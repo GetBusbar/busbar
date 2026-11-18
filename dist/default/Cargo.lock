@@ -1082,7 +1082,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-env"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=171ffa824c4e99e0e466c84ada50a74d62cce96b#171ffa824c4e99e0e466c84ada50a74d62cce96b"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=36df49db4f1b3426a5623d45e6375549b7899bd9#36df49db4f1b3426a5623d45e6375549b7899bd9"
 dependencies = [
  "busbar-plugin-abi",
  "sonic-rs",
@@ -1109,13 +1109,11 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=17620de2b816da4f9c38f4c32c2c0ee5d400ff1e#17620de2b816da4f9c38f4c32c2c0ee5d400ff1e"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=bd727e67d538071b28c9631831201a582620b221#bd727e67d538071b28c9631831201a582620b221"
 dependencies = [
- "busbar-contract",
+ "busbar-plugin-abi",
  "foldhash 0.2.0",
- "getrandom 0.3.4",
  "serde_json",
- "smallvec",
 ]
 
 [[package]]

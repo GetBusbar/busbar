@@ -232,6 +232,7 @@ loom-model = ["busbar-kernel/loom-model"]
 
 [package.metadata.busbar.always-on]
 plane-llm-door = "busbar-plane-llm"
+store-memory = "busbar-store-memory"
 secret-env = "busbar-secret-env"
 secret-file = "busbar-secret-file"
 plane-mcp-door = "busbar-plane-mcp"
@@ -286,6 +287,10 @@ auth-webhook-signature = "busbar-auth-webhook-signature"
 # default build; ARCHITECT 2026-10-02 WIRE-SECRET). 044034749a dropped their door-era rows when the `secret-doors` axis
 # went; without these rows the default binary admits no secret source and refuses every `{ env: .. }` reference
 # (BUSBAR-3121). Stores and hooks are native images (WP3), not linked rows.
+# THE DEFAULT STORE (`governance.store: memory`): a MIN-3 image (its logic crate's `PLUGIN` header) linked in every build on
+# `min3-images`, the same image a dropped-in store-memory admits. 0f85eef946 dropped its door-era linked rows with the `stores` axis
+# and nothing replaced them, so the default binary linked no store.
+store-memory = "busbar-store-memory"
 secret-env = "busbar-secret-env"
 secret-file = "busbar-secret-file"
 # THE TRANSPORT AXIS (#3, #30): the wires this build links, one row each, folded bottom-up by the boot
@@ -350,6 +355,7 @@ plane-a2a-door = "min3-images"
 # MIN-3 secret sources register their PLUGIN header; describe declares their source shorthand.
 secret-env = "min3-images"
 secret-file = "min3-images"
+store-memory = "min3-images"
 
 # A linked crate whose entry module is not `<crate>::linked`.
 [package.metadata.busbar.linked-entry]
@@ -470,7 +476,6 @@ auth_oidc = "busbar-auth-oidc"
 ranking_hook = "busbar-hook-ranking"
 source_file = "busbar-secret-file"
 metrics_fixture = "busbar-export-prometheus"
-memory_store = "busbar-store-memory"
 
 [package.metadata.busbar.test-common-sources]
 token_verifier = "busbar-auth-oidc"
@@ -763,7 +768,7 @@ busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-e
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
-busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "171ffa824c4e99e0e466c84ada50a74d62cce96b" }
+busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "36df49db4f1b3426a5623d45e6375549b7899bd9" }
 busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "4360a0ba0dc60a7ade98cd3401ec47495aee73f1" }
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
@@ -843,7 +848,7 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # (upgrade cell BOOT-W15). d7a62c4 is 5927d5e plus the upsert-by-id fix (492c728, busbar-store-memory fj#44):
 # a parented upserted plane record is keyed on its own id, so get/delete by (kind, id) reach it.
 # Explicit usage cleanup preserves billing; unsigned expiry cells retain permanent node claims.
-busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "17620de2b816da4f9c38f4c32c2c0ee5d400ff1e" }
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "bd727e67d538071b28c9631831201a582620b221" }
 # Published MIN-3 MCP implementation, linked through its PLUGIN header.
 busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "2493436985d38203790eed5cba0c44b673272b42" }
 # Published MIN-3 decisions implementation, linked through its PLUGIN header.
