@@ -25,8 +25,7 @@
 //!   timeout (the shutdown grace for CR_DRAIN), applies its CLOSE (absent = graceful), and only then drops the
 //!   handle; never after the framer answered CLOSE, after EOF, after a socket failure, or to a quarantined
 //!   instance (counted instead).
-//! * **ALPN by role** (round 9): a listener serving an instance advertises its `alpn(ROLE_SERVER)`
-//!   ([`server_alpn`]), a dial through it offers its `alpn(ROLE_CLIENT)` ([`client_alpn`]); never one list for
+//! * **ALPN by role** (round 9): a listener serving an instance advertises its `alpn(ROLE_SERVER)`, a dial through it offers its `alpn(ROLE_CLIENT)`; never one list for
 //!   both.
 
 use std::collections::VecDeque;
@@ -75,28 +74,6 @@ const FEED_GONE_STATUS: u32 = 500;
 
 /// The text that refusal carries (core text, never plugin text, I2).
 const FEED_GONE_TEXT: &str = "the exchange feeding this stream ended before the stream did";
-
-/// The protocol ids a listener serving `port`'s instance advertises: its `alpn(ROLE_SERVER)`, in order,
-/// for [`crate::compose::Accept::alpn`].
-#[must_use]
-pub fn server_alpn(port: &dyn TransportPort) -> Vec<Vec<u8>> {
-    protocol_ids(port.alpn(wire::ROLE_SERVER))
-}
-
-/// The protocol ids a dial through `port`'s instance offers: its `alpn(ROLE_CLIENT)`, in order, for
-/// [`crate::compose::Dial::alpn`].
-#[must_use]
-pub fn client_alpn(port: &dyn TransportPort) -> Vec<Vec<u8>> {
-    protocol_ids(port.alpn(wire::ROLE_CLIENT))
-}
-
-fn protocol_ids(ids: &[Box<str>]) -> Vec<Vec<u8>> {
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        out.push(Vec::from(id.as_bytes()));
-    }
-    out
-}
 
 /// What one transport answer asks of core, owned: a `TransportOut` borrows the framer's buffer, and the
 /// session task acts on it only after the call returned.
