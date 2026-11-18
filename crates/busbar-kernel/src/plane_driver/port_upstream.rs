@@ -295,25 +295,20 @@ pub enum Attempted {
 }
 
 /// The reply's head as the piece it is fed in: H_STATUS, PAIR*.
-fn head_piece(status: u16, headers: &HeadFields) -> Result<Vec<u8>, SessionError> {
-    let pairs: Vec<Pair<'_>> = headers
-        .iter()
-        .filter_map(|(name, value)| {
-            let name = std::str::from_utf8(name).ok().filter(|n| !n.is_empty())?;
-            Some(Pair {
-                name: Str::new(name),
-                value: Bytes::new(value),
-            })
-        })
-        .collect();
+fn head_piece(status: u16, headers: &HeadFields) -> Result<Reply, SessionError> {
     let mut head = Reply::new();
-    encode_upstream_head(&mut head, status, &pairs, None, None)
-        .map_err(|_| SessionError::Encode)?;
-    Ok(head.as_bytes().to_vec())
+    encode_upstream_head(&mut head, status, &[], None, None).map_err(|_| SessionError::Encode)?;
+    for (name, value) in headers.iter() {
+        if let Some(name) = std::str::from_utf8(name).ok().filter(|n| !n.is_empty()) {
+            head.put_pair(records::tag::PAIR, name, value)
+                .map_err(|_| SessionError::Encode)?;
+        }
+    }
+    Ok(head)
 }
 
 /// The far end's trailing fields as the PAIR* a TRAILERS piece carries.
-fn trailer_piece(block: &[u8]) -> Result<Vec<u8>, SessionError> {
+fn trailer_piece(block: &[u8]) -> Result<Reply, SessionError> {
     let mut out = Reply::new();
     for (name, value) in lines(block) {
         if let Some(name) = std::str::from_utf8(name).ok().filter(|n| !n.is_empty()) {
@@ -321,7 +316,7 @@ fn trailer_piece(block: &[u8]) -> Result<Vec<u8>, SessionError> {
                 .map_err(|_| SessionError::Encode)?;
         }
     }
-    Ok(out.as_bytes().to_vec())
+    Ok(out)
 }
 
 /// What feeding a reply produced.
@@ -380,7 +375,7 @@ fn feed<K: Calls + ?Sized>(
 ) -> Result<Fed, SessionError> {
     let mut fed = Fed::default();
     let head = head_piece(reply.status, &reply.headers)?;
-    if !step(task, &mut fed, P_HEAD, &head, effects)? {
+    if !step(task, &mut fed, P_HEAD, head.as_bytes(), effects)? {
         return Ok(fed);
     }
     loop {
@@ -392,7 +387,7 @@ fn feed<K: Calls + ?Sized>(
             }
             Ok(Some(Chunk::Trailers(block))) => {
                 let bytes = trailer_piece(&block)?;
-                if !step(task, &mut fed, P_TRAILERS, &bytes, effects)? {
+                if !step(task, &mut fed, P_TRAILERS, bytes.as_bytes(), effects)? {
                     return Ok(fed);
                 }
             }
