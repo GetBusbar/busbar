@@ -143,8 +143,13 @@ pub async fn admit<V: IngressVerifier + ?Sized, G: ReplayGuard + ?Sized>(
     ) else {
         return Err(Refused::BadCredential);
     };
-    let key = format!("standard-webhooks/{ts}/{id}");
-    match guard.claim(plane, key.as_bytes(), REPLAY_TTL_S).await {
+    // `standard-webhooks/<ts>/<id>`, built on the stack (a heap block only for an unusually long id).
+    let mut key: smallvec::SmallVec<[u8; 256]> = smallvec::SmallVec::new();
+    key.extend_from_slice(b"standard-webhooks/");
+    key.extend_from_slice(ts.as_bytes());
+    key.push(b'/');
+    key.extend_from_slice(id.as_bytes());
+    match guard.claim(plane, &key, REPLAY_TTL_S).await {
         Ok(true) => Ok(()),
         Ok(false) => Err(Refused::Replayed),
         Err(_) => Err(Refused::Unavailable),

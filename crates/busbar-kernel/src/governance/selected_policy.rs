@@ -287,9 +287,9 @@ impl SelectedPolicy {
                         == group.parent.as_deref()
             });
             if !matching {
-                errors.push(format!(
-                    "groups.{name}: selected policy does not match current group model"
-                ));
+                errors.push(
+                    crate::cold::governance::selected_policy::selected_policy_group_mismatch(name),
+                );
             }
         }
         // Temporary validation indexes are dropped before publication; actual target metadata
@@ -370,9 +370,9 @@ impl SelectedPolicy {
                     .and_then(|group| group.parent.as_deref());
             }
             if counts.values().any(|count| *count > MAX_APPLICABLE) {
-                errors.push(format!(
-                    "groups.{name}: more than 32 applicable selected-resource rules"
-                ));
+                errors.push(
+                    crate::cold::governance::selected_policy::selected_policy_too_many_rules(name),
+                );
             }
             // A provisioned child inherits the nearest template plus this complete parent chain.
             if let Some(template) = crate::config::groups::resolve_child_default(groups, name) {
@@ -384,7 +384,7 @@ impl SelectedPolicy {
                     }
                 }
                 if counts.values().any(|count| *count > MAX_APPLICABLE) {
-                    errors.push(format!("groups.{name}.child_default: child would exceed 32 applicable selected-resource rules"));
+                    errors.push(crate::cold::governance::selected_policy::selected_policy_child_too_many_rules(name));
                 }
             }
         }
@@ -513,12 +513,22 @@ fn compile_row(
 ) -> Option<CompiledRule> {
     let selected = limit.selected.as_ref()?;
     if !limit.valid_selected_shape() {
-        errors.push(format!("groups.{group}: invalid selected-resource rule"));
+        errors.push(crate::cold::governance::selected_policy::selected_policy_invalid_rule(group));
         return None;
     }
     match resources.get(&(selected.instance(), selected.resource())) {
-        None => errors.push(format!("groups.{group}: selected rule `{}` names an unavailable instance/resource", selected.id())),
-        Some(false) if limit.metric == LimitMetric::Tokens => errors.push(format!("groups.{group}: selected token rule `{}` requires attempt accounting on every matching target", selected.id())),
+        None => errors.push(
+            crate::cold::governance::selected_policy::selected_policy_unavailable_target(
+                group,
+                selected.id(),
+            ),
+        ),
+        Some(false) if limit.metric == LimitMetric::Tokens => errors.push(
+            crate::cold::governance::selected_policy::selected_policy_token_accounting(
+                group,
+                selected.id(),
+            ),
+        ),
         _ => {}
     }
     Some(CompiledRule {

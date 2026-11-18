@@ -32,7 +32,7 @@ pub enum SelectedTransfer {
     Applied(Arc<UnitCheckpoint>),
     RetainedPending(Arc<UnitCheckpoint>),
     RejectedNotOwned {
-        snapshot: UnitCheckpoint,
+        snapshot: Box<UnitCheckpoint>,
         error: RecordStoreError,
     },
 }
@@ -398,7 +398,7 @@ impl GovState {
                 SelectedTransfer::RetainedPending(Arc::new(previous.snapshot().clone()))
             } else {
                 SelectedTransfer::RejectedNotOwned {
-                    snapshot,
+                    snapshot: Box::new(snapshot),
                     error: error("selected terminal custody is already frozen"),
                 }
             };
@@ -451,7 +451,12 @@ impl GovState {
         };
         let (revision, durable, persisted) = match prepare() {
             Ok(prepared) => prepared,
-            Err(error) => return SelectedTransfer::RejectedNotOwned { snapshot, error },
+            Err(error) => {
+                return SelectedTransfer::RejectedNotOwned {
+                    snapshot: Box::new(snapshot),
+                    error,
+                }
+            }
         };
         snapshot.revision = revision;
         let accepted = Arc::new(snapshot.clone());
@@ -613,7 +618,7 @@ impl GovState {
     }
 
     /// The audit line hint noted for checkpoint `id`, if any.
-    pub fn unit_checkpoint_audit_hint(&self, id: &[u8; 16]) -> Option<Carried> {
+    pub(crate) fn unit_checkpoint_audit_hint(&self, id: &[u8; 16]) -> Option<Carried> {
         self.unit_checkpoints
             .pending
             .lock()
@@ -744,16 +749,13 @@ impl GovState {
                     continue;
                 }
                 let snapshot = entry.snapshot().clone();
-                drop(entry);
                 match self.apply_selected_checkpoint_memory(&snapshot) {
                     Ok(()) => {
                         pending.remove(id);
                     }
                     Err(failed) => {
                         first_error.get_or_insert_with(|| {
-                            error(&format!(
-                                "selected RAM custody remains unresolved: {failed}"
-                            ))
+                            error(&crate::cold::governance::selected_policy::unit_checkpoint_selected_unresolved(&failed))
                         });
                     }
                 }
@@ -926,7 +928,6 @@ impl GovState {
                         failed.push((item.id, why));
                         continue;
                     }
-                    drop(entry);
                     pending.remove(&item.id);
                     drop(pending);
                     for event in item.snapshot.terminal.iter().flatten() {
