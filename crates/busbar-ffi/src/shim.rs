@@ -841,7 +841,7 @@ pub(crate) unsafe extern "C" fn close<M: Image>(inst: *const c_void) -> Status {
     contain(|| {
         // SAFETY: the host calls `close` once, from `Instance::drop`, after every other entry for the
         // instance, with the address its INSTANCE answer named; nothing uses it again.
-        unsafe { drop_inst::<InstOf<M>>(inst) };
+        unsafe { drop_inst::<M::Plugin, M::Session, M::Reply, M::Inbox>(inst) };
         Status::OK
     })
 }

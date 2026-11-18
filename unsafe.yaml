@@ -19,7 +19,7 @@ ffi:
     src/header.rs: { tokens: 2, reason: "export!'s #[unsafe(no_mangle)]; its allow" }
     src/vt.rs: { tokens: 10, reason: "the nine instance-taking entry fn-pointer aliases (EntryFn0-5, ResumeFn, CancelFn, CloseFn); its allow" }
     src/shim.rs: { tokens: 41, reason: "enter (def and block); instance shims' definitions and enter blocks; close's drop; its allow. Slot primitives are private safe calls under I6." }
-    src/slots.rs: { tokens: 11, reason: "the raw slot write, exclusive value borrow and take, Sync for Slots, tie (the chain-future lifetime erasure), drop_inst (def and two blocks), the C-CLOSE-PARKED test's two blocks; its allow" }
+    src/slots.rs: { tokens: 11, reason: "the raw slot write, exclusive value borrow and take, Sync for Slots, tie (the chain-future lifetime erasure), drop_inst (def, the in-place drops of chains and of the owned rest, and the free), the C-CLOSE-PARKED test's one block; its allow" }
     src/host.rs: { tokens: 11, reason: "one call block per entry arity (invoke0-5), the resume, cancel and close calls, Arena::lend's append; its allow" }
     src/image.rs: { tokens: 7, reason: "Library::new, Library::get, the opened and admitted header views, the stamp view, the vt::<K> cast; its allow" }
   # Exactly these dependencies, each with its role: always, host (optional, feature `host`), or the cfg.
