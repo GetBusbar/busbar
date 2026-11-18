@@ -548,7 +548,7 @@ fn stamp_retry_after(items: &mut [ToClient], wait: Option<u32>) {
     {
         return;
     }
-    fields.push((RETRY_AFTER.to_vec(), wait.to_string().into_bytes()));
+    fields.push(crate::cold::retry_after_field(RETRY_AFTER, wait));
 }
 
 #[cfg(test)]

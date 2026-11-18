@@ -284,17 +284,7 @@ pub async fn admit(
 /// Core's own rendering of a refusal: the status, its text as `text/plain`, and the end.
 #[must_use]
 pub fn plain_refusal(refusal: &ClientRefusal) -> Vec<ToClient> {
-    vec![
-        ToClient::Head {
-            status: refusal.status,
-            fields: vec![(
-                b"content-type".to_vec(),
-                b"text/plain; charset=utf-8".to_vec(),
-            )],
-        },
-        ToClient::Body(refusal.text.as_bytes().to_vec()),
-        ToClient::End,
-    ]
+    crate::cold::plain_refusal_items(refusal)
 }
 
 /// The client items of a refusal: the plane renders it in its dialect (`render(RENDER_REFUSAL)`, arg = one

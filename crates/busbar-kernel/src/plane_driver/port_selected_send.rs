@@ -181,7 +181,7 @@ impl SelectedHandoff {
                 ));
                 return false;
             }
-            match rates.commit(money, reservation) {
+            let rejected = match rates.commit(money, reservation) {
                 Ok(attempt) => {
                     self.committed = Some(attempt);
                     return true;
@@ -194,23 +194,22 @@ impl SelectedHandoff {
                     ));
                     return false;
                 }
-                Err(SelectedCommitRejected::Rate(rejected))
-                | Err(SelectedCommitRejected::Money(NativeCommitError::Rate(rejected))) => {
-                    if !self.retry_expired(money, rejected) {
-                        return false;
-                    }
-                }
+                Err(SelectedCommitRejected::Rate(rejected)) => rejected,
+                Err(SelectedCommitRejected::Money(NativeCommitError::Rate(rejected))) => *rejected,
                 Err(SelectedCommitRejected::Money(NativeCommitError::Before {
                     reservation,
                     ..
                 })) => {
                     self.failure = Some(retire_prepared(
                         money,
-                        reservation.cancel(),
+                        (*reservation).cancel(),
                         SelectedFailure::Backend,
                     ));
                     return false;
                 }
+            };
+            if !self.retry_expired(money, rejected) {
+                return false;
             }
         }
     }

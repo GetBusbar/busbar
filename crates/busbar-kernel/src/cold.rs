@@ -169,7 +169,7 @@ pub(crate) fn route_policy_status_label(status: u16) -> String {
 pub(crate) fn selected_view_refusal(
     message: &'static str,
 ) -> busbar_contract::records::RecordStoreError {
-    busbar_contract::records::RecordStoreError(format!("{message}"))
+    busbar_contract::records::RecordStoreError(message.to_owned())
 }
 
 /// `plane_driver::money::native_admission`: a refused selected startup transfer, as the text the
@@ -177,4 +177,32 @@ pub(crate) fn selected_view_refusal(
 #[cold]
 pub(crate) fn selected_startup_refusal(error: &impl std::fmt::Debug) -> String {
     format!("selected startup terminal transfer refused: {error:?}")
+}
+
+// --- plane_driver::port_auth, plane_driver::port_serve ---
+
+/// `plane_driver::port_auth::plain_refusal`: core's own rendering of a refusal (the status, its
+/// text as `text/plain`, the end), spelled only when the plane cannot render it.
+#[cold]
+pub(crate) fn plain_refusal_items(
+    refusal: &crate::refusal::ClientRefusal,
+) -> Vec<crate::plane_driver::port_session::ToClient> {
+    use crate::plane_driver::port_session::ToClient;
+    vec![
+        ToClient::Head {
+            status: refusal.status,
+            fields: vec![(
+                b"content-type".to_vec(),
+                b"text/plain; charset=utf-8".to_vec(),
+            )],
+        },
+        ToClient::Body(refusal.text.as_bytes().to_vec()),
+        ToClient::End,
+    ]
+}
+
+/// `plane_driver::port_serve`: the `retry-after` field an exhausted session's refusal head gets.
+#[cold]
+pub(crate) fn retry_after_field(name: &[u8], wait: u32) -> (Vec<u8>, Vec<u8>) {
+    (name.to_vec(), format!("{wait}").into_bytes())
 }

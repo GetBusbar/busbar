@@ -9,16 +9,17 @@ use crate::governance::selected_resource::{
 use crate::governance::unit_checkpoint::partitions::ValidatedSelectedCheckpoint;
 
 pub(crate) enum NativeCommitError {
-    /// Refused before the rate was committed: the still-provisional reservation comes back.
-    Before {
-        reservation: RateReservation,
-    },
-    Rate(RateRejected),
+    /// Refused before the rate was committed: the still-provisional reservation comes back (boxed:
+    /// it carries the whole preparation, and only this refusal path pays the allocation).
+    Before { reservation: Box<RateReservation> },
+    /// The rate owner refused the commit (boxed: the refusal carries the whole preparation, and
+    /// only this refusal path pays the allocation).
+    Rate(Box<RateRejected>),
 }
 
 enum CommitFailure {
     Before,
-    Rate(RateRejected),
+    Rate(Box<RateRejected>),
 }
 impl From<NativeAttemptError> for CommitFailure {
     fn from(_: NativeAttemptError) -> Self {
@@ -36,7 +37,7 @@ impl NativeRequestMoney {
         let mut held = Some(reservation);
         self.commit_inner(&mut held).map_err(|error| match error {
             CommitFailure::Before => NativeCommitError::Before {
-                reservation: held.take().expect("preflight never consumes reservation"),
+                reservation: Box::new(held.take().expect("preflight never consumes reservation")),
             },
             CommitFailure::Rate(error) => NativeCommitError::Rate(error),
         })
@@ -102,6 +103,7 @@ impl NativeRequestMoney {
                 held.take()
                     .expect("callback runs at most once")
                     .try_commit()
+                    .map_err(Box::new)
             })
             .map_err(|error| match error {
                 SelectedCommitError::Custody(_) => CommitFailure::Before,

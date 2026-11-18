@@ -2237,25 +2237,27 @@ async fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
             crate::real_store::core().await;
         let other_money = PlaneMoney::new(r.gov.clone(), r.posted.clone());
         let outcome = spent.adopt(
-            if mismatch == 9 {
-                &other_money
-            } else {
-                &r.money
+            &crate::plane_driver::TicketAdoption {
+                money: if mismatch == 9 {
+                    &other_money
+                } else {
+                    &r.money
+                },
+                ctx: &receiving,
+                admit: &grant,
+                principal: &principal,
+                expected_key: &expected,
+                node_nonce: if mismatch == 6 { &other_node } else { &node },
+                instance_nonce: if mismatch == 7 {
+                    &other_instance
+                } else {
+                    &instance
+                },
+                store: if mismatch == 8 { &other_store } else { &store },
             },
-            &receiving,
-            &grant,
-            &principal,
-            &expected,
             "m".into(),
             r.unit.classes.clone(),
             r.unit.fee.clone(),
-            if mismatch == 6 { &other_node } else { &node },
-            if mismatch == 7 {
-                &other_instance
-            } else {
-                &instance
-            },
-            if mismatch == 8 { &other_store } else { &store },
         );
         if (1..=9).contains(&mismatch) {
             assert!(outcome.is_err(), "mismatch {mismatch} must fail closed");
