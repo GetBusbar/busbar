@@ -1547,14 +1547,6 @@ pub(crate) struct DoorRequest {
     pub(crate) consumed_fields: Vec<(String, String)>,
 }
 
-pub(crate) fn line_auth(flags: u32, data_chain: &[ChainAuth]) -> busbar_kernel::guest::LineAuth {
-    if flags & CLAIM_OPEN != 0 {
-        busbar_kernel::guest::LineAuth::None
-    } else {
-        chain_auth(data_chain)
-    }
-}
-
 pub(crate) type ChainAuth = (String, busbar_contract::abi::auth::AuthPoints);
 
 pub(crate) fn listener_method_bits(method: RouteMethod) -> u32 {

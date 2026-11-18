@@ -1690,6 +1690,16 @@ pub(crate) fn install_native_slots(
     Ok(())
 }
 
+/// A claim line's auth, built with the route table (once per generation): an open claim needs none, any
+/// other the plane's data chain.
+pub(crate) fn line_auth(flags: u32, data_chain: &[ChainAuth]) -> busbar_kernel::guest::LineAuth {
+    if flags & busbar_contract::abi::plane::CLAIM_OPEN != 0 {
+        busbar_kernel::guest::LineAuth::None
+    } else {
+        chain_auth(data_chain)
+    }
+}
+
 pub(crate) fn chain_auth(data_chain: &[ChainAuth]) -> busbar_kernel::guest::LineAuth {
     let points = data_chain.iter().fold(0, |set, (_, p)| set | p.bits());
     let tail = busbar_kernel::guest::LineAuth::Chain(
