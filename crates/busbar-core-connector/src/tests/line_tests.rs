@@ -84,6 +84,7 @@ impl FramerDoor for Hanging {
 
 fn dial(target: &str) -> Dial {
     Dial {
+        plaintext_accepted: false,
         target: target.to_owned(),
         tls: None,
         alpn: Vec::new(),

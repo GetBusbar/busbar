@@ -1257,6 +1257,7 @@ fn connector_holds_datagram_writes_until_the_signalling_exchange_finishes() {
         let connection = Planned::carried(
             crate::support::via(),
             Dial {
+                plaintext_accepted: false,
                 target: address.to_string(),
                 tls: None,
                 alpn: Vec::new(),

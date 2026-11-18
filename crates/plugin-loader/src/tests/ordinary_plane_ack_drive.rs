@@ -750,6 +750,7 @@ fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
         let plugin = load_linked::<Plane>(
             &row,
             Bind {
+                accept: Default::default(),
                 instance: format!("ack-{}", defect as u8).into(),
                 max_inflight_cap: 8,
                 sink: Arc::new(NoSink),
@@ -827,6 +828,7 @@ fn canceling_an_actual_pending_crossing_cannot_ack_its_drivers_result() {
     let plugin = load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
         Bind {
+            accept: Default::default(),
             instance: "cancel-driver-ack".into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
@@ -911,6 +913,7 @@ fn a_pending_driver_delivers_ids_resumes_and_retires_late_service_custody() {
     let plugin = load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
         Bind {
+            accept: Default::default(),
             instance: "pending-driver-service".into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
@@ -1079,6 +1082,7 @@ fn project_attributes_the_actual_host_service_call_to_its_unit() {
     let plugin = load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
         Bind {
+            accept: Default::default(),
             instance: "the-instance".into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),

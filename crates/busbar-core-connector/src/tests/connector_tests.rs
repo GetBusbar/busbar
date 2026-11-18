@@ -874,7 +874,11 @@ fn literal_connector() -> Connector {
         alpn: Vec::new(),
     }])
     .unwrap();
-    Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}))
+    let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}));
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A):
+    // its plaintext loopback far ends are admitted by that acceptance, never by loopback alone.
+    c.accept_plaintext(OWNER);
+    c
 }
 
 /// RED: a need whose config names its target (`target_from`) dials that target and no other: an
@@ -1584,12 +1588,16 @@ fn scheme_connector() -> Connector {
     ])
     .unwrap();
     let tls = crate::tls::client::build_client_config(&Default::default()).expect("the config");
-    Connector::serving(
+    let c = Connector::serving(
         view,
         loopback_literals(),
         Some(Arc::new(tls)),
         Arc::new(|_, _| {}),
-    )
+    );
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A):
+    // its plaintext loopback far ends are admitted by that acceptance, never by loopback alone.
+    c.accept_plaintext(OWNER);
+    c
 }
 
 fn open_in(c: &Connector, need: u32, target: &str) -> Result<ConnId, ConnError> {
@@ -1644,6 +1652,43 @@ fn loopback_allowed_refuses_plaintext_off_loopback() {
         assert_eq!(open_in(&c, 0, "\x310.1.2.3:80"), Err(ConnError::Refused));
         let id = open_in(&c, 0, &far).expect("plaintext loopback opens");
         c.close(OWNER, id).unwrap();
+    });
+}
+
+/// SEC-2 (#297 model A): an owner with no plaintext acceptance is refused plaintext to loopback;
+/// loopback is not exempt, and another owner's acceptance lends it nothing.
+#[test]
+fn plaintext_to_loopback_without_the_owners_acceptance_is_refused() {
+    const UNACCEPTED: InstanceId = InstanceId(OWNER.0 + 1000);
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let c = scheme_connector();
+        c.declare_need(UNACCEPTED, NeedId(0), "plain", EGRESS_LOOPBACK_ALLOWED)
+            .expect("a served scheme declares");
+        assert_eq!(
+            c.open(
+                UNACCEPTED,
+                NeedId(0),
+                &OpenDesc {
+                    target: &far,
+                    ..OpenDesc::default()
+                },
+            ),
+            Err(ConnError::Refused),
+            "plaintext loopback without an acceptance"
+        );
+        let id = c
+            .open(
+                UNACCEPTED,
+                NeedId(0),
+                &OpenDesc {
+                    target: &far,
+                    plaintext_accepted: true,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("the opener's own acceptance admits it");
+        c.close(UNACCEPTED, id).unwrap();
     });
 }
 
@@ -2038,7 +2083,11 @@ fn userinfo_connector() -> Connector {
         },
     ])
     .unwrap();
-    Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}))
+    let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}));
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A):
+    // its plaintext loopback far ends are admitted by that acceptance, never by loopback alone.
+    c.accept_plaintext(OWNER);
+    c
 }
 
 /// The refusal of a userinfo in a need's target STAYS for every target the need's own

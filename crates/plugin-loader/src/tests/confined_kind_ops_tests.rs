@@ -30,6 +30,7 @@ fn inline() -> usize {
 
 fn bind(dispatcher: &Dispatcher, label: &str, conns: ConnTable) -> Bind {
     Bind {
+        accept: Default::default(),
         instance: Arc::from(label),
         max_inflight_cap: 4,
         sink: Arc::new(NoSink),

@@ -32,6 +32,7 @@ fn sink() -> Arc<dyn ExportCalls> {
     let plugin = load_linked::<Export>(
         &row,
         Bind {
+            accept: Default::default(),
             instance: "export.snapshot-crossing".into(),
             max_inflight_cap: 4,
             sink: Arc::new(NoSink),

@@ -345,6 +345,7 @@ impl Host {
         sink: Arc<dyn EnvelopeSink>,
     ) -> Result<Plugin<K>, Refused> {
         img.load(Bind {
+            accept: Default::default(),
             instance: Arc::from(name),
             max_inflight_cap: 64,
             sink,

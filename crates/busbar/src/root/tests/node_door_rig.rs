@@ -191,6 +191,7 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
         load_linked::<Plane>(
             &row,
             Bind {
+                accept: Default::default(),
                 instance: Arc::from(instance),
                 max_inflight_cap: 64,
                 sink: Arc::new(crate::root::loader::dispatch::NoSink),
@@ -417,6 +418,7 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
         &dispatcher,
         &services,
         &sections,
+        &Default::default(),
         None,
         &plane_money,
         Some(&DoorEgress {

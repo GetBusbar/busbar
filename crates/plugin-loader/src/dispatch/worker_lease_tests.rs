@@ -160,6 +160,7 @@ fn rig() -> (Dispatcher, Plugin<LeaseKind>, *const State) {
     let p = load_linked::<LeaseKind>(
         &LinkedRow::of(door).unwrap(),
         Bind {
+            accept: Default::default(),
             instance: "worker-lease".into(),
             max_inflight_cap: 2,
             sink: Arc::new(NoSink),

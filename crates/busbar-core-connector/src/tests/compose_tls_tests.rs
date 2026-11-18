@@ -80,6 +80,7 @@ fn tls_dial(far: &str, ca: Vec<u8>) -> Dial {
         ..Default::default()
     };
     Dial {
+        plaintext_accepted: false,
         target: far.to_owned(),
         tls: Some(Arc::new(
             crate::tls::client::build_client_config(&trust).expect("a usable client config"),

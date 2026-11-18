@@ -361,6 +361,7 @@ pub(crate) fn dispatcher() -> Arc<Dispatcher> {
 
 pub(crate) fn bind(d: &Dispatcher, label: &str, conns: ConnTable) -> Bind {
     Bind {
+ accept: Default::default(),
         instance: Arc::from(label),
         max_inflight_cap: 1024,
         sink: Arc::new(report::CountingSink::default()),

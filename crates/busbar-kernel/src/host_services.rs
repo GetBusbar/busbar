@@ -101,14 +101,14 @@ pub trait DestJudge: Send + Sync {
 
     fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal>;
 
-    /// THE PLAINTEXT RULE for `dest` (a URL or `host[:port]`): admitted only to loopback or to a
-    /// host an exact `advanced.tls.destinations` entry admits plaintext to. The default knows no
-    /// entries: loopback only.
+    /// THE PLAINTEXT RULE for `dest` (a URL or `host[:port]`), as a judge alone knows it: admitted
+    /// only to a host an exact `advanced.tls.destinations` entry admits plaintext to. SEC-2 (#297
+    /// model A): no loopback address or name is exempt; an instance's own plaintext acceptance is
+    /// its core-held `insecure_transport.accept`, applied where its dial is opened. The default
+    /// knows no entries: nothing.
     fn plaintext_admitted(&self, dest: &str) -> bool {
-        match busbar_contract::net::url_host(dest) {
-            Some(h) => is_loopback_text(&h),
-            None => is_loopback_text(dest),
-        }
+        let _ = dest;
+        false
     }
 
     fn judge_host(&self, host: &str, class: u32) -> Result<(), DestRefusal> {
@@ -4490,27 +4490,6 @@ pub fn caller_binding() -> Arc<dyn busbar_contract::services::CallerBinding> {
         }
     }
     Arc::new(Binding)
-}
-
-/// Whether `host` (a name or a literal, bracketed or not, with or without a port) is loopback by
-/// its spelling: `localhost` (or a name under it), or a loopback literal.
-fn is_loopback_text(host: &str) -> bool {
-    let h = host.trim();
-    let h = if let Some(inner) = h.strip_prefix('[') {
-        inner.split_once(']').map_or(inner, |(a, _)| a)
-    } else if h.matches(':').count() == 1 {
-        h.split_once(':').map_or(h, |(a, _)| a)
-    } else {
-        h
-    };
-    const UNDER_LOCALHOST: &str = ".localhost";
-    let h = h.strip_suffix('.').unwrap_or(h);
-    h.eq_ignore_ascii_case("localhost")
-        || h.len()
-            .checked_sub(UNDER_LOCALHOST.len())
-            .and_then(|at| h.get(at..))
-            .is_some_and(|tail| tail.eq_ignore_ascii_case(UNDER_LOCALHOST))
-        || h.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 #[cfg(any(test, feature = "test-support"))]

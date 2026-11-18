@@ -60,6 +60,7 @@ fn dispatcher() -> Arc<Dispatcher> {
 fn bind(d: &Dispatcher) -> Bind {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     Bind {
+        accept: Default::default(),
         instance: format!(
             "ordinary-loader-negative-{}",
             NEXT.fetch_add(1, Ordering::Relaxed)

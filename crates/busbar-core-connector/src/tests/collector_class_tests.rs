@@ -69,6 +69,8 @@ fn dial_judge() -> Arc<dyn DialJudge> {
     judge(Arc::new(dest_judge()), &[OWN])
 }
 
+/// The collector's owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A: the
+/// only way plaintext is admitted); the `loopback-allowed` class still narrows it to loopback.
 /// `authority` (`host:port`, as the http framer locates it out of the collector URL), dialled
 fn open(
     j: &Arc<dyn DialJudge>,
@@ -98,7 +100,7 @@ fn open(
         rx.recv_timeout(Duration::from_secs(10))
             .expect("the judgement answered")
     })?;
-    if crate::class_admits(class, secure, false, &[], authority, at) {
+    if crate::class_admits(class, secure, true, &[], at) {
         Ok(at)
     } else {
         Err(DEST_PLAINTEXT)
@@ -451,11 +453,11 @@ fn a_spelling_of_a_public_address_is_the_collector_it_spells() {
     }
 }
 
-/// THE ONE PLAINTEXT RULE, in every class: a dial that is not secured from its first byte reaches
-/// loopback, or a host an exact `plaintext: true` entry names; nothing else. (Before the trust
-/// store, the default, provider and operator-infrastructure classes admitted plaintext anywhere.)
+/// THE ONE PLAINTEXT RULE, in every class (SEC-2, #297 model A): a dial that is not secured from its
+/// first byte is admitted only by its owner's plaintext acceptance or an exact entry; loopback is
+/// not exempt. The `loopback-allowed` class narrows an admitted plaintext dial to loopback.
 #[test]
-fn plaintext_reaches_loopback_or_an_exact_plaintext_entry_in_every_class() {
+fn plaintext_needs_an_acceptance_in_every_class_and_loopback_is_not_exempt() {
     use busbar_contract::abi::host::conn::connector::{
         EGRESS_DEFAULT, EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_PROVIDER,
     };
@@ -468,36 +470,27 @@ fn plaintext_reaches_loopback_or_an_exact_plaintext_entry_in_every_class() {
         LA,
     ] {
         assert!(
-            !crate::class_admits(class, false, false, &[], "otel.internal:4318", private),
-            "class {class}: plaintext to a private host without an entry is refused"
+            !crate::class_admits(class, false, false, &[], private),
+            "class {class}: plaintext to a private host without an acceptance is refused"
         );
-        assert!(crate::class_admits(
-            class,
-            false,
-            true,
-            &[],
-            "otel.internal:4318",
-            private
-        ));
-        assert!(crate::class_admits(
-            class,
-            false,
-            false,
-            &[],
-            "otel.internal:4318",
-            lo
-        ));
-        assert!(crate::class_admits(
-            class,
-            true,
-            false,
-            &[],
-            "otel.internal:4318",
-            private
-        ));
+        assert!(
+            !crate::class_admits(class, false, false, &[], lo),
+            "class {class}: plaintext to loopback without an acceptance is refused"
+        );
+        assert_eq!(
+            crate::class_admits(class, false, true, &[], private),
+            class != LA,
+            "class {class}: an accepted plaintext dial off loopback (refused only in loopback-allowed)"
+        );
+        assert!(
+            crate::class_admits(class, false, true, &[], lo),
+            "class {class}: an accepted plaintext dial to loopback"
+        );
+        assert!(crate::class_admits(class, true, false, &[], private));
     }
     assert!(
-        !crate::class_admits(EGRESS_OPEN_WEB, false, true, &[], "a.example:80", private),
-        "open-web never admits plaintext, whatever an entry says"
+        !crate::class_admits(EGRESS_OPEN_WEB, false, true, &[], private),
+        "open-web never admits plaintext, whatever is accepted"
     );
+    assert!(!crate::class_admits(EGRESS_OPEN_WEB, false, true, &[], lo));
 }

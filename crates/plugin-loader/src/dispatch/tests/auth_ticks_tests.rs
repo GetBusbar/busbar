@@ -141,6 +141,7 @@ fn opened(
 ) -> AuthInstance {
     let sink = AuthSink::new(label);
     let bind = crate::dispatch::Bind {
+        accept: Default::default(),
         instance: Arc::from(label),
         max_inflight_cap: 8,
         sink: sink.bind(),

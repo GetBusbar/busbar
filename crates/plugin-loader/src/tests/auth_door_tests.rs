@@ -383,6 +383,7 @@ fn two_instances_of_one_plugin_are_two_callers() {
     let open = |label: &str| {
         let sink = AuthSink::new("judge");
         let bind = Bind {
+            accept: Default::default(),
             instance: Arc::from(label),
             max_inflight_cap: 8,
             sink: sink.bind(),
@@ -457,6 +458,7 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
     let d = dispatcher();
     let sink = AuthSink::new("judge");
     let bind = Bind {
+        accept: Default::default(),
         instance: Arc::from("judge-1"),
         max_inflight_cap: 1,
         sink: sink.bind(),
@@ -503,6 +505,7 @@ async fn a_sign_in_past_max_inflight_is_an_outage_not_a_rejected_credential() {
     let d = dispatcher();
     let sink = AuthSink::new("judge");
     let bind = Bind {
+        accept: Default::default(),
         instance: Arc::from("pl-src-1-login-1"),
         max_inflight_cap: 1,
         sink: sink.bind(),
@@ -642,6 +645,7 @@ fn an_instance_debug_never_shows_its_settings_or_secrets() {
     let d = dispatcher();
     let sink = AuthSink::new("keyed");
     let bind = Bind {
+        accept: Default::default(),
         instance: Arc::from("keyed-a"),
         max_inflight_cap: 8,
         sink: sink.bind(),
@@ -1708,6 +1712,7 @@ fn an_auth_instance_holds_its_secrets_in_zeroising_buffers() {
     let d = dispatcher();
     let sink = AuthSink::new("keyed");
     let bind = Bind {
+        accept: Default::default(),
         instance: Arc::from("keyed-z"),
         max_inflight_cap: 8,
         sink: sink.bind(),

@@ -2483,18 +2483,15 @@ pub fn service_account_token_uri(credential: &str) -> Result<String, String> {
         .unwrap_or_else(|| "https://oauth2.googleapis.com/token".to_string()))
 }
 
-/// THE HOST'S TRANSPORT RULE FOR A TOKEN ENDPOINT, in 1.5.5's words: the client secret is POSTed
-/// there, so plaintext http is admitted only to a private or loopback host. The endpoint's own
-/// syntax (and any other scheme) stays the auth owner's to judge.
+/// THE HOST'S TRANSPORT RULE FOR A TOKEN ENDPOINT: the client secret is POSTed there, so plaintext
+/// http is refused for every host. SEC-2 (#297 model A): no private or loopback host is exempt. The
+/// endpoint's own syntax (and any other scheme) stays the auth owner's to judge.
 fn token_url_plaintext_refusal(token_url: &str) -> Option<String> {
-    use busbar_contract::net::{extract_normalized_host, host_is_private_or_loopback, scheme_is};
-    let private = extract_normalized_host(token_url)
-        .as_deref()
-        .is_some_and(host_is_private_or_loopback);
-    (scheme_is(token_url, http::uri::Scheme::HTTP.as_str()) && !private).then(|| {
+    use busbar_contract::net::scheme_is;
+    scheme_is(token_url, http::uri::Scheme::HTTP.as_str()).then(|| {
         let token_url = busbar_kernel_egress::trust::net::redact_userinfo(token_url);
         format!(
-            "token_url must use https for a public host (got '{token_url}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint"
+            "token_url must use https (got '{token_url}'); it carries the client secret, and no private or loopback host is exempt"
         )
     })
 }
@@ -2515,24 +2512,20 @@ fn describe_reference(cfg: &RootCfg, reference: &busbar_contract::secret_ref::Se
     }
 }
 
+/// A service-account `token_uri`: never a cloud-metadata host, and https only. SEC-2 (#297 model
+/// A): no private or loopback host is exempt from TLS.
 pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), String> {
-    use busbar_contract::net::{extract_normalized_host, host_is_private_or_loopback, scheme_is};
-    let host_private = extract_normalized_host(token_uri)
-        .as_deref()
-        .map(host_is_private_or_loopback)
-        .unwrap_or(false);
-    if !(scheme_is(token_uri, "https")
-        || (host_private && scheme_is(token_uri, http::uri::Scheme::HTTP.as_str())))
-    {
-        let token_uri = busbar_kernel_egress::trust::net::redact_userinfo(token_uri);
-        return Err(format!(
-            "service-account token_uri must use https for a public host (got '{token_uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
-        ));
-    }
+    use busbar_contract::net::scheme_is;
     if let Some(host) = metadata_blocked(token_uri, &posture.blocked_hosts) {
         let token_uri = busbar_kernel_egress::trust::net::redact_userinfo(token_uri);
         return Err(format!(
             "service-account token_uri '{token_uri}' targets a blocked cloud-metadata host '{host}' (the signed assertion would be POSTed there; cloud-metadata/IMDS endpoints are denied and no configuration admits them)"
+        ));
+    }
+    if !scheme_is(token_uri, "https") {
+        let token_uri = busbar_kernel_egress::trust::net::redact_userinfo(token_uri);
+        return Err(format!(
+            "service-account token_uri must use https (got '{token_uri}'); it receives the signed JWT assertion, and no private or loopback host is exempt"
         ));
     }
     Ok(())

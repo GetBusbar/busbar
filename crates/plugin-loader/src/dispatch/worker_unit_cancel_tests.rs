@@ -145,6 +145,7 @@ fn plugin(dispatcher: &Dispatcher) -> (Plugin<Plane>, Arc<Control>) {
     let plugin = load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
         Bind {
+            accept: Default::default(),
             instance: "unit-cancel".into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),

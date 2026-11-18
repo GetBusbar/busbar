@@ -754,7 +754,7 @@ fn route_of(
         pool: pool.to_owned(),
         affinity: wants.affinity.as_deref().map(affinity_of),
         wants_stream: wants.stream,
-        accept: Some(accept),
+        accept,
         ..UnitRoute::default()
     }
 }

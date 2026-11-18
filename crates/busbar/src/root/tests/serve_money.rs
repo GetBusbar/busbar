@@ -104,6 +104,7 @@ async fn governed_full(
                     &path,
                     &statement,
                     Bind {
+                        accept: Default::default(),
                         instance: Arc::from(variable),
                         max_inflight_cap: 1024,
                         sink: Arc::new(NoSink),
@@ -357,6 +358,7 @@ async fn governed_full(
         &dispatcher,
         &services,
         &sections,
+        &Default::default(),
         None,
         &move || Arc::clone(&one),
         None,
@@ -714,6 +716,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         &dispatcher,
         &services,
         &sections,
+        &Default::default(),
         None,
         &reach,
         &busbar_kernel::plane_driver::serve::ServeTables::default(),

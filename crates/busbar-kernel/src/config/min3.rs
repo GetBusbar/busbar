@@ -141,6 +141,12 @@ pub struct ProvisioningGuard {
 /// and the authoring view writes it back; it is never part of an instance's `settings`, the only bag a
 /// plugin is bound from, so it is stripped before binding by construction. It is keyed here by (the
 /// section word, the configured instance name); the store is (`store`, `store`).
+///
+/// A plane instance takes it from its own top-level section (AGREED 2026-11-16 ~19:05Z), beside its
+/// registrations: the pre-pass lifts it off the section ([`DeployCfg::plane_insecure_transport`]) before
+/// the plane sees its bag, and it is judged here by the same grammar. The section word of a plane is
+/// its instance name, so a plane is keyed (`<instance>`, `<instance>`) and a refusal names
+/// `<instance>.insecure_transport`.
 pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
     let mut refused = Vec::new();
     let insecure_transport = kept(parse_insecure_transport(deploy), &mut refused);
@@ -217,8 +223,9 @@ fn kept<T: Default>(parsed: Result<T, Vec<String>>, refused: &mut Vec<String>) -
 
 /// One instance block that may carry `insecure_transport` beside `module`.
 struct Block<'a> {
-    /// The section word (`store`, `secrets`, `identity-providers`, `hooks`, `export`).
-    section: &'static str,
+    /// The section word (`store`, `secrets`, `identity-providers`, `hooks`, `export`, or a plane's
+    /// instance name, which is its section).
+    section: &'a str,
     /// The configured instance name (`store` for the one store).
     name: &'a str,
     /// The block's path in the file, as a refusal names it (`store`, `secrets.vault`).
@@ -269,6 +276,14 @@ fn blocks(deploy: &DeployCfg) -> Vec<Block<'_>> {
             name: name.as_str(),
             path: format!("export.{name}"),
             insecure_transport: def.insecure_transport.as_ref(),
+        });
+    }
+    for (name, written) in &deploy.plane_insecure_transport {
+        out.push(Block {
+            section: name.as_str(),
+            name: name.as_str(),
+            path: name.clone(),
+            insecure_transport: Some(written),
         });
     }
     out

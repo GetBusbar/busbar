@@ -137,7 +137,7 @@ pub(crate) mod fetch {
         blocked: &[String],
         cap: usize,
     ) -> Result<Vec<u8>, String> {
-        let secured = busbar_kernel::preflight::plugin_fetch_admits(url, blocked)?;
+        busbar_kernel::preflight::plugin_fetch_admits(url, blocked)?;
         std::thread::scope(|s| {
             let joined = s
                 .spawn(|| -> Result<Vec<u8>, String> {
@@ -145,7 +145,7 @@ pub(crate) mod fetch {
                         .enable_all()
                         .build()
                         .map_err(|e| format!("fetch runtime: {e}"))?;
-                    rt.block_on(get(table, url, secured, cap))
+                    rt.block_on(get(table, url, cap))
                 })
                 .join()
                 .map_err(|_| "plugins.fetch download thread panicked".to_owned());
@@ -188,13 +188,12 @@ pub(crate) mod fetch {
     }
 
     /// One GET of `url` over `table`, read whole under `cap`.
-    async fn get(table: &Table, url: &str, secured: bool, cap: usize) -> Result<Vec<u8>, String> {
+    async fn get(table: &Table, url: &str, cap: usize) -> Result<Vec<u8>, String> {
         let sending =
             |cause: &str| format!("GET {url}: error sending request for url ({url}): {cause}");
         let refused = |why: Option<NeedRefusal>| why.map(|w| w.render(|t| scrub(t, url)));
         let (need_id, scheme) = match url.split_once("://") {
-            Some((scheme, _)) if secured => (table.secured_need, scheme.to_ascii_lowercase()),
-            Some((scheme, _)) => (table.plain_need, scheme.to_ascii_lowercase()),
+            Some((scheme, _)) => (table.secured_need, scheme.to_ascii_lowercase()),
             None => return Err(sending("the URL names no scheme")),
         };
 
@@ -456,6 +455,7 @@ pub(crate) mod doors {
     /// A door's binding on `on`, labelled `instance`.
     pub(crate) fn bind_as(on: &Dispatcher, instance: &str) -> Bind {
         Bind {
+            accept: Default::default(),
             instance: Arc::from(instance),
             max_inflight_cap: 1024,
             sink: Arc::new(NoSink),

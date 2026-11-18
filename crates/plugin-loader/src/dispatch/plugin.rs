@@ -140,6 +140,10 @@ pub struct Bind {
     /// (each need under its Statement index) and handed the connector slots
     /// ([`super::conn_services::CONN_SLOTS`]); any other instance is handed none.
     pub conns: ConnTable,
+    /// The instance's core-held `insecure_transport.accept` (TRANSPORT-SECURITY-POLICY §3, #297 model A),
+    /// already logged and audited (BUSBAR-3162). One holding `plaintext` is registered on the table at
+    /// bind ([`DeclaredConns::accept_plaintext`]): its own opens may dial plaintext; no other may.
+    pub accept: busbar_plugin_abi::host_side::caller::Accept,
 }
 
 /// THE BIND'S CONNECTION TABLE (Q-P4-3): the host's table, or, explicitly, why there is none. A
@@ -2844,6 +2848,10 @@ impl<K: Kind> Plugin<K> {
                     unbound.1 = Some((Arc::clone(table), instance));
                     if v.kind == KindCode::Auth {
                         table.hold_authority(instance);
+                    }
+                    if bind.accept.0 & busbar_plugin_abi::host_side::caller::Accept::PLAINTEXT != 0
+                    {
+                        table.accept_plaintext(instance);
                     }
                     // SAFETY: `validate` ran `check_statement`, which refused a NULL list with a
                     // count; the rendering reads the Statement's `'static` lists.

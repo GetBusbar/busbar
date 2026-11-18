@@ -444,6 +444,7 @@ fn an_actual_held_short_lease_is_released_exactly_once_when_its_token_drops() {
     let plugin = load_linked::<Auth>(
         &row,
         Bind {
+            accept: Default::default(),
             instance: Arc::from("held-short"),
             max_inflight_cap: 16,
             sink: Arc::new(NoSink),

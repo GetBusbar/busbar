@@ -276,16 +276,17 @@ fn scheme_admits(egress_class: u32, secure: bool) -> bool {
 ///
 /// WHETHER A CARRIER'S CLEARTEXT WINDOW ([`compose::Connection::hold_clear_window`]) may stand in
 /// for the plaintext rule in `egress_class`: never in `loopback-allowed`, whose ABI contract
-/// (`EGRESS_LOOPBACK_ALLOWED`) is a secure connection or plaintext to loopback, so a carrier
-/// there off loopback is refused at its dial unless an exact plaintext entry admits it.
+/// (`EGRESS_LOOPBACK_ALLOWED`) is a secure connection or plaintext to loopback, so a carrier there
+/// is refused at its dial unless it is secure or its owner's acceptance admits plaintext to loopback.
 fn carrier_window_admits(egress_class: u32) -> bool {
     egress_class != EGRESS_LOOPBACK_ALLOWED
 }
 
 ///
-/// THE ONE PLAINTEXT RULE (every class): a dial that is not secured from its first byte is admitted
-/// only to loopback (by name or by the judged address) or to a destination an exact
-/// `advanced.tls.destinations` entry admits plaintext to (`plain_admitted`, which a carrier that
+/// THE ONE PLAINTEXT RULE (every class; SEC-2: nothing hard-coded exempt, not loopback): a dial
+/// that is not secured from its first byte is admitted only when its opener's core-held
+/// `insecure_transport.accept` admits plaintext to it ([`Planned::plaintext_accepted`], #297 model
+/// A) or an exact `advanced.tls.destinations` entry admits plaintext to it (`plain_admitted`, which a carrier that
 /// upgrades later also carries: its cleartext window is held on the connection instead,
 /// [`compose::Connection::hold_clear_window`]). `open-web` never admits plaintext.
 pub(crate) fn class_admits(
@@ -293,18 +294,14 @@ pub(crate) fn class_admits(
     secure: bool,
     plain_admitted: bool,
     within: &[IpAddr],
-    authority: &str,
     addr: SocketAddr,
 ) -> bool {
     (within.is_empty() || within.contains(&addr.ip()))
         && match egress_class {
             EGRESS_OPEN_WEB => secure,
-            _ => {
-                secure
-                    || plain_admitted
-                    || addr.ip().is_loopback()
-                    || guard::names_loopback(&host_of(authority))
-            }
+            // The class's ABI contract narrows (never widens) the rule: plaintext only to loopback.
+            EGRESS_LOOPBACK_ALLOWED => secure || (plain_admitted && guard::is_loopback(addr.ip())),
+            _ => secure || plain_admitted,
         }
 }
 
@@ -1312,6 +1309,9 @@ pub struct Connector {
     auths: Mutex<Auths>,
     /// The instances whose connections' authority the host writes
     authority_held: Mutex<HashSet<InstanceId>>,
+    /// The instances whose core-held `insecure_transport.accept` holds `plaintext`
+    /// ([`DeclaredConns::accept_plaintext`], #297 model A): every open they make may dial plaintext.
+    plaintext_owners: Mutex<HashSet<InstanceId>>,
     /// THE ABI RULES FLAGGED, once per instance and code ([`Connector::flag_once`]): BUSBAR-6017 (a
     /// retired need shape), 6014 (a refused call) and 6015 (an honoured deprecated value), each
     /// logged and audited the first time an instance meets it.
@@ -1359,6 +1359,7 @@ impl Default for Connector {
             reaching: Mutex::default(),
             auths: Mutex::new(HashMap::new()),
             authority_held: Mutex::new(HashSet::new()),
+            plaintext_owners: Mutex::new(HashSet::new()),
             flagged: Mutex::new(HashSet::new()),
             io: hostio::process(),
             proxy: None,
@@ -1504,6 +1505,22 @@ impl Connector {
         }
     }
 
+    /// Whether `caller`'s open of `desc` carries its owner's core-held plaintext acceptance: the
+    /// opener stated it ([`OpenDesc::plaintext_accepted`]) or the host registered the owner's
+    /// acceptance ([`DeclaredConns::accept_plaintext`]). SEC-2 (#297 model A): nothing else does.
+    fn plaintext_accepted(&self, caller: InstanceId, desc: &OpenDesc<'_>) -> bool {
+        desc.plaintext_accepted || self.owner_accepts_plaintext(caller)
+    }
+
+    /// Whether the host registered `owner`'s core-held plaintext acceptance
+    /// ([`DeclaredConns::accept_plaintext`]).
+    fn owner_accepts_plaintext(&self, owner: InstanceId) -> bool {
+        self.plaintext_owners
+            .lock()
+            .expect("plaintext owners")
+            .contains(&owner)
+    }
+
     /// Whether an exact `advanced.tls.destinations` entry admits plaintext to `authority`'s host.
     fn plaintext_admitted(&self, authority: &str) -> bool {
         self.trust
@@ -1512,21 +1529,22 @@ impl Connector {
             .is_some_and(|s| s.plaintext_admitted(&host_of(authority)))
     }
 
-    /// Whether a dial of `planned` at `addr` is a carrier that must be secured before it carries
-    /// application bytes: not framed, not secure from its first byte, not to loopback, and not
-    /// to a destination plaintext is admitted to.
-    fn holds_clear_window(&self, planned: &Planned, addr: SocketAddr) -> bool {
+    /// Whether a dial of `planned` is a carrier that must be secured before it carries application
+    /// bytes: not framed, not secure from its first byte, and plaintext to it is neither accepted by
+    /// its opener's core-held acceptance nor admitted by an exact entry. No address is exempt.
+    fn holds_clear_window(&self, planned: &Planned) -> bool {
         !planned.framed()
             && !planned.secure()
-            && !addr.ip().is_loopback()
-            && !guard::names_loopback(&host_of(planned.authority()))
+            && !planned.plaintext_accepted()
             && !self.plaintext_admitted(planned.authority())
     }
 
-    /// Whether plaintext is admitted for `planned` in `egress_class` beyond loopback: a carrier
-    /// (held to its cleartext window instead, [`carrier_window_admits`]) or an exact plaintext entry.
+    /// Whether plaintext is admitted for `planned` in `egress_class`: its opener's core-held
+    /// acceptance admits it, a carrier (held to its cleartext window instead,
+    /// [`carrier_window_admits`]), or an exact plaintext entry.
     fn plain_admitted(&self, planned: &Planned, egress_class: u32) -> bool {
-        (!planned.framed() && carrier_window_admits(egress_class))
+        planned.plaintext_accepted()
+            || (!planned.framed() && carrier_window_admits(egress_class))
             || self.plaintext_admitted(planned.authority())
     }
 
@@ -2012,9 +2030,9 @@ impl Connector {
                         egress_class,
                         located.secure,
                         (door.facts().role == ROLE_CARRIER && carrier_window_admits(egress_class))
-                            || self.plaintext_admitted(&located.authority),
+                            || self.plaintext_admitted(&located.authority)
+                            || self.owner_accepts_plaintext(owner),
                         &[],
-                        &located.authority,
                         addr,
                     ) => {}
                 Some(Ok(_)) => {
@@ -2577,7 +2595,7 @@ impl Connector {
                         held.refused(verdict_reason(v, false));
                         return Err(held.fail(judging, pended_verdict(v)));
                     }
-                    Ok(at) if !class_admits(j.egress_class, secure, plain, &[], target, at) => {
+                    Ok(at) if !class_admits(j.egress_class, secure, plain, &[], at) => {
                         egress_audit::dial_refused(target, Some(j.egress_class), "plaintext", None);
                         held.refused(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                         return Err(held.fail(judging, ConnError::Refused));
@@ -2670,7 +2688,7 @@ impl Connector {
                 return Err(held.fail(judging, pended_verdict(v)));
             }
         };
-        if !class_admits(j.egress_class, secure, plain, &j.within, target, addr) {
+        if !class_admits(j.egress_class, secure, plain, &j.within, addr) {
             egress_audit::dial_refused(target, Some(j.egress_class), "plaintext", None);
             held.refused(NeedRefusal::Policy(refusal_text::PLAINTEXT));
             return Err(held.fail(judging, ConnError::Refused));
@@ -2682,7 +2700,7 @@ impl Connector {
         let mut next = 0;
         while next < also.len() {
             let at = also[next];
-            if class_admits(j.egress_class, secure, plain, &j.within, target, at) {
+            if class_admits(j.egress_class, secure, plain, &j.within, at) {
                 also[kept] = at;
                 kept += 1;
             }
@@ -2690,7 +2708,7 @@ impl Connector {
         }
         also.truncate(kept);
         let planned = j.planned.take().ok_or(ConnError::Refused)?;
-        let clear_window = self.holds_clear_window(&planned, addr);
+        let clear_window = self.holds_clear_window(&planned);
         let crossing = Crossing::begin(held, judging);
         crossing.finish((|| {
             let mut conn = planned.dial_at_any(addr, also).map_err(|f| {
@@ -2885,7 +2903,6 @@ impl Connector {
                         planned.secure(),
                         self.plain_admitted(&planned, egress_class),
                         &[],
-                        planned.authority(),
                         at,
                     ) =>
                 {
@@ -2957,7 +2974,6 @@ impl Connector {
                     planned.secure(),
                     self.plain_admitted(&planned, egress_class),
                     within,
-                    planned.authority(),
                     addr,
                 ) =>
             {
@@ -2971,7 +2987,7 @@ impl Connector {
                 return Err(ConnError::Refused);
             }
             Some(Ok(addr)) => {
-                let clear_window = self.holds_clear_window(&planned, addr);
+                let clear_window = self.holds_clear_window(&planned);
                 let mut conn = planned.dial_at(addr).map_err(|f| {
                     *why = Some(unreached(&f, false));
                     map(&f)
@@ -3535,6 +3551,7 @@ impl DeclaredConns for Connector {
                 &declared,
                 &declared.door,
                 Dial {
+                    plaintext_accepted: self.plaintext_accepted(caller, desc),
                     tls: match declared.tls.clone() {
                         Some(own) => Some(own),
                         None => self.tls_for(&named)?,
@@ -3567,6 +3584,13 @@ impl DeclaredConns for Connector {
         self.authority_held
             .lock()
             .expect("authority held")
+            .insert(owner);
+    }
+
+    fn accept_plaintext(&self, owner: InstanceId) {
+        self.plaintext_owners
+            .lock()
+            .expect("plaintext owners")
             .insert(owner);
     }
 
@@ -3975,6 +3999,10 @@ impl DeclaredConns for Connector {
             .lock()
             .expect("authority held")
             .remove(&owner);
+        self.plaintext_owners
+            .lock()
+            .expect("plaintext owners")
+            .remove(&owner);
     }
 }
 
@@ -4205,6 +4233,7 @@ impl Connector {
                 states_length: located.states_length(),
             });
         let dial = Dial {
+            plaintext_accepted: self.plaintext_accepted(caller, desc),
             target: crate::off_path::conns::owned(target),
             tls: match tls {
                 Some(own) => Some(own),
@@ -4579,6 +4608,7 @@ impl Connector {
                 return Err(ConnError::Refused);
             }
             let dial = Dial {
+                plaintext_accepted: self.plaintext_accepted(caller, desc),
                 anchors: None,
                 target: program.command.clone(),
                 tls: None,
@@ -4642,6 +4672,7 @@ impl Connector {
                 return Err(ConnError::Refused);
             }
             let dial = Dial {
+                plaintext_accepted: self.plaintext_accepted(caller, desc),
                 anchors: None,
                 target: crate::off_path::conns::owned(target),
                 tls: None,

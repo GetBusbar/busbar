@@ -1342,14 +1342,3 @@ fn unix(t: SystemTime) -> i64 {
     t.duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
-
-/// The host of `target` (`host`, `host:port`, `[v6]:port`, a URL), without port or brackets, as an
-/// owned name: taken once per dial or lookup of a destination, never per byte.
-pub(crate) fn host_only(target: &str) -> String {
-    use crate::tls::store::{dialled, Dialled};
-    match dialled(target) {
-        Some(Dialled::Ip(ip)) => ip.to_string(),
-        Some(Dialled::Name(n)) => n.to_ascii_lowercase(),
-        None => target.to_owned(),
-    }
-}

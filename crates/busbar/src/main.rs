@@ -1218,6 +1218,9 @@ async fn run(
     )
     .await
     .unwrap_or_else(|error| die(error));
+    // Each plane section's core-held acceptance (#297), kept for the door planes composed after
+    // the configuration moves into the boot App.
+    let plane_acceptance = cfg.min3.insecure_transport.clone();
     let preparation = root::boot_app::Preparation {
         secret_resolver: serving_ready.resolver(),
         startup: store_admission,
@@ -1451,6 +1454,7 @@ async fn run(
             },
             &door_pools,
         ),
+        &plane_acceptance,
         deploy.public_url.as_deref(),
         &door_reach,
         &app.serve_tables,

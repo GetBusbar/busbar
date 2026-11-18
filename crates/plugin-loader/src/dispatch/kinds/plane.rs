@@ -526,6 +526,7 @@ pub fn linked_probe(
         crate::dispatch::load_linked::<Plane>(
             &row,
             crate::dispatch::Bind {
+                accept: Default::default(),
                 instance: Arc::clone(&instance),
                 max_inflight_cap: 64,
                 sink: Arc::new(crate::dispatch::NoSink),

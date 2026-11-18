@@ -2021,8 +2021,8 @@ fingerprint, move the servers to certificates from the new CA, then remove the o
 restart again.
 
 **The plaintext rule** (every transport, carriers that upgrade later included: postgres,
-valkey/redis, mysql, ldap, vault over `http://`): a connection without TLS is admitted only to a
-loopback destination or to an instance whose own block carries `insecure_transport: { accept: plaintext, reason: "..." }` (BUSBAR-3141). There is no `plaintext` entry under `advanced.tls.destinations`. A
+valkey/redis, mysql, ldap, vault over `http://`): a connection without TLS is admitted only to an
+instance whose own block carries `insecure_transport: { accept: plaintext, reason: "..." }` (BUSBAR-3141). No loopback address or name is exempt (SEC-2): a local server without TLS needs the same acceptance. There is no `plaintext` entry under `advanced.tls.destinations`. A
 carrier that negotiates TLS in-protocol (a postgres SSLRequest, LDAP StartTLS, a MySQL SSLRequest)
 may make one cleartext write of at most 64 bytes before its upgrade; anything else in clear to a
 non-admitted host is refused. Credentials are never sent in clear to a host that is not loopback,

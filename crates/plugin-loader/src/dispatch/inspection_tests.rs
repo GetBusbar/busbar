@@ -153,6 +153,7 @@ fn rig() -> (Dispatcher, Plugin<InspectionKind>, *const State) {
     let p = crate::dispatch::load_linked::<InspectionKind>(
         &row,
         Bind {
+            accept: Default::default(),
             instance: "inspection".into(),
             max_inflight_cap: 2,
             sink: Arc::new(NoSink),
@@ -718,6 +719,7 @@ fn plane_rig() -> (crate::dispatch::plane_calls::PlaneInstance, *const State) {
     let p = crate::dispatch::load_linked::<Plane>(
         &row,
         Bind {
+            accept: Default::default(),
             instance: "inspection-plane".into(),
             max_inflight_cap: 2,
             sink: Arc::new(NoSink),

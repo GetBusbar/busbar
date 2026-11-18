@@ -958,6 +958,7 @@ fn resolve_validation_listeners(
         busbar_kernel::host_services::caller_binding(),
     );
     let bind = Bind {
+        accept: Default::default(),
         instance: Arc::from("configuration-listeners"),
         max_inflight_cap: 1,
         sink: Arc::new(NoSink),
@@ -2408,6 +2409,7 @@ fn locate_provider_destination_with(
         busbar_kernel::host_services::caller_binding(),
     );
     let bind = Bind {
+        accept: Default::default(),
         instance: Arc::from("configuration-locate"),
         max_inflight_cap: 1,
         sink: Arc::new(NoSink),

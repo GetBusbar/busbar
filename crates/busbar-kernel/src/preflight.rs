@@ -1093,25 +1093,21 @@ impl OpenedSecrets {
     }
 }
 
-pub fn plugin_fetch_admits(url: &str, blocked: &[String]) -> Result<bool, String> {
-    let https = config_validate::scheme_is(url, "https");
-    if !https {
-        let host_local = config_validate::extract_normalized_host(url)
-            .as_deref()
-            .map(config_validate::host_is_private_or_loopback)
-            .unwrap_or(false);
-        if !(config_validate::scheme_is(url, http::uri::Scheme::HTTP.as_str()) && host_local) {
-            return Err(format!(
-                "plugins.fetch url must use https for a public host (got '{url}')"
-            ));
-        }
+/// Whether a `plugins.fetch` URL may be downloaded from: https only, on every host (SEC-2, #297 model A:
+/// the download is core-owned and no instance acceptance covers it, so there is no loopback or private
+/// plaintext exemption), and never a blocked cloud-metadata host.
+pub fn plugin_fetch_admits(url: &str, blocked: &[String]) -> Result<(), String> {
+    if !config_validate::scheme_is(url, http::uri::Scheme::HTTPS.as_str()) {
+        return Err(format!(
+            "plugins.fetch url must use https (got '{url}'): a plugin download is never admitted over plaintext, on any host"
+        ));
     }
     if let Some(bad) = config_validate::ssrf_blocked_host(url, &[], false, blocked) {
         return Err(format!(
             "plugins.fetch url '{url}' targets a blocked cloud-metadata host '{bad}'"
         ));
     }
-    Ok(https)
+    Ok(())
 }
 
 #[must_use]

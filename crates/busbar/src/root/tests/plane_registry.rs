@@ -56,6 +56,7 @@ pub(crate) fn fallback() -> &'static busbar_kernel::plane_driver::registry::Plan
                     &path,
                     &stated,
                     Bind {
+                        accept: Default::default(),
                         instance: "root-fallback".into(),
                         max_inflight_cap: 64,
                         sink: std::sync::Arc::new(NoSink),

@@ -58,6 +58,7 @@ fn actual_transport(name: &str, row: &LinkedRow) -> Entry {
     let plugin = load_linked::<Transport>(
         row,
         Bind {
+            accept: Default::default(),
             instance: Arc::from(format!(
                 "{name}-{}",
                 NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed)

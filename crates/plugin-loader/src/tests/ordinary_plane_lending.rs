@@ -26,6 +26,7 @@ fn bound(door: DoorFn, d: &Dispatcher, label: &str) -> Plugin<Plane> {
     let p = load_linked::<Plane>(
         &row,
         Bind {
+            accept: Default::default(),
             instance: label.into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),

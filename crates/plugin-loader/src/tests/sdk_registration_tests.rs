@@ -377,6 +377,7 @@ fn sdk_registration_transport_direction_is_enforced_before_the_actual_callback()
             validate_door::<Transport>(&foreign).unwrap(),
             None,
             Bind {
+                accept: Default::default(),
                 instance: format!("direction-fixture-{dials}").into(),
                 max_inflight_cap: 4,
                 sink: Arc::new(NoSink),

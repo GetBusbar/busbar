@@ -260,6 +260,7 @@ fn observed_through_its_bind<K: crate::dispatch::Kind>(
     let plugin = crate::dispatch::load_linked::<K>(
         &row,
         crate::dispatch::Bind {
+            accept: Default::default(),
             instance: std::sync::Arc::from("envelope-all"),
             max_inflight_cap: 64,
             sink: binder.clone(),

@@ -596,6 +596,7 @@ fn scratch(tag: &str) -> PathBuf {
 
 fn bind(label: &str, sink: Arc<Tape>, d: &Dispatcher) -> Bind {
     Bind {
+        accept: Default::default(),
         instance: {
             static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             format!(

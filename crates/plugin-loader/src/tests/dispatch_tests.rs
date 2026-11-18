@@ -319,6 +319,7 @@ impl Recorder {
 
 fn bind(sink: Arc<Recorder>) -> Bind {
     Bind {
+        accept: Default::default(),
         instance: Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink,
@@ -2675,6 +2676,7 @@ fn red_a_hung_ticketless_open_is_watched_from_bind() {
     let p = load_linked::<TestKind>(
         &row(),
         Bind {
+            accept: Default::default(),
             dispatcher: d.adopter(),
             conns: crate::dispatch::ConnTable::NoNeeds,
             ..bind(sink)

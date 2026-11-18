@@ -572,6 +572,7 @@ fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
 
     let stated = rendering_of_library(path).ok()??;
     let bind = Bind {
+        accept: Default::default(),
         instance: std::sync::Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink: std::sync::Arc::new(NoSink),
@@ -645,6 +646,7 @@ pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
     libraries().into_iter().find_map(|p| {
         let stated = rendering_of_library(&p).ok()??;
         let bind = Bind {
+            accept: Default::default(),
             instance: std::sync::Arc::from("probe"),
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),

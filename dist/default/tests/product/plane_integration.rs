@@ -1487,6 +1487,7 @@ async fn plane_router(
             let plugin = load_linked::<busbar_plugin_loader::dispatch::kinds::plane::Plane>(
                 &row,
                 Bind {
+                    accept: Default::default(),
                     instance: name.into(),
                     max_inflight_cap: 64,
                     sink: Arc::new(NoSink),

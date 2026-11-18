@@ -5,8 +5,8 @@
 //!
 //! Core configuration fields are parsed directly by their current schema. A key that no core field
 //! owns but an admitted plane instance is named by is that plane's section: its core-owned
-//! `rate_card` and `fees` are lifted into core pricing keyed by instance name, and the remainder is
-//! carried raw. Any other key is refused (WP1-GAP-plane-sections r3). Reading the original event
+//! `rate_card` and `fees` are lifted into core pricing keyed by instance name, its core-owned
+//! `insecure_transport` is lifted for [`super::min3::parse_min3`], and the remainder is carried raw. Any other key is refused (WP1-GAP-plane-sections r3). Reading the original event
 //! stream preserves source locations and duplicate-field errors.
 
 use std::fmt;
@@ -27,6 +27,7 @@ pub(crate) struct Lifted {
     listen_explicit: bool,
     plane_rate_cards: super::PlaneRateCards,
     plane_fees: super::PlaneFeesMap,
+    plane_insecure_transport: super::PlaneInsecureTransport,
     /// Each recognized plane section, by instance name, minus the core words lifted off it.
     instance_sections: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
     /// The plane sections the document wrote, in document order: what the read used (§3.8).
@@ -38,6 +39,7 @@ impl Lifted {
         deploy.listen_explicit = self.listen_explicit;
         deploy.plane_rate_cards = self.plane_rate_cards;
         deploy.plane_fees = self.plane_fees;
+        deploy.plane_insecure_transport = self.plane_insecure_transport;
         deploy.instance_sections = self.instance_sections;
     }
 }
@@ -60,6 +62,11 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
 }
 
 pub(crate) const PLANE_CARD_KEYS: [&str; 2] = ["rate_card", "fees"];
+
+/// A plane section's core-owned transport acceptance (TRANSPORT-SECURITY-POLICY §4; AGREED
+/// 2026-11-16: a plane instance takes `insecure_transport` from its own section). Lifted raw here,
+/// judged by [`super::min3::parse_min3`] with every other kind's, and never part of the plane's bag.
+pub(crate) const PLANE_INSECURE_TRANSPORT_KEY: &str = "insecure_transport";
 
 fn plane_remainder_in<'de, D: Deserializer<'de>>(
     section_key: &'static str,
@@ -91,6 +98,11 @@ fn plane_remainder_in<'de, D: Deserializer<'de>>(
             per_session,
         };
         lifted.plane_fees.insert(plane.to_string(), fees);
+    }
+    if let Some(accept) = take(PLANE_INSECURE_TRANSPORT_KEY) {
+        lifted
+            .plane_insecure_transport
+            .insert(plane.to_string(), accept);
     }
     Ok(section)
 }

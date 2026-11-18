@@ -80,6 +80,7 @@ fn red_a_gate_that_waits_is_resumed_on_its_ticket_never_faulted_ticketless() {
     let p = load_linked::<Hook>(
         &LinkedRow::of(pending_door).expect("neutral Hook witness descriptor"),
         Bind {
+            accept: Default::default(),
             instance: "hook-ticket-control".into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),

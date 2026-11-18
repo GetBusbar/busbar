@@ -187,6 +187,7 @@ fn instance_label(base: &str) -> String {
 }
 fn bind(label: &str, tape: Arc<Tape>, dispatcher: &Dispatcher) -> Bind {
     Bind {
+        accept: Default::default(),
         instance: instance_label(label).into(),
         max_inflight_cap: 64,
         sink: tape,
