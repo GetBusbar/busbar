@@ -4,7 +4,6 @@
 //! THE EGRESS CRATE'S COLD CODE (LINT-RULES LR-167): refusal text and rare owned copies its
 //! request-path modules reach only off the priced path, out of line.
 
-
 /// The scheme a string CLAIMS, for a refusal message. Nothing is decided from it.
 #[cold]
 pub(crate) fn scheme_of(url: &str) -> String {

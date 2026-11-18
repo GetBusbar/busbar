@@ -134,17 +134,17 @@ fn opened_instances_select_their_own_carriers_and_refresh_preserves_owned_snapsh
     let first = open("first");
     let second = open("second");
     let default = open("default");
-    assert_eq!(*first.carriers(),["x-first"]);
-    assert_eq!(*second.carriers(),["x-second"]);
-    assert_eq!(*default.carriers(),["x-first", "x-second"]);
+    assert_eq!(*first.carriers(), ["x-first"]);
+    assert_eq!(*second.carriers(), ["x-second"]);
+    assert_eq!(*default.carriers(), ["x-first", "x-second"]);
     default.refresh().unwrap();
-    assert_eq!(*default.carriers(),["x-first", "x-second"]);
+    assert_eq!(*default.carriers(), ["x-first", "x-second"]);
 
     let opening_selection = first.carriers();
     first.refresh().expect("the refreshed variant is valid");
-    assert_eq!(*first.carriers(),["x-second"]);
+    assert_eq!(*first.carriers(), ["x-second"]);
     assert_eq!(*opening_selection, ["x-first"]);
-    assert_eq!(*second.carriers(),["x-second"]);
+    assert_eq!(*second.carriers(), ["x-second"]);
 }
 
 #[test]
@@ -169,7 +169,7 @@ fn undeclared_open_carriers_refuse_and_invalid_refreshed_carriers_stop_new_verif
         Verified::Pass
     );
     assert!(bad.refresh().is_err());
-    assert_eq!(*bad.carriers(),["x-first"]);
+    assert_eq!(*bad.carriers(), ["x-first"]);
     assert_eq!(
         bad.verify_now(&VerifyRequest::default()).unwrap().verified,
         Verified::Failed
@@ -190,7 +190,7 @@ fn undeclared_open_carriers_refuse_and_invalid_refreshed_carriers_stop_new_verif
         )
         .unwrap();
     assert!(refused.refresh().is_err());
-    assert_eq!(*refused.carriers(),["x-first"]);
+    assert_eq!(*refused.carriers(), ["x-first"]);
     assert_eq!(
         refused
             .verify_now(&VerifyRequest::default())
@@ -269,7 +269,7 @@ fn admitted_verify_keeps_its_input_while_refresh_publishes_a_new_selection() {
         lock.lock().unwrap().1 = true;
         changed.notify_all();
         refreshed.unwrap();
-        assert_eq!(*calls.carriers(),["x-second"]);
+        assert_eq!(*calls.carriers(), ["x-second"]);
         assert_eq!(*opening, ["x-first"]);
         assert!(matches!(old.join().unwrap().verified,
             Verified::Identity(ref identity) if identity.subject == "old-input"));
@@ -518,12 +518,12 @@ fn rejected_open_metadata_and_ready_failure_release_then_close_once_and_refresh_
         match variant {
             "first" => {
                 refreshed.unwrap();
-                assert_eq!(*calls.carriers(),["x-second"]);
+                assert_eq!(*calls.carriers(), ["x-second"]);
                 assert_eq!(RELEASES.load(Ordering::SeqCst), releases + 1);
             }
             _ => {
                 assert!(refreshed.is_err());
-                assert_eq!(*calls.carriers(),["x-first"]);
+                assert_eq!(*calls.carriers(), ["x-first"]);
                 assert_eq!(RELEASES.load(Ordering::SeqCst), releases);
             }
         }
