@@ -1143,18 +1143,10 @@ impl PlaneMoney {
             let fold = open.usage_fold();
             let counts = fold.counts();
             if !self.finish_checkpoint(key, &open, counts, delivered) {
-                self.bill(&open.money, open.provider.as_deref(), counts, |_| delivered);
+                self.bill(&open.money, open.provider.as_deref(), counts, delivered);
             }
         }
         open.fee.refundable = open.money.fee.refunds(caller_status, &open.last);
-    }
-
-    #[must_use]
-    pub fn last_counts(&self, key: UnitKey) -> Option<Vec<(u32, Count)>> {
-        self.usage_fold(key)?
-            .by_class()
-            .map(|(class, count)| count.map(|count| (class, count)))
-            .collect()
     }
 
     /// The unit's last reported usage, folded once per revision (SP-M1): the meter gate's input.
@@ -1331,15 +1323,8 @@ impl PlaneMoney {
         true
     }
 
-    fn bill(
-        &self,
-        m: &UnitMoney,
-        provider: Option<&str>,
-        counts: &[(u32, Count)],
-        metered: impl FnOnce(&[(u32, Count)]) -> bool,
-    ) {
-        let counts = &usage_only(m, counts);
-        let Some(units) = named(&m.classes, counts) else {
+    fn bill(&self, m: &UnitMoney, provider: Option<&str>, counts: &[(u32, Count)], metered: bool) {
+        let Some(units) = named(&m.classes, usage_only(m, counts)) else {
             tracing::error!("exact unit count overflow refused at settlement");
             return;
         };
@@ -1357,7 +1342,7 @@ impl PlaneMoney {
             tracing::error!(%error, "exact usage accrual refused");
             return;
         }
-        if metered(counts) {
+        if metered {
             if let Err(error) = self.gov.record_lane_counts_in_era(
                 &m.key,
                 &m.lane,
@@ -1383,7 +1368,7 @@ impl PlaneMoney {
         let Some(remaining) = remaining else {
             return false;
         };
-        let Some(usage_units) = named(&m.classes, &usage_only(m, counts)) else {
+        let Some(usage_units) = named(&m.classes, usage_only(m, counts)) else {
             return true;
         };
         match m.cost.price_counts_nanos(&m.lane, &usage_units) {
@@ -1426,20 +1411,25 @@ fn same_counts(last: &[UnitCount], units: &[UnitCount]) -> bool {
             .all(|(a, b)| a.class == b.class && a.source == b.source && a.amount == b.amount)
 }
 
-fn usage_only(m: &UnitMoney, counts: &[(u32, Count)]) -> Vec<(u32, Count)> {
+fn usage_only<'a>(
+    m: &'a UnitMoney,
+    counts: &'a [(u32, Count)],
+) -> impl Iterator<Item = (u32, Count)> + 'a {
     counts
         .iter()
         .copied()
         .filter(|(class, _)| !m.fee.is_fee(*class))
-        .collect()
 }
 
-fn named(classes: &[String], counts: &[(u32, Count)]) -> Option<BTreeMap<String, Count>> {
+fn named(
+    classes: &[String],
+    counts: impl Iterator<Item = (u32, Count)>,
+) -> Option<BTreeMap<String, Count>> {
     let mut units: BTreeMap<String, Count> = BTreeMap::new();
     for (class, amount) in counts {
-        if let Some(name) = classes.get(*class as usize) {
+        if let Some(name) = classes.get(class as usize) {
             let n = units.entry(name.clone()).or_insert(Count::ZERO);
-            *n = n.checked_add(*amount).ok()?;
+            *n = n.checked_add(amount).ok()?;
         }
     }
     Some(units)
@@ -1509,12 +1499,9 @@ impl MoneySeam for PlaneMoney {
         }
         if !unchanged && self.gov.unit_checkpoints_enabled() && !open.ledgered {
             let counts = reported(units);
-            let Some(snapshot) = self.checkpoint_snapshot(
-                ctx.key,
-                open,
-                &counts,
-                bills(&usage_only(&open.money, &counts)),
-            ) else {
+            let Some(snapshot) =
+                self.checkpoint_snapshot(ctx.key, open, &counts, bills(&open.money, &counts))
+            else {
                 open.snapshot_refused = true;
                 return Checkpoint::Unpriced;
             };
@@ -1530,7 +1517,7 @@ impl MoneySeam for PlaneMoney {
             let fee = u128::try_from(open.money.cost.request_fee_on(plane))
                 .ok()
                 .and_then(|n| n.checked_mul(busbar_kernel_ledger::cost::NANOS_PER_CENT));
-            let total = named(&open.money.classes, &usage_only(&open.money, &counts))
+            let total = named(&open.money.classes, usage_only(&open.money, &counts))
                 .and_then(|counts| {
                     open.money
                         .cost
@@ -1571,7 +1558,7 @@ impl MoneySeam for PlaneMoney {
                 ctx.key,
                 open,
                 &bill.billed,
-                bills(&usage_only(&open.money, &bill.billed)),
+                bills(&open.money, &bill.billed),
                 bill.unread,
             );
             let money = open.money.clone();
@@ -1584,7 +1571,12 @@ impl MoneySeam for PlaneMoney {
             (money, provider, removed, durable)
         };
         if !durable {
-            self.bill(&money, provider.as_deref(), &bill.billed, bills);
+            self.bill(
+                &money,
+                provider.as_deref(),
+                &bill.billed,
+                bills(&money, &bill.billed),
+            );
         }
         drop(removed);
     }
@@ -1611,13 +1603,13 @@ impl MoneySeam for PlaneMoney {
         if let Some((open, owed)) = removed {
             if owed {
                 let counts = reported(&open.last);
-                if !self.finish_checkpoint(
-                    ctx.key,
-                    &open,
-                    &counts,
-                    bills(&usage_only(&open.money, &counts)),
-                ) {
-                    self.bill(&open.money, open.provider.as_deref(), &counts, bills);
+                if !self.finish_checkpoint(ctx.key, &open, &counts, bills(&open.money, &counts)) {
+                    self.bill(
+                        &open.money,
+                        open.provider.as_deref(),
+                        &counts,
+                        bills(&open.money, &counts),
+                    );
                 }
             } else if !open.ledgered {
                 // Empty abandoned units still retire their last running snapshot.
@@ -1661,12 +1653,8 @@ impl MoneySeam for PlaneMoney {
             let money = open.money.clone();
             let provider = open.provider.clone();
             let counts = reported(&open.last);
-            let durable = self.finish_checkpoint(
-                ctx.key,
-                open,
-                &counts,
-                bills(&usage_only(&open.money, &counts)),
-            );
+            let durable =
+                self.finish_checkpoint(ctx.key, open, &counts, bills(&open.money, &counts));
             let removed = if open.abandoned {
                 all.remove(&ctx.key)
             } else {
@@ -1675,7 +1663,7 @@ impl MoneySeam for PlaneMoney {
             (money, provider, counts, removed, durable)
         };
         if !durable {
-            self.bill(&money, provider.as_deref(), &counts, bills);
+            self.bill(&money, provider.as_deref(), &counts, bills(&money, &counts));
         }
         drop(removed);
     }
@@ -1727,8 +1715,8 @@ fn locked<T>(shard: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn bills(usage: &[(u32, Count)]) -> bool {
-    usage.iter().any(|(_, n)| *n > Count::ZERO)
+fn bills(m: &UnitMoney, counts: &[(u32, Count)]) -> bool {
+    usage_only(m, counts).any(|(_, n)| n > Count::ZERO)
 }
 
 #[cfg(test)]
