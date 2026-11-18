@@ -27,7 +27,6 @@ use crate::state::{App, AppHandle};
 #[derive(Clone)]
 pub(crate) struct LoginMethod {
     pub(crate) module: Arc<dyn AuthCalls>,
-    pub(crate) inbound_style: Option<busbar_contract::auth_calls::InboundStyle>,
     /// `true` ⇒ this method has a `browser_login` block and renders a button (and accepts `begin`).
     pub(crate) has_button: bool,
     /// The plugin's redirect-vs-credential classification, as its tail states it, read ONCE at

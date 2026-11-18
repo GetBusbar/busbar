@@ -10,9 +10,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::records::Records;
-use busbar_ports::transport::TransportEvent;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::error::TrySendError;
 

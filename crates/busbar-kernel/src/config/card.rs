@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{DeployCfg, PlaneFeesMap, PlaneRateCards, RateEntryCfg, RootCfg};
+use super::{PlaneFeesMap, PlaneRateCards, RateEntryCfg, RootCfg};
 
 /// The card, as the configuration spells it: the flat `rate_card:` and `per_request_fee:`, and each
 /// other plane's own `rate_card:` and `fees:` by plane registry key (#47).

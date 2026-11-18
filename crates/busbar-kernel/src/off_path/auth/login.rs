@@ -127,7 +127,6 @@ impl LoginMethods {
                 name.clone(),
                 LoginMethod {
                     module: calls,
-                    inbound_style,
                     has_button,
                     login_kind,
                     form: Arc::default(),
