@@ -366,13 +366,13 @@
     {
       "repo": "busbar-store-postgres",
       "url": "https://github.com/GetBusbar/busbar-store-postgres",
-      "commit": "f8cddb2f600a5db8c6a1abdd87ea49f92cfa1a81",
+      "commit": "bd473e4265e2d006034c4897dc101c0382f6455a",
       "package": "busbar-store-postgres-plugin",
       "kind": "store",
       "alias": "postgres",
       "image": "libbusbar_store_postgres_plugin.so",
       "declares": "store-postgres/declares.json",
-      "lock_sha256": "9785080fdb89d71c1963e0f8a252eb0244eb87faed677b5e70d4fb1907966923",
+      "lock_sha256": "7330a31a63d8adcaba0d07c39f5e710823f1eccdb55998a19b6cd8c7668c8301",
       "former_names": [
         "busbar-store-postgres-plugin"
       ]

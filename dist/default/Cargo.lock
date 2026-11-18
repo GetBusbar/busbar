@@ -1128,20 +1128,18 @@ dependencies = [
 [[package]]
 name = "busbar-store-postgres"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=eb40baa7b52c6a3209357bf298fa513fe48ab46e#eb40baa7b52c6a3209357bf298fa513fe48ab46e"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=bd473e4265e2d006034c4897dc101c0382f6455a#bd473e4265e2d006034c4897dc101c0382f6455a"
 dependencies = [
  "base64 0.22.1",
- "busbar-contract",
+ "busbar-plugin-abi",
  "bytes",
  "fallible-iterator 0.2.0",
  "foldhash 0.2.0",
  "percent-encoding",
  "postgres-protocol",
  "postgres-types",
- "serde",
  "serde_json",
  "stringprep",
- "tracing",
  "zeroize",
 ]
 
