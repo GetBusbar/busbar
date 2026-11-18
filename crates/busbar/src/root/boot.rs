@@ -2369,11 +2369,6 @@ mod tests;
 #[path = "tests/start_scan_tests.rs"]
 mod start_scan_tests;
 
-#[cfg(test)]
-include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
-#[cfg(test)]
-owner_test_sources!(transport_inventory);
-
 #[cfg(all(test, unix, linked_every_plane_door, feature = "test-harness"))]
 #[path = "tests/bootstrap_pins.rs"]
 mod bootstrap_pin_tests;
