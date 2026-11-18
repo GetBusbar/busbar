@@ -56,7 +56,7 @@ fn dropping_the_boot_future_mid_open_cancels_once() {
     let spec = fx::spec(
         module,
         "migrate-deadline",
-        br#"{"id":"migrate-deadline","secret":"the operator's reference","hold":true}"#,
+        br#"{"id":"migrate-deadline","secret":{"env":"OPERATOR_REFERENCE"},"hold":true}"#,
     );
     // The timer is made inside the runtime: tokio's timeout needs the runtime when it is built.
     let timed_out = rt.block_on(async {
@@ -116,7 +116,7 @@ fn dropping_the_boot_future_mid_open_cancels_once() {
         let spec = fx::spec(
             module,
             "migrate-dropped",
-            br#"{"id":"migrate-dropped","secret":"the operator's reference","hold":true}"#,
+            br#"{"id":"migrate-dropped","secret":{"env":"OPERATOR_REFERENCE"},"hold":true}"#,
         );
         registry
             .open_store(
