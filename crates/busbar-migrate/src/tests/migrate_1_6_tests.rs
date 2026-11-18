@@ -326,10 +326,11 @@ fn the_shipped_clean_config_migrates_and_drops_its_empty_carve_outs() {
 /// 1.6.0 names no routing policy or member in a response header; nothing is rewritten.
 #[test]
 fn route_policy_true_is_refused_with_remedy() {
-    for on in ["true", "${ROUTE_HEADERS}"] {
+    // An env reference is quoted: a bare `${..}` cannot stand in a YAML flow mapping (d85176ae4b).
+    for on in ["true", "\"${ROUTE_HEADERS}\""] {
         let source =
             format!("advanced:\n  response_headers: {{server_timing: true, route_policy: {on}}}\n");
-        let resolved = value(&source.replace("${ROUTE_HEADERS}", "true"));
+        let resolved = value(&source.replace("\"${ROUTE_HEADERS}\"", "true"));
         let mut after = value(&source);
         let mut report = Vec::new();
         let refusal = run(
