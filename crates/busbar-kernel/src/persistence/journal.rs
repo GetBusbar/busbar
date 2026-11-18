@@ -256,23 +256,6 @@ impl<'a> StoreJournal<'a> {
         Ok(values)
     }
 
-    /// The node's selected head as the Store holds it, `(node_seq, hash)`, or `None` for a journal with no
-    /// records: the anchor a restore tail's chain for this node must continue from (DES-331 §B3.1). It reads
-    /// the head row only; it verifies no record.
-    pub(crate) async fn selected_head(&self) -> Result<Option<(u64, [u8; 32])>> {
-        let head = self
-            .read(vec![self.address(b'H', 0)])
-            .await?
-            .pop()
-            .ok_or(Error::Corrupt)?
-            .as_ref()
-            .map(Head::decode)
-            .transpose()?;
-        Ok(head
-            .filter(|head| head.count != 0)
-            .map(|head| (head.sequence, head.hash)))
-    }
-
     /// Select one head and then walk immutable records with constant retained
     /// state. Concurrent appends cannot change this cursor's selected prefix; a
     /// concurrent cut removes only rows below a newer base, which `walk`
