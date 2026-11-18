@@ -47,7 +47,7 @@ pub(crate) enum SelectedActivationError<E> {
 /// Dispatch custody validation failed, or the synchronous rate commitment was refused.
 #[derive(Debug)]
 pub(crate) enum SelectedCommitError<E> {
-    Custody(RecordStoreError),
+    Custody,
     Commit(E),
 }
 
@@ -158,9 +158,9 @@ impl UnitCheckpointBook {
     }
 }
 
-/// A checkpoint refusal, rendered once on the error path.
-fn error(message: &str) -> RecordStoreError {
-    crate::cold::governance::runtime::unit_checkpoint_refusal(message)
+/// A checkpoint refusal: its message is a fixed word of the program, so nothing is allocated.
+fn error(message: &'static str) -> RecordStoreError {
+    RecordStoreError::fixed(message)
 }
 
 /// Keeps a new, unpublished entry invisible to flush until admission commits. Removal also
@@ -252,34 +252,38 @@ impl GovState {
     ) -> Result<(Arc<UnitCheckpoint>, R), SelectedCommitError<E>> {
         use partitions::{Disposition, Finality, Transport};
         let mut pending = self.unit_checkpoints.pending.lock();
-        let mut entry = pending.edit(&snapshot.id).ok_or_else(|| {
-            SelectedCommitError::Custody(error("selected dispatch has no live custody"))
-        })?;
-        let preflight = || -> RecordStoreResult<()> {
+        let mut entry = pending
+            .edit(&snapshot.id)
+            .ok_or(SelectedCommitError::Custody)?;
+        let preflight = || -> bool {
             let before = entry.snapshot();
             if before.revision != expected_revision
                 || before.ended
                 || before.terminal.is_some()
                 || entry.is_recovered()
             {
-                return Err(error("selected dispatch has no current live predecessor"));
+                return false;
             }
             let Some(parts) = &before.partitions else {
-                return Err(error("selected dispatch requires partitioned custody"));
+                return false;
             };
             if parts.disposition != Disposition::Running {
-                return Err(error("selected dispatch requires a running predecessor"));
+                return false;
             }
-            Ok(())
+            true
         };
-        preflight().map_err(SelectedCommitError::Custody)?;
+        if !preflight() {
+            return Err(SelectedCommitError::Custody);
+        }
         let mut expected = entry.snapshot().clone();
-        expected.revision = expected.revision.checked_add(1).ok_or_else(|| {
-            SelectedCommitError::Custody(error("selected checkpoint revision exhausted"))
-        })?;
-        let parts = expected.partitions.as_mut().ok_or_else(|| {
-            SelectedCommitError::Custody(error("selected dispatch requires partitioned custody"))
-        })?;
+        expected.revision = expected
+            .revision
+            .checked_add(1)
+            .ok_or(SelectedCommitError::Custody)?;
+        let parts = expected
+            .partitions
+            .as_mut()
+            .ok_or(SelectedCommitError::Custody)?;
         let dispatch = parts
             .attempts
             .iter()
@@ -287,32 +291,27 @@ impl GovState {
             .max()
             .unwrap_or(0)
             .checked_add(1)
-            .ok_or_else(|| {
-                SelectedCommitError::Custody(error("selected dispatch ordinal exhausted"))
-            })?;
-        let last = parts.attempts.last_mut().ok_or_else(|| {
-            SelectedCommitError::Custody(error("selected dispatch has no prepared attempt"))
-        })?;
+            .ok_or(SelectedCommitError::Custody)?;
+        let last = parts
+            .attempts
+            .last_mut()
+            .ok_or(SelectedCommitError::Custody)?;
         if last.transport != Transport::Prepared
             || last.dispatch.is_some()
             || last.finality != Finality::Live
         {
-            return Err(SelectedCommitError::Custody(error(
-                "selected dispatch requires the last live prepared attempt",
-            )));
+            return Err(SelectedCommitError::Custody);
         }
         last.transport = Transport::Committed;
         last.dispatch = Some(dispatch);
         snapshot.revision = expected.revision;
         if snapshot != expected {
-            return Err(SelectedCommitError::Custody(error(
-                "selected dispatch changes facts outside the prepared transport commitment",
-            )));
+            return Err(SelectedCommitError::Custody);
         }
         partitions::validate_successor(entry.snapshot(), &snapshot)
-            .map_err(SelectedCommitError::Custody)?;
+            .map_err(|_| SelectedCommitError::Custody)?;
         self.validate_selected_terminal_capacity(&snapshot)
-            .map_err(SelectedCommitError::Custody)?;
+            .map_err(|_| SelectedCommitError::Custody)?;
         let accepted = Arc::new(snapshot.clone());
         let committed = commit().map_err(SelectedCommitError::Commit)?;
         entry.replace_snapshot(snapshot);
@@ -755,7 +754,10 @@ impl GovState {
                     }
                     Err(failed) => {
                         first_error.get_or_insert_with(|| {
-                            error(&crate::cold::governance::selected_policy::unit_checkpoint_selected_unresolved(&failed))
+                            // The rendered text is moved into the error: made once, never copied.
+                            RecordStoreError::from(
+                                crate::cold::governance::selected_policy::unit_checkpoint_selected_unresolved(&failed),
+                            )
                         });
                     }
                 }

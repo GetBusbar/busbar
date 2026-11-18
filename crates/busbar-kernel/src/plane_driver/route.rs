@@ -16,6 +16,7 @@ use busbar_contract::abi::plane::{
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
+use busbar_contract::kept::Text;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::plane_calls::{Answered, Lent, PieceInFlight};
 use tokio::sync::watch;
@@ -88,15 +89,16 @@ pub enum Pick {
     /// The member the walk picked and admitted through its breaker, and the pool it picked it
     /// from (a member shapes its request per pool).
     Member {
-        /// The member's configured name.
-        name: String,
-        /// The pool's configured name.
-        pool: String,
+        /// The member's configured name: the pool member's own shared name.
+        name: Text,
+        /// The pool's configured name: the pools' own shared name for it.
+        pool: Text,
         /// Whether the member relays the caller's own credential to the far end (its upstream
         /// credentials are passthrough); the plane is told on every piece from this attempt on.
         passthrough: bool,
-        /// The provider the member is served by (the metering row's provider).
-        provider: String,
+        /// The provider the member is served by (the metering row's provider): the route's own
+        /// shared name.
+        provider: Text,
     },
     /// No member is left: the walk's exhaustion terminal, the status the caller is told and its
     /// Retry-After seconds (the floor the walk applies), when it names one.
@@ -127,10 +129,10 @@ pub enum Pick {
 /// One attempt's request, as the plane bound it for the far end.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OutboundRequest {
-    /// The member the walk picked.
-    pub member: String,
-    /// The pool the walk picked it from.
-    pub pool: String,
+    /// The member the walk picked: the pick's own shared name.
+    pub member: Text,
+    /// The pool the walk picked it from: the pick's own shared name.
+    pub pool: Text,
     /// The attempt's number, from `1`.
     pub attempt_no: u32,
     /// The verb.
@@ -359,7 +361,11 @@ pub(crate) struct PieceBufs {
 
     resolved: Vec<u8>,
 
-    provider: String,
+    provider: Text,
+
+    /// The attempt's member and pool as the walk picked them (the same text `member` and `pool`
+    /// hold as bytes for the plane): a follow-up request on the attempt shares them.
+    picked: (Text, Text),
 
     pub(crate) claim: u32,
 
@@ -397,7 +403,8 @@ impl PieceBufs {
             member: Vec::new(),
             pool: Vec::new(),
             resolved: Vec::new(),
-            provider: String::new(),
+            provider: Text::EMPTY,
+            picked: (Text::EMPTY, Text::EMPTY),
             claim: 0,
             dialect: 0,
             caller_ref: Vec::new(),
@@ -430,12 +437,14 @@ impl PieceBufs {
             .unwrap_or_default()
     }
 
-    fn fields_of(&self, written: u32) -> HeadFields {
+    /// The first `written` head fields the plane wrote, each copied once out of the arena (the
+    /// arena is rewritten by the plane's next piece; the head is kept past it). Yielded one by
+    /// one, so a caller that already has a list adds to it and none is made in between.
+    fn fields_of(&self, written: u32) -> impl Iterator<Item = (Vec<u8>, Vec<u8>)> + '_ {
         self.fields
             .iter()
             .take(written as usize)
             .map(|f| (self.arena(f.name).to_vec(), self.arena(f.value).to_vec()))
-            .collect()
     }
 }
 
@@ -1510,7 +1519,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     retry_after,
                     detail,
                 }) if attempt_no == 1 => (
-                    (String::new(), String::new()),
+                    (Text::EMPTY, Text::EMPTY),
                     Some((status, retry_after, detail)),
                 ),
                 Ok(Pick::Exhausted {
@@ -1550,6 +1559,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             run.bufs.member.extend_from_slice(member.as_bytes());
             run.bufs.pool.clear();
             run.bufs.pool.extend_from_slice(pool.as_bytes());
+            run.bufs.picked = (member.clone(), pool.clone());
             let far_bound = !member.is_empty();
 
             let attempt_span = if far_bound {
@@ -1712,7 +1722,9 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 let head = first && piece.status.is_some();
                 let status = piece.status.filter(|_| first || piece.fields);
                 if head {
-                    run.bufs.head = FieldList::new(piece.head.clone());
+                    // The far end's head is handed to the list the plane is lent, as the piece's
+                    // bytes were handed to its input: nothing below reads the piece's own head.
+                    run.bufs.head = FieldList::new(std::mem::take(&mut piece.head));
                 }
                 first = false;
                 let streamed = {
@@ -1732,8 +1744,8 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     reason: 0,
                 };
                 let mut followup = OutboundRequest {
-                    member: String::from_utf8_lossy(&run.bufs.member).into_owned(),
-                    pool: String::from_utf8_lossy(&run.bufs.pool).into_owned(),
+                    member: run.bufs.picked.0.clone(),
+                    pool: run.bufs.picked.1.clone(),
                     ..OutboundRequest::default()
                 };
                 match self
@@ -2125,7 +2137,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                             st.facts.status = out.reply_status;
                         }
 
-                        let fields = bufs.fields_of(out.fields_written);
+                        let fields: HeadFields = bufs.fields_of(out.fields_written).collect();
                         self.caller.head(out.reply_status, fields);
                     }
                     let message_end = out.flags & EMIT_MESSAGE_END != 0;

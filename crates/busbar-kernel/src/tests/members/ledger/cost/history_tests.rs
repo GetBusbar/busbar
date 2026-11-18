@@ -183,7 +183,7 @@ fn the_fail_closed_posture_refuses_an_unpriced_lane_without_a_second_arithmetic(
         price_fail_closed(&view, &posting),
         Err(Unpriceable::LaneUnpriced {
             card_seq: history.entries()[0].key(),
-            lane: "mystery".to_string(),
+            lane: busbar_contract::kept::Text::fixed("mystery"),
         })
     );
 

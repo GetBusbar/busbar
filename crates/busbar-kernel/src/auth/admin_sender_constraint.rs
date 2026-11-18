@@ -20,7 +20,7 @@ pub(super) fn downgraded(app: &App, provider: &str, headers: &HeaderMap) -> bool
         .unwrap_or_default();
     // Authorization is also relevant when the provider's candidate came from another carrier.
     let carriers = (app.admin_modules.operator.carriers().iter())
-        .chain(&module)
+        .chain(module.iter())
         .map(String::as_str)
         .chain([AUTHORIZATION.as_str()]);
     downgraded_in(headers, carriers)

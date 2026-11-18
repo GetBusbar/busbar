@@ -1,39 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EGRESS MODULES' COLD TEXT: a destination guard refusal naming its host, a failed or capped
+//! THE EGRESS MODULES' COLD TEXT: a failed or capped
 //! name lookup's sentence, a proxy's refusal of a CONNECT, a crossing refused for want of the host
 //! clock, and the rate-limited BUSBAR-5051 / BUSBAR-5047 lines and audit records of a refused dial
 //! or a TLS verification failure (`egress_audit`). Each is built only when a dial is refused or
 //! fails, out of line.
 
-use std::net::IpAddr;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_kernel::diagnostics as diag;
 use foldhash::{HashMap, HashMapExt as _};
-
-/// A guard refusal of `host` under `verdict`, naming the address that decided it when one did.
-#[cold]
-pub(crate) fn refusal(verdict: u64, host: &str, addr: Option<IpAddr>) -> crate::guard::Refusal {
-    crate::guard::Refusal {
-        verdict,
-        host: host.to_owned(),
-        addr,
-    }
-}
-
-/// A guard refusal of the node's own front door at `addr`: the host is the address as judged.
-#[cold]
-pub(crate) fn own_door_refusal(verdict: u64, addr: std::net::SocketAddr) -> crate::guard::Refusal {
-    crate::guard::Refusal {
-        verdict,
-        host: format!("{addr}"),
-        addr: Some(addr.ip()),
-    }
-}
 
 /// A failed system lookup, answered with its sentence.
 #[cold]
@@ -54,15 +32,6 @@ pub(crate) fn proxy_refused_connect(addr: &str, line: &[u8]) -> String {
         "proxy refused CONNECT {addr}: {}",
         String::from_utf8_lossy(line)
     )
-}
-
-/// A crossing refused for want of the host clock a request head deadline needs.
-#[cold]
-pub(crate) fn no_host_clock() -> crate::framer::Crossed {
-    crate::framer::Crossed {
-        outcome: Outcome::Failed,
-        error: Some(b"request head deadline requires the host clock".to_vec()),
-    }
 }
 
 /// The audit action of a refused dial.

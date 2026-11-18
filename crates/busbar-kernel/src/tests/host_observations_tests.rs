@@ -288,7 +288,7 @@ async fn neutral_runtime_custody_reserves_settles_and_reattaches_original_tariff
         .bind_scope(
             id,
             crate::persistence::observations::PrincipalBinding {
-                principal: key.id.clone(),
+                principal: key.id.as_str().into(),
                 instance: policy.instance.clone(),
                 destination: policy.destination.clone(),
                 accounting_namespace: policy.accounting_namespace.clone(),

@@ -79,7 +79,7 @@ pub fn fallback_key() -> &'static str {
 /// key comes out only through [`LaneQualifier::plane_key`]; the lane prefix through
 /// [`LaneQualifier::lane_prefix`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LaneQualifier(String);
+pub struct LaneQualifier(busbar_contract::kept::Text);
 
 /// Text that cannot be a door's lane qualifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +104,7 @@ impl LaneQualifier {
         if qualifier.chars().any(char::is_control) || qualifier.trim() != qualifier {
             return Err(InvalidLaneQualifier);
         }
-        Ok(Self(qualifier.to_string()))
+        Ok(Self(busbar_contract::kept::off_path::text(qualifier)))
     }
 
     /// The plane key this qualifier names: the models plane's `""` is the fallback plane.
@@ -113,14 +113,14 @@ impl LaneQualifier {
         if self.0.is_empty() {
             fallback_key()
         } else {
-            &self.0
+            self.0.as_str()
         }
     }
 
     /// The prefix of every lane this door routes (`""`: the lanes are unqualified).
     #[must_use]
     pub fn lane_prefix(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 }
 
@@ -259,10 +259,6 @@ pub(crate) struct Mount {
 }
 
 impl PlaneDispatch {
-    pub fn admission_of(&self, key: &str) -> Option<&PlaneAdmission> {
-        self.admissions.get(key)
-    }
-
     pub fn admit(self, key: &'static str, admission: PlaneAdmission) -> Self {
         if is_fallback(key) {
             return self;

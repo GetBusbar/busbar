@@ -349,19 +349,51 @@ impl Standing {
                 governance.and_then(|g| g.resolve_bound(module, principal)),
             ),
         };
-        let resolved = resolved.ok_or_else(|| {
-            Lapsed::Identity(Refusal::IdentityNotLive {
-                principal: id.to_string(),
-            })
-        })?;
-        if !resolved.is_live()
-            || !resolved.enabled
-            || resolved.expires_at.is_some_and(|exp| now >= exp)
+        live_now(id, resolved, now).map(Some)
+    }
+}
+
+/// THE RE-RESOLUTION'S VERDICT: `resolved` is what the live registry (or the live bindings)
+/// answered for the principal `id`. It stands only if it is there, live, enabled and unexpired at
+/// `now`; anything else is the identity lapsing, named by its id.
+fn live_now(
+    id: &str,
+    resolved: Option<std::sync::Arc<VirtualKey>>,
+    now: u64,
+) -> Result<std::sync::Arc<VirtualKey>, Lapsed> {
+    match resolved {
+        Some(key)
+            if key.is_live() && key.enabled && !key.expires_at.is_some_and(|exp| now >= exp) =>
         {
-            return Err(Lapsed::Identity(Refusal::IdentityNotLive {
-                principal: id.to_string(),
-            }));
+            Ok(key)
         }
-        Ok(Some(resolved))
+        _ => Err(Lapsed::Identity(Refusal::IdentityNotLive {
+            principal: id.to_string(),
+        })),
+    }
+}
+
+/// ONE PRINCIPAL'S STANDING NOW, asked once and held open by nobody: the re-resolution a
+/// [`Standing`] runs on every poll, for a caller that keeps nothing between its asks. There is no
+/// lifetime to bound and no snapshot to pin, so it opens no `Standing` and reads no clock: `now` is
+/// the caller's own reading. A registry key is re-resolved by the id it already holds (nothing is
+/// copied; the id is only spelled when it lapsed); a bound key is re-run through the live bindings
+/// from its own marker, exactly as a `Standing` opened on it would.
+pub fn standing_now(
+    principal: &VirtualKey,
+    governance: Option<&dyn GovResolve>,
+    now: u64,
+) -> Result<std::sync::Arc<VirtualKey>, Lapsed> {
+    match crate::governance::bound_admission(principal) {
+        Some((module, bound)) => live_now(
+            &bound.id,
+            governance.and_then(|g| g.resolve_bound(&module, &bound)),
+            now,
+        ),
+        None => live_now(
+            &principal.id,
+            governance.and_then(|g| g.resolve_by_sub(&principal.id)),
+            now,
+        ),
     }
 }

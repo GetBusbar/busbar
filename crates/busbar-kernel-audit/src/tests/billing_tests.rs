@@ -70,7 +70,7 @@ fn facts(attempts: u32) -> BillingFacts {
 }
 fn record(billing: PartitionedBillingV1) -> AuditRecord {
     AuditRecord {
-        subject: Subject::PrincipalId("principal".into()),
+        subject: Subject::principal("principal"),
         what: What {
             unit_key: UnitKey::new(7),
             incarnation: 8,

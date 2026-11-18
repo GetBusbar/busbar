@@ -19,8 +19,9 @@ pub enum UsageView {
     Partitioned(Arc<UnitCheckpoint>),
 }
 
+/// A refused selected view: its message is a fixed word of the program, so nothing is allocated.
 fn refused(message: &'static str) -> RecordStoreError {
-    crate::cold::selected_view_refusal(message)
+    RecordStoreError::fixed(message)
 }
 
 impl PlaneMoney {
@@ -68,7 +69,7 @@ impl PlaneMoney {
             || parts
                 .declared_classes
                 .iter()
-                .any(|class| !money.classes.contains(class))
+                .any(|class| !money.classes.iter().any(|name| *class == *name))
         {
             return Err(refused(
                 "selected activation does not match its original open",
@@ -79,12 +80,12 @@ impl PlaneMoney {
                 u32::try_from(index)
                     .map_err(|_| refused("selected class index exceeds its domain"))?,
             ) {
-                if parts.attempt_classes.contains(class) {
+                if parts.attempt_classes.contains(class.as_str()) {
                     return Err(refused(
                         "an original fee class cannot be an attempt quantity",
                     ));
                 }
-                parts.declared_classes.remove(class);
+                parts.declared_classes.remove(class.as_str());
             }
         }
         let plan = money

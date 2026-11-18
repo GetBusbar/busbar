@@ -123,15 +123,15 @@ fn nope() -> PortError {
 impl Calls for Plane {
     type Session = Live;
 
-    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
+    fn usage_metadata(&self) -> (u64, Arc<[busbar_ports::plane::UsageClass]>, Arc<[Box<str>]>) {
         (
             if self.selected {
                 busbar_plugin_abi::plane::FB_PREPARED_ESTIMATES
             } else {
                 0
             },
-            &[],
-            &[],
+            Arc::default(),
+            Arc::default(),
         )
     }
 

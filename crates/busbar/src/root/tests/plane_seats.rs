@@ -58,6 +58,9 @@ impl PlanePort for Quiet {
     fn usage_classes(&self) -> &[UsageClass] {
         &[]
     }
+    fn usage_shared(&self) -> (std::sync::Arc<[UsageClass]>, std::sync::Arc<[Box<str>]>) {
+        Default::default()
+    }
     fn facts(&self) -> u64 {
         0
     }
@@ -411,18 +414,18 @@ async fn catalog_seat_uses_sealed_routes_policies_targets_and_shared_capacity() 
     let (catalog, fast, slow) = catalog().await;
     let mut pool = SeatPool::of("mcp", &upstreams()).unwrap();
     extend_catalog("mcp", &mut pool, &catalog).unwrap();
-    let fast_pool = &pool.pools[&fast];
+    let fast_pool = &pool.pools[fast.as_str()];
     assert_eq!(fast_pool.members[0].weight, 7);
     assert_eq!(fast_pool.members[0].attempt_timeout_ms, Some(321));
-    assert_eq!(fast_pool.failover.timeout_secs, 17);
-    assert_eq!(fast_pool.failover.max_hops, 2);
-    assert_eq!(fast_pool.failover.exclusions, ["mcp\u{1f}m"]);
+    assert_eq!(fast_pool.failover().timeout_secs, 17);
+    assert_eq!(fast_pool.failover().max_hops, 2);
+    assert_eq!(fast_pool.failover().exclusions, ["mcp\u{1f}m"]);
     assert_eq!(
         fast_pool.on_exhausted,
         busbar_kernel_egress::OnExhausted::FallbackPool(slow.clone())
     );
     assert_eq!(
-        pool.pools[&slow].on_exhausted,
+        pool.pools[slow.as_str()].on_exhausted,
         busbar_kernel_egress::OnExhausted::Queue { max_ms: 100 }
     );
     let table = Arc::new(Table::default());
@@ -443,7 +446,7 @@ async fn catalog_seat_uses_sealed_routes_policies_targets_and_shared_capacity() 
         .unwrap();
     assert!(egress
         .capacity
-        .try_acquire(pool.pools[&slow].members[0].destination)
+        .try_acquire(pool.pools[slow.as_str()].members[0].destination)
         .is_none());
     assert!(catalog
         .sealed
@@ -453,7 +456,7 @@ async fn catalog_seat_uses_sealed_routes_policies_targets_and_shared_capacity() 
     drop(held);
     assert!(egress
         .capacity
-        .try_acquire(pool.pools[&slow].members[0].destination)
+        .try_acquire(pool.pools[slow.as_str()].members[0].destination)
         .is_some());
     let probes = probe_targets(&pool);
     for (pair, association) in &catalog.sealed.associations {

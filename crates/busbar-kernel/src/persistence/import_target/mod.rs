@@ -8,7 +8,7 @@ pub mod r0;
 pub mod records;
 pub mod target;
 
-pub use target::{ActivationChange, ActivationRequest, TargetIdentity};
+pub use target::TargetIdentity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportError {

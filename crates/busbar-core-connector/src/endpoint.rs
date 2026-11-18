@@ -9,7 +9,7 @@ use busbar_contract::net::{host_is_cloud_metadata, host_is_link_local_v6, target
 
 /// Why the endpoint check refused a target.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EndpointRefusal {
+pub enum EndpointRefusal<'t> {
     /// The target names a cloud metadata host, in whatever spelling.
     MetadataHost {
         /// The host part of the target, as the shared reader reads it.
@@ -17,12 +17,12 @@ pub enum EndpointRefusal {
     },
     /// No host can be read out of the target at all, so there is nothing to have judged.
     NoHost {
-        /// The target, as written.
-        target: String,
+        /// The target, as written: the caller's own, lent (a refusal copies no target).
+        target: &'t str,
     },
 }
 
-impl fmt::Display for EndpointRefusal {
+impl fmt::Display for EndpointRefusal<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MetadataHost { host } => write!(
@@ -37,10 +37,10 @@ impl fmt::Display for EndpointRefusal {
     }
 }
 
-impl std::error::Error for EndpointRefusal {}
+impl std::error::Error for EndpointRefusal<'_> {}
 
 /// Check an open's `target` before any dial: `host`, `host:port`, `[v6]`, `[v6]:port`, or a URL.
-pub fn check(target: &str) -> Result<(), EndpointRefusal> {
+pub fn check(target: &str) -> Result<(), EndpointRefusal<'_>> {
     let host = host_of(target)?;
     if host_is_cloud_metadata(&host) || host_is_link_local_v6(&host) {
         return Err(EndpointRefusal::MetadataHost { host });
@@ -49,13 +49,13 @@ pub fn check(target: &str) -> Result<(), EndpointRefusal> {
 }
 
 /// Check that an open's `target` names a host, read by the one shared reader ([`target_host`]):
-pub fn named(target: &str) -> Result<(), EndpointRefusal> {
+pub fn named(target: &str) -> Result<(), EndpointRefusal<'_>> {
     host_of(target).map(drop)
 }
 
 /// The host `target` names, or the refusal naming the target.
-fn host_of(target: &str) -> Result<String, EndpointRefusal> {
-    target_host(target).ok_or_else(|| crate::cold::conns::no_host(target))
+fn host_of(target: &str) -> Result<String, EndpointRefusal<'_>> {
+    target_host(target).ok_or(EndpointRefusal::NoHost { target })
 }
 
 #[cfg(test)]

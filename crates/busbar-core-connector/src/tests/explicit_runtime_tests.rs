@@ -108,7 +108,7 @@ fn retained_host_io_listens_and_registers_accepted_sockets_on_its_runtime() {
     drop(host);
     retained.admit(ticket(1), Admission::Bind("127.0.0.1:0".into()));
     let (listener, address) = retained.listen(OWNER, ticket(1), "127.0.0.1:0").unwrap();
-    let mut peer = TcpStream::connect(address).unwrap();
+    let mut peer = TcpStream::connect(address.as_str()).unwrap();
     let foreign = foreign();
     foreign.block_on(async {
         let accept = poll_fn(|cx| retained.accept(OWNER, ticket(2), listener, cx.waker()));
@@ -143,7 +143,7 @@ fn explicit_host_open_has_a_real_pending_deadline_on_a_foreign_runtime() {
     let host = HostIo::new_on(runtime.handle().clone());
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap().to_string();
-    host.admit(ticket(3), Admission::Dial(vec![address.clone()]));
+    host.admit(ticket(3), Admission::Dial(address.clone()));
     let stream = host.open(OWNER, ticket(3), &address).unwrap();
     let (_peer, _) = listener.accept().unwrap();
     let mut bytes = [0; 1];

@@ -73,6 +73,8 @@ busbar_lane_state gauge [lane,pool] count -\n\
 busbar_login_attempts_total counter [method,outcome] - -\n\
 busbar_login_throttled_total counter [limiter,method] - -\n\
 busbar_metering_pending_coalesced_total counter [] - -\n\
+busbar_plane_channel_slot_full_total counter [] - -\n\
+busbar_plane_channel_unattributed_total counter [] - -\n\
 busbar_plane_request_duration_seconds histogram [ingress_protocol,plane,pool] seconds -\n\
 busbar_plane_requests_total counter [ingress_protocol,outcome,plane,pool] - -\n\
 busbar_plugin_inspect_cap_refusals_total counter [] - -\n\

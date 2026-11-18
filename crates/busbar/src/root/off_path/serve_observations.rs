@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use busbar_contract::kept::Text;
 use busbar_contract::section::{usage_observation_policies, USAGE_OBSERVATIONS_KEY};
 use busbar_contract::yaml::ValueExt as _;
 use busbar_kernel::plane_driver::ObservationPolicy;
@@ -56,21 +57,30 @@ pub(crate) fn parse(
             }
             classes.push(index);
         }
-        let serving_subject =
-            crate::root::door_steps::plane_lane(facts.plane.lane_prefix(), &member);
+        // The policy's names are made shared once here, as the generation is parsed: a scope's
+        // binding shares them afterwards.
+        let shared = |name: &str| Text::from(std::sync::Arc::<str>::from(name));
+        let serving_subject = shared(&crate::root::door_steps::plane_lane(
+            facts.plane.lane_prefix(),
+            &member,
+        ));
         let rated_subjects = policy
             .rated_subjects
             .iter()
-            .map(|lane| crate::root::door_steps::plane_lane(facts.plane.lane_prefix(), lane))
+            .map(|lane| {
+                shared(&crate::root::door_steps::plane_lane(
+                    facts.plane.lane_prefix(),
+                    lane,
+                ))
+            })
             .collect();
-        let owned_instance = instance.to_owned();
         policies.insert(
             member.clone(),
             ObservationPolicy {
-                instance: owned_instance,
-                destination: member,
+                instance: shared(instance),
+                destination: shared(&member),
                 serving_subject,
-                accounting_namespace: policy.accounting_namespace,
+                accounting_namespace: shared(&policy.accounting_namespace),
                 classes,
                 rated_subjects,
                 reserve_nanos: u128::from(policy.reserve_nanos),

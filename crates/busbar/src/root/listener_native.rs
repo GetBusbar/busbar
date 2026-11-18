@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use busbar_contract::secure::SecureVec;
 use busbar_contract::storage::{StorageCredit, StorageSource};
 use busbar_contract::transport::wire::{ConnectionIo, ConnectionSecurity, SecuredIo};
-use busbar_core_connector::framed_stream::session::{Actions, Inbound, TransportConn};
+use busbar_core_connector::framed_stream::session::{Inbound, TransportConn};
 use busbar_core_connector::response_delivery::DeliveryLedger;
 use busbar_kernel::inbound::native::{
     AcceptedConnection, ArrivalRefusal, CompletingPhysicalRequest, PhysicalConnection,
@@ -67,7 +67,6 @@ pub(crate) struct NativeListener {
 pub(crate) struct OpenedConnection {
     pub(crate) ingress: NativeIngress,
     pub(crate) conn: TransportConn,
-    pub(crate) first: Actions,
     pub(crate) io: Compat<SecuredIo>,
     pub(crate) progress: Arc<dyn busbar_contract::response_delivery::CarrierProgressReader>,
     pub(crate) delivery: DeliveryLedger,
@@ -183,7 +182,7 @@ impl NativeListener {
             self.limits.body_bytes,
         )?;
         let delivery = delivery_ledger(&io.storage)?;
-        let (conn, first) = TransportConn::begin(
+        let conn = TransportConn::begin(
             self.port.clone(),
             &ConnIn {
                 role: busbar_plugin_abi::transport::ROLE_SERVER,
@@ -207,7 +206,6 @@ impl NativeListener {
         Ok(OpenedConnection {
             ingress,
             conn,
-            first,
             io: io.compat(),
             progress,
             delivery,

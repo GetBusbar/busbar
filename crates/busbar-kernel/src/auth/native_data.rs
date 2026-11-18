@@ -21,7 +21,6 @@ use crate::inbound::native::{
 };
 use crate::plane_driver::port::PortSeat;
 use crate::plane_driver::port_admission::{AdmittedUnit, Pending};
-use crate::plane_driver::port_session::RequestDeclaration;
 use crate::plane_driver::request_admission::{
     AdmittedRequest, RequestAllocation, RequestPoolReceipt, RequestRoutes,
 };
@@ -122,11 +121,13 @@ impl NativeDataRoute {
         let binding = preparation.binding().clone();
         let selected = Arc::new(selected);
         let result = async {
-        binding.check_live().map_err(|_| DataRefused::Cancelled)?;
+        // One reading for this step's two deadlines: the binding's own and the call's. No lock
+        // and no await sits between the reading and the second check.
+        let live_at = binding.check_live_now().map_err(|_| DataRefused::Cancelled)?;
         if !Arc::ptr_eq(binding.route(), &self.binding)
             || cx.request_id != binding.invocation().request_id().get()
             || binding.deadline().is_some_and(|at| cx.deadline > at)
-            || Instant::now() >= cx.deadline
+            || live_at >= cx.deadline
             || selected.invocation() != binding.invocation()
             || !Arc::ptr_eq(selected.inventory(), &self.owners.inventory)
         {
@@ -204,8 +205,11 @@ impl PendingData {
     pub async fn complete(self) -> Result<DataAuthorization, DataPreparationFailed> {
         let binding = self.preparation.binding().clone();
         let result = async {
-            binding.check_live().map_err(|_| DataRefused::Cancelled)?;
-            if Instant::now() >= self.deadline {
+            // One reading for this step's two deadlines: the binding's own and the pending one.
+            let live_at = binding
+                .check_live_now()
+                .map_err(|_| DataRefused::Cancelled)?;
+            if live_at >= self.deadline {
                 return Err(DataRefused::Cancelled);
             }
             let mut key = None;
@@ -227,7 +231,7 @@ impl PendingData {
                     let (_, gov) = super::resolve_identity_from_bindings(
                         &app.role_bindings,
                         super::ChainVerdict::Identified {
-                            module: self.prepared.provider().to_owned(),
+                            module: self.prepared.provider_text(),
                             principal: super::Principal {
                                 id: identity.subject().to_owned(),
                                 name: None,
@@ -263,8 +267,12 @@ impl PendingData {
                     return Err(DataRefused::Binding)
                 }
             }
-            binding.check_live().map_err(|_| DataRefused::Cancelled)?;
-            if Instant::now() >= self.deadline {
+            // The replay claim above may have waited: a second reading is needed, and it is this
+            // step's one reading for both deadlines.
+            let live_at = binding
+                .check_live_now()
+                .map_err(|_| DataRefused::Cancelled)?;
+            if live_at >= self.deadline {
                 return Err(DataRefused::Cancelled);
             }
             Ok((lease, key.ok_or(DataRefused::Policy)?))
@@ -452,11 +460,12 @@ pub struct NativeDataAllocation {
 impl NativeDataAllocation {
     pub fn register(physical: AuthorizedPhysicalData) -> Result<Self, DataRefused> {
         let (authorization, physical) = physical.into_parts();
-        authorization
+        // One reading for both deadlines: the binding's own and the authorization's.
+        let live_at = authorization
             .binding
-            .check_live()
+            .check_live_now()
             .map_err(|_| DataRefused::Cancelled)?;
-        if Instant::now() >= authorization.deadline {
+        if live_at >= authorization.deadline {
             return Err(DataRefused::Cancelled);
         }
         let plan = &authorization.route;
@@ -544,21 +553,6 @@ impl NativeDataAllocation {
         )
     }
 
-    /// Preserve the declaration minted by the same preparatory Task for the selected
-    /// monetary binder. This does not mint or reconstruct a declaration from route facts.
-    pub fn into_pending_selected(
-        self,
-        commit: impl FnOnce(RequestPoolReceipt, RequestDeclaration) -> Result<AdmittedUnit, ClientRefusal>
-            + Send
-            + 'static,
-    ) -> NativeDataPending {
-        self.into_pending_using(
-            commit,
-            |allocation, routes, commit| Pending::new_selected(allocation, routes, None, commit),
-            |pending| pending,
-        )
-    }
-
     /// Wire the original candidate's route and budgets before exposing the preparatory Task.
     pub fn into_pending_runtime(
         self,
@@ -595,52 +589,6 @@ impl NativeDataAllocation {
                 Pending::new(allocation, routes, journal, move |receipt| {
                     commit(receipt, ())
                 })
-            },
-            move |pending| {
-                pending
-                    .with_route(route)
-                    .with_channel_budget(budget)
-                    .with_current_rates(rates)
-            },
-        ))
-    }
-
-    /// Selected Tasks additionally retain their own declaration through the monetary callback.
-    pub fn into_pending_selected_runtime(
-        self,
-        seat: &PortSeat,
-        journal: Option<Arc<dyn crate::plane_driver::HookJournal>>,
-        commit: impl FnOnce(RequestPoolReceipt, RequestDeclaration) -> Result<AdmittedUnit, ClientRefusal>
-            + Send
-            + 'static,
-    ) -> Result<NativeDataPending, DataRefused> {
-        if !seat
-            .driver
-            .caller()
-            .same_incarnation(&self.authorization.route.caller)
-            || !Arc::ptr_eq(
-                &seat.request_routes,
-                &self.authorization.route.owners.routes,
-            )
-        {
-            return Err(DataRefused::Binding);
-        }
-        let route = seat
-            .retain_route(
-                self.context(),
-                self.authorization.route.binding.line().route.rung,
-            )
-            .ok_or(DataRefused::Binding)?;
-        let budget = seat.channel_budget.unit();
-        let rates = self
-            .authorization
-            .binding
-            .handle()
-            .selected_rate_admission();
-        Ok(self.into_pending_using(
-            commit,
-            move |allocation, routes, commit| {
-                Pending::new_selected(allocation, routes, journal, commit)
             },
             move |pending| {
                 pending
@@ -699,11 +647,17 @@ impl NativeDataAllocation {
                 {
                     let mut custody = commit_custody.lock().map_err(|_| refuse())?;
                     let bundle = custody.bundle.as_ref().ok_or_else(refuse)?;
+                    // The binding's liveness is asked last and answers the reading it judged at;
+                    // the authorization's deadline is judged at that same reading. It is taken
+                    // after every lock these checks take: no deadline is judged before a lock.
                     if custody.phase != DataCommitPhase::Awaiting
                         || !commit_audit.node_ready()
-                        || bundle.authorization.binding.check_live().is_err()
                         || !bundle.registration.context.is_live()
-                        || Instant::now() >= bundle.authorization.deadline
+                        || !bundle
+                            .authorization
+                            .binding
+                            .check_live_now()
+                            .is_ok_and(|live_at| live_at < bundle.authorization.deadline)
                     {
                         return Err(refuse());
                     }
@@ -842,9 +796,13 @@ impl NativeDataPending {
     }
 
     pub fn is_live(&self) -> bool {
+        // The binding's liveness answers the reading it judged at (after its lock); the pending
+        // deadline is judged at that same reading.
         self.context.is_live()
-            && Instant::now() < self.deadline
-            && self.binding.check_live().is_ok()
+            && self
+                .binding
+                .check_live_now()
+                .is_ok_and(|live_at| live_at < self.deadline)
     }
 
     pub fn binding(&self) -> &Arc<RequestBinding> {

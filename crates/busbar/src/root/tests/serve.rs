@@ -503,9 +503,10 @@ fn the_composed_kernel_services_are_kept_for_the_driver() {
 struct Signs;
 
 impl SignKey for Signs {
-    fn sign(&self, _: &str, data: &[u8], sig: &mut Vec<u8>) -> Option<String> {
-        sig.extend_from_slice(data);
-        Some("kid".to_string())
+    fn sign(&self, _: &str, data: &[u8], out: &mut Vec<u8>) -> Option<usize> {
+        out.extend_from_slice(data);
+        out.extend_from_slice(b"kid");
+        Some(data.len())
     }
 }
 
@@ -586,7 +587,9 @@ async fn constructed_services_sign_and_write_trust_changes_down() {
         trust: vec![("peer".to_string(), entry)],
         ..InstanceFacts::default()
     };
-    k.admit("owner", facts.clone()).await.expect("admitted");
+    k.admit(&"owner".into(), facts.clone())
+        .await
+        .expect("admitted");
     let caller = Caller::for_test(
         Arc::from("owner"),
         busbar_contract::abi::mechanism::KindCode::Plane,
@@ -642,7 +645,7 @@ async fn constructed_services_sign_and_write_trust_changes_down() {
     ));
     let complete_kernel = complete.kernel().expect("complete kernel");
     complete_kernel
-        .admit("owner", facts)
+        .admit(&"owner".into(), facts)
         .await
         .expect("complete admission");
     let complete_sight = |hash| {
@@ -760,7 +763,7 @@ async fn constructed_services_keep_their_governance_record_store() {
         busbar_contract::abi::mechanism::KindCode::Plane,
     );
     k.admit(
-        "record-owner",
+        &"record-owner".into(),
         busbar_kernel::host_services::InstanceFacts {
             record_kinds: vec![busbar_contract::ids::RecordSchemaId::new("attach-probe")],
             ..Default::default()

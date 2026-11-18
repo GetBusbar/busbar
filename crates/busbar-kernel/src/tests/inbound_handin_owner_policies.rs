@@ -77,7 +77,7 @@ fn an_auth_line_needs_a_fixed_identity_and_a_none_line_needs_no_auth_verdict() {
     let list = guests();
     let h = handin(head("/v1/messages", &[], None));
     assert!(matches!(list.lines()[0].auth, LineAuth::Chain(..)));
-    let providers = ["actual-auth".to_owned()];
+    let providers = [busbar_contract::kept::Text::fixed("actual-auth")];
     for answer in [None, Some(Judged::Denied), Some(Judged::Overloaded)] {
         assert!(!matches!(
             fixed_answer_at(&[answer], &providers, &HashSet::default(), false),

@@ -9,7 +9,9 @@
 #![forbid(unsafe_code)]
 #![doc(test(attr(forbid(unsafe_code))))]
 
-pub mod canary_scan;
+/// The Q24 wipe proof. It lives in the contract (`busbar_contract::canary_scan`), whose own wipe
+/// tests use the same scan; a plugin repository reaches it here.
+pub use busbar_contract::canary_scan;
 pub mod envelopes;
 pub mod errors;
 pub mod fake_needs;

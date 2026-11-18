@@ -2064,59 +2064,37 @@ fn an_auth_plugin_diagnostic_is_a_text_field_never_the_message() {
     );
 }
 
-/// A pooled identity buffer set goes back to its door wiped: the next verify that takes it is lent
-/// the same allocation, holding no byte, span or strip name of the last one.
+/// THE OWNER'S RULING ON ALLOCATION (18 Nov, "a few ns may be a good trade for memory"): a verify allocates
+/// its identity set, uses it and releases it. After a burst of verifies, the default-sized ones and a grown
+/// recall's (`wide`), the identity-set bytes alive are back where they were before the first verify; and a door
+/// opened and closed holds none. Under nextest each test is its own process, so the count is this test's.
 #[test]
-fn a_pooled_identity_set_is_wiped_before_the_next_verify_takes_it() {
-    let pool = Arc::new(super::BufferPool::new());
-    let mut dirty = super::Buffers::new(
-        busbar_contract::abi::auth::IDENTITY_BUF_BYTES,
-        busbar_contract::abi::auth::IDENTITY_GROUPS,
-        busbar_contract::abi::auth::FIELDS_MAX,
-    );
-    dirty.buf.fill(0xA5);
-    let used = busbar_contract::abi::mechanism::call::Span { offset: 3, len: 9 };
-    dirty.groups.fill(used);
-    dirty.strip.fill(busbar_contract::abi::auth::StripName {
-        name: used,
-        place: 1,
-        _reserved: 0,
-    });
-    let at = dirty.buf.as_ptr();
-    let held = super::Held::over(
-        super::VerifyInput::empty(),
-        dirty,
-        (
-            busbar_contract::abi::auth::IDENTITY_GROUPS,
-            busbar_contract::abi::auth::FIELDS_MAX,
-        ),
-        Some(Arc::clone(&pool)),
-    );
-    drop(held);
-    let next = pool.take();
+fn a_burst_of_verifies_releases_every_identity_set_it_allocated() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let live = || super::LIVE_SET_BYTES.load(Relaxed);
+    let before_open = live();
+    let a = opened("judge-release");
+    let opened_at = live();
     assert_eq!(
-        next.buf.as_ptr(),
-        at,
-        "the door lends the set it was given back"
+        opened_at, before_open,
+        "opening a door allocates no identity set"
     );
-    assert!(
-        next.buf.iter().all(|b| *b == 0),
-        "the identity text is wiped"
-    );
-    assert!(
-        next.groups.iter().all(|s| *s == super::EMPTY_SPAN),
-        "every group span is absent"
-    );
-    assert!(
-        next.strip.iter().all(|s| *s == super::UNNAMED),
-        "every strip slot is unnamed"
-    );
+    for round in 0..200 {
+        let credential = if round % 10 == 0 { "wide" } else { "good" };
+        assert!(
+            a.verify_now(&request(Some(credential), None)).is_some(),
+            "round {round} answered"
+        );
+    }
     assert_eq!(
-        (next.buf.len(), next.groups.len(), next.strip.len()),
-        (
-            busbar_contract::abi::auth::IDENTITY_BUF_BYTES,
-            busbar_contract::abi::auth::IDENTITY_GROUPS as usize,
-            busbar_contract::abi::auth::FIELDS_MAX as usize,
-        )
+        live(),
+        opened_at,
+        "every identity set a verify allocated is released when the verify ends"
+    );
+    drop(a);
+    assert_eq!(
+        live(),
+        before_open,
+        "a door opened and closed holds no identity set"
     );
 }

@@ -17,7 +17,6 @@ fn described() -> Described {
         items: Vec::new(),
         schema: None,
         metrics: Vec::new(),
-        error_codes_refused: None,
     }
 }
 

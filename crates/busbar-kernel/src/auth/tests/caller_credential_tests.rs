@@ -44,7 +44,10 @@ fn only_authorization_has_a_public_scheme_word() {
         HeaderValue::from_static("session=secret; other=value"),
     );
     assert_eq!(
-        ConsumedCredentials::fields_of(Some(&consumed), &headers),
+        ConsumedCredentials::fields_of(Some(&consumed), &headers)
+            .into_iter()
+            .map(|(name, scheme)| (name.as_str().to_string(), scheme))
+            .collect::<Vec<_>>(),
         vec![
             ("x-api-key".to_string(), String::new()),
             ("authorization".to_string(), "Bearer".to_string()),

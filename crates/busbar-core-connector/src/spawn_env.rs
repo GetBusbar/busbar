@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use busbar_contract::config_time::ConfigScope;
+use busbar_contract::kept::Text;
 use busbar_contract::redacted::Secret;
 use busbar_contract::secret_ref::SecretRef;
 
@@ -25,12 +26,13 @@ pub fn linked_spawn_secret(
 pub(crate) const SPAWN_ENV_LEASE: Duration = Duration::from_secs(60);
 
 /// What a program's spawn hands its child now: every reference's value, name and value in the
-pub struct Resolved(pub(crate) Result<Vec<(String, Secret<String>)>, String>);
+pub struct Resolved(pub(crate) Result<Vec<(String, Secret<String>)>, Text>);
 
 impl Resolved {
-    /// The values, or the refusal.
-    pub fn env(&self) -> Result<&[(String, Secret<String>)], &str> {
-        self.0.as_deref().map_err(String::as_str)
+    /// The values, or the refusal: its reason as shared text, made once when the references were
+    /// resolved, so a spawn it refuses shares the words and copies none.
+    pub fn env(&self) -> Result<&[(String, Secret<String>)], &Text> {
+        self.0.as_deref()
     }
 }
 
@@ -131,18 +133,21 @@ mod refresher {
         }
     }
 
-    /// Keep `env`, first due one lease from now (its load has just resolved it).
-    pub(crate) fn keep(env: &Arc<SpawnEnv>) {
+    /// Keep `env`, first due one lease from now (its load has just resolved it); the reason if
+    /// the process's refresher did not start (the environment is then not kept fresh).
+    pub(crate) fn keep(env: &Arc<SpawnEnv>) -> Result<(), &'static str> {
         busbar_kernel::refresh::keep(
             Arc::downgrade(env) as Weak<dyn busbar_kernel::refresh::Refreshable>,
             crate::off_path::lines::first_spawn_env_due(),
-        );
+        )
     }
 
     /// Refresh every live held item NOW, on the calling thread (a cell that rotates a reference).
     #[cfg(test)]
     pub(crate) fn refresh_all() {
-        busbar_kernel::refresh::process().refresh_all_now();
+        busbar_kernel::refresh::process()
+            .expect("the process refresher started")
+            .refresh_all_now();
     }
 }
 

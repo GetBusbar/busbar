@@ -3,7 +3,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -222,11 +222,9 @@ struct Held {
     groups: *mut Span,
     groups_cap: u32,
 
-    // The set the pointers above point into. It is never touched again until `Drop` (moving a
-    // `Vec` does not move its heap block), so the pointers stay valid.
+    // The set the pointers above point into, allocated for this verify and released with it. It is never
+    // touched again until `Drop` (moving a `Vec` does not move its heap block), so the pointers stay valid.
     store: Buffers,
-    /// Where `store` goes back, wiped, when the last holder lets go (`None`: a set of its own).
-    pool: Option<Arc<BufferPool>>,
 }
 
 /// An absent span: what every group span of a fresh set holds.
@@ -242,12 +240,9 @@ const UNNAMED: StripName = StripName {
     _reserved: 0,
 };
 
-/// The most spare default-sized sets one shard of a door's pool keeps (16 KiB of text and 2 KiB of spans each).
-const POOLED: usize = 16;
-
 /// The identity buffers one verify lends its plugin: the identity text, its group spans and the
-/// strip names. A door lends the default-sized sets again ([`BufferPool`]); a grown recall and a
-/// login's identity lend a set of their own.
+/// strip names. Each verify (and a grown recall, and a login's identity) allocates its own set and releases it
+/// when the verify ends; a door keeps none (the owner's ruling on allocation, 18 Nov).
 #[derive(Default)]
 struct Buffers {
     buf: Vec<u8>,
@@ -258,85 +253,39 @@ struct Buffers {
 impl Buffers {
     /// A fresh set: the text zeroed, every span absent, every strip slot unnamed.
     fn new(buf_cap: usize, groups_cap: u32, strip_cap: u32) -> Self {
-        Self {
+        let made = Self {
             buf: vec![0u8; buf_cap],
             groups: vec![EMPTY_SPAN; groups_cap as usize],
             strip: vec![UNNAMED; strip_cap as usize],
-        }
-    }
-
-    /// Back to a fresh set's contents in place: the text wiped (it held the plugin's identity
-    /// words), the spans and strip slots reset.
-    fn wipe(&mut self) {
-        zero(&mut self.buf);
-        self.groups.fill(EMPTY_SPAN);
-        self.strip.fill(UNNAMED);
-    }
-}
-
-/// One door's spare default-sized buffer sets, in [`SHARDS`] shards so verifies on different threads do not
-/// share a lock: a verify takes one from its thread's shard (a fresh set only when that shard has none spare:
-/// as many as verifies ever ran at once there, at most [`POOLED`] kept per shard) and its `Held` gives it back
-/// wiped, so a verify allocates no buffer once the door is warm.
-struct BufferPool([Shard; SHARDS]);
-
-/// Shards per pool (a power of two).
-const SHARDS: usize = 8;
-
-/// One shard's spare sets, on a cache line of its own.
-#[repr(align(64))]
-struct Shard(Mutex<Vec<Buffers>>);
-
-std::thread_local! {
-    /// This thread's shard of every door's pool, fixed by the order threads first verify.
-    static SHARD: usize = {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        NEXT.fetch_add(1, Ordering::Relaxed) % SHARDS
-    };
-}
-
-impl BufferPool {
-    /// An empty pool with room for [`POOLED`] sets per shard (once per opened door).
-    fn new() -> Self {
-        Self(std::array::from_fn(|_| {
-            Shard(Mutex::new(Vec::with_capacity(POOLED)))
-        }))
-    }
-
-    fn shard(&self) -> &Mutex<Vec<Buffers>> {
-        &self.0[SHARD.with(|s| *s)].0
-    }
-
-    fn take(&self) -> Buffers {
-        let spare = self
-            .shard()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop();
-        spare.unwrap_or_else(|| Buffers::new(IDENTITY_BUF_BYTES, IDENTITY_GROUPS, FIELDS_MAX))
-    }
-
-    /// Keep a wiped default-sized `set` for the next verify on this thread's shard (freed, outside
-    /// the lock, when the shard is full).
-    fn give(&self, set: Buffers) {
-        let full = {
-            let mut spare = self
-                .shard()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if spare.len() < POOLED {
-                spare.push(set);
-                None
-            } else {
-                Some(set)
-            }
         };
-        drop(full);
+        #[cfg(test)]
+        LIVE_SET_BYTES.fetch_add(made.bytes(), Ordering::Relaxed);
+        made
+    }
+
+    /// The bytes this set holds.
+    #[cfg(test)]
+    fn bytes(&self) -> usize {
+        self.buf.capacity()
+            + self.groups.capacity() * std::mem::size_of::<Span>()
+            + self.strip.capacity() * std::mem::size_of::<StripName>()
     }
 }
 
-// SAFETY: the three buffers point only into the set `Held` owns until it is dropped (then wiped, and freed
-// or given back to its door's pool, where nothing lends it until the next verify takes it);
+/// Tests only: the bytes of identity sets alive now (counted where `Buffers::new` makes a set and where a set
+/// is freed), so a test can prove a door's verifies release what they allocated (the owner's ruling, 18 Nov).
+#[cfg(test)]
+pub(crate) static LIVE_SET_BYTES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+impl Drop for Buffers {
+    fn drop(&mut self) {
+        LIVE_SET_BYTES.fetch_sub(self.bytes(), Ordering::Relaxed);
+    }
+}
+
+// SAFETY: the three buffers point only into the set `Held` owns until it is dropped (then wiped and freed);
 // after construction nothing writes through them but the plugin crossing under the dispatcher,
 // which never runs concurrently with the host's read (the host reads only after the op completed).
 unsafe impl Send for Held {}
@@ -371,25 +320,18 @@ impl Held {
             input,
             Buffers::new(buf_cap, groups_cap, strip_cap),
             (groups_cap, strip_cap),
-            None,
         )
     }
 
-    /// A verify lent one of `pool`'s default-sized sets, given back when it is done.
-    fn pooled(input: Arc<VerifyInput>, pool: &Arc<BufferPool>) -> Arc<Self> {
-        Self::over(
-            input,
-            pool.take(),
-            (IDENTITY_GROUPS, FIELDS_MAX),
-            Some(Arc::clone(pool)),
-        )
+    /// A verify lent a default-sized set of its own, released when the verify ends.
+    fn fresh(input: Arc<VerifyInput>) -> Arc<Self> {
+        Self::new(input, IDENTITY_BUF_BYTES, IDENTITY_GROUPS, FIELDS_MAX)
     }
 
     fn over(
         input: Arc<VerifyInput>,
         mut store: Buffers,
         (groups_cap, strip_cap): (u32, u32),
-        pool: Option<Arc<BufferPool>>,
     ) -> Arc<Self> {
         let buf = store.buf.as_mut_ptr();
         let buf_cap = store.buf.len();
@@ -404,7 +346,6 @@ impl Held {
             groups,
             groups_cap,
             store,
-            pool,
         })
     }
 
@@ -560,15 +501,9 @@ impl Held {
 
 impl Drop for Held {
     fn drop(&mut self) {
-        // Nothing reads the buffers once the last `Arc` is dropped (the plugin's crossing is over):
-        // the text is wiped either way; a pooled set goes back reset for the next verify.
-        match self.pool.take() {
-            Some(pool) => {
-                self.store.wipe();
-                pool.give(std::mem::take(&mut self.store));
-            }
-            None => zero(&mut self.store.buf),
-        }
+        // Nothing reads the buffers once the last `Arc` is dropped (the plugin's crossing is over): the
+        // identity text is wiped, and the set is freed with `Held`.
+        zero(&mut self.store.buf);
     }
 }
 
@@ -718,8 +653,6 @@ struct Shared {
     plugin: Arc<Plugin<Auth>>,
     dispatcher: Arc<Dispatcher>,
     minted: AtomicU64,
-    /// The identity buffer sets this door's verifies lend and give back.
-    buffers: Arc<BufferPool>,
 }
 
 impl Shared {
@@ -766,9 +699,11 @@ pub struct AuthInstance {
 
     settings: SecureVec,
 
-    /// What the instance was lent (re-lent on rotation), and that material's fingerprint.
+    /// What the instance was lent (re-lent on rotation), and that material's fingerprint: `None`
+    /// when it could not be fingerprinted (the OS random source did not key the process), which a
+    /// re-lend reads as "changed" and lends again.
     secrets: Mutex<Arc<KeptSecrets>>,
-    lent_fingerprint: Mutex<[u8; 32]>,
+    lent_fingerprint: Mutex<Option<[u8; 32]>>,
     label: String,
     lifecycle: Mutex<()>,
 
@@ -807,16 +742,19 @@ impl KeptSecrets {
         Self(secrets)
     }
 
+    /// The kept material's fingerprint, for "did it change" only; `None` when the process could
+    /// not be keyed, so nothing can be compared and the material is treated as changed.
     fn fingerprint(
         &self,
         seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
-    ) -> [u8; 32] {
+    ) -> Option<[u8; 32]> {
         match seal {
             Some(seal) => busbar_contract::redacted::fingerprint(
                 self.0.iter().map(|s| s.expose(seal).as_slice()),
             ),
             None => busbar_contract::redacted::fingerprint(std::iter::empty()),
         }
+        .ok()
     }
 
     /// One secret blob per kept secret, pointing into the material `self` holds.
@@ -1014,7 +952,6 @@ impl AuthInstance {
                 plugin,
                 dispatcher,
                 minted: AtomicU64::new(0),
-                buffers: Arc::new(BufferPool::new()),
             }),
             sink,
             facts,
@@ -1084,12 +1021,13 @@ impl AuthCalls for AuthInstance {
         self.facts.credential_kinds.clone()
     }
 
-    fn carriers(&self) -> Vec<String> {
+    /// The instance's carriers as it holds them: shared, never copied.
+    fn carriers(&self) -> Arc<[String]> {
         let metadata = self
             .metadata
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cold::listed_carriers(&metadata.carriers)
+        Arc::clone(&metadata.carriers)
     }
 
     fn issued_shape(&self) -> Option<busbar_contract::auth_calls::IssuedShape> {
@@ -1111,10 +1049,7 @@ impl AuthCalls for AuthInstance {
         if reveals(request) && seal.is_none() {
             return Some(Verified::Failed.into());
         }
-        let held = Held::pooled(
-            VerifyInput::copied(request, seal, &headers),
-            &self.shared.buffers,
-        );
+        let held = Held::fresh(VerifyInput::copied(request, seal, &headers));
         let mut f = Frame::new(held.input(presented), identify_out());
         let called = plugin.call(slot::VERIFY, &mut f);
         let _lease = AnswerLease::new(plugin, called.lease);
@@ -1153,7 +1088,7 @@ impl AuthCalls for AuthInstance {
         if reveals(&request) && seal.is_none() {
             return Box::new(Settled(Some(Verified::Failed.into())));
         }
-        let held = Held::pooled(VerifyInput::taken(request, seal, &headers), &sh.buffers);
+        let held = Held::fresh(VerifyInput::taken(request, seal, &headers));
         sh.submit(&mut call, &held, presented);
         Box::new(Pending::new(
             call,
@@ -1206,13 +1141,17 @@ impl AuthCalls for AuthInstance {
         let (_, secrets) = split_secrets(&self.shared.plugin, settings);
         let secrets = KeptSecrets::new(secrets);
         let fingerprint = secrets.fingerprint(self.shared.dispatcher.seal());
-        let unchanged = busbar_contract::redacted::constant_time_eq(
+        // Unchanged only when both were fingerprinted and are the same: an unknown is a change.
+        let unchanged = match (
             &*self
                 .lent_fingerprint
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             &fingerprint,
-        );
+        ) {
+            (Some(lent), Some(now)) => busbar_contract::redacted::constant_time_eq(lent, now),
+            _ => false,
+        };
         if unchanged {
             return Ok(AuthRelent::Unchanged);
         }

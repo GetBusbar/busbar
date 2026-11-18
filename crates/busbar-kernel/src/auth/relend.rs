@@ -112,7 +112,7 @@ impl AuthCalls for RelendingAuth {
         self.now().inbound_points()
     }
 
-    fn carriers(&self) -> Vec<String> {
+    fn carriers(&self) -> Arc<[String]> {
         self.now().carriers()
     }
 

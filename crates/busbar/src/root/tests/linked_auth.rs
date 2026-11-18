@@ -998,13 +998,17 @@ async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
     let auth = Arc::new(synthetic_auth("data-door", "head-token"));
     let judged = |token: Option<&str>, head: bool| {
         let headers = token.map(bearer).unwrap_or_default();
-        let head = match head {
-            true => ChainHead::of_parts("POST", "/v1/chat/completions", &headers),
-            false => ChainHead::default(),
-        };
+        let with_head = head;
         let auth = auth.clone();
         let token = token.map(str::to_string);
-        async move { AuthMiddleware::run_chain_on_request_path(&auth, token, head, None, None).await }
+        // The head is a view of the request's own headers, so it is made where they live.
+        async move {
+            let head = match with_head {
+                true => ChainHead::of_parts("POST", "/v1/chat/completions", &headers),
+                false => ChainHead::default(),
+            };
+            AuthMiddleware::run_chain_on_request_path(&auth, token, head, None, None).await
+        }
     };
     match judged(Some(TOKEN), true).await {
         ChainVerdict::Identified { module, .. } => assert_eq!(module, "data-door"),

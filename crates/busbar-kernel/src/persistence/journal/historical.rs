@@ -53,7 +53,7 @@ impl HistoricalSnapshot {
             if frame.node != node
                 || frame.node_seq == 0
                 || frame.identity() != record.identity()
-                || frame.encode() != record.body
+                || !frame.encodes_as(&record.body)
                 || previous.is_some_and(|sequence| sequence >= frame.node_seq)
             {
                 return Err(Error::Corrupt);

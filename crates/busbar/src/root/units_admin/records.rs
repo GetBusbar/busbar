@@ -345,7 +345,7 @@ pub(crate) fn project(record: &AuditRecord, planes: Planes<'_>) -> (UnitRecord, 
             .or_else(|| pool.map(str::to_string)),
         group: group.map(str::to_string),
         key: match &record.subject {
-            Subject::PrincipalId(key) => Some(key.clone()),
+            Subject::PrincipalId(key) => Some(key.as_str().to_owned()),
             _ => None,
         },
         // §3.5: what `records.user` and `records.labels` sealed, from the record's own bytes; a
@@ -374,9 +374,9 @@ pub(crate) fn project(record: &AuditRecord, planes: Planes<'_>) -> (UnitRecord, 
             .zip(1u32..)
             .map(|(attempt, n)| UnitAttempt {
                 n,
-                target: attempt.target.clone(),
+                target: attempt.target.as_str().to_owned(),
                 outcome: attempt.outcome.as_str(),
-                reason: (!attempt.reason.is_empty()).then(|| attempt.reason.clone()),
+                reason: (!attempt.reason.is_empty()).then(|| attempt.reason.as_str().to_owned()),
                 us: nonzero(attempt.us),
             })
             .collect(),

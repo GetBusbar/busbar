@@ -28,8 +28,21 @@ pub struct TracePublisher {
     floor: LevelFilter,
 }
 
+/// The export layer could not be put in place; the reload handle said why.
+#[derive(Debug)]
+pub struct ActivationRefused(tracing_subscriber::reload::Error);
+
+impl std::fmt::Display for ActivationRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "export tracing activation: {}", self.0)
+    }
+}
+
 impl TracePublisher {
-    pub fn publish(self, exports: std::sync::Arc<super::plugin::Exports>) -> Result<(), String> {
+    pub fn publish(
+        self,
+        exports: std::sync::Arc<super::plugin::Exports>,
+    ) -> Result<(), ActivationRefused> {
         let (producer, filter) = producers(self.floor, exports);
         self.handle
             .modify(|layer| {
@@ -37,7 +50,7 @@ impl TracePublisher {
                 *layer.inner_mut() = producer;
                 *layer.filter_mut() = filter;
             })
-            .map_err(|error| format!("export tracing activation: {error}"))
+            .map_err(ActivationRefused)
     }
 }
 

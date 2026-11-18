@@ -56,6 +56,13 @@ impl RequestRoutes {
         }
         // A consuming builder cannot preserve a seal that was previously minted from this object.
         self.identity = Arc::new(());
+        self.section_lanes = pools
+            .iter()
+            .map(|(name, pool)| {
+                let members = pool.members.iter().map(String::as_str);
+                (shared(name), lanes_of(&self.instance, members))
+            })
+            .collect();
         self.section_pools = pools;
         Ok(self)
     }
@@ -128,21 +135,23 @@ impl RequestRoutes {
         &self,
         key: &VirtualKey,
         selection: Option<&SelectedResources>,
-        grants: &mut BTreeMap<String, Vec<String>>,
+        grants: &mut MemberGrants,
     ) {
-        for (name, pool) in &self.section_pools {
+        // `section_lanes` was made with `section_pools`: pool for pool, member for member.
+        for ((name, pool), (shared_name, lanes)) in
+            self.section_pools.iter().zip(&self.section_lanes)
+        {
             if !self.section_walk_admits(key, selection, name) {
                 continue;
             }
-            let members: Vec<_> = pool
-                .members
-                .iter()
-                .filter(|member| self.section_member_admits(key, selection, name, member))
-                .map(|member| format!("{}{PLANE_LANE_SEP}{member}", self.instance))
-                .filter(|lane| selection.is_none_or(|selected| selected.grants_member(name, lane)))
-                .collect();
+            let members = granted(lanes, |at, lane| {
+                pool.members
+                    .get(at)
+                    .is_some_and(|member| self.section_member_admits(key, selection, name, member))
+                    && selection.is_none_or(|selected| selected.grants_member(name, lane))
+            });
             if !members.is_empty() {
-                grants.insert(name.clone(), members);
+                grants.insert(shared_name.clone(), members);
             }
         }
     }

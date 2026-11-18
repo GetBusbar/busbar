@@ -475,7 +475,7 @@ async fn key_view(
     };
     let credentials = gov.core_store()?.identity().list_credentials(&k.id).await?;
     let mut meta = key_meta(k);
-    meta["state"] = json!(key_state(k, gov));
+    meta["state"] = json!(key_state(k, gov, busbar_kernel::store::now()));
     meta["revocation"] = revocations.get(&k.id).map_or(
         Value::Null,
         |(reason, at)| json!({ "reason": reason, "at": at }),
@@ -534,8 +534,10 @@ fn lift_plane_grants(
     Some((Value::Object(fields), plane))
 }
 
-fn key_state(k: &VirtualKey, gov: &busbar_kernel::governance::GovState) -> &'static str {
-    disposition(k, gov.is_revoked(&k.id), busbar_kernel::store::now())
+/// A key's state at `now`: the caller's one reading, so the revoked check and the expiry compare
+/// the same instant, and a list of keys is judged at one instant.
+fn key_state(k: &VirtualKey, gov: &busbar_kernel::governance::GovState, now: u64) -> &'static str {
+    disposition(k, gov.is_revoked_at(&k.id, now), now)
 }
 
 /// The one derived disposition of a key row: tombstoned, then revoked, then expired (its own
@@ -831,7 +833,7 @@ fn replay_store(
     gov: &busbar_kernel::governance::GovState,
 ) -> busbar_kernel::governance::RecordStoreResult<busbar_kernel::persistence::scoped::ScopedStore> {
     durable::scoped_store(gov.core_store_handle()?).map_err(|error| {
-        busbar_kernel::governance::RecordStoreError(format!("admin replay scope: {error:?}"))
+        busbar_kernel::governance::RecordStoreError::from(format!("admin replay scope: {error:?}"))
     })
 }
 
@@ -915,12 +917,14 @@ async fn check_key_cap(
         return Ok(None);
     }
     let keys = gov.all_keys_async().await?;
+    // One reading for the whole count, taken after the read above: every key is judged at it.
+    let now = busbar_kernel::store::now();
     Ok(check_key_cap_for_keys(
         &keys,
         cap,
         group,
         exclude_id,
-        |id| gov.is_revoked(id),
+        |id| gov.is_revoked_at(id, now),
     ))
 }
 
@@ -1313,9 +1317,8 @@ async fn create_key_owned(
 
 
                     let Some((kind, shape)) = issued else {
-                        return Err(busbar_kernel::governance::RecordStoreError(
-                            "no linked auth plugin states the shape of the credential to issue"
-                                .to_string(),
+                        return Err(busbar_kernel::governance::RecordStoreError::fixed(
+                            "no linked auth plugin states the shape of the credential to issue",
                         ).into());
                     };
                     gov.mint_signed_with_credential_claimed_async(spec, exp, now, kind, shape, &identity_guard).await
@@ -1774,11 +1777,13 @@ pub(crate) async fn list_keys(
     let res: busbar_kernel::governance::RecordStoreResult<_> = async move {
         let keys = gov.all_keys_async().await?;
         let revocations = revocations_of(&gov).await?;
+        // The list's one reading, taken after its reads: every row's state is judged at it.
+        let now = busbar_kernel::store::now();
 
         Ok::<_, busbar_kernel::governance::RecordStoreError>((
             keys.into_iter()
                 .map(|k| {
-                    let state = key_state(&k, &gov);
+                    let state = key_state(&k, &gov, now);
                     (k, state)
                 })
                 .collect::<Vec<_>>(),

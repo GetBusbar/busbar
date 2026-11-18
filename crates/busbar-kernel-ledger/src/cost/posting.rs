@@ -3,6 +3,8 @@
 
 //! What happened, and what it costs.
 
+use busbar_contract::kept::Text;
+
 use crate::cost::history::{EntryKey, HistoryView};
 use crate::cost::rate::{ClassPrice, RateCard};
 
@@ -36,8 +38,9 @@ impl Quantity {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Posting {
     /// The lane the traffic was served on — the card is keyed by it, so a posting that kept no lane
-    /// could not be priced by a lookup at all.
-    pub lane: String,
+    /// could not be priced by a lookup at all. Shared text: a refusal that names the lane shares
+    /// it and copies nothing.
+    pub lane: Text,
     /// One entry per reported meter class.
     pub quantities: Vec<Quantity>,
     /// How many flat fees this posting carries — one for a billable client request, zero otherwise.
@@ -117,18 +120,18 @@ pub enum Unpriceable {
     LaneUnpriced {
         /// The entry that was in force.
         card_seq: EntryKey,
-        /// The lane the card is silent about.
-        lane: String,
+        /// The lane the card is silent about: the posting's own, shared.
+        lane: Text,
     },
     /// A present card names the lane but not a class the posting HIT — the fail-closed rule for a
     /// class (#42: *"a hit class not priced ⇒ REFUSE"*), reached through [`price_fail_closed`].
     ClassUnpriced {
         /// The entry that was in force.
         card_seq: EntryKey,
-        /// The lane the class was reported on.
-        lane: String,
-        /// The class the card is silent about.
-        class: String,
+        /// The lane the class was reported on: the posting's own, shared.
+        lane: Text,
+        /// The class the card is silent about: a meter class is a word fixed in the program.
+        class: Text,
     },
     /// The priced figure does not fit the arithmetic. A REFUSAL, never a figure pinned at the
     /// ceiling: the one function is checked, and so is every reader of it.
@@ -257,18 +260,18 @@ pub fn price_at_card(
 pub fn price_fail_closed(view: &HistoryView<'_>, posting: &Posting) -> Result<Priced, Unpriceable> {
     let priced = price(view, posting)?;
     if priced.lane_unpriced {
-        return Err(crate::cold::posting_lane_unpriced(
-            priced.card_seq,
-            &posting.lane,
-        ));
+        return Err(Unpriceable::LaneUnpriced {
+            card_seq: priced.card_seq,
+            lane: posting.lane.clone(),
+        });
     }
 
     if let Some(line) = priced.lines.iter().find(|l| l.unpriced) {
-        return Err(crate::cold::posting_class_unpriced(
-            priced.card_seq,
-            &posting.lane,
-            line.class,
-        ));
+        return Err(Unpriceable::ClassUnpriced {
+            card_seq: priced.card_seq,
+            lane: posting.lane.clone(),
+            class: Text::fixed(line.class),
+        });
     }
     Ok(priced)
 }

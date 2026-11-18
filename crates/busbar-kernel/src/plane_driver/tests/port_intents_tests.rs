@@ -27,11 +27,11 @@ use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn};
 use busbar_ports::PortError;
 
 use super::{
-    DurableDecider, DurableWork, Hit, IntentHost, Looked, Namespace, Resolver, WorkDecider,
+    DurableDecider, DurableWork, IntentHost, Looked, Namespace, Resolver, TrustItems, WorkDecider,
     WorkIntent, WorkOutcome,
 };
 use crate::plane_driver::port_channels::Held;
-use crate::plane_driver::port_services::{ObservationIn, TrustItemOwned};
+use crate::plane_driver::port_services::ObservationIn;
 use crate::plane_driver::port_session::{Calls, Effects, SessionError, Task, ToClient, Violation};
 use crate::plane_grants::{SignedJws, TicketMint};
 use crate::plugin_records::{CommitOp, CommitOutcome, RecordsDenied, Scope};
@@ -400,6 +400,8 @@ impl Effects for Quiet {
 struct Host {
     calls: std::sync::Arc<Mutex<Vec<String>>>,
     present: Vec<(Vec<u8>, Vec<u8>)>,
+    /// A LOOKUP hands over its hits and then fails.
+    lookup_torn: bool,
     store_denied: bool,
     conflict_at: Option<u32>,
     commit_denied: bool,
@@ -410,7 +412,7 @@ struct Host {
     conn_state: u32,
     distrust: u32,
     signed: (u32, &'static str),
-    state_items: Vec<TrustItemOwned>,
+    state_items: Vec<busbar_ports::plane::TrustItem<'static>>,
     sight_denied: bool,
     rendezvous: Option<RecordsDenied>,
     mirrored: Option<&'static str>,
@@ -435,14 +437,14 @@ impl IntentHost for Host {
         flags: u32,
         limit: u32,
         key: &[u8],
-    ) -> Result<Looked, RecordsDenied> {
+        looked: &mut Looked,
+    ) -> Result<(), RecordsDenied> {
         self.note(format!(
             "lookup {} subject={}",
             String::from_utf8_lossy(key),
             scope.subject.is_some()
         ));
-        let hits = self
-            .present
+        self.present
             .iter()
             .filter(|(k, _)| {
                 if flags & LK_PREFIX != 0 {
@@ -452,12 +454,11 @@ impl IntentHost for Host {
                 }
             })
             .take(limit as usize)
-            .map(|(k, v)| Hit {
-                key: k.clone(),
-                value: v.clone(),
-            })
-            .collect();
-        Ok(Looked { hits, chain: None })
+            .for_each(|(k, v)| looked.push(&[k.as_slice()], v));
+        if self.lookup_torn {
+            return Err(RecordsDenied::Unavailable);
+        }
+        Ok(())
     }
 
     fn store(
@@ -589,18 +590,28 @@ impl IntentHost for Host {
         self.distrust
     }
 
-    fn trust_state(&self, party: &str) -> (u32, Option<[u8; 32]>, Vec<TrustItemOwned>) {
+    fn trust_state(&self, party: &str, items: &mut TrustItems) -> (u32, Option<[u8; 32]>) {
         self.note(format!("trust_state {party}"));
-        (self.distrust, None, self.state_items.clone())
+        for item in &self.state_items {
+            items.push(item);
+        }
+        (self.distrust, None)
     }
 
-    fn trust_verify(&self, party: &str, payload: &[u8], signatures: &[u8]) -> (u32, String) {
+    fn trust_verify(
+        &self,
+        party: &str,
+        payload: &[u8],
+        signatures: &[u8],
+        named: &mut String,
+    ) -> u32 {
         self.note(format!(
             "trust_verify {party} {} {}",
             String::from_utf8_lossy(payload),
             String::from_utf8_lossy(signatures)
         ));
-        (self.signed.0, self.signed.1.to_owned())
+        named.push_str(self.signed.1);
+        self.signed.0
     }
 
     fn rendezvous_accept(
@@ -731,6 +742,126 @@ fn a_lookup_hit_comes_back_as_one_p_lookup_piece() {
     assert_eq!(got.len(), 1);
     assert_eq!((got[0].0, got[0].1), (FROM_CORE, P_LOOKUP));
     assert_eq!(hits_of(&got[0].2), vec![(0, b"k".to_vec(), b"v".to_vec())]);
+}
+
+/// A read that fails after the host handed hits over is a miss: none of its hits reach the plane.
+#[test]
+fn a_lookup_that_fails_part_way_reads_as_a_miss_with_none_of_its_hits() {
+    let script = Script {
+        request: vec![lookup(b"k")],
+        ..Script::default()
+    };
+    let host = Host {
+        present: vec![(b"k".to_vec(), b"v".to_vec())],
+        lookup_torn: true,
+        ..Host::default()
+    };
+    run(&script, &host, None).unwrap();
+    let got = script.got();
+    assert_eq!(got.len(), 1);
+    assert_eq!((got[0].0, got[0].1), (FROM_CORE, P_LOOKUP));
+    assert!(hits_of(&got[0].2).is_empty());
+}
+
+/// The task's read buffer is cleared between the LOOKUPs of one answer: a miss after a hit repeats nothing.
+#[test]
+fn a_miss_after_a_hit_in_one_answer_carries_none_of_the_earlier_hits() {
+    let script = Script {
+        request: vec![
+            It::Lookup {
+                flags: LK_PREFIX,
+                limit: 4,
+                key: b"a/".to_vec(),
+            },
+            lookup(b"none"),
+        ],
+        ..Script::default()
+    };
+    let host = Host {
+        present: vec![
+            (b"a/1".to_vec(), b"x".to_vec()),
+            (b"a/2".to_vec(), b"y".to_vec()),
+        ],
+        ..Host::default()
+    };
+    run(&script, &host, None).unwrap();
+    let got = script.got();
+    assert_eq!(got.len(), 1);
+    assert_eq!(
+        hits_of(&got[0].2),
+        vec![
+            (0, b"a/1".to_vec(), b"x".to_vec()),
+            (0, b"a/2".to_vec(), b"y".to_vec()),
+        ]
+    );
+}
+
+/// The read buffer hands back exactly what was pushed, in order, and forgets what a rewind or a clear drops.
+#[test]
+fn the_lookup_read_buffer_keeps_hits_in_order_and_rewinds_to_a_mark() {
+    let mut looked = Looked::default();
+    looked.push(&[b"ch".as_slice(), 7u64.to_be_bytes().as_slice()], b"one");
+    let mark = looked.mark();
+    looked.push(&[b"k".as_slice()], b"");
+    assert_eq!(looked.len(), 2);
+    let all: Vec<(Vec<u8>, Vec<u8>)> = looked
+        .hits()
+        .map(|(key, value)| (key.to_vec(), value.to_vec()))
+        .collect();
+    assert_eq!(
+        all,
+        vec![
+            (
+                [b"ch".as_slice(), 7u64.to_be_bytes().as_slice()].concat(),
+                b"one".to_vec()
+            ),
+            (b"k".to_vec(), Vec::new()),
+        ]
+    );
+    looked.rewind(mark);
+    assert_eq!(looked.len(), 1);
+    assert_eq!(
+        looked.hits().next().map(|(_, value)| value),
+        Some(&b"one"[..])
+    );
+    looked.chain = Some((3, 0));
+    looked.clear();
+    assert!(looked.is_empty());
+    assert_eq!(looked.chain, None);
+    assert_eq!(looked.hits().count(), 0);
+}
+
+/// The trust item buffer hands back each item as it was pushed, in order, and a clear empties it.
+#[test]
+fn the_trust_item_buffer_keeps_items_in_order() {
+    let mut items = TrustItems::default();
+    assert!(items.is_empty());
+    items.push(&busbar_ports::plane::TrustItem {
+        name: "tool",
+        verdict: DISTRUST_NONE,
+        approved: Some([5; 32]),
+        sighted: None,
+    });
+    items.push(&busbar_ports::plane::TrustItem {
+        name: "",
+        verdict: DISTRUST_UNSIGHTED,
+        approved: None,
+        sighted: Some([6; 32]),
+    });
+    let all: Vec<(String, u32, Option<[u8; 32]>, Option<[u8; 32]>)> = items
+        .iter()
+        .map(|i| (i.name.to_owned(), i.verdict, i.approved, i.sighted))
+        .collect();
+    assert_eq!(
+        all,
+        vec![
+            ("tool".to_owned(), DISTRUST_NONE, Some([5; 32]), None),
+            (String::new(), DISTRUST_UNSIGHTED, None, Some([6; 32])),
+        ]
+    );
+    items.clear();
+    assert!(items.is_empty());
+    assert_eq!(items.iter().count(), 0);
 }
 
 #[test]
@@ -1611,14 +1742,14 @@ fn trust_serves_state_and_verify_answer_one_trust_ans_each_in_intent_order() {
         distrust: DISTRUST_NOT_APPROVED,
         signed: (SIGNED_ALGORITHM, "ES512"),
         state_items: vec![
-            TrustItemOwned {
-                name: "tool".into(),
+            busbar_ports::plane::TrustItem {
+                name: "tool",
                 verdict: DISTRUST_NONE,
                 approved: Some([5; 32]),
                 sighted: Some([5; 32]),
             },
-            TrustItemOwned {
-                name: "new".into(),
+            busbar_ports::plane::TrustItem {
+                name: "new",
                 verdict: DISTRUST_UNSIGHTED,
                 approved: None,
                 sighted: None,
@@ -1674,8 +1805,15 @@ fn trust_serves_state_and_verify_answer_one_trust_ans_each_in_intent_order() {
 struct Bare;
 
 impl IntentHost for Bare {
-    fn lookup(&self, _: Scope, _: u32, _: u32, _: &[u8]) -> Result<Looked, RecordsDenied> {
-        Ok(Looked::default())
+    fn lookup(
+        &self,
+        _: Scope,
+        _: u32,
+        _: u32,
+        _: &[u8],
+        _: &mut Looked,
+    ) -> Result<(), RecordsDenied> {
+        Ok(())
     }
     fn store(&self, _: Scope, _: u32, _: u64, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {
         Ok(())
@@ -1714,14 +1852,18 @@ fn a_host_with_no_service_installed_answers_fail_closed() {
         CONN_REFUSED
     );
     assert_ne!(host.trust_serves("github", None), DISTRUST_NONE);
-    let (verdict, root, items) = host.trust_state("github");
+    let mut items = TrustItems::default();
+    let (verdict, root) = host.trust_state("github", &mut items);
     assert_ne!(verdict, DISTRUST_NONE);
     assert!(items.is_empty());
     assert!(
         root.is_none(),
         "a missing trust service cannot supply a root"
     );
-    assert_ne!(host.trust_verify("github", b"d", b"[]").0, SIGNED_VERIFIED);
+    assert_ne!(
+        host.trust_verify("github", b"d", b"[]", &mut String::new()),
+        SIGNED_VERIFIED
+    );
     assert!(host.sight("github", None, &[]).is_err());
 }
 

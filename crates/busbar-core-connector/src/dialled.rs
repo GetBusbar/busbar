@@ -414,6 +414,9 @@ impl UpstreamLeg {
         due: Option<Instant>,
         now: Instant,
     ) -> Result<(), ConnError> {
+        // The drive is one operation at the caller's instant `now`: its one reading, stated by
+        // every crossing it makes (each datagram it reads, and the association's timer).
+        let at = crate::framer::At::of(now);
         let room = MAX_READY.saturating_sub(lock(&self.ready).len());
         let yielded = self.turn(
             (),
@@ -421,12 +424,12 @@ impl UpstreamLeg {
             |()| Err(ConnError::Closed),
             |f, ()| {
                 let mut buf = std::mem::take(&mut *lock(&self.recv));
-                let read = self.read_port(pairing, f, cx, &mut buf, room, now);
+                let read = self.read_port(pairing, f, cx, &mut buf, room, at);
                 *lock(&self.recv) = buf;
                 let mut yielded = read?;
                 if yielded.is_none() && f.deadline().is_some_and(|d| d <= now) {
                     let generation = pairing.storage_generation();
-                    yielded = match f.timeout_step(now).map_err(|_| ConnError::Fault)? {
+                    yielded = match f.timeout_step(at).map_err(|_| ConnError::Fault)? {
                         LineStep::Batch { yielded, .. } => Some(yielded),
                         LineStep::Complete => None,
                         LineStep::Credit => {
@@ -494,7 +497,7 @@ impl UpstreamLeg {
         cx: &mut Context<'_>,
         buf: &mut [u8],
         room: usize,
-        now: Instant,
+        at: crate::framer::At,
     ) -> Result<Option<Yielded>, ConnError> {
         for _ in 0..READS_PER_DRIVE {
             if room == 0 {
@@ -510,7 +513,7 @@ impl UpstreamLeg {
             match self.port.poll_recv_from(cx, buf) {
                 Poll::Ready(Ok((n, from))) => {
                     match f
-                        .datagram_step(from, &buf[..n], now)
+                        .datagram_step(from, &buf[..n], at)
                         .map_err(|_| ConnError::Fault)?
                     {
                         LineStep::Batch { yielded, .. } => return Ok(Some(yielded)),
@@ -580,7 +583,8 @@ impl LegSink for UpstreamLeg {
                 }))
             },
             |f, ()| {
-                let result = f.line_step(input, text, now);
+                // The poll is one operation at the caller's instant `now`: its one reading.
+                let result = f.line_step(input, text, crate::framer::At::of(now));
                 self.flush(f);
                 if matches!(result, Ok(LineStep::Batch { .. })) {
                     lock(&self.framing).publishing = true;
@@ -811,14 +815,16 @@ impl Dialled {
 
     /// The far end's description settles the association; its lines must mirror the caller's.
     fn settle(&self, description: &[u8]) -> Result<(), ConnError> {
-        let now = crate::framer::now();
+        // Settling is one operation: its one reading, stated by the rendezvous and what follows.
+        let at = crate::framer::At::now();
+        let now = at.instant();
         let yielded = self.leg.turn(
             (),
             |()| Err(ConnError::Pending),
             |()| Err(ConnError::Closed),
             |f, ()| {
                 let y = f
-                    .rendezvous(description, now)
+                    .rendezvous(description, at)
                     .map_err(|_| ConnError::Fault)?;
                 self.leg.flush(f);
                 lock(&self.leg.framing).publishing = true;
@@ -843,26 +849,26 @@ impl Dialled {
         self.running(waker)?;
         self.leg.wait_ready(waker);
         let mut cx = Context::from_waker(waker);
-        let body = |(n, end): (usize, bool)| Piece {
-            kind: PieceKind::Body,
-            stream: StreamId(0),
-            len: n,
-            end,
-            status: None,
-            status_code: None,
-            status_namespace: None,
-            retry_after_secs: None,
-            fault: None,
-            reason: None,
-            declared_len: None,
-        };
-        if let Some(ready) = take_ready(&self.leg.ready, buf) {
-            return Ok(body(ready));
-        }
         // One clock reading per read, taken only once nothing is ready: the keying bound and the
         // drive both judge by it.
-        let now = crate::framer::now();
+        let mut read_at: Option<Instant> = None;
         loop {
+            if let Some((n, end)) = take_ready(&self.leg.ready, buf) {
+                return Ok(Piece {
+                    kind: PieceKind::Body,
+                    stream: StreamId(0),
+                    len: n,
+                    end,
+                    status: None,
+                    status_code: None,
+                    status_namespace: None,
+                    retry_after_secs: None,
+                    fault: None,
+                    reason: None,
+                    declared_len: None,
+                });
+            }
+            let now = *read_at.get_or_insert_with(crate::framer::now);
             let keyed = self.leg.presented();
             if !keyed && self.due.is_some_and(|d| now >= d) {
                 return Err(ConnError::Timeout);
@@ -872,9 +878,6 @@ impl Dialled {
             }
             if lock(&self.leg.ready).is_empty() {
                 return Err(ConnError::Pending);
-            }
-            if let Some(ready) = take_ready(&self.leg.ready, buf) {
-                return Ok(body(ready));
             }
         }
     }

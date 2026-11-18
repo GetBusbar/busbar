@@ -26,14 +26,14 @@ fn seed_clean(gov: &GovState, cells: usize) {
         let id = format!("vk_idle_{index}");
         gov.budget
             .write(&id)
-            .insert(id.clone(), BudgetCell::fresh(0));
+            .insert(id.as_str().into(), BudgetCell::fresh(0));
     }
 }
 
 fn accrue(gov: &GovState, id: &str) {
     let mut cells = gov.budget.write(id);
     let cell = cells
-        .entry(id.to_string())
+        .entry(id.into())
         .or_insert_with(|| BudgetCell::fresh(0));
     cell.accrue_raw(
         "m",
@@ -108,7 +108,7 @@ async fn a_cell_left_dirty_is_reflagged_and_walked_next_tick() {
         .unwrap()
         .insert(id.clone());
     gov.flush_budgets().await;
-    assert!(gov.budget.read(&id)[&id].dirty);
+    assert!(gov.budget.read(&id)[id.as_str()].dirty);
     assert!(
         gov.budget.flagged(&id),
         "a shard the flush leaves dirty is flagged for the very next tick"
@@ -121,7 +121,7 @@ async fn a_cell_left_dirty_is_reflagged_and_walked_next_tick() {
     );
     gov.deleting_budget_buckets.lock().unwrap().remove(&id);
     gov.flush_budgets().await;
-    assert!(gov.budget.flagged(&id) || !gov.budget.read(&id)[&id].dirty);
+    assert!(gov.budget.flagged(&id) || !gov.budget.read(&id)[id.as_str()].dirty);
 }
 
 #[tokio::test]
@@ -131,7 +131,7 @@ async fn a_written_shard_is_flagged_and_a_walk_does_not_flag() {
     assert!(!gov.budget.flagged(&id));
     gov.budget
         .write(&id)
-        .insert(id.clone(), BudgetCell::fresh(0));
+        .insert(id.as_str().into(), BudgetCell::fresh(0));
     assert!(gov.budget.flagged(&id), "a mutable access flags its shard");
     gov.flush_budgets().await;
     assert!(

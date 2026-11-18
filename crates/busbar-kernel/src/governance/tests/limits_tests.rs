@@ -1687,7 +1687,7 @@ async fn a_stale_cell_still_owing_the_store_survives_the_sweep_and_is_written() 
             },
         );
         cell.dirty = true;
-        map.insert(owed.to_string(), cell);
+        map.insert(owed.into(), cell);
     }
 
     g.budget.sweep_ticker_for("vk_sweep_owed").store(
@@ -2002,7 +2002,7 @@ async fn exact_accrual_overflow_leaves_every_chain_bucket_and_meter_unchanged() 
         era,
     );
     assert_eq!(result, Err(CountError::Overflow));
-    assert!(!g.budget.read(&k.id).contains_key(&k.id));
+    assert!(!g.budget.read(&k.id).contains_key(k.id.as_str()));
     assert_eq!(
         g.budget.read(bucket)[bucket].total_tokens(),
         busbar_contract::count::MAX

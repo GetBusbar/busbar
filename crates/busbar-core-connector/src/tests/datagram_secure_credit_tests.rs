@@ -232,7 +232,8 @@ fn credit_before_secure_ingest_leaves_the_datagram_unaccepted_and_raw_readiness_
     let before = host.secure.as_ref().unwrap().ingest_calls();
     host.memory(Memory::new(Some(1)));
     assert!(matches!(
-        host.datagram_step(far.addr, &sealed, now).unwrap(),
+        host.datagram_step(far.addr, &sealed, crate::framer::At::of(now))
+            .unwrap(),
         LineStep::Credit
     ));
     assert!(!host.continuing());

@@ -98,12 +98,12 @@ impl PendingCorrection {
 
 fn unresolved(reason: impl std::fmt::Display) -> RecordStoreError {
     crate::governance::rendered_error(
-        RecordStoreError,
+        RecordStoreError::from,
         format_args!("usage correction unresolved: {reason}"),
     )
 }
 fn exact<T>(result: Result<T, &'static str>) -> RecordStoreResult<T> {
-    result.map_err(|reason| RecordStoreError(reason.into()))
+    result.map_err(RecordStoreError::fixed)
 }
 fn address(bucket: &str, window: u64) -> UsageAddress {
     UsageAddress {
@@ -805,11 +805,9 @@ impl GovState {
                 delta: &intent.delta,
                 now: crate::store::now(),
             };
-            let delta = ledger_off_path::ledger_adjust_nonzero_delta(&intent.delta);
             self.correct_usage_with_parent(
                 cost,
                 &adj,
-                &delta,
                 pending.request.day_start,
                 Some(parent.operation_id),
                 intent.action_id.as_deref(),
@@ -915,7 +913,7 @@ impl GovState {
             exact(correction::canonical_ledger(&mut plain))?;
             exact(correction::canonical_ledger(&mut dated))?;
             let mut cells = self.budget.write(bucket);
-            let live = cells.get(bucket);
+            let live = cells.get(bucket.as_str());
             if live.is_some_and(|cell| {
                 cell.correction.is_some()
                     || cell.window_start != *window
@@ -924,7 +922,7 @@ impl GovState {
                 continue;
             }
             let (before, _, _) = capture_target(bucket, live, &plain, &dated, *window)?;
-            cells.insert(bucket.clone(), before);
+            crate::governance::sharded::put(&mut cells, bucket, before);
         }
         Ok(())
     }
@@ -1358,7 +1356,7 @@ impl GovState {
                 .expect("target shard held");
             let branch = guards[index]
                 .1
-                .get(bucket)
+                .get(bucket.as_str())
                 .and_then(|cell| cell.correction.as_ref());
             if !branch.is_some_and(|branch| {
                 branch.op_id == pending.request.op_id && branch.window == *window
@@ -1371,7 +1369,10 @@ impl GovState {
             let index = order
                 .binary_search(&self.budget.shard_index(bucket))
                 .expect("target shard held");
-            let cell = guards[index].1.get(bucket).expect("checked target cell");
+            let cell = guards[index]
+                .1
+                .get(bucket.as_str())
+                .expect("checked target cell");
             let branch = cell.correction.as_ref().expect("checked reservation");
             let mut chosen = if decision == Decision::Applied {
                 branch.accepted.clone()
@@ -1389,7 +1390,7 @@ impl GovState {
             let index = order
                 .binary_search(&self.budget.shard_index(&bucket))
                 .expect("target shard held");
-            guards[index].1.insert(bucket, chosen);
+            crate::governance::sharded::put(&mut guards[index].1, &bucket, chosen);
         }
         drop(guards);
         *pending.settled.lock().unwrap_or_else(|p| p.into_inner()) = Some(decision);
@@ -1494,11 +1495,10 @@ impl GovState {
         &self,
         cost: &crate::cost::CostModel,
         adj: &Adjustment<'_, Count>,
-        delta: &BTreeMap<&str, Count>,
         day: u64,
         action_id: Option<&str>,
     ) -> RecordStoreResult<Result<(), AdjustRefused>> {
-        self.correct_usage_with_parent(cost, adj, delta, day, None, action_id)
+        self.correct_usage_with_parent(cost, adj, day, None, action_id)
             .await
     }
 
@@ -1506,7 +1506,6 @@ impl GovState {
         &self,
         cost: &crate::cost::CostModel,
         adj: &Adjustment<'_, Count>,
-        delta: &BTreeMap<&str, Count>,
         day: u64,
         parent_operation_id: Option<[u8; 16]>,
         action_id: Option<&str>,
@@ -1613,7 +1612,6 @@ impl GovState {
             }
             if let Err(refused) = check_metered(
                 adj,
-                delta,
                 day,
                 &metering,
                 &snapshots[&address(ADJUST_UP_BUCKET, day)],
@@ -1637,7 +1635,7 @@ impl GovState {
                     let index = order
                         .binary_search(&self.budget.shard_index(bucket))
                         .expect("target shard held");
-                    let live = guards[index].1.get(bucket);
+                    let live = guards[index].1.get(bucket.as_str());
                     if live.is_some_and(|cell| cell.correction.is_some()) {
                         return Err(unresolved("another correction owns an affected bucket"));
                     }
@@ -1667,30 +1665,31 @@ impl GovState {
                     } else {
                         segment_at(&target.models, adj.model, adj.card_epoch_ms)
                     };
-                    if segment.is_none() && delta.values().any(|count| *count < Count::ZERO) {
-                        let (class, _) = delta
-                            .iter()
-                            .find(|(_, count)| **count < Count::ZERO)
-                            .expect("negative delta");
-                        return Ok(Err(ledger_cold::ledger_correction_unplaced(
-                            bucket, *window, class,
-                        )));
+                    if segment.is_none() {
+                        // The first downward class, in class order, has nowhere to land.
+                        if let Some((class, _)) =
+                            nonzero(adj.delta).find(|(_, count)| *count < Count::ZERO)
+                        {
+                            return Ok(Err(ledger_cold::ledger_correction_unplaced(
+                                bucket, *window, class,
+                            )));
+                        }
                     }
                     let era = segment.map_or(metered_era, |index| target.models[index].era);
-                    for (class, change) in delta {
+                    for (class, change) in nonzero(adj.delta) {
                         let held = segment.map_or(Count::ZERO, |index| {
                             target.models[index]
                                 .cur
-                                .get(*class)
+                                .get(class)
                                 .copied()
                                 .unwrap_or_default()
                         });
-                        if moved(held, *change).is_none() {
+                        if moved(held, change).is_none() {
                             return Ok(Err(AdjustRefused::Exceeds {
                                 bucket: bucket.clone(),
-                                class: (*class).into(),
+                                class: class.into(),
                                 count: held,
-                                delta: *change,
+                                delta: change,
                             }));
                         }
                         prepare!(move_unit(
@@ -1737,8 +1736,8 @@ impl GovState {
                     branches.push((bucket.clone(), *window, before, accepted));
                 }
                 let slot = adjustment_slot(adj.key_id, adj.model, metered_era);
-                for (class, change) in delta {
-                    let bucket = if *change > Count::ZERO {
+                for (class, change) in nonzero(adj.delta) {
+                    let bucket = if change > Count::ZERO {
                         ADJUST_UP_BUCKET
                     } else {
                         ADJUST_DOWN_BUCKET
@@ -1776,7 +1775,7 @@ impl GovState {
                         window,
                         accepted,
                     }));
-                    guards[index].1.insert(bucket, before);
+                    crate::governance::sharded::put(&mut guards[index].1, &bucket, before);
                 }
                 let sent_at = ledger_off_path::ledger_correction_sent_clock();
                 let pending = PendingCorrection {
@@ -1818,7 +1817,7 @@ fn unique_metered_era(
 ) -> RecordStoreResult<RawRateEra> {
     let mut captured = None;
     for row in rows.iter().filter(|row| {
-        row.priced_from_ms == adj.entry_era && metering_lane(&row.model, &row.provider) == adj.model
+        row.priced_from_ms == adj.entry_era && on_lane(&row.model, &row.provider, adj.model)
     }) {
         let id = match EntryId::parse_metering_version(&row.pricing_version) {
             Some(Some(id)) => Some(id),
@@ -1856,14 +1855,13 @@ fn unique_metered_era(
 
 fn check_metered(
     adj: &Adjustment<'_, Count>,
-    delta: &BTreeMap<&str, Count>,
     day: u64,
     metering: &[MeteringRow],
     up: &UsageLedger,
     down: &UsageLedger,
     era: RawRateEra,
 ) -> Result<(), AdjustRefused> {
-    let in_lane = |row: &MeteringRow| metering_lane(&row.model, &row.provider) == adj.model;
+    let in_lane = |row: &MeteringRow| on_lane(&row.model, &row.provider, adj.model);
     if let Some(in_force) = metering
         .iter()
         .filter(|row| in_lane(row))
@@ -1888,11 +1886,11 @@ fn check_metered(
         return Err(AdjustRefused::NotMetered { day });
     }
     let slot = adjustment_slot(adj.key_id, adj.model, era);
-    for (class, change) in delta {
+    for (class, change) in nonzero(adj.delta) {
         let adjusted = |ledger: &UsageLedger| -> Option<Count> {
             match ledger.models.iter().find(|row| row.model == slot) {
                 Some(row) => {
-                    Count::from_stored(row.usage_units.get(*class).copied().unwrap_or(0), row.scale)
+                    Count::from_stored(row.usage_units.get(class).copied().unwrap_or(0), row.scale)
                         .ok()
                 }
                 None => Some(Count::ZERO),
@@ -1911,12 +1909,12 @@ fn check_metered(
                 day,
                 class,
                 Count::ZERO,
-                *change,
+                change,
             ));
         };
-        if moved(count, *change).is_none() {
+        if moved(count, change).is_none() {
             return Err(ledger_cold::ledger_correction_metering_exceeds(
-                day, class, count, *change,
+                day, class, count, change,
             ));
         }
     }
@@ -1980,14 +1978,12 @@ fn capture_target(
                 ))?;
             }
         }
-        let fees = ledger_off_path::ledger_correction_fee_eras(local.fee_eras.dated());
-        let flushed = ledger_off_path::ledger_correction_fee_eras(local.flushed_fee_eras.dated());
-        for era in crate::governance::sorted_union(fees.keys(), flushed.keys()) {
-            let difference = i128::from(fees.get(era).copied().unwrap_or(0))
-                - i128::from(flushed.get(era).copied().unwrap_or(0));
+        let (fees, flushed) = (local.fee_eras.dated(), local.flushed_fee_eras.dated());
+        for era in eras_ascending(eras_of(fees), eras_of(flushed)) {
+            let difference = i128::from(fee_count(fees, era)) - i128::from(fee_count(flushed, era));
             exact(move_unit(
                 &mut combined_dated,
-                &era_tag(*era),
+                &era_tag(era),
                 ERA_FEE_UNIT,
                 difference * 1_000_000,
             ))?;
@@ -2047,6 +2043,48 @@ fn checked_move(count: u64, change: i128) -> Result<u64, &'static str> {
             .ok_or("raw usage correction count overflow")?,
     )
     .map_err(|_| "raw usage correction count out of range")
+}
+
+/// The eras a fee split names, as recorded.
+fn eras_of(split: &[(RawRateEra, u64)]) -> impl Iterator<Item = RawRateEra> + Clone + '_ {
+    split.iter().map(|(era, _)| *era)
+}
+
+/// The count a fee split holds for `era`, zero when it names no such era. A split names a few
+/// eras in the order each was first charged, so it is read where it lies; were an era ever named
+/// twice its later count stands, as it did when the split was folded into a map.
+fn fee_count(split: &[(RawRateEra, u64)], era: RawRateEra) -> u64 {
+    split
+        .iter()
+        .rev()
+        .find(|(at, _)| *at == era)
+        .map_or(0, |(_, count)| *count)
+}
+
+/// The requests a fee split's eras hold in all, each era counted once.
+fn fee_total(split: &[(RawRateEra, u64)]) -> i128 {
+    eras_ascending(eras_of(split), std::iter::empty())
+        .map(|era| i128::from(fee_count(split, era)))
+        .sum()
+}
+
+/// Every era `a` or `b` names, ascending and each once. Both name a few eras in no order, so the
+/// next era is the least one after the last given: neither is sorted and neither is copied.
+fn eras_ascending<A, B>(a: A, b: B) -> impl Iterator<Item = RawRateEra>
+where
+    A: Iterator<Item = RawRateEra> + Clone,
+    B: Iterator<Item = RawRateEra> + Clone,
+{
+    let mut last: Option<RawRateEra> = None;
+    std::iter::from_fn(move || {
+        let next = a
+            .clone()
+            .chain(b.clone())
+            .filter(|era| last.is_none_or(|after| *era > after))
+            .min()?;
+        last = Some(next);
+        Some(next)
+    })
 }
 fn add_difference(
     row: &mut UsageLedger,

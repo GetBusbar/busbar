@@ -222,18 +222,6 @@ pub struct PlaneDriver {
 
     refused_piece: bool,
     authenticated_route: bool,
-
-    /// The render scratch a refusal or catalog render reuses (see [`RenderScratch`]).
-    render_scratch: Mutex<Vec<RenderScratch>>,
-}
-
-/// A plane render's host scratch (head fields, arena, record writes), reused render to render: a
-/// render takes one, the plane writes into it, the answer copies out what it keeps, and it goes back.
-#[derive(Default)]
-struct RenderScratch {
-    fields: Vec<OutField>,
-    arena: Vec<u8>,
-    records: Vec<busbar_contract::abi::plane::RecordWrite>,
 }
 
 pub trait AuditSink: Send + Sync {
@@ -339,7 +327,6 @@ impl PlaneDriver {
             audit: Arc::new(CoreAudit),
             refused_piece: false,
             authenticated_route: d.authenticated_route,
-            render_scratch: Mutex::new(Vec::new()),
         })
     }
 
@@ -461,7 +448,7 @@ impl PlaneDriver {
     /// configured namespace cannot inherit its live session authority.
     pub fn open_carrier_session(
         &self,
-        principal: &str,
+        principal: &Arc<str>,
         sink: crate::host_services::CarrierSink,
     ) -> Option<u64> {
         let (services, caller) = self.records.as_ref()?;
@@ -773,7 +760,7 @@ type LentFields = smallvec::SmallVec<[Field; 32]>;
 /// What a host lists to the plane for one call (a catalog's names), on the stack up to 32.
 type LentNames = smallvec::SmallVec<[AbiStr; 32]>;
 
-/// The empty frame every encode that renders no refusal answers with: one shared allocation.
+/// The empty frame every encode answers with: one shared allocation.
 static EMPTY_FRAME: std::sync::LazyLock<Arc<[u8]>> =
     std::sync::LazyLock::new(|| -> Arc<[u8]> { Arc::new([0u8; 0]) });
 
@@ -1038,54 +1025,15 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
 }
 
 impl PlaneDriver {
-    fn render_refusal(&self, input: RefusalIn, principal: Option<&PrincipalId>) -> Rendered {
-        let mut scratch = self.render_scratch();
-        let rendered = self.render_refusal_with(input, principal, &mut scratch);
-        self.render_scratch_back(scratch);
-        rendered
-    }
-
-    /// A render's scratch (head fields, arena, record writes) at the configured capacities,
-    /// zeroed: a reused one when a render returned it, else a new one.
-    fn render_scratch(&self) -> RenderScratch {
-        let caps = self.config.caps;
-        let mut scratch = self
-            .render_scratch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop()
-            .unwrap_or_default();
-        scratch.fields.clear();
-        scratch.fields.resize(caps.fields, NO_FIELD);
-        scratch.arena.clear();
-        scratch.arena.resize(caps.arena, 0);
-        scratch.records.clear();
-        scratch.records.resize(caps.records, NO_RECORD);
-        scratch
-    }
-
-    fn render_scratch_back(&self, scratch: RenderScratch) {
-        self.render_scratch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(scratch);
-    }
-
-    fn render_refusal_with(
-        &self,
-        mut input: RefusalIn,
-        principal: Option<&PrincipalId>,
-        scratch: &mut RenderScratch,
-    ) -> Rendered {
+    fn render_refusal(&self, mut input: RefusalIn, principal: Option<&PrincipalId>) -> Rendered {
         let status = input.status;
         let caps = self.config.caps;
-        // The reply buffer becomes the rendered body; the rest is the reused scratch.
-        let mut reply = vec![0u8; caps.reply];
-        let RenderScratch {
-            fields,
-            arena,
-            records,
-        } = scratch;
+        let (mut reply, mut fields, mut arena) = (
+            vec![0u8; caps.reply],
+            vec![NO_FIELD; caps.fields],
+            vec![0u8; caps.arena],
+        );
+        let mut records = vec![NO_RECORD; caps.records];
         (input.reply_buf, input.reply_cap) = (reply.as_mut_ptr(), reply.len());
         (input.fields_buf, input.fields_cap) = (fields.as_mut_ptr(), fields.len());
         (input.arena_buf, input.arena_cap) = (arena.as_mut_ptr(), arena.len());
@@ -1116,7 +1064,7 @@ impl PlaneDriver {
         if written != 0 {
             let arena_written = (o.arena_written as usize).min(arena.len());
             match busbar_contract::plane_calls::CancelWrite::owned(
-                records,
+                &records,
                 written,
                 &arena[..arena_written],
             ) {
@@ -1130,9 +1078,9 @@ impl PlaneDriver {
             if o.status == 0 { status } else { o.status },
             reply,
             o.reply_written,
-            fields,
+            &fields,
             o.fields_written,
-            arena,
+            &arena,
         )
     }
 
@@ -1182,73 +1130,69 @@ impl PlaneDriver {
         self.render_refusal(input, None)
     }
 
+    /// The head is lent where the caller already holds it: `head` yields each field's name and
+    /// value as the caller's own bytes, borrowed for this call only (the catalog call is answered
+    /// before it returns, and nothing keeps the head after it).
     #[must_use]
-    pub fn catalog_unitless(
+    pub fn catalog_unitless<'h>(
         &self,
         method: &[u8],
         target: &[u8],
-        head: &[(Vec<u8>, Vec<u8>)],
+        head: impl IntoIterator<Item = (&'h [u8], &'h [u8])>,
         names: &[String],
     ) -> Option<Rendered> {
         use busbar_contract::abi::plane::{CatalogIn, CatalogOut};
         let mut fields: LentFields = smallvec::SmallVec::new();
-        fields.extend(head.iter().map(|(n, v)| Field {
+        fields.extend(head.into_iter().map(|(n, v)| Field {
             name: AbiStr::over(n),
             value: AbiStr::over(v),
         }));
         let mut listed: LentNames = smallvec::SmallVec::new();
         listed.extend(names.iter().map(|n| AbiStr::over(n.as_bytes())));
         let caps = self.config.caps;
-        let mut scratch = self.render_scratch();
-        let rendered = (|| {
-            // The reply buffer becomes the rendered body; the rest is the reused scratch.
-            let mut reply = vec![0u8; caps.reply];
-            let RenderScratch {
-                fields: out_fields,
-                arena,
-                ..
-            } = &mut scratch;
-            let mut input = CatalogIn {
-                method: AbiStr::over(method),
-                target: AbiStr::over(target),
-                fields: fields.as_ptr(),
-                fields_len: fields.len(),
-                names: listed.as_ptr(),
-                names_len: listed.len(),
-                reply_buf: reply.as_mut_ptr(),
-                reply_cap: reply.len(),
-                fields_buf: out_fields.as_mut_ptr(),
-                fields_cap: out_fields.len(),
-                arena_buf: arena.as_mut_ptr(),
-                arena_cap: arena.len(),
-                ..blank_in()
-            };
-            let mut o: CatalogOut = blank_out();
-            let outcome = self.calls.catalog(&mut input, &mut o, &mut |short, i| {
-                reply.resize((short.reply_needed as usize).max(reply.len()), 0);
-                out_fields.resize(
-                    (short.fields_needed as usize).max(out_fields.len()),
-                    NO_FIELD,
-                );
-                arena.resize((short.arena_needed as usize).max(arena.len()), 0);
-                (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
-                (i.fields_buf, i.fields_cap) = (out_fields.as_mut_ptr(), out_fields.len());
-                (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
-            });
-            if outcome != AbiOutcome::Ready {
-                return None;
-            }
-            Some(rendered_of(
-                o.status,
-                reply,
-                o.reply_written,
-                out_fields,
-                o.fields_written,
-                arena,
-            ))
-        })();
-        self.render_scratch_back(scratch);
-        rendered
+        let (mut reply, mut out_fields, mut arena) = (
+            vec![0u8; caps.reply],
+            vec![NO_FIELD; caps.fields],
+            vec![0u8; caps.arena],
+        );
+        let mut input = CatalogIn {
+            method: AbiStr::over(method),
+            target: AbiStr::over(target),
+            fields: fields.as_ptr(),
+            fields_len: fields.len(),
+            names: listed.as_ptr(),
+            names_len: listed.len(),
+            reply_buf: reply.as_mut_ptr(),
+            reply_cap: reply.len(),
+            fields_buf: out_fields.as_mut_ptr(),
+            fields_cap: out_fields.len(),
+            arena_buf: arena.as_mut_ptr(),
+            arena_cap: arena.len(),
+            ..blank_in()
+        };
+        let mut o: CatalogOut = blank_out();
+        let outcome = self.calls.catalog(&mut input, &mut o, &mut |short, i| {
+            reply.resize((short.reply_needed as usize).max(reply.len()), 0);
+            out_fields.resize(
+                (short.fields_needed as usize).max(out_fields.len()),
+                NO_FIELD,
+            );
+            arena.resize((short.arena_needed as usize).max(arena.len()), 0);
+            (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
+            (i.fields_buf, i.fields_cap) = (out_fields.as_mut_ptr(), out_fields.len());
+            (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        });
+        if outcome != AbiOutcome::Ready {
+            return None;
+        }
+        Some(rendered_of(
+            o.status,
+            reply,
+            o.reply_written,
+            &out_fields,
+            o.fields_written,
+            &arena,
+        ))
     }
 }
 
@@ -1556,16 +1500,14 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_,
             let mut st = self.lock();
             (st.facts.streamed || st.rendered.is_some(), st.trail.take())
         };
-        let body = match reason {
-            Some(reason) if !pending => {
-                let (retry_after, said) = self.steps.refused_words();
-                let rendered = self.render_as(reason, None, said.as_deref(), retry_after);
-                let body = crate::cold::refusal_frame(&rendered.body);
-                self.lock().rendered = Some(rendered);
-                body
-            }
-            _ => Arc::clone(&EMPTY_FRAME),
-        };
+        // A refusal is rendered once and kept for the caller (`take_rendered`). The frame this
+        // step answers with carries no bytes for any outcome: the teller is its only reader and
+        // reads none, so the rendered body is not copied into it.
+        if let Some(reason) = reason.filter(|_| !pending) {
+            let (retry_after, said) = self.steps.refused_words();
+            let rendered = self.render_as(reason, None, said.as_deref(), retry_after);
+            self.lock().rendered = Some(rendered);
+        }
         if let Some(trail) = trail {
             self.summarize(_ctx, &trail, Some(outcome));
         }
@@ -1574,7 +1516,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_,
             busbar_contract::caps::Frame {
                 direction: busbar_contract::Direction::Outbound,
                 stream: busbar_contract::StreamId(0),
-                bytes: busbar_contract::SlabBytes::new(body),
+                bytes: busbar_contract::SlabBytes::new(Arc::clone(&EMPTY_FRAME)),
                 meta: busbar_contract::FrameMeta::default(),
             },
         )

@@ -372,7 +372,7 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
     let settled = sealed_subject(&records_after(&keyed, 1).await);
     assert_eq!(
         settled,
-        busbar_kernel_audit::Subject::PrincipalId(keyed.key.id.clone()),
+        busbar_kernel_audit::Subject::principal(&keyed.key.id),
         "{cred:?}: the loop settled on principal {settled:?}, not the key the door resolved"
     );
 
@@ -399,12 +399,12 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
     let settled = sealed_subject(&records_after(&open, 1).await);
     assert_eq!(
         settled,
-        busbar_kernel_audit::Subject::PrincipalId(anonymous),
+        busbar_kernel_audit::Subject::principal(&anonymous),
         "{cred:?}: an unbound request is not attributed to the anonymous actor"
     );
     assert_ne!(
         settled,
-        busbar_kernel_audit::Subject::PrincipalId(open.key.id.clone()),
+        busbar_kernel_audit::Subject::principal(&open.key.id),
         "{cred:?}: the loop settled on principal {settled:?} for a request the door bound no key to"
     );
 }

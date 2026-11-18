@@ -219,7 +219,8 @@ fn accepted(script: Script, tamper: bool) -> Rig {
     script.on_verified.push(Out::BindThis);
     let script: Shared = Arc::new(Mutex::new(script));
     let audit = Arc::new(Audited::default());
-    let now = Instant::now();
+    let now_ns = crate::framer::now_ns();
+    let now = crate::framer::instant_of(now_ns);
     let our_addr = p("198.51.100.1:3478");
     let session = Session::begin(
         &Fake(Arc::clone(&script)),
@@ -231,7 +232,7 @@ fn accepted(script: Script, tamper: bool) -> Rig {
             opening: &[],
             judge: permissive(),
         },
-        now,
+        now_ns,
     )
     .unwrap();
     let peer = Association::new(
@@ -341,7 +342,7 @@ fn a_datagram_begin_gets_the_host_fingerprint_and_a_dial_gets_its_opening() {
             opening: b"opening",
             judge: permissive(),
         },
-        Instant::now(),
+        crate::framer::now_ns(),
     )
     .unwrap();
     let (role, flags, _, head) = script.lock().unwrap().began.clone().unwrap();
@@ -363,7 +364,7 @@ fn a_session_whose_answer_has_no_ice_terms_is_refused() {
             opening: &[],
             judge: None,
         },
-        Instant::now(),
+        crate::framer::now_ns(),
     );
     assert!(matches!(refused, Err(RecordsDenied::Invalid)));
 }
@@ -428,7 +429,7 @@ fn a_dial_candidate_at_a_metadata_address_is_denied_and_nothing_is_sent() {
             opening: b"opening",
             judge: permissive(),
         },
-        Instant::now(),
+        crate::framer::now_ns(),
     )
     .unwrap();
     let guard = script.lock().unwrap();
@@ -537,7 +538,7 @@ fn stream_heads_become_the_sessions_lines_and_channels() {
             opening: &[],
             judge: None,
         },
-        Instant::now(),
+        crate::framer::now_ns(),
     )
     .unwrap();
     let lines = session.lines();

@@ -58,24 +58,34 @@ fn a_new_pool_starts_its_own_rotation_without_touching_an_existing_one() {
 #[test]
 fn an_unblocked_pools_membership_is_borrowed_not_copied() {
     use crate::pool::{Member, Pool};
-    use std::borrow::Cow;
-
     let members = vec![
         Member::new(DestinationId::new(0), "a", 1),
         Member::new(DestinationId::new(1), "b", 1),
     ];
     let pool = Pool::new("p", members.clone());
     assert!(
-        matches!(pool.admissible_members(), Cow::Borrowed(_)),
+        pool.admissible.is_none(),
         "an empty blocklist has nothing to filter, so nothing is copied"
     );
-    assert_eq!(pool.admissible_members().as_ref(), members.as_slice());
+    assert_eq!(pool.admissible_members(), members.as_slice());
+
+    // A blocklist that names no member of the pool copies nothing either.
+    let mut stranger = Pool::new("p", members.clone());
+    stranger.set_failover(crate::pool::Failover {
+        exclusions: vec!["elsewhere".to_string()],
+        ..crate::pool::Failover::default()
+    });
+    assert!(stranger.admissible.is_none());
+    assert_eq!(stranger.admissible_members(), members.as_slice());
 
     let mut blocked = Pool::new("p", members);
-    blocked.failover.exclusions = vec!["b".to_string()];
+    blocked.set_failover(crate::pool::Failover {
+        exclusions: vec!["b".to_string()],
+        ..crate::pool::Failover::default()
+    });
     let admissible = blocked.admissible_members();
     assert!(
-        matches!(admissible, Cow::Owned(_)),
+        blocked.admissible.is_some(),
         "a real blocklist yields a filtered membership of its own"
     );
     assert_eq!(

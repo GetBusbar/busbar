@@ -41,17 +41,6 @@ pub(crate) fn ledger_adjust_whole_delta(delta: &BTreeMap<String, i64>) -> BTreeM
         .collect()
 }
 
-/// `ledger_adjust`: the classes a correction actually moves (its non-zero deltas).
-pub(crate) fn ledger_adjust_nonzero_delta(
-    delta: &BTreeMap<String, Count>,
-) -> BTreeMap<&str, Count> {
-    delta
-        .iter()
-        .filter(|(_, count)| **count != Count::ZERO)
-        .map(|(class, count)| (class.as_str(), *count))
-        .collect()
-}
-
 /// `ledger_adjust`: the admin usage-adjustment view in whole units; a fractional net is refused.
 pub(crate) fn ledger_adjust_whole_adjustments(
     rows: Vec<UsageAdjustment<Count>>,
@@ -263,11 +252,6 @@ pub(crate) fn ledger_correction_release_window<T>(windows: &mut Vec<(u64, T)>, w
     windows.retain(|(at, _)| *at != window);
 }
 
-/// `ledger_correction`: a fee split's dated counts by era, for a correction's fee differences.
-pub(crate) fn ledger_correction_fee_eras(dated: &[(RawRateEra, u64)]) -> BTreeMap<RawRateEra, u64> {
-    dated.iter().copied().collect()
-}
-
 /// `ledger_correction`: the flush baselines (plain and dated) of a model a correction cut adds to a
 /// cell: both start at the cut's counts.
 pub(crate) fn ledger_correction_baselines(
@@ -354,23 +338,6 @@ pub(crate) fn ledger_correction_recovery_fee_eras(
         .iter()
         .filter(|(_, count)| *count != 0)
         .map(|(era, count)| ((*era).into(), *count))
-        .collect()
-}
-
-/// `ledger_correction_recovery`: a custody fee split read back, or `None` when an era repeats, is
-/// legacy zero, or holds no count.
-pub(crate) fn ledger_correction_recovery_fee_rows(
-    rows: Vec<(RawEra, u64)>,
-) -> Option<Vec<(RawRateEra, u64)>> {
-    let mut identities = BTreeSet::new();
-    rows.into_iter()
-        .map(|(era, count)| {
-            let era: RawRateEra = era.into();
-            if !identities.insert(era) || era == RawRateEra::legacy(0) || count == 0 {
-                return None;
-            }
-            Some((era, count))
-        })
         .collect()
 }
 
@@ -464,7 +431,7 @@ pub(crate) fn ledger_correction_recovery_cuts<C>(
 }
 
 /// A count era as correction custody stores it.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawEra {
     effective_from: u64,

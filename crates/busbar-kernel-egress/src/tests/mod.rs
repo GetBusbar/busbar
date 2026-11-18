@@ -5,4 +5,5 @@
 
 mod allocation_tests;
 mod pick_order_tests;
+mod queue_depth_tests;
 mod upstream_headers_tests;

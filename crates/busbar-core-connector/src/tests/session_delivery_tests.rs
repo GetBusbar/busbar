@@ -73,7 +73,7 @@ async fn real_raw_prefix_and_flush_join_response_completion() {
     assert!(matches!(
         task()
             .apply(
-                answer(&source, 1),
+                &mut answer(&source, 1),
                 &mut io,
                 Duration::from_secs(1),
                 &mut None
@@ -106,7 +106,7 @@ async fn malformed_late_fence_prevents_the_entire_answer_from_writing() {
     assert!(matches!(
         task()
             .apply(
-                answer(&source, 99),
+                &mut answer(&source, 99),
                 &mut io,
                 Duration::from_secs(1),
                 &mut None
@@ -159,7 +159,7 @@ async fn outer_error_preserves_actual_prefix_before_writer_retirement() {
     assert!(matches!(
         task()
             .apply(
-                answer(&source, 1),
+                &mut answer(&source, 1),
                 &mut io,
                 Duration::from_secs(1),
                 &mut None

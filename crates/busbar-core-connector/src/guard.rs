@@ -65,16 +65,41 @@ pub fn judged_class(class: u32, configured: bool) -> u32 {
 /// Why the guard refused a destination: the `DEST_*` verdict, the target name, and the address
 /// when an answered (or literal) address decided it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Refusal {
+pub struct Refusal<'h> {
     /// The `DEST_*` verdict (`busbar_contract::abi::host::service`).
     pub verdict: u64,
-    /// The target name as judged.
-    pub host: String,
+    /// The target as judged: the caller's own name, lent (a refusal copies no name).
+    pub host: Refused<'h>,
     /// The address that decided it, when one did.
     pub addr: Option<IpAddr>,
 }
 
-impl std::fmt::Display for Refusal {
+/// What a [`Refusal`] names: the target name as the caller gave it, or (the node's own front door)
+/// the address as judged. It spells exactly what the owned name spelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refused<'h> {
+    /// The target name as judged.
+    Name(&'h str),
+    /// The node's own front door, by the address as judged.
+    Door(SocketAddr),
+}
+
+impl<'h> From<&'h str> for Refused<'h> {
+    fn from(name: &'h str) -> Self {
+        Refused::Name(name)
+    }
+}
+
+impl std::fmt::Display for Refused<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::Name(name) => f.write_str(name),
+            Refused::Door(addr) => write!(f, "{addr}"),
+        }
+    }
+}
+
+impl std::fmt::Display for Refusal<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let h = &self.host;
         match (self.verdict, self.addr) {
@@ -116,7 +141,7 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-impl std::error::Error for Refusal {}
+impl std::error::Error for Refusal<'_> {}
 
 /// One configured metadata refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,30 +211,30 @@ pub struct FrozenGuard(Guard);
 
 impl FrozenGuard {
     /// Judge the logical name using this generation's immutable policy.
-    pub fn judge_name_with(
+    pub fn judge_name_with<'h>(
         &self,
-        host: &str,
+        host: &'h str,
         class: u32,
         strict: bool,
         reach: bool,
-    ) -> Result<Option<IpAddr>, Refusal> {
+    ) -> Result<Option<IpAddr>, Refusal<'h>> {
         self.0.judge_name_with(host, class, strict, reach)
     }
 
     /// Judge every address using this generation's immutable policy.
-    pub fn judge_answer_with(
+    pub fn judge_answer_with<'h>(
         &self,
-        host: &str,
+        host: &'h str,
         addrs: &[IpAddr],
         class: u32,
         strict: bool,
         reach: bool,
-    ) -> Result<(), Refusal> {
+    ) -> Result<(), Refusal<'h>> {
         self.0.judge_answer_with(host, addrs, class, strict, reach)
     }
 
     /// Refuse this generation's own listeners in every egress class.
-    pub fn not_the_node(&self, class: u32, addr: SocketAddr) -> Result<(), Refusal> {
+    pub fn not_the_node(&self, class: u32, addr: SocketAddr) -> Result<(), Refusal<'static>> {
         self.0.not_the_node(class, addr, true)
     }
 }
@@ -265,7 +290,7 @@ impl Guard {
         class: u32,
         addr: SocketAddr,
         all_classes: bool,
-    ) -> Result<(), Refusal> {
+    ) -> Result<(), Refusal<'static>> {
         if !all_classes && class != LOOPBACK_CLASS {
             return Ok(());
         }
@@ -274,7 +299,12 @@ impl Guard {
         let own_front_door = node.ports.contains(&addr.port())
             && (is_loopback(ip) || ip.is_unspecified() || node.ips.contains(&ip));
         if own_front_door {
-            return Err(crate::cold::egress::own_door_refusal(DEST_INTERNAL, addr));
+            // The host is the address as judged: named by value, so the refusal builds no text.
+            return Err(Refusal {
+                verdict: DEST_INTERNAL,
+                host: Refused::Door(addr),
+                addr: Some(addr.ip()),
+            });
         }
         Ok(())
     }
@@ -295,29 +325,35 @@ impl Guard {
     }
 
     /// The name arm, before any resolution, under egress class `class`. `Ok(Some(ip))`: the host
-    pub fn judge_name(&self, host: &str, class: u32) -> Result<Option<IpAddr>, Refusal> {
+    pub fn judge_name<'h>(&self, host: &'h str, class: u32) -> Result<Option<IpAddr>, Refusal<'h>> {
         self.judge_name_as(host, class, false)
     }
 
     /// [`Guard::judge_name`], private reach refused whatever the deployment says when `strict`.
-    pub fn judge_name_as(
+    pub fn judge_name_as<'h>(
         &self,
-        host: &str,
+        host: &'h str,
         class: u32,
         strict: bool,
-    ) -> Result<Option<IpAddr>, Refusal> {
+    ) -> Result<Option<IpAddr>, Refusal<'h>> {
         self.judge_name_with(host, class, strict, false)
     }
 
     /// [`Guard::judge_name_as`] for a destination its need holds a PRIVATE REACH to (`reach`, the
-    pub fn judge_name_with(
+    pub fn judge_name_with<'h>(
         &self,
-        host: &str,
+        host: &'h str,
         class: u32,
         strict: bool,
         reach: bool,
-    ) -> Result<Option<IpAddr>, Refusal> {
-        let refuse = |verdict| Err(crate::cold::egress::refusal(verdict, host, None));
+    ) -> Result<Option<IpAddr>, Refusal<'h>> {
+        let refuse = |verdict| {
+            Err(Refusal {
+                verdict,
+                host: Refused::Name(host),
+                addr: None,
+            })
+        };
 
         let Some(name) = norm(host) else {
             return refuse(DEST_NO_HOST);
@@ -346,21 +382,30 @@ impl Guard {
     }
 
     /// The answer arm, after resolution: EVERY address `host` answered with is judged, and one
-    pub fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), Refusal> {
+    pub fn judge_answer<'h>(
+        &self,
+        host: &'h str,
+        addrs: &[IpAddr],
+        class: u32,
+    ) -> Result<(), Refusal<'h>> {
         self.judge_answer_with(host, addrs, class, false, false)
     }
 
     /// [`Guard::judge_answer`] for a destination its need holds a private reach to
-    pub fn judge_answer_with(
+    pub fn judge_answer_with<'h>(
         &self,
-        host: &str,
+        host: &'h str,
         addrs: &[IpAddr],
         class: u32,
         strict: bool,
         reach: bool,
-    ) -> Result<(), Refusal> {
+    ) -> Result<(), Refusal<'h>> {
         if addrs.is_empty() {
-            return Err(crate::cold::egress::refusal(DEST_NO_ADDRESSES, host, None));
+            return Err(Refusal {
+                verdict: DEST_NO_ADDRESSES,
+                host: Refused::Name(host),
+                addr: None,
+            });
         }
         addrs
             .iter()
@@ -368,16 +413,23 @@ impl Guard {
     }
 
     /// One address `host` stands for, in the order the module header states.
-    fn judge_address(
+    fn judge_address<'h>(
         &self,
-        host: &str,
+        host: &'h str,
         addr: IpAddr,
         class: u32,
         strict: bool,
         reach: bool,
-    ) -> Result<(), Refusal> {
+    ) -> Result<(), Refusal<'h>> {
+        let refuse = |verdict| {
+            Err(Refusal {
+                verdict,
+                host: Refused::Name(host),
+                addr: Some(addr),
+            })
+        };
         let Some(name) = norm(host) else {
-            return Err(crate::cold::egress::refusal(DEST_NO_HOST, host, Some(addr)));
+            return refuse(DEST_NO_HOST);
         };
         let m = self.metadata();
         let metadata = ip_is_cloud_metadata(&addr);
@@ -394,7 +446,6 @@ impl Guard {
         if admitted {
             return Ok(());
         }
-        let refuse = |verdict| Err(crate::cold::egress::refusal(verdict, host, Some(addr)));
         if denied || link_local {
             return refuse(DEST_METADATA);
         }

@@ -253,7 +253,7 @@ The thousands digit is the area.
 | [BUSBAR-6014](/docs/1.6/errors/BUSBAR-6014/) | A plugin call was refused by an ABI rule | 1.6.0 |
 | [BUSBAR-6015](/docs/1.6/errors/BUSBAR-6015/) | A plugin requested the retired UPGRADE_VERIFY_OFF flag (refused) | 1.6.0 |
 | [BUSBAR-6017](/docs/1.6/errors/BUSBAR-6017/) | A plugin declares a retired ABI value | 1.6.0 |
-| [BUSBAR-6018](/docs/1.6/errors/BUSBAR-6018/) | A plugin's error-number declaration was refused; it runs without error codes | 1.6.0 |
+| [BUSBAR-6018](/docs/1.6/errors/BUSBAR-6018/) | A plugin's error-number declaration was refused; it runs without error codes — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-6019](/docs/1.6/errors/BUSBAR-6019/) | A plugin reported an error number it did not declare | 1.6.0 |
 
 ## 7xxx: Plane protocols
@@ -354,7 +354,7 @@ The thousands digit is the area.
 | [BUSBAR-9023](/docs/1.6/errors/BUSBAR-9023/) | An expired writer was not closed (the next start retries) | 1.6.0 |
 | [BUSBAR-9024](/docs/1.6/errors/BUSBAR-9024/) | More expired writers remain than one start closes (the next start continues) | 1.6.0 |
 | [BUSBAR-9025](/docs/1.6/errors/BUSBAR-9025/) | Waiting on another owner's record-format conversion of this dataset (no listener bound yet) | 1.6.0 |
-| [BUSBAR-9026](/docs/1.6/errors/BUSBAR-9026/) | This node is in restore quarantine: the Store was restored and is not yet declared | 1.6.0 |
+| [BUSBAR-9026](/docs/1.6/errors/BUSBAR-9026/) | This node is in restore quarantine: the Store was restored and is not yet declared — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-9101](/docs/1.6/errors/BUSBAR-9101/) | The command line names an argument busbar does not know | 1.6.0 |
 | [BUSBAR-9102](/docs/1.6/errors/BUSBAR-9102/) | A command's arguments do not fit together | 1.6.0 |
 | [BUSBAR-9103](/docs/1.6/errors/BUSBAR-9103/) | A command-line flag is missing its value | 1.6.0 |

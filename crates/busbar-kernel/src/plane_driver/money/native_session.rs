@@ -69,10 +69,11 @@ impl NativeRequestMoney {
             if open.money.fee.is_fee(index) {
                 continue;
             }
-            if !parts.declared_classes.contains(&*report.class) {
+            // The class's name is the checkpoint's own declared one, shared: a report copies none.
+            let Some(class) = parts.declared_classes.get(&*report.class) else {
                 return Err(NativeAttemptError::Binding);
-            }
-            let facts = session.classes.entry(report.class.to_string()).or_default();
+            };
+            let facts = session.classes.entry(class.clone()).or_default();
             match report.source {
                 SRC_REPORTED => facts.reported = Some(quantity),
                 SRC_FLOOR => facts.floor = Some(quantity),
@@ -88,15 +89,10 @@ impl NativeRequestMoney {
                 &snapshot,
             )
             .and_then(|checked| checked.project())
-            .map_err(NativeAttemptError::Custody)?
+            .map_err(|_| NativeAttemptError::Custody)?
             .partitions
             .iter()
-            .any(|partition| {
-                partition
-                    .billed_counts()
-                    .iter()
-                    .any(|(_, count)| !count.is_zero())
-            });
+            .any(|partition| partition.has_bill());
         let counted = crate::plane_driver::port_money::unit_counts(usage, &open.money.classes);
         if !counted.dropped.is_empty() {
             return Err(NativeAttemptError::Binding);
@@ -138,6 +134,6 @@ impl NativeRequestMoney {
                     Checkpoint::Continue
                 }
             })
-            .map_err(NativeAttemptError::Custody)
+            .map_err(|_| NativeAttemptError::Custody)
     }
 }

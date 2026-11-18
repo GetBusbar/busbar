@@ -55,7 +55,7 @@ impl ExportCalls for ListenerSentinel {
 }
 
 #[test]
-fn only_a_wholly_withheld_opened_public_surface_retires_its_listener_need() {
+fn an_opened_instance_mounts_only_its_non_public_paths_and_the_scrape_sink_its_public_ones() {
     use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
     let run = |paths: &[&str], public: &[&str], persistent: &[&str], scrape: bool, opened: bool| {
         let cfg = ExportCfg {
@@ -96,13 +96,9 @@ fn only_a_wholly_withheld_opened_public_surface_retires_its_listener_need() {
             reads: None,
         };
         let boot = if opened { vec![sink] } else { Vec::new() };
-        let (routes, withheld) = project_routes(&cfg, &boot);
-        (routes.len(), withheld.contains("tp"))
+        project_routes(&cfg, &boot).len()
     };
-    assert_eq!(
-        run(&["/metrics"], &["/metrics"], &[], false, true),
-        (0, true)
-    );
+    assert_eq!(run(&["/metrics"], &["/metrics"], &[], false, true), 0);
 
     assert_eq!(
         run(
@@ -112,7 +108,7 @@ fn only_a_wholly_withheld_opened_public_surface_retires_its_listener_need() {
             false,
             true
         ),
-        (0, true)
+        0
     );
     assert_eq!(
         run(
@@ -122,9 +118,9 @@ fn only_a_wholly_withheld_opened_public_surface_retires_its_listener_need() {
             false,
             true
         ),
-        (0, false)
+        0
     );
-    assert_eq!(run(&[], &[], &[], false, true), (0, false));
+    assert_eq!(run(&[], &[], &[], false, true), 0);
     assert_eq!(
         run(
             &["/metrics", "/exports/tp/private"],
@@ -133,24 +129,15 @@ fn only_a_wholly_withheld_opened_public_surface_retires_its_listener_need() {
             false,
             true
         ),
-        (1, false)
+        1
     );
-    assert_eq!(
-        run(&["/exports/tp/private"], &[], &[], false, true),
-        (1, false)
-    );
+    assert_eq!(run(&["/exports/tp/private"], &[], &[], false, true), 1);
     assert_eq!(
         run(&["/metrics"], &["/metrics"], &["/metrics"], false, true),
-        (0, false)
+        0
     );
-    assert_eq!(
-        run(&["/metrics"], &["/metrics"], &[], true, true),
-        (1, false)
-    );
-    assert_eq!(
-        run(&["/metrics"], &["/metrics"], &[], false, false),
-        (0, false)
-    );
+    assert_eq!(run(&["/metrics"], &["/metrics"], &[], true, true), 1);
+    assert_eq!(run(&["/metrics"], &["/metrics"], &[], false, false), 0);
 }
 
 #[test]

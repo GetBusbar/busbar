@@ -1908,8 +1908,6 @@ pub(crate) struct DoorMounts {
     pub(crate) data: Arc<DataRoutes>,
     pub(crate) routes: Vec<PlaneRouteSpec>,
 
-    pub(crate) sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
-
     pub(crate) refusals: Vec<PlaneRefusalSpec>,
 
     pub(crate) refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
@@ -1919,7 +1917,6 @@ impl std::fmt::Debug for DoorMounts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DoorMounts")
             .field("routes", &self.routes.len())
-            .field("sessions", &self.sessions.len())
             .finish()
     }
 }
@@ -2095,40 +2092,12 @@ pub(crate) fn door_mounts_planned(
         routes.served.billing.as_ref(),
         Some(Arc::clone(&routes)),
     ));
-    let mut session_mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
-    let mut sessions = Vec::new();
     let mut requests = Vec::new();
     for mount in mounts {
         let (path, method, auth, door) = mount;
         if !upgraded.contains(&door) {
             requests.push((path, method, auth, door));
-            continue;
         }
-
-        if method != RouteMethod::Get {
-            continue;
-        }
-        session_mounts.push((path.clone(), RouteMethod::Get, auth, door));
-        let routes = Arc::clone(&routes);
-        let (plane, claim) = door;
-        sessions.push(busbar_kernel::plane_routes::PlaneSessionSpec {
-            path,
-            auth,
-            handler: Arc::new(
-                move |ctx: PlaneReqCtx| -> busbar_kernel::plane_routes::PlaneSessionFuture {
-                    let routes = Arc::clone(&routes);
-                    Box::pin(async move {
-                        match DoorRequest::of(ctx) {
-                            Some(req) => routes.open_session(plane, claim, req).await,
-                            None => busbar_kernel::plane_routes::SessionAnswer::Refused(stated(
-                                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
-                                Body::empty(),
-                            )),
-                        }
-                    })
-                },
-            ),
-        });
     }
 
     let signed: Vec<Arc<[String]>> = routes
@@ -2139,7 +2108,6 @@ pub(crate) fn door_mounts_planned(
         .collect();
     let mut refusals: Vec<PlaneRefusalSpec> = requests
         .iter()
-        .chain(&session_mounts)
         .filter(|(_, _, auth, _)| matches!(auth, RouteAuth::Key))
         .map(|(path, method, _, (plane, claim))| {
             let (routes, plane, claim) = (Arc::clone(&routes), *plane, *claim);
@@ -2214,7 +2182,9 @@ pub(crate) fn door_mounts_planned(
                 {
                     return None;
                 }
-                let refusal = crate::root::native_refusals::client(r.reason, r.status, r.text);
+                // The kernel lends its words for this call only; the refusal keeps its own copy.
+                let refusal =
+                    crate::root::native_refusals::client(r.reason, r.status, r.text.to_owned());
                 return Some(crate::root::port_mount::render_kernel_refusal(
                     seat,
                     line.route.rung,
@@ -2321,7 +2291,6 @@ pub(crate) fn door_mounts_planned(
     Ok(DoorMounts {
         data: routes,
         routes: routes_of,
-        sessions,
         refusals,
         refuse_by_path: Some(refuse_by_path),
     })

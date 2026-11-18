@@ -145,7 +145,7 @@ fn configured_instances_read_their_own_subset_from_ready_open_extensions() {
         crate::dispatch::lifecycle::close(calls.plugin());
     }
 
-    assert_eq!(selected.0, ["x-first"]);
-    assert_eq!(selected.1, ["x-second"]);
-    assert_eq!(selected.2, ["x-first", "x-second"]);
+    assert_eq!(*selected.0, ["x-first"]);
+    assert_eq!(*selected.1, ["x-second"]);
+    assert_eq!(*selected.2, ["x-first", "x-second"]);
 }

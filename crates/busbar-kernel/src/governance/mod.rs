@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::count::{Count, CountError, COUNT_SCALE};
+use busbar_contract::kept::Text;
 use busbar_kernel_ledger::cost::{EntryId, RawRateEra};
 use foldhash::{HashMap, HashMapExt};
 use std::sync::atomic::Ordering;
@@ -684,7 +685,8 @@ pub enum LimitBlocked {
 pub struct FeeCharge {
     lane: Option<String>,
     era: RawRateEra,
-    cells: Vec<(String, u64)>,
+    /// Each bucket by the budget map's own key (shared, never copied) and the window it landed on.
+    cells: Vec<(Text, u64)>,
     chain: Option<crate::cost::ChainPlan>,
 }
 
@@ -777,7 +779,9 @@ pub struct GovState {
 
     concurrent: RwLock<HashMap<String, Arc<std::sync::atomic::AtomicI64>>>,
 
-    budget: Sharded<BudgetCell>,
+    /// The budget cells, keyed by the bucket's name as shared text: a charge, a flush flight and
+    /// a fee capture name their bucket by sharing this key.
+    budget: Sharded<BudgetCell, Text>,
 
     selected_rates: Arc<selected_resource::SelectedRates>,
 
@@ -794,7 +798,7 @@ pub struct GovState {
     ticket_operations: tickets::TicketOperations,
 
     budget_flushes:
-        std::sync::Mutex<std::collections::BTreeMap<(String, u64), Arc<BudgetFlushFlight>>>,
+        std::sync::Mutex<std::collections::BTreeMap<(Text, u64), Arc<BudgetFlushFlight>>>,
 
     budget_flush_runner: BudgetFlushRunner,
 
@@ -972,6 +976,36 @@ pub enum SelfMintRefusal {
     Held,
 }
 
+/// A hold's user-facing reason, written once: [`SelfMintRefusal::reason`] answers it and
+/// [`SelfMintRefusal::message`] wraps it.
+macro_rules! self_mint_reason {
+    (disabled) => {
+        "an administrator disabled it; ask your Busbar administrator to re-enable or delete it"
+    };
+    (revoked) => {
+        "an administrator revoked it, and a revoked key is never re-enabled; ask your Busbar \
+         administrator to delete it so your next sign-in issues a new key"
+    };
+    (other_provider) => {
+        "it was issued through a different sign-in provider; sign in with that provider, or ask \
+         your Busbar administrator to delete it"
+    };
+    (held) => {
+        "your account is on hold; ask your Busbar administrator"
+    };
+}
+
+/// A hold's coded refusal (BUSBAR-4043) over its reason, as one fixed text.
+macro_rules! self_mint_message {
+    ($hold:ident) => {
+        concat!(
+            "BUSBAR-4043: your self-serve key is on hold: ",
+            self_mint_reason!($hold),
+            ". See https://getbusbar.com/docs/1.6/errors/BUSBAR-4043"
+        )
+    };
+}
+
 impl SelfMintRefusal {
     /// The stable token naming this hold in the admin log (`key:<id>#<token>`) and in diagnostics.
     #[must_use]
@@ -988,29 +1022,24 @@ impl SelfMintRefusal {
     #[must_use]
     pub fn reason(self) -> &'static str {
         match self {
-            Self::Disabled => {
-                "an administrator disabled it; ask your Busbar administrator to re-enable or \
-                 delete it"
-            }
-            Self::Revoked => {
-                "an administrator revoked it, and a revoked key is never re-enabled; ask your \
-                 Busbar administrator to delete it so your next sign-in issues a new key"
-            }
-            Self::OtherProvider => {
-                "it was issued through a different sign-in provider; sign in with that provider, \
-                 or ask your Busbar administrator to delete it"
-            }
-            Self::Held => "your account is on hold; ask your Busbar administrator",
+            Self::Disabled => self_mint_reason!(disabled),
+            Self::Revoked => self_mint_reason!(revoked),
+            Self::OtherProvider => self_mint_reason!(other_provider),
+            Self::Held => self_mint_reason!(held),
         }
     }
 
-    /// The coded refusal the exchange body and the hosted page carry (BUSBAR-4043).
+    /// The coded refusal the exchange body and the hosted page carry (BUSBAR-4043): fixed text,
+    /// one per hold, exactly what `diagnostics::coded` renders for `SELF_MINT_HELD` over the
+    /// reason (a test holds the two equal). Answering a held subject builds no message.
     #[must_use]
-    pub fn message(self) -> String {
-        crate::diagnostics::coded(
-            &crate::diagnostics::SELF_MINT_HELD,
-            format_args!("your self-serve key is on hold: {}", self.reason()),
-        )
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Disabled => self_mint_message!(disabled),
+            Self::Revoked => self_mint_message!(revoked),
+            Self::OtherProvider => self_mint_message!(other_provider),
+            Self::Held => self_mint_message!(held),
+        }
     }
 
     /// Which hold a subject with several held rows answers: the most final one.
@@ -1063,19 +1092,19 @@ impl std::fmt::Display for SelfMintError {
 pub async fn mint_self_offloaded(
     gov: Arc<GovState>,
     op: SelfMintOp,
-    user_sub: String,
-    provider: String,
+    user_sub: &str,
+    provider: &str,
     allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
     exp: u64,
     now: u64,
 ) -> Result<(VirtualKey, String), SelfMintError> {
     match op {
         SelfMintOp::Issue => {
-            gov.issue_self_scoped(&user_sub, &provider, allowed_scopes, exp, now)
+            gov.issue_self_scoped(user_sub, provider, allowed_scopes, exp, now)
                 .await
         }
         SelfMintOp::Refresh => {
-            gov.refresh_self_scoped(&user_sub, &provider, allowed_scopes, exp, now)
+            gov.refresh_self_scoped(user_sub, provider, allowed_scopes, exp, now)
                 .await
         }
     }
@@ -1417,6 +1446,36 @@ impl MeterCounts {
         }
         Ok(())
     }
+    /// Add unit counts lent by the caller, as [`Self::try_merge`] adds a unit-only count: the
+    /// same refusals in the same order (a negative count, a priced cell, a sum out of range),
+    /// every sum checked before any count changes. Nothing is copied but the name of a class
+    /// this cell counts for the first time.
+    pub(crate) fn try_merge_units<'u>(
+        &mut self,
+        units: impl Iterator<Item = (&'u String, Count)> + Clone,
+    ) -> Result<(), CountError> {
+        if units.clone().any(|(_, n)| n.is_negative()) {
+            return Err(CountError::Negative);
+        }
+        if self.pricing.is_some() {
+            return Err(CountError::Malformed);
+        }
+        for (class, n) in units.clone() {
+            let held = self.usage_units.get(class).copied().unwrap_or_default();
+            held.checked_add(n)?;
+        }
+        let checked = "unit sum checked before the counts changed";
+        for (class, n) in units {
+            match self.usage_units.get_mut(class) {
+                Some(cur) => *cur = cur.checked_add(n).expect(checked),
+                None => {
+                    let first = Count::default().checked_add(n).expect(checked);
+                    self.usage_units.insert(class.clone(), first);
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn merge(&mut self, other: impl std::borrow::Borrow<MeterCounts>) {
         self.try_merge(other.borrow())
             .expect("metering count accumulation exceeds Count range");
@@ -1717,6 +1776,48 @@ impl PendingMetering {
         key: MeterKeyRef<'_>,
         add: MeterCounts,
     ) -> Result<(), CountError> {
+        self.with_probe(key, |map, probe| {
+            accrue_pending_checked(
+                map,
+                PendingKey::Probe(probe),
+                add,
+                MAX_PENDING_METERING_PER_SHARD,
+                &self.coalesce_warn,
+            )
+        })
+    }
+
+    /// [`Self::try_accrue_ref`] for unit counts lent by the caller: a cell that already exists
+    /// adds them in place, and only an identity's first accrual makes counts of its own (they
+    /// become the cell).
+    pub(crate) fn try_accrue_units_ref<'u>(
+        &self,
+        key: MeterKeyRef<'_>,
+        units: impl Iterator<Item = (&'u String, Count)> + Clone,
+    ) -> Result<(), CountError> {
+        self.with_probe(key, |map, probe| {
+            if let Some(cell) = map.get_mut(probe) {
+                return cell.try_merge_units(units);
+            }
+            let mut first = MeterCounts::default();
+            first.try_merge_units(units)?;
+            accrue_pending_checked(
+                map,
+                PendingKey::Probe(probe),
+                first,
+                MAX_PENDING_METERING_PER_SHARD,
+                &self.coalesce_warn,
+            )
+        })
+    }
+
+    /// Run `accrue` on `key`'s shard, under its lock, with this thread's reused probe filled
+    /// from `key` as the lookup identity.
+    fn with_probe<R>(
+        &self,
+        key: MeterKeyRef<'_>,
+        accrue: impl FnOnce(&mut HashMap<MeterIdentity, MeterCounts>, &MeterIdentity) -> R,
+    ) -> R {
         thread_local! {
             static PROBE: std::cell::RefCell<MeterIdentity> = const {
                 std::cell::RefCell::new(MeterIdentity { common: (
@@ -1737,13 +1838,7 @@ impl PendingMetering {
                 .shard_for(key.key_id)
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            accrue_pending_checked(
-                &mut map,
-                PendingKey::Probe(&probe),
-                add,
-                MAX_PENDING_METERING_PER_SHARD,
-                &self.coalesce_warn,
-            )
+            accrue(&mut map, &probe)
         })
     }
 
@@ -1797,7 +1892,10 @@ trait IntoStoreResult<T> {
 impl<T> IntoStoreResult<T> for Result<T, busbar_contract::crypto::RngError> {
     fn store(self) -> RecordStoreResult<T> {
         self.map_err(|e| {
-            rendered_error(RecordStoreError, format_args!("OS CSPRNG unavailable: {e}"))
+            rendered_error(
+                RecordStoreError::from,
+                format_args!("OS CSPRNG unavailable: {e}"),
+            )
         })
     }
 }
@@ -1851,7 +1949,7 @@ impl std::io::Write for DigestWriter<'_> {
 
 /// [`rendered_error`] into the store's error type: `.map_err(store_error)`.
 pub(crate) fn store_error(error: impl std::fmt::Display) -> RecordStoreError {
-    rendered_error(RecordStoreError, error)
+    rendered_error(RecordStoreError::from, error)
 }
 
 pub fn spawn_budget_flusher(

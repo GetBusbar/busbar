@@ -40,8 +40,6 @@ pub(crate) struct RateTerms {
     pub(crate) resource: Arc<str>,
     pub(crate) metric: RateMetric,
     pub(crate) threshold: u64,
-    pub(crate) policy_revision: u64,
-    pub(crate) activated_minute: u64,
 }
 
 impl RateTerms {
@@ -91,10 +89,6 @@ fn decimal_digits(n: usize) -> usize {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RateSnapshot {
-    pub(crate) rule: RateTerms,
-    pub(crate) process_epoch: [u8; 16],
-    pub(crate) window_start_ms: u64,
-    pub(crate) window_end_ms: u64,
     pub(crate) provisional_requests: u64,
     pub(crate) committed_requests: u64,
     pub(crate) known_tokens: Count,
@@ -117,15 +111,11 @@ pub(crate) enum RateRefusalKind {
 #[derive(Debug)]
 pub(crate) struct RateRefusal {
     pub(crate) kind: RateRefusalKind,
-    pub(crate) snapshots: Vec<RateSnapshot>,
 }
 
 impl RateRefusal {
     fn bare(kind: RateRefusalKind) -> Self {
-        Self {
-            kind,
-            snapshots: Vec::new(),
-        }
+        Self { kind }
     }
 }
 
@@ -159,12 +149,6 @@ pub(crate) enum RateObservationError {
     Incomplete,
     Arithmetic,
     Sealed,
-}
-
-#[derive(Debug)]
-pub(crate) struct RateFinalSnapshot {
-    pub(crate) rules: Vec<RateSnapshot>,
-    pub(crate) highwater: Vec<(Box<str>, Count)>,
 }
 
 struct RateClock {
@@ -325,8 +309,6 @@ impl SelectedRates {
             resource: resolved.resource_handle().cloned().unwrap_or_default(),
             metric: row.metric(),
             threshold: row.threshold(),
-            policy_revision: row.policy_revision(),
-            activated_minute: row.activated_minute(),
         }))
     }
 
@@ -346,21 +328,12 @@ impl SelectedRates {
         }
         let result = Self::terms(resolved).and_then(|terms| {
             self.sweep_next();
-            self.reserve_terms(terms, prepared.physical_classes())
+            self.reserve_shared(terms, prepared.physical_classes())
         });
         match result {
             Ok(hold) => Ok(RateReservation { hold, prepared }),
             Err(reason) => Err(RateRejected { reason, prepared }),
         }
-    }
-
-    /// The current-policy resolver has already bound the authenticated caller and candidate.
-    /// Missing rows yield no headroom facts; this never creates cells or reserves capacity.
-    pub(crate) fn headroom(
-        &self,
-        resolved: &ResolvedSelectedRules,
-    ) -> Result<Vec<RateSnapshot>, RateRefusal> {
-        self.headroom_terms(Self::terms(resolved)?)
     }
 
     fn capture(
@@ -478,10 +451,6 @@ impl SelectedRates {
         let scope = row.map(locks).get(&row.key);
         let cell = scope.and_then(|scope| scope.windows.get(&cell_minute));
         RateSnapshot {
-            rule: row.terms.clone(),
-            process_epoch: self.clock.epoch,
-            window_start_ms: cell_minute * MINUTE_MS,
-            window_end_ms: (cell_minute + 1) * MINUTE_MS,
             provisional_requests: cell.map_or(0, |cell| cell.provisional),
             committed_requests: cell.map_or(0, |cell| cell.committed),
             known_tokens: cell.map_or(Count::ZERO, |cell| cell.known),
@@ -521,23 +490,20 @@ impl SelectedRates {
                 _ => None,
             }
         };
-        kind.map(|kind| RateRefusal {
-            kind,
-            snapshots: vec![snapshot],
-        })
+        kind.map(|kind| RateRefusal { kind })
     }
 
-    fn reserve_terms<C: AsRef<str>>(
+    /// Reserve over `classes`, the prepared attempt's physical class names. They are shared
+    /// text (the checkpoint's own), so the hold names its classes without copying one.
+    pub(crate) fn reserve_shared(
         self: &Arc<Self>,
         terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
-        classes: &[C],
+        classes: &[busbar_contract::kept::Text],
     ) -> Result<RateHold, RateRefusal> {
         if classes.len() > MAX_CLASSES
             || classes.iter().enumerate().any(|(at, class)| {
-                class_text(class.as_ref().as_bytes()).is_err()
-                    || classes[..at]
-                        .iter()
-                        .any(|old| old.as_ref() == class.as_ref())
+                class_text(class.as_bytes()).is_err()
+                    || classes[..at].iter().any(|old| old == class)
             })
         {
             return Err(RateRefusal::bare(RateRefusalKind::InvalidBinding));
@@ -592,31 +558,12 @@ impl SelectedRates {
             classes: classes
                 .iter()
                 .map(|class| ClassHighwater {
-                    class: class.as_ref().into(),
+                    class: class.clone(),
                     amount: Count::ZERO,
                     authoritative: false,
                 })
                 .collect(),
         })
-    }
-
-    fn headroom_terms(
-        &self,
-        terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
-    ) -> Result<Vec<RateSnapshot>, RateRefusal> {
-        let captures = self.capture(terms)?;
-        if captures.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut locks = self.lock(&captures);
-        let minute = self.minute()?;
-        Ok(captures
-            .iter()
-            .map(|row| {
-                self.prune_scope(row.map(&mut locks), &row.key, minute);
-                self.snapshot(row, &mut locks, minute, minute)
-            })
-            .collect())
     }
 }
 
@@ -628,7 +575,7 @@ enum Phase {
 }
 
 struct ClassHighwater {
-    class: Box<str>,
+    class: busbar_contract::kept::Text,
     amount: Count,
     authoritative: bool,
 }
@@ -778,10 +725,7 @@ impl RateHold {
         Ok(())
     }
 
-    fn finish(
-        &mut self,
-        coverage: TokenCoverage,
-    ) -> Result<RateFinalSnapshot, RateObservationError> {
+    fn finish(&mut self, coverage: TokenCoverage) -> Result<(), RateObservationError> {
         if self.phase != Phase::Committed {
             return Err(RateObservationError::Sealed);
         }
@@ -805,11 +749,6 @@ impl RateHold {
             }
             cell.references -= 1;
         }
-        let rules = self
-            .captures
-            .iter()
-            .map(|row| rates.snapshot(row, &mut locks, self.minute, now))
-            .collect();
         for row in &self.captures {
             rates.prune_scope(row.map(&mut locks), &row.key, now);
         }
@@ -817,14 +756,7 @@ impl RateHold {
         if invalid {
             return Err(RateObservationError::Incomplete);
         }
-        Ok(RateFinalSnapshot {
-            rules,
-            highwater: self
-                .classes
-                .iter()
-                .map(|held| (held.class.clone(), held.amount))
-                .collect(),
-        })
+        Ok(())
     }
 }
 
@@ -888,10 +820,7 @@ impl CommittedRate {
         self.hold.observe(view)
     }
 
-    pub(crate) fn seal(
-        mut self,
-        coverage: TokenCoverage,
-    ) -> Result<RateFinalSnapshot, RateObservationError> {
+    pub(crate) fn seal(mut self, coverage: TokenCoverage) -> Result<(), RateObservationError> {
         self.hold.finish(coverage)
     }
 }

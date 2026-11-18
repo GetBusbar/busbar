@@ -11,7 +11,7 @@ use crate::governance::AdjustRefused;
 /// `ledger_adjust`: a priced bucket whose billable request count is out of range, refused.
 #[cold]
 pub(crate) fn ledger_adjust_billable_count_refusal(e: CountError) -> RecordStoreError {
-    RecordStoreError(format!("billable request count: {e}"))
+    RecordStoreError::from(format!("billable request count: {e}"))
 }
 
 /// `ledger_correction`: one retained correction the flush tick's retry could not settle, `key:

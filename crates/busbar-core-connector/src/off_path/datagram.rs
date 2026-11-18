@@ -98,6 +98,12 @@ pub(crate) fn read_terms(t: &RendezvousTerms, frame: &[u8]) -> Result<Terms, Ref
             .map_err(|_| fault("the framer's check credentials are not text"))?;
         Ok(text.to_owned())
     };
+    // A user name is made shared text here, once: the association is found by it afterwards.
+    let user = |s| -> Result<busbar_contract::kept::Text, Refused> {
+        let text = std::str::from_utf8(span(s)?)
+            .map_err(|_| fault("the framer's check credentials are not text"))?;
+        Ok(busbar_contract::kept::off_path::text(text))
+    };
     let role = match t.role {
         HANDSHAKE_INITIATES => Role::Client,
         HANDSHAKE_ANSWERS => Role::Server,
@@ -118,11 +124,11 @@ pub(crate) fn read_terms(t: &RendezvousTerms, frame: &[u8]) -> Result<Terms, Ref
     Ok(Terms {
         role,
         local: IceCredentials {
-            ufrag: utf8(t.local_user)?,
+            ufrag: user(t.local_user)?,
             pwd: utf8(t.local_secret)?,
         },
         remote: IceCredentials {
-            ufrag: utf8(t.remote_user)?,
+            ufrag: user(t.remote_user)?,
             pwd: utf8(t.remote_secret)?,
         },
         fingerprint,
@@ -150,9 +156,4 @@ pub(crate) fn opening<S: AsRef<str>>(
                 .map(|l| ("channel".to_owned(), l.as_ref().as_bytes().to_vec())),
         )
         .collect()
-}
-
-/// An association's user name, kept as the key it is found by: taken once, when it is carried.
-pub(crate) fn owned_user(user: &str) -> String {
-    user.to_owned()
 }

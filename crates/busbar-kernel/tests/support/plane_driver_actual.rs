@@ -87,18 +87,6 @@ pub(crate) struct Rig {
 }
 
 impl Rig {
-    pub(crate) fn projects(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
-        self.plane.projects.lock().unwrap().clone()
-    }
-
-    pub(crate) fn project_flags(&self) -> Vec<u32> {
-        self.plane.project_flags.lock().unwrap().clone()
-    }
-
-    pub(crate) fn regrown(&self) -> Vec<(usize, usize, usize)> {
-        self.plane.regrown.lock().unwrap().clone()
-    }
-
     pub(crate) fn stats(&self) -> [u64; stat::COUNT] {
         let mut out = [0; stat::COUNT];
         for (k, v) in out.iter_mut().enumerate() {
@@ -230,13 +218,6 @@ struct Double {
     pending_notice: Mutex<Option<std::sync::mpsc::Sender<bool>>>,
     next: AtomicU32,
     stats: [AtomicU64; stat::COUNT],
-    /// `project` crossings, and the bodies each was handed (with the rewrite, when one came).
-    projects: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
-    /// The `ProjectIn::flags` each `project` crossing carried, in crossing order.
-    project_flags: Mutex<Vec<u32>>,
-    /// The `(arena, messages, signals)` capacities each `project` re-call after a SHORT answer
-    /// was handed.
-    regrown: Mutex<Vec<(usize, usize, usize)>>,
     /// The driver tickets minted, and every ticket recycled.
     drivers: Mutex<Vec<Ticket>>,
     recycled: Mutex<Vec<Ticket>>,
@@ -1183,11 +1164,6 @@ impl PlaneCalls for Double {
         let target = unsafe { text(input.target) }.to_vec();
         let body = unsafe { bytes(input.body) }.to_vec();
         let rewrite = unsafe { bytes(input.rewrite) }.to_vec();
-        self.projects
-            .lock()
-            .unwrap()
-            .push((body.clone(), rewrite.clone()));
-        self.project_flags.lock().unwrap().push(input.flags);
         if (target == b"/faults-rewrite" && !rewrite.is_empty()) || target == b"/unparseable" {
             out.head.outcome = RawOutcome::of(Outcome::Fault);
             out.view.flags = busbar_contract::abi::plane::PROJECT_FAULT_UNPARSEABLE;
@@ -1293,11 +1269,6 @@ impl PlaneCalls for Double {
                         }
                     }
                     grow(out, input);
-                    self.regrown.lock().unwrap().push((
-                        input.arena_cap,
-                        input.messages_cap,
-                        input.signals_cap,
-                    ));
                     *out = busbar_contract::abi::sdk::door::blank_out();
                     continue;
                 }
@@ -1309,11 +1280,6 @@ impl PlaneCalls for Double {
                 out.messages_needed = turns.len() as u32;
                 out.arena_needed = arena as u64;
                 grow(out, input);
-                self.regrown.lock().unwrap().push((
-                    input.arena_cap,
-                    input.messages_cap,
-                    input.signals_cap,
-                ));
                 *out = busbar_contract::abi::sdk::door::blank_out();
                 continue;
             }
@@ -1755,7 +1721,7 @@ async fn records() -> Arc<KernelServices> {
         record_kinds: vec![RecordSchemaId::new("task")],
         ..InstanceFacts::default()
     };
-    s.admit("inst", facts).await.unwrap();
+    s.admit(&"inst".into(), facts).await.unwrap();
     Arc::new(s)
 }
 
@@ -2885,10 +2851,10 @@ impl busbar_kernel::plane_driver::FarEnd for Gone {
         use busbar_kernel::plane_driver::Pick;
         let pick = if attempt_no == 1 && self.sends {
             Pick::Member {
-                name: "m0".to_string(),
-                pool: "pool-a".to_string(),
+                name: "m0".into(),
+                pool: "pool-a".into(),
                 passthrough: false,
-                provider: "acme".to_string(),
+                provider: "acme".into(),
             }
         } else {
             self.then.clone()
@@ -3313,10 +3279,10 @@ impl busbar_kernel::plane_driver::FarEnd for Unpresentable {
         use busbar_kernel::plane_driver::Pick;
         let pick = match [UNBOUND, UNSPAWNED].get(attempt_no as usize - 1) {
             Some(m) => Pick::Member {
-                name: (*m).to_string(),
-                pool: "pool-a".to_string(),
+                name: (*m).into(),
+                pool: "pool-a".into(),
                 passthrough: false,
-                provider: "acme".to_string(),
+                provider: "acme".into(),
             },
             None => Pick::Exhausted {
                 status: 503,
@@ -3671,10 +3637,10 @@ impl busbar_kernel::plane_driver::FarEnd for Refusing {
         use busbar_kernel::plane_driver::Pick;
         let pick = if (attempt_no as usize) <= self.tries.len() {
             Pick::Member {
-                name: format!("m{attempt_no}"),
-                pool: "pool-a".to_string(),
+                name: format!("m{attempt_no}").as_str().into(),
+                pool: "pool-a".into(),
                 passthrough: false,
-                provider: "acme".to_string(),
+                provider: "acme".into(),
             }
         } else {
             Pick::Exhausted {

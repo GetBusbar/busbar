@@ -559,8 +559,8 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
         busbar_kernel::telemetry::lane_request_finished(&app, lane, ms / 1000.0);
     }
 
-    fn queued(&self, pool: &str, delta: i64) {
-        busbar_kernel_egress::ports::Telemetry::queued(&self.queued, pool, delta);
+    fn queued(&self, pool: &str, delta: i64, depth: i64) {
+        busbar_kernel_egress::ports::Telemetry::queued(&self.queued, pool, delta, depth);
 
         busbar_kernel::plane_driver::route_tables::change_pool_queued_depth(pool, delta);
     }

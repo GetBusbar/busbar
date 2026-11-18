@@ -45,10 +45,12 @@ pub(crate) const UNVERIFIABLE_DESCRIPTION: &str =
     "This deployment does not verify DPoP proofs, so a DPoP-bound or DPoP-scheme presentation \
      cannot be accepted (RFC 9449). Present an unbound bearer token.";
 
-pub(crate) enum SenderConstraint {
+/// A request's sender constraint, judged. A proven token is lent from the request's own head
+/// (`'h`): a holder that keeps it past the request makes its own copy.
+pub(crate) enum SenderConstraint<'h> {
     Unconstrained,
 
-    Proven(String),
+    Proven(&'h str),
 
     Refused(Refusal),
 }
@@ -107,7 +109,11 @@ impl std::fmt::Display for Surface {
 }
 
 /// The one way a sender-constraint refusal is made: recorded (never the token), then returned.
-fn refused(reason: Refusal, surface: Surface, no_authorization_server: bool) -> SenderConstraint {
+fn refused(
+    reason: Refusal,
+    surface: Surface,
+    no_authorization_server: bool,
+) -> SenderConstraint<'static> {
     diag_warn!(
         AUTH_SENDER_CONSTRAINT_REFUSED,
         surface = %surface,
@@ -118,32 +124,39 @@ fn refused(reason: Refusal, surface: Surface, no_authorization_server: bool) -> 
     SenderConstraint::Refused(reason)
 }
 
-pub(crate) fn dpop_credential(headers: &HeaderMap) -> Option<String> {
+/// The DPoP-scheme token the request's `Authorization` carries, read in place.
+pub(crate) fn dpop_token(headers: &HeaderMap) -> Option<&str> {
     let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
     let (scheme, token) = value.split_once(' ')?;
     let token = token.trim();
-    (scheme.eq_ignore_ascii_case(DPOP_SCHEME) && !token.is_empty()).then(|| token.to_string())
+    (scheme.eq_ignore_ascii_case(DPOP_SCHEME) && !token.is_empty()).then_some(token)
 }
 
-pub(crate) async fn judge(
+/// The DPoP-scheme token as a holder keeps it past the request (the candidate's custody, the
+/// caller-token extension): the one owned copy.
+pub(crate) fn dpop_credential(headers: &HeaderMap) -> Option<String> {
+    dpop_token(headers).map(|token| token.to_string())
+}
+
+pub(crate) async fn judge<'h>(
     app: &crate::state::App,
     method: &Method,
     path: &str,
-    headers: &HeaderMap,
+    headers: &'h HeaderMap,
     surface: Surface,
-) -> SenderConstraint {
+) -> SenderConstraint<'h> {
     judge_method(app, method.as_str(), path, headers, surface).await
 }
 
-pub(crate) async fn judge_method(
+pub(crate) async fn judge_method<'h>(
     app: &crate::state::App,
     method: &str,
     path: &str,
-    headers: &HeaderMap,
+    headers: &'h HeaderMap,
     surface: Surface,
-) -> SenderConstraint {
+) -> SenderConstraint<'h> {
     let no_authorization_server = app.oauth_as.is_none();
-    if let Some(token) = dpop_credential(headers) {
+    if let Some(token) = dpop_token(headers) {
         let (Some(plane), Some(seam)) = (app.oauth_as.as_ref(), crate::oauth_as::seam::seam())
         else {
             return refused(Refusal::Unverifiable, surface, no_authorization_server);
@@ -158,10 +171,10 @@ pub(crate) async fn judge_method(
             return refused(Refusal::ProofFailed, surface, no_authorization_server);
         };
         let presented = crate::oauth_as::seam::DpopPresentation {
-            method: method.to_string(),
-            path: path.to_string(),
-            token: token.clone().into(),
-            proof: proof.to_string().into(),
+            method,
+            path,
+            token,
+            proof,
         };
         return if (seam.verify_dpop)(plane, presented).await {
             SenderConstraint::Proven(token)
@@ -178,7 +191,7 @@ pub(crate) async fn judge_method(
 
 /// A bound token on any occurrence of any configured carrier, or of `Authorization` as a bearer,
 /// is refused: duplicate or secondary carriers cannot hide it behind an unbound candidate.
-fn bearer_constraint(headers: &HeaderMap, carriers: &[HeaderName]) -> SenderConstraint {
+fn bearer_constraint(headers: &HeaderMap, carriers: &[HeaderName]) -> SenderConstraint<'static> {
     if carries_bound(headers, carriers)
         || (!carriers.contains(&AUTHORIZATION) && carries_bound(headers, &[AUTHORIZATION]))
     {

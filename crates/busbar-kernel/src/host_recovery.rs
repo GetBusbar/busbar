@@ -68,15 +68,6 @@ impl RecoveryWork {
         if gov.is_revoked_at(&self.binding.principal, now) {
             return None;
         }
-        self.restore_standing(gov, now)
-    }
-
-    /// The standing half of [`Self::restore`]: the expiry and revocation checks are the caller's.
-    fn restore_standing(
-        &self,
-        gov: &crate::governance::GovState,
-        now: u64,
-    ) -> Option<Arc<busbar_contract::records::VirtualKey>> {
         let key = gov.lookup_by_sub(&self.binding.principal)?;
         (key.enabled
             && key.deleted_at.is_none()
@@ -92,20 +83,17 @@ impl RecoveryWork {
         now: u64,
     ) -> Option<Arc<busbar_contract::records::VirtualKey>> {
         let gov = app.governance.as_deref()?;
-        let bound = self
+        if self
             .binding
             .generation
-            .starts_with(crate::governance::PRINCIPAL_MARKER_PREFIX);
-        if !bound && self.binding.expires_at.is_some_and(|at| at <= now) {
-            return None;
-        }
-        if gov.is_revoked_at(&self.binding.principal, now) {
-            return None;
-        }
-        if bound {
+            .starts_with(crate::governance::PRINCIPAL_MARKER_PREFIX)
+        {
+            if gov.is_revoked_at(&self.binding.principal, now) {
+                return None;
+            }
             return self.restore_bound(&app.role_bindings, now);
         }
-        self.restore_standing(gov, now)
+        self.restore(gov, now)
     }
 
     fn restore_bound(

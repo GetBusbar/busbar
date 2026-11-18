@@ -31,8 +31,12 @@ impl Declared {
 }
 impl Calls for Declared {
     type Session = ();
-    fn usage_metadata(&self) -> (u64, &[UsageClass], &[Box<str>]) {
-        (busbar_plugin_abi::plane::FB_ATTEMPT_USAGE, &self.0, &self.1)
+    fn usage_metadata(&self) -> (u64, Arc<[UsageClass]>, Arc<[Box<str>]>) {
+        (
+            busbar_plugin_abi::plane::FB_ATTEMPT_USAGE,
+            self.0.as_slice().into(),
+            self.1.as_slice().into(),
+        )
     }
     fn request(
         &self,
@@ -232,7 +236,7 @@ async fn same_task_declaration_is_installed_before_effects_open() {
     let parts = snapshot.partitions.as_ref().unwrap();
     assert_eq!(
         parts.attempt_classes,
-        std::collections::BTreeSet::from(["tokens.custom".to_owned()])
+        std::collections::BTreeSet::from(["tokens.custom".into()])
     );
     assert_eq!(parts.physical_classes, parts.attempt_classes);
     assert!(parts.attempts.is_empty());

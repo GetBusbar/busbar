@@ -144,13 +144,15 @@ fn a_dropped_item_is_forgotten() {
 
 #[test]
 fn a_fingerprint_is_keyed_and_part_aware() {
-    let one = fingerprint([b"ab".as_slice(), b"c".as_slice()]);
-    let two = fingerprint([b"a".as_slice(), b"bc".as_slice()]);
+    let fingerprint =
+        |parts: &[&[u8]]| fingerprint(parts.iter().copied()).expect("the process is keyed");
+    let one = fingerprint(&[b"ab".as_slice(), b"c".as_slice()]);
+    let two = fingerprint(&[b"a".as_slice(), b"bc".as_slice()]);
     assert_ne!(one, two, "part boundaries count");
-    assert_eq!(one, fingerprint([b"ab".as_slice(), b"c".as_slice()]));
+    assert_eq!(one, fingerprint(&[b"ab".as_slice(), b"c".as_slice()]));
     let plain: [u8; 32] = crate::hashing::Sha256::digest(b"abc");
     assert_ne!(
-        fingerprint([b"abc".as_slice()]),
+        fingerprint(&[b"abc".as_slice()]),
         plain,
         "never the bare digest"
     );

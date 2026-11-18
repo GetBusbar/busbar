@@ -5,7 +5,7 @@ use super::*;
 use crate::host_services::VerifiedTicketIdentity;
 use crate::persistence::{
     facade::CoreStore,
-    scoped::{Expected, Mutation, Outcome, Predicate, Request, ScopedStore},
+    scoped::{ExpectedRow, MutationRow, Outcome, PredicateRow, ScopedStore},
 };
 use busbar_contract::{
     persistence::{Read, ReadResult, TimeGuard},
@@ -147,9 +147,8 @@ pub(crate) fn legacy_ticket_token(
         id.as_bytes(),
     )
     .map_err(|_| LegacyTicketError)?;
-    let mut bytes = vec![1];
-    bytes.extend_from_slice(&expires_at.to_be_bytes());
-    Ok((address, Secret::new(bytes)))
+    // A spent marker is the record encoding with no body: the one encoder builds it.
+    Ok((address, encoded_record(expires_at, b"")))
 }
 pub(crate) fn legacy_ticket_expiry(
     id: &str,
@@ -194,26 +193,119 @@ pub(crate) fn legacy_ticket_authorizes(address: &busbar_contract::persistence::A
         })
 }
 
+/// A ticket's identity: its 32 lowercase hex digits, held inline.
+type TicketId = [u8; 32];
+
+/// `id` as a ticket's inline identity: `None` when it is not 32 bytes long (no ticket is).
+fn ticket_bytes(id: &str) -> Option<TicketId> {
+    id.as_bytes().try_into().ok()
+}
+
+/// The map key of one retained ticket operation: the ticket, and whether the operation is the
+/// purge of its expired rows. Held inline, so retaining or finding an operation copies no text.
+/// Ordered exactly as the keys were when they were text (`<id>`, and `expiry:<id>` for a
+/// purge), so maintenance settles the retained operations in the same order.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct OperationKey {
+    purge: bool,
+    id: TicketId,
+}
+
+impl OperationKey {
+    /// The key of the mint, spend or unbind operation of the ticket `id`.
+    fn of(id: &str) -> Option<Self> {
+        Some(Self {
+            purge: false,
+            id: ticket_bytes(id)?,
+        })
+    }
+
+    /// The key's bytes as its text form had them.
+    fn text(&self) -> impl Iterator<Item = u8> + '_ {
+        let prefix: &[u8] = if self.purge { b"expiry:" } else { b"" };
+        prefix.iter().chain(self.id.iter()).copied()
+    }
+}
+
+impl Ord for OperationKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.text().cmp(other.text())
+    }
+}
+
+impl PartialOrd for OperationKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[derive(Default)]
 pub(super) struct TicketOperations {
-    pending: std::sync::Mutex<std::collections::BTreeMap<String, Arc<TicketOperation>>>,
+    pending: std::sync::Mutex<std::collections::BTreeMap<OperationKey, Arc<TicketOperation>>>,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum OperationKind {
-    Mint,
-    Spend,
-    Cleanup,
+
+/// What a retained ticket operation checks and writes, kept as the facts it was staged with.
+/// Its rows are lent over these facts at each attempt ([`GovState::ticket_attempt`]): the same
+/// facts give the same rows, so a resubmit finds the original attempt. Nothing is copied into a
+/// request ahead of time.
+enum Rows {
+    /// A new ticket: nothing is there; its record and its expiry index row are put.
+    Mint { original: Secret<Vec<u8>> },
+    /// A single-use spend: the record is as it was read, unspent and indexed; the record goes
+    /// and the spent marker is put.
+    Spend { original: Secret<Vec<u8>> },
+    /// An expired ticket's rows, each as the purge observed it: all three go.
+    Purge {
+        active: Option<Secret<Vec<u8>>>,
+        spent: Option<Secret<Vec<u8>>>,
+        index: Secret<Vec<u8>>,
+    },
+    /// A minted ticket whose host binding failed: its record and its index row go.
+    Unbind { original: Secret<Vec<u8>> },
 }
+
 struct TicketOperation {
     core: Arc<CoreStore>,
-    kind: OperationKind,
-    request: Request,
+    /// The ticket.
+    id: TicketId,
+    /// The receipt identity, held until the operation drops.
+    op: crate::persistence::scoped::Op,
+    rows: Rows,
     time: Option<TimeGuard>,
     principal: Arc<VirtualKey>,
     expires_at: u64,
-    record: Secret<Vec<u8>>,
     delivered: AtomicBool,
     runner: super::BudgetFlushRunner,
+}
+
+impl TicketOperation {
+    /// Where the retained operations keep this one.
+    fn key(&self) -> OperationKey {
+        OperationKey {
+            purge: matches!(self.rows, Rows::Purge { .. }),
+            id: self.id,
+        }
+    }
+}
+
+/// The value of a ticket's expiry index row.
+const INDEX_VALUE: &[u8] = &[1];
+
+/// A ticket's expiry index key: the big-endian expiry, then the id. Formed on the stack.
+fn index_key(id: &TicketId, expires_at: u64) -> [u8; 40] {
+    let mut key = [0u8; 40];
+    key[..8].copy_from_slice(&expires_at.to_be_bytes());
+    key[8..].copy_from_slice(id);
+    key
+}
+
+/// The value of a spent ticket's marker: the record's version byte and its expiry, with no body.
+/// Formed on the stack.
+fn spent_marker(expires_at: u64) -> [u8; 9] {
+    let mut marker = [0u8; 9];
+    marker[0] = 1;
+    marker[1..].copy_from_slice(&expires_at.to_be_bytes());
+    marker
 }
 /// The request's receipt identity, held by the retained `TicketOperation` until it drops.
 async fn request_id(core: &CoreStore) -> Option<crate::persistence::scoped::Op> {
@@ -335,7 +427,9 @@ async fn native_record(
         .backend()
         .read(Arc::new(Read {
             dataset: core.info().dataset,
-            addresses: crate::cold::governance::state::tickets_read_addresses(&addresses),
+            // The store's read request owns its address list: the three addresses are moved
+            // into it, not copied.
+            addresses: Vec::from(addresses),
             time: Some(time),
         }))
         .await
@@ -411,26 +505,152 @@ impl GovState {
         })
     }
     fn ticket_operation(&self, id: &str) -> Option<Arc<TicketOperation>> {
-        self.ticket_operations.pending.lock().ok()?.get(id).cloned()
+        let key = OperationKey::of(id)?;
+        self.ticket_operations
+            .pending
+            .lock()
+            .ok()?
+            .get(&key)
+            .cloned()
     }
-    fn forget_ticket_operation(&self, id: &str, operation: &Arc<TicketOperation>) {
+    /// Let go of `operation`, if it is still the one retained under its key.
+    fn forget_ticket_operation(&self, operation: &Arc<TicketOperation>) {
+        let key = operation.key();
         let mut pending = self
             .ticket_operations
             .pending
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         if pending
-            .get(id)
+            .get(&key)
             .is_some_and(|current| Arc::ptr_eq(current, operation))
         {
-            pending.remove(id);
+            pending.remove(&key);
         }
     }
+    /// One attempt of a retained operation: its rows are lent over the facts it keeps (the
+    /// ticket id, the expiry, the record bytes it read or wrote), so every attempt submits the
+    /// same rows under the same receipt identity and nothing is copied to form them.
     async fn ticket_attempt(&self, operation: &TicketOperation) -> Option<Outcome> {
-        scope(operation.core.clone())?
-            .conditional_native_timed(&operation.request, operation.time)
-            .await
-            .ok()
+        let store = scope(operation.core.clone())?;
+        let id = &operation.id[..];
+        let index = index_key(&operation.id, operation.expires_at);
+        let record = |expected| PredicateRow {
+            schema: TICKET_RECORD_KIND,
+            key: id,
+            expected,
+        };
+        let spent = |expected| PredicateRow {
+            schema: TICKET_SPENT_KIND,
+            key: id,
+            expected,
+        };
+        let indexed = |expected| PredicateRow {
+            schema: EXPIRY_SCHEMA,
+            key: &index,
+            expected,
+        };
+        let delete = |schema, key| MutationRow::Delete { schema, key };
+        let outcome = match &operation.rows {
+            Rows::Mint { original } => {
+                let original = original.expose(&crate::seal::lend()).as_slice();
+                store
+                    .conditional_rows_timed(
+                        &operation.op,
+                        &[
+                            record(ExpectedRow::Absent),
+                            spent(ExpectedRow::Absent),
+                            indexed(ExpectedRow::Absent),
+                        ],
+                        &[
+                            MutationRow::Put {
+                                schema: TICKET_RECORD_KIND,
+                                key: id,
+                                value: original,
+                            },
+                            MutationRow::Put {
+                                schema: EXPIRY_SCHEMA,
+                                key: &index,
+                                value: INDEX_VALUE,
+                            },
+                        ],
+                        operation.time,
+                    )
+                    .await
+            }
+            Rows::Spend { original } => {
+                let original = original.expose(&crate::seal::lend()).as_slice();
+                let marker = spent_marker(operation.expires_at);
+                store
+                    .conditional_rows_timed(
+                        &operation.op,
+                        &[
+                            record(ExpectedRow::Exact(original)),
+                            spent(ExpectedRow::Absent),
+                            indexed(ExpectedRow::Exact(INDEX_VALUE)),
+                        ],
+                        &[
+                            delete(TICKET_RECORD_KIND, id),
+                            MutationRow::Put {
+                                schema: TICKET_SPENT_KIND,
+                                key: id,
+                                value: &marker,
+                            },
+                        ],
+                        operation.time,
+                    )
+                    .await
+            }
+            Rows::Purge {
+                active,
+                spent: marker,
+                index: observed,
+            } => {
+                // The three observed values are read under one seal, before the submit waits.
+                let (active, marker, observed) = {
+                    let seal = crate::seal::lend();
+                    (
+                        active.as_ref().map_or(ExpectedRow::Absent, |bytes| {
+                            ExpectedRow::Exact(bytes.expose(&seal))
+                        }),
+                        marker.as_ref().map_or(ExpectedRow::Absent, |bytes| {
+                            ExpectedRow::Exact(bytes.expose(&seal))
+                        }),
+                        ExpectedRow::Exact(observed.expose(&seal)),
+                    )
+                };
+                store
+                    .conditional_rows_timed(
+                        &operation.op,
+                        &[record(active), spent(marker), indexed(observed)],
+                        &[
+                            delete(TICKET_RECORD_KIND, id),
+                            delete(TICKET_SPENT_KIND, id),
+                            delete(EXPIRY_SCHEMA, &index),
+                        ],
+                        operation.time,
+                    )
+                    .await
+            }
+            Rows::Unbind { original } => {
+                let original = original.expose(&crate::seal::lend()).as_slice();
+                store
+                    .conditional_rows_timed(
+                        &operation.op,
+                        &[
+                            record(ExpectedRow::Exact(original)),
+                            indexed(ExpectedRow::Exact(INDEX_VALUE)),
+                        ],
+                        &[
+                            delete(TICKET_RECORD_KIND, id),
+                            delete(EXPIRY_SCHEMA, &index),
+                        ],
+                        operation.time,
+                    )
+                    .await
+            }
+        };
+        outcome.ok()
     }
     async fn purge_expired_ticket_records(&self, principal: &Arc<VirtualKey>) -> Option<()> {
         let core = self.core_store_handle().ok()?;
@@ -448,11 +668,8 @@ impl GovState {
             if expiry >= observed.unix_seconds {
                 break;
             }
-            // The cleanup's map key carries the id; the id is borrowed from it, not copied out.
-            let cleanup_id = crate::cold::governance::state::tickets_cleanup_id(
-                std::str::from_utf8(&key[8..]).ok()?,
-            );
-            let id = &cleanup_id["expiry:".len()..];
+            // The index key is the expiry, then the ticket's id: the id is read off it in place.
+            let id = std::str::from_utf8(&key[8..]).ok()?;
             if !valid_ticket_id(id) {
                 return None;
             }
@@ -465,52 +682,25 @@ impl GovState {
                 .ok()?;
             let spent = values.pop()?;
             let active = values.pop()?;
+            // A spent marker is the record encoding with no body: judged in place, as the
+            // single read judges it (`judge_ticket`), with no second copy built to compare.
             if active
                 .as_ref()
                 .is_some_and(|bytes| record_body_len(bytes, expiry).is_none())
-                || spent.as_ref().is_some_and(|bytes| {
-                    bytes.expose(&crate::seal::lend())
-                        != encoded_record(expiry, b"").expose(&crate::seal::lend())
-                })
+                || spent
+                    .as_ref()
+                    .is_some_and(|bytes| record_body_len(bytes, expiry) != Some(0))
             {
                 return None;
             }
             let operation = Arc::new(TicketOperation {
                 core: core.clone(),
-                kind: OperationKind::Cleanup,
-                request: Request {
-                    op: request_id(&core).await?,
-                    predicates: vec![
-                        Predicate {
-                            schema: TICKET_RECORD_KIND.into(),
-                            key: id.as_bytes().into(),
-                            expected: active.map_or(Expected::Absent, Expected::Exact),
-                        },
-                        Predicate {
-                            schema: TICKET_SPENT_KIND.into(),
-                            key: id.as_bytes().into(),
-                            expected: spent.map_or(Expected::Absent, Expected::Exact),
-                        },
-                        Predicate {
-                            schema: EXPIRY_SCHEMA.into(),
-                            key: key.clone(),
-                            expected: Expected::Exact(index),
-                        },
-                    ],
-                    mutations: vec![
-                        Mutation::Delete {
-                            schema: TICKET_RECORD_KIND.into(),
-                            key: id.as_bytes().into(),
-                        },
-                        Mutation::Delete {
-                            schema: TICKET_SPENT_KIND.into(),
-                            key: id.as_bytes().into(),
-                        },
-                        Mutation::Delete {
-                            schema: EXPIRY_SCHEMA.into(),
-                            key,
-                        },
-                    ],
+                id: ticket_bytes(id)?,
+                op: request_id(&core).await?,
+                rows: Rows::Purge {
+                    active,
+                    spent,
+                    index,
                 },
                 time: Some(TimeGuard {
                     not_before: expiry.checked_add(1),
@@ -518,19 +708,18 @@ impl GovState {
                 }),
                 principal: principal.clone(),
                 expires_at: expiry,
-                record: Secret::default(),
                 delivered: AtomicBool::new(false),
                 runner: Default::default(),
             });
             let operation = {
                 let mut pending = self.ticket_operations.pending.lock().ok()?;
-                match pending.get(&cleanup_id) {
+                let cleanup = operation.key();
+                match pending.get(&cleanup) {
                     Some(retained) => retained.clone(),
-                    None => crate::cold::governance::state::tickets_keep_first(
-                        &mut *pending,
-                        &cleanup_id,
-                        operation,
-                    ),
+                    None => {
+                        pending.insert(cleanup, operation.clone());
+                        operation
+                    }
                 }
             };
             let Ok(_running) = operation.runner.enter(false).await else {
@@ -545,7 +734,7 @@ impl GovState {
                         | Outcome::NoEffect(_)
                 )
             ) {
-                self.forget_ticket_operation(&cleanup_id, &operation);
+                self.forget_ticket_operation(&operation);
             }
         }
         Some(())
@@ -562,7 +751,7 @@ impl GovState {
                 .unwrap_or_else(|p| p.into_inner()),
         );
         let mut settled = 0;
-        for (id, operation) in pending {
+        for (_, operation) in pending {
             let Ok(_running) = operation.runner.enter(false).await else {
                 continue;
             };
@@ -576,7 +765,7 @@ impl GovState {
                 )
             ) {
                 operation.delivered.store(true, Ordering::Release);
-                self.forget_ticket_operation(&id, &operation);
+                self.forget_ticket_operation(&operation);
                 settled += 1;
             }
         }
@@ -626,66 +815,33 @@ impl GovState {
             operation
         } else {
             let original = original?;
+            // The record carries its nine-byte head (version, expiry): the spend's condition is
+            // the whole record, and the body it hands back is read off it at redemption.
             record_body_len(&original, expires_at)?;
-            let record = crate::cold::governance::state::tickets_record_body(
-                &original.expose(&crate::seal::lend())[9..],
-            );
-            let op = request_id(&core).await?;
-            let mut spent = vec![1];
-            spent.extend_from_slice(&expires_at.to_be_bytes());
             let candidate = Arc::new(TicketOperation {
                 core: core.clone(),
-                kind: OperationKind::Spend,
-                request: Request {
-                    op,
-                    predicates: vec![
-                        Predicate {
-                            schema: TICKET_RECORD_KIND.into(),
-                            key: id.as_bytes().into(),
-                            expected: Expected::Exact(original),
-                        },
-                        Predicate {
-                            schema: TICKET_SPENT_KIND.into(),
-                            key: id.as_bytes().into(),
-                            expected: Expected::Absent,
-                        },
-                        Predicate {
-                            schema: EXPIRY_SCHEMA.into(),
-                            key: expiry_key(&id, expires_at),
-                            expected: Expected::Exact(Secret::new(vec![1])),
-                        },
-                    ],
-                    mutations: vec![
-                        Mutation::Delete {
-                            schema: TICKET_RECORD_KIND.into(),
-                            key: id.as_bytes().into(),
-                        },
-                        Mutation::Put {
-                            schema: TICKET_SPENT_KIND.into(),
-                            key: id.as_bytes().into(),
-                            value: Secret::new(spent),
-                        },
-                    ],
-                },
+                id: ticket_bytes(&id)?,
+                op: request_id(&core).await?,
+                rows: Rows::Spend { original },
                 time: Some(TimeGuard {
                     not_before: None,
                     before: expires_at.checked_add(1),
                 }),
                 principal: principal.clone(),
                 expires_at,
-                record,
                 delivered: AtomicBool::new(false),
                 runner: Default::default(),
             });
+            let key = candidate.key();
             self.ticket_operations
                 .pending
                 .lock()
                 .ok()?
-                .entry(id.clone())
+                .entry(key)
                 .or_insert(candidate)
                 .clone()
         };
-        if operation.kind != OperationKind::Spend
+        if !matches!(operation.rows, Rows::Spend { .. })
             || operation.delivered.load(Ordering::Acquire)
             || !Arc::ptr_eq(&operation.core, &core)
             || operation.expires_at != expires_at
@@ -734,10 +890,10 @@ impl GovState {
         }
         let operation = self.ticket_operation(&identity.id)?;
         let _running = operation.runner.enter(false).await.ok()?;
-        if operation.delivered.load(Ordering::Acquire)
-            || operation.kind != OperationKind::Spend
-            || !Arc::ptr_eq(&operation.core, &core)
-        {
+        let Rows::Spend { original } = &operation.rows else {
+            return None;
+        };
+        if operation.delivered.load(Ordering::Acquire) || !Arc::ptr_eq(&operation.core, &core) {
             return None;
         }
         match self.ticket_attempt(&operation).await? {
@@ -745,21 +901,25 @@ impl GovState {
                 if operation.delivered.swap(true, Ordering::AcqRel) {
                     return None;
                 }
-                self.forget_ticket_operation(&identity.id, &operation);
+                self.forget_ticket_operation(&operation);
                 let current = self.standing_of(ticket, now)?;
                 if current.id != identity.principal.id
                     || current.generation_hash != identity.principal.generation_hash
                 {
                     return None;
                 }
+                // The caller owns the body it is handed: the one copy of it, made here, off the
+                // record the spend kept (its head is nine bytes: checked when the spend was staged).
                 Some((
                     current,
-                    operation.record.expose(&crate::seal::lend()).clone(),
+                    crate::cold::governance::state::tickets_record_body(
+                        &original.expose(&crate::seal::lend())[9..],
+                    ),
                 ))
             }
             Outcome::ConditionConflict | Outcome::OpIdConflict | Outcome::NoEffect(_) => {
                 operation.delivered.store(true, Ordering::Release);
-                self.forget_ticket_operation(&identity.id, &operation);
+                self.forget_ticket_operation(&operation);
                 None
             }
             Outcome::Pending(_) | Outcome::Reconcile(_) | Outcome::Busy(_) => None,
@@ -839,41 +999,15 @@ impl GovState {
         let core = self
             .core_store_handle()
             .map_err(|_| TicketRefusal::NotKept)?;
-        let original = encoded_record(exp, record);
+        // A minted id is always 32 hex digits (`ticket_id`), so it always has its inline form.
+        let ticket = ticket_bytes(&id).ok_or(TicketRefusal::NotKept)?;
         let operation = Arc::new(TicketOperation {
             core: core.clone(),
-            kind: OperationKind::Mint,
-            request: Request {
-                op: request_id(&core).await.ok_or(TicketRefusal::NotKept)?,
-                predicates: vec![
-                    Predicate {
-                        schema: TICKET_RECORD_KIND.into(),
-                        key: id.as_bytes().into(),
-                        expected: Expected::Absent,
-                    },
-                    Predicate {
-                        schema: TICKET_SPENT_KIND.into(),
-                        key: id.as_bytes().into(),
-                        expected: Expected::Absent,
-                    },
-                    Predicate {
-                        schema: EXPIRY_SCHEMA.into(),
-                        key: expiry_key(&id, exp),
-                        expected: Expected::Absent,
-                    },
-                ],
-                mutations: vec![
-                    Mutation::Put {
-                        schema: TICKET_RECORD_KIND.into(),
-                        key: id.as_bytes().into(),
-                        value: original.clone(),
-                    },
-                    Mutation::Put {
-                        schema: EXPIRY_SCHEMA.into(),
-                        key: expiry_key(&id, exp),
-                        value: Secret::new(vec![1]),
-                    },
-                ],
+            id: ticket,
+            op: request_id(&core).await.ok_or(TicketRefusal::NotKept)?,
+            // The record is encoded once and kept here: it is the value the mint puts.
+            rows: Rows::Mint {
+                original: encoded_record(exp, record),
             },
             time: Some(TimeGuard {
                 not_before: None,
@@ -881,7 +1015,6 @@ impl GovState {
             }),
             principal: key.clone(),
             expires_at: exp,
-            record: Secret::default(),
             delivered: AtomicBool::new(false),
             runner: Default::default(),
         });
@@ -889,7 +1022,7 @@ impl GovState {
             .pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(id.clone(), operation.clone());
+            .insert(operation.key(), operation.clone());
         let _running = operation
             .runner
             .enter(false)
@@ -902,7 +1035,7 @@ impl GovState {
             return Err(TicketRefusal::NotKept);
         }
         operation.delivered.store(true, Ordering::Release);
-        self.forget_ticket_operation(&id, &operation);
+        self.forget_ticket_operation(&operation);
         let body = material.signer.mint_ticket_body(
             &key.id,
             exp,
@@ -921,39 +1054,21 @@ impl GovState {
             )),
         };
         if let Err(why) = bind(&identity) {
-            let cleanup = Request {
-                op: request_id(&core).await.ok_or(TicketRefusal::NotKept)?,
-                predicates: vec![
-                    Predicate {
-                        schema: TICKET_RECORD_KIND.into(),
-                        key: identity.id.as_bytes().into(),
-                        expected: Expected::Exact(original),
-                    },
-                    Predicate {
-                        schema: EXPIRY_SCHEMA.into(),
-                        key: expiry_key(&identity.id, exp),
-                        expected: Expected::Exact(Secret::new(vec![1])),
-                    },
-                ],
-                mutations: vec![
-                    Mutation::Delete {
-                        schema: TICKET_RECORD_KIND.into(),
-                        key: identity.id.as_bytes().into(),
-                    },
-                    Mutation::Delete {
-                        schema: EXPIRY_SCHEMA.into(),
-                        key: expiry_key(&identity.id, exp),
-                    },
-                ],
+            // The unbind is retained on its own and may outlive the mint's operation, so it
+            // keeps its own copy of the record it expects: made only here, when a binding fails.
+            let Rows::Mint { original } = &operation.rows else {
+                return Err(why);
             };
             let cleanup = Arc::new(TicketOperation {
                 core: core.clone(),
-                kind: OperationKind::Cleanup,
-                request: cleanup,
+                id: ticket,
+                op: request_id(&core).await.ok_or(TicketRefusal::NotKept)?,
+                rows: Rows::Unbind {
+                    original: original.clone(),
+                },
                 time: None,
                 principal: identity.principal.clone(),
                 expires_at: exp,
-                record: Secret::default(),
                 delivered: AtomicBool::new(false),
                 runner: Default::default(),
             });
@@ -961,7 +1076,7 @@ impl GovState {
                 .pending
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .insert(identity.id.clone(), cleanup.clone());
+                .insert(cleanup.key(), cleanup.clone());
             if matches!(
                 self.ticket_attempt(&cleanup).await,
                 Some(
@@ -971,7 +1086,7 @@ impl GovState {
                         | Outcome::NoEffect(_)
                 )
             ) {
-                self.forget_ticket_operation(&identity.id, &cleanup);
+                self.forget_ticket_operation(&cleanup);
             }
             return Err(why);
         }

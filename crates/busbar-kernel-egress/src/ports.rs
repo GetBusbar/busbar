@@ -221,8 +221,8 @@ pub struct Dispatched {
     pub leg: u8,
     /// Which attempt of the walk this is, counted from one.
     pub attempt: u32,
-    /// Which pool cell the attempt is recorded against.
-    pub pool: String,
+    /// Which pool cell the attempt is recorded against: the pool's own shared name.
+    pub pool: busbar_contract::kept::Text,
     /// Which member of the verified set is being dialled.
     pub destination: DestinationId,
     /// The lane the destination was sealed on.
@@ -303,8 +303,9 @@ pub trait Telemetry: Send + Sync {
     /// A cell tripped, freshly.
     fn breaker_trip(&self, pool: &str, destination: DestinationId);
 
-    /// A request parked in the wait terminal, or left it. The gauge is a depth, so the two calls
-    fn queued(&self, pool: &str, delta: i64);
+    /// A request parked in the wait terminal, or left it: the change, and the pool's depth after it
+    /// (counted by the pool itself, [`crate::pool::QueueDepth`]).
+    fn queued(&self, pool: &str, delta: i64, depth: i64);
 }
 
 /// The disposition labels, verbatim.

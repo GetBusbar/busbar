@@ -273,7 +273,7 @@ fn nothing_is_opened_bound_or_spawned_that_was_not_admitted() {
             Err(IoRefusal::Refused(_))
         ));
 
-        io.admit(ticket(1), Admission::Dial(vec!["127.0.0.1:8".into()]));
+        io.admit(ticket(1), Admission::Dial("127.0.0.1:8".into()));
         assert!(matches!(
             io.open(OWNER, ticket(1), "127.0.0.1:9"),
             Err(IoRefusal::Refused(_))
@@ -321,7 +321,7 @@ fn an_admitted_dial_moves_bytes_both_ways_and_a_handle_is_its_makers_alone() {
         let far = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let at = far.local_addr().unwrap().to_string();
         let io = HostIo::new();
-        io.admit(ticket(10), Admission::Dial(vec![at.clone()]));
+        io.admit(ticket(10), Admission::Dial(at.clone()));
         let h = io.open(OWNER, ticket(10), &at).unwrap();
         assert_eq!(io.settle(ticket(10)).0, Some(h));
         let (mut peer, _) = far.accept().await.unwrap();
@@ -529,7 +529,8 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
             &program.env_refs,
             Some(crate::spawn_env::counting_source),
             &scope(),
-        );
+        )
+        .expect("the environment is held");
         assert!(
             !format!("{held:?}").contains("hostio-spawn-value"),
             "a held environment names no value"
@@ -552,7 +553,8 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
             &unresolved.env_refs,
             Some(crate::spawn_env::counting_source),
             &scope(),
-        );
+        )
+        .expect("the environment is held");
         io.admit(ticket(31), Admission::Spawn(unresolved, held));
         match env_lines(&io, 31).await {
             Err(IoRefusal::Refused(why)) => {
@@ -587,7 +589,8 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
             &program.env_refs,
             Some(crate::spawn_env::counting_source),
             &scope(),
-        );
+        )
+        .expect("the environment is held");
         let loaded = crate::spawn_env::resolutions_of(VAR);
         assert!(loaded >= 1, "the load resolved the reference");
         let want = |v: &str| vec!["DECLARED=yes".to_owned(), format!("ROTATED={v}")];
@@ -644,7 +647,7 @@ fn reap_releases_every_handle_of_its_owner_and_no_other() {
             "reaped entry remains alive at {at}, other {other_at}"
         );
         assert!(
-            tokio::net::TcpStream::connect(&at).await.is_err(),
+            tokio::net::TcpStream::connect(at.as_str()).await.is_err(),
             "the reaped listener still accepts at {at}, other {other_at}"
         );
         assert!(matches!(io.close(OWNER, other), Err(IoRefusal::Refused(_))));
@@ -672,7 +675,7 @@ fn a_retired_listener_stops_accepting_while_a_fork_copy_of_its_descriptor_is_ope
             let original = std::sync::Arc::downgrade(&entry);
             drop(entry);
 
-            drop(tokio::net::TcpStream::connect(&at).await.unwrap());
+            drop(tokio::net::TcpStream::connect(at.as_str()).await.unwrap());
             match retirement {
                 "reap" => io.reap(OWNER),
                 "close" => io.close(OWNER, handle).unwrap(),
@@ -685,11 +688,54 @@ fn a_retired_listener_stops_accepting_while_a_fork_copy_of_its_descriptor_is_ope
                 "{retirement} retained the entry"
             );
             assert!(
-                tokio::net::TcpStream::connect(&at).await.is_err(),
+                tokio::net::TcpStream::connect(at.as_str()).await.is_err(),
                 "{retirement} left the copied socket listening at {at}"
             );
 
             drop(inherited);
         }
+    });
+}
+
+/// THE RELEASE PROOF FOR THE HANDLE TABLE'S SEGMENTS (owner's ruling on allocation, addendum; GROUP-storage R2.5
+/// item 3, T2: a block of slots made the first time a handle needs it, kept for the table's life). Needed: every
+/// `io.*` call reads its handle's slot without a lock, so the slot must exist before the handle does. The owner is
+/// the host's I/O: after one warm table, five tables that each made 70 handles (two segments) and closed them, then
+/// were dropped, leave less than one table's two segments held.
+#[test]
+fn a_host_io_dropped_returns_its_handle_segments() {
+    worker().block_on(async {
+        let cycle = |base: u32| {
+            let io = HostIo::new();
+            let mut held = Vec::with_capacity(70);
+            for n in 0..70 {
+                io.admit(ticket(base + n), Admission::Bind("127.0.0.1:0".into()));
+                let (handle, _) = io.listen(OWNER, ticket(base + n), "127.0.0.1:0").unwrap();
+                held.push(handle);
+            }
+            for handle in held {
+                io.close(OWNER, handle).unwrap();
+            }
+            assert_eq!(io.held(), 0);
+            drop(io);
+        };
+        cycle(1_000);
+        // The runtime's I/O driver releases a closed socket's registration on its next turn.
+        let turn = || tokio::time::sleep(std::time::Duration::from_millis(20));
+        turn().await;
+        let start = crate::support::held_bytes();
+        for round in 0..5 {
+            cycle(2_000 + round * 100);
+            turn().await;
+        }
+        let segments = isize::try_from(
+            (64 + 128) * std::mem::size_of::<arc_swap::ArcSwapOption<crate::hostio::Entry>>(),
+        )
+        .unwrap();
+        let held = crate::support::held_bytes() - start;
+        assert!(
+            held < segments,
+            "five host I/O tables dropped still hold {held} bytes"
+        );
     });
 }

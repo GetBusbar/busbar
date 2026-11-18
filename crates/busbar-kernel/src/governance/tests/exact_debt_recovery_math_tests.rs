@@ -74,7 +74,7 @@ fn signed_wire_chunks_preserve_era_cancellation_above_i64() {
 fn signed_wire_preserves_full_range_and_acknowledges_minimum() {
     for count in [i128::MIN, i128::MAX] {
         let mut debt = unit("model", count);
-        let signed = debt.signed().expect("full signed Count fits wire");
+        let signed = debt.clone().signed().expect("full signed Count fits wire");
         assert_eq!(signed.models[0].usage_units["input"], count);
         debt.subtract(&signed);
         assert!(debt.is_zero());

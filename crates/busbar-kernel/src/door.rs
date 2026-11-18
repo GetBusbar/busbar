@@ -118,8 +118,8 @@ pub fn metering_row(
 /// questions and they carry different statuses. A pool the caller may not reach is settled before
 /// pricing is asked about at all; a name with no configured rate is a bad request, not an exhausted
 /// budget. Collapsing them would make two refusals indistinguishable to anything reading the record.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VerifyRefusal {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyRefusal<'n> {
     /// The caller's key may not reach the pool it named, or a fallback pool reachable from it.
     ///
     /// One refusal for both, on purpose: a denial must be indistinguishable from outside whether it
@@ -127,12 +127,13 @@ pub enum VerifyRefusal {
     NotAuthorized,
     /// A rate card is present and the name the caller supplied has no configured rate.
     NoRate {
-        /// The name, as the caller spelled it — it appears in the message.
-        name: String,
+        /// The name, as the caller spelled it — it appears in the message. Lent from the request:
+        /// the refusal is read where it is made and copies no name.
+        name: &'n str,
     },
 }
 
-impl VerifyRefusal {
+impl VerifyRefusal<'_> {
     #[must_use]
     pub fn status(&self) -> u16 {
         match self {
@@ -163,7 +164,7 @@ impl VerifyRefusal {
     }
 }
 
-impl std::fmt::Display for VerifyRefusal {
+impl std::fmt::Display for VerifyRefusal<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VerifyRefusal::NotAuthorized => {
@@ -188,11 +189,11 @@ pub trait PoolView {
     fn is_unpriced(&self, name: &str) -> bool;
 }
 
-fn pool_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRefusal> {
+fn pool_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRefusal<'static>> {
     (view.has_key() && !view.pool_allowed(pool)).then_some(VerifyRefusal::NotAuthorized)
 }
 
-fn fallback_pools_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRefusal> {
+fn fallback_pools_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRefusal<'static>> {
     if !view.has_key() || !view.key_is_scoped() {
         return None;
     }
@@ -215,15 +216,14 @@ fn fallback_pools_authorized(view: &dyn PoolView, pool: &str) -> Option<VerifyRe
     }
 }
 
-fn priced(view: &dyn PoolView, name: &str) -> Option<VerifyRefusal> {
+fn priced<'n>(view: &dyn PoolView, name: &'n str) -> Option<VerifyRefusal<'n>> {
     if !(view.has_key() && !view.is_configured(name) && view.is_unpriced(name)) {
         return None;
     }
-    let name = crate::cold::host::door_refused_name(name);
     Some(VerifyRefusal::NoRate { name })
 }
 
-pub fn destination_guard(view: &dyn PoolView, pool: &str) -> Result<(), VerifyRefusal> {
+pub fn destination_guard<'n>(view: &dyn PoolView, pool: &'n str) -> Result<(), VerifyRefusal<'n>> {
     if let Some(r) = pool_authorized(view, pool) {
         return Err(r);
     }

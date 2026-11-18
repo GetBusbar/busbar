@@ -4,23 +4,52 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use busbar_contract::secure::SecureVec;
 use busbar_kernel_audit::record::{HookApplied, HookHead};
 use busbar_plugin_abi::kinds::hook::hook as abi;
 use busbar_ports::hook::{BudgetIn, CandidateIn, CostTermIn, HookAnswer, HookCall, HookView};
-use busbar_ports::{CallCx, FactRef};
+use busbar_ports::{CallCx, FactRef, FactVal};
 
-use super::{Call, CandidateView, Projection, Selected, Selection};
+use super::super::port_auth::Subject;
+use super::super::RoutedScope;
+use super::{Call, CandidateView, Projection, Selected};
 
+/// One stage event's facts (a tap's): at most five today, held without a list of their own.
+pub(super) type StageFacts = smallvec::SmallVec<[(u32, FactVal); 6]>;
+
+/// What one hook call is shown. Everything that can outlive the caller (a timed-out hook keeps
+/// running) is held shared by its owner, so the call's worker takes a count of each and copies
+/// none of it.
 pub(super) struct Input<'a> {
     pub projection: &'a Projection,
-    pub selected: &'a Selected,
-    pub selection: &'a Selection<'a>,
-    pub identity: &'a [u8],
-    pub candidates: &'a [CandidateView],
-    pub quantities: &'a [(Box<str>, f64)],
-    pub stage: &'a [(u32, busbar_ports::FactVal)],
+    pub selected: &'a Arc<Selected>,
+    pub scope: &'a Arc<RoutedScope>,
+    pub dialect: &'a Arc<str>,
+    pub principal: Option<&'a Subject>,
+    pub request_id: u64,
+    /// The admitted identity; `None` only in the worker of a call not granted it.
+    pub identity: Option<&'a Arc<SecureVec>>,
+    pub candidates: &'a Arc<Vec<CandidateView>>,
+    pub quantities: &'a Arc<Vec<(Box<str>, f64)>>,
+    /// A stage tap's facts; `None` on a request-stage call.
+    pub stage: Option<&'a Arc<StageFacts>>,
     pub context: &'a crate::host_services::InvocationContext,
 }
+
+impl<'a> Input<'a> {
+    fn stage(&self) -> &'a [(u32, FactVal)] {
+        self.stage.map_or(&[], |facts| facts.as_slice())
+    }
+}
+
+/// How many candidates, tags and cost terms per candidate, and budget buckets one hook view lays
+/// out in the call's own frame; a larger pool spills to the heap.
+const CANDIDATES_INLINE: usize = 8;
+const TAGS_INLINE: usize = 4;
+const TERMS_INLINE: usize = 4;
+const BUDGETS_INLINE: usize = 4;
+type Tags<'a> = smallvec::SmallVec<[&'a str; TAGS_INLINE]>;
+type Terms<'a> = smallvec::SmallVec<[CostTermIn<'a>; TERMS_INLINE]>;
 
 /// Plugin rewrite bytes remain wiping-owned even when an abandoned worker or a gate drops its reply.
 pub(super) struct Reply(HookAnswer);
@@ -68,7 +97,7 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
     }
     let facts = call.port.facts();
     let content =
-        input.stage.is_empty() && call.prompt.sends_prompt() && facts & abi::FB_WANTS_PROMPT != 0;
+        input.stage.is_none() && call.prompt.sends_prompt() && facts & abi::FB_WANTS_PROMPT != 0;
     let identity = call.user.sends_user() && facts & abi::FB_WANTS_IDENTITY != 0;
     if content && input.projection.conversation.is_none() {
         return Err(Failed::Unprojected);
@@ -78,8 +107,8 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
             deadline.into(),
             (input.selected.reads)(
                 &[&call.name],
-                input.selection.principal,
-                input.selection.dialect,
+                input.principal.map(Subject::as_str),
+                &**input.dialect,
                 identity,
             ),
         )
@@ -87,8 +116,10 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
         .map_err(|_| Failed::Unconfirmed)?
         .map_err(|_| Failed::Unconfirmed)?;
     }
-    // Both synchronous and I/O hooks run off the calling executor. The owned input retains
-    // wiping content and its exact generation until a timed-out worker actually returns.
+    // Both synchronous and I/O hooks run off the calling executor. The worker's input shares
+    // what the request holds (a count of each, no copy) and retains it, with its wiping content
+    // and its exact generation, until a timed-out worker actually returns. A call is lent the
+    // conversation and the identity only when it is granted them.
     let projection = Projection {
         facts: input
             .projection
@@ -104,22 +135,19 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
         },
         expects: Vec::new(),
     };
-    let selected = input.selected.clone();
-    let pool = input.selection.pool.to_owned();
-    let container = input.selection.container.to_owned();
-    let dialect = input.selection.dialect.to_owned();
-    let principal = input.selection.principal.map(str::to_owned);
-    let route = input.selection.route;
-    let request_id = input.selection.request_id;
-    let now_s = input.selection.now_s;
+    let selected = Arc::clone(input.selected);
+    let scope = Arc::clone(input.scope);
+    let dialect = Arc::clone(input.dialect);
+    let principal = input.principal.cloned();
+    let request_id = input.request_id;
     let identity = if identity {
-        busbar_contract::secure::SecureVec::from(input.identity.to_vec())
+        input.identity.cloned()
     } else {
-        Default::default()
+        None
     };
-    let candidates = input.candidates.to_vec();
-    let quantities = input.quantities.to_vec();
-    let stage = input.stage.to_vec();
+    let candidates = Arc::clone(input.candidates);
+    let quantities = Arc::clone(input.quantities);
+    let stage = input.stage.cloned();
     let context = input.context.clone();
     let call = Arc::clone(call);
     let handle = tokio::runtime::Handle::current();
@@ -127,31 +155,32 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
     let owner = context.clone();
     owner
         .offload_hook(Box::new(move || {
-            let selection = Selection {
-                route,
-                pool: &pool,
-                container: &container,
-                dialect: &dialect,
-                principal: principal.as_deref(),
-                key: context.principal().map(AsRef::as_ref),
-                request_id,
-                now_s,
+            let result = {
+                let input = Input {
+                    projection: &projection,
+                    selected: &selected,
+                    scope: &scope,
+                    dialect: &dialect,
+                    principal: principal.as_ref(),
+                    request_id,
+                    identity: identity.as_ref(),
+                    candidates: &candidates,
+                    quantities: &quantities,
+                    stage: stage.as_ref(),
+                    context: &context,
+                };
+                handle.block_on(async {
+                    tokio::time::timeout_at(deadline.into(), invoke(&call, point, &input, deadline))
+                        .await
+                        .map_err(|_| Failed::Port)?
+                })
             };
-            let input = Input {
-                projection: &projection,
-                selected: &selected,
-                selection: &selection,
-                identity: &identity,
-                candidates: &candidates,
-                quantities: &quantities,
-                stage: &stage,
-                context: &context,
-            };
-            let result = handle.block_on(async {
-                tokio::time::timeout_at(deadline.into(), invoke(&call, point, &input, deadline))
-                    .await
-                    .map_err(|_| Failed::Port)?
-            });
+            // What the worker shared is let go before its answer is handed back, so a caller
+            // still waiting for the answer is again the only holder of what it lent.
+            drop((
+                projection, selected, scope, dialect, principal, identity, candidates, quantities,
+                stage, context, call,
+            ));
             let _ = sent.send(result);
         }))
         .map_err(|_| Failed::Port)?;
@@ -169,27 +198,24 @@ async fn invoke(
 ) -> Result<Reply, Failed> {
     let facts = call.port.facts();
     let content =
-        input.stage.is_empty() && call.prompt.sends_prompt() && facts & abi::FB_WANTS_PROMPT != 0;
+        input.stage.is_none() && call.prompt.sends_prompt() && facts & abi::FB_WANTS_PROMPT != 0;
     let identity = call.user.sends_user() && facts & abi::FB_WANTS_IDENTITY != 0;
     let mut signals = super::view::signals(&input.projection.facts, call, content);
-    signals.push((abi::S_POOL, FactRef::Text(input.selection.pool)));
-    signals.push((
-        abi::S_INGRESS_PROTOCOL,
-        FactRef::Text(input.selection.dialect),
-    ));
+    signals.push((abi::S_POOL, FactRef::Text(&input.scope.pool)));
+    signals.push((abi::S_INGRESS_PROTOCOL, FactRef::Text(&**input.dialect)));
     if let Some(strategy) = &call.strategy {
         signals.push((abi::S_ROUTING_POLICY, FactRef::Text(strategy)));
     }
     if identity {
-        if let Some(principal) = input.selection.principal {
-            signals.push((abi::S_USER_SUBJECT, FactRef::Text(principal)));
+        if let Some(principal) = input.principal {
+            signals.push((abi::S_USER_SUBJECT, FactRef::Text(principal.as_str())));
         }
         if let Some(key) = &input.selected.key {
             signals.push((abi::S_KEY_ID, FactRef::Text(&key.id)));
             signals.push((abi::S_KEY_NAME, FactRef::Text(&key.name)));
         }
     }
-    for (key, value) in input.stage {
+    for (key, value) in input.stage() {
         if *key == abi::S_RESPONSE_TOKENS_OUT
             && !call
                 .signals
@@ -205,33 +231,30 @@ async fn invoke(
             },
         ));
     }
-    let tags: Vec<Vec<&str>> = input
-        .candidates
-        .iter()
-        .map(|candidate| candidate.facts.tags.iter().map(String::as_str).collect())
-        .collect();
-    let costs: Vec<Vec<CostTermIn<'_>>> = input
-        .candidates
-        .iter()
-        .map(|candidate| {
-            if !call
-                .signals
-                .wants(busbar_contract::signal::Signal::CandidateRouteCost)
-            {
-                return Vec::new();
-            }
-            input
-                .quantities
-                .iter()
-                .map(|(class, expected_units)| CostTermIn {
-                    class,
-                    expected_units: *expected_units,
-                    price_per_unit: input.selected.cost.routing_price(&candidate.lane, class),
-                })
-                .collect()
-        })
-        .collect();
-    let candidates: Vec<_> = input
+    // The slices the view lends are laid out in this call's own frame: each candidate's tags and
+    // cost terms, then the candidates and the budgets over them.
+    let priced = call
+        .signals
+        .wants(busbar_contract::signal::Signal::CandidateRouteCost);
+    let mut tags = smallvec::SmallVec::<[Tags<'_>; CANDIDATES_INLINE]>::new();
+    let mut costs = smallvec::SmallVec::<[Terms<'_>; CANDIDATES_INLINE]>::new();
+    for candidate in input.candidates.iter() {
+        let own: Tags<'_> = candidate.facts.tags.iter().map(String::as_str).collect();
+        tags.push(own);
+        // No term at all for a call that did not ask for the route cost.
+        let terms: Terms<'_> = input
+            .quantities
+            .iter()
+            .filter(|_| priced)
+            .map(|(class, expected_units)| CostTermIn {
+                class,
+                expected_units: *expected_units,
+                price_per_unit: input.selected.cost.routing_price(&candidate.lane, class),
+            })
+            .collect();
+        costs.push(terms);
+    }
+    let candidates: smallvec::SmallVec<[CandidateIn<'_>; CANDIDATES_INLINE]> = input
         .candidates
         .iter()
         .enumerate()
@@ -291,7 +314,7 @@ async fn invoke(
         })
         .collect();
     // An uncapped bucket has no finite remaining balance; never turn absence into zero.
-    let budgets: Vec<_> = input
+    let budgets: smallvec::SmallVec<[BudgetIn<'_>; BUDGETS_INLINE]> = input
         .selected
         .budget
         .iter()
@@ -312,16 +335,20 @@ async fn invoke(
         candidates: &candidates,
         budgets: &budgets,
         conversation: if content {
-            input.projection.conversation.as_deref()
+            input
+                .projection
+                .conversation
+                .as_deref()
+                .map(|bytes| &**bytes)
         } else {
             None
         },
         body: None,
-        identity: identity.then_some(input.identity),
+        identity: input.identity.filter(|_| identity).map(|bytes| &***bytes),
     };
     let cx = CallCx {
         deadline,
-        request_id: input.selection.request_id,
+        request_id: input.request_id,
         stack: Default::default(),
     };
     let answer = match call.port.on(cx, point, &view) {
@@ -341,25 +368,27 @@ pub(super) fn record(call: &Call, answer: Option<&HookAnswer>) -> HookApplied {
         }
         _ => HookHead::Pass,
     };
+    // The row shares the call's own configured key: a refcount, never a copy.
     HookApplied {
-        hook: call.name.to_string(),
+        hook: busbar_contract::kept::Text::from(Arc::clone(&call.name)),
         head,
         failed: answer.is_none(),
     }
 }
 
+/// `ran` takes one record per call attempted: the stage's own list, or a gate's few in its frame.
 pub(super) async fn chain(
     call: &Arc<Call>,
     point: u32,
     input: &Input<'_>,
-    ran: &mut Vec<HookApplied>,
+    ran: &mut impl Extend<HookApplied>,
 ) -> Result<(Arc<Call>, Reply), Failed> {
     for attempted in std::iter::once(call).chain(call.fallbacks.iter()) {
         let answer = one(attempted, point, input).await;
-        ran.push(record(
+        ran.extend(std::iter::once(record(
             attempted,
             answer.as_ref().ok().map(|reply| &**reply),
-        ));
+        )));
         if let Ok(answer) = answer {
             return Ok((Arc::clone(attempted), answer));
         }

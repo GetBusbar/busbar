@@ -214,8 +214,27 @@ impl JournalRecord {
         self.encode_onto(out);
     }
 
+    /// Whether `bytes` are exactly this record's encoding ([`JournalRecord::encode`]): the fixed
+    /// header is laid out on the stack and compared, the body is compared where it lies. A reader
+    /// that checks a decoded record against the bytes it was read from encodes nothing to ask.
+    #[must_use]
+    pub fn encodes_as(&self, bytes: &[u8]) -> bool {
+        let Some((header, body)) = bytes.split_at_checked(JOURNAL_HEADER_BYTES) else {
+            return false;
+        };
+        let mut own = [0u8; JOURNAL_HEADER_BYTES];
+        self.header_onto(&mut own);
+        header == own.as_slice() && body == self.body.as_slice()
+    }
+
     /// Write the encoding over `bytes`, which is exactly header plus body long and zeroed.
     fn encode_onto(&self, bytes: &mut [u8]) {
+        self.header_onto(bytes);
+        bytes[JOURNAL_HEADER_BYTES..].copy_from_slice(&self.body);
+    }
+
+    /// Write the fixed header over the first [`JOURNAL_HEADER_BYTES`] of `bytes`, which are zeroed.
+    fn header_onto(&self, bytes: &mut [u8]) {
         bytes[at::MAGIC..at::MAGIC + 4].copy_from_slice(&JOURNAL_MAGIC);
         bytes[at::VERSION..at::VERSION + 2].copy_from_slice(&JOURNAL_VERSION.to_le_bytes());
         bytes[at::CLASS] = self.class.code();
@@ -234,7 +253,6 @@ impl JournalRecord {
         bytes[at::BODY_HASH..at::BODY_HASH + 32].copy_from_slice(&self.body_hash);
         bytes[at::PREV_HASH..at::PREV_HASH + 32].copy_from_slice(&self.prev_hash);
         bytes[at::HASH..at::HASH + 32].copy_from_slice(&self.hash);
-        bytes[JOURNAL_HEADER_BYTES..].copy_from_slice(&self.body);
     }
 
     /// The digest this record's body should carry.

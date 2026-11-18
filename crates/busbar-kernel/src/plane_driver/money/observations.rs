@@ -7,20 +7,23 @@ use crate::persistence::observations::{
     Binding, BoundScope, BudgetBinding, ObservationStore, PrincipalBinding, RatedSubject, Receipt,
 };
 use busbar_contract::abi::sdk::plane::observation::{Observation, ScopeId};
+use busbar_contract::kept::Text;
 use busbar_kernel_ledger::cost::{ClassPrice, NANOS_PER_CENT};
 
 /// Operator-approved accounting policy for one configured upstream binding.
 /// The root supplies this only after routing has verified the selected destination.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObservationPolicy {
-    pub instance: String,
-    pub destination: String,
-    pub serving_subject: String,
-    pub accounting_namespace: String,
+    /// The four names are shared text, made once when the root builds the policy: a scope's
+    /// binding shares them and copies none.
+    pub instance: Text,
+    pub destination: Text,
+    pub serving_subject: Text,
+    pub accounting_namespace: Text,
     /// Eligible declared classes, excluding gateway admission/fee counts.
     pub classes: Vec<u32>,
     /// Additional approved accounting lanes. Index zero always remains the serving lane.
-    pub rated_subjects: Vec<String>,
+    pub rated_subjects: Vec<Text>,
     /// Conservative liability retained until an explicitly closed final scope.
     pub reserve_nanos: u128,
     pub ordered_revisions: bool,
@@ -195,7 +198,9 @@ impl PlaneMoney {
         }
         let money = open.money.clone();
         let identity = PrincipalBinding {
-            principal: money.key.id.clone(),
+            // The key's id is a plain string on the key: made shared once here, then shared by
+            // the binding built from this identity.
+            principal: Text::from(Arc::<str>::from(money.key.id.as_str())),
             instance: policy.instance.clone(),
             destination: policy.destination.clone(),
             accounting_namespace: policy.accounting_namespace.clone(),

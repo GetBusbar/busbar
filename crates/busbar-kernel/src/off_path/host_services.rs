@@ -67,30 +67,6 @@ pub(crate) fn open_unit_evidence(
     out
 }
 
-/// The flusher's tick schedule: its first tick one interval after it starts.
-pub(crate) fn flush_ticks(every: Duration) -> tokio::time::Interval {
-    tokio::time::interval_at(tokio::time::Instant::now() + every, every)
-}
-
-/// The shutdown drain of plane cleanup: sweep until idle, re-polling every 2 ms until the
-/// deadline.
-pub(crate) async fn drain_cleanup_until(
-    deadline: Duration,
-    mut sweep: impl FnMut(&mut std::task::Context<'_>) -> bool,
-) -> bool {
-    let until = tokio::time::Instant::now() + deadline;
-    loop {
-        if std::future::poll_fn(|cx| std::task::Poll::Ready(sweep(cx))).await {
-            return true;
-        }
-        let now = tokio::time::Instant::now();
-        if now >= until {
-            return false;
-        }
-        tokio::time::sleep_until(std::cmp::min(until, now + Duration::from_millis(2))).await;
-    }
-}
-
 /// The shutdown drain of the write-behind queue: flush until idle, every 2 ms until the deadline.
 pub(crate) fn drain_until(
     deadline: Duration,

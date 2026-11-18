@@ -54,6 +54,47 @@ impl PluginObserver for Observer {
         );
     }
 
+    fn metric(
+        &self,
+        plugin: &str,
+        kind: &str,
+        metric: busbar_contract::abi::mechanism::observe::PluginMetric,
+    ) {
+        let Some(kind) = KindCode::ALL.into_iter().find(|code| code.word() == kind) else {
+            return;
+        };
+        let (owner, name) = self.owner(plugin);
+        self.policy.observe_metric(
+            &LoaderGrants {
+                plugin,
+                owner: &owner,
+            },
+            &Output(&name, kind.word()),
+            kind,
+            metric,
+        );
+    }
+
+    fn diagnostic(
+        &self,
+        plugin: &str,
+        kind: &str,
+        diagnostic: busbar_contract::abi::mechanism::observe::PluginDiagnostic,
+    ) {
+        let Some(kind) = KindCode::ALL.into_iter().find(|code| code.word() == kind) else {
+            return;
+        };
+        let (owner, name) = self.owner(plugin);
+        self.policy.observe_diagnostic(
+            &LoaderGrants {
+                plugin,
+                owner: &owner,
+            },
+            &Output(&name, kind.word()),
+            &diagnostic,
+        );
+    }
+
     fn dropped(&self, observations: u64) {
         self.policy.dropped(observations);
     }

@@ -66,7 +66,7 @@ fn corrections_replace_sources_without_lowering_rate_highwater() {
     let classes = classes();
     let attempt_classes = vec!["tokens.in".into()];
     let declaration = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes).unwrap();
-    let physical = BTreeSet::from(["tokens.in".to_owned()]);
+    let physical = BTreeSet::from([busbar_contract::kept::Text::fixed("tokens.in")]);
     let before = attempt();
     let staged = stage_attempt_facts(
         &before,
@@ -106,7 +106,7 @@ fn explicit_reported_zero_can_complete_without_falling_back_to_floor() {
     let classes = classes();
     let attempt_classes = vec!["tokens.in".into()];
     let declaration = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes).unwrap();
-    let physical = BTreeSet::from(["tokens.in".to_owned()]);
+    let physical = BTreeSet::from([busbar_contract::kept::Text::fixed("tokens.in")]);
     let staged = stage_attempt_facts(
         &attempt(),
         &physical,
@@ -133,7 +133,7 @@ fn floor_or_estimate_does_not_prove_complete_coverage() {
     let classes = classes();
     let attempt_classes = vec!["tokens.in".into()];
     let declaration = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes).unwrap();
-    let physical = BTreeSet::from(["tokens.in".to_owned()]);
+    let physical = BTreeSet::from([busbar_contract::kept::Text::fixed("tokens.in")]);
     for source in [UsageSource::Estimated, UsageSource::Floor] {
         let before = attempt();
         assert!(stage_attempt_facts(
@@ -157,7 +157,7 @@ fn wrong_preparation_or_session_class_refuses_the_entire_batch() {
     let classes = classes();
     let attempt_classes = vec!["tokens.in".into()];
     let declaration = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes).unwrap();
-    let physical = BTreeSet::from(["tokens.in".to_owned()]);
+    let physical = BTreeSet::from([busbar_contract::kept::Text::fixed("tokens.in")]);
     let good = report(UsageSource::Reported, 7);
     for bad in [
         AttemptUsage { attempt: 2, ..good }, // Dispatch ordinal is not preparation ordinal.
@@ -178,7 +178,7 @@ fn prepared_no_send_and_sealed_attempts_cannot_accept_usage() {
     let classes = classes();
     let attempt_classes = vec!["tokens.in".into()];
     let declaration = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes).unwrap();
-    let physical = BTreeSet::from(["tokens.in".to_owned()]);
+    let physical = BTreeSet::from([busbar_contract::kept::Text::fixed("tokens.in")]);
     for (transport, finality) in [
         (Transport::Prepared, Finality::Live),
         (Transport::NoSend, Finality::Unknown),
@@ -207,7 +207,7 @@ fn accepted_fractional_usage_preserves_existing_half_even_rounding_signal() {
     let classes = classes();
     let attempt_classes = vec!["tokens.in".into()];
     let declaration = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes).unwrap();
-    let physical = BTreeSet::from(["tokens.in".to_owned()]);
+    let physical = BTreeSet::from([busbar_contract::kept::Text::fixed("tokens.in")]);
     let staged = stage_attempt_facts(
         &attempt(),
         &physical,
@@ -270,10 +270,11 @@ fn rate_observation_keeps_peak_and_requires_reported_coverage_including_zero() {
             ..Default::default()
         },
     );
-    let classes: Vec<Box<str>> = ["tokens.in", "tokens.zero", "tokens.floor", "tokens.missing"]
-        .into_iter()
-        .map(Into::into)
-        .collect();
+    let classes: Vec<busbar_contract::kept::Text> =
+        ["tokens.in", "tokens.zero", "tokens.floor", "tokens.missing"]
+            .into_iter()
+            .map(Into::into)
+            .collect();
     let view = super::effective_tokens(&classes, &partition);
     assert_eq!(view.0[0].quantity, Some(Count::from(20)));
     assert!(view.0[0].authoritative);
@@ -287,9 +288,9 @@ fn rate_observation_keeps_peak_and_requires_reported_coverage_including_zero() {
 
 #[test]
 fn spill_member_scope_does_not_replace_original_request_pool() {
-    let grants = BTreeMap::from([
-        ("seat\u{1f}p".to_owned(), vec!["seat\u{1f}a".to_owned()]),
-        ("seat\u{1f}q".to_owned(), vec!["seat\u{1f}b".to_owned()]),
+    let grants = crate::plane_driver::request_admission::MemberGrants::from([
+        ("seat\u{1f}p".into(), ["seat\u{1f}a".into()].into()),
+        ("seat\u{1f}q".into(), ["seat\u{1f}b".into()].into()),
     ]);
     assert!(super::member_granted(&grants, "seat\u{1f}q", "seat\u{1f}b"));
     assert!(!super::member_granted(

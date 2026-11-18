@@ -34,14 +34,22 @@ pub enum NamedMapSection {
 }
 
 impl NamedMapSection {
+    /// Every named-map section, in order: core's two, then each registered plane's. Walked where
+    /// it stands; nothing is built.
+    pub fn each() -> impl Iterator<Item = NamedMapSection> {
+        [NamedMapSection::IdentityProviders, NamedMapSection::Export]
+            .into_iter()
+            .chain(
+                crate::plane_driver::registry::plane_decls()
+                    .iter()
+                    .filter(|decl| decl.named_def_list.is_some())
+                    .map(|decl| NamedMapSection::Plane(decl.config_section)),
+            )
+    }
+
+    /// [`NamedMapSection::each`], as a list (configuration and management paths that keep one).
     pub fn sections() -> Vec<NamedMapSection> {
-        let mut out = vec![NamedMapSection::IdentityProviders, NamedMapSection::Export];
-        for decl in crate::plane_driver::registry::plane_decls() {
-            if decl.named_def_list.is_some() {
-                out.push(NamedMapSection::Plane(decl.config_section));
-            }
-        }
-        out
+        Self::each().collect()
     }
 
     pub fn key(self) -> &'static str {

@@ -4,7 +4,7 @@
 //! THE LEDGER CRATE'S COLD CODE (LINT-RULES LR-167): the refusals its request-path modules build,
 //! out of line. A priced posting never reaches any of them.
 
-use crate::cost::{EntryKey, MoneyError, Unpriceable};
+use crate::cost::{EntryKey, MoneyError};
 
 /// A configured rate's refusal, spelled once into the `String` the configuration check reports.
 #[cold]
@@ -33,24 +33,5 @@ pub(crate) fn tally_class_unpriced(
         card_seq,
         lane: lane.to_string(),
         class: class.to_string(),
-    }
-}
-
-/// The settlement posture's refusal of a lane a present card is silent about.
-#[cold]
-pub(crate) fn posting_lane_unpriced(card_seq: EntryKey, lane: &str) -> Unpriceable {
-    Unpriceable::LaneUnpriced {
-        card_seq,
-        lane: lane.to_owned(),
-    }
-}
-
-/// The settlement posture's refusal of a hit class a present card is silent about.
-#[cold]
-pub(crate) fn posting_class_unpriced(card_seq: EntryKey, lane: &str, class: &str) -> Unpriceable {
-    Unpriceable::ClassUnpriced {
-        card_seq,
-        lane: lane.to_owned(),
-        class: class.to_owned(),
     }
 }

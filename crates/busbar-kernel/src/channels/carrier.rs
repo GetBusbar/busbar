@@ -96,27 +96,6 @@ impl Events for LogEvents {
     }
 }
 
-/// What the driver counts (`plane_channel_unattributed_total`, and the messages a full slot dropped).
-#[derive(Debug, Default)]
-pub struct Counts {
-    unattributed: AtomicU64,
-    slot_full: AtomicU64,
-}
-
-impl Counts {
-    /// A DX_OUTSTANDING message with no ask open and no fallback.
-    #[must_use]
-    pub fn unattributed(&self) -> u64 {
-        self.unattributed.load(Ordering::Relaxed)
-    }
-
-    /// Messages dropped because the slot's queue was full.
-    #[must_use]
-    pub fn slot_full(&self) -> u64 {
-        self.slot_full.load(Ordering::Relaxed)
-    }
-}
-
 /// What the generation tasks share with the driver.
 struct Shared {
     instance: u64,
@@ -125,7 +104,6 @@ struct Shared {
     demuxer: Arc<dyn Demuxer>,
     signals: Arc<dyn SessionSignals>,
     events: Arc<dyn Events>,
-    counts: Arc<Counts>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -206,17 +184,10 @@ impl ChannelDriver {
                 demuxer,
                 signals,
                 events,
-                counts: Arc::new(Counts::default()),
             }),
             wires,
             channels: Mutex::new(HashMap::new()),
         }
-    }
-
-    /// The driver's counters.
-    #[must_use]
-    pub fn counts(&self) -> Arc<Counts> {
-        Arc::clone(&self.shared.counts)
     }
 
     fn check_command(
@@ -663,10 +634,8 @@ impl Run {
             match generation.link.head() {
                 Some(slot) => self.to_slot(slot, message),
                 None if demuxed.tail.is_empty() => {
-                    self.shared
-                        .counts
-                        .unattributed
-                        .fetch_add(1, Ordering::Relaxed);
+                    metrics::counter!(crate::snapshot::PLANE_CHANNEL_UNATTRIBUTED_TOTAL)
+                        .increment(1);
                 }
                 None => {
                     let sent = GuardedWrite::fallback(
@@ -678,10 +647,8 @@ impl Run {
                     .ok()
                     .is_some_and(|message| generation.link.write(message).is_ok());
                     if !sent {
-                        self.shared
-                            .counts
-                            .unattributed
-                            .fetch_add(1, Ordering::Relaxed);
+                        metrics::counter!(crate::snapshot::PLANE_CHANNEL_UNATTRIBUTED_TOTAL)
+                            .increment(1);
                     }
                 }
             }
@@ -717,7 +684,7 @@ impl Run {
         match tx {
             Some(tx) => {
                 if tx.try_send(ChannelMsg::Message(message)).is_err() {
-                    self.shared.counts.slot_full.fetch_add(1, Ordering::Relaxed);
+                    metrics::counter!(crate::snapshot::PLANE_CHANNEL_SLOT_FULL_TOTAL).increment(1);
                 }
             }
             None => tracing::debug!(slot, "a channel message named a slot that is gone"),

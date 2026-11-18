@@ -100,6 +100,9 @@ impl<F: Fn(&str) + Send + Sync> FramerDoor for Observed<F> {
     fn incomplete_retirement(&self, error: &Refused) {
         self.actual.incomplete_retirement(error);
     }
+    fn request_deadline(&self, timeout_ms: u64) -> Result<u64, Refused> {
+        self.actual.request_deadline(timeout_ms)
+    }
     fn cross(&self, call: Call<'_>) -> Crossed {
         self.observe(&call);
         self.actual.cross(call)

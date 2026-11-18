@@ -503,7 +503,6 @@ pub fn build_router_with_limits(
         &app.plane_slots,
         app.oauth_as.as_ref(),
         Vec::new(),
-        Vec::new(),
         true,
     );
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
@@ -532,13 +531,11 @@ pub(crate) fn base_data_router(
     >,
     oauth_as: Option<&std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
-    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
 ) -> (
     Router<std::sync::Arc<state::AppHandle>>,
     crate::core_routes::CoreRouteTable,
 ) {
-    base_data_router_scoped(plugin_routes, plane_slots, oauth_as, doors, sessions, true)
-        .into_parts()
+    base_data_router_scoped(plugin_routes, plane_slots, oauth_as, doors, true).into_parts()
 }
 
 /// The exact configured bound used to prepare this router, including explicit test overrides.
@@ -652,86 +649,6 @@ pub(crate) fn mount_plane_route(
                     ),
                 };
                 handler(ctx).await
-            }
-        },
-    )
-}
-
-pub(crate) fn mount_plane_session(
-    router: crate::core_routes::CoreRouter,
-    slot: std::sync::Arc<dyn std::any::Any + Send + Sync>,
-    spec: busbar_kernel::plane_routes::PlaneSessionSpec,
-) -> crate::core_routes::CoreRouter {
-    use busbar_contract::abi::mechanism::route::RouteMethod;
-    let busbar_kernel::plane_routes::PlaneSessionSpec {
-        path,
-        auth,
-        handler,
-    } = spec;
-    let ctx_path = path.clone();
-    router.route(
-        path,
-        RouteMethod::Get,
-        auth,
-        move |axum::extract::Extension(request): axum::extract::Extension<
-            limits::process_admission::RequestLease,
-        >,
-              axum::extract::State(handle): axum::extract::State<
-            std::sync::Arc<state::AppHandle>,
-        >,
-              upgrade: busbar_kernel::ingress::session::SessionUpgrade,
-              state::CurrentApp(app): state::CurrentApp,
-              _: axum::extract::RawPathParams,
-              uri: axum::http::Uri,
-              gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
-              signed_authority: Option<axum::extract::Extension<auth::SignedRequestAuthority>>,
-              principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
-              consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
-              listener: Option<
-            axum::extract::Extension<busbar_kernel::plane_routes::ListenerScheme>,
-        >,
-              mut headers: axum::http::HeaderMap| {
-            let consumed_fields =
-                auth::ConsumedCredentials::fields_of(consumed.as_deref(), &headers);
-            auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
-            let caller_credential = consumed.as_deref().and_then(|c| c.caller.clone());
-            let ticket = consumed.as_deref().and_then(|c| c.ticket.clone());
-            let host_ticket_admission = consumed
-                .as_deref()
-                .and_then(|c| c.host_ticket_admission.clone());
-            let handler = handler.clone();
-            let slot = slot.clone();
-            let ctx_path = ctx_path.clone();
-            async move {
-                let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = app;
-                let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
-                    request,
-                    handle,
-                    path: ctx_path,
-                    uri,
-                    method: RouteMethod::Get,
-                    headers,
-                    body: axum::body::Bytes::new(),
-                    gov: gov.map(|axum::extract::Extension(g)| g),
-                    signed_authority: signed_authority.map(|axum::extract::Extension(a)| a),
-                    principal: principal.map(|axum::extract::Extension(p)| p),
-                    engine,
-                    slot,
-                    caller_credential,
-                    scheme: listener.map_or(
-                        busbar_contract::abi::host::service::SCHEME_UNDECLARED,
-                        |axum::extract::Extension(l)| l.0,
-                    ),
-                    ticket,
-                    host_ticket_admission,
-                    consumed_fields,
-                };
-                match handler(ctx).await {
-                    busbar_kernel::plane_routes::SessionAnswer::Refused(response) => response,
-                    busbar_kernel::plane_routes::SessionAnswer::Accepted(pipe) => {
-                        busbar_kernel::ingress::session::bridge(upgrade, pipe)
-                    }
-                }
             }
         },
     )
@@ -1084,28 +1001,9 @@ pub fn build_split_routers_serving(
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
-    build_split_routers_serving_sessions(
-        app,
-        doors,
-        Vec::new(),
-        request_body_max_bytes,
-        max_inbound_concurrent,
-        server_timing_enabled,
-    )
-}
-
-pub fn build_split_routers_serving_sessions(
-    app: std::sync::Arc<state::App>,
-    doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
-    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
-    request_body_max_bytes: usize,
-    max_inbound_concurrent: usize,
-    server_timing_enabled: bool,
-) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
     build_split_routers_serving_doors(
         app,
         doors,
-        sessions,
         Vec::new(),
         request_body_max_bytes,
         max_inbound_concurrent,
@@ -1116,7 +1014,6 @@ pub fn build_split_routers_serving_sessions(
 pub fn build_split_routers_serving_doors(
     app: std::sync::Arc<state::App>,
     doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
-    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
     refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
     request_body_max_bytes: usize,
     max_inbound_concurrent: usize,
@@ -1127,7 +1024,6 @@ pub fn build_split_routers_serving_doors(
         app,
         &plugin_routes,
         doors,
-        sessions,
         refusals,
         request_body_max_bytes,
         max_inbound_concurrent,
@@ -1139,20 +1035,14 @@ pub fn build_split_routers_serving_listener(
     app: std::sync::Arc<state::App>,
     data_plugins: &crate::plugin_routes::PluginRouteTable,
     doors: Vec<crate::plane_routes::PlaneRouteSpec>,
-    sessions: Vec<crate::plane_routes::PlaneSessionSpec>,
     refusals: Vec<crate::plane_routes::PlaneRefusalSpec>,
     request_body_max_bytes: usize,
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
     // The data router borrows the snapshot's plane slots before the handle takes the snapshot.
-    let (data, data_core_routes) = base_data_router(
-        data_plugins,
-        &app.plane_slots,
-        app.oauth_as.as_ref(),
-        doors,
-        sessions,
-    );
+    let (data, data_core_routes) =
+        base_data_router(data_plugins, &app.plane_slots, app.oauth_as.as_ref(), doors);
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     let data = apply_common_layers(
         data,
@@ -1210,7 +1100,6 @@ pub fn build_data_router_on(
     handle: &std::sync::Arc<state::AppHandle>,
     plugins: &crate::plugin_routes::PluginRouteTable,
     doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
-    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
     refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
     refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
     request_body_max_bytes: usize,
@@ -1222,7 +1111,6 @@ pub fn build_data_router_on(
         &std::collections::BTreeMap::new(),
         None,
         doors,
-        sessions,
         false,
     )
     .into_parts();
@@ -1426,7 +1314,3 @@ pub(crate) fn apply_inbound_concurrency_limit(
 #[cfg(test)]
 #[path = "tests/router_door_tests.rs"]
 mod router_door_tests;
-
-#[cfg(test)]
-#[path = "tests/router_session_tests.rs"]
-mod router_session_tests;

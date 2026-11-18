@@ -15,7 +15,8 @@ use arc_swap::ArcSwapOption;
 use busbar_contract::abi::host::io::{DIR_BOTH, DIR_READ, DIR_WRITE};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::Program;
-use busbar_contract::io_host::{Ends, IoHost, IoRefusal, IoResult, Spawn};
+use busbar_contract::io_host::{AddrText, Ends, IoHost, IoRefusal, IoResult, Spawn};
+use busbar_contract::kept::Text;
 
 use crate::io::{self as reactor, Direction, Registered};
 use crate::socket::{self, Sock};
@@ -53,9 +54,9 @@ fn pipe_ends() -> io::Result<(
 /// What the connector admitted for one op's ticket: the one thing that op may reach.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Admission {
-    /// `open` of exactly these addresses (each `ip:port`, or `unix:` and an absolute path): the
-    /// address the destination judge pinned.
-    Dial(Vec<String>),
+    /// `open` of exactly this address (`ip:port`, or `unix:` and an absolute path): the address
+    /// the destination judge pinned. The host keeps it for the op, so it is the op's one copy.
+    Dial(String),
     /// `listen` on exactly this bind (`ip:port`).
     Bind(String),
     /// `spawn` of exactly this program, its environment references as config time resolved them.
@@ -218,6 +219,9 @@ impl std::fmt::Debug for HostIo {
     }
 }
 
+/// The policy refusal of a call the host did not admit for the op that asked: fixed words.
+const NOT_ADMITTED: &str = "the host did not admit this for the op that asked";
+
 fn failed(e: &io::Error) -> IoRefusal {
     IoRefusal::Failed(crate::cold::lines::io_error_text(e))
 }
@@ -322,9 +326,7 @@ impl HostIo {
         let held = self.admitted.lock().unwrap_or_else(PoisonError::into_inner);
         match held.get(&ticket).and_then(|a| a.what.as_ref()) {
             Some(what) if check(what) => Ok(()),
-            _ => Err(IoRefusal::Refused(
-                "the host did not admit this for the op that asked".into(),
-            )),
+            _ => Err(IoRefusal::Refused(Text::fixed(NOT_ADMITTED))),
         }
     }
 
@@ -517,10 +519,7 @@ fn shutdown(how: u32) -> Shutdown {
 
 impl IoHost for HostIo {
     fn open(&self, owner: u64, ticket: Ticket, addr: &str) -> IoResult<u64> {
-        self.admits(
-            ticket,
-            |a| matches!(a, Admission::Dial(at) if at.iter().any(|x| x == addr)),
-        )?;
+        self.admits(ticket, |a| matches!(a, Admission::Dial(at) if at == addr))?;
         let sock = match Self::connect(addr) {
             Ok(s) => s,
             Err(f) => {
@@ -550,7 +549,7 @@ impl IoHost for HostIo {
         Ok(id)
     }
 
-    fn listen(&self, owner: u64, ticket: Ticket, bind: &str) -> IoResult<(u64, String)> {
+    fn listen(&self, owner: u64, ticket: Ticket, bind: &str) -> IoResult<(u64, AddrText)> {
         self.admits(ticket, |a| matches!(a, Admission::Bind(b) if b == bind))?;
         let failed_bind = |stage: &str, error: &io::Error| {
             tracing::warn!(
@@ -570,7 +569,7 @@ impl IoHost for HostIo {
         let sock = self.register(l).map_err(|e| failed_bind("register", &e))?;
         let id = self.handles.make(owner, Kind::Listener(sock))?;
         self.record(ticket, Some(id), None);
-        Ok((id, crate::off_path::lines::bound_address(&local)))
+        Ok((id, AddrText::of(&local)))
     }
 
     fn accept(
@@ -579,7 +578,7 @@ impl IoHost for HostIo {
         ticket: Ticket,
         listener: u64,
         waker: &Waker,
-    ) -> Poll<IoResult<(u64, String)>> {
+    ) -> Poll<IoResult<(u64, AddrText)>> {
         let e = match self.entry(owner, listener) {
             Ok(e) => e,
             Err(r) => return Poll::Ready(Err(r)),
@@ -612,7 +611,7 @@ impl IoHost for HostIo {
                         Err(r) => return Poll::Ready(Err(r)),
                     };
                     self.record(ticket, Some(id), None);
-                    return Poll::Ready(Ok((id, crate::off_path::hostio::peer_text(&peer))));
+                    return Poll::Ready(Ok((id, AddrText::of(&peer))));
                 }
 
                 Poll::Ready(Err(e))
@@ -744,13 +743,13 @@ impl IoHost for HostIo {
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64> {
         let (held, cwd) = {
             let admitted = self.admitted.lock().unwrap_or_else(PoisonError::into_inner);
-            let admitted = admitted.get(&ticket).ok_or_else(|| {
-                IoRefusal::Refused("the host did not admit this for the op that asked".into())
-            })?;
+            let admitted = admitted
+                .get(&ticket)
+                .ok_or(IoRefusal::Refused(Text::fixed(NOT_ADMITTED)))?;
             if admitted.owner.is_some_and(|expected| expected != owner) {
-                return Err(IoRefusal::Refused(
-                    "the program admission belongs to another supplier".into(),
-                ));
+                return Err(IoRefusal::Refused(Text::fixed(
+                    "the program admission belongs to another supplier",
+                )));
             }
             match admitted.what.as_ref() {
                 Some(Admission::Spawn(program, env))
@@ -769,25 +768,23 @@ impl IoHost for HostIo {
                     (env.clone(), program.cwd.clone())
                 }
                 _ => {
-                    return Err(IoRefusal::Refused(
-                        "the host did not admit this for the op that asked".into(),
-                    ));
+                    return Err(IoRefusal::Refused(Text::fixed(NOT_ADMITTED)));
                 }
             }
         };
         if !std::path::Path::new(spawn.program).is_absolute() {
-            return Err(IoRefusal::Refused(
-                "a program is spawned by its absolute path only".into(),
-            ));
+            return Err(IoRefusal::Refused(Text::fixed(
+                "a program is spawned by its absolute path only",
+            )));
         }
         if cwd.as_deref().is_some_and(|directory| {
             !std::path::Path::new(directory).is_absolute()
                 || directory.trim() != directory
                 || directory.contains('\0')
         }) {
-            return Err(IoRefusal::Refused(
-                "a program working directory must be an unpadded absolute path without NUL".into(),
-            ));
+            return Err(IoRefusal::Refused(Text::fixed(
+                "a program working directory must be an unpadded absolute path without NUL",
+            )));
         }
         // Pipe registration and Command::spawn are synchronous. The guard never crosses an await;
         // it pins both the Unix child driver and Windows overlapped pipes to this generation.
@@ -797,9 +794,7 @@ impl IoHost for HostIo {
         }
 
         let held = held.now();
-        let resolved = held
-            .env()
-            .map_err(|why| IoRefusal::Refused(crate::cold::lines::refusal_text(why)))?;
+        let resolved = held.env().map_err(|why| IoRefusal::Refused(why.clone()))?;
 
         let (child_reads, stdin, stdout, child_writes) = pipe_ends().map_err(|e| failed(&e))?;
 
@@ -846,7 +841,7 @@ impl IoHost for HostIo {
                 let peer = inet(s.peer_addr()).map_err(|err| failed(&err))?;
                 Ok(Ends {
                     port: local.port(),
-                    peer: crate::off_path::hostio::peer_text(&peer),
+                    peer: AddrText::of(&peer),
                     exit: None,
                 })
             }

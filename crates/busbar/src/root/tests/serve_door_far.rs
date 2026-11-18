@@ -238,7 +238,7 @@ impl Telemetry for Quiet {
     fn upstream_failure(&self, _: &str, _: DestinationId, _: &'static str) {}
     fn failover(&self, _: &str, _: &'static str) {}
     fn breaker_trip(&self, _: &str, _: DestinationId) {}
-    fn queued(&self, _: &str, _: i64) {}
+    fn queued(&self, _: &str, _: i64, _: i64) {}
 }
 
 #[tokio::test]
@@ -344,17 +344,17 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
         pools: foldhash::HashMap::from_iter([(
-            pool_name.clone(),
-            Pool {
-                name: pool_name.clone(),
-                members: vec![Member::new(destination, "e", 1)],
-                failover: Failover {
+            busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(pool_name.as_str())),
+            {
+                let mut pool = Pool::new(pool_name.clone(), vec![Member::new(destination, "e", 1)]);
+                pool.set_failover(Failover {
                     timeout_secs: 30,
                     max_hops: 1,
                     exclusions: Vec::new(),
-                },
-                on_exhausted: OnExhausted::Status503,
-                floor: WeightedFloor::new(),
+                });
+                pool.on_exhausted = OnExhausted::Status503;
+                pool.floor = WeightedFloor::new();
+                pool
             },
         )]),
         routes: foldhash::HashMap::from_iter([(
@@ -365,7 +365,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
                 need: NeedId(0),
                 base_url: "https://far.test/".into(),
                 auth: None,
-                provider: "e".into(),
+                provider: busbar_contract::kept::Text::fixed("e"),
                 keep: Default::default(),
                 rides: Vec::new(),
                 anchors: Default::default(),
@@ -391,8 +391,8 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
     assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
     let request = OutboundRequest {
         text: false,
-        member: String::new(),
-        pool: String::new(),
+        member: busbar_contract::kept::Text::EMPTY,
+        pool: busbar_contract::kept::Text::EMPTY,
         attempt_no: 1,
         verb: b"POST".to_vec(),
         target: b"/x".to_vec(),

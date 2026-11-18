@@ -128,8 +128,9 @@ pub struct Work {
     pub instance: Arc<str>,
     /// Its reference.
     pub reference: Reference,
-    /// Its kind.
-    pub kind: String,
+    /// Its kind: a word fixed in the program when the host opens the handle itself, a shared name
+    /// when a caller states it or a row is read back.
+    pub kind: busbar_contract::kept::Text,
     /// Its owner.
     pub owner: Owner,
     /// Live (`true`) or settled.
@@ -240,7 +241,7 @@ impl Work {
         Some(Work {
             instance: Arc::clone(instance),
             reference,
-            kind: kind.to_string(),
+            kind: busbar_contract::kept::Text::from(Arc::<str>::from(kind)),
             owner,
             live,
             opened_ms,

@@ -256,32 +256,11 @@ pub async fn readyz(
             let at = now();
             lanes == 0 || (0..lanes).any(|i| app.store.is_ready_any_cell(i, at))
         };
-    if crate::persistence::restore::gate().quarantined() {
-        return restore_quarantined(ready);
-    }
     if ready {
         (StatusCode::OK, "ok").into_response()
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "not ready").into_response()
     }
-}
-
-/// `/readyz` while this process is in restore quarantine (DES-331 §B10.4): 503 with the reasons,
-/// `store_restored` first. The route stays as unauthenticated as it always is (D7).
-fn restore_quarantined(otherwise_ready: bool) -> Response {
-    let mut reasons = vec!["store_restored"];
-    if !otherwise_ready {
-        reasons.push("not_ready");
-    }
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            busbar_contract::protocol::APPLICATION_JSON,
-        )],
-        json!({ "ready": false, "reasons": reasons }).to_string(),
-    )
-        .into_response()
 }
 
 pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {

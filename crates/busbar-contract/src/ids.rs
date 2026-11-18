@@ -126,32 +126,52 @@ pub struct UpstreamIdx(pub u8);
 ///
 /// The auth kind resolves this; a plane never sees a credential and never mints a principal. The
 /// anonymous principal is the kernel's own and has no bucket.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
-pub struct PrincipalId(String);
+///
+/// The name is shared text: it is made once, when the principal is named, and every copy of the
+/// principal after that (the unit's hold, its records, its audit line) shares it.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+pub struct PrincipalId(crate::kept::Text);
 
 impl PrincipalId {
-    /// Name a principal.
+    /// Name a principal: the one place its name is made.
     #[must_use]
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
+    pub fn new(id: impl AsRef<str>) -> Self {
+        Self(crate::kept::Text::from(std::sync::Arc::<str>::from(
+            id.as_ref(),
+        )))
     }
 
     /// The anonymous principal: the kernel's own, carried by a round that has established no
     #[must_use]
     pub fn anonymous() -> Self {
-        Self(String::from("anonymous"))
+        Self(crate::kept::Text::fixed("anonymous"))
     }
 
     /// The identity as the audit row prints it.
     #[must_use]
     pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    /// The identity as shared text: a record that keeps the principal's name shares this one.
+    #[must_use]
+    pub fn text(&self) -> &crate::kept::Text {
         &self.0
+    }
+}
+
+// Written by hand so it prints `PrincipalId("name")`, exactly as it did when it held a `String`.
+impl fmt::Debug for PrincipalId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("PrincipalId")
+            .field(&self.0.as_str())
+            .finish()
     }
 }
 
 impl fmt::Display for PrincipalId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(self.0.as_str())
     }
 }
 

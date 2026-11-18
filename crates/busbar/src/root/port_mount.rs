@@ -150,9 +150,11 @@ fn with_head(status: u16, fields: HeadFields, body: Body) -> PlaneResponse {
     let mut response = PlaneResponse::new(body);
     *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
     for (name, value) in fields {
+        // The value's own allocation becomes the header value (checked as `from_bytes` checks
+        // it): the head's values are handed to the response, not copied into it.
         if let (Ok(name), Ok(value)) = (
             HeaderName::from_bytes(&name),
-            HeaderValue::from_bytes(&value),
+            HeaderValue::from_maybe_shared(Bytes::from(value)),
         ) {
             response.headers_mut().append(name, value);
         }
@@ -473,7 +475,7 @@ pub(crate) fn blocked_client(
         LimitBlocked::CustodyFull { .. } => ReasonCode::SessionBudget,
     };
     (
-        super::native_refusals::client(reason, status.as_u16(), &message),
+        super::native_refusals::client(reason, status.as_u16(), message),
         retry_after,
     )
 }

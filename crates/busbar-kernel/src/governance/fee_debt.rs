@@ -150,7 +150,8 @@ struct Association {
 /// existing flight until it is associated and resolved.
 pub struct FeeCapture {
     identity: Arc<()>,
-    bucket: String,
+    /// The bucket, by the budget map's own key: shared, not copied.
+    bucket: busbar_contract::kept::Text,
     incarnation: u64,
     window: u64,
     cut: u64,
@@ -163,7 +164,7 @@ pub struct FeeCapture {
 impl FeeCapture {
     pub(crate) fn frozen(
         producer: &FeeDebtProducer,
-        bucket: &str,
+        bucket: &busbar_contract::kept::Text,
         incarnation: u64,
         window: u64,
         cut: u64,
@@ -171,7 +172,7 @@ impl FeeCapture {
     ) -> Arc<Self> {
         Arc::new(Self {
             identity: producer.identity.clone(),
-            bucket: bucket.to_owned(),
+            bucket: bucket.clone(),
             incarnation,
             window,
             cut,
@@ -457,12 +458,11 @@ impl FeeDebtObserver {
             .source
             .try_reserve(bytes)
             .map_err(|_| FeeDebtRefusal::Capacity)?;
-        let mut targets = Vec::new();
-        if targets.try_reserve_exact(count).is_err() {
+        if state.targets.try_reserve_exact(count).is_err() {
             return Err(FeeDebtRefusal::Capacity);
         }
         for bucket in buckets {
-            targets.push(Target {
+            state.targets.push(Target {
                 bucket: Arc::from(bucket),
                 incarnation: 0,
                 window: None,
@@ -472,7 +472,6 @@ impl FeeDebtObserver {
                 unresolved: false,
             });
         }
-        state.targets = targets;
         state.credit = Some(credit);
         state.prepared = true;
         Ok(())

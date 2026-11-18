@@ -194,7 +194,9 @@ pub(super) struct FramedCaller {
     inner: IngressCaller,
     stream: Shared,
     trailers: Trailers,
-    opening: HeadFields,
+    /// The framer's opening fields, shared with the stream that holds them (never copied here):
+    /// they are copied once, into the head that states them. `None` = the framer stated none.
+    opening: Option<Arc<[HeadWords]>>,
 }
 
 impl FramedCaller {
@@ -206,8 +208,7 @@ impl FramedCaller {
         let opening = lock(&stream)
             .stream
             .as_ref()
-            .map(|stream| stream.opening_fields().to_vec())
-            .unwrap_or_default();
+            .and_then(FramedStream::opening_shared);
         Self {
             inner,
             stream,
@@ -274,7 +275,11 @@ impl CallerEnd for FramedCaller {
     }
 
     fn head(&self, status: u32, mut fields: HeadFields) {
-        fields.extend(self.opening.iter().cloned());
+        fields.extend(
+            self.opening
+                .iter()
+                .flat_map(|opening| opening.iter().cloned()),
+        );
         fields.retain(|(name, _)| !name.eq_ignore_ascii_case(b"content-length"));
         self.inner.head(status, fields);
     }

@@ -72,8 +72,6 @@ pub(crate) struct ClaimDoor {
     closed: AtomicBool,
     assocs: PortAssociations,
     legs: Mutex<HashMap<u64, Arc<CallerLeg>>>,
-    /// The legs one wake found expired, kept so the next wake reuses its room.
-    expiring: Mutex<Vec<Arc<CallerLeg>>>,
 
     joined: Notify,
 }
@@ -106,7 +104,6 @@ impl ClaimDoor {
             closed: AtomicBool::new(false),
             assocs: PortAssociations::new(),
             legs: Mutex::new(HashMap::default()),
-            expiring: Mutex::new(Vec::new()),
             joined: Notify::new(),
         });
         door.spawn(Arc::clone(&door).run());
@@ -304,21 +301,18 @@ impl ClaimDoor {
     }
 
     fn expire(&self, now: Instant) {
-        let mut expired = std::mem::take(&mut *lock(&self.expiring));
-        expired.extend(
-            lock(&self.legs)
-                .values()
-                .filter(|leg| {
-                    lock(&leg.lease)
-                        .as_ref()
-                        .is_some_and(|lease| lease.expires <= now)
-                })
-                .cloned(),
-        );
-        for leg in expired.drain(..) {
+        let expired: Vec<Arc<CallerLeg>> = lock(&self.legs)
+            .values()
+            .filter(|leg| {
+                lock(&leg.lease)
+                    .as_ref()
+                    .is_some_and(|lease| lease.expires <= now)
+            })
+            .cloned()
+            .collect();
+        for leg in expired {
             leg.failed();
         }
-        *lock(&self.expiring) = expired;
     }
 
     fn leave(&self, id: u64) {
@@ -481,7 +475,7 @@ impl CallerLeg {
         }
     }
 
-    fn take_batch(&self, session: SessionBatch, now: Instant) -> Result<(), String> {
+    fn take_batch(&self, session: SessionBatch, now: Instant) -> Result<(), &'static str> {
         self.take_batch_keeping(session, now, None).map(drop)
     }
 
@@ -492,7 +486,7 @@ impl CallerLeg {
         session: SessionBatch,
         _now: Instant,
         keep: Option<usize>,
-    ) -> Result<Option<Description>, String> {
+    ) -> Result<Option<Description>, &'static str> {
         let SessionBatch {
             pieces,
             custody,
@@ -519,11 +513,11 @@ impl CallerLeg {
                 let credit = self
                     .request
                     .try_reserve(g.bytes.len())
-                    .map_err(|_| "the gateway is at input capacity".to_owned())?;
+                    .map_err(|_| "the gateway is at input capacity")?;
                 let custody = owner
                     .reader_on(Leg::Caller)
                     .with_owner(Arc::new(credit))
-                    .map_err(|_| "the caller's input already has an owner".to_owned())?;
+                    .map_err(|_| "the caller's input already has an owner")?;
                 kept = Some(Description {
                     bytes: busbar_contract::secure::SecureVec::from(g.bytes),
                     custody,
@@ -550,7 +544,7 @@ impl CallerLeg {
                             } else {
                                 drop(g);
                                 drop(owner);
-                                return Err("the caller leg was not joined".into());
+                                return Err("the caller leg was not joined");
                             }
                         }
                         None => self.failed(),
@@ -563,7 +557,7 @@ impl CallerLeg {
             if g.failed && g.stream != 0 {
                 drop(g);
                 drop(owner);
-                return Err("the caller's channel failed".into());
+                return Err("the caller's channel failed");
             }
             if g.stream == 0 || g.ends_stream() {
                 drop(g);
@@ -574,11 +568,11 @@ impl CallerLeg {
             let credit = self
                 .request
                 .try_reserve(g.bytes.len())
-                .map_err(|_| "the gateway is at input capacity".to_owned())?;
+                .map_err(|_| "the gateway is at input capacity")?;
             let custody = owner
                 .reader_on(Leg::Caller)
                 .with_owner(Arc::new(credit))
-                .map_err(|_| "the caller's input already has an owner".to_owned())?;
+                .map_err(|_| "the caller's input already has an owner")?;
             let to_session = lock(&self.to_session).clone();
             let message = Message {
                 bytes: g.bytes,
@@ -594,7 +588,7 @@ impl CallerLeg {
                 }
             };
             if !sent {
-                return Err("the caller's channel reader did not accept its output".into());
+                return Err("the caller's channel reader did not accept its output");
             }
         }
         Ok(kept)
@@ -791,7 +785,9 @@ impl LegSink for CallerLeg {
     }
 
     fn channels(&self, batch: SessionBatch, now: Instant) -> Result<(), String> {
-        self.take_batch(batch, now)
+        // The publication keeps its first failure's text (`PublicationOutcome::failure`), so the
+        // fixed message becomes an owned one here, once, and only on a failure.
+        self.take_batch(batch, now).map_err(str::to_owned)
     }
 
     fn schedule(&self, task: PublicationTask) -> bool {
@@ -999,8 +995,10 @@ impl Opened {
         };
         *lock(&leg.pairing) = Some(Arc::clone(&pairing.pairing));
         framing.memory(pairing.pairing.memory_account());
-        let now = instant_of(now_ns());
-        let yielded = framing.rendezvous(description, now).map_err(|r| r.error)?;
+        // The rendezvous is one operation: its one reading, for the framer and the publication.
+        let at = busbar_core_connector::framer::At::now();
+        let now = at.instant();
+        let yielded = framing.rendezvous(description, at).map_err(|r| r.error)?;
         let session = pairing.pairing.publish(Leg::Caller, yielded, now);
         let index = session
             .pieces

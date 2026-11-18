@@ -86,7 +86,7 @@ pub(crate) fn build_inventory(
     ResourceInventory::from_wire(
         driver.caller(),
         epoch,
-        route.resource_kinds.clone(),
+        route.resource_kinds.to_vec(),
         &wire,
         Arc::clone(&inputs.upstreams),
         Arc::clone(&inputs.targets),
@@ -246,7 +246,6 @@ pub(crate) fn assemble_slot(
     let DoorMounts {
         data: dispatch,
         routes,
-        sessions,
         refusals,
         refuse_by_path,
     } = mounts;
@@ -255,7 +254,6 @@ pub(crate) fn assemble_slot(
         app,
         &plugins,
         routes,
-        sessions,
         refusals,
         refuse_by_path,
         slot == "listen",

@@ -447,6 +447,7 @@ async fn native_usage(backend: Arc<Backend>, applied_head: bool) -> (RecoveryEve
             ..Default::default()
         },
         Default::default(),
+        crate::store::now_ms(),
     )
     .unwrap()
     .unwrap();
@@ -473,6 +474,7 @@ async fn native_usage(backend: Arc<Backend>, applied_head: bool) -> (RecoveryEve
                 ..Default::default()
             },
             Default::default(),
+            crate::store::now_ms(),
         )
         .unwrap()
         .unwrap();

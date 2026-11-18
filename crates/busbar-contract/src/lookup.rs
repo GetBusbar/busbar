@@ -9,11 +9,13 @@
 //! visits no elements.
 //!
 //! - [`Bits`]: a set of small numbers (positions in a frozen list), with its size kept.
+//! - [`BitSet`]: a set of positions of a list, sized to the list when the owner's work starts.
 //! - [`Indexed`]: rows in first-insert order, found by key in one hash.
 //! - [`ByGroup`]: rows found by one key and retired together by another.
 //! - [`Slots`]: values taken out by the one who put them in, by the handle the insert returned.
 //!
-//! The only loops in this module are these: [`Bits`] visits its `W` words (a constant of the type);
+//! The only loops in this module are these: [`Bits`] visits its `W` words (a constant of the type); [`BitSet`] visits one word per 64
+//! positions of its width;
 //! [`ByGroup::take_group`] visits the rows of the one group being retired, each of which is its
 //! output; [`Indexed::from_rows`] visits rows once to index them, and is for off-path use.
 
@@ -147,6 +149,182 @@ impl<const W: usize> Bits<W> {
 impl<const W: usize> Default for Bits<W> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------- BitSet
+
+/// A set of positions `0 .. width`. The width is chosen by the owner when its work starts (a
+/// pool's member count); there is no fixed capacity. Up to 64 positions it holds no heap block.
+/// Above 64 it holds one block of `ceil(width / 64) - 1` words, made by the first `reset_*` that
+/// needs it, reused by every later `reset_*`, and released when the owner is dropped.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BitSet {
+    /// Positions 0..64.
+    first: u64,
+    /// Positions 64..; its length is exactly `ceil(width / 64) - 1`, or 0.
+    rest: Vec<u64>,
+    width: usize,
+    ones: usize,
+}
+
+impl BitSet {
+    /// Width 0, nothing allocated.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            first: 0,
+            rest: Vec::new(),
+            width: 0,
+            ones: 0,
+        }
+    }
+
+    /// The positions it covers, `0 .. width`.
+    #[must_use]
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    fn reset(&mut self, width: usize, fill: u64) {
+        self.rest.clear();
+        self.rest.resize(width.div_ceil(64).saturating_sub(1), fill);
+        self.first = if width == 0 { 0 } else { fill };
+        self.width = width;
+        // Bits at or above `width` are always zero, so the derived `Eq` is right.
+        let top = width % 64;
+        if top != 0 {
+            let mask = (1u64 << top) - 1;
+            match self.rest.last_mut() {
+                Some(last) => *last &= mask,
+                None => self.first &= mask,
+            }
+        }
+        self.ones = if fill == 0 { 0 } else { width };
+    }
+
+    /// Become the empty set over `0 .. width`, keeping the block.
+    pub fn reset_empty(&mut self, width: usize) {
+        self.reset(width, 0);
+    }
+
+    /// Become `{0, .., width - 1}`, keeping the block.
+    pub fn reset_full(&mut self, width: usize) {
+        self.reset(width, u64::MAX);
+    }
+
+    fn word(&self, at: usize) -> Option<&u64> {
+        match at / 64 {
+            0 => Some(&self.first),
+            word => self.rest.get(word - 1),
+        }
+    }
+
+    fn word_mut(&mut self, at: usize) -> Option<&mut u64> {
+        match at / 64 {
+            0 => Some(&mut self.first),
+            word => self.rest.get_mut(word - 1),
+        }
+    }
+
+    /// Add `at`. `false` when it was already in, or `at >= width` (nothing changes).
+    pub fn insert(&mut self, at: usize) -> bool {
+        if at >= self.width {
+            return false;
+        }
+        let bit = 1u64 << (at % 64);
+        let Some(word) = self.word_mut(at) else {
+            return false;
+        };
+        if *word & bit != 0 {
+            return false;
+        }
+        *word |= bit;
+        self.ones += 1;
+        true
+    }
+
+    /// Take `at` out. `false` when it was not in.
+    pub fn remove(&mut self, at: usize) -> bool {
+        let bit = 1u64 << (at % 64);
+        let Some(word) = self.word_mut(at) else {
+            return false;
+        };
+        if *word & bit == 0 {
+            return false;
+        }
+        *word &= !bit;
+        self.ones -= 1;
+        true
+    }
+
+    /// Whether `at` is in.
+    #[must_use]
+    pub fn contains(&self, at: usize) -> bool {
+        self.word(at)
+            .is_some_and(|word| word & (1u64 << (at % 64)) != 0)
+    }
+
+    /// How many are in. A stored count.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.ones
+    }
+
+    /// Whether none is in.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ones == 0
+    }
+
+    fn recount(&mut self) {
+        self.ones = self.first.count_ones() as usize
+            + self
+                .rest
+                .iter()
+                .map(|w| w.count_ones() as usize)
+                .sum::<usize>();
+    }
+
+    /// Keep only positions that are also in `other`; positions at or above `other.width()` leave.
+    pub fn keep_only(&mut self, other: &BitSet) {
+        self.first &= other.first;
+        for (at, word) in self.rest.iter_mut().enumerate() {
+            *word &= other.rest.get(at).copied().unwrap_or(0);
+        }
+        self.recount();
+    }
+
+    /// Take out every position that is in `other`.
+    pub fn drop_all(&mut self, other: &BitSet) {
+        self.first &= !other.first;
+        for (at, word) in self.rest.iter_mut().enumerate() {
+            *word &= !other.rest.get(at).copied().unwrap_or(0);
+        }
+        self.recount();
+    }
+
+    /// Become a copy of `other`, keeping this set's own block.
+    pub fn copy_from(&mut self, other: &BitSet) {
+        self.rest.clear();
+        self.rest.extend_from_slice(&other.rest);
+        self.first = other.first;
+        self.width = other.width;
+        self.ones = other.ones;
+    }
+
+    /// The smallest position that is in and is `>= from`.
+    #[must_use]
+    pub fn next_from(&self, from: usize) -> Option<usize> {
+        let mut at = from / 64;
+        let mut word = *self.word(from)? & (u64::MAX << (from % 64));
+        loop {
+            if word != 0 {
+                return Some(at * 64 + word.trailing_zeros() as usize);
+            }
+            at += 1;
+            word = *self.word(at * 64)?;
+        }
     }
 }
 

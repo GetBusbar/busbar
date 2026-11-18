@@ -16,6 +16,7 @@ use busbar_contract::caps::Route;
 use busbar_contract::caps::{
     Audit, Grant, OpClassId, OriginKind, Outcome, Pass, PrincipalId, VerifiedDestination,
 };
+use busbar_contract::kept::Text;
 use busbar_contract::{LaneId, UnitKey};
 use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission, RequestLease};
 #[path = "plane_node/terminal_book.rs"]
@@ -585,7 +586,7 @@ impl Node {
         let card = open.history.as_ref();
         let served = report.map(|report| report.lane.as_str());
         Ok(AuditInputs {
-            subject: Subject::PrincipalId(open.principal.as_str().to_owned()),
+            subject: Subject::PrincipalId(open.principal.text().clone()),
             what: What {
                 unit_key: context.key,
                 incarnation: 0,
@@ -2156,7 +2157,7 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
 }
 
 impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
-    fn hooks_ran(&self, record: &busbar_kernel::plane_driver::HooksRan) {
+    fn hooks_ran(&self, record: &busbar_kernel::plane_driver::HooksRan<'_>) {
         if let Some(open) = self.lock(record.unit).get_mut(&record.unit) {
             open.sealing.ran.hooks.extend(record.hooks.iter().cloned());
         }
@@ -2196,7 +2197,7 @@ impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
 #[derive(serde::Serialize)]
 struct RunningAuditFacts<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
-    selected_identity: Option<crate::root::durability::SelectedAuditIdentity>,
+    selected_identity: Option<SelectedIdentityFacts<'a>>,
     incarnation: u64,
     principal: &'a str,
     op_class: &'a str,
@@ -2208,6 +2209,30 @@ struct RunningAuditFacts<'a> {
     rate_card: Option<[u8; 20]>,
     policy_epoch: u64,
     hooks: HookFacts<'a>,
+}
+
+/// The selected identity a checkpoint captures, borrowed from the open unit: the fields of
+/// [`crate::root::durability::SelectedAuditIdentity`], in its order and its shapes, so they
+/// serialize to the very bytes that record reads back. Capturing it copies nothing.
+#[derive(serde::Serialize)]
+struct SelectedIdentityFacts<'a> {
+    node: u64,
+    boot_nonce: [u8; 16],
+    user: Option<&'a str>,
+    labels: LabelFacts<'a>,
+}
+
+/// A unit's kept request labels, spelled as the record's `(name, value)` pairs.
+struct LabelFacts<'a>(&'a [(Arc<str>, String)]);
+
+impl serde::Serialize for LabelFacts<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(
+            self.0
+                .iter()
+                .map(|(name, value)| (name.as_ref(), value.as_str())),
+        )
+    }
 }
 
 /// The hooks a unit ran, spelled as the record's `(hook, head, failed)` triples.
@@ -2236,18 +2261,11 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
         let node = self.node()?;
         let book = node.book.get()?.lock().unwrap_or_else(|p| p.into_inner());
         let captured = RunningAuditFacts {
-            selected_identity: Some(crate::root::durability::SelectedAuditIdentity {
+            selected_identity: Some(SelectedIdentityFacts {
                 node: book.record.node(),
                 boot_nonce: busbar_kernel::snapshot::boot_nonce(),
-                user: open.sealing.ran.records.user.clone(),
-                labels: open
-                    .sealing
-                    .ran
-                    .records
-                    .labels
-                    .iter()
-                    .map(|(key, value)| (key.to_string(), value.clone()))
-                    .collect(),
+                user: open.sealing.ran.records.user.as_deref(),
+                labels: LabelFacts(&open.sealing.ran.records.labels),
             }),
             incarnation: book.incarnation,
             principal: open.principal.as_str(),
@@ -2440,13 +2458,12 @@ impl Ran {
             } else {
                 (AttemptOutcome::Failed, attempt_reason(outcome))
             };
+            // A lane's name and a reason code's text are fixed in the program: the attempt names
+            // them and copies neither.
             *slot = Some(Attempt {
                 outcome: kind,
-                target: walked
-                    .lane
-                    .map(|l| l.as_str().to_owned())
-                    .unwrap_or_default(),
-                reason: reason.to_owned(),
+                target: walked.lane.map_or(Text::EMPTY, |l| Text::fixed(l.as_str())),
+                reason: Text::fixed(reason),
                 us: 0,
             });
         }
@@ -2686,6 +2703,43 @@ fn a_local_billing_lane_keeps_only_a_unique_verified_route_destination() {
     assert_eq!(ran.destination(Some(a.as_str())), Some(b.as_str()));
 }
 
+/// The selected identity a checkpoint captures is borrowed from the open unit; what it writes
+/// is byte for byte what the owned record ([`crate::root::durability::SelectedAuditIdentity`])
+/// writes and reads back, with a user and without, with labels and without.
+#[cfg(test)]
+#[test]
+fn the_captured_selected_identity_is_the_bytes_its_record_reads_back() {
+    let kept: Vec<(Arc<str>, String)> = vec![
+        (Arc::from("x-team"), "blue".to_owned()),
+        (Arc::from("x-env"), "prod \"quoted\"".to_owned()),
+    ];
+    let none: &[(Arc<str>, String)] = &[];
+    for labels in [&kept[..], none] {
+        for user in [None, Some("user-1")] {
+            let borrowed = SelectedIdentityFacts {
+                node: 7,
+                boot_nonce: [0xab; 16],
+                user,
+                labels: LabelFacts(labels),
+            };
+            let owned = crate::root::durability::SelectedAuditIdentity {
+                node: 7,
+                boot_nonce: [0xab; 16],
+                user: user.map(str::to_owned),
+                labels: labels
+                    .iter()
+                    .map(|(name, value)| (name.to_string(), value.clone()))
+                    .collect(),
+            };
+            let written = busbar_kernel::json::to_vec(&borrowed).expect("it serializes");
+            assert_eq!(
+                Some(&written),
+                busbar_kernel::json::to_vec(&owned).ok().as_ref()
+            );
+        }
+    }
+}
+
 /// RED (ADMIN-API-1.6 §9): a walk that failed over seals one attempt per dial, the earlier ones
 /// `failover` and the last by how the unit ended; dials beyond the slots are only counted.
 #[cfg(test)]
@@ -2802,7 +2856,7 @@ impl Sealing {
             ..Controls::default()
         };
         let inputs = AuditInputs {
-            subject: Subject::PrincipalId(principal.as_str().to_string()),
+            subject: Subject::PrincipalId(principal.text().clone()),
             what: What {
                 unit_key: seal.key,
                 incarnation: 0,
@@ -2995,12 +3049,12 @@ mod node_money_tests;
 fn checkpoint_facts_serialize_to_the_running_audit_record_bytes() {
     let hooks = [
         HookApplied {
-            hook: "guard".to_owned(),
+            hook: Text::fixed("guard"),
             head: busbar_kernel_audit::HookHead::Modify,
             failed: false,
         },
         HookApplied {
-            hook: "late".to_owned(),
+            hook: Text::fixed("late"),
             head: busbar_kernel_audit::HookHead::Veto,
             failed: true,
         },

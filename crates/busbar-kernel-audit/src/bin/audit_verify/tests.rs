@@ -90,7 +90,7 @@ fn current_producer_output_verifies_with_wide_numbers_and_repeated_groups() {
         QuantitySource, Recipe, Subject, Usage, UsageLine, What,
     };
     let mut record = AuditRecord {
-        subject: Subject::PrincipalId("operator\nquoted\"".into()),
+        subject: Subject::principal("operator\nquoted\""),
         what: What {
             unit_key: UnitKey::new(9),
             incarnation: u64::MAX,
@@ -135,12 +135,12 @@ fn current_producer_output_verifies_with_wide_numbers_and_repeated_groups() {
         controls: Controls {
             hooks_applied: vec![
                 HookApplied {
-                    hook: "first".into(),
+                    hook: busbar_contract::kept::Text::fixed("first"),
                     head: HookHead::Modify,
                     failed: false,
                 },
                 HookApplied {
-                    hook: "second".into(),
+                    hook: busbar_contract::kept::Text::fixed("second"),
                     head: HookHead::Veto,
                     failed: true,
                 },
@@ -544,7 +544,7 @@ fn v7_records_verify_against_the_published_page() {
     let mut previous = String::new();
     for seq in 1..=2u64 {
         let mut record = AuditRecord {
-            subject: Subject::PrincipalId("key-1".into()),
+            subject: Subject::principal("key-1"),
             what: What {
                 unit_key: UnitKey::new(seq),
                 incarnation: 3,
@@ -592,14 +592,14 @@ fn v7_records_verify_against_the_published_page() {
                 attempts: [
                     Some(Attempt {
                         outcome: AttemptOutcome::Failover,
-                        target: "lane-a".into(),
-                        reason: "upstream_5xx".into(),
+                        target: busbar_contract::kept::Text::fixed("lane-a"),
+                        reason: busbar_contract::kept::Text::fixed("upstream_5xx"),
                         us: 0,
                     }),
                     Some(Attempt {
                         outcome: AttemptOutcome::Ok,
-                        target: "lane-b".into(),
-                        reason: String::new(),
+                        target: busbar_contract::kept::Text::fixed("lane-b"),
+                        reason: busbar_contract::kept::Text::EMPTY,
                         us: 0,
                     }),
                     None,

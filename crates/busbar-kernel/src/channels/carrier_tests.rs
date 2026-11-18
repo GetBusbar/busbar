@@ -486,6 +486,23 @@ async fn an_unbidden_message_goes_to_the_head_of_the_ask_line_and_leaves_its_ask
     );
 }
 
+/// The sum of the counter `name` in the real recorder's snapshot (the driver counts on its own tasks, so a thread-local recorder cannot see it).
+fn dropped_total(name: &str) -> f64 {
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
+    crate::snapshot::snapshot()
+        .expect("the actual recorder is installed")
+        .iter()
+        .flat_map(|family| &family.samples)
+        .filter(|sample| sample.name == name)
+        .map(|sample| {
+            sample
+                .value
+                .parse::<f64>()
+                .expect("a numeric metric sample")
+        })
+        .sum()
+}
+
 #[tokio::test]
 async fn an_unbidden_message_with_no_ask_open_writes_the_planes_fallback_or_is_counted() {
     let up = Arc::new(upstream(300));
@@ -501,17 +518,17 @@ async fn an_unbidden_message_with_no_ask_open_writes_the_planes_fallback_or_is_c
         "{\"error\":\"no\"}\n",
         "the fallback, framed"
     );
-    assert_eq!(f.driver.counts().unattributed(), 0);
+    let before = dropped_total(crate::snapshot::PLANE_CHANNEL_UNATTRIBUTED_TOTAL);
     child.says("o|").await;
     for _ in 0..100 {
-        if f.driver.counts().unattributed() == 1 {
+        if dropped_total(crate::snapshot::PLANE_CHANNEL_UNATTRIBUTED_TOTAL) > before {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(
-        f.driver.counts().unattributed(),
-        1,
+        dropped_total(crate::snapshot::PLANE_CHANNEL_UNATTRIBUTED_TOTAL) - before,
+        1.0,
         "no fallback: dropped and counted"
     );
 }
@@ -586,42 +603,43 @@ async fn command_signals_cannot_cross_an_admission_or_reach_legacy_wildcards() {
     assert!(b_rx.try_recv().is_err());
 }
 
-/// Cost of one command-channel signal: 1,000 sessions registered under one admission and one key,
-/// 100,000 `signal_command` calls, each timed alone. Prints the median and the p99 per call.
+/// Cost of one command-channel signal: 1,000 sessions, then 1 session, registered under one admission and
+/// one key; 100,000 `signal_command` calls each, each timed alone. Prints the median and the p99 per call.
 #[tokio::test]
 #[ignore = "cost measurement: run explicitly on the build machine, before and after a signal-table change"]
 async fn command_signal_cost() {
     use super::signals::SignalRegistry;
-    const SESSIONS: usize = 1_000;
     const CALLS: usize = 100_000;
     let up = Arc::new(upstream(300));
     let admission = crate::plane_driver::request_admission::CommandAdmissionFixture::new(up).await;
     let authority = super::authority::ChannelAuthority::new(admission.request.clone()).unwrap();
-    let registry = SignalRegistry::new();
-    let mut held = Vec::with_capacity(SESSIONS);
-    for _ in 0..SESSIONS {
-        let (tx, rx) = mpsc::channel(1);
-        let member = registry
-            .register_command(INSTANCE, &authority, b"cost", tx)
-            .unwrap();
-        held.push((member, rx));
+    for sessions in [1_000_usize, 1] {
+        let registry = SignalRegistry::new();
+        let mut held = Vec::with_capacity(sessions);
+        for _ in 0..sessions {
+            let (tx, rx) = mpsc::channel(1);
+            let member = registry
+                .register_command(INSTANCE, &authority, b"cost", tx)
+                .unwrap();
+            held.push((member, rx));
+        }
+        let mut each = Vec::with_capacity(CALLS);
+        let mut reached = 0u64;
+        for _ in 0..CALLS {
+            let start = Instant::now();
+            let n = registry.signal_command(INSTANCE, &authority, b"cost", P_SIGNAL, b"tick");
+            each.push(start.elapsed());
+            reached += u64::from(n);
+        }
+        each.sort_unstable();
+        eprintln!(
+            "command_signal_cost: {sessions} sessions, {CALLS} calls: median {:?}, p99 {:?}, accepted {reached}, dropped {}",
+            each[CALLS / 2],
+            each[CALLS * 99 / 100],
+            registry.dropped()
+        );
+        assert_eq!(reached, sessions as u64);
     }
-    let mut each = Vec::with_capacity(CALLS);
-    let mut reached = 0u64;
-    for _ in 0..CALLS {
-        let start = Instant::now();
-        let n = registry.signal_command(INSTANCE, &authority, b"cost", P_SIGNAL, b"tick");
-        each.push(start.elapsed());
-        reached += u64::from(n);
-    }
-    each.sort_unstable();
-    eprintln!(
-        "command_signal_cost: {SESSIONS} sessions, {CALLS} calls: median {:?}, p99 {:?}, accepted {reached}, dropped {}",
-        each[CALLS / 2],
-        each[CALLS * 99 / 100],
-        registry.dropped()
-    );
-    assert_eq!(reached, SESSIONS as u64);
 }
 
 #[tokio::test]

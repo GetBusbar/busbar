@@ -33,8 +33,6 @@ const PLUGIN_TEXT_DETAILS: &str = r#"{"type":"object","required":["text","plugin
 const SERVICE_UNAVAILABLE_DETAILS: &str = r#"{"type":"object","properties":{"key":{"type":"string"},"ruling":{"enum":["approve","revoke"]},"decided_at":{"type":"integer","description":"Wall seconds the attempt was stamped at"},"decided_by":{"type":"object","required":["kind","id"],"properties":{"kind":{"const":"principal"},"id":{"type":"string"}}},"operation":{"type":["string","null"],"description":"The deciding request's Idempotency-Key"}}}"#;
 /// The `details` of `outcome_not_applied` (r3 §4.6): the replayed operation and its stamp.
 const OUTCOME_NOT_APPLIED_DETAILS: &str = r#"{"type":"object","required":["operation","decided_at"],"properties":{"operation":{"type":["string","null"]},"decided_at":{"type":"integer"}}}"#;
-/// The `details` of `restore_quarantine` (DES-331 §B10.8): the restore epoch and the admitted writes.
-const RESTORE_QUARANTINE_DETAILS: &str = r#"{"type":"object","required":["restore_epoch","allowed"],"properties":{"restore_epoch":{"type":"integer"},"allowed":{"type":"array","items":{"type":"string"}}}}"#;
 
 macro_rules! row {
     ($r:literal, $c:literal, $h:literal) => {
@@ -153,17 +151,6 @@ pub const REASONS: &[ReasonRow] = &[
     row!("reviewed_digest_stale", "conflict", 409),
     row!("decision_in_progress", "conflict", 409),
     row!("outcome_not_applied", "conflict", 409, details OUTCOME_NOT_APPLIED_DETAILS),
-    // DES-331 §B10.8: an administrative write refused while the node is in restore quarantine.
-    row!("restore_quarantine", "unavailable", 503, details RESTORE_QUARANTINE_DETAILS),
-    // DES-331 §B10.2, §B10.3: the restore tail refusals (store-restore, its verify dry run, the
-    // chunked tail upload).
-    row!("restore_tail_too_large", "request_too_large", 413),
-    row!("tail_encoding_invalid", "invalid_request", 422),
-    row!("tail_digest_mismatch", "invalid_request", 422),
-    row!("tail_chain_broken", "invalid_request", 422),
-    row!("tail_seal_invalid", "invalid_request", 422),
-    row!("tail_unsealed_end", "invalid_request", 422),
-    row!("tail_missing_chain", "invalid_request", 422),
 ];
 
 /// The closed list of `refusal` names a `plugin_refused` carries: the snake-case names of the 22

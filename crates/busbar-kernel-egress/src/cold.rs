@@ -4,19 +4,6 @@
 //! THE EGRESS CRATE'S COLD CODE (LINT-RULES LR-167): refusal text and rare owned copies its
 //! request-path modules reach only off the priced path, out of line.
 
-/// A pool's name, owned: a walk marks a pool visited only when it exhausts it or spills from it.
-#[cold]
-pub(crate) fn visited_pool(pool: &str) -> String {
-    pool.to_string()
-}
-
-/// One upstream head field, owned: written only when a build chooses an upstream encoding that
-/// adds a field (1.6.0's adds none).
-#[cold]
-pub(crate) fn push_field(fields: &mut Vec<(Vec<u8>, Vec<u8>)>, name: &[u8], value: &[u8]) {
-    fields.push((name.to_vec(), value.to_vec()));
-}
-
 /// The scheme a string CLAIMS, for a refusal message. Nothing is decided from it.
 #[cold]
 pub(crate) fn scheme_of(url: &str) -> String {

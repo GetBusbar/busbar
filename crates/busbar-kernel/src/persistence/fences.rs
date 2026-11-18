@@ -188,34 +188,6 @@ pub fn dataset(
     )
 }
 
-/// Prepare the restore pending marker (DES-331 §B5.1, §B10.4): the restore row from `previous`
-/// to the `pending` row `next`, and the manifest from `manifest.1` to `manifest.2` (the restored
-/// record format), both exactly guarded, in one candidate.
-pub fn restore_pending(
-    id: AttemptId,
-    previous: Option<control::Restore>,
-    next: control::Restore,
-    manifest: (Address, Vec<u8>, Secret<Vec<u8>>),
-) -> Result<PreparedCandidate, InvalidFence> {
-    if next.state != control::RestoreState::Pending
-        || !control::Restore::permits_successor(previous, next)
-    {
-        return Err(InvalidFence::Transition);
-    }
-    let (manifest_at, manifest_before, manifest_after) = manifest;
-    prepare(
-        id,
-        vec![
-            (
-                address(control::RESTORE_KEY.to_vec()),
-                previous.map(|row| row.encode().to_vec()),
-                Secret::new(next.encode().to_vec()),
-            ),
-            (manifest_at, Some(manifest_before), manifest_after),
-        ],
-    )
-}
-
 /// Guard a subsequent commit against any write since the observed scan generation.
 #[must_use]
 pub fn scan_guard(namespace: NamespaceId, generation: u64) -> Predicate {

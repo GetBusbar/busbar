@@ -368,7 +368,8 @@ fn a_refresh_failure_emits_8026_once_per_streak_window_and_audits_degraded() {
     assert_eq!(b.report.coded(8026).len(), 2, "again after a minute");
 
     let seen = b.report.all();
-    let digest = busbar_kernel::refresh::fingerprint([b"ta4-SECRET-VALUE".as_slice()]);
+    let digest = busbar_kernel::refresh::fingerprint([b"ta4-SECRET-VALUE".as_slice()])
+        .expect("the process is keyed");
     let plain: [u8; 32] = busbar_contract::abi::sdk::digest::sha256(b"ta4-SECRET-VALUE");
     for leaked in [
         "ta4-SECRET-VALUE".to_string(),

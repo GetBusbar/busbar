@@ -377,27 +377,43 @@ impl<O> fmt::Debug for SharedSecretWatch<O> {
 /// A FINGERPRINT of held material, for "did it change" only: SHA-256 keyed with a per-process
 /// random key over each part's length and bytes. An unsalted digest of a low-entropy credential is
 /// an offline oracle if it ever reaches a log or a dump; a keyed one is not. Compare two with
-/// [`constant_time_eq`], and never derive `Debug` over one. The process stops (exit 2) if the OS
-/// random source cannot key it.
-#[must_use]
-pub fn fingerprint<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> [u8; 32] {
+/// [`constant_time_eq`], and never derive `Debug` over one. [`FingerprintUnkeyed`] if the OS random
+/// source cannot key it: nothing is fingerprinted, and the caller refuses what it was doing (the
+/// process leaves, if it must, through the root's one exit path, never from here). A key that
+/// could not be made is tried again on the next call; one that was made is kept for the process.
+pub fn fingerprint<'a>(
+    parts: impl IntoIterator<Item = &'a [u8]>,
+) -> Result<[u8; 32], FingerprintUnkeyed> {
     static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
-    let key = KEY.get_or_init(|| {
-        let mut key = [0_u8; 32];
-        if crate::crypto::fill(&mut key).is_err() {
-            eprintln!("busbar: the OS random source did not answer; held material cannot be fingerprinted");
-            std::process::exit(2);
+    let key = match KEY.get() {
+        Some(key) => key,
+        None => {
+            let mut made = [0_u8; 32];
+            crate::crypto::fill(&mut made).map_err(|_| FingerprintUnkeyed)?;
+            // Two first callers may both make one: the first to set it keys the process.
+            KEY.get_or_init(|| made)
         }
-        key
-    });
+    };
     let mut hash = crate::crypto::Sha256::new();
     hash.update(key);
     for part in parts {
         hash.update(&(part.len() as u64).to_be_bytes());
         hash.update(part);
     }
-    hash.finish()
+    Ok(hash.finish())
 }
+
+/// The OS random source did not answer, so [`fingerprint`] has no key and fingerprinted nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FingerprintUnkeyed;
+
+impl fmt::Display for FingerprintUnkeyed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the OS random source did not answer; held material cannot be fingerprinted")
+    }
+}
+
+impl std::error::Error for FingerprintUnkeyed {}
 
 /// Constant-time comparison of the CONTENTS once lengths already match, to avoid leaking how much
 #[inline(never)]

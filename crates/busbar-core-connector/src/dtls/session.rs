@@ -27,6 +27,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 
+use busbar_contract::kept::Text;
 use busbar_kernel::media::Lines;
 use busbar_kernel::plugin_records::RecordsDenied;
 use busbar_plugin_abi::kinds::transport::transport as wire;
@@ -272,9 +273,9 @@ pub(crate) struct Session {
     lines: Lines,
     rendezvous: Option<Box<str>>,
     /// The local ufrag now registered as this session's demux key.
-    ufrag: Option<Box<str>>,
+    ufrag: Option<Text>,
     /// A ufrag change not yet taken: (the old key, the new one).
-    ufrag_moved: Option<(Option<Box<str>>, Box<str>)>,
+    ufrag_moved: Option<(Option<Text>, Text)>,
     /// Addresses numbered since the port last took them (its by-address routes).
     new_addrs: Vec<SocketAddr>,
     bound_told: Option<u32>,
@@ -477,8 +478,9 @@ impl Session {
         cert: Arc<SessionCert>,
         audit: Arc<dyn MediaAudit>,
         params: Params<'_>,
-        now: Instant,
+        now_ns: u64,
     ) -> Result<Session, RecordsDenied> {
+        let now = crate::framer::instant_of(now_ns);
         let fingerprint = sdp_fingerprint(cert.fingerprint());
         let local = crate::StackText::<{ crate::SOCKET_TEXT }>::of(&params.local);
         let conn = ConnIn {
@@ -496,7 +498,7 @@ impl Session {
             leftover: &[],
             head: params.opening,
             local_fingerprint: fingerprint.as_str(),
-            mono_ns: crate::framer::now_ns(),
+            mono_ns: now_ns,
         };
         let mut session = Session {
             handle: None,
@@ -566,7 +568,7 @@ impl Session {
 
     /// A ufrag change not yet taken: (the old demux key, the new one). The port re-keys with it and refuses a
     /// key already live there.
-    pub(crate) fn take_ufrag_move(&mut self) -> Option<(Option<Box<str>>, Box<str>)> {
+    pub(crate) fn take_ufrag_move(&mut self) -> Option<(Option<Text>, Text)> {
         self.ufrag_moved.take()
     }
 
@@ -754,8 +756,8 @@ impl Session {
         }
         assoc.set_controlling(controlling || self.dialling);
         if self.ufrag.as_deref() != Some(local.ufrag) {
-            let new: Box<str> = Box::from(local.ufrag);
-            let old = self.ufrag.replace(Box::clone(&new));
+            let new = busbar_contract::kept::off_path::text(local.ufrag);
+            let old = self.ufrag.replace(new.clone());
             self.ufrag_moved = Some((old, new));
         }
     }

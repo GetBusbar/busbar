@@ -16,16 +16,16 @@ use crate::config::PolicyOnError;
 /// ONE UNIT'S HOOK FACTS, as its hook stage reports them: every hook that ran for it, in the order
 /// it ran, by the key the deployment configured it under (never the instance serving it), with its
 /// decision head and whether it failed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HooksRan {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HooksRan<'a> {
     /// The unit the hooks ran for: the record is sealed under that unit's facts.
     pub unit: busbar_contract::UnitKey,
-    /// The hooks, in the order they ran.
-    pub hooks: Vec<HookApplied>,
+    /// The hooks, in the order they ran: lent by the stage that ran them, which keeps them.
+    pub hooks: &'a [HookApplied],
 }
 
 pub trait HookJournal: Send + Sync {
-    fn hooks_ran(&self, record: &HooksRan);
+    fn hooks_ran(&self, record: &HooksRan<'_>);
 
     /// Whether the node keeps the end user on its unit records (`records.user`, ADMIN-API-1.6
     /// §3.5). `false` (the default) leaves the driver no work for it.
@@ -108,12 +108,18 @@ pub struct Candidates {
 /// A restrict a hook decided: only members carrying one of `tags_any`; `on_empty` when none does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Restrict {
-    /// The tags, any of which admits a member.
-    pub tags_any: Vec<String>,
+    /// The tags, any of which admits a member: the deciding hook's own, moved out of its answer.
+    pub tags_any: Vec<Box<str>>,
     /// What an empty intersection does.
     pub on_empty: PolicyOnError,
     /// The deciding hook.
     pub name: std::sync::Arc<str>,
+}
+
+/// Whether a member carrying `tags` is admitted by `r`: it carries one of the restrict's tags.
+fn admits(r: &Restrict, tags: &[String]) -> bool {
+    tags.iter()
+        .any(|tag| r.tags_any.iter().any(|wanted| **wanted == **tag))
 }
 
 /// THE CONSTRAINT THE HOOKS PUT ON THE WALK.
@@ -138,12 +144,45 @@ impl Constraint {
         &self,
         members: impl IntoIterator<Item = (usize, &'m [String])> + Clone,
     ) -> Result<Vec<usize>, &Restrict> {
-        let mut kept: Vec<(usize, &'m [String])> = members.into_iter().collect();
+        // The restricts that narrow the members, in the order they were decided: a member is
+        // kept when every one of them admits it. A restrict that would leave no member either
+        // fails the walk or (`Weighted`) is passed over. No narrowed list is built on the way:
+        // only the kept indices, which the caller keeps.
+        let mut narrowing = smallvec::SmallVec::<[&Restrict; 4]>::new();
         for r in &self.restricts {
-            let narrowed: Vec<(usize, &'m [String])> = kept
+            let leaves_one = members.clone().into_iter().any(|(_, tags)| {
+                admits(r, tags) && narrowing.iter().all(|held| admits(held, tags))
+            });
+            if leaves_one {
+                narrowing.push(r);
+            } else if !matches!(r.on_empty, PolicyOnError::Weighted) {
+                return Err(r);
+            }
+        }
+        Ok(members
+            .into_iter()
+            .filter(|(_, tags)| narrowing.iter().all(|held| admits(held, tags)))
+            .map(|(idx, _)| idx)
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reconcile as it was written when it built one list of members per restrict: the model
+    /// the listless form is checked against.
+    fn listed<'c>(
+        constraint: &'c Constraint,
+        members: &[(usize, &[String])],
+    ) -> Result<Vec<usize>, &'c Restrict> {
+        let mut kept: Vec<(usize, &[String])> = members.to_vec();
+        for r in &constraint.restricts {
+            let narrowed: Vec<(usize, &[String])> = kept
                 .iter()
                 .copied()
-                .filter(|(_, tags)| tags.iter().any(|t| r.tags_any.iter().any(|w| w == t)))
+                .filter(|(_, tags)| tags.iter().any(|t| r.tags_any.iter().any(|w| **w == **t)))
                 .collect();
             if narrowed.is_empty() {
                 if matches!(r.on_empty, PolicyOnError::Weighted) {
@@ -154,5 +193,116 @@ impl Constraint {
             kept = narrowed;
         }
         Ok(kept.into_iter().map(|(idx, _)| idx).collect())
+    }
+
+    fn restrict(tags: &[&str], on_empty: PolicyOnError) -> Restrict {
+        Restrict {
+            tags_any: tags.iter().map(|tag| (*tag).into()).collect(),
+            on_empty,
+            name: "hook".into(),
+        }
+    }
+
+    fn members(tag_sets: &[&[&str]]) -> Vec<Vec<String>> {
+        tag_sets
+            .iter()
+            .map(|tags| tags.iter().map(|tag| (*tag).to_owned()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn restricts_narrow_in_order_and_an_empty_one_fails_or_is_passed_over() {
+        let held = members(&[&["a"], &["b"], &["a", "b"], &["c"]]);
+        let lent: Vec<(usize, &[String])> = held
+            .iter()
+            .enumerate()
+            .map(|(at, tags)| (at + 10, tags.as_slice()))
+            .collect();
+        let kept = |restricts: Vec<Restrict>| {
+            Constraint {
+                restricts,
+                ..Constraint::default()
+            }
+            .enforce(lent.iter().copied())
+            .map_err(|refusing| refusing.tags_any.clone())
+        };
+        assert_eq!(kept(Vec::new()), Ok(vec![10, 11, 12, 13]));
+        assert_eq!(
+            kept(vec![restrict(&["a"], PolicyOnError::Reject)]),
+            Ok(vec![10, 12])
+        );
+        assert_eq!(
+            kept(vec![
+                restrict(&["a"], PolicyOnError::Reject),
+                restrict(&["b"], PolicyOnError::Reject)
+            ]),
+            Ok(vec![12])
+        );
+        // Nothing carries `z`: a rejecting restrict fails the walk and names itself, a weighted
+        // one is passed over and the next still narrows.
+        assert_eq!(
+            kept(vec![
+                restrict(&["a"], PolicyOnError::Reject),
+                restrict(&["z"], PolicyOnError::Reject),
+            ]),
+            Err(vec![Box::<str>::from("z")])
+        );
+        assert_eq!(
+            kept(vec![
+                restrict(&["z"], PolicyOnError::Weighted),
+                restrict(&["b", "c"], PolicyOnError::Reject),
+            ]),
+            Ok(vec![11, 12, 13])
+        );
+        // `a` then `c` leaves no member, though each alone leaves some.
+        assert_eq!(
+            kept(vec![
+                restrict(&["a"], PolicyOnError::Reject),
+                restrict(&["c"], PolicyOnError::Reject),
+            ]),
+            Err(vec![Box::<str>::from("c")])
+        );
+    }
+
+    #[test]
+    fn enforce_keeps_exactly_what_narrowing_one_list_per_restrict_kept() {
+        let held = members(&[&[], &["a"], &["b"], &["a", "b"], &["c"]]);
+        let lent: Vec<(usize, &[String])> = held
+            .iter()
+            .enumerate()
+            .map(|(at, tags)| (at * 3, tags.as_slice()))
+            .collect();
+        let wanted: [&[&str]; 5] = [&["a"], &["b"], &["c"], &["a", "c"], &["z"]];
+        let one: Vec<Restrict> = wanted
+            .iter()
+            .flat_map(|tags| {
+                [PolicyOnError::Weighted, PolicyOnError::Reject]
+                    .into_iter()
+                    .map(move |on_empty| restrict(tags, on_empty))
+            })
+            .collect();
+        // Every sequence of up to three of the ten restricts (a position past the end is none).
+        let mut cases = 0;
+        for first in 0..=one.len() {
+            for second in 0..=one.len() {
+                for third in 0..=one.len() {
+                    let constraint = Constraint {
+                        restricts: [first, second, third]
+                            .iter()
+                            .filter_map(|at| one.get(*at).cloned())
+                            .collect(),
+                        ..Constraint::default()
+                    };
+                    assert_eq!(
+                        constraint.enforce(lent.iter().copied()),
+                        listed(&constraint, &lent),
+                        "{:?}",
+                        constraint.restricts
+                    );
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 11 * 11 * 11);
     }
 }

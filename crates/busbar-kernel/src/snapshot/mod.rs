@@ -197,6 +197,12 @@ pub const BILLING_TRUNCATED_TOTAL: &str = "busbar_billing_truncated_total";
 
 pub const PLUGIN_OBSERVATIONS_DROPPED_TOTAL: &str = "busbar_plugin_observations_dropped_total";
 
+/// DX_OUTSTANDING channel messages with no ask open and no fallback to write them to, dropped.
+pub const PLANE_CHANNEL_UNATTRIBUTED_TOTAL: &str = "busbar_plane_channel_unattributed_total";
+
+/// Channel messages dropped because the receiving slot's queue was full.
+pub const PLANE_CHANNEL_SLOT_FULL_TOTAL: &str = "busbar_plane_channel_slot_full_total";
+
 pub const PLUGIN_TEXT_CUT_TOTAL: &str = "busbar_plugin_text_cut_total";
 
 /// Plugin inspections refused because the process opened its cap of distinct images for inspection (DES-443 r3).

@@ -84,17 +84,18 @@ fn egress_over(pool_name: &str) -> Egress {
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
         pools: foldhash::HashMap::from_iter([(
-            pool_name.to_owned(),
-            Pool {
-                name: pool_name.to_owned(),
-                members: vec![Member::new(destination, "e", 1)],
-                failover: Failover {
+            busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(pool_name)),
+            {
+                let mut pool =
+                    Pool::new(pool_name.to_owned(), vec![Member::new(destination, "e", 1)]);
+                pool.set_failover(Failover {
                     timeout_secs: 30,
                     max_hops: 1,
                     exclusions: Vec::new(),
-                },
-                on_exhausted: OnExhausted::Status503,
-                floor: WeightedFloor::new(),
+                });
+                pool.on_exhausted = OnExhausted::Status503;
+                pool.floor = WeightedFloor::new();
+                pool
             },
         )]),
         routes: foldhash::HashMap::from_iter([(
@@ -105,7 +106,7 @@ fn egress_over(pool_name: &str) -> Egress {
                 need: NeedId(0),
                 base_url: "https://far.test/".into(),
                 auth: None,
-                provider: "e".into(),
+                provider: busbar_contract::kept::Text::fixed("e"),
                 keep: Default::default(),
                 rides: Vec::new(),
                 anchors: Default::default(),

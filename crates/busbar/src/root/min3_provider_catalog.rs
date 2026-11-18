@@ -112,7 +112,7 @@ impl StagedCatalog {
                     need: row.allocation.need,
                     base_url: url.to_string(),
                     auth: Some(binding),
-                    provider: row.provider,
+                    provider: busbar_contract::kept::Text::from(Arc::<str>::from(row.provider)),
                     keep: ResponseKeep {
                         mode: KEEP_ALL_EXCEPT_DENIED,
                         kept: Vec::new(),

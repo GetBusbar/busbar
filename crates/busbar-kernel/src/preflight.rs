@@ -342,7 +342,7 @@ pub(crate) fn linked_hook_answers(module: &str) -> bool {
 
 /// Whether a linked native (MIN-3) image of `kind` (its kind word) answers `module`: its identity or its linked alias.
 /// A linked image needs no plugins directory: it is compiled in and admitted at process start.
-pub fn linked_image_answers(kind: &str, module: &str) -> bool {
+fn linked_image_answers(kind: &str, module: &str) -> bool {
     root_rows()
         .linked_images
         .iter()
@@ -962,29 +962,6 @@ impl RelendStreak {
 /// The audit action a re-lend writes.
 pub(crate) const RELEND_ACTION: &str = "plugin.credential.rotate";
 
-/// DES-454 §6: core's text for a rotation cause, the 8028 `error` field. Never a value, a digest or plugin text.
-pub(crate) fn rotation_text(cause: busbar_contract::secret::RelendCause) -> &'static str {
-    use busbar_contract::secret::RelendCause;
-    match cause {
-        RelendCause::Unresolvable => {
-            "the rotated value is blank, too short to mask or not text where text is bound"
-        }
-        RelendCause::Refused => "the plugin refused the rotated value",
-        RelendCause::ReopenFailed => "the instance did not open with the rotated value",
-        RelendCause::Unstable => {
-            "the rotated value did not read the same twice, or another bound value changed with it"
-        }
-        RelendCause::Deadline => "a rotation call ran past its deadline",
-        RelendCause::ShapeChanged => {
-            "the instance opened with the rotated value declares other streams, scopes or limits"
-        }
-        RelendCause::ReloadRequired => {
-            "the rotated value takes effect at the next reload or restart"
-        }
-        RelendCause::RestartRequired => "the rotated value takes effect at the next restart",
-    }
-}
-
 #[cfg(test)]
 impl Source {
     fn new(
@@ -1061,12 +1038,13 @@ impl OpenedSecrets {
                         &crate::refresh::HOST_REPORT,
                     ));
                     if opened.relends() {
+                        // A source that cannot be kept fresh is not handed out: the open is refused.
                         crate::refresh::keep(
                             Arc::downgrade(&source)
                                 as std::sync::Weak<dyn crate::refresh::Refreshable>,
                             std::time::Instant::now()
                                 + crate::retry::spread(RELEND_EVERY, 0.1, crate::retry::unit()),
-                        );
+                        )?;
                     }
                     sources.insert(key.to_string(), source);
                     (opened, None)

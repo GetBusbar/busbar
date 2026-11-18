@@ -102,7 +102,7 @@ async fn seal(durability: &mut Durability) -> AuditRecord {
         AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage, What,
     };
     let inputs = AuditInputs {
-        subject: Subject::PrincipalId("pseudonym-1".to_string()),
+        subject: Subject::principal("pseudonym-1"),
         what: What {
             unit_key: UnitKey::new(1),
             incarnation: 0,

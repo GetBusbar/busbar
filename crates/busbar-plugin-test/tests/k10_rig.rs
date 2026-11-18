@@ -421,7 +421,7 @@ pub fn resolve(host: &KernelIntents<StoreRecords>, connect_op: u32) -> Vec<Piece
     let identity = b"identity-records".as_slice();
     let resolver = Resolver::new(host, None).with_principal(SUBJECT, identity);
     resolver
-        .resolve(&answer, &lent, &mut HashMap::new())
+        .resolve(&answer, &lent, &mut HashMap::new(), &mut Default::default())
         .into_iter()
         .map(|p| Piece {
             flags: p.flags,

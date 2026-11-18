@@ -583,7 +583,7 @@ fn extend_sections(
         })
         .collect();
     for (name, configured) in &walked {
-        if seat.pools.contains_key(name) {
+        if seat.pools.contains_key(name.as_str()) {
             return Err(format!(
                 "section pool `{name}` collides with a pool this plane already walks"
             ));
@@ -616,7 +616,8 @@ fn extend_sections(
             Some(fallback) => busbar_kernel_egress::OnExhausted::FallbackPool(fallback.clone()),
             None => busbar_kernel_egress::OnExhausted::Status503,
         };
-        seat.pools.insert(name.clone(), pool);
+        // Keyed by the pool's own name: one shared text for both.
+        seat.pools.insert(pool.name.clone(), pool);
     }
     // A fallback that is not itself walked is dropped from the routing record as from egress.
     Ok(walked
@@ -666,7 +667,7 @@ fn extend_catalog(
         return Err("catalog belongs to another plane instance".into());
     }
     for (name, configured) in &catalog.pools {
-        if seat.pools.contains_key(name) {
+        if seat.pools.contains_key(name.as_str()) {
             return Err("catalog pool collides with the registration pool".into());
         }
         let cfg = &configured.config;
@@ -698,7 +699,7 @@ fn extend_catalog(
             .collect::<Result<Vec<_>, String>>()?;
         let mut pool = busbar_kernel_egress::Pool::new(name, members);
         if let Some(failover) = &cfg.failover {
-            pool.failover = busbar_kernel_egress::Failover {
+            pool.set_failover(busbar_kernel_egress::Failover {
                 timeout_secs: failover.timeout_secs,
                 max_hops: failover.max_hops,
                 exclusions: failover
@@ -712,7 +713,7 @@ fn extend_catalog(
                         )
                     })
                     .collect(),
-            };
+            });
         }
         pool.on_exhausted = match &cfg.on_exhausted {
             None | Some(busbar_kernel::config::OnExhaustedCfg::Reject) => {
@@ -730,7 +731,8 @@ fn extend_catalog(
                 busbar_kernel_egress::OnExhausted::FallbackPool(actual.clone())
             }
         };
-        seat.pools.insert(name.clone(), pool);
+        // Keyed by the pool's own name: one shared text for both.
+        seat.pools.insert(pool.name.clone(), pool);
     }
     for (destination, route) in &catalog.sealed.routes {
         if seat.routes.insert(*destination, route.clone()).is_some() {
@@ -749,8 +751,8 @@ fn probe_targets(pool: &SeatPool) -> Vec<ProbeTarget> {
         .flat_map(|walked| {
             walked.members.iter().map(|member| ProbeTarget {
                 destination: member.destination,
-                pool: walked.name.clone(),
-                qualified_member: member.name.clone(),
+                pool: walked.name.as_str().to_owned(),
+                qualified_member: member.name.as_str().to_owned(),
             })
         })
         .collect();
@@ -794,13 +796,13 @@ fn egress_of(
         .pools
         .values()
         .flat_map(|walked| walked.members.iter())
-        .map(|member| (member.destination, member.name.clone()))
+        .map(|member| (member.destination, member.name.as_str().to_owned()))
         .collect();
     let cell = || busbar_kernel::store::pool_breaker_cfg(None);
     let policy = pool.pools.keys().fold(
         super::adapters::BreakerPolicy::new().with_default_cell(cell()),
         |policy, name| {
-            let configured = catalog.and_then(|catalog| catalog.pools.get(name));
+            let configured = catalog.and_then(|catalog| catalog.pools.get(name.as_str()));
             policy.with_pool(
                 name.as_str(),
                 busbar_kernel::store::pool_breaker_cfg(

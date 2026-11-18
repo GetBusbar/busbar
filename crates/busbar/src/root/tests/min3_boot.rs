@@ -501,7 +501,6 @@ fn actual_plane_settlement_has_its_core_owned_block_and_described_lift_authority
         )],
         schema: None,
         metrics: Vec::new(),
-        error_codes_refused: None,
     };
     let raw = busbar_plugin_loader::instance::Settled {
         config_json: SecureVec::from(&br#"{"token":"literal","display":"public"}"#[..]),
@@ -548,7 +547,6 @@ fn plugin_secret_paths_cannot_authorize_consumed_core_nonsecret_fields() {
         ],
         schema: None,
         metrics: Vec::new(),
-        error_codes_refused: None,
     };
     let raw = busbar_plugin_loader::instance::Settled {
         config_json: SecureVec::from(&br#"{"members":{"x":{"url":"https://public","opaque":"plugin-secret","auth":{"bearer":"core-secret"}}}}"#[..]),
@@ -583,7 +581,6 @@ fn an_auth_settlement_files_the_bindings_config_object() {
         )],
         schema: None,
         metrics: Vec::new(),
-        error_codes_refused: None,
     };
     let raw = busbar_plugin_loader::instance::Settled {
         config_json: SecureVec::from(

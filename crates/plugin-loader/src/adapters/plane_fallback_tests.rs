@@ -20,7 +20,7 @@ fn declared() -> PlaneDescribe {
             b"tokens.in",
         )
         .unwrap();
-    reply.put_text(t::D_ATTEMPT_CLASS, "tokens.in").unwrap();
+    wire::write_attempt_class(&mut reply, "tokens.in").unwrap();
     decode_describe(
         Records::new(reply.as_bytes()),
         p::M_UPSTREAM,

@@ -10,10 +10,9 @@ use busbar_contract::auth::{BeginLogin, LoginOutcome, Principal};
 use busbar_contract::auth_calls::{AuthCalls, LoginCallback};
 
 use super::self_keys::{
-    admit_self_mint, issue_key, DeterministicEd25519Keys, ExchangeError, HandleProvisioner,
-    SelfMint,
+    admit_identified_self_mint, issue_key, DeterministicEd25519Keys, ExchangeError,
+    HandleProvisioner, SelfMint,
 };
-use super::ChainVerdict;
 use crate::diagnostics::{diag_debug, diag_warn, LOGIN_OFFLOAD_SATURATED, LOGIN_PLUGIN_PANICKED};
 pub(crate) use crate::off_path::auth::login::lend_browser_login_secret;
 use crate::state::{App, AppHandle};
@@ -288,8 +287,9 @@ pub(crate) async fn declared_login_form(
         return cached;
     }
     let random = |n: usize| {
-        let mut buf = vec![0u8; n];
-        busbar_contract::crypto::fill(&mut buf).ok()?;
+        let mut buf = [0u8; 32];
+        let buf = &mut buf[..n];
+        busbar_contract::crypto::fill(buf).ok()?;
         Some(hex::encode(buf))
     };
     let begin = BeginLogin {
@@ -341,19 +341,14 @@ pub async fn issue_self_key(
     principal: Principal,
     refresh: bool,
 ) -> SelfKeyIssue {
-    let verdict = ChainVerdict::Identified {
-        module: crate::cold::auth::login::owned_name(module),
-        principal,
-        resolved: None,
-        signed_authority: None,
-    };
     let SelfMint {
         principal,
         team,
         granted_scopes: pools,
         ttl,
-    } = match admit_self_mint(
-        &verdict,
+    } = match admit_identified_self_mint(
+        module,
+        &principal,
         &app.role_bindings,
         &app.mint_policy,
         app.self_key_ttl_secs,
@@ -367,13 +362,7 @@ pub async fn issue_self_key(
     };
 
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
-    let keys = DeterministicEd25519Keys::new(
-        gov,
-        crate::cold::auth::login::owned_name(module),
-        team,
-        pools,
-        provisioner,
-    );
+    let keys = DeterministicEd25519Keys::new(gov, module, team, pools, provisioner);
     match issue_key(&keys, principal, ttl, refresh).await {
         Ok(k) => SelfKeyIssue::Issued {
             subject: principal.id.clone(),

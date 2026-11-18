@@ -20,6 +20,12 @@ pub mod abi;
 #[cfg(any(test, feature = "test-support"))]
 pub mod abi_scan;
 
+/// The Q24 wipe proof (`WipeProof`): the one home of the scan this crate's own wipe tests and the
+/// plugin test facade (`busbar_plugin_test::canary_scan`) both use. Test-only: it rides
+/// `test-support`.
+#[cfg(any(test, feature = "test-support"))]
+pub mod canary_scan;
+
 #[cfg(test)]
 #[path = "tests/allocation_observer.rs"]
 mod alloc_counter;

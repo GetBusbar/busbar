@@ -287,12 +287,13 @@ impl<V> Default for Keys<V> {
 impl<V> Keys<V> {
     /// Rebuild the index after the ring changed shape (the off-path sweeps).
     pub(crate) fn reindex(&mut self) {
-        self.index = self
-            .ring
-            .iter()
-            .enumerate()
-            .map(|(at, cached)| (cached.key, at))
-            .collect();
+        self.index.clear();
+        self.index.extend(
+            self.ring
+                .iter()
+                .enumerate()
+                .map(|(at, cached)| (cached.key, at)),
+        );
         if self.hand >= self.ring.len() {
             self.hand = 0;
         }

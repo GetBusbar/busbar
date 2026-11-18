@@ -45,8 +45,10 @@ use prepared::{FrozenUsage, PreparationFacts};
 pub trait Calls {
     type Session: Send + 'static;
 
-    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
-        (0, &[], &[])
+    /// The plane's usage facts and its declared classes and attempt classes, as the plane's own
+    /// shared lists: a session freezes its declaration by sharing them, never by copying.
+    fn usage_metadata(&self) -> (u64, Arc<[busbar_ports::plane::UsageClass]>, Arc<[Box<str>]>) {
+        (0, Arc::default(), Arc::default())
     }
 
     /// Declared resource kinds require the separate completed resource admission producer.
@@ -127,8 +129,9 @@ impl Calls for dyn PlanePort {
         PlanePort::channel(self, session, target, sink)
     }
 
-    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
-        (self.facts(), self.usage_classes(), self.attempt_classes())
+    fn usage_metadata(&self) -> (u64, Arc<[busbar_ports::plane::UsageClass]>, Arc<[Box<str>]>) {
+        let (classes, attempt_classes) = self.usage_shared();
+        (self.facts(), classes, attempt_classes)
     }
 
     fn resource_scoped(&self, route: u32) -> bool {
@@ -1270,6 +1273,9 @@ pub struct Task<'k, K: Calls + ?Sized> {
     pub(super) held: Channels,
     /// The answers a resolve stage still has to resolve, reused stage to stage (`Task::resolve`).
     pub(super) queue: std::collections::VecDeque<Answer>,
+    /// What the resolver reads from the host for this session's intents (a LOOKUP's hits, a TRUST_STATE's
+    /// items, a TRUST_VERIFY's named member), reused intent to intent; empty until the first such intent.
+    pub(super) reads: super::port_intents::Reads,
 }
 
 impl<'k, K: Calls + ?Sized> Task<'k, K> {
@@ -1343,6 +1349,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             usage: SessionUsage::new(),
             held: Channels::new(),
             queue: std::collections::VecDeque::new(),
+            reads: super::port_intents::Reads::default(),
         };
         let answer = task.checked(answer)?;
         buffered.release();
@@ -1381,6 +1388,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             usage: SessionUsage::new(),
             held: Channels::new(),
             queue: std::collections::VecDeque::new(),
+            reads: super::port_intents::Reads::default(),
         };
         let answer = task.checked(answer)?;
         buffered.release();
