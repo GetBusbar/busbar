@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::Poll;
 
 use busbar_core_connector::framer::now_ns;
@@ -150,7 +150,6 @@ impl Capacity for MemberPermits {
 #[derive(Debug, Default)]
 pub struct WalkTelemetry {
     pub(crate) names: HashMap<DestinationId, String>,
-    pub(crate) depths: Mutex<HashMap<String, i64>>,
     pub(crate) bound: LabelBound,
 }
 
@@ -230,17 +229,6 @@ impl WalkTelemetry {
     pub fn lane(&self, destination: DestinationId) -> &str {
         self.names.get(&destination).map_or("", String::as_str)
     }
-
-    #[cfg(test)]
-    #[must_use]
-    pub fn depth(&self, pool: &str) -> i64 {
-        self.depths
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(pool)
-            .copied()
-            .unwrap_or(0)
-    }
 }
 
 impl Telemetry for WalkTelemetry {
@@ -281,21 +269,7 @@ impl Telemetry for WalkTelemetry {
         busbar_kernel::telemetry::breaker_trip_on(pool, self.lane(destination));
     }
 
-    fn queued(&self, pool: &str, delta: i64) {
-        let depth = {
-            let mut depths = self
-                .depths
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(depth) = depths.get_mut(pool) {
-                *depth = depth.saturating_add(delta).max(0);
-                *depth
-            } else {
-                let depth = 0_i64.saturating_add(delta).max(0);
-                crate::root::cold::first_queued(&mut depths, pool, depth);
-                depth
-            }
-        };
+    fn queued(&self, pool: &str, _delta: i64, depth: i64) {
         busbar_kernel::telemetry::pool_queued_on(pool, depth);
     }
 }

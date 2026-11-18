@@ -34,6 +34,7 @@ impl Pool {
             failover: Failover::default(),
             on_exhausted: OnExhausted::default(),
             floor: WeightedFloor::default(),
+            queued: crate::pool::QueueDepth::default(),
         }
     }
 }

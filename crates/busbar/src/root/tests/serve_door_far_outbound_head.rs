@@ -229,6 +229,7 @@ fn egress_over(conns: Arc<dyn PollConns>, port: u16) -> Egress {
                 },
                 on_exhausted: OnExhausted::Status503,
                 floor: WeightedFloor::new(),
+                queued: Default::default(),
             },
         )]),
         routes: foldhash::HashMap::from_iter([(

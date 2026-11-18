@@ -320,8 +320,9 @@ pub trait Telemetry: Send + Sync {
     /// A cell tripped, freshly.
     fn breaker_trip(&self, pool: &str, destination: DestinationId);
 
-    /// A request parked in the wait terminal, or left it. The gauge is a depth, so the two calls
-    fn queued(&self, pool: &str, delta: i64);
+    /// A request parked in the wait terminal, or left it: the change, and the pool's depth after it
+    /// (counted by the pool itself, [`crate::pool::QueueDepth`]).
+    fn queued(&self, pool: &str, delta: i64, depth: i64);
 }
 
 /// The disposition labels, verbatim.

@@ -95,6 +95,7 @@ fn egress_over(pool_name: &str) -> Egress {
                 },
                 on_exhausted: OnExhausted::Status503,
                 floor: WeightedFloor::new(),
+                queued: Default::default(),
             },
         )]),
         routes: foldhash::HashMap::from_iter([(

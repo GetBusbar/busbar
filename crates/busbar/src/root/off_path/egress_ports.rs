@@ -4,7 +4,7 @@
 //! The walk ports' tables, built once per configured walk or published generation.
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use busbar_kernel_egress::ports::DestinationId;
 use foldhash::HashMap;
@@ -60,7 +60,6 @@ impl WalkTelemetry {
         let names = names.into_iter().collect();
         WalkTelemetry {
             names,
-            depths: Mutex::new(HashMap::default()),
             bound: LabelBound::default(),
         }
     }

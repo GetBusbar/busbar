@@ -79,18 +79,12 @@ async fn a_wait_over_an_unlimited_member_answers_at_once() {
     assert_eq!(got, Some(FREE));
 }
 
+/// Each pool's depth is the pool's own count now (`busbar_kernel_egress::pool::QueueDepth`, tested there).
 #[test]
-fn the_counters_label_a_member_by_name_and_keep_each_pools_depth() {
+fn the_counters_label_a_member_by_name() {
     let t = WalkTelemetry::new([(A, "first".to_string())]);
     assert_eq!(t.lane(A), "first");
     assert_eq!(t.lane(B), "", "a member the seal did not name");
-    t.queued("p", 1);
-    t.queued("p", 1);
-    t.queued("q", 1);
-    t.queued("p", -1);
-    assert_eq!((t.depth("p"), t.depth("q")), (1, 1));
-    t.queued("p", -5);
-    assert_eq!(t.depth("p"), 0, "a depth never reads below empty");
 }
 
 /// A connection table that opens nothing: the sealing below never dials.

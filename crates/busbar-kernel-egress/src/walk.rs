@@ -525,7 +525,7 @@ impl<'p> Parked<'p> {
     pub async fn wait(mut self, ports: &WalkPorts<'_>) -> Waited<'p> {
         let pool = self.pool;
         let members = pool.admissible_members();
-        let _parked = QueuedGuard::park(ports.telemetry, &pool.name);
+        let _parked = QueuedGuard::park(ports.telemetry, pool);
         let won = loop {
             if self.waiting.is_empty() {
                 break None;
@@ -583,20 +583,21 @@ struct PickAt<'s> {
 /// One parked waiter's place in the depth gauge, given back on drop. The increment and the
 struct QueuedGuard<'a> {
     telemetry: &'a dyn Telemetry,
-    pool: &'a str,
+    pool: &'a Pool,
 }
 
 impl<'a> QueuedGuard<'a> {
     /// Count one waiter in.
-    fn park(telemetry: &'a dyn Telemetry, pool: &'a str) -> Self {
-        telemetry.queued(pool, 1);
+    fn park(telemetry: &'a dyn Telemetry, pool: &'a Pool) -> Self {
+        telemetry.queued(&pool.name, 1, pool.queued.change(1));
         Self { telemetry, pool }
     }
 }
 
 impl Drop for QueuedGuard<'_> {
     fn drop(&mut self) {
-        self.telemetry.queued(self.pool, -1);
+        self.telemetry
+            .queued(&self.pool.name, -1, self.pool.queued.change(-1));
     }
 }
 

@@ -8,12 +8,6 @@
 
 use foldhash::HashMap;
 
-/// `egress_ports`: a configured pool's depth cell, keyed once, on its first queued wait.
-#[cold]
-pub(crate) fn first_queued(depths: &mut HashMap<String, i64>, pool: &str, depth: i64) {
-    depths.insert(pool.to_owned(), depth);
-}
-
 /// `observe`: a plugin's observation owner and its name, made and shared once, on its first
 /// observation.
 #[cold]

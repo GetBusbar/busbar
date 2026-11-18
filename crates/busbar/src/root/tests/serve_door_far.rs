@@ -257,7 +257,7 @@ impl Telemetry for Quiet {
     fn upstream_failure(&self, _: &str, _: DestinationId, _: &'static str) {}
     fn failover(&self, _: &str, _: &'static str) {}
     fn breaker_trip(&self, _: &str, _: DestinationId) {}
-    fn queued(&self, _: &str, _: i64) {}
+    fn queued(&self, _: &str, _: i64, _: i64) {}
 }
 
 #[tokio::test]
@@ -374,6 +374,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
                 },
                 on_exhausted: OnExhausted::Status503,
                 floor: WeightedFloor::new(),
+                queued: Default::default(),
             },
         )]),
         routes: foldhash::HashMap::from_iter([(

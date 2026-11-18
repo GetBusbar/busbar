@@ -535,7 +535,7 @@ impl Telemetry for Quiet {
     fn upstream_failure(&self, _: &str, _: DestinationId, _: &'static str) {}
     fn failover(&self, _: &str, _: &'static str) {}
     fn breaker_trip(&self, _: &str, _: DestinationId) {}
-    fn queued(&self, _: &str, _: i64) {}
+    fn queued(&self, _: &str, _: i64, _: i64) {}
 }
 
 /// An auth binding answering `authorization: Bearer <credential>`, counting its calls.
@@ -704,6 +704,7 @@ fn rig(
         },
         on_exhausted,
         floor: Default::default(),
+        queued: Default::default(),
     };
     let egress = Egress {
         caller: InstanceId(9),
@@ -1643,7 +1644,7 @@ impl Telemetry for Labels {
     fn upstream_failure(&self, _: &str, _: DestinationId, _: &'static str) {}
     fn failover(&self, _: &str, _: &'static str) {}
     fn breaker_trip(&self, _: &str, _: DestinationId) {}
-    fn queued(&self, _: &str, _: i64) {}
+    fn queued(&self, _: &str, _: i64, _: i64) {}
 }
 
 #[tokio::test]
@@ -2430,6 +2431,7 @@ async fn a_required_restrict_refuses_at_the_fallback_pool() {
         },
         on_exhausted: OnExhausted::Status503,
         floor: Default::default(),
+        queued: Default::default(),
     };
     r.egress.pools.insert("fb".to_string(), fallback);
     let t = token();
@@ -3206,7 +3208,7 @@ impl Telemetry for Failures {
     }
     fn failover(&self, _: &str, _: &'static str) {}
     fn breaker_trip(&self, _: &str, _: DestinationId) {}
-    fn queued(&self, _: &str, _: i64) {}
+    fn queued(&self, _: &str, _: i64, _: i64) {}
 }
 
 async fn read_last_as(

@@ -587,7 +587,7 @@ impl Telemetry for TestTelemetry {
             .push((pool.to_string(), destination));
     }
 
-    fn queued(&self, _pool: &str, delta: i64) {
+    fn queued(&self, _pool: &str, delta: i64, _depth: i64) {
         let mut depth = self.queue_depth.lock().unwrap_or_else(|e| e.into_inner());
         *depth += delta;
         if delta > 0 {

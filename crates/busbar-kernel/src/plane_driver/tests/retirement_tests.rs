@@ -390,7 +390,7 @@ impl Telemetry for WatchingTelemetry {
     fn breaker_trip(&self, _: &str, _: DestinationId) {
         self.0.check("trip");
     }
-    fn queued(&self, _: &str, _: i64) {
+    fn queued(&self, _: &str, _: i64, _: i64) {
         self.0.check("queued");
     }
 }
