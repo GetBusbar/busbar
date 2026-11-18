@@ -438,11 +438,12 @@ impl Served {
     pub fn report(&self) -> Report {
         self.shared.snapshot()
     }
-    pub fn finish(mut self) -> Result<Report, Report> {
+    /// The run's report: `Ok` when nothing failed, else the report (boxed: it is the large side).
+    pub fn finish(mut self) -> Result<Report, Box<Report>> {
         self.join();
         let report = self.report();
         if report.first_failure.is_some() {
-            Err(report)
+            Err(Box::new(report))
         } else {
             Ok(report)
         }
