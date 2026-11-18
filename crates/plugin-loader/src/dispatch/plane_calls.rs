@@ -12,7 +12,7 @@ use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     slot, ArriveIn, ArriveOut, AuthenticatedRouteIn, AuthenticatedRouteOut, OnPieceIn, OnPieceOut,
-    ProjectIn, ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut,
+    ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut,
 };
 use busbar_contract::plane_calls::{
     Answered, ArrivedTrust, AuthenticatedRouteInFlight, CancelWrite, Cancelled, Grow, InstanceDecl,
@@ -29,7 +29,7 @@ use super::{in_head, now_ns, Dispatcher, Done, Frame, InFrame, OutFrame, Plugin,
 /// `!Clone`, so a holder that keeps the plugin beside this one shares the same `Arc`.
 #[derive(Debug, Clone)]
 pub struct PlaneInstance {
-    plugin: Arc<Plugin<Plane>>,
+    pub(crate) plugin: Arc<Plugin<Plane>>,
     dispatcher: Arc<Dispatcher>,
     worker: u32,
     /// How many unit tickets were minted: the next one's worker, counted on from `worker`.
@@ -54,11 +54,6 @@ impl PlaneInstance {
         let workers = self.dispatcher.workers().max(1);
         let turn = self.minted.fetch_add(1, Ordering::Relaxed) % workers;
         (self.worker % workers + turn) % workers
-    }
-
-    pub fn refusal_statuses(&self) -> Vec<RefusalStatus> {
-        // The plane driver's config takes its own copy of the refusal table once.
-        crate::cold::dispatch::runtime::refusal_table(self.plugin.refusal_statuses())
     }
 
     fn pure<I: InFrame, O: OutFrame>(

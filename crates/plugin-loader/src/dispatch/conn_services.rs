@@ -875,10 +875,11 @@ struct Dial {
 #[derive(Default)]
 pub(crate) struct ConnState {
     /// The ticket supplier's context, even when a borrowed table binding names another owner.
-    context: OnceLock<HostCtx>,
-    /// Statement metadata, fixed at bind; open/refresh redeclare that same signed need.
-    need_timeouts: OnceLock<Box<[u64]>>,
-    response_keeps: OnceLock<Box<[ResponseKeep]>>,
+    pub(crate) context: OnceLock<HostCtx>,
+    /// Statement metadata, fixed at bind (`off_path::conn_services`); open/refresh redeclare that
+    /// same signed need.
+    pub(crate) need_timeouts: OnceLock<Box<[u64]>>,
+    pub(crate) response_keeps: OnceLock<Box<[ResponseKeep]>>,
     /// The instance's streams the host holds ([`Stream`]), by stream id.
     streams: Mutex<HashMap<u64, Stream>>,
     /// The facts strings its streams were answered ([`HeldFacts`]).
@@ -975,34 +976,6 @@ impl From<Answered> for Kept {
 }
 
 impl ConnState {
-    pub(crate) fn declare_needs(
-        &self,
-        ctx: HostCtx,
-        needs: &[busbar_contract::abi::mechanism::rendering::ReadNeed],
-    ) {
-        let _ = self.context.set(ctx);
-        // An instance's needs are declared once, at bind: load-time tables.
-        use crate::cold::dispatch::services::load_table;
-        let _ = self
-            .need_timeouts
-            .set(load_table(needs.iter().map(|n| n.timeout_ms)));
-        let _ = self.response_keeps.set(load_table(needs.iter().map(|n| {
-            ResponseKeep {
-                mode: n.keep_mode,
-                kept: load_table(
-                    n.keep_response_headers
-                        .iter()
-                        .map(|h| crate::intern_name(h)),
-                ),
-                denied: load_table(
-                    n.deny_response_headers
-                        .iter()
-                        .map(|h| crate::intern_name(h)),
-                ),
-            }
-        })));
-    }
-
     fn need_timeout(&self, need: NeedId) -> u64 {
         self.need_timeouts
             .get()
@@ -1444,12 +1417,12 @@ impl std::fmt::Debug for Authing {
 }
 
 #[derive(Debug, Default)]
-struct ResponseKeep {
-    mode: u32,
+pub(crate) struct ResponseKeep {
+    pub(crate) mode: u32,
     /// The keep list, interned once at bind: a reply judges against it borrowed.
-    kept: Vec<&'static str>,
+    pub(crate) kept: Vec<&'static str>,
     /// The deny list, interned once at bind.
-    denied: Vec<&'static str>,
+    pub(crate) denied: Vec<&'static str>,
 }
 
 /// [`filter_reply_head`]'s working copies (the reason, the kept fields, one field name lowered),

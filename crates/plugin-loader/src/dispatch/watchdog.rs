@@ -29,9 +29,9 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::DeadlineClass;
 
 use super::plugin::Instance;
-use super::worker::{spawn_worker, Pool, Worker};
+use super::worker::Pool;
 
-fn breach(pool: &Pool, inst: &Instance) -> bool {
+pub(crate) fn breach(pool: &Pool, inst: &Instance) -> bool {
     let n = inst
         .breaches
         .fetch_add(1, Ordering::AcqRel)
@@ -114,7 +114,7 @@ fn scan(pool: &Pool, live: &mut Vec<Arc<Instance>>) -> Option<Duration> {
         }
         let elapsed = now.saturating_sub(started);
         if elapsed > budget {
-            replace(pool, i, &w, started);
+            crate::off_path::watchdog::replace(pool, i, &w, started);
         } else {
             let left = Duration::from_nanos(budget - elapsed);
             earliest = Some(earliest.map_or(left, |e| e.min(left)));
@@ -163,67 +163,6 @@ fn ticketless(pool: &Pool, now: u64, live: &mut Vec<Arc<Instance>>) -> Option<Du
         }
     }
     earliest
-}
-
-fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {
-    let (gone, gens, breached, quarantined) = {
-        let mut st = old.lock();
-        if st.dead || old.crossing_since.load(Ordering::Acquire) != started {
-            return;
-        }
-        let Some(breached) = st.crossing.clone() else {
-            return;
-        };
-        let quarantined = breach(pool, &breached);
-        st.dead = true;
-
-        // Its successor's slab generations.
-        let gens = crate::cold::dispatch::runtime::successor_counts(&st.entries);
-        (Worker::fault_all(&mut st), gens, breached, quarantined)
-    };
-
-    if quarantined {
-        breached.wake.exports.wake_waiters(breached.wake);
-        breached.let_go_held();
-    }
-    pool.env.services.forget_worker(old.index);
-    pool.env.services.held.untrack_worker(old.index);
-    // The connections its faulted tickets held.
-    let conns = crate::cold::dispatch::runtime::wedged_conns(&gone);
-    super::conn_services::forget_worker(&conns, old.index);
-    let (orphans, gone) = old.orphans(gone, &breached);
-    let (w, rx) = Worker::new(old.index, gens, pool.env.ticket_key);
-    *pool.slots[i]
-        .current
-        .write()
-        .unwrap_or_else(|e| e.into_inner()) = w.clone();
-    pool.env.stats.replacements.fetch_add(1, Ordering::Relaxed);
-    spawn_worker(w, rx, pool.env.clone());
-
-    drop(gone);
-
-    if !orphans.is_empty() {
-        let retained = Arc::new(std::sync::Mutex::new(Some(orphans)));
-        let crossing = Arc::clone(&retained);
-        let spawned = std::thread::Builder::new()
-            .name("busbar-orphan-cancel".into())
-            .spawn(move || {
-                let batch = crossing.lock().unwrap_or_else(|e| e.into_inner()).take();
-                if let Some(batch) = batch {
-                    batch.into_iter().for_each(super::worker::Orphan::cancel);
-                }
-            });
-        if spawned.is_err() {
-            let batch = retained.lock().unwrap_or_else(|e| e.into_inner()).take();
-            if let Some(mut batch) = batch {
-                for orphan in &mut batch {
-                    orphan.fault_replies();
-                }
-                std::mem::forget(batch);
-                tracing::error!("could not start orphan cancellation; retained still-lent frames");
-            }
-        }
-    }
 }
 
 #[cfg(test)]

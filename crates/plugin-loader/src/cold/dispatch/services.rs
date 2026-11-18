@@ -23,13 +23,6 @@ pub(crate) fn program_name() -> String {
         .unwrap_or_default()
 }
 
-/// A table built once, at bind or admission (an instance's declared needs): gathered here, out of
-/// line, never on a call's path.
-#[cold]
-pub(crate) fn load_table<C: FromIterator<T>, T>(items: impl Iterator<Item = T>) -> C {
-    items.collect()
-}
-
 /// The refusal of a settings-only check for a style whose plugin has no such validator.
 #[cold]
 pub(crate) fn no_settings_validator(style: &str) -> String {

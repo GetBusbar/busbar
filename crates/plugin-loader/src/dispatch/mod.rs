@@ -58,7 +58,7 @@ pub mod snapshot;
 pub mod ticket;
 pub mod ticks;
 pub mod validate;
-mod watchdog;
+pub(crate) mod watchdog;
 pub mod worker;
 
 use std::mem::{offset_of, size_of};
