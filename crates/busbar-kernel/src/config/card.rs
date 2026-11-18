@@ -80,30 +80,6 @@ struct StoredCard {
 }
 
 impl CardFields {
-    #[must_use]
-    pub fn of_deploy(deploy: &DeployCfg) -> Self {
-        CardFields {
-            rate_card: deploy.rate_card.clone(),
-            per_request_fee: deploy.per_request_fee,
-            plane_rate_cards: deploy.plane_rate_cards.clone(),
-            plane_fees: deploy.plane_fees.clone(),
-            plugin_rate_cards: super::PluginRateCards::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn with_overlay(mut self, root: Option<&super::overlay::RootSettings>) -> Self {
-        if let Some(root) = root {
-            if let Some(card) = root.rate_card.as_ref() {
-                self.rate_card = Some(card.clone());
-            }
-            if let Some(fee) = root.per_request_fee {
-                self.per_request_fee = fee;
-            }
-        }
-        self
-    }
-
     pub fn apply_to(&self, cfg: &mut RootCfg) {
         cfg.rate_card = busbar_kernel_ledger::cost::compose_plane_cards(
             self.rate_card.as_ref(),
