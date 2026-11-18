@@ -839,10 +839,7 @@ fn egress_of(
         }),
         clock: Arc::new(super::egress_ports::NodeClock::new()),
         journal: Arc::new(SeatJournal),
-        telemetry: Arc::new(super::egress_ports::WalkTelemetry::new(
-            names,
-            pool.pools.keys().map(String::as_str),
-        )),
+        telemetry: Arc::new(super::egress_ports::WalkTelemetry::new(names)),
         pools: pool.pools.clone(),
         routes: pool.routes.clone(),
         stream_ceiling_secs: limits.as_ref().map_or(

@@ -81,7 +81,7 @@ async fn a_wait_over_an_unlimited_member_answers_at_once() {
 
 #[test]
 fn the_counters_label_a_member_by_name_and_keep_each_pools_depth() {
-    let t = WalkTelemetry::new([(A, "first".to_string())], ["p", "q"]);
+    let t = WalkTelemetry::new([(A, "first".to_string())]);
     assert_eq!(t.lane(A), "first");
     assert_eq!(t.lane(B), "", "a member the seal did not name");
     t.queued("p", 1);
@@ -477,7 +477,7 @@ fn a_label_outside_the_bound_falls_back_and_counts_its_refusal() {
         Vec::<String>::new(),
         ["entry-red-arm".to_string()],
     );
-    let t = WalkTelemetry::new([(A, "own-red-arm".to_string())], []).bounded(bound);
+    let t = WalkTelemetry::new([(A, "own-red-arm".to_string())]).bounded(bound);
     let stated = |pool: &str, lane: &str| StatedLabels {
         pool: Some(pool.to_string()),
         lane: Some(lane.to_string()),
