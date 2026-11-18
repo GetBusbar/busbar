@@ -177,6 +177,7 @@ macro_rules! kind {
             $crate::kind! { @methods [$Trait [$($session)?] [$(#[$doc])*]] [0] [] [] $($methods)* }
         }
         pub use $m::$Trait;
+        $crate::kind! { @view_check $m $($views)* }
     };
 
     (@session [] $Trait:ident $T:ident) => { () };
@@ -190,21 +191,31 @@ macro_rules! kind {
     ) => {
         $(#[$vd])*
         pub use $crate::plugin::__rt::views::$V;
+        $crate::kind! { @views $($rest)* }
+    };
+    // The check that each view's fields are the block's, emitted where the block is written: its field types
+    // resolve as the block's author named them (qualified, or through the author's own imports).
+    (@view_check $m:ident) => {};
+    (@view_check $m:ident
+        $(#[$vd:meta])* pub struct $V:ident < $lt:lifetime > { $( pub $vf:ident : $vt:ty ),* $(,)? }
+        $($rest:tt)*
+    ) => {
         const _: () = {
-            use $crate::types::*;
+            use $m::$V;
             fn fields<$lt>(v: &$V<$lt>) {
                 $( let _: &$vt = &v.$vf; )*
             }
-            const fn sizes<$lt>() -> usize {
+            // The field types name the view's lifetime; the marker argument carries it.
+            const fn sizes<$lt>(_: ::core::marker::PhantomData<&$lt ()>) -> usize {
                 0 $( + ::core::mem::size_of::<$vt>() )*
             }
             let _: fn(&$V<'static>) = fields;
             assert!(
-                sizes() == ::core::mem::size_of::<$V<'static>>(),
+                sizes(::core::marker::PhantomData) == ::core::mem::size_of::<$V<'static>>(),
                 "the view's fields do not fill it"
             );
         };
-        $crate::kind! { @views $($rest)* }
+        $crate::kind! { @view_check $m $($rest)* }
     };
 
     // ---- pods ----
@@ -684,6 +695,8 @@ mod tests {
     use crate::need::ChainBytes;
     use crate::plugin::{Describe, Endpoints, Open};
     use crate::records::{Out, Reply, Writer};
+    // The test kinds' view fields name these types unqualified, as a kind block may.
+    use crate::types::{Bytes, Pair, Slice, Str};
 
     crate::kind! {
         /// A store-shaped test kind.
@@ -1136,6 +1149,11 @@ mod tests {
         fps.dedup();
         assert_eq!(fps.len(), 7, "every kind block hashes to its own FP");
         assert_eq!(store::tag::ROW, 0x0100);
+        assert_eq!(
+            store::REQUIRED & store::M_READ,
+            store::M_READ,
+            "read is a required method"
+        );
         assert_eq!(core::mem::size_of::<store::RowRec>(), 8);
         for header in [
             store_fx::PLUGIN.as_ptr(),
@@ -1154,6 +1172,7 @@ mod tests {
     #[test]
     fn the_fingerprint_covers_signatures_not_default_bodies() {
         mod a {
+            use super::{ChainBytes, Describe, Endpoints, Fail, Host, Open};
             crate::kind! {
                 pub trait B: kind = 2, abi = 2 {
                     views {} pods {} tags {} consts { REQUIRED: u64 = 0b1; }
@@ -1163,8 +1182,15 @@ mod tests {
                     }
                 }
             }
+            mod k {
+                pub use super::B as Trait;
+                pub use super::secret::*;
+            }
+            fixture!(fx, k, {});
+            pub(super) use fx::PLUGIN;
         }
         mod b {
+            use super::{ChainBytes, Describe, Endpoints, Fail, Host, Open};
             crate::kind! {
                 pub trait B: kind = 2, abi = 2 {
                     views {} pods {} tags {} consts { REQUIRED: u64 = 0b1; }
@@ -1174,8 +1200,15 @@ mod tests {
                     }
                 }
             }
+            mod k {
+                pub use super::B as Trait;
+                pub use super::secret::*;
+            }
+            fixture!(fx, k, {});
+            pub(super) use fx::PLUGIN;
         }
         mod c {
+            use super::{ChainBytes, Describe, Endpoints, Fail, Host, Open};
             crate::kind! {
                 pub trait B: kind = 2, abi = 2 {
                     views {} pods {} tags {} consts { REQUIRED: u64 = 0b1; }
@@ -1186,10 +1219,20 @@ mod tests {
                     }
                 }
             }
+            mod k {
+                pub use super::B as Trait;
+                pub use super::secret::*;
+            }
+            fixture!(fx, k, {});
+            pub(super) use fx::PLUGIN;
         }
         // a and b differ only in a default body; b and c only by one doc line.
         assert_eq!(a::secret::FP, b::secret::FP, "a default body is not hashed");
         assert_ne!(b::secret::FP, c::secret::FP, "a method doc is hashed");
+        // Each block also builds a working table and header over a fixture.
+        for header in [a::PLUGIN.as_ptr(), b::PLUGIN.as_ptr(), c::PLUGIN.as_ptr()] {
+            assert!(!header.is_null());
+        }
     }
 
     #[cfg(feature = "host")]

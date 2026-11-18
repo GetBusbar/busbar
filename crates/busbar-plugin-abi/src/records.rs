@@ -1063,6 +1063,10 @@ impl Reply {
     pub fn len(&self) -> usize {
         self.buf.len()
     }
+    /// Whether nothing has been written yet.
+    pub fn is_empty(&self) -> bool {
+        self.buf.is_empty()
+    }
     /// Consume an empty reply as bounded unframed scratch. Invalid entry consumes and wipes
     /// the reply. Finishing the scratch wipes its bytes and returns this allocation for records.
     pub fn into_scratch(self, limit: usize) -> Result<Scratch, Full> {

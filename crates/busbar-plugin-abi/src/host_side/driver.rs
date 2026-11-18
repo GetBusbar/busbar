@@ -1229,6 +1229,8 @@ mod tests {
 
     #[test]
     fn open_rows() {
+        // One refused row: flags, cert handle, trust handle, the four arguments and why it is refused.
+        type BadRow<'a> = (u32, u32, u32, [&'a [u8]; 4], &'a str);
         let ok = |flags: u32, secret: u32, trust: u32, args: [&[u8]; 4]| {
             decode_need_owned(op::OPEN, flags, 0, 0, secret, trust, args)
         };
@@ -1253,7 +1255,7 @@ mod tests {
             ok(3, 4, 0, plain),
             Ok(Shape::Open(TlsKind::Inband(true), 0))
         ));
-        let bad: [(u32, u32, u32, [&[u8]; 4], &str); 11] = [
+        let bad: [BadRow<'_>; 11] = [
             (2, 0, 0, plain, "MUTUAL without a cert"),
             (4, 0, 0, plain, "a mode past INBAND"),
             (5 << 16, 0, 0, plain, "an egress class past 4"),
