@@ -37,9 +37,6 @@ use busbar_migrate::records::{
 /// plugin's. Key `<WORD>/<16 random bytes, hex>`; value the cells `[word, line]`.
 pub(crate) const AUDIT_NS: NamespaceId = NamespaceId(*b"busbar.migrate.a");
 
-/// The file beside config.yaml naming the attempt whose 5d ran in this directory (§A6 "Attempts").
-pub(crate) const ATTEMPT_SUFFIX: &str = "busbar-attempt";
-
 /// THE STORE, as the records step reaches it: blocking calls over the admitted store, made from
 /// a blocking thread while the boot's runtime drives the store's I/O.
 pub(crate) struct Store {
@@ -478,14 +475,6 @@ fn audit_key(audit: &Audit) -> Result<Vec<u8>, StoreFail> {
     Ok(format!("{word}/{}", hex::encode(nonce)).into_bytes())
 }
 
-/// `<config>.busbar-attempt`.
-pub(crate) fn attempt_file(config: &Path) -> PathBuf {
-    let mut name = config.as_os_str().to_owned();
-    name.push(".");
-    name.push(ATTEMPT_SUFFIX);
-    PathBuf::from(name)
-}
-
 /// What this directory shows of its own upgrade (§A6 "Attempts"): the stamp, the nonce in
 /// `<config>.busbar-attempt`, and config.yaml's SHA-256 now.
 pub(crate) fn local(config: &Path) -> attempts::Local {
@@ -494,7 +483,7 @@ pub(crate) fn local(config: &Path) -> attempts::Local {
         .ok()
         .and_then(|text| busbar_contract::upgrade::config_version(text).ok())
         .is_some_and(|version| version >= busbar_contract::upgrade::CONFIG_FORMAT);
-    let nonce = std::fs::read_to_string(attempt_file(config))
+    let nonce = std::fs::read_to_string(busbar_migrate::attempt_file(config))
         .ok()
         .and_then(|text| {
             let bytes = hex::decode(text.trim()).ok()?;
@@ -556,7 +545,7 @@ pub(crate) fn run_blocking(
     }
     let settled = attempts::settle(store, &local(config), now()).map_err(|r| r.to_string())?;
     if !settled.is_empty() && local(config).stamped {
-        let _ = std::fs::remove_file(attempt_file(config));
+        let _ = std::fs::remove_file(busbar_migrate::attempt_file(config));
     }
     let seal = |meta: &busbar_contract::records::CredentialMeta, plain: &[u8]| {
         keys.at_rest
@@ -608,93 +597,6 @@ pub(crate) async fn step4_with_keys(
     })
 }
 
-/// 5S and 5d over the opened store (§A6 "Attempts"): the attempt recorded under IMPORT before
-/// the write's first byte, and `<config>.busbar-attempt` naming it just before the rename.
-struct Attempt<'a> {
-    store: &'a Store,
-    config: &'a Path,
-    begun: std::cell::RefCell<Option<attempts::Attempt>>,
-}
-
-impl busbar_migrate::Attempted for Attempt<'_> {
-    fn begin(
-        &self,
-        digest: [u8; 32],
-        written_sha256: [u8; 32],
-    ) -> Result<(), busbar_migrate::Refusal> {
-        let mut nonce = [0u8; 16];
-        busbar_contract::crypto::fill(&mut nonce).map_err(|_| {
-            busbar_migrate::Refusal::Config(
-                "the boot drew no entropy for the upgrade attempt; nothing was written".to_owned(),
-            )
-        })?;
-        let attempt = attempts::Attempt {
-            digest,
-            nonce,
-            expires_at: now().saturating_add(attempts::EXPIRY_SECS),
-            written_sha256,
-        };
-        attempts::begin(self.store, &attempt)
-            .map_err(|refusal| busbar_migrate::Refusal::Config(refusal.to_string()))?;
-        *self.begun.borrow_mut() = Some(attempt);
-        Ok(())
-    }
-
-    fn before_rename(&self) -> Result<(), busbar_migrate::Refusal> {
-        let Some(attempt) = self.begun.borrow().clone() else {
-            return Ok(());
-        };
-        let path = attempt_file(self.config);
-        let mark = || -> std::io::Result<()> {
-            use std::io::Write;
-            let mut file = std::fs::File::create(&path)?;
-            file.write_all(hex::encode(attempt.nonce).as_bytes())?;
-            file.sync_all()
-        };
-        mark().map_err(|error| {
-            busbar_migrate::Refusal::Config(format!(
-                "cannot write {} ({error}); config.yaml was not replaced",
-                path.display()
-            ))
-        })
-    }
-}
-
-/// Step 5's write with the store side (5S, 5d, then 5C or MIGRATION_REFUSED): the attempt is
-/// consumed with MIGRATION_COMPLETED once config.yaml is renamed into place, or with
-/// MIGRATION_REFUSED and the write's text. A store fault at 5C leaves the attempt and its marker;
-/// the next boot's settle completes it.
-///
-/// # Errors
-/// The write's refusal.
-#[cold]
-#[inline(never)]
-pub(crate) fn write_with_attempt(
-    store: &Store,
-    plan: &busbar_migrate::Plan,
-    settled: &[busbar_migrate::Settled],
-    check: busbar_migrate::Check<'_>,
-    config: &Path,
-) -> Result<busbar_migrate::Written, busbar_migrate::Refusal> {
-    let attempt = Attempt {
-        store,
-        config,
-        begun: std::cell::RefCell::new(None),
-    };
-    let written = busbar_migrate::write_attempted(plan, settled, check, Some(&attempt));
-    if let Some(begun) = attempt.begun.into_inner() {
-        let settled = match &written {
-            Ok(busbar_migrate::Written::Stamped) => attempts::complete(store, &begun),
-            Ok(busbar_migrate::Written::StampedByPeer) => Ok(false),
-            Err(refusal) => attempts::refuse(store, &begun, &refusal.to_string()),
-        };
-        if matches!(settled, Ok(true)) {
-            let _ = std::fs::remove_file(attempt_file(config));
-        }
-    }
-    written
-}
-
 /// Step 4 then step 5 over the opened store: the records conversion and the config.yaml write the
 /// converting boot performs together. A refusal of the step-5 document must leave the store as it
 /// was found (MIGRATE-ON-BOOT r42: nothing has been changed until the document is accepted).
@@ -719,7 +621,8 @@ pub(crate) fn convert_and_write(
             report_line(&report)
         );
     }
-    write_with_attempt(store, plan, settled, check, config).map_err(|refusal| refusal.to_string())
+    busbar_migrate::write_with_attempt(store, plan, settled, check, config)
+        .map_err(|refusal| refusal.to_string())
 }
 
 #[cfg(test)]

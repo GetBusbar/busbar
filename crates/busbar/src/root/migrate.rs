@@ -286,7 +286,7 @@ pub(crate) async fn finish_settled_checked(
         };
         match core {
             // 5S, 5d and 5C over the opened store (§A6 "Attempts").
-            Some(core) => crate::root::migrate_records::write_with_attempt(
+            Some(core) => busbar_migrate::write_with_attempt(
                 &crate::root::migrate_records::Store::new(core, runtime),
                 plan,
                 &settled,

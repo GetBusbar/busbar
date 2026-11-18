@@ -804,7 +804,7 @@ mod records_step {
         attempts::begin(&store, &mine).unwrap();
         attempts::begin(&store, &stale).unwrap();
         std::fs::write(
-            migrate_records::attempt_file(&config),
+            busbar_migrate::attempt_file(&config),
             hex::encode([2u8; 16]),
         )
         .unwrap();
@@ -829,7 +829,7 @@ mod records_step {
         words.sort();
         assert_eq!(words, ["MIGRATION_ABANDONED", "MIGRATION_COMPLETED"]);
         assert!(
-            !migrate_records::attempt_file(&config).exists(),
+            !busbar_migrate::attempt_file(&config).exists(),
             "the marker goes once its attempt completed"
         );
     }
@@ -884,7 +884,7 @@ mod records_step {
         let plan = super::step1(&config, false, false, &super::accept)
             .unwrap()
             .expect("planned");
-        let written = migrate_records::write_with_attempt(
+        let written = busbar_migrate::write_with_attempt(
             &store,
             &plan,
             &[],
@@ -897,7 +897,7 @@ mod records_step {
         let audits = all(&store, AUDIT_NS);
         assert_eq!(audits.len(), 1, "one completion record");
         assert!(audits[0].0.starts_with(b"MIGRATION_COMPLETED/"));
-        assert!(!migrate_records::attempt_file(&config).exists());
+        assert!(!busbar_migrate::attempt_file(&config).exists());
     }
 
     /// Step 3 (§6a, red (h) with the production chain): a store whose format record a newer busbar
