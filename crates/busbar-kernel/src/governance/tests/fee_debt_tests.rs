@@ -261,6 +261,9 @@ async fn an_absorbed_obligation_waits_for_its_exact_owner_settled_proof() {
     observer.mark(0, "recovery-bucket", 5, 0, 1);
     let capture = FeeCapture::frozen(&gov.fee_debt, "recovery-bucket", 5, 0, 1, false);
     associate(&gov, &observer, &capture);
+    // As the flusher does (3d43a0341f): the durable flight keeps the absorbing revision first, then
+    // the exact owner is pinned at that kept revision before the flight retires.
+    gov.drive_durable_usage_flight(&captured).await.unwrap();
     assert!(gov.fee_hold(
         parent.operation_id,
         parent.revision,
@@ -273,7 +276,6 @@ async fn an_absorbed_obligation_waits_for_its_exact_owner_settled_proof() {
         parent.revision,
         parent.body_fingerprint
     ));
-    gov.drive_durable_usage_flight(&captured).await.unwrap();
     gov.resolve_fee_transfers(&observer).await;
     assert_eq!(
         observer.status(),
