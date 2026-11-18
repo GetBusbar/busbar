@@ -113,11 +113,12 @@ busbar-secret-file = { workspace = true }
 busbar-hook-ranking = { workspace = true }
 busbar-hook-complexity = { workspace = true }
 # THE OPERATOR CREDENTIAL (`auth.admin_auth: [admin-tokens]`, the single operator admin token), a
-# first-party AUTH plugin linked through the `auths` axis under `auth-admin-tokens` — the same row a
-# signed tarball of it registers when dropped in (DECISIONS #2 rule (1); ARCHITECT 2026-09-27
+# first-party AUTH plugin: a MIN-3 image (its logic crate's `PLUGIN` header) linked through the
+# `min3-images` axis under `auth-admin-tokens` — the same image a signed tarball of it admits when
+# dropped in (DECISIONS #2 rule (1); ARCHITECT 2026-09-27
 # AUTH-ROW). It lives in its own repo (GetBusbar/busbar-auth-admin-tokens) and is pulled at a PINNED rev; the
 # workspace `[patch]` points the busbar crates it names at this tree. The kernel names no auth module.
-busbar-auth-admin-tokens-plugin = { workspace = true }
+busbar-auth-admin-tokens = { workspace = true }
 # THE OUTBOUND HEADER STYLES (bearer, api-key, x-goog-api-key): the auth plugin a plane's outbound need
 # is bound under when its member's style is one of them (THE DESIGN §6 step 3: the auth plugin that
 # serves the style opens the binding), linked through the `auths` axis under `auth-header`
@@ -126,8 +127,9 @@ busbar-auth-admin-tokens-plugin = { workspace = true }
 busbar-auth-header = { workspace = true }
 # THE SIGV4 STYLE (outbound signing, inbound verify of busbar's own SigV4 keys) and THE OAUTH MINTING
 # STYLES (jwt-bearer, oauth-client-credentials): the auth plugins a provider's credential is bound
-# under when its style is one of theirs, linked through the `auths` axis (P2 D1, the auth split: the
-# kernel holds no auth style). Each lives in its own repo, pulled at a pinned rev.
+# under when its style is one of theirs (P2 D1, the auth split: the kernel holds no auth style). SigV4 is
+# linked through the `auths` axis; oauth is a MIN-3 image on the `min3-images` axis (its `PLUGIN` header).
+# Each lives in its own repo, pulled at a pinned rev.
 busbar-auth-sigv4 = { workspace = true }
 busbar-auth-oauth = { workspace = true }
 # THE WEBHOOK-SIGNATURE STYLE: the inbound auth plugin that verifies a webhook sender's HMAC (Twilio,
@@ -237,7 +239,7 @@ plane-decisions = "busbar-plane-decisions"
 transport-tcp = "busbar-transport-tcp"
 transport-ws = "busbar-transport-ws"
 transport-webrtc = "busbar-transport-webrtc"
-auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
+auth-admin-tokens = "busbar-auth-admin-tokens"
 auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
 auth-oauth = "busbar-auth-oauth"
@@ -271,8 +273,8 @@ export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
 export-prometheus = "busbar-export-prometheus"
 export-otlp = "busbar-export-otlp"
-# THE AUTH AXIS: the operator credential's module, under its `always-on` row.
-auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
+# THE AUTH ROWS: the operator credential's module (a MIN-3 image), under its `always-on` row.
+auth-admin-tokens = "busbar-auth-admin-tokens"
 auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
 auth-oauth = "busbar-auth-oauth"
@@ -315,10 +317,11 @@ export-file = "export-doors"
 export-webhook = "export-doors"
 export-prometheus = "export-doors"
 export-otlp = "export-doors"
-auth-admin-tokens = "auths"
+# MIN-3 auth images register their PLUGIN header (the operator credential and oauth).
+auth-admin-tokens = "min3-images"
 auth-header = "auths"
 auth-sigv4 = "auths"
-auth-oauth = "auths"
+auth-oauth = "min3-images"
 auth-webhook-signature = "auths"
 transport-tcp = "transport transport-door"
 # `connector-door`: the framer's door is opened on the root's one Connector, so an outbound need on
@@ -341,7 +344,8 @@ plane-a2a-door = "min3-images"
 [package.metadata.busbar.linked-entry]
 # Every entry names a crate's public door.
 # Auth follows the same `<entry>::door` boundary as every other kind.
-busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
+# A MIN-3 auth image's entry is the crate whose root holds its `PLUGIN` header (the logic crate).
+busbar-auth-admin-tokens = "busbar_auth_admin_tokens"
 busbar-auth-header = "busbar_auth_header"
 busbar-auth-sigv4 = "busbar_auth_sigv4"
 busbar-auth-oauth = "busbar_auth_oauth"
@@ -403,10 +407,8 @@ auth-webhook-signature = "busbar-auth-webhook-signature"
 # alias answers every word its dropped tarball answers (manifest name and alias), so a linked owner
 # is found by the word configuration or a plugin's migration request names it by, never re-fetched.
 [package.metadata.busbar.linked-canonical]
-auth-admin-tokens = "busbar-auth-admin-tokens"
-auth-oauth = "busbar-auth-oauth"
 
-# THE OPERATOR CREDENTIAL'S ROW: the `auths` row whose registry key (its `linked-name`) is the
+# THE OPERATOR CREDENTIAL'S ROW: the linked auth row (a MIN-3 image) whose registry key (its `linked-name`) is the
 # operator credential's provider word — the `auth.admin_auth:` default, the one `module:` whose
 # definition may carry `token:`, a reserved hook name, and the word in 1.5.5's refusals when the row
 # is not linked. Frozen 1.5.5 configuration text, stated here in packaging so the root's source names
@@ -490,7 +492,7 @@ planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
 secrets = ["busbar-secret-env", "busbar-secret-file"]
 # The operator credential's auth plugin the admin tests (`tests/admin_cross_plane/`) authenticate
 # through: the one the root links for it (`auth-admin-tokens`).
-operator-auth = ["busbar-auth-admin-tokens-plugin"]
+operator-auth = ["busbar-auth-admin-tokens"]
 
 [build-dependencies]
 serde_json = { workspace = true }

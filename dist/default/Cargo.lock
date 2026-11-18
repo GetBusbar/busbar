@@ -355,15 +355,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-auth-admin-tokens-plugin"
-version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=e12a8df9fa704a2869af5e72c30a187976fa74c6#e12a8df9fa704a2869af5e72c30a187976fa74c6"
-dependencies = [
- "busbar-auth-admin-tokens",
- "busbar-plugin-abi",
-]
-
-[[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
 source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=2889a997008ffcd3508b2d561aeebebb9658e5a4#2889a997008ffcd3508b2d561aeebebb9658e5a4"
@@ -604,7 +595,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "busbar-auth-admin-tokens-plugin",
+ "busbar-auth-admin-tokens",
  "busbar-auth-header",
  "busbar-auth-oauth",
  "busbar-auth-oidc",

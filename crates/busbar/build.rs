@@ -266,7 +266,7 @@ fn test_operator_auth_source(manifest: &str) -> String {
     }
     out.push_str("macro_rules! for_each_operator_auth_row {\n    ($f:expr) => {{\n");
     for id in &idents {
-        out.push_str(&format!("        ($f)({id}::door);\n"));
+        out.push_str(&format!("        ($f)(&{id}::PLUGIN);\n"));
     }
     out.push_str("    }};\n}\n");
     out
