@@ -15,10 +15,14 @@ use super::provider_catalog::{CatalogPlan, RouteKind};
 use crate::cost::CostModel;
 use crate::governance::{AdmitGrant, GovState, PLANE_LANE_SEP};
 use crate::host_services::InvocationContext;
+use crate::resource_admission::SelectedResources;
 
 #[path = "request_registration.rs"]
 mod registration;
 use registration::SelectedCommand;
+#[path = "request_section_pools.rs"]
+mod sections;
+pub use sections::SectionPool;
 #[path = "request_current.rs"]
 mod current;
 
@@ -82,6 +86,7 @@ pub struct RequestRoutes {
     catalog: Option<Arc<CatalogPlan>>,
     registration: Option<Arc<SeatPool>>,
     registrations: Option<Arc<crate::upstreams::ConfiguredUpstreams>>,
+    section_pools: BTreeMap<String, SectionPool>,
 }
 impl RequestRoutes {
     pub fn new(
@@ -111,16 +116,52 @@ impl RequestRoutes {
             catalog,
             registration,
             registrations: None,
+            section_pools: BTreeMap::new(),
         })
     }
 
-    // These resolved producers describe ordinary pool/direct scope. A descriptor requiring
-    // member-granted semantics needs its typed producer before root can assemble this path.
-    fn member_grants(&self, key: &VirtualKey) -> BTreeMap<String, Vec<String>> {
-        let allowed = |name: &str| {
-            self.scope_kind
-                .as_ref()
-                .is_none_or(|kind| key.scope_allowed(kind, name))
+    /// Whether `key` may use the operator domain `name` (K2). A declared kind checks the
+    /// key's grant of that kind. With no declared kind, a keyed unit is admitted only by an
+    /// unrestricted key or by its own non-empty authorized selection, which then narrows
+    /// the walk to the selected tuples; `None` never means allow.
+    /// The admission walk and the current-key re-check both use this one rule.
+    fn scope_admits(
+        &self,
+        key: &VirtualKey,
+        selection: Option<&SelectedResources>,
+        name: &str,
+    ) -> bool {
+        match selection {
+            Some(selected) => {
+                selected.scope_allowed(key)
+                    && self
+                        .scope_kind
+                        .as_ref()
+                        .is_none_or(|kind| key.scope_allowed(kind, name))
+            }
+            None => self.key_admits(key, name),
+        }
+    }
+
+    /// The key's own grant of `name` in this seat's declared kind. With no declared kind,
+    /// only an unrestricted key holds it.
+    fn key_admits(&self, key: &VirtualKey, name: &str) -> bool {
+        match &self.scope_kind {
+            Some(kind) => key.scope_allowed(kind, name),
+            None => key.allowed_scopes.is_none(),
+        }
+    }
+
+    // Catalog and registration walks are ordinary pool/direct scope. Member-granted pools are
+    // the section pools, granted per member in `section_grants` (#108, R5).
+    fn member_grants(
+        &self,
+        key: &VirtualKey,
+        selection: Option<&SelectedResources>,
+    ) -> BTreeMap<String, Vec<String>> {
+        let allowed = |name: &str| self.scope_admits(key, selection, name);
+        let selected = |walk: &str, member: &str| {
+            selection.is_none_or(|selected| selected.grants_member(walk, member))
         };
         let mut grants = BTreeMap::new();
         if let Some(catalog) = &self.catalog {
@@ -136,6 +177,7 @@ impl RequestRoutes {
                     .members
                     .iter()
                     .map(|member| format!("{}{PLANE_LANE_SEP}{}", self.instance, member.name()))
+                    .filter(|member| selected(walk.as_str(), member.as_str()))
                     .collect();
                 if !members.is_empty() {
                     grants.insert(walk.clone(), members);
@@ -148,12 +190,14 @@ impl RequestRoutes {
                     .members
                     .iter()
                     .map(|member| format!("{}{PLANE_LANE_SEP}{}", self.instance, member.upstream))
+                    .filter(|member| selected(registration.pool.as_str(), member.as_str()))
                     .collect();
                 if !members.is_empty() {
                     grants.insert(registration.pool.clone(), members);
                 }
             }
         }
+        self.section_grants(key, selection, &mut grants);
         grants
     }
     fn resolve(&self, selector: Option<&str>) -> Result<(RequestDomain, String), AdmissionError> {
@@ -175,6 +219,9 @@ impl RequestRoutes {
                         registration.pool.clone(),
                     ));
                 }
+            }
+            if self.section_pools.contains_key(name) {
+                return Ok((RequestDomain::NamedPool(name.into()), name.into()));
             }
             return Err(AdmissionError::Route);
         }
@@ -216,6 +263,7 @@ pub struct RequestAllocation {
     key: Arc<VirtualKey>,
     cost: Arc<CostModel>,
     arrived: u64,
+    selection: Option<Arc<SelectedResources>>,
     armed: bool,
 }
 impl RequestAllocation {
@@ -237,11 +285,18 @@ impl RequestAllocation {
             key,
             cost,
             arrived,
+            selection: None,
             armed: true,
         })
     }
     pub fn context(&self) -> &InvocationContext {
         &self.context
+    }
+    /// Bind this native unit's authorized resource selection: its walk grants become the
+    /// selected tuples' own targets, and a registration outside them is refused (K2).
+    pub fn with_selection(mut self, selected: Arc<SelectedResources>) -> Self {
+        self.selection = Some(selected);
+        self
     }
     pub fn forward(
         self,
@@ -274,7 +329,7 @@ impl RequestAllocation {
             RequestDomain::Local => "",
         };
         let grants = if let Some((_, walk_key)) = &walk {
-            let grants = routes.member_grants(&self.key);
+            let grants = routes.member_grants(&self.key, self.selection.as_deref());
             if !grants.contains_key(walk_key) {
                 return Err(AdmissionError::Scope);
             }
@@ -296,6 +351,7 @@ impl RequestAllocation {
             domain,
             walk,
             command: None,
+            selection: self.selection.clone(),
             armed: true,
         })
     }
@@ -320,6 +376,7 @@ pub struct RequestPoolReceipt {
     domain: RequestDomain,
     walk: Option<(RequestWalk, String)>,
     command: Option<SelectedCommand>,
+    selection: Option<Arc<SelectedResources>>,
     armed: bool,
 }
 impl RequestPoolReceipt {
@@ -455,6 +512,7 @@ impl CommittingRequest {
             domain: self.route.domain.clone(),
             walk: self.route.walk.clone(),
             command: self.route.command.clone(),
+            selection: self.route.selection.clone(),
             money,
             grant,
             governance,
@@ -480,6 +538,7 @@ pub struct AdmittedRequest {
     domain: RequestDomain,
     walk: Option<(RequestWalk, String)>,
     command: Option<SelectedCommand>,
+    selection: Option<Arc<SelectedResources>>,
     money: Arc<UnitMoney>,
     grant: Arc<AdmitGrant>,
     governance: Arc<GovState>,

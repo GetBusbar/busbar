@@ -258,6 +258,7 @@ fn shared(table: Option<ConnTable>) -> SeatShared {
         secrets: Arc::new(Fixed),
         kernel: Arc::new(Kernel::new()),
         table,
+        section_pools: BTreeMap::new(),
     }
 }
 

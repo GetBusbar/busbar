@@ -1565,9 +1565,6 @@ impl busbar_ports::binder::ConfigBinder for PlainBinder {
     ) -> Option<Arc<busbar_ports::binder::TrustAnchor>> {
         None
     }
-    fn unix_path(&self, _instance: u64, _path: &str) -> bool {
-        false
-    }
     fn dest(&self, _instance: u64, _handle: u32) -> Option<Arc<busbar_ports::binder::DestDef>> {
         None
     }
