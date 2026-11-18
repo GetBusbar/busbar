@@ -97,6 +97,10 @@ fn emit_openapi_artifact() {
     );
     if let Ok(path) = std::env::var("BUSBAR_EMIT_OPENAPI") {
         let json = serde_json::to_string_pretty(&doc).expect("serialize OpenAPI document");
+        if let Some(dir) = std::path::Path::new(&path).parent() {
+            std::fs::create_dir_all(dir)
+                .unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
+        }
         std::fs::write(&path, json).unwrap_or_else(|e| panic!("write {path}: {e}"));
     }
 }
