@@ -275,7 +275,7 @@ async fn admin_corpus_reconciles_with_the_served_router() {
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             super::plugins::trusted_config(&directory),
             None,
             Default::default(),
@@ -644,7 +644,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             super::plugins::trusted_config(&directory),
             None,
             Default::default(),
@@ -810,7 +810,7 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             super::plugins::trusted_config(&directory),
             None,
             Default::default(),

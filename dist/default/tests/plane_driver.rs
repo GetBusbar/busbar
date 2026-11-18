@@ -1246,7 +1246,7 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         Arc::new(busbar_kernel::appbuild::AcceptAll);
     let _app = runtime.block_on(async {
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             busbar_kernel::config::PluginsCfg {
                 enabled: true,
                 dir: directory.to_string_lossy().into_owned(),

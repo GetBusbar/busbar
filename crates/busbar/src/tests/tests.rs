@@ -490,7 +490,7 @@ async fn the_boot_path_keeps_its_journal_in_the_store_with_a_configured_director
     let rules =
         Arc::new(root::door_steps::Rules::default()) as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         Default::default(),
         None,
         Default::default(),
@@ -781,7 +781,7 @@ async fn one_seal_after_two_reloads() {
     let rules =
         Arc::new(root::door_steps::Rules::default()) as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (boot, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         Default::default(),
         None,
         Default::default(),
@@ -807,7 +807,7 @@ async fn one_seal_after_two_reloads() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the unchanged product deployment resolves for the first reload");
     let (first, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         Default::default(),
         None,
         Default::default(),
@@ -825,7 +825,7 @@ async fn one_seal_after_two_reloads() {
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the unchanged product deployment resolves for the second reload");
     let (second, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         Default::default(),
         None,
         Default::default(),

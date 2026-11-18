@@ -1082,7 +1082,7 @@ async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (built, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
@@ -1695,7 +1695,7 @@ async fn answer_over_counts(
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut built, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
@@ -1958,7 +1958,7 @@ async fn real_admin_dispatch() -> RouterDispatch {
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut built, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),

@@ -127,7 +127,7 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     });
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -256,7 +256,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     });
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -385,7 +385,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     });
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -518,7 +518,7 @@ async fn named_defs_propagate_store_overlay_read_failures() {
     });
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

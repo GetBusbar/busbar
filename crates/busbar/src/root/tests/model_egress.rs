@@ -44,7 +44,7 @@ async fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),
@@ -174,7 +174,7 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),
@@ -239,7 +239,7 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),
@@ -304,7 +304,7 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),
@@ -429,7 +429,7 @@ async fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),
@@ -495,7 +495,7 @@ async fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),
@@ -599,7 +599,7 @@ async fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),
@@ -686,7 +686,7 @@ async fn a_success_is_recorded_on_the_walks_clock() {
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),
@@ -784,7 +784,7 @@ async fn a_probe_success_joins_the_walks_window() {
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),
@@ -887,7 +887,7 @@ async fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
             let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
                 Arc::new(crate::root::door_steps::Rules::default());
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-                cfg,
+                crate::root::test_plugins::plaintext_listeners(cfg),
                 Default::default(),
                 None,
                 Default::default(),
@@ -1028,7 +1028,7 @@ async fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),
@@ -1123,7 +1123,7 @@ async fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),
@@ -1217,7 +1217,7 @@ async fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retire
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),
@@ -1289,7 +1289,7 @@ async fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retire
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),
@@ -1394,7 +1394,7 @@ async fn a_keyless_lane_is_not_probed() {
             let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
                 Arc::new(crate::root::door_steps::Rules::default());
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-                cfg,
+                crate::root::test_plugins::plaintext_listeners(cfg),
                 Default::default(),
                 None,
                 Default::default(),
@@ -1471,7 +1471,7 @@ async fn semantic_rate_limit_preserves_the_store_ladder_without_reading_protocol
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             Default::default(),
             None,
             Default::default(),

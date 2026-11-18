@@ -709,7 +709,7 @@ impl NativeExport {
     ) -> (busbar_kernel::state::App, busbar_kernel::InstalledLimits) {
         let cfg = Self::config(document, &self.plugins);
         let (app, rotation, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             self.plugins.clone(),
             None,
             Default::default(),

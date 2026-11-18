@@ -188,7 +188,7 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
     });
     let core = crate::root::real_store::core_over(store.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -322,7 +322,7 @@ async fn usage_read_store_failure_logs_the_real_error() {
     });
     let core = crate::root::real_store::core_over(store.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

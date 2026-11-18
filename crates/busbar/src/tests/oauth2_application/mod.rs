@@ -337,7 +337,7 @@ async fn build_application(
                 .unwrap(),
         };
         let (app, _rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugins.clone(),
             None,
             HashSet::new(),
@@ -504,7 +504,7 @@ async fn build_application(
     let rules = crate::root::min3_boot::fixture::carry(opened_store.rules, rules);
     let opened_store = opened_store.core;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugins,
         overlay,
         HashSet::new(),

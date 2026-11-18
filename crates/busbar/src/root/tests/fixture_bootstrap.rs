@@ -729,7 +729,7 @@ async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let before = app.config_generation.load(Ordering::Acquire);
     let runtime = busbar_kernel::appbuild::build_app_from_config_with_store(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugins,
         None,
         Default::default(),

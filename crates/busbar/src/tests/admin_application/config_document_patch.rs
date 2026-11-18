@@ -222,7 +222,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     let overlay = OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config persistence");
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay.clone()),
         Default::default(),
@@ -1004,7 +1004,7 @@ async fn configured_admin_in_directory(
         );
     }
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay.clone()),
         Default::default(),

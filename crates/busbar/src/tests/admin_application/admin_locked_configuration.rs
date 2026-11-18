@@ -63,7 +63,7 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         HashSet::new(),
@@ -195,7 +195,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         HashSet::new(),
@@ -322,7 +322,7 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         HashSet::new(),
@@ -435,7 +435,7 @@ async fn test_admin_v1_config_settings_put_refuses_locked_store_mutation() {
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         HashSet::new(),
@@ -554,7 +554,7 @@ async fn test_admin_v1_config_settings_put_rejects_retired_persist() {
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         HashSet::new(),
@@ -664,7 +664,7 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         HashSet::new(),

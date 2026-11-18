@@ -301,7 +301,7 @@ async fn governed_full(
         config.per_request_fee = flat_fee.unwrap_or(1);
     }
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         crate::root::test_plugins::trusted_config_with_key(
             &directory,
             &crate::root::test_plugins::key(0x5a),

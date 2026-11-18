@@ -84,7 +84,7 @@ async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() 
         "the fixture must not reopen secret instances between Store and App construction"
     );
     let (app, _, _limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         Some(backend),
         Default::default(),
@@ -161,7 +161,7 @@ async fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stal
         .await
         .unwrap();
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(backend.clone()),
         Default::default(),
@@ -391,7 +391,7 @@ async fn root_recovery_can_run_before_hydration_without_changing_standalone_buil
             .await
             .unwrap();
         let (app, _, _limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             plugin_config,
             None,
             Default::default(),

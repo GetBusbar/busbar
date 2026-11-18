@@ -259,7 +259,7 @@ async fn provider_configuration_never_grants_global_hostname_authority_across_re
     let reloaded = deployment(&[("b", "https://model-b.internal", &[])], "");
     let store = crate::root::real_store::core().await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        reloaded,
+        crate::root::test_plugins::plaintext_listeners(reloaded),
         Default::default(),
         None,
         Default::default(),

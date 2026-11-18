@@ -84,7 +84,7 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        native_config,
+        crate::root::test_plugins::plaintext_listeners(native_config),
         native_plugins,
         None,
         Default::default(),

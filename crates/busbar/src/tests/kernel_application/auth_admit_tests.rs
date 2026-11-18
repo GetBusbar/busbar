@@ -51,7 +51,7 @@ async fn an_open_chain_admits_a_session_anonymous_and_ungoverned() {
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -139,7 +139,7 @@ async fn a_configured_chain_denies_a_session_with_no_credential() {
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

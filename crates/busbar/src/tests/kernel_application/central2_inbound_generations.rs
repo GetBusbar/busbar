@@ -84,7 +84,7 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        native_config,
+        crate::root::test_plugins::plaintext_listeners(native_config),
         native_plugins,
         None,
         Default::default(),
@@ -196,7 +196,7 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
         .core_store_handle()
         .expect("reload native Store");
     let (replacement, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        native_config,
+        crate::root::test_plugins::plaintext_listeners(native_config),
         native_plugins,
         None,
         Default::default(),

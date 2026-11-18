@@ -70,7 +70,7 @@ async fn admin_plugin_full_binding_allows_mutation() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay.clone()),
         Default::default(),
@@ -191,7 +191,7 @@ async fn admin_max_admin_scope_caps_binding() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay.clone()),
         Default::default(),
@@ -307,7 +307,7 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay.clone()),
         Default::default(),
@@ -459,7 +459,7 @@ async fn roleless_external_admin_principal_denied() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay.clone()),
         Default::default(),
@@ -568,7 +568,7 @@ async fn forbidden_admin_requests_audit_once_per_window() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay.clone()),
         Default::default(),
@@ -700,7 +700,7 @@ async fn the_admin_gate_admits_only_the_listed_verbs() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay.clone()),
         Default::default(),
@@ -877,7 +877,7 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
             let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
             .expect("the actual Store supports conditional config records");
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-                config,
+                crate::root::test_plugins::plaintext_listeners(config),
                 plugin_config,
                 Some(overlay.clone()),
                 Default::default(),
@@ -1138,7 +1138,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
             let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
                 .expect("the actual Store supports conditional config records");
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-                config,
+                crate::root::test_plugins::plaintext_listeners(config),
                 plugin_config,
                 Some(overlay.clone()),
                 Default::default(),
@@ -1320,7 +1320,7 @@ async fn external_admin_verifier_receives_bearer_and_admin_header_candidates() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay.clone()),
         Default::default(),
@@ -1495,7 +1495,7 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay.clone()),
         Default::default(),

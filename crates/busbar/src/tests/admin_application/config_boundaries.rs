@@ -50,7 +50,7 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -179,7 +179,7 @@ async fn reload_refuses_env_policy_injection_without_publishing() {
         crate::root::connector::dest_judge(&config),
     )) as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

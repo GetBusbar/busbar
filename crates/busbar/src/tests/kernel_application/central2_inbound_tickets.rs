@@ -83,7 +83,7 @@ async fn actual_ticket_preflight_preserves_unspent_custody_and_invalid_prefix_re
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        native_config,
+        crate::root::test_plugins::plaintext_listeners(native_config),
         native_plugins,
         None,
         Default::default(),

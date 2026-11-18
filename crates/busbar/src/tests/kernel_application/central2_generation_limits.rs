@@ -87,7 +87,7 @@ async fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        native_config,
+        crate::root::test_plugins::plaintext_listeners(native_config),
         native_plugins,
         None,
         Default::default(),

@@ -60,7 +60,7 @@ async fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings()
     let rules =
         Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -179,7 +179,7 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
             .clone()
             .expect("the shared Store configuration");
         let (app, rotate, limits) = kernel::appbuild::build_app_from_config_with_store(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config,
             None,
             Default::default(),

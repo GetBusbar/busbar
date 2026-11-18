@@ -706,7 +706,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
         .await
         .expect("the catalog uses the configured native plugin-floor owner");
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         Default::default(),
         None,
         Default::default(),

@@ -148,7 +148,7 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay.clone()),
         Default::default(),
@@ -350,7 +350,7 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
         let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
             .expect("the actual Store supports conditional config records");
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config,
             Some(overlay.clone()),
             Default::default(),
@@ -510,7 +510,7 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
     .await
     .expect("the actual Store bootstraps its config authority");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -673,7 +673,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
             .expect("the actual Store supports conditional config records");
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config,
             Some(overlay.clone()),
             Default::default(),
@@ -908,7 +908,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
             let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
                 .expect("the actual Store supports conditional config records");
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-                config,
+                crate::root::test_plugins::plaintext_listeners(config),
                 plugin_config,
                 Some(overlay.clone()),
                 Default::default(),

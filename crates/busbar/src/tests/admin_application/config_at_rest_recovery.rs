@@ -122,7 +122,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         let store = RewrapStore::new(native);
         let core = crate::root::real_store::core_over(store.clone()).await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config,
             None,
             Default::default(),
@@ -209,7 +209,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual config resolves");
         let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             actual_plugins,
             None,
             Default::default(),

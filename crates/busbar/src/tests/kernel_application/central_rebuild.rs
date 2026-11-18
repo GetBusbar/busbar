@@ -228,7 +228,7 @@ async fn a_rejected_config_leaves_no_limits_behind() {
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
     let Err(err) = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         None,
         Default::default(),

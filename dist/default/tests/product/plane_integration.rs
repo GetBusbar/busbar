@@ -251,7 +251,7 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         None,
         Default::default(),
@@ -352,7 +352,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         None,
         Default::default(),
@@ -473,7 +473,7 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         None,
         Default::default(),
@@ -618,7 +618,7 @@ async fn plane_slot_is_none_when_the_plane_is_not_configured() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         None,
         Default::default(),
@@ -773,7 +773,7 @@ mod metrics_scrape {
         let exports = cfg.export.clone();
         let judge = crate::root::connector::dest_judge(&cfg);
         let (app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             plugin_config,
             None,
             Default::default(),
@@ -1072,7 +1072,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         None,
         Default::default(),

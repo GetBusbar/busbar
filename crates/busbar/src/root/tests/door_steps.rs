@@ -164,7 +164,7 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let opened = crate::root::real_store::core().await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),
@@ -289,7 +289,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
                 as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
             let opened = generation_store.clone();
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-                cfg,
+                crate::root::test_plugins::plaintext_listeners(cfg),
                 crate::root::test_plugins::trusted_config_with_key(
                     &directory,
                     &crate::root::test_plugins::key(0x5a),
@@ -402,7 +402,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let opened = generation_store.clone();
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),
@@ -977,7 +977,7 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let opened = crate::root::real_store::core().await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),
@@ -1174,7 +1174,7 @@ async fn money_book(
             .core_store_handle()
             .expect("the generation keeps its native governance authority");
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),
@@ -4759,7 +4759,7 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
                 as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
             let opened = crate::root::real_store::core().await;
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-                cfg,
+                crate::root::test_plugins::plaintext_listeners(cfg),
                 crate::root::test_plugins::trusted_config_with_key(
                     &directory,
                     &crate::root::test_plugins::key(0x5a),
@@ -4984,7 +4984,7 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let opened = crate::root::real_store::core().await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),
@@ -5388,7 +5388,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
             .core_store_handle()
             .expect("the generation keeps its native governance authority");
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),
@@ -5526,7 +5526,7 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let opened = crate::root::real_store::core().await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),

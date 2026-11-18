@@ -93,7 +93,7 @@ async fn boot_refusal_releases_the_completed_candidates_routes_without_committin
     let refusing = Arc::new(RefuseBoot::default());
     let rules: Arc<dyn RootRules> = refusing.clone();
     let refusal = match crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -215,7 +215,7 @@ async fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_t
     let reject = Arc::new(RefuseBuilt(std::sync::atomic::AtomicUsize::new(0)));
     let rules: Arc<dyn RootRules> = reject.clone();
     let result = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -303,7 +303,7 @@ async fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
     );
 
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

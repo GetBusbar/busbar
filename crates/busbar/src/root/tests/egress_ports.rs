@@ -227,7 +227,7 @@ async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        empty,
+        crate::root::test_plugins::plaintext_listeners(empty),
         Default::default(),
         None,
         Default::default(),

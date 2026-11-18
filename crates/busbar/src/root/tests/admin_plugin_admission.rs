@@ -212,7 +212,7 @@ async fn serve_admission_with_inputs(
     let core = opened.core.clone();
     let rules = crate::root::min3_boot::fixture::carry(opened.rules.clone(), rules);
     let (mut app, rotation, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        resolved,
+        crate::root::test_plugins::plaintext_listeners(resolved),
         Default::default(),
         None,
         Default::default(),

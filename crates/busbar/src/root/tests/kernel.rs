@@ -660,7 +660,7 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
                 .saturating_add(1);
         }
         let (app, _, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             plugins.clone(),
             None,
             Default::default(),

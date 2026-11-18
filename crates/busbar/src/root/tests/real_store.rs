@@ -131,7 +131,7 @@ pub(crate) async fn build_app(
         (opened.core, opened.rules)
     };
     busbar_kernel::appbuild::build_app_from_config_with_store(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugins,
         overlay,
         base_hooks,

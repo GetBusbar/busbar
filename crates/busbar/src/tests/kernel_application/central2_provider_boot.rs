@@ -68,7 +68,7 @@ async fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let result = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
@@ -149,7 +149,7 @@ async fn boot_starts_a_keyless_lane_declared_none() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let result = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),

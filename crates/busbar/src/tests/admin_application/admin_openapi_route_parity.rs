@@ -182,7 +182,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual admin deployment resolves");
         let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config.clone(),
             Some(overlay.clone()),
             HashSet::new(),

@@ -95,7 +95,7 @@ impl Fixture {
             .expect("the configured actual Store opens");
         let core = crate::root::real_store::core_over(backend).await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config,
             None,
             Default::default(),

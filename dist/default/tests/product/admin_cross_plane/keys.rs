@@ -238,7 +238,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, json::Value)> {
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             super::plugins::trusted_config(&directory),
             None,
             Default::default(),
@@ -407,7 +407,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             super::plugins::trusted_config(&directory),
             None,
             Default::default(),
@@ -551,7 +551,7 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             super::plugins::trusted_config(&directory),
             None,
             Default::default(),
@@ -749,7 +749,7 @@ async fn drive_key_cap_and_delegation_errors() {
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             super::plugins::trusted_config(&directory),
             None,
             Default::default(),
@@ -986,7 +986,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             super::plugins::trusted_config(&directory),
             None,
             Default::default(),
@@ -1094,7 +1094,7 @@ async fn serve_keys_fixture(
                 let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                     as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
                 let (mut app, rotate, limits) = crate::root::real_store::build_app(
-                    cfg,
+                    crate::root::test_plugins::plaintext_listeners(cfg),
                     super::plugins::trusted_config(&directory),
                     None,
                     Default::default(),
@@ -1176,7 +1176,7 @@ async fn serve_keys_fixture(
                 let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                     as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
                 let (mut app, rotate, limits) = crate::root::real_store::build_app(
-                    cfg,
+                    crate::root::test_plugins::plaintext_listeners(cfg),
                     super::plugins::trusted_config(&directory),
                     None,
                     Default::default(),
@@ -1253,7 +1253,7 @@ async fn serve_keys_fixture(
             let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                 as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
             let (mut app, rotate, limits) = crate::root::real_store::build_app(
-                cfg,
+                crate::root::test_plugins::plaintext_listeners(cfg),
                 super::plugins::trusted_config(&directory),
                 None,
                 Default::default(),
@@ -1892,7 +1892,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             .await
             .expect("the new fixture Store initializes the admitted OIDC principal namespace");
         let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             plugin_config,
             None,
             Default::default(),
@@ -2803,7 +2803,7 @@ async fn drive_plugin_reload_errors() {
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             super::plugins::trusted_config(&directory),
             None,
             Default::default(),
@@ -2926,7 +2926,7 @@ async fn drive_plugin_rollback_errors() {
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             super::plugins::trusted_config(&directory),
             None,
             Default::default(),
@@ -3167,7 +3167,7 @@ async fn drive_plugin_inspect_errors() {
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             super::plugins::trusted_config(&directory),
             None,
             Default::default(),
@@ -3605,7 +3605,7 @@ async fn named_map_app_opts(
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         super::plugins::trusted_config(&plugin_dir),
         Some(overlay.clone()),
         Default::default(),
@@ -4275,7 +4275,7 @@ async fn drive_named_map_errors() {
             let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                 as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
             let (mut app, rotate, limits) = crate::root::real_store::build_app(
-                cfg,
+                crate::root::test_plugins::plaintext_listeners(cfg),
                 super::plugins::trusted_config(&directory),
                 None,
                 Default::default(),

@@ -707,3 +707,24 @@ pub fn operator_client() -> reqwest::Client {
         .build()
         .expect("the operator client builds")
 }
+
+/// A fixture deployment as the root listeners need it since #359 SEC-L1 (2f61a291e9): a listener with no TLS
+/// boots only with its explicit plaintext acceptance, which the owner ruling has fixtures write ("kernel and root
+/// make_root_cfg fixtures write the explicit plaintext acceptance for both root listeners"). A listener with TLS,
+/// or one whose acceptance the document already wrote, is left as it is.
+pub(crate) fn plaintext_listeners(
+    mut cfg: busbar_kernel::config::RootCfg,
+) -> busbar_kernel::config::RootCfg {
+    use busbar_plugin_abi::host_side::caller::Accept;
+    let plain = || busbar_kernel::config::min3::InsecureTransport {
+        accept: Accept(Accept::PLAINTEXT),
+        reason: "test fixture listener".into(),
+    };
+    if cfg.tls.is_none() && cfg.listener_acceptances.listen.is_none() {
+        cfg.listener_acceptances.listen = Some(plain());
+    }
+    if cfg.admin_tls.is_none() && cfg.listener_acceptances.admin_listen.is_none() {
+        cfg.listener_acceptances.admin_listen = Some(plain());
+    }
+    cfg
+}

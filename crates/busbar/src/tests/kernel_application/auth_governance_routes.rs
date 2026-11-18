@@ -199,7 +199,7 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -350,7 +350,7 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -458,7 +458,7 @@ async fn open_chain_without_operator_still_inserts_default_context() {
         .admit()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -574,7 +574,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     .await
     .expect("the new fixture Store initializes the admitted OIDC principal namespace");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -697,7 +697,7 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     .await
     .expect("the new fixture Store initializes the admitted OIDC principal namespace");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

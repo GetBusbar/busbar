@@ -189,7 +189,7 @@ async fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut built, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
@@ -385,7 +385,7 @@ async fn the_mounted_live_admin_door_keeps_no_verdict_apart_from_bad_credentials
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut built, rotate, limits) = crate::root::real_store::build_app(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             crate::root::test_plugins::trusted_config(&directory),
             None,
             Default::default(),
@@ -697,7 +697,7 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (built, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
@@ -837,7 +837,7 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (built, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
@@ -964,7 +964,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (built, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),
@@ -1195,7 +1195,7 @@ async fn a_q71_node_replaying(
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (built, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),

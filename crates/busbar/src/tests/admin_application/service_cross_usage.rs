@@ -167,7 +167,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config.clone(),
         None,
         Default::default(),
@@ -210,7 +210,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
     let current = busbar_kernel::config::resolve(&current, &provider_defs)
         .expect("the current deployment resolves");
     let (next, rotate, limits) = crate::root::real_store::build_app(
-        current,
+        crate::root::test_plugins::plaintext_listeners(current),
         plugin_config,
         None,
         Default::default(),
