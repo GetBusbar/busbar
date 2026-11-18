@@ -2873,10 +2873,10 @@ impl busbar_kernel::plane_driver::FarEnd for Gone {
         use busbar_kernel::plane_driver::Pick;
         let pick = if attempt_no == 1 && self.sends {
             Pick::Member {
-                name: "m0".to_string(),
-                pool: "pool-a".to_string(),
+                name: "m0".into(),
+                pool: "pool-a".into(),
                 passthrough: false,
-                provider: "acme".to_string(),
+                provider: "acme".into(),
             }
         } else {
             self.then.clone()
@@ -3301,10 +3301,10 @@ impl busbar_kernel::plane_driver::FarEnd for Unpresentable {
         use busbar_kernel::plane_driver::Pick;
         let pick = match [UNBOUND, UNSPAWNED].get(attempt_no as usize - 1) {
             Some(m) => Pick::Member {
-                name: (*m).to_string(),
-                pool: "pool-a".to_string(),
+                name: (*m).into(),
+                pool: "pool-a".into(),
                 passthrough: false,
-                provider: "acme".to_string(),
+                provider: "acme".into(),
             },
             None => Pick::Exhausted {
                 status: 503,
@@ -3659,10 +3659,10 @@ impl busbar_kernel::plane_driver::FarEnd for Refusing {
         use busbar_kernel::plane_driver::Pick;
         let pick = if (attempt_no as usize) <= self.tries.len() {
             Pick::Member {
-                name: format!("m{attempt_no}"),
-                pool: "pool-a".to_string(),
+                name: format!("m{attempt_no}").as_str().into(),
+                pool: "pool-a".into(),
                 passthrough: false,
-                provider: "acme".to_string(),
+                provider: "acme".into(),
             }
         } else {
             Pick::Exhausted {

@@ -2641,7 +2641,8 @@ impl<'d> DoorFar<'d, '_> {
                     member_grants: self.steps.member_grants(),
                     allowed_member: self.steps.child_member(),
                     unit: self.unit,
-                    pool,
+                    // The unit routes under the pools' own shared name for its pool.
+                    pool: egress.pool_name(&pool),
                     connection_required: self.steps.connection_required(),
                     authorization: Some(Arc::clone(&self.authorization)),
                     caller_credential: self.credential.clone(),

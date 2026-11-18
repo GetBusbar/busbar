@@ -389,7 +389,7 @@ fn an_exchange_is_sent_as_the_far_end_s_request_and_its_reply_is_read_piece_by_p
 
 #[test]
 fn the_request_carries_the_exchange_the_member_and_the_pool() {
-    let request = request_of("lane:a", "pool", 3, exchange()).unwrap();
+    let request = request_of(&"lane:a".into(), &"pool".into(), 3, exchange()).unwrap();
     assert_eq!(request.member, "lane:a");
     assert_eq!(request.pool, "pool");
     assert_eq!(request.attempt_no, 3);
@@ -407,7 +407,7 @@ fn outbound_none_waives_the_member_credential_and_a_scope_rides_as_its_field() {
         scope: Some("tenant-1".into()),
         ..exchange()
     };
-    let request = request_of("a", "p", 1, none.clone()).unwrap();
+    let request = request_of(&"a".into(), &"p".into(), 1, none.clone()).unwrap();
     assert!(request
         .fields
         .iter()
@@ -426,11 +426,17 @@ fn is_request_of_agrees_with_building_the_request_and_comparing_it() {
             scope: Some("tenant-1".into()),
             ..exchange()
         };
-        let built = request_of("lane:a", "pool", 3, rich.clone()).unwrap();
+        let built = request_of(&"lane:a".into(), &"pool".into(), 3, rich.clone()).unwrap();
         // The old form: build a whole request from the parts and compare it.
         let agrees = |request: &OutboundRequest| {
             is_request_of(request, "lane:a", "pool", &rich)
-                == (request_of("lane:a", "pool", request.attempt_no, rich.clone()).as_ref()
+                == (request_of(
+                    &"lane:a".into(),
+                    &"pool".into(),
+                    request.attempt_no,
+                    rich.clone(),
+                )
+                .as_ref()
                     == Some(request))
         };
         assert!(is_request_of(&built, "lane:a", "pool", &rich));
@@ -438,8 +444,9 @@ fn is_request_of_agrees_with_building_the_request_and_comparing_it() {
         // One difference in each of the other eight fields.
         let mut differs: Vec<OutboundRequest> = Vec::new();
         for edit in [
-            (|r: &mut OutboundRequest| r.member.push('x')) as fn(&mut OutboundRequest),
-            |r| r.pool.push('x'),
+            (|r: &mut OutboundRequest| r.member = format!("{}x", r.member).as_str().into())
+                as fn(&mut OutboundRequest),
+            |r| r.pool = format!("{}x", r.pool).as_str().into(),
             |r| r.verb.push(b'x'),
             |r| r.target.push(b'x'),
             |r| r.fields.push((b"x".to_vec(), b"y".to_vec())),
@@ -484,17 +491,17 @@ fn an_exchange_this_carrier_does_not_send_is_not_a_request() {
         carrier: CARRIER_GRPC,
         ..exchange()
     };
-    assert!(request_of("a", "p", 1, grpc.clone()).is_none());
+    assert!(request_of(&"a".into(), &"p".into(), 1, grpc.clone()).is_none());
     let no_path = UpExchange {
         path: None,
         ..exchange()
     };
-    assert!(request_of("a", "p", 1, no_path.clone()).is_none());
+    assert!(request_of(&"a".into(), &"p".into(), 1, no_path.clone()).is_none());
     let http = UpExchange {
         carrier: CARRIER_HTTP,
         ..exchange()
     };
-    assert!(request_of("a", "p", 1, http).is_some());
+    assert!(request_of(&"a".into(), &"p".into(), 1, http).is_some());
 }
 
 #[test]
@@ -633,14 +640,14 @@ fn the_route_a_session_walks_under_states_the_wants_and_the_acceptance() {
         ..Wants::default()
     };
     let key = busbar_contract::UnitKey::new(7);
-    let route = route_of("pool", key, Accept(Accept::PLAINTEXT), &wants);
+    let route = route_of("pool".into(), key, Accept(Accept::PLAINTEXT), &wants);
     assert_eq!(route.pool, "pool");
     assert_eq!(route.unit, key);
     assert!(route.wants_stream);
     assert_eq!(route.allowed_member.as_deref(), Some("pinned"));
     assert!(route.affinity.is_some());
     assert_eq!(route.accept, Accept(Accept::PLAINTEXT));
-    let plain = route_of("pool", key, Accept::default(), &Wants::default());
+    let plain = route_of("pool".into(), key, Accept::default(), &Wants::default());
     assert_eq!(plain.affinity, None);
     assert_eq!(plain.allowed_member, None);
     assert_eq!(
@@ -731,7 +738,12 @@ fn b_request_of_held_against_moved() {
     let start = std::time::Instant::now();
     let mut kept = Vec::with_capacity(CYCLES);
     for exchange in &spare {
-        kept.push(request_of("lane:a", "pool", 1, exchange.clone()));
+        kept.push(request_of(
+            &"lane:a".into(),
+            &"pool".into(),
+            1,
+            exchange.clone(),
+        ));
     }
     let held_ns = start.elapsed().as_nanos() as usize / CYCLES;
     let held_bytes = crate::ThreadAllocated::bytes() as usize / CYCLES;
@@ -741,12 +753,15 @@ fn b_request_of_held_against_moved() {
     let start = std::time::Instant::now();
     let mut out = Vec::with_capacity(CYCLES);
     for exchange in moved_input {
-        out.push(request_of("lane:a", "pool", 1, exchange));
+        out.push(request_of(&"lane:a".into(), &"pool".into(), 1, exchange));
     }
     let moved_ns = start.elapsed().as_nanos() as usize / CYCLES;
     let moved_bytes = crate::ThreadAllocated::bytes() as usize / CYCLES;
     println!(
         "B-REQUEST-OF held: {held_ns} ns, {held_bytes} bytes; moved: {moved_ns} ns, {moved_bytes} bytes"
     );
-    assert_eq!(out[0], request_of("lane:a", "pool", 1, spare[0].clone()));
+    assert_eq!(
+        out[0],
+        request_of(&"lane:a".into(), &"pool".into(), 1, spare[0].clone())
+    );
 }

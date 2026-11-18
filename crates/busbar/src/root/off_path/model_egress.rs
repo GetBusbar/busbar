@@ -240,7 +240,9 @@ pub fn compose(
         member.passthrough = passthrough;
         Ok(member)
     };
-    let mut built: foldhash::HashMap<String, Pool> = foldhash::HashMap::default();
+    // Each pool is keyed by its own name: one shared text for both.
+    let mut built: foldhash::HashMap<busbar_contract::kept::Text, Pool> =
+        foldhash::HashMap::default();
     for (name, pool) in &plan.pools {
         let members = pool
             .members
@@ -253,11 +255,11 @@ pub fn compose(
         let mut p = Pool::new(name.clone(), members);
         p.set_failover(pool.failover.clone());
         p.on_exhausted = pool.on_exhausted.clone();
-        built.insert(name.clone(), p);
+        built.insert(p.name.clone(), p);
     }
     let mut direct = HashSet::default();
     for model in routes.keys() {
-        if built.contains_key(model) || !serving.lanes.contains_key(model) {
+        if built.contains_key(model.as_str()) || !serving.lanes.contains_key(model) {
             continue;
         }
         let member = member_of(model, 1, None, plan.passthrough)?;
@@ -267,7 +269,7 @@ pub fn compose(
             max_hops: busbar_kernel::config::DEFAULT_FAILOVER_CAP,
             exclusions: Vec::new(),
         });
-        built.insert(model.clone(), p);
+        built.insert(p.name.clone(), p);
         direct.insert(model.clone());
     }
     let permits = Arc::new(crate::root::egress_ports::MemberPermits::new(limits));

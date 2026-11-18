@@ -43,6 +43,7 @@
 //! [`PollConns`], the auth binding the contract's [`OutboundAuth`], and both are handed in by the
 //! composition root.
 
+use std::borrow::Cow;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -55,10 +56,10 @@ use busbar_contract::abi::transport::{
 };
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{CallId, Pass, ReasonCode, Route};
-use busbar_contract::kept::Text;
 use busbar_contract::conn::{
     ConnCause, ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
+use busbar_contract::kept::Text;
 use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
 use busbar_kernel_egress::{
     attempt::attempt_cap_ms,
@@ -98,8 +99,9 @@ pub struct MemberRoute {
     /// The auth binding the root opened at generation seal; `None` = no auth fields.
     pub auth: Option<AuthBinding>,
     /// The provider the member is served by: the metering row's provider column, as 1.5.5's
-    /// `lane.provider` (v1.5.5 `crates/busbar/src/proxy/usage.rs` `ledger_and_meter`).
-    pub provider: String,
+    /// `lane.provider` (v1.5.5 `crates/busbar/src/proxy/usage.rs` `ledger_and_meter`). Shared
+    /// text, made once when the route is built: an attempt that names its provider copies nothing.
+    pub provider: Text,
     /// Which of the far end's response head fields cross to the plane: its need's declared keep
     /// rule (THE DESIGN §5, "The response head and trailers": the kernel copies only those).
     pub keep: ResponseKeep,
@@ -245,7 +247,9 @@ pub struct Egress {
 
     pub telemetry: Arc<dyn Telemetry>,
 
-    pub pools: foldhash::HashMap<String, Pool>,
+    /// The pools, keyed by their names as shared text (made once, when the generation is built):
+    /// a unit's route, its walk and its attempts share the key and copy no pool name.
+    pub pools: foldhash::HashMap<Text, Pool>,
 
     pub routes: foldhash::HashMap<DestinationId, MemberRoute>,
 
@@ -274,8 +278,8 @@ pub struct UnitRoute {
     /// The unit the walk serves; every dispatch
     /// record it writes names this unit.
     pub unit: busbar_contract::UnitKey,
-    /// The pool the unit routes over.
-    pub pool: String,
+    /// The pool the unit routes over: the pools' own shared name for it ([`Egress::pool_name`]).
+    pub pool: Text,
     /// The sticky-routing key, if any.
     pub affinity: Option<u64>,
     /// The caller asked for a streamed answer.
@@ -378,7 +382,7 @@ impl Default for UnitRoute {
             connection_required: false,
             authorization: None,
             unit: busbar_contract::UnitKey::new(0),
-            pool: String::new(),
+            pool: Text::EMPTY,
             affinity: None,
             wants_stream: false,
             leg: 0,
@@ -393,6 +397,17 @@ impl Egress {
     #[must_use]
     pub fn budget_secs(&self, pool: &str) -> u64 {
         budget_secs(&self.pools, pool)
+    }
+
+    /// `pool` by the shared name this generation holds it under: the pools' own key, so a unit
+    /// that routes over it copies no name. A pool the generation does not hold (its walk ends at
+    /// once, on its refusal) is named by a text made here for that one unit.
+    #[must_use]
+    pub fn pool_name(&self, pool: &str) -> Text {
+        self.pools.get_key_value(pool).map_or_else(
+            || Text::from(Arc::<str>::from(pool)),
+            |(name, _)| name.clone(),
+        )
     }
 
     fn ports<'p>(&'p self, breaker: &'p dyn Breaker) -> WalkPorts<'p> {
@@ -486,7 +501,7 @@ impl Egress {
             Some(AuthBinding::Configured(binding)) if binding.passthrough => return None,
             _ => {}
         }
-        let found = self.pools.get(pool)?;
+        let (name, found) = self.pools.get_key_value(pool)?;
         let member = found
             .members
             .iter()
@@ -496,7 +511,7 @@ impl Egress {
                     && member.destination == destination
             })?
             .clone();
-        Some(self.probe_member(found.name.clone(), member, timeout))
+        Some(self.probe_member(name.clone(), member, timeout))
     }
 
     fn probe_member(&self, pool: Text, member: Member, timeout: Duration) -> EgressFarEnd<'_> {
@@ -507,7 +522,7 @@ impl Egress {
             egress: self,
             breaker,
             route: UnitRoute {
-                pool: pool.as_str().to_owned(),
+                pool,
                 ..UnitRoute::default()
             },
             state: Mutex::new(State {
@@ -838,18 +853,19 @@ impl EgressFarEnd<'_> {
         self.facts_of(member).map_or(&[], |f| f.tags.as_slice())
     }
 
-    fn constrained(
+    /// The members are lent: with no constraint the same list goes back and no member is copied.
+    fn constrained<'m>(
         &self,
-        members: Vec<Member>,
+        members: &'m [Member],
         primary: bool,
-    ) -> Result<(Vec<Member>, Vec<DestinationId>), ()> {
+    ) -> Result<(Cow<'m, [Member]>, Vec<DestinationId>), ()> {
         let constraint = self
             .constraint
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         let Some(c) = constraint else {
-            return Ok((members, Vec::new()));
+            return Ok((Cow::Borrowed(members), Vec::new()));
         };
         if primary {
             // The preferred set is a group, never a ranking. Encode its lexicographic priority
@@ -888,7 +904,7 @@ impl EgressFarEnd<'_> {
                 .filter_map(|i| members.get(*i))
                 .map(|m| m.destination)
                 .collect();
-            return Ok((kept, order));
+            return Ok((Cow::Owned(kept), order));
         }
         let tagged = members
             .iter()
@@ -896,24 +912,28 @@ impl EgressFarEnd<'_> {
             .map(|(i, m)| (i, self.tags_of(m)));
         let kept = c.enforce(tagged).map_err(|_| ())?;
         Ok((
-            kept.into_iter()
-                .filter_map(|i| members.get(i).cloned())
-                .collect(),
+            Cow::Owned(
+                kept.into_iter()
+                    .filter_map(|i| members.get(i).cloned())
+                    .collect(),
+            ),
             Vec::new(),
         ))
     }
 }
 
 impl Shape for EgressFarEnd<'_> {
-    fn shape(
+    fn shape<'m>(
         &self,
         pool: &str,
-        members: Vec<Member>,
+        members: &'m [Member],
         primary: bool,
-    ) -> Option<(Vec<Member>, Vec<DestinationId>)> {
+    ) -> Option<(Cow<'m, [Member]>, Vec<DestinationId>)> {
         let (mut members, mut order) = self.constrained(members, primary).ok()?;
+        // A grant or a binding narrows the list: the narrowed list is the unit's own (`to_mut`
+        // copies the lent one once, only then).
         if let Some(grants) = &self.route.native_member_grants {
-            members.retain(|m| {
+            members.to_mut().retain(|m| {
                 grants
                     .get(pool)
                     .is_some_and(|allowed| allowed.iter().any(|name| m.name == *name))
@@ -921,7 +941,7 @@ impl Shape for EgressFarEnd<'_> {
             order.retain(|id| members.iter().any(|m| m.destination == *id));
         }
         if let Some(grants) = &self.route.member_grants {
-            members.retain(|m| {
+            members.to_mut().retain(|m| {
                 grants.get(pool).is_some_and(|allowed| {
                     allowed.iter().any(|name| {
                         super::route::operator_name(m.name.as_bytes()) == name.as_bytes()
@@ -932,6 +952,7 @@ impl Shape for EgressFarEnd<'_> {
         }
         if let Some(allowed) = &self.route.allowed_member {
             members
+                .to_mut()
                 .retain(|m| super::route::operator_name(m.name.as_bytes()) == allowed.as_bytes());
             order.retain(|id| members.iter().any(|m| m.destination == *id));
         }
@@ -1298,18 +1319,6 @@ impl EgressFarEnd<'_> {
         live.probe = read.probe.take();
     }
 
-    /// The unit's pool by its shared name: the configured pool's own, or (a pool the generation
-    /// does not hold) the route's name made shared once.
-    fn route_pool(&self) -> Text {
-        self.egress
-            .pools
-            .get(&self.route.pool)
-            .map_or_else(
-                || Text::from(Arc::<str>::from(self.route.pool.as_str())),
-                |pool| pool.name.clone(),
-            )
-    }
-
     fn metric_pool<'m>(pool: &'m Text, member: &'m Member) -> &'m Text {
         if pool.is_empty() {
             &member.name
@@ -1347,10 +1356,10 @@ impl EgressFarEnd<'_> {
             lane: member.lane,
             unit: self.route.unit,
         };
-        // The pick answers with owned names (`Pick::Member`): one copy of each, made here. The
-        // dispatch record and the live attempt share the pool's own name.
-        let name = member.name.as_str().to_owned();
-        let picked_pool = pool.as_str().to_owned();
+        // The pick, the dispatch record and the live attempt share the member's, the pool's and
+        // the provider's own names: none is copied.
+        let name = member.name.clone();
+        let picked_pool = pool.clone();
         let route = self.egress.routes.get(&member.destination);
 
         let passthrough = member.passthrough
@@ -1429,7 +1438,7 @@ impl EgressFarEnd<'_> {
         };
         if let Some(member) = probe {
             return self.claim_member(
-                self.route_pool(),
+                self.route.pool.clone(),
                 member,
                 None,
                 None,
@@ -2979,7 +2988,7 @@ impl FarEnd for EgressFarEnd<'_> {
                             .egress
                             .routes
                             .get(&m.destination)
-                            .map(|r| r.provider.clone())
+                            .map(|r| r.provider.as_str().to_owned())
                             .unwrap_or_default(),
                         weight: m.weight,
                         context_max: m.context_max.and_then(|c| usize::try_from(c).ok()),
@@ -3032,7 +3041,7 @@ impl FarEnd for EgressFarEnd<'_> {
         };
         let pool = self.egress.pools.get(name)?;
         let members = self
-            .shape(&pool.name, pool.admissible_members().to_vec(), primary)
+            .shape(&pool.name, pool.admissible_members(), primary)
             .map(|(members, _)| members)
             .unwrap_or_default();
         Some(

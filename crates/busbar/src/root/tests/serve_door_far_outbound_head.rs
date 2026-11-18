@@ -217,7 +217,7 @@ fn egress_over(conns: Arc<dyn PollConns>, port: u16) -> Egress {
         clock: Arc::new(Wall),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
-        pools: foldhash::HashMap::from_iter([(POOL.to_owned(), {
+        pools: foldhash::HashMap::from_iter([(busbar_contract::kept::Text::fixed(POOL), {
             let mut pool = Pool::new(POOL.to_owned(), vec![Member::new(destination, "e", 1)]);
             pool.set_failover(Failover {
                 timeout_secs: 30,
@@ -236,7 +236,7 @@ fn egress_over(conns: Arc<dyn PollConns>, port: u16) -> Egress {
                 need: NEED,
                 base_url: format!("http://127.0.0.1:{port}/"),
                 auth: None,
-                provider: "e".into(),
+                provider: busbar_contract::kept::Text::fixed("e"),
                 keep: Default::default(),
                 rides: Vec::new(),
                 anchors: Default::default(),
@@ -252,8 +252,8 @@ fn egress_over(conns: Arc<dyn PollConns>, port: u16) -> Egress {
 fn request() -> OutboundRequest {
     OutboundRequest {
         text: false,
-        member: String::new(),
-        pool: String::new(),
+        member: busbar_contract::kept::Text::EMPTY,
+        pool: busbar_contract::kept::Text::EMPTY,
         attempt_no: 1,
         verb: b"POST".to_vec(),
         target: b"/v1/chat/completions".to_vec(),
@@ -272,7 +272,7 @@ async fn attempt(conns: Arc<dyn PollConns>, port: u16) -> ((Option<u32>, Vec<u8>
     let egress = egress_over(conns, port);
     let t = pass::<Route>();
     let far = egress.unit(UnitRoute {
-        pool: POOL.into(),
+        pool: busbar_contract::kept::Text::fixed(POOL),
         // The far end is a plaintext loopback server: its plane instance carries
         // `insecure_transport.accept: plaintext` (SEC-2, #297 model A; loopback is not exempt).
         accept: busbar_plugin_abi::host_side::caller::Accept(

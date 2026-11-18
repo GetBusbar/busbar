@@ -433,10 +433,10 @@ impl FarEnd for Pool {
     ) -> impl Future<Output = Pick> + Send + 'a {
         let pick = match self.members.get(attempt_no as usize - 1) {
             Some(m) => Pick::Member {
-                name: (*m).to_string(),
-                pool: "p".to_string(),
+                name: (*m).into(),
+                pool: "p".into(),
                 passthrough: false,
-                provider: format!("prov-{m}"),
+                provider: format!("prov-{m}").as_str().into(),
             },
             None => Pick::Exhausted {
                 status: 503,

@@ -343,17 +343,20 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         clock: busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
-        pools: foldhash::HashMap::from_iter([(pool_name.clone(), {
-            let mut pool = Pool::new(pool_name.clone(), vec![Member::new(destination, "e", 1)]);
-            pool.set_failover(Failover {
-                timeout_secs: 30,
-                max_hops: 1,
-                exclusions: Vec::new(),
-            });
-            pool.on_exhausted = OnExhausted::Status503;
-            pool.floor = WeightedFloor::new();
-            pool
-        })]),
+        pools: foldhash::HashMap::from_iter([(
+            busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(pool_name.as_str())),
+            {
+                let mut pool = Pool::new(pool_name.clone(), vec![Member::new(destination, "e", 1)]);
+                pool.set_failover(Failover {
+                    timeout_secs: 30,
+                    max_hops: 1,
+                    exclusions: Vec::new(),
+                });
+                pool.on_exhausted = OnExhausted::Status503;
+                pool.floor = WeightedFloor::new();
+                pool
+            },
+        )]),
         routes: foldhash::HashMap::from_iter([(
             destination,
             MemberRoute {
@@ -362,7 +365,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
                 need: NeedId(0),
                 base_url: "https://far.test/".into(),
                 auth: None,
-                provider: "e".into(),
+                provider: busbar_contract::kept::Text::fixed("e"),
                 keep: Default::default(),
                 rides: Vec::new(),
                 anchors: Default::default(),
@@ -388,8 +391,8 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
     assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
     let request = OutboundRequest {
         text: false,
-        member: String::new(),
-        pool: String::new(),
+        member: busbar_contract::kept::Text::EMPTY,
+        pool: busbar_contract::kept::Text::EMPTY,
         attempt_no: 1,
         verb: b"POST".to_vec(),
         target: b"/x".to_vec(),

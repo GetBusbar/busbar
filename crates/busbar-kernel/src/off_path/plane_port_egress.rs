@@ -64,7 +64,7 @@ impl SeatPool {
                     need: NeedId(index),
                     base_url: url.to_owned(),
                     auth: None,
-                    provider: name.to_owned(),
+                    provider: busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(name)),
                     keep: ResponseKeep {
                         mode: KEEP_ALL_EXCEPT_DENIED,
                         kept: Vec::new(),
@@ -93,11 +93,10 @@ impl SeatPool {
                 url: url.into(),
             });
         }
+        // The pool is keyed by its own name: one shared text for both.
         let mut pools = foldhash::HashMap::default();
-        pools.insert(
-            instance.to_owned(),
-            busbar_kernel_egress::Pool::new(instance, walked),
-        );
+        let pool = busbar_kernel_egress::Pool::new(instance, walked);
+        pools.insert(pool.name.clone(), pool);
         Ok(Self {
             pool: instance.to_owned(),
             pools,
