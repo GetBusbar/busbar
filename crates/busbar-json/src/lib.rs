@@ -31,6 +31,9 @@
 //! and the facade's text stops before them.
 //!
 
+#![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
+
 use std::collections::BTreeMap;
 use std::fmt;
 

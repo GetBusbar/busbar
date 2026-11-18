@@ -11,6 +11,7 @@
 //! file that cannot be read or parsed (the message is on stderr).
 
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 
 use std::process::ExitCode;
 
