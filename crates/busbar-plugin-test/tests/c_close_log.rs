@@ -34,13 +34,13 @@ fn config(tag: &str) -> Vec<u8> {
 fn a_close_log_line_is_attributed_and_scrubbed_and_the_slot_waits() {
     let mut needs = FakeNeeds::new();
     needs.secret("/password", SECRET.as_bytes());
-    let (h, slots) = fx::scrubbed(fx::loud::PLUGIN.plugin(), needs);
+    let h = fx::scrubbed(fx::loud::PLUGIN.plugin(), needs);
     let me = std::thread::current().id();
 
     let closing = h
         .open_secret("close-a", &config("close-a"))
         .unwrap_or_else(|e| panic!("{e:?}"));
-    let slot_a = slots.lock().expect("slots")[0];
+    let slot_a = h.needs().scrub_slots()[0];
 
     let (go, go_rx) = mpsc::channel::<()>();
     let (opened_tx, opened) = mpsc::channel::<()>();
@@ -96,7 +96,7 @@ fn a_close_log_line_is_attributed_and_scrubbed_and_the_slot_waits() {
     let after = h
         .open_secret("close-c", &config("close-c"))
         .unwrap_or_else(|e| panic!("{e:?}"));
-    let seen = slots.lock().expect("slots").clone();
+    let seen = h.needs().scrub_slots();
     assert_eq!(seen.len(), 3, "one SECRET per open: {seen:?}");
     assert_ne!(
         seen[1], slot_a,

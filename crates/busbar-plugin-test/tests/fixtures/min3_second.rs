@@ -757,15 +757,8 @@ pub fn spec<'a>(module: &'a str, name: &'a str, config: &'a [u8]) -> InstanceSpe
 }
 
 /// `plugin` admitted into a [`Harness`] over `needs` whose every answered SECRET is first registered in the
-/// asking chain's scrub set (`Registry::scrub_of`, as the boot attaches it to custody), with the watchdog slot of
-/// each such chain recorded, in order, in the returned list.
-pub fn scrubbed(plugin: &'static Plugin, needs: FakeNeeds) -> (Arc<Harness>, Arc<Mutex<Vec<u32>>>) {
-    let h = Arc::new(Harness::admit(plugin, needs).unwrap_or_else(|r| panic!("admit: {r:?}")));
-    let slots = Arc::new(Mutex::new(Vec::new()));
-    let (weak, seen) = (Arc::downgrade(&h), Arc::clone(&slots));
-    h.needs().attach_scrubs(Arc::new(move |slot| {
-        lock(&seen).push(slot);
-        weak.upgrade()?.registry().scrub_of(slot)
-    }));
-    (h, slots)
+/// asking chain's scrub set (`Registry::scrub_of`, as the boot attaches it to custody), (the watchdog slot of each such chain is read back with
+/// `FakeNeeds::scrub_slots`).
+pub fn scrubbed(plugin: &'static Plugin, needs: FakeNeeds) -> Arc<Harness> {
+    Arc::new(Harness::admit(plugin, needs.scrubbing()).unwrap_or_else(|r| panic!("admit: {r:?}")))
 }

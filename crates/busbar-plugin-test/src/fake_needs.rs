@@ -56,7 +56,6 @@ pub struct RecordCall {
     /// `get`, `put`, `claim`, `del`, `list`, or `commit`.
     pub op: &'static str,
 }
-use busbar_plugin_abi::host_side::scrub::Scrub;
 
 /// One step of a scripted conn.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -213,11 +212,8 @@ struct State {
     #[cfg(test)]
     open_limits: Vec<(String, busbar_plugin_abi::host_side::caller::InstanceLimits)>,
     released: u64,
+    scrub_slots: Vec<u32>,
 }
-
-/// The scrub set of the instance that owns a watchdog slot: `Registry::scrub_of`, as the kernel attaches it to
-/// custody (`SecretCustody::attach`, busbar root `min3_boot.rs`).
-pub type ScrubOf = Arc<dyn Fn(u32) -> Option<Arc<Scrub>> + Send + Sync>;
 
 /// A scriptable `Needs` for plugin CI (IF §14). Suites run `Registry<FakeNeeds>`.
 #[derive(Default)]
@@ -225,7 +221,8 @@ pub struct FakeNeeds {
     #[cfg(feature = "target-sockets")]
     sockets: Option<crate::sockets::SocketTargets>,
     state: Mutex<State>,
-    scrubs: Mutex<Option<ScrubOf>>,
+    scrubbing: bool,
+    slots: Option<Arc<busbar_plugin_loader::instance::SlotTable>>,
 }
 
 /// The next id in `ids` for `instance`: 1, 2, 3, ... per instance, never repeated.
@@ -372,13 +369,27 @@ impl FakeNeeds {
     }
 
     /// Custody's scrub registration (§12.2 step 5, I14): from here on every SECRET this double answers is first
-    /// registered, under its handle, in the scrub set `scrub_of` names for the asking chain's slot, and only then
-    /// handed to the plugin (register, then publish), as the kernel's custody does once the boot attaches
-    /// `Registry::scrub_of` to it. A suite attaches its registry's after the harness is built:
-    /// `h.needs().attach_scrubs(Arc::new(move |slot| weak.upgrade()?.registry().scrub_of(slot)))`. Without it no
-    /// value is registered (a plugin's FAIL text and log lines are then scrubbed of nothing it resolved).
-    pub fn attach_scrubs(&self, scrub_of: ScrubOf) {
-        *self.scrubs.lock().unwrap_or_else(PoisonError::into_inner) = Some(scrub_of);
+    /// registered, under its handle, in the scrub set of the asking chain's slot in the harness's process slot
+    /// table, and only then handed to the plugin (register, then publish), as the kernel's custody does. Without
+    /// it no value is registered (a plugin's FAIL text and log lines are then scrubbed of nothing it resolved).
+    #[must_use]
+    pub fn scrubbing(mut self) -> Self {
+        self.scrubbing = true;
+        self
+    }
+
+    /// The slot table the harness's registry runs on, set by the harness when it builds its Needs.
+    pub(crate) fn over_slots(
+        mut self,
+        slots: Option<Arc<busbar_plugin_loader::instance::SlotTable>>,
+    ) -> Self {
+        self.slots = slots;
+        self
+    }
+
+    /// The watchdog slot of each chain that asked for a SECRET while this double was scrubbing, in order.
+    pub fn scrub_slots(&self) -> Vec<u32> {
+        self.lock().scrub_slots.clone()
     }
 
     /// The first value `secret` scripted for `pointer`.
@@ -743,13 +754,15 @@ impl Needs for FakeNeeds {
             Some(value) => {
                 // Register, then publish (custody's order, §12.2 step 5): the scrub set masks the value before
                 // the plugin holds it.
-                let scrub_of = self
-                    .scrubs
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone();
-                if let Some(scrub) = scrub_of.and_then(|scrub_of| scrub_of(cx.slot)) {
-                    scrub.register(handle, &[value.as_slice()]);
+                if self.scrubbing {
+                    self.lock().scrub_slots.push(cx.slot);
+                    if let Some(scrub) = self
+                        .slots
+                        .as_ref()
+                        .and_then(|slots| slots.scrub_of(cx.slot))
+                    {
+                        scrub.register(handle, &[value.as_slice()]);
+                    }
                 }
                 res.put0(&value)
             }

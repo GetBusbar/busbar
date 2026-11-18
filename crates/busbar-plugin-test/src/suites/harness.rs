@@ -794,7 +794,18 @@ impl Harness {
                 "a test runtime",
             )
         })?;
-        let needs = Arc::new(needs);
+        static PROCESS: std::sync::OnceLock<
+            Result<busbar_plugin_loader::process::ProcessResources, String>,
+        > = std::sync::OnceLock::new();
+        let process = PROCESS.get_or_init(busbar_plugin_loader::process::ProcessResources::new);
+        let needs = Arc::new(
+            needs.over_slots(
+                process
+                    .as_ref()
+                    .ok()
+                    .map(|process| Arc::clone(process.slots())),
+            ),
+        );
         let binder = Arc::new(MemBinder::over(Arc::clone(&needs)));
         let admitted = admit()?;
         let first = admitted.first().ok_or_else(|| {
@@ -806,20 +817,14 @@ impl Harness {
             )
         })?;
         let (identity, kind) = (first.identity().to_owned(), first.kind());
-        static PROCESS: std::sync::OnceLock<
-            Result<busbar_plugin_loader::process::ProcessResources, String>,
-        > = std::sync::OnceLock::new();
-        let process = PROCESS
-            .get_or_init(busbar_plugin_loader::process::ProcessResources::new)
-            .as_ref()
-            .map_err(|error| {
-                Refusal::new(
-                    RefusalCode::Integrity,
-                    "process",
-                    error.clone(),
-                    "process resources",
-                )
-            })?;
+        let process = process.as_ref().map_err(|error| {
+            Refusal::new(
+                RefusalCode::Integrity,
+                "process",
+                error.clone(),
+                "process resources",
+            )
+        })?;
         let mut images = ImagesBuilder::new(&HOST, Arc::clone(process.slots()), Ceilings::DEFAULT);
         for image in admitted {
             images.admit(image)?;

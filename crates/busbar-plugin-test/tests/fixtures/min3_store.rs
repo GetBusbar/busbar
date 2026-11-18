@@ -629,15 +629,10 @@ pub fn booted(
     plugin: &'static busbar_plugin_abi::plugin::Plugin,
     needs: busbar_plugin_test::fake_needs::FakeNeeds,
 ) -> Arc<busbar_plugin_test::suites::harness::Harness> {
-    let h = Arc::new(
-        busbar_plugin_test::suites::harness::Harness::admit(plugin, needs)
+    Arc::new(
+        busbar_plugin_test::suites::harness::Harness::admit(plugin, needs.scrubbing())
             .unwrap_or_else(|r| panic!("admit refused: {r:?}")),
-    );
-    let weak = Arc::downgrade(&h);
-    h.needs().attach_scrubs(Arc::new(move |slot| {
-        weak.upgrade()?.registry().scrub_of(slot)
-    }));
-    h
+    )
 }
 
 /// The namespace the arms read.
