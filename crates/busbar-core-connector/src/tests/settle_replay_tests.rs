@@ -111,6 +111,8 @@ fn pending_connector(
         max_idle_per_host: if pooled { 8 } else { 0 },
         idle_timeout: Duration::from_secs(60),
     });
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+    crate::tests::accept_plaintext(&c, &[OWNER]);
     c.declare_over(OWNER, NeedId(0), "frames").unwrap();
     (Arc::new(c), framing)
 }
