@@ -518,3 +518,128 @@ fn indexed_from_rows_with_a_repeated_key_still_finds_the_first_row() {
     assert_eq!(rows.rows(), &[(1, 11), (2, 20), (1, 30)]);
     assert_eq!(*rows.row(1, || 0), 11);
 }
+
+/// `BitSet` against a plain `Vec<bool>` model, at widths either side of every word edge.
+fn bitset_model(set: &BitSet, width: usize) -> Vec<bool> {
+    (0..width).map(|at| set.contains(at)).collect()
+}
+
+fn bitset_random(width: usize, seed: u64) {
+    let mut rng = Rng::new(seed);
+    let mut set = BitSet::new();
+    set.reset_empty(width);
+    let mut model = vec![false; width];
+    let mut other = BitSet::new();
+    for _ in 0..OPERATIONS {
+        let at = rng.below(width + 8);
+        match rng.below(10) {
+            0..=2 => {
+                let fresh = at < width && !model[at];
+                assert_eq!(set.insert(at), fresh, "width {width}: insert {at}");
+                if fresh {
+                    model[at] = true;
+                }
+            }
+            3 | 4 => {
+                let held = at < width && model[at];
+                assert_eq!(set.remove(at), held, "width {width}: remove {at}");
+                if held {
+                    model[at] = false;
+                }
+            }
+            5 => {
+                let want = (at..width).find(|p| model[*p]);
+                assert_eq!(set.next_from(at), want, "width {width}: next_from {at}");
+            }
+            6 => {
+                // Keep only a random other set (its width may be narrower or wider).
+                let other_width = rng.below(width + 70);
+                other.reset_empty(other_width);
+                let mut other_model = vec![false; other_width];
+                for p in 0..other_width {
+                    if rng.below(2) == 0 {
+                        other.insert(p);
+                        other_model[p] = true;
+                    }
+                }
+                set.keep_only(&other);
+                for (p, held) in model.iter_mut().enumerate() {
+                    *held &= other_model.get(p).copied().unwrap_or(false);
+                }
+            }
+            7 => {
+                other.reset_empty(width);
+                let mut other_model = vec![false; width];
+                for p in 0..width {
+                    if rng.below(3) == 0 {
+                        other.insert(p);
+                        other_model[p] = true;
+                    }
+                }
+                set.drop_all(&other);
+                for (p, held) in model.iter_mut().enumerate() {
+                    *held &= !other_model[p];
+                }
+            }
+            8 => {
+                let mut copy = BitSet::new();
+                copy.copy_from(&set);
+                assert_eq!(copy, set, "width {width}: copy");
+            }
+            _ => {
+                if rng.below(2) == 0 {
+                    set.reset_full(width);
+                    model.iter_mut().for_each(|held| *held = true);
+                } else {
+                    set.reset_empty(width);
+                    model.iter_mut().for_each(|held| *held = false);
+                }
+            }
+        }
+        assert_eq!(bitset_model(&set, width), model, "width {width}");
+        assert_eq!(set.len(), model.iter().filter(|held| **held).count());
+        assert_eq!(set.is_empty(), !model.iter().any(|held| *held));
+        assert_eq!(set.width(), width);
+    }
+}
+
+#[test]
+fn bitset_matches_a_model_at_every_word_edge() {
+    for (seed, width) in [0, 1, 63, 64, 65, 127, 128, 129, 200, 1_000]
+        .into_iter()
+        .enumerate()
+    {
+        bitset_random(width, 0x9E37 + seed as u64);
+    }
+}
+
+#[test]
+fn bitset_equal_sets_are_equal_whatever_their_history() {
+    // Bits at or above the width stay zero, so a full set reset narrower equals a fresh full one.
+    let mut grown = BitSet::new();
+    grown.reset_full(200);
+    grown.reset_full(70);
+    let mut fresh = BitSet::new();
+    fresh.reset_full(70);
+    assert_eq!(grown, fresh);
+    assert_eq!(grown.len(), 70);
+    assert!(!grown.contains(70) && grown.contains(69));
+}
+
+/// Up to 64 positions there is no block; above, one block is made once and reused across resets.
+#[test]
+fn bitset_holds_no_block_up_to_64_and_reuses_one_above() {
+    let mut set = BitSet::new();
+    set.reset_full(64);
+    assert_eq!(set.rest.capacity(), 0, "64 positions need no heap block");
+    set.reset_full(1_000);
+    let block = set.rest.capacity();
+    assert!(block >= 15);
+    let at = set.rest.as_ptr();
+    set.reset_empty(10);
+    set.reset_full(1_000);
+    set.copy_from(&BitSet::default());
+    set.reset_full(1_000);
+    assert_eq!(set.rest.capacity(), block, "one block, kept across resets");
+    assert_eq!(set.rest.as_ptr(), at, "the same block");
+}
