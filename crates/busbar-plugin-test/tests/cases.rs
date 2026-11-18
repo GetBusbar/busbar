@@ -93,6 +93,8 @@ mod c_crypto_await;
 mod c_crypto_selftest;
 #[path = "c_deployment_id.rs"]
 mod c_deployment_id;
+#[path = "c_describe_paths.rs"]
+mod c_describe_paths;
 #[path = "c_dialect_auth.rs"]
 mod c_dialect_auth;
 #[path = "c_dtls_fp.rs"]
