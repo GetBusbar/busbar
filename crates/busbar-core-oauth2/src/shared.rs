@@ -1033,8 +1033,8 @@ impl Shared {
         };
         let name = ix_name(ix);
         for _ in 0..SWAP_ATTEMPTS {
-            let raw = self.authority(&name, &id).await?;
-            let candidate = Self::candidate(&atomic_schema(&name), &id, raw, encode(&name, &row)?);
+            let raw = self.authority(name, &id).await?;
+            let candidate = Self::candidate(&atomic_schema(name), &id, raw, encode(name, &row)?);
             if self.submit(candidate).await? == Decision::Applied {
                 return Ok(());
             }
