@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use busbar_contract::secret_ref::SecretRef;
 use busbar_contract::secure::SecureVec;
-use busbar_kernel::custody::{CustodyDenied, SecretCustody};
+use busbar_kernel::custody::{CustodyDenied, HeldView, Leased, RoundValues, SecretCustody};
 use busbar_kernel::plugin_config::{Binder, ConfigBinder};
 use busbar_kernel::plugin_records::{
     ChainRead, CommitOp, CommitOutcome, PluginRecords, RecordsDenied, Scope,
@@ -238,8 +238,13 @@ impl SecretCustody for Custody {
         &'a self,
         _: CallCx,
         _: &'a SecretRef,
-    ) -> BoxFut<'a, Result<SecureVec, CustodyDenied>> {
+    ) -> BoxFut<'a, Result<Leased, CustodyDenied>> {
         panic!("network test cannot resolve a core secret")
+    }
+    fn seed(&self, _: u64, _: RoundValues) {}
+    fn unseed(&self, _: u64) {}
+    fn held(&self, _: u64, _: u32) -> Option<HeldView> {
+        None
     }
 }
 

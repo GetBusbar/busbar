@@ -263,7 +263,7 @@ pub(super) async fn connect(
 /// The original logical origin (or its accepted SNI), never the connected proxy's IP.
 fn server_name(sni: &str, dest: &str) -> Result<ServerName<'static>, NeedErr> {
     let name = if sni.is_empty() {
-        crate::tls::store::host_only(dest)
+        crate::need::dialled_host(dest)
     } else {
         sni.to_owned()
     };
