@@ -30,10 +30,6 @@ notes = "DEP-5: this exact Git revision requires imported coverage or a separate
 audit-as-crates-io = true
 notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
 
-[policy.fs_extra]
-audit-as-crates-io = true
-notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
-
 [policy.granit-parser]
 audit-as-crates-io = true
 notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
@@ -318,9 +314,9 @@ version = "0.15.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.fs_extra]]
-version = "1.3.0@git:70f47864db8ae763979f47cde6785449cd790dad"
+version = "1.3.0"
 criteria = "safe-to-deploy"
-notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/fs_extra fork revision; build-time copy helper for aws-lc-sys. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
+notes = "DEP-5 coordinator exemption, carried from the MattJackson/fs_extra fork revision 70f47864db (exempted under #429) to crates.io fs_extra 1.3.0 when e2fe9461b6 dropped the fork (its changes were unused by aws-lc builds): build-time copy helper for aws-lc-sys. No imported audit covers it (aranya, bytecode-alliance, google, isrg, mozilla, zcash checked 2026-11-18). Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
 [[exemptions.futures-task]]
 version = "0.3.34"
