@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::config::groups::ExhaustionMode;
+use crate::governance::unit_checkpoint::shared_name;
 use crate::plane_driver::cancel::Checkpoint;
 use crate::plane_driver::usage::SessionUsage;
 use busbar_plugin_abi::plane::{SRC_ESTIMATED, SRC_FLOOR, SRC_REPORTED};
@@ -69,10 +70,13 @@ impl NativeRequestMoney {
             if open.money.fee.is_fee(index) {
                 continue;
             }
-            if !parts.declared_classes.contains(&*report.class) {
+            if !parts.declared_classes.contains(&report.class) {
                 return Err(NativeAttemptError::Binding);
             }
-            let facts = session.classes.entry(report.class.to_string()).or_default();
+            let facts = session
+                .classes
+                .entry(shared_name(&report.class))
+                .or_default();
             match report.source {
                 SRC_REPORTED => facts.reported = Some(quantity),
                 SRC_FLOOR => facts.floor = Some(quantity),

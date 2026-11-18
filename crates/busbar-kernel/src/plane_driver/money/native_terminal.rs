@@ -3,6 +3,7 @@
 
 //! One terminal result carrier from the actual selected Open to its retained response owner.
 
+use busbar_contract::kept::Text;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -339,7 +340,7 @@ fn delivery_facts(
         Ending::End => Disposition::End,
         Ending::Failed => Disposition::Failed,
         Ending::Cancel { cause, .. } => Disposition::Cancel {
-            reason: cause.as_str().to_owned(),
+            reason: Text::fixed(cause.as_str()),
         },
     };
     Ok((
@@ -405,7 +406,7 @@ impl PlaneMoney {
             parts.disposition = match native.work {
                 Some(crate::plane_driver::usage::Ending::Cancel { cause, .. }) => {
                     Disposition::Cancel {
-                        reason: cause.as_str().to_owned(),
+                        reason: Text::fixed(cause.as_str()),
                     }
                 }
                 None | Some(crate::plane_driver::usage::Ending::Failed) => Disposition::Failed,

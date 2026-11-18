@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::governance::unit_checkpoint::partitions::ClassSet;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -242,7 +243,6 @@ async fn attempt_owned_scope_class_refuses_before_paid_observation_create_or_att
     use crate::governance::unit_checkpoint::UnitCheckpoint;
     use crate::plane_driver::money::native_attempt::NativeMoney;
     use crate::plane_driver::{ObservationPolicy, ObservationRuntimeError};
-    use std::collections::BTreeSet;
 
     let (gov, money, mut unit) = fixture().await;
     unit.classes = Arc::from(vec!["tokens.in".to_owned()]);
@@ -257,10 +257,10 @@ async fn attempt_owned_scope_class_refuses_before_paid_observation_create_or_att
             id: open.checkpoint_id,
             revision: 0,
             unit: 1,
-            principal: unit.key.id.clone(),
+            principal: unit.key.id.as_str().into(),
             group: "g".into(),
             arrived: NOW,
-            lane: String::new(),
+            lane: Default::default(),
             provider: None,
             era_at: open.money.charge.raw_era().effective_from,
             era_entry: open.money.charge.raw_era().entry_id.map(|id| id.0),
@@ -274,12 +274,12 @@ async fn attempt_owned_scope_class_refuses_before_paid_observation_create_or_att
             unread: None,
             partitions: Some(PartitionedUsageV1 {
                 version: 1,
-                request_pool: unit.pool.clone(),
+                request_pool: unit.pool.as_str().into(),
                 routing_generation: 0,
                 attempt_limit: 1,
-                declared_classes: BTreeSet::from(["tokens.in".into()]),
-                attempt_classes: BTreeSet::from(["tokens.in".into()]),
-                physical_classes: BTreeSet::from(["tokens.in".into()]),
+                declared_classes: ClassSet::from(["tokens.in"]),
+                attempt_classes: ClassSet::from(["tokens.in"]),
+                physical_classes: ClassSet::from(["tokens.in"]),
                 session_origin: SessionOrigin {
                     instance: "native".into(),
                     lane: "native\u{1f}".into(),

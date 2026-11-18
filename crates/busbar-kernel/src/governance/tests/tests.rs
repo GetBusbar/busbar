@@ -6142,7 +6142,7 @@ async fn a_registry_key_standing_is_unchanged_by_the_bindings_resolver() {
     assert_eq!(
         ask(),
         Err(Lapsed::Identity(Refusal::IdentityNotLive {
-            principal: key.id.clone()
+            principal: key.id.as_str().into()
         }))
     );
 }
@@ -6471,16 +6471,16 @@ fn exhausted_unit(
         id: [id; 16],
         revision: 0,
         unit: u64::from(id),
-        principal: key.id.clone(),
-        group: String::new(),
+        principal: key.id.as_str().into(),
+        group: Default::default(),
         arrived,
-        lane: String::new(),
+        lane: Default::default(),
         provider: None,
         era_at: era.effective_from,
         era_entry: era.entry_id.map(|entry| entry.0),
         units: std::collections::BTreeMap::new(),
         targets: vec![super::unit_checkpoint::UnitTarget {
-            bucket: key.id.clone(),
+            bucket: key.id.as_str().into(),
             window: 0,
             group: None,
         }],

@@ -8,6 +8,7 @@ use crate::host_services::VerifiedTicketIdentity;
 use crate::persistence::facade::CoreStore;
 use busbar_contract::abi::plane::{units_bill, UnitCount};
 use busbar_contract::caps::{Admittance, CallId, Grant, PrincipalId, ReasonCode};
+use busbar_contract::kept::Text;
 use busbar_contract::records::VirtualKey;
 use busbar_contract::{Count, UnitKey};
 
@@ -673,9 +674,11 @@ impl PlaneMoney {
             .iter()
             .filter(|bucket| bucket.applies_to_pool(pool))
             .map(|bucket| crate::governance::unit_checkpoint::UnitTarget {
-                bucket: bucket.bucket_id.to_string(),
+                bucket: crate::governance::unit_checkpoint::shared_name(bucket.bucket_id),
                 window: crate::governance::budget_window(bucket.window, money.arrived),
-                group: bucket.group_name.map(str::to_string),
+                group: bucket
+                    .group_name
+                    .map(crate::governance::unit_checkpoint::shared_name),
             })
             .collect();
         MeasurementContext::request(
@@ -1206,7 +1209,7 @@ impl PlaneMoney {
     }
 
     #[must_use]
-    pub fn serving(&self, key: UnitKey) -> Option<String> {
+    pub fn serving(&self, key: UnitKey) -> Option<Text> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::MoneyShardLock);
         self.shard(key).get(&key).and_then(|open| {
             if let Some(native) = &open.native {
@@ -1218,7 +1221,9 @@ impl PlaneMoney {
                     .find(|attempt| attempt.preparation == target)
                     .map(|attempt| attempt.usage.lane.clone());
             }
-            Some(open.money.lane.clone())
+            Some(crate::governance::unit_checkpoint::shared_name(
+                &open.money.lane,
+            ))
         })
     }
 
@@ -1241,7 +1246,7 @@ impl PlaneMoney {
         if open.native.is_some() {
             return None;
         }
-        use crate::governance::unit_checkpoint::{UnitCheckpoint, UnitTarget};
+        use crate::governance::unit_checkpoint::{shared_name, UnitCheckpoint, UnitTarget};
         let m = &open.money;
         let mut units = BTreeMap::<String, busbar_contract::Count>::new();
         for (class, count) in counts {
@@ -1258,13 +1263,13 @@ impl PlaneMoney {
                 .iter()
                 .filter(|bucket| bucket.applies_to_pool(pool))
                 .map(|bucket| UnitTarget {
-                    bucket: bucket.bucket_id.to_string(),
+                    bucket: shared_name(bucket.bucket_id),
                     window: crate::governance::budget_window(bucket.window, m.arrived),
-                    group: bucket.group_name.map(str::to_string),
+                    group: bucket.group_name.map(shared_name),
                 })
                 .collect(),
             Err(_) => vec![UnitTarget {
-                bucket: m.key.id.clone(),
+                bucket: shared_name(&m.key.id),
                 window: 0,
                 group: None,
             }],
@@ -1274,11 +1279,11 @@ impl PlaneMoney {
             id: open.checkpoint_id,
             revision: 0,
             unit: key.get(),
-            principal: m.key.id.clone(),
-            group: m.key.group.clone().unwrap_or_default(),
+            principal: shared_name(&m.key.id),
+            group: shared_name(m.key.group.as_deref().unwrap_or_default()),
             arrived: m.arrived,
-            lane: m.lane.clone(),
-            provider: open.provider.clone(),
+            lane: shared_name(&m.lane),
+            provider: open.provider.as_deref().map(shared_name),
             era_at: era.effective_from,
             era_entry: era.entry_id.map(|entry| entry.0),
             units,
@@ -1318,7 +1323,7 @@ impl PlaneMoney {
             return false;
         }
         if let Some(mut snapshot) = self.checkpoint_snapshot(key, open, counts, metered) {
-            snapshot.unread = unread.map(|reason| reason.as_str().to_string());
+            snapshot.unread = unread.map(|reason| Text::fixed(reason.as_str()));
             busbar_contract::stage_probe::tick(
                 busbar_contract::stage_probe::Derive::CheckpointStage,
             );

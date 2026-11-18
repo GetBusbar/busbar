@@ -2,10 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use crate::governance::unit_checkpoint::shared_name;
 use crate::governance::unit_checkpoint::{
     partitions::{Disposition, PartitionedUsageV1, ValidatedSelectedCheckpoint},
     UnitCheckpoint, UnitTarget,
 };
+use busbar_contract::kept::Text;
 use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 
 /// Attribution readers must explicitly distinguish legacy quantities from an accepted selected
@@ -63,12 +65,12 @@ impl PlaneMoney {
             || parts.final_target.is_some()
             || parts.far_end_answered
             || parts.caller_bytes_committed
-            || parts.request_pool != money.pool
-            || parts.session_origin.lane != money.lane
+            || parts.request_pool.as_str() != money.pool
+            || parts.session_origin.lane.as_str() != money.lane
             || parts
                 .declared_classes
                 .iter()
-                .any(|class| !money.classes.contains(class))
+                .any(|class| !money.classes.iter().any(|held| held == class))
         {
             return Err(refused(
                 "selected activation does not match its original open",
@@ -84,7 +86,7 @@ impl PlaneMoney {
                         "an original fee class cannot be an attempt quantity",
                     ));
                 }
-                parts.declared_classes.remove(class);
+                parts.declared_classes = parts.declared_classes.without(class);
             }
         }
         let plan = money
@@ -99,9 +101,9 @@ impl PlaneMoney {
             .iter()
             .filter(|bucket| bucket.applies_to_pool(pool))
             .map(|bucket| UnitTarget {
-                bucket: bucket.bucket_id.to_owned(),
+                bucket: shared_name(bucket.bucket_id),
                 window: crate::governance::budget_window(bucket.window, money.arrived),
-                group: bucket.group_name.map(str::to_owned),
+                group: bucket.group_name.map(shared_name),
             })
             .collect();
         targets.sort_by(|a, b| (&a.bucket, a.window).cmp(&(&b.bucket, b.window)));
@@ -117,10 +119,10 @@ impl PlaneMoney {
             id: open.checkpoint_id,
             revision: 0,
             unit: key.get(),
-            principal: money.key.id.clone(),
-            group: money.key.group.clone().unwrap_or_default(),
+            principal: shared_name(&money.key.id),
+            group: shared_name(money.key.group.as_deref().unwrap_or_default()),
             arrived: money.arrived,
-            lane: String::new(),
+            lane: Text::EMPTY,
             provider: None,
             era_at: era.effective_from,
             era_entry: era.entry_id.map(|entry| entry.0),
@@ -202,7 +204,8 @@ impl UsageFold {
         let mut by_class = BTreeMap::<u32, Option<Count>>::new();
         for partition in projection.partitions {
             for (class, count) in partition.billed_counts() {
-                let class = u32::try_from(classes.iter().position(|name| *name == class)?).ok()?;
+                let class =
+                    u32::try_from(classes.iter().position(|name| name.as_str() == class)?).ok()?;
                 counts.push((class, count));
                 let sum = by_class.entry(class).or_insert(Some(Count::ZERO));
                 *sum = sum.and_then(|held| held.checked_add(count).ok());

@@ -552,7 +552,7 @@ fn unit(revision: u64) -> UnitCheckpoint {
         revision,
         unit: 17,
         principal: "race-principal".into(),
-        group: String::new(),
+        group: Default::default(),
         arrived: 1_700_000_000,
         lane: "race-lane".into(),
         provider: Some("race".into()),

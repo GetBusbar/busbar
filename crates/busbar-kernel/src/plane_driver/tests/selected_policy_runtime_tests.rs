@@ -931,7 +931,7 @@ fn a_selected_catalog_attempt_records_its_instance_qualified_pool() {
     // The partition rule is unchanged: a pool of another instance, or the bare walk key, is refused.
     for refused in ["other\u{1f}p".to_owned(), walk_key] {
         let mut changed = (**snapshot).clone();
-        changed.partitions.as_mut().unwrap().attempts[0].selected_pool = refused.clone();
+        changed.partitions.as_mut().unwrap().attempts[0].selected_pool = refused.as_str().into();
         assert!(
             ValidatedSelectedCheckpoint::try_from(&changed).is_err(),
             "selected_pool {refused:?} must be refused"

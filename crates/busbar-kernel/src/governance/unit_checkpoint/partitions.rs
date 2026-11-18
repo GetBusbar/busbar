@@ -4,7 +4,7 @@
 //! The selected unit's factual custody and its one monetary projection. Deserializing these
 //! facts never creates a live selection, rate reservation, admission or fee participation.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use busbar_contract::Count;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,8 @@ pub const MAX_CHECKPOINT_BYTES: usize = 16 * 1024 * 1024;
 
 mod decode;
 mod fee;
+pub use crate::off_path::class_set::ClassSet;
+use busbar_contract::kept::Text;
 pub(crate) use decode::check_encoded;
 pub use fee::{CapturedFee, FeeBasis, FeeResult, SelectedFeeCompletion};
 
@@ -33,12 +35,12 @@ fn invalid(message: &str) -> RecordStoreError {
 #[serde(deny_unknown_fields)]
 pub struct PartitionedUsageV1 {
     pub version: u8,
-    pub request_pool: String,
+    pub request_pool: Text,
     pub routing_generation: u64,
     pub attempt_limit: u32,
-    pub declared_classes: BTreeSet<String>,
-    pub attempt_classes: BTreeSet<String>,
-    pub physical_classes: BTreeSet<String>,
+    pub declared_classes: ClassSet,
+    pub attempt_classes: ClassSet,
+    pub physical_classes: ClassSet,
     pub session_origin: SessionOrigin,
     pub fee: CapturedFee,
     pub session: Option<UsagePartition>,
@@ -53,17 +55,17 @@ pub struct PartitionedUsageV1 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionOrigin {
-    pub instance: String,
-    pub lane: String,
-    pub provider: Option<String>,
+    pub instance: Text,
+    pub lane: Text,
+    pub provider: Option<Text>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsagePartition {
-    pub lane: String,
-    pub provider: Option<String>,
-    pub classes: BTreeMap<String, ClassFacts>,
+    pub lane: Text,
+    pub provider: Option<Text>,
+    pub classes: BTreeMap<Text, ClassFacts>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,9 +83,9 @@ pub struct AttemptPartition {
     pub preparation: u32,
     pub dispatch: Option<u32>,
     pub kind: TargetKind,
-    pub instance: String,
-    pub selected_pool: String,
-    pub resource: Option<String>,
+    pub instance: Text,
+    pub selected_pool: Text,
+    pub resource: Option<Text>,
     pub usage: UsagePartition,
     pub transport: Transport,
     pub finality: Finality,
@@ -119,7 +121,7 @@ pub enum Disposition {
     Running,
     End,
     Failed,
-    Cancel { reason: String },
+    Cancel { reason: Text },
     RecoveredRunning,
 }
 
@@ -148,11 +150,11 @@ pub enum PartitionScope {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PartitionIdentity {
-    pub lane: String,
-    pub provider: Option<String>,
-    pub instance: String,
-    pub selected_pool: Option<String>,
-    pub resource: Option<String>,
+    pub lane: Text,
+    pub provider: Option<Text>,
+    pub instance: Text,
+    pub selected_pool: Option<Text>,
+    pub resource: Option<Text>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -168,7 +170,7 @@ pub struct ProjectedPartition {
     pub identity: PartitionIdentity,
     pub transport: Option<Transport>,
     pub finality: Finality,
-    pub classes: BTreeMap<String, ProjectedClass>,
+    pub classes: BTreeMap<Text, ProjectedClass>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,8 +182,8 @@ pub enum LogicalMeterIdentity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogicalMeter {
     pub identity: LogicalMeterIdentity,
-    pub lane: String,
-    pub provider: Option<String>,
+    pub lane: Text,
+    pub provider: Option<Text>,
 }
 
 #[derive(Clone, Debug)]
@@ -189,12 +191,12 @@ pub struct ProjectedCommon {
     pub id: [u8; 16],
     pub revision: u64,
     pub unit: u64,
-    pub principal: String,
-    pub group: String,
+    pub principal: Text,
+    pub group: Text,
     pub arrived: u64,
     pub era: RawRateEra,
     pub targets: Vec<UnitTarget>,
-    pub request_pool: String,
+    pub request_pool: Text,
     pub routing_generation: u64,
 }
 
@@ -267,7 +269,7 @@ impl ProjectedPartition {
                 facts
                     .billed
                     .filter(|quantity| !quantity.count.is_zero())
-                    .map(|quantity| (class.clone(), quantity.count))
+                    .map(|quantity| (class.to_string(), quantity.count))
             })
             .collect()
     }
@@ -280,7 +282,7 @@ impl UsageProjection {
         for partition in &self.partitions {
             for (class, count) in partition.billed_counts() {
                 let total = lanes
-                    .entry(partition.identity.lane.clone())
+                    .entry(partition.identity.lane.to_string())
                     .or_default()
                     .entry(class)
                     .or_default();
@@ -308,22 +310,22 @@ impl ValidatedSelectedCheckpoint<'_> {
             Disposition::Cancel { .. } => usage.far_end_answered && usage.caller_bytes_committed,
             Disposition::Running | Disposition::End | Disposition::RecoveredRunning => true,
         };
-        let project_classes = |raw: &UsagePartition, classes: &BTreeSet<String>, billable: bool| {
-            classes
-                .iter()
-                .map(|name| {
-                    let facts = raw.classes.get(name).cloned().unwrap_or_default();
-                    (
-                        name.clone(),
-                        ProjectedClass {
-                            selected: facts.selected(),
-                            billed: (billable && eligible).then(|| facts.billable()).flatten(),
-                            rate_high_water: facts.rate_high_water,
-                        },
-                    )
-                })
-                .collect()
-        };
+        let project_classes =
+            |raw: &UsagePartition, classes: &mut dyn Iterator<Item = &Text>, billable: bool| {
+                classes
+                    .map(|name| {
+                        let facts = raw.classes.get(name.as_str()).cloned().unwrap_or_default();
+                        (
+                            name.clone(),
+                            ProjectedClass {
+                                selected: facts.selected(),
+                                billed: (billable && eligible).then(|| facts.billable()).flatten(),
+                                rate_high_water: facts.rate_high_water,
+                            },
+                        )
+                    })
+                    .collect()
+            };
         let mut partitions =
             Vec::with_capacity(usage.attempts.len() + usize::from(usage.session.is_some()));
         for attempt in &usage.attempts {
@@ -343,17 +345,13 @@ impl ValidatedSelectedCheckpoint<'_> {
                 finality: attempt.finality,
                 classes: project_classes(
                     &attempt.usage,
-                    &usage.attempt_classes,
+                    &mut usage.attempt_classes.as_slice().iter(),
                     attempt.transport == Transport::Committed,
                 ),
             });
         }
         if let Some(session) = &usage.session {
-            let classes = usage
-                .declared_classes
-                .difference(&usage.attempt_classes)
-                .cloned()
-                .collect();
+            let classes = usage.declared_classes.difference(&usage.attempt_classes);
             partitions.push(ProjectedPartition {
                 scope: PartitionScope::Session,
                 identity: PartitionIdentity {
@@ -370,7 +368,7 @@ impl ValidatedSelectedCheckpoint<'_> {
                     Disposition::RecoveredRunning => Finality::Unknown,
                     _ => Finality::Partial,
                 },
-                classes: project_classes(session, &classes, true),
+                classes: project_classes(session, &mut { classes }, true),
             });
         }
         let logical_request = if !snapshot.metered {
@@ -442,20 +440,20 @@ fn in_instance(lane: &str, instance: &str) -> bool {
 
 fn validate_classes(
     raw: &UsagePartition,
-    allowed: &BTreeSet<String>,
-    physical: &BTreeSet<String>,
+    allowed: &dyn Fn(&str) -> bool,
+    physical: &dyn Fn(&str) -> bool,
 ) -> RecordStoreResult<()> {
     if raw.classes.len() > MAX_CLASSES || !optional_identity(raw.provider.as_deref()) {
         return Err(invalid("selected usage identity or class bound is invalid"));
     }
     for (class, facts) in &raw.classes {
-        if !allowed.contains(class)
+        if !allowed(class.as_str())
             || facts.rate_high_water.is_negative()
             || [facts.reported, facts.floor, facts.estimated]
                 .into_iter()
                 .flatten()
                 .any(|n| n.is_negative())
-            || (physical.contains(class)
+            || (physical(class.as_str())
                 && facts
                     .selected()
                     .is_some_and(|quantity| quantity.count > facts.rate_high_water))
@@ -562,12 +560,13 @@ impl PartitionedUsageV1 {
             {
                 return Err(invalid("session usage changed its original host identity"));
             }
-            let classes = self
-                .declared_classes
-                .difference(&self.attempt_classes)
-                .cloned()
-                .collect();
-            validate_classes(session, &classes, &BTreeSet::new())?;
+            validate_classes(
+                session,
+                &|class| {
+                    self.declared_classes.contains(class) && !self.attempt_classes.contains(class)
+                },
+                &|_| false,
+            )?;
         }
         let mut preparation = 0;
         let mut dispatch = 0;
@@ -594,8 +593,8 @@ impl PartitionedUsageV1 {
             }
             validate_classes(
                 &attempt.usage,
-                &self.attempt_classes,
-                &self.physical_classes,
+                &|class| self.attempt_classes.contains(class),
+                &|class| self.physical_classes.contains(class),
             )?;
             if attempt.finality == Finality::Complete
                 && (attempt.transport != Transport::Committed

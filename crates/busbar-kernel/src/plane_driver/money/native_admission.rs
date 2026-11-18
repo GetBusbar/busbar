@@ -4,6 +4,8 @@
 //! Checked installation of the one native request admission into its existing allocation.
 
 use super::*;
+use crate::governance::unit_checkpoint::partitions::ClassSet;
+use crate::governance::unit_checkpoint::shared_name;
 use crate::governance::{LimitBlocked, PLANE_LANE_SEP};
 use crate::plane_driver::request_admission::{AdmissionError, AdmittedRequest, CommittingRequest};
 
@@ -216,13 +218,14 @@ impl PlaneMoney {
             .iter()
             .map(|class| class.class.to_string())
             .collect();
-        let declared_classes = classes.iter().cloned().collect();
-        let attempt_classes = classes
-            .iter()
-            .filter(|class| declared.is_attempt_class(class))
-            .cloned()
-            .collect();
-        let physical_classes = declared.physical_classes().map(str::to_owned).collect();
+        let declared_classes = ClassSet::new(classes.iter().map(|class| shared_name(class)));
+        let attempt_classes = ClassSet::new(
+            classes
+                .iter()
+                .filter(|class| declared.is_attempt_class(class))
+                .map(|class| shared_name(class)),
+        );
+        let physical_classes = ClassSet::new(declared.physical_classes().map(shared_name));
         let instance = request.context().instance().to_owned();
         let lane = format!("{instance}{PLANE_LANE_SEP}");
         let plan = request
@@ -255,15 +258,15 @@ impl PlaneMoney {
         self.install_native_pending_with(key, pending, |open| {
             let parts = PartitionedUsageV1 {
                 version: 1,
-                request_pool: open.money.pool.clone(),
+                request_pool: shared_name(&open.money.pool),
                 routing_generation: routing_generation.get(),
                 attempt_limit: attempt_limit.get(),
                 declared_classes,
                 attempt_classes,
                 physical_classes,
                 session_origin: SessionOrigin {
-                    instance,
-                    lane,
+                    instance: shared_name(&instance),
+                    lane: shared_name(&lane),
                     provider: None,
                 },
                 fee: open.fee.selected_fee().0,

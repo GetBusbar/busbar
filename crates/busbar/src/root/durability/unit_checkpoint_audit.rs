@@ -164,7 +164,7 @@ pub(super) async fn recover(
         ));
     };
     let facts: RunningAudit = busbar_contract::json::parse(encoded).map_err(error)?;
-    if facts.principal != snapshot.principal || facts.op_class.is_empty() {
+    if facts.principal != snapshot.principal.as_str() || facts.op_class.is_empty() {
         return Err(error(
             "running money audit identity differs from its admitted principal",
         ));

@@ -402,7 +402,7 @@ async fn selected_memory_capacity_retains_all_facts_then_retries_once() {
         for i in 0..MAX_PENDING_METERING_PER_SHARD {
             shard.insert(
                 (
-                    snapshot.principal.clone(),
+                    snapshot.principal.to_string(),
                     0,
                     format!("occupied-{i}"),
                     String::new(),
@@ -422,7 +422,7 @@ async fn selected_memory_capacity_retains_all_facts_then_retries_once() {
     assert!(gov
         .budget
         .read(&snapshot.principal)
-        .get(&snapshot.principal)
+        .get(snapshot.principal.as_str())
         .is_none());
     assert!(gov.unresolved_unit_target(&snapshot.principal, 0));
     assert!(matches!(
@@ -432,7 +432,7 @@ async fn selected_memory_capacity_retains_all_facts_then_retries_once() {
     assert!(gov
         .budget
         .read(&snapshot.principal)
-        .get(&snapshot.principal)
+        .get(snapshot.principal.as_str())
         .is_none());
     drop(gov.pending_metering.drain().collect::<Vec<_>>());
     gov.flush_unit_checkpoints().await.unwrap();

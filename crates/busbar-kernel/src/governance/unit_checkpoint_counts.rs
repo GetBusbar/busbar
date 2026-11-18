@@ -86,12 +86,12 @@ impl GovState {
                 },
             );
         let key: MeterIdentity = (
-            snapshot.principal.clone(),
+            snapshot.principal.to_string(),
             metering_bucket(snapshot.arrived),
             model.into(),
             provider.into(),
             snapshot.era_at,
-            snapshot.group.clone(),
+            snapshot.group.to_string(),
             snapshot
                 .era()
                 .entry_id
@@ -239,7 +239,7 @@ impl GovState {
                     let index = shards
                         .binary_search(&self.budget.shard_index(&target.bucket))
                         .expect("target shard held");
-                    let cell = guards[index].get(&target.bucket);
+                    let cell = guards[index].get(target.bucket.as_str());
                     if cell.is_some_and(|cell| {
                         cell.dirty || cell.flushing != 0 || cell.correction.is_some()
                     }) || crate::off_path::governance::runtime::unit_checkpoint_counts_in_flight(
@@ -295,7 +295,7 @@ impl GovState {
                 cell.group_owners.clone_from(&previous.group_owners);
             }
             if let Some(group) = &target.group {
-                cell.group_owners.insert(group.clone());
+                cell.group_owners.insert(group.to_string());
             }
             *refreshed = Some(cell);
         }
@@ -317,7 +317,7 @@ impl GovState {
             let index = shards
                 .binary_search(&self.budget.shard_index(&target.bucket))
                 .expect("target shard held");
-            if !same_checkpoint_cell(previous.as_ref(), guards[index].get(&target.bucket))
+            if !same_checkpoint_cell(previous.as_ref(), guards[index].get(target.bucket.as_str()))
                 || crate::off_path::governance::runtime::unit_checkpoint_counts_in_flight(
                     &flights,
                     &target.bucket,
@@ -596,12 +596,12 @@ fn selected_meter_counts(
                pricing: &busbar_contract::records::MeteringPricingV1| {
         MeterIdentity {
             common: (
-                common.principal.clone(),
+                common.principal.to_string(),
                 metering_bucket(common.arrived),
                 lane.to_owned(),
                 provider.unwrap_or_default().to_owned(),
                 common.era.effective_from,
-                common.group.clone(),
+                common.group.to_string(),
                 common
                     .era
                     .entry_id

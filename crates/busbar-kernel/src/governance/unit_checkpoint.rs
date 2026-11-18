@@ -4,6 +4,7 @@
 //! Running unit custody. Reports replace a hot snapshot; only the existing usage flush tick
 //! writes it. A terminal snapshot owns exact raw operation identities until their durable ACKs.
 
+use busbar_contract::kept::Text;
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
@@ -54,9 +55,9 @@ pub(crate) enum SelectedCommitError<E> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UnitTarget {
-    pub bucket: String,
+    pub bucket: Text,
     pub window: u64,
-    pub group: Option<String>,
+    pub group: Option<Text>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,11 +66,11 @@ pub struct UnitCheckpoint {
     pub id: [u8; 16],
     pub revision: u64,
     pub unit: u64,
-    pub principal: String,
-    pub group: String,
+    pub principal: Text,
+    pub group: Text,
     pub arrived: u64,
-    pub lane: String,
-    pub provider: Option<String>,
+    pub lane: Text,
+    pub provider: Option<Text>,
     pub era_at: u64,
     pub era_entry: Option<[u8; 12]>,
     pub units: BTreeMap<String, Count>,
@@ -83,7 +84,7 @@ pub struct UnitCheckpoint {
     /// The provider answered but its final stated usage was not billed: the `ReasonCode` name that
     /// ended the unit first (`BUSBAR-5046`). Absent when nothing went unread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unread: Option<String>,
+    pub unread: Option<Text>,
     /// Absent is the historical single-lane representation, never an inferred attempt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partitions: Option<partitions::PartitionedUsageV1>,
@@ -1099,3 +1100,11 @@ impl GovState {
 #[cfg(test)]
 #[path = "tests/unit_checkpoint_book_tests.rs"]
 mod book_tests;
+
+/// A shared name made from text that was copied out of a per-unit `String`: ONE allocation, the
+/// one the copy it replaces made. Interim: each call site goes when the owner of the name (the
+/// declaration, the cost model's bucket, the key's id) holds it as a `Text` and the site clones
+/// that instead (GROUP-records K1c, K5).
+pub(crate) fn shared_name(name: &str) -> Text {
+    Text::Shared(Arc::from(name))
+}

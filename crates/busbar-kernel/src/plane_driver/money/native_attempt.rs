@@ -4,7 +4,9 @@
 //! Linear input to the selected-resource governor. Selection and preparation minting remain
 //! private to the money consumer; configuration metadata alone cannot authorize an attempt.
 
-use std::collections::{BTreeMap, BTreeSet};
+use crate::governance::unit_checkpoint::partitions::ClassSet;
+use crate::governance::unit_checkpoint::shared_name;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::governance::unit_checkpoint::partitions::{
@@ -184,11 +186,11 @@ impl NativeRequestMoney {
         // class is in the checkpoint's set, and each of the checkpoint's is declared.
         if !physical_classes
             .iter()
-            .all(|class| parts.physical_classes.contains(&**class))
+            .all(|class| parts.physical_classes.contains(class))
             || !parts
                 .physical_classes
                 .iter()
-                .all(|held| physical_classes.iter().any(|class| **class == **held))
+                .all(|held| physical_classes.iter().any(|class| **class == *held))
         {
             return Err(NativeAttemptError::Binding);
         }
@@ -199,12 +201,13 @@ impl NativeRequestMoney {
                 TargetIdentity::Registration => TargetKind::Registration,
                 TargetIdentity::Model { .. } => TargetKind::Model,
             },
-            instance: self.request.context().instance().to_owned(),
-            selected_pool: partition_pool(&self.request, selected.pool()),
-            resource: selected.resource().map(str::to_owned),
+            instance: shared_name(self.request.context().instance()),
+            selected_pool: shared_name(&partition_pool(&self.request, selected.pool())),
+            resource: selected.resource().map(shared_name),
             usage: UsagePartition {
-                lane: selected.qualified_member().to_owned(),
-                provider: (!selected.provider().is_empty()).then(|| selected.provider().to_owned()),
+                lane: shared_name(selected.qualified_member()),
+                provider: (!selected.provider().is_empty())
+                    .then(|| shared_name(selected.provider())),
                 classes: BTreeMap::new(),
             },
             transport: Transport::Prepared,
@@ -401,7 +404,7 @@ struct StagedAttemptFacts {
 
 fn stage_attempt_facts(
     before: &AttemptPartition,
-    physical_classes: &BTreeSet<String>,
+    physical_classes: &ClassSet,
     declaration: Declaration<'_>,
     reports: &[AttemptUsage<'_>],
     end: Option<AttemptEnd>,
@@ -436,7 +439,7 @@ fn stage_attempt_facts(
         let facts = partition
             .usage
             .classes
-            .entry(report.class.to_owned())
+            .entry(shared_name(report.class))
             .or_default();
         match report.source {
             UsageSource::Reported => facts.reported = Some(count),

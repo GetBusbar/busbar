@@ -3,7 +3,8 @@
 
 // Pure factual staging tests. These values are not selected/send authority and do not mint
 // PreparedRateAttempt. The composed invocation/Open tests exercise that separate boundary.
-use std::collections::{BTreeMap, BTreeSet};
+use crate::governance::unit_checkpoint::partitions::ClassSet;
+use std::collections::BTreeMap;
 
 use busbar_contract::Count;
 use busbar_plugin_abi::plane::{FB_ATTEMPT_USAGE, UNIT_COUNT, UNIT_TOKENS};
@@ -66,7 +67,7 @@ fn corrections_replace_sources_without_lowering_rate_highwater() {
     let classes = classes();
     let attempt_classes = vec!["tokens.in".into()];
     let declaration = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes).unwrap();
-    let physical = BTreeSet::from(["tokens.in".to_owned()]);
+    let physical = ClassSet::from(["tokens.in"]);
     let before = attempt();
     let staged = stage_attempt_facts(
         &before,
@@ -106,7 +107,7 @@ fn explicit_reported_zero_can_complete_without_falling_back_to_floor() {
     let classes = classes();
     let attempt_classes = vec!["tokens.in".into()];
     let declaration = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes).unwrap();
-    let physical = BTreeSet::from(["tokens.in".to_owned()]);
+    let physical = ClassSet::from(["tokens.in"]);
     let staged = stage_attempt_facts(
         &attempt(),
         &physical,
@@ -133,7 +134,7 @@ fn floor_or_estimate_does_not_prove_complete_coverage() {
     let classes = classes();
     let attempt_classes = vec!["tokens.in".into()];
     let declaration = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes).unwrap();
-    let physical = BTreeSet::from(["tokens.in".to_owned()]);
+    let physical = ClassSet::from(["tokens.in"]);
     for source in [UsageSource::Estimated, UsageSource::Floor] {
         let before = attempt();
         assert!(stage_attempt_facts(
@@ -157,7 +158,7 @@ fn wrong_preparation_or_session_class_refuses_the_entire_batch() {
     let classes = classes();
     let attempt_classes = vec!["tokens.in".into()];
     let declaration = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes).unwrap();
-    let physical = BTreeSet::from(["tokens.in".to_owned()]);
+    let physical = ClassSet::from(["tokens.in"]);
     let good = report(UsageSource::Reported, 7);
     for bad in [
         AttemptUsage { attempt: 2, ..good }, // Dispatch ordinal is not preparation ordinal.
@@ -178,7 +179,7 @@ fn prepared_no_send_and_sealed_attempts_cannot_accept_usage() {
     let classes = classes();
     let attempt_classes = vec!["tokens.in".into()];
     let declaration = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes).unwrap();
-    let physical = BTreeSet::from(["tokens.in".to_owned()]);
+    let physical = ClassSet::from(["tokens.in"]);
     for (transport, finality) in [
         (Transport::Prepared, Finality::Live),
         (Transport::NoSend, Finality::Unknown),
@@ -207,7 +208,7 @@ fn accepted_fractional_usage_preserves_existing_half_even_rounding_signal() {
     let classes = classes();
     let attempt_classes = vec!["tokens.in".into()];
     let declaration = Declaration::new(FB_ATTEMPT_USAGE, &classes, &attempt_classes).unwrap();
-    let physical = BTreeSet::from(["tokens.in".to_owned()]);
+    let physical = ClassSet::from(["tokens.in"]);
     let staged = stage_attempt_facts(
         &attempt(),
         &physical,
