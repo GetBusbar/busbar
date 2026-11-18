@@ -66,8 +66,8 @@ pub struct AdminReplayUnknown {
 
 pub enum AdminCompletionRefused {
     Unavailable,
-    ReplayDenied(AdminReplayDenial),
-    ReplayUnknown(AdminReplayUnknown),
+    ReplayDenied(Box<AdminReplayDenial>),
+    ReplayUnknown(Box<AdminReplayUnknown>),
 }
 
 impl std::fmt::Debug for AdminCompletionRefused {
@@ -138,19 +138,23 @@ impl Pending {
         match self.prepared.claim_classified().await {
             NativeReplayClaim::Claimed => {}
             NativeReplayClaim::Duplicate => {
-                return Err(AdminCompletionRefused::ReplayDenied(AdminReplayDenial {
-                    _lease: lease,
-                    invocation: self.invocation.clone(),
-                    _prepared: Arc::clone(&self.prepared),
-                }))
+                return Err(AdminCompletionRefused::ReplayDenied(Box::new(
+                    AdminReplayDenial {
+                        _lease: lease,
+                        invocation: self.invocation.clone(),
+                        _prepared: Arc::clone(&self.prepared),
+                    },
+                )))
             }
             NativeReplayClaim::Unknown(error) => {
-                return Err(AdminCompletionRefused::ReplayUnknown(AdminReplayUnknown {
-                    _lease: lease,
-                    _invocation: self.invocation.clone(),
-                    _prepared: Arc::clone(&self.prepared),
-                    _error: error,
-                }))
+                return Err(AdminCompletionRefused::ReplayUnknown(Box::new(
+                    AdminReplayUnknown {
+                        _lease: lease,
+                        _invocation: self.invocation.clone(),
+                        _prepared: Arc::clone(&self.prepared),
+                        _error: error,
+                    },
+                )))
             }
             NativeReplayClaim::Inconsistent => return Err(AdminCompletionRefused::Unavailable),
         }

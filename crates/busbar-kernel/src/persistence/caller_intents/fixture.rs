@@ -11,11 +11,15 @@ use busbar_contract::persistence::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// The fixture's slot rows, keyed as the native store keys them.
+type SlotKey = ([u8; 16], u64, u32);
+type SlotRow = (u64, [u8; 32], bool);
+
 #[derive(Default)]
 struct Native {
     rows: BTreeMap<Address, Secret<Vec<u8>>>,
     generations: BTreeMap<[u8; 16], u64>,
-    slots: BTreeMap<([u8; 16], u64, u32), (u64, [u8; 32], bool)>,
+    slots: BTreeMap<SlotKey, SlotRow>,
     sent: Vec<[u8; 32]>,
 }
 pub(crate) struct Backend {

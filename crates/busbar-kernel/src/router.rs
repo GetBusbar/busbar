@@ -5,7 +5,7 @@ use axum::Router;
 
 use crate::off_path::router::base_data_router_scoped;
 pub(crate) use crate::off_path::router::project_auth_scope_caps;
-use crate::{auth, endpoints, limits, state};
+use crate::{auth, limits, state};
 
 pub(crate) const HEADER_SERVER_TIMING: &str = "server-timing";
 

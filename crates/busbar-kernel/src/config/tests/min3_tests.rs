@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::json::JsonValueTrait as _;
 use busbar_plugin_abi::host_side::caller::Accept;
 
 #[test]
@@ -606,8 +605,7 @@ fn parsed_registrations(yaml: &str) -> Result<BTreeMap<Box<str>, UpstreamCfg>, V
 #[test]
 fn top_level_upstreams_is_refused_with_registration_guidance() {
     let errors = crate::config::deploy_from_yaml_str(UPSTREAMS, &crate::config::Grammar::empty())
-        .err()
-        .expect("retired core key");
+        .expect_err("retired core key");
     assert!(errors.to_string().contains("registration"));
 }
 

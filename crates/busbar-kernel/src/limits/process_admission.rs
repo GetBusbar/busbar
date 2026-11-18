@@ -432,7 +432,6 @@ impl ByteCredit {
     }
 
     /// Transfer part of this reservation without changing process usage.
-
     pub fn split(&mut self, bytes: usize) -> Result<Self, CapacityDenied> {
         let bytes = u32::try_from(bytes).map_err(|_| CapacityDenied)?;
         if bytes > self.bytes {

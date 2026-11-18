@@ -109,7 +109,8 @@ pub(super) fn transfer_original(
     };
     match queue.try_enqueue_original(original) {
         Ok(()) => Ok(()),
-        Err((original, error)) => {
+        Err(refused) => {
+            let (original, error) = *refused;
             *held = Some(original);
             Err(error)
         }

@@ -6,7 +6,6 @@
 
 use super::*;
 use crate::governance::GovState;
-use busbar_contract::json::JsonValueMutTrait as _;
 
 fn source_facts(reported: Option<u64>, floor: Option<u64>, estimated: Option<u64>) -> json::Value {
     let high_water = reported

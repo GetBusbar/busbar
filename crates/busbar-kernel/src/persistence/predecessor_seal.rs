@@ -60,14 +60,16 @@ impl FenceMark {
 
     /// Read a mark row back; a row that does not decode is an error.
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() < 16 || &bytes[..8] != FENCE_MAGIC || (bytes.len() - 16) % 8 != 0 {
+        if bytes.len() < 16 || &bytes[..8] != FENCE_MAGIC || !(bytes.len() - 16).is_multiple_of(8) {
             return Err("malformed fence mark".into());
         }
         let lease_expires_ms = u64::from_be_bytes(bytes[8..16].try_into().map_err(error)?);
         let sealed = bytes[16..]
-            .chunks_exact(8)
-            .map(|c| c.try_into().map(u64::from_be_bytes).map_err(error))
-            .collect::<Result<Vec<u64>, String>>()?;
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_be_bytes(*c))
+            .collect::<Vec<u64>>();
         if sealed.windows(2).any(|w| w[0] >= w[1]) {
             return Err("fence mark nodes are not ascending".into());
         }

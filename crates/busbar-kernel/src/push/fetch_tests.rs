@@ -14,9 +14,12 @@ use crate::retry::PortError;
 
 use super::ConnectorPushSink;
 
+/// One recorded fetch, as the sink made it.
+type FetchCall = (u64, String, String, u32, Vec<u8>);
+
 struct Fetch {
     status: u16,
-    calls: Mutex<Vec<(u64, String, String, u32, Vec<u8>)>>,
+    calls: Mutex<Vec<FetchCall>>,
 }
 impl PlaneFetch for Fetch {
     fn fetch<'a>(

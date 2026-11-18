@@ -9,7 +9,7 @@ use super::super::protocol::{metadata, Metadata};
 async fn read(r: Response) -> (u16, Value) {
     let status = r.status().as_u16();
     let bytes = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
-    let value = busbar_contract::json::parse_value(&bytes).unwrap_or(Value::new());
+    let value = busbar_contract::json::parse_value(&bytes).unwrap_or_default();
     (status, value)
 }
 

@@ -81,10 +81,8 @@ impl HeadCell {
         fence(Ordering::Release);
         self.seq.store(head.seq, Ordering::Relaxed);
         self.node_seq.store(head.node_seq, Ordering::Relaxed);
-        for (word, chunk) in self.fp.iter().zip(head.fp.chunks_exact(8)) {
-            let mut bytes = [0u8; 8];
-            bytes.copy_from_slice(chunk);
-            word.store(u64::from_le_bytes(bytes), Ordering::Relaxed);
+        for (word, chunk) in self.fp.iter().zip(head.fp.as_chunks::<8>().0) {
+            word.store(u64::from_le_bytes(*chunk), Ordering::Relaxed);
         }
         self.wall_ms.store(head.wall_ms, Ordering::Relaxed);
         // A release store that also joins the single total order of the park handshake.
@@ -127,8 +125,8 @@ impl HeadCell {
                 fp: [0; 32],
                 wall_ms: self.wall_ms.load(Ordering::Relaxed),
             };
-            for (chunk, word) in head.fp.chunks_exact_mut(8).zip(&self.fp) {
-                chunk.copy_from_slice(&word.load(Ordering::Relaxed).to_le_bytes());
+            for (chunk, word) in head.fp.as_chunks_mut::<8>().0.iter_mut().zip(&self.fp) {
+                *chunk = word.load(Ordering::Relaxed).to_le_bytes();
             }
             fence(Ordering::Acquire);
             if self.version.load(Ordering::Relaxed) == before {

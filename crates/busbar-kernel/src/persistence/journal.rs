@@ -815,7 +815,7 @@ impl Replay<'_, '_> {
         Ok(Some(record))
     }
     /// Read every remaining original, then [`Self::finish`].
-    pub(crate) async fn to_end(mut self) -> Result<VerifiedHead> {
+    pub(crate) async fn read_through(mut self) -> Result<VerifiedHead> {
         while self.next().await?.is_some() {}
         self.finish()
     }

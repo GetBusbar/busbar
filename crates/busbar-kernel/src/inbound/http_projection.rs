@@ -172,7 +172,7 @@ where
         request: axum::extract::Request,
         state: &S,
     ) -> Result<Self, Self::Rejection> {
-        use axum::extract::{FromRequest, FromRequestParts};
+        use axum::extract::FromRequestParts;
         use axum::http::header::{HeaderMapPlan, ProjectionError};
 
         let (mut parts, body) = request.into_parts();

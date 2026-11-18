@@ -32,7 +32,7 @@ fn direct_network_authority_is_frozen_for_one_instance_and_operation() {
         b.admit_network(7, &e).is_none(),
         "binding alone grants no network authority"
     );
-    b.freeze_network(7, &[e.clone()]).unwrap();
+    b.freeze_network(7, std::slice::from_ref(&e)).unwrap();
     b.freeze_network(8, &[]).unwrap();
     let permit = b.admit_network(7, &e).expect("exact bound endpoint");
     assert!(

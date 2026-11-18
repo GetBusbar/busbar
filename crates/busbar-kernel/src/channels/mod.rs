@@ -111,9 +111,16 @@ pub struct Attachment {
     budget: budget::UnitBudget,
     _lease: budget::Charge,
 }
+/// Where an attachment sits: its carrier generation, its slot, and whether it greets.
+#[derive(Clone, Copy)]
+pub(super) struct AttachAt {
+    pub(super) generation: u64,
+    pub(super) slot: u64,
+    pub(super) greet: bool,
+}
+
 impl Attachment {
     /// Built by the carrier driver for each attach: `rx` carries the slot's demuxed inbound messages.
-    #[must_use]
     pub fn linked(
         link: Arc<Link>,
         budget: budget::UnitBudget,
@@ -135,19 +142,33 @@ impl Attachment {
                 None,
             )
             .map_err(|_| RecordsDenied::Unavailable)?;
-        Self::linked_reserved(link, budget, lease, generation, slot, greet, ready_tail, rx)
+        Self::linked_reserved(
+            link,
+            budget,
+            lease,
+            AttachAt {
+                generation,
+                slot,
+                greet,
+            },
+            ready_tail,
+            rx,
+        )
     }
 
     pub(super) fn linked_reserved(
         link: Arc<Link>,
         budget: budget::UnitBudget,
         lease: budget::Charge,
-        generation: u64,
-        slot: u64,
-        greet: bool,
+        at: AttachAt,
         ready_tail: bytes::Bytes,
         rx: mpsc::Receiver<ChannelMsg>,
     ) -> Result<Self, RecordsDenied> {
+        let AttachAt {
+            generation,
+            slot,
+            greet,
+        } = at;
         if !budget.accepts_link(link.budget()) {
             return Err(RecordsDenied::Invalid);
         }

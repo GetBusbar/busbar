@@ -366,8 +366,10 @@ fn exact_all_of_scopes_keep_empty_grants_and_kind_collisions_closed() {
         &[ScopeRef::pool("chat"), ScopeRef::pool("secret")],
     )
     .unwrap();
-    let mut key = VirtualKey::default();
-    key.allowed_scopes = Some(vec![ScopeRef::pool("chat")]);
+    let mut key = VirtualKey {
+        allowed_scopes: Some(vec![ScopeRef::pool("chat")]),
+        ..VirtualKey::default()
+    };
     assert!(!selected.scope_allowed(&key));
     key.allowed_scopes = Some(vec![ScopeRef {
         kind: "agent".into(),

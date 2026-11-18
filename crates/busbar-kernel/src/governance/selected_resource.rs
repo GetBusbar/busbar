@@ -424,7 +424,7 @@ impl SelectedRates {
     fn sweep_next(&self) {
         // A bounded rotating pass; capacity safety never relies on this pass making progress.
         let cursor = self.sweep_cursor.fetch_add(1, Ordering::Relaxed);
-        if cursor % 64 != 0 {
+        if !cursor.is_multiple_of(64) {
             return;
         }
         if let Ok(minute) = self.minute() {

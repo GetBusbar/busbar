@@ -1788,7 +1788,7 @@ impl KernelServices {
     }
 
     fn pool(&self) -> Option<&dyn Offload> {
-        self.pool.as_ref().map(|p| &**p)
+        self.pool.as_deref()
     }
 
     #[must_use]
@@ -4312,11 +4312,11 @@ impl HostServices for KernelServices {
     }
 }
 
-pub const STAGE_NO_UNIT: &str = "the crossing serves no unit in flight";
+pub(crate) const STAGE_NO_UNIT: &str = "the crossing serves no unit in flight";
 
-pub const STAGE_NOT_BOUND: &str = "the unit's hook stage is not bound yet";
+pub(crate) const STAGE_NOT_BOUND: &str = "the unit's hook stage is not bound yet";
 
-pub const STAGE_NOT_YOURS: &str = "the unit runs on another instance";
+pub(crate) const STAGE_NOT_YOURS: &str = "the unit runs on another instance";
 
 pub(crate) const STAGE_ANSWERED_AMISS: &str = "the hook stage answered outside the service's shape";
 

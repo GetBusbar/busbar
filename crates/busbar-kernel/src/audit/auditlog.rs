@@ -1177,7 +1177,7 @@ impl PendingAuditQueue {
 
     /// Transfer a background original without borrowing an unrelated request's audit context.
     fn try_enqueue_background(&self, p: PendingAudit) -> RecordStoreResult<()> {
-        self.try_enqueue_original(p).map_err(|(_, error)| error)
+        self.try_enqueue_original(p).map_err(|refused| refused.1)
     }
 
     /// A known no-effect refusal returns the exact original; it has not entered the queue
@@ -1185,13 +1185,13 @@ impl PendingAuditQueue {
     fn try_enqueue_original(
         &self,
         p: PendingAudit,
-    ) -> Result<(), (PendingAudit, RecordStoreError)> {
+    ) -> Result<(), Box<(PendingAudit, RecordStoreError)>> {
         let mut q = self.rows.lock().unwrap_or_else(|e| e.into_inner());
         if q.queued.len() >= self.cap {
-            return Err((
+            return Err(Box::new((
                 p,
                 RecordStoreError("the admin audit recovery queue is full".into()),
-            ));
+            )));
         }
         q.queued.push_back(p);
         Ok(())

@@ -10,9 +10,7 @@ use std::sync::Arc;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
 use busbar_contract::crypto::ed25519::SigningKey;
-use busbar_contract::json::{
-    json, JsonContainerTrait as _, JsonValueMutTrait as _, JsonValueTrait as _, Value,
-};
+use busbar_contract::json::{json, JsonValueMutTrait as _, Value};
 use busbar_plugin_abi::host_side::caller::{CallStack, Caller, InstanceLimits};
 use busbar_plugin_abi::plane::{
     DISTRUST_CHANGED, DISTRUST_NONE, DISTRUST_NOT_APPROVED, DISTRUST_QUARANTINED, DISTRUST_UNKNOWN,
@@ -474,7 +472,7 @@ async fn verify_is_todays_trust_verify_body() {
         let mut sig = good.clone();
         let mut raw = URL_SAFE_NO_PAD
             .decode(
-                sig.get(&"signature")
+                sig.get("signature")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default(),
             )

@@ -83,11 +83,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// One call the port saw.
+type SeenCall = (String, String, Option<String>, bool);
+
 #[derive(Default)]
 pub(crate) struct NativePort {
     pub(crate) calls: AtomicUsize,
     pub(crate) body_hashes: Mutex<Vec<Option<[u8; 32]>>>,
-    seen: Mutex<Vec<(String, String, Option<String>, bool)>>,
+    seen: Mutex<Vec<SeenCall>>,
 }
 fn unsupported<'a, T: Send + 'a>() -> BoxFut<'a, Result<T, PortError>> {
     Box::pin(async {

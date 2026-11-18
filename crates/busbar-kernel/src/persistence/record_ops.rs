@@ -590,9 +590,8 @@ impl CoreStore {
                     .collect()
             };
             for (gen8, writer, at, value) in foreign {
-                if !closed.contains_key(&writer) {
-                    let row = self.closed_writer_row(writer).await?;
-                    closed.insert(writer, row);
+                if let std::collections::btree_map::Entry::Vacant(slot) = closed.entry(writer) {
+                    slot.insert(self.closed_writer_row(writer).await?);
                 }
                 let Some(Some(control_row)) = closed.get(&writer) else {
                     continue;

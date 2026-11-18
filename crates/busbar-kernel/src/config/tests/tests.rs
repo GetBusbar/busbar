@@ -2786,7 +2786,8 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
          `telemetry`, `records`, `audit`. `bogus_key` is not a core section and no admitted \
          plane answers to it; plane sections are: (none) at line 3 column 1"
     );
-    for field in ["oauth_as"] {
+    {
+        let field = "oauth_as";
         let duplicate =
             parse(&format!("{field}: {{}}\n{field}: {{}}\n")).expect_err("duplicate core section");
         assert!(

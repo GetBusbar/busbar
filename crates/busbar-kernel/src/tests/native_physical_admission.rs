@@ -172,15 +172,6 @@ pub(crate) fn app() -> Arc<App> {
     }))
 }
 
-fn prepared(
-    app: &App,
-    slot: &str,
-    port: Arc<dyn TransportPort>,
-    path: &str,
-) -> Arc<PreparedListener> {
-    prepared_with_auth(app, slot, port, path, RouteAuth::None)
-}
-
 fn prepared_with_auth(
     app: &App,
     slot: &str,
@@ -528,7 +519,7 @@ fn native_physical_head_charges_spare_string_backing() {
     let conn = f.listener.connect(accepted());
     let mut original = head("/one");
     original.authority = String::with_capacity(256);
-    original.authority.push_str("a");
+    original.authority.push('a');
     assert!(matches!(
         conn.head(
             1,

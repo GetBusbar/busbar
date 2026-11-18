@@ -598,7 +598,7 @@ async fn native_data_without_node_audit_custody_refuses_before_money_or_effects(
         Ok(ordinary_unit(&book, admitted, None))
     }));
     let calls = PlaneCalls(AtomicUsize::new(0));
-    let mut task = begin_task(&calls, &pending);
+    let task = begin_task(&calls, &pending);
     let declaration = task.request_declaration().unwrap();
     assert!(
         pending.pending().admit(None, None, declaration).is_err(),

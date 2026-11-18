@@ -187,9 +187,10 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
     })
 }
 
-fn parse_issued_kinds(
-    deploy: &DeployCfg,
-) -> Result<BTreeMap<Box<str>, BTreeSet<Box<str>>>, Vec<String>> {
+/// Grant -> the issued kinds it may mint.
+type IssuedKinds = BTreeMap<Box<str>, BTreeSet<Box<str>>>;
+
+fn parse_issued_kinds(deploy: &DeployCfg) -> Result<IssuedKinds, Vec<String>> {
     let mut grants = BTreeMap::new();
     let mut refused = Vec::new();
     for (name, provider) in &deploy.identity_providers {
@@ -717,7 +718,7 @@ impl InsecureTransportDoc {
     }
 
     /// [`Self::resolve`] for an acceptance written at `at`, its full key; every refusal names `<at>.<key>`.
-    pub fn resolve_at(self, at: &str) -> Result<InsecureTransport, String> {
+    pub(crate) fn resolve_at(self, at: &str) -> Result<InsecureTransport, String> {
         use busbar_plugin_abi::host_side::caller::Accept;
         let words = match self.accept {
             AcceptDoc::One(w) => vec![w],

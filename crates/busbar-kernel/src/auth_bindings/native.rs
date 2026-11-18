@@ -163,20 +163,20 @@ pub enum SelectedCredential {
     Required(Arc<NativeBinding>),
 }
 
+/// Pool -> member -> the destination and the credential its route selects.
+type BindingRows = BTreeMap<Box<str>, BTreeMap<Box<str>, (DestinationId, SelectedCredential)>>;
+
 /// Every configured row is explicit, including no-auth rows. Omission never grants permission.
 #[derive(Clone)]
 pub struct NativeRouteBindings {
-    rows: BTreeMap<Box<str>, BTreeMap<Box<str>, (DestinationId, SelectedCredential)>>,
+    rows: BindingRows,
 }
 
 impl NativeRouteBindings {
     pub fn new(
         rows: impl IntoIterator<Item = (Box<str>, Box<str>, DestinationId, SelectedCredential)>,
     ) -> Result<Self, PortError> {
-        let mut bindings: BTreeMap<
-            Box<str>,
-            BTreeMap<Box<str>, (DestinationId, SelectedCredential)>,
-        > = BTreeMap::new();
+        let mut bindings: BindingRows = BTreeMap::new();
         for (pool, member, destination, credential) in rows {
             if pool.is_empty() || member.is_empty() {
                 return Err(refused());

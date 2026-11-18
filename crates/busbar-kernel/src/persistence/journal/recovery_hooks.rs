@@ -114,7 +114,7 @@ impl<'a> StoreJournal<'a> {
                 kept: Vec::new(),
                 base_tail: None,
             };
-            match replay.to_end().await {
+            match replay.read_through().await {
                 Ok(proof) if proof.records_seal == current.records_seal => return Ok(()),
                 Ok(_) => return Err(Error::Corrupt),
                 // A cut moved the base past `from` while the tail was read (SEALING-FIX §3.9): the
