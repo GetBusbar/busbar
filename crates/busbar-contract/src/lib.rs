@@ -42,6 +42,7 @@ pub mod config;
 pub mod config_time;
 pub mod confined_path;
 pub mod conn;
+pub mod lookup;
 pub use busbar_count::count;
 pub mod dest;
 
