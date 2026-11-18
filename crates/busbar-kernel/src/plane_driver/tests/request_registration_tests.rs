@@ -693,7 +693,7 @@ fn selected_rig_kind(
         pattern: "/requests".into(),
         cred_header: None,
         catalog: false,
-        resource_kinds: vec!["pool".into()],
+        resource_kinds: vec![Box::<str>::from("pool")].into(),
     };
     let mut wire = busbar_plugin_abi::records::Reply::new();
     busbar_plugin_abi::resource_admission::write_selection(

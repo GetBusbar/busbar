@@ -62,8 +62,10 @@ const DX_BITS: u32 = p::DX_RESIGHT | p::DX_OUTSTANDING | p::DX_BROADCAST | p::DX
 pub struct PlaneDescribe {
     pub routes: Vec<RouteInfo>,
     pub dialects: Vec<Box<str>>,
-    pub usage_classes: Vec<UsageClass>,
-    pub attempt_classes: Vec<Box<str>>,
+    /// The declared usage classes and attempt classes: shared lists, made once when the describe
+    /// is decoded, so a session that freezes its declaration shares them and copies none.
+    pub usage_classes: Arc<[UsageClass]>,
+    pub attempt_classes: Arc<[Box<str>]>,
     pub tick_s: Option<u64>,
     /// D_ADMIN_OPENAPI: the OpenAPI fragment of the ROUTE_ADMIN routes, for K8's admin document merge (round 8).
     pub admin_openapi: Option<Box<str>>,
@@ -81,6 +83,10 @@ pub fn decode_describe(
     facts: u64,
 ) -> Result<PlaneDescribe, DescribeInvalid> {
     let mut d = PlaneDescribe::default();
+    // The two class lists grow here as the describe is read and become the describe's shared
+    // lists once it is whole.
+    let mut usage_classes: Vec<UsageClass> = Vec::new();
+    let mut attempt_classes: Vec<Box<str>> = Vec::new();
     let mut headers: Vec<(u32, &str)> = Vec::new();
     let mut resource_routes: Vec<(u32, Vec<Box<str>>)> = Vec::new();
     for rec in describe {
@@ -105,7 +111,7 @@ pub fn decode_describe(
                     auth: r.auth,
                     pattern: pattern.into(),
                     cred_header: None,
-                    resource_kinds: Vec::new(),
+                    resource_kinds: Arc::default(),
                 });
             }
             t::D_ROUTE_RESOURCES => {
@@ -165,7 +171,7 @@ pub fn decode_describe(
             t::D_USAGE_CLASS => {
                 let bad = DescribeInvalid("describe.usage_class");
                 if facts & (p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES) != 0
-                    && d.usage_classes.len() >= attempt_wire::MAX_CLASSES
+                    && usage_classes.len() >= attempt_wire::MAX_CLASSES
                 {
                     return Err(bad);
                 }
@@ -175,11 +181,11 @@ pub fn decode_describe(
                 if u._r != 0
                     || !(p::UNIT_COUNT..=p::UNIT_CHARACTERS).contains(&u.unit)
                     || !(e.is_nan() || (e.is_finite() && e >= 0.0))
-                    || d.usage_classes.iter().any(|x| *x.class == *class)
+                    || usage_classes.iter().any(|x| *x.class == *class)
                 {
                     return Err(bad);
                 }
-                d.usage_classes.push(UsageClass {
+                usage_classes.push(UsageClass {
                     class: class.into(),
                     unit: u.unit,
                     expected_units: (!e.is_nan()).then_some(e),
@@ -188,10 +194,10 @@ pub fn decode_describe(
             t::D_ATTEMPT_CLASS => {
                 let class = attempt_wire::class_text(rec.body)
                     .map_err(|_| DescribeInvalid("describe.attempt_class"))?;
-                if d.attempt_classes.len() >= attempt_wire::MAX_CLASSES {
+                if attempt_classes.len() >= attempt_wire::MAX_CLASSES {
                     return Err(DescribeInvalid("describe.attempt_class"));
                 }
-                d.attempt_classes.push(class.into());
+                attempt_classes.push(class.into());
             }
             t::D_ADMIN_OPENAPI => {
                 let bad = DescribeInvalid("describe.admin_openapi");
@@ -233,7 +239,7 @@ pub fn decode_describe(
         if route.flags != 0 || route.auth != p::AUTH_PRINCIPAL {
             return Err(DescribeInvalid("describe.route_resources"));
         }
-        route.resource_kinds = kinds;
+        route.resource_kinds = kinds.into();
     }
     let any = |bit: u32| d.routes.iter().any(|r| r.flags & bit != 0);
     if any(p::ROUTE_ADMIN) != d.admin_openapi.is_some() {
@@ -245,6 +251,8 @@ pub fn decode_describe(
     if facts & p::FB_PROBES != 0 && methods & p::M_PROBE == 0 {
         return Err(DescribeInvalid("describe.probes"));
     }
+    d.usage_classes = usage_classes.into();
+    d.attempt_classes = attempt_classes.into();
     Declaration::new(facts, &d.usage_classes, &d.attempt_classes)
         .map_err(|_| DescribeInvalid("describe.attempt_class"))?;
     if facts & (p::FB_ATTEMPT_USAGE | p::FB_PREPARED_ESTIMATES) != 0 && methods & p::M_UPSTREAM == 0
@@ -1471,6 +1479,13 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
 
     fn attempt_classes(&self) -> &[Box<str>] {
         &self.describe.attempt_classes
+    }
+
+    fn usage_shared(&self) -> (Arc<[UsageClass]>, Arc<[Box<str>]>) {
+        (
+            Arc::clone(&self.describe.usage_classes),
+            Arc::clone(&self.describe.attempt_classes),
+        )
     }
 
     fn facts(&self) -> u64 {

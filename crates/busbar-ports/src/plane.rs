@@ -297,8 +297,9 @@ pub struct RouteInfo {
     pub auth: u32,
     pub pattern: Box<str>,
     pub cred_header: Option<Box<str>>,
-    /// Complete declared generic scope kinds; empty means this route does not opt in.
-    pub resource_kinds: Vec<Box<str>>,
+    /// Complete declared generic scope kinds; empty means this route does not opt in. A shared
+    /// list: the mount table shares it with the route and copies no kind.
+    pub resource_kinds: std::sync::Arc<[Box<str>]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -339,7 +340,7 @@ pub trait PlanePort: Send + Sync + 'static {
         self.routes()
             .iter()
             .find(|r| r.route == route)
-            .map_or(&[], |r| r.resource_kinds.as_slice())
+            .map_or(&[], |r| &r.resource_kinds[..])
     }
     /// Pure inventory/selection records, validated before return. Unsupported by default;
     /// callers must never use a failure to fall back to weaker authorization.
@@ -363,6 +364,10 @@ pub trait PlanePort: Send + Sync + 'static {
     fn attempt_classes(&self) -> &[Box<str>] {
         &[]
     }
+    /// The same two lists ([`Self::usage_classes`], [`Self::attempt_classes`]) as the image's
+    /// own shared storage: a session freezes its declaration by sharing them, so it copies no
+    /// class per request. No default: a port that copied here would do it on every request.
+    fn usage_shared(&self) -> (std::sync::Arc<[UsageClass]>, std::sync::Arc<[Box<str>]>);
     fn facts(&self) -> u64;
     /// Whether the actual opened image declares the demux callback. Foreign ports opt in explicitly.
     fn has_demux(&self) -> bool {

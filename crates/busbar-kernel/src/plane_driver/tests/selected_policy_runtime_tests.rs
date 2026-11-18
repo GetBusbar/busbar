@@ -101,6 +101,12 @@ impl PlanePort for Descriptor {
     fn attempt_classes(&self) -> &[Box<str>] {
         &self.attempt_classes
     }
+    fn usage_shared(&self) -> (std::sync::Arc<[UsageClass]>, std::sync::Arc<[Box<str>]>) {
+        (
+            self.classes.as_slice().into(),
+            self.attempt_classes.as_slice().into(),
+        )
+    }
     fn facts(&self) -> u64 {
         FB_ATTEMPT_USAGE
     }
@@ -409,7 +415,7 @@ fn signed_selected_preparation_rechecks_current_policy_and_revocation_before_han
                     auth: AUTH_PRINCIPAL,
                     pattern: "/x".into(),
                     cred_header: None,
-                    resource_kinds: Vec::new(),
+                    resource_kinds: Default::default(),
                 }],
                 classes: classes(),
                 attempt_classes: vec!["tokens".into()],
@@ -795,7 +801,7 @@ fn a_selected_catalog_attempt_records_its_instance_qualified_pool() {
                     auth: AUTH_PRINCIPAL,
                     pattern: "/x".into(),
                     cred_header: None,
-                    resource_kinds: Vec::new(),
+                    resource_kinds: Default::default(),
                 }],
                 classes: classes(),
                 attempt_classes: vec!["tokens".into()],

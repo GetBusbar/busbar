@@ -31,8 +31,12 @@ impl Declared {
 }
 impl Calls for Declared {
     type Session = ();
-    fn usage_metadata(&self) -> (u64, &[UsageClass], &[Box<str>]) {
-        (busbar_plugin_abi::plane::FB_ATTEMPT_USAGE, &self.0, &self.1)
+    fn usage_metadata(&self) -> (u64, Arc<[UsageClass]>, Arc<[Box<str>]>) {
+        (
+            busbar_plugin_abi::plane::FB_ATTEMPT_USAGE,
+            self.0.as_slice().into(),
+            self.1.as_slice().into(),
+        )
     }
     fn request(
         &self,

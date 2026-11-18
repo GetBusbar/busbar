@@ -34,6 +34,9 @@ impl PlanePort for InventoryPlane {
     fn usage_classes(&self) -> &[UsageClass] {
         &[]
     }
+    fn usage_shared(&self) -> (std::sync::Arc<[UsageClass]>, std::sync::Arc<[Box<str>]>) {
+        Default::default()
+    }
     fn facts(&self) -> u64 {
         busbar_plugin_abi::plane::FB_RESOURCE_ADMISSION
     }
@@ -156,7 +159,7 @@ fn inventory_fixture() -> (PortDriver, Arc<InventoryPlane>, InventoryInputs) {
             auth: busbar_plugin_abi::plane::AUTH_PRINCIPAL,
             pattern: "/resource".into(),
             cred_header: None,
-            resource_kinds: vec!["pool".into()],
+            resource_kinds: vec![Box::<str>::from("pool")].into(),
         }],
         seen: Mutex::default(),
     });

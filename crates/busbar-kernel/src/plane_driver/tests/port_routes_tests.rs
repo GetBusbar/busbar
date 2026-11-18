@@ -26,7 +26,7 @@ fn route(id: u32, flags: u32, auth: u32, pattern: &str) -> RouteInfo {
         auth,
         pattern: pattern.into(),
         cred_header: None,
-        resource_kinds: Vec::new(),
+        resource_kinds: Default::default(),
     }
 }
 
@@ -37,20 +37,20 @@ fn none(_: u32) -> Option<u32> {
 #[test]
 fn resource_metadata_cannot_activate_unsupported_or_ambiguous_mounts() {
     let mut r = route(1, 0, AUTH_PRINCIPAL, "/x");
-    r.resource_kinds = vec!["pool".into()];
+    r.resource_kinds = vec![Box::<str>::from("pool")].into();
     assert_eq!(
         plan(&[r.clone()], None, &none).unwrap().data[0].resource_kinds,
         r.resource_kinds
     );
     for kinds in [
-        vec!["Pool".into()],
+        vec![Box::<str>::from("Pool")],
         vec!["pool".into(), "pool".into()],
         vec!["pool".into(); 9],
     ] {
-        r.resource_kinds = kinds;
+        r.resource_kinds = kinds.into();
         assert!(plan(&[r.clone()], None, &none).is_err());
     }
-    r.resource_kinds = vec!["pool".into()];
+    r.resource_kinds = vec![Box::<str>::from("pool")].into();
     r.auth = AUTH_PUBLIC;
     assert!(plan(&[r.clone()], None, &none).is_err());
     r.auth = AUTH_PRINCIPAL;
@@ -214,6 +214,9 @@ impl PlanePort for Admin {
     }
     fn usage_classes(&self) -> &[UsageClass] {
         &[]
+    }
+    fn usage_shared(&self) -> (std::sync::Arc<[UsageClass]>, std::sync::Arc<[Box<str>]>) {
+        Default::default()
     }
     fn facts(&self) -> u64 {
         0

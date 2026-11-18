@@ -386,6 +386,9 @@ impl PlanePort for FakePort {
     fn usage_classes(&self) -> &[UsageClass] {
         &[]
     }
+    fn usage_shared(&self) -> (std::sync::Arc<[UsageClass]>, std::sync::Arc<[Box<str>]>) {
+        Default::default()
+    }
     fn facts(&self) -> u64 {
         0
     }

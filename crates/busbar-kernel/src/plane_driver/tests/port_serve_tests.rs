@@ -118,8 +118,8 @@ fn nope() -> PortError {
 impl Calls for Plane {
     type Session = Live;
 
-    fn usage_metadata(&self) -> (u64, &[busbar_ports::plane::UsageClass], &[Box<str>]) {
-        (self.usage_facts, &[], &[])
+    fn usage_metadata(&self) -> (u64, Arc<[busbar_ports::plane::UsageClass]>, Arc<[Box<str>]>) {
+        (self.usage_facts, Arc::default(), Arc::default())
     }
 
     fn resource_scoped(&self, _: u32) -> bool {
