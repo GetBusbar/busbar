@@ -70,15 +70,6 @@ impl NativeRefusalAudit {
             .check_output_live()
             .map_err(|_| RecordStoreError("native refusal output is no longer live".into()))
     }
-
-    /// Transfer the original guard only after this exact queued event was confirmed.
-    /// On uncertainty or cancellation, ownership remains in the returned error.
-    pub fn take_confirmed(self) -> Result<PhysicalRefusal, Self> {
-        if !self.confirmed.load(Ordering::Acquire) || self.refusal.check_output_live().is_err() {
-            return Err(self);
-        }
-        Ok(self.refusal)
-    }
 }
 
 pub(super) async fn wait_confirmation(
