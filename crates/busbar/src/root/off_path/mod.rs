@@ -7,13 +7,16 @@
 //! marker because it does not run per request; the request path only reads what it built. Each
 //! submodule is named for the request-path module it builds for.
 
+pub(crate) mod auth_bindings;
 pub(crate) mod dispatch;
 pub(crate) mod door_steps;
 pub(crate) mod egress_ports;
 pub(crate) mod exports;
+pub(crate) mod hooks;
 pub(crate) mod inbound;
 pub(crate) mod listener;
 pub(crate) mod model_egress;
+pub(crate) mod native_nests;
 pub(crate) mod plane_node;
 pub(crate) mod serve;
 pub(crate) mod serve_datagram;

@@ -315,7 +315,7 @@ pub fn register_stores(linked: &Linked) {
         export_axis: Some(&crate::root::exports::EXPORTS),
         admission: Some(&crate::root::admission::ADMISSION),
         durable: Some(&crate::root::admission::DURABLE),
-        hook_facts: Some(&crate::root::hooks::NATIVE),
+        hook_facts: Some(&crate::root::off_path::hooks::NATIVE),
         auth_chain_module: Some(crate::root::admission::auth_chain_module),
         dispatch_latched: Some(crate::root::admission::dispatch_latched),
         auth_axis: Some(crate::root::dispatch::auth_axis),

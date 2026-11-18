@@ -10,10 +10,14 @@ use busbar_kernel::plane_driver::{CallerEnd, HeadFields, SessionCaller};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
-use super::Served;
-
 pub(crate) use crate::root::off_path::serve_lines::session;
 pub(crate) use crate::root::off_path::serve_lines::{env_credential, line_carrier};
+pub(crate) use crate::root::off_path::serve_lines::serve_lines;
+#[cfg(test)]
+use crate::root::off_path::serve_lines::one_line_plane;
+
+/// The label a MIN-3 line session is bound and logged under: the process's own stdin/stdout (IF §12.23).
+pub(crate) const PORT_LINE_CARRIER: &str = "stdio";
 
 fn installed() -> &'static Result<Option<&'static str>, String> {
     static CARRIER: std::sync::OnceLock<Result<Option<&'static str>, String>> =
@@ -181,82 +185,10 @@ impl<R: AsyncRead + Unpin + Send> LineCaller<R> {
     }
 }
 
-pub(crate) async fn serve_lines(
-    served: Served,
-    app: Arc<busbar_kernel::state::AppHandle>,
-    admission: Arc<ProcessAdmission>,
-    stop: impl std::future::Future<Output = ()>,
-) -> i32 {
-    serve_lines_over(
-        served,
-        app,
-        tokio::io::stdin(),
-        tokio::io::stdout(),
-        admission,
-        stop,
-    )
-    .await
-}
-
-pub(crate) async fn serve_lines_over<R, W, S>(
-    served: Served,
-    app: Arc<busbar_kernel::state::AppHandle>,
-    reader: R,
-    writer: W,
-    admission: Arc<ProcessAdmission>,
-    stop: S,
-) -> i32
-where
-    R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin + Send + 'static,
-    S: std::future::Future<Output = ()>,
-{
-    let serving: Vec<(&str, bool)> = served
-        .ports
-        .iter()
-        .map(|seat| (seat.instance.as_str(), seat.driver.serves_lines()))
-        .collect();
-    match one_line_plane(&serving) {
-        Ok(Some(at)) => {
-            let seat = served.ports[at].clone();
-            serve_port_lines(seat, app, reader, writer, admission, stop).await
-        }
-        // Boot judged `--stdio` before any instance opened (WP1-GAP r3 §1.3); a generation that
-        // lost its one line plane since is refused the same way, never served elsewhere.
-        Ok(None) => {
-            eprintln!(
-                "busbar: {}",
-                busbar_plugin_loader::instance::plane_sections::StdioRefusal::None
-            );
-            1
-        }
-        Err(refusal) => {
-            eprintln!("busbar: {PORT_LINE_CARRIER} serve refused to start: {refusal}");
-            1
-        }
-    }
-}
-
-/// The label a MIN-3 line session is bound and logged under: the process's own stdin/stdout (IF §12.23).
-const PORT_LINE_CARRIER: &str = "stdio";
-
-/// IF §12.23 rule 1: the one served plane instance declaring ROUTE_LINE (`serving` = each instance's configured
-/// name and whether it declares one), by its place. None = no line serving; two or more refuse the start, naming both.
-pub(crate) fn one_line_plane(serving: &[(&str, bool)]) -> Result<Option<usize>, String> {
-    let mut lines = serving.iter().enumerate().filter(|(_, (_, line))| *line);
-    match (lines.next(), lines.next()) {
-        (Some((_, (one, _))), Some((_, (other, _)))) => Err(format!(
-            "the plane instances `{one}` and `{other}` both open a session on their first line, and the \
-             process's own stdin/stdout carries one"
-        )),
-        (one, _) => Ok(one.map(|(at, _)| at)),
-    }
-}
-
 /// IF §12.23 over the plane port: the one `ROUTE_LINE` plane's lines go to `PortSeat::answer_line` with the
 /// carrier id in `PlaneReq.carrier`; on EOF, a write failure or shutdown core stops reading, ends the in-flight
 /// lines, closes the writer, and then calls `admin(ADMIN_CARRIER_END)` once.
-async fn serve_port_lines<R, W, S>(
+pub(crate) async fn serve_port_lines<R, W, S>(
     seat: busbar_kernel::plane_driver::port::PortSeat,
     app: Arc<busbar_kernel::state::AppHandle>,
     reader: R,
