@@ -34,7 +34,7 @@ pub fn install() {
         ));
         let dispatcher = crate::root::dispatch::boot(1, &services);
         crate::root::doors::install_dispatcher(dispatcher);
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         crate::register_protocols();
         crate::register_planes();
         crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());

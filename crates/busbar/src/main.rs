@@ -301,7 +301,7 @@ fn register_protocols() {
 }
 
 fn register_planes() {
-    root::linked::register_stores(&LINKED);
+    root::linked::register_stores();
     busbar_kernel::preflight::install_linked_auth(LINKED.auths);
 
     // WP3 step 2: the native image prepare (verify, manifest read, describe; no instance opens) runs before

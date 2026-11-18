@@ -68,7 +68,7 @@ async fn governed_full(
 ) -> Governed {
     static ROOT: std::sync::Once = std::sync::Once::new();
     ROOT.call_once(|| {
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         use crate::root::loader::dispatch::kinds::transport::Transport;
         use crate::root::loader::dispatch::{
             load_dropped, rendering_of_library, Bind, ConnTable, NoSink,

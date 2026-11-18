@@ -144,7 +144,7 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,
@@ -269,7 +269,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             let archive = crate::root::test_plugins::signed(&release, manifest, &library);
             std::fs::write(directory.join("store.tar.gz"), archive)
                 .expect("stage the actual store");
-            crate::root::linked::register_stores(&crate::LINKED);
+            crate::root::linked::register_stores();
             busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
             busbar_kernel::preflight::install_operator(
                 crate::root::auth_bindings::operator_binding(None),
@@ -382,7 +382,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,
@@ -957,7 +957,7 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,
@@ -1128,7 +1128,7 @@ async fn money_book(
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,
@@ -3351,7 +3351,7 @@ fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
 }
 
 fn numeric_projection_config() -> busbar_kernel::config::RootCfg {
-    crate::root::linked::register_stores(&crate::LINKED);
+    crate::root::linked::register_stores();
     let def: busbar_kernel::config::ProviderDef =
         busbar_contract::yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n")
             .expect("provider");
@@ -4739,7 +4739,7 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             let archive = crate::root::test_plugins::signed(&release, manifest, &library);
             std::fs::write(directory.join("store.tar.gz"), archive)
                 .expect("stage the actual store");
-            crate::root::linked::register_stores(&crate::LINKED);
+            crate::root::linked::register_stores();
             busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
             busbar_kernel::preflight::install_operator(
                 crate::root::auth_bindings::operator_binding(None),
@@ -4964,7 +4964,7 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,
@@ -5122,7 +5122,7 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
 
 #[test]
 fn a_models_protocol_override_is_handed_to_the_plane() {
-    crate::root::linked::register_stores(&crate::LINKED);
+    crate::root::linked::register_stores();
     let def: busbar_kernel::config::ProviderDef =
         busbar_contract::yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n")
             .expect("a def");
@@ -5364,7 +5364,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,
@@ -5506,7 +5506,7 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,

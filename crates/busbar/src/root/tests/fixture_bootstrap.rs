@@ -676,7 +676,7 @@ async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_
         ),
     )
     .expect("stage signed actual Store");
-    crate::root::linked::register_stores(&crate::LINKED);
+    crate::root::linked::register_stores();
     busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
     busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
     let plugins = crate::root::test_plugins::trusted_config(&directory);

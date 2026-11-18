@@ -678,7 +678,7 @@ pub(crate) mod neutral_export_routes;
 /// The operator admin token an admin test presents, as `Authorization: Bearer`. 1.6 has no open
 /// admin posture (`admin_auth: []` is refused at boot, ADMIN-API-1.6-ONE-MODEL §8.1.1), so an
 /// admin test configures the operator credential and sends this token.
-pub const OPERATOR_TOKEN: &str = "admintok";
+const OPERATOR_TOKEN: &str = "admintok";
 
 /// Bind the linked first-party operator credential for this test process, through the production
 /// process-start binding, and return the provider key configuration names it by.

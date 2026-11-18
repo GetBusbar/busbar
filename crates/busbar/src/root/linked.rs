@@ -300,7 +300,7 @@ pub fn register_protocols(linked: &Linked) {
     }
 }
 
-pub fn register_stores(linked: &Linked) {
+pub fn register_stores() {
     busbar_kernel::preflight::install_linked_rows(RootInstall {
         linked_images: linked_images(),
         registry_build: Some(crate::root::boot::registry_rows),

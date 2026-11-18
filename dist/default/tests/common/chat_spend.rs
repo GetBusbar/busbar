@@ -22,7 +22,7 @@ pub fn chat_upstream(usage: Value) -> u16 {
 }
 
 /// A mock OpenAI Chat upstream whose n-th answer carries `usages[n]` (the last one repeats).
-pub fn chat_upstream_sequence(usages: Vec<Value>) -> u16 {
+fn chat_upstream_sequence(usages: Vec<Value>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the mock upstream");
     let port = listener.local_addr().expect("its address").port();
     let served = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
