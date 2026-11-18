@@ -145,6 +145,7 @@ impl<'a> Chain<'a> {
         self.buckets.iter()
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.buckets.len()
     }

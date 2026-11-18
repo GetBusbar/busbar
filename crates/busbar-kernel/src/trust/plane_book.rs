@@ -99,9 +99,9 @@ pub const AUDIT_TRUST_VERIFY: &str = "trust_verify";
 /// Audit action: a TRUST_VERIFY with no authenticity root configured for the counterparty.
 pub const AUDIT_TRUST_ROOT_MISSING: &str = "trust_root_missing";
 /// `named` is at most this many bytes (IF §12.14).
-pub const MAX_NAMED: usize = 128;
+pub(crate) const MAX_NAMED: usize = 128;
 /// The approval digests' text form: `sha256:` and 64 lowercase hex digits (IF §12.10 TRUST_APPROVAL).
-pub const DIGEST_PREFIX: &str = "sha256:";
+pub(crate) const DIGEST_PREFIX: &str = "sha256:";
 
 /// Where the book's trust actions are audited: one `busbar::audit` event per action. Core text only:
 /// names and verdict numbers, never a payload. One concrete sink (arch lints section 3.1: a trait needs two

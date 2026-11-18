@@ -455,7 +455,8 @@ impl DocumentPatch {
     }
 
     /// Catalog edits share the exact reader used for the operator's providers.yaml.
-    pub fn parse_catalog_yaml(
+    #[cfg(test)]
+    pub(crate) fn parse_catalog_yaml(
         &self,
         yaml: &str,
         grammar: &super::Grammar,
@@ -469,7 +470,7 @@ impl DocumentPatch {
             .map_err(|_| "patched provider catalog failed boot parsing".to_owned())
     }
 
-    /// [`Self::parse_catalog_yaml`], with what the patched catalog used of `grammar` (§3.8).
+    /// `Self::parse_catalog_yaml`, with what the patched catalog used of `grammar` (§3.8).
     pub fn parse_catalog_yaml_used(
         &self,
         yaml: &str,

@@ -46,10 +46,6 @@ impl FeeDebtProducer {
             .checked_add(1)
     }
 
-    pub(crate) fn identity(&self) -> &Arc<()> {
-        &self.identity
-    }
-
     /// Bind the trusted observer owner once. It is held weakly: no strong Node reference.
     pub(crate) fn bind(&self, owner: Weak<dyn FeeDebtAssociate>) -> Result<(), &'static str> {
         self.association
