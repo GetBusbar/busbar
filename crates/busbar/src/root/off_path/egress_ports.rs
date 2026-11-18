@@ -56,11 +56,17 @@ impl LabelBound {
 impl WalkTelemetry {
     /// The members' lane names, gathered once per configured walk.
     #[must_use]
-    pub(crate) fn new(names: impl IntoIterator<Item = (DestinationId, String)>) -> Self {
-        let names = names.into_iter().collect();
+    pub(crate) fn new<'p>(
+        names: impl IntoIterator<Item = (DestinationId, String)>,
+        pools: impl IntoIterator<Item = &'p str>,
+    ) -> Self {
         WalkTelemetry {
-            names,
-            depths: Mutex::new(HashMap::default()),
+            names: names.into_iter().collect(),
+            depths: Mutex::new(busbar_contract::fixed::Seats::make(
+                pools.into_iter().map(|pool| (pool, 0_i64)),
+                busbar_contract::fixed::DEFAULT_SPARE,
+                busbar_contract::fixed::DEFAULT_NAME_CAP,
+            )),
             bound: LabelBound::default(),
         }
     }
