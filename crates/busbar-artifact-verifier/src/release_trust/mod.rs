@@ -6,7 +6,7 @@ use crate::verification::{VerificationError, Verifier};
 
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const ROOT_THRESHOLD: usize = 1;
+const ROOT_THRESHOLD: usize = 1;
 
 pub const PLUGINS_ROLE: &str = "busbar-plugins";
 

@@ -154,7 +154,7 @@ pub fn key_row(row: &busbar_kernel::trust::book::KeyRow) -> TrustKeyRow {
 
 /// THE ONE PROJECTION (r3 §3.1): every trust key, as `GET /trust` and the views carry it.
 #[must_use]
-pub fn key_rows(readout: &TrustReadout) -> Vec<TrustKeyRow> {
+fn key_rows(readout: &TrustReadout) -> Vec<TrustKeyRow> {
     readout.rows().iter().map(key_row).collect()
 }
 

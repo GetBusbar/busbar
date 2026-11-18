@@ -8,8 +8,6 @@ use std::sync::Arc;
 use busbar_contract::auth::{AuthVerdict, Principal};
 use busbar_contract::auth_calls::{AuthCalls, Replay, Strip, Verified, VerifyAnswer};
 
-use crate::off_path::operator::config_text;
-
 /// A linked auth row: the key configuration names it by (and the auth catalog, `/info` and every
 pub type LinkedAuth = (&'static str, &'static str, AuthDoor);
 /// The door a linked auth row is opened through (`abi::auth`, one dispatcher).
@@ -137,21 +135,6 @@ pub fn answered(op: &str) -> bool {
 /// canonical plugin name.
 pub fn names(op: &str, module: &str) -> bool {
     module == op || bound().is_some_and(|c| op == c.provider && module == c.canonical)
-}
-
-/// The 1.4.x `governance.admin_token` held a literal value: the migration's TODO.
-pub fn literal_token_todo(op: &str) -> String {
-    config_text(format_args!(
-        "auth.admin_auth[{op}].token: governance.admin_token held a literal value; move it into an \
-         env var or file and reference it (token: {{ env: VAR }} or {{ file: /path }})"
-    ))
-}
-
-/// The migration's change line for the 1.4.x `governance.admin_token`.
-pub fn migrated_token(op: &str) -> String {
-    config_text(format_args!(
-        "governance.admin_token -> auth.admin_auth: [ {op}: {{ token: <secret-ref> }} ]"
-    ))
 }
 
 /// What the operator credential answered one request: a verdict — identified, a bad credential

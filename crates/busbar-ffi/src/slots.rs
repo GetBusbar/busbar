@@ -630,7 +630,7 @@ impl<T: Send> OwnedSlot<'_, T> {
     }
 
     /// Probe this handle's own index through the production generation check. A miss leaves it live.
-    pub fn get_if(&mut self, generation: u32) -> Option<&mut T> {
+    fn get_if(&mut self, generation: u32) -> Option<&mut T> {
         let (index, _) = self.identity?;
         self.table.get_mut_raw(index, generation)
     }

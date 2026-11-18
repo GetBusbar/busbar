@@ -6,11 +6,11 @@ use crate::verification::Verifier;
 use busbar_json::{self as json, JsonContainerTrait, JsonValueTrait, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const SPEC_VERSION: &str = "0.1-provisional";
+const SPEC_VERSION: &str = "0.1-provisional";
 
-pub const KEYS_TYPE: &str = "busbar-keys";
+const KEYS_TYPE: &str = "busbar-keys";
 
-pub const TARGETS_TYPE: &str = "targets";
+const TARGETS_TYPE: &str = "targets";
 
 /// The canonical (OLPC) bytes of a release document, written by olpc-cjson's sonic-rs formatter
 /// (DEPENDENCY-LADDER C16, SERDE-JSON-EXIT r2 §2) over the subset both sides sign: non-negative

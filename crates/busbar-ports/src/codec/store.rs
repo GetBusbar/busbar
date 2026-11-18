@@ -213,23 +213,14 @@ pub fn decode_read(a: &Answer<'_>, n: usize) -> Result<ReadResult, RecErr> {
     read_values(a.records(), n)
 }
 
-/// Rows carry no namespace on the wire and SCAN_STALE is not a page: the L3 adapter calls [`decode_scan`] with
-/// the request's namespace. This frozen form fills a zero namespace and reads SCAN_STALE as `RecErr::Size`.
-pub fn decode_page(a: &Answer<'_>) -> Result<Page, RecErr> {
-    match scan_outcome(a.records(), [0; 16])? {
-        ScanOutcome::Page(page) => Ok(page),
-        ScanOutcome::Stale => Err(RecErr::Size),
-    }
-}
-
 /// A `scan` answer: the page, or SCAN_STALE (the continued scan's generation changed).
 pub enum ScanOutcome {
     Page(Page),
     Stale,
 }
 
-/// `decode_page` without the frozen signature's gaps: the rows' namespace is the request's, and SCAN_STALE is
-/// an outcome, not a malformed answer.
+/// Rows carry no namespace on the wire: the L3 adapter passes the request's namespace, and SCAN_STALE (the
+/// continued scan's generation changed) is an outcome, not a malformed answer.
 pub fn decode_scan(a: &Answer<'_>, namespace: [u8; 16]) -> Result<ScanOutcome, RecErr> {
     scan_outcome(a.records(), namespace)
 }

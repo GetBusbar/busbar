@@ -4,7 +4,7 @@
 //! IF §8.2: the 1.5.5 module-keyed secret map becomes explicitly named instances.
 //! This pass runs only in STEPS[0]. It preserves the instance key and every supported block field.
 
-use busbar_contract::yaml::{MappingExt, Pairs, Value, ValueExt};
+use busbar_contract::yaml::{MappingExt, Pairs, Value};
 
 use crate::Refusal;
 

@@ -47,7 +47,7 @@ impl UnitRate {
     }
 
     /// Decimal text in micro-units per unit, read EXACTLY (no float), or the reason it cannot be.
-    pub fn parse_micros(text: &str) -> Result<UnitRate, String> {
+    fn parse_micros(text: &str) -> Result<UnitRate, String> {
         let count = busbar_contract::count::read_count(text).map_err(|e| {
             refusal(format_args!(
                 "`{text}` is not an exact non-negative decimal rate ({e:?})"

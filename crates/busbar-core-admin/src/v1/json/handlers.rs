@@ -670,7 +670,7 @@ async fn get_usage_series(
             }
         }
     }
-    group_by.sort_unstable();
+    group_by.sort();
     group_by.dedup();
     let filters = [
         ("key", UsageDim::Key),
@@ -3450,6 +3450,7 @@ pub(crate) async fn hook_status(
     ok_json(StatusCode::OK, &body)
 }
 
+#[cfg(feature = "openapi-schema")]
 pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
     (
         "/info",

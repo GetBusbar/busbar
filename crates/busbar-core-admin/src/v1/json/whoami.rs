@@ -131,7 +131,7 @@ pub(crate) fn view_of(app: &busbar_kernel::state::App, who: &AdminWho, now: u64)
         .filter(|row| door_admits_verb(door, row.name, rung(row.scope)))
         .map(|row| row.name)
         .collect();
-    verbs.sort_unstable();
+    verbs.sort();
     verbs.dedup();
     WhoamiView {
         rate: WhoamiRates {

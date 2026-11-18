@@ -38,7 +38,7 @@ fn fnv(text: &str) -> u64 {
 /// The digest of the named filter parameters present in `q`, in name order.
 pub(crate) fn filter_digest(q: &HashMap<String, String>, names: &[&str]) -> String {
     let mut sorted: Vec<&str> = names.to_vec();
-    sorted.sort_unstable();
+    sorted.sort();
     let mut text = String::new();
     for name in sorted {
         if let Some(value) = q.get(name) {
@@ -58,7 +58,7 @@ pub(crate) fn filter_digest_of_pairs(pairs: &[(String, String)]) -> String {
         .filter(|(name, _)| name != "limit" && name != "cursor")
         .map(|(name, value)| format!("{name}={value}\n"))
         .collect();
-    kept.sort_unstable();
+    kept.sort();
     format!("{:016x}", fnv(&kept.concat()))
 }
 

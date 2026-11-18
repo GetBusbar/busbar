@@ -152,7 +152,6 @@ fn every_current_operation_and_filter_binding_round_trips() {
             let page = keyset(all(), &first, op, filter, |item| item.clone(), false);
             let cursor = page.next_cursor.unwrap();
             let next = window(&q(&[("cursor", &cursor)]), op, filter, 200)
-                .ok()
                 .expect("a cursor issued by this list must be accepted by the same list");
             assert_eq!(next.after.as_deref(), Some("a"), "{op} {filter:?}");
             assert_eq!(

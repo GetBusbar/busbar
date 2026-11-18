@@ -108,11 +108,6 @@ impl Error {
         self.0.offset()
     }
 
-    /// Whether the input ended before the document did.
-    pub fn is_eof(&self) -> bool {
-        self.0.is_eof()
-    }
-
     /// The refusal in its own words: the [`Display`](fmt::Display) text without its
     /// ` at line L column C` suffix (and so without any input). The position stays readable
     /// through [`Error::line`] and [`Error::column`].

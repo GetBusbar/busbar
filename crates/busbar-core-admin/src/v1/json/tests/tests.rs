@@ -411,15 +411,14 @@ fn restart_unreachable_is_documented_on_every_restart_scoped_route() {
     let doc = openapi_doc();
     // The `/export/{name}` writes left with `/export` (ADMIN-API-1.6 §0.2, CON-6): an export section
     // is written through `/config/settings`, which carries the refusal.
-    for (path, method) in [("/api/v1/admin/config/settings", "put")] {
-        let description = doc["paths"][path][method]["responses"]["409"]["description"]
-            .as_str()
-            .unwrap_or_else(|| panic!("{method} {path} documents a 409"));
-        assert!(
-            description.contains("restart-only change on an in-memory Store"),
-            "{method} {path} 409 names the in-memory Store refusal: {description}"
-        );
-    }
+    let (path, method) = ("/api/v1/admin/config/settings", "put");
+    let description = doc["paths"][path][method]["responses"]["409"]["description"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{method} {path} documents a 409"));
+    assert!(
+        description.contains("restart-only change on an in-memory Store"),
+        "{method} {path} 409 names the in-memory Store refusal: {description}"
+    );
 }
 
 #[cfg(feature = "openapi-schema")]

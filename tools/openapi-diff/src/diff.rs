@@ -298,7 +298,7 @@ impl<'a> Walk<'a> {
                 old.get(combinator).and_then(|v| v.as_array()),
                 new.get(combinator).and_then(|v| v.as_array()),
             ) {
-                for (index, (was, now)) in was.into_iter().zip(now.into_iter()).enumerate() {
+                for (index, (was, now)) in was.into_iter().zip(now).enumerate() {
                     self.schema(&format!("{at}.{combinator}[{index}]"), was, now, dir);
                 }
             }

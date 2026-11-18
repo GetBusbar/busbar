@@ -206,7 +206,7 @@ fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
                     .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
             }) || REMOVED_ROUTES_IN_1_6
                 .iter()
-                .any(|(m, p)| method == *m && &path[..] == *p)
+                .any(|(m, p)| method == *m && path == *p)
             {
                 assert!(
                     find_verb(&method, path).is_none(),

@@ -398,12 +398,6 @@ impl Plan {
         self.digest
     }
 
-    /// The format config.yaml was planned from.
-    #[must_use]
-    pub fn source_format(&self) -> u64 {
-        self.from
-    }
-
     /// The text the boot reads in place of the file at `path` (§3 step 2): the planned config.yaml
     /// for config.yaml's own path, the planned providers catalog (§3 1k,
     /// `providers.busbar-1.6.yaml`) for its path, `None` for every other file.
@@ -645,7 +639,7 @@ fn rerun(plan: &Plan, settled: &[Settled], check: Check<'_>) -> Result<Rerun, Re
         )));
     }
     let applied = apply_settled(&again.text, &plan.path, settled, false, plan.facts.env)?;
-    again.text = applied.text().to_owned();
+    applied.text().clone_into(&mut again.text);
     judge(&again, &plan.facts, check)?;
     Ok(Rerun::Ready(Box::new(Ready {
         now,

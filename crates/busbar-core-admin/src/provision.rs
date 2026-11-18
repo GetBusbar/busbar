@@ -170,7 +170,7 @@ pub struct ReleaseBody {
 }
 
 /// `for_s` of a release without a body.
-pub const RELEASE_DEFAULT_S: u64 = 900;
+const RELEASE_DEFAULT_S: u64 = 900;
 
 /// An admin refusal on the guard routes.
 #[derive(Clone, Debug, PartialEq, Eq)]

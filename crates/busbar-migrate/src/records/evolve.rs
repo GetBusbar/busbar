@@ -146,8 +146,10 @@ impl Cursor {
             return Err(malformed());
         }
         let counts = counts
-            .chunks_exact(8)
-            .map(|c| u64::from_le_bytes(c.try_into().unwrap_or_default()))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_le_bytes(*c))
             .collect();
         Ok(Self { ns, last, counts })
     }

@@ -7,7 +7,7 @@ use busbar_contract::Count;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Maximum bytes in the canonical billing extension.
-pub const BILLING_BYTES: usize = 4 * 1024 * 1024;
+const BILLING_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum bytes in a complete selected audit journal body.
 pub const BILLING_RECORD_BYTES: usize = 16 * 1024 * 1024;
 const ID_BYTES: usize = 4096;

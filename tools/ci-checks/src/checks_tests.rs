@@ -618,7 +618,7 @@ fn export_stream_is_defined_exactly_once() {
         "crates/c/src/export_stream.rs".to_string(),
         "pub enum ExportStream { Logs }".to_string(),
     );
-    assert!(export_stream_findings(&[a.clone()]).is_empty());
+    assert!(export_stream_findings(std::slice::from_ref(&a)).is_empty());
     let b = (
         "crates/abi/src/export.rs".to_string(),
         "pub enum ExportStream { Logs }".to_string(),
