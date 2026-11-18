@@ -1162,3 +1162,104 @@ fn a_busy_flusher_is_not_woken_by_pushes_into_a_non_empty_queue() {
     assert!(shared.flusher.lock().unwrap().is_some());
     assert_eq!(sink.queued(), 1000);
 }
+
+/// The arrays a scrape lends: every family, sample and label, in order, each lent from its source
+/// text; a sample's labels and a family's samples are its own stretch of the one run; an empty
+/// list is lent as null with a count of zero; laying out again reuses the same three arrays.
+#[test]
+fn a_scrape_lends_every_family_sample_and_label_in_order_from_one_run_each() {
+    use busbar_contract::export_calls::{Family, Sample};
+    let sample = |name: &str, labels: &[(&str, &str)], value: &str| Sample {
+        name: name.into(),
+        labels: labels
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect(),
+        value: value.into(),
+    };
+    let family = |name: &str, help: Option<&str>, unit: Option<&str>, kind: u8, samples| Family {
+        name: name.into(),
+        help: help.map(Into::into),
+        unit: unit.map(Into::into),
+        kind,
+        samples,
+    };
+    let families = vec![
+        family(
+            "requests",
+            Some("served"),
+            None,
+            1,
+            vec![
+                sample("requests", &[("lane", "a"), ("code", "200")], "7"),
+                sample("requests", &[], "9"),
+            ],
+        ),
+        family("idle", None, Some("seconds"), 2, Vec::new()),
+        family(
+            "latency",
+            None,
+            None,
+            3,
+            vec![
+                sample("latency_bucket", &[("le", "0.5")], "3"),
+                sample(
+                    "latency_sum",
+                    &[("lane", "a"), ("x", "y"), ("z", "")],
+                    "1.5",
+                ),
+                sample("latency_count", &[], "3"),
+            ],
+        ),
+    ];
+    let lent = |a: AbiStr, s: &str| (a.ptr, a.len) == (s.as_ptr(), s.len());
+    let mut lowered = Lowered::default();
+    for pass in 0..2 {
+        lower(&mut lowered, &families);
+        assert_eq!(lowered.families.len(), 3, "pass {pass}");
+        assert_eq!(lowered.samples.len(), 5, "pass {pass}");
+        assert_eq!(lowered.labels.len(), 6, "pass {pass}");
+        let (mut sample_at, mut label_at) = (0usize, 0usize);
+        for (f, l) in families.iter().zip(&lowered.families) {
+            assert!(lent(l.name, &f.name));
+            match &f.help {
+                Some(help) => assert!(lent(l.help, help)),
+                None => assert!(l.help.ptr.is_null() && l.help.len == 0),
+            }
+            match &f.unit {
+                Some(unit) => assert!(lent(l.unit, unit)),
+                None => assert!(l.unit.ptr.is_null() && l.unit.len == 0),
+            }
+            assert_eq!((l.kind, l._reserved), (f.kind, [0; 7]));
+            assert_eq!(l.samples_len, f.samples.len());
+            if f.samples.is_empty() {
+                assert!(l.samples.is_null(), "an empty sample list is lent as null");
+            } else {
+                assert_eq!(l.samples, lowered.samples[sample_at..].as_ptr());
+            }
+            for s in &f.samples {
+                let ls = &lowered.samples[sample_at];
+                sample_at += 1;
+                assert!(lent(ls.name, &s.name) && lent(ls.value, &s.value));
+                assert_eq!(ls.labels_len, s.labels.len());
+                if s.labels.is_empty() {
+                    assert!(ls.labels.is_null(), "an empty label list is lent as null");
+                } else {
+                    assert_eq!(ls.labels, lowered.labels[label_at..].as_ptr());
+                }
+                for (k, v) in &s.labels {
+                    let ll = &lowered.labels[label_at];
+                    label_at += 1;
+                    assert!(lent(ll.key, k) && lent(ll.value, v));
+                }
+            }
+        }
+        assert_eq!(
+            (sample_at, label_at),
+            (5, 6),
+            "nothing is lent twice or left out"
+        );
+    }
+    lower(&mut lowered, &[]);
+    assert!(lowered.families.is_empty() && lowered.samples.is_empty() && lowered.labels.is_empty());
+}
