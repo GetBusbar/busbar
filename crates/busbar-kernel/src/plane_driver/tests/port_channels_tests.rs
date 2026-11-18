@@ -58,11 +58,14 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
     }
 }
 
+/// The pieces the plane was handed, one entry per call.
+type PieceLog = Mutex<Vec<(u32, u32, u32, Vec<u8>)>>;
+
 #[derive(Default)]
 struct Script {
     request: Vec<It>,
     answers: Mutex<VecDeque<Vec<It>>>,
-    pieces: Mutex<Vec<(u32, u32, u32, Vec<u8>)>>,
+    pieces: PieceLog,
 }
 
 impl Calls for Script {

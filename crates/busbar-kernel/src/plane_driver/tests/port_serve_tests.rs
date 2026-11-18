@@ -92,6 +92,9 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
 
 struct Live;
 
+/// The pieces the plane was handed, one entry per call.
+type PieceLog = Mutex<Vec<(u32, u32, u32, Vec<u8>)>>;
+
 #[derive(Default)]
 struct Plane {
     usage_facts: u64,
@@ -101,7 +104,7 @@ struct Plane {
     pieces: Mutex<VecDeque<Vec<It>>>,
     end: Vec<It>,
     fault_pieces: bool,
-    piece_log: Mutex<Vec<(u32, u32, u32, Vec<u8>)>>,
+    piece_log: PieceLog,
 }
 
 fn nope() -> PortError {

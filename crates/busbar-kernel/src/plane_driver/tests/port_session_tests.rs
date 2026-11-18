@@ -43,7 +43,6 @@ enum It {
     Header(&'static str, &'static [u8]),
     Body(&'static [u8]),
     Conversation(&'static [u8]),
-    Msg(u32, &'static [u8]),
     Trailers,
     End,
     Forward,
@@ -123,10 +122,6 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
             It::Header(n, v) => PlaneOut::Header(n, v),
             It::Body(b) => PlaneOut::Body(b),
             It::Conversation(b) => PlaneOut::Conversation(b),
-            It::Msg(flags, b) => PlaneOut::Msg {
-                flags: *flags,
-                bytes: b,
-            },
             It::Trailers => PlaneOut::Trailers,
             It::End => PlaneOut::End,
             It::Forward => PlaneOut::Forward { stream: true },

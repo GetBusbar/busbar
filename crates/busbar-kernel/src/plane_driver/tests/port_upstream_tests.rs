@@ -96,6 +96,9 @@ impl Drop for Live {
     }
 }
 
+/// The pieces the plane was handed, one entry per call.
+type PieceLog = Mutex<Vec<(u32, u32, u32, Vec<u8>)>>;
+
 #[derive(Default)]
 struct Plane {
     selected: bool,
@@ -104,7 +107,7 @@ struct Plane {
     pieces: Mutex<VecDeque<Vec<It>>>,
     end: Vec<It>,
     probe: Vec<It>,
-    piece_log: Mutex<Vec<(u32, u32, u32, Vec<u8>)>>,
+    piece_log: PieceLog,
     targets: Mutex<Vec<(u32, String, String)>>,
     dropped: Arc<AtomicBool>,
 }
