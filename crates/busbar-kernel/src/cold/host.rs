@@ -10,66 +10,6 @@ pub(crate) fn services_host_refused(host: &str) -> String {
     format!("host `{host}` was refused by the destination guard")
 }
 
-/// An admission refused: the instance declares a kernel-reserved record kind.
-#[cold]
-pub(crate) fn services_kind_reserved(
-    instance: &str,
-    kind: &str,
-) -> crate::host_services::AdmitRefused {
-    crate::host_services::AdmitRefused::KindReserved {
-        instance: instance.to_owned(),
-        kind: kind.to_owned(),
-    }
-}
-
-/// An admission refused: a cold record bootstrap grant holds the instance.
-#[cold]
-pub(crate) fn services_bootstrap_held(instance: &str) -> crate::host_services::AdmitRefused {
-    crate::host_services::AdmitRefused::BootstrapHeld {
-        instance: instance.to_owned(),
-    }
-}
-
-/// An admission refused: another instance holds the signing domain.
-#[cold]
-pub(crate) fn services_domain_held(
-    domain: &str,
-    held_by: &str,
-    asked_by: &str,
-) -> crate::host_services::AdmitRefused {
-    crate::host_services::AdmitRefused::DomainHeld {
-        domain: domain.to_owned(),
-        held_by: held_by.to_owned(),
-        asked_by: asked_by.to_owned(),
-    }
-}
-
-/// An admission refused: an admitted instance tried to change its ticket prefix.
-#[cold]
-pub(crate) fn services_ticket_prefix_changed(
-    instance: &str,
-    prefix: &str,
-) -> crate::host_services::AdmitRefused {
-    crate::host_services::AdmitRefused::TicketPrefixChanged {
-        instance: instance.to_owned(),
-        prefix: prefix.to_owned(),
-    }
-}
-
-/// An admission refused: another instance holds the ticket prefix.
-#[cold]
-pub(crate) fn services_ticket_prefix_held(
-    prefix: &str,
-    held_by: &str,
-    asked_by: &str,
-) -> crate::host_services::AdmitRefused {
-    crate::host_services::AdmitRefused::TicketPrefixHeld {
-        prefix: prefix.to_owned(),
-        held_by: held_by.to_owned(),
-        asked_by: asked_by.to_owned(),
-    }
-}
-
 /// A demotion row's key: spelled for an admission replay, an operator trust decision, or a
 /// sighting that changes trust state (`crate::host_services::demotion_key`).
 #[cold]
@@ -78,13 +18,6 @@ pub(crate) fn services_demotion_key(instance: &str, counterparty: &str) -> Strin
         "{instance}{}{counterparty}",
         crate::host_services::DEMOTION_SEP
     )
-}
-
-/// The default instance's unprefixed demotion row, settled only when a sighting changes trust
-/// state.
-#[cold]
-pub(crate) fn services_counterparty_row(counterparty: &str) -> String {
-    counterparty.to_owned()
 }
 
 /// An opened instance's caller-binding store handle, bound once, at its first session.

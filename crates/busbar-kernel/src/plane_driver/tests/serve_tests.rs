@@ -453,7 +453,7 @@ async fn a_trust_kernel(
         k
     };
     k.admit(
-        instance,
+        &instance.into(),
         crate::host_services::InstanceFacts {
             trust: vec![(
                 "peer".to_string(),

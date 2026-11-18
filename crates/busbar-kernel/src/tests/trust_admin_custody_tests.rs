@@ -50,7 +50,7 @@ fn immediate(operation: impl FnOnce(Later) -> Ran) -> Stored {
 fn recordless() -> KernelServices {
     let k = KernelServices::new();
     ready(k.admit(
-        "inst",
+        &"inst".into(),
         InstanceFacts {
             trust: vec![("cp".to_string(), entry())],
             ..InstanceFacts::default()

@@ -594,7 +594,7 @@ async fn native_host_callbacks_write_and_read_without_legacy_rows_or_blocking_po
     kernel = kernel.with_persistence(store);
     kernel
         .admit(
-            "instance",
+            &"instance".into(),
             InstanceFacts {
                 record_kinds: vec![RecordSchemaId::new("schema")],
                 ..InstanceFacts::default()

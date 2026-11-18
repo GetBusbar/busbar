@@ -1743,7 +1743,7 @@ async fn records() -> Arc<KernelServices> {
         record_kinds: vec![RecordSchemaId::new("task")],
         ..InstanceFacts::default()
     };
-    s.admit("inst", facts).await.unwrap();
+    s.admit(&"inst".into(), facts).await.unwrap();
     Arc::new(s)
 }
 

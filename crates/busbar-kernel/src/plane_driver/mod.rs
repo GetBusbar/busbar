@@ -448,7 +448,7 @@ impl PlaneDriver {
     /// configured namespace cannot inherit its live session authority.
     pub fn open_carrier_session(
         &self,
-        principal: &str,
+        principal: &Arc<str>,
         sink: crate::host_services::CarrierSink,
     ) -> Option<u64> {
         let (services, caller) = self.records.as_ref()?;

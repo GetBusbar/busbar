@@ -557,7 +557,7 @@ impl PortDriver {
     }
 
     /// Opens a line carrier owned by this instance, serving as `principal`, written through `sink`.
-    pub fn open_carrier(&self, principal: &str, sink: CarrierSink) -> NonZeroU64 {
+    pub fn open_carrier(&self, principal: &Arc<str>, sink: CarrierSink) -> NonZeroU64 {
         NonZeroU64::new(
             self.services
                 .open_carrier_session(&self.caller, principal, sink),

@@ -14,7 +14,7 @@ impl ReadyAdmission for crate::host_services::KernelServices {
         instance: &str,
         facts: crate::host_services::InstanceFacts,
     ) -> Result<(), crate::host_services::AdmitRefused> {
-        futures::FutureExt::now_or_never(self.admit(instance, facts))
+        futures::FutureExt::now_or_never(self.admit(&instance.into(), facts))
             .expect("in-memory fixture admission finishes in one poll")
     }
 }
@@ -951,7 +951,7 @@ fn inspection_reads_actual_work_times_and_current_retention_without_inventing_li
         Outcome::Ready
     );
     r.s.bound_work(
-        "inst",
+        &"inst".into(),
         WorkBounds {
             max_live: 17,
             retain_ms: 700,
@@ -969,7 +969,7 @@ fn inspection_reads_actual_work_times_and_current_retention_without_inventing_li
     );
 
     r.s.bound_work(
-        "inst",
+        &"inst".into(),
         WorkBounds {
             max_live: 17,
             retain_ms: 0,
@@ -1045,9 +1045,12 @@ fn inspection_carriers_are_instance_owned_point_in_time_observations_without_cal
     let me = caller("inst");
     let sink: crate::host_services::CarrierSink =
         Arc::new(|_| panic!("inspection must not call the sink"));
-    let alice = r.s.open_carrier_session(&me, "alice", Arc::clone(&sink));
-    let bob = r.s.open_carrier_session(&me, "bob", Arc::clone(&sink));
-    let foreign = r.s.open_carrier_session(&caller("other"), "alice", sink);
+    let alice =
+        r.s.open_carrier_session(&me, &"alice".into(), Arc::clone(&sink));
+    let bob =
+        r.s.open_carrier_session(&me, &"bob".into(), Arc::clone(&sink));
+    let foreign =
+        r.s.open_carrier_session(&caller("other"), &"alice".into(), sink);
     let query = InspectionQuery::CarrierSessions {
         sessions: vec![alice, bob, foreign, u64::MAX],
     };

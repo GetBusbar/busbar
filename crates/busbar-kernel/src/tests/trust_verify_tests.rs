@@ -51,7 +51,7 @@ fn caller(instance: &str) -> Caller {
 fn host() -> KernelServices {
     let s = KernelServices::new();
     ready(s.admit(
-        "inst",
+        &"inst".into(),
         InstanceFacts {
             trust: vec![
                 ("issuer".into(), entry(Some(key_info(&key(1))), true)),
@@ -354,7 +354,7 @@ fn pinned(roots: &[(&str, String)]) -> KernelServices {
     let s = KernelServices::new();
     ready(
         s.admit(
-            "inst",
+            &"inst".into(),
             InstanceFacts {
                 trust: roots
                     .iter()

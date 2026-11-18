@@ -20,7 +20,7 @@ trait TestAdmission {
 }
 impl TestAdmission for KernelServices {
     fn admit_sync(&self, instance: &str, facts: InstanceFacts) -> Result<(), AdmitRefused> {
-        ready(self.admit(instance, facts))
+        ready(self.admit(&instance.into(), facts))
     }
 }
 
@@ -2059,7 +2059,7 @@ fn an_emit_reaches_only_its_own_open_session() {
             true
         }) as CarrierSink
     };
-    let session = services.open_carrier_session(&me, "key-1", sink);
+    let session = services.open_carrier_session(&me, &"key-1".into(), sink);
     assert_eq!(
         services
             .session_emit(&me, session, b"{\"ping\":1}\n")
@@ -2093,7 +2093,7 @@ fn an_emit_reaches_only_its_own_open_session() {
     );
     assert_eq!(*written.lock().unwrap(), vec![b"{\"ping\":1}\n".to_vec()]);
 
-    let gone = services.open_carrier_session(&me, "key-1", Arc::new(|_: &[u8]| false));
+    let gone = services.open_carrier_session(&me, &"key-1".into(), Arc::new(|_: &[u8]| false));
     assert_eq!(
         services.session_emit(&me, gone, b"x").outcome,
         Outcome::Refused
@@ -2157,8 +2157,8 @@ fn an_instance_declaring_a_kernel_record_kind_is_refused_at_admit() {
         assert_eq!(
             refused,
             AdmitRefused::KindReserved {
-                instance: "squatter".to_string(),
-                kind: kind.to_string(),
+                instance: "squatter".into(),
+                kind,
             }
         );
         let words = refused.to_string();
@@ -2188,7 +2188,7 @@ async fn an_admit_parked_in_the_store_never_stalls_another_instances_host_servic
     let r = Rig::new().await;
     r.backend.park_scan.store(true, Ordering::SeqCst);
     let node = r.node.clone();
-    let admission = tokio::spawn(async move { node.admit("other", facts()).await });
+    let admission = tokio::spawn(async move { node.admit(&"other".into(), facts()).await });
     entered(&r.backend).await;
     assert_eq!(
         r.node.trust_unreached(&caller(), PEER).value,
@@ -2330,7 +2330,7 @@ fn a_credential_consumer_prefix_has_one_instance_owner() {
 async fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
     let mut r = rig();
     r.s.admit(
-        "minter",
+        &"minter".into(),
         InstanceFacts {
             ticket_prefix: Some("tk_".into()),
             ..InstanceFacts::default()
@@ -2481,7 +2481,7 @@ async fn an_instance_whose_trust_records_cannot_be_read_is_not_admitted() {
     let r = Rig::new().await;
     r.backend.refuse_scan.store(true, Ordering::SeqCst);
     assert!(matches!(
-        r.node.admit("unread", facts()).await,
+        r.node.admit(&"unread".into(), facts()).await,
         Err(AdmitRefused::TrustUnread(_))
     ));
     assert!(r
@@ -2549,7 +2549,7 @@ async fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
     }
     let mut r = rig();
     r.s.admit(
-        "minter",
+        &"minter".into(),
         InstanceFacts {
             ticket_prefix: Some("tk_".into()),
             ..InstanceFacts::default()
@@ -2609,7 +2609,7 @@ async fn a_refused_mint_carries_the_presss_code_retry_and_reason() {
     ] {
         let mut r = rig();
         r.s.admit(
-            "minter",
+            &"minter".into(),
             InstanceFacts {
                 ticket_prefix: Some("tk_".into()),
                 ..InstanceFacts::default()

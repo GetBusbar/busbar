@@ -22,7 +22,7 @@ fn caller(name: &str) -> Caller {
 #[test]
 fn invocation_refuses_missing_unit_and_another_instance() {
     let core = Arc::new(KernelServices::new());
-    core.admit("plane", InstanceFacts::default())
+    core.admit(&"plane".into(), InstanceFacts::default())
         .now_or_never()
         .unwrap()
         .unwrap();
@@ -94,7 +94,7 @@ fn native_invocation_requires_exact_opened_owner_without_legacy_service_grants()
 #[test]
 fn pending_nested_dispatch_keeps_its_original_generation_until_reply() {
     let core = Arc::new(KernelServices::new());
-    core.admit("plane", InstanceFacts::default())
+    core.admit(&"plane".into(), InstanceFacts::default())
         .now_or_never()
         .unwrap()
         .unwrap();
