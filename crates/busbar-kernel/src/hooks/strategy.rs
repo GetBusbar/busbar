@@ -10,8 +10,7 @@ use crate::path_claims::ConfigRefused;
 /// K8. Resolved once per config load, for each pool that names a strategy word.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StrategyBinding {
-    pub word: Box<str>,
-    /// The configured or implicit instance name.
+    /// The configured or implicit instance name (the strategy word itself).
     pub instance: Box<str>,
     pub implicit: bool,
 }
@@ -64,7 +63,6 @@ pub fn resolve_strategy(
 
 fn binding(word: &str, implicit: bool) -> StrategyBinding {
     StrategyBinding {
-        word: Box::from(word),
         instance: Box::from(word),
         implicit,
     }

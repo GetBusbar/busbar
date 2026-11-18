@@ -29,7 +29,6 @@ fn an_unconfigured_word_opens_one_implicit_instance() {
         assert_eq!(
             got,
             StrategyBinding {
-                word: word.into(),
                 instance: word.into(),
                 implicit: true,
             }
@@ -45,7 +44,6 @@ fn a_configured_instance_of_that_name_is_used() {
     assert_eq!(
         got,
         StrategyBinding {
-            word: "cheapest".into(),
             instance: "cheapest".into(),
             implicit: false,
         }
