@@ -33,7 +33,7 @@ use busbar_kernel_egress::{Failover, Member, OnExhausted, Pool, WeightedFloor};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use super::{Book, Free, Quiet, Wall};
+use super::{Book, Free, Quiet};
 
 const OWNER: InstanceId = InstanceId(7);
 const NEED: NeedId = NeedId(0);
@@ -214,7 +214,7 @@ fn egress_over(conns: Arc<dyn PollConns>, port: u16) -> Egress {
         conns,
         breaker: busbar_kernel::plane_driver::fixed_breaker(Arc::new(Book::default())),
         capacity: Arc::new(Free),
-        clock: Arc::new(Wall),
+        clock: busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
         pools: foldhash::HashMap::from_iter([(

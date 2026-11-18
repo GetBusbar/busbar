@@ -20,7 +20,7 @@ use busbar_kernel::test_hooks::tokens::grant;
 use busbar_kernel_egress::ports::DestinationId;
 use busbar_kernel_egress::{Failover, Member, OnExhausted, Pool, WeightedFloor};
 
-use super::{BadGateway, Book, Free, Quiet, Wall};
+use super::{BadGateway, Book, Free, Quiet};
 use crate::root::door_steps::{door_facts, egress_pool, DoorCaller, DoorPools, DoorSteps};
 use crate::root::serve::DoorFar;
 
@@ -80,7 +80,7 @@ fn egress_over(pool_name: &str) -> Egress {
         conns: Arc::new(BadGateway::default()),
         breaker: busbar_kernel::plane_driver::fixed_breaker(Arc::new(Book::default())),
         capacity: Arc::new(Free),
-        clock: Arc::new(Wall),
+        clock: busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
         pools: foldhash::HashMap::from_iter([(
