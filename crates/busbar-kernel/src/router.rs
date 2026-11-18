@@ -86,15 +86,6 @@ impl ServerTiming {
         MEASURING.scope(self.clone(), serving).await
     }
 
-    /// The header's value as of now for the request being measured ([`ServerTiming::measure`]),
-    /// for a response head written from inside it; `None` when the header is off.
-    #[must_use]
-    pub fn current_value() -> Option<String> {
-        MEASURING
-            .try_with(|timing| String::from(timing.value().as_str()))
-            .ok()
-    }
-
     /// The header's value as of now: `busbar;dur=<ms>`, written on the stack.
     #[must_use]
     pub(crate) fn value(&self) -> ServerTimingValue {
@@ -1311,11 +1302,6 @@ impl PreparedListener {
         let routes = crate::core_routes::CoreRouter::from_parts(self.router, self.core_routes);
         (self.router, self.core_routes) = mount(routes).into_parts();
         self
-    }
-
-    /// The refusal producer captured with this prepared listener's route snapshot.
-    pub fn refusal_renderer(&self) -> Option<crate::plane_routes::PlaneRefuseByPathFn> {
-        self.refuse_by_path.clone()
     }
 
     /// Retain the composition's neutral dispatcher with this exact route snapshot.
