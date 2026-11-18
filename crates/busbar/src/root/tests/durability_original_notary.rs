@@ -225,66 +225,9 @@ fn original_scan_rejects_changed_horizon_and_nonprogress() {
     assert_eq!(retry.cursor, Some(OriginalPageCursor::start(130)));
 }
 
-struct TwoOriginals {
-    entries: [NativeStagedAudit; 2],
-    credit: Mutex<Option<StorageCredit>>,
-    receipts: Mutex<[Option<OriginalLineReceipt>; 2]>,
-    stamp_pointer: Mutex<Option<usize>>,
-    deliveries: AtomicUsize,
-    done: tokio::sync::Notify,
-}
-
-impl OriginalPageReceiver for TwoOriginals {
-    fn fund_original_page(
-        &self,
-        target: &OriginalPageTarget,
-        bytes: usize,
-        cursor: Option<OriginalPageCursor>,
-    ) -> PageFunding {
-        let upper = cursor.map_or(2, |cursor| cursor.upper);
-        assert_eq!(upper, 2);
-        assert!(target.covers(&self.entries[0]));
-        assert!(target.covers(&self.entries[1]));
-        let credit = self.credit.lock().unwrap().take().unwrap();
-        assert!(credit.len() >= bytes);
-        PageFunding::Reserved(credit, upper)
-    }
-
-    fn deliver_original_page(
-        &self,
-        page: &OriginalPageReceipt,
-        cursor: Option<OriginalPageCursor>,
-    ) -> PageDelivery {
-        let cursor = cursor.expect("delivery inherits funding's finite horizon");
-        assert_eq!(cursor.upper, 2);
-        let index = match cursor.last {
-            None => 0,
-            Some(1) => 1,
-            _ => panic!("delivery repeated or escaped its original scan"),
-        };
-        let pointer = Arc::as_ptr(&page.backing.run) as usize;
-        let mut original = self.stamp_pointer.lock().unwrap();
-        if let Some(original) = *original {
-            assert_eq!(original, pointer);
-        }
-        *original = Some(pointer);
-        self.receipts.lock().unwrap()[index] = Some(page.bind(&self.entries[index]).unwrap());
-        self.deliveries.fetch_add(1, Ordering::AcqRel);
-        if index == 0 {
-            PageDelivery::Pending(OriginalPageCursor {
-                last: Some(1),
-                upper: 2,
-            })
-        } else {
-            self.done.notify_waiters();
-            PageDelivery::Complete
-        }
-    }
-}
-
-#[tokio::test]
 async fn running_notary_keeps_actual_signed_run_through_unknown_ack_and_delivery_slices() {
     use crate::root::durability::{notary, signer};
+    use crate::root::plane_node::retained_fixture::Retained;
     use std::sync::OnceLock;
     use std::time::Duration;
 
@@ -305,22 +248,23 @@ async fn running_notary_keeps_actual_signed_run_through_unknown_ack_and_delivery
         entries.push(slot.unwrap());
     }
     let target = feed.original.page(1, feed.head()).unwrap();
+    assert!(target.covers(&entries[0]));
+    assert!(target.covers(&entries[1]));
     feed.original.configure(&signed(&cap, &target)).unwrap();
     let account = Arc::new(Account::default());
     let bytes = feed.original.bytes().unwrap();
-    let credit = StorageSource::new(account.clone())
-        .try_reserve(bytes)
-        .unwrap();
-    let receiver = Arc::new(TwoOriginals {
-        entries: entries.try_into().ok().unwrap(),
-        credit: Mutex::new(Some(credit)),
-        receipts: Mutex::new([None, None]),
-        stamp_pointer: Mutex::new(None),
-        deliveries: AtomicUsize::new(0),
-        done: tokio::sync::Notify::new(),
-    });
-    let erased: Arc<dyn OriginalPageReceiver> = receiver.clone();
-    feed.register_original_receiver(Arc::downgrade(&erased))
+    let source = StorageSource::new(account.clone());
+    // The real table. One scan slice examines 64 candidates: the first original, then 63
+    // reserved entries the scans count and skip. The second original is the 65th candidate,
+    // so only a second delivery slice reaches it. The table's own backing is charged to a
+    // separate account, so `account` counts the two retention credits and nothing else.
+    let retained = Retained::new(StorageSource::new(Arc::new(Account::default())));
+    retained.original(1, entries[0].clone(), source.try_reserve(bytes).unwrap());
+    for reserved in 2..=64 {
+        retained.reserve(reserved);
+    }
+    retained.original(65, entries[1].clone(), source.try_reserve(bytes).unwrap());
+    feed.register_original_receiver(Arc::downgrade(&retained.book))
         .unwrap();
     assert!(feed.original_ready().is_none(), "notary has not started");
     let signers = signer::spawn(
@@ -353,35 +297,29 @@ async fn running_notary_keeps_actual_signed_run_through_unknown_ack_and_delivery
     })
     .await
     .unwrap();
-    assert_eq!(receiver.deliveries.load(Ordering::Acquire), 0);
-    assert!(receiver
-        .receipts
-        .lock()
-        .unwrap()
-        .iter()
-        .all(Option::is_none));
-    assert_eq!(account.0.load(Ordering::Acquire), bytes);
+    // The acknowledgement is unknown: nothing is delivered and no credit is released.
+    assert!(retained.receipt(1).is_none());
+    assert!(retained.receipt(65).is_none());
+    assert_eq!(account.0.load(Ordering::Acquire), 2 * bytes);
     fixture.faults.lose_acks.store(false, Ordering::Release);
     tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let notified = receiver.done.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if receiver.deliveries.load(Ordering::Acquire) == 2 {
-                break;
-            }
-            notified.await;
+        while retained.receipt(1).is_none() || retained.receipt(65).is_none() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
     .unwrap();
-    for (entry, receipt) in receiver
-        .entries
-        .iter()
-        .zip(receiver.receipts.lock().unwrap().iter())
-    {
-        assert!(receipt.as_ref().unwrap().confirms(entry));
-    }
+    let first = retained.receipt(1).unwrap();
+    let second = retained.receipt(65).unwrap();
+    assert!(first.confirms(&entries[0]));
+    assert!(second.confirms(&entries[1]));
+    assert!(
+        Arc::ptr_eq(&first.page.backing.run, &second.page.backing.run),
+        "both delivery slices carried the one signed run"
+    );
+    // The page was funded once, from the first original it covers.
+    assert!(!retained.holds_credit(1));
+    assert!(retained.holds_credit(65));
     let end = task.stop().await.unwrap();
     assert!(end.halted.is_none());
     assert_eq!(end.stamped_through, 2);
@@ -391,8 +329,8 @@ async fn running_notary_keeps_actual_signed_run_through_unknown_ack_and_delivery
         .iter()
         .all(|request| request.candidate().id == sent[0].candidate().id
             && request.fingerprint() == sent[0].fingerprint()));
-    drop(erased);
-    drop(receiver);
+    drop((first, second));
+    drop(retained);
     assert_eq!(account.0.load(Ordering::Acquire), 0);
     drop((
         signers.boot,
