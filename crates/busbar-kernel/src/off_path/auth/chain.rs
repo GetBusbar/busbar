@@ -391,22 +391,6 @@ impl AuthMiddleware {
             .map(|e| std::sync::Arc::clone(&e.calls))
     }
 
-    pub fn position_points(&self, provider: &str) -> busbar_contract::abi::auth::AuthPoints {
-        use busbar_contract::abi::auth::AuthPoints;
-        if let Some(entry) = self.chain.iter().find(|e| e.provider == provider) {
-            return entry.calls.inbound_points();
-        }
-        let readers = self
-            .readers
-            .iter()
-            .fold(0, |set, r| set | r.calls.inbound_points().bits());
-        if readers == 0 {
-            AuthPoints::HEAD
-        } else {
-            AuthPoints(readers)
-        }
-    }
-
     /// The instances the chain holds for `provider` (all, for `None`), in chain order: the admin
     /// flush refreshes each distinct one once ([`instances::flush_distinct`]).
     pub(crate) fn chain_instances<'a>(
