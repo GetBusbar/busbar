@@ -98,6 +98,25 @@ fn dropped_signed(
     lib: &[u8],
     signer: &SigningKey,
 ) -> PluginRegistry {
+    scanned_signed(tag, manifest, lib, signer)
+        .unwrap_or_else(|e| panic!("the signed plugin scans: {e:?}"))
+}
+
+/// The first-party-signed `lib` under `manifest`, scanned: the registry, or what the scan refused.
+pub(crate) fn scanned(
+    tag: &str,
+    manifest: Manifest,
+    lib: &[u8],
+) -> Result<PluginRegistry, Vec<String>> {
+    scanned_signed(tag, manifest, lib, &SigningKey::from_bytes(&[11u8; 32]))
+}
+
+fn scanned_signed(
+    tag: &str,
+    manifest: Manifest,
+    lib: &[u8],
+    signer: &SigningKey,
+) -> Result<PluginRegistry, Vec<String>> {
     static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
@@ -141,8 +160,7 @@ fn dropped_signed(
         min_versions: Default::default(),
         ..TrustPolicy::default()
     };
-    let registry = crate::scan_and_validate(&dir, &policy)
-        .unwrap_or_else(|e| panic!("the signed plugin scans: {e:?}"));
+    let registry = crate::scan_and_validate(&dir, &policy);
     let _ = std::fs::remove_dir_all(&dir);
     registry
 }
