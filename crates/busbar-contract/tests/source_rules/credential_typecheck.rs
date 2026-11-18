@@ -630,3 +630,56 @@ fn credential_typecheck_rejects_raw_urls_in_manual_debug() {
     );
     assert_eq!(found, ["url-in-sink Bad::fmt"]);
 }
+
+/// PM ruling (2026-11-17): a SHA-256 over secret values is not the secret, but a low-entropy secret can
+/// be guessed offline from it, so it is neither logged nor confused with other bytes. It is typed
+/// `SecretDigest`, which the typecheck recognises by name and holds to its contract: no derived or
+/// field-printing Debug, no Display or Serialize, no derived equality (only a constant-time compare),
+/// no public field (built only by the hashing function). Returning it from a secret is not an
+/// unsealed return; returning the bare 32 bytes still is.
+#[test]
+fn credential_typecheck_holds_the_secret_digest_type_to_its_contract() {
+    let broken = planted(
+        r#"
+        #[derive(Debug, PartialEq, Serialize)] pub struct SecretDigest(pub [u8; 32]);
+        impl std::fmt::Display for SecretDigest { fn fmt(&self, f: &mut Formatter<'_>) -> Result { todo!() } }
+        fn transition(s: &Secret<Vec<u8>>) -> [u8; 32] { todo!() }
+        fn digest(s: &Secret<Vec<u8>>) -> SecretDigest { todo!() }
+    "#,
+    );
+    assert_eq!(
+        broken,
+        [
+            "digest-printable SecretDigest",
+            "digest-equality SecretDigest",
+            "digest-constructible SecretDigest",
+            "digest-printable SecretDigest",
+            "unsealed-return transition",
+        ],
+        "{broken:?}"
+    );
+    let leaky_impls = planted(
+        r#"
+        pub struct SecretDigest([u8; 32]);
+        impl std::fmt::Debug for SecretDigest { fn fmt(&self, f: &mut Formatter<'_>) -> Result { write!(f, "{:?}", self.0) } }
+        impl PartialEq for SecretDigest { fn eq(&self, other: &Self) -> bool { self.0 == other.0 } }
+    "#,
+    );
+    assert_eq!(
+        leaky_impls,
+        [
+            "digest-printable SecretDigest",
+            "digest-equality SecretDigest"
+        ],
+        "{leaky_impls:?}"
+    );
+    let kept = planted(
+        r#"
+        pub struct SecretDigest([u8; 32]);
+        impl std::fmt::Debug for SecretDigest { fn fmt(&self, f: &mut Formatter<'_>) -> Result { f.write_str("SecretDigest(..)") } }
+        impl PartialEq for SecretDigest { fn eq(&self, other: &Self) -> bool { busbar_contract::constant_time_eq(&self.0, &other.0) } }
+        fn digest(s: &Secret<Vec<u8>>) -> SecretDigest { todo!() }
+    "#,
+    );
+    assert!(kept.is_empty(), "{kept:?}");
+}
