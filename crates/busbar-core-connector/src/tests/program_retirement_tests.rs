@@ -89,7 +89,7 @@ async fn retirement_waits_for_crossing_and_close(during_spawn: bool) {
     let c = Arc::new(Connector::serving(
         Transports::new(vec![Entry {
             door: Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         }])
         .unwrap(),
         Arc::new(crate::LiteralsOnly(crate::guard::Guard::default())),

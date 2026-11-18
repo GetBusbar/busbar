@@ -288,12 +288,15 @@ pub(crate) fn lease_tail(supervision_key: u64, program: &Program) -> Vec<u8> {
 
 /// The dial that spawns a member's program `command` over its carrier, offering `alpn`: built once
 /// per program generation (process spawn setup), never per lease.
-pub(crate) fn member_spawn_dial(command: &str, alpn: &[Vec<u8>]) -> crate::compose::Dial {
+pub(crate) fn member_spawn_dial(
+    command: &str,
+    alpn: &std::sync::Arc<[Vec<u8>]>,
+) -> crate::compose::Dial {
     crate::compose::Dial {
         plaintext_accepted: false,
         target: command.to_owned(),
         tls: None,
-        alpn: alpn.to_vec(),
+        alpn: std::sync::Arc::clone(alpn),
         open_timeout: crate::compose::DEFAULT_OPEN_TIMEOUT,
         opening: None,
         head_words: (Vec::new(), Vec::new()),

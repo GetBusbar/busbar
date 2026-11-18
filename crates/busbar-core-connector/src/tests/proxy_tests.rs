@@ -487,11 +487,11 @@ fn proxying(config: Option<Arc<ProxyChoice>>) -> Connector {
             door: Arc::new(
                 TestDoor::identity("bytes").with_role(busbar_contract::abi::transport::ROLE_FRAMER),
             ),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         Entry {
             door: Arc::new(TestDoor::identity("carrier")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
     ])
     .unwrap();
@@ -648,11 +648,11 @@ fn a_target_the_guard_refuses_never_reaches_the_proxy() {
                         TestDoor::identity("bytes")
                             .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
                     ),
-                    alpn: Vec::new(),
+                    alpn: Arc::default(),
                 },
                 Entry {
                     door: Arc::new(TestDoor::identity("carrier")),
-                    alpn: Vec::new(),
+                    alpn: Arc::default(),
                 },
             ])
             .unwrap();
@@ -819,11 +819,11 @@ fn configured_plain_connect_proxy_carries_an_open_web_tls_target() {
                     )
                     .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
                 ),
-                alpn: vec![],
+                alpn: Arc::default(),
             },
             Entry {
                 door: Arc::new(TestDoor::identity("carrier")),
-                alpn: vec![],
+                alpn: Arc::default(),
             },
         ])
         .unwrap();

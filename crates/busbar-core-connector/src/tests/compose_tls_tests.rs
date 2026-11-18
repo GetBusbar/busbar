@@ -85,7 +85,7 @@ fn tls_dial(far: &str, ca: Vec<u8>) -> Dial {
         tls: Some(Arc::new(
             crate::tls::client::build_client_config(&trust).expect("a usable client config"),
         )),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
         open_timeout: Duration::from_secs(5),
         opening: Some((Vec::new(), b"hello".to_vec().into())),
         head_words: Default::default(),

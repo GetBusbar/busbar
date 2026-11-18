@@ -1260,7 +1260,7 @@ fn connector_holds_datagram_writes_until_the_signalling_exchange_finishes() {
                 plaintext_accepted: false,
                 target: address.to_string(),
                 tls: None,
-                alpn: Vec::new(),
+                alpn: Arc::default(),
                 open_timeout: Duration::from_secs(5),
                 opening: None,
                 head_words: Default::default(),
