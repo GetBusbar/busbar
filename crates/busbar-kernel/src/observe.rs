@@ -207,6 +207,42 @@ impl KernelPluginObserver {
         }
         fold_metrics(grants, sink, metrics);
     }
+
+    /// One back-channel metric, as the plugin's instance reported it off a declared family: what
+    /// [`KernelPluginObserver::observe`] does with a one-entry `metrics` array holding its JSON
+    /// form, without the JSON. The entry is bounded by the same function, then admitted and
+    /// written by the same one.
+    pub fn observe_metric(
+        &self,
+        grants: &dyn Grants,
+        sink: &dyn ObservationSink,
+        kind: busbar_contract::abi::mechanism::KindCode,
+        metric: busbar_contract::abi::mechanism::observe::PluginMetric,
+    ) {
+        if kind == busbar_contract::abi::mechanism::KindCode::Hook {
+            return;
+        }
+        let mut cuts = busbar_contract::hook_wire::reply::TextCuts::default();
+        let bounded = busbar_contract::hook_wire::reply::bound_metric(metric.into(), &mut cuts);
+        text_cuts(sink, &cuts);
+        if let Some(m) = bounded {
+            fold_metric(grants, sink, m);
+        }
+    }
+
+    /// One back-channel diagnostic, as the plugin's instance raised it: what
+    /// [`KernelPluginObserver::observe`] does with a one-entry `diagnostics` array holding its
+    /// JSON form, without the JSON.
+    pub fn observe_diagnostic(
+        &self,
+        grants: &dyn Grants,
+        sink: &dyn ObservationSink,
+        diagnostic: &busbar_contract::abi::mechanism::observe::PluginDiagnostic,
+    ) {
+        let mut cuts = busbar_contract::hook_wire::reply::TextCuts::default();
+        fold_diagnostic(grants, sink, self.catalogue, diagnostic, &mut cuts);
+        text_cuts(sink, &cuts);
+    }
 }
 
 fn fold_metrics(grants: &dyn Grants, sink: &dyn ObservationSink, raw: &[serde_json::Value]) {
@@ -216,36 +252,45 @@ fn fold_metrics(grants: &dyn Grants, sink: &dyn ObservationSink, raw: &[serde_js
 
     let (parsed, cuts) = busbar_contract::hook_wire::reply::parse_status_metrics_counted(raw);
     text_cuts(sink, &cuts);
-    for mut m in parsed {
-        let granted = grants.first_party_series(&m.name, &m.kind);
-        if !granted && !admits_metric_name(&m.name) {
-            continue;
-        }
-
-        if let Some(labels) = &mut m.labels {
-            labels.retain(|k, _| {
-                k != KIND_LABEL
-                    && k != INSTANCE_LABEL
-                    && !(m.kind == "histogram" && k == super::source::QUANTILE_LABEL)
-            });
-        }
-
-        if let Err(refusal) = admit_metric(
-            grants.owner(),
-            &m.name,
-            &m.kind,
-            fingerprint_pairs(m.labels.as_ref()),
-        ) {
-            if matches!(refusal, MetricRefusal::Cardinality) {
-                warn_cardinality_once(grants.owner(), sink, &m.name);
-            }
-            continue;
-        }
-        if m.kind == "counter" && m.value < 0.0 {
-            continue;
-        }
-        sink.metric(&m, granted);
+    for m in parsed {
+        fold_metric(grants, sink, m);
     }
+}
+
+/// One bounded metric: admitted against its owner's grants and budget, then written.
+fn fold_metric(
+    grants: &dyn Grants,
+    sink: &dyn ObservationSink,
+    mut m: busbar_contract::hook_wire::reply::HookMetric,
+) {
+    let granted = grants.first_party_series(&m.name, &m.kind);
+    if !granted && !admits_metric_name(&m.name) {
+        return;
+    }
+
+    if let Some(labels) = &mut m.labels {
+        labels.retain(|k, _| {
+            k != KIND_LABEL
+                && k != INSTANCE_LABEL
+                && !(m.kind == "histogram" && k == super::source::QUANTILE_LABEL)
+        });
+    }
+
+    if let Err(refusal) = admit_metric(
+        grants.owner(),
+        &m.name,
+        &m.kind,
+        fingerprint_pairs(m.labels.as_ref()),
+    ) {
+        if matches!(refusal, MetricRefusal::Cardinality) {
+            warn_cardinality_once(grants.owner(), sink, &m.name);
+        }
+        return;
+    }
+    if m.kind == "counter" && m.value < 0.0 {
+        return;
+    }
+    sink.metric(&m, granted);
 }
 
 static WARNED: std::sync::RwLock<Option<std::collections::HashSet<ObservationOwner>>> =
@@ -267,7 +312,7 @@ fn fold_diagnostics(
     catalogue: crate::diagnostics::Catalogue,
     raw: &[serde_json::Value],
 ) {
-    use busbar_contract::hook_wire::reply::{TextCuts, TextField};
+    use busbar_contract::hook_wire::reply::TextCuts;
     if raw.is_empty() {
         return;
     }
@@ -278,47 +323,56 @@ fn fold_diagnostics(
         >(entry.clone()) else {
             continue;
         };
-        let Some(diag) = resolve_code(catalogue, &d.code) else {
-            continue;
-        };
-
-        let level = clamp_level(d.level, diag.severity);
-
-        if grants.first_party() {
-            let fields: Vec<(String, String)> = d
-                .ordered_fields()
-                .into_iter()
-                .take(MAX_DIAG_FIELDS)
-                .collect();
-            sink.diagnostic(diag, tracing_level(level), &d.message, &fields, true);
-            continue;
-        }
-        let (message, cut) = busbar_contract::hook_wire::reply::sanitize_cap_counted(
-            &d.message,
-            MAX_DIAG_MESSAGE_CHARS,
-        );
-        if let Some(sanitised_chars) = cut {
-            cuts.record(TextField::DiagMessage, sanitised_chars);
-        }
-        let fields = d
-            .fields
-            .iter()
-            .take(MAX_DIAG_FIELDS)
-            .filter(|(k, _)| busbar_contract::hook_wire::reply::valid_metric_name(k))
-            .map(|(k, v)| {
-                let (value, cut) = busbar_contract::hook_wire::reply::sanitize_cap_counted(
-                    v,
-                    MAX_DIAG_FIELD_CHARS,
-                );
-                if let Some(sanitised_chars) = cut {
-                    cuts.record(TextField::DiagField, sanitised_chars);
-                }
-                (k.clone(), value)
-            })
-            .collect::<Vec<_>>();
-        sink.diagnostic(diag, tracing_level(level), &message, &fields, false);
+        fold_diagnostic(grants, sink, catalogue, &d, &mut cuts);
     }
     text_cuts(sink, &cuts);
+}
+
+/// One raised diagnostic: resolved against the catalogue, clamped, bounded (noting each cut in
+/// `cuts`) and written. A code the catalogue does not hold writes nothing.
+fn fold_diagnostic(
+    grants: &dyn Grants,
+    sink: &dyn ObservationSink,
+    catalogue: crate::diagnostics::Catalogue,
+    d: &busbar_contract::abi::mechanism::observe::PluginDiagnostic,
+    cuts: &mut busbar_contract::hook_wire::reply::TextCuts,
+) {
+    use busbar_contract::hook_wire::reply::TextField;
+    let Some(diag) = resolve_code(catalogue, &d.code) else {
+        return;
+    };
+
+    let level = clamp_level(d.level, diag.severity);
+
+    if grants.first_party() {
+        let fields: Vec<(String, String)> = d
+            .ordered_fields()
+            .into_iter()
+            .take(MAX_DIAG_FIELDS)
+            .collect();
+        sink.diagnostic(diag, tracing_level(level), &d.message, &fields, true);
+        return;
+    }
+    let (message, cut) =
+        busbar_contract::hook_wire::reply::sanitize_cap_counted(&d.message, MAX_DIAG_MESSAGE_CHARS);
+    if let Some(sanitised_chars) = cut {
+        cuts.record(TextField::DiagMessage, sanitised_chars);
+    }
+    let fields = d
+        .fields
+        .iter()
+        .take(MAX_DIAG_FIELDS)
+        .filter(|(k, _)| busbar_contract::hook_wire::reply::valid_metric_name(k))
+        .map(|(k, v)| {
+            let (value, cut) =
+                busbar_contract::hook_wire::reply::sanitize_cap_counted(v, MAX_DIAG_FIELD_CHARS);
+            if let Some(sanitised_chars) = cut {
+                cuts.record(TextField::DiagField, sanitised_chars);
+            }
+            (k.clone(), value)
+        })
+        .collect::<Vec<_>>();
+    sink.diagnostic(diag, tracing_level(level), &message, &fields, false);
 }
 
 /// One `text_cut` per field the reply's parse cut, summed over the reply.

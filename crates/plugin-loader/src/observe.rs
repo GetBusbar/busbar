@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::mechanism::observe::Envelope;
+use busbar_contract::abi::mechanism::observe::{Envelope, PluginDiagnostic, PluginMetric};
 
 pub trait PluginObserver: Send + Sync {
+    /// An envelope's reported entries, verbatim: the JSON the plugin's reply carried.
     fn observe(
         &self,
         plugin: &str,
@@ -11,6 +12,16 @@ pub trait PluginObserver: Send + Sync {
         metrics: &[serde_json::Value],
         diagnostics: &[serde_json::Value],
     );
+
+    /// One metric an instance reported on its back-channel, off a family its Statement declares:
+    /// the entry itself, in the published shape of an envelope's `metrics` entries. The observer
+    /// treats it as it treats that entry's JSON form in a one-entry [`PluginObserver::observe`].
+    fn metric(&self, plugin: &str, kind: &str, metric: PluginMetric);
+
+    /// One diagnostic an instance raised on its back-channel: the entry itself, in the published
+    /// shape of an envelope's `diagnostics` entries, treated as its JSON form in a one-entry
+    /// [`PluginObserver::observe`] is.
+    fn diagnostic(&self, plugin: &str, kind: &str, diagnostic: PluginDiagnostic);
 
     fn dropped(&self, observations: u64);
 
@@ -70,11 +81,24 @@ pub const INTAKE_BOUND: usize = 4096;
 struct Observation {
     plugin: std::sync::Arc<str>,
     kind: &'static str,
-    metrics: Vec<serde_json::Value>,
-    diagnostics: Vec<serde_json::Value>,
+    entries: Entries,
 
     #[cfg(test)]
     scope: u64,
+}
+
+/// What one observation carries to the observer: moved in, moved on, never copied.
+enum Entries {
+    /// An envelope's reported entries, as its reply carried them.
+    Reported {
+        metrics: Vec<serde_json::Value>,
+        diagnostics: Vec<serde_json::Value>,
+    },
+    /// One back-channel metric. Boxed so an intake slot stays the size it was: the intake holds
+    /// [`INTAKE_BOUND`] slots for as long as it runs.
+    Metric(Box<PluginMetric>),
+    /// One back-channel diagnostic, boxed for the same reason.
+    Diagnostic(Box<PluginDiagnostic>),
 }
 
 struct Intake {
@@ -158,17 +182,34 @@ impl Observing {
                                 received,
                                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
                             );
-                            if let Ok(o) = &received {
+                            let handled = received.is_ok();
+                            if let Ok(o) = received {
                                 #[cfg(test)]
                                 testing::OBSERVING.store(o.scope, Ordering::SeqCst);
-                                observer.observe(&o.plugin, o.kind, &o.metrics, &o.diagnostics);
+                                match o.entries {
+                                    Entries::Reported {
+                                        metrics,
+                                        diagnostics,
+                                    } => observer.observe(
+                                        &o.plugin,
+                                        o.kind,
+                                        &metrics,
+                                        &diagnostics,
+                                    ),
+                                    Entries::Metric(metric) => {
+                                        observer.metric(&o.plugin, o.kind, *metric);
+                                    }
+                                    Entries::Diagnostic(diagnostic) => {
+                                        observer.diagnostic(&o.plugin, o.kind, *diagnostic);
+                                    }
+                                }
                             }
 
                             let lost = c.dropped.swap(0, Ordering::AcqRel);
                             if lost > 0 {
                                 observer.dropped(lost);
                             }
-                            if received.is_ok() {
+                            if handled {
                                 c.done.fetch_add(1, Ordering::Release);
                             }
                             if disconnected {
@@ -194,13 +235,7 @@ impl Observing {
     }
 
     /// Hand one observation to the intake: its plugin name shared, its entries moved, never copied.
-    fn enqueue(
-        &self,
-        plugin: &std::sync::Arc<str>,
-        kind: &'static str,
-        metrics: Vec<serde_json::Value>,
-        diagnostics: Vec<serde_json::Value>,
-    ) {
+    fn enqueue(&self, plugin: &std::sync::Arc<str>, kind: &'static str, entries: Entries) {
         use std::sync::atomic::Ordering;
         let Some(intake) = self.intake() else {
             return;
@@ -208,8 +243,7 @@ impl Observing {
         let observation = Observation {
             plugin: std::sync::Arc::clone(plugin),
             kind,
-            metrics,
-            diagnostics,
+            entries,
             #[cfg(test)]
             scope: testing::scope(),
         };
@@ -230,20 +264,35 @@ impl Observing {
         if envelope.is_bare() {
             return;
         }
-        self.enqueue(plugin, kind, envelope.metrics, envelope.diagnostics);
+        self.enqueue(
+            plugin,
+            kind,
+            Entries::Reported {
+                metrics: envelope.metrics,
+                diagnostics: envelope.diagnostics,
+            },
+        );
     }
 
-    pub(crate) fn fold_entries(
+    /// One back-channel metric, handed to the intake as the entry it is: no JSON is built here and
+    /// none is parsed by the observer.
+    pub(crate) fn fold_metric(
         &self,
         plugin: &std::sync::Arc<str>,
         kind: &'static str,
-        metrics: Vec<serde_json::Value>,
-        diagnostics: Vec<serde_json::Value>,
+        metric: PluginMetric,
     ) {
-        if metrics.is_empty() && diagnostics.is_empty() {
-            return;
-        }
-        self.enqueue(plugin, kind, metrics, diagnostics);
+        self.enqueue(plugin, kind, Entries::Metric(Box::new(metric)));
+    }
+
+    /// One back-channel diagnostic, handed to the intake as the entry it is.
+    pub(crate) fn fold_diagnostic(
+        &self,
+        plugin: &std::sync::Arc<str>,
+        kind: &'static str,
+        diagnostic: PluginDiagnostic,
+    ) {
+        self.enqueue(plugin, kind, Entries::Diagnostic(Box::new(diagnostic)));
     }
 }
 
@@ -344,24 +393,16 @@ impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
             FAMILY_GAUGE => "gauge",
             _ => "histogram",
         };
-        let mut metric = busbar_contract::abi::mechanism::observe::PluginMetric::new(
-            &family.name,
-            kind,
-            m.value,
-        );
+        let mut metric = PluginMetric::new(&family.name, kind, m.value);
         for (key, value) in family.label_keys.iter().zip(m.labels) {
             metric = metric.label(key, String::from_utf8_lossy(value));
         }
-        let Ok(entry) = serde_json::to_value(metric) else {
-            return;
-        };
-        self.observing
-            .fold_entries(&self.plugin, self.kind, vec![entry], Vec::new());
+        self.observing.fold_metric(&self.plugin, self.kind, metric);
     }
 
     fn diag(&self, d: crate::dispatch::Diagnostic<'_>) {
         use busbar_contract::abi::mechanism::call::{DIAG_LOG, DIAG_LOG_DROPPED};
-        use busbar_contract::abi::mechanism::observe::{DiagLevel, PluginDiagnostic};
+        use busbar_contract::abi::mechanism::observe::DiagLevel;
         if let Some(then) = &self.then {
             then.diag(d);
         }
@@ -378,11 +419,8 @@ impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
             level,
             String::from_utf8_lossy(d.text),
         );
-        let Ok(entry) = serde_json::to_value(diagnostic) else {
-            return;
-        };
         self.observing
-            .fold_entries(&self.plugin, self.kind, Vec::new(), vec![entry]);
+            .fold_diagnostic(&self.plugin, self.kind, diagnostic);
     }
 
     fn refused(&self, instance: &str, refusal: BindRefusal<'_>) {
@@ -596,6 +634,29 @@ pub(crate) mod testing {
                     diagnostics.to_vec(),
                 ),
             ));
+        }
+
+        /// A back-channel metric, recorded as the one-entry fold its JSON form is.
+        fn metric(
+            &self,
+            plugin: &str,
+            kind: &str,
+            metric: busbar_contract::abi::mechanism::observe::PluginMetric,
+        ) {
+            let entry = serde_json::to_value(metric).expect("a metric entry renders as JSON");
+            self.observe(plugin, kind, &[entry], &[]);
+        }
+
+        /// A back-channel diagnostic, recorded as the one-entry fold its JSON form is.
+        fn diagnostic(
+            &self,
+            plugin: &str,
+            kind: &str,
+            diagnostic: busbar_contract::abi::mechanism::observe::PluginDiagnostic,
+        ) {
+            let entry =
+                serde_json::to_value(diagnostic).expect("a diagnostic entry renders as JSON");
+            self.observe(plugin, kind, &[], &[entry]);
         }
     }
 

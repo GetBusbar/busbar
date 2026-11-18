@@ -1004,3 +1004,181 @@ fn a_plugin_replys_cuts_reach_the_sink_once_per_field() {
     assert_eq!(again, expected);
     forget_cardinality(plugin);
 }
+
+/// What a sink was handed, call by call, in order.
+#[derive(Default)]
+struct Told(std::sync::Mutex<Vec<String>>);
+impl ObservationSink for Told {
+    fn metric(&self, m: &busbar_contract::hook_wire::reply::HookMetric, canonical: bool) {
+        self.0.lock().unwrap().push(format!(
+            "metric {} {} {:?} {:?} {:?} {:?} {canonical}",
+            m.name, m.kind, m.value, m.labels, m.help, m.unit
+        ));
+    }
+    fn diagnostic(
+        &self,
+        diagnostic: &'static crate::diagnostics::Diagnostic,
+        level: tracing::Level,
+        message: &str,
+        fields: &[(String, String)],
+        canonical: bool,
+    ) {
+        self.0.lock().unwrap().push(format!(
+            "diagnostic {} {level} {message} {fields:?} {canonical}",
+            diagnostic.code
+        ));
+    }
+    fn cardinality(&self, series: &str, max_series: usize, max_label_sets: usize) {
+        self.0.lock().unwrap().push(format!(
+            "cardinality {series} {max_series} {max_label_sets}"
+        ));
+    }
+    fn text_cut(
+        &self,
+        field: busbar_contract::hook_wire::reply::TextField,
+        cap: usize,
+        count: u32,
+        max_sanitised: usize,
+    ) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("text_cut {field:?} {cap} {count} {max_sanitised}"));
+    }
+}
+
+/// Grants over one owner: first party or not, with one granted series.
+struct OneOwner {
+    owner: ObservationOwner,
+    first_party: bool,
+}
+impl Grants for OneOwner {
+    fn owner(&self) -> &ObservationOwner {
+        &self.owner
+    }
+    fn first_party(&self) -> bool {
+        self.first_party
+    }
+    fn first_party_series(&self, name: &str, kind: &str) -> bool {
+        self.first_party && name == "busbar_typed_lane_total" && kind == "counter"
+    }
+}
+
+/// A back-channel metric handed over as the entry it is reaches the sink exactly as its JSON form
+/// in a one-entry `observe` does: kept, cut, stripped or refused alike, for every kind.
+#[test]
+fn a_typed_metric_is_folded_exactly_as_its_json_form_is() {
+    use busbar_contract::abi::mechanism::observe::PluginMetric;
+    use busbar_contract::abi::mechanism::KindCode;
+    let observer = KernelPluginObserver::lent(crate::diagnostics::Catalogue::NEUTRAL);
+    let mut rich = PluginMetric::gauge("typed_lane_rich", 3.5).label("sink", "audit");
+    rich.help = Some("h".repeat(300));
+    rich.unit = Some("u".repeat(30));
+    let cases = [
+        PluginMetric::counter("typed_lane_total", 2.0).label("outcome", "ok"),
+        PluginMetric::counter("typed_lane_total", 2.0).label("outcome", "v".repeat(100)),
+        PluginMetric::counter("typed_lane_total", 1.0)
+            .label("kind", "forged")
+            .label("instance", "forged")
+            .label("sink", "audit"),
+        PluginMetric::new("typed_lane_seconds", "histogram", 4.0).label("quantile", "0.5"),
+        PluginMetric::counter("busbar_typed_lane_total", 1.0),
+        PluginMetric::counter("busbar_reserved_total", 1.0),
+        PluginMetric::counter("Bad Name", 1.0),
+        PluginMetric::new("typed_lane_total", "summary", 1.0),
+        PluginMetric::counter("typed_lane_total", f64::NAN),
+        PluginMetric::counter("typed_lane_total", f64::INFINITY),
+        PluginMetric::counter("typed_lane_total", -1.0),
+        PluginMetric::gauge("typed_lane_level", -0.0),
+        rich,
+    ];
+    for first_party in [false, true] {
+        for kind in [KindCode::Export, KindCode::Store, KindCode::Hook] {
+            for metric in &cases {
+                let as_json = Told::default();
+                let json = serde_json::to_value(metric).expect("the entry renders");
+                observer.observe(
+                    &OneOwner {
+                        owner: ObservationOwner::default(),
+                        first_party,
+                    },
+                    &as_json,
+                    kind,
+                    &[json],
+                    &[],
+                );
+                let typed = Told::default();
+                observer.observe_metric(
+                    &OneOwner {
+                        owner: ObservationOwner::default(),
+                        first_party,
+                    },
+                    &typed,
+                    kind,
+                    metric.clone(),
+                );
+                assert_eq!(
+                    *typed.0.lock().unwrap(),
+                    *as_json.0.lock().unwrap(),
+                    "{metric:?} as {kind:?}, first party {first_party}"
+                );
+            }
+        }
+    }
+}
+
+/// A back-channel diagnostic handed over as the entry it is reaches the sink exactly as its JSON
+/// form in a one-entry `observe` does.
+#[test]
+fn a_typed_diagnostic_is_folded_exactly_as_its_json_form_is() {
+    use busbar_contract::abi::mechanism::observe::{DiagLevel, PluginDiagnostic};
+    use busbar_contract::abi::mechanism::KindCode;
+    let observer = KernelPluginObserver::lent(crate::diagnostics::Catalogue::NEUTRAL);
+    let known = format!(
+        "BUSBAR-{}",
+        crate::diagnostics::PLUGINS_DIR_FINGERPRINT_FAILED.code
+    );
+    let cases = [
+        PluginDiagnostic::warn(known.clone(), "a plain line"),
+        PluginDiagnostic::new(known.clone(), DiagLevel::Error, "m".repeat(400))
+            .field("zeta", "w".repeat(100))
+            .field("alpha", "second")
+            .field("Bad Key", "dropped"),
+        PluginDiagnostic::new(known.clone(), DiagLevel::Debug, ""),
+        PluginDiagnostic::new(known, DiagLevel::Info, "info")
+            .field("a", "1")
+            .field("b", "2"),
+        PluginDiagnostic::warn("BUSBAR-65535", "not in the catalogue"),
+        PluginDiagnostic::warn("nonsense", "not a code"),
+    ];
+    for first_party in [false, true] {
+        for diagnostic in &cases {
+            let as_json = Told::default();
+            let json = serde_json::to_value(diagnostic).expect("the entry renders");
+            observer.observe(
+                &OneOwner {
+                    owner: ObservationOwner::default(),
+                    first_party,
+                },
+                &as_json,
+                KindCode::Export,
+                &[],
+                &[json],
+            );
+            let typed = Told::default();
+            observer.observe_diagnostic(
+                &OneOwner {
+                    owner: ObservationOwner::default(),
+                    first_party,
+                },
+                &typed,
+                diagnostic,
+            );
+            assert_eq!(
+                *typed.0.lock().unwrap(),
+                *as_json.0.lock().unwrap(),
+                "{diagnostic:?}, first party {first_party}"
+            );
+        }
+    }
+}
