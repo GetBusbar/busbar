@@ -3,6 +3,7 @@
 
 //! THE PROXY ENVIRONMENT, AS THE CONNECTOR HONOURS IT, held to 1.5.5's
 
+use std::ffi::OsString;
 use std::sync::Arc;
 
 use busbar_contract::conn::{ConnError, Conns, NeedId, OpenDesc, Ticket};
@@ -704,6 +705,8 @@ fn bypass_list_and_a_raw_stream_dial_direct() {
             } else {
                 proxying(config.clone())
             };
+            // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+            crate::tests::accept_plaintext(&c, &[OWNER]);
             c.declare_over(OWNER, need, scheme).expect("declares");
             let id = c
                 .open(

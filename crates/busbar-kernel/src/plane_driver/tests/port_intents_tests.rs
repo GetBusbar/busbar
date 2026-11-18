@@ -496,7 +496,7 @@ impl IntentHost for Host {
     }
 
     fn work(&self, w: &WorkIntent) -> WorkOutcome {
-        *self.work_identity.lock().unwrap() = w.identity.clone();
+        *self.work_identity.lock().unwrap() = w.identity.to_vec();
         self.note(format!("work op={} target={:?}", w.op, w.target));
         self.work.clone().unwrap_or_else(WorkOutcome::unsupported)
     }
@@ -2100,9 +2100,9 @@ fn decide(
         &namespace(),
         &WorkIntent {
             op,
-            target: target.map(str::to_owned),
-            reference: reference.map(str::to_owned),
-            identity: b"ID".to_vec(),
+            target,
+            reference,
+            identity: b"ID",
         },
     )
 }

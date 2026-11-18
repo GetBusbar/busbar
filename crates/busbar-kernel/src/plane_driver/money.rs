@@ -212,6 +212,20 @@ impl TicketReservation {
     }
 }
 
+/// Where and by whom a spent ticket's reservation is adopted: the receiving unit and its admission,
+/// and the source identity (principal, key, node, instance, store) the reservation must match.
+#[derive(Clone, Copy)]
+pub struct TicketAdoption<'a> {
+    pub money: &'a PlaneMoney,
+    pub ctx: &'a UnitCtx,
+    pub admit: &'a Grant<Admittance>,
+    pub principal: &'a PrincipalId,
+    pub expected_key: &'a VirtualKey,
+    pub node_nonce: &'a Arc<()>,
+    pub instance_nonce: &'a Arc<()>,
+    pub store: &'a Arc<CoreStore>,
+}
+
 impl SpentTicketReservation {
     pub(crate) fn after_redemption(
         reservation: TicketReservation,
@@ -228,18 +242,21 @@ impl SpentTicketReservation {
 
     pub fn adopt(
         self,
-        money: &PlaneMoney,
-        ctx: &UnitCtx,
-        admit: &Grant<Admittance>,
-        principal: &PrincipalId,
-        expected_key: &VirtualKey,
+        at: &TicketAdoption<'_>,
         lane: String,
         classes: Arc<[String]>,
         fee: FeeRefund,
-        node_nonce: &Arc<()>,
-        instance_nonce: &Arc<()>,
-        store: &Arc<CoreStore>,
     ) -> Result<ReservedRequestLineage, ReturnedTicketReservation> {
+        let TicketAdoption {
+            money,
+            ctx,
+            admit,
+            principal,
+            expected_key,
+            node_nonce,
+            instance_nonce,
+            store,
+        } = *at;
         let reservation = self.0;
         if !admit.bound_to(ctx.call)
             || reservation.source_call == CallId::UNBOUND
@@ -311,7 +328,6 @@ struct FeeState {
     children: usize,
     parent_refund: Option<bool>,
     child_incurred: bool,
-    completed: Option<crate::governance::unit_checkpoint::partitions::FeeResult>,
 }
 
 struct FeeAccount {
@@ -320,6 +336,8 @@ struct FeeAccount {
     // FEE-DEBT r1: the original native observer. Not a participant; never refunds or charges.
     observer: Option<Arc<crate::governance::fee_debt::FeeDebtObserver>>,
     state: Mutex<FeeState>,
+    /// Where the final fee result is published (read by selected checkpoints without participating).
+    completion: Arc<crate::governance::unit_checkpoint::partitions::SelectedFeeCompletion>,
 }
 
 struct FeeParticipation {
@@ -379,7 +397,7 @@ impl Drop for FeeParticipation {
         }
         // Counts alone are not completion: publish only after the existing refund mutations.
         if let Some(result) = result {
-            locked(&self.account.state).completed = Some(result);
+            self.account.completion.complete(result);
         }
     }
 }
@@ -712,8 +730,8 @@ impl PlaneMoney {
                 children: 0,
                 parent_refund: None,
                 child_incurred: false,
-                completed: None,
             }),
+            completion: Arc::default(),
         });
         let open = Open::new(
             money,

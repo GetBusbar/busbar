@@ -41,6 +41,9 @@ pub mod boot;
 #[deny(unsafe_code)]
 mod cold;
 
+// Each submodule but the path-pinned `durable_documents` (its unsafe is registered in unsafe.yaml) denies unsafe code.
+mod off_path;
+
 // busbar:request-path
 #[cfg_attr(
     not(test),
@@ -237,9 +240,7 @@ mod chains;
 #[deny(unsafe_code)]
 pub mod inspect;
 #[deny(unsafe_code)]
-#[deny(unsafe_code)]
 pub mod instance;
-#[deny(unsafe_code)]
 #[deny(unsafe_code)]
 pub mod refusal;
 #[deny(unsafe_code)]
@@ -518,10 +519,6 @@ mod ordinary_plane_deadline;
 #[cfg(test)]
 #[path = "tests/ordinary_plane_fault_outputs.rs"]
 mod ordinary_plane_fault_outputs;
-
-#[cfg(test)]
-#[path = "tests/retired_store_fixture.rs"]
-mod retired_store_fixture;
 
 #[cfg(test)]
 #[path = "tests/neutral_transport.rs"]

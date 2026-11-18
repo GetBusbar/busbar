@@ -31,6 +31,9 @@
 //! and the facade's text stops before them.
 //!
 
+#![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
+
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -370,7 +373,13 @@ pub fn to_writer<W: std::io::Write, T: Serialize + ?Sized>(
 /// # Errors
 /// A value sonic cannot write (a non-finite float, a map key that is not a string).
 pub fn to_value<T: Serialize + ?Sized>(value: &T) -> Result<Value, Error> {
-    Ok(sonic_rs::to_value(value)?)
+    match sonic_rs::to_value(value) {
+        Ok(tree) => Ok(tree),
+        // sonic's tree serializer holds only i64/u64/f64 numbers, so an i128/u128 outside them
+        // (a full-range count) is refused there; the text writer spells it exactly and the parsed
+        // tree keeps that lexeme. Any other refusal is refused again by the writer.
+        Err(_) => parse_value(&to_vec(value)?),
+    }
 }
 
 /// A number's text: a read number's lexeme exactly as the document spelled it, a built one as

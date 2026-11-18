@@ -130,7 +130,7 @@ impl Identity {
 }
 
 /// The longest REPLAY claim key (§8.3 ReplayRec) and the ttl clamp core applies to it.
-pub const REPLAY_KEY_MAX: usize = 256;
+const REPLAY_KEY_MAX: usize = 256;
 pub const REPLAY_TTL_S: core::ops::RangeInclusive<u64> = 1..=86_400;
 
 /// What one OK verify / verify_io answer said (§8.3): an identity (with or without a REPLAY claim the adapter

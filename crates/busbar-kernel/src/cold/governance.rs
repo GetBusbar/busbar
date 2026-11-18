@@ -8,4 +8,5 @@ pub(crate) mod ledger;
 pub(crate) mod persistence;
 pub(crate) mod principal_transition;
 pub(crate) mod runtime;
+pub(crate) mod selected_policy;
 pub(crate) mod state;

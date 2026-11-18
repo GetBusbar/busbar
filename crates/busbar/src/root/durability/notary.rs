@@ -80,7 +80,7 @@ impl CutEnd {
 /// awaits the store, and the notary never blocks on one).
 enum CutSeat {
     None,
-    Idle(JournalCut),
+    Idle(Box<JournalCut>),
     Running(JoinHandle<(JournalCut, CutProgress)>),
 }
 
@@ -378,7 +378,9 @@ pub(crate) fn spawn_with_boot(
         drain_clock,
         boot,
     } = runtime;
-    let cut = journal.cutter().map_or(CutSeat::None, CutSeat::Idle);
+    let cut = journal
+        .cutter()
+        .map_or(CutSeat::None, |cut| CutSeat::Idle(Box::new(cut)));
     let every_ms = cfg.every_ms.clamp(1, 1_000);
     let cfg = NotaryConfig { every_ms, ..cfg };
     let progress = Arc::new(NotaryProgress::default());
@@ -537,7 +539,7 @@ impl Notary {
     async fn settle_cut(&mut self) -> CutEnd {
         let mut cut = match std::mem::replace(&mut self.cut, CutSeat::None) {
             CutSeat::None => return CutEnd::None,
-            CutSeat::Idle(cut) => cut,
+            CutSeat::Idle(cut) => *cut,
             CutSeat::Running(running) => match running.await {
                 Ok((cut, progress)) => {
                     self.on_cut(&cut, progress);
@@ -578,7 +580,7 @@ impl Notary {
             CutSeat::Running(running) => match running.await {
                 Ok((cut, progress)) => {
                     self.on_cut(&cut, progress);
-                    cut
+                    Box::new(cut)
                 }
                 Err(join) => {
                     self.cut_due = false;
@@ -605,7 +607,7 @@ impl Notary {
             self.cut = CutSeat::Idle(cut);
             return;
         }
-        let mut cut = cut;
+        let mut cut = *cut;
         self.cut_due = false;
         let floor = self.cut_floor();
         // A Store crossing may not answer before C3. Publish the undecided state before

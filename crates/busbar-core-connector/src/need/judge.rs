@@ -112,7 +112,7 @@ impl<R: Resolve> Judge<R> {
 
     /// A judge over an already frozen generation's destination policy.
     #[must_use]
-    pub fn from_frozen(guard: FrozenGuard, resolver: R) -> Self {
+    fn from_frozen(guard: FrozenGuard, resolver: R) -> Self {
         Self::with_proxy(guard, resolver, None, ProxyResolution::Local)
     }
 

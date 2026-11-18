@@ -210,7 +210,7 @@ fn boot_lines_match_1_5_5_shape() {
 
     let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .env("BUSBAR_ADMIN_TOKEN", "boot-lines-test-admin-token")
         .env("RUST_LOG", "info")
@@ -330,7 +330,7 @@ fn allow_all_metadata_boot_line_is_the_warn() {
     let log_err = log.try_clone().unwrap();
     let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", &config)
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .env("BUSBAR_ADMIN_TOKEN", "boot-lines-test-admin-token")
         .env("RUST_LOG", "info")
@@ -387,7 +387,7 @@ fn boot_heterogeneous_until_listening(dir: &Path) -> String {
     let log_err = log.try_clone().unwrap();
     let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .env("BUSBAR_ADMIN_TOKEN", "boot-lines-test-admin-token")
         .env("RUST_LOG", "info")
@@ -423,7 +423,7 @@ fn boot_heterogeneous_until_refused(dir: &Path, env: &[(&str, &str)]) -> String 
     let mut command = Command::new(common::boot::exe());
     command
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .env("BUSBAR_ADMIN_TOKEN", "boot-lines-test-admin-token")
         .env("RUST_LOG", "info");

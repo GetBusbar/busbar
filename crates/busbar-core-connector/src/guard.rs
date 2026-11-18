@@ -16,7 +16,6 @@ use busbar_contract::net::{
     embedded_ipv4, host_ip, ip_is_cloud_metadata, ip_is_internal, is_alternate_ipv4_encoding,
     is_link_local_v6, judged_host, IpNet, METADATA_HOSTS,
 };
-use busbar_kernel::config::Destinations;
 
 /// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
 pub const PRIVATE_REFUSED_IN: &[u32] = &[
@@ -167,17 +166,17 @@ pub(crate) struct Metadata {
     pub(crate) blocked: Vec<Entry>,
 }
 
-/// THE GUARD, built at boot from a deployment's [`Destinations`]; its metadata lists are
+/// THE GUARD, built at boot from a deployment's [`Destinations`](busbar_kernel::config::Destinations); its metadata lists are
 /// re-published at every config commit ([`Guard::publish`]), and every clone reads the lists in
 /// force now.
 #[derive(Debug, Clone)]
 pub struct Guard {
-    block_private: bool,
+    pub(crate) block_private: bool,
     /// The 1.5.5 metadata lists in force, replaced whole at a commit.
-    metadata: Arc<RwLock<Arc<Metadata>>>,
+    pub(crate) metadata: Arc<RwLock<Arc<Metadata>>>,
     /// The node's own listen ports and bound addresses, replaced whole when the boot metadata is
     /// finalised ([`Guard::publish_own`]); every clone reads the set in force now.
-    node: Arc<ArcSwap<OwnNode>>,
+    pub(crate) node: Arc<ArcSwap<OwnNode>>,
 }
 
 /// A destination-policy snapshot with no mutation or publication surface.
@@ -246,15 +245,6 @@ impl Guard {
         })
     }
 
-    /// The guard a deployment states.
-    pub fn from_config(d: &Destinations) -> Result<Guard, String> {
-        Ok(Guard {
-            block_private: d.block_private_addresses,
-            metadata: Arc::new(RwLock::new(Arc::new(Metadata::from_config(d)))),
-            node: Arc::default(),
-        })
-    }
-
     /// Publish the node's own listen ports and the addresses its listeners are bound to (boot
     /// metadata, IF 12.1): what [`Guard::not_the_node`] refuses. Replaces the set whole.
     pub fn publish_own(&self, ports: &[u16], bound: &[IpAddr]) {
@@ -287,15 +277,6 @@ impl Guard {
             return Err(crate::cold::egress::own_door_refusal(DEST_INTERNAL, addr));
         }
         Ok(())
-    }
-
-    /// A config commit: the metadata lists `d` states (the carve-outs and the extra refusals)
-    pub fn publish(&self, d: &Destinations) {
-        let lists = Arc::new(Metadata::from_config(d));
-        *self
-            .metadata
-            .write()
-            .unwrap_or_else(PoisonError::into_inner) = lists;
     }
 
     /// The metadata lists in force now.

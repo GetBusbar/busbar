@@ -477,6 +477,7 @@ impl ConnState {
         let dials = lock(&self.dialling).drain_where(|k, _| gone(k));
         let waits = self.take_waits(|handle, _| gone(&handle.ticket));
         Closes {
+            dial: None,
             dials,
             streams: Vec::new(),
             waits,
@@ -515,6 +516,7 @@ impl ConnState {
             .drain_pairs_where(|_, stream| stream.authority.belongs_to(binding));
         let dials = lock(&self.dialling).drain_where(|_, dial| dial.authority.belongs_to(binding));
         let mut closes = Closes {
+            dial: None,
             dials,
             streams: Vec::with_capacity(streams.len()),
             waits: Vec::new(),
@@ -539,6 +541,8 @@ impl ConnState {
 #[must_use = "dropped, it closes its connections outside the state locks"]
 #[derive(Default)]
 pub(crate) struct Closes {
+    /// One ticket's own dial ([`ConnState::forget`]), held apart: forgetting builds no list.
+    dial: Option<Dial>,
     dials: Vec<Dial>,
     streams: Vec<Stream>,
     waits: Vec<ReplyWait>,
@@ -546,7 +550,7 @@ pub(crate) struct Closes {
 
 impl Drop for Closes {
     fn drop(&mut self) {
-        for dial in self.dials.drain(..) {
+        for dial in self.dial.take().into_iter().chain(self.dials.drain(..)) {
             let (owner, table) = &dial.authority.conn;
             let _ = table.close(*owner, dial.conn);
         }
@@ -875,10 +879,11 @@ struct Dial {
 #[derive(Default)]
 pub(crate) struct ConnState {
     /// The ticket supplier's context, even when a borrowed table binding names another owner.
-    context: OnceLock<HostCtx>,
-    /// Statement metadata, fixed at bind; open/refresh redeclare that same signed need.
-    need_timeouts: OnceLock<Box<[u64]>>,
-    response_keeps: OnceLock<Box<[ResponseKeep]>>,
+    pub(crate) context: OnceLock<HostCtx>,
+    /// Statement metadata, fixed at bind (`off_path::conn_services`); open/refresh redeclare that
+    /// same signed need.
+    pub(crate) need_timeouts: OnceLock<Box<[u64]>>,
+    pub(crate) response_keeps: OnceLock<Box<[ResponseKeep]>>,
     /// The instance's streams the host holds ([`Stream`]), by stream id.
     streams: Mutex<HashMap<u64, Stream>>,
     /// The facts strings its streams were answered ([`HeldFacts`]).
@@ -975,34 +980,6 @@ impl From<Answered> for Kept {
 }
 
 impl ConnState {
-    pub(crate) fn declare_needs(
-        &self,
-        ctx: HostCtx,
-        needs: &[busbar_contract::abi::mechanism::rendering::ReadNeed],
-    ) {
-        let _ = self.context.set(ctx);
-        // An instance's needs are declared once, at bind: load-time tables.
-        use crate::cold::dispatch::services::load_table;
-        let _ = self
-            .need_timeouts
-            .set(load_table(needs.iter().map(|n| n.timeout_ms)));
-        let _ = self.response_keeps.set(load_table(needs.iter().map(|n| {
-            ResponseKeep {
-                mode: n.keep_mode,
-                kept: load_table(
-                    n.keep_response_headers
-                        .iter()
-                        .map(|h| crate::intern_name(h)),
-                ),
-                denied: load_table(
-                    n.deny_response_headers
-                        .iter()
-                        .map(|h| crate::intern_name(h)),
-                ),
-            }
-        })));
-    }
-
     fn need_timeout(&self, need: NeedId) -> u64 {
         self.need_timeouts
             .get()
@@ -1157,7 +1134,8 @@ impl ConnState {
         // The ticket's own dial, by key; its waits are keyed by (ticket, seq).
         let dial = lock(&self.dialling).remove(&ticket);
         let closes = Closes {
-            dials: dial.map_or_else(Vec::new, |dial| vec![dial]),
+            dial,
+            dials: Vec::new(),
             streams: Vec::new(),
             waits: self.take_waits(|handle, _| handle.ticket == ticket),
         };
@@ -1333,6 +1311,7 @@ pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
         // A purged instance's streams are detached once.
         let streams = std::mem::take(&mut *st.streams()).drain_values();
         drop(Closes {
+            dial: None,
             streams,
             waits: st.take_waits(|_, _| true),
             dials: Vec::new(),
@@ -1444,12 +1423,12 @@ impl std::fmt::Debug for Authing {
 }
 
 #[derive(Debug, Default)]
-struct ResponseKeep {
-    mode: u32,
+pub(crate) struct ResponseKeep {
+    pub(crate) mode: u32,
     /// The keep list, interned once at bind: a reply judges against it borrowed.
-    kept: Vec<&'static str>,
+    pub(crate) kept: Vec<&'static str>,
     /// The deny list, interned once at bind.
-    denied: Vec<&'static str>,
+    pub(crate) denied: Vec<&'static str>,
 }
 
 /// [`filter_reply_head`]'s working copies (the reason, the kept fields, one field name lowered),

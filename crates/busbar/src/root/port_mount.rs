@@ -37,7 +37,9 @@ use busbar_kernel::auth::{AuthPrincipal, ChainHead, IdentityRefusal};
 use busbar_kernel::governance::{GovCtx, LimitBlocked};
 use busbar_kernel::ingress::signed_ingress;
 use busbar_kernel::plane_driver::dispatch::LaneQualifier;
-use busbar_kernel::plane_driver::port::{HttpIn, PortSeat, ServeError, ServeIn, Served, Unit};
+use busbar_kernel::plane_driver::port::{
+    HttpHead, HttpIn, PortSeat, ServeError, ServeIn, Served, Unit,
+};
 use busbar_kernel::plane_driver::port_admin;
 use busbar_kernel::plane_driver::port_admission::{AdmittedUnit, Pending};
 use busbar_kernel::plane_driver::port_auth::{
@@ -175,15 +177,17 @@ pub(crate) fn render_kernel_refusal(
     refusal: busbar_kernel::refusal::ClientRefusal,
 ) -> PlaneResponse {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    let http = HttpIn {
-        method: method.to_owned(),
-        path: path.to_owned(),
-        query: query.to_owned(),
-        headers: Vec::new(),
-        body: Bytes::new(),
-        request_id: REQUEST_IDS.fetch_add(1, Ordering::Relaxed),
-    };
-    match seat.driver.render_refusal_now(route, http, refusal.clone()) {
+    let http = HttpIn::new(
+        HttpHead::Text {
+            method: method.to_owned(),
+            path: path.to_owned(),
+            query: query.to_owned(),
+            headers: Vec::new(),
+        },
+        Bytes::new(),
+        REQUEST_IDS.fetch_add(1, Ordering::Relaxed),
+    );
+    match seat.driver.render_refusal_now(route, &http, &refusal) {
         Ok(items) => response_of(items),
         Err(_) => response_of(port_auth::plain_refusal(&refusal)),
     }
@@ -230,19 +234,17 @@ fn failed(status: StatusCode) -> PlaneResponse {
     response
 }
 
-fn http_in(ctx: &PlaneReqCtx) -> HttpIn {
-    HttpIn {
-        method: ctx.method.as_str().to_owned(),
-        path: ctx.uri.path().to_owned(),
-        query: ctx.uri.query().unwrap_or_default().to_owned(),
-        headers: ctx
-            .headers
-            .iter()
-            .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
-            .collect(),
-        body: ctx.body.clone(),
-        request_id: REQUEST_IDS.fetch_add(1, Ordering::Relaxed),
-    }
+/// The request as the plane is served it: its parts move in (the header map leaves `ctx`, which reads none after this).
+fn http_in(ctx: &mut PlaneReqCtx) -> HttpIn {
+    HttpIn::new(
+        HttpHead::Parts {
+            method: ctx.method.as_str(),
+            uri: ctx.uri.clone(),
+            headers: std::mem::take(&mut ctx.headers),
+        },
+        ctx.body.clone(),
+        REQUEST_IDS.fetch_add(1, Ordering::Relaxed),
+    )
 }
 
 /// The client's end of a streamed reply (`ClientSink`): the plane's first head decides the response, every later
@@ -410,8 +412,7 @@ pub(crate) async fn signed_of(
     ingress: &Ingress,
     who: &Namespace,
     route: &Mounted,
-    headers: &[(String, Vec<u8>)],
-    body: &[u8],
+    http: &HttpIn,
     now_s: u64,
 ) -> Option<bool> {
     if route.effective != AUTH_SIGNED_INGRESS {
@@ -420,20 +421,20 @@ pub(crate) async fn signed_of(
     let Some(secret) = (ingress.secrets)(&who.name, route.route) else {
         return Some(false);
     };
-    let pairs: Vec<Pair<'_>> = headers
-        .iter()
-        .map(|(name, value)| Pair {
+    let mut pairs: Vec<Pair<'_>> = Vec::new();
+    http.each_header(|name, value| {
+        pairs.push(Pair {
             name: Str::new(name),
             value: WireBytes::new(value),
-        })
-        .collect();
+        });
+    });
     let admitted = signed_ingress::admit(
         &*ingress.verifier,
         &*ingress.replay,
         &who.caller(),
         &secret,
         &pairs,
-        body,
+        &http.body,
         now_s,
     )
     .await;
@@ -679,12 +680,10 @@ async fn answer(
         Seen::Verified(id) => (Some(Arc::clone(id)), Some(subject_identity(id))),
         Seen::Anonymous | Seen::Rejected => (None, None),
     };
-    let http = http_in(&ctx);
+    let http = http_in(&mut ctx);
     let request = ctx.request.clone();
     let signed = match ingress {
-        Some(ingress) => {
-            signed_of(ingress, &seat.who, route, &http.headers, &http.body, now_s).await
-        }
+        Some(ingress) => signed_of(ingress, &seat.who, route, &http, now_s).await,
         None => None,
     };
     let models = if route.catalog {

@@ -62,7 +62,7 @@ models:
         command
             .args(args)
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("BOOT_SEMANTIC_PASS_ONCE_KEY", "x")
             .env("BUSBAR_TEST_SEMANTIC_PASS_PROBE", "1")
             .env("RUST_LOG", "info")

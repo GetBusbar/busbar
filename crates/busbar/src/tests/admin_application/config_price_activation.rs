@@ -79,7 +79,7 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -274,7 +274,7 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config,
             None,
             Default::default(),
@@ -641,7 +641,7 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config,
             None,
             Default::default(),
@@ -825,7 +825,7 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -1132,7 +1132,7 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

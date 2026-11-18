@@ -880,7 +880,7 @@ fn audit_line() -> busbar_kernel_audit::AuditRecord {
 /// #370: recovery carries the original WAL position, distinct from the audit chain sequence.
 #[tokio::test]
 async fn recovered_audit_lookup_and_reappend_keep_the_original_wal_position() {
-    bounded(async {
+    Box::pin(bounded(async {
         let fixture = fixture().await;
         fixture.sink.persist(&unit(1)).await.unwrap();
         let audit = audit_line();
@@ -926,7 +926,7 @@ async fn recovered_audit_lookup_and_reappend_keep_the_original_wal_position() {
             evidence.find_audit(17, 7).await.unwrap(),
             Some((position, audit))
         );
-    })
+    }))
     .await;
 }
 

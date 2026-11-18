@@ -996,6 +996,9 @@ pub struct KernelServices {
     trust: Arc<TrustBook>,
 
     trust_resync: Arc<(std::sync::atomic::AtomicU64, std::sync::atomic::AtomicBool)>,
+    /// Store upkeep jobs admitted to the pool and not yet finished or dropped unrun: `drain`
+    /// certifies nothing while one is outstanding.
+    upkeep: Arc<std::sync::atomic::AtomicUsize>,
 
     judge: Option<Arc<dyn DestJudge>>,
     demotions: Option<Demotions>,
@@ -1094,6 +1097,7 @@ fn audit_decision(
     attempt: &DecisionAttempt,
     key: &str,
     result: Result<KeyRow, TrustRefused>,
+    at_ms: u64,
 ) -> Decided {
     let (outcome, reason) = decision_outcome(&result);
     let action = match attempt.ruling {
@@ -1119,15 +1123,18 @@ fn audit_decision(
         "attempt": op_id,
         "reason": reason,
     });
-    crate::audit_ring::AUDIT.record_row(trust_audit_row(
-        action,
-        &attempt.resource,
-        outcome,
-        &attempt.actor,
-        attempt.request_id.clone(),
-        attempt.operation.clone(),
-        &data,
-    ));
+    crate::audit_ring::AUDIT.record_row_at(
+        trust_audit_row(
+            action,
+            &attempt.resource,
+            outcome,
+            &attempt.actor,
+            attempt.request_id.clone(),
+            attempt.operation.clone(),
+            &data,
+        ),
+        at_ms,
+    );
     Decided {
         result,
         audited: true,
@@ -1186,6 +1193,7 @@ fn kernel_trust_row(
     (instance, counterparty, item): (&str, &str, Option<&str>),
     outcome: &'static str,
     reason: &str,
+    at_ms: u64,
 ) {
     let data = busbar_contract::json::json!({
         "key": trust_key(instance, counterparty, item),
@@ -1195,15 +1203,18 @@ fn kernel_trust_row(
         "decided_by": DecidedBy::Kernel,
         "reason": reason,
     });
-    crate::audit_ring::AUDIT.record_row(trust_audit_row(
-        action,
-        "kernel:trust",
-        outcome,
-        &DecidedBy::Kernel,
-        None,
-        None,
-        &data,
-    ));
+    crate::audit_ring::AUDIT.record_row_at(
+        trust_audit_row(
+            action,
+            "kernel:trust",
+            outcome,
+            &DecidedBy::Kernel,
+            None,
+            None,
+            &data,
+        ),
+        at_ms,
+    );
 }
 fn trust_refused(why: Undecided) -> TrustRefused {
     match why {
@@ -1241,6 +1252,23 @@ impl Drop for TrustResync {
     fn drop(&mut self) {
         let (_, running) = &*self.0;
         running.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// One admitted Store upkeep job, counted from its admission to the pool until it finishes or
+/// is dropped unrun, so a record drain never certifies an empty queue while it is outstanding.
+struct Upkeep(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Upkeep {
+    fn admit(count: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Self(Arc::clone(count))
+    }
+}
+
+impl Drop for Upkeep {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
@@ -1282,6 +1310,7 @@ impl KernelServices {
             signer: inputs.signer,
             trust: Arc::default(),
             trust_resync: Arc::default(),
+            upkeep: Arc::default(),
             judge: Some(inputs.judge),
             demotions: Some(Demotions {
                 record: inputs.demotions,
@@ -1329,6 +1358,7 @@ impl KernelServices {
             signer: None,
             trust: Arc::default(),
             trust_resync: Arc::default(),
+            upkeep: Arc::default(),
             judge: None,
             demotions: None,
             work: Arc::default(),
@@ -1766,7 +1796,7 @@ impl KernelServices {
     }
 
     fn pool(&self) -> Option<&dyn Offload> {
-        self.pool.as_ref().map(|p| &**p)
+        self.pool.as_deref()
     }
 
     #[must_use]
@@ -1968,6 +1998,8 @@ impl KernelServices {
         actor: &str,
         operation: Option<&str>,
     ) -> Decided {
+        // The decision's one reading of the host clock: its stamp and its audit row's.
+        let at_ms = (self.wall_ms)();
         let resource = match ruling {
             Ruling::Approve => "/api/v1/admin/trust/approve",
             Ruling::Revoke => "/api/v1/admin/trust/revoke",
@@ -1991,25 +2023,25 @@ impl KernelServices {
         // Step 1 before any book access: custody is process-global, so a refusal here says nothing
         // about any key.
         let Some(record) = self.trust_decision_record() else {
-            return audit_decision(&attempt, key, Err(TrustRefused::Unavailable));
+            return audit_decision(&attempt, key, Err(TrustRefused::Unavailable), at_ms);
         };
         // Step 2: a flattened key must name exactly one row; the first of two matches would let an
         // upstream choose the row by naming a tool.
         let mut matching = self.trust.rows().into_iter().filter(|r| r.key() == key);
         let Some(found) = matching.next() else {
-            return audit_decision(&attempt, key, Err(TrustRefused::NoSuchKey));
+            return audit_decision(&attempt, key, Err(TrustRefused::NoSuchKey), at_ms);
         };
         if matching.next().is_some() {
-            return audit_decision(&attempt, key, Err(TrustRefused::Ambiguous));
+            return audit_decision(&attempt, key, Err(TrustRefused::Ambiguous), at_ms);
         }
         attempt.instance = found.instance;
         attempt.counterparty = found.counterparty;
         attempt.item = found.item;
-        let result = match self.prepare_decision(&attempt, Some(reviewed), record) {
+        let result = match self.prepare_decision(&attempt, Some(reviewed), record, at_ms) {
             Ok(decision) => decision.finish().await,
             Err(why) => Err(why),
         };
-        audit_decision(&attempt, key, result)
+        audit_decision(&attempt, key, result, at_ms)
     }
 
     /// Steps 3–4: the permit, the review check under it, and the stamp.
@@ -2018,6 +2050,7 @@ impl KernelServices {
         attempt: &DecisionAttempt,
         reviewed: Option<Reviewed<'_>>,
         record: Arc<DemotionRecord>,
+        at_ms: u64,
     ) -> Result<TrustDecision, TrustRefused> {
         let (instance, counterparty, item) = (
             attempt.instance.as_str(),
@@ -2033,8 +2066,8 @@ impl KernelServices {
             .rule(instance, counterparty, item, attempt.ruling, reviewed)
             .map_err(trust_refused)?;
         fact.decided_by = Some(attempt.actor.clone());
-        fact.decided_at = Some((self.wall_ms)() / 1000);
-        fact.operation = attempt.operation.clone();
+        fact.decided_at = Some(at_ms / 1000);
+        fact.operation.clone_from(&attempt.operation);
         let clear = if fact.item.is_none() && attempt.ruling == Ruling::Approve {
             let default = self
                 .demotions
@@ -2657,7 +2690,9 @@ impl KernelServices {
             return;
         };
         let store = Arc::clone(store);
+        let upkeep = Upkeep::admit(&self.upkeep);
         pool.run_async(Box::pin(async move {
+            let _upkeep = upkeep;
             if let Err(error) = store.sweep_claim_scope().await {
                 tracing::warn!(
                     ?error,
@@ -2683,8 +2718,9 @@ impl KernelServices {
         let resync = TrustResync(Arc::clone(&self.trust_resync));
         last.store(now, Ordering::Relaxed);
         let (record, trust) = (Arc::clone(&d.record), Arc::clone(&self.trust));
+        let upkeep = Upkeep::admit(&self.upkeep);
         pool.run_async(Box::pin(async move {
-            let _resync = resync;
+            let (_resync, _upkeep) = (resync, upkeep);
             let snapshot = trust.decision_snapshot();
             match record.decisions().await {
                 Ok(rows) => trust.resync_decided(&snapshot, &rows),
@@ -2706,7 +2742,7 @@ impl KernelServices {
     pub fn drain(&self, deadline: std::time::Duration) -> bool {
         crate::off_path::host_services::drain_until(
             deadline,
-            || self.batcher.idle(),
+            || self.batcher.idle() && self.upkeep.load(std::sync::atomic::Ordering::Acquire) == 0,
             || self.flush_tick(),
         )
     }
@@ -3398,6 +3434,8 @@ impl HostServices for KernelServices {
     }
 
     fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
+        // The sighting's one reading of the host clock: its judgement and its audit row's.
+        let at_ms = (self.wall_ms)();
         let durable = match (self.demotions.as_ref(), self.pool()) {
             (Some(_), None) => return Ran::Now(Stored::refused(NO_POOL)),
             (Some(d), Some(pool)) => Some((d, pool)),
@@ -3421,17 +3459,16 @@ impl HostServices for KernelServices {
         if !valid_trust_evidence(hash) {
             return Ran::Now(Stored::refused(INVALID_TRUST_EVIDENCE));
         }
-        let (sight, effect) =
-            match self
-                .trust
-                .sight(caller.namespace(), counterparty, hash, (self.wall_ms)())
-            {
-                Ok(v) => v,
-                Err(Unjudged::UnknownInstance) => return Ran::Now(Stored::refused(NOT_ADMITTED)),
-                Err(Unjudged::UnknownCounterparty) => {
-                    return Ran::Now(Stored::refused(NOT_A_COUNTERPARTY));
-                }
-            };
+        let (sight, effect) = match self
+            .trust
+            .sight(caller.namespace(), counterparty, hash, at_ms)
+        {
+            Ok(v) => v,
+            Err(Unjudged::UnknownInstance) => return Ran::Now(Stored::refused(NOT_ADMITTED)),
+            Err(Unjudged::UnknownCounterparty) => {
+                return Ran::Now(Stored::refused(NOT_A_COUNTERPARTY));
+            }
+        };
         let answer = Stored::ready(sight_code(sight));
         let Some((d, pool)) = durable.filter(|_| effect != Effect::None) else {
             return Ran::Now(answer);
@@ -3481,10 +3518,16 @@ impl HostServices for KernelServices {
             let at = (audit_instance.as_str(), audit_counterparty.as_str(), None);
             if let Err(error) = settled {
                 tracing::error!(%error,"the durable trust demotion could not be settled");
-                kernel_trust_row(action, at, crate::audit_ring::OUTCOME_DEGRADED, "not_kept");
+                kernel_trust_row(
+                    action,
+                    at,
+                    crate::audit_ring::OUTCOME_DEGRADED,
+                    "not_kept",
+                    at_ms,
+                );
                 owed.answer(failed(DECISION_UNKEPT));
             } else {
-                kernel_trust_row(action, at, crate::audit_ring::OUTCOME_APPLIED, "");
+                kernel_trust_row(action, at, crate::audit_ring::OUTCOME_APPLIED, "", at_ms);
                 owed.answer(answer);
             }
         }));
@@ -3706,6 +3749,8 @@ impl HostServices for KernelServices {
         if self.facts(caller).is_none() {
             return Ran::Now(Stored::refused(NOT_ADMITTED));
         }
+        // The decision's one reading of the host clock: its stamp and its audit row's.
+        let at_ms = (self.wall_ms)();
         let ruling = if approve {
             Ruling::Approve
         } else {
@@ -3743,20 +3788,21 @@ impl HostServices for KernelServices {
         // reviewed digest stays unconditional: it can never trust anything.
         let reviewed = match (ruling, expected) {
             (Ruling::Approve, None) => {
-                let decided = audit_decision(&attempt, &key_text, Err(TrustRefused::Stale));
+                let decided = audit_decision(&attempt, &key_text, Err(TrustRefused::Stale), at_ms);
                 return Ran::Now(trust_decision_answer(decided.result));
             }
             (_, Some(digest)) => Some(Reviewed::Seen(digest)),
             (Ruling::Revoke, None) => None,
         };
         let Some(record) = self.trust_decision_record() else {
-            let decided = audit_decision(&attempt, &key_text, Err(TrustRefused::Unavailable));
+            let decided =
+                audit_decision(&attempt, &key_text, Err(TrustRefused::Unavailable), at_ms);
             return Ran::Now(trust_decision_answer(decided.result));
         };
-        let work = match self.prepare_decision(&attempt, reviewed, record) {
+        let work = match self.prepare_decision(&attempt, reviewed, record, at_ms) {
             Ok(work) => work,
             Err(why) => {
-                let decided = audit_decision(&attempt, &key_text, Err(why));
+                let decided = audit_decision(&attempt, &key_text, Err(why), at_ms);
                 return Ran::Now(trust_decision_answer(decided.result));
             }
         };
@@ -3765,7 +3811,7 @@ impl HostServices for KernelServices {
         };
         submit_async(pool, later, async move {
             let result = work.finish().await;
-            trust_decision_answer(audit_decision(&attempt, &key_text, result).result)
+            trust_decision_answer(audit_decision(&attempt, &key_text, result, at_ms).result)
         })
     }
 
@@ -3850,7 +3896,8 @@ impl HostServices for KernelServices {
                 let Some(pool) = self.pool() else {
                     return Ran::Now(Stored::refused(NO_POOL));
                 };
-                let now = (self.wall_ms)() / 1000;
+                let at_ms = (self.wall_ms)();
+                let now = at_ms / 1000;
                 submit_async(pool, later, async move {
                     let _permit = permit;
                     let at = (
@@ -3865,6 +3912,7 @@ impl HostServices for KernelServices {
                                 at,
                                 crate::audit_ring::OUTCOME_APPLIED,
                                 "",
+                                at_ms,
                             );
                             Stored::ready(sight_code(sight))
                         }
@@ -3875,6 +3923,7 @@ impl HostServices for KernelServices {
                                 at,
                                 crate::audit_ring::OUTCOME_DEGRADED,
                                 "not_kept",
+                                at_ms,
                             );
                             failed(DECISION_UNKEPT)
                         }
@@ -4287,11 +4336,11 @@ impl HostServices for KernelServices {
     }
 }
 
-pub const STAGE_NO_UNIT: &str = "the crossing serves no unit in flight";
+pub(crate) const STAGE_NO_UNIT: &str = "the crossing serves no unit in flight";
 
-pub const STAGE_NOT_BOUND: &str = "the unit's hook stage is not bound yet";
+pub(crate) const STAGE_NOT_BOUND: &str = "the unit's hook stage is not bound yet";
 
-pub const STAGE_NOT_YOURS: &str = "the unit runs on another instance";
+pub(crate) const STAGE_NOT_YOURS: &str = "the unit runs on another instance";
 
 pub(crate) const STAGE_ANSWERED_AMISS: &str = "the hook stage answered outside the service's shape";
 

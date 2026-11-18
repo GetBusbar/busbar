@@ -252,7 +252,12 @@ async fn failed_own_seal_confirmation_preserves_original_before_certificate() {
             1,
             "retry must not append another terminal record"
         );
-        assert_eq!(terminals[0], &original_row);
+        // The staged original holds wal `Record`s, the journal reads back `JournalRecord`s: the one
+        // terminal is the original by its identity and its bytes.
+        assert_eq!(
+            (terminals[0].node, terminals[0].node_seq, &terminals[0].body),
+            (original_row.node, original_row.node_seq, &original_row.body)
+        );
         assert!(original_row.node_seq < certificate_at);
         assert_eq!(
             rows.iter()

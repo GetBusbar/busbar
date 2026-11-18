@@ -816,3 +816,31 @@ fn tunnel_addresses_preserve_the_embedded_destination_policy() {
         assert_eq!(embedded_ipv4(&literal.parse().unwrap()), None, "{literal}");
     }
 }
+
+/// An operator's list names a host in any ASCII case and still matches the host a URL names in
+/// another case: the list is a case-blind set, as it was a case-blind comparison of every entry.
+#[test]
+fn an_operators_list_matches_a_host_in_any_ascii_case() {
+    let blocked = [
+        "Internal.Example.COM.".to_string(),
+        "other.example".to_string(),
+    ];
+    for url in [
+        "http://internal.example.com/",
+        "http://INTERNAL.EXAMPLE.COM/",
+        "http://Internal.Example.Com/x",
+        "http://OTHER.example/",
+    ] {
+        assert!(
+            ssrf_blocked_host(url, &[], false, &blocked).is_some(),
+            "{url} is on the list"
+        );
+    }
+    assert!(ssrf_blocked_host("http://internal.example.co/", &[], false, &blocked).is_none());
+    assert!(ssrf_blocked_host("http://xinternal.example.com/", &[], false, &blocked).is_none());
+    let allowed = ["METADATA.google.internal".to_string()];
+    assert!(
+        ssrf_blocked_host("http://metadata.GOOGLE.internal/", &allowed, false, &[]).is_none(),
+        "the allow list is case-blind too"
+    );
+}

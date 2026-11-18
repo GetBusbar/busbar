@@ -260,6 +260,11 @@ impl AuditLog {
     pub fn record_row(&self, row: crate::audit::auditlog::AuditRowInput) {
         crate::audit::auditlog::emit_row_now(row);
     }
+
+    /// [`Self::record_row`], stamped with the op's own wall reading (milliseconds) instead of a fresh one.
+    pub fn record_row_at(&self, row: crate::audit::auditlog::AuditRowInput, at_ms: u64) {
+        crate::audit::auditlog::emit_row_at(row, at_ms);
+    }
 }
 
 pub static AUDIT: AuditLog = AuditLog { _private: () };

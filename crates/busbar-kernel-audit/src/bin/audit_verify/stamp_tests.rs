@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::json::JsonValueMutTrait;
 use busbar_kernel_audit::{
     AuditKeySet, AuditSigningKey, BootstrapSigner, BreakNotice, BreakReason, Fingerprint,
     LiveSigner, Notary, Stamp, StampKind, LINK_RECIPE, STAMP_DOMAIN,

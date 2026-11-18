@@ -3,6 +3,8 @@
 
 //! HEAD HISTORY: the permanent hourly anchors and the current tip.
 
+use std::fmt::Write as _;
+
 use crate::record::AuditRecord;
 
 /// How often a head joins the permanent series: one per hour.
@@ -77,17 +79,22 @@ impl HeadHistory {
             .series
             .last()
             .is_none_or(|last| wall.saturating_sub(last.wall) >= self.sample_seconds);
-        self.tip = Some(SignedHead {
-            seq: record.seq,
-            hash: record.fingerprint.to_string(),
+        // The tip's storage is reused: the fingerprint is written into its hash text in place.
+        let tip = self.tip.get_or_insert_with(|| SignedHead {
+            seq: 0,
+            hash: String::new(),
             signature: None,
             key_id: None,
-            wall,
+            wall: 0,
         });
+        tip.seq = record.seq;
+        tip.hash.clear();
+        let _ = write!(tip.hash, "{}", record.fingerprint);
+        tip.signature = None;
+        tip.key_id = None;
+        tip.wall = wall;
         if sample_due {
-            if let Some(tip) = &self.tip {
-                self.series.push(tip.clone());
-            }
+            self.series.push(tip.clone());
         }
     }
 

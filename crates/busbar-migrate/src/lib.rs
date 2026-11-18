@@ -26,6 +26,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 mod absent_store;
+mod attempt;
 mod catalog;
 #[cfg(any(test, feature = "counted"))]
 pub mod counted;
@@ -46,6 +47,7 @@ mod steps;
 mod styles;
 mod templates;
 
+pub use attempt::{attempt_file, write_with_attempt, ATTEMPT_SUFFIX};
 pub use overlay::{Selected, SelectedBy};
 pub use settle::{
     apply_settled, section as core_cfg_section, write_secrets, Applied, BagPlacement, CoreCfg,
@@ -398,12 +400,6 @@ impl Plan {
         self.digest
     }
 
-    /// The format config.yaml was planned from.
-    #[must_use]
-    pub fn source_format(&self) -> u64 {
-        self.from
-    }
-
     /// The text the boot reads in place of the file at `path` (§3 step 2): the planned config.yaml
     /// for config.yaml's own path, the planned providers catalog (§3 1k,
     /// `providers.busbar-1.6.yaml`) for its path, `None` for every other file.
@@ -566,24 +562,6 @@ pub fn write_settled(
     write_attempted(plan, settled, check, None)
 }
 
-/// The store side of step 5 (§3 5, §A6 "Attempts"), which the seam implements over the opened store:
-/// 5S records the attempt once every read-only precondition of the write held and before its first
-/// write; 5d marks this directory's attempt just before the rename over config.yaml. Its refusal
-/// stops the write with nothing renamed.
-pub trait Attempted {
-    /// 5S: `digest` is the plan's ([`Plan::digest`]), `written_sha256` the SHA-256 of the stamped
-    /// document about to be written.
-    ///
-    /// # Errors
-    /// The store's refusal; nothing was written.
-    fn begin(&self, digest: [u8; 32], written_sha256: [u8; 32]) -> Result<(), Refusal>;
-    /// 5d, just before the rename: this directory names the attempt as its own.
-    ///
-    /// # Errors
-    /// The marker could not be written; config.yaml is not renamed.
-    fn before_rename(&self) -> Result<(), Refusal>;
-}
-
 /// What step 5 re-runs from disk, under the directory lock, before it writes anything.
 enum Rerun {
     /// A peer already stamped config.yaml: there is nothing to write or check.
@@ -645,7 +623,7 @@ fn rerun(plan: &Plan, settled: &[Settled], check: Check<'_>) -> Result<Rerun, Re
         )));
     }
     let applied = apply_settled(&again.text, &plan.path, settled, false, plan.facts.env)?;
-    again.text = applied.text().to_owned();
+    applied.text().clone_into(&mut again.text);
     judge(&again, &plan.facts, check)?;
     Ok(Rerun::Ready(Box::new(Ready {
         now,
@@ -675,11 +653,11 @@ pub fn check_settled(plan: &Plan, settled: &[Settled], check: Check<'_>) -> Resu
 /// As [`write_settled`], and the attempt's refusal.
 #[cold]
 #[inline(never)]
-pub fn write_attempted(
+pub(crate) fn write_attempted(
     plan: &Plan,
     settled: &[Settled],
     check: Check<'_>,
-    attempted: Option<&dyn Attempted>,
+    mut attempted: Option<&mut attempt::Attempt<'_>>,
 ) -> Result<Written, Refusal> {
     entered!(write);
     let _held = lock::Held::take(&plan.path)?;
@@ -700,7 +678,7 @@ pub fn write_attempted(
     if let Some(read) = &read {
         overlay::backup_absent_or_equal(read)?;
     }
-    if let Some(attempted) = attempted {
+    if let Some(attempted) = attempted.as_deref_mut() {
         attempted.begin(
             plan.digest,
             busbar_contract::crypto::sha256_parts(&[again.text.as_bytes()]),
@@ -719,7 +697,7 @@ pub fn write_attempted(
             return Err(refusal);
         }
     }
-    if let Some(attempted) = attempted {
+    if let Some(attempted) = attempted.as_deref() {
         if let Err(refusal) = attempted.before_rename() {
             let _ = std::fs::remove_file(&fresh);
             return Err(refusal);

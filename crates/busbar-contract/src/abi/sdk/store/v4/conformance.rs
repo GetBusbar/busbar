@@ -176,7 +176,7 @@ pub fn initialization(
         op(operation),
         vec![
             Predicate {
-                address: root.clone(),
+                address: root,
                 expected: ExpectedValue::Absent,
             },
             Predicate {

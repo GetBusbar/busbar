@@ -301,7 +301,7 @@ fn register_protocols() {
 }
 
 fn register_planes() {
-    root::linked::register_stores(&LINKED);
+    root::linked::register_stores();
     busbar_kernel::preflight::install_linked_auth(LINKED.auths);
 
     // WP3 step 2: the native image prepare (verify, manifest read, describe; no instance opens) runs before
@@ -550,7 +550,6 @@ mod bootstrap_destination_tests {
     fn the_installed_bootstrap_seam_receives_the_complete_recovered_security_policy() {
         let policy = |block_private_addresses| config::Destinations {
             block_private_addresses,
-            allow: Vec::new(),
             blocked: Vec::new(),
         };
         let holder = BootstrapDestJudge::new(root::connector::guard_for(&policy(false)).unwrap());
@@ -1784,8 +1783,10 @@ async fn run(
                     Arc::clone(&app_handle),
                     bind.at.clone().into_boxed_str(),
                     Arc::clone(&supplier.port),
-                    Arc::clone(&request_admission),
-                    class,
+                    root::listener_native::NativeAdmission {
+                        budget: Arc::clone(&request_admission),
+                        class,
+                    },
                     Arc::new(root::serve::native_slot),
                     root::listener_native::NativeLimits {
                         max_connections: native_bind_limits(

@@ -95,7 +95,7 @@ async fn build(
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
 
     crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         std::collections::HashSet::new(),

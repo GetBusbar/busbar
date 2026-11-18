@@ -43,8 +43,7 @@ async fn admin_api(
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -63,7 +62,7 @@ async fn admin_api(
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -197,8 +196,7 @@ async fn install_rejects_bad_filenames() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -210,7 +208,7 @@ async fn install_rejects_bad_filenames() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -303,8 +301,7 @@ async fn inspect_verdicts_refuse_malformed_archives_without_publication() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -316,7 +313,7 @@ async fn inspect_verdicts_refuse_malformed_archives_without_publication() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

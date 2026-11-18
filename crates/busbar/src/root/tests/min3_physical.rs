@@ -279,7 +279,7 @@ async fn operator_slot_is_built_from_actual_admin_handlers_and_preserves_head_he
     use tower::ServiceExt as _;
     busbar_core_admin::install();
     let app = crate::root::min3_auth::tests::physical_app().await;
-    let transport = crate::root::min3_transports::tests::framer(&["http"]);
+    let transport = crate::root::min3_boot::transports::tests::framer(&["http"]);
     let slot = assemble_admin_slot(&app, "admin_listen", transport.clone()).unwrap();
     assert!(slot
         .prepared()
@@ -326,7 +326,9 @@ async fn operator_slot_is_built_from_actual_admin_handlers_and_preserves_head_he
             busbar_kernel::inbound::Head {
                 method: "HEAD".into(),
                 target: busbar_kernel::auth::HEALTHZ_PATH.into(),
-                ..Default::default()
+                authority: String::new(),
+                query: None,
+                fields: Vec::new(),
             },
             budget.try_enter(AdmissionClass::Operator).unwrap(),
             None,
@@ -385,6 +387,6 @@ async fn operator_slot_refuses_missing_actual_admin_authority() {
     busbar_core_admin::install();
     let app = crate::root::inbound_tests::app(false).await.0;
     assert!(app.native_admin.is_none());
-    let transport = crate::root::min3_transports::tests::framer(&["http"]);
+    let transport = crate::root::min3_boot::transports::tests::framer(&["http"]);
     assert!(assemble_admin_slot(&app, "admin_listen", transport).is_err());
 }

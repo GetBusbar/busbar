@@ -48,7 +48,7 @@ use crate::upstreams::{UpstreamDef, DEFAULT_IDLE_S};
 pub const MAX_KEY: usize = 128;
 
 /// How many inbound messages a slot buffers before delivery drops (counted).
-pub const SLOT_QUEUE: usize = 64;
+pub(crate) const SLOT_QUEUE: usize = 64;
 
 /// How an open wire reads and writes. Dropping `hold` stops the child or closes the request.
 pub struct Wire {
@@ -455,9 +455,11 @@ impl ChannelDriver {
                 Arc::clone(&generation.link),
                 req.budget.clone(),
                 lease,
-                generation.number,
-                slot,
-                greet,
+                super::AttachAt {
+                    generation: generation.number,
+                    slot,
+                    greet,
+                },
                 ready_tail,
                 rx,
             );

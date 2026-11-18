@@ -27,7 +27,6 @@ use crate::state::{App, AppHandle};
 #[derive(Clone)]
 pub(crate) struct LoginMethod {
     pub(crate) module: Arc<dyn AuthCalls>,
-    pub(crate) inbound_style: Option<busbar_contract::auth_calls::InboundStyle>,
     /// `true` ⇒ this method has a `browser_login` block and renders a button (and accepts `begin`).
     pub(crate) has_button: bool,
     /// The plugin's redirect-vs-credential classification, as its tail states it, read ONCE at
@@ -46,16 +45,6 @@ pub(crate) struct LoginMethod {
 #[derive(Clone)]
 pub(crate) struct LoginMethods {
     pub(crate) methods: IndexMap<String, LoginMethod>,
-}
-
-pub struct InboundAuthProvider {
-    pub provider: String,
-
-    pub module: String,
-
-    pub calls: Arc<dyn AuthCalls>,
-
-    pub points: busbar_contract::abi::auth::AuthPoints,
 }
 
 const LOGIN_OFFLOAD_MAX_INFLIGHT: usize = 16;

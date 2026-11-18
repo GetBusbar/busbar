@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderName, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
-use busbar_core_admin::provision::{self, ProvisionInstance, Verified};
+use busbar_core_admin::provision::{self, Verified};
 use busbar_kernel::auth::chain_run::{
     verify_cached, AuthServices, ChainInstance, IdentityPolicy, Verdict,
 };
@@ -100,12 +100,7 @@ impl ProvisionMount {
                 stack: CallStack::default(),
             },
         };
-        match tokio::time::timeout_at(
-            deadline.into(),
-            provision::mount(&invocation, &self.policy.clients, req),
-        )
-        .await
-        {
+        match tokio::time::timeout_at(deadline.into(), invocation.run(req)).await {
             Ok(response) => response,
             Err(_) => StatusCode::GATEWAY_TIMEOUT.into_response(),
         }
@@ -117,15 +112,30 @@ struct Invocation<'a> {
     cx: CallCx,
 }
 
-impl ProvisionInstance for Invocation<'_> {
-    fn name(&self) -> &str {
-        &self.mount.name
+impl Invocation<'_> {
+    /// One request on `/provision/<instance>/*`: the CA-2 client check, then `serve`. No plugin is
+    /// called before the check passes.
+    async fn run(&self, req: Request<Body>) -> Response {
+        let capped = match provision::capped(req, self.mount.body_cap).await {
+            Ok(capped) => capped,
+            Err(status) => return self.refuse(status),
+        };
+        let verified = self.verify(capped.request()).await;
+        match provision::admitted(
+            capped,
+            verified,
+            &self.mount.policy.clients,
+            &self.mount.credential_headers,
+        ) {
+            Ok(admitted) => self.serve(admitted.client, admitted.request).await,
+            Err(status) => self.refuse(status),
+        }
     }
-    fn body_cap(&self) -> usize {
-        self.mount.body_cap
-    }
-    fn cred_headers(&self) -> &[HeaderName] {
-        &self.mount.credential_headers
+
+    /// A refusal of the mount, audited `provision_refused{instance, status}`.
+    fn refuse(&self, status: StatusCode) -> Response {
+        provision::audit_refusal(&self.mount.name, status);
+        provision::refusal(status)
     }
 
     async fn verify(&self, request: &Request<Bytes>) -> Verified {

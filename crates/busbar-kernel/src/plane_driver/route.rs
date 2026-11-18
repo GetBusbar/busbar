@@ -115,8 +115,8 @@ pub enum Pick {
     Vetoed {
         /// The status number.
         status: u32,
-        /// The words.
-        text: String,
+        /// The words (the walk's own, fixed).
+        text: &'static str,
     },
     /// The walk refuses the unit for `0` before any member was dialled: the member's credential,
     /// re-resolved for this attempt, is unavailable (`ReasonCode::CredentialUnavailable`). The
@@ -572,7 +572,7 @@ pub(crate) enum End {
 
     Exhausted(u32, Option<u32>, &'static str),
 
-    Vetoed(u32, String),
+    Vetoed(u32, &'static str),
 
     Cancel(ReasonCode, Option<Answered>),
 }
@@ -887,7 +887,9 @@ pub(crate) struct Pumping<'u> {
     state: &'u Mutex<UnitState>,
     ctx: &'u UnitCtx,
     ticket: Ticket,
-    deadline_ns: u64,
+    /// The unit's deadline, armed once when the run starts (the plane clock is read once for it);
+    /// every guarded wait races the same timer, so no wait reads a clock.
+    deadline: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
     stop: watch::Receiver<bool>,
     bufs: Box<PieceBufs>,
     keep: Keep,
@@ -924,6 +926,33 @@ impl<'u> Pumping<'u> {
         deadline_ns: u64,
         body: bytes::Bytes,
     ) -> Self {
+        let now_ns = if deadline_ns == 0 {
+            0
+        } else {
+            driver.calls.now_ns()
+        };
+        Self::at(
+            driver,
+            token,
+            state,
+            ctx,
+            ticket,
+            (deadline_ns, now_ns),
+            body,
+        )
+    }
+
+    /// [`Pumping::new`] for a caller that already read the plane clock: `deadline` is the unit's
+    /// `(deadline_ns, now_ns)` (0 = none) on the plane's clock.
+    pub(crate) fn at(
+        driver: &'u PlaneDriver,
+        token: &'u Pass<Route>,
+        state: &'u Mutex<UnitState>,
+        ctx: &'u UnitCtx,
+        ticket: Ticket,
+        (deadline_ns, now_ns): (u64, u64),
+        body: bytes::Bytes,
+    ) -> Self {
         driver.calls.bind_unit(ticket, ctx.key.get());
         let mut bufs = Box::new(PieceBufs::new(&driver.config.caps, body));
         if driver.records.as_ref().is_some_and(|(services, caller)| {
@@ -940,7 +969,11 @@ impl<'u> Pumping<'u> {
             state,
             ctx,
             ticket,
-            deadline_ns,
+            deadline: (deadline_ns != 0).then(|| {
+                Box::pin(tokio::time::sleep(Duration::from_nanos(
+                    deadline_ns.saturating_sub(now_ns),
+                )))
+            }),
             stop: driver.reload.subscribe(),
             bufs,
             keep: Arc::new(Mutex::new(None)),
@@ -963,12 +996,6 @@ impl<'u> Pumping<'u> {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn left(&self) -> Option<Duration> {
-        (self.deadline_ns != 0).then(|| {
-            Duration::from_nanos(self.deadline_ns.saturating_sub(self.driver.calls.now_ns()))
-        })
-    }
-
     async fn cross(&mut self, p: &Piece) -> (Answered, Option<Answer>, Option<ReasonCode>, bool) {
         self.piece_flags = p.flags;
 
@@ -980,23 +1007,23 @@ impl<'u> Pumping<'u> {
         }
         let calls = &self.driver.calls;
         let (input, out) = frame(&mut self.bufs, p, self.ctx.key.get());
-        let left = self.left();
         let lent: Lent = self.keep.clone();
         let flight = self
             .flight
             .insert(calls.on_piece(self.ticket, input, out, lent));
-        let (answered, cause) = match guarded(&mut self.stop, left, &mut **flight).await {
-            Ok(answered) => (answered, None),
-            Err(cause) => {
-                self.state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .cancel_started
-                    .store(true, std::sync::atomic::Ordering::Release);
-                calls.drop_client(self.ticket);
-                ((&mut **flight).await, Some(cause))
-            }
-        };
+        let (answered, cause) =
+            match guarded(&mut self.stop, self.deadline.as_mut(), &mut **flight).await {
+                Ok(answered) => (answered, None),
+                Err(cause) => {
+                    self.state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .cancel_started
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    calls.drop_client(self.ticket);
+                    ((&mut **flight).await, Some(cause))
+                }
+            };
         let retired = flight.retirement().is_some();
         let out = flight.out().map(|o| Answer::of(&o));
 
@@ -1288,14 +1315,14 @@ pub(crate) fn answered_done(
 
 async fn guarded<T>(
     stop: &mut watch::Receiver<bool>,
-    left: Option<Duration>,
+    deadline: Option<&mut std::pin::Pin<Box<tokio::time::Sleep>>>,
     fut: impl Future<Output = T>,
 ) -> Result<T, ReasonCode> {
     tokio::select! {
         biased;
         v = fut => Ok(v),
         _ = stop.wait_for(|stopped| *stopped) => Err(ReasonCode::Drain),
-        () = until(left) => Err(ReasonCode::DeadlineExceeded),
+        () = until(deadline) => Err(ReasonCode::DeadlineExceeded),
     }
 }
 
@@ -1303,8 +1330,7 @@ async fn guarded_run<T>(
     run: &mut Pumping<'_>,
     fut: impl Future<Output = T>,
 ) -> Result<T, ReasonCode> {
-    let left = run.left();
-    guarded(&mut run.stop, left, fut).await
+    guarded(&mut run.stop, run.deadline.as_mut(), fut).await
 }
 
 async fn turn_wait<T>(
@@ -1332,9 +1358,9 @@ async fn turn_wait<T>(
     }
 }
 
-async fn until(left: Option<Duration>) {
-    match left {
-        Some(left) => tokio::time::sleep(left).await,
+async fn until(deadline: Option<&mut std::pin::Pin<Box<tokio::time::Sleep>>>) {
+    match deadline {
+        Some(deadline) => deadline.as_mut().await,
         None => std::future::pending::<()>().await,
     }
 }
@@ -2111,12 +2137,16 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                                 st.facts.content = true;
                             }
                         }
-                        let left = run.left();
-                        let Pumping { stop, bufs, .. } = &mut *run;
+                        let Pumping {
+                            stop,
+                            bufs,
+                            deadline,
+                            ..
+                        } = &mut *run;
                         let emitted = &bufs.reply[..n];
                         let text = out.flags & PIECE_OUT_TEXT != 0;
                         let written = self.caller.write_piece(emitted, text, message_end);
-                        match guarded(stop, left, written).await {
+                        match guarded(stop, deadline.as_mut(), written).await {
                             Ok(true) => {}
                             Ok(false) => {
                                 return Step::End(End::Cancel(ReasonCode::ClientGone, None));

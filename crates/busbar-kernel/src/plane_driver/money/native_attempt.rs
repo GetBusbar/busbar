@@ -21,8 +21,10 @@ pub(crate) enum NativeAttemptError {
     Unavailable,
     Binding,
     Custody(busbar_contract::records::RecordStoreError),
-    Usage(RecErr),
-    Rate(crate::governance::selected_resource::RateObservationError),
+    /// The answer's usage records were refused (the session reports BadRecords).
+    Usage,
+    /// The rate owner refused the observation or the seal.
+    Rate,
 }
 
 /// The book-accepted complete checkpoint is the runtime's single factual source as well.
@@ -178,11 +180,15 @@ impl NativeRequestMoney {
             .physical_classes()
             .map(Box::<str>::from)
             .collect();
-        if physical_classes
+        // The same set as the checkpoint's (as the owned set comparison judged it): each declared
+        // class is in the checkpoint's set, and each of the checkpoint's is declared.
+        if !physical_classes
             .iter()
-            .map(|class| class.to_string())
-            .collect::<BTreeSet<_>>()
-            != parts.physical_classes
+            .all(|class| parts.physical_classes.contains(&**class))
+            || !parts
+                .physical_classes
+                .iter()
+                .all(|held| physical_classes.iter().any(|class| **class == **held))
         {
             return Err(NativeAttemptError::Binding);
         }
@@ -194,7 +200,7 @@ impl NativeRequestMoney {
                 TargetIdentity::Model { .. } => TargetKind::Model,
             },
             instance: self.request.context().instance().to_owned(),
-            selected_pool: selected.pool().to_owned(),
+            selected_pool: partition_pool(&self.request, selected.pool()),
             resource: selected.resource().map(str::to_owned),
             usage: UsagePartition {
                 lane: selected.qualified_member().to_owned(),
@@ -221,6 +227,13 @@ impl NativeRequestMoney {
     /// A quota/eligibility refusal consumes the original preparation without creating a dispatch.
     /// Minute-expired provisional reservations instead return this same token for re-admission.
     pub(crate) fn no_send(&self, prepared: PreparedRateAttempt) -> Result<(), NativeAttemptError> {
+        // The token is spent here, on every path, after the shard guard of the check is released.
+        let result = self.no_send_checked(&prepared);
+        drop(prepared);
+        result
+    }
+
+    fn no_send_checked(&self, prepared: &PreparedRateAttempt) -> Result<(), NativeAttemptError> {
         let mut all = self.money.shard(self.request.unit());
         let open = all
             .get_mut(&self.request.unit())
@@ -437,12 +450,14 @@ fn stage_attempt_facts(
         }
     }
     if let Some(end) = end {
-        let reported: Vec<&str> = partition
-            .usage
-            .classes
-            .iter()
-            .filter_map(|(class, facts)| facts.reported.is_some().then_some(class.as_str()))
-            .collect();
+        let mut reported = smallvec::SmallVec::<[&str; 8]>::new();
+        reported.extend(
+            partition
+                .usage
+                .classes
+                .iter()
+                .filter_map(|(class, facts)| facts.reported.is_some().then_some(class.as_str())),
+        );
         declaration.validate_attempt_end(state, end, &reported)?;
         partition.finality = match end.completeness {
             Completeness::Complete => Finality::Complete,
@@ -456,3 +471,18 @@ fn stage_attempt_facts(
 #[cfg(test)]
 #[path = "native_attempt_tests.rs"]
 mod tests;
+
+/// The pool a selected attempt partition records: an instance-qualified identity
+/// (`instance\u{1f}pool`, required by the partition rule of ddd61a377f), never an internal walk
+/// key (request_admission: "Operator domain is distinct from the internal walk key"). Every walk
+/// key is internal: a seat walks its own pool under the bare instance (`SeatPool::of`), a catalog
+/// pool under a length-framed key (`provider_catalog::walk_key`). An attempt in the request's own
+/// walk records the request's own qualified pool (`instance\u{1f}domain`). Any other walk key is
+/// recorded as it is, and the partition rule judges it.
+fn partition_pool(request: &AdmittedRequest, walk_pool: &str) -> String {
+    if request.walk_key() == Some(walk_pool) {
+        request.pool().to_owned()
+    } else {
+        walk_pool.to_owned()
+    }
+}

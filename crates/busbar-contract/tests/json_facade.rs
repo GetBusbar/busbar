@@ -535,3 +535,12 @@ fn pointer_reads_rfc_6901() {
     );
     assert!(json::pointer_mut(&mut tree, "/a/missing").is_none());
 }
+
+/// A document that stops short is end-of-input; a complete but invalid one is not (the relay's cut-short test).
+#[test]
+fn a_cut_short_document_is_eof_and_a_malformed_one_is_not() {
+    let cut = json::parse_foreign::<IgnoredAny>(br#"{"a":[1,2"#).expect_err("cut short");
+    assert!(cut.is_eof(), "{cut}");
+    let bad = json::parse_foreign::<IgnoredAny>(br#"{"a":]}"#).expect_err("malformed");
+    assert!(!bad.is_eof(), "{bad}");
+}

@@ -92,28 +92,48 @@ impl AttemptTiming {
             trail.status(status);
         }
         // A synthetic failure/completion without status or bytes is not response readiness.
-        if !self.ready && (piece.status.is_some() || !piece.bytes.is_empty()) {
-            self.mark("response_ready_us");
-            self.ready = true;
-        }
-        if !self.body && !piece.bytes.is_empty() && !piece.fields {
-            self.mark("first_body_us");
-            self.body = true;
-        }
-        if piece.last && !piece.cut && !piece.fail_over {
-            self.mark("far_end_last_us");
+        let ready = !self.ready && (piece.status.is_some() || !piece.bytes.is_empty());
+        let body = !self.body && !piece.bytes.is_empty() && !piece.fields;
+        let last = piece.last && !piece.cut && !piece.fail_over;
+        if ready || body || last {
+            // One clock reading marks every boundary this piece crosses.
+            let at = self.since_start();
+            if ready {
+                self.mark(at, "response_ready_us");
+                self.ready = true;
+            }
+            if body {
+                self.mark(at, "first_body_us");
+                self.body = true;
+            }
+            if last {
+                self.mark(at, "far_end_last_us");
+            }
         }
     }
 
-    fn mark(&self, field: &'static str) {
-        if let Some(start) = self.start {
-            self.span.record(field, micros(traced_since(start)));
+    /// The interval since the attempt's start, read once per boundary; `None` when the span does
+    /// not record (a disabled span reads no clock).
+    fn since_start(&self) -> Option<u64> {
+        self.start.map(|start| micros(traced_since(start)))
+    }
+
+    fn mark(&self, at: Option<u64>, field: &'static str) {
+        if let Some(us) = at {
+            self.span.record(field, us);
         }
     }
 
     pub(super) fn finish(&mut self, outcome: &'static str) {
         if !self.terminal {
-            self.mark("attempt_end_us");
+            let at = self.since_start();
+            self.finish_at(at, outcome);
+        }
+    }
+
+    fn finish_at(&mut self, at: Option<u64>, outcome: &'static str) {
+        if !self.terminal {
+            self.mark(at, "attempt_end_us");
             self.span.record("outcome", outcome);
             self.terminal = true;
             if let Some(trail) = self.trail.as_mut() {
@@ -123,22 +143,24 @@ impl AttemptTiming {
     }
 
     pub(super) fn ended(&mut self, end: &End, cut: bool) {
+        // One clock reading for the end and the attempt's close.
+        let at = self.since_start();
         match end {
             End::Done if !cut => {
-                self.mark("producer_complete_us");
-                self.finish("complete");
+                self.mark(at, "producer_complete_us");
+                self.finish_at(at, "complete");
             }
-            End::Done => self.finish("cut"),
-            End::RetiredByCompletion => self.finish("retired"),
+            End::Done => self.finish_at(at, "cut"),
+            End::RetiredByCompletion => self.finish_at(at, "retired"),
             End::Cancel(reason, _) => {
-                self.mark("cancelled_us");
+                self.mark(at, "cancelled_us");
                 self.span.record(
                     "cancel_reason",
                     busbar_contract::abi::plane::reason_code(*reason),
                 );
-                self.finish("cancelled");
+                self.finish_at(at, "cancelled");
             }
-            _ => self.finish("failed"),
+            _ => self.finish_at(at, "failed"),
         }
     }
 }

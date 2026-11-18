@@ -120,7 +120,7 @@ async fn application(core: Arc<CoreStore>) -> Arc<busbar_kernel::state::App> {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugins,
         None,
         Default::default(),

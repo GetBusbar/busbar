@@ -30,13 +30,10 @@ use zerocopy::IntoBytes;
 /// holds `unsafe extern "C"` entries and raw table pointers, and only `plugin()` builds one. Re-exported here
 /// under their frozen paths; their `mechanism!` block is busbar-ffi's, folded into `CORE_FP` after this crate's.
 pub use busbar_ffi::header::{
-    OPEN_DRY_RUN, PLUGIN_CANCEL_AT, PLUGIN_CLOSE_AT, PLUGIN_DESCRIBE_AT, PLUGIN_FORMER_NAMES_AT,
-    PLUGIN_KIND_VT_AT, PLUGIN_OPEN_AT, PLUGIN_RESUME_AT, PLUGIN_STAMP_AT, Plugin, SYMBOL,
+    EntryFn, OPEN_DRY_RUN, PLUGIN_CANCEL_AT, PLUGIN_CLOSE_AT, PLUGIN_DESCRIBE_AT,
+    PLUGIN_FORMER_NAMES_AT, PLUGIN_KIND_VT_AT, PLUGIN_OPEN_AT, PLUGIN_RESUME_AT, PLUGIN_STAMP_AT,
+    Plugin, SYMBOL,
 };
-
-/// The type of the one exported symbol, `busbar_plugin` (IF §7.1). UNSAFE-MIN r3.1: `export!` emits it as a
-/// safe `extern "C" fn` (it only returns the address of a `'static` header), so the pointer type is safe too.
-pub type EntryFn = extern "C" fn() -> *const Plugin;
 
 /// What the macros name, under one hidden path, so a plugin crate needs no busbar-ffi dependency of its own.
 #[doc(hidden)]
@@ -449,7 +446,6 @@ pub fn open<T: Open>(
 ) -> busbar_ffi::shim::Opening<Outcome<T>, Inbox> {
     use busbar_ffi::shim::Opening;
     if flags & OPEN_DRY_RUN != 0 {
-        drop(chained);
         return Opening::Done(check::<T>(h, config.get(), out));
     }
     Opening::Chain(

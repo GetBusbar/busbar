@@ -41,7 +41,7 @@ fn omitted(list: &&[String]) -> bool {
 }
 
 /// The fixed OAuth metadata document as neutral head/body output.
-pub fn metadata_rendered(m: &Metadata<'_>) -> crate::plane_driver::Rendered {
+pub(crate) fn metadata_rendered(m: &Metadata<'_>) -> crate::plane_driver::Rendered {
     let doc = Document {
         authorization_servers: m.authorization_servers,
         bearer_methods_supported: ["header"],

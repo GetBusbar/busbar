@@ -180,7 +180,7 @@ impl Conns for Table {
             .unwrap_or(Script::Refused);
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let (pieces, bytes) = match script {
-            Script::Refused => return Err(ConnError::Refused),
+            Script::Refused => return Err(ConnError::Closed),
             Script::OpenFails(err) => return Err(err),
             Script::ReadFails(err) => {
                 self.read_fails.lock().unwrap().insert(id, err);
@@ -315,7 +315,7 @@ impl PollConns for Table {
         timeout_ms: u64,
     ) -> Result<HeadDefaults, ConnError> {
         if self.fail_defaults.load(Ordering::SeqCst) {
-            return Err(ConnError::Refused);
+            return Err(ConnError::Closed);
         }
         let mut lines = self.defaults.lock().unwrap().clone();
         if self.budget_defaults.load(Ordering::SeqCst) {
@@ -355,7 +355,7 @@ impl PollConns for Table {
             }
 
             if self.broken.lock().unwrap().contains(&conn.0) {
-                return Poll::Ready(Err(ConnError::Refused));
+                return Poll::Ready(Err(ConnError::Closed));
             }
             return Poll::Pending;
         };
@@ -1905,7 +1905,7 @@ async fn a_dial_whose_auth_refuses_or_fails_records_nothing_against_the_destinat
         );
     }
     let r = rig(
-        &[("a.test", Script::OpenFails(ConnError::Refused))],
+        &[("a.test", Script::OpenFails(ConnError::Closed))],
         OnExhausted::Status503,
         None,
     );
@@ -2364,7 +2364,7 @@ async fn the_hooks_constraint_orders_and_restricts_the_pick() {
         None,
     );
     let t = token();
-    let described = Arc::new(HashMap::from([(
+    let described = Arc::new(foldhash::HashMap::from_iter([(
         "m2".to_string(),
         MemberFacts {
             tags: vec!["baa".to_string()],
@@ -2451,8 +2451,7 @@ async fn a_required_restrict_refuses_at_the_fallback_pool() {
         far.member(&t, 2).await,
         Pick::Vetoed {
             status: 503,
-            text: "No upstream satisfies a required gate's restriction. Please retry shortly."
-                .to_string(),
+            text: "No upstream satisfies a required gate's restriction. Please retry shortly.",
         }
     );
 }
@@ -4391,7 +4390,8 @@ async fn native_credential_hashes_exact_body_bytes() {
     ] {
         let mut request = request();
         request.body = body.to_vec();
-        far.native_credential(&binding, &request, "https://a.test/chat", None, &[])
+        let now = super::dialing(&*far.egress.clock);
+        far.native_credential(&binding, &request, "https://a.test/chat", None, &[], now)
             .await
             .unwrap();
         let recorded = port.body_hashes.lock().unwrap();
@@ -4587,4 +4587,44 @@ async fn native_retry_mints_for_the_actual_second_destination() {
     assert!(opened[0].0.contains("a.test"));
     assert!(opened[1].0.contains("b.test"));
     assert_eq!(rig.auth.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_credential_cause_warns_once_and_again_when_it_changes() {
+    crate::plane_driver::declare_providers(["cred-warn-a", "cred-warn-b"]);
+    assert!(super::credential_cause_changed(
+        "cred-warn-a",
+        ConnError::AuthRefused
+    ));
+    assert!(!super::credential_cause_changed(
+        "cred-warn-a",
+        ConnError::AuthRefused
+    ));
+    assert!(super::credential_cause_changed(
+        "cred-warn-a",
+        ConnError::Closed
+    ));
+    assert!(!super::credential_cause_changed(
+        "cred-warn-a",
+        ConnError::Closed
+    ));
+    // Another provider keeps its own last cause.
+    assert!(super::credential_cause_changed(
+        "cred-warn-b",
+        ConnError::Closed
+    ));
+}
+
+#[test]
+fn an_undeclared_provider_past_the_spare_seats_is_never_warned_about() {
+    crate::plane_driver::declare_providers(["cred-warn-declared"]);
+    let mut warned = 0;
+    for at in 0..busbar_contract::fixed::DEFAULT_SPARE + 4 {
+        let name = format!("cred-warn-undeclared-{at}");
+        if super::credential_cause_changed(&name, ConnError::AuthRefused) {
+            warned += 1;
+        }
+    }
+    // The table is shared by the process, so other tests may hold spare seats: at most the spares.
+    assert!(warned <= busbar_contract::fixed::DEFAULT_SPARE);
 }

@@ -231,7 +231,7 @@ fn egress_over(conns: Arc<dyn PollConns>, port: u16) -> Egress {
                 floor: WeightedFloor::new(),
             },
         )]),
-        routes: HashMap::from([(
+        routes: foldhash::HashMap::from_iter([(
             destination,
             MemberRoute {
                 ride_anchors: Vec::new(),

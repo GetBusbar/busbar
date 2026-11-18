@@ -19,8 +19,8 @@ pub enum UsageView {
     Partitioned(Arc<UnitCheckpoint>),
 }
 
-fn refused(message: &str) -> RecordStoreError {
-    RecordStoreError(message.to_owned())
+fn refused(message: &'static str) -> RecordStoreError {
+    crate::cold::selected_view_refusal(message)
 }
 
 impl PlaneMoney {

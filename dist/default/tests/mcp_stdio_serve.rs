@@ -137,7 +137,7 @@ fn base_command(dir: &Path, credential: Option<&str>) -> Command {
             "0000000000000000000000000000000000000000000000000000000000000001",
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env(
             common::credentials::HARNESS_FIRST_PARTY_KEY_ENV,
             common::credentials::harness_release_key_hex(),
@@ -242,7 +242,7 @@ fn the_catalog_sections_are_required_only_when_a_linked_plane_requires_them() {
     let out = Command::new(common::boot::exe())
         .arg("--validate")
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .output()
         .expect("run busbar --validate");
     let _ = std::fs::remove_dir_all(&dir);

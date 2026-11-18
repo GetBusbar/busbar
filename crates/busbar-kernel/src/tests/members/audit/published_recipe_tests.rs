@@ -240,12 +240,27 @@ fn the_published_table_still_describes_what_this_build_seals() {
         "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
     )
     .expect("the test seed is 64 lowercase hex");
-    let mut chain = busbar_kernel_audit::record::AuditChain::new().signing_with(key);
-    let sealed = busbar_kernel_audit::record::Audit::seal(
+    let mut chain = busbar_kernel_audit::record::AuditChain::new().signing_with(
+        busbar_kernel_audit::sign::AuditSigningKey::from_hex_seed(
+            "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+        )
+        .expect("the test seed is 64 lowercase hex"),
+    );
+    let mut sealed = busbar_kernel_audit::record::Audit::seal(
         &mut chain,
         super::sign_tests::rich_inputs(1),
         &token,
     );
+    // Since SF-4 part 2 (4bc8cfec86) this build seals link lines, whose contract is
+    // audit-link-v1.md (79c0ce5e50; checked from that page alone by busbar-kernel-audit's
+    // audit_verify tests). v7 is verify-only and still stored, so its published page must still
+    // reproduce a v7 line: rebuild this one as the previous build sealed it (v7, no link date,
+    // genesis link) and sign it again.
+    sealed.recipe = busbar_kernel_audit::Recipe::V7;
+    sealed.linked_ms = 0;
+    sealed.prev_hash = String::new();
+    sealed.hash = busbar_kernel_audit::record::AuditChain::digest_of(&sealed);
+    sealed.signature = Some(key.sign_digest(&sealed.hash));
 
     let body: json::Value = json::parse_value(
         busbar_kernel_audit::expose::range_body(std::slice::from_ref(&sealed), 1, 1).as_bytes(),

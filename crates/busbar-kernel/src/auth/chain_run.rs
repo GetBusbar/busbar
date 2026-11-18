@@ -129,51 +129,49 @@ pub fn run_chain<'a>(
 
 /// The same walk for a consumer retaining its own ports and callers. Snapshot before constructing
 /// the future so borrowed ABI request views never cross a suspension point.
-pub fn run_owned_chain<'a>(
+pub async fn run_owned_chain<'a>(
     services: &'a AuthServices<'a>,
     cache: &'a dyn VerdictCache,
     chain: &'a [ChainInstance<'a>],
     cx: CallCx,
     req: Request,
-) -> impl std::future::Future<Output = ChainEnd> + Send + 'a {
-    async move {
-        for instance in chain {
-            match verify_owned(services, cache, *instance, cx, &req).await {
-                Ok(Verdict::Identity(identity)) => {
-                    return ChainEnd::Admitted {
-                        instance: instance.id,
-                        identity,
-                    };
+) -> ChainEnd {
+    for instance in chain {
+        match verify_owned(services, cache, *instance, cx, &req).await {
+            Ok(Verdict::Identity(identity)) => {
+                return ChainEnd::Admitted {
+                    instance: instance.id,
+                    identity,
+                };
+            }
+            Ok(Verdict::Held) => {
+                return ChainEnd::Held {
+                    instance: instance.id,
                 }
-                Ok(Verdict::Held) => {
-                    return ChainEnd::Held {
-                        instance: instance.id,
-                    }
+            }
+            Ok(Verdict::PolicyRejected { code }) => {
+                return ChainEnd::PolicyRejected {
+                    instance: instance.id,
+                    code,
                 }
-                Ok(Verdict::PolicyRejected { code }) => {
-                    return ChainEnd::PolicyRejected {
-                        instance: instance.id,
-                        code,
-                    }
+            }
+            Ok(Verdict::NotMine) => {}
+            Ok(Verdict::Rejected { code, text }) => {
+                return ChainEnd::Rejected {
+                    instance: instance.id,
+                    code,
+                    text,
                 }
-                Ok(Verdict::NotMine) => {}
-                Ok(Verdict::Rejected { code, text }) => {
-                    return ChainEnd::Rejected {
-                        instance: instance.id,
-                        code,
-                        text,
-                    }
-                }
-                Err(error) => {
-                    return ChainEnd::Failed {
-                        instance: instance.id,
-                        error,
-                    }
+            }
+            Err(error) => {
+                return ChainEnd::Failed {
+                    instance: instance.id,
+                    error,
                 }
             }
         }
-        ChainEnd::NoIdentity
     }
+    ChainEnd::NoIdentity
 }
 
 /// One instance's verdict through the cache (§12.28 rule 4). A KEYS_STALE answer flushes the instance (rule 6).
@@ -415,12 +413,12 @@ pub struct Request {
 }
 impl Drop for Request {
     fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.method.zeroize();
-        self.path.zeroize();
-        self.query.zeroize();
-        self.authority.zeroize();
-        self.peer.zeroize();
+        use busbar_contract::secure::wipe_string;
+        wipe_string(&mut self.method);
+        wipe_string(&mut self.path);
+        wipe_string(&mut self.query);
+        wipe_string(&mut self.authority);
+        wipe_string(&mut self.peer);
     }
 }
 impl Request {

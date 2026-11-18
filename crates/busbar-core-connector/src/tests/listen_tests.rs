@@ -921,3 +921,50 @@ fn the_accept_backoff_sequence_is_5ms_doubling_to_a_250ms_cap() {
         assert_eq!(delays, want);
     });
 }
+
+/// #245, DES-245 r3 C6: an accepted client that resets mid-handshake failed the transport, so the
+/// cause stage is `CAUSE_CONNECT`; a client the listener's `client_ca` refuses stays
+/// `CAUSE_SECURITY` (the test above).
+#[test]
+fn an_accepted_client_that_resets_mid_handshake_is_a_connect_failure() {
+    use busbar_contract::abi::host::conn::connector::CAUSE_CONNECT;
+    let (_ca, leaf, key) = localhost_cert();
+    worker().block_on(async move {
+        let server = std::sync::Arc::unwrap_or_clone(
+            busbar_contract::crypto::tls::server_config(|b| {
+                b.with_no_client_auth().with_single_cert(
+                    vec![leaf.into()],
+                    rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+                )
+            })
+            .unwrap(),
+        );
+        let door = Arc::new(TestDoor::identity("sec"));
+        let mut l = Listening::bind(
+            Some(door.clone()),
+            &crate::support::via(),
+            "127.0.0.1:0",
+            Some(Arc::new(server)),
+            Vec::new(),
+            AcceptLimits::default(),
+        )
+        .unwrap();
+        let addr = l.local_addr();
+        let client = tokio::spawn(async move {
+            let mut s = Client::connect(addr).await.unwrap();
+            // A ClientHello record header and the start of its body, then a reset.
+            s.write_all(&[0x16, 0x03, 0x01, 0x00, 0x80, 0x01, 0x00])
+                .await
+                .unwrap();
+            s.set_zero_linger().unwrap();
+            drop(s);
+        });
+        let mut conn = accept(&mut l).await.conn;
+        client.await.unwrap();
+        assert!(next(&mut conn).await.is_err());
+        let cause = conn.cause().expect("a cause");
+        assert_eq!(cause.stage, CAUSE_CONNECT, "{}", cause.text);
+        assert_eq!(door.count("begin"), 0, "the framer never saw it");
+        conn.close();
+    });
+}

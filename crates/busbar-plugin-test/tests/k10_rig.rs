@@ -19,13 +19,11 @@ use busbar_kernel::channels::SessionSignals;
 use busbar_kernel::connections::{ConnectLogins, StoreConnections};
 use busbar_kernel::persistence::facade::{CoreStore, Limits};
 use busbar_kernel::persistence::startup::{Progress, Startup};
-use busbar_kernel::plane_driver::port_intents::{
-    Intent, KernelIntents, Namespace, Piece, Resolver,
-};
+use busbar_kernel::plane_driver::port_intents::{Intent, KernelIntents, Lent, Namespace, Resolver};
 use busbar_kernel::plane_driver::port_services::Services;
 use busbar_kernel::plane_grants::{CoreJwsSigner, GrantResolver, RequestGrants, SealedTickets};
-use busbar_kernel::plugin_records::{RecordsDenied, StoreRecords};
-use busbar_kernel::push::PushQueue;
+use busbar_kernel::plugin_records::StoreRecords;
+use busbar_kernel::push::StorePushQueue;
 use busbar_kernel::upstreams::{UpstreamAuth, UpstreamDef, UpstreamTls, Upstreams};
 use busbar_plugin_abi::auth::{FB_LOGIN_REDIRECT, SECURITY_CHECK};
 use busbar_plugin_abi::fail::refused::R_UNSUPPORTED;
@@ -45,8 +43,8 @@ pub const CONNECTED: &str = "github";
 /// The grant the fake authorization server issues on COMPLETE.
 pub const GRANT: &[u8] = b"gho_refresh-token-1";
 /// The plane instance the arms run as.
-pub const PLANE_PLUGIN: &str = "plane-mcp";
-pub const PLANE_NAME: &str = "tools";
+const PLANE_PLUGIN: &str = "plane-mcp";
+const PLANE_NAME: &str = "tools";
 /// The verified principal.
 pub const SUBJECT: &str = "alice";
 
@@ -330,7 +328,11 @@ impl Deployment {
         };
         KernelIntents::new(
             Arc::new(StoreRecords::new(Arc::clone(&self.store))),
-            Arc::new(NoPush),
+            // The one push queue (arch lints section 3.1): durable rows in this deployment's store.
+            Arc::new(StorePushQueue::new(
+                Arc::clone(&self.store),
+                Arc::new(busbar_kernel::retry::Policy::default()),
+            )),
             Arc::new(NoSignals),
             Namespace {
                 plugin: Arc::from(PLANE_PLUGIN),
@@ -353,19 +355,6 @@ impl GrantResolver for Chat {
     }
 }
 
-struct NoPush;
-
-impl PushQueue for NoPush {
-    fn enqueue<'a>(
-        &'a self,
-        _who: &'a Caller<'_>,
-        _ttl_s: u64,
-        _recs: &'a [u8],
-    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
-        Box::pin(async { Err(RecordsDenied::Unavailable) })
-    }
-}
-
 struct NoSignals;
 
 impl SessionSignals for NoSignals {
@@ -381,50 +370,64 @@ impl SessionSignals for NoSignals {
     }
 }
 
+/// A delivered result piece, copied out of the resolver's lent pieces for the cases to read.
+pub(crate) struct Piece {
+    pub(crate) flags: u32,
+    pub(crate) bytes: Vec<u8>,
+}
+
 /// One plane answer with a CONNECT, a SIGN, a MINT, an ENTITLE and a LOOKUP (after the STORE it reads), stated
 /// in the reverse of the §8.6 delivery order, resolved by core as the verified `SUBJECT`. Called off the runtime
 /// (the production host blocks on it, as it does from `spawn_blocking`).
 pub fn resolve(host: &KernelIntents<StoreRecords>, connect_op: u32) -> Vec<Piece> {
+    let mut lent = Lent::default();
     let answer = vec![
         Intent::Connect {
             check: 5,
             op: connect_op,
-            upstream: CONNECTED.to_owned(),
-            return_to: Some("/settings/connections".to_owned()),
+            upstream: lent.put(CONNECTED.as_bytes()),
+            return_to: Some(lent.put(b"/settings/connections")),
         },
         Intent::Sign {
             check: 4,
             flags: busbar_plugin_abi::plane::SIGN_JWS_COMPACT,
-            payload: br#"{"name":"agent-card"}"#.to_vec(),
+            payload: lent.put(br#"{"name":"agent-card"}"#),
         },
         Intent::Mint {
             check: 3,
             flags: busbar_plugin_abi::plane::MINT_ONCE,
             ttl_s: 60,
-            scope: Some("realtime".to_owned()),
-            audience: Some("calls".to_owned()),
-            prefix: Some("ek_".to_owned()),
+            scope: Some(lent.put(b"realtime")),
+            audience: Some(lent.put(b"calls")),
+            prefix: Some(lent.put(b"ek_")),
             record: None,
         },
         Intent::Entitle {
             check: 2,
-            grant: "chat".to_owned(),
+            grant: lent.put(b"chat"),
         },
         Intent::Store {
             flags: 0,
             ttl_s: 0,
-            key: b"k".to_vec(),
-            value: b"v".to_vec(),
+            key: lent.put(b"k"),
+            value: lent.put(b"v"),
         },
         Intent::Lookup {
             flags: 0,
             limit: 1,
-            key: b"k".to_vec(),
+            key: lent.put(b"k"),
         },
     ];
     let identity = b"identity-records".as_slice();
     let resolver = Resolver::new(host, None).with_principal(SUBJECT, identity);
-    resolver.resolve(&answer, &mut HashMap::new())
+    resolver
+        .resolve(&answer, &lent, &mut HashMap::new())
+        .into_iter()
+        .map(|p| Piece {
+            flags: p.flags,
+            bytes: p.bytes.as_bytes().to_vec(),
+        })
+        .collect()
 }
 
 /// The FROM_CORE piece flags in delivery order.
@@ -467,7 +470,6 @@ pub fn connect(
     connections: &StoreConnections<StoreRecords>,
     query_extra: &str,
 ) -> busbar_kernel::connections::CallbackAnswer {
-    use busbar_kernel::connections::CallerConnections as _;
     let who = plane();
     rt.block_on(connections.begin(&who, SUBJECT, CONNECTED, None))
         .expect("BEGIN answers the authorization URL");

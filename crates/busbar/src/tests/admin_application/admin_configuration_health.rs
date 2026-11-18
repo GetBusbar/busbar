@@ -96,7 +96,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let upstream_key = directory.join("provider-key");
@@ -136,17 +136,18 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store opens the configuration authority")
+        .admit()
+        .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),
@@ -294,7 +295,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let identity = busbar_contract::crypto::testing::rcgen::generate_simple_self_signed(vec![
         "127.0.0.1".into(),
@@ -306,8 +307,8 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     std::fs::write(&certificate_a, identity.cert.pem()).unwrap();
     std::fs::write(&certificate_b, identity.cert.pem()).unwrap();
     std::fs::write(&listener_key, identity.signing_key.serialize_pem()).unwrap();
-    document["tls"]["cert"]["file"] = certificate_a.to_string_lossy().into_owned().into();
-    document["tls"]["key"]["file"] = listener_key.to_string_lossy().into_owned().into();
+    document["tls"]["cert"]["file"] = certificate_a.to_string_lossy().as_ref().into();
+    document["tls"]["key"]["file"] = listener_key.to_string_lossy().as_ref().into();
     let dir = directory.clone();
     let upstream_key = directory.join("provider-key");
     std::fs::write(&upstream_key, "unused-upstream-credential")
@@ -337,7 +338,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     .unwrap();
     let mut disk = document.clone();
     disk["listen"] = "127.0.0.1:19091".into();
-    disk["tls"]["cert"]["file"] = certificate_b.to_string_lossy().into_owned().into();
+    disk["tls"]["cert"]["file"] = certificate_b.to_string_lossy().as_ref().into();
     disk["advanced"]["worker_threads"] = 3.into();
 
     disk["models"]["m-new"] = json::json!({"provider":"test-provider","max_concurrent":4});
@@ -353,17 +354,18 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store opens the configuration authority")
+        .admit()
+        .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),
@@ -428,7 +430,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         assert_pending(&reload, path);
     }
     // Reverting a desired setting does not clear conservative pending state until boot.
-    disk["listen"] = deploy.listen.clone().into();
+    disk["listen"] = deploy.listen.as_str().into();
     std::fs::write(&config_path, disk.to_string()).unwrap();
     let repeated = admin(client.post(format!("http://{addr}/api/v1/admin/config/reload")))
         .send()

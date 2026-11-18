@@ -233,6 +233,7 @@ async fn a_borrowed_unit_seals_its_verified_destination() {
             OpClassId::new("seal"),
             None,
             None,
+            test_lease(),
         )
         .await;
     assert!(outcome.is_some(), "the table took the unit and it ended");
@@ -367,6 +368,7 @@ async fn open_and_finish<U: Units + RouteAwait>(
             None,
             OpClassId::new("seal"),
             None,
+            test_lease(),
         )
         .await
         .expect("the table took the session");
@@ -405,6 +407,7 @@ async fn an_unfinished_session_retires_its_facts_and_preserves_its_destination_f
             Some(history),
             OpClassId::new("seal"),
             None,
+            test_lease(),
         )
         .await
         .expect("the session opens");
@@ -668,6 +671,7 @@ async fn sealed_after(
             OpClassId::new("seal"),
             None,
             None,
+            test_lease(),
         )
         .await;
     assert!(outcome.is_some(), "the table took the unit and it ended");
@@ -779,6 +783,7 @@ async fn sealed_under(
             OpClassId::new("seal"),
             None,
             None,
+            test_lease(),
         )
         .await;
     assert!(outcome.is_some(), "the table took the unit and it ended");
@@ -1007,6 +1012,7 @@ async fn sealed_unit_of(caller: &Clocked) -> busbar_kernel_audit::UnitFacts {
                 started: std::time::Instant::now(),
                 caller,
             }),
+            test_lease(),
         )
         .await;
     assert!(outcome.is_some(), "the table took the unit and it ended");
@@ -1142,6 +1148,7 @@ async fn a_session_terminal_stage_refusal_fails_finish() {
             None,
             OpClassId::new("seal"),
             None,
+            test_lease(),
         )
         .await
         .expect("session admitted before staging closes");
@@ -1153,4 +1160,15 @@ async fn a_session_terminal_stage_refusal_fails_finish() {
     assert!(slot.finish(&post).await.is_err());
     assert!(book.lock().unwrap().audit_records().is_empty());
     assert_eq!(post.open_units(), 0);
+}
+
+/// The original request's process admission lease the node's terminal book is charged to
+/// (e5b8ff5fb8, STORAGE-JOIN-r2): a fresh Data lease, kept for the rest of the test process.
+fn test_lease() -> &'static busbar_kernel::limits::process_admission::RequestLease {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    Box::leak(Box::new(
+        ProcessAdmission::new(0)
+            .try_enter(AdmissionClass::Data)
+            .expect("an unbounded admission admits one Data request"),
+    ))
 }

@@ -37,6 +37,30 @@ pub(super) struct Inner {
     entries: Counted<BTreeMap<Id, Pending>>,
     /// `(unit, id)` for every entry. Same lock as `entries`.
     by_unit: Counted<BTreeSet<(u64, Id)>>,
+    /// The audit line `node_seq` of every entry that carries one, with its count. Same lock as `entries`;
+    /// kept on every change of an entry's audit line, so the floor is its first key, not a walk.
+    audit_seqs: BTreeMap<u64, usize>,
+}
+
+impl Inner {
+    fn note_audit_seq(&mut self, seq: Option<u64>) {
+        if let Some(seq) = seq {
+            *self.audit_seqs.entry(seq).or_default() += 1;
+        }
+    }
+
+    fn forget_audit_seq(&mut self, seq: Option<u64>) {
+        if let Some(seq) = seq {
+            if let std::collections::btree_map::Entry::Occupied(mut held) =
+                self.audit_seqs.entry(seq)
+            {
+                *held.get_mut() -= 1;
+                if *held.get() == 0 {
+                    held.remove();
+                }
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -54,7 +78,7 @@ pub(super) struct Pending {
     /// The unit's live audit line, carried from the root's seal (SHUTDOWN-HANG F1a). RAM only.
     audit: Option<Carried>,
     memory_selected: bool,
-    fee_completion: Option<Arc<dyn super::partitions::SelectedFeeCompletion>>,
+    fee_completion: Option<Arc<super::partitions::SelectedFeeCompletion>>,
     awaiting_terminal_reader: bool,
     terminal_signal: Option<Arc<super::TerminalSignal>>,
     ordinary_signal: Option<Arc<super::ordinary_completion::OrdinarySignal>>,
@@ -115,12 +139,6 @@ impl Pending {
         self
     }
 
-    pub(super) fn ordinary_signal(
-        &self,
-    ) -> Option<&Arc<super::ordinary_completion::OrdinarySignal>> {
-        self.ordinary_signal.as_ref()
-    }
-
     pub(super) fn selected(snapshot: UnitCheckpoint, durable: bool, pending_hot: bool) -> Self {
         let mut entry = Self::new(snapshot, None, pending_hot);
         entry.memory_selected = !durable;
@@ -133,7 +151,7 @@ impl Pending {
 
     pub(super) fn with_fee_completion(
         mut self,
-        completion: Option<Arc<dyn super::partitions::SelectedFeeCompletion>>,
+        completion: Option<Arc<super::partitions::SelectedFeeCompletion>>,
     ) -> Self {
         self.fee_completion = completion;
         self.awaiting_terminal_reader = true;
@@ -279,9 +297,13 @@ impl PendingBook {
         let inner = self.hold();
         let mut live = 0;
         let mut index: BTreeMap<Box<str>, BTreeMap<u64, usize>> = BTreeMap::new();
+        let mut audit_seqs: BTreeMap<u64, usize> = BTreeMap::new();
         let mut by_unit = BTreeSet::new();
         for (id, entry) in inner.entries.iter() {
             by_unit.insert((entry.snapshot.unit, *id));
+            if let Some(seq) = entry.audit_seq() {
+                *audit_seqs.entry(seq).or_default() += 1;
+            }
             if entry.recovered {
                 live += 1;
                 for target in &entry.snapshot.targets {
@@ -310,6 +332,7 @@ impl PendingBook {
         assert_eq!(kept, index, "recovered index");
         let kept: BTreeSet<_> = inner.by_unit.iter().copied().collect();
         assert_eq!(kept, by_unit, "unit index");
+        assert_eq!(inner.audit_seqs, audit_seqs, "audit line index");
         let ended = inner.entries.values().filter(|e| e.snapshot.ended).count();
         assert_eq!(
             self.terminal.load(Ordering::Relaxed),
@@ -341,11 +364,7 @@ impl PendingGuard<'_> {
 
     /// The lowest audit line `node_seq` noted on any entry (SEALING-FIX §3.9 floor (b)).
     pub(super) fn oldest_audit_seq(&self) -> Option<u64> {
-        self.inner
-            .entries
-            .values()
-            .filter_map(Pending::audit_seq)
-            .min()
+        self.inner.audit_seqs.keys().next().copied()
     }
 
     pub(super) fn insert(&mut self, id: Id, entry: Pending) -> Option<Pending> {
@@ -358,8 +377,10 @@ impl PendingGuard<'_> {
         if entry.snapshot.ended {
             self.terminal.fetch_add(1, Ordering::Relaxed);
         }
+        self.inner.note_audit_seq(entry.audit_seq());
         let old = self.inner.entries.insert(id, entry);
         if let Some(old) = &old {
+            self.inner.forget_audit_seq(old.audit_seq());
             if old.snapshot.ended {
                 self.terminal.fetch_sub(1, Ordering::Relaxed);
             }
@@ -374,6 +395,7 @@ impl PendingGuard<'_> {
 
     pub(super) fn remove(&mut self, id: &Id) -> Option<Pending> {
         let old = self.inner.entries.remove(id)?;
+        self.inner.forget_audit_seq(old.audit_seq());
         if old.snapshot.ended {
             self.terminal.fetch_sub(1, Ordering::Relaxed);
         }
@@ -423,7 +445,10 @@ impl PendingGuard<'_> {
         match found {
             Some(id) if !several => {
                 if let Some(entry) = self.inner.entries.get_mut(&id) {
+                    let previous = entry.audit_seq();
                     entry.audit = Some(line);
+                    self.inner.forget_audit_seq(previous);
+                    self.inner.note_audit_seq(Some(line.seq));
                 }
                 Ok(())
             }

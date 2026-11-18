@@ -143,7 +143,7 @@ fn a_document_writing_models_empty_answers_with_the_1_5_5_bytes() {
     let mut child = Reap(
         Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("CAP_KEY", "oracle-cred-models-empty-0001")
             .env("RUST_LOG", "warn")
             .stdout(log.try_clone().unwrap())

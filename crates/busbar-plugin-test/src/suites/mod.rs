@@ -78,8 +78,8 @@ pub struct TransportCase<'a> {
     pub expect_streams: u32,
 }
 
-/// A [`TransportCase`] with the conn facts the suite otherwise leaves at their defaults, run by
-/// [`transport_conns`]. Additive to IF §14: `TransportCase` and `transport` stay as frozen, so every existing
+/// A [`TransportCase`] with the conn facts the suite otherwise leaves at their defaults, as [`transport`]
+/// runs each case. Additive to IF §14: `TransportCase` and `transport` stay as frozen, so every existing
 /// struct literal still builds. Build one with [`TransportConnCase::new`] (or `From<TransportCase>`) and the
 /// builder methods.
 #[derive(Clone, Copy)]
@@ -180,12 +180,6 @@ pub fn transport(plugin: &'static Plugin, config: &[u8], cases: &[TransportCase<
     let cases: Vec<TransportConnCase<'_>> =
         cases.iter().copied().map(TransportConnCase::new).collect();
     transport::run(plugin, config, &cases);
-}
-
-/// Additive to IF §14: [`transport`] over cases that state their conn facts (an upgraded server conn, a dial
-/// with its own head).
-pub fn transport_conns(plugin: &'static Plugin, config: &[u8], cases: &[TransportConnCase<'_>]) {
-    transport::run(plugin, config, cases);
 }
 
 /// Round 31, any kind: `open` an older `bag` (operator form) through the registry's `open_<kind>` (bind, inline

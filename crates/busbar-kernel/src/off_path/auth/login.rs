@@ -2,82 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Off-path code for `auth::login` and `auth::login_limits`: the hosted-login map's build (boot
-//! and reload), its configuration refusals, the inbound default-auth resolution a listener build
-//! runs once per published policy, and the login limiter's policy and trusted-proxy parsing.
+//! and reload), its configuration refusals, and the login limiter's policy and trusted-proxy parsing.
 
 use std::sync::Arc;
 
 use indexmap::IndexMap;
 
-use crate::auth::login::{
-    validate_browser_login_secret, InboundAuthProvider, LoginMethod, LoginMethods,
-};
+use crate::auth::login::{validate_browser_login_secret, LoginMethod, LoginMethods};
 use crate::config::AuthCfg;
-use crate::state::App;
-
-impl App {
-    pub fn inbound_default_auth(&self, style: &str) -> Result<Option<InboundAuthProvider>, String> {
-        self.login_methods.inbound_default_auth(style)
-    }
-}
-
-impl LoginMethods {
-    fn inbound_default_auth(&self, style: &str) -> Result<Option<InboundAuthProvider>, String> {
-        let Some(provider) = select_inbound_provider(
-            style,
-            self.methods.iter().filter_map(|(provider, method)| {
-                Some((provider.as_str(), method.inbound_style.as_ref()?))
-            }),
-        )?
-        else {
-            return Ok(None);
-        };
-        let method = &self.methods[provider];
-        let declared = method
-            .inbound_style
-            .as_ref()
-            .expect("selected declared style");
-        let selected = InboundAuthProvider {
-            provider: provider.to_string(),
-            module: declared.module.clone(),
-            calls: Arc::clone(&method.module),
-            points: declared.points,
-        };
-        Ok(Some(selected))
-    }
-}
-
-pub(crate) fn select_inbound_provider<'a>(
-    style: &str,
-    declarations: impl Iterator<Item = (&'a str, &'a busbar_contract::auth_calls::InboundStyle)>,
-) -> Result<Option<&'a str>, String> {
-    if style.is_empty() {
-        return Ok(None);
-    }
-    let mut matching = declarations.filter_map(|(provider, declared)| {
-        declared
-            .names
-            .iter()
-            .any(|name| name == style)
-            .then_some(provider)
-    });
-    let Some(provider) = matching.next() else {
-        return Err(format!(
-            "inbound auth style '{style}' has no configured ordinary identity provider"
-        ));
-    };
-    if let Some(other) = matching.next() {
-        return Err(format!(
-            "inbound auth style '{style}' is ambiguous between identity providers '{provider}' and '{other}'"
-        ));
-    }
-    if crate::config::is_builtin_identity_module(provider) {
-        return Err(format!(
-            "inbound auth style '{style}' selects identity provider '{provider}', whose name is reserved for a configured host auth position"
-        ));
-    }
-    Ok(Some(provider))
-}
 
 fn login_module_refusal(name: &str, module: &str, reason: &str) -> String {
     format!(
@@ -195,7 +127,6 @@ impl LoginMethods {
                 name.clone(),
                 LoginMethod {
                     module: calls,
-                    inbound_style,
                     has_button,
                     login_kind,
                     form: Arc::default(),

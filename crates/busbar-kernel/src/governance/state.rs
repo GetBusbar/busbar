@@ -1499,11 +1499,12 @@ impl GovState {
             .map_err(super::fee_debt::ObservedAdmission::Blocked)?;
         // The observer may walk the applicable buckets more than once; `prepare` takes a
         // cloneable iterator, which the carried chain's own iterator is not.
-        let applicable: Vec<&str> = resolved
-            .iter()
-            .filter(|b| b.applies_to_pool(lane_pool))
-            .map(|b| b.bucket_id)
-            .collect();
+        let mut applicable: smallvec::SmallVec<[&str; 16]> = smallvec::SmallVec::new();
+        for bucket in resolved.iter() {
+            if bucket.applies_to_pool(lane_pool) {
+                applicable.push(bucket.bucket_id);
+            }
+        }
         observer
             .prepare(self, applicable.iter().copied())
             .map_err(super::fee_debt::ObservedAdmission::Observer)?;

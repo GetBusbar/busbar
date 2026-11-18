@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use busbar_contract::json::{self, JsonValueTrait as _};
 
 fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
@@ -60,7 +64,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     let (addr, handle, _book) =
@@ -213,7 +217,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     let (addr, handle, _book) =
@@ -358,7 +362,7 @@ async fn test_mint_parent_mismatch_is_409() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     let (addr, handle, _book) =
@@ -440,7 +444,7 @@ async fn test_max_keys_per_principal_cap_trips() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     document["limits"] = json::json!({"max_keys_per_principal": 2});
@@ -516,7 +520,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     document["limits"] = json::json!({"max_keys_per_principal": 1});
@@ -615,7 +619,7 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     document["limits"] = json::json!({"max_keys_per_principal": 3});
@@ -629,17 +633,18 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store opens the configuration authority")
+        .admit()
+        .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),

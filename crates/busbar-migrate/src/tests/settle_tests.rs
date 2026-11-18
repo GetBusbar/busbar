@@ -459,9 +459,7 @@ fn a_known_secret_moved_to_an_undeclared_slot_refuses_the_migration() {
         &["/bind_service_password"],
         &["hunter2-secret"],
     );
-    let refused = apply(STAMPED, &[settled], false)
-        .err()
-        .expect("the moved secret refuses");
+    let refused = apply(STAMPED, &[settled], false).expect_err("the moved secret refuses");
     let text = refused.to_string();
     assert!(
         text.contains("/note") && text.contains("plaintext"),

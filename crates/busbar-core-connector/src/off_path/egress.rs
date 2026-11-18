@@ -12,6 +12,39 @@ pub(crate) mod proxy {
 
     use crate::proxy::{ProxyChoice, ProxyEnvValues, ProxyHop};
 
+    // The proxy environment is read once, at boot (callers: `from_env` here, the boot proxy
+    // posture note in `off_path::lines`).
+    impl ProxyEnvValues {
+        /// Uppercase read before lowercase, empty values treated as unset — hyper-util
+        pub(crate) fn from_process_env() -> Result<Self, String> {
+            Self::from_lookup(|key| std::env::var_os(key))
+        }
+
+        pub(crate) fn from_lookup(
+            mut lookup: impl FnMut(&str) -> Option<std::ffi::OsString>,
+        ) -> Result<Self, String> {
+            let mut first = |keys: [&str; 2]| -> Result<Option<String>, String> {
+                for key in keys {
+                    let Some(value) = lookup(key) else {
+                        continue;
+                    };
+                    if value.is_empty() {
+                        continue;
+                    }
+                    return value.into_string().map(Some).map_err(|_| not_unicode(key));
+                }
+                Ok(None)
+            };
+            Ok(ProxyEnvValues {
+                https: first(crate::proxy::HTTPS_PROXY_KEYS)?,
+
+                http: first(crate::proxy::HTTP_PROXY_KEYS)?,
+                all: first(crate::proxy::ALL_PROXY_KEYS)?,
+                no: first(crate::proxy::NO_PROXY_KEYS)?,
+            })
+        }
+    }
+
     /// The proxy env value as a REFUSAL may render it: userinfo replaced by `***`, everything
     fn redact_userinfo(v: &str) -> String {
         let parts = busbar_contract::net::url_authority(v);
@@ -398,6 +431,7 @@ pub(crate) mod fetch {
 /// The destination guard's lists, read once per configuration commit.
 pub(crate) mod guard {
     use std::net::IpAddr;
+    use std::sync::{Arc, PoisonError, RwLock};
 
     use busbar_contract::net::{host_ip, IpNet};
     use busbar_kernel::config::Destinations;
@@ -423,6 +457,32 @@ pub(crate) mod guard {
             Some(ip) => Entry::Net(IpNet::host(ip)),
             None => Entry::Host(e),
         })
+    }
+
+    // A guard is built once at boot and its lists re-published once per config commit: off the
+    // request path (callers: the root's boot and config commit, the store kit's run).
+    impl crate::guard::Guard {
+        /// The guard a deployment states.
+        ///
+        /// # Errors
+        /// None today; the `Result` is the boot's.
+        pub fn from_config(d: &Destinations) -> Result<crate::guard::Guard, String> {
+            Ok(crate::guard::Guard {
+                block_private: d.block_private_addresses,
+                metadata: Arc::new(RwLock::new(Arc::new(Metadata::from_config(d)))),
+                node: Arc::default(),
+            })
+        }
+
+        /// A config commit: the metadata lists `d` states (the carve-outs and the extra refusals)
+        /// replace the ones in force, whole.
+        pub fn publish(&self, d: &Destinations) {
+            let lists = Arc::new(Metadata::from_config(d));
+            *self
+                .metadata
+                .write()
+                .unwrap_or_else(PoisonError::into_inner) = lists;
+        }
     }
 
     impl Metadata {
@@ -465,9 +525,25 @@ pub(crate) mod doors {
         }
     }
 
-    /// What a LINKED row's door is bound to: [`crate::doors::bind`], labelled with the row's name.
-    pub(crate) fn row_bind(row: &str) -> Result<Bind, String> {
-        let bound = crate::doors::bind();
+    /// What a transport door is bound to: the transport lane's own instance label, on the process's
+    /// dispatcher. Made once, when a door is bound.
+    pub fn bind() -> Bind {
+        bind_on(crate::doors::dispatcher())
+    }
+
+    /// [`bind`], adopted by `on`: a composition of its own (a root cell's rig) binds its doors on its
+    /// own dispatcher.
+    pub fn bind_on(on: &Dispatcher) -> Bind {
+        bind_as(on, "transport")
+    }
+
+    /// What a LINKED row's door is bound to: [`bind`], labelled with the row's name (its registry
+    /// name), with the row's plugin log sink.
+    ///
+    /// # Errors
+    /// The row's plugin log sink cannot be opened.
+    pub fn row_bind(row: &str) -> Result<Bind, String> {
+        let bound = bind();
         let sink = crate::doors::plugin_logs().sink(
             row,
             busbar_contract::abi::mechanism::KindCode::Transport,
@@ -527,8 +603,14 @@ pub(crate) mod doors {
         }
     }
 
-    /// A config apply over the live instances whose name `named` keeps: the refusals, whole.
-    pub(crate) fn refresh_named(
+    /// A CONFIG APPLY, as every opened transport instance takes it (`BUSBAR-1.6.0.md` §11.4): each one
+    /// refreshed with `settings`; the refusals, whole.
+    pub fn refresh_live(settings: &busbar_contract::transport::TransportSettings) -> Vec<String> {
+        refresh_named(settings, |_| true)
+    }
+
+    /// [`refresh_live`] over the live instances whose name `named` keeps: the refusals, whole.
+    pub fn refresh_named(
         settings: &busbar_contract::transport::TransportSettings,
         named: impl Fn(&str) -> bool,
     ) -> Vec<String> {

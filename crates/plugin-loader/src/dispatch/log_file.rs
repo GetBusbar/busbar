@@ -56,13 +56,12 @@ use std::fs::File;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use busbar_contract::abi::mechanism::call::{
     DIAG_LOG, SEVERITY_DEBUG, SEVERITY_ERROR, SEVERITY_INFO, SEVERITY_TRACE, SEVERITY_WARN,
 };
-use busbar_contract::abi::mechanism::KindCode;
 
 use super::plugin::{Diagnostic, Dropped, EnvelopeSink, Metric};
 
@@ -154,181 +153,38 @@ pub struct PluginLogConfig {
     /// configuration without a data directory writes no file, as 1.5.5 wrote none).
     pub named_dir: bool,
     /// The live words every sink opened from this configuration (or a clone) follows.
-    live: Live,
+    pub(crate) live: Live,
 }
 
 pub const DEFAULT_DIR: &str = "logs/plugins";
 
 pub const DEFAULT_KEEP: u32 = 5;
 
-impl PluginLogConfig {
-    pub fn from_words(
-        dir: Option<&str>,
-        level: Option<&str>,
-        levels: &BTreeMap<String, String>,
-        rotate_mb: Option<u64>,
-        keep: Option<u32>,
-    ) -> Result<Self, String> {
-        let level = level.map_or(Ok(LogLevel::Info), |w| {
-            LogLevel::parse(w).ok_or_else(|| crate::cold::dispatch::load::bad_log_level(w))
-        })?;
-        // plugins.logs is read once per config apply.
-        let mut parsed = BTreeMap::new();
-        for (k, w) in levels {
-            let level = LogLevel::parse(w)
-                .ok_or_else(|| crate::cold::dispatch::load::bad_instance_log_level(k, w))?;
-            parsed.insert(crate::cold::dispatch::load::text(k), level);
-        }
-        if rotate_mb == Some(0) {
-            return Err("plugins.logs.rotate_mb: must be at least 1".into());
-        }
-        let dir_path = crate::cold::dispatch::load::path(dir.unwrap_or(DEFAULT_DIR));
-        Ok(Self {
-            dir: dir_path,
-            named_dir: dir.is_some(),
-            level,
-            levels: parsed,
-            rotate_bytes: rotate_mb.map(|mb| mb.saturating_mul(1024 * 1024)),
-            keep: keep.unwrap_or(DEFAULT_KEEP),
-            live: Live::default(),
-        })
-    }
-
-    pub fn level_for(&self, instance: &str) -> LogLevel {
-        self.current().level_for(instance)
-    }
-
-    pub fn path_for(&self, instance: &str, kind: KindCode) -> PathBuf {
-        self.current().dir.join(file_name(instance, kind))
-    }
-
-    fn words(&self) -> Words {
-        Words {
-            dir: crate::cold::dispatch::load::path_copy(&self.dir),
-            level: self.level,
-            levels: crate::cold::dispatch::load::map_copy(&self.levels),
-            rotate_bytes: self.rotate_bytes,
-            keep: self.keep,
-            named_dir: self.named_dir,
-        }
-    }
-
-    fn current(&self) -> Arc<Words> {
-        self.live
-            .0
-            .now
-            .words()
-            .unwrap_or_else(|| Arc::new(self.words()))
-    }
-
-    pub fn reconfigure(&self, next: &PluginLogConfig) {
-        let words = Arc::new(next.words());
-        if *self.current() == *words {
-            return;
-        }
-        if next.named_dir {
-            if let Err(e) = crate::durable::create_dir_all(&words.dir) {
-                tracing::warn!(
-                    error = %format_args!("plugins.logs.dir {}: {e}", words.dir.display()),
-                    "the applied plugin log directory cannot be used"
-                );
-            }
-        }
-        let cell = &self.live.0;
-        let mut sinks = cell.sinks.lock().unwrap_or_else(|p| p.into_inner());
-        *cell.now.words.write().unwrap_or_else(|p| p.into_inner()) = Some(Arc::clone(&words));
-        cell.now.generation.fetch_add(1, Ordering::AcqRel);
-        // A config apply re-levels every live sink once.
-        crate::cold::dispatch::load::relevel(&mut *sinks, |s| {
-            s.level
-                .store(words.level_for(&s.instance) as u8, Ordering::Release);
-        });
-    }
-
-    pub fn sink(
-        &self,
-        instance: &str,
-        kind: KindCode,
-        metrics: Arc<dyn EnvelopeSink>,
-    ) -> Result<PluginLogSink, String> {
-        let cell = &self.live.0;
-        let (admit, words) = {
-            let mut sinks = cell.sinks.lock().unwrap_or_else(|p| p.into_inner());
-            let words = self.current();
-            let admit = Arc::new(Admit {
-                instance: crate::cold::dispatch::load::text(instance),
-                level: AtomicU8::new(words.level_for(instance) as u8),
-            });
-            crate::cold::dispatch::load::prune_weak(&mut *sinks);
-            sinks.push(Arc::downgrade(&admit));
-            (admit, words)
-        };
-        let name = file_name(instance, kind);
-        let path = words.dir.join(&name);
-        let tag = Arc::new(Tag {
-            instance: crate::cold::dispatch::load::text(instance),
-            kind: crate::cold::dispatch::load::kind_tag(kind),
-        });
-        if words.named_dir {
-            FileSlot::of(&path)
-                .and_then(|slot| slot.open())
-                .map_err(|e| refusal(&path, &e))?;
-        }
-        let lane = {
-            let mut lanes = cell.lanes.lock().unwrap_or_else(|p| p.into_inner());
-            match lanes.get(&name).and_then(Weak::upgrade) {
-                Some(lane) => lane,
-                None => {
-                    let lane = Lane::start(&name, &cell.now, words, &tag)
-                        .map_err(|e| crate::cold::dispatch::load::writer_refused(instance, &e))?;
-                    crate::cold::dispatch::load::prune_weak_map(&mut *lanes);
-                    lanes.insert(name, Arc::downgrade(&lane));
-                    lane
-                }
-            }
-        };
-        Ok(PluginLogSink {
-            tag,
-            admit,
-            #[cfg(test)]
-            path,
-            metrics,
-            clock: wall_secs,
-            lane,
-        })
-    }
-}
-
-fn file_name(instance: &str, kind: KindCode) -> String {
-    // A log file is named once, when its sink is bound.
-    crate::cold::dispatch::load::log_file_name(instance, kind)
-}
-
-fn refusal(path: &Path, e: &std::io::Error) -> String {
+pub(crate) fn refusal(path: &Path, e: &std::io::Error) -> String {
     let dir = path.parent().unwrap_or(path);
     crate::cold::dispatch::load::dir_refusal(dir, e)
 }
 
 /// The words of `plugins.logs` a sink and its writer follow.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Words {
-    dir: PathBuf,
-    level: LogLevel,
-    levels: BTreeMap<String, LogLevel>,
-    rotate_bytes: Option<u64>,
-    keep: u32,
-    named_dir: bool,
+pub(crate) struct Words {
+    pub(crate) dir: PathBuf,
+    pub(crate) level: LogLevel,
+    pub(crate) levels: BTreeMap<String, LogLevel>,
+    pub(crate) rotate_bytes: Option<u64>,
+    pub(crate) keep: u32,
+    pub(crate) named_dir: bool,
 }
 
 impl Words {
-    fn level_for(&self, instance: &str) -> LogLevel {
+    pub(crate) fn level_for(&self, instance: &str) -> LogLevel {
         self.levels.get(instance).copied().unwrap_or(self.level)
     }
 }
 
 /// ONE live setting, shared by every clone of a [`PluginLogConfig`].
 #[derive(Clone, Default)]
-struct Live(Arc<Cell>);
+pub(crate) struct Live(pub(crate) Arc<Cell>);
 
 impl PartialEq for Live {
     fn eq(&self, _: &Self) -> bool {
@@ -345,39 +201,39 @@ impl std::fmt::Debug for Live {
 }
 
 #[derive(Default)]
-struct Cell {
+pub(crate) struct Cell {
     /// The words, shared with every writer.
-    now: Arc<Now>,
+    pub(crate) now: Arc<Now>,
     /// Each file's writer, by file name: every sink of one file shares it.
-    lanes: Mutex<foldhash::HashMap<String, Weak<Lane>>>,
+    pub(crate) lanes: Mutex<foldhash::HashMap<String, Weak<Lane>>>,
     /// Every open sink's level, set anew by each reconfigure.
-    sinks: Mutex<Vec<Weak<Admit>>>,
+    pub(crate) sinks: Mutex<Vec<Weak<Admit>>>,
 }
 
 /// The words a writer follows, and how many times they changed.
 #[derive(Default)]
-struct Now {
-    generation: AtomicU64,
-    words: RwLock<Option<Arc<Words>>>,
+pub(crate) struct Now {
+    pub(crate) generation: AtomicU64,
+    pub(crate) words: RwLock<Option<Arc<Words>>>,
 }
 
 impl Now {
-    fn words(&self) -> Option<Arc<Words>> {
+    pub(crate) fn words(&self) -> Option<Arc<Words>> {
         self.words.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 }
 
-struct Admit {
-    instance: String,
-    level: AtomicU8,
+pub(crate) struct Admit {
+    pub(crate) instance: String,
+    pub(crate) level: AtomicU8,
 }
 
-struct Tag {
-    instance: String,
-    kind: String,
+pub(crate) struct Tag {
+    pub(crate) instance: String,
+    pub(crate) kind: String,
 }
 
-fn wall_secs() -> u64 {
+pub(crate) fn wall_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
@@ -386,25 +242,25 @@ fn wall_secs() -> u64 {
 pub const LOG_QUEUE_LINES: usize = 1024;
 
 pub struct PluginLogSink {
-    tag: Arc<Tag>,
-    admit: Arc<Admit>,
+    pub(crate) tag: Arc<Tag>,
+    pub(crate) admit: Arc<Admit>,
 
     #[cfg(test)]
-    path: PathBuf,
-    metrics: Arc<dyn EnvelopeSink>,
-    clock: fn() -> u64,
+    pub(crate) path: PathBuf,
+    pub(crate) metrics: Arc<dyn EnvelopeSink>,
+    pub(crate) clock: fn() -> u64,
 
-    lane: Arc<Lane>,
+    pub(crate) lane: Arc<Lane>,
 }
 
-struct Lane {
-    queue: SyncSender<Job>,
-    over: Arc<Over>,
+pub(crate) struct Lane {
+    pub(crate) queue: SyncSender<Job>,
+    pub(crate) over: Arc<Over>,
 }
 
 /// The lines a full queue refused, not yet reported, and the time of the last of them.
 #[derive(Default)]
-struct Over {
+pub(crate) struct Over {
     lines: AtomicU64,
     at: AtomicU64,
     /// The writer is gone and the host has been told so.
@@ -440,7 +296,7 @@ impl Over {
     }
 }
 
-enum Job {
+pub(crate) enum Job {
     Line {
         tag: Arc<Tag>,
         at: u64,
@@ -487,7 +343,7 @@ impl PluginLogSink {
 
     #[cfg(test)]
     pub fn flush(&self) {
-        let (done, wait) = sync_channel(1);
+        let (done, wait) = std::sync::mpsc::sync_channel(1);
         if self.lane.queue.send(Job::Flush(done)).is_ok() {
             let _ = wait.recv();
         }
@@ -529,52 +385,24 @@ impl PluginLogSink {
     }
 }
 
-impl Lane {
-    fn start(
-        name: &str,
-        now: &Arc<Now>,
-        words: Arc<Words>,
-        first: &Arc<Tag>,
-    ) -> std::io::Result<Arc<Self>> {
-        let (queue, jobs) = sync_channel(LOG_QUEUE_LINES);
-        let over = Arc::new(Over::default());
-        let writer = Writer {
-            name: crate::cold::dispatch::load::text(name),
-            rendered: String::new(),
-            now: Arc::clone(now),
-
-            seen: u64::MAX,
-            path: words.dir.join(name),
-            words,
-            slot: None,
-            over: Arc::clone(&over),
-            last: Arc::clone(first),
-        };
-        std::thread::Builder::new()
-            .name("busbar-plugin-log".into())
-            .spawn(move || writer.drain(&jobs))?;
-        Ok(Arc::new(Self { queue, over }))
-    }
-}
-
-struct Writer {
-    name: String,
+pub(crate) struct Writer {
+    pub(crate) name: String,
     /// The line being written, reused for every line this writer renders.
-    rendered: String,
-    now: Arc<Now>,
+    pub(crate) rendered: String,
+    pub(crate) now: Arc<Now>,
 
-    seen: u64,
-    words: Arc<Words>,
-    path: PathBuf,
+    pub(crate) seen: u64,
+    pub(crate) words: Arc<Words>,
+    pub(crate) path: PathBuf,
 
-    slot: Option<Arc<FileSlot>>,
-    over: Arc<Over>,
+    pub(crate) slot: Option<Arc<FileSlot>>,
+    pub(crate) over: Arc<Over>,
 
-    last: Arc<Tag>,
+    pub(crate) last: Arc<Tag>,
 }
 
 impl Writer {
-    fn drain(mut self, jobs: &Receiver<Job>) {
+    pub(crate) fn drain(mut self, jobs: &Receiver<Job>) {
         while let Ok(job) = jobs.recv() {
             self.run(job);
             while let Ok(job) = jobs.try_recv() {
@@ -771,7 +599,7 @@ pub const MIRROR_TARGET: &str = "busbar::plugin";
 
 static FILES: Mutex<Option<foldhash::HashMap<PathBuf, Weak<FileSlot>>>> = Mutex::new(None);
 
-struct FileSlot {
+pub(crate) struct FileSlot {
     path: PathBuf,
     state: Mutex<FileState>,
 }
@@ -797,7 +625,7 @@ impl RotationReport {
 }
 
 impl FileSlot {
-    fn of(path: &Path) -> std::io::Result<Arc<Self>> {
+    pub(crate) fn of(path: &Path) -> std::io::Result<Arc<Self>> {
         let (dir, name) = match (path.parent(), path.file_name()) {
             (Some(dir), Some(name)) => (dir, name),
             _ => return Err(std::io::Error::other("no file name")),
@@ -822,7 +650,7 @@ impl FileSlot {
         Ok(slot)
     }
 
-    fn open(&self) -> std::io::Result<()> {
+    pub(crate) fn open(&self) -> std::io::Result<()> {
         let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if st.file.is_none() {
             st.file = Some(self.opened()?);

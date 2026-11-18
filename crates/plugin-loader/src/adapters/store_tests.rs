@@ -296,3 +296,20 @@ fn request_clock_writes_one_clock_record() {
     assert!(!bytes.is_empty());
     assert!(bytes.windows(16).any(|w| w == d.0));
 }
+
+/// The `clock` argument is the dataset itself, 16 bytes (ABI-MIN3-INTERFACE §8.8: "Authoritative UTC for `dataset`
+/// (16 bytes). Answer: CLOCK."; the SDK's `Store::clock` doc says the same). CLOCK is the answer's record, never the
+/// request's: every MIN-3 store reads the argument as exactly 16 bytes (store-memory e59e035, store-sqlite,
+/// store-postgres 03c5ff4, store-valkey) and refuses anything else ("a dataset is 16 bytes"), so a record-wrapped
+/// argument refuses the default binary's boot persistence over the linked store-memory image.
+#[test]
+fn request_clock_is_exactly_the_sixteen_dataset_bytes() {
+    let d = DatasetId([7; 16]);
+    let req = request(
+        4096,
+        &Op::Clock(d),
+        &busbar_contract::plugin::TestKernelSeal,
+    )
+    .expect("fits max_out");
+    assert_eq!(req.bytes(), &d.0[..]);
+}

@@ -311,12 +311,6 @@ impl Candidate {
     }
 
     #[must_use]
-    pub(crate) fn answering_former(self, former_of: impl Fn(&str) -> Vec<String>) -> Self {
-        let words: Vec<String> = self.words().flat_map(former_of).collect();
-        self.answering(words)
-    }
-
-    #[must_use]
     pub fn serves(&self, uses: &Uses) -> bool {
         uses.schemes
             .iter()

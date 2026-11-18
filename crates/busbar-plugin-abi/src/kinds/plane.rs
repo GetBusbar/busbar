@@ -1110,8 +1110,10 @@ crate::kind! {
             /// `live` points into the plugin image and is valid because `inst` holds the image (I13).
             #[cfg(feature = "host")]
             pub struct Proxy {
-                inst: std::sync::Arc<crate::host_side::driver::Instance>,
+                /// Declared first so it drops first: `inst`'s `Drop` then holds the last `Arc` of the live instance
+                /// and runs `close` under the entry guard as this instance's slot (C-CLOSE-LOG, 632805ee11).
                 live: std::sync::Arc<busbar_ffi::host::Instance<Marker>>,
+                inst: std::sync::Arc<crate::host_side::driver::Instance>,
             }
 
             #[cfg(feature = "host")]

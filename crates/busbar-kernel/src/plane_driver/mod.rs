@@ -38,6 +38,8 @@ pub mod port_upstream;
 pub mod port_work;
 pub mod provider_catalog;
 pub mod request_admission;
+pub use crate::off_path::plane_driver::declare_providers;
+pub(crate) use far_end::CREDENTIAL_WARNED;
 pub use money::native_attempt::NativeRequestMoney;
 pub(crate) use money::native_attempt::PreparedRateAttempt;
 pub(crate) use money::native_attempt::{NativeAttempt, NativeAttemptError, NativeCommitError};
@@ -100,8 +102,8 @@ pub use host::{
 pub use money::{
     EndPost, FeeRefund, MeasurementRequestGuard, MeasurementRequestState, ObservationPolicy,
     ObservationRuntimeError, ParentMoney, PlaneMoney, ReservedRequestLineage,
-    ReturnedTicketReservation, SpentTicketReservation, TicketReservation, UnitEnd, UnitMoney,
-    UsageFold, UsageView,
+    ReturnedTicketReservation, SpentTicketReservation, TicketAdoption, TicketReservation, UnitEnd,
+    UnitMoney, UsageFold, UsageView,
 };
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
@@ -222,6 +224,18 @@ pub struct PlaneDriver {
 
     refused_piece: bool,
     authenticated_route: bool,
+
+    /// The render scratch a refusal or catalog render reuses (see [`RenderScratch`]).
+    render_scratch: Mutex<Vec<RenderScratch>>,
+}
+
+/// A plane render's host scratch (head fields, arena, record writes), reused render to render: a
+/// render takes one, the plane writes into it, the answer copies out what it keeps, and it goes back.
+#[derive(Default)]
+struct RenderScratch {
+    fields: Vec<OutField>,
+    arena: Vec<u8>,
+    records: Vec<busbar_contract::abi::plane::RecordWrite>,
 }
 
 pub trait AuditSink: Send + Sync {
@@ -327,6 +341,7 @@ impl PlaneDriver {
             audit: Arc::new(CoreAudit),
             refused_piece: false,
             authenticated_route: d.authenticated_route,
+            render_scratch: Mutex::new(Vec::new()),
         })
     }
 
@@ -1025,15 +1040,54 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
 }
 
 impl PlaneDriver {
-    fn render_refusal(&self, mut input: RefusalIn, principal: Option<&PrincipalId>) -> Rendered {
+    fn render_refusal(&self, input: RefusalIn, principal: Option<&PrincipalId>) -> Rendered {
+        let mut scratch = self.render_scratch();
+        let rendered = self.render_refusal_with(input, principal, &mut scratch);
+        self.render_scratch_back(scratch);
+        rendered
+    }
+
+    /// A render's scratch (head fields, arena, record writes) at the configured capacities,
+    /// zeroed: a reused one when a render returned it, else a new one.
+    fn render_scratch(&self) -> RenderScratch {
+        let caps = self.config.caps;
+        let mut scratch = self
+            .render_scratch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop()
+            .unwrap_or_default();
+        scratch.fields.clear();
+        scratch.fields.resize(caps.fields, NO_FIELD);
+        scratch.arena.clear();
+        scratch.arena.resize(caps.arena, 0);
+        scratch.records.clear();
+        scratch.records.resize(caps.records, NO_RECORD);
+        scratch
+    }
+
+    fn render_scratch_back(&self, scratch: RenderScratch) {
+        self.render_scratch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(scratch);
+    }
+
+    fn render_refusal_with(
+        &self,
+        mut input: RefusalIn,
+        principal: Option<&PrincipalId>,
+        scratch: &mut RenderScratch,
+    ) -> Rendered {
         let status = input.status;
         let caps = self.config.caps;
-        let (mut reply, mut fields, mut arena) = (
-            vec![0u8; caps.reply],
-            vec![NO_FIELD; caps.fields],
-            vec![0u8; caps.arena],
-        );
-        let mut records = vec![NO_RECORD; caps.records];
+        // The reply buffer becomes the rendered body; the rest is the reused scratch.
+        let mut reply = vec![0u8; caps.reply];
+        let RenderScratch {
+            fields,
+            arena,
+            records,
+        } = scratch;
         (input.reply_buf, input.reply_cap) = (reply.as_mut_ptr(), reply.len());
         (input.fields_buf, input.fields_cap) = (fields.as_mut_ptr(), fields.len());
         (input.arena_buf, input.arena_cap) = (arena.as_mut_ptr(), arena.len());
@@ -1064,7 +1118,7 @@ impl PlaneDriver {
         if written != 0 {
             let arena_written = (o.arena_written as usize).min(arena.len());
             match busbar_contract::plane_calls::CancelWrite::owned(
-                &records,
+                records,
                 written,
                 &arena[..arena_written],
             ) {
@@ -1078,9 +1132,9 @@ impl PlaneDriver {
             if o.status == 0 { status } else { o.status },
             reply,
             o.reply_written,
-            &fields,
+            fields,
             o.fields_written,
-            &arena,
+            arena,
         )
     }
 
@@ -1147,49 +1201,56 @@ impl PlaneDriver {
         let mut listed: LentNames = smallvec::SmallVec::new();
         listed.extend(names.iter().map(|n| AbiStr::over(n.as_bytes())));
         let caps = self.config.caps;
-        let (mut reply, mut out_fields, mut arena) = (
-            vec![0u8; caps.reply],
-            vec![NO_FIELD; caps.fields],
-            vec![0u8; caps.arena],
-        );
-        let mut input = CatalogIn {
-            method: AbiStr::over(method),
-            target: AbiStr::over(target),
-            fields: fields.as_ptr(),
-            fields_len: fields.len(),
-            names: listed.as_ptr(),
-            names_len: listed.len(),
-            reply_buf: reply.as_mut_ptr(),
-            reply_cap: reply.len(),
-            fields_buf: out_fields.as_mut_ptr(),
-            fields_cap: out_fields.len(),
-            arena_buf: arena.as_mut_ptr(),
-            arena_cap: arena.len(),
-            ..blank_in()
-        };
-        let mut o: CatalogOut = blank_out();
-        let outcome = self.calls.catalog(&mut input, &mut o, &mut |short, i| {
-            reply.resize((short.reply_needed as usize).max(reply.len()), 0);
-            out_fields.resize(
-                (short.fields_needed as usize).max(out_fields.len()),
-                NO_FIELD,
-            );
-            arena.resize((short.arena_needed as usize).max(arena.len()), 0);
-            (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
-            (i.fields_buf, i.fields_cap) = (out_fields.as_mut_ptr(), out_fields.len());
-            (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
-        });
-        if outcome != AbiOutcome::Ready {
-            return None;
-        }
-        Some(rendered_of(
-            o.status,
-            reply,
-            o.reply_written,
-            &out_fields,
-            o.fields_written,
-            &arena,
-        ))
+        let mut scratch = self.render_scratch();
+        let rendered = (|| {
+            // The reply buffer becomes the rendered body; the rest is the reused scratch.
+            let mut reply = vec![0u8; caps.reply];
+            let RenderScratch {
+                fields: out_fields,
+                arena,
+                ..
+            } = &mut scratch;
+            let mut input = CatalogIn {
+                method: AbiStr::over(method),
+                target: AbiStr::over(target),
+                fields: fields.as_ptr(),
+                fields_len: fields.len(),
+                names: listed.as_ptr(),
+                names_len: listed.len(),
+                reply_buf: reply.as_mut_ptr(),
+                reply_cap: reply.len(),
+                fields_buf: out_fields.as_mut_ptr(),
+                fields_cap: out_fields.len(),
+                arena_buf: arena.as_mut_ptr(),
+                arena_cap: arena.len(),
+                ..blank_in()
+            };
+            let mut o: CatalogOut = blank_out();
+            let outcome = self.calls.catalog(&mut input, &mut o, &mut |short, i| {
+                reply.resize((short.reply_needed as usize).max(reply.len()), 0);
+                out_fields.resize(
+                    (short.fields_needed as usize).max(out_fields.len()),
+                    NO_FIELD,
+                );
+                arena.resize((short.arena_needed as usize).max(arena.len()), 0);
+                (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
+                (i.fields_buf, i.fields_cap) = (out_fields.as_mut_ptr(), out_fields.len());
+                (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
+            });
+            if outcome != AbiOutcome::Ready {
+                return None;
+            }
+            Some(rendered_of(
+                o.status,
+                reply,
+                o.reply_written,
+                out_fields,
+                o.fields_written,
+                arena,
+            ))
+        })();
+        self.render_scratch_back(scratch);
+        rendered
     }
 }
 
@@ -1201,18 +1262,19 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             return StepAnswer::refuse(token, Refusal::new(ReasonCode::InFlightCap));
         };
 
-        let deadline_ns = match (self.deadline_ns, self.far.deadline_ns(d.calls.now_ns())) {
+        let now_ns = d.calls.now_ns();
+        let deadline_ns = match (self.deadline_ns, self.far.deadline_ns(now_ns)) {
             (own, 0) => own,
             (0, stated) => stated,
             (own, stated) => own.min(stated),
         };
-        let mut run = route::Pumping::new(
+        let mut run = route::Pumping::at(
             d,
             token,
             &self.state,
             ctx,
             ticket,
-            deadline_ns,
+            (deadline_ns, now_ns),
             self.arrival.body.clone(),
         );
         {
@@ -1257,12 +1319,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 StepAnswer::refuse(token, Refusal::new(ReasonCode::BreakerOpen))
             }
             route::End::Vetoed(status, text) => {
-                let rendered = self.render_as(
-                    ReasonCode::HookVeto,
-                    Some((status, None)),
-                    Some(&text),
-                    None,
-                );
+                let rendered =
+                    self.render_as(ReasonCode::HookVeto, Some((status, None)), Some(text), None);
                 self.lock().rendered = Some(rendered);
                 StepAnswer::refuse(token, Refusal::new(ReasonCode::HookVeto))
             }

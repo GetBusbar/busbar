@@ -284,30 +284,6 @@ impl MessageStreamSubject {
         )
     }
 
-    /// Read one bounded, regular package file once. Production unpacking also bounds expanded members.
-    #[cfg(target_os = "linux")]
-    pub fn serve_signed_file(
-        self,
-        path: &std::path::Path,
-        expected_sha256: &str,
-        trust: &TrustConfig,
-    ) -> Result<Served, Failure> {
-        let cap = busbar_plugin_loader::tarball::MAX_TARBALL_FILE_BYTES;
-        let file = std::fs::File::open(path).map_err(|_| Failure::Io)?;
-        let metadata = file.metadata().map_err(|_| Failure::Io)?;
-        if !metadata.is_file() || metadata.len() > cap {
-            return Err(Failure::Limit);
-        }
-        let mut bytes = Vec::new();
-        file.take(cap + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| Failure::Io)?;
-        if bytes.len() as u64 > cap {
-            return Err(Failure::Limit);
-        }
-        self.serve_signed_package(&bytes, expected_sha256, trust)
-    }
-
     fn start(
         self,
         image: Admitted,
@@ -462,11 +438,12 @@ impl Served {
     pub fn report(&self) -> Report {
         self.shared.snapshot()
     }
-    pub fn finish(mut self) -> Result<Report, Report> {
+    /// The run's report: `Ok` when nothing failed, else the report (boxed: it is the large side).
+    pub fn finish(mut self) -> Result<Report, Box<Report>> {
         self.join();
         let report = self.report();
         if report.first_failure.is_some() {
-            Err(report)
+            Err(Box::new(report))
         } else {
             Ok(report)
         }

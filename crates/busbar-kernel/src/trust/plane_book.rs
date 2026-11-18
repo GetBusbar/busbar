@@ -2,12 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The trust book as the plane sees it: SIGHT, TRUST_SERVES, TRUST_STATE, TGT_SIGHT, TRUST_VERIFY and the operator's
-//! approve/revoke/release (IF §12.14). The frozen contract is the [`TrustBook`] trait; W1-K10's implementation is
-//! [`CoreTrustBook`], the kernel judge (`trust::book`) over durable rows, with today's `trust.verify` body for
+//! approve/revoke/release (IF §12.14). The frozen contract is the public methods of
+//! [`CoreTrustBook`] (W1-K10's implementation), the kernel judge (`trust::book`) over durable rows, with today's `trust.verify` body for
 //! TRUST_VERIFY and [`approval_entry`] reading one `trust.<plane instance>.<upstream>` approval.
-
-// W0-ABI: IF §12.14 names this trait `TrustBook` in module `trust`; `trust/book.rs` already holds the kernel's
-// concrete `TrustBook` struct, so the trait lives in this new file (`crate::trust::plane_book::TrustBook`).
 
 use std::sync::Arc;
 
@@ -26,71 +23,6 @@ use super::section::{DeclaredPin, TrustEntry};
 use crate::plane_grants::core_name;
 use crate::plugin_records::{PluginRecords, RecordsDenied, Scope};
 
-/// Keyed by (plane plugin, plane instance name, configured upstream name): durable, replica-shared.
-pub trait TrustBook: Send + Sync + 'static {
-    /// SIGHT: record the observation (catalogue hash stamps the re-verification clock; each item digest is
-    /// compared with the approval; drift quarantines the counterparty and is audited `trust_drift`).
-    fn sight<'a>(
-        &'a self,
-        plane: &'a Caller<'_>,
-        party: &'a str,
-        catalog: Option<[u8; 32]>,
-        items: &'a [(&'a str, [u8; 32])],
-    ) -> BoxFut<'a, Result<(), RecordsDenied>>;
-    /// TRUST_SERVES: DISTRUST_NONE or the DISTRUST_* that refuses (digest None = the last sighting). Never pends.
-    fn serves(
-        &self,
-        plane: &Caller<'_>,
-        party: &str,
-        item: Option<(&str, Option<[u8; 32]>)>,
-    ) -> u32;
-    /// TRUST_STATE: the counterparty verdict and per-item state, for the plane's admin views.
-    fn state(
-        &self,
-        plane: &Caller<'_>,
-        party: &str,
-        sink: &mut dyn FnMut(TrustItem<'_>),
-    ) -> (u32, Option<[u8; 32]>);
-    /// Upstreams of this plane instance whose re-verification is due; K8 runs `probe(TGT_SIGHT)` for each
-    /// (and on DX_RESIGHT), with RetrySite::PlaneProbe.
-    fn due(&self, plane: &Caller<'_>, now_s: u64) -> Vec<Box<str>>;
-    /// Round 7. TRUST_VERIFY: verify `signatures` (JSON array of `{protected, signature}`; empty = none) over
-    /// `payload` with the authenticity root configured for (`plane.name`, `party`) in TRUST_APPROVAL. The root's
-    /// key selects the algorithm (through `busbar-crypto`'s JWS verify, I12); a header naming another algorithm
-    /// is SIGNED_ALGORITHM, an unknown `crit` member SIGNED_CRITICAL (both write the name into `named`, ≤ 128
-    /// bytes). No root configured => SIGNED_MALFORMED_ROOT, audited `trust_root_missing`. Returns SIGNED_*
-    /// (§8.6). Never pends, never allocates beyond `named`; audited `trust_verify` with the verdict. Today's
-    /// kernel `trust.verify` body moves here unchanged.
-    fn verify(
-        &self,
-        plane: &Caller<'_>,
-        party: &str,
-        payload: &[u8],
-        signatures: &[u8],
-        named: &mut String,
-    ) -> u32;
-    /// Operator actions (core admin API only, never ABI, never a plane verb; round 7): approve an item digest
-    /// or the counterparty, revoke an approval, clear a quarantine.
-    fn approve<'a>(
-        &'a self,
-        plane_name: &'a str,
-        party: &'a str,
-        item: &'a str,
-        digest: [u8; 32],
-    ) -> BoxFut<'a, Result<(), RecordsDenied>>;
-    fn revoke<'a>(
-        &'a self,
-        plane_name: &'a str,
-        party: &'a str,
-        item: &'a str,
-    ) -> BoxFut<'a, Result<(), RecordsDenied>>;
-    fn release<'a>(
-        &'a self,
-        plane_name: &'a str,
-        party: &'a str,
-    ) -> BoxFut<'a, Result<(), RecordsDenied>>;
-}
-
 /// Audit action: a sighting moved from its approval (the counterparty's catalogue or one item); the detail names
 /// the item, empty for the catalogue.
 pub const AUDIT_TRUST_DRIFT: &str = "trust_drift";
@@ -99,21 +31,57 @@ pub const AUDIT_TRUST_VERIFY: &str = "trust_verify";
 /// Audit action: a TRUST_VERIFY with no authenticity root configured for the counterparty.
 pub const AUDIT_TRUST_ROOT_MISSING: &str = "trust_root_missing";
 /// `named` is at most this many bytes (IF §12.14).
-pub const MAX_NAMED: usize = 128;
+pub(crate) const MAX_NAMED: usize = 128;
 /// The approval digests' text form: `sha256:` and 64 lowercase hex digits (IF §12.10 TRUST_APPROVAL).
-pub const DIGEST_PREFIX: &str = "sha256:";
+pub(crate) const DIGEST_PREFIX: &str = "sha256:";
 
-/// Where the book's trust actions are audited. Core text only: names and verdict numbers, never a payload.
-pub trait TrustAudit: Send + Sync + 'static {
-    fn record(&self, action: &'static str, plane: &str, party: &str, detail: &str);
+/// Where the book's trust actions are audited: one `busbar::audit` event per action. Core text only:
+/// names and verdict numbers, never a payload. One concrete sink (arch lints section 3.1: a trait needs two
+/// production implementations); the kernel's own tests also read the actions back.
+#[derive(Default)]
+pub struct TrustAudit {
+    #[cfg(test)]
+    recorded: Option<std::sync::Mutex<Vec<&'static str>>>,
 }
 
-/// The default audit sink: one `busbar::audit` event per action.
-pub struct TracingAudit;
+impl TrustAudit {
+    /// The audit sink: every action is a `busbar::audit` event.
+    #[must_use]
+    pub fn tracing() -> Self {
+        Self::default()
+    }
 
-impl TrustAudit for TracingAudit {
-    fn record(&self, action: &'static str, plane: &str, party: &str, detail: &str) {
+    /// Audit one trust action.
+    pub fn record(&self, action: &'static str, plane: &str, party: &str, detail: &str) {
         tracing::info!(target: "busbar::audit", action, plane, party, detail, "trust");
+        #[cfg(test)]
+        if let Some(recorded) = &self.recorded {
+            recorded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(action);
+        }
+    }
+
+    /// A sink that also keeps the actions it audited, for the kernel's tests.
+    #[cfg(test)]
+    pub(crate) fn recording() -> Self {
+        Self {
+            recorded: Some(std::sync::Mutex::default()),
+        }
+    }
+
+    /// The actions audited so far (a recording sink only).
+    #[cfg(test)]
+    pub(crate) fn actions(&self) -> Vec<String> {
+        self.recorded.as_ref().map_or_else(Vec::new, |recorded| {
+            recorded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .map(|action| (*action).to_owned())
+                .collect()
+        })
     }
 }
 
@@ -269,7 +237,7 @@ fn fingerprint_pin(fingerprint: String) -> DeclaredPin {
 pub struct CoreTrustBook<R> {
     book: Arc<kernel_book::TrustBook>,
     records: R,
-    audit: Arc<dyn TrustAudit>,
+    audit: Arc<TrustAudit>,
     clock_ms: fn() -> u64,
 }
 
@@ -279,7 +247,7 @@ impl<R: PluginRecords> CoreTrustBook<R> {
     pub fn new(
         book: Arc<kernel_book::TrustBook>,
         records: R,
-        audit: Arc<dyn TrustAudit>,
+        audit: Arc<TrustAudit>,
         clock_ms: fn() -> u64,
     ) -> Self {
         Self {
@@ -423,8 +391,11 @@ impl<R: PluginRecords> CoreTrustBook<R> {
     }
 }
 
-impl<R: PluginRecords> TrustBook for CoreTrustBook<R> {
-    fn sight<'a>(
+/// Keyed by (plane plugin, plane instance name, configured upstream name): durable, replica-shared.
+impl<R: PluginRecords> CoreTrustBook<R> {
+    /// SIGHT: record the observation (catalogue hash stamps the re-verification clock; each item digest is
+    /// compared with the approval; drift quarantines the counterparty and is audited `trust_drift`).
+    pub fn sight<'a>(
         &'a self,
         plane: &'a Caller<'_>,
         party: &'a str,
@@ -471,7 +442,8 @@ impl<R: PluginRecords> TrustBook for CoreTrustBook<R> {
         })
     }
 
-    fn serves(
+    /// TRUST_SERVES: DISTRUST_NONE or the DISTRUST_* that refuses (digest None = the last sighting). Never pends.
+    pub fn serves(
         &self,
         plane: &Caller<'_>,
         party: &str,
@@ -486,7 +458,8 @@ impl<R: PluginRecords> TrustBook for CoreTrustBook<R> {
         )
     }
 
-    fn state(
+    /// TRUST_STATE: the counterparty verdict and per-item state, for the plane's admin views.
+    pub fn state(
         &self,
         plane: &Caller<'_>,
         party: &str,
@@ -516,7 +489,9 @@ impl<R: PluginRecords> TrustBook for CoreTrustBook<R> {
         (verdict, catalog)
     }
 
-    fn due(&self, plane: &Caller<'_>, now_s: u64) -> Vec<Box<str>> {
+    /// Upstreams of this plane instance whose re-verification is due; K8 runs `probe(TGT_SIGHT)` for each
+    /// (and on DX_RESIGHT), with RetrySite::PlaneProbe.
+    pub fn due(&self, plane: &Caller<'_>, now_s: u64) -> Vec<Box<str>> {
         self.book
             .due_at(plane.name, now_s.saturating_mul(1_000))
             .unwrap_or_default()
@@ -525,7 +500,14 @@ impl<R: PluginRecords> TrustBook for CoreTrustBook<R> {
             .collect()
     }
 
-    fn verify(
+    /// Round 7. TRUST_VERIFY: verify `signatures` (JSON array of `{protected, signature}`; empty = none) over
+    /// `payload` with the authenticity root configured for (`plane.name`, `party`) in TRUST_APPROVAL. The root's
+    /// key selects the algorithm (through `busbar-crypto`'s JWS verify, I12); a header naming another algorithm
+    /// is SIGNED_ALGORITHM, an unknown `crit` member SIGNED_CRITICAL (both write the name into `named`, ≤ 128
+    /// bytes). No root configured => SIGNED_MALFORMED_ROOT, audited `trust_root_missing`. Returns SIGNED_*
+    /// (§8.6). Never pends, never allocates beyond `named`; audited `trust_verify` with the verdict. Today's
+    /// kernel `trust.verify` body moves here unchanged.
+    pub fn verify(
         &self,
         plane: &Caller<'_>,
         party: &str,
@@ -546,7 +528,9 @@ impl<R: PluginRecords> TrustBook for CoreTrustBook<R> {
         verdict
     }
 
-    fn approve<'a>(
+    /// Operator actions (core admin API only, never ABI, never a plane verb; round 7): approve an item digest
+    /// or the counterparty, revoke an approval, clear a quarantine.
+    pub fn approve<'a>(
         &'a self,
         plane_name: &'a str,
         party: &'a str,
@@ -571,7 +555,7 @@ impl<R: PluginRecords> TrustBook for CoreTrustBook<R> {
         })
     }
 
-    fn revoke<'a>(
+    pub fn revoke<'a>(
         &'a self,
         plane_name: &'a str,
         party: &'a str,
@@ -584,7 +568,7 @@ impl<R: PluginRecords> TrustBook for CoreTrustBook<R> {
         })
     }
 
-    fn release<'a>(
+    pub fn release<'a>(
         &'a self,
         plane_name: &'a str,
         party: &'a str,

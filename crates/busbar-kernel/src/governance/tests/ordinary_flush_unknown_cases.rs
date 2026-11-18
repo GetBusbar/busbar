@@ -58,12 +58,12 @@ async fn ordinary_unknown_result_retries_once(unwind: bool) {
 
 #[tokio::test]
 async fn ordinary_small_usage_unknown_reply_does_not_duplicate_committed_effect() {
-    ordinary_unknown_result_retries_once(false).await;
+    Box::pin(ordinary_unknown_result_retries_once(false)).await;
 }
 
 #[tokio::test]
 async fn ordinary_small_usage_unwind_does_not_duplicate_committed_effect() {
-    ordinary_unknown_result_retries_once(true).await;
+    Box::pin(ordinary_unknown_result_retries_once(true)).await;
 }
 
 /// STORE-TRANSACTIONS §8 item 19: a first send a day and a second in the past.

@@ -121,6 +121,17 @@ pub struct Waited<'p> {
     won: Option<(Member, Permit, Option<u64>)>,
 }
 
+/// The op's one reading of the egress clock's two scales, taken at its entry and handed to the walk (which reads
+/// no clock itself): `secs` (epoch seconds, the deadline) and `millis` (the monotonic point the bounded wait
+/// measures from).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalkNow {
+    /// `Clock::now_secs`: whole seconds since the epoch.
+    pub secs: u64,
+    /// `Clock::now_millis`: milliseconds since the clock's fixed point.
+    pub millis: u128,
+}
+
 /// ONE UNIT'S WALK: its request context (deadline, every member tried, every pool visited), where
 /// it is, and how many hops it has taken.
 #[derive(Debug, Clone)]
@@ -135,13 +146,9 @@ pub struct Walk {
 impl Walk {
     /// A walk over `pool` starting now: its budget is the pool's request timeout.
     #[must_use]
-    pub fn start(ports: &WalkPorts<'_>, pool: &str) -> Self {
+    pub fn start(ports: &WalkPorts<'_>, pool: &str, now: WalkNow) -> Self {
         Self {
-            ctx: RequestCtx::new(
-                budget_secs(ports.pools, pool),
-                ports.clock.now_secs(),
-                ports.clock.now_millis(),
-            ),
+            ctx: RequestCtx::new(budget_secs(ports.pools, pool), now.secs, now.millis),
             phase: Phase::Primary(pool.to_string()),
             hops: 0,
             taken: 0,
@@ -150,13 +157,9 @@ impl Walk {
 
     /// A walk with no pool to walk, bounded by `budget_secs` from now: one health probe's. Its one
     #[must_use]
-    pub fn pinned(ports: &WalkPorts<'_>, budget_secs: u64) -> Self {
+    pub fn pinned(budget_secs: u64, now: WalkNow) -> Self {
         Self {
-            ctx: RequestCtx::new(
-                budget_secs,
-                ports.clock.now_secs(),
-                ports.clock.now_millis(),
-            ),
+            ctx: RequestCtx::new(budget_secs, now.secs, now.millis),
             phase: Phase::Shed(Shed::empty_pool()),
             hops: 0,
             taken: 0,
@@ -224,7 +227,17 @@ impl Walk {
                         return Step::Shed(Shed::empty_pool());
                     }
                     if self.hops <= pool.failover.max_hops {
-                        match self.pick(ports, pool, affinity, shape, token, true) {
+                        match self.pick(
+                            ports,
+                            pool,
+                            PickAt {
+                                affinity,
+                                shape,
+                                primary: true,
+                                now,
+                            },
+                            token,
+                        ) {
                             Ok(Some(taken)) => {
                                 self.hops += 1;
                                 return Step::Take(taken);
@@ -237,9 +250,19 @@ impl Walk {
                 }
                 Phase::Spill(name) => {
                     let Some(pool) = ports.pools.get(&name) else {
-                        return Step::Shed(pool_shed(ports, &name, &[], token));
+                        return Step::Shed(pool_shed(ports, &name, &[], now, token));
                     };
-                    match self.pick(ports, pool, None, shape, token, false) {
+                    match self.pick(
+                        ports,
+                        pool,
+                        PickAt {
+                            affinity: None,
+                            shape,
+                            primary: false,
+                            now,
+                        },
+                        token,
+                    ) {
                         Ok(Some(taken)) => return Step::Take(taken),
                         Ok(None) => {}
                         Err(shed) => return Step::Shed(shed),
@@ -249,7 +272,7 @@ impl Walk {
                 Phase::Terminal(name, primary) => {
                     self.ctx.mark_pool_visited(&name);
                     let Some(pool) = ports.pools.get(&name) else {
-                        return Step::Shed(pool_shed(ports, &name, &[], token));
+                        return Step::Shed(pool_shed(ports, &name, &[], now, token));
                     };
 
                     let kept = |walk: &mut Self| {
@@ -259,7 +282,7 @@ impl Walk {
                     match &pool.on_exhausted {
                         OnExhausted::Status503 => {
                             return Step::Shed(match kept(self) {
-                                Ok(members) => pool_shed(ports, &name, &members, token),
+                                Ok(members) => pool_shed(ports, &name, &members, now, token),
                                 Err(shed) => shed,
                             });
                         }
@@ -278,9 +301,9 @@ impl Walk {
                                 Err(shed) => return Step::Shed(shed),
                             };
 
-                            let shed = pool_shed(ports, &name, &members, token);
+                            let shed = pool_shed(ports, &name, &members, now, token);
                             self.phase = Phase::Shed(shed.clone());
-                            return match least_bad(ports, pool, &members, token) {
+                            return match least_bad(ports, pool, &members, now, token) {
                                 Some((member, permit)) => {
                                     Step::Take(self.take(&pool.name, member, permit, None, true))
                                 }
@@ -349,13 +372,16 @@ impl Walk {
         &mut self,
         ports: &WalkPorts<'_>,
         pool: &Pool,
-        affinity: Option<u64>,
-        shape: Option<&dyn Shape>,
+        at: PickAt<'_>,
         token: &Pass<Route>,
-        primary: bool,
     ) -> Result<Option<Taken>, Shed> {
+        let PickAt {
+            affinity,
+            shape,
+            primary,
+            now,
+        } = at;
         let (members, order) = self.shaped(pool, shape, primary)?;
-        let now = ports.clock.now_secs();
         let Some(mut picked) = pick_among(
             &PickInput {
                 breaker: ports.breaker,
@@ -436,7 +462,13 @@ impl Walk {
         token: &Pass<Route>,
     ) -> Result<Parked<'p>, Shed> {
         let Some(pool) = ports.pools.get(&wait.pool) else {
-            return Err(pool_shed(ports, &wait.pool, &[], token));
+            return Err(pool_shed(
+                ports,
+                &wait.pool,
+                &[],
+                ports.clock.now_secs(),
+                token,
+            ));
         };
         let mut waiting: Vec<DestinationId> = Vec::new();
         for (destination, reason) in self.ctx.excluded_reasons() {
@@ -445,7 +477,13 @@ impl Walk {
             }
         }
         if waiting.is_empty() {
-            let shed = pool_shed(ports, &wait.pool, &wait.members, token);
+            let shed = pool_shed(
+                ports,
+                &wait.pool,
+                &wait.members,
+                ports.clock.now_secs(),
+                token,
+            );
             self.phase = Phase::Shed(shed.clone());
             return Err(shed);
         }
@@ -470,7 +508,13 @@ impl Walk {
         let taken = waited.won.map(|(member, permit, probe)| {
             self.take(&waited.pool.name, member, permit, probe, true)
         });
-        let shed = pool_shed(ports, &waited.name, &waited.members, token);
+        let shed = pool_shed(
+            ports,
+            &waited.name,
+            &waited.members,
+            ports.clock.now_secs(),
+            token,
+        );
         self.phase = Phase::Shed(shed.clone());
         taken.ok_or(shed)
     }
@@ -526,6 +570,16 @@ impl<'p> Parked<'p> {
     }
 }
 
+/// What one [`Walk::pick`] is over: the affinity and the hooks' shape, whether the pool is the walk's
+/// own, and the step's one clock reading.
+#[derive(Clone, Copy)]
+struct PickAt<'s> {
+    affinity: Option<u64>,
+    shape: Option<&'s dyn Shape>,
+    primary: bool,
+    now: u64,
+}
+
 /// One parked waiter's place in the depth gauge, given back on drop. The increment and the
 struct QueuedGuard<'a> {
     telemetry: &'a dyn Telemetry,
@@ -547,14 +601,14 @@ impl Drop for QueuedGuard<'_> {
 }
 
 /// The shed for `pool`: refuse, with the wait its `members` justify (the ones the unit's hooks
-fn pool_shed(ports: &WalkPorts<'_>, pool: &str, members: &[Member], token: &Pass<Route>) -> Shed {
-    Shed::overloaded(retry_after_secs(
-        ports.breaker,
-        members,
-        pool,
-        ports.clock.now_secs(),
-        token,
-    ))
+fn pool_shed(
+    ports: &WalkPorts<'_>,
+    pool: &str,
+    members: &[Member],
+    now: u64,
+    token: &Pass<Route>,
+) -> Shed {
+    Shed::overloaded(retry_after_secs(ports.breaker, members, pool, now, token))
 }
 
 /// Exclude every member of `members` (the pool's ADMISSIBLE members) whose window is at or below

@@ -349,15 +349,17 @@ fn tls_read_allocates_nothing() {
     // Warm both: buffers, the inbox and the scratch slots reach their working size.
     for _ in 0..3 {
         let rec = records(&mut client, &[b'w'; RECORD]);
-        conn.feed(&rec, false, false).unwrap();
-        plain.feed(&[b'w'; RECORD], false, false).unwrap();
+        conn.feed(&rec, false, false, &mut None).unwrap();
+        plain
+            .feed(&[b'w'; RECORD], false, false, &mut None)
+            .unwrap();
         conn.inbox.clear();
         plain.inbox.clear();
     }
     let rec = records(&mut client, &[b'r'; RECORD]);
     let bytes = [b'r'; RECORD];
-    let ((), clear) = allocations_during(|| plain.feed(&bytes, false, false).unwrap());
-    let ((), secured) = allocations_during(|| conn.feed(&rec, false, false).unwrap());
+    let ((), clear) = allocations_during(|| plain.feed(&bytes, false, false, &mut None).unwrap());
+    let ((), secured) = allocations_during(|| conn.feed(&rec, false, false, &mut None).unwrap());
     assert_eq!(conn.inbox.back().map(|g| g.bytes.len()), Some(RECORD));
     assert!(
         secured <= clear + 1,

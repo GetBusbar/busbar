@@ -52,13 +52,14 @@ async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() 
     let cfg = config;
     let rules: std::sync::Arc<dyn busbar_kernel::appbuild::RootRules> =
         std::sync::Arc::new(AcceptAll);
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: opened,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: opened,
         rules,
     } = crate::root::min3_boot::fixture::open(&cfg, &plugin_config, rules)
         .await
-        .unwrap();
-    let opened = crate::root::real_store::core_over(opened).await;
+        .unwrap()
+        .admit()
+        .await;
     let calls = opened.clone();
     let backend = busbar_kernel::config::overlay::OverlayStore::from_core(calls.clone()).unwrap();
     persist_root(
@@ -83,7 +84,7 @@ async fn base_store_bootstrap_and_effective_build_share_the_same_opened_store() 
         "the fixture must not reopen secret instances between Store and App construction"
     );
     let (app, _, _limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         Some(backend),
         Default::default(),
@@ -146,20 +147,21 @@ async fn a_cross_node_sibling_update_and_intervening_get_cannot_authorize_a_stal
     )];
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: opened,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: opened,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules)
         .await
-        .unwrap();
-    let opened = crate::root::real_store::core_over(opened).await;
+        .unwrap()
+        .admit()
+        .await;
     let calls = opened.clone();
     let backend = busbar_kernel::config::overlay::OverlayStore::from_core(calls.clone()).unwrap();
     persist_root(Some(&backend), &RootSettings::default())
         .await
         .unwrap();
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(backend.clone()),
         Default::default(),
@@ -284,6 +286,7 @@ async fn bootstrap_opens_the_anchor_before_requiring_modules_whose_pins_it_must_
     let crate::root::min3_boot::fixture::Fixture {
         backend: opened,
         rules: _rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&cfg, &plugin_config, rules)
         .await
         .unwrap();
@@ -354,13 +357,14 @@ async fn root_recovery_can_run_before_hydration_without_changing_standalone_buil
         )];
         let cfg = config;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> = Arc::new(AcceptAll);
-        let crate::root::min3_boot::fixture::Fixture {
-            backend: opened,
+        let crate::root::min3_boot::fixture::Admitted {
+            core: opened,
             rules,
         } = crate::root::min3_boot::fixture::open(&cfg, &plugin_config, rules)
             .await
-            .unwrap();
-        let opened = crate::root::real_store::core_over(opened).await;
+            .unwrap()
+            .admit()
+            .await;
         let records = Arc::clone(&opened);
         let id = "vk_recovery_boot_order";
         records
@@ -387,7 +391,7 @@ async fn root_recovery_can_run_before_hydration_without_changing_standalone_buil
             .await
             .unwrap();
         let (app, _, _limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             plugin_config,
             None,
             Default::default(),

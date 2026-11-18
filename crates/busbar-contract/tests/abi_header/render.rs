@@ -16,11 +16,22 @@ pub const REGENERATE: &str =
 
 pub const ABI: &str = "crates/busbar-contract/src/abi";
 
+/// busbar-artifact-metadata's sources, as paths under [`ABI`].
+const META_VERSIONS: &str = "../../../busbar-artifact-metadata/src/versions.rs";
+const META_LIB: &str = "../../../busbar-artifact-metadata/src/lib.rs";
+const META_EXTENSIONS: &str = "../../../busbar-artifact-metadata/src/extensions.rs";
+const META_MEASUREMENT: &str = "../../../busbar-artifact-metadata/src/measurement.rs";
+
 /// `(kind, golden alias prefix, path under abi/, is a folder)`. The order is the order of the
 pub const SOURCES: &[(&str, &str, &str, bool)] = &[
     ("mech", "Mech", "mechanism", true),
-    ("mech", "Mech", "versions.rs", false),
+    // 7ba7137edc moved these mechanism and measurement items (the version numbers, BLOB_JSON, the
+    // extension keys, MAX_MEASUREMENT_CLASSES) into busbar-artifact-metadata; the contract re-exports them.
+    ("mech", "Mech", META_VERSIONS, false),
+    ("mech", "Mech", META_LIB, false),
+    ("mech", "Mech", META_EXTENSIONS, false),
     ("measurement", "measurement::", "measurement.rs", false),
+    ("measurement", "measurement::", META_MEASUREMENT, false),
     ("store", "Store", "store", true),
     ("store", "Store", "../records/op_id.rs", false),
     ("secret", "Secret", "secret", true),

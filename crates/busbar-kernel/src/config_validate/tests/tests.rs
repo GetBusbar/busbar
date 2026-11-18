@@ -1164,7 +1164,6 @@ fn test_auth_policy_valid_block_passes() {
         ]),
         max_ttl: Some("90d".to_string()),
         mint_ceilings: ceilings,
-        ..Default::default()
     };
     let errs = policy_errors(&root_with_auth_policy(policy));
     assert!(errs.is_empty(), "a valid policy adds no error: {errs:?}");

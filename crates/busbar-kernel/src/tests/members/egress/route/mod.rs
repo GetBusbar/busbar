@@ -23,7 +23,7 @@ use busbar_kernel_egress::pool::{Member, Pool};
 use busbar_kernel_egress::ports::Clock;
 use busbar_kernel_egress::ports::DestinationId;
 use busbar_kernel_egress::select::{RequestCtx, WeightedFloor};
-use busbar_kernel_egress::walk::{Shape, Step, Taken, Walk, WalkPorts};
+use busbar_kernel_egress::walk::{Shape, Step, Taken, Walk, WalkNow, WalkPorts};
 use busbar_kernel_egress::wire::Shed;
 
 use crate::plane_driver::{
@@ -151,7 +151,11 @@ impl Node {
 
     pub fn walker(&self, pool: &str) -> Walker<'_> {
         let pools = self.timed_pools();
-        let walk = Walk::start(&ports(self, &pools), pool);
+        let now = WalkNow {
+            secs: self.clock.now_secs(),
+            millis: self.clock.now_millis(),
+        };
+        let walk = Walk::start(&ports(self, &pools), pool, now);
         Walker {
             node: self,
             pools,

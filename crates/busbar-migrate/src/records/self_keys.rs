@@ -12,14 +12,14 @@ use busbar_contract::records::VirtualKey;
 use super::SelfId;
 
 /// The group prefix of a 1.5.5 self-serve key.
-pub const GROUP_PREFIX: &str = "user:";
+const GROUP_PREFIX: &str = "user:";
 /// The name 1.5.5 gave a self-serve key, around its subject.
-pub const NAME_PREFIX: &str = "self-serve key (";
+const NAME_PREFIX: &str = "self-serve key (";
 /// The binding mode a verified self-serve key is carried under.
-pub const USER_BOUND: &str = "user-bound";
+const USER_BOUND: &str = "user-bound";
 /// The epochs tried after the key's own marker: 1.5.5's rotate and revoke wrote a random
 /// generation (`state.rs:191, 1277`), so the epoch a key was minted under is not always its own.
-pub const EPOCH_PROBE: u64 = 256;
+const EPOCH_PROBE: u64 = 256;
 
 /// What [`convert`] found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

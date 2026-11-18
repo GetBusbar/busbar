@@ -56,7 +56,6 @@ pub struct RecordCall {
     /// `get`, `put`, `claim`, `del`, `list`, or `commit`.
     pub op: &'static str,
 }
-use busbar_plugin_abi::host_side::scrub::Scrub;
 
 /// One step of a scripted conn.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -213,11 +212,8 @@ struct State {
     #[cfg(test)]
     open_limits: Vec<(String, busbar_plugin_abi::host_side::caller::InstanceLimits)>,
     released: u64,
+    scrub_slots: Vec<u32>,
 }
-
-/// The scrub set of the instance that owns a watchdog slot: `Registry::scrub_of`, as the kernel attaches it to
-/// custody (`SecretCustody::attach`, busbar root `min3_boot.rs`).
-pub type ScrubOf = Arc<dyn Fn(u32) -> Option<Arc<Scrub>> + Send + Sync>;
 
 /// A scriptable `Needs` for plugin CI (IF §14). Suites run `Registry<FakeNeeds>`.
 #[derive(Default)]
@@ -225,7 +221,8 @@ pub struct FakeNeeds {
     #[cfg(feature = "target-sockets")]
     sockets: Option<crate::sockets::SocketTargets>,
     state: Mutex<State>,
-    scrubs: Mutex<Option<ScrubOf>>,
+    scrubbing: bool,
+    slots: Option<Arc<busbar_plugin_loader::instance::SlotTable>>,
 }
 
 /// The next id in `ids` for `instance`: 1, 2, 3, ... per instance, never repeated.
@@ -362,14 +359,37 @@ impl FakeNeeds {
         self
     }
 
+    /// The secret a CORE_CFG(LIFT) moved out of the settings: core writes the literal to its own secret file and
+    /// leaves a reference at `pointer` (busbar-migrate `settle`), so custody answers that literal for it from then
+    /// on. Used by the migrate suite after a converting open, the way [`Self::secret`] scripts one up front.
+    pub(crate) fn lifted(&self, pointer: &str, value: &[u8]) {
+        self.lock()
+            .secrets
+            .push((pointer.to_owned(), SecureVec::from(value)));
+    }
+
     /// Custody's scrub registration (§12.2 step 5, I14): from here on every SECRET this double answers is first
-    /// registered, under its handle, in the scrub set `scrub_of` names for the asking chain's slot, and only then
-    /// handed to the plugin (register, then publish), as the kernel's custody does once the boot attaches
-    /// `Registry::scrub_of` to it. A suite attaches its registry's after the harness is built:
-    /// `h.needs().attach_scrubs(Arc::new(move |slot| weak.upgrade()?.registry().scrub_of(slot)))`. Without it no
-    /// value is registered (a plugin's FAIL text and log lines are then scrubbed of nothing it resolved).
-    pub fn attach_scrubs(&self, scrub_of: ScrubOf) {
-        *self.scrubs.lock().unwrap_or_else(PoisonError::into_inner) = Some(scrub_of);
+    /// registered, under its handle, in the scrub set of the asking chain's slot in the harness's process slot
+    /// table, and only then handed to the plugin (register, then publish), as the kernel's custody does. Without
+    /// it no value is registered (a plugin's FAIL text and log lines are then scrubbed of nothing it resolved).
+    #[must_use]
+    pub fn scrubbing(mut self) -> Self {
+        self.scrubbing = true;
+        self
+    }
+
+    /// The slot table the harness's registry runs on, set by the harness when it builds its Needs.
+    pub(crate) fn over_slots(
+        mut self,
+        slots: Option<Arc<busbar_plugin_loader::instance::SlotTable>>,
+    ) -> Self {
+        self.slots = slots;
+        self
+    }
+
+    /// The watchdog slot of each chain that asked for a SECRET while this double was scrubbing, in order.
+    pub fn scrub_slots(&self) -> Vec<u32> {
+        self.lock().scrub_slots.clone()
     }
 
     /// The first value `secret` scripted for `pointer`.
@@ -734,13 +754,15 @@ impl Needs for FakeNeeds {
             Some(value) => {
                 // Register, then publish (custody's order, §12.2 step 5): the scrub set masks the value before
                 // the plugin holds it.
-                let scrub_of = self
-                    .scrubs
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone();
-                if let Some(scrub) = scrub_of.and_then(|scrub_of| scrub_of(cx.slot)) {
-                    scrub.register(handle, &[value.as_slice()]);
+                if self.scrubbing {
+                    self.lock().scrub_slots.push(cx.slot);
+                    if let Some(scrub) = self
+                        .slots
+                        .as_ref()
+                        .and_then(|slots| slots.scrub_of(cx.slot))
+                    {
+                        scrub.register(handle, &[value.as_slice()]);
+                    }
                 }
                 res.put0(&value)
             }
@@ -785,81 +807,6 @@ impl Needs for FakeNeeds {
             }
         }
         state.released += 1;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_script_replays_expect_and_reply_in_order() {
-        let mut script = ConnScript::new()
-            .expect(b"PING\r\n")
-            .reply(b"+PONG\r\n")
-            .eof();
-        assert_eq!(script.read(64), Err(NeedErr::Timeout));
-        assert_eq!(script.wrote(b"PI"), Ok(()));
-        assert_eq!(script.wrote(b"NG\r\n"), Ok(()));
-        assert_eq!(script.read(3), Ok(Read::Bytes(b"+PO".to_vec())));
-        assert_eq!(script.read(64), Ok(Read::Bytes(b"NG\r\n".to_vec())));
-        assert_eq!(script.read(64), Ok(Read::Eof));
-        assert_eq!(script.read(64), Ok(Read::Eof));
-    }
-
-    #[test]
-    fn a_wrong_or_extra_write_is_invalid_and_a_reset_closes() {
-        let mut script = ConnScript::new().expect(b"AB").reset();
-        assert_eq!(script.wrote(b"AC"), Err(NeedErr::Invalid));
-        let mut script = ConnScript::new().expect(b"AB").expect(b"CD").reset();
-        assert_eq!(script.wrote(b"ABC"), Ok(()));
-        assert_eq!(script.wrote(b"DE"), Err(NeedErr::Closed));
-        assert_eq!(script.read(1), Err(NeedErr::Closed));
-        let mut spent = ConnScript::new();
-        assert_eq!(spent.wrote(b"x"), Err(NeedErr::Invalid));
-        assert_eq!(spent.read(0), Err(NeedErr::Invalid));
-    }
-
-    /// C-POOL-STATE (a), the FakeNeeds side (round 19): ids per instance start at 1 and never repeat.
-    #[test]
-    fn ids_are_minted_per_instance_from_one_and_never_repeat() {
-        let mut ids = BTreeMap::new();
-        assert_eq!(mint(&mut ids, 7), Ok(1));
-        assert_eq!(mint(&mut ids, 9), Ok(1));
-        let mut last = 1;
-        for _ in 0..10_000 {
-            let id = mint(&mut ids, 7).unwrap();
-            assert!(id > last);
-            last = id;
-        }
-    }
-
-    #[test]
-    fn deny_and_the_endpoint_match_compare_hosts() {
-        assert_eq!(host_of("db.test:5432"), "db.test");
-        assert_eq!(host_of("https://user:pw@api.test:8443/v1?x=1"), "api.test");
-        assert_eq!(host_of("[::1]:6379"), "::1");
-        assert_eq!(host_of("unix:/run/x.sock"), "unix:/run/x.sock");
-        let mut needs = FakeNeeds::new();
-        needs.deny("https://169.254.169.254/latest");
-        let state = needs.state();
-        assert!(state.denies("169.254.169.254:80"));
-        assert!(!state.denies("api.test:443"));
-        state.seen.push(Seen {
-            op: "open",
-            dest: "db.test:5432".to_owned(),
-            tls: true,
-            egress: 0,
-        });
-        state.seen.push(Seen {
-            op: "fetch",
-            dest: "http://api.test/x".to_owned(),
-            tls: false,
-            egress: 0,
-        });
-        let undeclared = needs.undeclared(&[("db.test:5432", true), ("api.test:443", true)]);
-        assert_eq!(undeclared.len(), 1);
-        assert_eq!(undeclared[0].dest, "http://api.test/x");
     }
 }
 
@@ -1036,5 +983,80 @@ impl Drop for SocketRoute<'_> {
         if !self.keep {
             self.host.lock().socket_routes.remove(&self.key);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_script_replays_expect_and_reply_in_order() {
+        let mut script = ConnScript::new()
+            .expect(b"PING\r\n")
+            .reply(b"+PONG\r\n")
+            .eof();
+        assert_eq!(script.read(64), Err(NeedErr::Timeout));
+        assert_eq!(script.wrote(b"PI"), Ok(()));
+        assert_eq!(script.wrote(b"NG\r\n"), Ok(()));
+        assert_eq!(script.read(3), Ok(Read::Bytes(b"+PO".to_vec())));
+        assert_eq!(script.read(64), Ok(Read::Bytes(b"NG\r\n".to_vec())));
+        assert_eq!(script.read(64), Ok(Read::Eof));
+        assert_eq!(script.read(64), Ok(Read::Eof));
+    }
+
+    #[test]
+    fn a_wrong_or_extra_write_is_invalid_and_a_reset_closes() {
+        let mut script = ConnScript::new().expect(b"AB").reset();
+        assert_eq!(script.wrote(b"AC"), Err(NeedErr::Invalid));
+        let mut script = ConnScript::new().expect(b"AB").expect(b"CD").reset();
+        assert_eq!(script.wrote(b"ABC"), Ok(()));
+        assert_eq!(script.wrote(b"DE"), Err(NeedErr::Closed));
+        assert_eq!(script.read(1), Err(NeedErr::Closed));
+        let mut spent = ConnScript::new();
+        assert_eq!(spent.wrote(b"x"), Err(NeedErr::Invalid));
+        assert_eq!(spent.read(0), Err(NeedErr::Invalid));
+    }
+
+    /// C-POOL-STATE (a), the FakeNeeds side (round 19): ids per instance start at 1 and never repeat.
+    #[test]
+    fn ids_are_minted_per_instance_from_one_and_never_repeat() {
+        let mut ids = BTreeMap::new();
+        assert_eq!(mint(&mut ids, 7), Ok(1));
+        assert_eq!(mint(&mut ids, 9), Ok(1));
+        let mut last = 1;
+        for _ in 0..10_000 {
+            let id = mint(&mut ids, 7).unwrap();
+            assert!(id > last);
+            last = id;
+        }
+    }
+
+    #[test]
+    fn deny_and_the_endpoint_match_compare_hosts() {
+        assert_eq!(host_of("db.test:5432"), "db.test");
+        assert_eq!(host_of("https://user:pw@api.test:8443/v1?x=1"), "api.test");
+        assert_eq!(host_of("[::1]:6379"), "::1");
+        assert_eq!(host_of("unix:/run/x.sock"), "unix:/run/x.sock");
+        let mut needs = FakeNeeds::new();
+        needs.deny("https://169.254.169.254/latest");
+        let state = needs.state();
+        assert!(state.denies("169.254.169.254:80"));
+        assert!(!state.denies("api.test:443"));
+        state.seen.push(Seen {
+            op: "open",
+            dest: "db.test:5432".to_owned(),
+            tls: true,
+            egress: 0,
+        });
+        state.seen.push(Seen {
+            op: "fetch",
+            dest: "http://api.test/x".to_owned(),
+            tls: false,
+            egress: 0,
+        });
+        let undeclared = needs.undeclared(&[("db.test:5432", true), ("api.test:443", true)]);
+        assert_eq!(undeclared.len(), 1);
+        assert_eq!(undeclared[0].dest, "http://api.test/x");
     }
 }

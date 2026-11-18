@@ -19,3 +19,7 @@ pub fn current_thread() -> tokio::runtime::Builder {
 pub fn multi_thread() -> tokio::runtime::Builder {
     tokio::runtime::Builder::new_multi_thread()
 }
+
+/// The runtime these builders build. A core holder names it here (R40): every core runtime is
+/// still built only by [`current_thread`] or [`multi_thread`].
+pub type Runtime = tokio::runtime::Runtime;

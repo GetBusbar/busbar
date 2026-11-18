@@ -157,15 +157,16 @@ async fn actual_signed_reader_preserves_credential_body_gate_and_revocation_cust
     let destinations = config.destinations();
     let native_config = config;
     let native_plugins = plugin_config;
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: native_core,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: native_core,
         rules,
     } = crate::root::min3_boot::fixture::open(&native_config, &native_plugins, rules.clone())
         .await
-        .expect("actual Store opens for native startup");
-    let native_core = crate::root::real_store::core_over(native_core).await;
+        .expect("actual Store opens for native startup")
+        .admit()
+        .await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        native_config,
+        crate::root::test_plugins::plaintext_listeners(native_config),
         native_plugins,
         None,
         Default::default(),

@@ -201,7 +201,7 @@ pub fn stdio_instance<'a>(
         0 => Err(StdioRefusal::None),
         1 => Ok(lines.remove(0)),
         _ => {
-            lines.sort_unstable();
+            lines.sort();
             Err(StdioRefusal::Several(
                 lines.into_iter().map(str::to_owned).collect(),
             ))

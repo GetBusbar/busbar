@@ -40,7 +40,7 @@ async fn far_end_app() -> busbar_kernel::state::App {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         Default::default(),
         None,
         Default::default(),
@@ -97,7 +97,7 @@ fn egress_over(pool_name: &str) -> Egress {
                 floor: WeightedFloor::new(),
             },
         )]),
-        routes: HashMap::from([(
+        routes: foldhash::HashMap::from_iter([(
             destination,
             MemberRoute {
                 ride_anchors: Vec::new(),
@@ -121,7 +121,14 @@ fn egress_over(pool_name: &str) -> Egress {
 #[tokio::test(flavor = "current_thread")]
 async fn the_caller_secret_is_shared_from_the_door_to_the_far_ends_route() {
     let app = Arc::new(far_end_app().await);
-    let facts = door_facts("p", &[], &[], &[], "a", Vec::new());
+    let facts = door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap(),
+        &[],
+        &[],
+        &[],
+        "a",
+        Vec::new(),
+    );
     let section: busbar_contract::yaml::Value =
         busbar_contract::yaml::from_str("e: {}").expect("yaml");
     let pools = DoorPools::of(&section, busbar_contract::section::TOOL_CALL_SECTION_KEY)

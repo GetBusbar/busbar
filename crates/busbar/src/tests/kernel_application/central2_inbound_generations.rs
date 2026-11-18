@@ -75,15 +75,16 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
     let native_config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the unchanged deployment resolves for its first actual build");
     let native_plugins = plugin_config.clone();
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: native_core,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: native_core,
         rules,
     } = crate::root::min3_boot::fixture::open(&native_config, &native_plugins, rules.clone())
         .await
-        .expect("actual Store opens for native startup");
-    let native_core = crate::root::real_store::core_over(native_core).await;
+        .expect("actual Store opens for native startup")
+        .admit()
+        .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        native_config,
+        crate::root::test_plugins::plaintext_listeners(native_config),
         native_plugins,
         None,
         Default::default(),
@@ -195,7 +196,7 @@ async fn actual_inbound_generation_keeps_only_original_request_authority() {
         .core_store_handle()
         .expect("reload native Store");
     let (replacement, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        native_config,
+        crate::root::test_plugins::plaintext_listeners(native_config),
         native_plugins,
         None,
         Default::default(),

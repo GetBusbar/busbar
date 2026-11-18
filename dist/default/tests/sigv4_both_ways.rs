@@ -68,7 +68,7 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     let log_err = log.try_clone().unwrap();
     let child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env(
             UPSTREAM_CREDS_ENV,
             format!("{UPSTREAM_AKID}:{UPSTREAM_SECRET}"),
@@ -280,7 +280,7 @@ fn the_aws_credential_mints_when_the_chain_does_not_name_keys() {
     let log_err = log.try_clone().unwrap();
     let child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env(
             UPSTREAM_CREDS_ENV,
             format!("{UPSTREAM_AKID}:{UPSTREAM_SECRET}"),

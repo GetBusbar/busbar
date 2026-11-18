@@ -25,7 +25,7 @@ pub fn linked_spawn_secret(
 pub(crate) const SPAWN_ENV_LEASE: Duration = Duration::from_secs(60);
 
 /// What a program's spawn hands its child now: every reference's value, name and value in the
-pub struct Resolved(Result<Vec<(String, Secret<String>)>, String>);
+pub struct Resolved(pub(crate) Result<Vec<(String, Secret<String>)>, String>);
 
 impl Resolved {
     /// The values, or the refusal.
@@ -35,19 +35,19 @@ impl Resolved {
 }
 
 /// One program's environment references and what they resolved to at the last load or refresh.
-struct SpawnEnv {
-    refs: Vec<(String, SecretRef)>,
+pub(crate) struct SpawnEnv {
+    pub(crate) refs: Vec<(String, SecretRef)>,
     /// How the references resolve: what the connector that loaded this environment was handed.
-    secrets: Option<SpawnSecretFn>,
-    held: arc_swap::ArcSwap<Resolved>,
+    pub(crate) secrets: Option<SpawnSecretFn>,
+    pub(crate) held: arc_swap::ArcSwap<Resolved>,
     /// Taken by a reload alone, so two reloads never race their stores; no spawn ever waits on it.
-    reloading: Mutex<()>,
+    pub(crate) reloading: Mutex<()>,
 }
 
 /// A program's HELD ENVIRONMENT, shared by the need that declared the program, the destination its
 /// carrier dials and the host's admission of the spawn. Two are equal only when they are one.
 #[derive(Clone)]
-pub struct HeldEnv(Arc<SpawnEnv>);
+pub struct HeldEnv(pub(crate) Arc<SpawnEnv>);
 
 impl PartialEq for HeldEnv {
     fn eq(&self, other: &Self) -> bool {
@@ -57,19 +57,11 @@ impl PartialEq for HeldEnv {
 
 impl Eq for HeldEnv {}
 
-/// A held environment NAMES NO VALUE in a debug line: its references' sources and whether they
-impl std::fmt::Debug for HeldEnv {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let refs = crate::off_path::lines::described_refs(&self.0.refs);
-        f.debug_struct("HeldEnv")
-            .field("refs", &refs)
-            .field("resolved", &self.0.held.load().0.is_ok())
-            .finish()
-    }
-}
+// A held environment NAMES NO VALUE in a debug line (its references' sources and whether they
+// resolved): its Debug is in `off_path::lines`.
 
 /// `refs` resolved now, through `secrets`, with the proof.
-fn resolve(
+pub(crate) fn resolve(
     refs: &[(String, SecretRef)],
     secrets: Option<SpawnSecretFn>,
     scope: &ConfigScope,
@@ -89,26 +81,6 @@ impl HeldEnv {
             held: arc_swap::ArcSwap::from_pointee(Resolved(Ok(Vec::new()))),
             reloading: Mutex::new(()),
         }))
-    }
-
-    /// `refs` RESOLVED NOW through `secrets` (the resolver the connector was handed; `None`
-    #[must_use]
-    pub fn load(
-        refs: &[(String, SecretRef)],
-        secrets: Option<SpawnSecretFn>,
-        scope: &ConfigScope,
-    ) -> Self {
-        if refs.is_empty() {
-            return Self::written_only();
-        }
-        let held = Self(Arc::new(SpawnEnv {
-            refs: crate::off_path::lines::held_refs(refs),
-            secrets,
-            held: arc_swap::ArcSwap::from_pointee(resolve(refs, secrets, scope)),
-            reloading: Mutex::new(()),
-        }));
-        refresher::keep(&held.0);
-        held
     }
 
     /// RE-RESOLVE every reference, at config time, and swap what is held whole: a spawn sees the
@@ -145,6 +117,8 @@ impl SpawnEnv {
 /// THE HOST'S ENVIRONMENT REFRESHER: the host's one refresher (`busbar_kernel::refresh`), the same
 /// bounded pool that keeps every served credential, renewing each held environment once a
 /// [`SPAWN_ENV_LEASE`]. Its threads that cannot start stop the process (exit 2).
+pub(crate) use refresher::keep;
+
 mod refresher {
     use super::{SpawnEnv, SPAWN_ENV_LEASE};
     use std::sync::{Arc, Weak};
@@ -158,7 +132,7 @@ mod refresher {
     }
 
     /// Keep `env`, first due one lease from now (its load has just resolved it).
-    pub(super) fn keep(env: &Arc<SpawnEnv>) {
+    pub(crate) fn keep(env: &Arc<SpawnEnv>) {
         busbar_kernel::refresh::keep(
             Arc::downgrade(env) as Weak<dyn busbar_kernel::refresh::Refreshable>,
             crate::off_path::lines::first_spawn_env_due(),

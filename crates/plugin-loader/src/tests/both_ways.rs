@@ -50,11 +50,6 @@ pub(crate) fn example_cdylib(name: &str) -> PathBuf {
 
 const FIXTURE_ROOT_SEED: u8 = 81;
 
-/// The embedded release root that verifies [`sealed_first_party`]'s seals.
-pub(crate) fn first_party_roots() -> Vec<crate::sign::FirstPartyKey> {
-    vec![crate::release_trust::tests::TestSigner::ed25519(FIXTURE_ROOT_SEED).root("fixture-root")]
-}
-
 /// A first-party plugin as busbar ships it (#300/#357): a release seal whose keys document the
 /// fixture root signs and whose targets document the plugins signer signs, naming the canonical
 /// manifest. Returns the sealed manifest and the embedded root that verifies it.
@@ -98,6 +93,25 @@ fn dropped_signed(
     lib: &[u8],
     signer: &SigningKey,
 ) -> PluginRegistry {
+    scanned_signed(tag, manifest, lib, signer)
+        .unwrap_or_else(|e| panic!("the signed plugin scans: {e:?}"))
+}
+
+/// The first-party-signed `lib` under `manifest`, scanned: the registry, or what the scan refused.
+pub(crate) fn scanned(
+    tag: &str,
+    manifest: Manifest,
+    lib: &[u8],
+) -> Result<PluginRegistry, Vec<String>> {
+    scanned_signed(tag, manifest, lib, &SigningKey::from_bytes(&[11u8; 32]))
+}
+
+fn scanned_signed(
+    tag: &str,
+    manifest: Manifest,
+    lib: &[u8],
+    signer: &SigningKey,
+) -> Result<PluginRegistry, Vec<String>> {
     static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
@@ -141,8 +155,7 @@ fn dropped_signed(
         min_versions: Default::default(),
         ..TrustPolicy::default()
     };
-    let registry = crate::scan_and_validate(&dir, &policy)
-        .unwrap_or_else(|e| panic!("the signed plugin scans: {e:?}"));
+    let registry = crate::scan_and_validate(&dir, &policy);
     let _ = std::fs::remove_dir_all(&dir);
     registry
 }

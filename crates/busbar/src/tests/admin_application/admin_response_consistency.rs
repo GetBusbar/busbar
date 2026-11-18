@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,7 +34,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let upstream_key = directory.join("provider-key");
     std::fs::write(&upstream_key, "unused-upstream-credential").expect("write provider input");
@@ -64,17 +65,18 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store opens the configuration authority")
+        .admit()
+        .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),
@@ -113,11 +115,11 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
                     let mut later = (*handle.load()).clone();
                     later.config_version += 1;
                     if replace_pending.swap(false, Ordering::SeqCst) {
-                        busbar_kernel::config::overlay::persist_named_map_async(
+                        busbar_kernel::config::overlay::persist_named_map_text_async(
                             later.overlay_path.as_deref(),
                             busbar_kernel::config::named_map::NamedMapSection::Export,
                             "pending-entry",
-                            Some(&json::json!({"module":"pending-after", "settings":[]})),
+                            Some(r#"{"module":"pending-after", "settings":[]}"#),
                         )
                         .await
                         .unwrap();
@@ -319,11 +321,11 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
     let section = busbar_kernel::config::named_map::NamedMapSection::Export;
     for item in [false, true] {
         let current = handle.load();
-        busbar_kernel::config::overlay::persist_named_map_async(
+        busbar_kernel::config::overlay::persist_named_map_text_async(
             current.overlay_path.as_deref(),
             section,
             "pending-entry",
-            Some(&json::json!({"module":"pending-before", "settings":[]})),
+            Some(r#"{"module":"pending-before", "settings":[]}"#),
         )
         .await
         .unwrap();

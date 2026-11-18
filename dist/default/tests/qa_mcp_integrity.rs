@@ -381,7 +381,7 @@ auth:
     let log = std::fs::File::create(dir.join("busbar.log")).unwrap();
     let child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", &cfg)
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("BUSBAR_ADMIN_TOKEN", &admin_token)
         .env("RUST_LOG", "warn")
         .stdout(Stdio::from(log.try_clone().unwrap()))

@@ -15,8 +15,8 @@ use busbar_kernel::plugin_records::StoreRecords;
 use busbar_kernel::state::App;
 
 use super::credentials::AppCredentials;
+use super::min3_auth::AuthSet;
 use super::min3_auth::{AuthOwners, OpenedAuth};
-use super::min3_auth::{AuthSet, NativeChain};
 
 /// Assemble every configured native admin position before this candidate is published.
 pub(crate) fn install(app: &mut App, auth: Arc<AuthSet>, epoch: u64) -> Result<(), String> {
@@ -41,34 +41,10 @@ pub(crate) fn install(app: &mut App, auth: Arc<AuthSet>, epoch: u64) -> Result<(
             Arc::new(auth.operator_chain(app, epoch, &[name.as_str()])?),
         );
     }
-    app.native_admin = Some(Arc::new(Admin { chains, unset }));
+    app.native_admin = Some(Arc::new(
+        busbar_kernel::auth::native_admin::NativeAdmin::new(chains, unset),
+    ));
     Ok(())
-}
-
-struct Admin {
-    chains: BTreeMap<String, Arc<NativeChain>>,
-    unset: BTreeSet<String>,
-}
-impl busbar_kernel::auth::native_admin::NativeAdmin for Admin {
-    fn prepare<'a>(
-        &'a self,
-        name: &'a str,
-        cx: busbar_ports::CallCx,
-        request: Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
-    ) -> busbar_plugin_abi::host_side::caller::BoxFut<
-        'a,
-        Result<busbar_kernel::auth::native_admin::PreparedAnswer, busbar_ports::PortError>,
-    > {
-        Box::pin(async move {
-            if self.unset.contains(name) {
-                return Ok(busbar_kernel::auth::native_admin::PreparedAnswer::NotMine);
-            }
-            let chain = self.chains.get(name).ok_or(busbar_ports::PortError::Call(
-                busbar_plugin_abi::fail::CallError::NotDeclared,
-            ))?;
-            chain.prepare(cx, request).await
-        })
-    }
 }
 
 pub(crate) fn owners(

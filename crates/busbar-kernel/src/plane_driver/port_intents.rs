@@ -20,9 +20,8 @@
 //! paid dispatch as it does without a recovery runtime. The store-backed [`DurableWork`] over `host_work/` and
 //! `host_recovery.rs` is the next piece (it needs the recovery binding the governance standing captures).
 
-use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use busbar_plugin_abi::fail::failed::F_UNAVAILABLE;
 use busbar_plugin_abi::fail::refused::{R_DENIED, R_INVALID, R_RATE_LIMITED, R_UNSUPPORTED};
@@ -55,98 +54,172 @@ use crate::plane_grants::{SignedJws, TicketMint};
 use crate::plugin_records::{
     CommitOp, CommitOutcome, PluginRecords, RecordsDenied, Scope, MAX_KEY, MAX_VALUE,
 };
-use crate::push::PushQueue;
+use crate::push::StorePushQueue;
 
 /// How many rounds of intents one answer may chain (an answer's pieces answering with more intents) before the
 /// session is cut. A plane's real chains are two or three deep (LOOKUP, then COMMIT, then WORK).
 const MAX_ROUNDS: u32 = 64;
 
-/// One intent of an answer, owned (the sink's borrows end with the answer).
+/// Where one intent field's bytes sit in its answer's [`Lent`] buffer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Span {
+    at: u32,
+    len: u32,
+}
+
+/// The bytes an answer's intents name: one buffer per answer, appended as the plane's items are read (the plane's
+/// output buffer is reused by its next call, so each item is copied once, here, and never again).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Lent {
+    bytes: Vec<u8>,
+}
+
+impl Lent {
+    /// Appends `bytes` and names them. An answer is bounded by the plane's output cap, far below 4 GiB.
+    pub fn put(&mut self, bytes: &[u8]) -> Span {
+        let at = u32::try_from(self.bytes.len()).unwrap_or(u32::MAX);
+        self.bytes.extend_from_slice(bytes);
+        Span {
+            at,
+            len: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+        }
+    }
+
+    /// The bytes `span` names (empty for a span of another buffer).
+    #[must_use]
+    pub fn bytes(&self, span: Span) -> &[u8] {
+        let at = span.at as usize;
+        self.bytes
+            .get(at..at.saturating_add(span.len as usize))
+            .unwrap_or_default()
+    }
+
+    /// The text `span` names: what [`Lent::put`] was given as `&str` reads back as it (empty otherwise).
+    #[must_use]
+    pub fn text(&self, span: Span) -> &str {
+        std::str::from_utf8(self.bytes(span)).unwrap_or_default()
+    }
+
+    /// The validated nested records `span` names.
+    #[must_use]
+    pub fn records(&self, span: Span) -> Records<'_> {
+        Records::new(self.bytes(span))
+    }
+}
+
+/// The OBS_REQUIRE classes of an OBS_SCOPE, read back from its validated records.
+pub(crate) fn required_classes(lent: &Lent, require: Span) -> impl Iterator<Item = &str> {
+    lent.records(require)
+        .filter_map(|rec| rec.ok()?.text().ok())
+}
+
+/// The (class, amount, scale) counts of an OBSERVE, read back from its validated USAGE records.
+pub(crate) fn observed_counts(lent: &Lent, counts: Span) -> impl Iterator<Item = (&str, u64, u32)> {
+    lent.records(counts).filter_map(|rec| {
+        let (head, class) = rec
+            .ok()?
+            .pod_tail::<busbar_plugin_abi::plane::UsageRec>()
+            .ok()?;
+        Some((std::str::from_utf8(class).ok()?, head.amount, head.scale))
+    })
+}
+
+/// The (name, digest) items of a SIGHT, read back from its validated pair records.
+pub(crate) fn sighted_items(lent: &Lent, items: Span) -> impl Iterator<Item = (&str, [u8; 32])> {
+    lent.records(items).filter_map(|rec| {
+        let (name, digest) = rec.ok()?.pair().ok()?;
+        Some((name, <[u8; 32]>::try_from(digest).ok()?))
+    })
+}
+
+/// One intent of an answer. Its bytes live in the answer's [`Lent`] buffer (copied there once, as the sink's borrows end
+/// with the answer); a [`Span`] names them. A nested record list (OBS_REQUIRE, OBSERVE counts, SIGHT items, COMMIT
+/// ops, PUSH records, a CHANNEL head) keeps the records the adapter validated, read again where they are used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Intent {
     Lookup {
         flags: u32,
         limit: u32,
-        key: Vec<u8>,
+        key: Span,
     },
     Store {
         flags: u32,
         ttl_s: u64,
-        key: Vec<u8>,
-        value: Vec<u8>,
+        key: Span,
+        value: Span,
     },
     Delete {
         flags: u32,
-        key: Vec<u8>,
+        key: Span,
     },
     /// `ops` = the nested REC_PRED*, REC_PUT*, REC_DEL* the adapter validated.
     Commit {
         check: u32,
-        ops: Vec<u8>,
+        ops: Span,
     },
     Work {
         check: u32,
         op: u32,
-        target: Option<String>,
-        reference: Option<String>,
+        target: Option<Span>,
+        reference: Option<Span>,
     },
     /// `recs` = the nested records core's push queue copies and owns.
     Push {
         ttl_s: u64,
-        recs: Vec<u8>,
+        recs: Span,
     },
     Signal {
         flags: u32,
-        key: Vec<u8>,
+        key: Span,
     },
     /// ENTITLE: does the verified principal hold `grant` (§12.11).
     Entitle {
         check: u32,
-        grant: String,
+        grant: Span,
     },
     /// JUDGE: the destination guard on `dest` (§12.1); `class` <= 4 and `flags` are checked when the answer is read.
     Judge {
         check: u32,
         class: u32,
         flags: u32,
-        dest: String,
+        dest: Span,
     },
     /// MINT: seal a ticket for the verified subject (§12.11); `flags` = MINT_ONCE?.
     Mint {
         check: u32,
         flags: u32,
         ttl_s: u64,
-        scope: Option<String>,
-        audience: Option<String>,
-        prefix: Option<String>,
-        record: Option<Vec<u8>>,
+        scope: Option<Span>,
+        audience: Option<Span>,
+        prefix: Option<Span>,
+        record: Option<Span>,
     },
     /// SIGN: sign `payload` with the host's key (§12.11); `flags` = SIGN_JWS_COMPACT or SIGN_JWS_DETACHED.
     Sign {
         check: u32,
         flags: u32,
-        payload: Vec<u8>,
+        payload: Span,
     },
     /// CONNECT: a caller connection to a configured upstream (§12.12); `op` = CONNECT_BEGIN, _STATUS or _REVOKE.
     Connect {
         check: u32,
         op: u32,
-        upstream: String,
-        return_to: Option<String>,
+        upstream: Span,
+        return_to: Option<Span>,
     },
     /// RENDEZVOUS: `flags` = RV_ACCEPT (a client's offer, accepted as client exchange `exchange`) or RV_REMOTE
     /// (the far end's answer for upstream exchange `exchange`); `description` = the session description (§12.13).
     Rendezvous {
         exchange: u32,
         flags: u32,
-        description: String,
+        description: Span,
     },
     /// OBS_SCOPE: create, reattach or close usage-observation custody (§12.4); `require` = the OBS_REQUIRE classes.
     ObsScope {
         check: u32,
         op: u32,
         scope: Option<[u8; 32]>,
-        require: Vec<String>,
+        require: Span,
     },
     /// OBSERVE: one owned usage observation (§12.4); `counts` = (class, amount, scale).
     Observe {
@@ -155,31 +228,31 @@ pub enum Intent {
         rated_subject: u32,
         revision_order: u64,
         scope: [u8; 32],
-        event: Vec<u8>,
-        component: Vec<u8>,
-        revision: Option<Vec<u8>>,
-        counts: Vec<(String, u64, u32)>,
-        evidence: Option<Vec<u8>>,
+        event: Span,
+        component: Span,
+        revision: Option<Span>,
+        counts: Span,
+        evidence: Option<Span>,
     },
     /// SIGHT: the plane observed `party` offering `items` (name, SHA-256 digest); no answer (§12.14).
     Sight {
-        party: String,
+        party: Span,
         catalog: Option<[u8; 32]>,
-        items: Vec<(String, [u8; 32])>,
+        items: Span,
     },
     /// TRUST: `op` = TRUST_SERVES (with its optional item) or TRUST_STATE (§12.14).
     Trust {
         check: u32,
         op: u32,
-        party: String,
-        item: Option<(String, Option<[u8; 32]>)>,
+        party: Span,
+        item: Option<(Span, Option<[u8; 32]>)>,
     },
     /// TRUST_VERIFY: `signatures` (a JSON array) over `payload`, against the root core holds for `party`.
     TrustVerify {
         check: u32,
-        party: String,
-        payload: Vec<u8>,
-        signatures: Vec<u8>,
+        party: Span,
+        payload: Span,
+        signatures: Span,
     },
     /// CHANNEL: attach `exchange` to a shared upstream channel (§12.19); `head` = the nested HTTP head records.
     Channel {
@@ -187,13 +260,13 @@ pub enum Intent {
         carrier: u32,
         flags: u32,
         framing: u32,
-        key: String,
-        head: Vec<u8>,
+        key: Span,
+        head: Span,
     },
     /// CH_READY: the greeting session's greeting is done; `tail` is handed to later attachers.
     ChReady {
         exchange: u32,
-        tail: Vec<u8>,
+        tail: Span,
     },
 }
 
@@ -221,12 +294,12 @@ pub struct Looked {
 
 /// One WORK intent, the verified principal's.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkIntent {
+pub struct WorkIntent<'a> {
     pub op: u32,
-    pub target: Option<String>,
-    pub reference: Option<String>,
+    pub target: Option<&'a str>,
+    pub reference: Option<&'a str>,
     /// The request's identity records (ID_*): the principal the row binds to (§12.24).
-    pub identity: Vec<u8>,
+    pub identity: &'a [u8],
 }
 
 /// One WORK_ANS (§8.6): `status` 0 = done, else a generic REFUSED code.
@@ -279,7 +352,7 @@ pub trait IntentHost: Send + Sync {
     fn delete(&self, scope: Scope, key: &[u8]) -> Result<(), RecordsDenied>;
     fn commit(&self, scope: Scope, ops: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied>;
     /// WORK under the request's verified principal. The default is the fail-closed answer.
-    fn work(&self, _intent: &WorkIntent) -> WorkOutcome {
+    fn work(&self, _intent: &WorkIntent<'_>) -> WorkOutcome {
         WorkOutcome::unsupported()
     }
     fn push(&self, ttl_s: u64, recs: &[u8]) -> Result<(), RecordsDenied>;
@@ -379,12 +452,42 @@ pub fn subject_scope(subject: &str) -> [u8; 32] {
 }
 
 /// One result piece core delivers: `piece(FROM_CORE, 0, flags, bytes)`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Piece {
+pub struct Piece<'i> {
     /// The exchange the piece is for (0 for the client side and most FROM_CORE results).
     pub exchange: u32,
     pub flags: u32,
-    pub bytes: Vec<u8>,
+    pub bytes: PieceBytes<'i>,
+}
+
+/// A piece's bytes, never copied to be delivered: the records encoded for it (the reply buffer itself, which wipes
+/// on drop), an intent's own bytes, or bytes a host answered with, moved in.
+pub enum PieceBytes<'i> {
+    Records(Reply),
+    Lent(&'i [u8]),
+    Owned(Box<[u8]>),
+}
+
+impl PieceBytes<'_> {
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Records(reply) => reply.as_bytes(),
+            Self::Lent(bytes) => bytes,
+            Self::Owned(bytes) => bytes,
+        }
+    }
+}
+
+/// One answer's result pieces, on the stack up to one of each kind (thirteen) and a few spares.
+pub type Pieces<'i> = smallvec::SmallVec<[Piece<'i>; 16]>;
+
+/// A piece of records for core's results, encoded into `reply` (created by the first record).
+fn records_piece<'i>(flags: u32, reply: Option<Reply>) -> Option<Piece<'i>> {
+    reply.map(|reply| Piece {
+        exchange: 0,
+        flags,
+        bytes: PieceBytes::Records(reply),
+    })
 }
 
 /// Resolves intents against a host for one request: `subject` is the verified principal's scope, if any.
@@ -485,12 +588,18 @@ impl<'h> Resolver<'h> {
 
     /// Applies `intents` in answer order and returns the pieces to deliver, in the IF order.
     #[must_use]
-    pub fn resolve(&self, intents: &[Intent], held: &mut Channels) -> Vec<Piece> {
+    pub fn resolve<'i>(
+        &self,
+        intents: &[Intent],
+        lent: &'i Lent,
+        held: &mut Channels,
+    ) -> Pieces<'i> {
         // STORE, DELETE, COMMIT, PUSH and SIGNAL first, in answer order; LOOKUP and WORK read what they wrote.
-        let mut failed: Vec<&[u8]> = Vec::new();
-        let mut committed: Vec<(u32, u32, u32, u32)> = Vec::new();
-        let mut channel_pieces: Vec<Piece> = Vec::new();
-        let mut rendezvous_pieces: Vec<Piece> = Vec::new();
+        // A failed write's key is the first kind of piece, so it is delivered from here as it fails.
+        let mut pieces = Pieces::new();
+        let mut committed: Option<Reply> = None;
+        let mut channel_pieces: smallvec::SmallVec<[Piece<'i>; 4]> = smallvec::SmallVec::new();
+        let mut rendezvous_pieces: smallvec::SmallVec<[Piece<'i>; 4]> = smallvec::SmallVec::new();
         for intent in intents {
             match intent {
                 Intent::Store {
@@ -499,30 +608,40 @@ impl<'h> Resolver<'h> {
                     key,
                     value,
                 } => {
+                    let (key, value) = (lent.bytes(*key), lent.bytes(*value));
                     let done = self
                         .scope(flags & LK_CALLER != 0)
                         .ok_or(RecordsDenied::Invalid)
                         .and_then(|scope| self.host.store(scope, *flags, *ttl_s, key, value));
                     if done.is_err() {
-                        failed.push(key);
+                        pieces.push(store_failed(key));
                     }
                 }
                 Intent::Delete { flags, key } => {
+                    let key = lent.bytes(*key);
                     let done = self
                         .scope(flags & LK_CALLER != 0)
                         .ok_or(RecordsDenied::Invalid)
                         .and_then(|scope| self.host.delete(scope, key));
                     if done.is_err() {
-                        failed.push(key);
+                        pieces.push(store_failed(key));
                     }
                 }
-                Intent::Commit { check, ops } => committed.push(self.commit(*check, ops)),
+                Intent::Commit { check, ops } => {
+                    // A Reply refuses only past its cap; a commit answer is a few words.
+                    let put = encode_committed(
+                        committed.get_or_insert_with(Reply::new),
+                        &[self.commit(*check, lent.bytes(*ops))],
+                    );
+                    debug_assert!(put.is_ok(), "COMMITTED answers fit a Reply");
+                }
                 Intent::Push { ttl_s, recs } => {
-                    if let Err(denied) = self.host.push(*ttl_s, recs) {
+                    if let Err(denied) = self.host.push(*ttl_s, lent.bytes(*recs)) {
                         tracing::warn!(?denied, "a plane push was not queued");
                     }
                 }
                 Intent::Signal { flags, key } => {
+                    let key = lent.bytes(*key);
                     if let Some(pending) = self.pending {
                         if let Some(admitted) = pending.admitted() {
                             signal_admitted(
@@ -553,30 +672,35 @@ impl<'h> Resolver<'h> {
                         carrier: *carrier,
                         flags: *flags,
                         framing: *framing,
-                        key,
+                        key: lent.text(*key),
                         subject: self.subject,
-                        head,
+                        head: lent.bytes(*head),
                     },
                 )),
                 Intent::ChReady { exchange, tail } => {
                     if let Some(channel) = held.get_mut(exchange) {
-                        channel.ready(tail);
+                        channel.ready(lent.bytes(*tail));
                     }
                 }
                 Intent::Rendezvous {
                     exchange,
                     flags,
                     description,
-                } => {
-                    rendezvous_pieces.extend(self.rendezvous(held, *exchange, *flags, description))
-                }
+                } => rendezvous_pieces.extend(self.rendezvous(
+                    held,
+                    *exchange,
+                    *flags,
+                    lent.text(*description),
+                )),
                 Intent::Sight {
                     party,
                     catalog,
                     items,
                 } => {
-                    let seen: Vec<(&str, [u8; 32])> =
-                        items.iter().map(|(name, d)| (name.as_str(), *d)).collect();
+                    let party = lent.text(*party);
+                    let mut seen: smallvec::SmallVec<[(&str, [u8; 32]); 16]> =
+                        smallvec::SmallVec::new();
+                    seen.extend(sighted_items(lent, *items));
                     if let Err(denied) = self.host.sight(party, *catalog, &seen) {
                         tracing::warn!(?denied, party, "a plane sighting was not recorded");
                     }
@@ -594,95 +718,26 @@ impl<'h> Resolver<'h> {
                 | Intent::Connect { .. } => {}
             }
         }
-        let mut pieces = Vec::new();
-        for key in failed {
-            pieces.push(Piece {
-                exchange: 0,
-                flags: P_STORE_FAILED,
-                bytes: key.to_vec(),
-            });
-        }
-        if let Some(bytes) = self.lookups(intents) {
-            pieces.push(Piece {
-                exchange: 0,
-                flags: P_LOOKUP,
-                bytes,
-            });
-        }
-        if !committed.is_empty() {
-            let mut reply = Reply::new();
-            // A Reply refuses only past its cap; a commit answer is a few words.
-            let put = encode_committed(&mut reply, &committed);
-            debug_assert!(put.is_ok(), "COMMITTED answers fit a Reply");
-            pieces.push(Piece {
-                exchange: 0,
-                flags: P_COMMITTED,
-                bytes: reply.as_bytes().to_vec(),
-            });
-        }
-        if let Some(bytes) = self.observeds(intents) {
-            pieces.push(Piece {
-                exchange: 0,
-                flags: P_OBSERVED,
-                bytes,
-            });
-        }
-        if let Some(bytes) = self.works(intents) {
-            pieces.push(Piece {
-                exchange: 0,
-                flags: P_WORK,
-                bytes,
-            });
-        }
-        if let Some(bytes) = self.entitles(intents) {
-            pieces.push(Piece {
-                exchange: 0,
-                flags: P_ENTITLE,
-                bytes,
-            });
-        }
-        if let Some(bytes) = self.judges(intents) {
-            pieces.push(Piece {
-                exchange: 0,
-                flags: P_JUDGED,
-                bytes,
-            });
-        }
-        if let Some(bytes) = self.trusts(intents) {
-            pieces.push(Piece {
-                exchange: 0,
-                flags: P_TRUST,
-                bytes,
-            });
-        }
-        if let Some(bytes) = self.mints(intents) {
-            pieces.push(Piece {
-                exchange: 0,
-                flags: P_MINTED,
-                bytes,
-            });
-        }
-        if let Some(bytes) = self.signs(intents) {
-            pieces.push(Piece {
-                exchange: 0,
-                flags: P_SIGNED,
-                bytes,
-            });
-        }
-        if let Some(bytes) = self.connects(intents) {
-            pieces.push(Piece {
-                exchange: 0,
-                flags: P_CONNECT,
-                bytes,
-            });
-        }
+        let kinds = [
+            records_piece(P_LOOKUP, self.lookups(intents, lent)),
+            records_piece(P_COMMITTED, committed),
+            records_piece(P_OBSERVED, self.observeds(intents, lent)),
+            records_piece(P_WORK, self.works(intents, lent)),
+            records_piece(P_ENTITLE, self.entitles(intents, lent)),
+            records_piece(P_JUDGED, self.judges(intents, lent)),
+            records_piece(P_TRUST, self.trusts(intents, lent)),
+            records_piece(P_MINTED, self.mints(intents, lent)),
+            records_piece(P_SIGNED, self.signs(intents, lent)),
+            records_piece(P_CONNECT, self.connects(intents, lent)),
+        ];
+        pieces.extend(kinds.into_iter().flatten());
         pieces.extend(channel_pieces);
         pieces.extend(rendezvous_pieces);
         pieces
     }
 
     /// One CHANNEL: the attachment as P_CHANNEL, or the P_ERROR the exchange ends with.
-    fn channel(&self, held: &mut Channels, attach: &ChannelAttach<'_>) -> Piece {
+    fn channel<'i>(&self, held: &mut Channels, attach: &ChannelAttach<'_>) -> Piece<'i> {
         let attached = self
             .channels
             .ok_or(RecordsDenied::Unavailable)
@@ -697,7 +752,7 @@ impl<'h> Resolver<'h> {
                 Piece {
                     exchange: attach.exchange,
                     flags: P_CHANNEL,
-                    bytes: reply.as_bytes().to_vec(),
+                    bytes: PieceBytes::Records(reply),
                 }
             }
             Err(denied) => {
@@ -712,7 +767,7 @@ impl<'h> Resolver<'h> {
                 Piece {
                     exchange: attach.exchange,
                     flags: P_ERROR,
-                    bytes: reply.as_bytes().to_vec(),
+                    bytes: PieceBytes::Records(reply),
                 }
             }
         }
@@ -721,7 +776,8 @@ impl<'h> Resolver<'h> {
     /// One COMMIT: (check, outcome, failed, status).
     fn commit(&self, check: u32, raw: &[u8]) -> (u32, u32, u32, u32) {
         let refused = |status| (check, 0, 0, status);
-        let mut ops = Vec::new();
+        // At most `commit::MAX_OPS`; the common commit is a few ops, held on the stack.
+        let mut ops: smallvec::SmallVec<[CommitOp<'_>; 16]> = smallvec::SmallVec::new();
         let mut caller_bound = false;
         let mut mutating = false;
         for rec in Records::new(raw) {
@@ -790,20 +846,20 @@ impl<'h> Resolver<'h> {
         }
     }
 
-    /// The LOOKUP_HIT* (and CHAIN_STATE) of every LOOKUP of the answer, by index; `None` when it has none.
-    fn lookups(&self, intents: &[Intent]) -> Option<Vec<u8>> {
-        let mut reply = Reply::new();
-        let mut any = false;
+    /// The LOOKUP_HIT* (and CHAIN_STATE) of every LOOKUP of the answer, by index; `None` when it has none. Each
+    /// record is encoded as its hit is read (the encoders write one record per element, in order).
+    fn lookups(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+        let mut reply: Option<Reply> = None;
         let mut index = 0u32;
         for intent in intents {
             let Intent::Lookup { flags, limit, key } = intent else {
                 continue;
             };
-            any = true;
+            let reply = reply.get_or_insert_with(Reply::new);
             let at = index;
             index += 1;
             let looked = match self.scope(flags & LK_CALLER != 0) {
-                Some(scope) => match self.host.lookup(scope, *flags, *limit, key) {
+                Some(scope) => match self.host.lookup(scope, *flags, *limit, lent.bytes(*key)) {
                     Ok(looked) => looked,
                     Err(denied) => {
                         tracing::warn!(?denied, "a plane lookup was refused; it reads as a miss");
@@ -812,48 +868,40 @@ impl<'h> Resolver<'h> {
                 },
                 None => Looked::default(),
             };
-            let hits: Vec<(u32, &[u8], &[u8])> = looked
-                .hits
-                .iter()
-                .take(*limit as usize)
-                .map(|h| (at, &h.key[..], &h.value[..]))
-                .collect();
-            // The reply refuses only past its cap; the host bounds a hit by MAX_VALUE.
-            let put = encode_lookup_hits(&mut reply, &hits);
-            debug_assert!(put.is_ok(), "LOOKUP_HITs fit a Reply");
+            for h in looked.hits.iter().take(*limit as usize) {
+                // The reply refuses only past its cap; the host bounds a hit by MAX_VALUE.
+                let put = encode_lookup_hits(reply, &[(at, &h.key[..], &h.value[..])]);
+                debug_assert!(put.is_ok(), "LOOKUP_HITs fit a Reply");
+            }
             if let (Some((len, broken_at)), true) = (looked.chain, flags & LK_CHAIN != 0) {
-                let put = encode_chain_state(&mut reply, at, len, broken_at);
+                let put = encode_chain_state(reply, at, len, broken_at);
                 debug_assert!(put.is_ok(), "a CHAIN_STATE fits a Reply");
             }
         }
-        any.then(|| reply.as_bytes().to_vec())
+        reply
     }
 
     /// The ENTITLE_ANS of every ENTITLE of the answer, in intent order; `None` when it has none. Without a
     /// verified principal there is no grant set to ask: not granted, and the host is not asked.
-    fn entitles(&self, intents: &[Intent]) -> Option<Vec<u8>> {
-        let mut answers: Vec<(u32, bool)> = Vec::new();
+    fn entitles(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+        let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Entitle { check, grant } = intent else {
                 continue;
             };
             let granted = self
                 .principal
-                .is_some_and(|p| self.host.entitle(p.identity, grant));
-            answers.push((*check, granted));
+                .is_some_and(|p| self.host.entitle(p.identity, lent.text(*grant)));
+            let put =
+                encode_entitle_answers(reply.get_or_insert_with(Reply::new), &[(*check, granted)]);
+            debug_assert!(put.is_ok(), "ENTITLE_ANS records fit a Reply");
         }
-        if answers.is_empty() {
-            return None;
-        }
-        let mut reply = Reply::new();
-        let put = encode_entitle_answers(&mut reply, &answers);
-        debug_assert!(put.is_ok(), "ENTITLE_ANS records fit a Reply");
-        Some(reply.as_bytes().to_vec())
+        reply
     }
 
     /// The JUDGE_ANS of every JUDGE of the answer, in intent order; `None` when it has none.
-    fn judges(&self, intents: &[Intent]) -> Option<Vec<u8>> {
-        let mut answers: Vec<(u32, u32)> = Vec::new();
+    fn judges(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+        let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Judge {
                 check,
@@ -864,26 +912,22 @@ impl<'h> Resolver<'h> {
             else {
                 continue;
             };
-            answers.push((*check, self.host.judge(dest, *class, *flags)));
+            let verdict = self.host.judge(lent.text(*dest), *class, *flags);
+            let put = encode_judged(reply.get_or_insert_with(Reply::new), &[(*check, verdict)]);
+            debug_assert!(put.is_ok(), "JUDGE_ANS records fit a Reply");
         }
-        if answers.is_empty() {
-            return None;
-        }
-        let mut reply = Reply::new();
-        let put = encode_judged(&mut reply, &answers);
-        debug_assert!(put.is_ok(), "JUDGE_ANS records fit a Reply");
-        Some(reply.as_bytes().to_vec())
+        reply
     }
 
     /// One RENDEZVOUS: RV_ACCEPT answers P_RENDEZVOUS (the local description, the bridge now held under
     /// `exchange`) or P_RV_FAILED; RV_REMOTE goes to the bridge held there and answers only a failure.
-    fn rendezvous(
+    fn rendezvous<'i>(
         &self,
         held: &mut Channels,
         exchange: u32,
         flags: u32,
         description: &str,
-    ) -> Option<Piece> {
+    ) -> Option<Piece<'i>> {
         match flags {
             RV_ACCEPT => match self.host.rendezvous_accept(self.route, description) {
                 Ok((local, bridge)) => {
@@ -891,7 +935,7 @@ impl<'h> Resolver<'h> {
                     Some(Piece {
                         exchange,
                         flags: P_RENDEZVOUS,
-                        bytes: local.as_bytes().to_vec(),
+                        bytes: PieceBytes::Owned(local.into_boxed_bytes()),
                     })
                 }
                 Err(denied) => Some(rv_failed(exchange, &denied, None)),
@@ -899,7 +943,7 @@ impl<'h> Resolver<'h> {
             RV_REMOTE => match held.get_mut(&exchange) {
                 Some(bridge) => match bridge.remote(description) {
                     Ok(()) => None,
-                    Err(denied) => Some(rv_failed(exchange, &denied, bridge.refusal())),
+                    Err(denied) => Some(rv_failed(exchange, &denied, bridge.refusal().as_deref())),
                 },
                 None => Some(rv_failed(exchange, &RecordsDenied::Invalid, None)),
             },
@@ -910,12 +954,8 @@ impl<'h> Resolver<'h> {
     /// The OBS_SCOPE_ANS and OBS_RECEIPT of the answer's OBS_SCOPE and OBSERVE, in intent order; `None` when it
     /// has none. Custody is the verified principal's: without one every answer is OBS_REFUSED and the host is
     /// not asked. The host's calls are durable before they return, so the piece is delivered after the commit.
-    fn observeds(&self, intents: &[Intent]) -> Option<Vec<u8>> {
-        enum Seen {
-            Scope(u32, u32, Option<[u8; 32]>),
-            Receipt(u32, u32, Vec<u8>),
-        }
-        let mut seen: Vec<Seen> = Vec::new();
+    fn observeds(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+        let mut reply: Option<Reply> = None;
         for intent in intents {
             match intent {
                 Intent::ObsScope {
@@ -927,11 +967,19 @@ impl<'h> Resolver<'h> {
                     let (status, id) = match self.principal {
                         None => (OBS_REFUSED, None),
                         Some(p) => {
-                            let classes: Vec<&str> = require.iter().map(String::as_str).collect();
+                            let mut classes: smallvec::SmallVec<[&str; 16]> =
+                                smallvec::SmallVec::new();
+                            classes.extend(required_classes(lent, *require));
                             self.host.obs_scope(p.identity, *op, *scope, &classes)
                         }
                     };
-                    seen.push(Seen::Scope(*check, status, id));
+                    let answer = ObservedAnswer::Scope {
+                        check: *check,
+                        status,
+                        scope: id,
+                    };
+                    let put = encode_observed(reply.get_or_insert_with(Reply::new), &[answer]);
+                    debug_assert!(put.is_ok(), "OBS answers fit a Reply");
                 }
                 Intent::Observe {
                     check,
@@ -948,65 +996,49 @@ impl<'h> Resolver<'h> {
                     let (status, receipt) = match self.principal {
                         None => (OBS_REFUSED, Vec::new()),
                         Some(p) => {
-                            let counted: Vec<(&str, u64, u32)> = counts
-                                .iter()
-                                .map(|(class, amount, scale)| (class.as_str(), *amount, *scale))
-                                .collect();
+                            let mut counted: smallvec::SmallVec<[(&str, u64, u32); 16]> =
+                                smallvec::SmallVec::new();
+                            counted.extend(observed_counts(lent, *counts));
                             self.host.observe(
                                 p.identity,
                                 &ObservationIn {
                                     scope: *scope,
-                                    event,
-                                    component,
-                                    revision: revision.as_deref().map(|r| (r, *revision_order)),
+                                    event: lent.bytes(*event),
+                                    component: lent.bytes(*component),
+                                    revision: revision.map(|r| (lent.bytes(r), *revision_order)),
                                     state: *state,
                                     counts: &counted,
                                     rated_subject: *rated_subject,
-                                    evidence: evidence.as_deref().unwrap_or(&[]),
+                                    evidence: evidence.map_or(&[][..], |e| lent.bytes(e)),
                                 },
                             )
                         }
                     };
-                    seen.push(Seen::Receipt(*check, status, receipt));
+                    let answer = ObservedAnswer::Receipt {
+                        check: *check,
+                        status,
+                        receipt: &receipt,
+                    };
+                    let put = encode_observed(reply.get_or_insert_with(Reply::new), &[answer]);
+                    debug_assert!(put.is_ok(), "OBS answers fit a Reply");
                 }
                 _ => {}
             }
         }
-        if seen.is_empty() {
-            return None;
-        }
-        let answers: Vec<ObservedAnswer<'_>> = seen
-            .iter()
-            .map(|s| match s {
-                Seen::Scope(check, status, scope) => ObservedAnswer::Scope {
-                    check: *check,
-                    status: *status,
-                    scope: *scope,
-                },
-                Seen::Receipt(check, status, receipt) => ObservedAnswer::Receipt {
-                    check: *check,
-                    status: *status,
-                    receipt,
-                },
-            })
-            .collect();
-        let mut reply = Reply::new();
-        let put = encode_observed(&mut reply, &answers);
-        debug_assert!(put.is_ok(), "OBS answers fit a Reply");
-        Some(reply.as_bytes().to_vec())
+        reply
     }
 
     /// The TRUST_ANS of every TRUST and TRUST_VERIFY of the answer, in intent order; `None` when it has none.
-    fn trusts(&self, intents: &[Intent]) -> Option<Vec<u8>> {
-        // (check, verdict, item states of a STATE, the named member of a VERIFY)
-        let mut rows: Vec<(u32, u32, Vec<TrustItemOwned>, String, Option<[u8; 32]>)> = Vec::new();
+    fn trusts(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+        let mut reply: Option<Reply> = None;
         for intent in intents {
-            match intent {
+            // (verdict, item states of a STATE, the named member of a VERIFY, the listing's catalog hash)
+            let (check, verdict, items, named, catalog) = match intent {
                 Intent::Trust {
                     check, op, party, ..
                 } if *op == TRUST_STATE => {
-                    let (verdict, catalog, items) = self.host.trust_state(party);
-                    rows.push((*check, verdict, items, String::new(), catalog));
+                    let (verdict, catalog, items) = self.host.trust_state(lent.text(*party));
+                    (*check, verdict, items, String::new(), catalog)
                 }
                 Intent::Trust {
                     check,
@@ -1014,13 +1046,13 @@ impl<'h> Resolver<'h> {
                     party,
                     item,
                 } if *op == TRUST_SERVES => {
-                    let item = item.as_ref().map(|(name, digest)| (name.as_str(), *digest));
-                    let verdict = self.host.trust_serves(party, item);
-                    rows.push((*check, verdict, Vec::new(), String::new(), None));
+                    let item = item.map(|(name, digest)| (lent.text(name), digest));
+                    let verdict = self.host.trust_serves(lent.text(*party), item);
+                    (*check, verdict, Vec::new(), String::new(), None)
                 }
                 Intent::Trust { check, .. } => {
                     // The adapter admits only SERVES and STATE; anything else does not serve.
-                    rows.push((*check, DISTRUST_UNKNOWN, Vec::new(), String::new(), None));
+                    (*check, DISTRUST_UNKNOWN, Vec::new(), String::new(), None)
                 }
                 Intent::TrustVerify {
                     check,
@@ -1028,50 +1060,39 @@ impl<'h> Resolver<'h> {
                     payload,
                     signatures,
                 } => {
-                    let (verdict, named) = self.host.trust_verify(party, payload, signatures);
-                    rows.push((*check, verdict, Vec::new(), named, None));
+                    let (verdict, named) = self.host.trust_verify(
+                        lent.text(*party),
+                        lent.bytes(*payload),
+                        lent.bytes(*signatures),
+                    );
+                    (*check, verdict, Vec::new(), named, None)
                 }
-                _ => {}
-            }
+                _ => continue,
+            };
+            let mut views: smallvec::SmallVec<[TrustItem<'_>; 16]> = smallvec::SmallVec::new();
+            views.extend(items.iter().map(|i| TrustItem {
+                name: &i.name,
+                verdict: i.verdict,
+                approved: i.approved,
+                sighted: i.sighted,
+            }));
+            let answer = TrustAnswer {
+                check,
+                verdict,
+                catalog,
+                items: &views,
+                named: &named,
+            };
+            let put = encode_trust_answers(reply.get_or_insert_with(Reply::new), &[answer]);
+            debug_assert!(put.is_ok(), "TRUST_ANS records fit a Reply");
         }
-        if rows.is_empty() {
-            return None;
-        }
-        let views: Vec<Vec<TrustItem<'_>>> = rows
-            .iter()
-            .map(|(_, _, items, _, _)| {
-                items
-                    .iter()
-                    .map(|i| TrustItem {
-                        name: &i.name,
-                        verdict: i.verdict,
-                        approved: i.approved,
-                        sighted: i.sighted,
-                    })
-                    .collect()
-            })
-            .collect();
-        let answers: Vec<TrustAnswer<'_>> = rows
-            .iter()
-            .zip(&views)
-            .map(|((check, verdict, _, named, catalog), items)| TrustAnswer {
-                check: *check,
-                verdict: *verdict,
-                catalog: *catalog,
-                items,
-                named,
-            })
-            .collect();
-        let mut reply = Reply::new();
-        let put = encode_trust_answers(&mut reply, &answers);
-        debug_assert!(put.is_ok(), "TRUST_ANS records fit a Reply");
-        Some(reply.as_bytes().to_vec())
+        reply
     }
 
     /// The MINTED of every MINT of the answer, in intent order; `None` when it has none. A ticket binds the
     /// verified subject: without one the answer is `R_DENIED` and the host is not asked.
-    fn mints(&self, intents: &[Intent]) -> Option<Vec<u8>> {
-        let mut answers: Vec<(u32, u32, u64, Box<str>)> = Vec::new();
+    fn mints(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+        let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Mint {
                 check,
@@ -1089,35 +1110,29 @@ impl<'h> Resolver<'h> {
                 None => Err(R_DENIED),
                 Some(p) => self.host.mint(TicketMint {
                     subject: p.subject,
-                    scope: scope.as_deref().unwrap_or(""),
-                    audience: audience.as_deref().unwrap_or("ticket"),
+                    scope: scope.map_or("", |s| lent.text(s)),
+                    audience: audience.map_or("ticket", |s| lent.text(s)),
                     ttl_s: *ttl_s,
                     once: flags & MINT_ONCE != 0,
-                    prefix: prefix.as_deref().unwrap_or(""),
-                    record: record.as_deref().unwrap_or(&[]),
+                    prefix: prefix.map_or("", |s| lent.text(s)),
+                    record: record.map_or(&[][..], |r| lent.bytes(r)),
                 }),
             };
-            answers.push(match minted {
-                Ok((ticket, expires_at_s)) => (*check, 0, expires_at_s, ticket),
-                Err(status) => (*check, status, 0, Box::from("")),
-            });
+            let reply = reply.get_or_insert_with(Reply::new);
+            let put = match &minted {
+                Ok((ticket, expires_at_s)) => {
+                    encode_minted(reply, &[(*check, 0, *expires_at_s, &**ticket)])
+                }
+                Err(status) => encode_minted(reply, &[(*check, *status, 0, "")]),
+            };
+            debug_assert!(put.is_ok(), "MINTED records fit a Reply");
         }
-        if answers.is_empty() {
-            return None;
-        }
-        let refs: Vec<(u32, u32, u64, &str)> = answers
-            .iter()
-            .map(|(check, status, exp, ticket)| (*check, *status, *exp, &**ticket))
-            .collect();
-        let mut reply = Reply::new();
-        let put = encode_minted(&mut reply, &refs);
-        debug_assert!(put.is_ok(), "MINTED records fit a Reply");
-        Some(reply.as_bytes().to_vec())
+        reply
     }
 
     /// The SIGNED of every SIGN of the answer, in intent order; `None` when it has none.
-    fn signs(&self, intents: &[Intent]) -> Option<Vec<u8>> {
-        let mut signed: Vec<(u32, Result<SignedJws, u32>, bool)> = Vec::new();
+    fn signs(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+        let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Sign {
                 check,
@@ -1128,21 +1143,15 @@ impl<'h> Resolver<'h> {
                 continue;
             };
             let detached = *flags == SIGN_JWS_DETACHED;
-            signed.push((*check, self.host.sign(payload, detached), detached));
-        }
-        if signed.is_empty() {
-            return None;
-        }
-        let answers: Vec<SignedAnswer<'_>> = signed
-            .iter()
-            .map(|(check, jws, detached)| match jws {
+            let jws = self.host.sign(lent.bytes(*payload), detached);
+            let answer = match &jws {
                 Ok(SignedJws::Compact(jws)) if !detached => {
                     SignedAnswer::Compact { check: *check, jws }
                 }
                 Ok(SignedJws::Detached {
                     protected,
                     signature,
-                }) if *detached => SignedAnswer::Detached {
+                }) if detached => SignedAnswer::Detached {
                     check: *check,
                     protected,
                     signature,
@@ -1156,18 +1165,17 @@ impl<'h> Resolver<'h> {
                     check: *check,
                     status: *status,
                 },
-            })
-            .collect();
-        let mut reply = Reply::new();
-        let put = encode_signed(&mut reply, &answers);
-        debug_assert!(put.is_ok(), "SIGNED records fit a Reply");
-        Some(reply.as_bytes().to_vec())
+            };
+            let put = encode_signed(reply.get_or_insert_with(Reply::new), &[answer]);
+            debug_assert!(put.is_ok(), "SIGNED records fit a Reply");
+        }
+        reply
     }
 
     /// The CONNECT_ANS of every CONNECT of the answer, in intent order; `None` when it has none. A connection
     /// is the verified subject's: without one the state is `CONN_REFUSED` and the host is not asked.
-    fn connects(&self, intents: &[Intent]) -> Option<Vec<u8>> {
-        let mut answers: Vec<(u32, u32, Option<Box<str>>)> = Vec::new();
+    fn connects(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+        let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Connect {
                 check,
@@ -1180,30 +1188,27 @@ impl<'h> Resolver<'h> {
             };
             let (state, url) = match self.principal {
                 None => (CONN_REFUSED, None),
-                Some(p) => self
-                    .host
-                    .connect(*op, p.subject, upstream, return_to.as_deref()),
+                Some(p) => self.host.connect(
+                    *op,
+                    p.subject,
+                    lent.text(*upstream),
+                    return_to.map(|r| lent.text(r)),
+                ),
             };
             // Only a BEGIN carries a URL.
             let url = url.filter(|_| *op == CONNECT_BEGIN);
-            answers.push((*check, state, url));
+            let put = encode_connect_answers(
+                reply.get_or_insert_with(Reply::new),
+                &[(*check, state, url.as_deref())],
+            );
+            debug_assert!(put.is_ok(), "CONNECT_ANS records fit a Reply");
         }
-        if answers.is_empty() {
-            return None;
-        }
-        let refs: Vec<(u32, u32, Option<&str>)> = answers
-            .iter()
-            .map(|(check, state, url)| (*check, *state, url.as_deref()))
-            .collect();
-        let mut reply = Reply::new();
-        let put = encode_connect_answers(&mut reply, &refs);
-        debug_assert!(put.is_ok(), "CONNECT_ANS records fit a Reply");
-        Some(reply.as_bytes().to_vec())
+        reply
     }
 
     /// The WORK_ANS of every WORK of the answer, in intent order; `None` when it has none.
-    fn works(&self, intents: &[Intent]) -> Option<Vec<u8>> {
-        let mut outcomes: Vec<(u32, WorkOutcome)> = Vec::new();
+    fn works(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+        let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Work {
                 check,
@@ -1220,32 +1225,22 @@ impl<'h> Resolver<'h> {
             } else {
                 self.host.work(&WorkIntent {
                     op: *op,
-                    target: target.clone(),
-                    reference: reference.clone(),
-                    identity: self
-                        .principal
-                        .map_or_else(Vec::new, |p| p.identity.to_vec()),
+                    target: target.map(|t| lent.text(t)),
+                    reference: reference.map(|r| lent.text(r)),
+                    identity: self.principal.map_or(&[], |p| p.identity),
                 })
             };
-            outcomes.push((*check, outcome));
-        }
-        if outcomes.is_empty() {
-            return None;
-        }
-        let answers: Vec<WorkAnswer<'_>> = outcomes
-            .iter()
-            .map(|(check, o)| WorkAnswer {
+            let answer = WorkAnswer {
                 check: *check,
-                status: o.status,
-                state: o.state,
-                reference: &o.reference,
-                target: &o.target,
-            })
-            .collect();
-        let mut reply = Reply::new();
-        let put = encode_work_answers(&mut reply, &answers);
-        debug_assert!(put.is_ok(), "WORK_ANS records fit a Reply");
-        Some(reply.as_bytes().to_vec())
+                status: outcome.status,
+                state: outcome.state,
+                reference: &outcome.reference,
+                target: &outcome.target,
+            };
+            let put = encode_work_answers(reply.get_or_insert_with(Reply::new), &[answer]);
+            debug_assert!(put.is_ok(), "WORK_ANS records fit a Reply");
+        }
+        reply
     }
 }
 
@@ -1257,9 +1252,18 @@ fn split_key(tail: &[u8], key_len: u32) -> Option<(&[u8], &[u8])> {
     tail.split_at_checked(at)
 }
 
+/// A STORE or DELETE the host refused: its key, as the plane sent it (P_STORE_FAILED).
+fn store_failed(key: &[u8]) -> Piece<'_> {
+    Piece {
+        exchange: 0,
+        flags: P_STORE_FAILED,
+        bytes: PieceBytes::Lent(key),
+    }
+}
+
 /// P_RV_FAILED's bytes: one REFUSAL in core's own fixed text for the cause (§12.15), or `mirrored`'s text when the
 /// media bridge says why the far end's answer was refused.
-fn rv_failed(exchange: u32, denied: &RecordsDenied, text: Option<String>) -> Piece {
+fn rv_failed<'i>(exchange: u32, denied: &RecordsDenied, text: Option<&str>) -> Piece<'i> {
     let (status, code, fixed) = match denied {
         RecordsDenied::Invalid | RecordsDenied::TooLarge => {
             (400, R_INVALID, "the media session description was refused")
@@ -1268,12 +1272,12 @@ fn rv_failed(exchange: u32, denied: &RecordsDenied, text: Option<String>) -> Pie
         RecordsDenied::Unavailable => (502, F_UNAVAILABLE, "the media session is unavailable"),
     };
     let mut reply = Reply::new();
-    let put = encode_refusal(&mut reply, status, code, text.as_deref().unwrap_or(fixed));
+    let put = encode_refusal(&mut reply, status, code, text.unwrap_or(fixed));
     debug_assert!(put.is_ok(), "a REFUSAL fits a Reply");
     Piece {
         exchange,
         flags: P_RV_FAILED,
-        bytes: reply.as_bytes().to_vec(),
+        bytes: PieceBytes::Records(reply),
     }
 }
 
@@ -1317,7 +1321,10 @@ impl<K: Calls + ?Sized> Task<'_, K> {
         screening: bool,
     ) -> Result<Vec<Answer>, SessionError> {
         let mut out = Vec::new();
-        let mut queue = VecDeque::from([first]);
+        // The task's queue, lent to this stage; an error ends the session, so only a stage that finishes hands it back.
+        let mut queue = std::mem::take(&mut self.queue);
+        queue.clear();
+        queue.push_back(first);
         let mut rounds = 0u32;
         let mut held_effects = false;
         while let Some(mut answer) = queue.pop_front() {
@@ -1332,6 +1339,7 @@ impl<K: Calls + ?Sized> Task<'_, K> {
                 return Err(SessionError::Violation(Violation::BadRecords));
             }
             let intents = std::mem::take(&mut answer.intents);
+            let lent = std::mem::take(&mut answer.lent);
             if screening && !intents.is_empty() {
                 let reads = intents.iter().any(prerequisite);
                 let writes = intents.iter().any(|intent| !prerequisite(intent));
@@ -1343,6 +1351,7 @@ impl<K: Calls + ?Sized> Task<'_, K> {
                 if writes {
                     held_effects = true;
                     answer.intents = intents;
+                    answer.lent = lent;
                     out.push(answer);
                     continue;
                 }
@@ -1355,17 +1364,18 @@ impl<K: Calls + ?Sized> Task<'_, K> {
             if rounds > MAX_ROUNDS {
                 return Err(SessionError::Violation(Violation::IntentStorm));
             }
-            for piece in resolver.resolve(&intents, &mut self.held) {
+            for piece in resolver.resolve(&intents, &lent, &mut self.held) {
                 let next = self.piece(
                     FROM_CORE,
                     piece.exchange,
                     piece.flags,
-                    &piece.bytes,
+                    piece.bytes.as_bytes(),
                     effects,
                 )?;
                 queue.push_back(next);
             }
         }
+        self.queue = queue;
         Ok(out)
     }
 }
@@ -1403,7 +1413,9 @@ impl Namespace {
             instance: self.instance,
             slot: self.slot,
             chain: 1,
-            deadline: Instant::now() + Duration::from_secs(30),
+            // The node's monotonic clock service, read once for this call.
+            deadline: busbar_contract::mono_instant::instant_at(crate::store::monotonic_ns())
+                + Duration::from_secs(30),
             stack: CallStack::default(),
             out_of_process: false,
             limits: InstanceLimits::default(),
@@ -1411,12 +1423,12 @@ impl Namespace {
     }
 }
 
-/// The production [`IntentHost`]: records through [`PluginRecords`], pushes through the [`PushQueue`], signals
+/// The production [`IntentHost`]: records through [`PluginRecords`], pushes through the [`StorePushQueue`], signals
 /// through the [`SessionSignals`] registry, WORK through the decider (default [`NoWork`]). Its calls block on `rt`,
 /// so they run from `spawn_blocking`, never on a runtime worker.
 pub struct KernelIntents<R: PluginRecords> {
     records: Arc<R>,
-    push: Arc<dyn PushQueue>,
+    push: Arc<StorePushQueue>,
     signals: Arc<dyn SessionSignals>,
     work: Arc<dyn WorkDecider>,
     services: Services,
@@ -1426,7 +1438,7 @@ pub struct KernelIntents<R: PluginRecords> {
 
 /// Decides WORK intents (§12.24).
 pub trait WorkDecider: Send + Sync + 'static {
-    fn decide(&self, who: &Namespace, intent: &WorkIntent) -> WorkOutcome;
+    fn decide(&self, who: &Namespace, intent: &WorkIntent<'_>) -> WorkOutcome;
 }
 
 /// Durable paid work (IF §12.24): the store-backed rows over `host_work/` and the recovery runtime over
@@ -1486,16 +1498,16 @@ impl DurableDecider {
 }
 
 impl WorkDecider for DurableDecider {
-    fn decide(&self, who: &Namespace, intent: &WorkIntent) -> WorkOutcome {
+    fn decide(&self, who: &Namespace, intent: &WorkIntent<'_>) -> WorkOutcome {
         let plane = who.caller();
         match intent.op {
             WORK_OPEN => {
-                let Some(target) = intent.target.as_deref().filter(|t| (self.recovers)(t)) else {
+                let Some(target) = intent.target.filter(|t| (self.recovers)(t)) else {
                     return WorkOutcome::refused(R_INVALID);
                 };
                 match self
                     .rt
-                    .block_on(self.work.open(&plane, &intent.identity, target))
+                    .block_on(self.work.open(&plane, intent.identity, target))
                 {
                     Ok(reference) => WorkOutcome {
                         status: 0,
@@ -1507,12 +1519,12 @@ impl WorkDecider for DurableDecider {
                 }
             }
             WORK_FIND => {
-                let Some(reference) = intent.reference.as_deref() else {
+                let Some(reference) = intent.reference else {
                     return WorkOutcome::refused(R_INVALID);
                 };
                 match self
                     .rt
-                    .block_on(self.work.find(&plane, &intent.identity, reference))
+                    .block_on(self.work.find(&plane, intent.identity, reference))
                 {
                     Ok((state, target)) => WorkOutcome {
                         status: 0,
@@ -1524,12 +1536,12 @@ impl WorkDecider for DurableDecider {
                 }
             }
             WORK_SETTLE => {
-                let Some(reference) = intent.reference.as_deref() else {
+                let Some(reference) = intent.reference else {
                     return WorkOutcome::refused(R_INVALID);
                 };
                 match self
                     .rt
-                    .block_on(self.work.settle(&plane, &intent.identity, reference))
+                    .block_on(self.work.settle(&plane, intent.identity, reference))
                 {
                     Ok(()) => WorkOutcome {
                         status: 0,
@@ -1549,7 +1561,7 @@ impl WorkDecider for DurableDecider {
 pub struct NoWork;
 
 impl WorkDecider for NoWork {
-    fn decide(&self, _: &Namespace, _: &WorkIntent) -> WorkOutcome {
+    fn decide(&self, _: &Namespace, _: &WorkIntent<'_>) -> WorkOutcome {
         WorkOutcome::unsupported()
     }
 }
@@ -1558,7 +1570,7 @@ impl<R: PluginRecords> KernelIntents<R> {
     #[must_use]
     pub fn new(
         records: Arc<R>,
-        push: Arc<dyn PushQueue>,
+        push: Arc<StorePushQueue>,
         signals: Arc<dyn SessionSignals>,
         who: Namespace,
         rt: Handle,
@@ -1683,7 +1695,7 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
         self.rt.block_on(self.records.commit(&who, scope, ops))
     }
 
-    fn work(&self, intent: &WorkIntent) -> WorkOutcome {
+    fn work(&self, intent: &WorkIntent<'_>) -> WorkOutcome {
         self.work.decide(&self.who, intent)
     }
 

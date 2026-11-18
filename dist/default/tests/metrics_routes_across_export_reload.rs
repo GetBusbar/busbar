@@ -182,7 +182,7 @@ fn a_reload_that_removes_the_scrape_sink_keeps_metrics_hooks_and_drops_metrics_a
     let child = Reap(
         Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("MOCK_KEY", "x")
             .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
             .env("RUST_LOG", "info")
@@ -290,7 +290,7 @@ fn test_metrics_requires_auth_in_chain_mode() {
     let mut child = Reap(
         Command::new(common::boot::exe())
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("MOCK_KEY", "x")
             .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
             .env("RUST_LOG", "info")

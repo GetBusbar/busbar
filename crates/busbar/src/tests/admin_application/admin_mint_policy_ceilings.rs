@@ -68,7 +68,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -102,7 +102,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),
@@ -213,7 +213,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -247,7 +247,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),
@@ -341,7 +341,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["auth"]["policy"] = json::json!({"max_ttl":"24h"});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -354,17 +354,18 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store opens the configuration authority")
+        .admit()
+        .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),
@@ -451,7 +452,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["auth"]["policy"] = json::json!({"max_ttl":"24h"});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -464,17 +465,18 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store opens the configuration authority")
+        .admit()
+        .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),
@@ -586,7 +588,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -619,7 +621,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),
@@ -734,7 +736,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -767,7 +769,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),
@@ -882,7 +884,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -915,7 +917,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),

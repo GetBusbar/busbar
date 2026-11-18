@@ -95,10 +95,9 @@ fn failed_refusal(code: u32) -> ClientRefusal {
 
 /// 400..=499 as the hook stated it, else 403 (today's hook rule).
 fn clamp_reject_status(status: Option<u16>) -> u16 {
-    match status {
-        Some(s @ 400..=499) => s,
-        _ => 403,
-    }
+    status
+        .filter(|status| (400..=499).contains(status))
+        .unwrap_or(403)
 }
 
 /// True when `text` holds something shaped like a plugin code (`BUSBAR-` then a lowercase letter).

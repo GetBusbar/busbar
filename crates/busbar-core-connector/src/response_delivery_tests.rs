@@ -253,7 +253,7 @@ fn dropped_prepared_answer_does_not_consume_offset_or_capacity() {
     let mut ledger = ledger(1, 1);
     ledger.admit(key(1)).unwrap();
     let events = [part(1, WireClass::Payload, 1)];
-    drop(ledger.prepare_batch(&events).unwrap());
+    let _ = ledger.prepare_batch(&events).unwrap();
     assert_eq!(ledger.adopted_prefix(), 0);
     ledger.prepare_batch(&events).unwrap().commit();
     assert_eq!(ledger.adopted_prefix(), 1);

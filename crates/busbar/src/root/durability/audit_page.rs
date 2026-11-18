@@ -91,8 +91,9 @@ impl Cursor {
 /// hole in the chain.
 #[derive(Clone)]
 enum Line {
-    Unit(AuditRecord),
-    NotaryKey(u64, NotaryKeyRecord),
+    // Both boxed (large_enum_variant: a unit line is about 1 KB); the admin page read, never per request.
+    Unit(Box<AuditRecord>),
+    NotaryKey(u64, Box<NotaryKeyRecord>),
 }
 
 impl Line {
@@ -151,7 +152,7 @@ impl Evidence {
         self.certs
             .iter()
             .filter(move |(_, cert)| cert.seq >= from && cert.seq <= to)
-            .map(|(at, cert)| Line::NotaryKey(*at, cert.clone()))
+            .map(|(at, cert)| Line::NotaryKey(*at, Box::new(cert.clone())))
     }
 }
 
@@ -179,7 +180,7 @@ fn cover_lines(
             continue;
         }
         if let Some(unit) = decode_audit(row).map_err(|_| GovernanceError::Store)? {
-            lines.insert(unit.seq, Line::Unit(unit));
+            lines.insert(unit.seq, Line::Unit(Box::new(unit)));
         }
     }
     let mut cover = Vec::new();
@@ -296,8 +297,7 @@ impl Durability {
             self.audit_records()
                 .iter()
                 .filter(|r| r.seq >= cursor.next_audit && r.seq <= cursor.snapshot_to)
-                .cloned()
-                .map(Line::Unit)
+                .map(|record| Line::Unit(Box::new(record.clone())))
                 .collect()
         };
         Ok(AuditPagePlan {
@@ -356,12 +356,12 @@ impl AuditPagePlan {
             for record in window {
                 if let Some(audit) = decode_audit(record).map_err(|_| GovernanceError::Store)? {
                     if audit.seq >= self.cursor.next_audit && audit.seq <= self.cursor.snapshot_to {
-                        self.records.push(Line::Unit(audit));
+                        self.records.push(Line::Unit(Box::new(audit)));
                     }
                 } else if let Some(cert) = evidence.certs.get(&record.node_seq) {
                     if cert.seq >= self.cursor.next_audit && cert.seq <= self.cursor.snapshot_to {
                         self.records
-                            .push(Line::NotaryKey(record.node_seq, cert.clone()));
+                            .push(Line::NotaryKey(record.node_seq, Box::new(cert.clone())));
                     }
                 }
             }
@@ -512,6 +512,7 @@ mod tests {
     use super::*;
     use crate::root::durability::tests::{seal, NativeFixture};
     use crate::root::units_admin::{AuditView, NodeAudit};
+    use busbar_contract::json::JsonContainerTrait as _;
     use busbar_contract::json::JsonValueTrait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};

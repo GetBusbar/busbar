@@ -179,7 +179,7 @@ pub struct App {
     /// is offloaded off the reactor (a plugin can do blocking JWKS/introspection I/O).
     /// Rebuilt on boot AND reload (`build_app_from_config`), Arc-shared so `App::clone` is cheap.
     pub admin_modules: Arc<crate::auth::AdminAuthChain>,
-    pub native_admin: Option<Arc<dyn crate::auth::native_admin::NativeAdmin>>,
+    pub native_admin: Option<Arc<crate::auth::native_admin::NativeAdmin>>,
     /// The build's auth instances by provider (WASTE-AUTH-SECRETS W1/W2): what the chain,
     /// `admin_modules` and the login methods hold, kept so the next build can carry an unchanged,
     /// healthy instance instead of opening it again.

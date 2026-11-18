@@ -425,7 +425,7 @@ pub fn resume_secret(
 }
 
 /// One NEED_RES record answering a SECRET with `value`.
-pub fn secret_result(value: &[u8]) -> Vec<u8> {
+fn secret_result(value: &[u8]) -> Vec<u8> {
     let head = NeedResRec {
         op: op::SECRET,
         status: 0,

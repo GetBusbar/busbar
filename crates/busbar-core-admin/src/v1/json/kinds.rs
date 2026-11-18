@@ -891,7 +891,7 @@ fn embedded_schema(name: &str) -> Value {
             .unwrap_or_else(Value::new_null)
     });
     components
-        .get(&name)
+        .get(name)
         .map_or_else(Value::new_null, |schema| inline_refs(components, schema, 0))
 }
 

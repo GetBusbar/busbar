@@ -91,8 +91,7 @@ async fn list_groups_projects_the_limit_tree() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -104,7 +103,7 @@ async fn list_groups_projects_the_limit_tree() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -208,8 +207,7 @@ async fn list_groups_is_cursor_paginated() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -221,7 +219,7 @@ async fn list_groups_is_cursor_paginated() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -349,8 +347,7 @@ async fn get_group_by_name_and_not_found() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -362,7 +359,7 @@ async fn get_group_by_name_and_not_found() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -465,7 +462,7 @@ async fn build_with_group_creates_leaf_and_rebuilds_cost() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -554,7 +551,7 @@ async fn build_with_group_rejects_dangling_parent() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -638,7 +635,7 @@ async fn build_with_group_rejects_empty_name() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -718,7 +715,7 @@ async fn build_with_group_name_length_boundary_is_exact() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -799,7 +796,7 @@ async fn healthz_returns_a_real_response_not_the_default() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

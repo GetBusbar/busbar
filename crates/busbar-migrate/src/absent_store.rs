@@ -44,9 +44,9 @@ pub(crate) fn name_the_ephemeral_store(
             write_implied(root, resolved, one, report);
             Ok(())
         }
-        [] => Err(Refusal::Config(format!(
+        [] => Err(Refusal::Config(String::from(
             "config has no `store:` block naming a `module:`, which 1.5.5 ran on its built-in RAM \
-             store; this build has no such store; add `store: {{module: …}}`"
+             store; this build has no such store; add `store: {module: …}`",
         ))),
         several => Err(Refusal::Config(format!(
             "config has no `store:` block naming a `module:`, which 1.5.5 ran on its built-in RAM \

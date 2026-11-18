@@ -275,3 +275,20 @@ fn plane_judge_unavailable_is_a_registered_diagnostic() {
         "the code is in the built-in registry, so its docs page is generated"
     );
 }
+
+#[test]
+fn the_page_intro_names_the_plugin_error_code_form_in_page_and_generator() {
+    let page = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/diagnostics.md"
+    ));
+    let rendered = render_markdown_for(&[]);
+    let line = rendered
+        .lines()
+        .find(|l| l.contains("BUSBAR-<plugin>-NNNN"))
+        .expect("the generated intro names the plugin error-code form");
+    assert!(
+        page.lines().any(|l| l == line),
+        "docs/diagnostics.md intro drifted from the generator"
+    );
+}

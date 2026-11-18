@@ -153,10 +153,7 @@ fn delivered<'o>(mut recs: Records<'o>, confirm: bool) -> Result<Delivered<'o>, 
 /// Round 7: ACK, or APPEND then ACK (§8.5). Borrowed tail; the adapter copies only a non-empty tail.
 /// Round 33: plus the optional CUSTODY after ACK. CUSTODY after APPEND, CUSTODY_NONE or a level above INDEXED,
 /// a second CUSTODY, or `recheck_s > 0` when `confirm` (the image declared M_CONFIRM) is false: RecErr.
-pub fn decode_delivered<'o>(
-    a: &Answer<'o>,
-    confirm: bool,
-) -> Result<(u64, Option<(u32, &'o [u8])>, Option<CustodyRec>), RecErr> {
+pub fn decode_delivered<'o>(a: &Answer<'o>, confirm: bool) -> Result<Delivered<'o>, RecErr> {
     delivered(a.records(), confirm)
 }
 

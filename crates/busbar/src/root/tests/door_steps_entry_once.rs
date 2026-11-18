@@ -18,7 +18,14 @@ use std::sync::Arc;
 async fn entry_resolved_once() {
     let (app, key) = downgrade_book(Vec::new(), None).await;
     let pools = pools(DOWNGRADE_SECTION);
-    let facts = super::super::door_facts("p", &["model"], &[], &[], "door", Vec::new());
+    let facts = super::super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap(),
+        &["model"],
+        &[],
+        &[],
+        "door",
+        Vec::new(),
+    );
     let principal = PrincipalId::new(key.id.as_str());
     let steps = super::super::DoorSteps::new(
         &facts,

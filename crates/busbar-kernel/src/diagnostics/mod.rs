@@ -309,11 +309,11 @@ diagnostics! {
         "A plugin asked for something the ABI does not allow: `dest.judge` under the operator-infrastructure egress class (content-named hosts are judged in the default or open-web class), or a mid-stream upgrade offering a name that is not the dialled host (only a dial to an IP literal may offer another name). The call is refused; the first refusal per instance is logged and audited.",
         "Upgrade the plugin to a release built against busbar 1.6.0, or report the plugin to its author.";
 
-    /// A plugin used a deprecated ABI value that is still honoured; flagged once per instance and audited.
+    /// A plugin requested the retired UPGRADE_VERIFY_OFF flag; refused, logged and audited.
     PLUGIN_USES_DEPRECATED_ABI_VALUE = 6015, Plugins, Actionable, "plugin-uses-deprecated-abi-value", "1.6.0", false,
-        "A plugin used a deprecated ABI value (refused from 1.7.0)",
-        "A plugin secured an operator-infrastructure connection with `UPGRADE_VERIFY_OFF`, so the far end's certificate is not verified (postgres `sslmode=prefer`, valkey `#insecure`). The value is honoured in 1.6.x, deprecated, and refused from 1.7.0. The first use per instance is logged and audited.",
-        "Configure the server with a certificate the plugin can verify (`sslmode=require` or `verify-full`, `rediss://` without `#insecure`); for a server with a private CA, list that CA under `advanced.tls.trust_anchors` (or the server under `advanced.tls.destinations`).";
+        "A plugin requested the retired UPGRADE_VERIFY_OFF flag (refused)",
+        "A plugin requested `UPGRADE_VERIFY_OFF` on a connection upgrade. Busbar refuses this flag in 1.6.0: a plugin cannot turn off certificate verification through the upgrade call. The refusal is logged once per instance and audited.",
+        "Upgrade the plugin to a version that uses the core-held transport policy on its declared need. Configure verified TLS; for a server with a private CA, configure `advanced.tls.trust_anchors` and `advanced.tls.destinations`. Any deliberate exception uses the instance's explicit `insecure_transport` policy, never `UPGRADE_VERIFY_OFF`.";
 
     /// RETIRED: a registration's `allow_private` is core's own key again and is not refused.
     CONFIG_PRIVATE_REACH_RETIRED = 3135, Config, Fatal, "config-private-reach-retired", "1.6.0", true,
@@ -2062,6 +2062,12 @@ pub fn render_markdown_for(catalog: &[&Diagnostic]) -> String {
         "Every operator-facing log line from busbar carries a stable `BUSBAR-NNNN` code in its \
          `diag` field. Find the code below for what it means, whether it needs action, and what \
          to do. This page is generated from the code — do not edit by hand.\n\n",
+    );
+    out.push_str(
+        "A plugin that declares its own error numbers writes them as `BUSBAR-<plugin>-NNNN` \
+         (for example `BUSBAR-acme-0042`), with the plugin's own name and never in the `diag` \
+         field. Those codes belong to the plugin, not to this catalog; core does not vouch for \
+         their text.\n\n",
     );
     out.push_str("Codes are grouped by class (the thousands digit).\n\n");
     for class in Class::ALL {

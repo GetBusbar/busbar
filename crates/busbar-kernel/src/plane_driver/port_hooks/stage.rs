@@ -87,24 +87,32 @@ impl Stage {
             });
         }
     }
+    /// Every tap but the last takes a copy of the facts; the last takes the facts themselves.
     fn taps(&self, calls: &[Arc<super::Call>], facts: Vec<(u32, FactVal)>) {
+        let mut calls = calls.iter();
+        let Some(last) = calls.next_back() else {
+            return;
+        };
         for call in calls {
-            let mut held = self.clone();
-            if !facts.is_empty() {
-                held.projection = held.projection.shape();
-            }
-            let facts = facts.clone();
-            let call = Arc::clone(call);
-            crate::hooks::taps::spawn_bounded_tap(async move {
-                let selection = held.selection();
-                let input = held.input(&selection, &facts);
-                let result = call::one(&call, abi::POINT_NOTIFY, &input).await;
-                held.report(vec![call::record(
-                    &call,
-                    result.as_ref().ok().map(|reply| &**reply),
-                )]);
-            });
+            self.tap(call, facts.clone());
         }
+        self.tap(last, facts);
+    }
+    fn tap(&self, call: &Arc<super::Call>, facts: Vec<(u32, FactVal)>) {
+        let mut held = self.clone();
+        if !facts.is_empty() {
+            held.projection = held.projection.shape();
+        }
+        let call = Arc::clone(call);
+        crate::hooks::taps::spawn_bounded_tap(async move {
+            let selection = held.selection();
+            let input = held.input(&selection, &facts);
+            let result = call::one(&call, abi::POINT_NOTIFY, &input).await;
+            held.report(vec![call::record(
+                &call,
+                result.as_ref().ok().map(|reply| &**reply),
+            )]);
+        });
     }
 }
 
@@ -255,7 +263,9 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
     let handle = tokio::runtime::Handle::current();
     let mut ran = Vec::new();
     let result = (|| {
-        for rewrite in stage.selected.rewrites.clone() {
+        // The stage is rewritten inside the loop, so each rewrite call is held by its own Arc.
+        for at in 0..stage.selected.rewrites.len() {
+            let rewrite = Arc::clone(&stage.selected.rewrites[at]);
             let selection = stage.selection();
             let input = stage.input(&selection, &[]);
             let (called, mut answer) = handle
@@ -288,7 +298,11 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                 }
             }
         }
-        stage.quantities = super::quantities(&invocation.classes, &stage.projection.expects)?;
+        super::quantities(
+            &invocation.classes,
+            &stage.projection.expects,
+            &mut stage.quantities,
+        )?;
         stage.taps(&stage.selected.taps.request, Vec::new());
         let selection = stage.selection();
         let input = stage.input(&selection, &[]);
@@ -302,12 +316,12 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                 }
             }),
         ));
-        let mut outcomes = Vec::new();
+        let mut outcomes = smallvec::SmallVec::<[_; 8]>::new();
         for (outcome, records) in gate_results {
             ran.extend(records);
             outcomes.push(outcome);
         }
-        let mut judged = Vec::new();
+        let mut judged = smallvec::SmallVec::<[_; 8]>::new();
         for outcome in outcomes {
             let (called, mut answer) =
                 outcome.map_err(|_| unavailable(req.route, drive.refusals))?;
@@ -503,7 +517,7 @@ fn rejected(
 
 fn normalize(answer: &mut busbar_ports::hook::HookAnswer, candidates: &[CandidateView]) {
     if matches!(answer.verb, abi::VERB_PREFER | abi::VERB_PRIORITIZE) {
-        let mut seen = Vec::new();
+        let mut seen = smallvec::SmallVec::<[_; 16]>::new();
         answer.order.retain(|index| {
             let valid = candidates
                 .iter()

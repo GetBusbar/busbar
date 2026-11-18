@@ -78,15 +78,16 @@ async fn a_built_generations_limits_are_in_force_only_once_it_is_live() {
     config.limits = running.clone();
     let native_config = config;
     let native_plugins = plugin_config.clone();
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: native_core,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: native_core,
         rules,
     } = crate::root::min3_boot::fixture::open(&native_config, &native_plugins, rules.clone())
         .await
-        .expect("actual Store opens for native startup");
-    let native_core = crate::root::real_store::core_over(native_core).await;
+        .expect("actual Store opens for native startup")
+        .admit()
+        .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        native_config,
+        crate::root::test_plugins::plaintext_listeners(native_config),
         native_plugins,
         None,
         Default::default(),

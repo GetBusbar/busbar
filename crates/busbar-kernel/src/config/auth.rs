@@ -85,7 +85,32 @@ pub struct IdentityProviderCfg {
 fn issued_kind_grants<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Vec<Box<str>>>, D::Error> {
-    Vec::<Box<str>>::deserialize(deserializer).map(Some)
+    /// One grant: a YAML string and nothing else. The YAML reader hands `null` to a string visitor as
+    /// an empty string, so `Box<str>` alone admitted `[null]` (red-proof 9fc5ed4f19).
+    struct KindName(Box<str>);
+    impl<'de> serde::Deserialize<'de> for KindName {
+        fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct Text;
+            impl serde::de::Visitor<'_> for Text {
+                type Value = KindName;
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("a credential kind name")
+                }
+                fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<KindName, E> {
+                    Ok(KindName(v.into()))
+                }
+                fn visit_unit<E: serde::de::Error>(self) -> Result<KindName, E> {
+                    Err(E::invalid_type(serde::de::Unexpected::Unit, &self))
+                }
+                fn visit_none<E: serde::de::Error>(self) -> Result<KindName, E> {
+                    Err(E::invalid_type(serde::de::Unexpected::Option, &self))
+                }
+            }
+            d.deserialize_any(Text)
+        }
+    }
+    Vec::<KindName>::deserialize(deserializer)
+        .map(|grants| Some(grants.into_iter().map(|g| g.0).collect()))
 }
 
 // Preserve explicit null so policy parsing refuses it instead of silently disabling the mount.

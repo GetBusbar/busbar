@@ -6,7 +6,6 @@ use busbar_contract::caps::{Audit as AuditStep, MeterClassId};
 
 use busbar_kernel_audit::journal::{from_journal_body, journal_body};
 use busbar_kernel_audit::record::AuditChain;
-use busbar_kernel_audit::sign::AuditSigningKey;
 
 fn declared(name: &str) -> Option<MeterClassId> {
     ["tokens_in", "tokens_out"]
@@ -17,11 +16,8 @@ fn declared(name: &str) -> Option<MeterClassId> {
 
 #[test]
 fn a_subject_value_that_does_not_re_render_is_refused_in_a_sealed_body() {
-    let key = AuditSigningKey::from_hex_seed(
-        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
-    )
-    .expect("the test seed is 64 lowercase hex");
-    let mut chain = AuditChain::new().signing_with(key);
+    // A production link line (SF-4 part 2, 4bc8cfec86): signed by no line, so the journal holds it whole.
+    let mut chain = AuditChain::new();
     let mut inputs = super::sign_tests::rich_inputs(1);
     inputs.subject = busbar_kernel_audit::record::Subject::Node(7);
     let record = busbar_kernel_audit::record::Audit::seal(

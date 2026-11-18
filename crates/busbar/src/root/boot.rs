@@ -1530,13 +1530,15 @@ pub(crate) fn classify_against(
 pub(crate) fn admitted_grammar(
     rows: &dyn PluginRows,
 ) -> Result<Option<busbar_kernel::config::Grammar>, busbar_kernel::config::GrammarRefusal> {
-    let refused = busbar_kernel::config::GrammarRefusal;
     let Some(registry) = super::loader::rows::registry_of(rows) else {
         return Ok(None);
     };
     let sugars = crate::root::native_secrets::NATIVE.sugars();
+    // The shorthand resolves through the native source that declares it: without the sources the published
+    // sugar names nothing, and `{ env: .. }` was refused (BUSBAR-3121) on every default install.
     Ok(Some(
         busbar_kernel::config::Grammar::new(sugars, owners_of(registry), Vec::new())
+            .with_secret_sources(crate::root::native_secrets::NATIVE.sources())
             .with_items(classify(registry, None)),
     ))
 }

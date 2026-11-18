@@ -64,7 +64,7 @@ impl PreparedConfigRead {
         self.context.is_some()
     }
     /// The root's context for this read, shared (DES-NATIVE-FIRST-PARTY r3 §3.1: trust questions name it).
-    pub fn context_arc(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+    pub(crate) fn context_arc(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
         self.context.clone()
     }
 
@@ -289,10 +289,7 @@ impl Grammar {
             .map(|(_, identity)| (*identity).to_owned())
             .collect();
         for sugar in bound.sugars.iter() {
-            if explicit_identities
-                .iter()
-                .any(|identity| *identity == sugar.plugin)
-            {
+            if explicit_identities.contains(&sugar.plugin) {
                 continue;
             }
             let source = self.secret_sources.get(&sugar.plugin).ok_or_else(|| {

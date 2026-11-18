@@ -37,7 +37,7 @@ use busbar_ports::transport::{
 use busbar_ports::PortError;
 use foldhash::HashMap;
 
-use super::{Association, Failure, IceCredentials, Role, SessionCert, SrtpKeying, Up, Verdict};
+use super::{Association, Failure, IceTerms, Role, SessionCert, SrtpKeying, Up, Verdict};
 use crate::DialJudge;
 
 /// The most paths (heard sources and judged candidates) one session numbers.
@@ -132,59 +132,62 @@ impl Live for PortedSession {
 }
 
 /// What opens a session.
-pub(crate) struct Params {
+pub(crate) struct Params<'a> {
     /// `CONN_DIAL` (the connector reaches out: its candidates are admitted and probed) rather than `CONN_ACCEPT`.
     pub(crate) dial: bool,
     /// The media port's bound address, as `ConnIn.local` states it.
     pub(crate) local: SocketAddr,
     /// A dial's opening (`ConnInfo.head`), empty for an accept.
-    pub(crate) opening: Vec<u8>,
+    pub(crate) opening: &'a [u8],
     /// The destination judge and egress class the session's candidates are judged under; none refuses them all.
     pub(crate) judge: Option<(Arc<dyn DialJudge>, u32)>,
 }
 
-/// What the transport answered, owned: a `TransportOut` borrows the transport's buffer, and the session
-/// acts on it only after the call returned.
+/// What the transport answered, kept until the call returned: a `TransportOut` borrows the transport's
+/// buffer, and the session acts on it only after the call returned. Each act's bytes are copied into the
+/// session's `act_bytes` and named here by their span; both buffers are the session's, cleared per call.
 enum Act {
     Send {
         path: u32,
         secured: bool,
-        bytes: Vec<u8>,
+        bytes: Span,
     },
     Close,
     Wake(u64),
-    Line(Line),
+    /// A line (`media`: a media kind) or a data channel (a label) a stream head names.
+    Line {
+        media: bool,
+        name: Span,
+    },
     Secure {
         path: u32,
         role: u32,
         alg: u32,
-        digest: Vec<u8>,
+        digest: Span,
     },
-    Rendezvous(Box<str>),
+    Rendezvous(Span),
     Terms {
         controlling: bool,
-        local: IceCredentials,
-        remote: IceCredentials,
+        /// (ufrag, pwd) of each side.
+        local: (Span, Span),
+        remote: (Span, Span),
     },
-    Candidate(Box<str>),
+    Candidate(Span),
     Bind {
         path: u32,
         from: Option<u32>,
     },
 }
 
-/// A line (media kind) or a data channel (label) a stream head names.
-enum Line {
-    Media(Box<str>),
-    Channel(Box<str>),
-}
+/// A span of the session's `act_bytes`.
+type Span = std::ops::Range<usize>;
 
 /// What the session owes the transport next, in order.
 enum Ev {
     Path {
         path: u32,
         flags: u32,
-        addr: Box<str>,
+        addr: crate::StackText<{ crate::SOCKET_TEXT }>,
     },
     Keying {
         path: u32,
@@ -257,7 +260,13 @@ pub(crate) struct Session {
     audit: Arc<dyn MediaAudit>,
     paths: Paths,
     events: VecDeque<Ev>,
-    out: VecDeque<(SocketAddr, Vec<u8>)>,
+    out: Outbox,
+    /// What the call into the transport now under way answered, and the bytes those acts name (cleared
+    /// per call, kept for the next).
+    acts: Vec<Act>,
+    act_bytes: Vec<u8>,
+    /// What the association handed up in one drain (cleared per drain, kept for the next).
+    ups: Vec<Up>,
     /// The transport's WAKE_AT, in the host clock's nanoseconds.
     wake: Option<u64>,
     lines: Lines,
@@ -276,30 +285,31 @@ pub(crate) struct Session {
     denied: u64,
 }
 
+/// The longest [`sdp_fingerprint`]: `sha-256 ` and 32 hex pairs joined by `:`.
+pub(crate) const SDP_FINGERPRINT_TEXT: usize = 8 + 32 * 3 - 1;
+
 /// `fp`'s SDP form, `sha-256 AA:BB:...` (the `a=fingerprint` value the transport writes into its answer).
-pub(crate) fn sdp_fingerprint(fp: [u8; 32]) -> String {
-    let mut text = String::from("sha-256 ");
+pub(crate) fn sdp_fingerprint(fp: [u8; 32]) -> crate::StackText<SDP_FINGERPRINT_TEXT> {
+    let mut text = crate::StackText::<SDP_FINGERPRINT_TEXT>::of(&"sha-256 ");
     for (i, b) in fp.iter().enumerate() {
         if i > 0 {
-            text.push(':');
+            let _ = text.write_char(':');
         }
         let _ = write!(text, "{b:02X}");
     }
     text
 }
 
-fn creds(ufrag: &str, pwd: &[u8]) -> IceCredentials {
-    IceCredentials {
-        ufrag: String::from(ufrag),
-        pwd: std::str::from_utf8(pwd)
-            .map(String::from)
-            .unwrap_or_default(),
-    }
+/// `bytes` kept at the end of the session's act buffer, and the span they take there.
+fn keep(into: &mut Vec<u8>, bytes: &[u8]) -> Span {
+    let start = into.len();
+    into.extend_from_slice(bytes);
+    start..into.len()
 }
 
-/// The line or channel a stream head names: `kind` makes it a media line, `label` a data channel (today's
-/// `stream_head`, kept).
-fn line_of(head: Records<'_>) -> Option<Line> {
+/// The line or channel a stream head names: `kind` makes it a media line (`true`), `label` a data channel
+/// (today's `stream_head`, kept).
+fn line_of(head: Records<'_>) -> Option<(bool, &str)> {
     let mut label = None;
     for rec in head {
         let Ok(rec) = rec else {
@@ -315,16 +325,16 @@ fn line_of(head: Records<'_>) -> Option<Line> {
             continue;
         };
         match name {
-            "kind" => return Some(Line::Media(Box::from(value.trim()))),
+            "kind" => return Some((true, value.trim())),
             "label" => label = Some(value),
             _ => {}
         }
     }
-    label.map(|l| Line::Channel(Box::from(l.trim())))
+    label.map(|l| (false, l.trim()))
 }
 
-fn capture(out: TransportOut<'_>, into: &mut Vec<Act>) {
-    match out {
+fn capture(out: &TransportOut<'_>, into: &mut Vec<Act>, bytes_into: &mut Vec<u8>) {
+    match *out {
         TransportOut::SendTo {
             path,
             secured,
@@ -332,13 +342,16 @@ fn capture(out: TransportOut<'_>, into: &mut Vec<Act>) {
         } => into.push(Act::Send {
             path,
             secured,
-            bytes: Vec::from(bytes),
+            bytes: keep(bytes_into, bytes),
         }),
         TransportOut::Close { .. } => into.push(Act::Close),
         TransportOut::WakeAt(ns) => into.push(Act::Wake(ns)),
         TransportOut::StreamHead { head, .. } => {
-            if let Some(line) = line_of(head) {
-                into.push(Act::Line(line));
+            if let Some((media, name)) = line_of(head) {
+                into.push(Act::Line {
+                    media,
+                    name: keep(bytes_into, name.as_bytes()),
+                });
             }
         }
         TransportOut::Secure {
@@ -350,9 +363,11 @@ fn capture(out: TransportOut<'_>, into: &mut Vec<Act>) {
             path,
             role,
             alg,
-            digest: Vec::from(peer_fingerprint),
+            digest: keep(bytes_into, peer_fingerprint),
         }),
-        TransportOut::Rendezvous(text) => into.push(Act::Rendezvous(Box::from(text))),
+        TransportOut::Rendezvous(text) => {
+            into.push(Act::Rendezvous(keep(bytes_into, text.as_bytes())));
+        }
         TransportOut::IceTerms {
             controlling,
             local_ufrag,
@@ -361,12 +376,62 @@ fn capture(out: TransportOut<'_>, into: &mut Vec<Act>) {
             remote_pwd,
         } => into.push(Act::Terms {
             controlling,
-            local: creds(local_ufrag, local_pwd),
-            remote: creds(remote_ufrag, remote_pwd),
+            local: (
+                keep(bytes_into, local_ufrag.as_bytes()),
+                keep(bytes_into, local_pwd),
+            ),
+            remote: (
+                keep(bytes_into, remote_ufrag.as_bytes()),
+                keep(bytes_into, remote_pwd),
+            ),
         }),
-        TransportOut::IceCandidate(text) => into.push(Act::Candidate(Box::from(text))),
+        TransportOut::IceCandidate(text) => {
+            into.push(Act::Candidate(keep(bytes_into, text.as_bytes())));
+        }
         TransportOut::PathBind { path, from } => into.push(Act::Bind { path, from }),
         _ => {}
+    }
+}
+
+/// Text an act kept (`""` when the span holds no UTF-8: a pwd that was not UTF-8 is read as empty, as
+/// it always was).
+fn text(bytes: &[u8], span: Span) -> &str {
+    bytes
+        .get(span)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .unwrap_or_default()
+}
+
+/// The datagrams core owes the wire, in order: each one's destination and length, their bytes back to
+/// back in one buffer (both cleared when sent, kept for the next).
+#[derive(Default)]
+struct Outbox {
+    sends: VecDeque<(SocketAddr, usize)>,
+    bytes: Vec<u8>,
+}
+
+impl Outbox {
+    fn push(&mut self, to: SocketAddr, bytes: &[u8]) {
+        self.bytes.extend_from_slice(bytes);
+        self.sends.push_back((to, bytes.len()));
+    }
+
+    fn clear(&mut self) {
+        self.sends.clear();
+        self.bytes.clear();
+    }
+
+    /// Each datagram to `send`, in order; the outbox is empty after.
+    fn send_each(&mut self, send: &mut dyn FnMut(SocketAddr, &[u8])) {
+        let mut at = 0;
+        for (to, len) in self.sends.drain(..) {
+            let end = at + len;
+            if let Some(bytes) = self.bytes.get(at..end) {
+                send(to, bytes);
+            }
+            at = end;
+        }
+        self.bytes.clear();
     }
 }
 
@@ -411,7 +476,7 @@ impl Session {
         opener: &dyn Opener,
         cert: Arc<SessionCert>,
         audit: Arc<dyn MediaAudit>,
-        params: Params,
+        params: Params<'_>,
         now: Instant,
     ) -> Result<Session, RecordsDenied> {
         let fingerprint = sdp_fingerprint(cert.fingerprint());
@@ -429,16 +494,12 @@ impl Session {
             local: local.as_str(),
             tls_peer_cert: &[],
             leftover: &[],
-            head: &params.opening,
-            local_fingerprint: &fingerprint,
+            head: params.opening,
+            local_fingerprint: fingerprint.as_str(),
             mono_ns: crate::framer::now_ns(),
         };
-        let mut acts = Vec::new();
-        let handle = opener
-            .begin(&conn, &mut |out| capture(out, &mut acts))
-            .map_err(|e| refused(&e))?;
         let mut session = Session {
-            handle: Some(handle),
+            handle: None,
             cert,
             assoc: None,
             dialling: params.dial,
@@ -446,7 +507,10 @@ impl Session {
             audit,
             paths: Paths::default(),
             events: VecDeque::new(),
-            out: VecDeque::new(),
+            out: Outbox::default(),
+            acts: Vec::new(),
+            act_bytes: Vec::new(),
+            ups: Vec::new(),
             wake: None,
             lines: Lines::default(),
             rendezvous: None,
@@ -460,7 +524,12 @@ impl Session {
             dropped: 0,
             denied: 0,
         };
-        session.apply(acts, now);
+        let (acts, act_bytes) = (&mut session.acts, &mut session.act_bytes);
+        let handle = opener
+            .begin(&conn, &mut |out| capture(&out, acts, act_bytes))
+            .map_err(|e| refused(&e))?;
+        session.handle = Some(handle);
+        session.apply_acts(now);
         session.settle(now);
         if session.assoc.is_none() || session.closed {
             // ICE_TERMS are required: core cannot route a check to a session without its local ufrag.
@@ -506,9 +575,16 @@ impl Session {
         std::mem::take(&mut self.new_addrs)
     }
 
-    /// The datagram core owes the wire next (DTLS, probes, the transport's clear SEND_TO).
+    /// Each datagram core owes the wire (DTLS, probes, the transport's clear SEND_TO), in order, to `send`.
+    pub(crate) fn send_out(&mut self, send: &mut dyn FnMut(SocketAddr, &[u8])) {
+        self.out.send_each(send);
+    }
+
+    /// The datagram core owes the wire next, copied out (the tests' view of [`Self::send_out`]).
+    #[cfg(test)]
     pub(crate) fn take_out(&mut self) -> Option<(SocketAddr, Vec<u8>)> {
-        self.out.pop_front()
+        let (to, len) = self.out.sends.pop_front()?;
+        Some((to, self.out.bytes.drain(..len).collect()))
     }
 
     /// (SEND_TOs dropped: unverified path, unbound secured path, unknown or denied path; candidates the judge
@@ -589,14 +665,16 @@ impl Session {
         call: impl FnOnce(&mut dyn Live, &mut dyn FnMut(TransportOut<'_>)) -> Result<R, PortError>,
     ) -> Option<R> {
         let mut handle = self.handle.take()?;
-        let mut acts = Vec::new();
+        self.acts.clear();
+        self.act_bytes.clear();
+        let (acts, act_bytes) = (&mut self.acts, &mut self.act_bytes);
         let result = call(&mut *handle, &mut |out| {
-            capture(out, &mut acts);
+            capture(&out, acts, act_bytes);
         });
         self.handle = Some(handle);
         match result {
             Ok(value) => {
-                self.apply(acts, now);
+                self.apply_acts(now);
                 Some(value)
             }
             Err(_) => {
@@ -606,46 +684,62 @@ impl Session {
         }
     }
 
-    fn apply(&mut self, acts: Vec<Act>, now: Instant) {
-        for act in acts {
+    /// Act on what the last call answered, in order; the act buffers are emptied for the next call.
+    fn apply_acts(&mut self, now: Instant) {
+        let mut acts = std::mem::take(&mut self.acts);
+        let bytes = std::mem::take(&mut self.act_bytes);
+        for act in acts.drain(..) {
             match act {
                 Act::Send {
                     path,
                     secured,
-                    bytes,
-                } => self.send_to(path, secured, bytes),
+                    bytes: span,
+                } => self.send_to(path, secured, bytes.get(span).unwrap_or_default()),
                 Act::Close => self.close(),
                 Act::Wake(ns) => self.wake = Some(ns),
-                Act::Line(Line::Media(kind)) => {
-                    if self.lines.media.len() < MAX_LINES {
-                        self.lines.media.push(kind);
+                Act::Line { media, name } => {
+                    let named = if media {
+                        &mut self.lines.media
+                    } else {
+                        &mut self.lines.channels
+                    };
+                    if named.len() < MAX_LINES {
+                        named.push(Box::from(text(&bytes, name)));
                     }
                 }
-                Act::Line(Line::Channel(label)) => {
-                    if self.lines.channels.len() < MAX_LINES {
-                        self.lines.channels.push(label);
-                    }
-                }
-                Act::Rendezvous(text) => self.rendezvous = Some(text),
+                Act::Rendezvous(span) => self.rendezvous = Some(Box::from(text(&bytes, span))),
                 Act::Terms {
                     controlling,
                     local,
                     remote,
-                } => self.terms(controlling, &local, &remote),
+                } => self.terms(
+                    controlling,
+                    IceTerms {
+                        ufrag: text(&bytes, local.0),
+                        pwd: text(&bytes, local.1),
+                    },
+                    IceTerms {
+                        ufrag: text(&bytes, remote.0),
+                        pwd: text(&bytes, remote.1),
+                    },
+                ),
                 Act::Secure {
                     path,
                     role,
                     alg,
                     digest,
-                } => self.secure(path, role, alg, &digest, now),
-                Act::Candidate(text) => self.candidate(&text, now),
+                } => self.secure(path, role, alg, bytes.get(digest).unwrap_or_default(), now),
+                Act::Candidate(span) => self.candidate(text(&bytes, span), now),
                 Act::Bind { path, from } => self.bind(path, from, now),
             }
         }
+        self.acts = acts;
+        self.act_bytes = bytes;
+        self.act_bytes.clear();
     }
 
     /// ICE_TERMS: the association's credentials, and the demux key when the local ufrag is new.
-    fn terms(&mut self, controlling: bool, local: &IceCredentials, remote: &IceCredentials) {
+    fn terms(&mut self, controlling: bool, local: IceTerms<'_>, remote: IceTerms<'_>) {
         if local.ufrag.is_empty() || local.pwd.is_empty() {
             // A session no check can be verified for is a faulted one.
             self.close();
@@ -659,8 +753,8 @@ impl Session {
             assoc.set_dialling();
         }
         assoc.set_controlling(controlling || self.dialling);
-        if self.ufrag.as_deref() != Some(local.ufrag.as_str()) {
-            let new: Box<str> = Box::from(local.ufrag.as_str());
+        if self.ufrag.as_deref() != Some(local.ufrag) {
+            let new: Box<str> = Box::from(local.ufrag);
             let old = self.ufrag.replace(Box::clone(&new));
             self.ufrag_moved = Some((old, new));
         }
@@ -706,7 +800,7 @@ impl Session {
             self.events.push_back(Ev::Path {
                 path,
                 flags: wire::PATH_NEW,
-                addr: Box::from(text.as_str()),
+                addr: text,
             });
         }
         if self.dialling {
@@ -754,7 +848,7 @@ impl Session {
         self.events.push_back(Ev::Path {
             path,
             flags: wire::PATH_DENIED,
-            addr: Box::from(text.as_str()),
+            addr: text,
         });
     }
 
@@ -779,30 +873,30 @@ impl Session {
     }
 
     fn reject(&mut self, path: u32) {
-        let addr = self
-            .paths
-            .slot(path)
-            .map(|s| crate::StackText::<{ crate::SOCKET_TEXT }>::of(&s.addr));
+        let addr = self.paths.slot(path).map_or_else(
+            || crate::StackText::<{ crate::SOCKET_TEXT }>::of(&""),
+            |s| crate::StackText::<{ crate::SOCKET_TEXT }>::of(&s.addr),
+        );
         self.events.push_back(Ev::Path {
             path,
             flags: wire::PATH_REJECTED,
-            addr: Box::from(addr.as_ref().map_or("", crate::StackText::as_str)),
+            addr,
         });
     }
 
     /// SEND_TO: a clear datagram goes where the association allows it (a check to an admitted candidate, an
     /// answer to a heard path, anything to the bound path); a secured one is sealed only toward the bound path.
     /// Anything else is dropped and counted.
-    fn send_to(&mut self, path: u32, secured: bool, bytes: Vec<u8>) {
+    fn send_to(&mut self, path: u32, secured: bool, bytes: &[u8]) {
         let addr = self.paths.slot(path).filter(|s| !s.denied).map(|s| s.addr);
         let (Some(addr), Some(assoc)) = (addr, self.assoc.as_mut()) else {
             self.dropped += 1;
             return;
         };
         let sent = if secured {
-            assoc.bound_path() == Some(addr) && assoc.seal(&bytes).is_ok()
-        } else if assoc.may_send_clear(addr, &bytes) {
-            self.out.push_back((addr, bytes));
+            assoc.bound_path() == Some(addr) && assoc.seal(bytes).is_ok()
+        } else if assoc.may_send_clear(addr, bytes) {
+            self.out.push(addr, bytes);
             true
         } else {
             false
@@ -838,7 +932,7 @@ impl Session {
         self.events.push_back(Ev::Path {
             path,
             flags: wire::PATH_VERIFIED | if new { wire::PATH_NEW } else { 0 },
-            addr: Box::from(text.as_str()),
+            addr: text,
         });
     }
 
@@ -857,7 +951,7 @@ impl Session {
                             TransportEvent::Path {
                                 path,
                                 flags,
-                                addr: &addr,
+                                addr: addr.as_str(),
                             },
                             sink,
                         )
@@ -893,10 +987,10 @@ impl Session {
         let Some(assoc) = self.assoc.as_mut() else {
             return;
         };
-        while let Some(wire_out) = assoc.poll_wire() {
-            self.out.push_back(wire_out);
+        while let Some((to, bytes)) = assoc.poll_wire() {
+            self.out.push(to, &bytes);
         }
-        let mut ups = Vec::new();
+        let mut ups = std::mem::take(&mut self.ups);
         while let Some(up) = assoc.poll_up() {
             ups.push(up);
         }
@@ -915,12 +1009,12 @@ impl Session {
                 self.events.push_back(Ev::Path {
                     path: id,
                     flags: wire::PATH_BOUND,
-                    addr: Box::from(text.as_str()),
+                    addr: text,
                 });
             }
         }
         let bound_id = bound.and_then(|b| self.paths.id(b));
-        for up in ups {
+        for up in ups.drain(..) {
             match up {
                 Up::Keyed(keying) => {
                     if let Some(path) = bound_id {
@@ -940,6 +1034,7 @@ impl Session {
                 Up::Closed => self.ended = true,
             }
         }
+        self.ups = ups;
         if let Some(failure) = failure {
             if !self.failure_told {
                 self.failure_told = true;
@@ -962,7 +1057,7 @@ impl Session {
                     self.events.push_back(Ev::Path {
                         path: id,
                         flags,
-                        addr: Box::from(text.as_str()),
+                        addr: text,
                     });
                 }
             }

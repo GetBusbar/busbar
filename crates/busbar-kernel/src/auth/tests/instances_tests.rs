@@ -723,3 +723,26 @@ mod operator_instance {
         );
     }
 }
+
+/// D-OPERATOR (E6's finding (a)): an `admin_auth` module a native (MIN-3) auth image answers opens nothing through the door
+/// auth axis: the root builds that admin chain natively over the image's opened instance (`root::min3_admin_auth`). Before,
+/// the kernel looked for a door row and refused the build, so `admin_auth: [admin-tokens]` on the default binary failed.
+#[test]
+fn an_admin_module_a_native_image_answers_opens_no_door_instance() {
+    crate::preflight::publish_root_rows(crate::preflight::RootInstall {
+        native_auth: Some(|module| module == "native-op"),
+        ..Default::default()
+    });
+    let mut entry = AuthChainEntry::bare("native-op");
+    entry.name = "native-op".into();
+    let mut cfg = AuthCfg::default_none();
+    cfg.admin_auth = vec![entry];
+    let secrets = crate::config::secret::SecretResolver::builtins_only();
+    let mut instances = AuthInstances::carrying(None);
+    let open_axis = || -> Option<Arc<dyn AuthAxis>> { None };
+    if let Err(refusal) =
+        AdminAuthChain::build_on(&cfg, &Rows::default(), &secrets, &mut instances, &open_axis)
+    {
+        panic!("a natively answered admin module opens no door instance, yet the build refused: {refusal}");
+    }
+}

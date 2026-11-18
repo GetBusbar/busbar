@@ -67,11 +67,11 @@ pub const OFFSET: usize = 32;
 /// A payload's length: small for jemalloc, with filler on both sides of the canary.
 pub const PAYLOAD_LEN: usize = 128;
 /// A short payload's length: at most 30 bytes, so a small-string type stores it inline.
-pub const SHORT_PAYLOAD_LEN: usize = 24;
+const SHORT_PAYLOAD_LEN: usize = 24;
 /// Characters in a short text canary (at least [`WINDOW`]).
-pub const SHORT_CANARY_LEN: usize = 20;
+const SHORT_CANARY_LEN: usize = 20;
 /// Where a short canary sits in its payload: two filler bytes on each side.
-pub const SHORT_OFFSET: usize = 2;
+const SHORT_OFFSET: usize = 2;
 /// The filler around the canary.
 const FILLER: u8 = 0xA5;
 /// The filler around a text canary (ASCII, so the payload is a `String`).
@@ -507,10 +507,11 @@ mod linux {
 
             let buf_low = self.buf.as_ptr() as u64;
             let own = buf_low.saturating_sub(WINDOW as u64 - 1)..buf_low + self.buf.len() as u64;
+            // Which byte values occur anywhere in each pattern.
             let mut tables = [[false; 256]; 3];
-            for (pattern, starts) in patterns.iter().zip(&mut tables) {
-                for at in 0..=pattern.len - WINDOW {
-                    starts[usize::from(pattern.byte(at))] = true;
+            for (pattern, present) in patterns.iter().zip(&mut tables) {
+                for at in 0..pattern.len {
+                    present[usize::from(pattern.byte(at))] = true;
                 }
             }
             let mut extra = [0_usize; 3];
@@ -536,34 +537,63 @@ mod linux {
                     }
                     let buf = &self.buf[..read];
                     let limit = read.saturating_sub(WINDOW - 1).min(STEP);
-                    for (((pattern, starts), places), extra) in patterns
+                    // A match is a window starting at some `place` in `0..limit` (all its bytes in
+                    // `buf`). Every window of WINDOW bytes holds exactly one address that is a
+                    // multiple of WINDOW, so only those bytes are probed: a probed byte equal to
+                    // pattern byte `index` names the windows (pattern offsets) that could hold it
+                    // there, and each is checked whole. The same windows and anchors as testing
+                    // every place, at a WINDOW-th of the probes (a scan is about 1 s of an
+                    // unoptimised test build otherwise, and a wipe test makes dozens).
+                    let first =
+                        usize::try_from((WINDOW as u64 - at % WINDOW as u64) % WINDOW as u64)
+                            .unwrap_or(0);
+                    let end = (limit + WINDOW - 1).min(read);
+                    for (((pattern, present), places), extra) in patterns
                         .iter()
                         .zip(&tables)
                         .zip(&mut self.places)
                         .zip(&mut extra)
                     {
-                        for place in 0..limit {
-                            if !starts[usize::from(buf[place])] {
-                                continue;
-                            }
-                            let address = at + place as u64;
-                            if own.contains(&address) {
-                                continue; // the scan's own read buffer
-                            }
-                            for offset in 0..=pattern.len - WINDOW {
-                                if !(0..WINDOW).all(|k| pattern.is(offset + k, buf[place + k])) {
-                                    continue;
+                        let mut probe = first;
+                        while probe < end {
+                            let seen = buf[probe];
+                            if present[usize::from(seen)] {
+                                for index in 0..pattern.len {
+                                    if !pattern.is(index, seen) {
+                                        continue;
+                                    }
+                                    // Offsets whose window covers pattern byte `index`.
+                                    let lowest = index.saturating_sub(WINDOW - 1);
+                                    let highest = index.min(pattern.len - WINDOW);
+                                    for offset in lowest..=highest {
+                                        let Some(place) = probe.checked_sub(index - offset) else {
+                                            continue;
+                                        };
+                                        if place >= limit {
+                                            continue; // the next read starts this window
+                                        }
+                                        let address = at + place as u64;
+                                        if own.contains(&address) {
+                                            continue; // the scan's own read buffer
+                                        }
+                                        if !(0..WINDOW)
+                                            .all(|k| pattern.is(offset + k, buf[place + k]))
+                                        {
+                                            continue;
+                                        }
+                                        let anchor = address - offset as u64;
+                                        if places.contains(&anchor) {
+                                            continue;
+                                        }
+                                        if places.len() < places.capacity() {
+                                            places.push(anchor);
+                                        } else {
+                                            *extra += 1;
+                                        }
+                                    }
                                 }
-                                let anchor = address - offset as u64;
-                                if places.contains(&anchor) {
-                                    continue;
-                                }
-                                if places.len() < places.capacity() {
-                                    places.push(anchor);
-                                } else {
-                                    *extra += 1;
-                                }
                             }
+                            probe += WINDOW;
                         }
                     }
                     at += limit.max(1) as u64;

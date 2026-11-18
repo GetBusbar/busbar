@@ -23,9 +23,9 @@ use crate::plane_driver::HeadFields;
 use crate::state::InvocationId;
 use crate::upstreams::{UpstreamDef, Upstreams};
 
-pub const MAX_RESOURCES: usize = 65_536;
+pub(crate) const MAX_RESOURCES: usize = 65_536;
 pub const MAX_SELECTED: usize = 32;
-pub const MAX_KINDS: usize = 8;
+pub(crate) const MAX_KINDS: usize = 8;
 pub const MAX_VALUE: usize = 256;
 
 /// A plane's configured fact; never an admitted executable target by itself.

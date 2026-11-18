@@ -277,11 +277,11 @@ mod fixture {
     use std::sync::atomic::AtomicUsize;
 
     pub static LOCK: Mutex<()> = Mutex::new(());
-    pub static BEGINS: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static BEGINS: AtomicUsize = AtomicUsize::new(0);
     pub static CLOSES: AtomicUsize = AtomicUsize::new(0);
-    pub static EOFS: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static EOFS: AtomicUsize = AtomicUsize::new(0);
     pub static DROPS: AtomicUsize = AtomicUsize::new(0);
-    pub static TIMERS: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static TIMERS: AtomicUsize = AtomicUsize::new(0);
     pub struct Framer {
         mode: u8,
     }

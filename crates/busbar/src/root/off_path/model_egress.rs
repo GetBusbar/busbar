@@ -19,7 +19,7 @@ use crate::root::model_egress::{
 
 /// The member facts by model, in the map type the kernel's far end takes them as.
 pub(crate) type MemberFactsByModel =
-    std::collections::HashMap<String, busbar_kernel::plane_driver::MemberFacts>;
+    foldhash::HashMap<String, busbar_kernel::plane_driver::MemberFacts>;
 
 impl ModelPools {
     #[must_use]
@@ -208,7 +208,7 @@ pub fn compose(
     stream_ceiling_secs: u64,
 ) -> Result<(busbar_kernel::plane_driver::Egress, ModelShown), String> {
     let plan = &serving.pools;
-    let mut sealed = std::collections::HashMap::new();
+    let mut sealed = foldhash::HashMap::default();
     let mut names = Vec::new();
     let mut limits = Vec::new();
     let mut member_of = |model: &str,
@@ -295,6 +295,9 @@ pub fn compose(
         Arc::new(move || -> Arc<dyn Breaker> {
             Arc::new(WalkCells::over(app.clone(), Arc::clone(&cells)))
         });
+    busbar_kernel::plane_driver::declare_providers(
+        sealed.values().map(|route| route.provider.as_str()),
+    );
     Ok((
         busbar_kernel::plane_driver::Egress {
             caller,
@@ -306,7 +309,10 @@ pub fn compose(
             telemetry: Arc::new(ModelTelemetry {
                 app: serving.app.clone(),
                 names: stable_names,
-                queued: crate::root::egress_ports::WalkTelemetry::new(names),
+                queued: crate::root::egress_ports::WalkTelemetry::new(
+                    names,
+                    built.keys().map(String::as_str),
+                ),
             }),
             pools: built,
             routes: sealed,

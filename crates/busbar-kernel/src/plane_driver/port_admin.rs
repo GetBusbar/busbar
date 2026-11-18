@@ -10,7 +10,7 @@
 
 use busbar_contract::abi::transport::route::{method_bit, path_matches, PATH_PATTERN};
 
-use super::port::{HttpIn, PortSeat, ServeIn, Served};
+use super::port::{HttpHead, HttpIn, PortSeat, ServeIn, Served};
 use super::port_auth::{Credentials, Principal};
 use super::port_routes::Mounted;
 use super::port_session::ToClient;
@@ -96,14 +96,16 @@ pub async fn answer(seats: &[PortSeat], request: AdminRequest) -> Option<AdminAn
         admission: None,
         invocation: None,
         route,
-        http: HttpIn {
-            method,
-            path,
-            query,
-            headers,
+        http: HttpIn::new(
+            HttpHead::Text {
+                method,
+                path,
+                query,
+                headers,
+            },
             body,
             request_id,
-        },
+        ),
         creds: Credentials {
             bearer: None,
             principal: Principal::Anonymous,

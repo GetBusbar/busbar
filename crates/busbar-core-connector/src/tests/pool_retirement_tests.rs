@@ -208,7 +208,7 @@ fn an_unregistered_release_preserves_its_holder_without_retaining_the_key() {
         .unwrap();
         let weak = Arc::downgrade(&trust);
         let mut key = original.clone();
-        key.trust = Some(crate::pool::Same(trust));
+        key.trust = Some(crate::pool::Same::of(trust));
         c.pools.release(*shard, &key, &line);
         assert!(
             line.reusable(),
@@ -345,6 +345,8 @@ fn retiring_the_bootstrap_pool_closes_connections_outside_every_pool_lock() {
                 .pooling(crate::pool::PoolPosture::default()),
         );
         *carrier.connector.lock().unwrap() = Arc::downgrade(&c);
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+        crate::tests::accept_plaintext(&c, &[OWNER]);
         c.declare_over(OWNER, NeedId(0), "messages").unwrap();
         let id = completed(&c, &far).await;
         c.close(OWNER, id).unwrap();
@@ -436,6 +438,8 @@ fn idle_probe_loses_retired_membership(retire: impl FnOnce(&Connector)) {
                 },
             ),
         );
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+        crate::tests::accept_plaintext(&c, &[OWNER]);
         c.declare_over(OWNER, NeedId(0), "messages").unwrap();
         let id = completed(&c, &far).await;
         let (_, held) = c.slab.get(OWNER, id).unwrap();

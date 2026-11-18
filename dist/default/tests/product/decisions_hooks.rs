@@ -207,6 +207,8 @@ async fn hook_target(
 
 struct Served {
     router: Router,
+    admin: Router,
+    overlay: Option<Arc<busbar_kernel::config::overlay::OverlayStore>>,
     token: String,
     heard: tokio::sync::mpsc::UnboundedReceiver<String>,
     hook_heard: tokio::sync::mpsc::UnboundedReceiver<Value>,
@@ -227,6 +229,17 @@ impl Drop for Served {
 }
 
 async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach: bool) -> Served {
+    served_with_overlay(instance, reply, bound, prompt, attach, false).await
+}
+
+async fn served_with_overlay(
+    instance: &str,
+    reply: Reply,
+    bound: Bound,
+    prompt: &str,
+    attach: bool,
+    writable: bool,
+) -> Served {
     crate::dist_root_install::install();
     let (provider_port, heard, provider_task) = provider().await;
     let (hook_url, hook_heard, hook_task) = hook_target(reply).await;
@@ -274,21 +287,6 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
             document["pools"] = json!({"hooks":["cell"]});
         }
     }
-    let deploy = busbar_kernel::config::deploy_from_deserializer(
-        document,
-        &crate::root::boot::axis_test_grammar(),
-    )
-    .expect("actual decisions deployment parses");
-    let definitions = std::collections::HashMap::from([(
-        "typesafe".to_owned(),
-        serde_json::from_value(json!({
-            "protocol":"jev", "base_url":format!("http://127.0.0.1:{provider_port}")
-        }))
-        .expect("the actual provider definition parses"),
-    )]);
-    let cfg = busbar_kernel::config::resolve(&deploy, &definitions)
-        .expect("actual decisions deployment resolves");
-    let judge = crate::root::connector::dest_judge(&cfg);
     let mut plugins = busbar_kernel::config::PluginsCfg {
         enabled: true,
         dir: directory.to_string_lossy().into_owned(),
@@ -309,6 +307,27 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
                 revoked: false,
             }],
         });
+    document["plugins"] = plugins::config_document(&plugins);
+    let catalog = json!({"typesafe": {
+        "protocol":"jev", "base_url":format!("http://127.0.0.1:{provider_port}")
+    }});
+    let config_path = directory.join("config.json");
+    let providers_path = directory.join("providers.json");
+    if writable {
+        std::fs::write(&config_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        std::fs::write(&providers_path, serde_json::to_vec(&catalog).unwrap()).unwrap();
+    }
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("actual decisions deployment parses");
+    let definitions = serde_json::from_value(catalog).expect("actual provider definitions parse");
+    let base_hook_names: HashSet<_> = deploy.hooks.keys().cloned().collect();
+    let base_group_names: HashSet<_> = deploy.groups.keys().cloned().collect();
+    let cfg = busbar_kernel::config::resolve(&deploy, &definitions)
+        .expect("actual decisions deployment resolves");
+    let judge = crate::root::connector::dest_judge(&cfg);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (admitted, serving) = crate::root::min3_boot::fixture::open(&cfg, &plugins, rules)
@@ -316,13 +335,27 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         .expect("actual Registry and signed Store open")
         .admit_serving()
         .await;
+    let overlay = writable.then(|| {
+        busbar_kernel::config::overlay::OverlayStore::from_core(admitted.core.clone())
+            .expect("the admitted actual Store supplies config persistence")
+    });
+    if let Some(overlay) = overlay.as_ref() {
+        busbar_kernel::config::overlay::write_async(overlay, &Default::default())
+            .await
+            .expect("settle the initial empty configuration overlay");
+    }
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        cfg.clone(),
+        // RootCfg is not Clone (3e5b860ca5): the app takes its own resolution of the same document.
+        busbar_kernel::config::resolve(&deploy, &definitions)
+            .expect("actual decisions deployment resolves"),
         plugins,
-        None,
-        HashSet::new(),
-        HashSet::new(),
-        (None, None),
+        overlay.clone(),
+        base_hook_names,
+        base_group_names,
+        (
+            writable.then_some(config_path),
+            writable.then_some(providers_path),
+        ),
         None,
         &admitted.rules,
         Some(admitted.core),
@@ -412,15 +445,20 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         &[],
     )
     .expect("actual decisions routes mount");
-    let (router, _, handle) =
+    let (router, admin, handle) =
         busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
     let workers = std::mem::replace(
-        &mut fixture.workers,
+        fixture
+            .workers
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
         crate::root::boot::workers::PreparedWorkers::new(),
     )
     .start();
     Served {
         router,
+        admin,
+        overlay,
         hook_heard,
         attached: attach,
         _fixture: fixture,
@@ -434,6 +472,29 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
 }
 
 impl Served {
+    async fn admin_request(&self, method: &str, path: &str, body: Value) -> (StatusCode, Value) {
+        // The existing Decisions fixture explicitly configures admin_auth: []; exercise that
+        // real open-admin route, without injecting a principal or substituting an auth provider.
+        let response = self
+            .admin
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(format!("/api/v1/admin{path}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .expect("the actual Admin router answers");
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
     async fn decide(&mut self) -> (StatusCode, Value, Option<String>) {
         let response = self
             .router
@@ -463,6 +524,101 @@ impl Served {
             self.heard.try_recv().ok(),
         )
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejected_file_hook_mutations_keep_actual_native_callers_and_behavior() {
+    if isolated_case() {
+        return;
+    }
+    let _one = crate::root::PUBLISHING.lock().await;
+    let mut s = served_with_overlay(
+        "decisions-hooks-file-authority",
+        Reply::Reject(409, "file-owned policy"),
+        Bound::Section,
+        "ro",
+        true,
+        true,
+    )
+    .await;
+    let (status, body, provider) = s.decide().await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        provider.is_none(),
+        "the configured native gate refuses before forwarding"
+    );
+
+    let original = s._handle.load();
+    assert!(original.base_hook_names.contains("cell"));
+    let opened = s._fixture.hooks().await.unwrap();
+    let hook = opened
+        .get("cell")
+        .expect("the actual configured HookPort opened")
+        .clone();
+    let plane_driver = s._fixture.seat.driver.clone();
+    let plane_caller = s._fixture.seat.who.caller();
+    let overlay = s.overlay.as_ref().unwrap().clone();
+    let stored = overlay.read_bytes_async().await.unwrap();
+    assert!(stored.is_some(), "the actual Store has a settled overlay");
+    let publications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = publications.clone();
+    s._handle.on_apply(Box::new(move |_| {
+        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }));
+    let mut replacement = serde_json::to_value(
+        original.hook_registry["cell"].authoring(&busbar_kernel::seal::lend()),
+    )
+    .unwrap();
+    replacement["settings"]["url"] = json!("http://127.0.0.1:1/rejected-target");
+
+    for (method, path, request) in [
+        (
+            "POST",
+            "/hooks",
+            json!({"name":"cell", "config":replacement.clone()}),
+        ),
+        ("PUT", "/hooks/cell", json!({"config":replacement})),
+        (
+            "PATCH",
+            "/hooks/cell/settings",
+            json!({"settings":{"url":"http://127.0.0.1:1/rejected-target"}}),
+        ),
+        ("DELETE", "/hooks/cell", json!({})),
+    ] {
+        let (status, refusal) = s.admin_request(method, path, request).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{method} {path}: {refusal}");
+        assert!(
+            refusal
+                .to_string()
+                .contains("defined in the base config file"),
+            "{refusal}"
+        );
+        let current = s._handle.load();
+        assert!(Arc::ptr_eq(&original, &current));
+        assert_eq!(current.config_version, original.config_version);
+        assert_eq!(overlay.read_bytes_async().await.unwrap(), stored);
+        assert_eq!(publications.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let current_hooks = s._fixture.hooks().await.unwrap();
+        let current_hook = current_hooks.get("cell").unwrap();
+        assert!(Arc::ptr_eq(&hook.port, &current_hook.port));
+        assert!(hook
+            .who
+            .caller()
+            .same_incarnation(&current_hook.who.caller()));
+        assert!(Arc::ptr_eq(&plane_driver, &s._fixture.seat.driver));
+        assert!(plane_caller.same_incarnation(&s._fixture.seat.who.caller()));
+        let (status, body, provider) = s.decide().await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(
+            body["detail"]["message"],
+            "the request was refused by policy"
+        );
+        assert!(
+            provider.is_none(),
+            "rejected config changed actual forwarding: {provider:?}"
+        );
+    }
+    println!("actual Decisions hook assertions completed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

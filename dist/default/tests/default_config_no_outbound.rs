@@ -145,6 +145,10 @@ fn default_config_makes_no_outbound_connection() {
         .arg("--providers")
         .arg(repo_root().join("providers.yaml"))
         .env("BUSBAR_ADMIN_TOKEN", "default-config-no-outbound-admin")
+        .env(
+            "BUSBAR_ADMIN_TOKEN_SHA256",
+            busbar_contract::redacted::sha256_hex(b"default-config-no-outbound-admin"),
+        )
         .env("ANTHROPIC_KEY", "sk-not-a-real-key")
         .current_dir(&dir)
         .stdout(log)

@@ -7,6 +7,11 @@
 //! kernel opens no hook. What validation asks of hooks (which names and aliases a hook image answers to, which are
 //! linked, and the D_WORD words that spell the pool ranking strategies) is read from the admitted images, published
 //! by the stage that prepared them (`FileImages::publish_hooks`), the same source the serving walk binds from.
+//!
+//! Off the request path (`off_path`): [`NativeHooks::publish_images`] runs once per image preparation
+//! (`boot::images`, the start and every config apply), and the [`HookImageFacts`] answers are read by
+//! the kernel's configuration validation (`preflight`: hook references, ranking words, linked
+//! hooks), never by a request.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

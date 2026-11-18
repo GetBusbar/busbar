@@ -23,20 +23,9 @@ pub(crate) fn first_text_cut(
 
 // Sections as submodules (cold/<section>.rs), so the slices that fill them do not collide.
 pub(crate) mod auth;
+pub(crate) mod far_end;
 pub(crate) mod governance;
 pub(crate) mod host;
-// --- plane_driver::far_end ---
-
-/// `plane_driver::far_end`: a provider's credential refusal, keyed once, on its first refusal.
-#[cold]
-pub(crate) fn far_end_first_refusal(
-    last: &mut foldhash::HashMap<String, busbar_contract::conn::ConnError>,
-    provider: &str,
-    err: busbar_contract::conn::ConnError,
-) {
-    last.insert(provider.to_owned(), err);
-}
-
 // --- plane_driver (door, registry, serve, dispatch, slots, needs, route_tables, timing, authenticated_route) ---
 
 /// `plane_driver::slots`: a plane's runtime slot key, `<plane_key>:runtime`, composed and leaked
@@ -125,4 +114,83 @@ pub(crate) fn lossy_owned(bytes: &[u8]) -> String {
 #[cold]
 pub(crate) fn refusal_frame(body: &[u8]) -> std::sync::Arc<[u8]> {
     std::sync::Arc::from(body)
+}
+
+// --- plane_driver::port_observations ---
+
+/// `plane_driver::port_observations`: a principal's first in-flight unit, keyed once by its
+/// instance and subject names; its later units and every lookup borrow them.
+#[cold]
+pub(crate) fn first_observing_principal(
+    book: &mut crate::plane_driver::port_observations::ByPrincipal,
+    instance: &str,
+    subject: &str,
+) {
+    let instance: std::sync::Arc<str> = std::sync::Arc::from(instance);
+    let subject: std::sync::Arc<str> = std::sync::Arc::from(subject);
+    book.entry(std::sync::Arc::clone(&instance))
+        .or_default()
+        .insert(
+            std::sync::Arc::clone(&subject),
+            crate::plane_driver::port_observations::PrincipalUnits {
+                instance,
+                subject,
+                units: Vec::new(),
+            },
+        );
+}
+
+// --- plane_driver::port_hooks ---
+
+/// `plane_driver::port_hooks`: a route-policy rejection counter's `status` label, spelled once per
+/// decider and status, on that status's first rejection (the counter is kept from then on).
+#[cold]
+pub(crate) fn route_policy_status_label(status: u16) -> String {
+    format!("{status}")
+}
+
+// --- plane_driver::money ---
+
+/// `plane_driver::money::selected_view`: a selected checkpoint's refusal, spelled only when the
+/// capture or its budget view is refused.
+#[cold]
+pub(crate) fn selected_view_refusal(
+    message: &'static str,
+) -> busbar_contract::records::RecordStoreError {
+    busbar_contract::records::RecordStoreError(message.to_owned())
+}
+
+/// `plane_driver::money::native_admission`: a refused selected startup transfer, as the text the
+/// response confirmation reports.
+#[cold]
+pub(crate) fn selected_startup_refusal(error: &impl std::fmt::Debug) -> String {
+    format!("selected startup terminal transfer refused: {error:?}")
+}
+
+// --- plane_driver::port_auth, plane_driver::port_serve ---
+
+/// `plane_driver::port_auth::plain_refusal`: core's own rendering of a refusal (the status, its
+/// text as `text/plain`, the end), spelled only when the plane cannot render it.
+#[cold]
+pub(crate) fn plain_refusal_items(
+    refusal: &crate::refusal::ClientRefusal,
+) -> Vec<crate::plane_driver::port_session::ToClient> {
+    use crate::plane_driver::port_session::ToClient;
+    vec![
+        ToClient::Head {
+            status: refusal.status,
+            fields: vec![(
+                b"content-type".to_vec(),
+                b"text/plain; charset=utf-8".to_vec(),
+            )],
+        },
+        ToClient::Body(refusal.text.as_bytes().to_vec()),
+        ToClient::End,
+    ]
+}
+
+/// `plane_driver::port_serve`: the `retry-after` field an exhausted session's refusal head gets.
+#[cold]
+pub(crate) fn retry_after_field(name: &[u8], wait: u32) -> (Vec<u8>, Vec<u8>) {
+    (name.to_vec(), format!("{wait}").into_bytes())
 }

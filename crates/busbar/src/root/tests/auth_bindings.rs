@@ -186,19 +186,19 @@ fn the_shipped_config_needs_no_admin_token_to_boot() {
 #[test]
 fn the_operator_refusals_name_the_root_words() {
     let op = operator_words().provider;
-    let unanswered = busbar_kernel_identity::operator::unanswered_token(op);
+    // A configured `token:` the build cannot answer: 1.5.5's "built WITHOUT the `auth-<op>`
+    // feature" refusal went with the compiled-in operator (c1b9b9e234, OPERATOR-FROM-ADMITTED-AUTH
+    // r3.1 OP-3); a 1.5 `token:` is now refused with its 1.6 remedy, at the definition it names.
+    let unanswered = busbar_kernel_identity::operator::operator_token(op);
     assert!(
-        unanswered.starts_with(&format!("an {op} token is configured")),
+        unanswered.starts_with(&format!(
+            "identity-providers.{op}: `token:` is the 1.5 operator credential"
+        )),
         "{unanswered}"
     );
     assert!(
-        unanswered.contains(&format!("`auth-{op}` feature")),
+        unanswered.contains("docs/migration-1.6.md#operator-credential"),
         "{unanswered}"
-    );
-    assert_eq!(
-        unanswered,
-        word_1_5_5("unanswered_token"),
-        "1.5.5's line, byte for byte"
     );
     let misplaced = busbar_kernel_identity::operator::misplaced_token(op, "keys");
     assert_eq!(

@@ -20,11 +20,11 @@ use busbar_contract::conn::InstanceId;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
 use super::services::{HostServices, Served, ServiceStore, ServicesSlot};
-use super::ticket::{decode, encode, WakeRoute, MAX_INDEX, MAX_WORKERS};
-use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
+use super::ticket::{decode, encode, WakeRoute, MAX_INDEX};
+use super::{in_head, now_ns, out_head, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
 #[path = "worker_unit_cancel.rs"]
-mod unit_cancel;
+pub(crate) mod unit_cancel;
 
 /// The longest a crossing may take before the watchdog faults it, per class. A crossing never
 /// blocks by contract, so these bound a wedged plugin, not a slow request (that is the deadline).
@@ -179,8 +179,8 @@ pub(crate) struct Stats {
 }
 
 pub(crate) struct Env {
-    measurements: super::measurement::AuthoritySlot,
-    callers: Arc<dyn busbar_contract::services::CallerBinding>,
+    pub(crate) measurements: super::measurement::AuthoritySlot,
+    pub(crate) callers: Arc<dyn busbar_contract::services::CallerBinding>,
     pub(crate) budgets: Budgets,
 
     pub(crate) quarantine_after: u32,
@@ -202,7 +202,7 @@ pub(crate) struct Env {
 
     pub(crate) ticket_key: super::handle::TicketKey,
 
-    latch: std::sync::OnceLock<&'static super::handle::Latch>,
+    pub(crate) latch: std::sync::OnceLock<&'static super::handle::Latch>,
 
     pub(crate) seal:
         std::sync::OnceLock<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>>,
@@ -903,8 +903,8 @@ impl Drop for LetGo {
 pub(crate) struct Current {
     pub(crate) meta: Meta,
 
-    job: Option<Box<dyn Job>>,
-    pending: bool,
+    pub(crate) job: Option<Box<dyn Job>>,
+    pub(crate) pending: bool,
     wake_at_ns: u64,
     detached: bool,
 
@@ -1047,11 +1047,20 @@ pub(crate) struct Entry {
     /// The connection-table identity of every instance whose op ran on this ticket: the connector
     /// slots' kept answers are forgotten under each of them, and only them, when it is recycled.
     pub(crate) conns: Vec<InstanceId>,
-    unit_binding: Option<unit_cancel::Binding>,
+    pub(crate) unit_binding: Option<unit_cancel::Binding>,
     unit_waiters: Vec<unit_cancel::Waiter>,
 }
 
 impl Entry {
+    /// A slab slot of mint `count` (`u32::MAX`: never minted) and that mint's ticket generation.
+    pub(crate) fn minted(count: u32, generation: u32) -> Self {
+        Self {
+            count,
+            generation,
+            ..Self::default()
+        }
+    }
+
     fn note(&mut self, id: InstanceId) {
         if !self.conns.contains(&id) {
             self.conns.push(id);
@@ -1074,6 +1083,17 @@ pub(crate) struct WorkerState {
     forged: Vec<Option<&'static super::ticket::InstanceWake>>,
     /// The timers each turn found due, reused turn after turn ([`Worker::timers`]).
     due: Vec<(u32, Action)>,
+}
+
+impl WorkerState {
+    /// A fresh worker's state over its slab and free list.
+    pub(crate) fn fresh(entries: Vec<Entry>, free: Vec<u32>) -> Self {
+        Self {
+            entries,
+            free,
+            ..Self::default()
+        }
+    }
 }
 
 pub(crate) enum Msg {
@@ -1105,8 +1125,8 @@ pub(crate) enum Msg {
 pub(crate) struct Worker {
     pub(crate) index: u32,
 
-    key: super::handle::TicketKey,
-    tx: Sender<Msg>,
+    pub(crate) key: super::handle::TicketKey,
+    pub(crate) tx: Sender<Msg>,
     pub(crate) state: Mutex<WorkerState>,
 
     pub(crate) crossing_since: AtomicU64,
@@ -1201,49 +1221,11 @@ impl Pool {
 }
 
 impl Worker {
-    pub(crate) fn new(
-        index: u32,
-        counts: Vec<Option<u32>>,
-        key: super::handle::TicketKey,
-    ) -> (Arc<Self>, Receiver<Msg>) {
-        let (tx, rx) = channel();
-
-        // Built once, at dispatcher start or watchdog replacement.
-        let free = crate::cold::dispatch::runtime::worker_free_slots(&counts);
-        let state = WorkerState {
-            entries: crate::cold::dispatch::runtime::worker_table(
-                counts,
-                |(count, idx)| match count {
-                    Some(count) => Entry {
-                        count,
-                        generation: super::handle::ticket_generation(key, index, idx, count),
-                        ..Entry::default()
-                    },
-                    None => Entry {
-                        count: u32::MAX,
-                        ..Entry::default()
-                    },
-                },
-            ),
-            free,
-            ..WorkerState::default()
-        };
-        let w = Arc::new(Self {
-            index,
-            key,
-            tx,
-            state: Mutex::new(state),
-            crossing_since: AtomicU64::new(0),
-            crossing_budget: AtomicU64::new(0),
-        });
-        (w, rx)
-    }
-
     pub(crate) fn lock(&self) -> MutexGuard<'_, WorkerState> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn ticket(&self, idx: u32, generation: u32) -> Ticket {
+    pub(crate) fn ticket(&self, idx: u32, generation: u32) -> Ticket {
         Ticket {
             slot: encode(self.index, idx),
             generation,
@@ -2226,12 +2208,12 @@ impl Worker {
         gone: Vec<Entry>,
         wedged: &Arc<Instance>,
     ) -> (Vec<Orphan>, Vec<Entry>) {
-        unit_cancel::group_orphans(self, gone, wedged)
+        crate::off_path::worker_unit_cancel::group_orphans(self, gone, wedged)
     }
 }
 
 pub(crate) struct Orphan {
-    entries: Vec<(Ticket, Entry)>,
+    pub(crate) entries: Vec<(Ticket, Entry)>,
 }
 
 impl Drop for Orphan {
@@ -2433,7 +2415,7 @@ impl Adopter {
 }
 
 pub struct Dispatcher {
-    pool: Arc<Pool>,
+    pub(crate) pool: Arc<Pool>,
 }
 
 impl std::fmt::Debug for Dispatcher {
@@ -2455,13 +2437,6 @@ impl Dispatcher {
             return Err(authority);
         }
         self.pool.env.measurements.set(authority)
-    }
-
-    /// Snapshot the immutable declarations of currently bound instances, including plugins
-    /// declaring no classes. Used by the host to reject unknown configured namespaces.
-    pub fn measurement_bindings(&self) -> Vec<super::measurement::Binding> {
-        // Listed once per config check.
-        crate::cold::dispatch::runtime::measurement_bindings(&self.pool.adopted)
     }
 
     pub fn new(
@@ -2580,50 +2555,6 @@ impl Dispatcher {
             key,
             busbar_contract::services::test_caller_binding(),
         )
-    }
-
-    fn build_unlent(
-        config: DispatchConfig,
-        provider: Option<Arc<ServicesSlot>>,
-        ticket_key: super::handle::TicketKey,
-        callers: Arc<dyn busbar_contract::services::CallerBinding>,
-    ) -> Self {
-        let n = config.workers.clamp(1, MAX_WORKERS - 1);
-        let services: Arc<ServiceStore> = Arc::default();
-        let env = Arc::new(Env {
-            measurements: Arc::default(),
-            callers,
-            budgets: config.budgets,
-            quarantine_after: config.quarantine_after.max(1),
-            stats: Arc::default(),
-            inline: Arc::new(super::inline::InlineTickets::new(ticket_key, &services)),
-            services,
-            provider,
-            runtime: std::sync::OnceLock::new(),
-            io: std::sync::OnceLock::new(),
-            auth: std::sync::OnceLock::new(),
-            observing: Arc::default(),
-            ticket_key,
-            latch: std::sync::OnceLock::new(),
-            seal: std::sync::OnceLock::new(),
-        });
-        // A dispatcher's workers start once, when it is built.
-        let (slots, started) = crate::cold::dispatch::runtime::start_workers(n, ticket_key);
-        let pool = Arc::new(Pool {
-            slots,
-            env: env.clone(),
-            stop: AtomicBool::new(false),
-            adopted: Mutex::new(Vec::new()),
-        });
-        for (w, rx) in started {
-            spawn_worker(w, rx, env.clone());
-        }
-        watchdog::spawn(
-            Arc::downgrade(&pool),
-            config.watchdog_period,
-            config.budgets.min(),
-        );
-        Self { pool }
     }
 
     pub fn workers(&self) -> u32 {

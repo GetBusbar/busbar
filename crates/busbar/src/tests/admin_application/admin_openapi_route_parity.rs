@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -101,7 +102,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     // Each actual plane supplies its own valid configuration through its kind test fixture.
     // The census owns coverage, but has no knowledge of any plane's configuration grammar.
@@ -169,6 +170,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: backend,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the actual Store opens the configuration authority");
@@ -180,7 +182,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         let config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual admin deployment resolves");
         let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config.clone(),
             Some(overlay.clone()),
             HashSet::new(),
@@ -302,8 +304,8 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
             let statuses = op[OAS_OPERATION_STATUSES]
                 .as_object()
                 .unwrap_or_else(|| panic!("{method} {path} documents no status"))
-                .keys()
-                .map(str::to_owned)
+                .iter()
+                .map(|(status, _)| status.to_owned())
                 .collect();
             documented.insert((method, path.to_owned()), statuses);
         }

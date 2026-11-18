@@ -1508,3 +1508,46 @@ fn a_framer_rejecting_the_far_ends_bytes_never_names_an_outbound_cause() {
         );
     });
 }
+
+/// #245, DES-245 r3 C1 and C2: a far end that resets (C1) or closes (C2) the connection during the
+/// TLS handshake failed the transport, not security. The stage is `CAUSE_CONNECT` (nothing was
+/// sent), never `CAUSE_SECURITY`, which a refusal keeps (C3 above, the unknown issuer).
+#[test]
+fn a_handshake_the_far_end_resets_or_closes_is_a_connect_failure() {
+    use busbar_contract::abi::host::conn::connector::CAUSE_CONNECT;
+    worker().block_on(async move {
+        for reset in [true, false] {
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let far = l.local_addr().unwrap().to_string();
+            tokio::spawn(async move {
+                let (mut s, _) = l.accept().await.unwrap();
+                // The ClientHello's record header: the handshake is under way.
+                let mut header = [0_u8; 5];
+                let _ = s.read_exact(&mut header).await;
+                if reset {
+                    s.set_zero_linger().unwrap();
+                }
+                drop(s);
+            });
+            let mut d = dial(&far);
+            d.tls = Some(Arc::new(
+                crate::tls::client::build_client_config(&Default::default())
+                    .expect("the default config"),
+            ));
+            let door = Arc::new(TestDoor::new(
+                "sec",
+                &["sec"],
+                &[],
+                Knobs {
+                    secure_name: Some("localhost"),
+                    ..Knobs::default()
+                },
+            ));
+            let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
+            assert!(next(&mut c).await.is_err(), "reset {reset}");
+            let cause = c.cause().expect("a cause");
+            assert_eq!(cause.stage, CAUSE_CONNECT, "reset {reset}: {}", cause.text);
+            assert!(!cause.outbound);
+        }
+    });
+}

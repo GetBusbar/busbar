@@ -172,7 +172,7 @@ where
         request: axum::extract::Request,
         state: &S,
     ) -> Result<Self, Self::Rejection> {
-        use axum::extract::{FromRequest, FromRequestParts};
+        use axum::extract::FromRequestParts;
         use axum::http::header::{HeaderMapPlan, ProjectionError};
 
         let (mut parts, body) = request.into_parts();
@@ -216,6 +216,12 @@ where
             .await
             .map_err(IntoResponse::into_response)?;
         parts.headers = proxy_headers;
+        // axum's Form drops the moved Parts (and this carrier with them) before it awaits the body,
+        // so the second map's reservation is also held here, until extraction completes or is
+        // cancelled (915bf59654: "its small second map has its own reservation").
+        let _held = proxy_carrier
+            .as_ref()
+            .map(|carrier| Carrier(Arc::clone(&carrier.0)));
         if let Some(carrier) = proxy_carrier {
             parts.extensions.insert(carrier);
         }

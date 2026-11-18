@@ -409,6 +409,8 @@ fn the_real_http_framer_delivers_one_head_and_the_exact_body() {
         ),
         true,
     );
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+    crate::tests::accept_plaintext(&connector, &[OWNER]);
     assert!(connector.serves_scheme("http"));
     DeclaredConns::declare(
         &connector,

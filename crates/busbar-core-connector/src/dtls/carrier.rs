@@ -93,6 +93,9 @@ struct Table {
 struct Port {
     socket: ReadyPort,
     table: Mutex<Table>,
+    /// The reader's snapshot of the sessions it visits (its timers, a socket failure), taken so no session is
+    /// locked under the table's lock: cleared per visit, kept for the next.
+    visiting: Mutex<Vec<Arc<Cell>>>,
 }
 
 impl Port {
@@ -104,6 +107,7 @@ impl Port {
         let port = Arc::new(Port {
             socket,
             table: Mutex::new(Table::default()),
+            visiting: Mutex::new(Vec::new()),
         });
         tokio::spawn(run(Arc::downgrade(&port)));
         Ok(port)
@@ -113,6 +117,13 @@ impl Port {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The reader's visiting list, empty.
+    fn visiting(&self) -> MutexGuard<'_, Vec<Arc<Cell>>> {
+        let mut cells = self.visiting.lock().unwrap_or_else(PoisonError::into_inner);
+        cells.clear();
+        cells
+    }
+
     /// Register `session` under its local ufrag. A ufrag already live on this port is refused (the session is
     /// closed and nothing of it stays routed).
     fn admit(&self, mut session: Session) -> Result<Arc<Cell>, RecordsDenied> {
@@ -120,7 +131,7 @@ impl Port {
             session.close();
             return Err(RecordsDenied::Invalid);
         };
-        let key: Box<[u8]> = Box::from(ufrag.as_bytes());
+        let key: Box<[u8]> = ufrag.into_boxed_bytes();
         let cell = Arc::new(Cell {
             inner: Mutex::new(Inner {
                 session,
@@ -150,12 +161,13 @@ impl Port {
     /// After every call into `inner`'s session: send what it queued, re-key a changed ufrag (refusing one live
     /// elsewhere on this port), route the addresses it numbered, forget it once closed, wake its waiters.
     fn after(&self, cell: &Arc<Cell>, inner: &mut Inner) {
-        while let Some((to, bytes)) = inner.session.take_out() {
+        let socket = &self.socket;
+        inner.session.send_out(&mut |to, bytes| {
             // A full send buffer drops the datagram: the far end's own retransmission is the recovery.
-            let _ = self.socket.send_to(&bytes, to);
-        }
+            let _ = socket.send_to(bytes, to);
+        });
         if let Some((_, new)) = inner.session.take_ufrag_move() {
-            let new: Box<[u8]> = Box::from(new.as_bytes());
+            let new: Box<[u8]> = new.into_boxed_bytes();
             let mut table = self.table();
             let taken = table
                 .by_ufrag
@@ -239,14 +251,9 @@ impl Port {
 
     /// The timers of every session on the port.
     fn tick(&self, now: Instant) {
-        let mut cells = Vec::new();
-        {
-            let table = self.table();
-            for cell in table.by_ufrag.values() {
-                cells.push(Arc::clone(cell));
-            }
-        }
-        for cell in cells {
+        let mut cells = self.visiting();
+        cells.extend(self.table().by_ufrag.values().map(Arc::clone));
+        for cell in cells.drain(..) {
             let mut inner = cell.lock();
             if inner.session.deadline().is_some_and(|due| due <= now) {
                 inner.session.on_timer(now);
@@ -257,14 +264,9 @@ impl Port {
 
     /// The socket failed: every session on it ends.
     fn close_all(&self) {
-        let mut cells = Vec::new();
-        {
-            let table = self.table();
-            for cell in table.by_ufrag.values() {
-                cells.push(Arc::clone(cell));
-            }
-        }
-        for cell in cells {
+        let mut cells = self.visiting();
+        cells.extend(self.table().by_ufrag.values().map(Arc::clone));
+        for cell in cells.drain(..) {
             let mut inner = cell.lock();
             inner.session.close();
             self.after(&cell, &mut inner);
@@ -275,7 +277,8 @@ impl Port {
 /// A port's reader: datagrams in, timers on a short tick. It holds the port only while it works.
 async fn run(weak: Weak<Port>) {
     let mut buf = vec![0_u8; udp::MAX_DATAGRAM];
-    let mut next_tick = crate::framer::now();
+    // The first wake ticks: no reading is taken before it.
+    let mut next_tick: Option<Instant> = None;
     loop {
         let Some(port) = weak.upgrade() else {
             return;
@@ -298,9 +301,9 @@ async fn run(weak: Weak<Port>) {
             }
             Err(_) => {}
         }
-        if now >= next_tick {
+        if next_tick.is_none_or(|at| now >= at) {
             port.tick(now);
-            next_tick = now + TICK;
+            next_tick = Some(now + TICK);
         }
     }
 }
@@ -434,6 +437,7 @@ impl DatagramCarrier {
         route: MediaRoute,
         dial: bool,
         opening: &[u8],
+        now: Instant,
     ) -> Result<Session, RecordsDenied> {
         Session::begin(
             &*self.opener,
@@ -442,10 +446,10 @@ impl DatagramCarrier {
             Params {
                 dial,
                 local: port.socket.local_addr(),
-                opening: Vec::from(opening),
+                opening,
                 judge: Some((Arc::clone(&self.judge), route.class)),
             },
-            crate::framer::now(),
+            now,
         )
     }
 }
@@ -462,11 +466,13 @@ impl MediaCarrier for DatagramCarrier {
                 .listener(route)
                 .ok_or(RecordsDenied::Unavailable)?;
             let port = self.listener_port(media.bind)?;
-            let session = self.begin(&port, media, false, &[])?;
+            // The accept's one reading: its session begins and takes the offer at it.
+            let now = crate::framer::now();
+            let session = self.begin(&port, media, false, &[], now)?;
             let cell = port.admit(session)?;
             let answer = {
                 let mut inner = cell.lock();
-                let taken = inner.session.rendezvous(offer, crate::framer::now());
+                let taken = inner.session.rendezvous(offer, now);
                 port.after(&cell, &mut inner);
                 if !taken {
                     return Err(RecordsDenied::Invalid);
@@ -495,7 +501,7 @@ impl MediaCarrier for DatagramCarrier {
             // A port of its own, on the listener's address: two calls to one far end would share the 5-tuple.
             let own = SocketAddr::new(media.bind.ip(), 0);
             let port = Port::open(own).map_err(|_| RecordsDenied::Unavailable)?;
-            let session = self.begin(&port, media, true, opening)?;
+            let session = self.begin(&port, media, true, opening, crate::framer::now())?;
             let cell = port.admit(session)?;
             let offer = cell.lock().session.take_rendezvous();
             let Some(offer) = offer else {

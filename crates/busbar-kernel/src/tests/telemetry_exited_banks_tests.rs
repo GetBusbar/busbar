@@ -101,14 +101,14 @@ fn the_metering_tick_takes_every_unretained_cell_and_keeps_the_retained_ones() {
         |(k, v)| (v != 0).then_some((k, v)),
     );
     let mut taken: Vec<_> = flight.into_iter().map(|(k, _)| k).collect();
-    taken.sort_unstable();
+    taken.sort();
     let expected: Vec<u32> = (1..32).filter(|k| ![1, 6, 11].contains(k)).collect();
     assert_eq!(taken, expected, "key 0 has a zero count and is dropped");
     let mut left: Vec<u32> = shards
         .iter()
         .flat_map(|s| s.lock().unwrap().keys().copied().collect::<Vec<_>>())
         .collect();
-    left.sort_unstable();
+    left.sort();
     assert_eq!(
         left,
         vec![1, 6, 11],

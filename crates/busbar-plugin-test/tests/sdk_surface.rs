@@ -11,7 +11,6 @@ use busbar_plugin_test::suites::{
 };
 use busbar_plugin_test::{CallCx, FakeNeeds, LoginAnswer, LoginIn, PlaneOut, PortError, TargetIn};
 
-#[allow(dead_code)]
 fn surface(p: &'static LinkedPlugin) {
     let headers: &[Pair<'_>] = &[];
     let auth = AuthIn {
@@ -67,7 +66,9 @@ fn surface(p: &'static LinkedPlugin) {
 }
 
 #[test]
-fn surface_compiles() {}
+fn surface_compiles() {
+    let _: fn(&'static LinkedPlugin) = surface;
+}
 
 #[test]
 fn auth_login_surface_compiles() {

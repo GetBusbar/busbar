@@ -153,8 +153,7 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,
@@ -173,6 +172,7 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the configured native backend opens");
@@ -187,7 +187,7 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
     });
     let core = crate::root::real_store::core_over(store.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -286,8 +286,7 @@ async fn usage_read_store_failure_logs_the_real_error() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,
@@ -306,6 +305,7 @@ async fn usage_read_store_failure_logs_the_real_error() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the configured native backend opens");
@@ -320,7 +320,7 @@ async fn usage_read_store_failure_logs_the_real_error() {
     });
     let core = crate::root::real_store::core_over(store.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

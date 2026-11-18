@@ -2,9 +2,18 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The stdio line session's lifecycle: its carrier, chosen once per process; its credential and
-//! admission, once when the session opens; its drain deadline, once when it ends.
+//! admission, once when the session opens; its drain deadline, once when it ends; and the session's
+//! entry ([`serve_lines`], called once by `main` with `--stdio`), which picks the one line plane
+//! ([`one_line_plane`], a start refusal when two declare it) and hands its lines to the request
+//! path (`serve::lines::serve_port_lines`).
 
 use std::sync::Arc;
+
+use busbar_kernel::limits::process_admission::ProcessAdmission;
+use tokio::io::{AsyncRead, AsyncWrite};
+
+use crate::root::serve::lines::{serve_port_lines, PORT_LINE_CARRIER};
+use crate::root::serve::Served;
 
 pub(crate) fn line_carrier(
     transports: &[crate::root::linked::LinkedTransport],
@@ -144,4 +153,73 @@ pub(crate) fn session_principal(gov: &busbar_contract::records::PlaneRequestCtx)
 /// When the session's remaining units are ended: the clock read once, as the session ends.
 pub(crate) fn drain_deadline() -> tokio::time::Instant {
     tokio::time::Instant::now() + busbar_kernel::detached::DETACHED_DRAIN_GRACE
+}
+
+pub(crate) async fn serve_lines(
+    served: Served,
+    app: Arc<busbar_kernel::state::AppHandle>,
+    admission: Arc<ProcessAdmission>,
+    stop: impl std::future::Future<Output = ()>,
+) -> i32 {
+    serve_lines_over(
+        served,
+        app,
+        tokio::io::stdin(),
+        tokio::io::stdout(),
+        admission,
+        stop,
+    )
+    .await
+}
+
+pub(crate) async fn serve_lines_over<R, W, S>(
+    served: Served,
+    app: Arc<busbar_kernel::state::AppHandle>,
+    reader: R,
+    writer: W,
+    admission: Arc<ProcessAdmission>,
+    stop: S,
+) -> i32
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+    S: std::future::Future<Output = ()>,
+{
+    let serving: Vec<(&str, bool)> = served
+        .ports
+        .iter()
+        .map(|seat| (seat.instance.as_str(), seat.driver.serves_lines()))
+        .collect();
+    match one_line_plane(&serving) {
+        Ok(Some(at)) => {
+            let seat = served.ports[at].clone();
+            serve_port_lines(seat, app, reader, writer, admission, stop).await
+        }
+        // Boot judged `--stdio` before any instance opened (WP1-GAP r3 §1.3); a generation that
+        // lost its one line plane since is refused the same way, never served elsewhere.
+        Ok(None) => {
+            eprintln!(
+                "busbar: {}",
+                busbar_plugin_loader::instance::plane_sections::StdioRefusal::None
+            );
+            1
+        }
+        Err(refusal) => {
+            eprintln!("busbar: {PORT_LINE_CARRIER} serve refused to start: {refusal}");
+            1
+        }
+    }
+}
+
+/// IF §12.23 rule 1: the one served plane instance declaring ROUTE_LINE (`serving` = each instance's configured
+/// name and whether it declares one), by its place. None = no line serving; two or more refuse the start, naming both.
+pub(crate) fn one_line_plane(serving: &[(&str, bool)]) -> Result<Option<usize>, String> {
+    let mut lines = serving.iter().enumerate().filter(|(_, (_, line))| *line);
+    match (lines.next(), lines.next()) {
+        (Some((_, (one, _))), Some((_, (other, _)))) => Err(format!(
+            "the plane instances `{one}` and `{other}` both open a session on their first line, and the \
+             process's own stdin/stdout carries one"
+        )),
+        (one, _) => Ok(one.map(|(at, _)| at)),
+    }
 }

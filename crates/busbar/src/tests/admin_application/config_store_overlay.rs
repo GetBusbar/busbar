@@ -119,6 +119,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         let crate::root::min3_boot::fixture::Fixture {
             backend: actual,
             rules,
+            owners: _owners,
         } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
             .await
             .expect("actual native Store opens");
@@ -126,7 +127,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         let core = crate::root::real_store::core_over(faults.clone()).await;
         let calls = overlay_scope(core.clone());
         let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config,
             None,
             Default::default(),
@@ -285,13 +286,14 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -458,13 +460,14 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
         let crate::root::min3_boot::fixture::Fixture {
             backend: actual,
             rules,
+            owners: _owners,
         } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
             .await
             .expect("actual native Store opens");
         let faults = OverlayFaults::new(actual);
         let core = crate::root::real_store::core_over(faults.clone()).await;
         let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config,
             None,
             Default::default(),
@@ -579,13 +582,14 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -734,13 +738,14 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -969,13 +974,14 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -1109,13 +1115,14 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("actual native Store opens");
     let faults = OverlayFaults::new(actual);
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

@@ -199,7 +199,14 @@ pub(crate) async fn replay_claimed(
     let Ok(core) = gov.core_store() else {
         return false;
     };
-    let token = format!("{provider}/{}", replay.key);
+    // `provider/key`, built on the stack (a heap block only for an unusually long key).
+    let mut token: smallvec::SmallVec<[u8; 256]> = smallvec::SmallVec::new();
+    token.extend_from_slice(provider.as_bytes());
+    token.push(b'/');
+    token.extend_from_slice(replay.key.as_bytes());
+    let Ok(token) = std::str::from_utf8(&token) else {
+        return false;
+    };
     let Some(expires_at) = now
         .checked_add(replay.ttl_secs)
         .filter(|expiry| *expiry < u64::MAX)
@@ -208,7 +215,7 @@ pub(crate) async fn replay_claimed(
     };
     if !matches!(
         crate::persistence::claims::Claims::authorized(core, AUTH_REPLAY_OWNER, AUTH_REPLAY)
-            .redeem(&token, expires_at)
+            .redeem(token, expires_at)
             .await,
         Ok(crate::persistence::claims::Outcome::Claimed)
     ) {
@@ -295,7 +302,7 @@ impl PendingClaim {
 
     fn native(
         invocation: native_admin::Invocation,
-        prepared: std::sync::Arc<dyn native_admin::PreparedIdentity>,
+        prepared: std::sync::Arc<native_admin::PreparedIdentity>,
     ) -> Self {
         Self(PendingKind::Native(native_admin::Pending::new(
             invocation, prepared,
@@ -1179,7 +1186,7 @@ type AdminChainAnswer = (ChainVerdict, Option<busbar_contract::authz::Scope>);
 /// 503 with `Retry-After`, SIGN-auth-kind 2026-10-30).
 #[derive(Debug, Default)]
 pub(crate) struct AdminCarried {
-    native: Option<std::sync::Arc<dyn native_admin::PreparedIdentity>>,
+    native: Option<std::sync::Arc<native_admin::PreparedIdentity>>,
     strips: Vec<Strip>,
     replay: Option<(String, Box<Replay>)>,
     no_verdict: bool,

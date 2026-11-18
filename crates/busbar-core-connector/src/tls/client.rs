@@ -40,20 +40,6 @@ pub fn operator_ca_anchors(pem: &[u8]) -> Result<Vec<Vec<u8>>, String> {
     crate::off_path::tls::operator_ca_anchors(pem)
 }
 
-/// THE UNVERIFIED CLIENT CONFIG: the far end's certificate (its chain, its name, its validity) is
-/// not checked; built through the crypto backend, which may refuse it.
-pub fn unverified_client_config() -> Result<Arc<rustls::ClientConfig>, crypto_tls::TlsError> {
-    let verifier = unverified_verifier();
-    crypto_tls::client_config(|builder| {
-        crate::off_path::tls::select_client_output(
-            builder
-                .dangerous()
-                .with_custom_certificate_verifier(verifier)
-                .with_no_client_auth(),
-        )
-    })
-}
-
 pub(crate) fn unverified_verifier() -> Arc<dyn rustls::client::danger::ServerCertVerifier> {
     Arc::new(AcceptsAnyCertificate(crypto_tls::signature_algorithms()))
 }
@@ -106,14 +92,6 @@ pub(crate) struct PinnedKeyVerifier {
     pub(crate) inner: Arc<dyn rustls::client::danger::ServerCertVerifier>,
     /// The pinned SPKI digests, looked up by the handshake's digest.
     pub(crate) pins: foldhash::HashSet<[u8; 32]>,
-}
-
-impl PinnedKeyVerifier {
-    /// The verifier over `roots` holding the peer to `pins`, or why it cannot be built (an empty
-    /// root store, as `advanced.tls.roots: none` with no anchor gives): a refusal, never a panic.
-    pub(crate) fn try_new(roots: rustls::RootCertStore, pins: &[[u8; 32]]) -> Result<Self, String> {
-        crate::off_path::tls::pinned_key_verifier(roots, pins)
-    }
 }
 
 impl rustls::client::danger::ServerCertVerifier for PinnedKeyVerifier {

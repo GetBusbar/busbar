@@ -177,7 +177,7 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
-        "identity-providers": serde_json::json!({(operator): {"module":operator,"token":{"file":operator_secret}}}),
+        "identity-providers": serde_json::json!({(operator): {"module":operator,"settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_secret) }}}),
         "auth": { "chain": ["keys"], "admin_auth": [operator], "signing_key": {"file": signing},
             "role_bindings": {} },
         "per_request_fee": 1,
@@ -190,15 +190,16 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("actual native Store opens");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("actual native Store opens")
+        .admit()
+        .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -327,7 +328,7 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
-        "identity-providers": serde_json::json!({(operator): {"module":operator,"token":{"file":operator_secret}}}),
+        "identity-providers": serde_json::json!({(operator): {"module":operator,"settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_secret) }}}),
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing},
             "role_bindings": {} },
         "per_request_fee": 1,
@@ -340,15 +341,16 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("actual native Store opens");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("actual native Store opens")
+        .admit()
+        .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -447,15 +449,16 @@ async fn open_chain_without_operator_still_inserts_default_context() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("actual native Store opens");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("actual native Store opens")
+        .admit()
+        .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -549,7 +552,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
-        "identity-providers": serde_json::json!({"ordinary-oidc":{"module":oidc_module,"settings":common::credentials::settings(AUDIENCE)}, (operator):{"module":operator,"token":{"file":operator_secret}}}),
+        "identity-providers": serde_json::json!({"ordinary-oidc":{"module":oidc_module,"settings":common::credentials::settings(AUDIENCE)}, (operator):{"module":operator,"settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_secret) }}}),
         "auth": { "chain": ["ordinary-oidc"], "admin_auth": [operator], "signing_key": {"file": signing},
             "role_bindings": {"ordinary-oidc":{"bound":{}}} },
         "per_request_fee": 1,
@@ -571,7 +574,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     .await
     .expect("the new fixture Store initializes the admitted OIDC principal namespace");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -694,7 +697,7 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     .await
     .expect("the new fixture Store initializes the admitted OIDC principal namespace");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

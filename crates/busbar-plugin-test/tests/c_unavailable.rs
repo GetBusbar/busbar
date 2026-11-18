@@ -155,6 +155,7 @@ path = '{lib}'
 [dependencies]
 zerocopy = {{ version = "0.8", features = ["derive"] }}
 busbar-ffi = {{ path = '{ffi}', features = ["host"] }}
+busbar-secure = {{ path = '{secure}' }}
 busbar-crypto = {{ path = "../facade" }}
 aho-corasick = "1"
 arc-swap = "1"
@@ -171,6 +172,7 @@ memio = []
 "#,
                 lib = crates.join("busbar-plugin-abi/src/lib.rs").display(),
                 ffi = crates.join("busbar-ffi").display(),
+                secure = crates.join("busbar-secure").display(),
             );
             let facade = format!(
                 r#"[package]

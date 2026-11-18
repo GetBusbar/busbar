@@ -65,7 +65,6 @@ fn refusing_openers_return_no_session_and_no_cancel() {
         .request(&mut buf, &plane_req(ACCEPT), b"")
         .expect("an accepted request");
     assert!(answer.is_ok());
-    drop(answer);
     let fresh = leading_token(buf.bytes());
     drop(session);
     drop(buf);
@@ -82,7 +81,6 @@ fn refusing_openers_return_no_session_and_no_cancel() {
         assert_eq!(answer.status, status);
         assert_eq!(answer.fail().map(|(code, _)| code), Some(code));
         assert_eq!(answer.records().count(), 0, "a refusal is exactly one FAIL");
-        drop(answer);
         assert_eq!(
             tags(buf.bytes()),
             [tag::FAIL],
@@ -100,7 +98,6 @@ fn refusing_openers_return_no_session_and_no_cancel() {
             assert_eq!(answer.fail().map(|(_, text)| text), Some(FAILED_TEXT));
         }
         assert_eq!(answer.records().count(), 0, "a refusal is exactly one FAIL");
-        drop(answer);
         assert_eq!(tags(buf.bytes()), [tag::FAIL], "no TOKEN");
     }
     assert_eq!(counts(), (0, 0), "no session was made and none cancelled");
@@ -112,7 +109,6 @@ fn refusing_openers_return_no_session_and_no_cancel() {
         .request(&mut buf, &plane_req(ACCEPT), b"")
         .expect("an accepted request");
     assert!(answer.is_ok());
-    drop(answer);
     assert_eq!(
         leading_token(buf.bytes()),
         fresh,
@@ -135,7 +131,6 @@ fn refusing_openers_return_no_session_and_no_cancel() {
         .begin(&mut buf, &conn(ACCEPT))
         .expect("an accepted begin");
     assert!(answer.is_ok());
-    drop(answer);
     let fresh = leading_token(buf.bytes());
     drop(session);
     drop(buf);
@@ -152,7 +147,6 @@ fn refusing_openers_return_no_session_and_no_cancel() {
         assert_eq!(answer.status, status);
         assert_eq!(answer.fail().map(|(code, _)| code), Some(code));
         assert_eq!(answer.records().count(), 0, "a refusal is exactly one FAIL");
-        drop(answer);
         assert_eq!(
             tags(buf.bytes()),
             [tag::FAIL],
@@ -167,7 +161,6 @@ fn refusing_openers_return_no_session_and_no_cancel() {
         .begin(&mut buf, &conn(ACCEPT))
         .expect("an accepted begin");
     assert!(answer.is_ok());
-    drop(answer);
     assert_eq!(
         leading_token(buf.bytes()),
         fresh,
@@ -207,7 +200,7 @@ pub(crate) mod fixture {
     pub const REFUSE: u32 = 3;
     /// One record, then Err(FAILED F_UNAVAILABLE, [`FAILED_TEXT`]).
     pub const FAIL: u32 = 4;
-    pub const FAILED_TEXT: &str = "the upstream is down";
+    pub(super) const FAILED_TEXT: &str = "the upstream is down";
     /// The instance's max_out (what the registry passes from the image's describe).
     pub const MAX_OUT: usize = 1 << 20;
     /// A watchdog slot no registry of this test binary allocates (slots are dense from 0).
@@ -251,7 +244,7 @@ pub(crate) mod fixture {
         hosted_with_limit::<K>(plugin, methods, MAX_OUT)
     }
 
-    pub fn hosted_with_limit<K: Kind>(
+    pub(super) fn hosted_with_limit<K: Kind>(
         plugin: &'static LinkedPlugin,
         methods: u64,
         max_out: usize,
@@ -259,7 +252,7 @@ pub(crate) mod fixture {
         hosted_with_facts::<K>(plugin, methods, max_out, 0)
     }
 
-    pub fn hosted_with_facts<K: Kind>(
+    pub(super) fn hosted_with_facts<K: Kind>(
         plugin: &'static LinkedPlugin,
         methods: u64,
         max_out: usize,

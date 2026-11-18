@@ -183,7 +183,7 @@ pub struct Ran {
 pub(super) fn absorb(
     ran: &mut Ran,
     forward: &mut Option<Forward>,
-    answers: Vec<Answer>,
+    answers: impl IntoIterator<Item = Answer>,
     books: &dyn Books,
 ) {
     for answer in answers {
@@ -270,12 +270,15 @@ fn run_pending_session<K: Calls + ?Sized>(
             let stage = stage::enforce(hooks, &mut task, &mut answers, req, &mut drive, &buffered)?;
             let observed = Observed::new(drive.effects, stage);
             buffered.release();
-            let mut resolved = Vec::new();
+            let mut resolved = None;
             for answer in answers {
                 if let (Some(carrier), Some(forward)) = (drive.carrier, &answer.forward) {
                     carrier.map.point_wanted(&Wants::from_facts(&forward.wants));
                 }
-                resolved.extend(task.resolve(answer, drive.resolver, &observed)?);
+                gather(
+                    &mut resolved,
+                    task.resolve(answer, drive.resolver, &observed)?,
+                );
             }
             let mut allowed = Drive {
                 resolver: drive.resolver,
@@ -287,17 +290,20 @@ fn run_pending_session<K: Calls + ?Sized>(
                 books: drive.books,
                 carrier: drive.carrier,
             };
-            drive_answers(&mut task, resolved, req, &mut allowed)
+            drive_answers(&mut task, resolved.unwrap_or_default(), req, &mut allowed)
         } else {
             buffered.release();
-            let mut resolved = Vec::new();
+            let mut resolved = None;
             for answer in answers {
                 if let (Some(carrier), Some(forward)) = (drive.carrier, &answer.forward) {
                     carrier.map.point_wanted(&Wants::from_facts(&forward.wants));
                 }
-                resolved.extend(task.resolve(answer, drive.resolver, drive.effects)?);
+                gather(
+                    &mut resolved,
+                    task.resolve(answer, drive.resolver, drive.effects)?,
+                );
             }
-            drive_answers(&mut task, resolved, req, &mut drive)
+            drive_answers(&mut task, resolved.unwrap_or_default(), req, &mut drive)
         }
     })();
     if outcome.is_err() {
@@ -332,12 +338,15 @@ fn run_hook_session<K: Calls + ?Sized>(
         let stage = stage::enforce(hooks, &mut task, &mut answers, req, &mut drive, &buffered)?;
         let observed = Observed::new(drive.effects, stage);
         buffered.release();
-        let mut resolved = Vec::new();
+        let mut resolved = None;
         for answer in answers {
             if let (Some(carrier), Some(forward)) = (drive.carrier, &answer.forward) {
                 carrier.map.point_wanted(&Wants::from_facts(&forward.wants));
             }
-            resolved.extend(task.resolve(answer, drive.resolver, &observed)?);
+            gather(
+                &mut resolved,
+                task.resolve(answer, drive.resolver, &observed)?,
+            );
         }
         let mut allowed = Drive {
             resolver: drive.resolver,
@@ -349,12 +358,21 @@ fn run_hook_session<K: Calls + ?Sized>(
             books: drive.books,
             carrier: drive.carrier,
         };
-        drive_answers(&mut task, resolved, req, &mut allowed)
+        drive_answers(&mut task, resolved.unwrap_or_default(), req, &mut allowed)
     })();
     if outcome.is_err() {
         drive.books.ended(Ending::Failed, task.usage());
     }
     outcome
+}
+
+/// The answers resolved so far, gathered without a fresh buffer: the first resolution's own Vec
+/// becomes the list (the common one-answer case copies nothing) and later ones extend it.
+fn gather(resolved: &mut Option<Vec<Answer>>, more: Vec<Answer>) {
+    match resolved {
+        Some(held) => held.extend(more),
+        None => *resolved = Some(more),
+    }
 }
 
 /// The end user a plane projected on its request answer (PJ_END_USER), when it stated one.
@@ -464,9 +482,11 @@ fn drive_answers<K: Calls + ?Sized>(
     // STORE, COMMIT and PUSH of the end answer apply; a session that has ended can be told no result.
     let end_intents = std::mem::take(&mut last.intents);
     if !end_intents.is_empty() {
-        let _ = drive.resolver.resolve(&end_intents, &mut task.held);
+        let _ = drive
+            .resolver
+            .resolve(&end_intents, &last.lent, &mut task.held);
     }
-    absorb(&mut ran, &mut None, vec![last], drive.books);
+    absorb(&mut ran, &mut None, [last], drive.books);
     ran.usage = task.usage().clone();
     drive.effects.observed_usage(task.usage());
     hand_out(drive.effects, &mut ran.client);
@@ -528,7 +548,7 @@ fn stamp_retry_after(items: &mut [ToClient], wait: Option<u32>) {
     {
         return;
     }
-    fields.push((RETRY_AFTER.to_vec(), wait.to_string().into_bytes()));
+    fields.push(crate::cold::retry_after_field(RETRY_AFTER, wait));
 }
 
 #[cfg(test)]

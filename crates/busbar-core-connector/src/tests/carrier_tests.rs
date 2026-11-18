@@ -21,7 +21,7 @@ fn a_carried_dial_moves_bytes_both_ways_and_its_close_ends_the_stream() {
         let mut carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Authority(at),
+            &Dest::Authority(&at),
         )
         .unwrap();
         let (mut peer, _) = far.accept().await.unwrap();
@@ -59,7 +59,7 @@ fn a_dial_to_what_was_not_admitted_never_reaches_the_wire() {
         let refused = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Authority("example.test:80".into()),
+            &Dest::Authority("example.test:80"),
         )
         .unwrap_err();
         assert!(matches!(refused, DialFailure::Refused(_)), "{refused:?}");

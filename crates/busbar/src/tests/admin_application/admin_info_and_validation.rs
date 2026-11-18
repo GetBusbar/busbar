@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait as _};
 
 #[tokio::test]
@@ -31,7 +32,7 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
@@ -138,7 +139,7 @@ async fn test_admin_v1_auth_read() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
@@ -190,7 +191,7 @@ async fn test_admin_malformed_body_returns_generic_400_no_input_fragment() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
@@ -293,7 +294,7 @@ async fn info_is_node_identity_and_nodes_are_a_process_view() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
@@ -411,7 +412,7 @@ async fn process_state_crypto_members() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -419,8 +420,8 @@ async fn process_state_crypto_members() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
-        "module": operator, "token": { "file": operator_token },
+    document["identity-providers"][operator] = json::json!({
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;

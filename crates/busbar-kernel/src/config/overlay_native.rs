@@ -108,7 +108,7 @@ struct Candidate {
 enum State {
     Idle,
     Busy,
-    Pending(Candidate),
+    Pending(Box<Candidate>),
     NeedsReload,
 }
 
@@ -133,7 +133,7 @@ impl Drop for Operation<'_> {
             } else {
                 State::Idle
             },
-            State::Pending,
+            |candidate| State::Pending(Box::new(candidate)),
         );
         *self
             .overlay
@@ -187,7 +187,7 @@ impl NativeOverlay {
         Ok(Operation {
             overlay: self,
             candidate: match previous {
-                State::Pending(candidate) => Some(candidate),
+                State::Pending(candidate) => Some(*candidate),
                 _ => None,
             },
             needs_reload,

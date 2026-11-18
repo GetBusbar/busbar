@@ -168,12 +168,7 @@ impl<T> Items<T> {
 
     pub(crate) fn push(&mut self, value: T) -> Result<(), StorageDenied> {
         if self.values.len() == self.values.capacity() {
-            let capacity = self
-                .values
-                .len()
-                .checked_mul(2)
-                .unwrap_or(usize::MAX)
-                .max(1);
+            let capacity = self.values.len().saturating_mul(2).max(1);
             let bytes = capacity
                 .checked_mul(std::mem::size_of::<T>())
                 .ok_or(StorageDenied)?;

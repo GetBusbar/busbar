@@ -25,8 +25,7 @@
 //!   timeout (the shutdown grace for CR_DRAIN), applies its CLOSE (absent = graceful), and only then drops the
 //!   handle; never after the framer answered CLOSE, after EOF, after a socket failure, or to a quarantined
 //!   instance (counted instead).
-//! * **ALPN by role** (round 9): a listener serving an instance advertises its `alpn(ROLE_SERVER)`
-//!   ([`server_alpn`]), a dial through it offers its `alpn(ROLE_CLIENT)` ([`client_alpn`]); never one list for
+//! * **ALPN by role** (round 9): a listener serving an instance advertises its `alpn(ROLE_SERVER)`, a dial through it offers its `alpn(ROLE_CLIENT)`; never one list for
 //!   both.
 
 use std::collections::VecDeque;
@@ -75,28 +74,6 @@ const FEED_GONE_STATUS: u32 = 500;
 
 /// The text that refusal carries (core text, never plugin text, I2).
 const FEED_GONE_TEXT: &str = "the exchange feeding this stream ended before the stream did";
-
-/// The protocol ids a listener serving `port`'s instance advertises: its `alpn(ROLE_SERVER)`, in order,
-/// for [`crate::compose::Accept::alpn`].
-#[must_use]
-pub fn server_alpn(port: &dyn TransportPort) -> Vec<Vec<u8>> {
-    protocol_ids(port.alpn(wire::ROLE_SERVER))
-}
-
-/// The protocol ids a dial through `port`'s instance offers: its `alpn(ROLE_CLIENT)`, in order, for
-/// [`crate::compose::Dial::alpn`].
-#[must_use]
-pub fn client_alpn(port: &dyn TransportPort) -> Vec<Vec<u8>> {
-    protocol_ids(port.alpn(wire::ROLE_CLIENT))
-}
-
-fn protocol_ids(ids: &[Box<str>]) -> Vec<Vec<u8>> {
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        out.push(Vec::from(id.as_bytes()));
-    }
-    out
-}
 
 /// What one transport answer asks of core, owned: a `TransportOut` borrows the framer's buffer, and the
 /// session task acts on it only after the call returned.
@@ -211,11 +188,41 @@ pub(crate) struct Answers {
     capacity_failed: bool,
     provenance: bool,
     /// STREAM_FULL streams of this answer, judged at its end (STREAM_OPENED may come later in it).
-    full: storage::Items<u64>,
+    full: FullStreams,
     opened: Option<u64>,
     /// An `emit(E_CLOSE)` answer already carried its CLOSE.
     closing: bool,
     broke: Option<FaultReason>,
+}
+
+/// The STREAM_FULL streams one answer named, as far as the answer's judgement needs them: whether there
+/// was one, the first, and whether any other differed from it (no list is kept).
+#[derive(Default)]
+struct FullStreams {
+    first: Option<u64>,
+    mixed: bool,
+}
+
+impl FullStreams {
+    fn push(&mut self, stream: u64) {
+        match self.first {
+            None => self.first = Some(stream),
+            Some(first) => self.mixed |= first != stream,
+        }
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn is_empty(&self) -> bool {
+        self.first.is_none()
+    }
+
+    /// Whether any stream named is not `mine`.
+    fn any_but(&self, mine: Option<u64>) -> bool {
+        self.mixed || self.first.is_some_and(|first| Some(first) != mine)
+    }
 }
 
 impl Answers {
@@ -229,7 +236,7 @@ impl Answers {
             called: Called::Begin,
             now,
             acts: Actions::new(&source)?,
-            full: storage::Items::new(&source)?,
+            full: FullStreams::default(),
             source,
             capacity_failed: false,
             provenance: false,
@@ -267,7 +274,7 @@ impl Answers {
     }
 
     /// One record of the answer, in order. After a breach the rest is ignored.
-    pub(crate) fn take(&mut self, out: TransportOut<'_>) {
+    pub(crate) fn take(&mut self, out: &TransportOut<'_>) {
         if self.capture(out).is_err() {
             self.capacity_failed = true;
         }
@@ -275,7 +282,7 @@ impl Answers {
 
     fn capture(
         &mut self,
-        out: TransportOut<'_>,
+        out: &TransportOut<'_>,
     ) -> Result<(), busbar_contract::storage::StorageDenied> {
         if self.broke.is_some() || self.capacity_failed {
             return Ok(());
@@ -285,7 +292,7 @@ impl Answers {
             return Ok(());
         }
         if self.called == Called::Close {
-            match out {
+            match *out {
                 TransportOut::Write(bytes) if !self.closing => {
                     self.acts
                         .push(Act::Write(Payload::copy(&self.source, bytes)?))?;
@@ -331,7 +338,7 @@ impl Answers {
             self.breach();
             return Ok(());
         }
-        match out {
+        match *out {
             TransportOut::WirePart {
                 stream,
                 class,
@@ -403,7 +410,7 @@ impl Answers {
                 Called::Emit { piece, .. }
                     if !matches!(piece, wire::E_RELEASE | wire::E_DELIVERY_SETTLED) =>
                 {
-                    self.full.push(stream)?
+                    self.full.push(stream);
                 }
                 _ => self.breach(),
             },
@@ -450,7 +457,7 @@ impl Answers {
             } else {
                 Some(stream)
             };
-            if self.full.iter().any(|full| Some(*full) != mine) {
+            if self.full.any_but(mine) {
                 self.acts.clear();
                 self.full.clear();
                 return Err(GRAMMAR);
@@ -483,8 +490,12 @@ impl Answers {
         self.holds.next_deadline()
     }
 
-    pub(crate) fn take_stalled(&mut self, now: Instant) -> Vec<u64> {
+    pub(crate) fn take_stalled(&mut self, now: Instant) -> &[u64] {
         self.holds.take_stalled(now)
+    }
+
+    pub(crate) fn stalled(&self) -> &[u64] {
+        self.holds.stalled()
     }
 }
 
@@ -588,7 +599,7 @@ impl TransportConn {
         answers.provenance = port.facts() & wire::FB_WIRE_PROVENANCE != 0;
         answers.start(Called::Begin, now);
         let handle = port
-            .begin(conn, &mut |out| answers.take(out))
+            .begin(conn, &mut |out| answers.take(&out))
             .map_err(Ended::Port)?;
         let mut session = Self {
             backend: Some(Backend::Port { port, handle }),
@@ -705,14 +716,15 @@ impl TransportConn {
     /// Every held stream whose stall deadline has passed at `now` is reset with
     /// `emit(stream, E_RESET, RESET_STALLED)`. Returns those streams, ascending (the caller ends each feed as for
     /// a peer reset and counts `transport_stream_stalled_total`), and what the answers asked of core.
-    pub fn stall(&mut self, now: Instant) -> Result<(Vec<u64>, Actions), Ended> {
-        let stalled = self.answers.take_stalled(now);
+    pub fn stall(&mut self, now: Instant) -> Result<(&[u64], Actions), Ended> {
+        let count = self.answers.take_stalled(now).len();
         let mut acts = Actions::new(&self.answers.source).map_err(|_| Ended::Capacity)?;
-        for &stream in &stalled {
+        for at in 0..count {
+            let stream = self.answers.stalled()[at];
             acts.append(self.emit(stream, wire::E_RESET, wire::RESET_STALLED, &[], now)?)
                 .map_err(|_| Ended::Capacity)?;
         }
-        Ok((stalled, acts))
+        Ok((self.answers.stalled(), acts))
     }
 
     /// The socket failed: nothing more can be written, so no E_CLOSE will be sent.
@@ -770,7 +782,7 @@ impl TransportConn {
             return Err(Ended::Misuse("a call after the session was over"));
         };
         answers.start(called, now);
-        let sink = &mut |out: TransportOut<'_>| answers.take(out);
+        let sink = &mut |out: TransportOut<'_>| answers.take(&out);
         let answered = match live {
             Backend::Port { port, handle } => match call {
                 Call::Ingest(bytes) => port.ingest(handle, bytes, sink),
@@ -949,29 +961,34 @@ pub enum Outcome<S> {
     Ended(Ended),
     /// The framer answered UPGRADE to an `emit(E_HEAD)` of H_STATUS(101) (§12.27): the connection, the
     /// session (which still owns the response until the next transport's `begin` returns OK), the protocol
-    /// and the leftover bytes go back to core.
-    Upgraded {
-        /// Original progress and response ownership survive the transport handoff.
-        delivery: Delivery,
-        /// The HTTP session.
-        conn: TransportConn,
-        /// The connection.
-        io: S,
-        /// The protocol named.
-        protocol: Name,
-        /// The bytes read past the head.
-        leftover: Payload,
-    },
+    /// and the leftover bytes go back to core (boxed: every other outcome is small, and an upgrade
+    /// ends a session once).
+    Upgraded(Box<Upgrade<S>>),
+}
+
+/// What an UPGRADE hands back to core ([`Outcome::Upgraded`]).
+#[derive(Debug)]
+pub struct Upgrade<S> {
+    /// Original progress and response ownership survive the transport handoff.
+    pub delivery: Delivery,
+    /// The HTTP session.
+    pub conn: TransportConn,
+    /// The connection.
+    pub io: S,
+    /// The protocol named.
+    pub protocol: Name,
+    /// The bytes read past the head.
+    pub leftover: Payload,
 }
 
 impl<S> Outcome<S> {
     /// Dispose an unadopted upgrade's exact writer before freezing its failed delivery facts.
     /// Other outcomes have already disposed their writer inside the original session owner.
     pub fn retire(self) {
-        if let Self::Upgraded {
-            delivery, io, conn, ..
-        } = self
-        {
+        if let Self::Upgraded(upgrade) = self {
+            let Upgrade {
+                delivery, io, conn, ..
+            } = *upgrade;
             drop(conn);
             drop(io);
             delivery.writer_retired();
@@ -1043,13 +1060,14 @@ impl Task {
         acts: Actions,
         io: &mut DeliveryIo<S>,
         write_timeout: Duration,
+        clock: &mut Option<(Instant, u64)>,
     ) -> Flow {
         let mut prefix = io.ledger().adopted_prefix();
         if let Err(reason) = io.prepare(&acts) {
             return Flow::Rejected(reason);
         }
         let mut wrote = false;
-        let deadline = tokio::time::Instant::now() + write_timeout;
+        let deadline = tokio::time::Instant::from_std(wake_clock(clock).0) + write_timeout;
         for act in acts {
             match act {
                 Act::Write(mut bytes) | Act::WirePart { mut bytes, .. } => {
@@ -1082,7 +1100,7 @@ impl Task {
                     return if abort { Flow::Aborted } else { Flow::Closed };
                 }
                 Act::Wake(ns) => {
-                    let (now, mono) = crate::off_path::framing::session_clock();
+                    let (now, mono) = wake_clock(clock);
                     self.wake_at = Some(now + Duration::from_nanos(ns.saturating_sub(mono)));
                 }
                 Act::Upgrade { protocol, leftover } => {
@@ -1205,6 +1223,12 @@ async fn finish_prefix<S: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// THE WAKE'S CLOCK: the session clock's one reading for this wake (the OS instant and the host's
+/// `mono` taken together), read the first time the wake asks and kept for the rest of it.
+fn wake_clock(at: &mut Option<(Instant, u64)>) -> (Instant, u64) {
+    *at.get_or_insert_with(crate::off_path::framing::session_clock)
+}
+
 /// Core closes the session with `reason`: E_CLOSE once (or skipped and counted), its bytes written under
 /// the write timeout (the drain grace for CR_DRAIN), its CLOSE applied; the handle drops when `conn` does,
 /// after the bytes are out.
@@ -1215,14 +1239,15 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
     write_timeout: Duration,
     drain_grace: Duration,
     counters: &SessionCounters,
+    clock: &mut Option<(Instant, u64)>,
 ) -> Ended2 {
     let limit = if reason == wire::CR_DRAIN {
         drain_grace.min(write_timeout)
     } else {
         write_timeout
     };
-    let deadline = tokio::time::Instant::now() + limit;
-    let (now, _) = crate::off_path::framing::session_clock();
+    let (now, _) = wake_clock(clock);
+    let deadline = tokio::time::Instant::from_std(now) + limit;
     let acts = match conn.close(reason, now) {
         Ok(Some(acts)) => acts,
         Ok(None) => {
@@ -1328,7 +1353,11 @@ where
     let mut feeds_open = true;
     let mut registrations_open = true;
 
-    match task.apply(first, &mut io, wiring.write_timeout).await {
+    let mut clock = None;
+    match task
+        .apply(first, &mut io, wiring.write_timeout, &mut clock)
+        .await
+    {
         Flow::Go => {}
         Flow::Closed => {
             return finish_closed(
@@ -1348,17 +1377,20 @@ where
         }
         Flow::Upgrade(protocol, leftover) => {
             let (io, delivery) = io.into_parts();
-            return Outcome::Upgraded {
+            return Outcome::Upgraded(Box::new(Upgrade {
                 delivery,
                 conn,
                 io,
                 protocol,
                 leftover,
-            };
+            }));
         }
     }
 
     loop {
+        // THE WAKE'S CLOCK: one reading per pass of the loop (a pass is one wake), taken the first
+        // time the pass needs it. Before the wait only the close below reads it, and it returns.
+        let mut clock = None;
         if eof && task.idle() {
             while let Ok(feed) = wiring.feeds.try_recv() {
                 attach(&mut task.slots, feed);
@@ -1375,6 +1407,7 @@ where
                 wiring.write_timeout,
                 wiring.drain_grace,
                 &wiring.counters,
+                &mut clock,
             )
             .await
             .into();
@@ -1383,9 +1416,7 @@ where
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
-        let sleep_until = tokio::time::Instant::from_std(
-            deadline.unwrap_or_else(|| crate::off_path::framing::session_clock().0),
-        );
+        let sleep_until = deadline.map(tokio::time::Instant::from_std);
         let can_read = task.reading && task.pending.is_empty() && !eof;
         let can_feed = !task.slots.by_stream.is_empty() || !task.slots.opening.is_empty();
         let step = tokio::select! {
@@ -1407,7 +1438,7 @@ where
                 }
                 Step::Again
             },
-            event = next_io(&mut io, &mut buf, can_read, deadline.map(|_| sleep_until)) => event,
+            event = next_io(&mut io, &mut buf, can_read, sleep_until) => event,
             permit = wiring.inbound.reserve(), if !task.pending.is_empty() => match permit {
                 Ok(permit) => {
                     if let Some(item) = task.pending.pop_front() {
@@ -1429,7 +1460,11 @@ where
             },
             next = next_piece(&mut task.slots), if can_feed => Step::Feed(next),
         };
-        let (now, _) = crate::off_path::framing::session_clock();
+        let step = match step {
+            Step::Again => continue,
+            step => step,
+        };
+        let (now, _) = wake_clock(&mut clock);
         let mut settlement = None;
         let answered = match step {
             Step::Again => continue,
@@ -1441,6 +1476,7 @@ where
                     wiring.write_timeout,
                     wiring.drain_grace,
                     &wiring.counters,
+                    &mut clock,
                 )
                 .await
                 .into();
@@ -1467,7 +1503,7 @@ where
                 if conn.next_stall().is_some_and(|due| due <= now) {
                     match conn.stall(now) {
                         Ok((stalled, more)) => {
-                            for stream in stalled {
+                            for &stream in stalled {
                                 task.slots.by_stream.remove(&stream);
                                 task.pending.push_back(Inbound::Stalled(stream));
                                 wiring.counters.stalled.fetch_add(1, Ordering::Relaxed);
@@ -1523,7 +1559,10 @@ where
             Ok(acts) => acts,
             Err(ended) => return Outcome::Ended(ended),
         };
-        match task.apply(acts, &mut io, wiring.write_timeout).await {
+        match task
+            .apply(acts, &mut io, wiring.write_timeout, &mut clock)
+            .await
+        {
             Flow::Go => {}
             Flow::Closed => {
                 return finish_closed(
@@ -1543,13 +1582,13 @@ where
             }
             Flow::Upgrade(protocol, leftover) => {
                 let (io, delivery) = io.into_parts();
-                return Outcome::Upgraded {
+                return Outcome::Upgraded(Box::new(Upgrade {
                     delivery,
                     conn,
                     io,
                     protocol,
                     leftover,
-                };
+                }));
             }
         }
         if let Some(stream) = settlement {
@@ -1591,7 +1630,7 @@ async fn finish_closed<S: AsyncWrite + Unpin>(
             let Some(control) = control else { return Outcome::Closed; };
             match control {
                 DeliveryControl::Settled { stream } => {
-                    let acts = match conn.emit(stream, wire::E_DELIVERY_SETTLED, 0, &[], Instant::now()) {
+                    let acts = match conn.emit(stream, wire::E_DELIVERY_SETTLED, 0, &[], crate::off_path::framing::session_clock().0) {
                         Ok(acts) => acts,
                         Err(ended) => return Outcome::Ended(ended),
                     };
@@ -1626,8 +1665,7 @@ async fn next_io<S: AsyncRead + Unpin>(
     can_read: bool,
     deadline: Option<tokio::time::Instant>,
 ) -> Step {
-    let sleep = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now));
-    tokio::pin!(sleep);
+    let mut sleep = std::pin::pin!(deadline.map(tokio::time::sleep_until));
     poll_fn(|cx| {
         if let Poll::Ready(control) = io.poll_control(cx) {
             return Poll::Ready(Step::Control(control));
@@ -1636,7 +1674,11 @@ async fn next_io<S: AsyncRead + Unpin>(
         if io.ledger().poll_idle(cx).is_ready() && had_responses {
             return Poll::Ready(Step::Again);
         }
-        if deadline.is_some() && std::future::Future::poll(sleep.as_mut(), cx).is_ready() {
+        if sleep
+            .as_mut()
+            .as_pin_mut()
+            .is_some_and(|sleep| std::future::Future::poll(sleep, cx).is_ready())
+        {
             return Poll::Ready(Step::Tick);
         }
         if can_read {

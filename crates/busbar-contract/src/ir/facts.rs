@@ -177,7 +177,10 @@ impl ContentItem<'_> {
         framed(&mut buf, &slot_idx.to_be_bytes());
         framed(&mut buf, author.as_bytes());
         framed(&mut buf, text.as_bytes());
-        crate::sha256_hex(&buf)
+        let digest = crate::sha256_hex(&buf);
+        // The hash's block function leaves pieces of the framed text in its stack frames.
+        crate::secret_json::wipe_stack(0);
+        digest
     }
 }
 

@@ -48,7 +48,7 @@ pub const STAMP_LOCAL_BUILD: u32 = 1;
 /// New (r4 §3.1): runs only in busbar-plugin-host, network denied (rung 3 / webrtc).
 pub const STAMP_OUT_OF_PROCESS: u32 = 8;
 pub const STAMP_FLAGS_KNOWN: u32 = 9;
-pub const fn build_id_of(hex: Option<&str>) -> ([u8; 32], u32) {
+const fn build_id_of(hex: Option<&str>) -> ([u8; 32], u32) {
     // const-panics on bad hex (r10)
     let Some(hex) = hex else {
         return ([0; 32], STAMP_LOCAL_BUILD);

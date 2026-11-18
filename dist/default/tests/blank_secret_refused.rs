@@ -51,7 +51,7 @@ fn command(dir: &Path, mock_key: &str) -> Command {
             "0000000000000000000000000000000000000000000000000000000000000001",
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"));
+        .env_remove("BUSBAR_PROVIDERS");
     c
 }
 

@@ -228,11 +228,14 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
 
 struct Live;
 
+/// The pieces the plane was handed, one entry per call.
+type PieceLog = Mutex<Vec<(u32, u32, u32, Vec<u8>)>>;
+
 #[derive(Default)]
 struct Plane {
     request: Vec<It>,
     pieces: Mutex<VecDeque<Vec<It>>>,
-    log: Mutex<Vec<(u32, u32, u32, Vec<u8>)>>,
+    log: PieceLog,
 }
 
 fn nope() -> PortError {
@@ -408,7 +411,8 @@ impl UpstreamChannels for FakeChannels {
 
 struct Rig {
     budget: crate::channels::budget::InstanceBudget,
-    rt: tokio::runtime::Runtime,
+    // Owns the runtime the carrier was handed a handle to; held, never read.
+    _rt: tokio::runtime::Runtime,
     channels: Arc<FakeChannels>,
     registry: Arc<SignalRegistry>,
     carrier: PortCarrier,
@@ -435,7 +439,7 @@ fn rig(mut channels: FakeChannels, upstreams: &[&str]) -> Rig {
     );
     Rig {
         budget,
-        rt,
+        _rt: rt,
         channels,
         registry,
         carrier,

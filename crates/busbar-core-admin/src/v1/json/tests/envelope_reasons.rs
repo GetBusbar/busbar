@@ -7,7 +7,9 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use crate::v1::contract::AdminError;
-use crate::v1::json::{err_json, err_json_cond};
+use crate::v1::json::err_json;
+#[cfg(feature = "openapi-schema")]
+use crate::v1::json::err_json_cond;
 
 async fn parts(resp: Response) -> (StatusCode, axum::http::HeaderMap, serde_json::Value) {
     use http_body_util::BodyExt;

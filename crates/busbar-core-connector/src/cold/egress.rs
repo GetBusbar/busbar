@@ -77,14 +77,15 @@ const REMEMBERED: usize = 4096;
 
 static LAST: Mutex<Option<HashMap<(String, String), Instant>>> = Mutex::new(None);
 
-/// Whether the limiter lets a line for `(host, why)` through now.
+/// Whether the limiter lets a line for `(host, why)` through now: judged by the op's one clock
+/// reading, `now` (the op's memo: the clock is read here only if the op has not read it yet).
 #[cold]
-pub(crate) fn due(host: &str, why: &str) -> bool {
+pub(crate) fn due(host: &str, why: &str, now: &mut Option<Instant>) -> bool {
+    let now = crate::compose::clock(now);
     let mut last = LAST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let map = last.get_or_insert_with(HashMap::new);
-    let now = Instant::now();
     let key = (host.to_owned(), why.to_owned());
     if map
         .get(&key)
@@ -103,10 +104,16 @@ pub(crate) fn due(host: &str, why: &str) -> bool {
 }
 
 /// A REFUSED DIAL of `host` (as a record may name it): one BUSBAR-5051 line and one audit record,
-/// rate-limited per host and reason.
+/// rate-limited per host and reason by the op's clock memo `now`.
 #[cold]
-pub(crate) fn dial_refused(host: &str, class: Option<u32>, why: &str, owner: Option<(u64, u32)>) {
-    if !due(host, why) {
+pub(crate) fn dial_refused(
+    host: &str,
+    class: Option<u32>,
+    why: &str,
+    owner: Option<(u64, u32)>,
+    now: &mut Option<Instant>,
+) {
+    if !due(host, why, now) {
         return;
     }
     let owner_text =
@@ -129,10 +136,10 @@ pub(crate) fn dial_refused(host: &str, class: Option<u32>, why: &str, owner: Opt
 
 /// A TLS VERIFICATION FAILURE on a dial of `host` (as a record may name it): one BUSBAR-5047 line
 /// and one audit record naming the matched `advanced.tls.destinations` entries and the operator
-/// anchors in force.
+/// anchors in force, rate-limited by the op's clock memo `now`.
 #[cold]
-pub(crate) fn tls_failed(host: &str, why: &str) {
-    if !due(host, "tls") {
+pub(crate) fn tls_failed(host: &str, why: &str, now: &mut Option<Instant>) {
+    if !due(host, "tls", now) {
         return;
     }
     let (matched, anchors) = crate::egress_audit::store()

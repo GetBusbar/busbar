@@ -245,7 +245,7 @@ impl NativeOrdinaryTerminalSlot {
         let state = locked(&self.state);
         let owner = state.terminal.as_ref()?;
         let observer = state.fee.as_ref()?;
-        if locked(&owner.fee.state).completed.is_none() {
+        if owner.fee.completion.observe().is_none() {
             return Some(crate::governance::fee_debt::FeeDebtStatus::Pending);
         }
         Some(observer.status())

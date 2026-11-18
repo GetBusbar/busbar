@@ -61,6 +61,7 @@ async fn slow_store_read_does_not_stall_the_executor() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: backend,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("configured native backend");
@@ -69,7 +70,7 @@ async fn slow_store_read_does_not_stall_the_executor() {
     let core = crate::root::real_store::core_over(probe_store.clone()).await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone()).unwrap();
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         Default::default(),
@@ -181,7 +182,7 @@ async fn cap_is_read_from_the_post_lock_snapshot() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -353,7 +354,7 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config,
             None,
             Default::default(),
@@ -443,7 +444,7 @@ async fn concurrent_mints_never_bind_a_deleted_group() {
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config,
             None,
             Default::default(),
@@ -580,7 +581,7 @@ async fn concurrent_rebinds_never_bind_a_deleted_group() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

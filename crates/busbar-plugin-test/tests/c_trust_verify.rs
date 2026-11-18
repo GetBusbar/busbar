@@ -15,7 +15,7 @@ use std::sync::Arc;
 use busbar_contract::crypto::ed25519::SigningKey;
 use busbar_kernel::plugin_records::StoreRecords;
 use busbar_kernel::trust::book::TrustBook as Judge;
-use busbar_kernel::trust::plane_book::{CoreTrustBook, TracingAudit, TrustBook as _};
+use busbar_kernel::trust::plane_book::{CoreTrustBook, TrustAudit};
 use busbar_kernel::trust::reverify::Policy;
 use busbar_kernel::trust::section::{DeclaredPin, TrustEntry};
 use busbar_plugin_abi::plane::{
@@ -70,7 +70,7 @@ fn trust_verify_matches_the_golden_corpus() {
     let book = CoreTrustBook::new(
         Arc::new(Judge::default()),
         StoreRecords::new(rt.block_on(store())),
-        Arc::new(TracingAudit),
+        Arc::new(TrustAudit::tracing()),
         busbar_kernel::store::now_ms,
     );
     rt.block_on(book.admit(

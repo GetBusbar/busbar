@@ -355,80 +355,61 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-auth-admin-tokens-plugin"
-version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=e12a8df9fa704a2869af5e72c30a187976fa74c6#e12a8df9fa704a2869af5e72c30a187976fa74c6"
-dependencies = [
- "busbar-auth-admin-tokens",
- "busbar-plugin-abi",
-]
-
-[[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=2889a997008ffcd3508b2d561aeebebb9658e5a4#2889a997008ffcd3508b2d561aeebebb9658e5a4"
+source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=bee0f44ba87f86cd5bb981fab09569b1504a8113#bee0f44ba87f86cd5bb981fab09569b1504a8113"
 dependencies = [
- "busbar-contract",
+ "busbar-plugin-abi",
  "foldhash 0.2.0",
  "serde",
- "serde_json",
- "tracing",
+ "sonic-rs",
 ]
 
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=c17f2e437dccb852b458cf4622cefe50dc4ab0b4#c17f2e437dccb852b458cf4622cefe50dc4ab0b4"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=2f0b32bc8f46c83d4321dfc04e9a6dd6d42ce577#2f0b32bc8f46c83d4321dfc04e9a6dd6d42ce577"
 dependencies = [
  "base64 0.22.1",
- "busbar-contract",
- "foldhash 0.2.0",
- "http",
+ "busbar-plugin-abi",
+ "percent-encoding",
  "serde",
- "serde_json",
- "tracing",
- "zeroize",
+ "sonic-rs",
 ]
 
 [[package]]
 name = "busbar-auth-oidc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=7877ca767f9f4da677df369afc022b2cbd5633cf#7877ca767f9f4da677df369afc022b2cbd5633cf"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=9167fa4bc22693182971f6f58e408305afa4e0f5#9167fa4bc22693182971f6f58e408305afa4e0f5"
 dependencies = [
  "base64 0.22.1",
- "busbar-contract",
- "foldhash 0.2.0",
- "http",
+ "busbar-plugin-abi",
+ "percent-encoding",
  "serde",
- "serde_json",
- "tracing",
+ "sonic-rs",
  "url",
- "zeroize",
 ]
 
 [[package]]
 name = "busbar-auth-oidc-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=7877ca767f9f4da677df369afc022b2cbd5633cf#7877ca767f9f4da677df369afc022b2cbd5633cf"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=9167fa4bc22693182971f6f58e408305afa4e0f5#9167fa4bc22693182971f6f58e408305afa4e0f5"
 dependencies = [
  "busbar-auth-oidc",
- "busbar-contract",
+ "busbar-plugin-abi",
 ]
 
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=1c457d415173fb069624fca676ae0ae4dbc71e9f#1c457d415173fb069624fca676ae0ae4dbc71e9f"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=c4c80db023c40d3730e01868eea47c7d3d1d937a#c4c80db023c40d3730e01868eea47c7d3d1d937a"
 dependencies = [
- "busbar-contract",
- "foldhash 0.2.0",
- "hex",
+ "busbar-plugin-abi",
  "percent-encoding",
- "serde_json",
+ "serde",
  "smallvec",
+ "sonic-rs",
  "time",
- "tracing",
- "zeroize",
 ]
 
 [[package]]
@@ -607,7 +588,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.22.1",
- "busbar-auth-admin-tokens-plugin",
+ "busbar-auth-admin-tokens",
  "busbar-auth-header",
  "busbar-auth-oauth",
  "busbar-auth-oidc",
@@ -674,6 +655,7 @@ dependencies = [
  "lexopt",
  "metrics",
  "opentelemetry-proto",
+ "proc-macro2",
  "prost",
  "reqwest",
  "rustls",
@@ -681,6 +663,8 @@ dependencies = [
  "serde",
  "serde_json",
  "socket2",
+ "stats_alloc",
+ "syn 2.0.117",
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
@@ -969,7 +953,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=f9e6247ddce2fdecdf266d1ed9cc48062b354573#f9e6247ddce2fdecdf266d1ed9cc48062b354573"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=9215146350b750191fd53f5a07c5cd7e0b6888d1#9215146350b750191fd53f5a07c5cd7e0b6888d1"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -989,7 +973,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=a63691561995d34a307567b85ba0a36f62b5e66c#a63691561995d34a307567b85ba0a36f62b5e66c"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=2493436985d38203790eed5cba0c44b673272b42#2493436985d38203790eed5cba0c44b673272b42"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -999,7 +983,6 @@ dependencies = [
  "jsonschema",
  "percent-encoding",
  "serde",
- "serde_json",
  "tracing",
  "url",
 ]
@@ -1092,7 +1075,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-env"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=171ffa824c4e99e0e466c84ada50a74d62cce96b#171ffa824c4e99e0e466c84ada50a74d62cce96b"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=36df49db4f1b3426a5623d45e6375549b7899bd9#36df49db4f1b3426a5623d45e6375549b7899bd9"
 dependencies = [
  "busbar-plugin-abi",
  "sonic-rs",
@@ -1101,7 +1084,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-file"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=4360a0ba0dc60a7ade98cd3401ec47495aee73f1#4360a0ba0dc60a7ade98cd3401ec47495aee73f1"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=66a5ab9e3110524327ee975f65fb79dc80f195e8#66a5ab9e3110524327ee975f65fb79dc80f195e8"
 dependencies = [
  "busbar-plugin-abi",
  "libc",
@@ -1119,46 +1102,39 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=17620de2b816da4f9c38f4c32c2c0ee5d400ff1e#17620de2b816da4f9c38f4c32c2c0ee5d400ff1e"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=bd727e67d538071b28c9631831201a582620b221#bd727e67d538071b28c9631831201a582620b221"
 dependencies = [
- "busbar-contract",
+ "busbar-plugin-abi",
  "foldhash 0.2.0",
- "getrandom 0.3.4",
  "serde_json",
- "smallvec",
 ]
 
 [[package]]
 name = "busbar-store-postgres"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=eb40baa7b52c6a3209357bf298fa513fe48ab46e#eb40baa7b52c6a3209357bf298fa513fe48ab46e"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=bd473e4265e2d006034c4897dc101c0382f6455a#bd473e4265e2d006034c4897dc101c0382f6455a"
 dependencies = [
  "base64 0.22.1",
- "busbar-contract",
+ "busbar-plugin-abi",
  "bytes",
  "fallible-iterator 0.2.0",
  "foldhash 0.2.0",
  "percent-encoding",
  "postgres-protocol",
  "postgres-types",
- "serde",
  "serde_json",
  "stringprep",
- "tracing",
  "zeroize",
 ]
 
 [[package]]
 name = "busbar-store-sqlite"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=4102868e504e32b22f1c6f19e6f5a363c1c1d980#4102868e504e32b22f1c6f19e6f5a363c1c1d980"
+source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=931d17d372f22935fda599e9712f1b0a05fd86dd#931d17d372f22935fda599e9712f1b0a05fd86dd"
 dependencies = [
- "busbar-contract",
- "foldhash 0.2.0",
- "getrandom 0.3.4",
+ "busbar-plugin-abi",
  "rusqlite",
  "serde_json",
- "winapi-util",
 ]
 
 [[package]]
@@ -1295,12 +1271,6 @@ name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
-
-[[package]]
-name = "cfg_aliases"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "chacha20"
@@ -1838,7 +1808,8 @@ dependencies = [
 [[package]]
 name = "fs_extra"
 version = "1.3.0"
-source = "git+https://github.com/MattJackson/fs_extra?rev=70f47864db8ae763979f47cde6785449cd790dad#70f47864db8ae763979f47cde6785449cd790dad"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "futures"
@@ -1960,10 +1931,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
- "js-sys",
  "libc",
  "wasi",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -1987,11 +1956,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
- "js-sys",
  "libc",
  "r-efi 6.0.0",
  "rand_core 0.10.1",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -2169,22 +2136,6 @@ dependencies = [
  "smallvec",
  "tokio",
  "want",
-]
-
-[[package]]
-name = "hyper-rustls"
-version = "0.27.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
-dependencies = [
- "http",
- "hyper",
- "hyper-util",
- "rustls",
- "tokio",
- "tokio-rustls",
- "tower-service",
- "webpki-roots",
 ]
 
 [[package]]
@@ -2439,12 +2390,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
 ]
-
-[[package]]
-name = "lru-slab"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "matchers"
@@ -3103,62 +3048,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "quinn"
-version = "0.11.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9e20a958963c291dc322d98411f541009df2ced7b5a4f2bd52337638cfccf20"
-dependencies = [
- "bytes",
- "cfg_aliases",
- "pin-project-lite",
- "quinn-proto",
- "quinn-udp",
- "rustc-hash",
- "rustls",
- "socket2",
- "thiserror",
- "tokio",
- "tracing",
- "web-time",
-]
-
-[[package]]
-name = "quinn-proto"
-version = "0.11.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e750cca55fe4f0439a15d0bb529da9651e79993e8e72c61a899a36d462befbe"
-dependencies = [
- "bytes",
- "getrandom 0.4.3",
- "lru-slab",
- "rand 0.10.2",
- "rand_pcg",
- "ring",
- "rustc-hash",
- "rustls",
- "rustls-pki-types",
- "slab",
- "thiserror",
- "tinyvec",
- "tracing",
- "web-time",
-]
-
-[[package]]
-name = "quinn-udp"
-version = "0.5.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af66907df18639dcf4db56ca65490cabc4b27a97dbadd96f2926cca73298f016"
-dependencies = [
- "cfg_aliases",
- "libc",
- "once_cell",
- "socket2",
- "tracing",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3233,15 +3122,6 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
-
-[[package]]
-name = "rand_pcg"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
-dependencies = [
- "rand_core 0.10.1",
-]
 
 [[package]]
 name = "rand_xoshiro"
@@ -3379,21 +3259,16 @@ dependencies = [
  "http-body",
  "http-body-util",
  "hyper",
- "hyper-rustls",
  "hyper-util",
  "js-sys",
  "log",
  "percent-encoding",
  "pin-project-lite",
- "quinn",
- "rustls",
- "rustls-pki-types",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "sync_wrapper",
  "tokio",
- "tokio-rustls",
  "tokio-util",
  "tower",
  "tower-http",
@@ -3403,7 +3278,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
- "webpki-roots",
 ]
 
 [[package]]
@@ -3517,7 +3391,6 @@ source = "git+https://github.com/MattJackson/rustls?rev=02181ad51e81f9cb33a06481
 dependencies = [
  "aws-lc-rs",
  "once_cell",
- "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -3530,7 +3403,6 @@ version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f4925028c7eb5d1fcdaf196971378ed9d2c1c4efc7dc5d011256f76c99c0a96"
 dependencies = [
- "web-time",
  "zeroize",
 ]
 
@@ -3870,6 +3742,12 @@ dependencies = [
  "memchr",
  "pin-project-lite",
 ]
+
+[[package]]
+name = "stats_alloc"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c0e04424e733e69714ca1bbb9204c1a57f09f5493439520f9f68c132ad25eec"
 
 [[package]]
 name = "str0m"
@@ -4514,16 +4392,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "web-time"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
-dependencies = [
- "js-sys",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "webpki-roots"
 version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4547,15 +4415,6 @@ name = "winapi-i686-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
-
-[[package]]
-name = "winapi-util"
-version = "0.1.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
-dependencies = [
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "winapi-x86_64-pc-windows-gnu"

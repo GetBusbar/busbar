@@ -64,7 +64,7 @@ async fn registering_more_units_than_the_custody_cap_refuses_none() {
     let now = busbar_kernel::store::now();
     let key = ungrouped_key(&g, "ticket-register-uncapped", now).await;
     let live = g.served.planes[0].live.current();
-    let node = g.post.node();
+    let node = g.post.node().expect("the fixture Node is alive");
     let owners: Vec<_> = (0..4_097)
         .map(|_| {
             node.ticket_custody.register(

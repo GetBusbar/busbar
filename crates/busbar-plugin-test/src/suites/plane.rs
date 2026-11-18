@@ -326,7 +326,7 @@ fn feed_upstream(
     let mut head = Reply::new();
     encode_upstream_head(&mut head, 200, &[], None, None)
         .expect("plane suite: the upstream head fits a reply");
-    let mut step = |session: &mut PlaneSession, told: &mut Told, flags: u32, bytes: &[u8]| {
+    let step = |session: &mut PlaneSession, told: &mut Told, flags: u32, bytes: &[u8]| {
         let mut next = Told::default();
         must(
             "piece(FROM_UPSTREAM)",
@@ -495,7 +495,7 @@ pub(super) fn run(
         );
     }
     let mut classes: Vec<&str> = port.usage_classes().iter().map(|u| &*u.class).collect();
-    classes.sort_unstable();
+    classes.sort();
     let declared = classes.len();
     classes.dedup();
     assert_eq!(

@@ -7,15 +7,13 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
 use busbar_contract::UnitKey;
-use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Matched, Route};
+use busbar_kernel::guest::{Claimant, GuestList, Matched};
 use busbar_kernel::host_services::{InvocationContext, KernelServices, Nest, NestReply};
 use busbar_kernel::host_units::UnitRecord;
-use busbar_kernel::plane_driver::port::{HttpIn, ServeIn, Served};
+use busbar_kernel::plane_driver::port::{HttpHead, HttpIn, ServeIn, Served};
 use busbar_kernel::plane_driver::port_auth::{subject_identity, Credentials, Principal};
 use busbar_kernel::plane_driver::port_billing::{end_of, PortBilling};
-use busbar_kernel::plane_driver::port_routes::PortRoutes;
 use busbar_kernel::plane_driver::port_session::{ClientSink, ToClient};
 use busbar_kernel::plane_driver::HeadFields;
 
@@ -27,69 +25,11 @@ const PARENT_ADMISSION: &str = "native child has no live parent billing admissio
 /// Built once before the serving generation is published. The same guest precedence rules
 /// choose native, legacy and core claims; matching a core claim never falls through to a plane.
 pub(crate) struct NativeNests {
-    guests: GuestList,
-    destinations: BTreeMap<(String, u32), usize>,
+    pub(crate) guests: GuestList,
+    pub(crate) destinations: BTreeMap<(String, u32), usize>,
 }
 
 impl NativeNests {
-    pub(crate) fn new(snapshot: &DispatchSnapshot) -> Result<Self, String> {
-        let ports: Vec<_> = snapshot
-            .served
-            .ports
-            .iter()
-            .map(|seat| (seat.instance.as_str(), seat.driver.routes()))
-            .collect();
-        Self::seal(snapshot.guests.lines().to_vec(), &ports)
-    }
-
-    fn seal(mut lines: Vec<Line>, ports: &[(&str, &PortRoutes)]) -> Result<Self, String> {
-        let mut destinations = BTreeMap::new();
-        for (seat, (instance, routes)) in ports.iter().enumerate() {
-            for route in &routes.data {
-                // Match exactly the verbs exposed by the native HTTP data mount.
-                let methods = crate::root::port_mount::methods_of(route.methods)
-                    .iter()
-                    .fold(0, |mask, method| mask | method_bit(method.as_str()));
-                if methods == 0 {
-                    continue;
-                }
-                let key = (instance.to_string(), route.route);
-                if destinations.insert(key, seat).is_some()
-                    || lines.iter().any(|line| {
-                        line.claimant == Claimant::Plane(instance.to_string())
-                            && line.route.rung == route.route
-                    })
-                {
-                    return Err("native nested route repeats an admitted plane route".into());
-                }
-                lines.push(Line {
-                    route: Route {
-                        methods,
-                        path_form: if route.pattern.contains('{') {
-                            PATH_PATTERN
-                        } else {
-                            PATH_EXACT
-                        },
-                        path: route.pattern.to_string(),
-                        fields: Vec::new(),
-                        rung: route.route,
-                    },
-                    claimant: Claimant::Plane(instance.to_string()),
-                    dialect: 0,
-                    auth: LineAuth::None,
-                    upgrade: None,
-                    offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
-                });
-            }
-        }
-        let guests = GuestList::seal(lines)
-            .map_err(|why| format!("native nested route table refused: {why:?}"))?;
-        Ok(Self {
-            guests,
-            destinations,
-        })
-    }
-
     fn selected(&self, method: &str, target: &str) -> Option<(usize, u32)> {
         let path = target.split('?').next().unwrap_or_default();
         let Matched::Line(line) = self.guests.matched(method, path, &[]) else {
@@ -234,14 +174,16 @@ impl NativeNests {
                 admission: None,
                 invocation: Some(invocation),
                 route,
-                http: HttpIn {
-                    method: nest.ask.verb.clone(),
-                    path: path.into(),
-                    query: query.into(),
-                    headers: Vec::new(),
+                http: HttpIn::new(
+                    HttpHead::Text {
+                        method: nest.ask.verb.clone(),
+                        path: path.into(),
+                        query: query.into(),
+                        headers: Vec::new(),
+                    },
                     body,
-                    request_id: id.get(),
-                },
+                    id.get(),
+                ),
                 creds: Credentials {
                     bearer: None,
                     principal: Principal::Verified(&identity),

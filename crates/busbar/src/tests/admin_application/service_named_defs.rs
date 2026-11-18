@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait};
 use busbar_contract::persistence::*;
 use std::sync::{
@@ -98,8 +99,7 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -113,6 +113,7 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the configured native backend opens");
@@ -125,7 +126,7 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     });
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -226,8 +227,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -241,6 +241,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the configured native backend opens");
@@ -253,7 +254,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     });
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -354,8 +355,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -369,6 +369,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the configured native backend opens");
@@ -381,7 +382,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     });
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),
@@ -486,8 +487,7 @@ async fn named_defs_propagate_store_overlay_read_failures() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
         &crate::root::boot::axis_test_grammar(),
@@ -501,6 +501,7 @@ async fn named_defs_propagate_store_overlay_read_failures() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the configured native backend opens");
@@ -513,7 +514,7 @@ async fn named_defs_propagate_store_overlay_read_failures() {
     });
     let core = crate::root::real_store::core_over(faults.clone()).await;
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

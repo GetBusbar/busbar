@@ -137,7 +137,7 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
         "advanced": {  },
     });
     document["identity-providers"][operator] = serde_json::json!({
-        "module": operator, "token": {"file": operator_token},
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
@@ -150,7 +150,7 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

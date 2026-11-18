@@ -610,6 +610,7 @@ fn a_config_placement_writes_the_bindings_config_key() {
         )),
         core_cfg: Vec::new(),
         allowed_lifts: Default::default(),
+        known_secrets: Vec::new(),
         placement: busbar_migrate::BagPlacement::Config,
     }];
     let applied = busbar_migrate::apply_settled(
@@ -657,7 +658,7 @@ fn keyfile_guard(
         &marked,
         &|pointer| {
             (pointer == "/credential")
-                .then(|| original.map(str::to_owned))
+                .then(|| original.map(busbar_contract::secure::SecureString::from))
                 .flatten()
         },
         &|file| std::fs::metadata(file).is_ok_and(|meta| meta.is_file()),

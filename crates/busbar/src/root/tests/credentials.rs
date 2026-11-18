@@ -80,7 +80,7 @@ async fn each_app_generation_constructs_its_own_credential_read() {
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             Default::default(),
             None,
             Default::default(),
@@ -140,7 +140,7 @@ async fn each_app_generation_constructs_its_own_credential_read() {
             let rules = Arc::new(crate::root::door_steps::Rules::default())
                 as Arc<dyn busbar_kernel::appbuild::RootRules>;
             let (mut app, rotate, limits) = crate::root::real_store::build_app(
-                config,
+                crate::root::test_plugins::plaintext_listeners(config),
                 Default::default(),
                 None,
                 Default::default(),
@@ -252,7 +252,7 @@ async fn absent_custody_stays_refused_and_complete_custody_retains_no_app_owner(
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             Default::default(),
             None,
             Default::default(),

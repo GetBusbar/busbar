@@ -32,11 +32,12 @@ pub(crate) enum RateMetric {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RateTerms {
-    pub(crate) group_id: Box<str>,
-    pub(crate) rule_id: Box<str>,
-    pub(crate) key_id: Box<str>,
-    pub(crate) instance: Box<str>,
-    pub(crate) resource: Box<str>,
+    // Shared with the current policy and the resolved request: a hold clones the handles, never the text.
+    pub(crate) group_id: Arc<str>,
+    pub(crate) rule_id: Arc<str>,
+    pub(crate) key_id: Arc<str>,
+    pub(crate) instance: Arc<str>,
+    pub(crate) resource: Arc<str>,
     pub(crate) metric: RateMetric,
     pub(crate) threshold: u64,
     pub(crate) policy_revision: u64,
@@ -54,11 +55,12 @@ impl RateTerms {
         ];
         let capacity = 1 + parts
             .iter()
-            .map(|part| part.len() + part.len().to_string().len() + 1)
+            .map(|part| part.len() + decimal_digits(part.len()) + 1)
             .sum::<usize>();
         let mut key = String::with_capacity(capacity);
         for part in parts {
-            key.push_str(&part.len().to_string());
+            // Infallible: fmt::Write into a String only grows it, within the capacity reserved above.
+            let _ = std::fmt::Write::write_fmt(&mut key, format_args!("{}", part.len()));
             key.push(':');
             key.push_str(part);
         }
@@ -80,6 +82,11 @@ impl RateTerms {
         .iter()
         .all(|s| !s.is_empty() && s.len() <= 128 && !s.chars().any(char::is_control))
     }
+}
+
+/// The number of decimal digits `n` is written with (`0` has one).
+fn decimal_digits(n: usize) -> usize {
+    n.checked_ilog10().map_or(1, |digits| digits as usize + 1)
 }
 
 #[derive(Clone, Debug)]
@@ -228,7 +235,12 @@ impl Scope {
     }
 }
 
-type Locked<'a> = Vec<(usize, RwLockWriteGuard<'a, HashMap<String, Scope>>)>;
+/// The write guards of the shards one hold's scopes live in (one per shard; eight inline).
+type Locked<'a> = smallvec::SmallVec<[(usize, RwLockWriteGuard<'a, HashMap<String, Scope>>); 8]>;
+
+/// One hold's captured scopes (at most MAX_RULES). A Vec: inline storage would grow every reservation
+/// and the refusals that return one.
+type Captures = Vec<Captured>;
 
 struct Captured {
     terms: RateTerms,
@@ -296,27 +308,26 @@ impl SelectedRates {
         self.minute()
     }
 
-    fn terms(resolved: &ResolvedSelectedRules) -> Result<Vec<RateTerms>, RateRefusal> {
+    /// The rules' terms, built as `capture` takes them (no intermediate Vec).
+    fn terms(
+        resolved: &ResolvedSelectedRules,
+    ) -> Result<impl ExactSizeIterator<Item = RateTerms> + '_, RateRefusal> {
         if resolved.rows().len() > MAX_RULES
             || (resolved.resource().is_none() && !resolved.rows().is_empty())
         {
             return Err(RateRefusal::bare(RateRefusalKind::InvalidBinding));
         }
-        Ok(resolved
-            .rows()
-            .iter()
-            .map(|row| RateTerms {
-                group_id: row.group_id().into(),
-                rule_id: row.rule_id().into(),
-                key_id: resolved.key_id().into(),
-                instance: resolved.instance().into(),
-                resource: resolved.resource().unwrap_or_default().into(),
-                metric: row.metric(),
-                threshold: row.threshold(),
-                policy_revision: row.policy_revision(),
-                activated_minute: row.activated_minute(),
-            })
-            .collect())
+        Ok(resolved.rows().iter().map(|row| RateTerms {
+            group_id: Arc::clone(row.group_handle()),
+            rule_id: Arc::clone(row.rule_handle()),
+            key_id: Arc::clone(resolved.key_handle()),
+            instance: Arc::clone(resolved.instance_handle()),
+            resource: resolved.resource_handle().cloned().unwrap_or_default(),
+            metric: row.metric(),
+            threshold: row.threshold(),
+            policy_revision: row.policy_revision(),
+            activated_minute: row.activated_minute(),
+        }))
     }
 
     pub(crate) fn reserve(
@@ -352,12 +363,19 @@ impl SelectedRates {
         self.headroom_terms(Self::terms(resolved)?)
     }
 
-    fn capture(&self, terms: Vec<RateTerms>) -> Result<Vec<Captured>, RateRefusal> {
-        if terms.len() > MAX_RULES || terms.iter().any(|term| !term.valid()) {
+    fn capture(
+        &self,
+        terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
+    ) -> Result<Captures, RateRefusal> {
+        let terms = terms.into_iter();
+        if terms.len() > MAX_RULES {
             return Err(RateRefusal::bare(RateRefusalKind::InvalidBinding));
         }
-        let mut captures: Vec<Captured> = Vec::with_capacity(terms.len());
+        let mut captures = Captures::with_capacity(terms.len());
         for terms in terms {
+            if !terms.valid() {
+                return Err(RateRefusal::bare(RateRefusalKind::InvalidBinding));
+            }
             let key = terms.scope_key();
             if captures.iter().any(|held| held.key == key) {
                 return Err(RateRefusal::bare(RateRefusalKind::InvalidBinding));
@@ -375,7 +393,7 @@ impl SelectedRates {
         let mut mask = captures
             .iter()
             .fold(0u64, |mask, row| mask | (1u64 << row.shard));
-        let mut locks = Vec::with_capacity(mask.count_ones() as usize);
+        let mut locks = Locked::new();
         while mask != 0 {
             let index = mask.trailing_zeros() as usize;
             mask &= mask - 1;
@@ -424,7 +442,7 @@ impl SelectedRates {
     fn sweep_next(&self) {
         // A bounded rotating pass; capacity safety never relies on this pass making progress.
         let cursor = self.sweep_cursor.fetch_add(1, Ordering::Relaxed);
-        if cursor % 64 != 0 {
+        if !cursor.is_multiple_of(64) {
             return;
         }
         if let Ok(minute) = self.minute() {
@@ -511,7 +529,7 @@ impl SelectedRates {
 
     fn reserve_terms<C: AsRef<str>>(
         self: &Arc<Self>,
-        terms: Vec<RateTerms>,
+        terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
         classes: &[C],
     ) -> Result<RateHold, RateRefusal> {
         if classes.len() > MAX_CLASSES
@@ -582,7 +600,10 @@ impl SelectedRates {
         })
     }
 
-    fn headroom_terms(&self, terms: Vec<RateTerms>) -> Result<Vec<RateSnapshot>, RateRefusal> {
+    fn headroom_terms(
+        &self,
+        terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
+    ) -> Result<Vec<RateSnapshot>, RateRefusal> {
         let captures = self.capture(terms)?;
         if captures.is_empty() {
             return Ok(Vec::new());
@@ -614,7 +635,7 @@ struct ClassHighwater {
 
 struct RateHold {
     rates: Arc<SelectedRates>,
-    captures: Vec<Captured>,
+    captures: Captures,
     minute: u64,
     phase: Phase,
     classes: Vec<ClassHighwater>,

@@ -229,7 +229,7 @@ curl -s localhost:8080/v1/chat/completions -H 'content-type: application/json' \
 Or the container, which ships a bootable default config, so one line is the whole thing:
 
 ```bash
-docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN getbusbar/busbar
+docker run --rm -p 8080:8080 -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN_SHA256 getbusbar/busbar   # the SHA-256 (hex) of your admin token
 ```
 
 `busbar --validate` checks the selected config and provider catalog, plugin declarations and local artifacts, and built-in `env:` / `file:` secret references without starting the server or opening a Store. It makes no network calls and does not read the Store-backed admin overlay. A pass checks those operator inputs; boot separately recovers and validates the effective configuration and opens its runtime dependencies. Full walkthrough: [Getting started](https://getbusbar.com/docs/getting-started/).
@@ -362,4 +362,5 @@ Single Rust binary, MSRV 1.97, Apache-2.0. Docs at
 [`docs/`](docs/): [getting started](docs/getting-started.md),
 [architecture](docs/architecture.md), [roadmap](docs/roadmap.md), [testing](docs/testing.md),
 [security practices](docs/security/achievements.md) and the
-[1.5.5 to 1.6.0 migration guide](docs/migration-1.6.md).
+[1.5.5 to 1.6.0 migration guide](docs/migration-1.6.md). How to contribute and how the
+project is run: [CONTRIBUTING.md](CONTRIBUTING.md) and [GOVERNANCE.md](GOVERNANCE.md).

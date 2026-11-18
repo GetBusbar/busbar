@@ -12,11 +12,14 @@ use busbar_plugin_abi::records::{tag, Reply, Writer};
 use crate::plane_driver::port_fetch::{PlaneFetch, PlaneFetchReply, PlaneFetchRequest};
 use crate::retry::PortError;
 
-use super::{ConnectorPushSink, PushSink};
+use super::ConnectorPushSink;
+
+/// One recorded fetch, as the sink made it.
+type FetchCall = (u64, String, String, u32, Vec<u8>);
 
 struct Fetch {
     status: u16,
-    calls: Mutex<Vec<(u64, String, String, u32, Vec<u8>)>>,
+    calls: Mutex<Vec<FetchCall>>,
 }
 impl PlaneFetch for Fetch {
     fn fetch<'a>(

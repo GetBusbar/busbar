@@ -411,7 +411,16 @@ fn a_plane_with_a_manifest_alias_parses_under_the_alias_at_start_and_at_reload()
     )
     .unwrap();
     let start = scanned(&dir);
-    assert_eq!(start.loadable().len(), 1, "{:?}", start.skipped());
+    assert_eq!(
+        start.loadable().len(),
+        1,
+        "{:?}",
+        start
+            .skipped()
+            .iter()
+            .map(|s| (&s.file, &s.reason))
+            .collect::<Vec<_>>()
+    );
     let registered = crate::root::boot::Registered {
         planes: vec![(MODULE.to_owned(), Some(FILE.to_owned()))],
         linked_styles: Vec::new(),

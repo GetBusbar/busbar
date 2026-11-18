@@ -284,7 +284,6 @@ pub struct AcceptedConnection {
     local: Box<str>,
     alpn: Box<str>,
     sni: Box<str>,
-    tls_present: bool,
     peer_certificate: SecureVec,
     // Backing fields drop first. The same facts Arc may outlive both socket and connection task.
     _credit: StorageCredit,
@@ -364,7 +363,6 @@ impl AcceptedConnection {
             local,
             alpn,
             sni,
-            tls_present: tls_sni.is_some(),
             peer_certificate: certificate,
             _credit: credit,
         })
@@ -380,9 +378,6 @@ impl AcceptedConnection {
     }
     pub fn sni(&self) -> &str {
         &self.sni
-    }
-    pub fn tls_present(&self) -> bool {
-        self.tls_present
     }
     pub fn peer_certificate(&self) -> &[u8] {
         self.peer_certificate.as_slice()

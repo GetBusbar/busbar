@@ -42,7 +42,6 @@ pub(crate) fn make_root_cfg(
 
         endpoint_resources: Default::default(),
         oauth_as: None,
-        credentials: Default::default(),
         public_url: None,
         tls: None,
         admin_listen: busbar_kernel::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
@@ -3074,7 +3073,7 @@ fn rate_card_of(entries: &[&str]) -> std::collections::BTreeMap<String, config::
 fn test_validate_completeness_refusal_precedes_the_unknown_model_error() {
     let mut cfg = cost_cfg(&["a", "b", "c"]);
     cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&["a", "nope"])));
-    let (result, _) = validate_with_rate_warnings(&cfg);
+    let result = validate(&cfg);
     let errors = result.expect_err("a partial card with an unknown model is refused");
     assert_eq!(errors.len(), 2, "{errors:?}");
     assert_eq!(
@@ -3098,7 +3097,7 @@ fn test_validate_missing_rates_warn_but_unknown_models_still_refuse() {
     cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&[
         "some-other-model",
     ])));
-    let (result, _) = validate_with_rate_warnings(&cfg);
+    let result = validate(&cfg);
     let joined = result
         .expect_err("an unknown rate-card model remains invalid")
         .join("\n");
@@ -3134,7 +3133,7 @@ fn test_validate_unpriced_class_with_billing_on_refuses_boot() {
     ])));
     cfg.models
         .insert("some-priced-model".to_string(), make_model("p", 10));
-    let (result, _) = validate_with_rate_warnings(&cfg);
+    let result = validate(&cfg);
     let errors = result.expect_err("a present card silent about a configured model refuses boot");
     assert_eq!(
         errors,
@@ -3206,7 +3205,7 @@ fn test_validate_rate_card_refuses_naming_every_missing_model() {
     let mut cfg = cost_cfg(&["alpha", "long-model-name"]);
 
     cfg.rate_card = Some(rate_card_for_actual_plane(rate_card_of(&[])));
-    let (result, _) = validate_with_rate_warnings(&cfg);
+    let result = validate(&cfg);
     let errors = result.expect_err("a present empty card refuses every configured model");
     assert_eq!(
         errors,

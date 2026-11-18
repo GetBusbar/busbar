@@ -167,6 +167,8 @@ fn completing_a_later_replay_drops_the_earlier_public_waker_outside_guards() {
                 "",
             ))),
         );
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+        crate::tests::accept_plaintext(&c, &[OWNER]);
         c.declare_need(OWNER, NeedId(0), "frames", EGRESS_OPERATOR_INFRASTRUCTURE)
             .unwrap();
         let id = c
@@ -262,6 +264,8 @@ fn a_judgement_completion_wakes_a_public_wait_without_holding_its_answer() {
         None,
         Arc::new(move |_, _| waking.observe()),
     ));
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+    crate::tests::accept_plaintext(&c, &[OWNER]);
     c.declare_over(OWNER, NeedId(0), "bytes").unwrap();
     let id = c
         .open(
@@ -328,6 +332,8 @@ fn a_proxy_judgement_can_reenter_the_same_connections_public_wait() {
             "",
         ))),
     );
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+    crate::tests::accept_plaintext(&c, &[OWNER]);
     c.declare_need(OWNER, NeedId(0), "frames", EGRESS_OPERATOR_INFRASTRUCTURE)
         .unwrap();
     let id = c
@@ -576,6 +582,9 @@ fn an_asynchronous_proxy_hop_failure_names_the_proxy() {
                 "",
             )),
         );
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A): the
+        // plaintext proxy hop is admitted, so the hop's own failure is what is named.
+        crate::tests::accept_plaintext(&c, &[OWNER]);
         let id = c.open(
             OWNER,
             NeedId(0),

@@ -66,7 +66,7 @@ use busbar_contract::abi::host::service::DEST_METADATA;
 const IMDS: &str = "169.254.169.254";
 
 fn deployment(providers: &[(&str, &str, &[&str])], security: &str) -> RootCfg {
-    crate::root::linked::register_stores(&crate::LINKED);
+    crate::root::linked::register_stores();
     let mut defs = std::collections::HashMap::new();
     let mut yaml = String::from("store: {module: memory}\nmodels: {}\nproviders:");
     yaml.push_str(if providers.is_empty() { " {}\n" } else { "\n" });
@@ -259,7 +259,7 @@ async fn provider_configuration_never_grants_global_hostname_authority_across_re
     let reloaded = deployment(&[("b", "https://model-b.internal", &[])], "");
     let store = crate::root::real_store::core().await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        reloaded,
+        crate::root::test_plugins::plaintext_listeners(reloaded),
         Default::default(),
         None,
         Default::default(),

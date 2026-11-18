@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait as _};
 use busbar_contract::records::{MeteringDelta, VirtualKey, UNIT_INPUT};
 use busbar_kernel::cost::CostModel;
@@ -88,12 +89,13 @@ impl Fixture {
         let crate::root::min3_boot::fixture::Fixture {
             backend: backend,
             rules,
+            owners: _owners,
         } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
             .await
             .expect("the configured actual Store opens");
         let core = crate::root::real_store::core_over(backend).await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            config,
+            crate::root::test_plugins::plaintext_listeners(config),
             plugin_config,
             None,
             Default::default(),

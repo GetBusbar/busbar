@@ -31,6 +31,7 @@ use busbar_plugin_abi::host_side::pool::Pool;
 use busbar_plugin_abi::host_side::scrub::Scrub;
 use busbar_plugin_abi::host_side::watch::ENTRY_DESCRIBE;
 use busbar_plugin_abi::need::{egress, need_flag, op};
+use busbar_plugin_abi::plugin::{ENDPOINTS_MAX, ENDPOINT_DEST_MAX};
 use busbar_plugin_abi::records::{tag, CeilingRec, EndpointRec, Records};
 use busbar_plugin_abi::types::KindCode;
 
@@ -148,7 +149,7 @@ impl ImagesBuilder {
         let row = crate::watchdog::ceiling_row(&declared, blocking).map_err(|have| Refusal {
             code: RefusalCode::DescribeInvalid,
             field: "describe.ceiling",
-            plugin: Some(identity.to_owned()),
+            plugin: Some(Box::from(identity)),
             have,
             want: "one CeilingRec per kind method bit 0..=55 or CEIL_OPEN".to_owned(),
             link: None,
@@ -614,11 +615,6 @@ impl Registry {
         })
     }
 
-    /// The registry's slot table (the watchdog thread and the adapters' leases).
-    pub(crate) fn slots(&self) -> &Arc<SlotTable> {
-        &self.slots
-    }
-
     /// The scrub set of the instance that owns watchdog slot `slot` (its slot record, §10.6): what custody
     /// registers every value it hands that instance in (§12.2 step 5). None: the slot is not live.
     pub fn scrub_of(&self, slot: u32) -> Option<Arc<Scrub>> {
@@ -864,6 +860,7 @@ impl Registry {
             let port: Arc<dyn SecretPort> = Arc::new(crate::adapters::secret::SecretAdapter::new(
                 proxy,
                 Arc::clone(&needs),
+                opened.errors,
             ));
             Ok(port)
         })
@@ -960,7 +957,7 @@ impl Registry {
         prepared: PreparedInstance,
         needs: &Arc<N>,
         refs: &Arc<dyn RefSource>,
-    ) -> BoxFut<'_, Result<(Arc<dyn HookPort>, InstanceLimits), OpenError>> {
+    ) -> BoxFut<'_, HookOpened> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         let refs = Arc::clone(refs);
@@ -1698,8 +1695,8 @@ fn decode_errors<'a>(
         return Err(refuse(format!("body {} bytes", body.len())));
     }
     let mut numbers: Vec<u16> = Vec::with_capacity(body.len() / 2);
-    for (index, pair) in body.chunks_exact(2).enumerate() {
-        let n = u16::from_le_bytes([pair[0], pair[1]]);
+    for (index, pair) in body.as_chunks::<2>().0.iter().enumerate() {
+        let n = u16::from_le_bytes(*pair);
         if n == 0 || n > 9999 {
             return Err(refuse(format!("{n} at index {index}")));
         }
@@ -1734,7 +1731,7 @@ fn name_conflict<'a, W: Iterator<Item = &'a str>>(
     let conflict = |field: &'static str, word: &str| Refusal {
         code: RefusalCode::NameConflict,
         field,
-        plugin: Some(identity.to_owned()),
+        plugin: Some(Box::from(identity)),
         have: word.to_owned(),
         want: "a word no other admitted plugin answers to".to_owned(),
         link: None,
@@ -1767,13 +1764,9 @@ pub struct DeclaredEndpoint {
     pub op: u32,
     /// The `NeedRec.flags` encoding: TLS bits 0..=3 and the egress class in bits 16..=19.
     pub flags: u32,
-    /// The destination the plugin declared, at most `MAX_DEST` bytes of UTF-8.
+    /// The destination the plugin declared, at most `ENDPOINT_DEST_MAX` bytes of UTF-8.
     pub dest: Box<str>,
 }
-
-/// The most ENDPOINT records an answer may carry and the longest dest (§3, round 32).
-const MAX_ENDPOINTS: usize = 16;
-const MAX_DEST: usize = 2_048;
 
 /// §3: the ENDPOINT records of a CHECK answer, in answer order. More than 16, a dest over 2,048 bytes or not
 /// UTF-8, an op other than OPEN/FETCH, an egress above `LOOPBACK_ALLOWED`, the retired 0x200 or any other
@@ -1790,7 +1783,7 @@ fn decode_endpoints(answer: &[u8], name: &str) -> Result<Vec<DeclaredEndpoint>, 
         if rec.tag != tag::ENDPOINT {
             continue;
         }
-        if out.len() == MAX_ENDPOINTS {
+        if out.len() == ENDPOINTS_MAX {
             return Err(invalid("more than 16"));
         }
         let (head, dest) = rec
@@ -1803,7 +1796,7 @@ fn decode_endpoints(answer: &[u8], name: &str) -> Result<Vec<DeclaredEndpoint>, 
         if head.flags & !known != 0 || (head.flags >> 16) & 0xF > egress::LOOPBACK_ALLOWED {
             return Err(invalid("flags"));
         }
-        if dest.len() > MAX_DEST {
+        if dest.len() > ENDPOINT_DEST_MAX {
             return Err(invalid("dest over 2,048 bytes"));
         }
         let dest = core::str::from_utf8(dest).map_err(|_| invalid("dest not UTF-8"))?;
@@ -2174,6 +2167,9 @@ pub enum OpenedPort {
     Plane(Arc<dyn PlanePort>),
     Transport(Arc<dyn TransportPort>),
 }
+
+/// An opened hook: its port and the limits the instance settled at open.
+type HookOpened = Result<(Arc<dyn HookPort>, InstanceLimits), OpenError>;
 
 /// Round 34: the three plugin-answer variants carry the resolved ERROR number (`ErrorBook::resolve`; None for a
 /// core-made refusal). Its `Display` writes core's own words and the code only; the plugin text is a separate
@@ -2714,7 +2710,7 @@ pub(crate) fn inspect_checks(
         .map_err(|have| Refusal {
             code: RefusalCode::DescribeInvalid,
             field: "describe.ceiling",
-            plugin: Some(identity.to_owned()),
+            plugin: Some(Box::from(identity)),
             have,
             want: "one CeilingRec per kind method bit 0..=55 or CEIL_OPEN".to_owned(),
             link: None,

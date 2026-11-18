@@ -48,7 +48,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -80,7 +80,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),
@@ -122,7 +122,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     let b =
         json::parse_value(&mint(&delegated_token).await.unwrap().bytes().await.unwrap()).unwrap();
 
-    assert!(a["id"].is_string() && b["id"].is_string());
+    assert!(a["id"].is_str() && b["id"].is_str());
     assert_ne!(
         a["id"], b["id"],
         "a second principal's identical Idempotency-Key must mint a NEW key, not replay A's"
@@ -175,7 +175,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -208,7 +208,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),
@@ -368,10 +368,10 @@ async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["ops"] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
@@ -456,7 +456,7 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -494,7 +494,7 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),
@@ -554,7 +554,7 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
 
     let b = json::parse_value(&mint(&token_b).await.unwrap().bytes().await.unwrap()).unwrap();
 
-    assert!(a["id"].is_string() && b["id"].is_string());
+    assert!(a["id"].is_str() && b["id"].is_str());
     assert_ne!(
         a["id"], b["id"],
         "a second principal's identical Idempotency-Key must mint a NEW key, not replay A's"
@@ -619,7 +619,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -657,7 +657,7 @@ async fn test_admin_v1_distinct_issuer_connectors_obey_verbs_and_revoke_independ
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),

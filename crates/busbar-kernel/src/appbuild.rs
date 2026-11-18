@@ -272,36 +272,6 @@ pub fn load_config_from_disk_compacting_document_patches(
     raw.typed_prepared(read)
 }
 
-/// THE BOOT POST-STORE RECOMPUTE (SECRET-SHORTHAND-BOOT §3.7): once the Store is open, the
-/// generation's documents are `config.yaml` and the providers catalog with the Store's durable
-/// document patches applied, and its grammar is phase 1 over that read's own block with the
-/// overlay's plugin version pins. The documents are typed under that grammar, never under the
-/// start grammar. The caller compares the two on what the documents use (BUSBAR-3170).
-pub fn load_config_under_store(
-    config_path: &std::path::Path,
-    providers_override: Option<&std::path::Path>,
-    env_mode: config::EnvSubst,
-    rules: &dyn RootRules,
-    doc: &config::overlay::OverlayDoc,
-) -> Result<LoadedConfig, String> {
-    let mut patch = doc.document_patch.clone();
-    let mut providers_patch = doc.providers_patch.clone();
-    let raw = read_config_documents(
-        config_path,
-        providers_override,
-        false,
-        env_mode,
-        rules,
-        DocumentPatchLoad {
-            patch: patch.as_mut(),
-            providers_patch: providers_patch.as_mut(),
-            admission: None,
-        },
-    )?;
-    let read = Arc::new(raw.read_with_pins(&doc.plugin_versions)?);
-    raw.typed_prepared(read)
-}
-
 /// The deployment document as one read sees it before its typed parse: read, normalized,
 /// interpolated in the read's env mode, judged for legacy markers and unloaded plane sections, and
 /// with the durable document patch applied. What the read's grammar is computed from
@@ -315,6 +285,9 @@ pub struct RawDocuments<'a> {
     config_text: busbar_contract::secure::SecureString,
     /// Whether `config_text` carries a durable document patch (its parse refusal says so).
     patched: bool,
+    /// The keys that patch itself names (DocumentPatch::submitted_keys): the only names its parse
+    /// refusal may quote.
+    patch_keys: Vec<busbar_contract::secure::SecureString>,
     /// Whether that patch edits `identity-providers`: then config.yaml's operator definitions
     /// (the file-policy reference) are read from `source_text`, not the patched document.
     operator_patched: bool,
@@ -338,7 +311,7 @@ impl RawDocuments<'_> {
         self.read_with_pins(&Default::default())
     }
 
-    pub fn read_with_pins(
+    fn read_with_pins(
         &self,
         pins: &std::collections::BTreeMap<String, String>,
     ) -> Result<config::grammar::PreparedConfigRead, String> {
@@ -400,6 +373,7 @@ impl RawDocuments<'_> {
             source_text,
             config_text,
             patched,
+            patch_keys,
             operator_patched,
             mut unset_env_vars,
         } = self;
@@ -409,7 +383,7 @@ impl RawDocuments<'_> {
         let mut deploy =
             config::deploy_from_yaml_str(config_text.as_ref(), grammar).map_err(|e| {
                 grammar.with_report(if patched {
-                    "patched configuration failed boot parsing".to_owned()
+                    patched_parse_refusal(&e.to_string(), &patch_keys)
                 } else {
                     format!(
                         "config.yaml: invalid YAML: {}",
@@ -527,9 +501,11 @@ pub fn read_config_documents<'a>(
     // The operator credential's reference is config.yaml as read, before any patch (§000.1). Only a
     // patch that edits `identity-providers` can make the composed document's differ.
     let mut operator_patched = false;
+    let mut patch_keys = Vec::new();
     let (config_text, patched) = match patch.filter(|_| !ignore_overlay) {
         Some(patch) => {
             *patch = patch.compacted_against_yaml(&interpolated_config)?;
+            patch_keys = patch.submitted_keys();
             operator_patched = config::operator_file::touches_identity_providers(patch);
             let text = patch.patched_text(&interpolated_config, |keys| {
                 rules.unloaded_plane_refusal(keys).map_or(Ok(()), Err)
@@ -554,9 +530,32 @@ pub fn read_config_documents<'a>(
         source_text: busbar_contract::secure::SecureString::from(interpolated_config),
         config_text,
         patched,
+        patch_keys,
         operator_patched,
         unset_env_vars,
     })
+}
+
+/// The refusal of a patched document's boot parse. Every boot-parse error stays redacted (b381eadf2e),
+/// except one: an unknown field whose name is a key the caller's own patch names. That name is the
+/// caller's input, not configuration it cannot see, so it is quoted; no value ever is (PM ruling
+/// D-REDACT, 2026-11-17).
+fn patched_parse_refusal(
+    error: &str,
+    patch_keys: &[busbar_contract::secure::SecureString],
+) -> String {
+    const REDACTED: &str = "patched configuration failed boot parsing";
+    let Some(rest) = error.split_once("unknown field `").map(|(_, rest)| rest) else {
+        return REDACTED.to_owned();
+    };
+    let Some((name, _)) = rest.split_once('`') else {
+        return REDACTED.to_owned();
+    };
+    if patch_keys.iter().any(|key| key.as_str() == name) {
+        format!("{REDACTED}: unknown field `{name}`")
+    } else {
+        REDACTED.to_owned()
+    }
 }
 
 /// The providers half of a typed read: the catalog file `deploy` names (or the override), read,
@@ -1045,15 +1044,43 @@ pub(crate) fn plane_is_open_for_build(
     (fallback || written.contains(section)) && (fallback || !awaiting_restart.contains(&section))
 }
 
+/// The root's act that completes one candidate once the kernel has built its app.
+pub type CandidateFinish = Box<
+    dyn for<'a> FnOnce(
+            &'a mut App,
+        )
+            -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Result<(), String>>
+        + Send,
+>;
+
 /// Root-owned early resolver and late completion of one unpublished candidate.
 /// The containing transaction owns this object across awaits; response detachment does not abort it.
-pub trait CandidatePreparation: Send + 'static {
-    fn secret_resolver(&self) -> Arc<config::secret::SecretResolver>;
+pub struct CandidatePreparation {
+    secret_resolver: Arc<config::secret::SecretResolver>,
+    finish: CandidateFinish,
+}
 
-    fn finish<'a>(
-        self: Box<Self>,
+impl CandidatePreparation {
+    pub fn new(
+        secret_resolver: Arc<config::secret::SecretResolver>,
+        finish: CandidateFinish,
+    ) -> Self {
+        Self {
+            secret_resolver,
+            finish,
+        }
+    }
+
+    pub fn secret_resolver(&self) -> Arc<config::secret::SecretResolver> {
+        Arc::clone(&self.secret_resolver)
+    }
+
+    pub fn finish<'a>(
+        self,
         app: &'a mut App,
-    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Result<(), String>>;
+    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'a, Result<(), String>> {
+        (self.finish)(app)
+    }
 }
 
 pub trait RootRules: Send + Sync {
@@ -1074,7 +1101,7 @@ pub trait RootRules: Send + Sync {
         _plugins: &'a config::PluginsCfg,
     ) -> busbar_plugin_abi::host_side::caller::BoxFut<
         'a,
-        Result<Option<Box<dyn CandidatePreparation>>, String>,
+        Result<Option<CandidatePreparation>, String>,
     > {
         Box::pin(async move {
             if cfg
@@ -1204,7 +1231,6 @@ pub async fn bootstrap_store_inputs(
         .as_ref()
         .map(|s| crate::governance::at_rest::AtRestKeys::from_signing_secret(&s.secret_bytes()));
     publish_bootstrap_at_rest(Ok(at_rest.is_some()));
-    publish_records_keys(RecordsKeys { at_rest, signer });
     Ok(registry)
 }
 
@@ -1216,14 +1242,6 @@ pub struct RecordsKeys {
     pub at_rest: Option<crate::governance::at_rest::AtRestKeys>,
     /// `auth.signing_key`, `None` when it is absent.
     pub signer: Option<crate::governance::signing::TokenSigner>,
-}
-
-static BOOTSTRAP_RECORDS_KEYS: std::sync::Mutex<Option<RecordsKeys>> = std::sync::Mutex::new(None);
-
-fn publish_records_keys(keys: RecordsKeys) {
-    *BOOTSTRAP_RECORDS_KEYS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(keys);
 }
 
 /// [`RecordsKeys`] from the raw secret bytes a MIN-3 boot's walk resolved (its core secrets), parsed exactly as the
@@ -1246,15 +1264,6 @@ pub fn records_keys_from(signing_key: Option<&[u8]>) -> Result<RecordsKeys, Stri
         .as_ref()
         .map(|s| crate::governance::at_rest::AtRestKeys::from_signing_secret(&s.secret_bytes()));
     Ok(RecordsKeys { at_rest, signer })
-}
-
-/// The latest store bootstrap's [`RecordsKeys`], moved out: `None` before any bootstrap or once taken.
-#[must_use]
-pub fn take_bootstrap_records_keys() -> Option<RecordsKeys> {
-    BOOTSTRAP_RECORDS_KEYS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
 }
 
 /// What the latest store bootstrap resolved of `credentials.at_rest`, before the store opened:

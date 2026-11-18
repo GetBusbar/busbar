@@ -85,7 +85,7 @@ fn authored_routing_distinguishes_absent_null_and_empty_lists() {
 
 #[test]
 fn authored_routing_ignores_unrelated_values_without_changing_boot_acceptance() {
-    let text = "providers: {}\nmodels: {}\npublic_url: 184467440737095516160000000000000000000000000000000001\nsecrets:\n  vault:\n    settings:\n      token: PRIVATE_UNRELATED_CANARY\n";
+    let text = "providers: {}\nmodels: {}\npublic_url: 184467440737095516160000000000000000000000000000000001\nsecrets:\n  vault:\n    module: vault\n    settings:\n      token: PRIVATE_UNRELATED_CANARY\n";
     let deploy = super::super::deploy_from_yaml_str(text, &crate::config::Grammar::empty())
         .expect("normal boot parser remains authoritative");
     let view = busbar_contract::json::to_value(deploy.authored_routing.as_ref().unwrap()).unwrap();

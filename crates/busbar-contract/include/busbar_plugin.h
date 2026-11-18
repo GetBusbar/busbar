@@ -32,7 +32,6 @@ extern "C" {
 /* mech */
 #define BB_MECH_FLAG_RESUME UINT32_C(1) /* [`InHead::flags`]: this call RESUMES a call that answered [`Outcome::Pending`], with the same */
 #define BB_MECH_BLOB_ABSENT UINT32_C(0) /* [`Blob::fmt`]: absent. */
-#define BB_MECH_BLOB_JSON UINT32_C(1) /* [`Blob::fmt`]: one JSON document. */
 #define BB_MECH_BLOB_JSONL UINT32_C(2) /* [`Blob::fmt`]: JSON lines. */
 #define BB_MECH_BLOB_OCTETS UINT32_C(3) /* [`Blob::fmt`]: opaque octets. */
 #define BB_MECH_BLOB_SECRET UINT32_C(1) /* [`Blob::flags`]: the bytes are secret material; the owner zeroises them on release. */
@@ -79,8 +78,6 @@ extern "C" {
 #define BB_MECH_SECTION_REQUIRED UINT32_C(2) /* [`Section::flags`]: a document must carry the section when the plugin is linked. */
 #define BB_MECH_SECTION_CONSUMED UINT32_C(4) /* [`Section::flags`]: the plugin reads the section but does not own its grammar. */
 #define BB_MECH_SECTION_SELECTS UINT32_C(16) /* [`Section::flags`]: this section's presence uses the plane (it selects it at boot, Law 7). */
-#define BB_MECH_EXT_DECLARES "declares" /* The `declares` document's key in a door's `Statement::extensions`. */
-#define BB_MECH_EXT_REFERENCE_FIELDS "reference_fields" /* The reference-capable, non-secret settings fields' key in a door's `Statement::extensions`. */
 #define BB_MECH_EXT_SPAN_RECORDS "span_records" /* The full span records' key in an export door's `Statement::extensions`. */
 #define BB_MECH_EXT_WHOLE_BATCHES "whole_batches" /* The whole-batch carriage key in an export door's `Statement::extensions`. */
 #define BB_MECH_SLOT_VALIDATE UINT32_C(0) /* `validate`. */
@@ -105,15 +102,18 @@ extern "C" {
 #define BB_MECH_MECHANISM_VERSION UINT32_C(2) /* The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION`. */
 #define BB_MECH_DOOR_MAGIC UINT64_C(0x4c50524142535542) /* ASCII `"BUSBARPL"`, little-endian: a door's first eight bytes. Deliberately not the retired */
 #define BB_MECH_DOOR_SYMBOL "busbar_plugin_door" /* The ONE symbol a plugin exports, NUL-terminated for `dlsym`. */
+#define BB_MECH_BLOB_JSON UINT32_C(1) /* A public JSON blob's wire format. */
+#define BB_MECH_EXT_DECLARES "declares" /* The `declares` document's key in a door's `Statement::extensions`. */
+#define BB_MECH_EXT_REFERENCE_FIELDS "reference_fields" /* The reference-capable, non-secret settings fields' key in a door's `Statement::extensions`. */
 
 /* measurement */
-#define BB_MEASUREMENT_MAX_MEASUREMENT_CLASSES ((size_t)64) /* Maximum immutable declarations and cumulative counts per invocation. */
 #define BB_MEASUREMENT_UNITS_ESTIMATED UINT32_C(0) /* Legacy plane-only estimate; rejected by common measurement batches. */
 #define BB_MEASUREMENT_UNITS_REPORTED UINT32_C(1) /* A factual whole-unit report; pricing and attribution belong to the host. */
 #define BB_MEASUREMENT_UNITS_FLOOR UINT32_C(2) /* [`UnitCount::source`]: the legacy plane's floor for a delivered reply whose far-end usage could not be */
 #define BB_MEASUREMENT_UNITS_ESTIMATED_MICROS UINT32_C(3) /* An estimated count whose amount is an exact scale-six mantissa; never billed. */
 #define BB_MEASUREMENT_UNITS_REPORTED_MICROS UINT32_C(4) /* A reported count whose amount is an exact scale-six mantissa. */
 #define BB_MEASUREMENT_UNITS_FLOOR_MICROS UINT32_C(5) /* A usage floor whose amount is an exact scale-six mantissa. */
+#define BB_MEASUREMENT_MAX_MEASUREMENT_CLASSES ((size_t)64) /* Maximum immutable declarations and cumulative counts per invocation. */
 
 /* store */
 #define BB_STORE_ABI_VERSION UINT32_C(3) /* Primitive Store ABI: one increment from the version 2 released with v1.5.5. */

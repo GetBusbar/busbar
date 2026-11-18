@@ -12,7 +12,7 @@ pub fn resolve_store_bootstrap(deploy: &DeployCfg) -> Result<RootCfg, Vec<String
 
 /// Non-serving projection with an explicit caller-owned security view. Final
 /// deployment resolution must still validate the complete original policy.
-pub fn resolve_store_bootstrap_with_security(
+pub(crate) fn resolve_store_bootstrap_with_security(
     deploy: &DeployCfg,
     security: &Option<super::SecurityCfg>,
 ) -> Result<RootCfg, Vec<String>> {

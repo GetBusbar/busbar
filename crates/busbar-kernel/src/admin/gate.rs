@@ -176,7 +176,7 @@ pub const HEADER_CLIENT_REQUEST_ID: &str = "x-client-request-id";
 pub const HEADER_TRACEPARENT: &str = "traceparent";
 
 /// The longest client request id the engine keeps.
-pub const CLIENT_REQUEST_ID_MAX: usize = 128;
+pub(crate) const CLIENT_REQUEST_ID_MAX: usize = 128;
 
 /// A client `X-Request-Id` the engine keeps: 1 to 128 of `[A-Za-z0-9._:-]`.
 #[must_use]

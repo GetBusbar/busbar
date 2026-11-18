@@ -300,7 +300,7 @@ pub fn register_protocols(linked: &Linked) {
     }
 }
 
-pub fn register_stores(linked: &Linked) {
+pub fn register_stores() {
     busbar_kernel::preflight::install_linked_rows(RootInstall {
         linked_images: linked_images(),
         registry_build: Some(crate::root::boot::registry_rows),
@@ -315,12 +315,13 @@ pub fn register_stores(linked: &Linked) {
         export_axis: Some(&crate::root::exports::EXPORTS),
         admission: Some(&crate::root::admission::ADMISSION),
         durable: Some(&crate::root::admission::DURABLE),
-        hook_facts: Some(&crate::root::hooks::NATIVE),
+        hook_facts: Some(&crate::root::off_path::hooks::NATIVE),
         auth_chain_module: Some(crate::root::admission::auth_chain_module),
         dispatch_latched: Some(crate::root::admission::dispatch_latched),
         auth_axis: Some(crate::root::dispatch::auth_axis),
 
         in_process_auth: None,
+        native_auth: Some(crate::root::native_operator::answers_auth),
         config_projection: Some(crate::root::door_steps::door_config),
         admitted_grammar: Some(crate::root::boot::admitted_grammar),
     });
@@ -577,7 +578,7 @@ fn catalogue_registry(
 ) -> Result<crate::root::loader::PluginRegistry, String> {
     use crate::root::loader::{LinkedPlugin, PluginRegistry};
 
-    let mut rows: Vec<_> = linked
+    let rows: Vec<_> = linked
         .auths
         .iter()
         .map(|(key, canonical, door)| {

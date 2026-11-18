@@ -27,6 +27,27 @@ coordinate disclosure timing. Confirmed vulnerabilities are published as
 through which we request and issue **CVE** identifiers. We credit reporters who wish to be
 credited once a fix is released.
 
+### CVE identifiers and disclosure
+
+<!-- Source: DES-docs-policy r3 (adopted) §2 items 1-5, PM provisional answers applied. -->
+
+- **Who assigns.** The maintainer decides whether a confirmed vulnerability gets a CVE: one in a
+  released version that has been or will be publicly disclosed. The CVE is requested through a
+  GitHub Security Advisory, with GitHub as the CVE Numbering Authority. The reporter is told the
+  CVE identifier as soon as it is assigned.
+- **Timeline.** The embargo is agreed with the reporter for each report. The advisory is published
+  when the fix ships, and the CVE Record is published within 72 hours of public disclosure. Beyond
+  that and the 48-hour acknowledgement above, the project makes no numeric response commitment.
+- **End-of-life lines.** A vulnerability in a line past its support date (see
+  [supported versions](#supported-versions)) gets a CVE only when it is confirmed on that line, and
+  the record is tagged "unsupported when assigned".
+- **Disputes.** To contest a severity or an assignment decision, write to
+  **security@getbusbar.com**. A dispute that stays unresolved can be taken to the CNA (GitHub) or to
+  the CVE Program.
+- **Backup contact.** There is none today: the bus factor is 1 (see [GOVERNANCE.md](GOVERNANCE.md)).
+- **Advisories.** Each published advisory in [docs/security/advisories/](docs/security/advisories/)
+  lists its CVE identifiers once they are assigned.
+
 ### Safe harbor
 
 We support good-faith security research. If you make a genuine effort to comply with this

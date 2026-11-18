@@ -4,7 +4,7 @@
 //! The dated history and the lookup over it: appending never rewrites, the resolution rule takes
 
 use super::*;
-use crate::cost::{Author, CardEntryDraft, EntryKey, History, LaneClass, RateCard};
+use crate::cost::{Author, CardEntry, CardEntryDraft, EntryKey, History, LaneClass, RateCard};
 
 /// A card pricing one class on one lane at a named rate.
 fn card_at(micro: f64) -> RateCard {
@@ -462,4 +462,160 @@ fn a_tally_names_its_attached_entry_key_and_leaves_an_unattached_card_unbound() 
             lane: "missing".to_owned()
         }
     );
+}
+
+/// A fixed-seed generator (xorshift64*), so a failing history replays exactly.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+}
+
+/// The last instant a random history names; every instant from 0 to here is judged.
+const LAST_INSTANT: u64 = 320;
+
+/// One random history: appends, ordered inserts under their own keys, and voids, with
+/// overlapping, open-ended, empty and back-dated intervals. The keys it voided come back with it.
+fn random_history(rng: &mut Rng) -> (History, Vec<EntryKey>) {
+    let mut history = History::new();
+    let mut voided = Vec::new();
+    for _ in 0..rng.below(14) + 1 {
+        let effective_from = if rng.below(5) == 0 { 0 } else { rng.below(200) };
+        let effective_until = match rng.below(4) {
+            0 => None,
+            1 => Some(effective_from.saturating_sub(rng.below(3))),
+            _ => Some(effective_from + 1 + rng.below(110)),
+        };
+        let author = match rng.below(5) {
+            0 | 1 => Author::Amend {
+                reason_hash: [rng.below(255) as u8; 32],
+            },
+            _ => Author::Config {
+                policy_epoch: rng.below(4),
+            },
+        };
+        let draft = CardEntryDraft {
+            effective_from,
+            effective_until,
+            card: card_at(rng.below(9) as f64 + 1.0),
+            appended_at: rng.below(1_000),
+            author,
+        };
+        match rng.below(10) {
+            0..=5 => {
+                history.append(draft);
+            }
+            6 | 7 => {
+                let key = EntryKey::new(
+                    rng.below(2_000),
+                    [rng.below(4) as u8; 8],
+                    rng.below(9) as u32,
+                );
+                history.insert(key, draft);
+            }
+            _ => {
+                if !history.is_empty() {
+                    let at = rng.below(history.len() as u64) as usize;
+                    let key = history.entries()[at].key();
+                    assert!(history.void(&key));
+                    voided.push(key);
+                }
+                history.append(draft);
+            }
+        }
+    }
+    (history, voided)
+}
+
+/// TODAY'S WALK, kept here as the reference: the highest-keyed live entry of `entries` covering `t`.
+fn walk_at<'e>(entries: &'e [CardEntry], voided: &[EntryKey], t: u64) -> Option<&'e CardEntry> {
+    entries
+        .iter()
+        .rev()
+        .find(|e| !voided.contains(&e.key()) && e.covers(t))
+}
+
+/// Today's walk for amendments: the highest-keyed live amendment written after `original` that
+/// covers `t`, else `original`.
+fn walk_after<'e>(
+    entries: &'e [CardEntry],
+    voided: &[EntryKey],
+    original: &'e CardEntry,
+    t: u64,
+) -> &'e CardEntry {
+    entries
+        .iter()
+        .rev()
+        .find(|e| {
+            e.seq() > original.seq()
+                && matches!(e.author(), Author::Amend { .. })
+                && !voided.contains(&e.key())
+                && e.covers(t)
+        })
+        .unwrap_or(original)
+}
+
+/// Every lookup that answers "which entry prices this instant" agrees with the walk over the
+/// entries, at every instant of 1,000 random histories, for the whole history and for a view
+/// pinned below its head.
+#[test]
+fn every_instant_of_random_histories_resolves_as_the_walk_does() {
+    let mut rng = Rng(0x0C0A_57ED_1157_0B1E);
+    for _ in 0..1_000 {
+        let (history, voided) = random_history(&mut rng);
+        let entries = history.entries();
+        let pin =
+            (!entries.is_empty()).then(|| entries[rng.below(entries.len() as u64) as usize].key());
+        let mut views = vec![(history.current(), entries)];
+        if let Some(pin) = pin {
+            let seen = &entries[..entries.partition_point(|e| e.key() <= pin)];
+            views.push((history.snapshot(pin), seen));
+        }
+        for t in 0..=LAST_INSTANT {
+            let want = walk_at(entries, &voided, t);
+            assert_eq!(
+                history.entry_at(t).map(|(id, _)| id),
+                want.map(CardEntry::id),
+                "History::entry_at({t}) of {history:?}"
+            );
+            for (view, seen) in &views {
+                let want = walk_at(seen, &voided, t);
+                assert_eq!(
+                    view.card_at(t).map(|(key, _)| key),
+                    want.map(CardEntry::key),
+                    "card_at({t}) of {view:?}"
+                );
+                assert_eq!(
+                    view.entry_at(t).map(CardEntry::key),
+                    want.map(CardEntry::key),
+                    "entry_at({t}) of {view:?}"
+                );
+                for original in seen.iter() {
+                    let first = seen
+                        .iter()
+                        .find(|e| e.id() == original.id())
+                        .expect("the entry itself");
+                    let want = walk_after(seen, &voided, first, t);
+                    assert_eq!(
+                        view.card_for_entry_era(original.id(), t)
+                            .map(|(key, _)| key),
+                        Some(want.key()),
+                        "card_for_entry_era({}, {t}) of {view:?}",
+                        original.id()
+                    );
+                }
+            }
+        }
+    }
 }

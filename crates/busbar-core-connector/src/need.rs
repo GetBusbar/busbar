@@ -105,7 +105,7 @@ impl Default for NeedLimits {
 /// What one egress class allows a dial: how long to connect, how long one read or write may take,
 /// and whether the instance's own trust anchor may be added to the class's roots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DialPolicy {
+pub(crate) struct DialPolicy {
     /// The longest a connect may take (capped by `limits.connect_timeout_ms`).
     pub connect_timeout: Duration,
     /// The longest one read or write may take (capped by the chain's deadline).
@@ -516,7 +516,13 @@ where
     }
 
     fn audit_refused(&self, cx: &Caller<'_>, dest: &str, class: u32, why: &str) {
-        crate::egress_audit::dial_refused(dest, Some(class), why, Some((cx.instance, 0)));
+        crate::egress_audit::dial_refused(
+            dest,
+            Some(class),
+            why,
+            Some((cx.instance, 0)),
+            &mut None,
+        );
     }
 
     /// Answer a conn the chain now holds: a = conn id, b = flags, data0 = ALPN, data1 = the

@@ -7,12 +7,11 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_OCTETS, BLOB_SECRET};
+use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::RefusalStatus;
 use busbar_contract::conn::InstanceId;
 use busbar_contract::plane_calls::CancelWrite;
-use busbar_contract::secure::SecureVec;
 use foldhash::{HashMap, HashSet};
 
 use crate::dispatch::export_bindings::Generation;
@@ -274,15 +273,6 @@ pub(crate) fn lossy_text(bytes: &[u8]) -> String {
 #[cold]
 pub(crate) fn outcome_name(outcome: Outcome) -> String {
     format!("{outcome:?}")
-}
-
-/// An OPEN's secret blobs, lent once when the instance opens.
-#[cold]
-pub(crate) fn secret_blobs(secrets: &[SecureVec]) -> Vec<Blob> {
-    secrets
-        .iter()
-        .map(|s| crate::dispatch::lifecycle::blob(s, BLOB_OCTETS, BLOB_SECRET))
-        .collect()
 }
 
 // ---------------------------------------------------------------------------------------------

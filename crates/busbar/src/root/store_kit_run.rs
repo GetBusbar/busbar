@@ -29,12 +29,11 @@
 //! `not-run`.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::persistence::PersistenceBackend;
-use busbar_kernel::persistence::store_kit::{self, Fixture};
+use busbar_kernel::persistence::store_kit;
 
 use super::min3_boot::store_kit::KitStore;
 
@@ -144,73 +143,45 @@ impl Opener for KitStore {
     }
 }
 
-/// The kit's [`Fixture`] over an [`Opener`] and a [`Template`].
-pub(crate) struct KitFixture<O> {
+/// The kit's fixture over an [`Opener`] and a [`Template`]: one open per handle it asks for. The
+/// config for each open is the template's, with the dataset and instance names put in.
+pub(crate) fn kit_fixture<O: Opener + 'static>(
     opener: O,
     template: Template,
-    next: AtomicU64,
-}
-
-/// One case's dataset: its token and its first handle, kept open for the case.
-pub(crate) struct Dataset {
-    token: String,
-    first: Arc<dyn PersistenceBackend>,
-}
-
-impl<O: Opener> KitFixture<O> {
-    pub(crate) fn new(opener: O, template: Template) -> Self {
-        Self {
-            opener,
-            template,
-            next: AtomicU64::new(1),
-        }
-    }
-
-    fn next(&self) -> u64 {
-        self.next.fetch_add(1, Ordering::Relaxed)
-    }
-
-    async fn instance(&self, dataset: &str) -> Arc<dyn PersistenceBackend> {
-        let name = format!("store-kit-{}", self.next());
-        let config = self.template.config(dataset, &name);
-        self.opener
-            .open(&name, config)
-            .await
-            .unwrap_or_else(|refusal| panic!("{} {refusal}", store_kit::MARK))
-    }
-}
-
-#[async_trait::async_trait]
-impl<O: Opener> Fixture for KitFixture<O> {
-    type Dataset = Dataset;
-
-    async fn fresh(&self) -> Dataset {
-        let token = format!("kit-{}", self.next());
-        let first = self.instance(&token).await;
-        Dataset { token, first }
-    }
-
-    async fn open(&self, dataset: &Dataset) -> Arc<dyn PersistenceBackend> {
-        match self.template.scope {
-            Scope::Instance => Arc::clone(&dataset.first),
-            Scope::Shared => self.instance(&dataset.token).await,
-        }
-    }
+) -> store_kit::Fixture {
+    let scope = match template.scope {
+        Scope::Instance => store_kit::Scope::Instance,
+        Scope::Shared => store_kit::Scope::Shared,
+    };
+    let (opener, template) = (Arc::new(opener), Arc::new(template));
+    store_kit::Fixture::new(
+        scope,
+        Box::new(move |dataset, instance| {
+            let (opener, template) = (Arc::clone(&opener), Arc::clone(&template));
+            Box::pin(async move {
+                let config = template.config(&dataset, &instance);
+                opener
+                    .open(&instance, config)
+                    .await
+                    .unwrap_or_else(|refusal| panic!("{} {refusal}", store_kit::MARK))
+            })
+        }),
+    )
 }
 
 /// Run every kit case over `fixture` on `runtime`, each within `case`, all within `total`. `Err`
 /// names the failing case (the kit's own panic text) or the deadline that passed.
-pub(crate) fn run_kit<O: Opener>(
-    runtime: &tokio::runtime::Runtime,
-    fixture: &KitFixture<O>,
+pub(crate) fn run_kit(
+    runtime: &busbar_kernel::rt::Runtime,
+    fixture: &store_kit::Fixture,
     case: Duration,
     total: Duration,
 ) -> Result<(), String> {
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        runtime.block_on(tokio::time::timeout(
-            total,
-            store_kit::run_within(fixture, case),
-        ))
+        // The deadline is made inside the runtime: a tokio timer needs its reactor when it is created.
+        runtime.block_on(async {
+            tokio::time::timeout(total, store_kit::run_within(fixture, case)).await
+        })
     }));
     match ran {
         Ok(Ok(())) => Ok(()),
@@ -432,8 +403,8 @@ pub(crate) fn command(words: &[String]) -> i32 {
 
 /// Everything one run needs, kept alive for it.
 struct Prepared {
-    runtime: tokio::runtime::Runtime,
-    fixture: KitFixture<KitStore>,
+    runtime: busbar_kernel::rt::Runtime,
+    fixture: store_kit::Fixture,
     /// The plugin process resources the registry's slots and ids come from, as `main` keeps
     /// them for the process.
     _process: Arc<busbar_plugin_loader::process::ProcessResources>,
@@ -462,7 +433,7 @@ fn prepare(args: Args) -> Result<Prepared, String> {
             ..busbar_kernel::config::sections::Destinations::default()
         },
     )?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let runtime = busbar_kernel::rt::multi_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("a runtime: {error}"))?;
@@ -471,7 +442,7 @@ fn prepare(args: Args) -> Result<Prepared, String> {
     let store = KitStore::new(&process, guard, builder.finish(), runtime.handle().clone())?;
     Ok(Prepared {
         runtime,
-        fixture: KitFixture::new(store, template),
+        fixture: kit_fixture(store, template),
         _process: process,
     })
 }

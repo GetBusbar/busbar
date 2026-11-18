@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use foldhash::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
 use arc_swap::ArcSwap;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
@@ -39,7 +39,7 @@ pub(crate) struct Held {
     /// The tickets `inner` tracks, read without its lock: a service call on any other ticket
     /// (every call but a driver ticket's) is told so here and takes no lock ([`Held::tracks`]).
     /// Replaced, under `inner`'s lock, whenever a ticket is tracked or stops being tracked.
-    drivers: ArcSwap<HashSet<Ticket>>,
+    pub(crate) drivers: ArcSwap<HashSet<Ticket>>,
 }
 
 impl Held {
@@ -50,12 +50,6 @@ impl Held {
     pub(crate) fn tracks(&self, ticket: Ticket) -> bool {
         let drivers = self.drivers.load();
         !drivers.is_empty() && drivers.contains(&ticket)
-    }
-
-    fn publish(&self, all: &HashMap<Ticket, Cycle>) {
-        // A driver ticket's start or stop republishes the lock-free snapshot; no service call does.
-        let drivers = crate::cold::dispatch::runtime::driver_snapshot(all);
-        self.drivers.store(Arc::new(drivers));
     }
 
     pub(crate) fn track(&self, driver: Ticket) {

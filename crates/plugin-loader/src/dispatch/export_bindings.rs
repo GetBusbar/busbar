@@ -25,15 +25,15 @@ impl Drop for Generation {
 }
 
 #[derive(Default)]
-pub(crate) struct Bindings(Mutex<State>);
+pub(crate) struct Bindings(pub(crate) Mutex<State>);
 
 #[derive(Default)]
-struct State {
+pub(crate) struct State {
     current: Option<Arc<Generation>>,
 
     root: Option<Arc<Generation>>,
-    tickets: HashMap<Ticket, Arc<Generation>>,
-    staged: HashMap<Ticket, Arc<Generation>>,
+    pub(crate) tickets: HashMap<Ticket, Arc<Generation>>,
+    pub(crate) staged: HashMap<Ticket, Arc<Generation>>,
     entering: usize,
     refreshing: Option<Ticket>,
     pending_refresh: bool,
@@ -245,15 +245,6 @@ impl Bindings {
                 waking.wake(ticket);
             }
         }
-    }
-
-    pub(crate) fn worker_pins(&self, worker: u32) -> Vec<(Ticket, Arc<Generation>)> {
-        let state = self.0.lock().unwrap_or_else(|p| p.into_inner());
-        // A wedged worker's replacement forgets the export pins its tickets held.
-        crate::cold::dispatch::runtime::worker_pins(
-            state.tickets.iter().chain(state.staged.iter()),
-            worker,
-        )
     }
 }
 

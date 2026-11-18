@@ -234,7 +234,6 @@ allow-git = [
     "https://github.com/MattJackson/jobserver-rs",
     "https://github.com/MattJackson/rust-stringprep",
     "https://github.com/MattJackson/dunce",
-    "https://github.com/MattJackson/fs_extra",
     # YAML: busbar's opt-in serde_yaml-compatibility patches, offered upstream; exact revisions in
     # the root/dist [patch.crates-io] rows and locks.
     "https://github.com/MattJackson/serde-saphyr",
@@ -255,6 +254,28 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-auth-admin-tokens",
     "https://github.com/GetBusbar/busbar-secret-env",
     "https://github.com/GetBusbar/busbar-secret-file",
+    # Every other first-party plugin dist/default pins, on the canonical GitLab host at its pinned rev
+    # (the fleet repin moves each pin from the github.com mirror to this host; W02: the GitHub export
+    # rewrites these URLs to github.com).
+    "https://github.com/GetBusbar/busbar-auth-header",
+    "https://github.com/GetBusbar/busbar-auth-oauth",
+    "https://github.com/GetBusbar/busbar-auth-oidc",
+    "https://github.com/GetBusbar/busbar-auth-sigv4",
+    "https://github.com/GetBusbar/busbar-auth-webhook-signature",
+    "https://github.com/GetBusbar/busbar-export-file",
+    "https://github.com/GetBusbar/busbar-export-otlp",
+    "https://github.com/GetBusbar/busbar-export-prometheus",
+    "https://github.com/GetBusbar/busbar-export-webhook",
+    "https://github.com/GetBusbar/busbar-hook-complexity",
+    "https://github.com/GetBusbar/busbar-hook-ranking",
+    "https://github.com/GetBusbar/busbar-hook-webrequest",
+    "https://github.com/GetBusbar/busbar-store-memory",
+    "https://github.com/GetBusbar/busbar-store-postgres",
+    "https://github.com/GetBusbar/busbar-store-sqlite",
+    "https://github.com/GetBusbar/busbar-transport-grpc",
+    "https://github.com/GetBusbar/busbar-transport-http",
+    "https://github.com/GetBusbar/busbar-transport-webrtc",
+    "https://github.com/GetBusbar/busbar-transport-ws",
     # postgres-protocol fork at its exact rev, via busbar-store-postgres in dist/default (busbar#429).
     "https://github.com/MattJackson/rust-postgres",
 ]

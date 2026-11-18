@@ -2,6 +2,15 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Guarded operator document publication, inside the existing native durable owner.
+//!
+//! Off the request path (lint ruling Q4; unchanged, at its path, declared under `off_path` and
+//! still reached as `crate::durable::documents`): every caller, at the move, is the root's
+//! `RootDurable` (`busbar/src/root/admission.rs`), whose `DurableFs::inspect_document`,
+//! `replace_document` and `recover_document` the kernel's `DurableFs` trait declares for the
+//! startup config-document conversion (`busbar-kernel/src/durable.rs`: "only the startup owner
+//! with a confirmed PendingReplace checkpoint"; no other caller in the workspace), and
+//! `migration_secrets.rs` (the Windows identity readers, a migration step); no request path
+//! reaches them.
 use busbar_contract::secure::SecureVec;
 use std::{io, path::Path};
 

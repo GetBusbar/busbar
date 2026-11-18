@@ -67,7 +67,11 @@ fn a_changed_operation_id_is_found() {
 
 #[test]
 fn a_removed_response_status_is_found() {
-    let found = changes(BASE, &BASE.replace(r#","401":{"description":"no"}"#, ""));
+    // BASE breaks its line before `"401"` (1316ef513a), so the removal names that line break too.
+    let found = changes(
+        BASE,
+        &BASE.replace(",\n\"401\":{\"description\":\"no\"}", ""),
+    );
     assert!(
         found
             .iter()

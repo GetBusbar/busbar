@@ -42,7 +42,9 @@ pub struct SelectedTargetConfig<'a> {
 
 #[derive(Clone)]
 struct CompiledRule {
-    id: Box<str>,
+    // Shared into every resolved request: resolution clones the handles, never the text.
+    group: Arc<str>,
+    id: Arc<str>,
     instance: Box<str>,
     resource: Box<str>,
     metric: LimitMetric,
@@ -210,9 +212,9 @@ impl SelectedPolicy {
         resource: Option<&str>,
     ) -> Result<ResolvedSelectedRules, SelectedPolicyRefusal> {
         Ok(ResolvedSelectedRules {
-            key_id: key.id.clone().into_boxed_str(),
+            key_id: key.id.as_str().into(),
             instance: instance.into(),
-            resource: resource.map(Box::from),
+            resource: resource.map(Arc::from),
             rows: self.applicable_rows(key, instance, resource)?,
             policy_revision: self.revision,
             activated_minute: self.activated_minute,
@@ -226,14 +228,14 @@ impl SelectedPolicy {
         key: &busbar_contract::records::VirtualKey,
         instance: &str,
         resource: Option<&str>,
-    ) -> Result<Box<[ResolvedSelectedRule]>, SelectedPolicyRefusal> {
+    ) -> Result<ResolvedRows, SelectedPolicyRefusal> {
         use busbar_contract::caps::ReasonCode;
         use SelectedPolicyRefusal::{CurrentGroup, InvalidBinding};
         let chain = self
             .cost
             .chain_for(key)
             .map_err(|_| CurrentGroup(ReasonCode::ScopeDenied))?;
-        let mut rows = Vec::new();
+        let mut rows = ResolvedRows::new();
         for &index in chain.group_indices() {
             let group = self.cost.groups().get(index).ok_or(InvalidBinding)?;
             if !group.enabled {
@@ -252,8 +254,8 @@ impl SelectedPolicy {
                     _ => return Err(InvalidBinding),
                 };
                 rows.push(ResolvedSelectedRule {
-                    group_id: group.name.clone().into_boxed_str(),
-                    rule_id: rule.id.clone(),
+                    group_id: Arc::clone(&rule.group),
+                    rule_id: Arc::clone(&rule.id),
                     metric,
                     threshold: rule.threshold,
                     policy_revision: self.revision,
@@ -261,7 +263,7 @@ impl SelectedPolicy {
                 });
             }
         }
-        Ok(rows.into_boxed_slice())
+        Ok(rows)
     }
 
     /// Run against the same validated groups, CostModel and actual target set that the
@@ -287,9 +289,9 @@ impl SelectedPolicy {
                         == group.parent.as_deref()
             });
             if !matching {
-                errors.push(format!(
-                    "groups.{name}: selected policy does not match current group model"
-                ));
+                errors.push(
+                    crate::cold::governance::selected_policy::selected_policy_group_mismatch(name),
+                );
             }
         }
         // Temporary validation indexes are dropped before publication; actual target metadata
@@ -370,9 +372,9 @@ impl SelectedPolicy {
                     .and_then(|group| group.parent.as_deref());
             }
             if counts.values().any(|count| *count > MAX_APPLICABLE) {
-                errors.push(format!(
-                    "groups.{name}: more than 32 applicable selected-resource rules"
-                ));
+                errors.push(
+                    crate::cold::governance::selected_policy::selected_policy_too_many_rules(name),
+                );
             }
             // A provisioned child inherits the nearest template plus this complete parent chain.
             if let Some(template) = crate::config::groups::resolve_child_default(groups, name) {
@@ -384,7 +386,7 @@ impl SelectedPolicy {
                     }
                 }
                 if counts.values().any(|count| *count > MAX_APPLICABLE) {
-                    errors.push(format!("groups.{name}.child_default: child would exceed 32 applicable selected-resource rules"));
+                    errors.push(crate::cold::governance::selected_policy::selected_policy_child_too_many_rules(name));
                 }
             }
         }
@@ -513,15 +515,26 @@ fn compile_row(
 ) -> Option<CompiledRule> {
     let selected = limit.selected.as_ref()?;
     if !limit.valid_selected_shape() {
-        errors.push(format!("groups.{group}: invalid selected-resource rule"));
+        errors.push(crate::cold::governance::selected_policy::selected_policy_invalid_rule(group));
         return None;
     }
     match resources.get(&(selected.instance(), selected.resource())) {
-        None => errors.push(format!("groups.{group}: selected rule `{}` names an unavailable instance/resource", selected.id())),
-        Some(false) if limit.metric == LimitMetric::Tokens => errors.push(format!("groups.{group}: selected token rule `{}` requires attempt accounting on every matching target", selected.id())),
+        None => errors.push(
+            crate::cold::governance::selected_policy::selected_policy_unavailable_target(
+                group,
+                selected.id(),
+            ),
+        ),
+        Some(false) if limit.metric == LimitMetric::Tokens => errors.push(
+            crate::cold::governance::selected_policy::selected_policy_token_accounting(
+                group,
+                selected.id(),
+            ),
+        ),
         _ => {}
     }
     Some(CompiledRule {
+        group: group.into(),
         id: selected.id().into(),
         instance: selected.instance().into(),
         resource: selected.resource().into(),
@@ -597,18 +610,21 @@ impl PendingSelectedPolicy {
 
 /// Only the current authenticated resolver in this module may construct this bound result.
 /// No public constructor or raw key/rule-vector adapter exists.
+/// A request's applicable rows: at most MAX_APPLICABLE (32), eight inline.
+type ResolvedRows = smallvec::SmallVec<[ResolvedSelectedRule; 8]>;
+
 pub(crate) struct ResolvedSelectedRules {
-    key_id: Box<str>,
-    instance: Box<str>,
-    resource: Option<Box<str>>,
-    rows: Box<[ResolvedSelectedRule]>,
+    key_id: Arc<str>,
+    instance: Arc<str>,
+    resource: Option<Arc<str>>,
+    rows: ResolvedRows,
     policy_revision: u64,
     activated_minute: u64,
 }
 
 pub(crate) struct ResolvedSelectedRule {
-    group_id: Box<str>,
-    rule_id: Box<str>,
+    group_id: Arc<str>,
+    rule_id: Arc<str>,
     metric: RateMetric,
     threshold: u64,
     policy_revision: u64,
@@ -628,6 +644,15 @@ impl ResolvedSelectedRules {
     pub(crate) fn rows(&self) -> &[ResolvedSelectedRule] {
         &self.rows
     }
+    pub(crate) fn key_handle(&self) -> &Arc<str> {
+        &self.key_id
+    }
+    pub(crate) fn instance_handle(&self) -> &Arc<str> {
+        &self.instance
+    }
+    pub(crate) fn resource_handle(&self) -> Option<&Arc<str>> {
+        self.resource.as_ref()
+    }
     pub(crate) fn policy_revision(&self) -> u64 {
         self.policy_revision
     }
@@ -637,10 +662,14 @@ impl ResolvedSelectedRules {
 }
 
 impl ResolvedSelectedRule {
+    #[cfg(test)]
     pub(crate) fn group_id(&self) -> &str {
         &self.group_id
     }
-    pub(crate) fn rule_id(&self) -> &str {
+    pub(crate) fn group_handle(&self) -> &Arc<str> {
+        &self.group_id
+    }
+    pub(crate) fn rule_handle(&self) -> &Arc<str> {
         &self.rule_id
     }
     pub(crate) fn metric(&self) -> RateMetric {

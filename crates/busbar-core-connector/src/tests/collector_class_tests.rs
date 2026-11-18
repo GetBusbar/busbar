@@ -357,9 +357,9 @@ fn only_an_http_or_https_url_names_a_collector() {
     }
 }
 
-/// Plaintext reaches a collector only where its url writes loopback.
+/// Plaintext reaches a collector only where its resolved address is loopback (#297, 67fc01cf5d).
 #[test]
-fn plaintext_reaches_a_collector_only_where_its_url_writes_loopback() {
+fn plaintext_reaches_a_collector_only_where_it_resolves_to_loopback() {
     let j = dial_judge();
     for authority in ["lo.test:4318", "lo6.test:4318", "LO.TEST:4318"] {
         assert_eq!(
@@ -372,8 +372,15 @@ fn plaintext_reaches_a_collector_only_where_its_url_writes_loopback() {
             "the same name over a secure connection: {authority}"
         );
     }
+    // #297 (67fc01cf5d): the loopback-allowed class narrows an accepted plaintext dial to the
+    // RESOLVED address being loopback. A name is not evidence: `public.localhost` resolving to a
+    // public address is refused, however it is written.
+    assert_eq!(
+        open(&j, "public.localhost:4318", false, LA),
+        Err(DEST_PLAINTEXT),
+        "plaintext to a loopback-looking name that resolves to a public address"
+    );
     for (authority, at) in [
-        ("public.localhost:4318", "93.184.216.34:4318"),
         ("127.1:4318", "127.0.0.1:4318"),
         ("[::ffff:127.0.0.1]:4318", "[::ffff:127.0.0.1]:4318"),
     ] {
@@ -408,6 +415,8 @@ fn plaintext_reaches_a_collector_only_where_its_url_writes_loopback() {
     ] {
         assert_eq!(judged(url), Err(DEST_PLAINTEXT), "{url}");
     }
+    // The destination judge only locates the address; the dial is still narrowed by the class on the
+    // resolved address (above: `public.localhost` -> a public address is refused at the dial).
     for (url, at) in [
         ("https://lo.test:4318/v1/traces", "127.0.0.1:4318"),
         (

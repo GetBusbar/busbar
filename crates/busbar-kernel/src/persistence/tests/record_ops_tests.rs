@@ -105,7 +105,9 @@ async fn r1_a_closed_writers_generations_are_swept_and_b_keeps_its_own() {
     assert_eq!(store.control(a_writer), Some(CLOSED));
     assert_eq!(store.rows_in(receipts_namespace(a_gen).0), 0);
     assert!(store.row(&owner_address(a_gen).unwrap()).is_none());
-    assert_eq!(store.rows_in(receipts_namespace(b_gen).0), 3);
+    // B's three survive; the pass's own delete of A's lease row (SHUTDOWN-HANG F5, 1e569a28da)
+    // is a conditional write of B's and leaves B's fourth receipt.
+    assert_eq!(store.rows_in(receipts_namespace(b_gen).0), 3 + 1);
     assert_eq!(
         store.row(&owner_address(b_gen).unwrap()),
         Some(OWN.to_vec())

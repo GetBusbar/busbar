@@ -19,6 +19,12 @@ name = "busbar-plugin-pack"
 path = "src/pack.rs"
 required-features = ["pack"]
 
+# B-VERIFY: one inbound verify through the auth door, timed (median, p99).
+[[bench]]
+name = "b_verify"
+path = "benches/b_verify.rs"
+harness = false
+
 [[example]]
 name = "dispatch_test_plugin"
 path = "tests/fixtures/dispatch_test_plugin.rs"

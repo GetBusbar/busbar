@@ -97,11 +97,35 @@ pub fn default_port(https: bool) -> u16 {
 /// depends on the host being judged, so none of it belongs on the request path: a deployment with a
 /// denylist of any size re-did the whole parse for every candidate of every dial. It is done here,
 /// where the list is stated, and a judgement is then a scan over values already in their final form.
+/// A list entry as the set holds it: equal to, and hashed like, any spelling of the same name that
+/// differs only in ASCII case, so a lookup answers what the case-blind comparison of every entry
+/// answered, without lower-casing the entry or the host into a new string.
+#[derive(Debug, Clone)]
+struct Folded<'a>(std::borrow::Cow<'a, str>);
+
+impl PartialEq for Folded<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(&other.0)
+    }
+}
+
+impl Eq for Folded<'_> {}
+
+impl std::hash::Hash for Folded<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for byte in self.0.bytes() {
+            state.write_u8(byte.to_ascii_lowercase());
+        }
+        state.write_u8(0xff);
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 struct HostSet<'a> {
-    /// Hostname (and verbatim) entries, trimmed, trailing dots dropped, lowercased. Empty and
-    /// whitespace-only entries are not kept, so they can never match.
-    names: Vec<std::borrow::Cow<'a, str>>,
+    /// Hostname (and verbatim) entries, trimmed, trailing dots dropped, matched without regard to
+    /// ASCII case (one lookup). Empty and whitespace-only entries are not kept, so they can never
+    /// match.
+    names: HashSet<Folded<'a>>,
     /// The entries that are IPv4 literals, parsed.
     v4: HashSet<std::net::Ipv4Addr>,
     /// The entries that are IPv6 literals, parsed.
@@ -149,7 +173,7 @@ impl<'a> HostSet<'a> {
             } else if let Ok(v6) = norm.parse::<std::net::Ipv6Addr>() {
                 set.v6.insert(v6);
             }
-            set.names.push(norm);
+            set.names.insert(Folded(norm));
         }
         set
     }
@@ -167,7 +191,10 @@ impl<'a> HostSet<'a> {
             return false;
         }
 
-        if self.names.iter().any(|n| n.eq_ignore_ascii_case(host)) {
+        if self
+            .names
+            .contains(&Folded(std::borrow::Cow::Borrowed(host)))
+        {
             return true;
         }
 

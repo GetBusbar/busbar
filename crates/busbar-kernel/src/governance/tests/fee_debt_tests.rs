@@ -261,6 +261,9 @@ async fn an_absorbed_obligation_waits_for_its_exact_owner_settled_proof() {
     observer.mark(0, "recovery-bucket", 5, 0, 1);
     let capture = FeeCapture::frozen(&gov.fee_debt, "recovery-bucket", 5, 0, 1, false);
     associate(&gov, &observer, &capture);
+    // As the flusher does (3d43a0341f): the durable flight keeps the absorbing revision first, then
+    // the exact owner is pinned at that kept revision before the flight retires.
+    gov.drive_durable_usage_flight(&captured).await.unwrap();
     assert!(gov.fee_hold(
         parent.operation_id,
         parent.revision,
@@ -273,7 +276,6 @@ async fn an_absorbed_obligation_waits_for_its_exact_owner_settled_proof() {
         parent.revision,
         parent.body_fingerprint
     ));
-    gov.drive_durable_usage_flight(&captured).await.unwrap();
     gov.resolve_fee_transfers(&observer).await;
     assert_eq!(
         observer.status(),
@@ -281,6 +283,18 @@ async fn an_absorbed_obligation_waits_for_its_exact_owner_settled_proof() {
         "a kept Intent is not the owner's settled proof"
     );
     gov.drive_raw_recovery(owner.operation_id).await.unwrap();
+    gov.resolve_fee_transfers(&observer).await;
+    // FEE-DEBT r1 "Split debt": the owner must reach its existing settled proof including the
+    // raw operations it owns; 3d43a0341f resolves only once recovery_children_settled holds. The
+    // owner's own pass settles it and selects its handoff child as an Intent; that child is its
+    // own raw operation, driven by the recovery pulse.
+    assert_eq!(
+        observer.status(),
+        FeeDebtStatus::Pending,
+        "a settled owner whose handoff child is still an Intent is not the settled proof"
+    );
+    let settled = gov.recovery_event(owner.operation_id).unwrap();
+    gov.resume_recovery_children(&settled).await.unwrap();
     gov.resolve_fee_transfers(&observer).await;
     assert_eq!(
         observer.status(),

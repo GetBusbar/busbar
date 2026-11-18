@@ -93,6 +93,17 @@ impl NativeSecrets {
             .unwrap_or_default()
     }
 
+    /// Every admitted native secret source by name and alias, as the start stage published them (empty before).
+    /// A shorthand resolves through its source (01149013b8), so every grammar that carries [`Self::sugars`]
+    /// carries these too.
+    pub(crate) fn sources(&self) -> BTreeMap<String, SecretSource> {
+        self.admitted
+            .load()
+            .as_ref()
+            .map(|admitted| admitted.sources.clone())
+            .unwrap_or_default()
+    }
+
     fn source(&self, module: &str) -> Option<SecretSource> {
         self.admitted
             .load()

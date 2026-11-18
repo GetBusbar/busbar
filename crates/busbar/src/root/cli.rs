@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_kernel::{config, config_validate, diagnostics};
-use busbar_kernel::{load_config_from_disk, DEFAULT_CONFIG_PATH, ENV_CONFIG};
+use busbar_kernel::{DEFAULT_CONFIG_PATH, ENV_CONFIG};
 
 use crate::build_info_line;
 
@@ -458,11 +458,17 @@ pub(crate) fn validate_judged(
     if let Some(refusal) = crate::root::boot::start_refusal() {
         return Err(ValidateRefusal::Load(refusal));
     }
-    let mut loaded = load_config_from_disk(
+    // Read under the boot's own rules: the start stage's native image prepare supplies the grammar (the linked
+    // secret images' shorthand and sources), as every boot read does. The kernel's default rules prepare no
+    // image, so `{ env: .. }` was refused here (BUSBAR-3121) while the same config booted.
+    let process = crate::root::boot::images::process().map_err(ValidateRefusal::Load)?;
+    let rules = crate::root::boot_app::ConfigRules { process };
+    let mut loaded = busbar_kernel::load_config_from_disk_judged(
         config_path,
         providers_override,
         ignore_overlay,
         config::EnvSubst::Lenient,
+        &rules,
     )
     .map_err(ValidateRefusal::Load)?;
     let unset_env_vars = loaded.unset_env_vars.clone();

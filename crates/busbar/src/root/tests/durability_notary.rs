@@ -5,6 +5,8 @@
 //! parks when idle and wakes on the next line; the request path moves its record and signs
 //! nothing; the book holds no signing capability.
 
+use busbar_contract::json::JsonContainerTrait as _;
+use busbar_contract::json::JsonValueTrait as _;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -317,13 +319,13 @@ fn the_book_holds_no_signing_capability() {
     impl NoSigner for crate::root::durability::AuditRing {}
     impl NoSigner for crate::root::durability::HeadFeed {}
     impl NoSigner for busbar_kernel::governance::GovState {}
-    impl NoSigner for busbar_kernel_wal::JournalRecord {}
     impl<T: NoSigner> NoSigner for Arc<T> {}
     impl<T: NoSigner> NoSigner for std::sync::Weak<T> {}
     impl<T: NoSigner> NoSigner for Option<T> {}
     impl<T: NoSigner> NoSigner for Vec<T> {}
     fn no_signer<T: NoSigner>(_: &T) {}
-    #[expect(dead_code, reason = "compile-time field audit only")]
+    // A compile-time field audit: naming it keeps it compiled, with no dead-code escape (BP06).
+    const _: fn(&Durability) = audit;
     fn audit(book: &Durability) {
         let Durability {
             journal,
@@ -339,7 +341,6 @@ fn the_book_holds_no_signing_capability() {
             resumed,
             audit_hints,
             head,
-            resumed_head_node_seq,
             boot_records,
         } = book;
         no_signer(journal);
@@ -355,7 +356,6 @@ fn the_book_holds_no_signing_capability() {
         no_signer(resumed);
         no_signer(audit_hints);
         no_signer(head);
-        no_signer(resumed_head_node_seq);
         no_signer(boot_records);
     }
 }
@@ -429,7 +429,7 @@ async fn ephemeral_journal_is_bounded_after_n_requests() {
             .prepare_audit_page(1, sample, None)
             .unwrap();
         let page: busbar_contract::json::Value =
-            busbar_contract::json::from_slice(&plan.finish().await.unwrap()).unwrap();
+            busbar_contract::json::parse(&plan.finish().await.unwrap()).unwrap();
         let base_seq = page["truncated_below_base"]["base_seq"]
             .as_str()
             .unwrap()

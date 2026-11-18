@@ -26,8 +26,16 @@ pub enum MeteringPricingV1 {
     },
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "role", rename_all = "snake_case", deny_unknown_fields)]
+/// The wire form: `{"version":1,"role":"usage"|"request"}` or
+/// `{"version":1,"role":"fee","lane":<text|null>,"charged":n,"refunded":n,"unknown":n}`.
+///
+/// Written as an internally tagged enum, but decoded through [`FlatWire`]: serde decodes an internally
+/// tagged enum by buffering the object, and a buffered number under the workspace's sonic-rs
+/// `arbitrary_precision` is its exact-number map, never a `u8`/`u64` ("invalid type: map, expected
+/// u8"). The flat form reads every number directly and keeps the tagged form's refusals: an unknown
+/// role or field, a usage/request row carrying fee fields, a fee row missing any of them.
+#[derive(Serialize)]
+#[serde(tag = "role", rename_all = "snake_case")]
 enum Wire {
     Usage {
         version: u8,
@@ -37,7 +45,6 @@ enum Wire {
     },
     Fee {
         version: u8,
-        #[serde(deserialize_with = "required_lane")]
         lane: Option<String>,
         charged: u64,
         refunded: u64,
@@ -45,8 +52,65 @@ enum Wire {
     },
 }
 
-fn required_lane<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<Option<String>, D::Error> {
-    Option::<String>::deserialize(decoder)
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FlatWire {
+    role: FlatRole,
+    version: u8,
+    /// `Some(lane)` when the key is present (its value may be null), `None` when absent.
+    #[serde(default, deserialize_with = "present")]
+    lane: Option<Option<String>>,
+    charged: Option<u64>,
+    refunded: Option<u64>,
+    unknown: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FlatRole {
+    Usage,
+    Request,
+    Fee,
+}
+
+fn present<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(decoder).map(Some)
+}
+
+impl<'de> Deserialize<'de> for Wire {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let flat = FlatWire::deserialize(decoder)?;
+        let fee_fields = flat.lane.is_some()
+            || flat.charged.is_some()
+            || flat.refunded.is_some()
+            || flat.unknown.is_some();
+        match flat.role {
+            FlatRole::Usage if !fee_fields => Ok(Self::Usage {
+                version: flat.version,
+            }),
+            FlatRole::Request if !fee_fields => Ok(Self::Request {
+                version: flat.version,
+            }),
+            FlatRole::Usage | FlatRole::Request => Err(D::Error::custom(
+                "a usage or request pricing carries no fee fields",
+            )),
+            FlatRole::Fee => match (flat.lane, flat.charged, flat.refunded, flat.unknown) {
+                (Some(lane), Some(charged), Some(refunded), Some(unknown)) => Ok(Self::Fee {
+                    version: flat.version,
+                    lane,
+                    charged,
+                    refunded,
+                    unknown,
+                }),
+                _ => Err(D::Error::custom(
+                    "a fee pricing names lane, charged, refunded and unknown",
+                )),
+            },
+        }
+    }
 }
 
 impl TryFrom<Wire> for MeteringPricingV1 {

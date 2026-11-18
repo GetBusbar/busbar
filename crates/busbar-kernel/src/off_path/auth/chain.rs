@@ -91,6 +91,9 @@ impl AdminAuthChain {
                 _ if backed && entry.settings.is_empty() => {}
                 // The built-in `keys` position opens no plugin: the admin chain judges it itself.
                 crate::config::KEYS_MODULE => {}
+                // A native (MIN-3) auth image's admin chain is the root's native one (min3_admin_auth), built over its
+                // opened instance; the door axis does not answer it, so it opens nothing here.
+                other if crate::preflight::native_auth_answers(other) => {}
                 other => {
                     let name = entry.name.as_str();
                     let refused = |e: String| {
@@ -386,22 +389,6 @@ impl AuthMiddleware {
             .iter()
             .find(|e| e.provider == provider)
             .map(|e| std::sync::Arc::clone(&e.calls))
-    }
-
-    pub fn position_points(&self, provider: &str) -> busbar_contract::abi::auth::AuthPoints {
-        use busbar_contract::abi::auth::AuthPoints;
-        if let Some(entry) = self.chain.iter().find(|e| e.provider == provider) {
-            return entry.calls.inbound_points();
-        }
-        let readers = self
-            .readers
-            .iter()
-            .fold(0, |set, r| set | r.calls.inbound_points().bits());
-        if readers == 0 {
-            AuthPoints::HEAD
-        } else {
-            AuthPoints(readers)
-        }
     }
 
     /// The instances the chain holds for `provider` (all, for `None`), in chain order: the admin

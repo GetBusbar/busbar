@@ -154,7 +154,17 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for KeySeed<'_, S> {
                 if super::recognizer::is_core_key(v) {
                     error
                 } else {
-                    E::custom(format!("{error}. {}", names.refusal(v)))
+                    // The reader's own error already ends with its position; the refusal this
+                    // returns gets the position once, from the reader, so drop the inner one.
+                    let text = error.to_string();
+                    let text = text
+                        .rsplit_once(" at line ")
+                        .filter(|(_, at)| {
+                            at.split(", column ")
+                                .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+                        })
+                        .map_or(text.as_str(), |(head, _)| head);
+                    E::custom(format!("{text}. {}", names.refusal(v)))
                 }
             })
     }

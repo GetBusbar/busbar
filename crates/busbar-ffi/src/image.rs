@@ -18,7 +18,7 @@ use std::ffi::OsStr;
 
 use object::{Object, ObjectSegment};
 
-use crate::header::{LinkedPlugin, Plugin, STAMP_SIZE, SYMBOL, StampBytes, stamp_kind};
+use crate::header::{EntryFn, LinkedPlugin, Plugin, STAMP_SIZE, SYMBOL, StampBytes, stamp_kind};
 use crate::raw::{Bytes, KindCode};
 use crate::vt::{Kind, auth, export, hook, kind, plane, secret, store, transport};
 
@@ -121,7 +121,7 @@ impl Opened {
         // native plugins are trusted code (UNSAFE-MIN §2.1 trust note).
         let lib = unsafe { libloading::Library::new(path) }.map_err(ImageError::Load)?;
         // SAFETY: `busbar_plugin` is emitted only by `export!`, with exactly this signature.
-        let symbol = unsafe { lib.get::<extern "C" fn() -> *const Plugin>(SYMBOL) };
+        let symbol = unsafe { lib.get::<EntryFn>(SYMBOL) };
         let entry = match symbol {
             Ok(symbol) => *symbol,
             Err(_) => return Err(ImageError::NoSymbol),

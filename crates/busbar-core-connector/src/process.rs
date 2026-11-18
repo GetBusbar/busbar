@@ -16,37 +16,14 @@ use busbar_contract::abi::host::service::{
     DEST_INTERNAL, DEST_NO_HOST, DEST_PLAINTEXT, DEST_SCHEME, DEST_UNRESOLVABLE,
 };
 use busbar_contract::net::url_host_to_ascii;
-use busbar_contract::transport::trust::EgressTrust;
 use busbar_kernel::config::Destinations;
 use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Destination, Refused};
 
 use crate::guard::{is_loopback, names_loopback, Guard, Resolve, SystemResolver};
-use crate::pool::PoolPosture;
-use crate::registry::{Entry, Transports};
-use crate::{Connector, DialJudge, Judged, JudgedAll, Verdict, WakeTicket};
+use crate::{DialJudge, Judged, JudgedAll, Verdict};
 
-/// THE PROCESS'S CONNECTOR over the framer entries `entries` yields, judging every dial through
-pub fn build_with_secrets(
-    entries: impl FnOnce() -> Result<Vec<Entry>, String>,
-    dest: Arc<dyn DestJudge>,
-    own_ports: &[u16],
-    wake: WakeTicket,
-    pool: PoolPosture,
-    spawn_secrets: crate::spawn_env::SpawnSecretFn,
-) -> Result<Arc<Connector>, String> {
-    let proxy = crate::proxy::from_env()
-        .map_err(|e| crate::cold::lines::prefixed("its proxy environment: ", &e))?;
-    let view = Transports::new(entries()?).map_err(|e| crate::cold::lines::display_text(&e))?;
-    let connector =
-        Connector::serving_with_trust(view, judge(dest, own_ports), EgressTrust::default(), wake)
-            .map_err(|e| crate::cold::lines::prefixed("its connection security: ", &e))?;
-    Ok(Arc::new(
-        connector
-            .pooling(pool)
-            .proxying(proxy)
-            .resolving_spawn_secrets(spawn_secrets),
-    ))
-}
+/// THE PROCESS'S CONNECTOR, built once on the boot path (off the request path: see its definition).
+pub use crate::off_path::process::build_with_secrets;
 
 /// THE PROXY POSTURE, said once at boot (BUSBAR-3149) and audited: the proxy endpoints (never their
 /// credentials), `NO_PROXY`, and whether the guard judges a proxied target by address
@@ -558,11 +535,9 @@ fn not_the_node(
     }
 }
 
-/// The ports the node listens on, read off its listen addresses (`listen`, `admin_listen`): an
-#[must_use]
-pub fn own_ports(listens: &[&str]) -> Vec<u16> {
-    crate::off_path::lines::own_ports(listens)
-}
+// The node's own ports are read once per config (callers: the root's boot and config commit): off the
+// request path.
+pub use crate::off_path::lines::own_ports;
 
 #[cfg(test)]
 #[path = "tests/process_tests.rs"]

@@ -35,7 +35,7 @@ fn describe_open_and_close_log_lines_are_attributed_and_scrubbed_and_64_kib_answ
     let me = std::thread::current().id();
     let mut needs = FakeNeeds::new();
     needs.secret("/password", SECRET.as_bytes());
-    let (h, _) = fx::scrubbed(fx::loud::PLUGIN.plugin(), needs);
+    let h = fx::scrubbed(fx::loud::PLUGIN.plugin(), needs);
 
     let schema = h
         .registry()

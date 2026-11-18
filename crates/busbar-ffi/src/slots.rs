@@ -6,7 +6,7 @@
 //!
 //! `unsafe` here: the value write of `insert_raw`, the `get_mut_raw` value borrow, the `remove_raw` take,
 //! `Sync for Slots`, `tie` (the one lifetime erasure of a chain future that borrows its instance) and
-//! `drop_inst` (def, the in-place drop and the free; the C-CLOSE-PARKED test calls it).
+//! `drop_inst` (def, the two in-place drops and the free; the C-CLOSE-PARKED test calls it).
 
 #![allow(unsafe_code)]
 
@@ -630,7 +630,7 @@ impl<T: Send> OwnedSlot<'_, T> {
     }
 
     /// Probe this handle's own index through the production generation check. A miss leaves it live.
-    pub fn get_if(&mut self, generation: u32) -> Option<&mut T> {
+    fn get_if(&mut self, generation: u32) -> Option<&mut T> {
         let (index, _) = self.identity?;
         self.table.get_mut_raw(index, generation)
     }
@@ -676,10 +676,17 @@ pub const fn unpack(t: Token) -> (bool, u32, u32) {
 static NEXT_INST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// The plugin instance the shims build (IF §6.5). Fields drop in declaration order: every chain (whose
-/// future may borrow `plugin`) and every session drops before `plugin`. No `Drop` impl; do not reorder.
+/// future may borrow `plugin`) drops first, then `owned` (every session, then `plugin`). No `Drop` impl;
+/// do not reorder. `owned` is one field so `drop_inst` can drop it in place apart from `chains`.
 pub struct Inst<P, S, R, X> {
     serial: u64,
     chains: Slots<ChainBox<R, X>>,
+    owned: Owned<P, S>,
+}
+
+/// The part of an [`Inst`] no chain future borrows into while it drops: sessions (they own no borrow of
+/// the instance), then the plugin, in this order.
+struct Owned<P, S> {
     sessions: Slots<S>,
     plugin: P,
 }
@@ -690,19 +697,21 @@ impl<P, S: Send, R, X: Send> Inst<P, S, R, X> {
         Inst {
             serial: NEXT_INST.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             chains: Slots::new(),
-            sessions: Slots::new(),
-            plugin,
+            owned: Owned {
+                sessions: Slots::new(),
+                plugin,
+            },
         }
     }
     pub fn plugin(&self) -> &P {
-        &self.plugin
+        &self.owned.plugin
     }
     pub fn serial(&self) -> u64 {
         self.serial
     }
     /// The session table (sessions own no borrow of the instance).
     pub fn sessions(&self) -> &Slots<S> {
-        &self.sessions
+        &self.owned.sessions
     }
     /// Box the instance for INSTANCE: its address, provenance exposed (the host turns it back into the
     /// `inst` pointer of every later entry with `with_exposed_provenance`).
@@ -719,23 +728,42 @@ impl<P, S: Send, R, X: Send> Inst<P, S, R, X> {
 /// whole value while chain futures still hold their borrows of `plugin` (Miri: C-CLOSE-PARKED).
 ///
 /// # Safety
-/// `inst` is the address `Inst::into_instance` returned for an `I` (exposed provenance), and nothing
+/// `inst` is the address `Inst::into_instance` returned for an `Inst<P, S, R, X>` (exposed provenance), and nothing
 /// uses it again.
-/// It must be non-null, aligned, initialized, still allocated by `Box<I>` and not previously dropped.
+/// It must be non-null, aligned, initialized, still allocated by `Box<Inst<P, S, R, X>>` and not previously dropped.
 /// No entry may overlap teardown. For `Inst`, outstanding internal chain borrows end when its first
 /// field destructors run, before `plugin` is dropped; no external reference may be used during or
 /// after teardown. The caller is `shim::close` after the host's last `Instance` owner is released.
 /// If a field destructor panics, unwinding skips the allocation-free step below; the caller must not
 /// retry destruction of that partially dropped value. The outer shim contains the panic as FAULT.
-pub(crate) unsafe fn drop_inst<I>(inst: *const c_void) {
-    let p = inst.cast::<I>().cast_mut();
-    // SAFETY: by the contract `p` is the live, uniquely owned `I` from `Box::into_raw`; dropping it in place
-    // through the raw pointer runs the field drops in order without invalidating the borrows the chain
-    // futures hold until they are dropped first.
-    unsafe { core::ptr::drop_in_place(p) };
-    // SAFETY: the same Box allocation, now dropped; MaybeUninit<I> has I's size and alignment, so the
-    // original allocator/layout are preserved. It frees storage without running I's destructor twice.
-    drop(unsafe { Box::from_raw(p.cast::<core::mem::MaybeUninit<I>>()) });
+pub(crate) unsafe fn drop_inst<P, S, R, X>(inst: *const c_void) {
+    let p = inst.cast::<Inst<P, S, R, X>>().cast_mut();
+    // `chains` is dropped in place apart from the rest, then `owned` (sessions, then plugin): a whole-value
+    // `drop_in_place(p)` holds a unique borrow of all of `Inst` for its duration, so a parked chain future
+    // reading `plugin` from its destructor read through a borrow that unique one had invalidated (Miri,
+    // stacked and tree borrows, C-CLOSE-PARKED with the pointer's provenance kept). The two places are
+    // computed without dereferencing `p` (offset_of, provenance kept). As in drop glue, a panicking chain
+    // destructor does not stop `owned` from dropping; that panic then continues unwinding.
+    let base = p.cast::<u8>();
+    let chains = base
+        .wrapping_add(core::mem::offset_of!(Inst<P, S, R, X>, chains))
+        .cast::<Slots<ChainBox<R, X>>>();
+    let owned = base
+        .wrapping_add(core::mem::offset_of!(Inst<P, S, R, X>, owned))
+        .cast::<Owned<P, S>>();
+    let chains = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: by the contract `p` is the live, uniquely owned `Inst` from `Box::into_raw`; `chains` is its
+        // field, dropped once, first.
+        unsafe { core::ptr::drop_in_place(chains) }
+    }));
+    // SAFETY: the same `Inst`'s `owned` field, dropped once, after every chain that could borrow `plugin`.
+    unsafe { core::ptr::drop_in_place(owned) };
+    if let Err(payload) = chains {
+        std::panic::resume_unwind(payload);
+    }
+    // SAFETY: the same Box allocation, now dropped; MaybeUninit<Inst> has Inst's size and alignment, so
+    // the original allocator/layout are preserved. It frees storage without running a destructor twice.
+    drop(unsafe { Box::from_raw(p.cast::<core::mem::MaybeUninit<Inst<P, S, R, X>>>()) });
 }
 
 /// One chain: its boxed future (I5), its check id and the adapter's per-chain state `X` (the inbox and
@@ -1278,13 +1306,15 @@ mod tests {
     fn a_parked_chain_drops_before_its_plugin() {
         type I = Inst<Plugin, (), (), ()>;
         static SAW_ALIVE: AtomicBool = AtomicBool::new(false);
-        let address = Box::new(I::new(Plugin {
+        // The instance pointer as `into_instance` makes it (the leaked Box), kept as a pointer: through the
+        // integer handle Miri sees a wildcard provenance and cannot check this drop's borrows (and the
+        // miri job's -Zmiri-strict-provenance refuses the round trip). `inst` is a shared view of the same
+        // allocation, taken after the pointer, and only read until `drop_inst` below.
+        let leaked: &'static mut I = Box::leak(Box::new(I::new(Plugin {
             alive: AtomicBool::new(true),
-        }))
-        .into_instance();
-        let raw = core::ptr::with_exposed_provenance::<c_void>(address as usize);
-        // SAFETY: `raw` is the live boxed instance just made; it is only read until `drop_inst` below.
-        let inst = unsafe { &*raw.cast::<I>() };
+        })));
+        let raw = (&raw mut *leaked).cast::<c_void>().cast_const();
+        let inst: &I = leaked;
         let parked = Parked {
             plugin: inst.plugin(),
             saw_alive: &SAW_ALIVE,
@@ -1299,8 +1329,8 @@ mod tests {
         let mut cb = ChainBox::new(tie(fut), id, ());
         assert!(ChainRef::new(&mut cb).poll().is_pending());
         assert!(inst.chains().insert_raw(cb).is_some());
-        // SAFETY: `raw` came from `into_instance` and is not used again.
-        unsafe { drop_inst::<I>(raw) };
+        // SAFETY: `raw` came from `Box::into_raw` of an `I` and is not used again.
+        unsafe { drop_inst::<Plugin, (), (), ()>(raw) };
         assert!(SAW_ALIVE.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

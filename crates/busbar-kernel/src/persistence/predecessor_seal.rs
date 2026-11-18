@@ -60,14 +60,16 @@ impl FenceMark {
 
     /// Read a mark row back; a row that does not decode is an error.
     pub fn parse(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() < 16 || &bytes[..8] != FENCE_MAGIC || (bytes.len() - 16) % 8 != 0 {
+        if bytes.len() < 16 || &bytes[..8] != FENCE_MAGIC || !(bytes.len() - 16).is_multiple_of(8) {
             return Err("malformed fence mark".into());
         }
         let lease_expires_ms = u64::from_be_bytes(bytes[8..16].try_into().map_err(error)?);
         let sealed = bytes[16..]
-            .chunks_exact(8)
-            .map(|c| c.try_into().map(u64::from_be_bytes).map_err(error))
-            .collect::<Result<Vec<u64>, String>>()?;
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| u64::from_be_bytes(*c))
+            .collect::<Vec<u64>>();
         if sealed.windows(2).any(|w| w[0] >= w[1]) {
             return Err("fence mark nodes are not ascending".into());
         }
@@ -216,8 +218,8 @@ pub enum PredecessorRetire {
 /// The seal row and the fence mark of one predecessor, as read.
 #[derive(Debug, Clone, Default)]
 pub struct SealState {
-    /// The node's seal row bytes, if present.
-    pub row: Option<Vec<u8>>,
+    /// The node's seal row bytes, if present, kept in wiping custody.
+    pub row: Option<busbar_contract::secure::SecureVec>,
     /// The writer's mark row exactly as read (the compare-and-set's predicate).
     mark_raw: Option<Secret<Vec<u8>>>,
     /// The mark, if present and it decodes.
@@ -286,10 +288,10 @@ impl PredecessorFence {
                 .get(NODE_SCHEMA, &super::id_key(assignment.id))
                 .await
                 .map_err(RetireError::from)?;
-            if reserved
+            // Compared in place: no copy of the reserved row leaves custody.
+            if !reserved
                 .as_ref()
-                .map(|v| v.expose(&crate::seal::lend()).to_vec())
-                != Some(assignment.bytes())
+                .is_some_and(|v| v.expose(&crate::seal::lend())[..] == assignment.bytes()[..])
             {
                 out.refused.push(RefusedNode {
                     id: Some(assignment.id),
@@ -375,7 +377,9 @@ impl PredecessorFence {
             .as_ref()
             .and_then(|v| FenceMark::parse(v.expose(&crate::seal::lend())).ok());
         Ok(SealState {
-            row: row.map(|v| v.expose(&crate::seal::lend()).to_vec()),
+            row: row.map(|v| {
+                busbar_contract::secure::SecureVec::from(v.expose(&crate::seal::lend()).as_slice())
+            }),
             mark_raw,
             mark,
         })
@@ -412,12 +416,6 @@ impl PredecessorFence {
             .decide(predicates, mutations)
             .await
             .map_err(RetireError::from)
-    }
-
-    /// Settle a seal write this task left retained (one round trip on a store that answers).
-    pub async fn settle_seal(&self) -> Result<(), String> {
-        let _gate = self.seals.gate.lock().await;
-        self.seals.resume().await.map(|_| ())
     }
 
     /// The predecessor's journal head and owner (`None`: it never wrote a record).
@@ -469,7 +467,7 @@ pub(super) fn seal_records(
 /// live node). The bytes are returned as read; [`SealRow::parse`] judges them.
 pub async fn read_seal_row(
     journal: &crate::persistence::journal::runtime::RuntimeJournal,
-) -> Result<Option<Vec<u8>>, String> {
+) -> Result<Option<busbar_contract::secure::SecureVec>, String> {
     let rows = seal_records(journal.store().clone())?;
     let row = rows
         .records
@@ -479,5 +477,7 @@ pub async fn read_seal_row(
         .into_iter()
         .next()
         .ok_or("seal row observation missing")?;
-    Ok(row.map(|value| value.expose(&crate::seal::lend()).to_vec()))
+    Ok(row.map(|value| {
+        busbar_contract::secure::SecureVec::from(value.expose(&crate::seal::lend()).as_slice())
+    }))
 }

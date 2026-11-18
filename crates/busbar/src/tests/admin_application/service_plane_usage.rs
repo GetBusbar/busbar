@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -138,7 +139,7 @@ async fn app(cost: CostModel) -> busbar_kernel::state::App {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         crate::root::test_plugins::trusted_config(&directory),
         None,
         Default::default(),

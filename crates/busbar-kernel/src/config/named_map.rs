@@ -149,10 +149,10 @@ impl NamedMapSection {
                     }
 
                     super::validate_token_placement(name, cfg.module.trim(), cfg.token.is_some())?;
-                    Ok(NamedDef::IdentityProvider(cfg))
+                    Ok(NamedDef::IdentityProvider(Box::new(cfg)))
                 }),
             NamedMapSection::Export => read_def(def, &grammar.sugars, used)
-                .map(NamedDef::Export)
+                .map(|cfg| NamedDef::Export(Box::new(cfg)))
                 .map_err(|e| format!("invalid `export.{name}` definition: {e}")),
 
             NamedMapSection::Plane(_) => {
@@ -295,8 +295,8 @@ impl PlaneDefinition<'_> {
 }
 
 pub enum NamedDef {
-    IdentityProvider(IdentityProviderCfg),
-    Export(ExportDefCfg),
+    IdentityProvider(Box<IdentityProviderCfg>),
+    Export(Box<ExportDefCfg>),
 
     Plane {
         section: NamedMapSection,
@@ -308,11 +308,11 @@ impl NamedDef {
     fn install(self, deploy: &mut DeployCfg, name: &str) -> Result<(), String> {
         match self {
             NamedDef::IdentityProvider(cfg) => {
-                deploy.identity_providers.insert(name.to_string(), cfg);
+                deploy.identity_providers.insert(name.to_string(), *cfg);
                 Ok(())
             }
             NamedDef::Export(cfg) => {
-                deploy.export.insert(name.to_string(), cfg);
+                deploy.export.insert(name.to_string(), *cfg);
                 Ok(())
             }
             NamedDef::Plane { section, def } => match section {

@@ -55,7 +55,7 @@ impl SigningKey {
     }
 
     /// The key whose RFC 8032 seed is `seed`, or why the backend refused it.
-    pub fn try_from_seed(seed: &[u8; 32]) -> Result<Self, crypto::Error> {
+    fn try_from_seed(seed: &[u8; 32]) -> Result<Self, crypto::Error> {
         ed25519::SigningKey::from_seed(seed).map(Self)
     }
 
@@ -173,7 +173,7 @@ impl FirstPartyKey {
     }
 }
 
-pub const RELEASE_KEYS_ENV: &str = "BUSBAR_RELEASE_PUBKEY";
+const RELEASE_KEYS_ENV: &str = "BUSBAR_RELEASE_PUBKEY";
 
 pub fn parse_release_keys(spec: &str) -> Result<Vec<FirstPartyKey>, String> {
     Verifier::unrestricted()
@@ -316,7 +316,7 @@ fn retired_signer<'a>(
     Ok(None)
 }
 
-pub const REVOKED_DIGESTS: &[(&str, &str)] = &[];
+const REVOKED_DIGESTS: &[(&str, &str)] = &[];
 
 #[must_use]
 pub fn revoked_digests() -> BTreeMap<String, String> {
@@ -1095,7 +1095,7 @@ fn invalid_public_key(
     }
 }
 
-/// Why [`first_party_signer`] named no key.
+/// Why [`first_party_signer_for`] named no key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FirstPartyUnverified {
     /// Verification could not be performed; never an invalid-proof allowance.
@@ -1147,21 +1147,6 @@ impl std::fmt::Display for FirstPartyUnverified {
             }
         }
     }
-}
-
-pub fn first_party_signer<'k>(
-    manifest: &Manifest,
-    bytes: &[u8],
-    keys: &'k [FirstPartyKey],
-    checks: crate::release_trust::Checks,
-) -> Result<&'k FirstPartyKey, FirstPartyUnverified> {
-    first_party_signer_for(
-        manifest,
-        bytes,
-        keys,
-        checks,
-        crate::release_trust::PLUGIN_TARGET,
-    )
 }
 
 pub fn first_party_signer_for<'k>(

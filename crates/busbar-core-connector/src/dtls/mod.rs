@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use busbar_contract::crypto;
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::kinds::transport::transport::{FP_SHA256, FP_SHA384, FP_SHA512};
-pub use stun::IceCredentials;
+pub use stun::{IceCredentials, IceTerms};
 
 /// How many distinct heard paths (and, apart, admitted candidates) one association remembers.
 const MAX_HEARD_PATHS: usize = 16;
@@ -224,7 +224,7 @@ pub struct Association {
     keys: stun::Keys,
     /// The far end's certificate digest under its FP_* algorithm; `None` until a session learns it (SECURE).
     /// No handshake starts while it is `None`.
-    remote_fingerprint: Option<(u32, Vec<u8>)>,
+    remote_fingerprint: Option<(u32, PeerDigest)>,
     dtls: Option<dimpl::Dtls>,
     /// Paths a verified check came from, and when the last one did.
     pub(crate) heard: HashMap<SocketAddr, Instant>,
@@ -275,8 +275,8 @@ impl Association {
         remote: &IceCredentials,
         remote_fingerprint: [u8; 32],
     ) -> Self {
-        let mut association = Self::pending(cert, local);
-        association.set_credentials(local, remote);
+        let mut association = Self::pending(cert, local.terms());
+        association.set_credentials(local.terms(), remote.terms());
         let _ = association.accept_peer(role, FP_SHA256, &remote_fingerprint);
         association
     }
@@ -285,11 +285,8 @@ impl Association {
     /// ICE_TERMS come first, the far end's credentials and the SECURE fingerprint later). It hears and
     /// verifies checks at once; no handshake starts until [`Self::set_peer`].
     #[must_use]
-    pub fn pending(cert: Arc<SessionCert>, local: &IceCredentials) -> Self {
-        let remote = IceCredentials {
-            ufrag: String::new(),
-            pwd: String::new(),
-        };
+    pub fn pending(cert: Arc<SessionCert>, local: IceTerms<'_>) -> Self {
+        let remote = IceTerms { ufrag: "", pwd: "" };
         let role = Role::Server;
         let remote_fingerprint = None;
         let mut tie_breaker = [0_u8; 8];
@@ -299,7 +296,7 @@ impl Association {
             ingest_calls: 0,
             cert,
             role,
-            keys: stun::Keys::new(local, &remote),
+            keys: stun::Keys::new(local, remote),
             remote_fingerprint,
             dtls: None,
             heard: HashMap::new(),
@@ -326,8 +323,8 @@ impl Association {
 
     /// Replace both sides' ICE credentials (a later ICE_TERMS: the far end's credentials learned, or an
     /// ICE restart's new ones). Checks already heard stay heard; probes in flight keep their old key.
-    pub fn set_credentials(&mut self, local: &IceCredentials, remote: &IceCredentials) {
-        self.keys = stun::Keys::new(local, remote);
+    pub fn set_credentials(&mut self, local: IceTerms<'_>, remote: IceTerms<'_>) {
+        self.keys.set(local, remote);
     }
 
     /// The far end's DTLS role and certificate digest under `alg` (an FP_* code), from SECURE. Refused (`false`)
@@ -360,10 +357,10 @@ impl Association {
                 && self
                     .remote_fingerprint
                     .as_ref()
-                    .is_some_and(|(a, d)| *a == alg && d.as_slice() == digest);
+                    .is_some_and(|(a, d)| *a == alg && d.bytes() == digest);
         }
         self.role = role;
-        self.remote_fingerprint = Some((alg, Vec::from(digest)));
+        self.remote_fingerprint = Some((alg, PeerDigest::of(digest)));
         true
     }
 
@@ -871,11 +868,33 @@ impl Association {
             return false;
         };
         match *alg {
-            FP_SHA256 => crypto::ct_eq(&crypto::sha256(der), digest),
-            FP_SHA384 => crypto::ct_eq(&crypto::sha384(der), digest),
-            FP_SHA512 => crypto::ct_eq(&crypto::sha512(der), digest),
+            FP_SHA256 => crypto::ct_eq(&crypto::sha256(der), digest.bytes()),
+            FP_SHA384 => crypto::ct_eq(&crypto::sha384(der), digest.bytes()),
+            FP_SHA512 => crypto::ct_eq(&crypto::sha512(der), digest.bytes()),
             _ => false,
         }
+    }
+}
+
+/// The far end's certificate digest SECURE gave (at most SHA-512's 64 bytes; `accept_peer` admits
+/// only the lengths of the algorithms it checks), held in place.
+#[derive(Clone, Copy)]
+struct PeerDigest {
+    bytes: [u8; 64],
+    len: usize,
+}
+
+impl PeerDigest {
+    /// `digest` (at most 64 bytes: the caller checked its length against its algorithm).
+    fn of(digest: &[u8]) -> Self {
+        let mut bytes = [0_u8; 64];
+        let len = digest.len().min(bytes.len());
+        bytes[..len].copy_from_slice(&digest[..len]);
+        Self { bytes, len }
+    }
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
     }
 }
 

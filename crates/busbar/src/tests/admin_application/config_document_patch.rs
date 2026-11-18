@@ -5,6 +5,7 @@
 
 use crate::root::test_plugins as plugins;
 use axum::http::StatusCode;
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait as _, Value};
 use busbar_kernel::config::overlay::OverlayStore;
 use std::sync::Arc;
@@ -210,17 +211,18 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     let config = busbar_kernel::config::resolve(&deploy, &defs).unwrap();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual configured Store opens");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual configured Store opens")
+        .admit()
+        .await;
     let overlay = OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config persistence");
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay.clone()),
         Default::default(),
@@ -978,6 +980,7 @@ async fn configured_admin_in_directory(
     let crate::root::min3_boot::fixture::Fixture {
         backend: opened,
         rules: boot_rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, boot_rules.clone())
         .await
         .expect("the actual configured Store opens");
@@ -1001,7 +1004,7 @@ async fn configured_admin_in_directory(
         );
     }
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay.clone()),
         Default::default(),

@@ -170,7 +170,8 @@ async fn actual_file_read_owns_replacement_directory_removal_and_disabled_invent
     let path = first_dir.join("fixture.tar.gz");
     std::fs::write(&path, &a).unwrap();
     std::fs::write(second_dir.join("fixture.tar.gz"), &a).unwrap();
-    let process = Arc::new(ProcessResources::new().unwrap());
+    // The process's one loader resources: its plugin sinks install once (a02080fd43).
+    let process = crate::root::boot::images::process().unwrap();
     let first = plugins(&first_dir);
     let held_a = read(&process, &first);
     assert_image(&held_a, "1.6.0", a_digest, 7071);

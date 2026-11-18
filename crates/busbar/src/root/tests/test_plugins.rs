@@ -325,7 +325,7 @@ pub(crate) fn trusted_config_with_key(
             plugins: archives
                 .iter()
                 .map(|path| {
-                    crate::root::loader::unpack(
+                    crate::root::loader::tarball::unpack(
                         &std::fs::read(path).expect("fixture archive reads"),
                     )
                     .expect("fixture archive unpacks")
@@ -534,15 +534,38 @@ pub fn cdylib(snake: &str) -> Option<Vec<u8>> {
 #[cfg(all(test, not(oracle_lookup)))]
 include!(concat!(env!("OUT_DIR"), "/common_test_sources.rs"));
 
-/// The oracle package compiles no plugin source: `token_verifier` is the cdylib lookup alone (the
-/// token-verifying `kind: auth` cdylib ci/qa.yml placed in the test profile directory).
-#[cfg(all(test, oracle_lookup))]
+/// `token_verifier` is the cdylib lookup alone (the token-verifying `kind: auth` cdylib in the test
+/// profile directory): busbar-auth-oidc publishes no root test sources since its MIN-3 port (c882ae1), so
+/// the default distribution and the oracle package look it up the same way.
+#[cfg(test)]
 pub(crate) mod token_verifier {
     pub fn token_verifier_cdylib_path() -> Option<std::path::PathBuf> {
         super::cdylib_path("busbar_auth_oidc_plugin")
     }
+
+    /// One framed (HTTP/2) admission request on `stream` for `path`, with the connection preface when
+    /// `preface`: carried over unchanged from busbar-auth-oidc 7877ca7's retired common source, which
+    /// the transport root sources still mounted here read.
+    pub fn framed_admission_request(stream: u32, path: &str, preface: bool) -> Vec<u8> {
+        assert!(path.len() < 127);
+        let mut bytes = Vec::new();
+        if preface {
+            bytes.extend_from_slice(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+            bytes.extend_from_slice(&[0, 0, 0, 4, 0, 0, 0, 0, 0]);
+        }
+        let mut fields = vec![0x83, 0x86, 0x04, path.len() as u8];
+        fields.extend_from_slice(path.as_bytes());
+        fields.extend_from_slice(&[0x01, 9]);
+        fields.extend_from_slice(b"localhost");
+        let len = fields.len() as u32;
+        bytes.extend_from_slice(&len.to_be_bytes()[1..]);
+        bytes.extend_from_slice(&[1, 4]);
+        bytes.extend_from_slice(&stream.to_be_bytes());
+        bytes.extend_from_slice(&fields);
+        bytes
+    }
 }
-#[cfg(all(test, oracle_lookup))]
+#[cfg(test)]
 pub use token_verifier::*;
 
 fn libraries() -> Vec<PathBuf> {
@@ -678,7 +701,7 @@ pub(crate) mod neutral_export_routes;
 /// The operator admin token an admin test presents, as `Authorization: Bearer`. 1.6 has no open
 /// admin posture (`admin_auth: []` is refused at boot, ADMIN-API-1.6-ONE-MODEL §8.1.1), so an
 /// admin test configures the operator credential and sends this token.
-pub const OPERATOR_TOKEN: &str = "admintok";
+const OPERATOR_TOKEN: &str = "admintok";
 
 /// Bind the linked first-party operator credential for this test process, through the production
 /// process-start binding, and return the provider key configuration names it by.
@@ -706,4 +729,32 @@ pub fn operator_client() -> reqwest::Client {
         .default_headers(headers)
         .build()
         .expect("the operator client builds")
+}
+
+/// A fixture deployment as the root listeners need it since #359 SEC-L1 (2f61a291e9): a listener with no TLS
+/// boots only with its explicit plaintext acceptance, which the owner ruling has fixtures write ("kernel and root
+/// make_root_cfg fixtures write the explicit plaintext acceptance for both root listeners"). A listener with TLS,
+/// or one whose acceptance the document already wrote, is left as it is.
+pub(crate) fn plaintext_listeners(
+    mut cfg: busbar_kernel::config::RootCfg,
+) -> busbar_kernel::config::RootCfg {
+    use busbar_plugin_abi::host_side::caller::Accept;
+    let plain = || busbar_kernel::config::min3::InsecureTransport {
+        accept: Accept(Accept::PLAINTEXT),
+        reason: "test fixture listener".into(),
+    };
+    if cfg.tls.is_none() && cfg.listener_acceptances.listen.is_none() {
+        cfg.listener_acceptances.listen = Some(plain());
+    }
+    if cfg.admin_tls.is_none() && cfg.listener_acceptances.admin_listen.is_none() {
+        cfg.listener_acceptances.admin_listen = Some(plain());
+    }
+    cfg
+}
+
+/// The operator's 1.6 settings digest for a token a fixture wrote to `path`: 1.6 takes the operator
+/// credential as `identity-providers.<operator>.settings.sha256`, and refuses the 1.5 `token:` form with its
+/// remedy (c1b9b9e234, OPERATOR-FROM-ADMITTED-AUTH r3.1). The SHA-256 of the file's bytes, 64 lower-case hex.
+pub fn operator_sha256_of(path: impl AsRef<std::path::Path>) -> String {
+    sha256(&std::fs::read(path).expect("the fixture's operator token file reads"))
 }

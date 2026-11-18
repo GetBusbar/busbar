@@ -29,7 +29,7 @@ struct Fx;
 impl crate::Auth for Fx {}
 impl Open for Fx {
     async fn open(_: &'static Host, _: ChainBytes) -> Result<Self, Fail> {
-        let port_bytes = [b'5', b'4', b'3', b'2'];
+        let port_bytes = *b"5432";
         let port = std::str::from_utf8(&port_bytes).unwrap();
         let parts = ["db.test", ":", port];
         let _ = crate::need::need::open_parts(&parts, crate::need::need::Tls::None, 2).await?;
@@ -140,9 +140,11 @@ fn describe_parts_and_pod_nested_preserve_whole_answer_limit_failure() {
 
 #[test]
 fn local_open_parts_survive_pending_resume_and_cancellation() {
-    let mut out = OutLease::new(vec![0; 4096], 4096).unwrap();
     let image = image();
     for complete in [false, true] {
+        // One lease per open, as the host leases one per entry: a reused lease still holds the earlier
+        // open's NEED and TOKEN, and the chain would take that (cancelled) token as its own.
+        let mut out = OutLease::new(vec![0; 4096], 4096).unwrap();
         let OpenAnswer::Chain(mut chain) =
             image.open::<marker::Auth>(&HOST, Vec::new(), 0, &mut out)
         else {

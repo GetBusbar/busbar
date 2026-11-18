@@ -564,8 +564,6 @@ pub use busbar_kernel::config::auth::{
     ALL_ADMIN_VERBS, DEFAULT_MAX_ADMIN_SCOPE, KEYS_MODULE,
 };
 
-pub const CONFIG_TARGET_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 pub fn validate_token_placement(name: &str, module: &str, has_token: bool) -> Result<(), String> {
     let op = operator_provider();
     if has_token && !op.is_empty() && !names_operator(module) {
@@ -1965,6 +1963,23 @@ pub fn resolve_with_provider_planes(
         });
 
     let min3 = resolve_min3(deploy, &mut errors);
+    // With no provider plane admitted, nothing can own a catalog option, so once a provider is
+    // deployed every catalog entry is judged whole as before: a stray key takes no option (PM ruling,
+    // 2026-11-17). With a plane admitted, a reached entry is judged by that plane's own schema in
+    // `provider_catalog::resolve` and an unreached entry's options are untouched (41ba31d8d2,
+    // native_provider_catalog 5c5bf279f7).
+    if planes.is_empty() && !deploy.providers.is_empty() {
+        let mut names: Vec<&String> = defs.keys().collect();
+        names.sort();
+        for name in names {
+            if let Err(refusal) = crate::config::providers::judge_catalog_entry(name, &defs[name]) {
+                errors.push(
+                    coded::config_provider_invalid(format_args!("providers.yaml: {refusal}"))
+                        .into(),
+                );
+            }
+        }
+    }
     let catalogs = match crate::plane_driver::provider_catalog::resolve(
         deploy,
         &resolved_providers,

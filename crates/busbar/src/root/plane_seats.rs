@@ -819,6 +819,9 @@ fn egress_of(
     );
     let unit = busbar_kernel_breaker::BreakerUnit::new()
         .with_limits(hard_down_cooldown_secs, max_honored_retry_after_secs);
+    busbar_kernel::plane_driver::declare_providers(
+        pool.routes.values().map(|route| route.provider.as_str()),
+    );
     Ok(busbar_kernel::plane_driver::Egress {
         caller: owner,
         conns: Arc::clone(&table.conns),
@@ -839,7 +842,10 @@ fn egress_of(
         }),
         clock: Arc::new(super::egress_ports::NodeClock::new()),
         journal: Arc::new(SeatJournal),
-        telemetry: Arc::new(super::egress_ports::WalkTelemetry::new(names)),
+        telemetry: Arc::new(super::egress_ports::WalkTelemetry::new(
+            names,
+            pool.pools.keys().map(String::as_str),
+        )),
         pools: pool.pools.clone(),
         routes: pool.routes.clone(),
         stream_ceiling_secs: limits.as_ref().map_or(

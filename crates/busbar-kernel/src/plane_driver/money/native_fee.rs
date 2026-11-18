@@ -5,23 +5,15 @@
 
 use std::sync::Arc;
 
-use super::{locked, FeeAccount, FeeParticipation};
+use super::FeeParticipation;
 use crate::governance::unit_checkpoint::partitions::{
-    CapturedFee, FeeBasis, FeeResult, SelectedFeeCompletion,
+    CapturedFee, FeeBasis, SelectedFeeCompletion,
 };
-
-struct FeeCompletion(Arc<FeeAccount>);
-
-impl SelectedFeeCompletion for FeeCompletion {
-    fn observe(&self) -> Option<FeeResult> {
-        locked(&self.0.state).completed
-    }
-}
 
 impl FeeParticipation {
     /// Capture before transferring terminal custody, then consume the actual participation at
     /// its normal terminal point. Retaining this observer cannot prevent final fee completion.
-    pub(super) fn selected_fee(&self) -> (CapturedFee, Option<Arc<dyn SelectedFeeCompletion>>) {
+    pub(super) fn selected_fee(&self) -> (CapturedFee, Option<Arc<SelectedFeeCompletion>>) {
         let charge = &self.account.money.charge;
         let basis = FeeBasis {
             lane: charge.fee_lane().map(str::to_owned),
@@ -30,7 +22,7 @@ impl FeeParticipation {
         if !self.owner {
             return (CapturedFee::NotOwner { basis }, None);
         }
-        let completion = Arc::new(FeeCompletion(self.account.clone()));
+        let completion = Arc::clone(&self.account.completion);
         match completion.observe() {
             Some(result) => (CapturedFee::ResolvedOwner { basis, result }, None),
             None => (CapturedFee::PendingOwner { basis }, Some(completion)),

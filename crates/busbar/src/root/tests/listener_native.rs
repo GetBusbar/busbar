@@ -69,7 +69,7 @@ pub(super) async fn ingress_fixture() -> (NativeIngress, busbar_contract::storag
     use busbar_kernel::inbound::native::{AcceptedConnection, PhysicalListener};
     busbar_core_admin::install();
     let app = crate::root::min3_auth::tests::physical_app().await;
-    let transport = crate::root::min3_transports::tests::framer(&["http"]);
+    let transport = crate::root::min3_boot::transports::tests::framer(&["http"]);
     let slot =
         crate::root::min3_physical::assemble_admin_slot(&app, "admin_listen", transport.clone())
             .unwrap();
@@ -302,7 +302,7 @@ async fn actual_tcp_accept_passes_real_socket_facts_and_host_clock_to_native_beg
     busbar_core_admin::install();
     let app = crate::root::min3_auth::tests::physical_app().await;
     let port = Arc::new(ObservedBegin {
-        inner: crate::root::min3_transports::tests::framer(&["http"]),
+        inner: crate::root::min3_boot::transports::tests::framer(&["http"]),
         slots: ["admin_listen".into()],
         seen: Default::default(),
     });
@@ -313,8 +313,10 @@ async fn actual_tcp_accept_passes_real_socket_facts_and_host_clock_to_native_beg
         Arc::new(busbar_kernel::state::AppHandle::new(app)),
         "admin_listen".into(),
         port.clone(),
-        budget.clone(),
-        AdmissionClass::Operator,
+        crate::root::listener_native::NativeAdmission {
+            budget: budget.clone(),
+            class: AdmissionClass::Operator,
+        },
         Arc::new(move |_, name| (name == slot.slot()).then(|| slot.clone())),
         NativeLimits {
             max_connections: 2,

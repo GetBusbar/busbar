@@ -45,12 +45,15 @@ fn connector(door: Arc<dyn FramerDoor>) -> Connector {
         },
     ])
     .unwrap();
-    Connector::serving(
+    let c = Connector::serving(
         view,
         crate::tests::loopback_literals(),
         None,
         Arc::new(|_, _| {}),
-    )
+    );
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+    crate::tests::accept_plaintext(&c, &[OWNER]);
+    c
 }
 
 fn desc(target: &str) -> OpenDesc<'_> {

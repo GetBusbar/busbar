@@ -141,7 +141,7 @@ serde_path_to_error = "0.1.20"
 smallvec = "1"
 socket2 = { version = "0.6", features = ["all"] }
 # THE JSON SEAM (DEP-3): sonic-rs behind `busbar_contract::json`. `arbitrary_precision` keeps every
-# number's lexeme (SERDE-NUMBERS r17), through the MattJackson fork in [patch.crates-io].
+# number's lexeme (SERDE-NUMBERS r17), through the MattJackson fork in the crates-io patch table below.
 # `sort_keys` keeps a built or edited `Value` object in key order (sonic's default is a hash map, so
 # its members would be written in no fixed order): core's JSON answers, audit lines and digests stay
 # byte-stable, in the key order serde_json's `Map` wrote (#162, SERDE-JSON-EXIT CORE-A).
@@ -175,7 +175,7 @@ psl = "2.1"
 tower = "0.5"
 tracing = "0.1.44"
 tracing-core = "0.1"
-tracing-subscriber = "0.3.23"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "registry", "tracing-log", "smallvec"] }
 tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
 h2 = "0.4"
 log = "0.4"
@@ -230,7 +230,6 @@ rustls = { git = "https://github.com/MattJackson/rustls", rev = "02181ad51e81f9c
 aws-lc-sys = { git = "https://github.com/MattJackson/aws-lc-sys", rev = "3469edb189e0cc2fab40e88f551713a828a5d867" }
 jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3efc1acc11add04854cc093f97876e439e129" }
 dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d" }
-fs_extra = { git = "https://github.com/MattJackson/fs_extra", rev = "70f47864db8ae763979f47cde6785449cd790dad" }
 # Native HTTP allocation projection and serializer provenance (adopted transport cohort).
 http = { git = "https://github.com/MattJackson/http", rev = "904f4519b5f27a0424b121a4828640c741efcd95" }
 h2 = { git = "https://github.com/MattJackson/h2", rev = "6bdbf046878247aebe9138f37f32d2665b54bdd9" }

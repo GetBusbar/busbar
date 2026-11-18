@@ -10,9 +10,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::records::Records;
-use busbar_ports::transport::TransportEvent;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::error::TrySendError;
 
@@ -167,13 +165,13 @@ async fn rejected_upgrade_retires_original_tcp_writer_before_failed_receipt() {
     let io = crate::raw_progress::tcp(socket);
     let progress = io.progress();
     let script = scripted(Box::new(|_| Vec::new()), None, false);
-    let outcome = Outcome::Upgraded {
+    let outcome = Outcome::Upgraded(Box::new(Upgrade {
         delivery: Delivery::new(ledger, progress),
         conn: script.conn,
         io,
         protocol: Name::copy(&source, "websocket").unwrap(),
         leftover: Payload::copy(&source, &[]).unwrap(),
-    };
+    }));
     assert!(handles.watch.snapshot().terminal.is_none());
     outcome.retire();
     assert_eq!(
@@ -233,7 +231,7 @@ fn answer(
 ) -> Result<Actions, FaultReason> {
     answers.start(called, Instant::now());
     for out in outs {
-        answers.take(out);
+        answers.take(&out);
     }
     answers.finish()
 }
@@ -448,8 +446,11 @@ fn upgrade_leftover_stays_in_wiping_custody() {
     };
     assert_eq!(protocol.as_ref(), "test-protocol");
     assert_eq!(leftover.as_slice(), b"first-private-message");
-    drop(acts);
+    // Since 403829b816 the leftover starts as an empty funded payload that the first Leftover
+    // replaces with an exactly funded buffer: the retired buffer is wiped, then the leftover itself.
     assert_eq!(busbar_contract::secure::wipe_counts().1 - before, 1);
+    drop(acts);
+    assert_eq!(busbar_contract::secure::wipe_counts().1 - before, 2);
 }
 
 struct PendingRead;
@@ -684,7 +685,7 @@ fn the_stall_deadline_is_armed_once_at_the_first_stream_full() {
     let t0 = Instant::now();
     let mut answers = Answers::new(None, t0);
     answers.start(emit(4, E_BODY), t0);
-    answers.take(TransportOut::StreamFull(4));
+    answers.take(&TransportOut::StreamFull(4));
     answers.finish().expect("held");
     answers.start(emit(4, E_RESET), t0 + Duration::from_secs(1));
     answers.finish().expect("reset");
@@ -694,13 +695,13 @@ fn the_stall_deadline_is_armed_once_at_the_first_stream_full() {
     );
 
     answers.start(emit(3, E_BODY), t0);
-    answers.take(TransportOut::StreamFull(3));
+    answers.take(&TransportOut::StreamFull(3));
     answers.finish().expect("held");
     // Released by a WRITABLE, then held again later: a fresh hold arms a fresh deadline. Until then, a repeated
     // STREAM_FULL on a stream still held never pushes its deadline out.
     let later = t0 + Duration::from_secs(30);
     answers.start(emit(5, E_BODY), t0);
-    answers.take(TransportOut::StreamFull(5));
+    answers.take(&TransportOut::StreamFull(5));
     answers.finish().expect("held");
     answers.start(emit(5, E_RESET), later);
     answers.finish().expect("reset 5");
@@ -712,10 +713,10 @@ fn the_stall_deadline_is_armed_once_at_the_first_stream_full() {
     );
     let mut again = Answers::new(None, t0);
     again.start(emit(3, E_BODY), t0);
-    again.take(TransportOut::StreamFull(3));
+    again.take(&TransportOut::StreamFull(3));
     again.finish().expect("held");
     again.start(emit(3, E_BODY), later);
-    again.take(TransportOut::StreamFull(3));
+    again.take(&TransportOut::StreamFull(3));
     again.finish().expect("still held");
     assert_eq!(
         again.next_stall(),
@@ -1072,113 +1073,6 @@ fn e_close_never_goes_through_emit() {
     assert!(seen(&s.seen).is_empty());
 }
 
-// ---- ALPN by role (§8.7 `offer`, §13 round 9) ----
-
-/// A port whose only answers are its offers.
-struct Offers {
-    server: Vec<Box<str>>,
-    client: Vec<Box<str>>,
-}
-
-fn not_called() -> PortError {
-    PortError::Call(CallError::NotDeclared)
-}
-
-impl TransportPort for Offers {
-    fn listener_slots(&self) -> &[Box<str>] {
-        &[]
-    }
-    fn alpn(&self, role: u32) -> &[Box<str>] {
-        match role {
-            wire::ROLE_SERVER => &self.server,
-            wire::ROLE_CLIENT => &self.client,
-            _ => &[],
-        }
-    }
-    fn defaults(&self, _: u32) -> &[(Box<str>, Box<str>)] {
-        &[]
-    }
-    fn protocols(&self) -> &[Box<str>] {
-        &[]
-    }
-    fn facts(&self) -> u64 {
-        wire::FB_SERVER | wire::FB_CLIENT
-    }
-    fn begin(
-        &self,
-        _: &ConnIn<'_>,
-        _: &mut dyn FnMut(TransportOut<'_>),
-    ) -> Result<TransportSession, PortError> {
-        Err(not_called())
-    }
-    fn ingest(
-        &self,
-        _: &mut TransportSession,
-        _: &[u8],
-        _: &mut dyn FnMut(TransportOut<'_>),
-    ) -> Result<(), PortError> {
-        Err(not_called())
-    }
-    fn emit(
-        &self,
-        _: &mut TransportSession,
-        _: u64,
-        _: u32,
-        _: u32,
-        _: &[u8],
-        _: &mut dyn FnMut(TransportOut<'_>),
-    ) -> Result<(), PortError> {
-        Err(not_called())
-    }
-    fn timer(
-        &self,
-        _: &mut TransportSession,
-        _: &mut dyn FnMut(TransportOut<'_>),
-    ) -> Result<(), PortError> {
-        Err(not_called())
-    }
-    fn datagram(
-        &self,
-        _: &mut TransportSession,
-        _: u32,
-        _: bool,
-        _: &[u8],
-        _: &mut dyn FnMut(TransportOut<'_>),
-    ) -> Result<(), PortError> {
-        Err(not_called())
-    }
-    fn event(
-        &self,
-        _: &mut TransportSession,
-        _: TransportEvent<'_>,
-        _: &mut dyn FnMut(TransportOut<'_>),
-    ) -> Result<(), PortError> {
-        Err(not_called())
-    }
-}
-
-#[test]
-fn the_listener_offers_the_server_list_and_the_dial_the_client_list() {
-    let port = Offers {
-        server: vec![Box::from("h2"), Box::from("http/1.1")],
-        client: vec![Box::from("http/1.1")],
-    };
-    assert_eq!(
-        server_alpn(&port),
-        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
-    );
-    assert_eq!(client_alpn(&port), vec![b"http/1.1".to_vec()]);
-    let silent = Offers {
-        server: Vec::new(),
-        client: vec![Box::from("h2")],
-    };
-    assert!(
-        server_alpn(&silent).is_empty(),
-        "an undeclared side offers nothing"
-    );
-    assert_eq!(client_alpn(&silent), vec![b"h2".to_vec()]);
-}
-
 // ---- the session task over a connection ----
 
 async fn drive<S: AsyncRead + AsyncWrite + Unpin>(
@@ -1228,16 +1122,16 @@ fn attributed_output_is_retained_without_becoming_unattributed_write() {
     use busbar_contract::response_delivery::{CompletionRequirement, WireClass};
     let mut answers = Answers::new(None, Instant::now());
     answers.start(Called::Timer, Instant::now());
-    answers.take(TransportOut::WirePart {
+    answers.take(&TransportOut::WirePart {
         stream: 3,
         class: WireClass::Payload,
         bytes: b"body",
     });
-    answers.take(TransportOut::WireEnd {
+    answers.take(&TransportOut::WireEnd {
         stream: 3,
         requirement: CompletionRequirement::Flush,
     });
-    answers.take(TransportOut::ResponseQuiescent(3));
+    answers.take(&TransportOut::ResponseQuiescent(3));
     let acts = answers.finish().expect("attributed native answer");
     assert!(
         matches!(&acts[0], Act::WirePart { stream: 3, class: WireClass::Payload, bytes } if bytes.as_slice() == b"body")

@@ -6,7 +6,6 @@
 
 use super::*;
 use crate::governance::GovState;
-use busbar_contract::json::JsonValueMutTrait as _;
 
 fn source_facts(reported: Option<u64>, floor: Option<u64>, estimated: Option<u64>) -> json::Value {
     let high_water = reported
@@ -444,10 +443,7 @@ async fn selected_memory_capacity_retains_all_facts_then_retries_once() {
         .is_some());
     gov.flush_unit_checkpoints().await.unwrap();
     assert!(!gov.unresolved_unit_target(&snapshot.principal, 0));
-    assert_eq!(
-        gov.budget.read(&snapshot.principal)[&snapshot.principal].total_tokens(),
-        Count::from(20u64)
-    );
+    assert_eq!(work_units(&gov, &snapshot.principal), Count::from(20u64));
     let meters: Vec<_> = gov.pending_metering.drain().collect();
     assert_eq!(
         meters
@@ -458,10 +454,7 @@ async fn selected_memory_capacity_retains_all_facts_then_retries_once() {
     );
     gov.flush_unit_checkpoints().await.unwrap();
     assert!(gov.pending_metering.drain().next().is_none());
-    assert_eq!(
-        gov.budget.read(&snapshot.principal)[&snapshot.principal].total_tokens(),
-        Count::from(20u64)
-    );
+    assert_eq!(work_units(&gov, &snapshot.principal), Count::from(20u64));
 }
 
 #[tokio::test]
@@ -505,14 +498,9 @@ async fn selected_refused_publication_retains_the_previous_revision_and_sources(
 async fn selected_pending_fee_keeps_raw_custody_until_nonparticipating_observation() {
     use crate::governance::unit_checkpoint::{partitions::*, SelectedTransfer};
     use busbar_contract::records::MeteringPricingV1;
-    struct Completion(std::sync::atomic::AtomicBool);
-    impl SelectedFeeCompletion for Completion {
-        fn observe(&self) -> Option<FeeResult> {
-            self.0.load(Ordering::Acquire).then_some(FeeResult::Charged)
-        }
-    }
     let gov = governance().await;
-    let completion = Arc::new(Completion(std::sync::atomic::AtomicBool::new(false)));
+    // The money owner's own completion cell (arch lints section 3.1), published here by hand.
+    let completion = Arc::new(SelectedFeeCompletion::default());
     let mut snapshot = decode(&selected_value());
     snapshot.partitions.as_mut().unwrap().fee = CapturedFee::PendingOwner {
         basis: FeeBasis {
@@ -564,7 +552,7 @@ async fn selected_pending_fee_keeps_raw_custody_until_nonparticipating_observati
     gov.flush_unit_checkpoints().await.unwrap();
     assert!(gov.unresolved_unit_target(&snapshot.principal, 0));
     assert!(gov.pending_metering.drain().next().is_none());
-    completion.0.store(true, Ordering::Release);
+    completion.complete(FeeResult::Charged);
     gov.flush_unit_checkpoints().await.unwrap();
     assert!(gov.unresolved_unit_target(&snapshot.principal, 0));
     assert!(wakes.0.load(Ordering::Relaxed) > 0);
@@ -628,4 +616,18 @@ async fn selected_unknown_fee_is_emitted_even_without_a_logical_request() {
             ..
         })
     ));
+}
+
+/// The principal's raw `work` counts across its model cells. `total_tokens` is a token-class view
+/// that counts `work` only while some admitted plane declares it in the token family, which no
+/// plane in this test process does.
+fn work_units(gov: &GovState, principal: &str) -> Count {
+    let cells = gov.budget.read(principal);
+    Count::total(
+        cells[principal]
+            .models
+            .iter()
+            .filter_map(|model| model.cur.get("work").copied()),
+    )
+    .expect("work counts fit Count")
 }

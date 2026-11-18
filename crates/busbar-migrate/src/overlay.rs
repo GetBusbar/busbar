@@ -41,7 +41,7 @@ pub const ENV: &str = "BUSBAR_CONFIG_OVERLAY";
 /// constant, moved here: no other production source names it).
 pub const DEFAULT_OVERLAY_FILENAME: &str = "busbar-overlay.json";
 /// The most overlay bytes the upgrade reads.
-pub const MAX_OVERLAY_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_OVERLAY_BYTES: u64 = 64 * 1024 * 1024;
 /// F: where 5c holds the 1.5.5 overlay between moving it off `<o>` and keeping it as B.
 pub const FOLDING_SUFFIX: &str = ".busbar-folding";
 /// The marker file inside P.

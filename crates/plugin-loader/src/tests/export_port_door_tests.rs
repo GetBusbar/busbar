@@ -19,6 +19,14 @@ use super::{AppendBytes, AppendDenied, DestAppend, PortDoor};
 use busbar_ports::export::{Custody, Delivered, ExportPort, FamilyIn, RecorderNeeds, ScopeInfo};
 use busbar_ports::{CallCx, PortError};
 
+/// One family as the fake port rendered it: kind, name, unit, and each sample (kind, value, stamp, labels).
+type Rendered = (
+    u32,
+    String,
+    u32,
+    Vec<(u32, f64, f64, Vec<(String, String)>)>,
+);
+
 const WAIT: Duration = Duration::from_secs(5);
 const ACCEPTED: Custody = Custody {
     level: x::CUSTODY_ACCEPTED,
@@ -63,14 +71,7 @@ struct Double {
     /// When set, the next `deliver` holds the pump until the test sends on it.
     gate: Mutex<Option<Receiver<()>>>,
     pending: bool,
-    rendered: Mutex<
-        Vec<(
-            u32,
-            String,
-            u32,
-            Vec<(u32, f64, f64, Vec<(String, String)>)>,
-        )>,
-    >,
+    rendered: Mutex<Vec<Rendered>>,
 }
 
 impl Double {
@@ -283,7 +284,7 @@ fn streams_0_1_2_reach_the_port_with_minted_deliveries() {
         assert_eq!(call.lines, vec![format!("{{\"s\":{stream}}}").into_bytes()]);
         seen.push(call.delivery);
     }
-    seen.sort_unstable();
+    seen.sort();
     seen.dedup();
     assert_eq!(seen.len(), 3, "each line set gets its own delivery id");
     assert_eq!(door.custody_total(x::STREAM_LOGS, x::CUSTODY_ACCEPTED), 1);

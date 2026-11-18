@@ -403,7 +403,7 @@ impl RequestStore {
             return None;
         };
         drop(state);
-        workspace.sort_unstable_by(|a, b| {
+        workspace.sort_by(|a, b| {
             self.core.labels[a.index]
                 .get()
                 .cmp(&self.core.labels[b.index].get())

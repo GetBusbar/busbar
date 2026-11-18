@@ -80,10 +80,28 @@ impl TryFrom<CapturedFeeWire> for CapturedFee {
     }
 }
 
-/// Implemented by the money owner's nonparticipating Arc observer. It cannot refund, admit,
-/// increment a child count or recreate a FeeParticipation.
-pub trait SelectedFeeCompletion: Send + Sync {
-    fn observe(&self) -> Option<FeeResult>;
+/// The money owner's nonparticipating completion observer: the one cell the fee account publishes its
+/// final result into, after its refund mutations (arch lints section 3.1: one concrete type). Holding it
+/// cannot refund, admit, increment a child count or recreate a FeeParticipation.
+#[derive(Debug, Default)]
+pub struct SelectedFeeCompletion(std::sync::Mutex<Option<FeeResult>>);
+
+impl SelectedFeeCompletion {
+    /// The completed result, or None while the fee is still pending.
+    pub fn observe(&self) -> Option<FeeResult> {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Publish the final result (the fee account, once its refund mutations are done).
+    pub(crate) fn complete(&self, result: FeeResult) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+    }
 }
 
 impl CapturedFee {

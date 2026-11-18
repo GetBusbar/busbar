@@ -206,7 +206,7 @@ fn the_auth_adapters_port_error_log_line_and_audit_row_hold() {
 fn shown_text(e: &busbar_ports::PortError) -> &str {
     use busbar_ports::PortError;
     match e {
-        PortError::Failed { text, .. } | PortError::Refused { text, .. } => &**text,
+        PortError::Failed { text, .. } | PortError::Refused { text, .. } => text,
         other => panic!("not a plugin error: {other:?}"),
     }
 }
@@ -372,7 +372,7 @@ fn bb_fail_cuts_at_a_char_boundary_and_masks_the_same() {
             status: Status::FAILED.0,
             code: failed::F_INTERNAL,
         };
-        shim.put_pod_tail(tag::FAIL, &head, text[..cut].as_bytes())
+        shim.put_pod_tail(tag::FAIL, &head, &text.as_bytes()[..cut])
             .expect("fail");
         assert_eq!(answer, shim.as_bytes(), "the C cut is the Rust cut");
 

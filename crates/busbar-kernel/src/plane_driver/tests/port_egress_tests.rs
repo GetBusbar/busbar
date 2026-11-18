@@ -7,7 +7,6 @@
 
 use std::cell::Cell;
 use std::collections::VecDeque;
-use std::future::Future;
 use std::sync::Mutex;
 
 use busbar_contract::abi::auth::{NO_MEMBER_AUTH_FIELD, SCOPE_REQUEST_FIELD};
@@ -62,26 +61,17 @@ struct Fake {
 }
 
 impl FarEnd for Fake {
-    fn member<'a>(&'a self, _: &'a Pass<Route>, _: u32) -> impl Future<Output = Pick> + Send + 'a {
-        async move { self.picks.lock().unwrap().pop_front().unwrap_or_else(spent) }
+    async fn member(&self, _: &Pass<Route>, _: u32) -> Pick {
+        self.picks.lock().unwrap().pop_front().unwrap_or_else(spent)
     }
 
-    fn send<'a>(
-        &'a self,
-        _: &'a Pass<Route>,
-        request: OutboundRequest,
-    ) -> impl Future<Output = bool> + Send + 'a {
-        async move {
-            self.sent.lock().unwrap().push(request);
-            !self.refuse_send
-        }
+    async fn send(&self, _: &Pass<Route>, request: OutboundRequest) -> bool {
+        self.sent.lock().unwrap().push(request);
+        !self.refuse_send
     }
 
-    fn next<'a>(
-        &'a self,
-        _: &'a Pass<Route>,
-    ) -> impl Future<Output = Option<FarPiece>> + Send + 'a {
-        async move { self.pieces.lock().unwrap().pop_front().flatten() }
+    async fn next(&self, _: &Pass<Route>) -> Option<FarPiece> {
+        self.pieces.lock().unwrap().pop_front().flatten()
     }
 
     fn judged_stating(&self, _: &Pass<Route>, fault: u8, _: Option<&str>) {
@@ -93,12 +83,8 @@ impl FarEnd for Fake {
         self.judged_stating(token, fault, None);
     }
 
-    fn write<'a>(
-        &'a self,
-        _: &'a Pass<Route>,
-        _: OutboundRequest,
-    ) -> impl Future<Output = bool> + Send + 'a {
-        async { true }
+    async fn write(&self, _: &Pass<Route>, _: OutboundRequest) -> bool {
+        true
     }
 }
 
@@ -345,7 +331,6 @@ fn judged_of(fake: Fake, run: impl FnOnce(&mut dyn Members)) -> Vec<u8> {
     let mut members = walk.members();
     let _ = members.next(&Wants::default());
     run(&mut members);
-    drop(members);
     walk.far()
         .map(|far| far.judged.lock().unwrap().clone())
         .unwrap()
@@ -633,7 +618,6 @@ fn the_plane_s_wait_rides_with_its_verdict_into_the_breaker() {
             retry_after_s: 0,
         },
     );
-    drop(members);
     let waits = walk.far().map(|far| far.waits.lock().unwrap().clone());
     assert_eq!(
         waits,

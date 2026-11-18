@@ -9,7 +9,7 @@
 //! PUSH tail as the plane wrote it (nested H_METHOD, PUSH_URL, PAIR*, BODY), copied and owned by core.
 //!
 //! Delivery. [`StorePushQueue::deliver_due`] runs from the owner's tick with the live instance of that name as
-//! Caller and hands each due row to a [`PushSink`]: the connector's fetch, whose guard judges every new
+//! Caller and hands each due row to the [`ConnectorPushSink`]: the connector's fetch, whose guard judges every new
 //! connection (§12.1), so a URL accepted at set time that later resolves internal is refused at delivery.
 //! A failed attempt asks `RetryPolicy(PlanePush)`; Stop or a passed `ttl_s` drops the row and names it for the
 //! audit. [`StorePushQueue::forget`] drops every row of an instance name no longer configured.
@@ -24,26 +24,10 @@ use crate::persistence::facade::CoreStore;
 use crate::persistence::scoped::{Expected, Mutation, Predicate, Request, ScopedStore};
 use crate::plugin_records::store::{denied, expiry, label, live, operation, InDoubt};
 use crate::plugin_records::RecordsDenied;
-use crate::retry::{PortError, Retry, RetryPolicy, RetrySite};
+use crate::retry::{Retry, RetryPolicy, RetrySite};
 
 mod fetch;
 pub use fetch::ConnectorPushSink;
-
-/// Plane PUSH intents. Durable (CoreStore, rows keyed by (who.plugin, who.name), never the runtime id),
-/// at-least-once, deliveries through the connector's fetch with the live instance of that name as Caller
-/// (the connector's guard judges every new connection, §12.1), retries via RetryPolicy(PlanePush), dropped and audited after ttl_s or when no
-/// instance of that name is configured. The plane learns nothing back (it may record its own bookkeeping).
-/// Round 16: a plane that must refuse a bad callback **when the client sets it** (plane-a2a's push config) asks
-/// first with the JUDGE intent (§8.6, §12.1 `PlaneJudge`) and refuses in its own protocol; the delivery-time judge
-/// here still applies to every attempt (DNS can change between the two).
-pub trait PushQueue: Send + Sync + 'static {
-    fn enqueue<'a>(
-        &'a self,
-        who: &'a Caller<'_>,
-        ttl_s: u64,
-        recs: &'a [u8],
-    ) -> BoxFut<'a, Result<(), RecordsDenied>>;
-}
 
 /// The queued pushes.
 pub(crate) const PUSHES: &str = "busbar.plane-push.v1";
@@ -56,15 +40,6 @@ pub(crate) const MAX_PUSH_TTL_S: u64 = crate::plugin_records::MAX_TTL_S;
 
 /// The most rows one [`StorePushQueue::deliver_due`] round attempts.
 pub const ROUND: usize = 64;
-
-/// One delivery attempt: the connector's fetch under the live instance's Caller and the connector's guard.
-pub trait PushSink: Send + Sync {
-    fn deliver<'a>(
-        &'a self,
-        who: &'a Caller<'_>,
-        recs: &'a [u8],
-    ) -> BoxFut<'a, Result<(), PortError>>;
-}
 
 /// Why a row left the queue undelivered (the caller audits `plane_push_dropped` with it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +93,7 @@ impl StorePushQueue {
     pub async fn deliver_due(
         &self,
         who: &Caller<'_>,
-        sink: &dyn PushSink,
+        sink: &ConnectorPushSink,
     ) -> Result<Round, RecordsDenied> {
         self.deliver_round(who, sink).await
     }
@@ -134,8 +109,15 @@ impl StorePushQueue {
     }
 }
 
-impl PushQueue for StorePushQueue {
-    fn enqueue<'a>(
+impl StorePushQueue {
+    /// Queue one plane PUSH (arch lints section 3.1: the one queue is this concrete type). Durable (CoreStore,
+    /// rows keyed by (who.plugin, who.name), never the runtime id), at-least-once, delivered through the
+    /// connector's fetch with the live instance of that name as Caller (the connector's guard judges every new
+    /// connection, section 12.1), retried via RetryPolicy(PlanePush), dropped and audited after ttl_s or when no
+    /// instance of that name is configured. The plane learns nothing back. Round 16: a plane that must refuse a
+    /// bad callback when the client sets it asks first with the JUDGE intent (section 8.6, 12.1 `PlaneJudge`);
+    /// the delivery-time judge still applies to every attempt (DNS can change between the two).
+    pub fn enqueue<'a>(
         &'a self,
         who: &'a Caller<'_>,
         ttl_s: u64,
@@ -264,7 +246,7 @@ impl StorePushQueue {
     async fn deliver_round(
         &self,
         who: &Caller<'_>,
-        sink: &dyn PushSink,
+        sink: &ConnectorPushSink,
     ) -> Result<Round, RecordsDenied> {
         let records = self.scoped(who)?;
         self.in_doubt.settle_one().await;

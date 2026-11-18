@@ -1391,19 +1391,23 @@ impl DriverSteps for DoorSteps<'_> {
                 .as_ref()
                 .ok_or_else(|| Refusal::new(ReasonCode::Unpriced))?;
             let lane = opened_lane(self.facts.plane.lane_prefix(), self.lock().routed.as_ref())?;
+            let store = gov
+                .core_store_handle()
+                .map_err(|_| Refusal::new(ReasonCode::Unpriced))?;
             match spent.adopt(
-                money,
-                ctx,
-                admit,
-                principal,
-                key,
+                &busbar_kernel::plane_driver::TicketAdoption {
+                    money,
+                    ctx,
+                    admit,
+                    principal,
+                    expected_key: key,
+                    node_nonce: node,
+                    instance_nonce: instance,
+                    store: &store,
+                },
                 lane,
                 Arc::clone(&self.facts.classes),
                 FeeRefund::PlaneFeeUnits(Arc::clone(&self.facts.fee_units)),
-                node,
-                instance,
-                &gov.core_store_handle()
-                    .map_err(|_| Refusal::new(ReasonCode::Unpriced))?,
             ) {
                 Ok(lineage) => {
                     {

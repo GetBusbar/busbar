@@ -3,6 +3,7 @@
 
 //! Read-only artifact metadata. No module opens or executes an image.
 #![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
 pub mod civil;
 pub mod extensions;
 pub mod measurement;

@@ -72,7 +72,7 @@ fn a_running_busbar_writes_no_state_file() {
 
     let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("BUSBAR_STATE_FILE", &state_file)
         .env("MOCK_KEY", "x")
         .env("RUST_LOG", "info")

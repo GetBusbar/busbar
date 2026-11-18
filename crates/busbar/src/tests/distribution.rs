@@ -438,7 +438,6 @@ mod admin_effect_authority;
 // Source owners supply product fixtures and scenarios in this original test scope.
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(admin_application);
-owner_test_sources!(sqlite_application);
 
 #[path = "admin_application/admin_generation_etags.rs"]
 mod admin_application_admin_generation_etags;

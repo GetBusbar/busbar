@@ -1186,7 +1186,7 @@ type ScannedLease = (Target, Vec<u8>, Secret<Vec<u8>>, u64);
 
 /// One writer whose lease expired at least the grace ago (SHUTDOWN-HANG F5 "The scan").
 #[derive(Clone, Debug)]
-pub struct ExpiredWriter {
+pub(crate) struct ExpiredWriter {
     pub epoch: u64,
     pub writer: [u8; 16],
     /// `(host, node)` assignments under this writer, lowest node first.
@@ -1198,7 +1198,7 @@ pub struct ExpiredWriter {
 /// One scan's inventory: up to `max` rows, the count left beyond it, and the rows that did not
 /// decode (never closed, reported once per start).
 #[derive(Debug, Default)]
-pub struct ExpiredWriters {
+pub(crate) struct ExpiredWriters {
     pub rows: Vec<ExpiredWriter>,
     pub remaining: usize,
     pub invalid: usize,

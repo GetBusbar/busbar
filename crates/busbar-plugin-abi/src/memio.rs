@@ -217,10 +217,10 @@ impl MemIo {
                 out.put(tag::WRITE, &p.write.as_slice()[..n])?;
                 p.write.consume(n);
             }
-            if p.write.len() < before {
-                if let Some(waker) = p.writer.take() {
-                    waker.wake();
-                }
+            if p.write.len() < before
+                && let Some(waker) = p.writer.take()
+            {
+                waker.wake();
             }
         }
         let wake = if self.budget_out {

@@ -111,7 +111,9 @@ async fn conditional_unknown_replays_exact_candidate_and_reconnect_receipt() {
         rows.conditional(&held, &changed).await.unwrap(),
         Outcome::OpIdConflict
     );
-    assert_eq!(backend.state.lock().unwrap().sent.len(), 2);
+    // `attach` starts `sent` after the reconnected store's generation open (86f2c543e0): the
+    // receipt answers both requests without a new commit.
+    assert_eq!(backend.state.lock().unwrap().sent.len(), 0);
     let private = HostRecords::host_private(&reconnected, "instance", ["schema"]).unwrap();
     assert_eq!(
         private.conditional(&held, &original).await.unwrap(),

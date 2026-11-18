@@ -14,6 +14,21 @@ const LANE: &str = "m-dated-read";
 const PROVIDER: &str = "dated-read";
 const TOKENS: u64 = 1_000;
 
+/// [`complete_usage_fixture`] over a JSON-facade document (#162): the round trip through this file's value type
+/// stays here, so a caller on the facade never names it.
+pub(super) fn complete_usage_fixture_facade(
+    document: &mut busbar_contract::json::Value,
+    directory: &std::path::Path,
+    model_providers: &[(&str, &str)],
+) -> std::collections::HashMap<String, busbar_kernel::config::ProviderDef> {
+    let mut shared: serde_json::Value =
+        serde_json::from_str(&document.to_string()).expect("the facade document is JSON");
+    let defs = complete_usage_fixture(&mut shared, directory, model_providers);
+    *document = busbar_contract::json::parse_value(shared.to_string().as_bytes())
+        .expect("the completed document is JSON");
+    defs
+}
+
 pub(super) fn complete_usage_fixture(
     document: &mut serde_json::Value,
     directory: &std::path::Path,
@@ -147,17 +162,18 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store opens the configuration authority")
+        .admit()
+        .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config.clone(),
         Some(overlay.clone()),
         HashSet::new(),
@@ -187,7 +203,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         rotate.await;
     }
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        current_config,
+        crate::root::test_plugins::plaintext_listeners(current_config),
         plugin_config,
         Some(overlay),
         HashSet::new(),

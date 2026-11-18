@@ -184,14 +184,9 @@ impl Case {
             (
                 "ledger  MeteredRow::spend_micros_at_card",
                 None,
-                ledger_cost::MeteredRow::new(
-                    self.lane,
-                    units.clone(),
-                    self.fee_count,
-                    &BTreeMap::new(),
-                )
-                .spend_micros_at_card(&card)
-                .map(i128::from),
+                metered_row(self.lane, units.clone(), self.fee_count)
+                    .spend_micros_at_card(&card)
+                    .map(i128::from),
             ),
             (
                 "admin   derive_spend_micros_row (current card)",
@@ -363,9 +358,7 @@ fn d5_an_unpriced_class_on_a_priced_lane_refuses_everywhere() {
     let counts: [(&str, u64); 3] = [(INPUT, 1_000), (OUTPUT, 250), (CACHE_READ, 10_000_000)];
     let history = History::opening(card.clone(), 0);
     let one = ledger_cost::price_ledger(&[one_entry(LANE, &counts, 0, 0)], &history);
-    let derived =
-        ledger_cost::MeteredRow::new(LANE, enforcement_units(&counts), 0, &BTreeMap::new())
-            .spend_micros_at_card(&card);
+    let derived = metered_row(LANE, enforcement_units(&counts), 0).spend_micros_at_card(&card);
     let posting = ledger_cost::Posting::from_usage(
         LANE,
         &usage_report(&counts),
@@ -665,8 +658,7 @@ async fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement
     )
     .expect("the card prices both classes");
     let ledger_micros =
-        ledger_cost::MeteredRow::new(LANE, enforcement_units(&counts), 0, &BTreeMap::new())
-            .spend_micros_at_card(&card);
+        metered_row(LANE, enforcement_units(&counts), 0).spend_micros_at_card(&card);
     let units = enforcement_units(&counts);
     let config_card: BTreeMap<String, busbar_kernel::config::RateEntryCfg> =
         busbar_contract::yaml::from_str(&format!(
@@ -703,8 +695,7 @@ async fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement
     );
 
     let silent = kernel_cost_model(Some(&[(LANE, [0.0, 2.0, 0.0, 0.0])]), 0);
-    let refusal = ledger_cost::MeteredRow::new(LANE, units.clone(), 0, &BTreeMap::new())
-        .spend_micros_at_card(silent.card());
+    let refusal = metered_row(LANE, units.clone(), 0).spend_micros_at_card(silent.card());
     assert!(
         matches!(refusal, Err(MoneyError::ClassUnpriced { ref class, .. }) if class == "hops"),
         "an unpriced open class refuses, never a silent 0: {refusal:?}"
@@ -961,4 +952,23 @@ async fn an_open_class_beside_the_tokens_moves_no_token_line() {
             (OUTPUT.to_string(), 1),
         ])
     );
+}
+
+/// A metered row of whole-unit counts and no ledgered classes: the projection the test-only
+/// `MeteredRow::new` made (17da9b4713 keeps it to the ledger crate's own tests), built through the
+/// public `MeteredRow::exact` with each count lifted by `whole`.
+fn metered_row(
+    lane: &str,
+    counts: BTreeMap<String, u64>,
+    requests: u64,
+) -> ledger_cost::MeteredRow<'_> {
+    ledger_cost::MeteredRow::exact(
+        lane,
+        counts
+            .into_iter()
+            .map(|(class, n)| (class, ledger_cost::whole(n)))
+            .collect(),
+        requests,
+        BTreeMap::new(),
+    )
 }

@@ -48,6 +48,9 @@ pub enum Carry<'a> {
 
 /// [`op_of`] a `flush`.
 const FLUSH: u8 = 6;
+/// How many arguments and environment entries a program destination lends from the stack before they
+/// spill to the heap.
+const DEST_INLINE: usize = 8;
 
 /// The slot a [`Carry`] crosses, to know what is pending on a side.
 fn op_of(c: &Carry<'_>) -> u8 {
@@ -145,27 +148,27 @@ pub(crate) const fn abi(b: &[u8]) -> AbiStr {
 }
 
 /// Where a carrier dials, with the storage its pointers name.
-#[derive(Debug, Clone)]
-pub enum Dest {
+#[derive(Debug, Clone, Copy)]
+pub enum Dest<'a> {
     /// An authority: the address the destination judge pinned (`ip:port`), or a unix-domain path
     /// (`unix:/path`).
-    Authority(String),
+    Authority(&'a str),
     /// A program: its absolute path, arguments and whole environment, and its environment
     /// references as config time resolved them ([`crate::spawn_env::HeldEnv`]), and the
     /// supervision key of the member that runs it (`DialIn::supervision_key`; `0` = no member).
     Program(
-        busbar_contract::conn::Program,
-        crate::spawn_env::HeldEnv,
+        &'a busbar_contract::conn::Program,
+        &'a crate::spawn_env::HeldEnv,
         u64,
     ),
 }
 
-impl Dest {
+impl Dest<'_> {
     /// What the host admits for a dial to this destination: exactly it.
     fn admission(&self) -> Admission {
         match self {
-            Self::Authority(a) => Admission::Dial(vec![a.clone()]),
-            Self::Program(p, env, _) => Admission::Spawn(p.clone(), env.clone()),
+            Self::Authority(a) => Admission::Dial(vec![String::from(*a)]),
+            Self::Program(p, env, _) => Admission::Spawn((*p).clone(), (*env).clone()),
         }
     }
 }
@@ -204,15 +207,22 @@ impl Carried {
     pub fn dial(
         door: Arc<dyn FramerDoor>,
         io: Arc<HostIo>,
-        dest: &Dest,
+        dest: &Dest<'_>,
     ) -> Result<Self, DialFailure> {
         let refused = || DialFailure::Refused("the transport is no carrier the host drives".into());
         let mut wr = Driven::of(door.as_ref()).ok_or_else(refused)?;
         let rd = Driven::of(door.as_ref()).ok_or_else(refused)?;
-        let (args, env): (Vec<AbiStr>, Vec<Field>) = match dest {
-            Dest::Program(p, _, _) => crate::off_path::lines::program_destination(p),
-            Dest::Authority(_) => (Vec::new(), Vec::new()),
-        };
+        // A program destination's argument and environment arrays, naming the program's own bytes: on
+        // the stack for a program of up to DEST_INLINE of each.
+        let mut args: smallvec::SmallVec<[AbiStr; DEST_INLINE]> = smallvec::SmallVec::new();
+        let mut env: smallvec::SmallVec<[Field; DEST_INLINE]> = smallvec::SmallVec::new();
+        if let Dest::Program(p, _, _) = dest {
+            args.extend(p.args.iter().map(|a| abi(a.as_bytes())));
+            env.extend(p.env.iter().map(|(k, v)| Field {
+                name: abi(k.as_bytes()),
+                value: abi(v.as_bytes()),
+            }));
+        }
         let raw = match dest {
             Dest::Authority(a) => Destination {
                 kind: DEST_AUTHORITY,

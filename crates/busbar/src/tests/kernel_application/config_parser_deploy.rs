@@ -17,7 +17,6 @@ pub(crate) fn base_deploy() -> DeployCfg {
         grammar: busbar_kernel::config::GrammarField::bound(busbar_kernel::config::Grammar::empty()),
 
         oauth_as: None,
-        credentials: Default::default(),
         public_url: None,
         tls: None,
         admin_listen: DEFAULT_ADMIN_LISTEN_ADDR.into(),
@@ -546,7 +545,6 @@ fn root_pools_named_after_a_reserved_sub_key_load_as_in_1_5_5() {
 /// A deployment document carrying `body` under the given prelude, parsed as the boot does.
 fn parse_deploy_text(text: &str) -> Result<DeployCfg, String> {
     crate::dist_root_install::install();
-    crate::distribution::install_migration_rows();
     busbar_kernel::config::deploy_from_yaml_str(text, &crate::root::boot::axis_test_grammar())
         .map_err(|e| e.to_string())
 }

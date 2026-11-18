@@ -48,7 +48,7 @@ pub fn verify(payload: &[u8], signatures: &Value, root: &VerifyingKey) -> Result
     let mut verified = false;
     for sig in list {
         let protected = sig
-            .get(&"protected")
+            .get("protected")
             .and_then(|v| v.as_str())
             .ok_or_else(|| refused(svc::SIGNED_MALFORMED_HEADER))?;
         let header = header(protected)?;
@@ -69,7 +69,7 @@ pub fn verify(payload: &[u8], signatures: &Value, root: &VerifyingKey) -> Result
             );
         }
         let raw = sig
-            .get(&"signature")
+            .get("signature")
             .and_then(|v| v.as_str())
             .and_then(|s| URL_SAFE_NO_PAD.decode(s).ok())
             .and_then(|b| <[u8; 64]>::try_from(b).ok())

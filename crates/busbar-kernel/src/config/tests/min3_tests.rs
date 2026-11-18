@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::json::JsonValueTrait as _;
 use busbar_plugin_abi::host_side::caller::Accept;
 
 #[test]
@@ -354,6 +353,7 @@ store:
   insecure_transport: { accept: plaintext, reason: "pg sidecar on the pod network, INFRA-142" }
 secrets:
   vault:
+    module: vault
     insecure_transport: { accept: [plaintext, unverified_tls], reason: "dev vault, CHG-9" }
 "#,
     );
@@ -605,17 +605,36 @@ fn parsed_registrations(yaml: &str) -> Result<BTreeMap<Box<str>, UpstreamCfg>, V
 #[test]
 fn top_level_upstreams_is_refused_with_registration_guidance() {
     let errors = crate::config::deploy_from_yaml_str(UPSTREAMS, &crate::config::Grammar::empty())
-        .err()
-        .expect("retired core key");
+        .expect_err("retired core key");
     assert!(errors.to_string().contains("registration"));
 }
 
-/// PRD-4: a 1.5.5-shaped config (every instance block with only its 1.5.5 keys) parses unchanged and carries no
-/// MIN-3 key; every new key is additive.
+/// PRD-4: a 1.5.5-shaped config (every instance block with only its 1.5.5 keys) carries no MIN-3 key; every new key
+/// is additive. Since 01149013b8 (`module` required on a secret instance; "legacy conversion belongs to
+/// migrate-on-boot") the module-keyed secret block is refused, pointing the operator at the upgrade; as the upgrade
+/// writes it (`module` named after the key, busbar-migrate secret_instances) the config parses unchanged otherwise.
 #[test]
 fn a_1_5_5_shaped_config_parses_and_carries_no_min3_keys() {
-    let deploy = deploy(
-        r#"
+    let unconverted =
+        crate::config::deploy_from_yaml_str(LEGACY_1_5_5, &crate::config::Grammar::empty())
+            .expect_err("a module-keyed secret instance needs the upgrade");
+    let text = unconverted.to_string();
+    assert!(
+        text.contains("secrets.vault")
+            && text.contains("missing field `module`")
+            && text.contains("1.6.0 upgrade")
+            && text.contains("docs/migration-1.6"),
+        "{text}"
+    );
+    let deploy = deploy(&LEGACY_1_5_5.replace(
+        "  vault:\n    settings:",
+        "  vault:\n    module: vault\n    settings:",
+    ));
+    let min3 = parse_min3(&deploy).expect("nothing to refuse");
+    assert!(min3 == Min3Config::default(), "no MIN-3 key was written");
+}
+
+const LEGACY_1_5_5: &str = r#"
 providers: {}
 models: {}
 store:
@@ -635,11 +654,7 @@ hooks:
 export:
   metrics:
     module: prometheus
-"#,
-    );
-    let min3 = parse_min3(&deploy).expect("nothing to refuse");
-    assert!(min3 == Min3Config::default(), "no MIN-3 key was written");
-}
+"#;
 
 /// `<kind>.<name>.limits` is not a config key: an instance block of every kind that carries it is refused as an
 /// unknown field naming `limits` (an instance runs at its kind's defaults; `insecure_transport` stays).

@@ -865,6 +865,22 @@ pub async fn persist_named_map_async(
         .await
 }
 
+/// [`persist_named_map_async`] for callers on the JSON facade (#162): `def` is JSON text, parsed here, where the
+/// overlay document's own value type lives, so a caller never names that type. Test support only.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn persist_named_map_text_async(
+    store: Option<&OverlayStore>,
+    section: crate::config::named_map::NamedMapSection,
+    name: &str,
+    def: Option<&str>,
+) -> Result<(), String> {
+    let def = def
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()
+        .map_err(|error| format!("the named-map definition is not JSON: {error}"))?;
+    persist_named_map_async(store, section, name, def.as_ref()).await
+}
+
 pub async fn read_async(store: &OverlayStore) -> Option<OverlayDoc> {
     store.read_required_async().await.ok().flatten()
 }

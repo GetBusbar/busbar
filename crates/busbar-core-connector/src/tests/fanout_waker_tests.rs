@@ -97,6 +97,8 @@ fn fan_waker_retirement(removal: bool) {
             )
             .pooling(SHARED_LINE_POOL),
         );
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+        crate::tests::accept_plaintext(&c, &[OWNER]);
         c.declare_over(OWNER, NEED, FRAMER_CLAIM).unwrap();
         let desc = OpenDesc {
             target: &far,

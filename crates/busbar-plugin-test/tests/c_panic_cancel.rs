@@ -43,9 +43,9 @@ mod fixture {
     use busbar_plugin_abi::Export;
 
     /// Fuses dropped armed (each panicked).
-    pub static FUSES_BLOWN: AtomicU32 = AtomicU32::new(0);
+    pub(super) static FUSES_BLOWN: AtomicU32 = AtomicU32::new(0);
     /// Plugin values dropped whose `Drop` panicked.
-    pub static CLOSE_PANICS: AtomicU32 = AtomicU32::new(0);
+    pub(super) static CLOSE_PANICS: AtomicU32 = AtomicU32::new(0);
     /// `release` calls the rig saw.
     pub static RELEASED: AtomicU32 = AtomicU32::new(0);
 
@@ -61,7 +61,7 @@ mod fixture {
 
     static EVENTS: Mutex<Vec<Event>> = Mutex::new(Vec::new());
 
-    pub fn take_events() -> Vec<Event> {
+    pub(super) fn take_events() -> Vec<Event> {
         std::mem::take(&mut *EVENTS.lock().unwrap_or_else(PoisonError::into_inner))
     }
 

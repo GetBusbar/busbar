@@ -202,8 +202,10 @@ fn price_legacy<'a>(
         .collect();
     busbar_kernel_ledger::usage::price_dated_counts_raw(
         rows.iter().map(|(lane, era, counts)| (*lane, *era, counts)),
+        // The fee walk is replayed, so it is collected once (9ee3661f1b: `IntoIter: Clone`).
         fees.into_iter()
-            .map(|(era, n)| (RawRateEra::legacy(era), n)),
+            .map(|(era, n)| (RawRateEra::legacy(era), n))
+            .collect::<Vec<_>>(),
         window_start_ms,
         live,
         dated,
@@ -658,7 +660,7 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
                 .saturating_add(1);
         }
         let (app, _, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             plugins.clone(),
             None,
             Default::default(),

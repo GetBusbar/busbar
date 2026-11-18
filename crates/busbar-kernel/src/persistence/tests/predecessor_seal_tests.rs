@@ -375,7 +375,7 @@ async fn the_host_scan_lists_reserved_nodes_and_refuses_the_rest() {
         .iter()
         .map(|n| (n.id, n.lease_expires_ms))
         .collect();
-    ids.sort_unstable();
+    ids.sort();
     assert_eq!(ids, vec![(71, Some(10_000)), (72, Some(20_000))]);
     assert_eq!(listed.refused.len(), 1);
     assert_eq!(listed.refused[0].id, Some(73));

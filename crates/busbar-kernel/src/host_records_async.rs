@@ -71,6 +71,7 @@ impl AsyncRecords {
         self.owner()?.scan(schema, prefix, after).await
     }
     /// A class-M receipt identity for one request on these records (DES-264).
+    #[cfg(test)]
     pub(crate) async fn record_op(&self) -> Result<HeldOp, host_records::Error> {
         Ok(self.store.record_op().await?)
     }

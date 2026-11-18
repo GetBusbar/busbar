@@ -10,6 +10,7 @@
 //! one-string displays, where the prefix is added after the cut, so a plugin keeps its full 512 bytes.
 
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
+#[cfg(test)]
 use busbar_ports::PortError;
 
 /// The resolved code (IF §11.2): `Copy` over `&'static`, `Display` = `BUSBAR-{plugin}-{number:04}`, which can never
@@ -23,7 +24,7 @@ pub(crate) const DIAG_MEMBER: &str = "plugin_diag";
 
 /// Plugin text as core holds it: the plugin's scrubbed text and the code core resolved for it, if any. Its JSON
 /// serializer writes the raw text member and `plugin_diag` (string or `null`), always together, into the object
-/// that holds it (`#[serde(flatten)]`, or [`PluginText::write_members`] for a JSON map); its `Display` is
+/// that holds it (`#[serde(flatten)]`, or `PluginText::write_members` for a JSON map); its `Display` is
 /// the joined `"{code}: {text}"` (or `"{text}"`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginText {
@@ -52,8 +53,9 @@ impl PluginText {
     }
 
     /// The plugin text of a port error, with its code; None for a `CallError`, which carries no plugin text.
+    #[cfg(test)]
     #[must_use]
-    pub fn of_port_error(e: &PortError) -> Option<Self> {
+    pub(crate) fn of_port_error(e: &PortError) -> Option<Self> {
         match e {
             PortError::Refused { text, error, .. } | PortError::Failed { text, error, .. } => {
                 Some(Self {
@@ -73,7 +75,8 @@ impl PluginText {
 
     /// Writes both members into a JSON object: `text` raw and `plugin_diag` (string or `null`). An existing
     /// member of either name is replaced, so the pair can never disagree.
-    pub fn write_members(&self, object: &mut busbar_contract::json::Map) {
+    #[cfg(test)]
+    pub(crate) fn write_members(&self, object: &mut busbar_contract::json::Map) {
         use busbar_contract::json::Value;
         object.insert(TEXT_MEMBER, Value::from(&*self.text));
         let diag = match self.code {

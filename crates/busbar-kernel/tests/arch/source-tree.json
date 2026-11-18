@@ -4,7 +4,6 @@
     "busbar-plugin-test"
   ],
   "generated": [
-    "crates/busbar/src/main.rs:296",
-    "crates/busbar/src/main.rs:298"
+    "crates/busbar/src/main.rs:297"
   ]
 }

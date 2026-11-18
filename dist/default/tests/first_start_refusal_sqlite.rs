@@ -136,7 +136,7 @@ impl Fixture {
         let mut command = Command::new(common::boot::exe());
         command
             .env("BUSBAR_CONFIG", self.dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", self.dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("RUST_LOG", "info")
             .env(
                 "BUSBAR_SIGNING_KEY",

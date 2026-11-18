@@ -44,7 +44,7 @@ use busbar_kernel::plane_grants::{
 };
 use busbar_kernel::plugin_config::ConfigBinder;
 use busbar_kernel::plugin_records::{PluginRecords, RecordsDenied, StoreRecords};
-use busbar_kernel::push::{PushQueue, StorePushQueue};
+use busbar_kernel::push::StorePushQueue;
 use busbar_kernel::retry::Policy as RetryPolicyImpl;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller as LoaderCaller};
 use busbar_plugin_abi::types::KindCode;
@@ -85,7 +85,7 @@ pub(crate) struct CoreSecrets {
 /// The serving instances' shared owners, constructed after the Store deployment checks.
 struct Shared {
     records: Records,
-    push: Arc<dyn PushQueue>,
+    push: Arc<StorePushQueue>,
     signals: Arc<SignalRegistry>,
     /// The observation custody every seat's OBS_SCOPE and OBSERVE run on (units register as requests bill).
     observations: ObsCustody,
@@ -185,7 +185,7 @@ fn recovery_matcher(patterns: Vec<Box<str>>) -> Box<dyn Fn(&str) -> bool + Send 
 impl Shared {
     fn new(
         records: Records,
-        push: Arc<dyn PushQueue>,
+        push: Arc<StorePushQueue>,
         store: Arc<busbar_kernel::persistence::facade::CoreStore>,
         binder: Arc<WorkBinder>,
     ) -> Self {
@@ -1369,6 +1369,9 @@ pub(crate) struct ServingReady {
     built: Built,
     instances: Vec<Configured>,
     declared: std::collections::BTreeMap<String, busbar_kernel::upstreams::Declared>,
+    /// The secret instances the boot opened for a shorthand alone (`{ env: .. }`), with no `secrets.<name>` block in the
+    /// document: a conversion has no block of theirs to settle.
+    shorthand_only: std::collections::BTreeSet<String>,
     leases: super::boot::walk::BootstrapLeases<Option<OpenedPort>>,
     reserved: Vec<(u32, PreparedInstance)>,
     provisioning: Vec<busbar_kernel::directory::ProvisioningInstance>,
@@ -1608,12 +1611,12 @@ fn prepare_serving_owned(
     let planes: Vec<PlaneImage> = effective_images
         .aliases
         .iter()
-        .cloned()
         .filter(|(id, _)| {
             images
                 .described(id)
                 .is_some_and(|facts| facts.kind == KindCode::Plane)
         })
+        .cloned()
         .map(|(identity, alias)| PlaneImage { identity, alias })
         .collect();
     let sugars = candidate_secrets.sugars().clone();
@@ -1815,6 +1818,13 @@ fn prepare_serving_owned(
         auth_policy: cfg.min3.clone(),
         request_body_cap: cfg.limits.request_body_max_bytes,
         built,
+        shorthand_only: instances
+            .iter()
+            .filter(|instance| {
+                instance.kind == KindCode::Secret && !cfg.secrets.contains_key(&instance.name)
+            })
+            .map(|instance| instance.name.clone())
+            .collect(),
         instances,
         declared,
         leases,
@@ -1938,6 +1948,7 @@ pub(super) async fn finish_with_store(
         built,
         instances,
         declared,
+        shorthand_only,
         leases,
         reserved,
         provisioning,
@@ -2132,6 +2143,11 @@ pub(super) async fn finish_with_store(
             } else {
                 &built.registry
             };
+            if instance.kind == KindCode::Secret && shorthand_only.contains(&instance.name) {
+                // Opened for a shorthand only: the document holds no `secrets.<name>` block to settle into.
+                let _ = settlement_registry.take_settled(&instance.name);
+                continue;
+            }
             let answer = settlement_registry
                 .take_settled(&instance.name)
                 .ok_or_else(|| {
@@ -2412,7 +2428,7 @@ pub(super) async fn finish_with_store(
     for probe in probes {
         workers.push(probe);
     }
-    let queue: Arc<dyn PushQueue> = shared.push.clone();
+    let queue: Arc<StorePushQueue> = shared.push.clone();
     for seat in ticking {
         let queue = Arc::clone(&queue);
         workers.push(async move { seat.tick_task(queue).await });
@@ -2472,7 +2488,10 @@ async fn guard_legacy_marks(
                 busbar_contract::secret::SecretResolve::resolve_string(&*resolver, &reference)
                     .ok()?;
             let seal = busbar_kernel::seal::lend();
-            Some(held.expose(&seal).trim_end_matches(['\r', '\n']).to_owned())
+            // The resolved credential stays in wiping custody (credential typecheck: expose-copy).
+            Some(busbar_contract::secure::SecureString::from(
+                held.expose(&seal).trim_end_matches(['\r', '\n']),
+            ))
         })
         .await
         .ok()

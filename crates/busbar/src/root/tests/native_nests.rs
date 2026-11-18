@@ -2,8 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_HEAD, METHOD_POST};
+use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_HEAD, METHOD_POST, PATH_EXACT};
+use busbar_kernel::guest::{Line, LineAuth, Route};
 use busbar_kernel::plane_driver::port_routes::Mounted;
+use busbar_kernel::plane_driver::port_routes::PortRoutes;
 use busbar_plugin_abi::plane::AUTH_PRINCIPAL;
 
 fn routes(entries: &[(u32, &str, u32)]) -> PortRoutes {
@@ -18,6 +20,7 @@ fn routes(entries: &[(u32, &str, u32)]) -> PortRoutes {
                 effective: AUTH_PRINCIPAL,
                 pattern: (*pattern).into(),
                 cred_header: None,
+                resource_kinds: Vec::new(),
                 catalog: false,
             })
             .collect(),

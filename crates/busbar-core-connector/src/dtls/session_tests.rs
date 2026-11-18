@@ -228,7 +228,7 @@ fn accepted(script: Script, tamper: bool) -> Rig {
         Params {
             dial: false,
             local: our_addr,
-            opening: Vec::new(),
+            opening: &[],
             judge: permissive(),
         },
         now,
@@ -320,7 +320,10 @@ fn a_datagram_begin_gets_the_host_fingerprint_and_a_dial_gets_its_opening() {
     let (role, flags, fingerprint, head) = rig.seen().began.clone().unwrap();
     assert_eq!(role, wire::ROLE_DATAGRAM);
     assert_eq!(flags, wire::CONN_ACCEPT);
-    assert_eq!(fingerprint, sdp_fingerprint(rig.cert.fingerprint()));
+    assert_eq!(
+        fingerprint,
+        sdp_fingerprint(rig.cert.fingerprint()).as_str()
+    );
     assert!(fingerprint.starts_with("sha-256 ") && fingerprint.len() > 8);
     assert!(head.is_empty());
 
@@ -335,7 +338,7 @@ fn a_datagram_begin_gets_the_host_fingerprint_and_a_dial_gets_its_opening() {
         Params {
             dial: true,
             local: p("198.51.100.1:40000"),
-            opening: Vec::from(&b"opening"[..]),
+            opening: b"opening",
             judge: permissive(),
         },
         Instant::now(),
@@ -357,7 +360,7 @@ fn a_session_whose_answer_has_no_ice_terms_is_refused() {
         Params {
             dial: false,
             local: p("198.51.100.1:3478"),
-            opening: Vec::new(),
+            opening: &[],
             judge: None,
         },
         Instant::now(),
@@ -422,7 +425,7 @@ fn a_dial_candidate_at_a_metadata_address_is_denied_and_nothing_is_sent() {
         Params {
             dial: true,
             local: p("198.51.100.1:40000"),
-            opening: Vec::from(&b"opening"[..]),
+            opening: b"opening",
             judge: permissive(),
         },
         Instant::now(),
@@ -531,7 +534,7 @@ fn stream_heads_become_the_sessions_lines_and_channels() {
         Params {
             dial: false,
             local: p("198.51.100.1:3478"),
-            opening: Vec::new(),
+            opening: &[],
             judge: None,
         },
         Instant::now(),

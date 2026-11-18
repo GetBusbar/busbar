@@ -17,10 +17,14 @@ fn every_linked_transport_row_is_keyed_by_its_doors_statement() {
             stated
         })
         .collect();
-    let rows: Vec<(&str, Vec<&str>)> = crate::LINKED
-        .transports
+    // The linked row no longer carries its claims and layers (040c52e0cc: never read); the boot seal
+    // reads them off the same door through `row_facts`, which must agree with the connector's key.
+    let rows: Vec<(&str, Vec<&str>)> = crate::LINKED_TRANSPORT_DOORS
         .iter()
-        .map(|t| ((t.claims)()[0], (t.composes_over)().to_vec()))
+        .map(|(_, door)| {
+            let facts = row_facts(*door);
+            (facts.key, facts.composes_over)
+        })
         .collect();
     assert_eq!(
         stated

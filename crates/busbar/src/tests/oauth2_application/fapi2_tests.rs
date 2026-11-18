@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -267,7 +268,7 @@ impl RsaKey {
 struct Subject {
     app: Arc<busbar_kernel::state::App>,
     origin: String,
-    client: reqwest::Client,
+    client: super::Client,
 
     key: Key,
 
@@ -311,10 +312,7 @@ async fn serve(fapi2: bool) -> Subject {
     Subject {
         app,
         origin,
-        client: super::client_builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("client"),
+        client: super::client(),
         key,
         other,
         rsa,
@@ -1106,10 +1104,12 @@ async fn resource_after_inbound(s: &Subject, token: &str, scheme: &str, proofs: 
             3,
             Listener {
                 guests,
-                auths: std::collections::HashMap::from([(
+                auths: [(
                     provider.into(),
                     Arc::clone(&verifier) as Arc<dyn busbar_contract::auth_calls::AuthCalls>,
-                )]),
+                )]
+                .into_iter()
+                .collect(),
                 body_limit: 1024,
                 app: Arc::clone(&s.app),
                 door_refusals: Vec::new(),

@@ -3,6 +3,7 @@
 
 //! A real retained usage operation, observed and resolved through the mounted operator surface.
 
+use busbar_contract::json::JsonContainerTrait as _;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -152,7 +153,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         Default::default(),
         None,
         Default::default(),

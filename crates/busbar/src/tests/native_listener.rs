@@ -126,7 +126,9 @@ where
         .await;
     let core = Arc::clone(&admitted.core);
     let (mut app, rotation, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        cfg.clone(),
+        // RootCfg is not Clone (3e5b860ca5): the app takes its own resolution of the same document.
+        config::resolve(&deploy, &Default::default())
+            .expect("the actual native fixture configuration resolves"),
         plugins,
         None,
         Default::default(),
@@ -244,8 +246,10 @@ where
             handle,
             "listen".into(),
             Arc::clone(&port),
-            budget,
-            AdmissionClass::Data,
+            root::listener_native::NativeAdmission {
+                budget,
+                class: AdmissionClass::Data,
+            },
             Arc::new(root::serve::native_slot),
             root::listener_native::NativeLimits {
                 max_connections: ROOT_BIND_LIMITS.max_conns,

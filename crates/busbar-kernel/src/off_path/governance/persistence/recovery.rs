@@ -1124,15 +1124,20 @@ impl StoreRecovery {
         self.confirm_local(history, &proof).await?;
         Ok(proof)
     }
-    /// Confirm this node's `proof` is owned and admitted. A pinned History
-    /// requires the exact head. A History beside this node's live owner
-    /// requires the owner's admitted head to extend `proof`: that owner keeps
-    /// appending on the request path, so the originals after `proof` are read
-    /// and must link to it and reproduce the live head and its original-byte
-    /// seal exactly, then that head's H and O rows and admission are checked.
-    /// A forked, rewritten or damaged tail, or a fence, epoch or owner change,
-    /// refuses. Selection itself is guarded separately, under the publication
-    /// driver against the live head.
+    /// Confirm this node's `proof` is owned and admitted. A pinned History requires the exact
+    /// head.
+    ///
+    /// Beside this node's live owner there are two cases. When `proof` is the owner's own
+    /// verified head (SHUTDOWN-HANG F1, carried evidence), one lane-free read of H, O and
+    /// admission confirms it and no original is read: a head moved by anything but the owner (an
+    /// outside append) is refused as `Authority`, and a damaged original that no selection names
+    /// is not looked at here; it is caught at the next cold recovery, whose journal open replays
+    /// every original. Otherwise the owner's admitted head must extend `proof`: the originals
+    /// after `proof` are read and must link to it and reproduce the live head and its
+    /// original-byte seal exactly, then that head's H and O rows and admission are checked, and a
+    /// forked, rewritten or damaged tail after `proof`, or a fence, epoch or owner change,
+    /// refuses. Selection itself is guarded separately, under the publication driver against the
+    /// live head.
     async fn confirm_local(
         &self,
         history: &History<'_>,

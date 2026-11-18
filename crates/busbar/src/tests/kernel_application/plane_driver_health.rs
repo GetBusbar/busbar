@@ -46,7 +46,7 @@ async fn lane_less_app(opening: Option<bool>) -> Arc<kernel::state::App> {
     let rules =
         Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         None,
         Default::default(),

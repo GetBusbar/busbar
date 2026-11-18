@@ -51,7 +51,7 @@ pub(crate) fn refused(e: &impl Display) -> Failure {
 /// Audit a dial of `target` the trust store refused.
 #[cold]
 pub(crate) fn trust_refused(target: &str, refusal: &impl Display) {
-    crate::conns::egress_audit::dial_refused(target, None, &format!("{refusal}"), None);
+    crate::conns::egress_audit::dial_refused(target, None, &format!("{refusal}"), None, &mut None);
 }
 
 /// A dial that failed at the operator's egress proxy, as its reason: the line's own cause.

@@ -195,7 +195,7 @@ pub fn restore_pending(
     id: AttemptId,
     previous: Option<control::Restore>,
     next: control::Restore,
-    manifest: (Address, Vec<u8>, Vec<u8>),
+    manifest: (Address, Vec<u8>, Secret<Vec<u8>>),
 ) -> Result<PreparedCandidate, InvalidFence> {
     if next.state != control::RestoreState::Pending
         || !control::Restore::permits_successor(previous, next)
@@ -211,11 +211,7 @@ pub fn restore_pending(
                 previous.map(|row| row.encode().to_vec()),
                 Secret::new(next.encode().to_vec()),
             ),
-            (
-                manifest_at,
-                Some(manifest_before),
-                Secret::new(manifest_after),
-            ),
+            (manifest_at, Some(manifest_before), manifest_after),
         ],
     )
 }

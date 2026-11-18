@@ -195,13 +195,10 @@ fn a_scan_request_carries_after_only_with_its_flag() {
 }
 
 #[test]
-fn the_clock_request_is_the_dataset_in_one_record() {
-    let mut w = Reply::new();
+fn the_clock_request_is_the_dataset_s_sixteen_bytes() {
+    let mut w = busbar_plugin_abi::host_side::pool::Pool::global().acquire(4096);
     encode_dataset(&mut w, &DatasetId([9; 16])).unwrap();
-    let recs: Vec<_> = Records::new(w.as_bytes()).map(Result::unwrap).collect();
-    assert_eq!(recs.len(), 1);
-    assert_eq!(recs[0].tag, wire::tag::CLOCK);
-    assert_eq!(recs[0].body, &[9u8; 16][..]);
+    assert_eq!(w.bytes(), &[9u8; 16][..]);
 }
 
 fn read_done(code: u32, observed_at: u64, authority: [u8; 16]) -> Reply {

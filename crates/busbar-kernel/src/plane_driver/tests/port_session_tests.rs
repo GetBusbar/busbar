@@ -43,11 +43,12 @@ enum It {
     Header(&'static str, &'static [u8]),
     Body(&'static [u8]),
     Conversation(&'static [u8]),
-    Msg(u32, &'static [u8]),
     Trailers,
     End,
     Forward,
     Want(u32, u64),
+    /// A text want (e.g. `W_MODEL`).
+    WantText(u32, &'static str),
     Emit(u64, &'static [u8]),
     Finish,
     /// An item a later slice drives.
@@ -121,14 +122,11 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
             It::Header(n, v) => PlaneOut::Header(n, v),
             It::Body(b) => PlaneOut::Body(b),
             It::Conversation(b) => PlaneOut::Conversation(b),
-            It::Msg(flags, b) => PlaneOut::Msg {
-                flags: *flags,
-                bytes: b,
-            },
             It::Trailers => PlaneOut::Trailers,
             It::End => PlaneOut::End,
             It::Forward => PlaneOut::Forward { stream: true },
             It::Want(k, v) => PlaneOut::Want(*k, FactRef::U(*v)),
+            It::WantText(k, v) => PlaneOut::Want(*k, FactRef::Text(v)),
             It::Emit(carrier, b) => PlaneOut::Emit {
                 carrier: *carrier,
                 bytes: b,
@@ -180,11 +178,11 @@ fn command_callback_rejects_trailing_effects_and_duplicate_channels() {
             key: "command",
             head: busbar_plugin_abi::records::Records::new(&[]),
         };
-        answer.take(channel(), Origin::Channel, &mut once, &effects);
+        answer.take(&channel(), Origin::Channel, &mut once, &effects);
         assert_eq!(answer.intents.len(), 1);
         assert!(answer.violation.is_none());
         answer.take(
-            if duplicate {
+            &if duplicate {
                 channel()
             } else {
                 PlaneOut::Emit {
@@ -247,7 +245,7 @@ fn the_actual_resource_echo_is_retained_on_exchange_zero() {
         let mut answer = super::Answer::default();
         let mut once = super::Once::default();
         let fx = Emitted::default();
-        let mut take = |out| answer.take(out, Origin::Upstream, &mut once, &fx);
+        let mut take = |out| answer.take(&out, Origin::Upstream, &mut once, &fx);
         if echo_first {
             take(PlaneOut::ResourceEcho(echo));
         }

@@ -73,9 +73,9 @@ impl End {
     }
 }
 
-pub(super) struct Binding {
-    instance: Arc<Instance>,
-    unit: u64,
+pub(crate) struct Binding {
+    pub(crate) instance: Arc<Instance>,
+    pub(crate) unit: u64,
     stream: Option<u64>,
     completion_sibling: bool,
     end: Option<End>,
@@ -83,7 +83,7 @@ pub(super) struct Binding {
 }
 
 impl Binding {
-    fn matches(&self, instance: &Arc<Instance>, unit: u64) -> bool {
+    pub(crate) fn matches(&self, instance: &Arc<Instance>, unit: u64) -> bool {
         self.unit == unit && Arc::ptr_eq(&self.instance, instance)
     }
 
@@ -573,58 +573,6 @@ impl Worker {
 #[cfg(test)]
 #[path = "worker_unit_cancel_tests.rs"]
 mod tests;
-
-pub(super) fn group_orphans(
-    worker: &Worker,
-    gone: Vec<Entry>,
-    wedged: &Arc<Instance>,
-) -> (Vec<Orphan>, Vec<Entry>) {
-    // A wedged worker's entries are sorted into orphans once, at its replacement.
-    let mut entries = crate::cold::dispatch::runtime::orphan_slots(gone, |(idx, entry)| {
-        Some((worker.ticket(idx as u32, entry.generation), entry))
-    });
-    let orphans = crate::cold::dispatch::runtime::orphan_groups(entries.len(), |idx| {
-        let Some((_, entry)) = &entries[idx] else {
-            return None;
-        };
-        let pending = entry.driver.is_none()
-            && entry.current.as_ref().is_some_and(|current| {
-                current.pending
-                    && current.job.is_some()
-                    && !Arc::ptr_eq(&current.meta.instance, wedged)
-                    && !current.meta.instance.faulted.load(Ordering::Acquire)
-            });
-        if !pending {
-            return None;
-        }
-        let key = entry
-            .unit_binding
-            .as_ref()
-            .map(|binding| (Arc::clone(&binding.instance), binding.unit));
-        let mut group = vec![entries[idx].take().expect("pending orphan")];
-        if let Some((instance, unit)) = key {
-            for sibling in &mut entries {
-                if sibling.as_ref().is_some_and(|(_, entry)| {
-                    entry
-                        .unit_binding
-                        .as_ref()
-                        .is_some_and(|b| b.matches(&instance, unit))
-                }) {
-                    group.push(sibling.take().expect("bound sibling"));
-                }
-            }
-        }
-        Some(Orphan { entries: group })
-    });
-    // A wedged worker's remaining entries, forgotten once at its replacement.
-    let rest = crate::cold::dispatch::runtime::orphan_rest(entries, |(ticket, entry)| {
-        for id in &entry.conns {
-            drop(crate::dispatch::conn_services::forget(*id, ticket));
-        }
-        entry
-    });
-    (orphans, rest)
-}
 
 pub(super) fn cancel_orphan(mut orphan: Orphan) {
     let (ticket, entry) = &mut orphan.entries[0];

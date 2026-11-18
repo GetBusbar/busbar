@@ -576,7 +576,7 @@ impl CoreStore {
                 .await
                 .map_err(AccessError::Backend)?;
             read += page.rows.len().max(1);
-            sweeps.cursor = page.next.clone();
+            sweeps.cursor.clone_from(&page.next);
             // Decode the page first: no seal is held across a crossing.
             let foreign: Vec<_> = {
                 let seal = crate::seal::lend();
@@ -590,9 +590,8 @@ impl CoreStore {
                     .collect()
             };
             for (gen8, writer, at, value) in foreign {
-                if !closed.contains_key(&writer) {
-                    let row = self.closed_writer_row(writer).await?;
-                    closed.insert(writer, row);
+                if let std::collections::btree_map::Entry::Vacant(slot) = closed.entry(writer) {
+                    slot.insert(self.closed_writer_row(writer).await?);
                 }
                 let Some(Some(control_row)) = closed.get(&writer) else {
                     continue;

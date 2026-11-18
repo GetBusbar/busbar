@@ -61,7 +61,7 @@ pub(crate) mod neutral;
 mod observations;
 
 #[path = "native_nests.rs"]
-mod native_nests;
+pub(crate) mod native_nests;
 
 #[cfg(test)]
 #[must_use]
@@ -1304,67 +1304,6 @@ impl std::ops::Deref for DataRoutes {
 }
 
 impl DataRoutes {
-    pub(crate) fn new(snapshot: DispatchSnapshot) -> Result<Arc<Self>, String> {
-        let snapshot = Arc::new(snapshot);
-        let native = Arc::new(native_nests::NativeNests::new(&snapshot)?);
-        let kernel = snapshot
-            .served
-            .planes
-            .first()
-            .map(|plane| Arc::clone(&plane.kernel))
-            .or_else(|| {
-                snapshot
-                    .served
-                    .ports
-                    .first()
-                    .map(|seat| Arc::clone(seat.driver.core()))
-            });
-        let generation = match kernel {
-            Some(kernel) => {
-                if snapshot
-                    .served
-                    .planes
-                    .iter()
-                    .any(|other| !Arc::ptr_eq(&kernel, &other.kernel))
-                    || snapshot
-                        .served
-                        .ports
-                        .iter()
-                        .any(|seat| !Arc::ptr_eq(&kernel, seat.driver.core()))
-                {
-                    return Err("listener planes do not share the same core services".into());
-                }
-                if snapshot
-                    .served
-                    .planes
-                    .iter()
-                    .any(|plane| plane.driver.invocation_caller().is_none())
-                {
-                    return Err("listener plane has no admitted invocation owner".into());
-                }
-                let runtime =
-                    tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
-                Some(Arc::new(
-                    busbar_kernel::host_services::ServingGeneration::try_new(
-                        kernel,
-                        Arc::new(DoorNests {
-                            routes: Arc::clone(&snapshot),
-                            native,
-                            runtime,
-                            detached: busbar_kernel::detached::worker_detached(),
-                        }),
-                    )
-                    .map_err(|_| "native routing generation counter exhausted".to_owned())?,
-                ))
-            }
-            None => None,
-        };
-        Ok(Arc::new(Self {
-            snapshot,
-            generation,
-        }))
-    }
-
     /// Register the allocated native unit against this selected immutable dispatch snapshot.
     /// Monetary/effect authority remains pending until the retained task resolves its actual pool.
     pub(crate) fn native_unit(
@@ -1520,7 +1459,7 @@ pub(crate) const NEST_INPUT_FULL: &str = "the nested unit's input budget is exha
 
 pub(crate) struct DoorNests {
     pub(crate) routes: Arc<DispatchSnapshot>,
-    native: Arc<native_nests::NativeNests>,
+    pub(crate) native: Arc<native_nests::NativeNests>,
     pub(crate) runtime: tokio::runtime::Handle,
     pub(crate) detached: Option<Arc<busbar_kernel::detached::DetachedTasks>>,
 }
@@ -1606,14 +1545,6 @@ pub(crate) struct DoorRequest {
     pub(crate) scheme: u8,
 
     pub(crate) consumed_fields: Vec<(String, String)>,
-}
-
-pub(crate) fn line_auth(flags: u32, data_chain: &[ChainAuth]) -> busbar_kernel::guest::LineAuth {
-    if flags & CLAIM_OPEN != 0 {
-        busbar_kernel::guest::LineAuth::None
-    } else {
-        chain_auth(data_chain)
-    }
 }
 
 pub(crate) type ChainAuth = (String, busbar_contract::abi::auth::AuthPoints);

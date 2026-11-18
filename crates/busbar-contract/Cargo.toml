@@ -17,6 +17,12 @@ name = "sdk_door_baseline"
 path = "tests/fixtures/sdk_door_baseline.rs"
 crate-type = ["cdylib"]
 
+# B-LOOKUP: the `lookup` module's answers against the scans they replace (median, p99).
+[[bench]]
+name = "b_lookup"
+path = "benches/b_lookup.rs"
+harness = false
+
 [dependencies]
 busbar-json = { path = "../busbar-json" }
 busbar-artifact-metadata = { path = "../busbar-artifact-metadata" }

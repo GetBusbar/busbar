@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -80,7 +81,7 @@ async fn a_wait_over_an_unlimited_member_answers_at_once() {
 
 #[test]
 fn the_counters_label_a_member_by_name_and_keep_each_pools_depth() {
-    let t = WalkTelemetry::new([(A, "first".to_string())]);
+    let t = WalkTelemetry::new([(A, "first".to_string())], ["p", "q"]);
     assert_eq!(t.lane(A), "first");
     assert_eq!(t.lane(B), "", "a member the seal did not name");
     t.queued("p", 1);
@@ -191,7 +192,7 @@ fn a_linked_dialect() -> String {
     let fixture: json::Value = json::parse_value(text.as_bytes()).expect("the fixture is JSON");
     fixture["body_model"]
         .as_object()
-        .and_then(|dialects| dialects.keys().next().map(str::to_string))
+        .and_then(|dialects| dialects.iter().next().map(|(key, _)| key.to_string()))
         .expect("the fixture names a body-model dialect")
 }
 
@@ -226,7 +227,7 @@ async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        empty,
+        crate::root::test_plugins::plaintext_listeners(empty),
         Default::default(),
         None,
         Default::default(),
@@ -476,7 +477,7 @@ fn a_label_outside_the_bound_falls_back_and_counts_its_refusal() {
         Vec::<String>::new(),
         ["entry-red-arm".to_string()],
     );
-    let t = WalkTelemetry::new([(A, "own-red-arm".to_string())]).bounded(bound);
+    let t = WalkTelemetry::new([(A, "own-red-arm".to_string())], []).bounded(bound);
     let stated = |pool: &str, lane: &str| StatedLabels {
         pool: Some(pool.to_string()),
         lane: Some(lane.to_string()),

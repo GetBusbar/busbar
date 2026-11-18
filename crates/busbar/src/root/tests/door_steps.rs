@@ -144,7 +144,7 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,
@@ -164,7 +164,7 @@ async fn routing_recipe_preserves_configured_float_prices_before_ranking() {
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let opened = crate::root::real_store::core().await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),
@@ -269,7 +269,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             let archive = crate::root::test_plugins::signed(&release, manifest, &library);
             std::fs::write(directory.join("store.tar.gz"), archive)
                 .expect("stage the actual store");
-            crate::root::linked::register_stores(&crate::LINKED);
+            crate::root::linked::register_stores();
             busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
             busbar_kernel::preflight::install_operator(
                 crate::root::auth_bindings::operator_binding(None),
@@ -289,7 +289,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
                 as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
             let opened = generation_store.clone();
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-                cfg,
+                crate::root::test_plugins::plaintext_listeners(cfg),
                 crate::root::test_plugins::trusted_config_with_key(
                     &directory,
                     &crate::root::test_plugins::key(0x5a),
@@ -382,7 +382,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,
@@ -402,7 +402,7 @@ async fn routing_recipe_uses_the_admitted_planes_card_and_keeps_unknown_prices_u
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let opened = generation_store.clone();
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),
@@ -957,7 +957,7 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,
@@ -977,7 +977,7 @@ async fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() 
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let opened = crate::root::real_store::core().await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),
@@ -1128,7 +1128,7 @@ async fn money_book(
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,
@@ -1174,7 +1174,7 @@ async fn money_book(
             .core_store_handle()
             .expect("the generation keeps its native governance authority");
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),
@@ -1830,7 +1830,14 @@ async fn exhausted_pool_walk_bills_under_a_member_lane() {
     .await;
     let pools = llm_pools();
     let gov = Arc::clone(app.governance.as_ref().expect("a governed generation"));
-    let facts = super::door_facts("", &["pool"], &[], &[], "door", Vec::new());
+    let facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("").unwrap(),
+        &["pool"],
+        &[],
+        &[],
+        "door",
+        Vec::new(),
+    );
     let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
         crate::root::plane_node::Node::new(),
     )));
@@ -1941,6 +1948,7 @@ fn llm_pool_member_scope_is_judged_at_the_pool_not_the_member() {
             Some(k),
             (ROUTE_POOL, Some(pool.as_bytes())),
             member.map(str::as_bytes),
+            None,
         )
     };
     assert!(
@@ -1970,7 +1978,14 @@ async fn child_grant_on_a_pooled_llm_target_walks_only_the_target() {
 
     let (app, key) = downgrade_book(Vec::new(), None).await;
     let pools = llm_pools();
-    let facts = super::door_facts("p", &["pool"], &[], &[], "door", Vec::new());
+    let facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap(),
+        &["pool"],
+        &[],
+        &[],
+        "door",
+        Vec::new(),
+    );
     let gov = Arc::clone(app.governance.as_ref().expect("a governed generation"));
     let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
         crate::root::plane_node::Node::new(),
@@ -2090,7 +2105,7 @@ async fn a_routed_unit_with_no_member_is_refused_before_admission_charges() {
     let (app, key) = downgrade_book(vec![one_request_a_day()], None).await;
     let pools = pools(DOWNGRADE_SECTION);
     let facts = super::door_facts(
-        "",
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("").unwrap(),
         &["pool"],
         &["input", "per_request"],
         &["per_request"],
@@ -2188,7 +2203,14 @@ async fn a_downgrade_into_a_pool_with_no_member_is_refused_uncharged() {
         crate::root::plane_node::Node::new(),
     )));
     let money = PlaneMoney::new(Arc::clone(&gov), post as Arc<dyn EndPost>);
-    let facts = super::door_facts("", &["pool"], &[], &[], "door", Vec::new());
+    let facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("").unwrap(),
+        &["pool"],
+        &[],
+        &[],
+        "door",
+        Vec::new(),
+    );
     let arrived = busbar_kernel::store::now();
     let charge = |unit: u64| {
         let steps = super::DoorSteps::new(
@@ -2259,7 +2281,7 @@ async fn a_child_of_a_routed_unit_with_no_member_opens_no_money() {
     let (app, key) = downgrade_book(vec![one_request_a_day()], None).await;
     let pools = pools(DOWNGRADE_SECTION);
     let facts = super::door_facts(
-        "",
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("").unwrap(),
         &["pool"],
         &["input", "per_request"],
         &["per_request"],
@@ -2643,10 +2665,12 @@ fn a_provider_base_url_with_userinfo_is_reached_at_its_stripped_authority() {
     )
     .expect("a provider entry");
     let routes = super::provider_routes(
-        &std::collections::HashMap::from([(
+        &[(
             "p".to_string(),
             busbar_kernel::config::ResolvedProvider::from(provider),
-        )]),
+        )]
+        .into_iter()
+        .collect::<busbar_kernel::config::ResolvedProviders>(),
         &busbar_kernel::config_validate::MetadataPosture::default(),
     );
     let route = &routes["p"];
@@ -3327,7 +3351,7 @@ fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
 }
 
 fn numeric_projection_config() -> busbar_kernel::config::RootCfg {
-    crate::root::linked::register_stores(&crate::LINKED);
+    crate::root::linked::register_stores();
     let def: busbar_kernel::config::ProviderDef =
         busbar_contract::yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n")
             .expect("provider");
@@ -4715,7 +4739,7 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             let archive = crate::root::test_plugins::signed(&release, manifest, &library);
             std::fs::write(directory.join("store.tar.gz"), archive)
                 .expect("stage the actual store");
-            crate::root::linked::register_stores(&crate::LINKED);
+            crate::root::linked::register_stores();
             busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
             busbar_kernel::preflight::install_operator(
                 crate::root::auth_bindings::operator_binding(None),
@@ -4735,7 +4759,7 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
                 as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
             let opened = crate::root::real_store::core().await;
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-                cfg,
+                crate::root::test_plugins::plaintext_listeners(cfg),
                 crate::root::test_plugins::trusted_config_with_key(
                     &directory,
                     &crate::root::test_plugins::key(0x5a),
@@ -4940,7 +4964,7 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,
@@ -4960,7 +4984,7 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let opened = crate::root::real_store::core().await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),
@@ -5098,7 +5122,7 @@ async fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_
 
 #[test]
 fn a_models_protocol_override_is_handed_to_the_plane() {
-    crate::root::linked::register_stores(&crate::LINKED);
+    crate::root::linked::register_stores();
     let def: busbar_kernel::config::ProviderDef =
         busbar_contract::yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n")
             .expect("a def");
@@ -5340,7 +5364,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,
@@ -5364,7 +5388,7 @@ async fn the_doors_admission_check_reads_the_arrival_window_and_not_the_clock() 
             .core_store_handle()
             .expect("the generation keeps its native governance authority");
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),
@@ -5482,7 +5506,7 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
         let library = std::fs::read(library_path).expect("the actual store library reads");
         let archive = crate::root::test_plugins::signed(&release, manifest, &library);
         std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual store");
-        crate::root::linked::register_stores(&crate::LINKED);
+        crate::root::linked::register_stores();
         busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
         busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(
             None,
@@ -5502,7 +5526,7 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
         let opened = crate::root::real_store::core().await;
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             crate::root::test_plugins::trusted_config_with_key(
                 &directory,
                 &crate::root::test_plugins::key(0x5a),
@@ -5531,11 +5555,9 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
         key: None,
         app: &app,
     };
-    let allocated = || {
-        tikv_jemalloc_ctl::thread::allocatedp::read()
-            .map(|m| m.get())
-            .expect("jemalloc's per-thread counter reads")
-    };
+    // The test build's counting allocator (UNSAFE-MIN §4.4, 4793e7b460), as the root's other
+    // allocation proofs read it: tikv-jemalloc-ctl is not in the distribution graph (f47845ac8b).
+    let allocated = || crate::GLOBAL.stats().bytes_allocated;
 
     let _ = allocated();
     let before = allocated();
@@ -5932,9 +5954,6 @@ fn door_step_each_call_resolves_fresh() {
     }
     let _ = std::fs::remove_file(&key_file);
 }
-
-include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
-owner_test_sources!(door_steps);
 
 #[path = "door_steps_lease.rs"]
 mod lease;

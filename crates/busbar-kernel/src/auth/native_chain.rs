@@ -8,7 +8,7 @@ use super::chain_run::{
     prepare_snapshot as verify_snapshot, run_owned_chain, AuthServices, ChainEnd, ChainInstance,
     IdentityPolicy, Request, Verdict,
 };
-use super::native_admin::{PreparedAnswer, PreparedIdentity};
+use super::native_admin::PreparedAnswer;
 use super::native_policy::ChainPolicy;
 use super::verdicts::VerdictCache;
 use crate::directory::HoldSet;
@@ -218,37 +218,33 @@ impl NativeChain {
     ) -> impl std::future::Future<Output = ChainEnd> + Send + 'a {
         let request = Request::new(req);
         async move {
-            let callers: Vec<_> = self
-                .instances
-                .iter()
-                .map(|instance| {
-                    let opened = &instance.opened;
-                    Caller {
-                        plugin: &opened.who.plugin,
-                        kind: KindCode::Auth,
-                        name: &opened.who.name,
-                        instance: opened.who.instance,
-                        slot: opened.who.slot,
-                        chain: 0,
-                        deadline: cx.deadline,
-                        stack: cx.stack,
-                        out_of_process: opened.out_of_process,
-                        limits: opened.limits,
-                    }
-                })
-                .collect();
-            let chain: Vec<_> = self
-                .instances
-                .iter()
-                .zip(&callers)
-                .map(|(instance, caller)| ChainInstance {
+            // One caller and one chain position per configured instance, on the stack for an ordinary chain.
+            let mut callers: smallvec::SmallVec<[_; 4]> = smallvec::SmallVec::new();
+            for instance in &self.instances {
+                let opened = &instance.opened;
+                callers.push(Caller {
+                    plugin: &opened.who.plugin,
+                    kind: KindCode::Auth,
+                    name: &opened.who.name,
+                    instance: opened.who.instance,
+                    slot: opened.who.slot,
+                    chain: 0,
+                    deadline: cx.deadline,
+                    stack: cx.stack,
+                    out_of_process: opened.out_of_process,
+                    limits: opened.limits,
+                });
+            }
+            let mut chain: smallvec::SmallVec<[_; 4]> = smallvec::SmallVec::new();
+            for (instance, caller) in self.instances.iter().zip(&callers) {
+                chain.push(ChainInstance {
                     id: instance.opened.who.instance,
                     port: instance.opened.port.as_ref(),
                     caller,
                     keys: &instance.keys,
                     holds: &instance.holds,
-                })
-                .collect();
+                });
+            }
             let services = AuthServices {
                 issued: self.owners.issued.as_ref(),
                 replay: self.owners.replay.as_ref(),
@@ -284,26 +280,20 @@ pub struct PreparedNativeIdentity {
     cutoff: Option<u64>,
 }
 
-impl PreparedIdentity for PreparedNativeIdentity {
-    fn claim_classified(
-        &self,
-    ) -> busbar_plugin_abi::host_side::caller::BoxFut<'_, super::native_admin::NativeReplayClaim>
-    {
-        Box::pin(PreparedNativeIdentity::claim_classified(self))
+impl std::fmt::Debug for PreparedNativeIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedIdentity").finish_non_exhaustive()
     }
-    fn provider(&self) -> &str {
-        &self.instance.opened.who.name
-    }
-    fn credential_headers(&self) -> &[Box<str>] {
+}
+
+impl PreparedNativeIdentity {
+    pub fn credential_headers(&self) -> &[Box<str>] {
         self.instance.opened.port.cred_headers()
     }
-    fn identity(&self) -> &busbar_ports::auth::Identity {
-        &self.identity
-    }
-    fn request(&self) -> &Arc<ChargedRequestSnapshot> {
+    pub fn request(&self) -> &Arc<ChargedRequestSnapshot> {
         &self.request
     }
-    fn authorize(&self, now_s: u64) -> Result<(), u32> {
+    pub fn authorize(&self, now_s: u64) -> Result<(), u32> {
         self.fresh(now_s)?;
         self.request
             .with_auth_input(|req| {
@@ -314,7 +304,7 @@ impl PreparedIdentity for PreparedNativeIdentity {
             })
             .map_err(|_| busbar_plugin_abi::fail::refused::R_POLICY)?
     }
-    fn claim(&self) -> busbar_plugin_abi::host_side::caller::BoxFut<'_, bool> {
+    pub fn claim(&self) -> busbar_plugin_abi::host_side::caller::BoxFut<'_, bool> {
         Box::pin(async move {
             match (self.identity.replay(), self.cutoff) {
                 (Some((key, _)), Some(until)) => {
@@ -377,8 +367,5 @@ impl PreparedNativeIdentity {
             return Err(busbar_plugin_abi::fail::refused::R_POLICY);
         }
         Ok(())
-    }
-    pub(crate) fn claim(&self) -> busbar_plugin_abi::host_side::caller::BoxFut<'_, bool> {
-        <Self as PreparedIdentity>::claim(self)
     }
 }

@@ -8,16 +8,15 @@ use std::sync::Mutex;
 
 use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::plane::{
-    ADMIN_CATALOG, ADMIN_HYDRATE, AUTH_OPERATOR, AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC,
-    AUTH_TICKET, ROUTE_ADMIN, ROUTE_CATALOG, ROUTE_LINE, ROUTE_RECOVERY, ROUTE_UPGRADE,
-    RQ_RECOVERY,
+    ADMIN_HYDRATE, AUTH_OPERATOR, AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC, AUTH_TICKET,
+    ROUTE_ADMIN, ROUTE_CATALOG, ROUTE_LINE, ROUTE_RECOVERY, ROUTE_UPGRADE, RQ_RECOVERY,
 };
 use busbar_ports::plane::{
     PlaneIn, PlaneOut, PlanePort, PlaneSession, RouteInfo, TargetIn, UsageClass,
 };
 use busbar_ports::{CallCx, PortError};
 
-use super::{admin_catalog, admin_hydrate, plan, recovery_request, RouteRefused};
+use super::{admin_hydrate, plan, recovery_request, RouteRefused};
 
 fn route(id: u32, flags: u32, auth: u32, pattern: &str) -> RouteInfo {
     RouteInfo {
@@ -295,24 +294,19 @@ impl PlanePort for Admin {
 }
 
 #[tokio::test]
-async fn catalog_refresh_and_hydrate_are_the_two_admin_ops_and_their_answers_go_to_core_as_they_are(
-) {
+async fn hydrate_is_an_admin_op_and_its_answer_goes_to_core_as_it_is() {
     let port = Admin {
         seen: Mutex::default(),
         answer: Ok(b"answer".to_vec()),
     };
-    assert_eq!(admin_catalog(&port).await.unwrap(), b"answer");
     assert_eq!(admin_hydrate(&port, b"stored").await.unwrap(), b"answer");
     assert_eq!(
         *port.seen.lock().unwrap(),
-        vec![
-            (ADMIN_CATALOG, Vec::new()),
-            (ADMIN_HYDRATE, b"stored".to_vec())
-        ]
+        vec![(ADMIN_HYDRATE, b"stored".to_vec())]
     );
     let failing = Admin {
         seen: Mutex::default(),
         answer: Err(()),
     };
-    assert!(admin_catalog(&failing).await.is_err());
+    assert!(admin_hydrate(&failing, b"stored").await.is_err());
 }

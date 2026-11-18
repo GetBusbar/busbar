@@ -5,66 +5,16 @@
 //! mount (W2-K8P). The two-replica hold arm (FU5 (a)) drives two kernel directories over one store and lives in
 //! the kernel's own directory tests (`directory::tests::two_replicas`), where the store's internals are in reach.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
-
-use axum::body::{Body, Bytes};
+use axum::body::Body;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode};
-use axum::response::{IntoResponse, Response};
 
 use busbar_core_admin::provision::{
-    client_entry, mount, mount_path, mounted, strip_credentials, ProvisionInstance, Verified,
+    admitted, capped, client_entry, mount_path, mounted, refusal, strip_credentials, Verified,
 };
 
-struct Fake {
-    verdict: Verified,
-    cap: usize,
-    creds: Vec<HeaderName>,
-    served: Mutex<Vec<(String, HeaderMap)>>,
-    verified: AtomicUsize,
-    request_seen: Mutex<Option<(String, String, Vec<u8>)>>,
-}
-
-impl Fake {
-    fn new(verdict: Verified) -> Self {
-        Self {
-            verdict,
-            cap: 16,
-            creds: vec![HeaderName::from_static("x-api-key")],
-            served: Mutex::new(Vec::new()),
-            verified: AtomicUsize::new(0),
-            request_seen: Mutex::new(None),
-        }
-    }
-}
-
-impl ProvisionInstance for Fake {
-    fn name(&self) -> &str {
-        "scim"
-    }
-    fn body_cap(&self) -> usize {
-        self.cap
-    }
-    fn cred_headers(&self) -> &[HeaderName] {
-        &self.creds
-    }
-    async fn verify(&self, request: &Request<Bytes>) -> Verified {
-        *self.request_seen.lock().unwrap() = Some((
-            request.method().to_string(),
-            request.uri().to_string(),
-            request.body().to_vec(),
-        ));
-        self.verified.fetch_add(1, Ordering::SeqCst);
-        self.verdict.clone()
-    }
-    async fn serve(&self, client: &str, req: Request<Bytes>) -> Response {
-        self.served
-            .lock()
-            .unwrap()
-            .push((client.to_string(), req.headers().clone()));
-        StatusCode::NO_CONTENT.into_response()
-    }
-    fn refused(&self, _status: StatusCode) {}
+/// The instance's D_CRED_HEADER headers.
+fn creds() -> Vec<HeaderName> {
+    vec![HeaderName::from_static("x-api-key")]
 }
 
 fn clients() -> Vec<Box<str>> {
@@ -106,59 +56,82 @@ async fn only_an_instance_declaring_fb_provision_with_a_block_is_mounted() {
 
 #[tokio::test]
 async fn a_request_without_a_credential_is_401_with_a_bearer_challenge_and_serve_is_not_called() {
-    let inst = Fake::new(Verified::NoCredential);
-    let resp = mount(&inst, &clients(), request("{}")).await;
+    let request = capped(request("{}"), 16).await.unwrap();
+    // No `Admitted` is made, so there is nothing to serve.
+    let status = admitted(request, Verified::NoCredential, &clients(), &creds())
+        .err()
+        .unwrap();
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let resp = refusal(status);
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(
         resp.headers().get("www-authenticate"),
         Some(&HeaderValue::from_static("Bearer"))
     );
-    assert!(inst.served.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn a_refused_credential_is_401_and_a_failed_verify_keeps_its_mapped_status() {
-    let refused = Fake::new(Verified::Refused);
+    let refused = capped(request("{}"), 16).await.unwrap();
     assert_eq!(
-        mount(&refused, &clients(), request("{}")).await.status(),
+        admitted(refused, Verified::Refused, &clients(), &creds())
+            .err()
+            .unwrap(),
         StatusCode::UNAUTHORIZED
     );
-    let failed = Fake::new(Verified::Failed(StatusCode::SERVICE_UNAVAILABLE));
+    let failed = capped(request("{}"), 16).await.unwrap();
     assert_eq!(
-        mount(&failed, &clients(), request("{}")).await.status(),
+        admitted(
+            failed,
+            Verified::Failed(StatusCode::SERVICE_UNAVAILABLE),
+            &clients(),
+            &creds()
+        )
+        .err()
+        .unwrap(),
         StatusCode::SERVICE_UNAVAILABLE
     );
 }
 
 #[tokio::test]
 async fn a_verified_principal_that_is_not_a_client_is_403_with_no_serve() {
-    let inst = Fake::new(Verified::Principal("someone-else".into()));
-    let resp = mount(&inst, &clients(), request("{}")).await;
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    assert!(inst.served.lock().unwrap().is_empty());
+    let request = capped(request("{}"), 16).await.unwrap();
+    let status = admitted(
+        request,
+        Verified::Principal("someone-else".into()),
+        &clients(),
+        &creds(),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(refusal(status).status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
 async fn an_oversized_body_is_413_before_any_verify() {
-    let inst = Fake::new(Verified::Principal("scim-client".into()));
-    let resp = mount(
-        &inst,
-        &clients(),
-        request("0123456789abcdef0123456789abcdef"),
-    )
-    .await;
-    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(inst.verified.load(Ordering::SeqCst), 0);
+    // No `Capped` is made, so there is nothing to verify.
+    let status = capped(request("0123456789abcdef0123456789abcdef"), 16)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 #[tokio::test]
 async fn a_client_is_served_with_q_client_and_the_credentials_stripped() {
-    let inst = Fake::new(Verified::Principal("scim-client".into()));
-    let resp = mount(&inst, &clients(), request("{}")).await;
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-    let served = inst.served.lock().unwrap();
-    let (client, head) = &served[0];
-    assert_eq!(client, "scim-client");
+    let request = capped(request("{}"), 16).await.unwrap();
+    let allowed = clients();
+    let served = admitted(
+        request,
+        Verified::Principal("scim-client".into()),
+        &allowed,
+        &creds(),
+    )
+    .ok()
+    .unwrap();
+    assert_eq!(served.client, "scim-client");
+    let head = served.request.headers();
     for gone in ["authorization", "cookie", "x-api-key"] {
         assert!(head.get(gone).is_none(), "{gone} reached serve");
     }
@@ -178,21 +151,19 @@ fn client_match_is_exact_bytes_and_strip_removes_only_credentials() {
 
 #[tokio::test]
 async fn own_instance_verify_receives_the_complete_original_request() {
-    let instance = Fake::new(Verified::Principal("scim-client".into()));
     let request = Request::builder()
         .method("PATCH")
         .uri("/provision/scim/Groups/g?version=2")
         .header("authorization", "Bearer original")
         .body(Body::from("patch body"))
         .unwrap();
-    let response = mount(&instance, &clients(), request).await;
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let request = capped(request, 1024).await.unwrap();
+    let seen = request.request();
+    assert_eq!(seen.method().to_string(), "PATCH");
+    assert_eq!(seen.uri().to_string(), "/provision/scim/Groups/g?version=2");
     assert_eq!(
-        *instance.request_seen.lock().unwrap(),
-        Some((
-            "PATCH".into(),
-            "/provision/scim/Groups/g?version=2".into(),
-            b"patch body".to_vec()
-        ))
+        seen.headers().get("authorization").unwrap(),
+        "Bearer original"
     );
+    assert_eq!(seen.body().to_vec(), b"patch body".to_vec());
 }

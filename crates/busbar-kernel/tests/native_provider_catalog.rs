@@ -446,3 +446,32 @@ fn auth_binding_form_retains_catalog_style_deployment_instance_and_explicit_unse
         .values()
         .all(|target| matches!(&target.auth_selection, ProviderAuthSelection::Implicit)));
 }
+
+/// K-SRC-configtokens (PM ruling 2026-11-17, decided by behaviour): a 1.5.5-shaped provider that uses
+/// the keys the 1.5.5 LLM descriptor typed (`max_output_key`, `anthropic_adaptive_thinking`,
+/// `native_structured_output`, `model_capabilities`; fixtures/provider-keys-llm.json) still parses
+/// since d3dc7a93fd, and every one of them reaches the plane whose schema owns them, unchanged, in
+/// that plane's projection (IF round 14: "error_map, model_capabilities travel inside it"). They are
+/// delegated to the plane, not removed.
+#[test]
+fn the_1_5_5_descriptor_typed_provider_keys_reach_the_plane_that_owns_them() {
+    let catalog = "p:\n  protocol: wire-a\n  base_url: https://upstream.example/api\n  max_output_key: max_completion_tokens\n  anthropic_adaptive_thinking: true\n  native_structured_output: false\n  model_capabilities: [{models: ['wire-*'], native_structured_output: true, reasoning_none: true}]\n";
+    let deployment = "providers:\n  p:\n    api_key: {module: fixture-secret, settings: {slot: lane-key}}\nmodels:\n  m0: {provider: p, upstream_model: wire-model-a}\n";
+    let schema = r#"{"type":"object","properties":{"max_output_key":{"enum":["max_tokens","max_completion_tokens"]},"anthropic_adaptive_thinking":{"type":"boolean"},"native_structured_output":{"type":"boolean"},"model_capabilities":{"type":"array"}},"additionalProperties":false}"#;
+    let result = resolved(catalog, deployment, &[plane("llm", &["wire-a"], schema)]);
+    let targets: Vec<_> = result.catalogs["llm"].targets().values().collect();
+    assert!(!targets.is_empty(), "the model is served by the plane");
+    for target in targets {
+        let projection: busbar_contract::json::Value =
+            busbar_contract::json::parse_value(target.projection.as_bytes()).unwrap();
+        assert_eq!(projection["max_output_key"], "max_completion_tokens");
+        assert_eq!(projection["anthropic_adaptive_thinking"], true);
+        assert_eq!(projection["native_structured_output"], false);
+        assert_eq!(projection["model_capabilities"][0]["models"][0], "wire-*");
+        assert_eq!(
+            projection["model_capabilities"][0]["native_structured_output"],
+            true
+        );
+        assert_eq!(projection["model_capabilities"][0]["reasoning_none"], true);
+    }
+}

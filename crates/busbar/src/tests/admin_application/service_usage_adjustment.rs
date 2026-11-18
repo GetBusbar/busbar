@@ -62,8 +62,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,
@@ -80,7 +79,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (mut app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config.clone(),
         None,
         Default::default(),
@@ -123,7 +122,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
     let current = busbar_kernel::config::resolve(&current, &provider_defs)
         .expect("the current deployment resolves");
     let (next, rotate, limits) = crate::root::real_store::build_app(
-        current,
+        crate::root::test_plugins::plaintext_listeners(current),
         plugin_config,
         None,
         Default::default(),

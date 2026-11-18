@@ -84,7 +84,11 @@ impl PersistenceBackend for Backend {
                     .addresses
                     .iter()
                     .map(|at| {
-                        if at.namespace == control::NAMESPACE.0 {
+                        if at.namespace == control::NAMESPACE.0 && at.key == control::RESTORE_KEY {
+                            // The declared-restore row (DES-331 §B2, 3bdc74edd2): absent until a
+                            // restore path writes it, never the synthetic writer row below.
+                            state.rows.get(at).cloned()
+                        } else if at.namespace == control::NAMESPACE.0 {
                             let bytes = if at.key == control::DATASET_KEY {
                                 control::Dataset {
                                     id: DatasetId([1; 16]),

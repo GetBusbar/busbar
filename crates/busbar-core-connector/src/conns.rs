@@ -423,7 +423,7 @@ fn request_head_is_refused(
 /// at declare (a need no entry serves is refused there, never at its open). Held once per
 /// declaration and shared by every open as an `Arc`: it is never cloned (its trust carries anchor
 /// DER and a client identity's private key).
-struct DeclaredNeed {
+pub(crate) struct DeclaredNeed {
     door: Arc<dyn FramerDoor>,
     /// The protocols the serving entry offers in the TLS handshake.
     alpn: Vec<Vec<u8>>,
@@ -501,7 +501,7 @@ type Answer = Arc<
 >;
 
 /// The trust anchors sealed per destination (the transport pin), by the need's owner, the need and
-type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>;
+pub(crate) type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>;
 
 /// THE REGISTRATIONS' SEALS AT ONE DESTINATION: each registration's seal at its authority, by name
 /// (`None`: it holds no anchors), in name order. An open naming no registration sealed there is held
@@ -509,7 +509,7 @@ type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sea
 /// a pin nobody enforces is refused, never dropped, and no registration's anchors are erased by
 /// another's.
 #[derive(Default)]
-struct Registered {
+pub(crate) struct Registered {
     members: std::collections::BTreeMap<String, Option<Arc<tls::client::Sealed>>>,
 }
 
@@ -554,11 +554,11 @@ fn same_anchors(
 }
 
 /// The trust anchors sealed per REGISTRATION, by the need's owner, the need and the registration's
-type MemberAnchored = Mutex<ByMember<(String, Option<Arc<tls::client::Sealed>>)>>;
+pub(crate) type MemberAnchored = Mutex<ByMember<(String, Option<Arc<tls::client::Sealed>>)>>;
 
 /// What is held per registration: by the need's owner, then the need, then the registration's
 /// name, so a lookup borrows the name and an owner's entries go with it in one removal.
-struct ByMember<V>(HashMap<InstanceId, HashMap<NeedId, HashMap<String, V>>>);
+pub(crate) struct ByMember<V>(HashMap<InstanceId, HashMap<NeedId, HashMap<String, V>>>);
 
 impl<V> Default for ByMember<V> {
     fn default() -> Self {
@@ -582,7 +582,7 @@ impl<V> ByMember<V> {
     }
 
     /// Every entry `owner` holds goes.
-    fn forget(&mut self, owner: InstanceId) {
+    pub(crate) fn forget(&mut self, owner: InstanceId) {
         self.0.remove(&owner);
     }
 }
@@ -596,14 +596,14 @@ pub(crate) type Auths = HashMap<
 >;
 
 /// The listeners, one per inbound need, by the need's owner and need.
-type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Accepting>>>;
+pub(crate) type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Accepting>>>;
 
 /// ONE INBOUND LISTENER, driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin code runs under a
 /// host lock): an accept takes the listener out, crosses the carrier's `accept` (and closes a
 /// connection past the cap) with nothing held, and puts it back. An accept that finds it out
 /// (another accept has it, or its bind is still crossing) answers PENDING, woken when it is back.
 #[derive(Default)]
-struct Accepting {
+pub(crate) struct Accepting {
     /// The listener while no accept has it out, and the accepts that found it out (each once).
     slot: Mutex<(Option<Listening>, Wakers)>,
 }
@@ -1274,7 +1274,7 @@ impl std::fmt::Debug for Held {
 
 /// A need as an instance declared it, whole, the answer its declaration got, and why its latest
 /// `declare` or `open` failed before any connection existed (host-only, [`NeedRefusal`]).
-type Declared = (ReadNeed, Result<(), ConnError>, Option<NeedRefusal>);
+pub(crate) type Declared = (ReadNeed, Result<(), ConnError>, Option<NeedRefusal>);
 
 type TlsPolicy = (
     Arc<rustls::ClientConfig>,
@@ -1283,35 +1283,35 @@ type TlsPolicy = (
 
 /// THE CONNECTOR: the host side of the connection table.
 pub struct Connector {
-    slab: ConnSlab<Held>,
+    pub(crate) slab: ConnSlab<Held>,
     /// The transport each declared need names, the egress class its dials are judged under, and
-    over: Mutex<HashMap<(InstanceId, NeedId), Arc<DeclaredNeed>>>,
+    pub(crate) over: Mutex<HashMap<(InstanceId, NeedId), Arc<DeclaredNeed>>>,
     /// Every need an instance declared through [`DeclaredConns::declare`], whole, and the answer
-    declared: Mutex<HashMap<(InstanceId, NeedId), Declared>>,
+    pub(crate) declared: Mutex<HashMap<(InstanceId, NeedId), Declared>>,
     transports: RwLock<Transports>,
     tls: Option<Arc<rustls::ClientConfig>>,
     tls_policy: Option<busbar_contract::transport::trust::EgressTrust>,
     wake: WakeTicket,
     judge: Arc<dyn DialJudge>,
     /// One listener per inbound need.
-    listeners: Listeners,
+    pub(crate) listeners: Listeners,
     /// The per-worker pools of dialled connections.
-    pools: Pools,
+    pub(crate) pools: Pools,
     /// The trust anchors each sealed destination's connections are held to.
-    anchored: Anchored,
+    pub(crate) anchored: Anchored,
     /// The trust anchors each sealed REGISTRATION's own connections are held to: two registrations
-    member_anchored: MemberAnchored,
+    pub(crate) member_anchored: MemberAnchored,
     /// The registrations' seals at each destination, by the need's owner, the need and the
-    registered: Mutex<HashMap<(InstanceId, NeedId, String), Registered>>,
+    pub(crate) registered: Mutex<HashMap<(InstanceId, NeedId, String), Registered>>,
     /// The core-selected registrations holding private reach, by the need's
-    reaching: Mutex<ByMember<(String, bool)>>,
+    pub(crate) reaching: Mutex<ByMember<(String, bool)>>,
     /// Each member's auth binding: what a plugin's own request naming that member is authenticated
-    auths: Mutex<Auths>,
+    pub(crate) auths: Mutex<Auths>,
     /// The instances whose connections' authority the host writes
-    authority_held: Mutex<HashSet<InstanceId>>,
+    pub(crate) authority_held: Mutex<HashSet<InstanceId>>,
     /// The instances whose core-held `insecure_transport.accept` holds `plaintext`
     /// ([`DeclaredConns::accept_plaintext`], #297 model A): every open they make may dial plaintext.
-    plaintext_owners: Mutex<HashSet<InstanceId>>,
+    pub(crate) plaintext_owners: Mutex<HashSet<InstanceId>>,
     /// THE ABI RULES FLAGGED, once per instance and code ([`Connector::flag_once`]): BUSBAR-6017 (a
     /// retired need shape), 6014 (a refused call) and 6015 (an honoured deprecated value), each
     /// logged and audited the first time an instance meets it.
@@ -2016,6 +2016,8 @@ impl Connector {
             return Err(verdict_reason(v, false));
         }
         if socket::address_of(&located.authority).is_some() {
+            // The admission's clock memo: either refusal below is its one reading.
+            let mut now = None;
             match self.judge.judge_target_all(
                 busbar_kernel::host_services::Destination {
                     authority: &located.authority,
@@ -2041,6 +2043,7 @@ impl Connector {
                         Some(egress_class),
                         "plaintext",
                         Some((owner.0, need.0)),
+                        &mut now,
                     );
                     return Err(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                 }
@@ -2050,6 +2053,7 @@ impl Connector {
                         Some(egress_class),
                         egress_audit::verdict_name(v),
                         Some((owner.0, need.0)),
+                        &mut now,
                     );
                     return Err(verdict_reason(v, false));
                 }
@@ -2060,7 +2064,7 @@ impl Connector {
     }
 
     /// Record (or, with `None`, drop) what the connector holds for `owner`'s `need`: a member of an
-    fn set_need(&self, owner: InstanceId, need: NeedId, record: Option<DeclaredNeed>) {
+    pub(crate) fn set_need(&self, owner: InstanceId, need: NeedId, record: Option<DeclaredNeed>) {
         let before = {
             let mut over = self.over.lock().expect("needs");
             match record {
@@ -2524,6 +2528,8 @@ impl Connector {
     }
 
     fn settle_dial(&self, held: &Held, waker: Option<&Waker>) -> Result<bool, ConnError> {
+        // The dial's clock memo: its refusals (exclusive branches) share one reading.
+        let mut now = None;
         if held.retired.load(Ordering::Acquire) {
             return Err(ConnError::Closed);
         }
@@ -2591,12 +2597,19 @@ impl Connector {
                             Some(j.egress_class),
                             egress_audit::verdict_name(v),
                             None,
+                            &mut now,
                         );
                         held.refused(verdict_reason(v, false));
                         return Err(held.fail(judging, pended_verdict(v)));
                     }
                     Ok(at) if !class_admits(j.egress_class, secure, plain, &[], at) => {
-                        egress_audit::dial_refused(target, Some(j.egress_class), "plaintext", None);
+                        egress_audit::dial_refused(
+                            target,
+                            Some(j.egress_class),
+                            "plaintext",
+                            None,
+                            &mut now,
+                        );
                         held.refused(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                         return Err(held.fail(judging, ConnError::Refused));
                     }
@@ -2683,13 +2696,14 @@ impl Connector {
                     Some(j.egress_class),
                     egress_audit::verdict_name(v),
                     None,
+                    &mut now,
                 );
                 held.refused(verdict_reason(v, false));
                 return Err(held.fail(judging, pended_verdict(v)));
             }
         };
         if !class_admits(j.egress_class, secure, plain, &j.within, addr) {
-            egress_audit::dial_refused(target, Some(j.egress_class), "plaintext", None);
+            egress_audit::dial_refused(target, Some(j.egress_class), "plaintext", None, &mut now);
             held.refused(NeedRefusal::Policy(refusal_text::PLAINTEXT));
             return Err(held.fail(judging, ConnError::Refused));
         }
@@ -2855,6 +2869,8 @@ impl Connector {
         reach: bool,
         why: &mut Option<NeedRefusal>,
     ) -> Result<(Option<Connection>, Option<Judging>), ConnError> {
+        // The dial's clock memo: its refusals (exclusive branches) share one reading.
+        let mut now = None;
         let answer: Answer = Arc::new(Mutex::new((None, None, Vec::new())));
 
         let judged = self.judge_into(
@@ -2893,6 +2909,7 @@ impl Connector {
                         Some(egress_class),
                         egress_audit::verdict_name(v),
                         None,
+                        &mut now,
                     );
                     *why = Some(verdict_reason(v, false));
                     return Err(ConnError::Refused);
@@ -2911,6 +2928,7 @@ impl Connector {
                         Some(egress_class),
                         "plaintext",
                         None,
+                        &mut now,
                     );
                     *why = Some(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                     return Err(ConnError::Refused);
@@ -2964,6 +2982,7 @@ impl Connector {
                     Some(egress_class),
                     egress_audit::verdict_name(v),
                     None,
+                    &mut now,
                 );
                 *why = Some(verdict_reason(v, false));
                 return Err(ConnError::Refused);
@@ -2982,6 +3001,7 @@ impl Connector {
                     Some(egress_class),
                     "plaintext",
                     None,
+                    &mut now,
                 );
                 *why = Some(NeedRefusal::Policy(refusal_text::PLAINTEXT));
                 return Err(ConnError::Refused);
@@ -3545,7 +3565,9 @@ impl DeclaredConns for Connector {
         // The line may have been dialled for another target on the same key: the commit plans
         // its own. The line's own target is read only as its liveness (a closing line answers
         // `Closed`).
-        line.target().ok_or(ConnError::Closed)?;
+        if !line.holds_target() {
+            return Err(ConnError::Closed);
+        }
         let planned = self
             .plan_declared(
                 &declared,
@@ -3961,48 +3983,8 @@ impl DeclaredConns for Connector {
 
     /// THE INSTANCE IS GONE: its connections close (a member lease among them ends), then every
     fn forget(&self, owner: InstanceId) {
-        for conn in self.slab.forget(owner) {
-            let _ = self.close(owner, conn);
-        }
-        self.pools.forget(owner);
-
-        // An instance's retirement lets go of what it bound and declared, once: off the request
-        // path. The listeners it bound are dropped with no lock held.
-        let gone: Vec<Arc<Accepting>> = crate::off_path::conns::take_owned(
-            &mut *self.listeners.lock().expect("listeners"),
-            |(o, _)| *o == owner,
-        );
-        drop(gone);
-        let needs = crate::off_path::conns::needs_of(&*self.over.lock().expect("needs"), owner);
-        for need in needs {
-            self.set_need(owner, need, None);
-        }
-        crate::off_path::conns::forget_owned(
-            &mut *self.declared.lock().expect("declared needs"),
-            |(o, _)| *o == owner,
-        );
-        crate::off_path::conns::forget_owned(
-            &mut *self.anchored.lock().expect("anchored"),
-            |(o, _, _)| *o == owner,
-        );
-        self.member_anchored
-            .lock()
-            .expect("member anchored")
-            .forget(owner);
-        crate::off_path::conns::forget_owned(
-            &mut *self.registered.lock().expect("registered"),
-            |(o, _, _)| *o == owner,
-        );
-        self.reaching.lock().expect("reaching").forget(owner);
-        self.auths.lock().expect("auths").remove(&owner);
-        self.authority_held
-            .lock()
-            .expect("authority held")
-            .remove(&owner);
-        self.plaintext_owners
-            .lock()
-            .expect("plaintext owners")
-            .remove(&owner);
+        // Retirement is lifecycle work, built off the request path.
+        self.retire(owner);
     }
 }
 
@@ -4253,7 +4235,7 @@ impl Connector {
             anchors: None,
         };
 
-        let trust = dial.tls.clone().map(Same);
+        let trust = dial.tls.clone().map(Same::of);
         // The head's own locate answer when it carried one; else a declared target's kept place.
         let planned = match carried {
             Some(carried) => self.plan_carried(&door, dial, Some(carried)),
@@ -4309,7 +4291,7 @@ impl Connector {
             anchors
         };
 
-        let sealed = anchors.clone().map(Same);
+        let sealed = anchors.clone().map(Same::of);
         if anchors.as_ref().is_some_and(|a| {
             (a.key_pin.is_some() || !a.extra_anchors.is_empty()) && !planned.secure()
         }) {

@@ -9,20 +9,21 @@ use crate::governance::selected_resource::{
 use crate::governance::unit_checkpoint::partitions::ValidatedSelectedCheckpoint;
 
 pub(crate) enum NativeCommitError {
-    Before {
-        error: NativeAttemptError,
-        reservation: RateReservation,
-    },
-    Rate(RateRejected),
+    /// Refused before the rate was committed: the still-provisional reservation comes back (boxed:
+    /// it carries the whole preparation, and only this refusal path pays the allocation).
+    Before { reservation: Box<RateReservation> },
+    /// The rate owner refused the commit (boxed: the refusal carries the whole preparation, and
+    /// only this refusal path pays the allocation).
+    Rate(Box<RateRejected>),
 }
 
 enum CommitFailure {
-    Before(NativeAttemptError),
-    Rate(RateRejected),
+    Before,
+    Rate(Box<RateRejected>),
 }
 impl From<NativeAttemptError> for CommitFailure {
-    fn from(error: NativeAttemptError) -> Self {
-        Self::Before(error)
+    fn from(_: NativeAttemptError) -> Self {
+        Self::Before
     }
 }
 
@@ -35,9 +36,8 @@ impl NativeRequestMoney {
     ) -> Result<NativeAttempt, NativeCommitError> {
         let mut held = Some(reservation);
         self.commit_inner(&mut held).map_err(|error| match error {
-            CommitFailure::Before(error) => NativeCommitError::Before {
-                error,
-                reservation: held.take().expect("preflight never consumes reservation"),
+            CommitFailure::Before => NativeCommitError::Before {
+                reservation: Box::new(held.take().expect("preflight never consumes reservation")),
             },
             CommitFailure::Rate(error) => NativeCommitError::Rate(error),
         })
@@ -103,11 +103,10 @@ impl NativeRequestMoney {
                 held.take()
                     .expect("callback runs at most once")
                     .try_commit()
+                    .map_err(Box::new)
             })
             .map_err(|error| match error {
-                SelectedCommitError::Custody(error) => {
-                    CommitFailure::Before(NativeAttemptError::Custody(error))
-                }
+                SelectedCommitError::Custody(_) => CommitFailure::Before,
                 SelectedCommitError::Commit(error) => CommitFailure::Rate(error),
             })?;
         // Everything after irrevocable rate commitment is an infallible ownership transfer.
@@ -190,12 +189,6 @@ impl NativeAttempt {
         native.publish_incurred(&self.service.money.gov, snapshot)
     }
 
-    pub(crate) fn checkpoint(
-        &self,
-    ) -> Result<crate::plane_driver::cancel::Checkpoint, NativeAttemptError> {
-        self.service.checkpoint()
-    }
-
     pub(super) fn new(service: NativeRequestMoney, rate: CommittedRate) -> Self {
         Self {
             service,
@@ -216,16 +209,6 @@ impl NativeAttempt {
 
     pub(crate) fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
         self.rate.as_ref()?.prepared()._prepared.data()
-    }
-
-    /// The immutable exchange retained by the same committed preparation.
-    pub(crate) fn exchange(&self) -> &crate::plane_driver::port_session::UpExchange {
-        self.rate
-            .as_ref()
-            .expect("live guard retains committed rate")
-            .prepared()
-            ._prepared
-            .exchange()
     }
 
     /// Validate the complete answer before any effect, then retain all actual source facts.
@@ -262,7 +245,7 @@ impl NativeAttempt {
             reports,
             end,
         )
-        .map_err(NativeAttemptError::Usage)?;
+        .map_err(|_| NativeAttemptError::Usage)?;
         let physical_classes = prepared.physical_classes().to_vec();
         let rate_view = effective_tokens(&physical_classes, &staged.partition);
         *parts
@@ -283,7 +266,9 @@ impl NativeAttempt {
         let published = native.publish_incurred(&self.service.money.gov, snapshot);
         // The checkpoint book lock is released before entering rate cells. The money shard
         // retains the current attempt's source/authority while both owners observe the batch.
-        let observed = rate.observe(&rate_view).map_err(NativeAttemptError::Rate);
+        let observed = rate
+            .observe(&rate_view)
+            .map_err(|_| NativeAttemptError::Rate);
         published?;
         observed?;
         Ok(staged.rounded)
@@ -328,7 +313,7 @@ impl NativeAttempt {
         })();
         match outcome {
             Ok((coverage, published)) => {
-                let sealed = rate.seal(coverage).map_err(NativeAttemptError::Rate);
+                let sealed = rate.seal(coverage).map_err(|_| NativeAttemptError::Rate);
                 published?;
                 sealed
             }

@@ -150,8 +150,9 @@ pub fn decode_describe(
 }
 
 /// A decoded `deliver` answer as the port's value. No CUSTODY reads ACCEPTED with no recheck (round 33). An
-/// APPEND's `dest` is the instance-local handle: at or past `dest_count` bindings it is FAULT BadRecords. APPEND
-/// carries no custody (a file sink's is ACCEPTED, decided by core, §8.5).
+/// APPEND's `dest` is the instance-local handle: 0 or past `dest_count` bindings it is FAULT BadRecords. APPEND
+/// carries no custody (a file sink's is ACCEPTED, decided by core, §8.5). The handle is the `{"$dest": n}` the binder
+/// wrote, numbered from 1 (core resolves it with `ConfigBinder::dest(instance, handle)`): 0 is never one.
 pub fn delivered_from(
     accepted: u64,
     append: Option<(u32, &[u8])>,
@@ -160,7 +161,7 @@ pub fn delivered_from(
 ) -> Result<Delivered, RecErr> {
     match append {
         Some((dest, tail)) => {
-            if dest >= dest_count {
+            if dest == 0 || dest > dest_count {
                 return Err(RecErr::Size);
             }
             Ok(Delivered::Append {

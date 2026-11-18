@@ -132,6 +132,23 @@ pub fn is_core_key(key: &str) -> bool {
     core_keys().contains(key)
 }
 
+/// The audiences of the recognized plane sections that serve HTTP routes: each section's
+/// `canonical_uri`, in instance-name order. `serves_http` is the root reader's judgement of the
+/// instance's admitted routes (the loader's route records); a section that states no
+/// `canonical_uri` has no audience to protect.
+#[must_use]
+pub fn plane_audiences(
+    sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
+    serves_http: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    use busbar_contract::yaml::ValueExt as _;
+    sections
+        .iter()
+        .filter(|(instance, _)| serves_http(instance))
+        .filter_map(|(_, section)| section.get("canonical_uri")?.as_str().map(str::to_owned))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,21 +200,4 @@ mod tests {
         assert!(!is_core_key("mcp"));
         assert!(!is_core_key("tools"));
     }
-}
-
-/// The audiences of the recognized plane sections that serve HTTP routes: each section's
-/// `canonical_uri`, in instance-name order. `serves_http` is the root reader's judgement of the
-/// instance's admitted routes (the loader's route records); a section that states no
-/// `canonical_uri` has no audience to protect.
-#[must_use]
-pub fn plane_audiences(
-    sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
-    serves_http: impl Fn(&str) -> bool,
-) -> Vec<String> {
-    use busbar_contract::yaml::ValueExt as _;
-    sections
-        .iter()
-        .filter(|(instance, _)| serves_http(instance))
-        .filter_map(|(_, section)| section.get("canonical_uri")?.as_str().map(str::to_owned))
-        .collect()
 }

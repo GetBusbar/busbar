@@ -259,8 +259,10 @@ fn native_initial_binding_selects_the_exact_declaring_instance_and_server_offer(
     assert_eq!(selected.instance.as_ref(), "independent-publisher");
     assert!(Arc::ptr_eq(&selected.port, &port));
     assert_eq!(
-        busbar_core_connector::framed_stream::session::server_alpn(&*selected.port),
-        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        selected
+            .port
+            .alpn(busbar_plugin_abi::transport::ROLE_SERVER),
+        [Box::<str>::from("h2"), Box::from("http/1.1")]
     );
     assert!(framers.for_slot("Listen").is_err(), "slots are exact");
 }

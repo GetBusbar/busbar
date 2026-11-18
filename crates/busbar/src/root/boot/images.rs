@@ -113,13 +113,25 @@ impl FileImages {
     /// linkage and ranking words from. Called by the stage that prepares the images it serves or validates, never
     /// by a per-read phase one (which mutates nothing).
     pub(crate) fn publish_hooks(&self) {
-        crate::root::hooks::NATIVE.publish_images(
+        crate::root::off_path::hooks::NATIVE.publish_images(
             &self.images,
             &self.aliases,
             self.proofs
                 .iter()
                 .filter(|(_, proof)| proof.digest.is_none())
                 .map(|(identity, _)| identity.as_str()),
+        );
+    }
+
+    /// Publish the operator claims of these images' auth images (D-OPERATOR): the start judgement, `--validate`
+    /// and the restart check read them beside the door rows' claims. Called by the start stage only.
+    pub(crate) fn publish_operator(&self) {
+        crate::root::native_operator::NATIVE.publish(crate::root::native_operator::claims_of(
+            &self.images,
+            &self.aliases,
+        ));
+        crate::root::native_operator::NATIVE.publish_auth_names(
+            crate::root::native_operator::auth_names_of(&self.images, &self.aliases),
         );
     }
 
@@ -340,6 +352,15 @@ pub(crate) fn process() -> Result<Arc<ProcessResources>, String> {
 /// the start scan and the start grammar. So `--validate`, `--list-plugins` and the start grammar read the native
 /// secret words, from the one source every later read uses. With no readable `plugins:` block the linked images
 /// alone are prepared.
+/// The grammar the start stage's image prepare judged (its native plane sections, secret words and classified items): the
+/// grammar the boot's own reads use (`ConfigRules`). The conversion's re-read of the upgraded document reads under it.
+static START_IMAGES_GRAMMAR: std::sync::OnceLock<Grammar> = std::sync::OnceLock::new();
+
+/// [`START_IMAGES_GRAMMAR`], once the start stage has prepared its images.
+pub(crate) fn start_images_grammar() -> Option<&'static Grammar> {
+    START_IMAGES_GRAMMAR.get()
+}
+
 pub(crate) fn publish_start() -> Result<(), String> {
     let process = process()?;
     let plugins = super::configured_block().unwrap_or_else(|| busbar_kernel::config::PluginsCfg {
@@ -349,6 +370,8 @@ pub(crate) fn publish_start() -> Result<(), String> {
     let prepared = prepare(&process, &PhaseOneIn::of(&plugins)).map_err(|refusal| refusal.0)?;
     prepared.publish_secrets();
     prepared.publish_hooks();
+    prepared.publish_operator();
+    let _ = START_IMAGES_GRAMMAR.set(prepared.grammar.clone());
     Ok(())
 }
 

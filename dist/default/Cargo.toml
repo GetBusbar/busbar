@@ -113,11 +113,12 @@ busbar-secret-file = { workspace = true }
 busbar-hook-ranking = { workspace = true }
 busbar-hook-complexity = { workspace = true }
 # THE OPERATOR CREDENTIAL (`auth.admin_auth: [admin-tokens]`, the single operator admin token), a
-# first-party AUTH plugin linked through the `auths` axis under `auth-admin-tokens` — the same row a
-# signed tarball of it registers when dropped in (DECISIONS #2 rule (1); ARCHITECT 2026-09-27
+# first-party AUTH plugin: a MIN-3 image (its logic crate's `PLUGIN` header) linked through the
+# `min3-images` axis under `auth-admin-tokens` — the same image a signed tarball of it admits when
+# dropped in (DECISIONS #2 rule (1); ARCHITECT 2026-09-27
 # AUTH-ROW). It lives in its own repo (GetBusbar/busbar-auth-admin-tokens) and is pulled at a PINNED rev; the
 # workspace `[patch]` points the busbar crates it names at this tree. The kernel names no auth module.
-busbar-auth-admin-tokens-plugin = { workspace = true }
+busbar-auth-admin-tokens = { workspace = true }
 # THE OUTBOUND HEADER STYLES (bearer, api-key, x-goog-api-key): the auth plugin a plane's outbound need
 # is bound under when its member's style is one of them (THE DESIGN §6 step 3: the auth plugin that
 # serves the style opens the binding), linked through the `auths` axis under `auth-header`
@@ -126,8 +127,9 @@ busbar-auth-admin-tokens-plugin = { workspace = true }
 busbar-auth-header = { workspace = true }
 # THE SIGV4 STYLE (outbound signing, inbound verify of busbar's own SigV4 keys) and THE OAUTH MINTING
 # STYLES (jwt-bearer, oauth-client-credentials): the auth plugins a provider's credential is bound
-# under when its style is one of theirs, linked through the `auths` axis (P2 D1, the auth split: the
-# kernel holds no auth style). Each lives in its own repo, pulled at a pinned rev.
+# under when its style is one of theirs (P2 D1, the auth split: the kernel holds no auth style). SigV4 is
+# linked through the `auths` axis; oauth is a MIN-3 image on the `min3-images` axis (its `PLUGIN` header).
+# Each lives in its own repo, pulled at a pinned rev.
 busbar-auth-sigv4 = { workspace = true }
 busbar-auth-oauth = { workspace = true }
 # THE WEBHOOK-SIGNATURE STYLE: the inbound auth plugin that verifies a webhook sender's HMAC (Twilio,
@@ -230,6 +232,9 @@ loom-model = ["busbar-kernel/loom-model"]
 
 [package.metadata.busbar.always-on]
 plane-llm-door = "busbar-plane-llm"
+store-memory = "busbar-store-memory"
+secret-env = "busbar-secret-env"
+secret-file = "busbar-secret-file"
 plane-mcp-door = "busbar-plane-mcp"
 plane-a2a-door = "busbar-plane-a2a"
 plane-streaming = "busbar-plane-streaming"
@@ -237,7 +242,7 @@ plane-decisions = "busbar-plane-decisions"
 transport-tcp = "busbar-transport-tcp"
 transport-ws = "busbar-transport-ws"
 transport-webrtc = "busbar-transport-webrtc"
-auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
+auth-admin-tokens = "busbar-auth-admin-tokens"
 auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
 auth-oauth = "busbar-auth-oauth"
@@ -271,13 +276,23 @@ export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
 export-prometheus = "busbar-export-prometheus"
 export-otlp = "busbar-export-otlp"
-# THE AUTH AXIS: the operator credential's module, under its `always-on` row.
-auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
+# THE AUTH ROWS: the operator credential's module (a MIN-3 image), under its `always-on` row.
+auth-admin-tokens = "busbar-auth-admin-tokens"
 auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
 auth-oauth = "busbar-auth-oauth"
 auth-webhook-signature = "busbar-auth-webhook-signature"
-# Stores, hooks and secret sources are native images (WP3), not linked rows.
+# THE SECRET SOURCES (`{ env: VAR }`, `{ file: PATH }`): MIN-3 images (each logic crate's `PLUGIN` header), linked in
+# every build on the `min3-images` axis (THE DESIGN, "Plugins": env and file secrets are ordinary plugins, linked in the
+# default build; ARCHITECT 2026-10-02 WIRE-SECRET). 044034749a dropped their door-era rows when the `secret-doors` axis
+# went; without these rows the default binary admits no secret source and refuses every `{ env: .. }` reference
+# (BUSBAR-3121). Stores and hooks are native images (WP3), not linked rows.
+# THE DEFAULT STORE (`governance.store: memory`): a MIN-3 image (its logic crate's `PLUGIN` header) linked in every build on
+# `min3-images`, the same image a dropped-in store-memory admits. 0f85eef946 dropped its door-era linked rows with the `stores` axis
+# and nothing replaced them, so the default binary linked no store.
+store-memory = "busbar-store-memory"
+secret-env = "busbar-secret-env"
+secret-file = "busbar-secret-file"
 # THE TRANSPORT AXIS (#3, #30): the wires this build links, one row each, folded bottom-up by the boot
 # seal. A row whose crate is a required dependency is linked in every build (its key names the row);
 # `ws` rides its optional edge. ONE ENTRY PER PLUGIN: a row is one crate's one entry, and the seal
@@ -315,10 +330,11 @@ export-file = "export-doors"
 export-webhook = "export-doors"
 export-prometheus = "export-doors"
 export-otlp = "export-doors"
-auth-admin-tokens = "auths"
-auth-header = "auths"
-auth-sigv4 = "auths"
-auth-oauth = "auths"
+# MIN-3 auth images register their PLUGIN header (the operator credential, oauth, and the header and sigv4 outbound styles).
+auth-admin-tokens = "min3-images"
+auth-header = "min3-images"
+auth-sigv4 = "min3-images"
+auth-oauth = "min3-images"
 auth-webhook-signature = "auths"
 transport-tcp = "transport transport-door"
 # `connector-door`: the framer's door is opened on the root's one Connector, so an outbound need on
@@ -336,12 +352,17 @@ plane-llm-door = "min3-images"
 plane-mcp-door = "min3-images"
 plane-streaming = "min3-images"
 plane-a2a-door = "min3-images"
+# MIN-3 secret sources register their PLUGIN header; describe declares their source shorthand.
+secret-env = "min3-images"
+secret-file = "min3-images"
+store-memory = "min3-images"
 
 # A linked crate whose entry module is not `<crate>::linked`.
 [package.metadata.busbar.linked-entry]
 # Every entry names a crate's public door.
 # Auth follows the same `<entry>::door` boundary as every other kind.
-busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
+# A MIN-3 auth image's entry is the crate whose root holds its `PLUGIN` header (the logic crate).
+busbar-auth-admin-tokens = "busbar_auth_admin_tokens"
 busbar-auth-header = "busbar_auth_header"
 busbar-auth-sigv4 = "busbar_auth_sigv4"
 busbar-auth-oauth = "busbar_auth_oauth"
@@ -391,6 +412,7 @@ plane-mcp-door = "mcp"
 plane-a2a-door = "a2a"
 plane-decisions = "decisions"
 plane-streaming = "streaming"
+store-memory = "memory"
 auth-admin-tokens = "admin-tokens"
 auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
@@ -403,10 +425,8 @@ auth-webhook-signature = "busbar-auth-webhook-signature"
 # alias answers every word its dropped tarball answers (manifest name and alias), so a linked owner
 # is found by the word configuration or a plugin's migration request names it by, never re-fetched.
 [package.metadata.busbar.linked-canonical]
-auth-admin-tokens = "busbar-auth-admin-tokens"
-auth-oauth = "busbar-auth-oauth"
 
-# THE OPERATOR CREDENTIAL'S ROW: the `auths` row whose registry key (its `linked-name`) is the
+# THE OPERATOR CREDENTIAL'S ROW: the linked auth row (a MIN-3 image) whose registry key (its `linked-name`) is the
 # operator credential's provider word — the `auth.admin_auth:` default, the one `module:` whose
 # definition may carry `token:`, a reserved hook name, and the word in 1.5.5's refusals when the row
 # is not linked. Frozen 1.5.5 configuration text, stated here in packaging so the root's source names
@@ -453,14 +473,11 @@ node = "plane_node"
 # Source-owned root fixtures from any plugin kind, compiled only in root test builds.
 [package.metadata.busbar.root-test-sources]
 file_export = "busbar-export-file"
-auth_oidc = "busbar-auth-oidc"
 ranking_hook = "busbar-hook-ranking"
 source_file = "busbar-secret-file"
 metrics_fixture = "busbar-export-prometheus"
-memory_store = "busbar-store-memory"
 
 [package.metadata.busbar.test-common-sources]
-token_verifier = "busbar-auth-oidc"
 metrics_fixture = "busbar-export-prometheus"
 
 [package.metadata.busbar.test-source-contexts]
@@ -478,12 +495,8 @@ boot_carrier_locate = "busbar-transport-tcp"
 listener_session = "busbar-transport-ws"
 listener_carrier = "busbar-transport-tcp"
 boot_session_locate = "busbar-transport-ws"
-door_steps = "busbar-auth-oauth"
 admin_application = "busbar-hook-webrequest"
-sqlite_application = "busbar-store-sqlite"
 linked_auth = "busbar-auth-webhook-signature"
-migration_table_store = "busbar-store-postgres"
-migration_table_auth = "busbar-auth-oidc"
 migration_table_hook = "busbar-hook-webrequest"
 
 [package.metadata.busbar.test-linked]
@@ -493,7 +506,7 @@ planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
 secrets = ["busbar-secret-env", "busbar-secret-file"]
 # The operator credential's auth plugin the admin tests (`tests/admin_cross_plane/`) authenticate
 # through: the one the root links for it (`auth-admin-tokens`).
-operator-auth = ["busbar-auth-admin-tokens-plugin"]
+operator-auth = ["busbar-auth-admin-tokens"]
 
 [build-dependencies]
 serde_json = { workspace = true }
@@ -540,9 +553,6 @@ busbar-plane-llm = { workspace = true }
 # roster).
 busbar-plane-mcp = { workspace = true }
 busbar-plane-a2a = { workspace = true }
-# `root::door_steps` tests: a member bound under an OAuth grant, its credential minted by the real
-# token-style auth plugin through its own need (TODO row 22). The same pin the `auth-oauth` row links.
-busbar-auth-oauth = { workspace = true }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
 # through the kernel's test_support, exposed to dependents only behind this feature.
 busbar-kernel = { path = "../../crates/busbar-kernel", features = ["test-support"] }
@@ -628,7 +638,18 @@ hex = { workspace = true }
 # the `ws` wire composed over `http`; composition left with ARCHITECT ruling Q128 U7 (no transport
 # names another), and the upgrade's cells return with the http detach -> ws adopt battery
 # (p2-transport-stack stage B).
-busbar-contract = { path = "../../crates/busbar-contract", features = ["test-seal", "tls", "test-support"] }
+busbar-contract = { path = "../../crates/busbar-contract", features = ["test-seal", "tls", "test-support", "stage-probe"] }
+# The root crate's own dev-dependencies (crates/busbar/Cargo.toml), which this package compiles the tests of:
+# the escapes check parses the binary's sources (R34, 01b648a46e); the migrate seam counts busbar_migrate's entries
+# (MIGRATE-ON-BOOT §9 C1 (sz2)); the stage probes (6c349b3e20) are read by the root's tests.
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
+busbar-migrate = { path = "../../crates/busbar-migrate", features = ["counted"] }
+
+# The root tests' counting allocator (UNSAFE-MIN §4.4, 4793e7b460). Not tikv-jemalloc-ctl: the distribution
+# graph carries no `paste` (f47845ac8b); the root tests read allocations through this allocator.
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+stats_alloc = { workspace = true }
 
 # THE PLANE DRIVER'S TEST PLANE (`tests/plane_driver.rs`): one source, compiled into the test as a
 # module (the LINKED door) and built here as a `cdylib` (the DROPPED door), so one unit runs end to end
@@ -722,17 +743,17 @@ members = ["."]
 
 [workspace.dependencies]
 busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "bea74851f4c7da848c4ad4cbf5d811d0defb656f" }
-busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "4102868e504e32b22f1c6f19e6f5a363c1c1d980" }
-busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "eb40baa7b52c6a3209357bf298fa513fe48ab46e" }
+busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "931d17d372f22935fda599e9712f1b0a05fd86dd" }
+busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "bd473e4265e2d006034c4897dc101c0382f6455a" }
 # Published MIN-3 LLM implementation, linked through its PLUGIN header.
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "f9e6247ddce2fdecdf266d1ed9cc48062b354573" }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "9215146350b750191fd53f5a07c5cd7e0b6888d1" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "e12a8df9fa704a2869af5e72c30a187976fa74c6" }
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "e12a8df9fa704a2869af5e72c30a187976fa74c6" }
 # auth-oidc dev a19d113327 (security item 3, #59 + #62): discovery and the JWKS in open-web, the
 # token exchange in the default class named per request (a private IdP refused unless allowlisted).
-busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "7877ca767f9f4da677df369afc022b2cbd5633cf" }
-busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "7877ca767f9f4da677df369afc022b2cbd5633cf" }
+busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9167fa4bc22693182971f6f58e408305afa4e0f5" }
+busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "9167fa4bc22693182971f6f58e408305afa4e0f5" }
 busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "8553ddc893a6ab5efb4415e7c89b6e98ce7fc917" }
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "8553ddc893a6ab5efb4415e7c89b6e98ce7fc917" }
 busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "809a38a130a82d352a6695deaa9af5e7ae1c6483" }
@@ -745,8 +766,8 @@ busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-e
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
-busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "171ffa824c4e99e0e466c84ada50a74d62cce96b" }
-busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "4360a0ba0dc60a7ade98cd3401ec47495aee73f1" }
+busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "36df49db4f1b3426a5623d45e6375549b7899bd9" }
+busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "66a5ab9e3110524327ee975f65fb79dc80f195e8" }
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
@@ -772,7 +793,7 @@ busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-trans
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (row `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split). The pin ranks
 # 1.5.5's `bearer` and `api-key` first (arch-audit u29 F1, busbar-auth-header #35).
-busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "2889a997008ffcd3508b2d561aeebebb9658e5a4" }
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "bee0f44ba87f86cd5bb981fab09569b1504a8113" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the
@@ -784,14 +805,14 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 # STYLE_ENDPOINT_TOKEN_URL rank 4. Its mint needs are in the provider class (security item 3,
 # busbar-auth-oauth #43, dev ce2dbffe28): a private token endpoint is refused unless
 # advanced.allow_destinations names it, as BUSBAR-3025 says.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "c17f2e437dccb852b458cf4622cefe50dc4ab0b4" }
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "2f0b32bc8f46c83d4321dfc04e9a6dd6d42ce577" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (row `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a
 # private `Held<Zeroizing<String>>` (busbar-auth-sigv4 #20; secret-hygiene check1, #1192).
 # On that pin, the signer logs the region warning 1.5.5 logged on every signature scoped to a
 # region defaulted at seal (`region_unread`), with the host (busbar-auth-sigv4 pin-1809-region-warn, merged onto the dev pin).
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "1c457d415173fb069624fca676ae0ae4dbc71e9f" }
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "c4c80db023c40d3730e01868eea47c7d3d1d937a" }
 # THE WEBHOOK-SIGNATURE STYLE (kind: auth): the inbound verify of a webhook sender's HMAC (variants
 # Twilio and Standard Webhooks), linked on the root's `auths` axis (row `auth-webhook-signature`,
 # default-on, ARCHITECT 2026-10-14: its inbound verify is an auth-chain module, so
@@ -825,9 +846,9 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # (upgrade cell BOOT-W15). d7a62c4 is 5927d5e plus the upsert-by-id fix (492c728, busbar-store-memory fj#44):
 # a parented upserted plane record is keyed on its own id, so get/delete by (kind, id) reach it.
 # Explicit usage cleanup preserves billing; unsigned expiry cells retain permanent node claims.
-busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "17620de2b816da4f9c38f4c32c2c0ee5d400ff1e" }
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "bd727e67d538071b28c9631831201a582620b221" }
 # Published MIN-3 MCP implementation, linked through its PLUGIN header.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "a63691561995d34a307567b85ba0a36f62b5e66c" }
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "2493436985d38203790eed5cba0c44b673272b42" }
 # Published MIN-3 decisions implementation, linked through its PLUGIN header.
 busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "316652515c7a01aaa9a87b95f12d1ec33ee615bb" }
 # Published MIN-3 A2A implementation, linked through its PLUGIN header.
@@ -960,8 +981,9 @@ proc-macro2 = { version = "1", features = ["span-locations"] }
 # The C header generator and the source rules (busbar-contract tests) print parsed items back to tokens.
 quote = "1"
 # The floor shared by the dependency and dev-dependency uses; busbar adds `http2` to one and `json`
-# to the other. Both decline default features — rustls only, so no second crypto backend enters.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+# to the other. No TLS feature: reqwest's rustls-tls brings ring, a second crypto backend (ARC-6). Test
+# clients that speak TLS use busbar_core_connector::test_support::https with a config from the seam.
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 webpki-roots = "1"
 # The ring signature verifier the dtls engine checks a peer's DTLS signature with (rustls's own).
@@ -991,7 +1013,10 @@ sonic-rs = "0.5"
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 # No `xattr`: the loader unpacks in memory and restores nothing to disk.
 tar = { version = "0.4", default-features = false }
+# Test-only (the root tests' counting allocator, UNSAFE-MIN §4.4): `StatsAlloc<Jemalloc>`; `nightly` only makes
+# `StatsAlloc::new` a `const fn`.
 tikv-jemallocator = "0.6"
+stats_alloc = { version = "0.1.10", features = ["nightly"] }
 # No feature floor: each consumer needs a different slice of the runtime and tokio's default set is
 # empty, so the whole feature choice belongs to the member.
 tokio = "1"
@@ -1021,7 +1046,7 @@ psl = "2.1"
 tower = "0.5"
 tracing = "0.1.44"
 tracing-core = "0.1"
-tracing-subscriber = "0.3.23"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std", "registry", "tracing-log", "smallvec"] }
 tracing-log = { version = "0.2", default-features = false, features = ["log-tracer", "std"] }
 # The plugin-logging witness's libraries (plugin-loader's `log_witness_plugin` fixture): a plugin logs
 # through these from inside a call, and the door's capture must carry it. All three are already in
@@ -1075,7 +1100,6 @@ aws-lc-sys = { git = "https://github.com/MattJackson/aws-lc-sys", rev = "3469edb
 jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3efc1acc11add04854cc093f97876e439e129" }
 stringprep = { git = "https://github.com/MattJackson/rust-stringprep", rev = "e81fc4b8a718e5a80bbdf87e5d183565dd5e66cf" }
 dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d" }
-fs_extra = { git = "https://github.com/MattJackson/fs_extra", rev = "70f47864db8ae763979f47cde6785449cd790dad" }
 # Native HTTP allocation projection and serializer provenance (adopted transport cohort).
 http = { git = "https://github.com/MattJackson/http", rev = "904f4519b5f27a0424b121a4828640c741efcd95" }
 h2 = { git = "https://github.com/MattJackson/h2", rev = "6bdbf046878247aebe9138f37f32d2665b54bdd9" }

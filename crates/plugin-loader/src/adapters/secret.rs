@@ -6,6 +6,7 @@
 //! borrowed `Caller`, and decodes the answer straight into `SecretAnswer` (VALUE, FACT(F_LEASE_S)?). The only
 //! box is the port's.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use busbar_contract::secure::SecureVec;
@@ -25,15 +26,27 @@ use busbar_ports::secret::{SecretAnswer, SecretPort};
 use busbar_ports::PluginCode;
 use busbar_ports::{CallCx, PortError};
 
+use crate::instance::ErrorBook;
+
 /// The secret port over one instance's proxy.
 pub struct SecretAdapter<N: Needs> {
     proxy: Proxy,
     needs: Arc<N>,
+    /// The image's `ErrorBook` (§11.2), for the ERROR number of a REFUSED or FAILED answer.
+    errors: &'static ErrorBook,
+    /// The undeclared-number WARN latch (once per instance).
+    latch: AtomicBool,
 }
 
 impl<N: Needs> SecretAdapter<N> {
-    pub fn new(proxy: Proxy, needs: Arc<N>) -> Self {
-        Self { proxy, needs }
+    /// Built by `Registry::open_secret` after INSTANCE: `errors` is the owning image's book.
+    pub fn new(proxy: Proxy, needs: Arc<N>, errors: &'static ErrorBook) -> Self {
+        Self {
+            proxy,
+            needs,
+            errors,
+            latch: AtomicBool::new(false),
+        }
     }
 }
 
@@ -77,7 +90,9 @@ impl<N: Needs> SecretPort for SecretAdapter<N> {
                 .resolve(&mut drv, req)
                 .await
                 .map_err(PortError::Call)?;
-            match decode_answer(&inst.scrub, &owned.answer()) {
+            let answer = owned.answer();
+            let error = self.errors.resolve(answer.fail_error(), &self.latch);
+            match decode_answer(&inst.scrub, &answer, error) {
                 Ok(answer) => Ok(answer),
                 Err(e @ PortError::Call(_)) => {
                     inst.quarantine();
@@ -92,7 +107,11 @@ impl<N: Needs> SecretPort for SecretAdapter<N> {
 /// The answer to a `PortError` or a `SecretAnswer`: REFUSED and FAILED become the port's refusal and failure
 /// (text through `fail_text`, FAILED facts), an OK answer is `answer_value`, and a malformed OK answer is
 /// `Call(Fault(BadRecords))` (the caller quarantines).
-fn decode_answer(scrub: &Scrub, a: &Answer<'_>) -> Result<SecretAnswer, PortError> {
+fn decode_answer(
+    scrub: &Scrub,
+    a: &Answer<'_>,
+    error: Option<PluginCode>,
+) -> Result<SecretAnswer, PortError> {
     if a.is_ok() {
         return answer_value(a.records())
             .map_err(|e| PortError::Call(CallError::Fault(FaultReason::BadRecords(e))));
@@ -101,7 +120,6 @@ fn decode_answer(scrub: &Scrub, a: &Answer<'_>) -> Result<SecretAnswer, PortErro
         .fail()
         .ok_or(PortError::Call(CallError::Fault(FaultReason::MissingFail)))?;
     let failed = a.status == Status::FAILED;
-    // Round 34: `error` waits for the instance's `ErrorBook` (L2's shared builder, §11.2).
     Err(port_failure(
         scrub,
         failed,
@@ -109,7 +127,7 @@ fn decode_answer(scrub: &Scrub, a: &Answer<'_>) -> Result<SecretAnswer, PortErro
         text,
         a.fail_fact(fact::FACT_RETRY_AFTER_S),
         a.fail_fact(fact::FACT_BACKEND_STATUS),
-        None,
+        error,
     ))
 }
 

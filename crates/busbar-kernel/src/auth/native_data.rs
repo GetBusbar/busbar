@@ -186,7 +186,6 @@ impl NativeDataRoute {
                 selected,
                 None,
                 reason,
-                None,
             )),
         }
     }
@@ -204,7 +203,6 @@ impl PendingData {
     /// is not cancellation; reset/deadline and an uncertain replay still grant no effects.
     pub async fn complete(self) -> Result<DataAuthorization, DataPreparationFailed> {
         let binding = self.preparation.binding().clone();
-        let mut replay_error = None;
         let result = async {
             binding.check_live().map_err(|_| DataRefused::Cancelled)?;
             if Instant::now() >= self.deadline {
@@ -258,8 +256,7 @@ impl PendingData {
                 super::native_admin::NativeReplayClaim::Duplicate => {
                     return Err(DataRefused::Replay)
                 }
-                super::native_admin::NativeReplayClaim::Unknown(error) => {
-                    replay_error = Some(error);
+                super::native_admin::NativeReplayClaim::Unknown(_) => {
                     return Err(DataRefused::Unavailable);
                 }
                 super::native_admin::NativeReplayClaim::Inconsistent => {
@@ -282,7 +279,6 @@ impl PendingData {
                     self.selected,
                     Some(self.prepared),
                     reason,
-                    replay_error,
                 ))
             }
         };
@@ -291,7 +287,6 @@ impl PendingData {
                 _preparation: None,
                 _prepared: Some(self.prepared.clone()),
                 reason: DataRefused::Cancelled,
-                replay_error: None,
             })
         })?;
         Ok(DataAuthorization {
@@ -350,12 +345,6 @@ pub struct UnknownDataPreparation {
     _preparation: Option<DataPreparation>,
     _prepared: Option<Arc<PreparedNativeIdentity>>,
     reason: DataRefused,
-    replay_error: Option<crate::plugin_records::RecordsDenied>,
-}
-impl UnknownDataPreparation {
-    pub fn replay_error(&self) -> Option<&crate::plugin_records::RecordsDenied> {
-        self.replay_error.as_ref()
-    }
 }
 
 fn preparation_failed(
@@ -364,7 +353,6 @@ fn preparation_failed(
     selected: Arc<SelectedResources>,
     prepared: Option<Arc<PreparedNativeIdentity>>,
     reason: DataRefused,
-    replay_error: Option<crate::plugin_records::RecordsDenied>,
 ) -> DataPreparationFailed {
     if matches!(
         reason,
@@ -382,7 +370,6 @@ fn preparation_failed(
                 _preparation: None,
                 _prepared: prepared,
                 reason: DataRefused::Cancelled,
-                replay_error,
             }),
         }
     } else {
@@ -390,7 +377,6 @@ fn preparation_failed(
             _preparation: Some(preparation),
             _prepared: prepared,
             reason,
-            replay_error,
         })
     }
 }
@@ -400,7 +386,7 @@ fn preparation_failed(
 /// ```compile_fail,E0599
 /// use std::sync::Arc;
 /// use busbar_kernel::auth::{native_admin::PreparedIdentity, native_data::DataAuthorization};
-/// fn fabricate(identity: Arc<dyn PreparedIdentity>) -> DataAuthorization {
+/// fn fabricate(identity: Arc<PreparedIdentity>) -> DataAuthorization {
 ///     DataAuthorization::from_identity(identity)
 /// }
 /// ```

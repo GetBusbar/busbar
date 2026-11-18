@@ -90,6 +90,8 @@ fn a_dial_that_finishes_after_forget_retires_its_refused_insert() {
                 idle_timeout: std::time::Duration::from_secs(60),
             }),
         );
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+        crate::tests::accept_plaintext(&c, &[OWNER]);
         c.declare_over(OWNER, NeedId(0), "messages").unwrap();
         let opening = Arc::clone(&c);
         let opened = std::thread::spawn(move || {

@@ -511,12 +511,6 @@ impl Drop for ConditionalChain {
 }
 impl zeroize::ZeroizeOnDrop for ConditionalChain {}
 
-/// Volatile-wipe `value`. The one call the request-path modules make for a value they own and
-/// cannot give a `Drop` of their own (a marked module may not name `Zeroize::zeroize`).
-pub(crate) fn wipe<T: zeroize::Zeroize + ?Sized>(value: &mut T) {
-    zeroize::Zeroize::zeroize(value);
-}
-
 /// A transaction candidate in the host's custody: wiped on every exit, as the caller's copy
 /// of its contents is.
 pub(crate) struct CandidateCustody(pub crate::host_records::ConditionalCandidate);

@@ -358,6 +358,8 @@ fn a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal() {
             None,
             Arc::new(|_, _| {}),
         ));
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+        crate::tests::accept_plaintext(&c, &[OWNER]);
         c.declare_need(
             OWNER,
             NEED,

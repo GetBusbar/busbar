@@ -216,6 +216,16 @@ fn swept_node() -> (
 }
 
 fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str) {
+    // The unit's terminal slot is reserved before it enters, as every occupied constructor
+    // reserves its original slot (e5b8ff5fb8, STORAGE-JOIN-r2).
+    let call = node.kernel.next_call();
+    let reservation = node
+        .reserve_terminal(
+            busbar_kernel::limits::process_admission::AdmissionClass::Data,
+            key,
+            call,
+        )
+        .expect("the fixture terminal book reserves the unit's slot");
     let slot = node
         .inflight
         .insert(busbar_kernel::inflight::Enter {
@@ -228,13 +238,14 @@ fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str) {
                 &node.kernel,
                 &node.door,
                 PrincipalId::new("acct:swept"),
-                node.kernel.next_call(),
+                call,
             ),
             now: EPOCH * 1_000,
         })
         .expect("the uncapped table takes the unit");
     drop(Occupied {
         node,
+        reservation,
         post: None,
         slot,
         arrived: Arrived::at(EPOCH * 1_000, key.get()),
@@ -249,11 +260,17 @@ fn a_competing_sweep_leaves_a_claimed_units_hold_and_slot_with_its_owner() {
     let key = UnitKey::new(93);
     lose_a_unit(&node, key, "widget_call");
 
+    // The lost table is the class-isolated terminal book (e5b8ff5fb8); the unit is a Data unit.
     let owned = node
         .lost
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .remove(&key)
+        .as_mut()
+        .expect("the fixture binds a terminal book")
+        .remove(
+            busbar_kernel::limits::process_admission::AdmissionClass::Data,
+            key,
+        )
         .unwrap();
     assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), 0);
     assert!(
@@ -265,10 +282,18 @@ fn a_competing_sweep_leaves_a_claimed_units_hold_and_slot_with_its_owner() {
         .unwrap_or_else(|p| p.into_inner())
         .audit_records()
         .is_empty());
-    node.lost
+    assert!(node
+        .lost
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .insert(key, owned);
+        .as_mut()
+        .expect("the fixture binds a terminal book")
+        .insert(
+            busbar_kernel::limits::process_admission::AdmissionClass::Data,
+            key,
+            owned
+        )
+        .is_ok());
     node.marked.fetch_add(1, Ordering::AcqRel);
     assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 100)), 1);
     assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 101)), 0);
@@ -760,6 +785,7 @@ fn cancelling_before_the_door_retires_the_borrowed_facts_and_sweeps_once() {
         DoorUnit::op_class(),
         None,
         None,
+        test_lease(),
     ));
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     assert!(run.as_mut().poll(&mut cx).is_pending());
@@ -815,6 +841,7 @@ async fn drive_door(
             DoorUnit::op_class(),
             None,
             None,
+            test_lease(),
         )
         .await;
     (key, outcome)
@@ -1281,4 +1308,15 @@ fn concurrent_unit_ends_land_their_money_while_the_book_is_held() {
         t.join().expect("no unit panicked");
     }
     drop(node);
+}
+
+/// The original request's process admission lease the node's terminal book is charged to
+/// (e5b8ff5fb8, STORAGE-JOIN-r2): a fresh Data lease, kept for the rest of the test process.
+fn test_lease() -> &'static busbar_kernel::limits::process_admission::RequestLease {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    Box::leak(Box::new(
+        ProcessAdmission::new(0)
+            .try_enter(AdmissionClass::Data)
+            .expect("an unbounded admission admits one Data request"),
+    ))
 }

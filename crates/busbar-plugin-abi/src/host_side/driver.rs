@@ -16,7 +16,6 @@
 //! an op outside the chain's `NeedRow` is FAULT NeedNotAllowed for the whole chain (§6.1 "Allowed Needs").
 
 use core::any::Any;
-use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -621,6 +620,36 @@ impl Watched {
     }
 }
 
+std::thread_local! {
+    /// Entries of this thread now running inside `step`/`step_fixed`, outermost included.
+    static ENTRY_DEPTH: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+}
+
+/// The outermost-exit duty of the entry guard (W1-H1, I11): when the outermost entry of this thread returns or
+/// unwinds, everything its `random`/`crypto` answers lent from the thread's arena is zeroed and the arena starts
+/// over (`host_vt::reset_arena`). A nested entry's exit resets nothing: its caller's outputs are still lent.
+struct Outermost;
+
+impl Outermost {
+    fn enter() -> Outermost {
+        ENTRY_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+        Outermost
+    }
+}
+
+impl Drop for Outermost {
+    fn drop(&mut self) {
+        let left = ENTRY_DEPTH.with(|depth| {
+            let left = depth.get().saturating_sub(1);
+            depth.set(left);
+            left
+        });
+        if left == 0 {
+            crate::host_side::host_vt::reset_arena();
+        }
+    }
+}
+
 /// One step, inline: the watchdog word around the call, `out` lent to busbar-ffi for it. None: busbar-ffi's
 /// ACTIVE stack is full (more nested entries on this thread than busbar-ffi allows; core's own nesting is at most
 /// four, §10.3 `CallStack`), which is a host fault, not the plugin's: no sink, no quarantine.
@@ -635,6 +664,7 @@ pub(crate) fn step<R>(
     out: &mut PooledOut,
     call: impl FnOnce(&mut OutLease) -> R,
 ) -> Option<R> {
+    let _outermost = Outermost::enter();
     let _migration = crate::host_side::entry::MigrationScope::set(migration.map(Arc::clone));
     let _owner = crate::host_side::entry::Owning::set(slot);
     let _watched = Watched::enter(slot, entry);
@@ -649,6 +679,7 @@ pub(crate) fn step_fixed<R>(
     out: &mut [u8],
     call: impl for<'loan> FnOnce(&mut OutLease<'loan>) -> R,
 ) -> Option<R> {
+    let _outermost = Outermost::enter();
     let _migration = crate::host_side::entry::MigrationScope::deny();
     let _owner = crate::host_side::entry::Owning::set(slot);
     let _watched = Watched::enter(slot, entry);

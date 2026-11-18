@@ -15,6 +15,8 @@ use busbar_ports::PortError;
 use crate::limits::process_admission::{ByteCredit, CapacityDenied, RequestLease};
 
 /// Borrowed original facts. Physical callers map their existing header array without allocating Pair views.
+/// Every field borrows or is a scalar, so the input is `Copy` whenever its header source is.
+#[derive(Clone, Copy)]
 pub struct SnapshotInput<'a, H> {
     pub method: &'a str,
     pub path: &'a str,
@@ -327,10 +329,6 @@ impl ChargedRequestSnapshot {
     pub fn request(&self) -> &RequestLease {
         self.credit.request()
     }
-    pub fn same_snapshot(this: &Arc<Self>, other: &Arc<Self>) -> bool {
-        Arc::ptr_eq(this, other)
-    }
-
     pub fn headers(&self) -> impl Clone + ExactSizeIterator<Item = (&str, &[u8])> {
         Headers {
             bytes: self.slice(&self.headers),

@@ -3,7 +3,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -222,14 +222,121 @@ struct Held {
     groups: *mut Span,
     groups_cap: u32,
 
-    // The three allocations the pointers above point into. They are never touched again until
-    // `Drop` (moving a `Vec` does not move its heap block), so the pointers stay valid.
-    _strip_store: Vec<StripName>,
-    buf_store: Vec<u8>,
-    _groups_store: Vec<Span>,
+    // The set the pointers above point into. It is never touched again until `Drop` (moving a
+    // `Vec` does not move its heap block), so the pointers stay valid.
+    store: Buffers,
+    /// Where `store` goes back, wiped, when the last holder lets go (`None`: a set of its own).
+    pool: Option<Arc<BufferPool>>,
 }
 
-// SAFETY: the three buffers point only into allocations `Held` owns and frees when dropped;
+/// An absent span: what every group span of a fresh set holds.
+const EMPTY_SPAN: Span = Span {
+    offset: SPAN_ABSENT,
+    len: 0,
+};
+
+/// An unnamed strip name: what every strip slot of a fresh set holds.
+const UNNAMED: StripName = StripName {
+    name: EMPTY_SPAN,
+    place: 0,
+    _reserved: 0,
+};
+
+/// The most spare default-sized sets one shard of a door's pool keeps (16 KiB of text and 2 KiB of spans each).
+const POOLED: usize = 16;
+
+/// The identity buffers one verify lends its plugin: the identity text, its group spans and the
+/// strip names. A door lends the default-sized sets again ([`BufferPool`]); a grown recall and a
+/// login's identity lend a set of their own.
+#[derive(Default)]
+struct Buffers {
+    buf: Vec<u8>,
+    groups: Vec<Span>,
+    strip: Vec<StripName>,
+}
+
+impl Buffers {
+    /// A fresh set: the text zeroed, every span absent, every strip slot unnamed.
+    fn new(buf_cap: usize, groups_cap: u32, strip_cap: u32) -> Self {
+        Self {
+            buf: vec![0u8; buf_cap],
+            groups: vec![EMPTY_SPAN; groups_cap as usize],
+            strip: vec![UNNAMED; strip_cap as usize],
+        }
+    }
+
+    /// Back to a fresh set's contents in place: the text wiped (it held the plugin's identity
+    /// words), the spans and strip slots reset.
+    fn wipe(&mut self) {
+        zero(&mut self.buf);
+        self.groups.fill(EMPTY_SPAN);
+        self.strip.fill(UNNAMED);
+    }
+}
+
+/// One door's spare default-sized buffer sets, in [`SHARDS`] shards so verifies on different threads do not
+/// share a lock: a verify takes one from its thread's shard (a fresh set only when that shard has none spare:
+/// as many as verifies ever ran at once there, at most [`POOLED`] kept per shard) and its `Held` gives it back
+/// wiped, so a verify allocates no buffer once the door is warm.
+struct BufferPool([Shard; SHARDS]);
+
+/// Shards per pool (a power of two).
+const SHARDS: usize = 8;
+
+/// One shard's spare sets, on a cache line of its own.
+#[repr(align(64))]
+struct Shard(Mutex<Vec<Buffers>>);
+
+std::thread_local! {
+    /// This thread's shard of every door's pool, fixed by the order threads first verify.
+    static SHARD: usize = {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        NEXT.fetch_add(1, Ordering::Relaxed) % SHARDS
+    };
+}
+
+impl BufferPool {
+    /// An empty pool with room for [`POOLED`] sets per shard (once per opened door).
+    fn new() -> Self {
+        Self(std::array::from_fn(|_| {
+            Shard(Mutex::new(Vec::with_capacity(POOLED)))
+        }))
+    }
+
+    fn shard(&self) -> &Mutex<Vec<Buffers>> {
+        &self.0[SHARD.with(|s| *s)].0
+    }
+
+    fn take(&self) -> Buffers {
+        let spare = self
+            .shard()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop();
+        spare.unwrap_or_else(|| Buffers::new(IDENTITY_BUF_BYTES, IDENTITY_GROUPS, FIELDS_MAX))
+    }
+
+    /// Keep a wiped default-sized `set` for the next verify on this thread's shard (freed, outside
+    /// the lock, when the shard is full).
+    fn give(&self, set: Buffers) {
+        let full = {
+            let mut spare = self
+                .shard()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if spare.len() < POOLED {
+                spare.push(set);
+                None
+            } else {
+                Some(set)
+            }
+        };
+        drop(full);
+    }
+}
+
+// SAFETY: the three buffers point only into the set `Held` owns until it is dropped (then wiped, and freed
+// or given back to its door's pool, where nothing lends it until the next verify takes it);
 // after construction nothing writes through them but the plugin crossing under the dispatcher,
 // which never runs concurrently with the host's read (the host reads only after the op completed).
 unsafe impl Send for Held {}
@@ -258,22 +365,36 @@ impl Headers {
 }
 
 impl Held {
+    /// A verify lent a set of its own, of the given capacities (a grown recall, a login's identity).
     fn new(input: Arc<VerifyInput>, buf_cap: usize, groups_cap: u32, strip_cap: u32) -> Arc<Self> {
-        let mut buf_store = vec![0u8; buf_cap];
-        let buf = buf_store.as_mut_ptr();
-        let empty = Span {
-            offset: SPAN_ABSENT,
-            len: 0,
-        };
-        let mut groups_store = vec![empty; groups_cap as usize];
-        let groups = groups_store.as_mut_ptr();
-        let unnamed = StripName {
-            name: empty,
-            place: 0,
-            _reserved: 0,
-        };
-        let mut strip_store = vec![unnamed; strip_cap as usize];
-        let strip = strip_store.as_mut_ptr();
+        Self::over(
+            input,
+            Buffers::new(buf_cap, groups_cap, strip_cap),
+            (groups_cap, strip_cap),
+            None,
+        )
+    }
+
+    /// A verify lent one of `pool`'s default-sized sets, given back when it is done.
+    fn pooled(input: Arc<VerifyInput>, pool: &Arc<BufferPool>) -> Arc<Self> {
+        Self::over(
+            input,
+            pool.take(),
+            (IDENTITY_GROUPS, FIELDS_MAX),
+            Some(Arc::clone(pool)),
+        )
+    }
+
+    fn over(
+        input: Arc<VerifyInput>,
+        mut store: Buffers,
+        (groups_cap, strip_cap): (u32, u32),
+        pool: Option<Arc<BufferPool>>,
+    ) -> Arc<Self> {
+        let buf = store.buf.as_mut_ptr();
+        let buf_cap = store.buf.len();
+        let groups = store.groups.as_mut_ptr();
+        let strip = store.strip.as_mut_ptr();
         Arc::new(Self {
             input,
             strip,
@@ -282,9 +403,8 @@ impl Held {
             buf_cap,
             groups,
             groups_cap,
-            _strip_store: strip_store,
-            buf_store,
-            _groups_store: groups_store,
+            store,
+            pool,
         })
     }
 
@@ -440,8 +560,15 @@ impl Held {
 
 impl Drop for Held {
     fn drop(&mut self) {
-        // Nothing reads the buffers once the last `Arc` is dropped; the stores free themselves.
-        zero(&mut self.buf_store);
+        // Nothing reads the buffers once the last `Arc` is dropped (the plugin's crossing is over):
+        // the text is wiped either way; a pooled set goes back reset for the next verify.
+        match self.pool.take() {
+            Some(pool) => {
+                self.store.wipe();
+                pool.give(std::mem::take(&mut self.store));
+            }
+            None => zero(&mut self.store.buf),
+        }
     }
 }
 
@@ -501,10 +628,10 @@ fn grown(out: &IdentifyOut, held: &Held) -> Option<(usize, u32, u32)> {
     ))
 }
 
-struct FlushSink {
-    plugin: String,
-    family: Mutex<Option<u32>>,
-    flushed: AtomicU64,
+pub(crate) struct FlushSink {
+    pub(crate) plugin: String,
+    pub(crate) family: Mutex<Option<u32>>,
+    pub(crate) flushed: AtomicU64,
 }
 
 impl EnvelopeSink for FlushSink {
@@ -534,18 +661,9 @@ impl EnvelopeSink for FlushSink {
 
 /// The sink an auth instance binds with, before it is opened.
 #[derive(Clone)]
-pub struct AuthSink(Arc<FlushSink>);
+pub struct AuthSink(pub(crate) Arc<FlushSink>);
 
 impl AuthSink {
-    #[must_use]
-    pub fn new(plugin: &str) -> Self {
-        Self(Arc::new(FlushSink {
-            plugin: cold::sink_plugin(plugin),
-            family: Mutex::new(None),
-            flushed: AtomicU64::new(0),
-        }))
-    }
-
     #[must_use]
     pub fn bind(&self) -> Arc<dyn EnvelopeSink> {
         self.0.clone()
@@ -600,6 +718,8 @@ struct Shared {
     plugin: Arc<Plugin<Auth>>,
     dispatcher: Arc<Dispatcher>,
     minted: AtomicU64,
+    /// The identity buffer sets this door's verifies lend and give back.
+    buffers: Arc<BufferPool>,
 }
 
 impl Shared {
@@ -629,12 +749,12 @@ impl Shared {
 }
 
 #[derive(Clone)]
-struct InstanceMetadata {
-    carriers: Arc<[String]>,
-    presentation: Option<busbar_contract::auth_calls::LoginPresentation>,
-    generation: u64,
+pub(crate) struct InstanceMetadata {
+    pub(crate) carriers: Arc<[String]>,
+    pub(crate) presentation: Option<busbar_contract::auth_calls::LoginPresentation>,
+    pub(crate) generation: u64,
     // An attempted epoch is never reused, even when the plugin's reply cannot be admitted.
-    attempted_generation: u64,
+    pub(crate) attempted_generation: u64,
 }
 
 pub struct AuthInstance {
@@ -680,7 +800,7 @@ pub fn split_secrets(
     settings.lend_secrets(refs)
 }
 
-pub(crate) struct KeptSecrets(Vec<busbar_contract::Secret<Vec<u8>>>);
+pub(crate) struct KeptSecrets(pub(crate) Vec<busbar_contract::Secret<Vec<u8>>>);
 
 impl KeptSecrets {
     fn new(secrets: Vec<busbar_contract::Secret<Vec<u8>>>) -> Self {
@@ -697,17 +817,6 @@ impl KeptSecrets {
             ),
             None => busbar_contract::redacted::fingerprint(std::iter::empty()),
         }
-    }
-
-    fn blobs(
-        &self,
-        seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
-    ) -> Result<Vec<Blob>, String> {
-        if self.0.is_empty() {
-            return Ok(Vec::new());
-        }
-        let seal = seal.ok_or("credential lending requires the host settings seal")?;
-        Ok(cold::lent_blobs(self, seal))
     }
 
     /// One secret blob per kept secret, pointing into the material `self` holds.
@@ -732,85 +841,28 @@ impl std::fmt::Debug for KeptSecrets {
     }
 }
 
-fn instance_carriers(
-    blob: Blob,
-    previous: &[String],
-    facts: &AuthFacts,
-) -> Result<Vec<String>, String> {
-    use busbar_contract::abi::auth::{EXT_CARRIERS, FACT_DEFAULT_INBOUND_STYLE};
-    use busbar_contract::abi::mechanism::extensions;
-
-    let invalid = cold::invalid_carriers;
-    if blob.fmt == BLOB_ABSENT && blob.len == 0 {
-        return Ok(cold::kept_carriers(previous));
-    }
-    if blob.fmt != BLOB_OCTETS || (blob.len != 0 && blob.ptr.is_null()) {
-        return Err(invalid());
-    }
-    // SAFETY: the validated READY reply owns these bytes until its lease is released by the caller.
-    let bytes = unsafe { crate::dispatch::plugin::blob_bytes(blob) };
-    let mut consumed = 0;
-    let mut selection = None;
-    for (key, value) in extensions::entries(bytes) {
-        consumed += 2 + key.len() + 4 + value.len();
-        if key != EXT_CARRIERS.as_bytes() {
-            continue;
-        }
-        if selection.is_some() {
-            return Err(invalid());
-        }
-        // The selection is the stated names themselves, lowered and deduplicated in place
-        // (first occurrence kept, in order).
-        let mut selected: Vec<String> = serde_json::from_slice(value).map_err(|_| invalid())?;
-        for name in &mut selected {
-            if !facts
-                .carriers
-                .iter()
-                .any(|declared| declared.eq_ignore_ascii_case(name.as_str()))
-            {
-                return Err(invalid());
-            }
-            name.make_ascii_lowercase();
-        }
-        let mut kept = 0;
-        for at in 0..selected.len() {
-            if !selected[..kept].contains(&selected[at]) {
-                selected.swap(kept, at);
-                kept += 1;
-            }
-        }
-        selected.truncate(kept);
-        if selected.is_empty() && facts.facts & FACT_DEFAULT_INBOUND_STYLE != 0 {
-            return Err(invalid());
-        }
-        selection = Some(selected);
-    }
-    if consumed != bytes.len() {
-        return Err(invalid());
-    }
-    Ok(selection.unwrap_or_else(|| cold::kept_carriers(previous)))
+/// A READY reply's metadata extensions, checked before any byte of them is read.
+#[derive(Clone, Copy)]
+pub(crate) enum ReplyExtensions<'b> {
+    /// The reply states none.
+    Absent,
+    /// Well-formed octets.
+    Bytes(&'b [u8]),
 }
 
-fn instance_metadata(
-    blob: Blob,
-    previous: &[String],
-    facts: &AuthFacts,
-    generation: u64,
-) -> Result<InstanceMetadata, String> {
-    let carriers = instance_carriers(blob, previous, facts)?;
-    // SAFETY: instance_carriers checked the envelope; the caller retains the READY reply lease.
-    let bytes = unsafe { crate::dispatch::plugin::blob_bytes(blob) };
-    let presentation = busbar_contract::auth_calls::presentation::login_presentation(bytes)
-        .map_err(cold::presentation_refused)?;
-    if presentation.is_some() && facts.caps & busbar_contract::abi::auth::CAP_LOGIN == 0 {
-        return Err("auth login presentation requires the login capability".into());
+/// The READY reply's extension `blob`, checked: absent, octets the reply owns, or `None` (malformed). The caller holds
+/// the reply's lease for as long as it reads the bytes.
+fn reply_extensions<'b>(blob: Blob) -> Option<ReplyExtensions<'b>> {
+    if blob.fmt == BLOB_ABSENT && blob.len == 0 {
+        return Some(ReplyExtensions::Absent);
     }
-    Ok(InstanceMetadata {
-        carriers: cold::shared_carriers(carriers),
-        presentation,
-        generation,
-        attempted_generation: generation,
-    })
+    if blob.fmt != BLOB_OCTETS || (blob.len != 0 && blob.ptr.is_null()) {
+        return None;
+    }
+    // SAFETY: the validated READY reply owns these bytes until its lease is released by the caller.
+    Some(ReplyExtensions::Bytes(unsafe {
+        crate::dispatch::plugin::blob_bytes(blob)
+    }))
 }
 
 impl AuthInstance {
@@ -878,7 +930,12 @@ impl AuthInstance {
             return Err((bytes, why(called.outcome, called.error)));
         }
         let current = self.carriers();
-        let metadata = instance_metadata(f.out.extensions, &current, &self.facts, generation);
+        let metadata = crate::off_path::auth_door::instance_metadata(
+            reply_extensions(f.out.extensions),
+            &current,
+            &self.facts,
+            generation,
+        );
         match metadata {
             Ok(metadata) => {
                 *self
@@ -923,7 +980,12 @@ impl AuthInstance {
         if called.outcome != Outcome::Ready {
             return Err(why(called.outcome, called.error));
         }
-        let metadata = instance_metadata(f.out.head.extensions, &facts.carriers, &facts, 1);
+        let metadata = crate::off_path::auth_door::instance_metadata(
+            reply_extensions(f.out.head.extensions),
+            &facts.carriers,
+            &facts,
+            1,
+        );
         release(&plugin, called.lease);
         let metadata = match metadata {
             Ok(metadata) => metadata,
@@ -952,6 +1014,7 @@ impl AuthInstance {
                 plugin,
                 dispatcher,
                 minted: AtomicU64::new(0),
+                buffers: Arc::new(BufferPool::new()),
             }),
             sink,
             facts,
@@ -1048,11 +1111,9 @@ impl AuthCalls for AuthInstance {
         if reveals(request) && seal.is_none() {
             return Some(Verified::Failed.into());
         }
-        let held = Held::new(
+        let held = Held::pooled(
             VerifyInput::copied(request, seal, &headers),
-            IDENTITY_BUF_BYTES,
-            IDENTITY_GROUPS,
-            FIELDS_MAX,
+            &self.shared.buffers,
         );
         let mut f = Frame::new(held.input(presented), identify_out());
         let called = plugin.call(slot::VERIFY, &mut f);
@@ -1092,12 +1153,7 @@ impl AuthCalls for AuthInstance {
         if reveals(&request) && seal.is_none() {
             return Box::new(Settled(Some(Verified::Failed.into())));
         }
-        let held = Held::new(
-            VerifyInput::taken(request, seal, &headers),
-            IDENTITY_BUF_BYTES,
-            IDENTITY_GROUPS,
-            FIELDS_MAX,
-        );
+        let held = Held::pooled(VerifyInput::taken(request, seal, &headers), &sh.buffers);
         sh.submit(&mut call, &held, presented);
         Box::new(Pending::new(
             call,

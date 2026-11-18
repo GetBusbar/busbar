@@ -403,7 +403,7 @@ fn a_changed_signature_or_message_moves_the_hash_and_a_comment_does_not() {
 
     let commented = CONTRACT.replacen(
         "const _: () = {",
-        "// a comment\n/// a doc\n#[allow(unused)]\nconst _: () = {",
+        "// a comment\n/// a doc\n#[rustfmt::skip]\nconst _: () = {",
         1,
     );
     assert_eq!(hash_of(&commented, MANIFEST), base);

@@ -27,9 +27,9 @@ pub const MAX_FOLLOWERS: usize = 1024;
 pub(crate) const LEAD_S: u64 = LEAD_MS / 1_000;
 const SHARDS: usize = 16;
 /// The most slots one eviction looks at (rule 5): with every one recently referenced, the fill is declined.
-pub const SWEEP_STEPS: usize = 16;
+pub(crate) const SWEEP_STEPS: usize = 16;
 /// The most standing leads, every instance's, across the lead table's shards; a full shard answers `Bypass`.
-pub const MAX_LEADS: usize = 4_096;
+pub(crate) const MAX_LEADS: usize = 4_096;
 const LEADS_PER_SHARD: usize = MAX_LEADS / SHARDS;
 
 /// The credential a verify read, by hash only (the credential itself is never stored). `credential` = SHA-256
@@ -319,7 +319,7 @@ impl Verdicts {
 
 impl<V, O> Verdicts<V, O> {
     /// The same cache over another fill rule (the tests' stand-in values).
-    pub fn with_fill(policy: VerdictPolicy, fill: Fill<V, O>) -> Self {
+    pub(crate) fn with_fill(policy: VerdictPolicy, fill: Fill<V, O>) -> Self {
         Verdicts {
             policy,
             fill,

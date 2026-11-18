@@ -39,7 +39,7 @@ fn validate(dir: &Path, export: &str) -> (bool, String) {
     let out = Command::new(common::boot::exe())
         .arg("--validate")
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("MOCK_KEY", "x")
         .output()
         .expect("run busbar --validate");

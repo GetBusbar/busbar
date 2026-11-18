@@ -11,11 +11,15 @@ use busbar_contract::persistence::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// The fixture's slot rows, keyed as the native store keys them.
+type SlotKey = ([u8; 16], u64, u32);
+type SlotRow = (u64, [u8; 32], bool);
+
 #[derive(Default)]
 struct Native {
     rows: BTreeMap<Address, Secret<Vec<u8>>>,
     generations: BTreeMap<[u8; 16], u64>,
-    slots: BTreeMap<([u8; 16], u64, u32), (u64, [u8; 32], bool)>,
+    slots: BTreeMap<SlotKey, SlotRow>,
     sent: Vec<[u8; 32]>,
 }
 pub(crate) struct Backend {
@@ -260,7 +264,26 @@ impl PersistenceBackend for Backend {
                         changed.insert(address.namespace);
                         state.rows.remove(address);
                     }
-                    Mutation::DeleteRange { .. } => panic!("caller intent uses no range deletion"),
+                    // The one range delete here is a closed writer's slot cleanup, part of the
+                    // shared writer transition a fence carries (D299 3853418ae9, retained in the
+                    // retirement candidate since d01322db5f). Caller intents use none.
+                    Mutation::DeleteRange {
+                        namespace,
+                        prefix,
+                        exact_key_length,
+                    } => {
+                        assert_eq!(
+                            *namespace,
+                            control::SLOT_NS,
+                            "caller intent uses no range deletion"
+                        );
+                        changed.insert(namespace.0);
+                        state.rows.retain(|at, _| {
+                            !(at.namespace == namespace.0
+                                && at.key.starts_with(prefix)
+                                && at.key.len() as u64 == *exact_key_length)
+                        });
+                    }
                 }
             }
             for namespace in changed {

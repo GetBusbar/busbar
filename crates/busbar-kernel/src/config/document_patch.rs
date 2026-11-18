@@ -273,6 +273,16 @@ impl DocumentPatch {
         self.stages().flat_map(stage_paths)
     }
 
+    /// Every decoded segment of the paths this patch sets or removes: the keys the caller itself
+    /// submitted. Only such a name may be quoted back in a refusal of the patched document (PM
+    /// ruling D-REDACT, 2026-11-17); no value is ever quoted. Kept in custody, never logged.
+    pub fn submitted_keys(&self) -> Vec<SecureString> {
+        self.paths()
+            .filter_map(|path| pointer(path).ok())
+            .flatten()
+            .collect()
+    }
+
     /// True for an identical, ancestor, or descendant pointer.
     pub fn overlaps_path(&self, path: &str) -> Result<bool, PatchError> {
         let target = pointer(path)?;
@@ -445,7 +455,8 @@ impl DocumentPatch {
     }
 
     /// Catalog edits share the exact reader used for the operator's providers.yaml.
-    pub fn parse_catalog_yaml(
+    #[cfg(test)]
+    pub(crate) fn parse_catalog_yaml(
         &self,
         yaml: &str,
         grammar: &super::Grammar,
@@ -459,7 +470,7 @@ impl DocumentPatch {
             .map_err(|_| "patched provider catalog failed boot parsing".to_owned())
     }
 
-    /// [`Self::parse_catalog_yaml`], with what the patched catalog used of `grammar` (§3.8).
+    /// `Self::parse_catalog_yaml`, with what the patched catalog used of `grammar` (§3.8).
     pub fn parse_catalog_yaml_used(
         &self,
         yaml: &str,

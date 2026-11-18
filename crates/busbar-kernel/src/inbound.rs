@@ -52,7 +52,7 @@ pub const OVER_GATE: &str = "the body passes the line's size gate";
 
 pub const UNIT_FOREIGN: &str = "the unit is not one the kernel minted for this request";
 
-pub const UNIT_UNMINTED: &str = "the kernel could not mint the request's unit";
+pub(crate) const UNIT_UNMINTED: &str = "the kernel could not mint the request's unit";
 
 pub(crate) const CONN_MISMATCH: &str =
     "the call names another connection than the one its framing's calls named";
@@ -1268,11 +1268,11 @@ fn matched_handin_line<'a>(
     if auth_line != Some(requested) {
         return None;
     }
-    let fields: Vec<(&str, &[u8])> = head
-        .fields
-        .iter()
-        .map(|(n, v)| (n.as_str(), v.as_slice()))
-        .collect();
+    // The head's fields as borrowed pairs, on the stack for any ordinary head.
+    let mut fields: smallvec::SmallVec<[(&str, &[u8]); 32]> = smallvec::SmallVec::new();
+    for (n, v) in &head.fields {
+        fields.push((n.as_str(), v.as_slice()));
+    }
     match guests.matched(&head.method, &head.target, &fields) {
         Matched::Line(m) if std::ptr::eq::<Line>(m, line) => Some(line),
         _ => None,
@@ -1564,6 +1564,15 @@ fn judged_answer(a: VerifyAnswer) -> (Judged, Option<VerifiedIdentity>, Vec<Stri
     (judged, identity, a.strips)
 }
 
+/// A key position's judgement: the verdict, the identity, its strips, the virtual key and the signed authority.
+type KeysJudged = (
+    Judged,
+    Option<VerifiedIdentity>,
+    Vec<Strip>,
+    Option<Arc<crate::governance::VirtualKey>>,
+    Option<crate::auth::SignedRequestAuthority>,
+);
+
 fn signed_then_keys(
     app: &App,
     gov: Option<&crate::governance::GovState>,
@@ -1571,13 +1580,7 @@ fn signed_then_keys(
     signed: Option<SignedAnswer>,
     now: u64,
     expected_aud: Option<&str>,
-) -> (
-    Judged,
-    Option<VerifiedIdentity>,
-    Vec<Strip>,
-    Option<Arc<crate::governance::VirtualKey>>,
-    Option<crate::auth::SignedRequestAuthority>,
-) {
+) -> KeysJudged {
     // The signed answer's own strips are moved, never copied; the keys arm's follow them.
     let signed_strips = match signed {
         Some(s) => {
@@ -1643,13 +1646,7 @@ fn keys_judged(
     candidate: Option<&Secret<String>>,
     now: u64,
     expected_aud: Option<&str>,
-) -> (
-    Judged,
-    Option<VerifiedIdentity>,
-    Vec<Strip>,
-    Option<Arc<crate::governance::VirtualKey>>,
-    Option<crate::auth::SignedRequestAuthority>,
-) {
+) -> KeysJudged {
     let carriers = app.auth.carriers();
     let strips = carriers
         .iter()

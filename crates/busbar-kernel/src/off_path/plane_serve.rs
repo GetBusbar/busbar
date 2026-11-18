@@ -14,6 +14,20 @@ use crate::plane_driver::serve::{
 };
 
 impl ServeTables {
+    /// Every published instance's routes, in publication order: what an admin read reports as an
+    /// instance's `runtime.plane.routes` (ADMIN-API-1.6 §5.3). Reads the snapshot without a lock;
+    /// an admin read, never a request.
+    #[must_use]
+    pub fn published(&self) -> Vec<(String, Vec<ServeRoute>)> {
+        self.0
+            .now
+            .load()
+            .tables
+            .iter()
+            .map(|table| (table.instance.clone(), table.routes.clone()))
+            .collect()
+    }
+
     pub fn publish(&self, table: ServeTable, reserved: &[(&str, &str)]) -> Result<(), Collision> {
         self.publish_batch(vec![table], reserved)
     }

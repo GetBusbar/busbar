@@ -28,6 +28,7 @@ use crate::need::judge::Judge;
 use crate::need::{Admission, Dial, Dialled, FetchReq, HostNeeds, NeedIo, NeedLimits, TlsPlan};
 
 mod fixture {
+    use busbar_contract::json::{JsonValueTrait as _, Value};
     use busbar_plugin_abi::fail::refused::R_INVALID;
     use busbar_plugin_abi::fail::Fail;
     use busbar_plugin_abi::host::Host;
@@ -35,12 +36,11 @@ mod fixture {
     use busbar_plugin_abi::plugin::{Describe, Endpoints, Open};
     use busbar_plugin_abi::records::Reply;
     use busbar_plugin_abi::Secret;
-    use serde_json::Value;
 
     pub struct Probe;
 
     fn config(bytes: &[u8]) -> Result<Value, Fail> {
-        serde_json::from_slice(bytes)
+        busbar_contract::json::parse(bytes)
             .map_err(|_| Fail::refused_because(R_INVALID, "fixture config"))
     }
 
@@ -417,9 +417,9 @@ impl Harness {
     async fn open(
         &self,
         name: &str,
-        config: serde_json::Value,
+        config: busbar_contract::json::Value,
     ) -> Arc<dyn busbar_ports::secret::SecretPort> {
-        let bytes = serde_json::to_vec(&config).unwrap();
+        let bytes = busbar_contract::json::to_vec(&config).unwrap();
         let spec = InstanceSpec {
             purpose: OpenPurpose::Canonical,
             identity: "fixture-network-authority",
@@ -439,7 +439,7 @@ impl Harness {
 
 #[tokio::test]
 async fn real_native_driver_admits_exact_check_authority_before_network_and_custody() {
-    use serde_json::json;
+    use busbar_contract::json::json;
     let harness = Harness::new();
     let host = "private.example:8443";
     let url = "https://private.example:8443/secret";

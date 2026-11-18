@@ -51,8 +51,6 @@ fn now_for_test() -> u64 {
 mod in_memory;
 pub use in_memory::*;
 
-pub const MAX_POOL_MEMBERS: usize = 8;
-
 pub mod plane_view;
 
 #[cfg(test)]

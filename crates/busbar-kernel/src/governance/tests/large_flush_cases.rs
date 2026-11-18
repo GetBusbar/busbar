@@ -929,22 +929,38 @@ async fn final_flush_joins_active_ordinary_runner(reply: Reply, _formerly_legacy
 
 #[tokio::test]
 async fn final_budget_flush_waits_for_active_runner_and_persists_later_accrual() {
-    final_flush_joins_active_ordinary_runner(Reply::Confirm, false).await;
+    Box::pin(final_flush_joins_active_ordinary_runner(
+        Reply::Confirm,
+        false,
+    ))
+    .await;
 }
 
 #[tokio::test]
 async fn final_budget_flush_waits_for_active_legacy_snapshots_and_persists_later_accrual() {
-    final_flush_joins_active_ordinary_runner(Reply::Confirm, true).await;
+    Box::pin(final_flush_joins_active_ordinary_runner(
+        Reply::Confirm,
+        true,
+    ))
+    .await;
 }
 
 #[tokio::test]
 async fn final_budget_flush_reconciles_unknown_active_runner_commit() {
-    final_flush_joins_active_ordinary_runner(Reply::LoseAfter, false).await;
+    Box::pin(final_flush_joins_active_ordinary_runner(
+        Reply::LoseAfter,
+        false,
+    ))
+    .await;
 }
 
 #[tokio::test]
 async fn final_budget_flush_recovers_custody_after_active_runner_unwind() {
-    final_flush_joins_active_ordinary_runner(Reply::CancelAfter, false).await;
+    Box::pin(final_flush_joins_active_ordinary_runner(
+        Reply::CancelAfter,
+        false,
+    ))
+    .await;
 }
 
 #[tokio::test]

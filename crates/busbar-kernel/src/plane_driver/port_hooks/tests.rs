@@ -44,8 +44,8 @@ impl Fixture {
             context: InvocationContext::new(generation, caller, 7).unwrap(),
             _admission: admission,
             selected: Selected {
-                rewrites: Vec::new(),
-                gates: Vec::new(),
+                rewrites: Arc::default(),
+                gates: Arc::default(),
                 policy: None,
                 taps: Taps::default(),
                 key: None,
@@ -299,8 +299,10 @@ fn deferred_answers_keep_latest_expect_and_declared_defaults_without_fabricating
         });
         projection.absorb(&answer);
     }
+    let mut out = Vec::new();
+    quantities(&classes, &projection.expects, &mut out).unwrap();
     assert_eq!(
-        quantities(&classes, &projection.expects).unwrap(),
+        out,
         vec![("explicit".into(), 1.25), ("default".into(), 4.0)]
     );
     assert!(quantities(
@@ -309,7 +311,8 @@ fn deferred_answers_keep_latest_expect_and_declared_defaults_without_fabricating
             class: "undeclared".into(),
             amount: 1,
             scale: 0
-        }]
+        }],
+        &mut out,
     )
     .is_err());
 }

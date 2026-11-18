@@ -1065,21 +1065,6 @@ impl ParkedOps {
     }
 }
 
-/// A detached connection's bytes and host ownership, consumed by its adopting framing.
-#[derive(Debug)]
-pub struct Detached {
-    bytes: Vec<u8>,
-    context: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
-}
-
-impl Drop for Detached {
-    fn drop(&mut self) {
-        if let Some(context) = self.context.take() {
-            context.end();
-        }
-    }
-}
-
 /// The most ticketed ops one framing may have parked at once: each holds a ticket of the host's,
 pub(crate) const MAX_PARKED: usize = 256;
 
@@ -1510,6 +1495,29 @@ fn locate_as(
     accept: bool,
     deadline_ns: u64,
 ) -> Result<Located, Refused> {
+    let mut alpn = LOCATE_ALPN.with(std::cell::Cell::take);
+    let mut defaults = LOCATE_DEFAULTS.with(std::cell::Cell::take);
+    let located = locate_in(
+        door,
+        target,
+        (accept, deadline_ns),
+        &mut alpn,
+        &mut defaults,
+    );
+    LOCATE_ALPN.with(|kept| kept.set(alpn));
+    LOCATE_DEFAULTS.with(|kept| kept.set(defaults));
+    located
+}
+
+/// [`locate_as`] with the protocol offer and head lines written into `alpn` and `defaults`, the
+/// thread's reused locate buffers (each cleared and zeroed to its room before it is lent).
+fn locate_in(
+    door: &dyn FramerDoor,
+    target: &str,
+    (accept, deadline_ns): (bool, u64),
+    alpn: &mut Vec<u8>,
+    defaults: &mut Vec<u8>,
+) -> Result<Located, Refused> {
     if !accept {
         door.facts().require_dial()?;
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::Locate);
@@ -1519,8 +1527,10 @@ fn locate_as(
     for _ in 0..2 {
         let mut authority = vec![0_u8; auth_cap];
         let mut name = vec![0_u8; name_cap];
-        let mut alpn = vec![0_u8; alpn_cap];
-        let mut defaults = vec![0_u8; defaults_cap];
+        alpn.clear();
+        alpn.resize(alpn_cap, 0);
+        defaults.clear();
+        defaults.resize(defaults_cap, 0);
         let mut i: LocateIn = blank_in();
         i.head.deadline_ns = deadline_ns;
         i.target = abi(target.as_bytes());
@@ -1613,6 +1623,10 @@ const LINE_PREDICATES_INLINE: usize = 4;
 thread_local! {
     /// The buffer a stream's final status is laid out in, reused across finishes on this thread.
     static FINAL_BYTES: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
+    /// The buffers a `locate` answer writes its protocol offer and head lines into, reused across
+    /// locates on this thread (they are read into the answer's own values before the next one).
+    static LOCATE_ALPN: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
+    static LOCATE_DEFAULTS: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
 /// `encode`: an envelope as the entry's own wire bytes.
@@ -2316,45 +2330,6 @@ impl Framing {
         )
     }
 
-    /// Adopt once while requesting a typed opening receipt and an explicit wire commit.
-    pub fn adopt_detached_staged(
-        door: Arc<dyn FramerDoor>,
-        side: u32,
-        detached: Detached,
-        established: &Established,
-    ) -> Result<(Self, Yielded), Refused> {
-        Self::adopt_detached_mode(door, side, detached, established, true)
-    }
-
-    fn adopt_detached_mode(
-        door: Arc<dyn FramerDoor>,
-        side: u32,
-        mut detached: Detached,
-        established: &Established,
-        prewire: bool,
-    ) -> Result<(Self, Yielded), Refused> {
-        let context =
-            match detached.context.as_ref() {
-                Some(source) => Some(door.adopting_context(Arc::clone(source))?.ok_or_else(
-                    || Refused {
-                        outcome: Outcome::Refused,
-                        error: "adoption lost its host framing context".into(),
-                    },
-                )?),
-                None => None,
-            };
-
-        drop(detached.context.take());
-        Self::adopt_context(
-            door,
-            side,
-            std::borrow::Cow::Owned(std::mem::take(&mut detached.bytes)),
-            established,
-            context,
-            prewire,
-        )
-    }
-
     fn adopt_context(
         door: Arc<dyn FramerDoor>,
         side: u32,
@@ -2650,57 +2625,6 @@ impl Framing {
         let mut y = Yielded::default();
         self.more(Again::Timer, &mut y)?;
         Ok(y)
-    }
-
-    /// `detach`: the bytes the framer took and did not answer, and the framing is over.
-    pub fn detach(mut self) -> Result<Detached, Refused> {
-        self.try_detach()
-    }
-
-    /// Attempt a handover without dropping an unchanged framing when its first crossing refuses.
-    pub fn try_detach(&mut self) -> Result<Detached, Refused> {
-        self.quiet()?;
-        let mut crossed = false;
-        let mut left = Vec::new();
-        let mut recalls = Recalls::default();
-        loop {
-            let mut i: FramingIn = blank_in();
-            i.framing = self.token;
-            i.sink = self.bufs.sink();
-            let mut o: FramerOut = blank_out();
-            if let Err(mut error) = ready(self.door.cross_scoped(
-                self.context.as_ref(),
-                None,
-                false,
-                Call::Detach(&mut i, &mut o),
-            )) {
-                if crossed {
-                    error.outcome = Outcome::Fault;
-                }
-                return Err(error);
-            }
-            crossed = true;
-            let n = usize::try_from(o.yielded.frame_len).unwrap_or(usize::MAX);
-            left.extend_from_slice(self.bufs.frame.get(..n).ok_or_else(|| Refused {
-                outcome: Outcome::Fault,
-                error: "the framer's answer is out of bounds: frame".into(),
-            })?);
-            if o.yielded.flags & YIELD_MORE == 0 {
-                self.token = 0;
-                if let Some(context) = &self.context {
-                    context.detach().map_err(|error| Refused {
-                        outcome: Outcome::Refused,
-                        error: error.into(),
-                    })?;
-                }
-                let context = self.context.take();
-                return Ok(Detached {
-                    bytes: left,
-                    context,
-                });
-            }
-            recalls.owed(&o, &self.bufs)?;
-        }
     }
 
     /// `finish`: close the framing with `reason` (`CLOSE_*`); what it still owes the far side.

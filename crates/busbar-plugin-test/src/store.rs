@@ -6,7 +6,6 @@
 
 use crate::fake_needs::FakeNeeds;
 use crate::suites::harness::{Harness, OpenPurpose};
-use busbar_contract::plugin::TestKernelSeal;
 use busbar_plugin_abi::plugin::__rt::LinkedPlugin;
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
@@ -58,7 +57,7 @@ impl StoreHarness {
         Self::from_harness(Harness::admit_admitted(image, needs)?)
     }
     /// Verify the image kind; the harness supplies its private test factory at each open.
-    pub fn from_harness(inner: Harness) -> Result<Self, Refusal> {
+    fn from_harness(inner: Harness) -> Result<Self, Refusal> {
         if inner.kind() != KindCode::Store {
             return Err(Refusal::new(
                 RefusalCode::Integrity,
@@ -95,10 +94,6 @@ impl StoreHarness {
         spec.purpose = purpose;
         spec.limits = case.limits;
         self.inner.open_store_spec(&spec)
-    }
-    /// Inspect a store test's wiping byte value, without exposing a reusable production seal.
-    pub fn value_bytes<'a>(&self, value: &'a Secret<Vec<u8>>) -> &'a [u8] {
-        value.expose(&TestKernelSeal).as_slice()
     }
     /// Complete live socket accounting. Drop all store handles before this call.
     pub fn finish(&self) -> Result<(), FinishError> {

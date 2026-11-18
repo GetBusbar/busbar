@@ -667,7 +667,7 @@ impl NativeExport {
             lines: None,
             threads: Vec::new(),
             work_recovery: tokio::spawn(async {}),
-            generation_workers: crate::root::boot::workers::PreparedWorkers::new().start(),
+            generation_workers: crate::root::min3_candidate::Workers::idle(),
             exports: self.pumps.take().expect("one root pump owner"),
             export_captures: app.exports.clone(),
             export_observer_retry: ExportRetry::start(observers.clone()),
@@ -709,7 +709,7 @@ impl NativeExport {
     ) -> (busbar_kernel::state::App, busbar_kernel::InstalledLimits) {
         let cfg = Self::config(document, &self.plugins);
         let (app, rotation, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             self.plugins.clone(),
             None,
             Default::default(),

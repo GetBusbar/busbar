@@ -164,7 +164,7 @@ async fn application(
         "advanced": {  }, "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document,
@@ -179,6 +179,7 @@ async fn application(
     let crate::root::min3_boot::fixture::Fixture {
         backend: backend,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the actual Store reopens the configuration authority");
@@ -186,7 +187,7 @@ async fn application(
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(store.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotation, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         HashSet::new(),

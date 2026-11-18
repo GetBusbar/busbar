@@ -26,19 +26,22 @@ fn boot_style_data_preserves_config_words_order_flags_and_the_first_inventory() 
         assert_eq!(parsed.as_str(), style.name);
         assert_eq!(style_flags(&style.name), style.flags);
     }
+    // Since d3dc7a93fd a provider `auth` word may name a style or an explicit auth instance; the
+    // native binding pass resolves it, so the word parses and an undeclared style has no flags.
     let unknown = busbar_contract::json::from_value::<ProviderAuth>(&busbar_contract::json::json!(
         "unloaded-style"
     ))
-    .unwrap_err();
-    assert_eq!(
-        unknown.message(),
-        "unknown variant `unloaded-style`, expected `linked-style` or `dropped-style`"
-    );
+    .expect("an undeclared word parses; binding resolves its owner");
+    assert_eq!(unknown.as_str(), "unloaded-style");
     assert_eq!(style_flags("unloaded-style"), 0);
 
     let mut copy = declared_styles();
     copy[0].name = "changed".into();
     install_declared_styles(copy);
     assert_eq!(declared_styles(), styles);
-    assert!(busbar_contract::json::parse_str::<ProviderAuth>("\"changed\"").is_err());
+    assert_eq!(
+        style_flags("changed"),
+        0,
+        "a second install changes no inventory"
+    );
 }

@@ -280,6 +280,10 @@ fn connector_judged(
         DEFAULT_CLASS,
     )
     .expect("the request/response framer's door serves the need");
+    // The far ends are plaintext loopback servers: since #297 (67fc01cf5d) a dial not secured from its
+    // first byte is admitted only by its opener's acceptance, so the test owner carries it, as the
+    // connector's own fixtures do (4dbed22994).
+    busbar_contract::conn::DeclaredConns::accept_plaintext(&c, OWNER);
     c
 }
 

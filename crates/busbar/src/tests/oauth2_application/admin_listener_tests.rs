@@ -18,11 +18,8 @@ const REDIRECT_URI: &str = "http://127.0.0.1:9999/cb";
 const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const SCOPE: &str = "read";
 
-fn no_redirects() -> reqwest::Client {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client")
+fn no_redirects() -> super::Client {
+    super::Client::plain()
 }
 
 fn is_handle(value: &str) -> bool {

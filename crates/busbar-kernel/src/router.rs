@@ -5,7 +5,7 @@ use axum::Router;
 
 use crate::off_path::router::base_data_router_scoped;
 pub(crate) use crate::off_path::router::project_auth_scope_caps;
-use crate::{auth, endpoints, limits, state};
+use crate::{auth, limits, state};
 
 pub(crate) const HEADER_SERVER_TIMING: &str = "server-timing";
 
@@ -84,15 +84,6 @@ impl ServerTiming {
     /// Serve the request under this measurement, so its forward path records its round trip here.
     pub async fn measure<F: std::future::Future>(&self, serving: F) -> F::Output {
         MEASURING.scope(self.clone(), serving).await
-    }
-
-    /// The header's value as of now for the request being measured ([`ServerTiming::measure`]),
-    /// for a response head written from inside it; `None` when the header is off.
-    #[must_use]
-    pub fn current_value() -> Option<String> {
-        MEASURING
-            .try_with(|timing| String::from(timing.value().as_str()))
-            .ok()
     }
 
     /// The header's value as of now: `busbar;dur=<ms>`, written on the stack.
@@ -1311,11 +1302,6 @@ impl PreparedListener {
         let routes = crate::core_routes::CoreRouter::from_parts(self.router, self.core_routes);
         (self.router, self.core_routes) = mount(routes).into_parts();
         self
-    }
-
-    /// The refusal producer captured with this prepared listener's route snapshot.
-    pub fn refusal_renderer(&self) -> Option<crate::plane_routes::PlaneRefuseByPathFn> {
-        self.refuse_by_path.clone()
     }
 
     /// Retain the composition's neutral dispatcher with this exact route snapshot.

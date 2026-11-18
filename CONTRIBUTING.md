@@ -1,14 +1,35 @@
 # Contributing to Busbar
 
+<!-- Source: DES-docs-policy r3 (adopted; #180 item 10, #183 item 11), PM provisional answers applied. -->
+
 By contributing, you agree your contributions are licensed under the project's
-[Apache-2.0](LICENSE) license.
+[Apache-2.0](LICENSE) license. How the project is run, and who decides, is in
+[GOVERNANCE.md](GOVERNANCE.md).
 
 ## Ground rules
 
 - Be respectful and constructive in all project spaces.
-- By contributing, you agree your contributions are licensed under the project's
-  [Apache-2.0](LICENSE) license.
-- Security issues go through [SECURITY.md](SECURITY.md), **not** public issues.
+- Security issues go through [SECURITY.md](SECURITY.md), **not** public discussions or issues.
+
+## Reporting a bug or asking for a feature
+
+The public [GitHub repository](https://github.com/GetBusbar/busbar) is a mirror and has no issue
+tracker. Report bugs and propose enhancements in its
+[Discussions](https://github.com/GetBusbar/busbar/discussions). Include the Busbar version, the
+platform, a minimal configuration with every secret removed, the steps to reproduce, and what you
+expected against what happened. Search the existing discussions first.
+
+Discussions are public and stay archived. Each actionable report becomes an issue in the project's
+GitLab, in the repository that owns the code, and that issue links back to the discussion. Replies
+are best effort; there is no response-time commitment.
+
+## Developer Certificate of Origin
+
+A contribution from outside the project carries a `Signed-off-by: Name <email>` trailer on every
+commit, certifying the [Developer Certificate of Origin 1.1](https://developercertificate.org/).
+`git commit -s` adds it. Sign off only for work you can certify, and never for someone else.
+Commits made inside the project by its maintainer are covered by the Apache-2.0 licence on
+contribution and carry no sign-off.
 
 ## Build and test on a fresh checkout
 

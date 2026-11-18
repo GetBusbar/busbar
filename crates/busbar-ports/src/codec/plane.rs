@@ -1020,7 +1020,8 @@ mod tests {
         encode_work_answers(&mut w, &answers).expect("fits");
         let records = recs(w.as_bytes());
         assert_eq!(records.len(), 3);
-        let want: [(u32, u32, u32, &[(u16, &str)]); 3] = [
+        type Want<'a> = (u32, u32, u32, &'a [(u16, &'a str)]);
+        let want: [Want<'_>; 3] = [
             (1, 0, plane::WORK_LIVE, &[(tag::WK_REF, "wk-1")]),
             (
                 2,

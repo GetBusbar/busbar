@@ -67,10 +67,22 @@ mod root_boot_walk;
 /// refuses its re-check: the boot is refused naming the store, with the store's text scrubbed by core (the URL
 /// userinfo masked), and no 2c instance opens. The id here is the walk's `deployment` read answered with a fixed
 /// id: the `busbar.deployment.v1`/`id` row through a store is (a)'s (W1-K9). `set_deployment` is process-wide
-/// and keep-once, so the refusal runs second (its 2a/2b opens already see the id) and the arm relies on each test
-/// running in its own process (nextest).
+/// and keep-once and every open runs its config-only CHECK first (694764d34e), so a 2b open after the id is
+/// published would refuse in its own check and never reach the re-check: the two halves run as two tests, each
+/// in its own process (nextest), and each walk starts with no id.
 #[test]
 fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
+    recheck_arm(true);
+}
+
+/// (f), second half: a 2b store whose install binding names another deployment refuses its re-check.
+#[test]
+fn a_wrong_install_binding_refuses_the_2b_recheck() {
+    recheck_arm(false);
+}
+
+/// `ids`: the first half (what each instance saw); else the second (the refused re-check).
+fn recheck_arm(ids: bool) {
     use std::sync::Mutex;
 
     use self::root_boot_walk::{walk, BootRefused, BootSteps, DeploymentRead, RegistryBoot};
@@ -154,69 +166,83 @@ fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
     .unwrap_or_else(|r| panic!("{r:?}"));
     let inline = "fixture-store-inline";
     assert_eq!(vt::deployment().0, [0; 16], "no id before the walk");
-
-    let instances = [
-        (
-            KindCode::Secret,
-            h.spec_for(
-                probe::PROBE,
-                "vault-2a",
-                br#"{"tag":"dep-2a","deployment":true}"#,
+    if ids {
+        let instances = [
+            (
+                KindCode::Secret,
+                h.spec_for(
+                    probe::PROBE,
+                    "vault-2a",
+                    br#"{"tag":"dep-2a","deployment":true}"#,
+                ),
             ),
-        ),
-        (
-            KindCode::Store,
-            h.spec_for(inline, "store-2b", br#"{"id":"dep-2b","deployment":true}"#),
-        ),
-        (
-            KindCode::Secret,
-            h.spec_for(
-                probe::PROBE,
-                "late-2c",
-                br#"{"tag":"dep-2c","deployment":true}"#,
+            (
+                KindCode::Store,
+                h.spec_for(inline, "store-2b", br#"{"id":"dep-2b","deployment":true}"#),
             ),
-        ),
-    ];
-    let steps = Watched {
-        inner: RegistryBoot {
-            registry: h.registry(),
-            needs: &h.needs_arc(),
-            refs: &h.refs_arc(),
-            store_seal: Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
-            instances: &instances,
-            deployment: read,
-        },
-        calls: Mutex::new(Vec::new()),
-    };
-    let booted = h
-        .block_on(walk(&plan, &steps))
-        .unwrap_or_else(|e| panic!("{e}"));
-    assert_eq!(booted.deployment, ID);
-    assert_eq!(
-        steps.calls(),
-        [
-            "open 0",
-            "open 1",
-            "deployment",
-            "publish",
-            "check 0",
-            "check 1",
-            "open 2"
-        ],
-        "the id is published and 2a then 2b re-checked before the 2c open"
-    );
-    let (none, some) = (Vec::<u8>::new(), ID.to_vec());
-    assert_eq!(probe_saw("dep-2a", "open.deployment"), [none.clone()]);
-    assert_eq!(probe_saw("dep-2a", "check.deployment"), [some.clone()]);
-    let store_saw = store::counts("dep-2b");
-    assert_eq!(store_saw.opens_saw, [none]);
-    assert_eq!(store_saw.checks_saw, [some.clone()]);
-    assert_eq!(probe_saw("dep-2c", "open.deployment"), [some]);
-    assert!(
-        probe_saw("dep-2c", "check.deployment").is_empty(),
-        "a 2c instance is not re-checked"
-    );
-    drop(booted);
+            (
+                KindCode::Secret,
+                h.spec_for(
+                    probe::PROBE,
+                    "late-2c",
+                    br#"{"tag":"dep-2c","deployment":true}"#,
+                ),
+            ),
+        ];
+        let steps = Watched {
+            inner: RegistryBoot {
+                registry: h.registry(),
+                needs: &h.needs_arc(),
+                refs: &h.refs_arc(),
+                store_seal: Arc::new(|| Box::new(busbar_contract::plugin::TestKernelSeal)),
+                instances: &instances,
+                deployment: read,
+            },
+            calls: Mutex::new(Vec::new()),
+        };
+        let booted = h
+            .block_on(walk(&plan, &steps))
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(booted.deployment, ID);
+        assert_eq!(
+            steps.calls(),
+            [
+                "open 0",
+                "open 1",
+                "deployment",
+                "publish",
+                "check 0",
+                "check 1",
+                "open 2"
+            ],
+            "the id is published and 2a then 2b re-checked before the 2c open"
+        );
+        // Every open runs its config-only CHECK first (694764d34e): a 2a/2b check sees None there (§5: "sees
+        // `deployment_id()` None in its 2a/2b `check`/`open` and Some in this re-check"), and the re-check sees Some.
+        let (none, some) = (Vec::<u8>::new(), ID.to_vec());
+        assert_eq!(
+            probe_saw("dep-2a", "open.deployment"),
+            std::slice::from_ref(&none)
+        );
+        assert_eq!(
+            probe_saw("dep-2a", "check.deployment"),
+            [none.clone(), some.clone()]
+        );
+        let store_saw = store::counts("dep-2b");
+        assert_eq!(store_saw.opens_saw, std::slice::from_ref(&none));
+        assert_eq!(store_saw.checks_saw, [none, some.clone()]);
+        assert_eq!(
+            probe_saw("dep-2c", "open.deployment"),
+            std::slice::from_ref(&some)
+        );
+        assert_eq!(
+            probe_saw("dep-2c", "check.deployment"),
+            [some],
+            "a 2c instance is checked by its own open only, never re-checked"
+        );
+        drop(booted);
+        return;
+    }
 
     let instances = [
         (

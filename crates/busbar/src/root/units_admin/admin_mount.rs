@@ -120,9 +120,9 @@ impl AdminNode {
         physical: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
     ) -> RetainedAnswer {
         let ((answer, record, claim_failure), publication) =
-            busbar_kernel::audit::auditlog::confirmed_request(
+            busbar_kernel::audit::auditlog::confirmed_request(Box::pin(
                 self.answer_confirmed(request, admission, physical),
-            )
+            ))
             .await;
         if publication.is_err() {
             return answer.publication_failed();
@@ -857,8 +857,7 @@ pub(crate) fn mount(
                 // The operation keeps custody through client cancellation, including
                 // publishing its durable replay receipt after a native write.
                 let answer = tokio::spawn(async move {
-                    node.answer_with_admission(request, admission, physical)
-                        .await
+                    Box::pin(node.answer_with_admission(request, admission, physical)).await
                 })
                 .await
                 .unwrap_or_else(|_| RetainedAnswer::NativeFailed(unavailable_answer()));
@@ -922,7 +921,7 @@ pub(crate) fn mount_node(
 
             units.admin.replay_store = Some(Arc::clone(&replay_store));
 
-            units.admin.trust = trust.clone();
+            units.admin.trust.clone_from(&trust);
 
             match app.load().governance.clone() {
                 Some(gov) => {

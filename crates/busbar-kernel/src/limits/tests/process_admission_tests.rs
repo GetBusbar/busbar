@@ -40,11 +40,16 @@ fn operator_can_borrow_spare_capacity_and_overflow_changes_nothing() {
 }
 
 #[tokio::test]
-async fn one_slot_is_operator_only_and_zero_keeps_count_unlimited() {
+async fn one_slot_admits_exactly_one_request_and_zero_keeps_count_unlimited() {
+    // A limit of one admits exactly one request (PM ruling 2026-11-17: a limit of 1 that admits zero
+    // Data requests is a defect); while it is held, nothing else enters.
     let one = budget(1);
+    let data = one.try_enter(AdmissionClass::Data).unwrap();
     assert!(one.try_enter(AdmissionClass::Data).is_err());
-    assert!(one.enter(AdmissionClass::Data).await.is_err());
+    assert!(one.try_enter(AdmissionClass::Operator).is_err());
+    drop(data);
     let _operator = one.try_enter(AdmissionClass::Operator).unwrap();
+    assert!(one.try_enter(AdmissionClass::Data).is_err());
     let unlimited = budget(0);
     let data: Vec<_> = (0..64)
         .map(|_| unlimited.try_enter(AdmissionClass::Data).unwrap())

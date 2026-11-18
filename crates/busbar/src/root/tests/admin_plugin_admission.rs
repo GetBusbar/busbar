@@ -212,7 +212,7 @@ async fn serve_admission_with_inputs(
     let core = opened.core.clone();
     let rules = crate::root::min3_boot::fixture::carry(opened.rules.clone(), rules);
     let (mut app, rotation, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        resolved,
+        crate::root::test_plugins::plaintext_listeners(resolved),
         Default::default(),
         None,
         Default::default(),
@@ -612,12 +612,11 @@ async fn install_refuses_a_plugin_whose_release_seal_has_expired() {
     handle.abort();
 }
 
-fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {
+/// A linked plugin the install-time one-version rule judges today: a still-linked transport door row
+/// (PluginRegistry::linked_copy). The door store these cases first stood on went with WP3 (7d3d78322e); the
+/// rule is the registry's, not the kind's (lead ruling, CAUSES-engine.md "admin_plugin_admission").
+fn linked_transport() -> (&'static str, &'static str, String, Vec<u8>) {
     crate::dist_root_install::install();
-    let &(key, _, _, canonical) = busbar_kernel::preflight::root_rows()
-        .stores
-        .first()
-        .expect("the build links a store");
     let linked: Vec<_> = busbar_kernel::preflight::linked_rows()
         .iter()
         .map(crate::root::boot::linked_row)
@@ -626,14 +625,20 @@ fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {
         .link(linked)
         .expect("the linked rows register");
     let row = reg
-        .resolve(canonical)
-        .expect("the linked store answers its canonical name");
-    let version = row.plugin_version().expect("the store states its version");
+        .linked()
+        .iter()
+        .find(|row| row.manifest.kind == "transport")
+        .expect("the build links a transport door row");
+    let version = row
+        .plugin_version()
+        .expect("the transport states its version");
+    let canonical: &'static str = Box::leak(row.manifest.name.clone().into_boxed_str());
+    let key: &'static str = Box::leak(row.manifest.alias.clone().into_boxed_str());
     (
         canonical,
         key,
         version,
-        row.statement().expect("the store states itself"),
+        row.statement().expect("the transport states itself"),
     )
 }
 
@@ -649,7 +654,7 @@ fn restated(rendering: &[u8], version: &str) -> Vec<u8> {
 }
 
 fn unsigned_copy(name: &str, alias: &str, version: &str) -> Vec<u8> {
-    let (_, _, _, statement) = linked_store();
+    let (_, _, _, statement) = linked_transport();
     let lib = b"junk lib bytes of a linked plugin";
     let mut m = test_manifest(name, alias, "acme", "1.0.0");
     m.statement = Some(hex::encode(restated(&statement, version)));
@@ -664,7 +669,7 @@ async fn install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op() {
     crate::dist_root_install::install();
     let dir = tmp_plugins_dir("linked-same");
     let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
-    let (canonical, key, version, _) = linked_store();
+    let (canonical, key, version, _) = linked_transport();
     let (status, view) = install(
         addr,
         "copy.tar.gz",
@@ -690,7 +695,7 @@ async fn install_of_a_linked_plugin_at_another_version_is_refused() {
     crate::dist_root_install::install();
     let dir = tmp_plugins_dir("linked-other");
     let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
-    let (canonical, key, version, _) = linked_store();
+    let (canonical, key, version, _) = linked_transport();
     let (status, b) = install(
         addr,
         "copy.tar.gz",
@@ -714,7 +719,7 @@ async fn install_of_a_linked_plugin_stating_no_version_is_refused() {
     crate::dist_root_install::install();
     let dir = tmp_plugins_dir("linked-unstated");
     let (addr, handle) = serve_admission(dir.clone(), unsigned_ok_posture(), None).await;
-    let (canonical, key, version, _) = linked_store();
+    let (canonical, key, version, _) = linked_transport();
     let lib = b"junk lib bytes of a linked plugin";
     let tarball = unsigned_tarball(test_manifest(canonical, key, "acme", &version), lib);
     let (status, b) = install(addr, "copy.tar.gz", &tarball).await;
@@ -735,7 +740,7 @@ async fn install_judges_trust_before_the_one_version_rule() {
     crate::dist_root_install::install();
     let dir = tmp_plugins_dir("linked-untrusted");
     let (addr, handle) = serve_admission(dir.clone(), strict_posture(), None).await;
-    let (canonical, key, _, _) = linked_store();
+    let (canonical, key, _, _) = linked_transport();
     let (status, b) = install(
         addr,
         "copy.tar.gz",
@@ -1012,7 +1017,7 @@ async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
         return;
     }
     crate::dist_root_install::install();
-    let (canonical, key, version, _) = linked_store();
+    let (canonical, key, version, _) = linked_transport();
     let tarball = unsigned_copy(canonical, key, &version);
     let file = "linked-copy.tar.gz";
     let dir = tmp_plugins_dir("linked-copy");

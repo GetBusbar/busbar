@@ -473,7 +473,9 @@ async fn every_exit_closes_an_arrived_unit_exactly_once() {
 
 #[tokio::test]
 async fn idle_maintenance_pays_a_dropped_units_close_without_another_arrival() {
-    // The unit stalls on a far end that never answers; dropping it there owes its close.
+    // The unit stalls on a caller that never takes its answer (the deleted gate-first screen,
+    // dad4e6ebd1, was the only stall outside the route): dropping it buries its in-flight piece,
+    // whose close the plane cleanup owes and pays.
     let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
     let (plane, driver) = (r.plane, Arc::new(r.driver));
     let services = services();
@@ -482,8 +484,8 @@ async fn idle_maintenance_pays_a_dropped_units_close_without_another_arrival() {
     let maintenance = tokio::spawn(async move { cadence.flushes().await });
     let (steps, far, caller) = (
         common::TestUnits::passing(),
-        cases::Far::new(&["hang"], cases::CHUNKS),
-        cases::Caller::default(),
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        stalled_caller(),
     );
     let units = driver.unit(&steps, &far, &caller, cases::arrival("/call", b"x"), 0);
     assert!(
@@ -492,9 +494,10 @@ async fn idle_maintenance_pays_a_dropped_units_close_without_another_arrival() {
             .is_err()
     );
     drop(units);
-    assert_eq!(driver.owed_closes(), 1);
+    assert_eq!((driver.owed_closes(), driver.buried()), (0, 1));
+    assert_eq!(closes(&plane, 811), 0, "the close is owed, not yet made");
     let settled = tokio::time::timeout(Duration::from_secs(3), async {
-        while driver.owed_closes() != 0 {
+        while driver.buried() != 0 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
@@ -517,7 +520,8 @@ async fn cleanup_drain_retains_a_pending_close_and_uses_the_callers_waker() {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
-    // The unit stalls on a far end that never answers; dropping it there owes its close.
+    // The unit stalls on a caller that never takes its answer (see the case above): dropping it
+    // buries its in-flight piece, whose close the cleanup drain owes.
     let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
     let (plane, driver) = (r.plane, Arc::new(r.driver));
     plane
@@ -528,8 +532,8 @@ async fn cleanup_drain_retains_a_pending_close_and_uses_the_callers_waker() {
     services.register_plane_cleanup(Arc::downgrade(&driver));
     let (steps, far, caller) = (
         common::TestUnits::passing(),
-        cases::Far::new(&["hang"], cases::CHUNKS),
-        cases::Caller::default(),
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        stalled_caller(),
     );
     let units = driver.unit(&steps, &far, &caller, cases::arrival("/call", b"x"), 0);
     assert!(
@@ -540,8 +544,8 @@ async fn cleanup_drain_retains_a_pending_close_and_uses_the_callers_waker() {
     drop(units);
     assert!(!services.drain_plane_cleanup(Duration::ZERO).await);
     assert_eq!(
-        driver.owed_closes(),
-        1,
+        (driver.owed_closes(), driver.buried()),
+        (0, 1),
         "timeout must retain cancellation custody"
     );
     let wakes = Arc::new(Wakes(std::sync::atomic::AtomicUsize::new(0)));
@@ -556,8 +560,15 @@ async fn cleanup_drain_retains_a_pending_close_and_uses_the_callers_waker() {
         "cancel completion must wake the actual maintenance caller"
     );
     assert!(draining.await);
-    assert_eq!(driver.owed_closes(), 0);
+    assert_eq!((driver.owed_closes(), driver.buried()), (0, 0));
     assert_eq!(closes(&plane, 812), 1);
     assert!(services.drain_plane_cleanup(Duration::ZERO).await);
     assert_eq!(closes(&plane, 812), 1);
+}
+
+/// A caller whose side is never writable: the unit's answer stays in flight.
+fn stalled_caller() -> cases::Caller {
+    let mut caller = cases::Caller::default();
+    caller.stall_after = Some(0);
+    caller
 }

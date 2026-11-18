@@ -77,17 +77,6 @@ impl AsSocket for Sock {
     }
 }
 
-/// The far end's IP address, when `socket` is a connected TCP stream (a unix-domain stream's
-/// peer is a path: none).
-#[must_use]
-pub fn peer_ip(socket: &Socket) -> Option<std::net::IpAddr> {
-    socket
-        .peer_addr()
-        .ok()
-        .and_then(|a| a.as_socket())
-        .map(|a| a.ip())
-}
-
 /// Whether `socket` is idle and open: nothing to read, no error, not closed by the far end.
 /// A look at the kernel's buffer (`MSG_PEEK`) that consumes nothing; anything else than "would
 /// block" (data waiting, EOF, an error) is not idle.

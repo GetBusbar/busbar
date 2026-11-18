@@ -18,7 +18,6 @@ use std::sync::OnceLock;
 
 use busbar_ffi::host::OutLease;
 use crossbeam_queue::ArrayQueue;
-use zerocopy::IntoBytes;
 
 use crate::records::{
     Full, Nested, Pod, RawWrite, Writer, put_fact_in, put_fact_text_in, put_metric_in,
@@ -140,6 +139,13 @@ impl PooledOut {
         if let Some(held) = &mut self.buf {
             held.clear();
         }
+    }
+    /// Appends `bytes` as they are, no record head: a request argument the interface states as plain bytes (a
+    /// store `clock`'s 16-byte dataset, ABI-MIN3-INTERFACE §8.8). Full: nothing changed.
+    pub fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), Full> {
+        self.room(bytes.len())?;
+        self.append(bytes);
+        Ok(())
     }
     /// Round 9: false for the empty handle (`PooledOut::default()`: no buffer, Drop does nothing, no queue op).
     pub fn is_held(&self) -> bool {

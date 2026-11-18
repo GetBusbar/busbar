@@ -57,9 +57,9 @@ fn audit_action_catalogue_closed() {
         .expect("components.x-busbar-audit-actions is generated");
     let published: Vec<&str> = table.keys().map(String::as_str).collect();
     let mut kernel = busbar_kernel::audit::auditlog::AUDIT_ACTIONS.to_vec();
-    kernel.sort_unstable();
+    kernel.sort();
     let mut published_sorted = published.clone();
-    published_sorted.sort_unstable();
+    published_sorted.sort();
     assert_eq!(
         published_sorted, kernel,
         "the document publishes the kernel catalogue"

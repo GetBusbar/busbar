@@ -11,7 +11,9 @@ use std::sync::OnceLock;
 mod transport;
 
 struct Process {
-    resources: busbar_plugin_loader::process::ProcessResources,
+    /// The process's one loader resources (`boot::images::process`): a process installs its plugin
+    /// sinks once (a02080fd43), so the fixture shares the start stage's set rather than making a second.
+    resources: Arc<busbar_plugin_loader::process::ProcessResources>,
     io: crate::root::boot::process::ProcessIo,
 }
 
@@ -20,7 +22,7 @@ fn process() -> Result<&'static Process, String> {
     PROCESS
         .get_or_init(|| {
             Ok(Process {
-                resources: busbar_plugin_loader::process::ProcessResources::new()?,
+                resources: crate::root::boot::images::process()?,
                 io: crate::root::boot::process::ProcessIo::new()?,
             })
         })
@@ -31,7 +33,7 @@ fn process() -> Result<&'static Process, String> {
 /// The test process's one loader resources, shared by every fixture in it.
 pub(crate) fn resources() -> Result<&'static busbar_plugin_loader::process::ProcessResources, String>
 {
-    process().map(|process| &process.resources)
+    process().map(|process| &*process.resources)
 }
 
 pub(crate) fn grammar(plugins: &PluginsCfg) -> Result<busbar_kernel::config::Grammar, String> {
@@ -55,7 +57,7 @@ pub(crate) fn described(
         .ok_or_else(|| format!("fixture image `{identity}` has no admitted describe"))
 }
 
-struct Owners {
+pub(crate) struct Owners {
     admitted_images: Arc<crate::root::boot::images::FileImages>,
     channel_accounts: ChannelAccounts,
     built: Built,
@@ -69,7 +71,9 @@ struct Owners {
 pub(crate) struct Fixture {
     pub(crate) backend: busbar_contract::persistence::axis::OpenedBackend,
     pub(crate) rules: Arc<dyn RootRules>,
-    owners: Arc<Owners>,
+    /// The native image and secret owners the opened backend came from: a caller that takes the
+    /// backend apart keeps them (`owners: _owners`) for as long as it uses it.
+    pub(crate) owners: Arc<Owners>,
 }
 
 pub(crate) struct Admitted {
@@ -106,7 +110,9 @@ pub(crate) struct ServingFixture {
 
 pub(crate) struct PlaneFixture {
     pub(crate) seat: PortSeat,
-    pub(crate) workers: crate::root::boot::workers::PreparedWorkers,
+    /// Held behind a lock: the fixture is retained in `Served` (shared across threads) while its
+    /// dormant workers, `Send` but not `Sync`, wait to be taken by [`PlaneFixture::served`].
+    pub(crate) workers: std::sync::Mutex<crate::root::boot::workers::PreparedWorkers>,
     _owners: Arc<Owners>,
     _prefix: Arc<BootSecrets>,
     hooks: std::collections::BTreeMap<String, HookFixture>,
@@ -143,7 +149,9 @@ impl PlaneFixture {
         crate::root::boot::workers::PreparedWorkers,
     ) {
         let workers = std::mem::replace(
-            &mut self.workers,
+            self.workers
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner),
             crate::root::boot::workers::PreparedWorkers::new(),
         );
         let owner = Arc::new(self);
@@ -371,7 +379,7 @@ impl ServingFixture {
         workers.push(async move { ticking.tick_task(shared.push.clone()).await });
         Ok(PlaneFixture {
             seat,
-            workers,
+            workers: std::sync::Mutex::new(workers),
             _owners: Arc::clone(&self.owners),
             _prefix: prefix,
             hooks: opened_hooks,
@@ -597,8 +605,9 @@ impl busbar_contract::persistence::PersistenceBackend for Backend {
     fn commit(
         &self,
         candidate: busbar_contract::persistence::PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
     ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
-        self.inner.commit(candidate)
+        self.inner.commit(candidate, key)
     }
     fn clock(
         &self,
@@ -632,10 +641,8 @@ async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_
             &'a self,
             _: &'a RootCfg,
             _: &'a PluginsCfg,
-        ) -> BoxFut<
-            'a,
-            Result<Option<Box<dyn busbar_kernel::appbuild::CandidatePreparation>>, String>,
-        > {
+        ) -> BoxFut<'a, Result<Option<busbar_kernel::appbuild::CandidatePreparation>, String>>
+        {
             self.calls.fetch_add(1, Ordering::AcqRel);
             Box::pin(async { Err("native fixture has no serving candidate owner".into()) })
         }
@@ -667,7 +674,7 @@ async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_
         ),
     )
     .expect("stage signed actual Store");
-    crate::root::linked::register_stores(&crate::LINKED);
+    crate::root::linked::register_stores();
     busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
     busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
     let plugins = crate::root::test_plugins::trusted_config(&directory);
@@ -720,7 +727,7 @@ async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let before = app.config_generation.load(Ordering::Acquire);
     let runtime = busbar_kernel::appbuild::build_app_from_config_with_store(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugins,
         None,
         Default::default(),

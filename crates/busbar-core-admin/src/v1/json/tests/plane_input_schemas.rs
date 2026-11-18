@@ -198,7 +198,6 @@ fn published_registration_resource_reaches_core_ownership_without_plane_authorit
 #[cfg(feature = "openapi-schema")]
 #[test]
 fn native_authored_registration_resource_uses_the_actual_bag_relative_pointer() {
-    use busbar_contract::json::JsonValueTrait as _;
     use busbar_kernel::upstreams::{core_field_paths, core_secret_paths, declared, Upstreams as _};
 
     let mut plane = stated("native-registration-fixture", "a2a");

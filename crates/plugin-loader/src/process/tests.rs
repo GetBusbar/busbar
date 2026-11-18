@@ -37,6 +37,6 @@ fn concurrent_candidates_reserve_distinct_ids() {
         .into_iter()
         .flat_map(|thread| thread.join().unwrap())
         .collect();
-    reserved.sort_unstable();
+    reserved.sort();
     assert_eq!(reserved, (1..=1024).collect::<Vec<_>>());
 }

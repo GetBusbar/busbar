@@ -57,7 +57,8 @@ pub struct ProcessAdmission {
 
 impl ProcessAdmission {
     /// `max_requests` has already passed configuration's Semaphore::MAX_PERMITS validation.
-    /// Zero leaves count unlimited; one admits only Operator requests.
+    /// Zero leaves count unlimited. A limit of one admits exactly one request of either class (no
+    /// Operator reserve is carved out of a single slot); from two up, the reserve keeps room for Operator.
     #[must_use]
     pub fn new(max_requests: usize) -> Arc<Self> {
         Self::build(max_requests, BODY_BYTES, OPERATOR_BODY_BYTES)
@@ -77,7 +78,12 @@ impl ProcessAdmission {
     fn build(max_requests: usize, byte_limit: u32, operator_bytes: u32) -> Arc<Self> {
         assert!(byte_limit > 0 && operator_bytes <= byte_limit);
         let counts = (max_requests != 0).then(|| {
-            let reserved = (max_requests / 16).clamp(1, 32);
+            // A reserve never takes the only slot: a limit of 1 must admit one Data request.
+            let reserved = if max_requests > 1 {
+                (max_requests / 16).clamp(1, 32)
+            } else {
+                0
+            };
             let data_limit = max_requests - reserved;
             Counts {
                 total: Arc::new(Semaphore::new(max_requests)),
@@ -426,7 +432,6 @@ impl ByteCredit {
     }
 
     /// Transfer part of this reservation without changing process usage.
-
     pub fn split(&mut self, bytes: usize) -> Result<Self, CapacityDenied> {
         let bytes = u32::try_from(bytes).map_err(|_| CapacityDenied)?;
         if bytes > self.bytes {

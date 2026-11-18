@@ -78,7 +78,7 @@ mod cases {
     pub(super) fn run(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
         let host =
             StoreHarness::admit(plugin, needs).unwrap_or_else(|r| panic!("admit refused: {r:?}"));
-        run_parameterized(&host, |case| {
+        crate::store::run_suite(&host, |case| {
             let name = format!("store-{case}");
             StoreCase::new(name.clone(), config_for(config, &name))
         });

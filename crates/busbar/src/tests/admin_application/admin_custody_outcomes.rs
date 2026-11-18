@@ -355,7 +355,7 @@ async fn app() -> (
     store.core.set(anchor.clone()).ok().unwrap();
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone()).unwrap();
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         plugin_config,
         Some(overlay),
         Default::default(),
@@ -902,7 +902,7 @@ async fn committed_mint_publishes_without_refresh_and_same_idempotency_cannot_mi
     assert_eq!(response.status(), StatusCode::CREATED);
     let answer = body(response).await;
     let id = answer["id"].as_str().unwrap().to_string();
-    assert!(answer["token"].is_string());
+    assert!(answer["token"].is_str());
     // Applied carries the exact committed rows into governance's cache. A failed
     // full refresh cannot erase confirmation or manufacture an unknown outcome.
     let listed = request(

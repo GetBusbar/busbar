@@ -42,6 +42,7 @@ pub mod config;
 pub mod config_time;
 pub mod confined_path;
 pub mod conn;
+pub mod lookup;
 pub use busbar_count::count;
 pub mod dest;
 
@@ -49,6 +50,7 @@ pub mod diagnostic;
 pub mod duration;
 pub mod export_calls;
 pub mod export_stream;
+pub mod fixed;
 pub mod framing_scope;
 pub mod grammar;
 pub mod header;
@@ -66,6 +68,7 @@ pub mod io_host;
 pub mod ir;
 pub mod json;
 pub mod jsonrpc;
+pub mod kept;
 pub mod kinds;
 
 #[allow(missing_docs, missing_debug_implementations)]

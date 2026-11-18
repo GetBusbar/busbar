@@ -44,7 +44,7 @@ fn a_chain_naming_the_webhook_signature_plugin_resolves_to_the_linked_row() {
             "0000000000000000000000000000000000000000000000000000000000000001",
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env(SECRET_ENV, "test-webhook-linked-signing-secret")
         .output()
         .expect("run busbar");

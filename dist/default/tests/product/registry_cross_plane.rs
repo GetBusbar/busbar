@@ -4,9 +4,9 @@
 use busbar_kernel::config::plane_sections::{config_sections_from, refuse_cross_plane_reference};
 use busbar_kernel::config::{deploy_from_yaml_str, resolve, RootCfg};
 use busbar_kernel::plane_driver::registry::{
-    build_dispatch, install_planes, merged_boot_plane_decls, plane_decl_for, BuildCtx, PlaneDecl,
-    PlaneDeclaration,
+    build_dispatch, install_planes, plane_decl_for, BuildCtx, PlaneDecl, PlaneDeclaration,
 };
+use busbar_kernel::test_hooks::merged_boot_plane_decls;
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -710,7 +710,11 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots, false)
         .expect("a plane that claims no path needs no admission");
-    assert!(dispatch.mounted_keys().is_empty(), "and it mounts nothing");
+    // `mounted_keys` went with its lint escape (caa7d06374); a plane mounts iff it has a mount.
+    assert!(
+        dispatch.mount_of(MOUNTS_NOTHING.key).is_none(),
+        "and it mounts nothing"
+    );
 }
 
 #[tokio::test]
@@ -780,7 +784,7 @@ async fn r2_boot_a_plane_whose_start_errs_refuses_boot() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         Default::default(),
         None,
         Default::default(),
@@ -933,7 +937,7 @@ async fn r2_boot_a_plane_whose_hydrate_errs_refuses_boot() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        config,
+        crate::root::test_plugins::plaintext_listeners(config),
         Default::default(),
         None,
         Default::default(),
@@ -974,10 +978,9 @@ fn r3_no_vocabulary_collision_across_the_mounted_set() {
     let dispatch =
         build_dispatch(builtin_plane_decls(), &slots, false).expect("the dispatch table builds");
 
-    let mounted_keys = dispatch.mounted_keys();
     let mounted: Vec<&&PlaneDecl> = builtin_plane_decls()
         .iter()
-        .filter(|d| mounted_keys.contains(&d.key))
+        .filter(|d| dispatch.mount_of(d.key).is_some())
         .collect();
 
     let mut scope_kinds: Vec<&str> = mounted
@@ -1003,7 +1006,7 @@ fn r3_no_vocabulary_collision_across_the_mounted_set() {
         "audit kinds collide across the mounted set: {audit_kinds:?}"
     );
 
-    let mut keys = mounted_keys;
+    let mut keys: Vec<&str> = mounted.iter().map(|d| d.key).collect();
     keys.sort();
     let mut want = vec![owning("tools").key, owning("agents").key];
     want.sort();
@@ -1064,7 +1067,9 @@ fn a_delegation_only_multi_binding_plane_mounts_nothing() {
     let dispatch =
         build_dispatch(builtin_plane_decls(), &slots, false).expect("no path, no refusal");
     assert!(
-        dispatch.mounted_keys().is_empty(),
+        builtin_plane_decls()
+            .iter()
+            .all(|d| dispatch.mount_of(d.key).is_none()),
         "a delegation-only deployment claims no path"
     );
     assert!(dispatch

@@ -29,8 +29,8 @@ pub mod self_keys;
 
 pub use convert::{scale6, MAX_WHOLE_UNITS};
 pub use evolve::{
-    evolve_with, has_step, initial_cursor, Manifest, RecordStep, CURSOR_KEY, RECORD_FORMAT,
-    RECORD_STEPS,
+    evolve_with, has_step, initial_cursor, published, Manifest, Publication, RecordStep,
+    CURSOR_KEY, RECORD_FORMAT, RECORD_STEPS,
 };
 
 /// The most rows one page (one commit) carries.
@@ -128,18 +128,6 @@ pub trait RecordStore {
     /// # Errors
     /// The store's failure, or an authority no longer admitted.
     fn register(&self) -> Result<(), StoreFail>;
-}
-
-/// THE STORE, as the record-format chain reaches it (#319 r4 §7, §9): a [`RecordStore`] under
-/// the migration owner's authority, which the kernel's opening or claim installed.
-pub trait FormatStore: RecordStore {
-    /// THE FINAL PUBLICATION: apply `c` (the last step's zero-payload completion: exact on the
-    /// manifest and the cursor, the cursor deleted, its evidence) atomically with the manifest at
-    /// `(format, 0)` under a fresh registrar and the dataset epoch advanced past this owner.
-    ///
-    /// # Errors
-    /// The store's failure (the outcome is then unknown; the next boot reinspects).
-    fn finalize(&self, c: Candidate, format: u32) -> Result<Committed, StoreFail>;
 }
 
 /// The counters of one R0 row: request counts whole, token counts in scale 6 (whole units ×

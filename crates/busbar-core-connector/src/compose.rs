@@ -264,6 +264,10 @@ pub struct Connection {
     presented: Arc<std::sync::atomic::AtomicBool>,
     /// Connection security's own error, when it is what failed the connection.
     security_error: Option<String>,
+    /// The connection failed on its transport (a socket read or write error, or the peer's EOF) while
+    /// its TLS handshake was under way, not by a TLS refusal: the stage is `CAUSE_CONNECT`, not
+    /// `CAUSE_SECURITY` (#245, DES-245 r3 section 3.2). Unset, a handshake failure is a refusal.
+    handshake_transport: bool,
     /// Why the connection failed, once it has (its stage and the underlying error's own text).
     cause: Option<ConnCause>,
     /// THE PROXY TUNNEL a dial through a proxy asks for before anything else rides the socket
@@ -574,7 +578,7 @@ fn refused(e: impl std::fmt::Display) -> Failure {
 /// for the rest of it, so a drive reads the clock at most once, and not at all when no deadline is
 /// set. A reading taken earlier in the drive is a few µs early: it can only judge a deadline not yet
 /// due, never fire one late, and the timer [`Connection::keep_deadlines`] arms wakes the drive for it.
-fn clock(now: &mut Option<Instant>) -> Instant {
+pub(crate) fn clock(now: &mut Option<Instant>) -> Instant {
     *now.get_or_insert_with(|| {
         busbar_contract::work_count::tally(busbar_contract::work_count::Work::ClockRead);
         #[cfg(test)]
@@ -1038,7 +1042,7 @@ impl Planned {
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Authority(crate::off_path::compose::display_text(&addr)),
+            &Dest::Authority(crate::StackText::<{ crate::SOCKET_TEXT }>::of(&addr).as_str()),
         )
         .map_err(dial_failure)
         .map_err(|f| (dialled, f))?;
@@ -1109,7 +1113,7 @@ impl Connection {
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Authority(crate::off_path::compose::unix_authority(path)),
+            &Dest::Authority(&crate::off_path::compose::unix_authority(path)),
         )
         .map_err(dial_failure)?;
         Self::open_dialled(
@@ -1188,6 +1192,7 @@ impl Connection {
             pinned,
             presented,
             security_error: None,
+            handshake_transport: false,
             cause: None,
             opening_owed: false,
             unfed: VecDeque::new(),
@@ -1225,7 +1230,7 @@ impl Connection {
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Program(program.clone(), env.clone(), supervision_key),
+            &Dest::Program(program, env, supervision_key),
         )
         .map_err(dial_failure)?;
         let established = Established {
@@ -1259,6 +1264,7 @@ impl Connection {
             seals: crate::seal::Seals::default(),
             opening_sensitive: SensitiveFields::default(),
             security_error: None,
+            handshake_transport: false,
             pinned: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             door: None,
@@ -1402,6 +1408,7 @@ impl Connection {
             pinned: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             security_error: None,
+            handshake_transport: false,
             cause: None,
             opening_owed: false,
             unfed: VecDeque::new(),
@@ -1810,6 +1817,15 @@ impl Connection {
         self.tls.as_ref().is_some_and(|t| t.is_handshaking())
     }
 
+    /// The carrier failed (a socket read or write error): while a TLS handshake is under way, from
+    /// the first byte or an in-Open upgrade, that is the handshake's transport failing, so the cause
+    /// stage is `CAUSE_CONNECT` and not `CAUSE_SECURITY` (DES-245 r3 section 3.2).
+    fn transport_failed(&mut self) {
+        if matches!(self.phase, Phase::Handshaking) || self.handshaking() {
+            self.handshake_transport = true;
+        }
+    }
+
     /// Whether connection security is set and its handshake has completed: what
     pub(crate) fn secured(&self) -> bool {
         self.tls.as_ref().is_some_and(|t| !t.is_handshaking())
@@ -1850,13 +1866,20 @@ impl Connection {
         // The framer's own error is let go either way; the outbound emit's, when held, wins.
         let framer_error = self.framer_error.take();
         let framer = emitted.or(framer_error);
+        // A handshake (from the first byte, or an in-Open upgrade) that failed on its transport is a
+        // connect failure with nothing sent; one the TLS stack refused is security (DES-245 r3
+        // section 3.2). No text is inspected; an unmarked site keeps security.
+        let handshake = if self.handshake_transport {
+            CAUSE_CONNECT
+        } else {
+            CAUSE_SECURITY
+        };
         let stage = match (&f, &self.phase) {
             (Failure::Timeout, _) => CAUSE_DEADLINE,
             (_, Phase::Open) if framer.is_some() => CAUSE_FRAMER,
             (_, Phase::Connecting) => CAUSE_CONNECT,
-            (_, Phase::Handshaking) => CAUSE_SECURITY,
-
-            _ if self.handshaking() => CAUSE_SECURITY,
+            (_, Phase::Handshaking) => handshake,
+            _ if self.handshaking() => handshake,
             _ => CAUSE_EXCHANGE,
         };
         let text = match &f {
@@ -2011,7 +2034,15 @@ impl Connection {
         if self.tls.is_none() && !bytes.is_empty() {
             if let Some(left) = self.clear_window.as_mut() {
                 if *left == 0 || bytes.len() > CLEAR_WINDOW_BYTES {
-                    crate::egress_audit::dial_refused(&self.target, None, "plaintext-window", None);
+                    // The refusal is this op's only clock reading: it returns before any drive.
+                    let mut now = None;
+                    crate::egress_audit::dial_refused(
+                        &self.target,
+                        None,
+                        "plaintext-window",
+                        None,
+                        &mut now,
+                    );
                     return Err(Failure::Refused(CLEAR_WINDOW_REFUSED.into()));
                 }
                 *left -= 1;
@@ -2068,7 +2099,7 @@ impl Connection {
         let redialled = Carried::dial(
             Arc::clone(&f.door),
             Arc::clone(&f.io),
-            &Dest::Authority(crate::off_path::compose::display_text(&next)),
+            &Dest::Authority(crate::StackText::<{ crate::SOCKET_TEXT }>::of(&next).as_str()),
         );
         Some(
             redialled
@@ -2086,7 +2117,7 @@ impl Connection {
         let mut moved = false;
         if self.tunnel.as_ref().is_some_and(|t| t.asked) {
             moved |= self.flush(cx)?;
-            moved |= self.tunnel_read(cx)?;
+            moved |= self.tunnel_read(cx, &mut now)?;
         } else if matches!(self.phase, Phase::Connecting) {
             match self.carried.poll_connected(cx) {
                 Poll::Ready(Ok(())) => {
@@ -2117,7 +2148,7 @@ impl Connection {
                 && self.buffered_input().saturating_add(self.receive_held) < RECEIVE_BUFFER_BYTES
                 && self.out.len() < 2 * WRITE_BUFFER_BYTES
             {
-                moved |= self.read(cx)?;
+                moved |= self.read(cx, &mut now)?;
             }
         }
         moved |= self.keep_deadlines(cx, &mut now)?;
@@ -2135,7 +2166,11 @@ impl Connection {
     }
 
     /// Read the proxy's answer to the tunnel request: once its head is whole and 2xx the socket is
-    fn tunnel_read(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
+    fn tunnel_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        now: &mut Option<Instant>,
+    ) -> Result<bool, Failure> {
         let mut buf = [0_u8; 256];
         let n = match self.carried.poll_read(cx, &mut buf) {
             Poll::Pending => return Ok(false),
@@ -2162,7 +2197,7 @@ impl Connection {
         self.tunnel = None;
         self.connected()?;
         if let Some(rest) = head.get(end..).filter(|rest| !rest.is_empty()) {
-            self.feed(rest, false, false)?;
+            self.feed(rest, false, false, now)?;
         }
         Ok(true)
     }
@@ -2189,6 +2224,7 @@ impl Connection {
                     Poll::Ready(Ok(())) => self.unflushed = false,
                     Poll::Ready(Err(e)) => {
                         self.carrier_lost = true;
+                        self.transport_failed();
                         return Err(failed(e));
                     }
                 }
@@ -2229,6 +2265,7 @@ impl Connection {
                 }
                 Poll::Ready(Err(e)) => {
                     self.carrier_lost = true;
+                    self.transport_failed();
                     return Err(failed(e));
                 }
                 Poll::Pending => return Ok(moved),
@@ -2237,7 +2274,7 @@ impl Connection {
     }
 
     /// Read what the carrier has, and hand it on.
-    fn read(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
+    fn read(&mut self, cx: &mut Context<'_>, now: &mut Option<Instant>) -> Result<bool, Failure> {
         if self.read_end {
             return Ok(false);
         }
@@ -2267,17 +2304,18 @@ impl Connection {
             Ok(0) if !end_of_frame => {
                 self.read_end = true;
                 self.carrier_lost = true;
-                self.feed(&[], true, false)?;
+                self.feed(&[], true, false, now)?;
                 Ok(true)
             }
             Ok(_) => {
-                self.feed(scratch.as_slice(), false, end_of_frame)?;
+                self.feed(scratch.as_slice(), false, end_of_frame, now)?;
                 Ok(true)
             }
             Err(e) => {
                 if self.door.is_none() && self.tls.is_none() {
                     self.framer_error = Some(crate::cold::framing::display(&e));
                 }
+                self.transport_failed();
                 Err(failed(e))
             }
         }
@@ -2513,7 +2551,7 @@ impl Connection {
     }
 
     /// THE TRANSPORT PIN, held on a dialled connection whose handshake just completed: the far end's
-    fn hold_to_anchors(&mut self) -> Result<(), Failure> {
+    fn hold_to_anchors(&mut self, now: &mut Option<Instant>) -> Result<(), Failure> {
         let Some(rustls::Connection::Client(c)) = self.tls.as_ref() else {
             return Ok(());
         };
@@ -2525,7 +2563,7 @@ impl Connection {
 
         match self.pinned.as_ref().and_then(|a| a.key_pin.as_deref()) {
             Some(pin) if self.established.peer_key_pin.as_deref() != Some(pin) => {
-                crate::egress_audit::tls_failed(&self.target, PIN_REFUSED);
+                crate::egress_audit::tls_failed(&self.target, PIN_REFUSED, now);
                 Err(Failure::Refused(PIN_REFUSED.into()))
             }
             _ => Ok(()),
@@ -2533,7 +2571,13 @@ impl Connection {
     }
 
     /// What the carrier read (`end` = its clean end; `end_of_frame` = the bytes complete a frame of
-    fn feed(&mut self, bytes: &[u8], end: bool, end_of_frame: bool) -> Result<(), Failure> {
+    fn feed(
+        &mut self,
+        bytes: &[u8],
+        end: bool,
+        end_of_frame: bool,
+        now: &mut Option<Instant>,
+    ) -> Result<(), Failure> {
         let Some(tls) = self.tls.as_mut() else {
             return self.ingest(bytes, end, end_of_frame);
         };
@@ -2554,7 +2598,7 @@ impl Connection {
                         matches!(tls, rustls::Connection::Client(_)),
                     );
                     if self.side == SIDE_DIAL && crate::egress_audit::is_verification(&e) {
-                        crate::egress_audit::tls_failed(&self.target, &text);
+                        crate::egress_audit::tls_failed(&self.target, &text, now);
                     }
                     self.security_error = Some(text);
                     // Flush the fatal alert that rustls queued (RFC 8446 §6.2) so the
@@ -2566,6 +2610,11 @@ impl Connection {
         }
         if end {
             tls.read_tls(&mut io::empty()).map_err(failed)?;
+            // The peer's EOF while the handshake (from the first byte, or an upgrade) is under way is
+            // a transport failure, not a refusal (DES-245 r3 section 3.2).
+            if matches!(self.phase, Phase::Handshaking) || tls.is_handshaking() {
+                self.handshake_transport = true;
+            }
         }
         if matches!(self.phase, Phase::Handshaking) {
             if end {
@@ -2588,7 +2637,7 @@ impl Connection {
                     let asked = s.server_name().map(crate::off_path::compose::owned);
                     self.established.offered_name = asked;
                 }
-                self.hold_to_anchors()?;
+                self.hold_to_anchors(now)?;
                 self.begin()?;
             }
         }

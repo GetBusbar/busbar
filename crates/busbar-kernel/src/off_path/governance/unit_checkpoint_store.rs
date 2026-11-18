@@ -310,8 +310,10 @@ pub struct StoreUnitCheckpoints {
     /// applies (SHUTDOWN-HANG F1). About 56 B per checkpoint; RAM only. On an Ephemeral journal
     /// each entry also pins its original, so no cut deletes it before R's
     /// `record(seq, carried)` reads it (SEALING-FIX §3.9 floor (d)).
-    carried: Mutex<HashMap<[u8; 16], (Carried, Option<Pin>)>>,
+    carried: Mutex<CarriedOriginals>,
 }
+/// Checkpoint id -> its carried original and, on an Ephemeral journal, the pin that keeps it.
+type CarriedOriginals = HashMap<[u8; 16], (Carried, Option<Pin>)>;
 impl StoreUnitCheckpoints {
     pub fn new(evidence: Arc<UnitCheckpointEvidence>, audit: Arc<dyn UnitCheckpointAudit>) -> Self {
         Self {

@@ -68,11 +68,12 @@ fn the_digest_is_of_the_canonical_bytes_and_domain_separated() {
 #[test]
 fn every_non_canonical_tail_is_refused() {
     let good = encode(&two_nodes());
-    let mut refused: Vec<Vec<u8>> = Vec::new();
     // Trailing bytes, a wrong magic, a truncation.
-    refused.push([good.clone(), vec![0]].concat());
-    refused.push([b"BSRT2\0\0\0".as_slice(), &good[8..]].concat());
-    refused.push(good[..good.len() - 1].to_vec());
+    let mut refused: Vec<Vec<u8>> = vec![
+        [good.clone(), vec![0]].concat(),
+        [b"BSRT2\0\0\0".as_slice(), &good[8..]].concat(),
+        good[..good.len() - 1].to_vec(),
+    ];
     // Nodes out of order, a duplicate node, an empty chain.
     refused.push(encode(&Tail {
         chains: vec![chain(9, 1, 1), chain(3, 1, 1)],

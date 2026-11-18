@@ -316,10 +316,21 @@ fn descriptor_provider_entries(
     }
     let syntax = &parser.file;
     let tokens = quote::quote!(#syntax).to_string();
-    assert!(tokens.contains("door :: provider_keys"));
-    assert!(tokens.contains("next_value_seed (ValueSeed :: field (field))"));
+    // Since d3dc7a93fd the descriptor keys are delegated by behaviour, not by descriptor typing: the
+    // parser keeps every non-core key verbatim in the entry's options, and the catalog projects to
+    // an admitted plane exactly the keys that plane's own schema owns (IF round 14 §8.6: "nested lists
+    // and tables (error_map, model_capabilities) travel inside it"). Both halves must stay.
+    assert!(tokens.contains("next_value :: < Value >"));
     assert!(tokens.contains("options . insert"));
     assert!(tokens.contains("entry . options = options"));
+    let catalog = sources
+        .iter()
+        .find(|s| s.rel == "crates/busbar-kernel/src/off_path/plane_provider_catalog.rs")
+        .expect("the provider catalog source");
+    let catalog = &catalog.file;
+    let projection = quote::quote!(#catalog).to_string();
+    assert!(projection.contains("schema . owns (k)"));
+    assert!(projection.contains("validation_paths"));
     entries
 }
 

@@ -12,7 +12,9 @@
 #![doc(test(attr(forbid(unsafe_code))))]
 
 pub mod auth;
+pub mod clock;
 pub mod export;
+pub mod frame;
 pub mod hook;
 pub mod network;
 pub mod plane;

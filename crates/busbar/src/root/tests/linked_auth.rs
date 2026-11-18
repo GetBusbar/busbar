@@ -337,7 +337,7 @@ async fn without_the_root_row_the_operator_token_is_refused() {
 
     let mut without_row = (*with_row).clone();
     without_row.admin_modules = Arc::new(AdminAuthChain {
-        modules: HashMap::new(),
+        modules: Default::default(),
         operator: Operator::new(config::operator_provider()),
     });
     let without_row = Arc::new(without_row);
@@ -512,7 +512,7 @@ async fn credentials_app(
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugins,
         None,
         Default::default(),
@@ -755,8 +755,8 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
         let defs = [(op, "any-credential")].into_iter();
         let is_op = |m: &str| config::names_operator(m);
 
-        let operator = Operator::open(op, defs, &is_op, false, None, |_| unreachable!())
-            .expect("opens")
+        // No instance opened for the operator: its credential is the opened map (c1b9b9e234).
+        let operator = Operator::open(op, defs, &is_op, false, foldhash::HashMap::default())
             .with_carriers(base.admin_modules.operator.carriers().to_vec());
         assert!(
             !operator.is(op),
@@ -764,12 +764,14 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
         );
         let mut named = (*base).clone();
         named.admin_modules = Arc::new(AdminAuthChain {
-            modules: HashMap::from([(
+            modules: [(
                 op.to_string(),
                 busbar_kernel::auth::AdminModule {
                     calls: synthetic_calls("any-credential", "any"),
                 },
-            )]),
+            )]
+            .into_iter()
+            .collect(),
             operator,
         });
         Arc::new(named)

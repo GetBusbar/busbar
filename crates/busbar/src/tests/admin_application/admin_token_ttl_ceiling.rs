@@ -31,7 +31,7 @@ async fn proof_max_ttl_ceiling_clamps_a_rotated_token() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["auth"]["policy"] = json::json!({"max_ttl": "24h"});
     let (addr, handle, _book) =

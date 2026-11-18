@@ -698,7 +698,6 @@ pub(crate) struct Prepared {
     image: Arc<Image>,
     identity: Arc<str>,
     errors: &'static ErrorBook,
-    ceilings: [u32; 64],
     described: Described,
     bound: SecureVec,
     dests: u32,
@@ -849,7 +848,6 @@ impl Registry {
             image: Arc::clone(image),
             identity: Arc::from(entry.identity.as_ref()),
             errors: entry.errors,
-            ceilings: entry.ceilings,
             described: entry.described.clone(),
             bound,
             dests,
@@ -1327,7 +1325,7 @@ mod tests {
 
     #[test]
     fn a_method_the_kind_lacks_is_cap_unknown_and_a_missing_required_one_is_invalid() {
-        let r = describe(st::REQUIRED | st::ALL + 1);
+        let r = describe(st::REQUIRED | (st::ALL + 1));
         let e = decode_described(KindCode::Store, Records::new(r.as_bytes()))
             .err()
             .unwrap();

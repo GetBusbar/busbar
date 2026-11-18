@@ -69,7 +69,7 @@ pools:
     let stderr_path = dir.join("stderr.log");
     let mut child = Command::new(common::boot::exe())
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .env("BOOT_WARNINGS_ONCE_KEY", "x")
         .env("RUST_LOG", "info")
         .stdin(Stdio::null())
@@ -158,7 +158,7 @@ pools:
         command
             .args(args)
             .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env_remove("BUSBAR_PROVIDERS")
             .env("BOOT_WARNINGS_ONCE_KEY", "x")
             .env("RUST_LOG", "info")
             .stdin(Stdio::null());

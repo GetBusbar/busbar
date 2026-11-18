@@ -350,8 +350,15 @@ async fn final_origin_fold_rejects_parent_head_advanced_between_read_and_finish(
     });
     assert!(recovery.verify_origin(&child).await.is_err());
 }
+/// WHO: a node whose own journal holds a damaged original that no selection names (an unselected
+/// tail row).
+/// DOES: (SHUTDOWN-HANG F1, 6426a6a085, ceab41b955) on the live path the owner confirms its own
+/// head in one read and does not look at that row, so the live origin fold answers Ok; the next
+/// cold recovery (a restart: no carried evidence) reads every original and refuses the journal.
+/// WHY: F1 took the whole-journal read off the live path for drain speed; the damage is still
+/// caught, at the restart, before any recovery runs on that journal.
 #[tokio::test]
-async fn final_origin_fold_verifies_unselected_tail_after_all_facts_are_found() {
+async fn final_origin_fold_live_skips_a_damaged_unselected_tail_and_cold_recovery_detects_it() {
     let (backend, recovery) = fixture().await;
     let initial = intent();
     recovery.persist(&initial).await.unwrap();
@@ -368,7 +375,15 @@ async fn final_origin_fold_verifies_unselected_tail_after_all_facts_are_found() 
     .await;
     let (at, _) = record_row(&backend, recovery.node, tail.sequence);
     damage(&backend, &at, false);
-    assert!(recovery.verify_origin(&initial).await.is_err());
+    assert!(
+        recovery.verify_origin(&initial).await.is_ok(),
+        "the live path does not look at an unselected own row"
+    );
+    drop(recovery);
+    assert!(matches!(
+        restarted(&backend, 1, 7).await,
+        Err(crate::persistence::journal::RuntimeError::Corrupt)
+    ));
 }
 #[path = "checkpoint_final_fold_tests.rs"]
 mod checkpoint_final_fold;

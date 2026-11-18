@@ -30,7 +30,7 @@ fn lost_seal_comparisons_restart_when_the_fence_mark_changed_meaning() {
     });
     assert_eq!(after_lost_seal(7, &state, true), LostSeal::RetrySigned);
     assert_eq!(after_lost_seal(7, &state, false), LostSeal::Restart);
-    state.row = Some(vec![1]);
+    state.row = Some(busbar_contract::secure::SecureVec::from(vec![1]));
     assert_eq!(after_lost_seal(7, &state, true), LostSeal::ExistingRow);
 }
 
@@ -49,7 +49,7 @@ async fn a_walk_over_budget_is_a_budget_break_over_the_walked_range() {
         .iter()
         .enumerate()
         .map(|(i, record)| TailItem::Line {
-            record: record.clone(),
+            record: Box::new(record.clone()),
             node_seq: 100 + i as u64,
         })
         .collect();

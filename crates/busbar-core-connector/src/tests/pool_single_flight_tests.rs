@@ -250,6 +250,8 @@ fn connector(
         max_idle_per_host: 8,
         idle_timeout: Duration::from_secs(60),
     });
+    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+    crate::tests::accept_plaintext(&c, &[OWNER]);
     c.declare_over(OWNER, NEED, "messages").unwrap();
     Arc::new(c)
 }
@@ -1129,6 +1131,14 @@ fn breaches(files: &[(String, String)]) -> Vec<String> {
     found
 }
 
+/// One planted breach: what it plants, the file it plants it in, how, and the words its refusal names.
+type Arm = (
+    &'static str,
+    &'static str,
+    Box<dyn Fn(&str) -> String>,
+    &'static str,
+);
+
 /// `files` with `path`'s text changed by `plant`.
 fn planted(
     files: &[(String, String)],
@@ -1163,7 +1173,7 @@ fn pool_fills_through_take() {
 
     let open_take = "self.pools.take(*shard, key, claim, candidate)";
     let redial_take = "self.pools.take(*shard, key, false, false)";
-    let arms: [(&str, &str, Box<dyn Fn(&str) -> String>, &str); 9] = [
+    let arms: [Arm; 9] = [
         (
             "a leader built outside pool.rs",
             "conns.rs",

@@ -794,7 +794,18 @@ impl Harness {
                 "a test runtime",
             )
         })?;
-        let needs = Arc::new(needs);
+        static PROCESS: std::sync::OnceLock<
+            Result<busbar_plugin_loader::process::ProcessResources, String>,
+        > = std::sync::OnceLock::new();
+        let process = PROCESS.get_or_init(busbar_plugin_loader::process::ProcessResources::new);
+        let needs = Arc::new(
+            needs.over_slots(
+                process
+                    .as_ref()
+                    .ok()
+                    .map(|process| Arc::clone(process.slots())),
+            ),
+        );
         let binder = Arc::new(MemBinder::over(Arc::clone(&needs)));
         let admitted = admit()?;
         let first = admitted.first().ok_or_else(|| {
@@ -806,20 +817,14 @@ impl Harness {
             )
         })?;
         let (identity, kind) = (first.identity().to_owned(), first.kind());
-        static PROCESS: std::sync::OnceLock<
-            Result<busbar_plugin_loader::process::ProcessResources, String>,
-        > = std::sync::OnceLock::new();
-        let process = PROCESS
-            .get_or_init(busbar_plugin_loader::process::ProcessResources::new)
-            .as_ref()
-            .map_err(|error| {
-                Refusal::new(
-                    RefusalCode::Integrity,
-                    "process",
-                    error.clone(),
-                    "process resources",
-                )
-            })?;
+        let process = process.as_ref().map_err(|error| {
+            Refusal::new(
+                RefusalCode::Integrity,
+                "process",
+                error.clone(),
+                "process resources",
+            )
+        })?;
         let mut images = ImagesBuilder::new(&HOST, Arc::clone(process.slots()), Ceilings::DEFAULT);
         for image in admitted {
             images.admit(image)?;
@@ -1107,17 +1112,6 @@ impl Harness {
             .clone()
     }
 
-    /// The log lines, emptied.
-    pub fn take_logs(&self) -> Vec<LogLine> {
-        std::mem::take(
-            &mut *self
-                .logs
-                .lines
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        )
-    }
-
     /// Every error number the registry found undeclared since the harness was built (an ERROR record or a `log`
     /// number the image's D_ERRORS does not hold, or one over 9999), once per instance, in order: the number of
     /// each "plugin error number not declared" WARN.
@@ -1174,7 +1168,7 @@ fn endpoint_pairs(declared: &[DeclaredEndpoint]) -> Vec<(&str, bool)> {
 /// The core refusal an open answered, when core (not the plugin) refused.
 pub fn core_refusal(error: &OpenError) -> Option<&Refusal> {
     match error {
-        OpenError::Refused { refusal, .. } => Some(refusal),
+        OpenError::Refused { refusal, .. } => Some(std::borrow::Borrow::<Refusal>::borrow(refusal)),
         _ => None,
     }
 }
@@ -1196,6 +1190,100 @@ pub fn plugin_code(error: &OpenError) -> Option<PluginCode> {
         | OpenError::Failed { error, .. } => *error,
         _ => None,
     }
+}
+
+#[cfg(feature = "target-sockets")]
+fn collect_socket_bindings(
+    node: &Value,
+    at: &str,
+    bound: &Bound,
+    needs: &FakeNeeds,
+    host: &crate::sockets::SocketTargets,
+    out: &mut crate::sockets::Bindings,
+) -> Result<(), BindError> {
+    if let Some(handle) = node.get(TRUST).and_then(count) {
+        if host.wants_trust(at) {
+            let index = usize::try_from(handle)
+                .ok()
+                .and_then(|h| h.checked_sub(1))
+                .ok_or(BindError::TooMany)?;
+            let pem = bound
+                .trust
+                .get(index)
+                .and_then(JsonValueTrait::as_str)
+                .ok_or_else(|| bad_reference(at, "socket trust must be PEM text"))?;
+            out.trusts.push((
+                at.to_owned(),
+                u32::try_from(handle).map_err(|_| BindError::TooMany)?,
+                pem.to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+    if let Some(handle) = node.get(SECRET).and_then(count) {
+        if host.wants_client(at) {
+            let pem = needs
+                .secret_at(at)
+                .ok_or_else(|| bad_reference(at, "socket client identity is not scripted"))?;
+            out.clients.push((
+                at.to_owned(),
+                u32::try_from(handle).map_err(|_| BindError::TooMany)?,
+                SecureVec::from(pem),
+            ));
+        }
+        return Ok(());
+    }
+    if let Some(members) = node.as_object() {
+        for (key, value) in members.iter() {
+            collect_socket_bindings(
+                value,
+                &format!("{at}/{}", escape(key)),
+                bound,
+                needs,
+                host,
+                out,
+            )?;
+        }
+    } else if let Some(items) = node.as_array() {
+        for (index, value) in items.iter().enumerate() {
+            collect_socket_bindings(value, &format!("{at}/{index}"), bound, needs, host, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Keep test authority internal; production callers cannot obtain a seal through the SDK facade.
+fn test_store_seal() -> Result<busbar_plugin_loader::instance::StoreSeal, OpenError> {
+    #[cfg(feature = "test-seal")]
+    {
+        Ok(Arc::new(|| {
+            Box::new(busbar_contract::plugin::TestKernelSeal)
+        }))
+    }
+    #[cfg(not(feature = "test-seal"))]
+    {
+        Err(OpenError::Unknown(
+            "store tests require the test-seal feature".into(),
+        ))
+    }
+}
+
+/// A test source that grants no custody authority. MemBinder owns its explicit pointer scripts;
+/// this source refuses any resolution attempted outside that test binder.
+pub fn no_refs() -> Arc<dyn busbar_ports::binder::RefSource> {
+    struct Deny;
+    impl busbar_ports::binder::RefSource for Deny {
+        fn resolve<'a>(
+            &'a self,
+            _instance: u64,
+            _slot: u32,
+            _binding: u32,
+            _reference: &'a busbar_contract::secret_ref::SecretRef,
+        ) -> BoxFut<'a, Option<SecureVec>> {
+            Box::pin(std::future::ready(None))
+        }
+    }
+    Arc::new(Deny)
 }
 
 #[cfg(test)]
@@ -1423,98 +1511,4 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, BindError::NotAReference { .. }));
     }
-}
-
-#[cfg(feature = "target-sockets")]
-fn collect_socket_bindings(
-    node: &Value,
-    at: &str,
-    bound: &Bound,
-    needs: &FakeNeeds,
-    host: &crate::sockets::SocketTargets,
-    out: &mut crate::sockets::Bindings,
-) -> Result<(), BindError> {
-    if let Some(handle) = node.get(TRUST).and_then(count) {
-        if host.wants_trust(at) {
-            let index = usize::try_from(handle)
-                .ok()
-                .and_then(|h| h.checked_sub(1))
-                .ok_or(BindError::TooMany)?;
-            let pem = bound
-                .trust
-                .get(index)
-                .and_then(JsonValueTrait::as_str)
-                .ok_or_else(|| bad_reference(at, "socket trust must be PEM text"))?;
-            out.trusts.push((
-                at.to_owned(),
-                u32::try_from(handle).map_err(|_| BindError::TooMany)?,
-                pem.to_owned(),
-            ));
-        }
-        return Ok(());
-    }
-    if let Some(handle) = node.get(SECRET).and_then(count) {
-        if host.wants_client(at) {
-            let pem = needs
-                .secret_at(at)
-                .ok_or_else(|| bad_reference(at, "socket client identity is not scripted"))?;
-            out.clients.push((
-                at.to_owned(),
-                u32::try_from(handle).map_err(|_| BindError::TooMany)?,
-                SecureVec::from(pem),
-            ));
-        }
-        return Ok(());
-    }
-    if let Some(members) = node.as_object() {
-        for (key, value) in members.iter() {
-            collect_socket_bindings(
-                value,
-                &format!("{at}/{}", escape(key)),
-                bound,
-                needs,
-                host,
-                out,
-            )?;
-        }
-    } else if let Some(items) = node.as_array() {
-        for (index, value) in items.iter().enumerate() {
-            collect_socket_bindings(value, &format!("{at}/{index}"), bound, needs, host, out)?;
-        }
-    }
-    Ok(())
-}
-
-/// Keep test authority internal; production callers cannot obtain a seal through the SDK facade.
-fn test_store_seal() -> Result<busbar_plugin_loader::instance::StoreSeal, OpenError> {
-    #[cfg(feature = "test-seal")]
-    {
-        Ok(Arc::new(|| {
-            Box::new(busbar_contract::plugin::TestKernelSeal)
-        }))
-    }
-    #[cfg(not(feature = "test-seal"))]
-    {
-        Err(OpenError::Unknown(
-            "store tests require the test-seal feature".into(),
-        ))
-    }
-}
-
-/// A test source that grants no custody authority. MemBinder owns its explicit pointer scripts;
-/// this source refuses any resolution attempted outside that test binder.
-pub fn no_refs() -> Arc<dyn busbar_ports::binder::RefSource> {
-    struct Deny;
-    impl busbar_ports::binder::RefSource for Deny {
-        fn resolve<'a>(
-            &'a self,
-            _instance: u64,
-            _slot: u32,
-            _binding: u32,
-            _reference: &'a busbar_contract::secret_ref::SecretRef,
-        ) -> BoxFut<'a, Option<SecureVec>> {
-            Box::pin(std::future::ready(None))
-        }
-    }
-    Arc::new(Deny)
 }

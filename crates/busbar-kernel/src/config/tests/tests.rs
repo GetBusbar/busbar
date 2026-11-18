@@ -2773,6 +2773,7 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
     let error = parse("bogus_key: true\n").expect_err("unknown field");
     // `oauth_as` is named among the document's fields, in 1.5.5's spelling
     // (serde's backticked list). `config_version` is the 1.6.0 stamp (MIGRATE-ON-BOOT r42 §3, 257c).
+    // Rule 3's sentence follows the unknown-field refusal (4a7485fe98, prepass.rs).
     assert_eq!(
         error.to_string(),
         "bogus_key: unknown field `bogus_key`, expected one of `config_version`, `listen`, \
@@ -2782,9 +2783,11 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
          `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, \
          `hooks`, `groups`, `rate_card`, `per_request_fee`, `store`, \
          `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`, \
-         `telemetry`, `records`, `audit` at line 3 column 1"
+         `telemetry`, `records`, `audit`. `bogus_key` is not a core section and no admitted \
+         plane answers to it; plane sections are: (none) at line 3 column 1"
     );
-    for field in ["oauth_as"] {
+    {
+        let field = "oauth_as";
         let duplicate =
             parse(&format!("{field}: {{}}\n{field}: {{}}\n")).expect_err("duplicate core section");
         assert!(

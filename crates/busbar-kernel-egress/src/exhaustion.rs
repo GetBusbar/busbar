@@ -35,9 +35,9 @@ pub fn least_bad(
     ports: &WalkPorts<'_>,
     pool: &Pool,
     members: &[Member],
+    now: u64,
     token: &Pass<Route>,
 ) -> Option<(Member, Permit)> {
-    let now = ports.clock.now_secs();
     // The members in order of soonest cooldown, ties in configured order: each round takes the
     // least `(cooldown, position)` past the last one tried, so nothing is collected or sorted.
     let mut tried: Option<(u64, usize)> = None;

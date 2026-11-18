@@ -75,9 +75,7 @@ impl Drop for AdmissionRollback {
                 if let Err(error) = self.money.abort_selected_startup(&request, slot) {
                     // Refusal leaves the exact Open and checkpoint owner intact. Surface the
                     // failure to the existing response confirmation rather than losing facts.
-                    slot.publish(Err(format!(
-                        "selected startup terminal transfer refused: {error:?}"
-                    )));
+                    slot.publish(Err(crate::cold::selected_startup_refusal(&error)));
                 }
             } else {
                 let _ = self.money.settle_admitted(
@@ -455,7 +453,7 @@ impl PlaneMoney {
             if let Some((slot, state)) = ordinary {
                 open.ordinary_terminal = Some(Arc::clone(slot));
                 state.request = Some(admitted.clone());
-                state.fee = open.fee.account.observer.clone();
+                state.fee.clone_from(&open.fee.account.observer);
             }
             Ok(admitted)
         })
@@ -482,8 +480,9 @@ impl PlaneMoney {
         self.admit_existing_with(request, classes, fee, mode, Some((slot, &mut state)))
     }
 
-    // The sole production caller above supplies the typed phase transition. Keeping this
-    // transaction private prevents a scalar-only path from opening native money authority.
+    // The installation tests drive the transaction through this scalar form; production supplies
+    // the typed phase transition through `install_native_pending_with` only.
+    #[cfg(test)]
     fn install_native_pending<R>(
         &self,
         key: UnitKey,
@@ -519,9 +518,7 @@ impl PlaneMoney {
         let mut removed = None;
         let result = {
             let mut all = self.shard(key);
-            if all.contains_key(&key) {
-                Err(NativeAdmissionError::Occupied)
-            } else {
+            if let std::collections::hash_map::Entry::Vacant(vacant) = all.entry(key) {
                 let (money, grant) = pending.facts();
                 let account = Arc::new(FeeAccount {
                     gov: self.gov.clone(),
@@ -531,8 +528,8 @@ impl PlaneMoney {
                         children: 0,
                         parent_refund: None,
                         child_incurred: false,
-                        completed: None,
                     }),
+                    completion: Arc::default(),
                 });
                 let open = Open::new(
                     money.clone(),
@@ -545,8 +542,7 @@ impl PlaneMoney {
                     },
                     checkpoint_audit,
                 );
-                all.insert(key, open);
-                match activate(all.get_mut(&key).expect("inserted under the same lock")) {
+                match activate(vacant.insert(open)) {
                     Ok(receipt) => {
                         pending.commit();
                         Ok(receipt)
@@ -558,6 +554,8 @@ impl PlaneMoney {
                         Err(error)
                     }
                 }
+            } else {
+                Err(NativeAdmissionError::Occupied)
             }
         };
         // No governor refund, concurrency release or participant drop under a money shard.

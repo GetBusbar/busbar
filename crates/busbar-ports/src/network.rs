@@ -3,6 +3,7 @@
 //! the kernel owns freezing and admission. These types are never plugin ABI records.
 
 use busbar_plugin_abi::need::{egress, need_flag, op};
+use busbar_plugin_abi::plugin::{ENDPOINTS_MAX, ENDPOINT_DEST_MAX};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -50,7 +51,7 @@ pub struct NetworkEndpoint {
 impl NetworkEndpoint {
     /// Canonical, bounded CHECK rows. Conflicting constraints at one operation/origin refuse.
     pub fn canonical_set(endpoints: &[Self]) -> Option<Box<[Self]>> {
-        if endpoints.len() > 16 {
+        if endpoints.len() > ENDPOINTS_MAX {
             return None;
         }
         let mut frozen: Vec<Self> = Vec::new();
@@ -72,7 +73,7 @@ impl NetworkEndpoint {
 
     /// Decode a bounded CHECK endpoint into the same operation-specific authority used at dial.
     pub fn new(op: u32, flags: u32, dest: &str) -> Option<Self> {
-        if dest.len() > 2048 {
+        if dest.len() > ENDPOINT_DEST_MAX {
             return None;
         }
         Self::from_intent(op, flags, dest)

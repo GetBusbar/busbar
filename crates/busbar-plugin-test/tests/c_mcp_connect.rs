@@ -11,7 +11,7 @@
 //! `iss` mismatch is the security-check page; the grant survives a restart and is read by a second replica.
 
 use busbar_contract::secure::SecureVec;
-use busbar_kernel::connections::{pkce, settle_outbound, CallbackAnswer, CallerConnections as _};
+use busbar_kernel::connections::{pkce, settle_outbound, CallbackAnswer};
 use busbar_plugin_abi::fail::refused::R_CONNECT_REQUIRED;
 use busbar_plugin_abi::plane::{CONN_NONE, CONN_READY};
 use busbar_ports::auth::OutboundAnswer;

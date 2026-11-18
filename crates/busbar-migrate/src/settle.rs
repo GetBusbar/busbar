@@ -21,7 +21,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use busbar_contract::secure::SecureString;
-use busbar_contract::yaml::{self, MappingExt, Pairs, Value, ValueExt};
+use busbar_contract::yaml::{self, MappingExt, Pairs, Value};
 use zeroize::Zeroize;
 
 use crate::patch::{rewrite, schema_insert};
@@ -245,7 +245,7 @@ fn settle_block(
                 "a whole-block CONFIG must be an object",
             ));
         };
-        *block = bag.clone();
+        block.clone_from(bag);
         if let Some(limits) = wrapped.get_key("limits") {
             block.insert_key("limits", limits.clone());
         }

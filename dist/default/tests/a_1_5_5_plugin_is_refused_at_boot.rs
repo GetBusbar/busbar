@@ -69,7 +69,7 @@ fn boot(dir: &Path) -> Option<(i32, String)> {
             "0000000000000000000000000000000000000000000000000000000000000001",
         )
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()

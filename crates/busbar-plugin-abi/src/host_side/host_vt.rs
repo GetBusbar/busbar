@@ -737,6 +737,32 @@ mod tests {
         std::thread::spawn(f).join().expect("test thread")
     }
 
+    /// I11 / W1-H1: every top-level entry's crypto output is lent until that entry returns, and the outermost
+    /// exit starts the arena over. A long-lived thread that serves many separate entries never runs the arena
+    /// out: here, more full-size outputs than the arena holds, one per top-level entry, all answer OK.
+    #[test]
+    fn many_top_level_entries_on_one_thread_never_exhaust_the_arena() {
+        fresh(|| {
+            let entries = ARENA_CAP / RANDOM_MAX + 4;
+            let mut first: Option<(usize, usize)> = None;
+            for n in 0..entries {
+                let mut buf = [0u8; 64];
+                let status = crate::host_side::driver::step_fixed(7, 0, &mut buf, |_lease| {
+                    NO_HOST.scoped(|ctx| {
+                        let ret = vt::random(ctx, RANDOM_MAX);
+                        if n == 0 {
+                            let out = ret.out.get();
+                            first = Some((out.as_ptr().addr(), out.len()));
+                        }
+                        ret.status
+                    })
+                });
+                assert_eq!(status, Some(status::OK), "top-level entry {n} of {entries}");
+            }
+            assert!(first.is_some());
+        });
+    }
+
     #[test]
     fn c_crypto_selftest_answers_rng_and_counts_only_the_self_test() {
         let before = faults(SELF_TEST);

@@ -51,7 +51,7 @@ fn ok_generic(t: u16) -> bool {
             | tag::CORE_CFG
             | tag::H_METHOD..=tag::H_BODY_LEN
             | tag::CONVERSATION
-            | tag::D_METHODS..=tag::D_ERRORS
+            | tag::D_METHODS..=tag::D_UPSTREAM_PATH
             | tag::ID_SUBJECT..=tag::ID_CLAIM
             | tag::METRIC
             | tag::REC_PRED..=tag::REC_DEL
@@ -356,6 +356,15 @@ mod tests {
             (a.fail(), a.fail_error(), a.fail_fact(FACT_RETRY_AFTER_S)),
             (None, 0, None)
         );
+    }
+
+    #[test]
+    fn a_describe_answer_may_declare_plane_upstream_registration_paths() {
+        // D_UPSTREAM_PATH (0x004D) is a describe item like D_ERRORS before it: an OK describe naming one parses.
+        let mut r = Reply::new();
+        r.put_text(tag::D_UPSTREAM_PATH, "/upstreams/*")
+            .expect("path");
+        assert!(Answer::parse(Status::OK, r.as_bytes()).is_ok());
     }
 
     #[test]

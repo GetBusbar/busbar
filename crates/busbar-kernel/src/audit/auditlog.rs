@@ -1019,9 +1019,14 @@ pub(crate) fn stamp_request_context(row: &mut AuditRowInput) {
 }
 
 /// Write one row under hash scheme 4, stamped with the request in flight.
-pub fn emit_row_now(mut row: AuditRowInput) {
+pub fn emit_row_now(row: AuditRowInput) {
+    emit_row_at(row, busbar_kernel::store::now_ms());
+}
+
+/// [`emit_row_now`], stamped `at_ms` (the op's one wall reading, milliseconds).
+pub fn emit_row_at(mut row: AuditRowInput, at_ms: u64) {
     stamp_request_context(&mut row);
-    let suffix = row4_suffix(busbar_kernel::store::now_ms(), &row);
+    let suffix = row4_suffix(at_ms, &row);
     drain_pending_audit();
     enqueue_pending_audit(ADMIN_LOG, suffix, EventOrigin::Mutation);
     drain_pending_audit();
@@ -1177,7 +1182,7 @@ impl PendingAuditQueue {
 
     /// Transfer a background original without borrowing an unrelated request's audit context.
     fn try_enqueue_background(&self, p: PendingAudit) -> RecordStoreResult<()> {
-        self.try_enqueue_original(p).map_err(|(_, error)| error)
+        self.try_enqueue_original(p).map_err(|refused| refused.1)
     }
 
     /// A known no-effect refusal returns the exact original; it has not entered the queue
@@ -1185,13 +1190,13 @@ impl PendingAuditQueue {
     fn try_enqueue_original(
         &self,
         p: PendingAudit,
-    ) -> Result<(), (PendingAudit, RecordStoreError)> {
+    ) -> Result<(), Box<(PendingAudit, RecordStoreError)>> {
         let mut q = self.rows.lock().unwrap_or_else(|e| e.into_inner());
         if q.queued.len() >= self.cap {
-            return Err((
+            return Err(Box::new((
                 p,
                 RecordStoreError("the admin audit recovery queue is full".into()),
-            ));
+            )));
         }
         q.queued.push_back(p);
         Ok(())

@@ -125,7 +125,7 @@ fn a_program_ready_requires_its_actual_live_same_ticket_supplier_spawn() {
             let result = Carried::dial(
                 Arc::clone(&door) as Arc<dyn FramerDoor>,
                 Arc::clone(&io),
-                &Dest::Program(program, crate::spawn_env::HeldEnv::written_only(), 1),
+                &Dest::Program(&program, &crate::spawn_env::HeldEnv::written_only(), 1),
             );
             assert_eq!(door.attempts.load(Ordering::Relaxed), 1);
             if matches!(answer, Answer::Spawned) {
@@ -163,7 +163,7 @@ fn a_program_carrier_without_a_checked_supplier_owner_never_crosses() {
         assert!(Carried::dial(
             Arc::clone(&door) as Arc<dyn FramerDoor>,
             Arc::clone(&io),
-            &Dest::Program(program, crate::spawn_env::HeldEnv::written_only(), 1)
+            &Dest::Program(&program, &crate::spawn_env::HeldEnv::written_only(), 1)
         )
         .is_err());
         assert_eq!(door.attempts.load(Ordering::Relaxed), 0);

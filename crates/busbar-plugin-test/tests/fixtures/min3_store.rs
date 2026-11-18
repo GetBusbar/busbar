@@ -33,6 +33,9 @@
 //!   `opens_saw`: the 16 bytes, or empty for None) (C-DEPLOYMENT-ID).
 //! - `"install": text`: the install binding `check` decides on once `deployment_id()` is Some: 16 bytes other than
 //!   the id refuse R_CONFIG with [`INSTALL_REFUSAL`] (whose URL carries [`INSTALL_PASSWORD`]); None skips.
+//! - `"check_recovery": true`: `check` also asks the `"recovery"` gate (`Host::migrate_admit`), which the
+//!   config-only CHECK denies. Every open runs `check` first, and `check` calls no host service unless
+//!   `"deployment"`, `"install"` or this asks it to.
 //!
 //! It answers `read` with READ_DONE (READ_VALUES) and one absent VALUE per ADDRESS, `scan` with an exhausted
 //! empty page, `commit` with COMMITTED (evaluating nothing) and `clock` with CLOCK.
@@ -61,25 +64,25 @@ pub const DATASET: [u8; 16] = *b"fixture.dataset\0";
 pub const DOMAIN: [u8; 16] = *b"fixture.domain\0\0";
 pub const AUTHORITY: [u8; 16] = *b"fixture.clock.a\0";
 /// The authority `"authority": "wrong"` stamps instead.
-pub const WRONG_AUTHORITY: [u8; 16] = *b"fixture.clock.z\0";
+const WRONG_AUTHORITY: [u8; 16] = *b"fixture.clock.z\0";
 pub const PHYSICAL_VERSION: u32 = 3;
 /// The `observed_at` of every answer.
 pub const OBSERVED_AT: u64 = 1_800_000_000;
 
 /// The lane image's declared ceilings: CEIL_OPEN 3,600 s, commit 60 s, and a scan ceiling of 500 s that core
 /// clamps to the lane range's 120 s.
-pub const LANE_OPEN_US: u64 = 3_600_000_000;
-pub const LANE_COMMIT_US: u64 = 60_000_000;
+const LANE_OPEN_US: u64 = 3_600_000_000;
+const LANE_COMMIT_US: u64 = 60_000_000;
 pub const LANE_SCAN_US: u64 = 500_000_000;
 pub const LANE_SCAN_CLAMPED_US: u64 = 120_000_000;
 
 /// The stall image's describe runs this long (the describe ceiling is 5 s).
-pub const STALL_DESCRIBE: Duration = Duration::from_secs(6);
+const STALL_DESCRIBE: Duration = Duration::from_secs(6);
 
 /// The password in the URL an `"install"` refusal names (core's scrub masks URL userinfo).
 pub const INSTALL_PASSWORD: &str = "pw-install-7781";
 /// The text a wrong install binding refuses with.
-pub const INSTALL_REFUSAL: &str =
+const INSTALL_REFUSAL: &str =
     "the install binding https://installer:pw-install-7781@licence.example names another deployment";
 
 /// What one config `"id"` saw.
@@ -225,6 +228,7 @@ pub struct Plan {
     ignore_recovery: bool,
     teardown_probe: bool,
     recovery_fail: bool,
+    check_recovery: bool,
 }
 
 impl Plan {
@@ -260,6 +264,7 @@ impl Plan {
             ignore_recovery: config.get("ignore_recovery").and_then(Value::as_bool) == Some(true),
             teardown_probe: config.get("teardown_probe").and_then(Value::as_bool) == Some(true),
             recovery_fail: config.get("recovery_fail").and_then(Value::as_bool) == Some(true),
+            check_recovery: config.get("check_recovery").and_then(Value::as_bool) == Some(true),
         }
     }
 }
@@ -333,10 +338,18 @@ impl<const MODE: u8> Open for Fixture<MODE> {
 
     fn check(h: &Host, config: &[u8], _ends: &mut Endpoints<'_>) -> Result<(), Fail> {
         let plan = Plan::of(&object(config)?);
-        if let Some(count) = plan.recovery {
-            h.migrate_admit(count)?;
+        // Every open runs this check first under the config-only CHECK host (694764d34e), where any host call
+        // faults the check: host services are asked for only when the config asks this check to.
+        if plan.check_recovery {
+            if let Some(count) = plan.recovery {
+                h.migrate_admit(count)?;
+            }
         }
-        let seen = deployment_seen(h);
+        let seen = if plan.deployment || plan.install.is_some() {
+            deployment_seen(h)
+        } else {
+            Vec::new()
+        };
         if plan.deployment {
             bump(&plan.id, |c| c.checks_saw.push(seen.clone()));
         }
@@ -616,15 +629,10 @@ pub fn booted(
     plugin: &'static busbar_plugin_abi::plugin::Plugin,
     needs: busbar_plugin_test::fake_needs::FakeNeeds,
 ) -> Arc<busbar_plugin_test::suites::harness::Harness> {
-    let h = Arc::new(
-        busbar_plugin_test::suites::harness::Harness::admit(plugin, needs)
+    Arc::new(
+        busbar_plugin_test::suites::harness::Harness::admit(plugin, needs.scrubbing())
             .unwrap_or_else(|r| panic!("admit refused: {r:?}")),
-    );
-    let weak = Arc::downgrade(&h);
-    h.needs().attach_scrubs(Arc::new(move |slot| {
-        weak.upgrade()?.registry().scrub_of(slot)
-    }));
-    h
+    )
 }
 
 /// The namespace the arms read.

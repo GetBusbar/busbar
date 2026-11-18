@@ -698,6 +698,8 @@ guarded by `auth.admin_auth` (the operator credential of the configured auth mod
 `Authorization: Bearer <admin_token>` or `X-Admin-Token: <admin_token>`, or an IdP role with
 `admin_scope`).
 
+**No default admin credential ships.** Busbar has no built-in or fallback admin token. The `admin-tokens` module is configured with the SHA-256 digest of a token the operator generates, and refuses to open on a malformed digest or the digest of an empty token. The host only ever sees the digest, so it cannot measure the token's length: generate the token from at least 32 random bytes (see the [admin-tokens README](https://github.com/GetBusbar/busbar-auth-admin-tokens#config)) and keep it in an operator secret store.
+
 Minting, listing, rotating, and revoking keys (the routes, request/response shapes, the mint-body
 field reference, and the scope lattice) are owned by the **[Admin API reference](/docs/admin-api/)**.
 The limit/group model those keys charge through is owned by

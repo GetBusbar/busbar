@@ -197,6 +197,9 @@ impl Rig {
             .await
             .unwrap(),
         );
+        // As Startup hands the store over (DES-264 §3.2): generation 0 is open, so no receipt
+        // mint opens one through the backend's switched commit path.
+        core.open_record_generation().await.unwrap();
         let clock = Arc::new(AtomicU64::new(1_700_000_000_000));
         let (node, record) = Self::node_on(core.clone(), clock.clone(), Arc::new(AsyncPool)).await;
         Self {

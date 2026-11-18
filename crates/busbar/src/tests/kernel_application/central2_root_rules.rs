@@ -62,7 +62,7 @@ async fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_bann
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         None,
         Default::default(),

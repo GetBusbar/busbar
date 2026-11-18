@@ -12,11 +12,14 @@ use busbar_contract::abi::mechanism::lifecycle::slot;
 /// THE BOOT'S ANSWER TO `migrate.admit` (MIGRATE-ON-BOOT §3 step 2, §4): installed once by the
 /// gateway's migration seam, which decides from core's own config (`auth.signing_key`). The
 /// loader holds no decision of its own: with no answer installed, every call is refused.
-static ADMIT: std::sync::OnceLock<fn(u64) -> Result<(), &'static str>> = std::sync::OnceLock::new();
+/// The boot's `migrate.admit` answer: admits the identity, or names why not.
+type Admit = fn(u64) -> Result<(), &'static str>;
+
+static ADMIT: std::sync::OnceLock<Admit> = std::sync::OnceLock::new();
 
 /// Install the boot's `migrate.admit` answer. `false` when one is installed already (the first
 /// stands).
-pub fn install_admit(admit: fn(u64) -> Result<(), &'static str>) -> bool {
+pub fn install_admit(admit: Admit) -> bool {
     ADMIT.set(admit).is_ok()
 }
 

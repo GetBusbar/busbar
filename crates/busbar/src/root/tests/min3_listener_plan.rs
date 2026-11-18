@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::root::boot::ListenerNeed;
-use crate::root::min3_transports::tests::initial;
+use crate::root::min3_boot::transports::tests::initial;
 use busbar_contract::abi::mechanism::KindCode;
 
 fn bind(slot: &str, port: u16) -> InboundBind {

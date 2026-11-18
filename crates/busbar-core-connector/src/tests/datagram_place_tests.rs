@@ -94,6 +94,8 @@ fn rendezvous_swap_relocates_and_pins() {
             None,
             Arc::new(|_, _| {}),
         );
+        // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
+        crate::tests::accept_plaintext(&c, &[OWNER]);
         c.declare_need_to(
             OWNER,
             NEED,

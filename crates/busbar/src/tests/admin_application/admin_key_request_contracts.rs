@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait as _};
 
 #[tokio::test]
@@ -31,7 +32,7 @@ async fn test_create_list_usage_roundtrip_through_spawn_blocking() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
@@ -117,7 +118,7 @@ async fn test_create_key_rejects_removed_budget_period_field() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
@@ -190,7 +191,7 @@ async fn test_create_key_rejects_unsafe_labels() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
@@ -308,7 +309,7 @@ async fn test_create_key_name_length_boundary_is_exact() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
@@ -386,7 +387,7 @@ async fn test_create_key_rejects_removed_max_budget_cents_field() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
@@ -459,7 +460,7 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;
@@ -602,7 +603,7 @@ async fn test_create_key_rejects_removed_rate_limit_fields() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root(document, &directory, &module).await;

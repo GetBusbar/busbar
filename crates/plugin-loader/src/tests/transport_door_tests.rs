@@ -226,15 +226,16 @@ fn a_min3_transport_image_is_left_to_the_min3_registry_and_another_kinds_stamp_i
         "this path bound an image the MIN-3 registry serves"
     );
 
+    // A row declared transport whose stamp names another kind is not a MIN-3 transport. Since
+    // 9a3e659055 (native signed packaging from stamp and header) the scan itself refuses a native
+    // manifest whose kind is not its stamp's, before any open path sees the row.
     let lib = min3_lib(KindCode::Plane, busbar_plugin_abi::plane::FP);
-    let registry = dropped("min3-plane-as-transport", manifest(), &lib);
-    let why = registry
-        .open_transport_entries(&bind(), &uses(&["delta"]), &log_config())
-        .err()
-        .expect("a row declared transport whose stamp names another kind is not a MIN-3 transport");
+    let why = crate::both_ways::scanned("min3-plane-as-transport", manifest(), &lib)
+        .expect_err("a row declared transport whose stamp names another kind is refused")
+        .join("; ");
     assert!(
-        why.contains("exports no memory-ABI door"),
-        "the refusal is the one this path always gave: {why}"
+        why.contains("native manifest name/version/kind/ABI must match its validated stamp"),
+        "the refusal names the stamp mismatch: {why}"
     );
 }
 

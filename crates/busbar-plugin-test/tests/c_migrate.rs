@@ -171,10 +171,15 @@ fn store_recovery_gate_is_scoped_to_initial_and_resumed_open() {
             .expect("initial and resumed Store gate admit"),
     );
     assert_eq!(admission.first_refused(), None);
+    // The check that asks the gate itself (every open runs the config-only CHECK first, 694764d34e).
+    let checked = br#"{"id":"gate-resume","recovery":7,"check_recovery":true,"secret":{"module":"file","path":"synthetic"}}"#;
+    let mut check = h.spec("store", checked);
+    check.store_migration = Some(Arc::clone(&admission));
     assert!(
-        h.check_spec(&spec).is_err(),
+        h.check_spec(&check).is_err(),
         "DRY_RUN has no recovery authority"
     );
+    drop(check);
     assert_eq!(
         admission.first_refused(),
         None,
@@ -699,4 +704,183 @@ fn core_cfg_conflicts_secret_round_trip_and_former_names_mismatch() {
 #[ignore = "owner: W1-K9; blocked (re-checked on dev 2026-11-16): the boot writes no settled answer back: busbar root::migrate::write_back_settled is #[cfg(test)] only and finish() passes finish_settled an empty list (no Registry::take_settled), so a through-boot arm is red. The write-back itself runs as busbar::root::migrate::tests::a_stamped_boot_writes_the_settled_answer_back_once; the through-boot arm then moves there (crates/busbar is a bin crate, so nothing can depend on it)"]
 fn the_settled_write_back_through_boot() {
     todo!("owner: W1-K9 (C-MIGRATE)")
+}
+
+mod lift_fixture {
+    use super::*;
+    use busbar_contract::json::{self, JsonValueTrait};
+    use busbar_plugin_abi::plugin::Describe;
+
+    /// The settings it was opened with, and whether `/token` held a 1.x literal there.
+    pub struct Fixture(Vec<u8>, bool);
+
+    impl Open for Fixture {
+        async fn open(_: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
+            let config = config.to_vec();
+            let value = json::parse_value(&config).map_err(|_| Fail::refused(refused::R_CONFIG))?;
+            let literal = value
+                .get("token")
+                .is_some_and(|token| token.as_str().is_some());
+            Ok(Self(config, literal))
+        }
+
+        fn check(_: &Host, _: &[u8], _: &mut Endpoints<'_>) -> Result<(), Fail> {
+            Ok(())
+        }
+
+        fn describe(d: &mut Describe<'_>) {
+            d.schema(r#"{"type":"object"}"#).secret_path("/token");
+        }
+
+        /// The settings unchanged, and CORE_CFG(LIFT) naming `/token` while it still holds a literal.
+        fn settled(&self, out: &mut Out<'_>) -> Result<(), Full> {
+            settled::config(out, &self.0)?;
+            if self.1 {
+                settled::core_cfg(out, core_cfg::LIFT, "", br#""/token""#)?;
+            }
+            Ok(())
+        }
+    }
+
+    impl busbar_plugin_abi::Auth for Fixture {}
+    busbar_plugin_abi::plugin!(Auth, Fixture, name: "fixture-migration-lift");
+}
+
+/// A converting open that leaves a 1.x literal at a declared secret slot and names it CORE_CFG(LIFT) is complete:
+/// core moves the literal to its own secret file and writes a reference there (busbar-migrate `settle`,
+/// 10f464ae50, #441), so the fixed-point and newer opens bind that reference, never the literal (which a
+/// canonical bind refuses, `NotAReference`).
+#[test]
+fn a_lifted_literal_reopens_as_the_reference_core_writes_for_it() {
+    use busbar_plugin_test::suites::{migrate_case, MigrateCase, MigrateExpect};
+    let bag = br#"{"token":"a-1x-literal-secret"}"#;
+    migrate_case(
+        lift_fixture::PLUGIN.plugin(),
+        MigrateCase {
+            bag,
+            purpose: busbar_plugin_test::suites::harness::OpenPurpose::ConvertUnstamped,
+            limits: Default::default(),
+        },
+        busbar_plugin_test::FakeNeeds::new(),
+        MigrateExpect::Settled {
+            config: Some(bag),
+            core_cfg: &[(core_cfg::LIFT, "", br#""/token""#)],
+        },
+    );
+}
+
+mod visible_fixture {
+    use super::*;
+    use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
+    use busbar_plugin_abi::plane::{PlaneReq, Target};
+    use busbar_plugin_abi::plugin::Describe;
+    use busbar_plugin_abi::types::Bytes;
+
+    /// The canonical settings this plane converts an older `{"old_url": ..}` to: one registration whose `url`
+    /// core takes over.
+    pub const CONVERTED: &[u8] =
+        br#"{"upstreams":{"a":{"model":"m","url":"https://upstream.example"}}}"#;
+
+    /// A plane that declares `/upstreams/*` registrations and, like a real plane's strict schema, refuses a
+    /// core-owned member (`url`) inside one: core takes those members out before every open after a
+    /// conversion (the plane's visible bag).
+    pub struct Fixture(Option<Vec<u8>>);
+
+    impl Open for Fixture {
+        async fn open(_: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
+            let config = config.to_vec();
+            let value = json::parse_value(&config).map_err(|_| Fail::refused(refused::R_CONFIG))?;
+            if value.get("old_url").is_some() {
+                return Ok(Self(Some(CONVERTED.to_vec())));
+            }
+            let owned = value
+                .get("upstreams")
+                .and_then(|u| u.as_object())
+                .is_some_and(|members| members.iter().any(|(_, m)| m.get("url").is_some()));
+            if owned {
+                return Err(Fail::refused_because(
+                    refused::R_CONFIG,
+                    "unknown field `url` in a registration",
+                ));
+            }
+            Ok(Self(None))
+        }
+
+        fn check(_: &Host, _: &[u8], _: &mut Endpoints<'_>) -> Result<(), Fail> {
+            Ok(())
+        }
+
+        fn describe(d: &mut Describe<'_>) {
+            d.schema(r#"{"type":"object"}"#)
+                .upstream_path("/upstreams/*");
+        }
+
+        fn settled(&self, out: &mut Out<'_>) -> Result<(), Full> {
+            match &self.0 {
+                Some(bag) => settled::config(out, bag),
+                None => Ok(()),
+            }
+        }
+    }
+
+    impl busbar_plugin_abi::Plane for Fixture {
+        type Session = ();
+        fn request(
+            &self,
+            _: &Host,
+            _: &PlaneReq<'_>,
+            _: Bytes<'_>,
+            _: &mut Out<'_>,
+        ) -> Result<(), Fail> {
+            Err(Fail::unsupported())
+        }
+        fn upstream(
+            &self,
+            _: &Host,
+            _: &mut (),
+            _: &Target<'_>,
+            _: &mut Out<'_>,
+        ) -> Result<(), Fail> {
+            Ok(())
+        }
+        fn piece(
+            &self,
+            _: &Host,
+            _: &mut (),
+            _: u32,
+            _: u32,
+            _: u32,
+            _: Bytes<'_>,
+            _: &mut Out<'_>,
+        ) -> Result<(), Fail> {
+            Ok(())
+        }
+        fn end(&self, _: &Host, _: (), _: &mut Out<'_>) -> Result<(), Fail> {
+            Ok(())
+        }
+    }
+
+    busbar_plugin_abi::plugin!(Plane, Fixture, name: "fixture-migration-visible");
+}
+
+/// A plane that declares D_UPSTREAM_PATH and converts an older bag into registrations carrying core-owned
+/// members (`url`) is reopened, as core reopens it, with its visible bag: core keeps the members it owns
+/// (busbar-kernel `upstreams::declared`, root `min3_boot` `declared_planes`, 39451a9603) and hands the plane
+/// the rest, so the fixed-point and newer opens never see `url` there.
+#[test]
+fn a_converted_registration_reopens_as_the_visible_bag_core_hands_the_plane() {
+    use busbar_plugin_test::suites::{migrate_case, MigrateCase, MigrateExpect};
+    migrate_case(
+        visible_fixture::PLUGIN.plugin(),
+        MigrateCase {
+            bag: br#"{"old_url":"https://upstream.example"}"#,
+            purpose: busbar_plugin_test::suites::harness::OpenPurpose::ConvertUnstamped,
+            limits: Default::default(),
+        },
+        busbar_plugin_test::FakeNeeds::new(),
+        MigrateExpect::Settled {
+            config: Some(visible_fixture::CONVERTED),
+            core_cfg: &[],
+        },
+    );
 }

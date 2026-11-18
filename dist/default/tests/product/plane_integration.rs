@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 mod linked {
     use busbar_kernel::plane_driver::registry::PlaneDecl;
     pub(super) fn install() {
@@ -243,17 +244,14 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
     );
     cfg.store = Some(busbar_kernel::config::StoreCfg {
         module,
-        settings: settings
-            .as_object()
-            .expect("product settings object")
-            .clone()
-            .into(),
+        settings: busbar_contract::json::from_value(&settings).expect("product settings object"),
+        insecure_transport: None,
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         None,
         Default::default(),
@@ -347,17 +345,14 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     );
     cfg.store = Some(busbar_kernel::config::StoreCfg {
         module,
-        settings: settings
-            .as_object()
-            .expect("product settings object")
-            .clone()
-            .into(),
+        settings: busbar_contract::json::from_value(&settings).expect("product settings object"),
+        insecure_transport: None,
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         None,
         Default::default(),
@@ -471,17 +466,14 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     );
     cfg.store = Some(busbar_kernel::config::StoreCfg {
         module,
-        settings: settings
-            .as_object()
-            .expect("product settings object")
-            .clone()
-            .into(),
+        settings: busbar_contract::json::from_value(&settings).expect("product settings object"),
+        insecure_transport: None,
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         None,
         Default::default(),
@@ -619,17 +611,14 @@ async fn plane_slot_is_none_when_the_plane_is_not_configured() {
     );
     cfg.store = Some(busbar_kernel::config::StoreCfg {
         module,
-        settings: settings
-            .as_object()
-            .expect("product settings object")
-            .clone()
-            .into(),
+        settings: busbar_contract::json::from_value(&settings).expect("product settings object"),
+        insecure_transport: None,
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         None,
         Default::default(),
@@ -672,6 +661,7 @@ async fn plane_slot_is_none_when_the_plane_is_not_configured() {
 #[cfg(test)]
 mod metrics_scrape {
     use super::*;
+    use busbar_contract::json::JsonContainerTrait as _;
 
     fn series_for<'a>(exposition: &'a str, family: &str, plane: &str) -> Vec<&'a str> {
         let want = format!("plane=\"{plane}\"");
@@ -773,11 +763,9 @@ mod metrics_scrape {
         );
         cfg.store = Some(busbar_kernel::config::StoreCfg {
             module,
-            settings: settings
-                .as_object()
-                .expect("product settings object")
-                .clone()
-                .into(),
+            settings: busbar_contract::json::from_value(&settings)
+                .expect("product settings object"),
+            insecure_transport: None,
         });
         let plugin_config = plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -785,7 +773,7 @@ mod metrics_scrape {
         let exports = cfg.export.clone();
         let judge = crate::root::connector::dest_judge(&cfg);
         let (app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
+            crate::root::test_plugins::plaintext_listeners(cfg),
             plugin_config,
             None,
             Default::default(),
@@ -838,7 +826,7 @@ mod metrics_scrape {
                 (plugin.name.clone(), calls)
             })
             .collect();
-        busbar_kernel::export::plugin::open_prepared(&exports, &opened)
+        busbar_kernel::export::plugin::open_prepared(&exports, &opened, app.amendments.clone())
             .expect("the configured export projection retains its real exporter");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
@@ -1077,17 +1065,14 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     );
     cfg.store = Some(busbar_kernel::config::StoreCfg {
         module,
-        settings: settings
-            .as_object()
-            .expect("product settings object")
-            .clone()
-            .into(),
+        settings: busbar_contract::json::from_value(&settings).expect("product settings object"),
+        insecure_transport: None,
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = crate::root::real_store::build_app(
-        cfg,
+        crate::root::test_plugins::plaintext_listeners(cfg),
         plugin_config,
         None,
         Default::default(),
@@ -1523,6 +1508,7 @@ async fn plane_router(
         &dispatcher,
         &services,
         &configured,
+        &Default::default(),
         Some("https://busbar.example"),
         &|| {
             Arc::new(busbar_kernel::plane_driver::PlaneMoney::new(
@@ -1546,40 +1532,29 @@ async fn plane_router(
         })
         .collect();
 
-    let mut transports = crate::LINKED.transports.to_vec();
-    for row in [
-        crate::root::linked::linked_transport!(busbar_transport_http::door),
-        crate::root::linked::linked_transport!(busbar_transport_grpc::door),
-    ] {
-        if !transports
-            .iter()
-            .any(|present| (present.claims)()[0] == (row.claims)()[0])
-        {
-            transports.push(row);
-        }
-    }
-    let offers = crate::root::serve::transport_offers(&transports, &[]);
-
-    let initial = crate::root::boot::configured_listener_needs(&cfg, &configured)
-        .expect("the actual configured root declares its physical listener assignments");
-    let framer_for = |scheme: &str| crate::root::connector::the().framer_for(scheme);
-    let plan = crate::root::serve::ListenerPlan::new(initial, offers.clone(), &framer_for);
-    let ((routes, sessions, refusals, refuse_by_path), _) =
-        crate::root::serve::data_routes_with_dispatch(
-            served,
-            &app,
-            &plan,
-            "listen",
-            &data_chain,
-            &busbar_kernel::base_data_core_lines(&app),
-            &[],
-            &offers,
-        )
-        .expect("the actual root mounts the planes' own declared doors on the HTTP listener");
+    // The planes' doors mount through the production composition (`door_mounts`): the legacy
+    // ListenerPlan, `data_routes_with_dispatch` and the transport offers it took were deleted as dead
+    // (040c52e0cc, 4074625463: native listeners use NativeListenerPlan; no native consumer of offers).
+    let core_lines = busbar_kernel::base_data_core_lines(&app);
+    let mounts = crate::root::serve::door_mounts(
+        served,
+        || crate::root::kernel::ROOT_CARD.pin(),
+        &data_chain,
+        &core_lines,
+        &[],
+        &[],
+    )
+    .expect("the actual root mounts the planes' own declared doors on the HTTP listener");
     let (router, _, handle) = busbar_kernel::build_split_routers_serving_doors(
-        app, routes, sessions, refusals, body_limit, 16, false,
+        app,
+        mounts.routes,
+        mounts.sessions,
+        mounts.refusals,
+        body_limit,
+        16,
+        false,
     );
-    if let Some(refuser) = refuse_by_path {
+    if let Some(refuser) = mounts.refuse_by_path {
         handle.bind_door_refuser(refuser);
     }
     router

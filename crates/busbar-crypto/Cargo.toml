@@ -16,7 +16,7 @@ license = "Apache-2.0"
 # build patches its own crate of the same name in. The rev's crates/busbar-crypto-backend tree must equal
 # this commit's (tests/backend_pin.rs): a plugin pinned to this commit builds exactly that backend. A
 # backend change therefore takes two commits: the change, then the bump of this rev to a commit carrying it.
-busbar-crypto-backend = { git = "https://github.com/GetBusbar/busbar", rev = "d3d97f9fdce2f1140acfed817a41ff3c6f3eb9aa" }
+busbar-crypto-backend = { git = "https://github.com/GetBusbar/busbar", rev = "f2f962551293b9d786ea56cfcf5028e933c673e6" }
 zeroize = { version = "1", default-features = false }
 # The listener-ticket key-failure warning (tls::ListenerTickets).
 tracing = { version = "0.1", default-features = false, features = ["std"], optional = true }

@@ -8,10 +8,9 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
     check_accept, check_arrival, check_begin_scheme, check_binding, check_cancel,
-    check_claim_facts, check_claims, check_composes_over, check_emit_body_len, check_fault_cover,
-    check_fault_rows, check_framer, check_framer_fields, check_head_slots_with_pieces, check_io,
-    check_listen, check_locate, check_offered_points, check_settings, check_status_rows,
-    check_tail, check_upgrades_to,
+    check_claim_facts, check_claims, check_composes_over, check_emit_body_len, check_framer,
+    check_framer_fields, check_head_slots_with_pieces, check_io, check_listen, check_locate,
+    check_settings, check_tail, check_upgrades_to,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
@@ -21,8 +20,163 @@ use busbar_contract::abi::transport::{
 };
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
+// The transport's Statement read (once per load, bind and boot) lives in
+// `off_path::kinds_transport`; the paths its callers use stay here.
+use crate::off_path::kinds_transport::tail_facts;
+pub use crate::off_path::kinds_transport::{linked_facts, stated};
 
 const TRANSPORT_TAIL_FROZEN: usize = std::mem::offset_of!(TransportTail, fault_rows);
+
+pub(crate) fn owned(s: AbiStr, field: &str) -> Result<&'static str, String> {
+    if s.len == 0 {
+        return Ok("");
+    }
+    // SAFETY: a tail string is `'static` plugin data; `check_tail`/`check_claims` refused a NULL
+    // pointer with a count before this reads it, and its length is capped before the slice is
+    // formed.
+    let bytes = unsafe { crate::dispatch::validate::lent_str(s) }
+        .ok_or_else(|| crate::cold::dispatch::kinds::transport_overlong(field))?;
+    std::str::from_utf8(bytes)
+        .map(crate::intern_name)
+        .map_err(|_| crate::cold::dispatch::kinds::transport_not_utf8(field))
+}
+
+/// A claim row's final status numbering, read once at bind.
+pub(crate) fn status_namespace(row: &Claim) -> Result<Option<std::sync::Arc<str>>, String> {
+    // SAFETY: check_claims validated each borrowed ABI string before projection.
+    let bytes = unsafe { crate::dispatch::validate::lent_str(row.status_namespace) }
+        .ok_or("status namespace exceeds its declaration bound")?;
+    let value = std::str::from_utf8(bytes).map_err(|_| "status namespace is not UTF-8")?;
+    transport::status::namespace(value)
+}
+
+// THE PLUGIN MEMORY THE TRANSPORT'S STATEMENT READ (`off_path::kinds_transport`, once per load,
+// bind and boot) READS, judged and formed here beside the kind's other unsafe code.
+
+/// A transport Statement's tail and the lists the read takes from it, as [`stated_tail`] judges
+/// and forms them.
+pub(crate) struct StatedTail {
+    /// The tail.
+    pub(crate) tail: TransportTail,
+    /// Its claim rows.
+    pub(crate) rows: &'static [Claim],
+    /// The Statement's claims.
+    pub(crate) names: &'static [AbiStr],
+    /// The claims it composes over.
+    pub(crate) under: &'static [AbiStr],
+    /// Its settings.
+    pub(crate) settings: &'static [SettingDecl],
+    /// The Statement's extensions.
+    pub(crate) extensions: &'static [u8],
+    /// Its status rows (unjudged: the read judges them later, in its order).
+    pub(crate) status: &'static [StatusRow],
+    /// Its fault rows (unjudged, as `status`).
+    pub(crate) faults: &'static [FaultRow],
+    /// Its own claim (row `0`) selects on the local PORT (`TransportFacts::ported`).
+    pub(crate) ported: bool,
+}
+
+/// The transport tail `st` states, judged in the read's order up to its settings
+/// (`check_tail`, `check_claims` and each row's `check_claim_facts`, `check_claim_rows`,
+/// `check_composes_over`, `check_upgrades_to`, `check_settings`), and its lists and extensions
+/// formed over the plugin's `'static` data.
+pub(crate) fn stated_tail(st: &Statement) -> Result<StatedTail, String> {
+    use crate::cold::dispatch::kinds as cold;
+    // SAFETY: `TransportTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid);
+    // a non-NULL kind tail is `'static` plugin data of its stated size.
+    let tail: TransportTail =
+        unsafe { crate::dispatch::plugin::kind_tail(st, "a transport", TRANSPORT_TAIL_FROZEN) }?;
+    let broke = |f: Fault| cold::tail_fault("transport", f);
+    check_tail(&tail).map_err(broke)?;
+    // SAFETY: `check_tail` refused a NULL list with a count; both lists are `'static` plugin data.
+    let rows: &[Claim] =
+        unsafe { std::slice::from_raw_parts(tail.claim_rows, tail.claim_rows_len) };
+    check_claims(rows).map_err(broke)?;
+    for row in rows {
+        let keys: &[AbiStr] = if row.facts_len == 0 {
+            &[]
+        } else {
+            // SAFETY: `check_claims` refused a NULL list with a count and held it bounded and
+            // aligned; the list is `'static` plugin data.
+            unsafe { std::slice::from_raw_parts(row.facts, row.facts_len) }
+        };
+        check_claim_facts(keys).map_err(broke)?;
+    }
+
+    busbar_contract::abi::transport::check::check_claim_rows(st.claims_len, &tail)
+        .map_err(broke)?;
+    let names: &[AbiStr] = if st.claims_len == 0 {
+        &[]
+    } else {
+        // SAFETY: the loader's Statement check refused a NULL `claims` with a count; the list is
+        // `'static` plugin data.
+        unsafe { std::slice::from_raw_parts(st.claims, st.claims_len) }
+    };
+    let under: &[AbiStr] = if tail.composes_over_len == 0 {
+        &[]
+    } else {
+        // SAFETY: as above.
+        unsafe { std::slice::from_raw_parts(tail.composes_over, tail.composes_over_len) }
+    };
+    check_composes_over(under).map_err(broke)?;
+    let upgrades_to: &[AbiStr] = if tail.upgrades_to_len == 0 {
+        &[]
+    } else {
+        // SAFETY: `check_tail` refused a NULL list with a count and held it bounded and aligned;
+        // the list is `'static` plugin data.
+        unsafe { std::slice::from_raw_parts(tail.upgrades_to, tail.upgrades_to_len) }
+    };
+    check_upgrades_to(upgrades_to).map_err(broke)?;
+    let settings: &[SettingDecl] = if tail.settings_len == 0 {
+        &[]
+    } else {
+        // SAFETY: `check_tail` refused a NULL list with a count; the list is `'static` plugin data.
+        unsafe { std::slice::from_raw_parts(tail.settings, tail.settings_len) }
+    };
+    check_settings(settings).map_err(broke)?;
+    let extensions: &[u8] = if st.extensions.ptr.is_null() {
+        &[]
+    } else {
+        // SAFETY: a non-NULL Statement blob is `'static` plugin data of its stated length, capped
+        // before the slice is formed.
+        unsafe { crate::dispatch::validate::lent(st.extensions.ptr, st.extensions.len) }
+            .ok_or("the Statement's extensions are longer than any blob may be")?
+    };
+
+    let status: &[StatusRow] = if tail.status_rows_len == 0 {
+        &[]
+    } else {
+        // SAFETY: `check_tail` refused a NULL list with a count; the list is `'static` plugin data.
+        unsafe { std::slice::from_raw_parts(tail.status_rows, tail.status_rows_len) }
+    };
+    let faults: &[FaultRow] = if tail.fault_rows_len == 0 {
+        &[]
+    } else {
+        // SAFETY: as above.
+        unsafe { std::slice::from_raw_parts(tail.fault_rows, tail.fault_rows_len) }
+    };
+    let ported = rows.first().is_some_and(|row| {
+        let port =
+            busbar_contract::abi::shared::code::selector_form(busbar_contract::SelectorForm::Port);
+        row.selector_forms.len > 0
+            // SAFETY: `check_claims` refused a NULL list with a count; `'static` plugin data.
+            && unsafe {
+                std::slice::from_raw_parts(row.selector_forms.ptr, row.selector_forms.len)
+            }
+            .contains(&port)
+    });
+    Ok(StatedTail {
+        tail,
+        rows,
+        names,
+        under,
+        settings,
+        extensions,
+        status,
+        faults,
+        ported,
+    })
+}
 
 /// WHAT A TRANSPORT STATES, read once at bind and checked by the kind's own `check_tail`,
 /// `check_claims` (and each row's `check_claim_facts`), `check_claim_rows`, `check_composes_over`
@@ -117,192 +271,6 @@ impl TransportFacts {
         };
         outbound.then_some(Outcome::Refused)
     }
-}
-
-pub fn stated(
-    door_fn: busbar_contract::abi::mechanism::door::DoorFn,
-) -> Result<TransportFacts, String> {
-    let st = crate::dispatch::load::statement_of(crate::dispatch::load::raw(door_fn))
-        .map_err(crate::cold::dispatch::kinds::load_refusal)?;
-    tail_facts(&st)
-}
-
-pub(crate) fn owned(s: AbiStr, field: &str) -> Result<&'static str, String> {
-    if s.len == 0 {
-        return Ok("");
-    }
-    // SAFETY: a tail string is `'static` plugin data; `check_tail`/`check_claims` refused a NULL
-    // pointer with a count before this reads it, and its length is capped before the slice is
-    // formed.
-    let bytes = unsafe { crate::dispatch::validate::lent_str(s) }
-        .ok_or_else(|| crate::cold::dispatch::kinds::transport_overlong(field))?;
-    std::str::from_utf8(bytes)
-        .map(crate::intern_name)
-        .map_err(|_| crate::cold::dispatch::kinds::transport_not_utf8(field))
-}
-
-/// A claim row's final status numbering, read once at bind.
-pub(crate) fn status_namespace(row: &Claim) -> Result<Option<std::sync::Arc<str>>, String> {
-    // SAFETY: check_claims validated each borrowed ABI string before projection.
-    let bytes = unsafe { crate::dispatch::validate::lent_str(row.status_namespace) }
-        .ok_or("status namespace exceeds its declaration bound")?;
-    let value = std::str::from_utf8(bytes).map_err(|_| "status namespace is not UTF-8")?;
-    transport::status::namespace(value)
-}
-
-fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
-    use crate::cold::dispatch::kinds as cold;
-    // SAFETY: `TransportTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid);
-    // a non-NULL kind tail is `'static` plugin data of its stated size.
-    let tail: TransportTail =
-        unsafe { crate::dispatch::plugin::kind_tail(st, "a transport", TRANSPORT_TAIL_FROZEN) }?;
-    let broke = |f: Fault| cold::tail_fault("transport", f);
-    check_tail(&tail).map_err(broke)?;
-    // SAFETY: `check_tail` refused a NULL list with a count; both lists are `'static` plugin data.
-    let rows: &[Claim] =
-        unsafe { std::slice::from_raw_parts(tail.claim_rows, tail.claim_rows_len) };
-    check_claims(rows).map_err(broke)?;
-    for row in rows {
-        let keys: &[AbiStr] = if row.facts_len == 0 {
-            &[]
-        } else {
-            // SAFETY: `check_claims` refused a NULL list with a count and held it bounded and
-            // aligned; the list is `'static` plugin data.
-            unsafe { std::slice::from_raw_parts(row.facts, row.facts_len) }
-        };
-        check_claim_facts(keys).map_err(broke)?;
-    }
-
-    busbar_contract::abi::transport::check::check_claim_rows(st.claims_len, &tail)
-        .map_err(broke)?;
-    let names: &[AbiStr] = if st.claims_len == 0 {
-        &[]
-    } else {
-        // SAFETY: the loader's Statement check refused a NULL `claims` with a count; the list is
-        // `'static` plugin data.
-        unsafe { std::slice::from_raw_parts(st.claims, st.claims_len) }
-    };
-    let under: &[AbiStr] = if tail.composes_over_len == 0 {
-        &[]
-    } else {
-        // SAFETY: as above.
-        unsafe { std::slice::from_raw_parts(tail.composes_over, tail.composes_over_len) }
-    };
-    check_composes_over(under).map_err(broke)?;
-    let upgrades_to: &[AbiStr] = if tail.upgrades_to_len == 0 {
-        &[]
-    } else {
-        // SAFETY: `check_tail` refused a NULL list with a count and held it bounded and aligned;
-        // the list is `'static` plugin data.
-        unsafe { std::slice::from_raw_parts(tail.upgrades_to, tail.upgrades_to_len) }
-    };
-    check_upgrades_to(upgrades_to).map_err(broke)?;
-    let settings: &[SettingDecl] = if tail.settings_len == 0 {
-        &[]
-    } else {
-        // SAFETY: `check_tail` refused a NULL list with a count; the list is `'static` plugin data.
-        unsafe { std::slice::from_raw_parts(tail.settings, tail.settings_len) }
-    };
-    check_settings(settings).map_err(broke)?;
-    let extensions: &[u8] = if st.extensions.ptr.is_null() {
-        &[]
-    } else {
-        // SAFETY: a non-NULL Statement blob is `'static` plugin data of its stated length, capped
-        // before the slice is formed.
-        unsafe { crate::dispatch::validate::lent(st.extensions.ptr, st.extensions.len) }
-            .ok_or("the Statement's extensions are longer than any blob may be")?
-    };
-    let offered = check_offered_points(extensions).map_err(broke)?;
-    let seals =
-        busbar_contract::abi::transport::check::check_sealed_values(extensions).map_err(broke)?;
-    let adopts_session =
-        busbar_contract::abi::mechanism::extensions::get(
-            extensions,
-            busbar_contract::abi::transport::adopted_session::EXT_ADOPTED_SESSION,
-        ) == Some(busbar_contract::abi::transport::adopted_session::SUPPORT_ADOPTED_SESSION);
-    let claims = cold::transport_names(names, "claim")?;
-
-    let lines = cold::transport_claims_where(&claims, rows, |row| {
-        row.unit0_trigger == busbar_contract::abi::transport::UNIT0_FIRST_LINE
-    });
-    let upgrades = cold::transport_claims_where(&claims, rows, |row| {
-        row.unit0_trigger == busbar_contract::abi::transport::UNIT0_UPGRADE
-    });
-    let sessions = cold::transport_claims_where(&claims, rows, |row| row.session == 1);
-
-    let status: &[StatusRow] = if tail.status_rows_len == 0 {
-        &[]
-    } else {
-        // SAFETY: `check_tail` refused a NULL list with a count; the list is `'static` plugin data.
-        unsafe { std::slice::from_raw_parts(tail.status_rows, tail.status_rows_len) }
-    };
-    let faults: &[FaultRow] = if tail.fault_rows_len == 0 {
-        &[]
-    } else {
-        // SAFETY: as above.
-        unsafe { std::slice::from_raw_parts(tail.fault_rows, tail.fault_rows_len) }
-    };
-    check_status_rows(status, tail.claim_rows_len as u64).map_err(broke)?;
-    check_fault_rows(faults, tail.claim_rows_len as u64).map_err(broke)?;
-    check_fault_cover(status, faults).map_err(broke)?;
-    let status_namespaces = cold::transport_status_namespaces(rows)?;
-    for row in status {
-        if status_namespaces[row.claim as usize].is_none() {
-            return Err("a numbered status table requires its claim's namespace".into());
-        }
-    }
-    let handoff_status = transport::status::handoff(extensions, &claims)?;
-    let listener_bindings = transport::listener_bindings::read(extensions, &claims)?;
-    if !listener_bindings.is_empty()
-        && (tail.role != transport::ROLE_FRAMER || tail.facts & transport::FACT_ACCEPTS == 0)
-    {
-        return Err("listener-bindings requires an accepting framer".into());
-    }
-    let name = owned(st.name, "Statement name")?;
-    let status_rows = cold::transport_status_rows(status);
-    let composes_over = cold::transport_names(under, "composes_over")?;
-    let settings_keys = cold::transport_settings_keys(settings)?;
-    Ok(TransportFacts {
-        status_namespaces,
-        handoff_status,
-        listener_bindings,
-        adopts_session,
-        name,
-        datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
-        accepts: tail.facts & busbar_contract::abi::transport::FACT_ACCEPTS != 0,
-        dials: tail.facts & transport::FACT_DIALS != 0,
-        detaches: tail.facts & transport::FACT_DETACHES != 0,
-        adopts: tail.facts & transport::FACT_ADOPTS != 0,
-        status_rows,
-        offered,
-        seals,
-        role: tail.role,
-        claims,
-        upgrades,
-        sessions,
-        lines,
-        composes_over,
-        settings_keys,
-        ported: rows.first().is_some_and(|row| {
-            let port = busbar_contract::abi::shared::code::selector_form(
-                busbar_contract::SelectorForm::Port,
-            );
-            row.selector_forms.len > 0
-                // SAFETY: `check_claims` refused a NULL list with a count; `'static` plugin data.
-                && unsafe {
-                    std::slice::from_raw_parts(row.selector_forms.ptr, row.selector_forms.len)
-                }
-                .contains(&port)
-        }),
-    })
-}
-
-pub fn linked_facts(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
-) -> Result<TransportFacts, String> {
-    let v = crate::dispatch::load::validate::<Transport>(crate::dispatch::load::raw(door))
-        .map_err(crate::cold::dispatch::kinds::load_refusal)?;
-    tail_facts(&v.statement)
 }
 
 /// The transport kind.

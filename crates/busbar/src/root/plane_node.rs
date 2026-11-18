@@ -1425,7 +1425,7 @@ impl LateAccrual {
         // A report that bills nothing is not sealed as usage, but its attribution still is.
         let reported = late();
         if matches!(reported, Some(Reported::Partitioned)) {
-            return preview_confirmation(custody, outcome, seal);
+            return preview_confirmation(&custody, outcome, seal);
         }
         let (report, attribution) = match reported.and_then(Reported::legacy).map(Report::of) {
             Some(report)
@@ -2494,7 +2494,7 @@ impl Accruing {
 // awaited, or its awaiter cancelled mid-confirm) is restarted in one detached
 // task, so cancellation never abandons its original. `confirm` is cancel-safe.
 fn preview_confirmation(
-    custody: Arc<crate::root::serve::TicketCustody>,
+    custody: &crate::root::serve::TicketCustody,
     outcome: Option<Outcome>,
     seal: Option<Sealing>,
 ) -> Option<TerminalConfirmation> {
