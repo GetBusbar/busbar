@@ -167,6 +167,10 @@ pub struct RootInstall {
     /// with no plugin behind them, which the plugin pre-flight therefore does not require in the
     /// plugins directory. `None` = every module but the engine's built-ins is a plugin reference.
     pub in_process_auth: Option<fn(&str) -> bool>,
+    /// Whether an admitted native (MIN-3) auth image answers `module` (its identity, its alias or a former name). Such a
+    /// module's chains are built natively by the root (its admin chains in `root::min3_admin_auth`), never opened through
+    /// the door auth axis. `None` = no native auth image is admitted.
+    pub native_auth: Option<fn(&str) -> bool>,
     /// What the root keeps of each resolved configuration beside the generation built from it
     /// ([`crate::appbuild::ConfigProjection`]), taken by every build. `None` = a generation keeps
     /// no projection.
@@ -343,6 +347,13 @@ pub fn linked_image_answers(kind: &str, module: &str) -> bool {
         .linked_images
         .iter()
         .any(|image| image.kind == kind && (image.identity == module || image.alias == module))
+}
+
+/// Whether an admitted native (MIN-3) auth image answers `module` ([`RootInstall::native_auth`]).
+pub fn native_auth_answers(module: &str) -> bool {
+    root_rows()
+        .native_auth
+        .is_some_and(|answers| answers(module))
 }
 
 /// Operator remedy shared by the store refusals.
