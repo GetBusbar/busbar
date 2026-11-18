@@ -1091,7 +1091,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-file"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=4360a0ba0dc60a7ade98cd3401ec47495aee73f1#4360a0ba0dc60a7ade98cd3401ec47495aee73f1"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=66a5ab9e3110524327ee975f65fb79dc80f195e8#66a5ab9e3110524327ee975f65fb79dc80f195e8"
 dependencies = [
  "busbar-plugin-abi",
  "libc",
