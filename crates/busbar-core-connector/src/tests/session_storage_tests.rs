@@ -4,17 +4,20 @@
 use super::*;
 use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
 
+// `ProcessAdmission::used()` is (retained total, retained Data payload): Data storage counts in both
+// (the kernel's meaning since d6069a4294 and 85e1aaad6c, pinned by its process_admission_tests).
+
 #[test]
 fn consumed_payload_keeps_full_backing_charge_until_final_drop() {
     let account = ProcessAdmission::with_limits(2, 4096, 512);
     let source = account.connection_storage(AdmissionClass::Data);
     let mut payload = Payload::copy(&source, b"sensitive payload").expect("capacity");
-    assert_eq!(account.used(), (0, 17));
+    assert_eq!(account.used(), (17, 17));
     payload.consume(10);
     assert_eq!(payload.as_slice(), b"payload");
     assert_eq!(
         account.used(),
-        (0, 17),
+        (17, 17),
         "logical consumption is not backing retirement"
     );
     assert!(!format!("{payload:?}").contains("payload"));
@@ -55,9 +58,9 @@ fn denied_replacement_retains_original_payload_and_releases_no_live_credit() {
         "old plus replacement exceed data capacity"
     );
     assert_eq!(payload.as_slice(), &[7; 16]);
-    assert_eq!(account.used(), (0, 16));
+    assert_eq!(account.used(), (16, 16));
     assert!(Payload::copy(&source, &[9; 13]).is_err());
-    assert_eq!(account.used(), (0, 16));
+    assert_eq!(account.used(), (16, 16));
     drop(payload);
     assert_eq!(account.used(), (0, 0));
 }
@@ -69,10 +72,10 @@ fn upgrade_name_and_leftover_remain_funded_after_callback_returns() {
     let name = Name::copy(&source, "websocket").expect("name");
     let bytes = Payload::copy(&source, b"leftover").expect("leftover");
     assert_eq!(&*name, "websocket");
-    assert_eq!(account.used(), (0, 17));
+    assert_eq!(account.used(), (17, 17));
     drop(source);
     drop(name);
-    assert_eq!(account.used(), (0, 8));
+    assert_eq!(account.used(), (8, 8));
     drop(bytes);
     assert_eq!(account.used(), (0, 0));
 }
