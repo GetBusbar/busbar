@@ -656,3 +656,33 @@ fn refused_secret_text_is_wiped_and_never_quoted() {
         }
     }
 }
+
+/// P-2 (DES-SONIC-WIPE r3 §7.2, R8): digesting an invocation's content for the screening cache
+/// (one item's digest, and a screened projection's digests) leaves no copy of the arguments: the
+/// framed digest buffer is in custody, and the SHA-256 context's trailing partial block (AWS-LC's
+/// `md_data`, behind busbar-crypto's `Sha256`) is cleansed when the digest finishes or drops.
+#[test]
+fn digesting_an_invocation_leaves_no_argument_copy() {
+    use busbar_contract::ir::facts::{IrFacts as _, ScreenedContent};
+    for short in [false, true] {
+        let what = format!("digested arguments (short: {short})");
+        let proof = if short {
+            WipeProof::short_text()
+        } else {
+            WipeProof::text()
+        };
+        let staging = proof.text_payload();
+        let text = SecureString::from_args(format_args!(r#"{{"credential":"{}"}}"#, &*staging));
+        drop(staging);
+        let request = request_of(secret_json(text), SecretScopedExtra::default());
+        let items = request.content();
+        let digest = items[0].screening_digest();
+        let screened = ScreenedContent::over(&items);
+        assert_eq!(screened.digest(0).as_deref(), Some(digest.as_str()));
+        assert_eq!(screened.digests().count(), 1);
+        drop(screened);
+        drop(items);
+        drop(request);
+        proof.assert_absent(&what);
+    }
+}
