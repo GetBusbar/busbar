@@ -142,7 +142,7 @@ impl Conns for Lending {
         need: NeedId,
         desc: &OpenDesc<'_>,
         require_secure: bool,
-        located: Option<&LocatedTarget>,
+        located: Option<&Arc<LocatedTarget>>,
     ) -> Result<ConnId, ConnError> {
         self.0
             .open_located(caller, need, desc, require_secure, located)

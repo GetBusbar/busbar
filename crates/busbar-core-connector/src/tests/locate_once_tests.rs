@@ -26,7 +26,7 @@ async fn located_attempt(c: &Connector, far: &str, located_at: &str) -> (Exchang
                 ..OpenDesc::default()
             },
             false,
-            located.as_deref(),
+            located.as_ref(),
         )
         .expect("opens");
     let mut buf = [0_u8; 64];

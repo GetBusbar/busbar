@@ -37,7 +37,9 @@ pub struct FramedStream {
     claim: u32,
     rows: smallvec::SmallVec<[StatusRow; STATUS_ROWS_INLINE]>,
     partial: Vec<u8>,
-    opening: Vec<HeadWords>,
+    /// The framer's opening fields, shared with the caller that states them on its head
+    /// ([`FramedStream::opening_shared`]); `None` = the framer stated none (nothing is held).
+    opening: Option<Arc<[HeadWords]>>,
     deadline_ns: Option<u64>,
 }
 
@@ -102,11 +104,14 @@ impl FramedStream {
     ) -> Result<Self, Refused> {
         binding.ticket_less()?;
         let facts = door.facts();
-        let index = facts
+        // The door's own word for the claim (fixed in the program) is the one the connection
+        // keeps: the caller's `claim` is only compared with it, never copied.
+        let (index, own) = facts
             .claims
             .iter()
-            .position(|c| *c == claim)
-            .and_then(|i| u32::try_from(i).ok())
+            .enumerate()
+            .find(|(_, c)| **c == claim)
+            .and_then(|(i, c)| Some((u32::try_from(i).ok()?, *c)))
             .ok_or_else(|| {
                 crate::cold::framing::fault(format_args!(
                     "`{}` does not answer `{claim}`",
@@ -121,7 +126,7 @@ impl FramedStream {
             class: 0,
         }));
         let established = Established {
-            claim: Some(crate::off_path::conns::owned(claim)),
+            claim: Some(own),
             scheme,
             ..Established::default()
         };
@@ -143,7 +148,7 @@ impl FramedStream {
             claim: index,
             rows,
             partial: Vec::new(),
-            opening,
+            opening: (!opening.is_empty()).then(|| opening.into()),
             deadline_ns: opened.deadline_ns,
         };
         stream.observe(&opened)?;
@@ -153,7 +158,14 @@ impl FramedStream {
     /// Initial response fields supplied by the stream's framer at Begin, before any body or
     #[must_use]
     pub fn opening_fields(&self) -> &[HeadWords] {
-        &self.opening
+        self.opening.as_deref().unwrap_or_default()
+    }
+
+    /// [`FramedStream::opening_fields`], shared: the caller that states them on its head keeps
+    /// a reference to the stream's own fields instead of a copy. `None` = the framer stated none.
+    #[must_use]
+    pub fn opening_shared(&self) -> Option<Arc<[HeadWords]>> {
+        self.opening.clone()
     }
 
     /// The next host-clock instant at which this stream's framer must be called.

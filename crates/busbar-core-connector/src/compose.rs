@@ -724,7 +724,7 @@ impl Connection {
 }
 
 /// THE HEAD THE FRAMER WAS PROMISED (THE DESIGN section 6, step 5): the dial's opening completed
-fn complete_opening(dial: &mut Dial, located: &mut framer::Located) {
+fn complete_opening(dial: &mut Dial, located: &Placed) {
     let Some((fields, body)) = dial.opening.as_mut() else {
         return;
     };
@@ -732,12 +732,11 @@ fn complete_opening(dial: &mut Dial, located: &mut framer::Located) {
     if fields.is_empty() && body.is_empty() && method.is_empty() && target.is_empty() {
         return;
     }
-    // The located defaults are lent to the head for the completion and handed back after.
-    let head = busbar_contract::conn::HeadDefaults {
-        lines: std::mem::take(&mut located.defaults),
-        states_length: located.states_length,
-    };
-    let added = head.completing(
+    // The located defaults are lent to the completion where they are: an answer shared with the
+    // head that carried it is read, never taken apart.
+    let added = busbar_contract::conn::HeadDefaults::completing_lines(
+        located.defaults(),
+        located.states_length(),
         |name| {
             fields
                 .iter()
@@ -745,7 +744,6 @@ fn complete_opening(dial: &mut Dial, located: &mut framer::Located) {
         },
         body.len(),
     );
-    located.defaults = head.lines;
     // Each added name becomes its text in place (only a name that is not UTF-8 is rewritten,
     // lossily, as before).
     fields.extend(added.into_iter().map(|(n, v)| {
@@ -776,6 +774,85 @@ pub fn carried_at(claim: &str, target: &str) -> Result<framer::Located, Failure>
     })
 }
 
+/// WHERE A PLAN'S DIAL GOES, as the entry answered: an answer this plan owns (it asked the entry
+/// itself), a declared target's kept place, or the answer the attempt's head was completed with.
+/// The last two are shared with their holder by a reference count: a plan reads the authority,
+/// the name, the protocol offer and the head lines where they are and copies none of them.
+enum Placed {
+    /// Located for this plan alone.
+    Own(framer::Located),
+    /// A declared target's kept place (`DeclaredNeed::place`).
+    Kept(Arc<framer::Located>),
+    /// The answer the attempt's head carried ([`busbar_contract::conn::Conns::open_located`]).
+    Carried(Arc<busbar_contract::conn::LocatedTarget>),
+}
+
+impl Placed {
+    /// The authority to dial (`host:port`).
+    fn authority(&self) -> &str {
+        match self {
+            Self::Own(l) => &l.authority,
+            Self::Kept(l) => &l.authority,
+            Self::Carried(l) => l.authority(),
+        }
+    }
+
+    /// The name to offer the far end, where the entry named one.
+    fn name(&self) -> Option<&str> {
+        match self {
+            Self::Own(l) => l.name.as_deref(),
+            Self::Kept(l) => l.name.as_deref(),
+            Self::Carried(l) => l.name(),
+        }
+    }
+
+    /// The target asks for connection security.
+    fn secure(&self) -> bool {
+        match self {
+            Self::Own(l) => l.secure,
+            Self::Kept(l) => l.secure,
+            Self::Carried(l) => l.secure(),
+        }
+    }
+
+    /// The entry's protocol offer, most preferred first.
+    fn offer(&self) -> &[Vec<u8>] {
+        match self {
+            Self::Own(l) => &l.offer,
+            Self::Kept(l) => &l.offer,
+            Self::Carried(l) => l.offer(),
+        }
+    }
+
+    /// The framer's own head lines, in its order.
+    fn defaults(&self) -> &[HeadWords] {
+        match self {
+            Self::Own(l) => &l.defaults,
+            Self::Kept(l) => &l.defaults,
+            Self::Carried(l) => l.defaults(),
+        }
+    }
+
+    /// The framer's head states its body's length.
+    fn states_length(&self) -> bool {
+        match self {
+            Self::Own(l) => l.states_length,
+            Self::Kept(l) => l.states_length,
+            Self::Carried(l) => l.states_length(),
+        }
+    }
+
+    /// The entry's protocol offer for the client config a new secured connection is set up with
+    /// (rustls owns its config's list). An answer this plan owns gives its list up; a shared one
+    /// is copied here, once per new secured connection and never per open.
+    fn offer_for_handshake(&mut self) -> Vec<Vec<u8>> {
+        match self {
+            Self::Own(l) => std::mem::take(&mut l.offer),
+            Self::Kept(_) | Self::Carried(_) => self.offer().to_vec(),
+        }
+    }
+}
+
 /// A dial located but not yet dialled: the target and the authority the entry named each name a
 pub struct Planned {
     /// The framer; `None` = the carrier carried as itself.
@@ -783,7 +860,7 @@ pub struct Planned {
     /// The carrier the dial rides.
     via: Via,
     dial: Dial,
-    located: framer::Located,
+    located: Placed,
 }
 
 impl std::fmt::Debug for Planned {
@@ -807,13 +884,13 @@ impl Planned {
         door: Arc<dyn FramerDoor>,
         via: Via,
         dial: Dial,
-        carried: Option<framer::Located>,
+        carried: Option<Arc<busbar_contract::conn::LocatedTarget>>,
     ) -> Result<Self, Failure> {
         let located = match carried {
-            Some(located) => located,
+            Some(located) => Placed::Carried(located),
             None => {
                 endpoint::named(&dial.target).map_err(refused)?;
-                framer::locate(door.as_ref(), &dial.target).map_err(refused)?
+                Placed::Own(framer::locate(door.as_ref(), &dial.target).map_err(refused)?)
             }
         };
         Self::checked(door, via, dial, located)
@@ -825,10 +902,10 @@ impl Planned {
         door: Arc<dyn FramerDoor>,
         via: Via,
         dial: Dial,
-        located: framer::Located,
+        located: Arc<framer::Located>,
     ) -> Result<Self, Failure> {
         endpoint::named(&dial.target).map_err(refused)?;
-        Self::checked(door, via, dial, located)
+        Self::checked(door, via, dial, Placed::Kept(located))
     }
 
     /// The located authority names a host, and the dial's opening is completed from the answer.
@@ -836,10 +913,10 @@ impl Planned {
         door: Arc<dyn FramerDoor>,
         via: Via,
         mut dial: Dial,
-        mut located: framer::Located,
+        located: Placed,
     ) -> Result<Self, Failure> {
-        endpoint::named(&located.authority).map_err(refused)?;
-        complete_opening(&mut dial, &mut located);
+        endpoint::named(located.authority()).map_err(refused)?;
+        complete_opening(&mut dial, &located);
         Ok(Self {
             door: Some(door),
             via,
@@ -858,20 +935,20 @@ impl Planned {
             door: None,
             via,
             dial,
-            located,
+            located: Placed::Own(located),
         })
     }
 
     /// The authority the entry named (`host:port`), as the judge reads it.
     #[must_use]
     pub fn authority(&self) -> &str {
-        &self.located.authority
+        self.located.authority()
     }
 
     /// Whether the entry located a target asking for connection security.
     #[must_use]
     pub fn secure(&self) -> bool {
-        self.located.secure
+        self.located.secure()
     }
 
     /// Whether the opener's core-held acceptance admits plaintext to this dial ([`Dial::plaintext_accepted`]).
@@ -889,7 +966,7 @@ impl Planned {
     /// The name the entry located for connection security, where it names one.
     #[must_use]
     pub fn name(&self) -> Option<&str> {
-        self.located.name.as_deref()
+        self.located.name()
     }
 
     /// The dial this plan was located for.
@@ -903,10 +980,10 @@ impl Planned {
     /// is the agreed one (WASTE-EGRESS rule 2).
     #[must_use]
     pub fn offer(&self) -> &[Vec<u8>] {
-        if self.located.secure && self.located.offer.is_empty() {
+        if self.located.secure() && self.located.offer().is_empty() {
             &self.dial.alpn
         } else {
-            &self.located.offer
+            self.located.offer()
         }
     }
 
@@ -972,7 +1049,6 @@ impl Planned {
             Hop::Target
         };
         let target = |f: Failure| (Hop::Target, f);
-        let authority_for_tunnel = self.located.authority.clone();
         let Self {
             door,
             via,
@@ -983,7 +1059,7 @@ impl Planned {
         // The client config the handshake is set up with: its protocol offer is the one the
         // connection keeps, encoded, to hold the agreed protocol to.
         let mut offered: Option<Arc<rustls::ClientConfig>> = None;
-        let tls = if located.secure {
+        let tls = if located.secure() {
             let base = dial
                 .anchors
                 .as_ref()
@@ -998,13 +1074,14 @@ impl Planned {
             let mut config = (*base).clone();
 
             // rustls owns the protocol offer of the client config each connection's handshake is
-            // set up with: the dial's own list (or the entry's) is moved into it, not copied. A
-            // secured dial reads neither again (a single located protocol is the agreed one only
-            // in the clear).
-            let protocols = if located.offer.is_empty() {
+            // set up with: the dial's own list is moved into it, not copied, and so is the
+            // entry's where this plan owns the answer (a shared answer's list is copied, once,
+            // for this new connection). A secured dial reads neither again (a single located
+            // protocol is the agreed one only in the clear).
+            let protocols = if located.offer().is_empty() {
                 std::mem::take(&mut dial.alpn)
             } else {
-                std::mem::take(&mut located.offer)
+                located.offer_for_handshake()
             };
             config.alpn_protocols = protocols;
 
@@ -1058,30 +1135,31 @@ impl Planned {
             dial,
             (tls, presented),
             offered_name,
-            &located.offer,
+            // Read only by a dial in the clear (a single located protocol is the agreed one):
+            // a secured dial's agreed protocol is the handshake's.
+            located.offer(),
         )
         .map_err(|f| (dialled, f))?;
         if let Some(config) = &offered {
             write_protocol_names(&config.alpn_protocols, &mut conn.alpn_offer);
         }
+        // Only a dial through a proxy keeps the target's authority, for the tunnel it asks for.
         conn.tunnel = connect.map(|request| Tunnel {
             request,
             asked: false,
             deadline: None,
             head: Vec::new(),
-            authority: authority_for_tunnel,
+            authority: located.authority().to_owned(),
         });
         Ok(conn)
     }
 }
 
 /// The name a secured dial offers the far end: the entry's located name, else the authority's host.
-fn offered_host(located: &framer::Located) -> &str {
-    located.name.as_deref().unwrap_or_else(|| {
-        located
-            .authority
-            .rsplit_once(':')
-            .map_or(located.authority.as_str(), |(h, _)| h)
+fn offered_host(located: &Placed) -> &str {
+    located.name().unwrap_or_else(|| {
+        let authority = located.authority();
+        authority.rsplit_once(':').map_or(authority, |(h, _)| h)
     })
 }
 
@@ -1152,8 +1230,7 @@ impl Connection {
                 .facts()
                 .claims
                 .first()
-                .copied()
-                .map(crate::off_path::compose::owned),
+                .copied(),
             ..Established::default()
         };
         let pinned = dial.anchors.take().filter(|a| a.key_pin.is_some());
@@ -1239,13 +1316,7 @@ impl Connection {
             peer_key_pin: None,
             offered_name: None,
             agreed_protocol: None,
-            claim: carried
-                .door()
-                .facts()
-                .claims
-                .first()
-                .copied()
-                .map(crate::off_path::compose::owned),
+            claim: carried.door().facts().claims.first().copied(),
         };
         let mut conn = Self {
             framer_error: None,
@@ -1370,8 +1441,7 @@ impl Connection {
                 .facts()
                 .claims
                 .first()
-                .copied()
-                .map(crate::off_path::compose::owned),
+                .copied(),
             ..Established::default()
         };
         let mut conn = Self {

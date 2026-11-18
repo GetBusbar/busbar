@@ -2093,7 +2093,7 @@ impl EgressFarEnd<'_> {
             },
             head,
             require_secure,
-            carried.as_deref(),
+            carried.as_ref(),
         );
         let now_us = at.micros;
         let now_ms = now_us / 1000;
