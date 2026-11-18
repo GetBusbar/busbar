@@ -41,11 +41,6 @@ pub(crate) enum SelectedCommitRejected {
     Money(NativeCommitError),
 }
 
-pub(crate) enum SelectedHeadroomRejected {
-    Policy(SelectedPolicyRefusal),
-    Rate(RateRefusal),
-}
-
 impl AppHandle {
     pub fn selected_rate_admission(self: &Arc<Self>) -> SelectedRateAdmission {
         SelectedRateAdmission {
@@ -97,45 +92,6 @@ impl SelectedRateAdmission {
         money
             .commit(current_reservation)
             .map_err(SelectedCommitRejected::Money)
-    }
-
-    pub(crate) fn headroom(
-        &self,
-        receipt: &crate::plane_driver::request_admission::AdmittedRequest,
-        origin: &crate::plane_driver::route_identity::OriginalPlaneRoute,
-        candidate: &crate::plane_driver::port_upstream::Candidate,
-        definition: &crate::upstreams::UpstreamDef,
-    ) -> Result<Vec<RateSnapshot>, SelectedHeadroomRejected> {
-        let now = crate::store::now();
-        if let Some(governance) = &self.handle.load().governance {
-            governance.refresh_current_credential(now);
-        }
-        let _admission = self
-            .handle
-            .admission
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let now = crate::store::now();
-        let current = self.handle.current.load_full();
-        let policy = current
-            .selected_policy
-            .as_ref()
-            .ok_or(SelectedHeadroomRejected::Policy(
-                SelectedPolicyRefusal::InvalidBinding,
-            ))?;
-        let resolved = policy
-            .resolve_headroom(&current, receipt, origin, candidate, definition, now)
-            .map_err(SelectedHeadroomRejected::Policy)?;
-        let governance = current
-            .governance
-            .as_ref()
-            .ok_or(SelectedHeadroomRejected::Policy(
-                SelectedPolicyRefusal::InvalidBinding,
-            ))?;
-        governance
-            .selected_rates()
-            .headroom(&resolved)
-            .map_err(SelectedHeadroomRejected::Rate)
     }
 
     pub(crate) fn reserve(
