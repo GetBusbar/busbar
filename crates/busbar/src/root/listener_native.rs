@@ -73,18 +73,24 @@ pub(crate) struct OpenedConnection {
     pub(crate) delivery: DeliveryLedger,
 }
 
+/// What admits a native listener's requests: the process budget and the class they are counted under.
+pub(crate) struct NativeAdmission {
+    pub(crate) budget: Arc<ProcessAdmission>,
+    pub(crate) class: AdmissionClass,
+}
+
 impl NativeListener {
     pub(crate) fn new(
         handle: Arc<busbar_kernel::state::AppHandle>,
         slot: Box<str>,
         port: Arc<dyn TransportPort>,
-        budget: Arc<ProcessAdmission>,
-        class: AdmissionClass,
+        admission: NativeAdmission,
         select: SelectNativeSlot,
         limits: NativeLimits,
         admin: Option<axum::Router>,
     ) -> Result<Self, InputError> {
         use busbar_plugin_abi::transport::{FB_DATAGRAM, FB_SERVER, FB_WIRE_PROVENANCE};
+        let NativeAdmission { budget, class } = admission;
         if !port
             .listener_slots()
             .iter()

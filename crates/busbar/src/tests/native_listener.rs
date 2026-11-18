@@ -246,8 +246,10 @@ where
             handle,
             "listen".into(),
             Arc::clone(&port),
-            budget,
-            AdmissionClass::Data,
+            root::listener_native::NativeAdmission {
+                budget,
+                class: AdmissionClass::Data,
+            },
             Arc::new(root::serve::native_slot),
             root::listener_native::NativeLimits {
                 max_connections: ROOT_BIND_LIMITS.max_conns,

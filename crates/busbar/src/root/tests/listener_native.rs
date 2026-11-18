@@ -313,8 +313,10 @@ async fn actual_tcp_accept_passes_real_socket_facts_and_host_clock_to_native_beg
         Arc::new(busbar_kernel::state::AppHandle::new(app)),
         "admin_listen".into(),
         port.clone(),
-        budget.clone(),
-        AdmissionClass::Operator,
+        crate::root::listener_native::NativeAdmission {
+            budget: budget.clone(),
+            class: AdmissionClass::Operator,
+        },
         Arc::new(move |_, name| (name == slot.slot()).then(|| slot.clone())),
         NativeLimits {
             max_connections: 2,
