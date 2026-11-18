@@ -68,6 +68,13 @@ impl SecretJson {
     /// is not exactly one JSON document in UTF-8; [`SecretJsonError::Overflow`] when the canonical
     /// buffer cannot be allocated.
     pub fn from_secure(text: SecureVec) -> Result<Self, SecretJsonError> {
+        let taken = Self::canonical(text);
+        wipe_stack();
+        taken
+    }
+
+    /// [`Self::from_secure`] before its stack wipe.
+    fn canonical(text: SecureVec) -> Result<Self, SecretJsonError> {
         if json::exceeds_max_depth(&text, json::MAX_JSON_DEPTH) {
             return Err(SecretJsonError::TooDeep);
         }
@@ -140,7 +147,9 @@ impl SecretJson {
         if arena.len() < len {
             *arena = SecureVec::zeroed(len);
         }
-        json::from_slice_borrowed(self.0.as_bytes(), &mut arena[..])
+        let read = json::from_slice_borrowed(self.0.as_bytes(), &mut arena[..]);
+        wipe_stack();
+        read
     }
 
     /// The string at the JSON pointer `pointer`, copied once into custody; `None` when nothing is
@@ -165,6 +174,25 @@ impl SecretJson {
     pub fn into_secure(self) -> SecureVec {
         self.0.into_bytes()
     }
+}
+
+/// How much stack [`wipe_stack`] overwrites below its caller's frame, in 8-byte words (64 KiB).
+/// A scan of the thread's stack after a secret read finds the reader's residue within about
+/// 36 KiB below the caller (DES-SONIC-WIPE r3 §7: `invoke_request_wipe`'s probes); this leaves
+/// room for an unoptimised build's larger frames and stays far inside any thread's stack.
+const STACK_WIPE_WORDS: usize = 8 * 1024;
+
+/// Overwrite the stack the call that just returned used. The SIMD JSON reader and writer, the
+/// UTF-8 check and the SHA-256 block function keep 16- to 64-byte pieces of their input in
+/// registers that spill into their own frames, and nothing wipes a frame when it returns: a short
+/// secret (one load holds all of it) survives there whole. Every reader of secret text calls this
+/// on every exit, after the work and before its result goes back to the caller, so the next
+/// frames to use that stack are this one's (wiped) and the caller's own.
+#[inline(never)]
+pub(crate) fn wipe_stack() {
+    let mut area = [0_u64; STACK_WIPE_WORDS];
+    area.zeroize();
+    std::hint::black_box(&mut area);
 }
 
 /// `null`, as an absent document reads (so `std::mem::take` leaves one behind).
