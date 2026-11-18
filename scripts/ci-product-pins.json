@@ -139,13 +139,13 @@
     {
       "repo": "busbar-store-sqlite",
       "url": "https://github.com/GetBusbar/busbar-store-sqlite",
-      "commit": "19e69206fbf92e33263bd452006ca105a0df12ac",
+      "commit": "931d17d372f22935fda599e9712f1b0a05fd86dd",
       "package": "busbar-store-sqlite-plugin",
       "kind": "store",
       "alias": "sqlite",
       "image": "libbusbar_store_sqlite_plugin.so",
       "declares": "store-sqlite/declares.json",
-      "lock_sha256": "0ea52d44d42b2db8ecb68bbdc055ce9fb0680d89df17088e20e9c3dc55708206",
+      "lock_sha256": "471478698b7d2f927b62f643722917ed1d33855293030f47024c58439087a64c",
       "former_names": [
         "busbar-store-sqlite-plugin"
       ]

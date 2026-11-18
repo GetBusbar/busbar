@@ -1151,14 +1151,11 @@ dependencies = [
 [[package]]
 name = "busbar-store-sqlite"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=4102868e504e32b22f1c6f19e6f5a363c1c1d980#4102868e504e32b22f1c6f19e6f5a363c1c1d980"
+source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=931d17d372f22935fda599e9712f1b0a05fd86dd#931d17d372f22935fda599e9712f1b0a05fd86dd"
 dependencies = [
- "busbar-contract",
- "foldhash 0.2.0",
- "getrandom 0.3.4",
+ "busbar-plugin-abi",
  "rusqlite",
  "serde_json",
- "winapi-util",
 ]
 
 [[package]]
@@ -4547,15 +4544,6 @@ name = "winapi-i686-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
-
-[[package]]
-name = "winapi-util"
-version = "0.1.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
-dependencies = [
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "winapi-x86_64-pc-windows-gnu"

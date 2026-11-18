@@ -725,7 +725,7 @@ members = ["."]
 
 [workspace.dependencies]
 busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "bea74851f4c7da848c4ad4cbf5d811d0defb656f" }
-busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "4102868e504e32b22f1c6f19e6f5a363c1c1d980" }
+busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "931d17d372f22935fda599e9712f1b0a05fd86dd" }
 busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "eb40baa7b52c6a3209357bf298fa513fe48ab46e" }
 # Published MIN-3 LLM implementation, linked through its PLUGIN header.
 busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "f9e6247ddce2fdecdf266d1ed9cc48062b354573" }
