@@ -56,6 +56,9 @@ type Respond = Box<dyn FnMut(&Seen) -> Vec<Out> + Send>;
 pub(crate) struct Script {
     pub(crate) quarantined: bool,
     respond: Respond,
+    /// A framer that answers from borrowed statics and records nothing (the cost runs): the script
+    /// then allocates nothing itself, so what is counted is the session's own.
+    lean: Option<fn(Call<'_>, &mut dyn FnMut(TransportOut<'_>))>,
     seen: Arc<Mutex<Vec<Seen>>>,
     charges: Arc<Mutex<Vec<FaultReason>>>,
     dropped: Arc<AtomicU64>,
@@ -73,6 +76,10 @@ impl Script {
         call: Call<'_>,
         sink: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError> {
+        if let Some(lean) = self.lean {
+            lean(call, sink);
+            return Ok(());
+        }
         let seen = match call {
             Call::Ingest(bytes) => Seen::Ingest(Vec::from(bytes)),
             Call::Emit {
@@ -197,6 +204,7 @@ fn scripted(respond: Respond, stall_ms: Option<u32>, quarantined: bool) -> Scrip
     let script = Script {
         quarantined,
         respond,
+        lean: None,
         seen: Arc::clone(&seen),
         charges: Arc::clone(&charges),
         dropped: Arc::clone(&dropped),
@@ -1918,4 +1926,170 @@ async fn a_core_drain_close_to_a_stopped_reader_is_bounded_by_the_drain_grace() 
     let started = tokio::time::Instant::now();
     let outcome = drive(s.conn, Vec::new(), StoppedReader, r.wiring).await;
     assert_stall_closed(&outcome, started.elapsed(), STALL_BOUND, &s.dropped);
+}
+
+// ---- THE EMIT PATH'S COST: core's pieces in, the framer's socket bytes out ----
+
+/// The response head the cost framer writes for E_HEAD (a plausible HTTP/1 status line and headers).
+static COST_HEAD: [u8; 128] = [b'h'; 128];
+
+/// The cost framer: E_HEAD answers one WRITE of the head, E_BODY one WRITE of the piece's bytes, as a
+/// content-length HTTP/1 framer does. Everything it answers is borrowed, so it allocates nothing.
+fn cost_answer(call: Call<'_>, sink: &mut dyn FnMut(TransportOut<'_>)) {
+    match call {
+        Call::Emit { piece: E_HEAD, .. } => sink(TransportOut::Write(&COST_HEAD)),
+        Call::Emit {
+            piece: E_BODY,
+            bytes,
+            ..
+        } => sink(TransportOut::Write(bytes)),
+        _ => {}
+    }
+}
+
+/// A socket that takes every byte at once and counts them.
+struct CountingSink(Arc<AtomicU64>);
+
+impl AsyncRead for CountingSink {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        _: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+impl AsyncWrite for CountingSink {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.0.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        Poll::Ready(Ok(bytes.len()))
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// What one shape of response costs on the emit path, per response, after warm-up.
+#[derive(Debug)]
+struct EmitCost {
+    records: usize,
+    allocations_min: u64,
+    allocations_max: u64,
+    wipes: f64,
+    median_ns: u64,
+    bytes: u64,
+}
+
+/// Drives `rounds` responses (E_HEAD, then `pieces` E_BODY of `body`) through the session's emit path:
+/// `TransportConn::emit` (the framer's answer captured) and the task's `apply` (its bytes written),
+/// exactly as `drive` does for each piece it pulls from a feed.
+fn emit_cost(body: &[u8], pieces: usize, rounds: usize) -> EmitCost {
+    use futures::FutureExt;
+    let mut s = scripted(Box::new(|_| Vec::new()), None, false);
+    if let Some(Backend::Script(script)) = s.conn.backend.as_mut() {
+        script.lean = Some(cost_answer);
+    }
+    let r = rig();
+    let written = Arc::new(AtomicU64::new(0));
+    let carrier = crate::raw_progress::test_carrier(CountingSink(Arc::clone(&written)));
+    let progress = carrier.progress();
+    let mut io = DeliveryIo::new(
+        carrier,
+        Delivery::new(r.wiring.delivery, progress),
+        s.conn.storage().clone(),
+    );
+    let mut task = Task {
+        slots: Slots::default(),
+        pending: VecDeque::new(),
+        reading: true,
+        wake_at: None,
+    };
+    let timeout = Duration::from_secs(5);
+    let mut one = |conn: &mut TransportConn, piece: u32, bytes: &[u8]| {
+        let now = Instant::now();
+        conn.emit(1, piece, 0, bytes, now).expect("emit");
+        let mut clock = None;
+        let flow = task
+            .apply(conn.actions(), &mut io, timeout, &mut clock)
+            .now_or_never()
+            .expect("an always-ready socket");
+        assert!(matches!(flow, Flow::Go));
+    };
+    let mut response = |conn: &mut TransportConn| {
+        one(conn, E_HEAD, &[]);
+        for _ in 0..pieces {
+            one(conn, E_BODY, body);
+        }
+    };
+    for _ in 0..(rounds / 10).max(10) {
+        response(&mut s.conn);
+    }
+    let mut times = Vec::with_capacity(rounds);
+    let mut allocations = Vec::with_capacity(rounds);
+    let wipes_before = busbar_contract::secure::wipe_counts().1;
+    for _ in 0..rounds {
+        let at = std::time::Instant::now();
+        let ((), n) = crate::support::allocations_during(|| response(&mut s.conn));
+        times.push(u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        allocations.push(n);
+    }
+    let wipes = busbar_contract::secure::wipe_counts().1 - wipes_before;
+    times.sort_unstable();
+    drop(response);
+    EmitCost {
+        records: 1 + pieces,
+        allocations_min: allocations.iter().copied().min().unwrap_or(0),
+        allocations_max: allocations.iter().copied().max().unwrap_or(0),
+        wipes: wipes as f64 / rounds as f64,
+        median_ns: times[times.len() / 2],
+        bytes: written.load(Ordering::Relaxed),
+    }
+}
+
+/// THE MEASUREMENT (N1): time and heap allocations per response and per answer record on the emit path,
+/// for a small response (one head, one 1 KiB body piece) and a streamed one (one head, 50 pieces of 200
+/// bytes). `B_SESSION_EMIT_ROUNDS` sets the responses timed (default 200); run it in release with
+/// `--nocapture` for the numbers. Same thread, same allocator as every lib test (the counting one).
+#[tokio::test]
+async fn the_emit_path_cost_per_answer_record() {
+    let rounds = std::env::var("B_SESSION_EMIT_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+    for (label, body, pieces) in [
+        ("small (head + 1 x 1024 B)", [0x42u8; 1024].as_slice(), 1),
+        ("streamed (head + 50 x 200 B)", [0x42u8; 200].as_slice(), 50),
+    ] {
+        let cost = emit_cost(body, pieces, rounds);
+        let per_record = cost.median_ns as f64 / cost.records as f64;
+        println!(
+            "SESSION-EMIT {label}: {} records; median {} ns per response, {per_record:.0} ns per record; \
+             allocations per response {}..={} ({:.2} per record); buffer wipes per response {:.2}; \
+             {} bytes written",
+            cost.records,
+            cost.median_ns,
+            cost.allocations_min,
+            cost.allocations_max,
+            cost.allocations_max as f64 / cost.records as f64,
+            cost.wipes,
+            cost.bytes,
+        );
+        let expected = (rounds + (rounds / 10).max(10)) as u64
+            * (COST_HEAD.len() + body.len() * pieces) as u64;
+        assert_eq!(cost.bytes, expected, "every byte reached the socket");
+    }
 }
