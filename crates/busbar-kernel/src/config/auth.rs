@@ -87,29 +87,29 @@ fn issued_kind_grants<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<Vec<Box<str>>>, D::Error> {
     /// One grant: a YAML string and nothing else. The YAML reader hands `null` to a string visitor as
     /// an empty string, so `Box<str>` alone admitted `[null]` (red-proof 9fc5ed4f19).
-    struct Grant(Box<str>);
-    impl<'de> serde::Deserialize<'de> for Grant {
+    struct KindName(Box<str>);
+    impl<'de> serde::Deserialize<'de> for KindName {
         fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
             struct Text;
             impl serde::de::Visitor<'_> for Text {
-                type Value = Grant;
+                type Value = KindName;
                 fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                     f.write_str("a credential kind name")
                 }
-                fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Grant, E> {
-                    Ok(Grant(v.into()))
+                fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<KindName, E> {
+                    Ok(KindName(v.into()))
                 }
-                fn visit_unit<E: serde::de::Error>(self) -> Result<Grant, E> {
+                fn visit_unit<E: serde::de::Error>(self) -> Result<KindName, E> {
                     Err(E::invalid_type(serde::de::Unexpected::Unit, &self))
                 }
-                fn visit_none<E: serde::de::Error>(self) -> Result<Grant, E> {
+                fn visit_none<E: serde::de::Error>(self) -> Result<KindName, E> {
                     Err(E::invalid_type(serde::de::Unexpected::Option, &self))
                 }
             }
             d.deserialize_any(Text)
         }
     }
-    Vec::<Grant>::deserialize(deserializer)
+    Vec::<KindName>::deserialize(deserializer)
         .map(|grants| Some(grants.into_iter().map(|g| g.0).collect()))
 }
 
