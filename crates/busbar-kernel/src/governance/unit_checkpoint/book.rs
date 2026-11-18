@@ -54,7 +54,7 @@ pub(super) struct Pending {
     /// The unit's live audit line, carried from the root's seal (SHUTDOWN-HANG F1a). RAM only.
     audit: Option<Carried>,
     memory_selected: bool,
-    fee_completion: Option<Arc<dyn super::partitions::SelectedFeeCompletion>>,
+    fee_completion: Option<Arc<super::partitions::SelectedFeeCompletion>>,
     awaiting_terminal_reader: bool,
     terminal_signal: Option<Arc<super::TerminalSignal>>,
     ordinary_signal: Option<Arc<super::ordinary_completion::OrdinarySignal>>,
@@ -133,7 +133,7 @@ impl Pending {
 
     pub(super) fn with_fee_completion(
         mut self,
-        completion: Option<Arc<dyn super::partitions::SelectedFeeCompletion>>,
+        completion: Option<Arc<super::partitions::SelectedFeeCompletion>>,
     ) -> Self {
         self.fee_completion = completion;
         self.awaiting_terminal_reader = true;

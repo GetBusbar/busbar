@@ -311,7 +311,6 @@ struct FeeState {
     children: usize,
     parent_refund: Option<bool>,
     child_incurred: bool,
-    completed: Option<crate::governance::unit_checkpoint::partitions::FeeResult>,
 }
 
 struct FeeAccount {
@@ -320,6 +319,8 @@ struct FeeAccount {
     // FEE-DEBT r1: the original native observer. Not a participant; never refunds or charges.
     observer: Option<Arc<crate::governance::fee_debt::FeeDebtObserver>>,
     state: Mutex<FeeState>,
+    /// Where the final fee result is published (read by selected checkpoints without participating).
+    completion: Arc<crate::governance::unit_checkpoint::partitions::SelectedFeeCompletion>,
 }
 
 struct FeeParticipation {
@@ -379,7 +380,7 @@ impl Drop for FeeParticipation {
         }
         // Counts alone are not completion: publish only after the existing refund mutations.
         if let Some(result) = result {
-            locked(&self.account.state).completed = Some(result);
+            self.account.completion.complete(result);
         }
     }
 }
@@ -712,8 +713,8 @@ impl PlaneMoney {
                 children: 0,
                 parent_refund: None,
                 child_incurred: false,
-                completed: None,
             }),
+            completion: Arc::default(),
         });
         let open = Open::new(
             money,

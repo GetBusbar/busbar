@@ -531,8 +531,8 @@ impl PlaneMoney {
                         children: 0,
                         parent_refund: None,
                         child_incurred: false,
-                        completed: None,
                     }),
+                    completion: Arc::default(),
                 });
                 let open = Open::new(
                     money.clone(),

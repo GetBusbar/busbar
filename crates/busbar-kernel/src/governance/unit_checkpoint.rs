@@ -386,7 +386,7 @@ impl GovState {
         &self,
         mut snapshot: UnitCheckpoint,
         expected_revision: Option<u64>,
-        completion: Option<Arc<dyn partitions::SelectedFeeCompletion>>,
+        completion: Option<Arc<partitions::SelectedFeeCompletion>>,
     ) -> SelectedTransfer {
         let mut pending = self.unit_checkpoints.pending.lock();
         if let Some(previous) = pending
