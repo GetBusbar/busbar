@@ -266,15 +266,31 @@ pub mod plugin_fetch;
 pub mod policy;
 pub mod principal_transition;
 // ADMIN-API-1.6 §3.5: `records.user` and `records.labels`, configured at boot.
+pub(crate) mod native_operator;
 pub(crate) mod records_capture;
 pub mod registry;
 // busbar:request-path
-pub(crate) mod native_operator;
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
 pub(crate) mod native_secrets;
 /// The launch variables 1.6.0 retired: the BUSBAR-3029 "set but ignored" notice.
 pub(crate) mod retired_env;
 pub(crate) mod secret_custody;
 pub(crate) mod secret_grammar;
+// busbar:request-path
 #[cfg_attr(
     not(test),
     deny(
