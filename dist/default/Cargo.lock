@@ -380,26 +380,23 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=7877ca767f9f4da677df369afc022b2cbd5633cf#7877ca767f9f4da677df369afc022b2cbd5633cf"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=9167fa4bc22693182971f6f58e408305afa4e0f5#9167fa4bc22693182971f6f58e408305afa4e0f5"
 dependencies = [
  "base64 0.22.1",
- "busbar-contract",
- "foldhash 0.2.0",
- "http",
+ "busbar-plugin-abi",
+ "percent-encoding",
  "serde",
- "serde_json",
- "tracing",
+ "sonic-rs",
  "url",
- "zeroize",
 ]
 
 [[package]]
 name = "busbar-auth-oidc-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=7877ca767f9f4da677df369afc022b2cbd5633cf#7877ca767f9f4da677df369afc022b2cbd5633cf"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=9167fa4bc22693182971f6f58e408305afa4e0f5#9167fa4bc22693182971f6f58e408305afa4e0f5"
 dependencies = [
  "busbar-auth-oidc",
- "busbar-contract",
+ "busbar-plugin-abi",
 ]
 
 [[package]]
