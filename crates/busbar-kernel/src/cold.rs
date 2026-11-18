@@ -152,3 +152,11 @@ pub(crate) fn first_observing_principal(
         );
 }
 
+// --- plane_driver::port_hooks ---
+
+/// `plane_driver::port_hooks`: a route-policy rejection counter's `status` label, spelled once per
+/// decider and status, on that status's first rejection (the counter is kept from then on).
+#[cold]
+pub(crate) fn route_policy_status_label(status: u16) -> String {
+    format!("{status}")
+}

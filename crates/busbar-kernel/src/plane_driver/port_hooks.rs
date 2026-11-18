@@ -47,13 +47,19 @@ struct Projection {
 
 impl Drop for Projection {
     fn drop(&mut self) {
-        use zeroize::Zeroize;
         for (_, value) in &mut self.facts {
             if let FactVal::Text(value) = value {
-                value.as_mut().zeroize();
+                wipe_text(value);
             }
         }
     }
+}
+
+/// Wipe a projected text fact's whole allocation through the counted secure wipe; the fact is
+/// left empty. A `Box<str>` becomes its `String` without a copy.
+fn wipe_text(text: &mut Box<str>) {
+    let mut owned = std::mem::take(text).into_string();
+    busbar_contract::secure::wipe_string(&mut owned);
 }
 
 impl Projection {
@@ -68,8 +74,7 @@ impl Projection {
                         return true;
                     }
                     if let FactVal::Text(text) = value {
-                        use zeroize::Zeroize;
-                        text.as_mut().zeroize();
+                        wipe_text(text);
                     }
                     false
                 });
@@ -229,7 +234,7 @@ impl RouteCounters {
                 ROUTE_POLICY_REJECTIONS_TOTAL,
                 "policy" => Arc::clone(policy),
                 "pool" => Arc::clone(&self.pool),
-                "status" => status.to_string(),
+                "status" => crate::cold::route_policy_status_label(status),
             )
         })
         .increment(1);
