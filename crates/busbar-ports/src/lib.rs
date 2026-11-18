@@ -13,6 +13,7 @@
 
 pub mod auth;
 pub mod export;
+pub mod frame;
 pub mod hook;
 pub mod network;
 pub mod plane;

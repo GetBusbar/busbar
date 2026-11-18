@@ -17,3 +17,9 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 
 [lints]
 workspace = true
+
+# B-FRAME: take, share and drop of a request frame, timed against a fresh allocation.
+[[bench]]
+name = "frame"
+path = "benches/frame.rs"
+harness = false
