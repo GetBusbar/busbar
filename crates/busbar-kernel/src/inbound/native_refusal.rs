@@ -106,21 +106,6 @@ enum RefusalProvenance {
     },
 }
 impl PhysicalRefusal {
-    pub fn check_output_live(&self) -> Result<(), ArrivalRefusal> {
-        let phase = self
-            .binding
-            .state
-            .phase
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if *phase != Phase::Refusing || self.binding.state.cancelled.is_cancelled() {
-            return Err(ArrivalRefusal::Cancelled);
-        }
-        if self.binding.deadline.is_some_and(|at| Instant::now() >= at) {
-            return Err(ArrivalRefusal::Deadline);
-        }
-        Ok(())
-    }
     pub fn binding(&self) -> &Arc<RequestBinding> {
         &self.binding
     }
