@@ -49,7 +49,7 @@ async fn a_walk_over_budget_is_a_budget_break_over_the_walked_range() {
         .iter()
         .enumerate()
         .map(|(i, record)| TailItem::Line {
-            record: record.clone(),
+            record: Box::new(record.clone()),
             node_seq: 100 + i as u64,
         })
         .collect();

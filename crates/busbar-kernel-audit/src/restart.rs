@@ -37,8 +37,8 @@ const SPAN_PAGES: u64 = 100;
 pub enum TailItem {
     /// An audit line (any recipe).
     Line {
-        /// The decoded line.
-        record: AuditRecord,
+        /// The decoded line (boxed: a line is several times the other variants' size).
+        record: Box<AuditRecord>,
         /// The WAL `node_seq` of the journal record that carries it.
         node_seq: u64,
     },
@@ -186,7 +186,7 @@ pub fn reference_walk_tail(items: &[TailItem], cx: &WalkContext<'_>) -> WalkOutc
         .iter()
         .enumerate()
         .filter_map(|(i, item)| match item {
-            TailItem::Line { record, node_seq } => Some((record, *node_seq, i)),
+            TailItem::Line { record, node_seq } => Some((&**record, *node_seq, i)),
             _ => None,
         })
         .collect();
@@ -302,7 +302,7 @@ pub fn reference_walk_tail(items: &[TailItem], cx: &WalkContext<'_>) -> WalkOutc
             })
         };
         let (record, node_seq) = match item {
-            TailItem::Line { record, node_seq } => (record, *node_seq),
+            TailItem::Line { record, node_seq } => (&**record, *node_seq),
             TailItem::Undecodable { node_seq } => return broken(BreakReason::Decode, *node_seq),
             TailItem::Stamp { .. } => continue,
             TailItem::Certificate { .. } => return WalkOutcome::Unsupported,

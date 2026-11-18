@@ -104,7 +104,7 @@ impl Journal {
         for record in lines {
             let node_seq = self.next();
             self.0.push(TailItem::Line {
-                record: record.clone(),
+                record: Box::new(record.clone()),
                 node_seq,
             });
         }
@@ -227,7 +227,7 @@ fn a_certificate_in_the_crash_tail_is_walked_as_a_linked_record() {
     all[2].hash = AuditChain::digest_of(&all[2]);
     let items = vec![
         TailItem::Line {
-            record: all[0].clone(),
+            record: Box::new(all[0].clone()),
             node_seq: 1,
         },
         TailItem::Stamp {
@@ -239,7 +239,7 @@ fn a_certificate_in_the_crash_tail_is_walked_as_a_linked_record() {
             node_seq: 3,
         },
         TailItem::Line {
-            record: all[2].clone(),
+            record: Box::new(all[2].clone()),
             node_seq: 4,
         },
     ];

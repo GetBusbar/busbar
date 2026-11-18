@@ -42,7 +42,7 @@ pub(crate) fn tail_items(records: &[JournalRecord]) -> Result<Vec<TailItem>, Rec
             &busbar_kernel::Registration::meter_class,
         ) {
             Ok(Some(AuditLinkedRecord::Unit(line))) => items.push(TailItem::Line {
-                record: *line,
+                record: line,
                 node_seq: record.node_seq,
             }),
             Ok(Some(AuditLinkedRecord::NotaryKey(line))) => items.push(TailItem::Certificate {
