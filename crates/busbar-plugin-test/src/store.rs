@@ -12,7 +12,7 @@ use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::admit::Admitted;
 use std::future::Future;
 
-pub use busbar_contract::abi::sdk::store::v4::conformance;
+pub use busbar_contract::persistence::conformance;
 pub use busbar_contract::persistence::{
     control, Address, AttemptId, BackendInfo, Call, Candidate, ClockObservation, CommitKey,
     DatasetId, Decision, Durability, ExpectedValue, Failure, InvalidCandidate, Mutation,
