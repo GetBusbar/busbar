@@ -277,6 +277,16 @@ impl AuditVerifyingKey {
             .verify_strict(message, raw)
             .map_err(|_| KeyError::BadSignature)
     }
+
+    /// Check one ledger checkpoint body's 64 raw signature bytes against THIS key.
+    pub fn verify_checkpoint_body(&self, body: &[u8], signature: &[u8]) -> Result<(), KeyError> {
+        let raw: &[u8; 64] = signature
+            .try_into()
+            .map_err(|_| KeyError::MalformedSignature)?;
+        self.inner
+            .verify_strict(&checkpoint_preimage(body), raw)
+            .map_err(|_| KeyError::BadSignature)
+    }
 }
 
 /// THE PUBLIC KEY SET, as the key-set admin verb answers it.
@@ -334,23 +344,6 @@ impl AuditKeySet {
     #[must_use]
     pub fn keys(&self) -> &[AuditVerifyingKey] {
         &self.keys
-    }
-
-    /// Check one ledger checkpoint's signature against EVERY key in the set.
-    pub fn verify_checkpoint_body(&self, body: &[u8], signature: &[u8]) -> Result<(), KeyError> {
-        let raw: [u8; 64] = signature
-            .try_into()
-            .map_err(|_| KeyError::MalformedSignature)?;
-        let preimage = checkpoint_preimage(body);
-        if self
-            .keys
-            .iter()
-            .any(|k| k.inner.verify_strict(&preimage, &raw).is_ok())
-        {
-            Ok(())
-        } else {
-            Err(KeyError::BadSignature)
-        }
     }
 
     /// Whether the set holds nothing.

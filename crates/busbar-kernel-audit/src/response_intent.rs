@@ -246,10 +246,7 @@ pub fn verify_response_intent(
         return Err(IntentError::Header);
     }
     let key = keys.get(key_id).ok_or(IntentError::MissingKey)?;
-    let mut singleton = AuditKeySet::new();
-    singleton.insert(key.clone());
-    singleton
-        .verify_checkpoint_body(prepared.signing_body(), &body[SIGNING_BYTES + 8..])
+    key.verify_checkpoint_body(prepared.signing_body(), &body[SIGNING_BYTES + 8..])
         .map_err(|_| IntentError::Signature)?;
     Ok(Some(VerifiedResponseIntent { intent, stamp }))
 }

@@ -11,6 +11,12 @@ license = "Apache-2.0"
 name = "busbar_kernel_audit"
 path = "src/lib.rs"
 
+# B-INTENT: one response intent verified on the request path (median, p99).
+[[bench]]
+name = "b_intent"
+path = "benches/b_intent.rs"
+harness = false
+
 [features]
 # Dev-dependencies only; never a shipped build.
 test-support = []

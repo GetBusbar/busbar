@@ -6,7 +6,9 @@
 
 use busbar_contract::crypto::ed25519::SigningKey;
 
-use crate::sign::{from_hex_secret, key_id_of, AuditSigningKey, KeyError};
+use crate::sign::{
+    checkpoint_preimage, from_hex_secret, key_id_of, AuditKeySet, AuditSigningKey, KeyError,
+};
 
 impl AuditSigningKey {
     /// Build one from a 32-byte ed25519 seed.
@@ -46,5 +48,29 @@ impl AuditSigningKey {
     #[must_use]
     pub fn sign_checkpoint_body(&self, body: &[u8]) -> Vec<u8> {
         self.sign_checkpoint_raw(body).to_vec()
+    }
+}
+
+impl AuditKeySet {
+    /// Check one unit checkpoint's signature against EVERY key in the set. A unit checkpoint record
+    /// does not say which key signed it, so each key the node has held is tried. Its one caller
+    /// reads those records back (`busbar-kernel` `off_path/governance/unit_checkpoint_store.rs`:
+    /// restore, replay and the flusher's own re-read), never per request; a record that names its
+    /// key (the response intent) is verified by that key alone
+    /// ([`crate::sign::AuditVerifyingKey::verify_checkpoint_body`]).
+    pub fn verify_checkpoint_body(&self, body: &[u8], signature: &[u8]) -> Result<(), KeyError> {
+        if signature.len() != 64 {
+            return Err(KeyError::MalformedSignature);
+        }
+        let preimage = checkpoint_preimage(body);
+        if self
+            .keys()
+            .iter()
+            .any(|k| k.verify_raw(&preimage, signature).is_ok())
+        {
+            Ok(())
+        } else {
+            Err(KeyError::BadSignature)
+        }
     }
 }
