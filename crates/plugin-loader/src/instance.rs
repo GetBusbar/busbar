@@ -38,6 +38,7 @@ use busbar_plugin_abi::types::KindCode;
 use crate::admit::Admitted;
 use crate::chains::{self, OwnedSpec};
 use crate::refusal::{Refusal, RefusalCode};
+use crate::reopen::{BoundNeeds, Reopener};
 use busbar_ffi::kind as k;
 use busbar_ports::auth::{AuthPort, IssuedShape};
 use busbar_ports::binder::{ConfigBinder, RefSource};
@@ -471,7 +472,7 @@ pub type StoreSeal =
 #[derive(Clone)]
 struct Applied {
     refs: Arc<dyn RefSource>,
-    opener: crate::reopen::Reopen,
+    opener: Arc<dyn Reopener>,
     identity: Box<str>,
     config: Vec<u8>,
     limits: InstanceLimits,
@@ -1335,7 +1336,10 @@ impl Registry {
                 caller_upstreams: &stored.caller_upstreams,
             };
             self.check_endpoints_with_refs(&spec, &stored.refs).await?;
-            let port = (stored.opener)(self, OwnedSpec::new(&spec), kind).await?;
+            let port = stored
+                .opener
+                .open(self, OwnedSpec::new(&spec), kind)
+                .await?;
             if let Some(held) = self
                 .applied
                 .lock()
@@ -1378,7 +1382,7 @@ impl Registry {
                 public_url: stored.public_url.as_deref(),
                 caller_upstreams: &stored.caller_upstreams,
             };
-            (stored.opener)(self, OwnedSpec::new(&spec), kind).await
+            stored.opener.open(self, OwnedSpec::new(&spec), kind).await
         })
     }
 
@@ -1419,7 +1423,11 @@ impl Registry {
             key,
             Applied {
                 refs: Arc::clone(refs),
-                opener: crate::reopen::bound(Arc::clone(needs), Arc::clone(refs), seal),
+                opener: Arc::new(BoundNeeds {
+                    needs: Arc::clone(needs),
+                    refs: Arc::clone(refs),
+                    seal,
+                }),
                 identity: Box::from(s.identity),
                 config: s.config_json.to_vec(),
                 limits: s.limits,
