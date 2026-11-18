@@ -864,6 +864,7 @@ impl Registry {
             let port: Arc<dyn SecretPort> = Arc::new(crate::adapters::secret::SecretAdapter::new(
                 proxy,
                 Arc::clone(&needs),
+                opened.errors,
             ));
             Ok(port)
         })
