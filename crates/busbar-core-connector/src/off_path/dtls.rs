@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `dtls` off-path code (see `crate::off_path`): what an association builds once (its STUN
-//! user names, its handshake certificate) and the consent probe its timers and path discovery
+//! `dtls` off-path code (see `crate::off_path`): what an association builds once (its
+//! handshake certificate) and the consent probe its timers and path discovery
 //! send (a probe per consent interval, or per newly heard path; no datagram's own handling).
 
 use busbar_contract::crypto;
@@ -11,19 +11,6 @@ use crate::dtls::stun::{
     attr, set_len, Keys, BINDING_REQUEST, FINGERPRINT, FINGERPRINT_XOR, HEADER, ICE_CONTROLLED,
     ICE_CONTROLLING, MAGIC_COOKIE, MESSAGE_INTEGRITY, MI_LEN, PRIORITY, PROBE_PRIORITY, USERNAME,
 };
-use crate::dtls::IceCredentials;
-
-/// The local USERNAME prefix a check to us names, and the USERNAME our probes carry: built once,
-/// when the association's keys are.
-pub(crate) fn credential_names(
-    local: &IceCredentials,
-    remote: &IceCredentials,
-) -> (Vec<u8>, Vec<u8>) {
-    (
-        format!("{}:", local.ufrag).into_bytes(),
-        format!("{}:{}", remote.ufrag, local.ufrag).into_bytes(),
-    )
-}
 
 /// The handshake certificate in the DTLS engine's form (DER and key): built once, when the
 /// association's handshake begins.

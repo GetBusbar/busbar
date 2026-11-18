@@ -50,7 +50,29 @@ impl std::fmt::Debug for IceCredentials {
     }
 }
 
-/// The keys an association checks and signs with, built once.
+impl IceCredentials {
+    /// The credentials, borrowed.
+    #[must_use]
+    pub fn terms(&self) -> IceTerms<'_> {
+        IceTerms {
+            ufrag: &self.ufrag,
+            pwd: &self.pwd,
+        }
+    }
+}
+
+/// One side's ICE credentials, borrowed: what an ICE_TERMS names, read where it was kept (a
+/// session's act buffer); the association copies only what its keys hold.
+#[derive(Clone, Copy)]
+pub struct IceTerms<'a> {
+    /// The username fragment (`a=ice-ufrag`).
+    pub ufrag: &'a str,
+    /// The password (`a=ice-pwd`), an HMAC key.
+    pub pwd: &'a str,
+}
+
+/// The keys an association checks and signs with: built when it is, replaced in place (their
+/// buffers reused) by a later ICE_TERMS.
 pub(crate) struct Keys {
     local_ufrag_prefix: Vec<u8>,
     /// The local ICE password: the MESSAGE-INTEGRITY (HMAC-SHA1) key of checks to us.
@@ -61,15 +83,38 @@ pub(crate) struct Keys {
 }
 
 impl Keys {
-    pub(crate) fn new(local: &IceCredentials, remote: &IceCredentials) -> Self {
-        let (local_ufrag_prefix, probe_username) =
-            crate::off_path::dtls::credential_names(local, remote);
-        Keys {
-            local_ufrag_prefix,
+    pub(crate) fn new(local: IceTerms<'_>, remote: IceTerms<'_>) -> Self {
+        let mut keys = Keys {
+            local_ufrag_prefix: Vec::new(),
             local: SecureVec::from(local.pwd.as_bytes()),
             remote: SecureVec::from(remote.pwd.as_bytes()),
-            probe_username,
-        }
+            probe_username: Vec::new(),
+        };
+        keys.name(local, remote);
+        keys
+    }
+
+    /// Both sides' credentials replaced: the passwords re-keyed, the user names rewritten into
+    /// the buffers they already have.
+    pub(crate) fn set(&mut self, local: IceTerms<'_>, remote: IceTerms<'_>) {
+        self.local = SecureVec::from(local.pwd.as_bytes());
+        self.remote = SecureVec::from(remote.pwd.as_bytes());
+        self.name(local, remote);
+    }
+
+    /// The local USERNAME prefix a check to us names (`local:`), and the USERNAME our probes carry
+    /// (`remote:local`).
+    fn name(&mut self, local: IceTerms<'_>, remote: IceTerms<'_>) {
+        self.local_ufrag_prefix.clear();
+        self.local_ufrag_prefix
+            .extend_from_slice(local.ufrag.as_bytes());
+        self.local_ufrag_prefix.push(b':');
+        self.probe_username.clear();
+        self.probe_username
+            .extend_from_slice(remote.ufrag.as_bytes());
+        self.probe_username.push(b':');
+        self.probe_username
+            .extend_from_slice(local.ufrag.as_bytes());
     }
 }
 
