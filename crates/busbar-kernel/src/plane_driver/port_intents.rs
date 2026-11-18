@@ -60,92 +60,166 @@ use crate::push::StorePushQueue;
 /// session is cut. A plane's real chains are two or three deep (LOOKUP, then COMMIT, then WORK).
 const MAX_ROUNDS: u32 = 64;
 
-/// One intent of an answer, owned (the sink's borrows end with the answer).
+/// Where one intent field's bytes sit in its answer's [`Lent`] buffer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Span {
+    at: u32,
+    len: u32,
+}
+
+/// The bytes an answer's intents name: one buffer per answer, appended as the plane's items are read (the plane's
+/// output buffer is reused by its next call, so each item is copied once, here, and never again).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Lent {
+    bytes: Vec<u8>,
+}
+
+impl Lent {
+    /// Appends `bytes` and names them. An answer is bounded by the plane's output cap, far below 4 GiB.
+    pub fn put(&mut self, bytes: &[u8]) -> Span {
+        let at = u32::try_from(self.bytes.len()).unwrap_or(u32::MAX);
+        self.bytes.extend_from_slice(bytes);
+        Span {
+            at,
+            len: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+        }
+    }
+
+    /// The bytes `span` names (empty for a span of another buffer).
+    #[must_use]
+    pub fn bytes(&self, span: Span) -> &[u8] {
+        let at = span.at as usize;
+        self.bytes
+            .get(at..at.saturating_add(span.len as usize))
+            .unwrap_or_default()
+    }
+
+    /// The text `span` names: what [`Lent::put`] was given as `&str` reads back as it (empty otherwise).
+    #[must_use]
+    pub fn text(&self, span: Span) -> &str {
+        std::str::from_utf8(self.bytes(span)).unwrap_or_default()
+    }
+
+    /// The validated nested records `span` names.
+    #[must_use]
+    pub fn records(&self, span: Span) -> Records<'_> {
+        Records::new(self.bytes(span))
+    }
+}
+
+/// The OBS_REQUIRE classes of an OBS_SCOPE, read back from its validated records.
+pub(crate) fn required_classes(lent: &Lent, require: Span) -> impl Iterator<Item = &str> {
+    lent.records(require)
+        .filter_map(|rec| rec.ok()?.text().ok())
+}
+
+/// The (class, amount, scale) counts of an OBSERVE, read back from its validated USAGE records.
+pub(crate) fn observed_counts(lent: &Lent, counts: Span) -> impl Iterator<Item = (&str, u64, u32)> {
+    lent.records(counts).filter_map(|rec| {
+        let (head, class) = rec
+            .ok()?
+            .pod_tail::<busbar_plugin_abi::plane::UsageRec>()
+            .ok()?;
+        Some((std::str::from_utf8(class).ok()?, head.amount, head.scale))
+    })
+}
+
+/// The (name, digest) items of a SIGHT, read back from its validated pair records.
+pub(crate) fn sighted_items(lent: &Lent, items: Span) -> impl Iterator<Item = (&str, [u8; 32])> {
+    lent.records(items).filter_map(|rec| {
+        let (name, digest) = rec.ok()?.pair().ok()?;
+        Some((name, <[u8; 32]>::try_from(digest).ok()?))
+    })
+}
+
+/// One intent of an answer. Its bytes live in the answer's [`Lent`] buffer (copied there once, as the sink's borrows end
+/// with the answer); a [`Span`] names them. A nested record list (OBS_REQUIRE, OBSERVE counts, SIGHT items, COMMIT
+/// ops, PUSH records, a CHANNEL head) keeps the records the adapter validated, read again where they are used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Intent {
     Lookup {
         flags: u32,
         limit: u32,
-        key: Vec<u8>,
+        key: Span,
     },
     Store {
         flags: u32,
         ttl_s: u64,
-        key: Vec<u8>,
-        value: Vec<u8>,
+        key: Span,
+        value: Span,
     },
     Delete {
         flags: u32,
-        key: Vec<u8>,
+        key: Span,
     },
     /// `ops` = the nested REC_PRED*, REC_PUT*, REC_DEL* the adapter validated.
     Commit {
         check: u32,
-        ops: Vec<u8>,
+        ops: Span,
     },
     Work {
         check: u32,
         op: u32,
-        target: Option<String>,
-        reference: Option<String>,
+        target: Option<Span>,
+        reference: Option<Span>,
     },
     /// `recs` = the nested records core's push queue copies and owns.
     Push {
         ttl_s: u64,
-        recs: Vec<u8>,
+        recs: Span,
     },
     Signal {
         flags: u32,
-        key: Vec<u8>,
+        key: Span,
     },
     /// ENTITLE: does the verified principal hold `grant` (§12.11).
     Entitle {
         check: u32,
-        grant: String,
+        grant: Span,
     },
     /// JUDGE: the destination guard on `dest` (§12.1); `class` <= 4 and `flags` are checked when the answer is read.
     Judge {
         check: u32,
         class: u32,
         flags: u32,
-        dest: String,
+        dest: Span,
     },
     /// MINT: seal a ticket for the verified subject (§12.11); `flags` = MINT_ONCE?.
     Mint {
         check: u32,
         flags: u32,
         ttl_s: u64,
-        scope: Option<String>,
-        audience: Option<String>,
-        prefix: Option<String>,
-        record: Option<Vec<u8>>,
+        scope: Option<Span>,
+        audience: Option<Span>,
+        prefix: Option<Span>,
+        record: Option<Span>,
     },
     /// SIGN: sign `payload` with the host's key (§12.11); `flags` = SIGN_JWS_COMPACT or SIGN_JWS_DETACHED.
     Sign {
         check: u32,
         flags: u32,
-        payload: Vec<u8>,
+        payload: Span,
     },
     /// CONNECT: a caller connection to a configured upstream (§12.12); `op` = CONNECT_BEGIN, _STATUS or _REVOKE.
     Connect {
         check: u32,
         op: u32,
-        upstream: String,
-        return_to: Option<String>,
+        upstream: Span,
+        return_to: Option<Span>,
     },
     /// RENDEZVOUS: `flags` = RV_ACCEPT (a client's offer, accepted as client exchange `exchange`) or RV_REMOTE
     /// (the far end's answer for upstream exchange `exchange`); `description` = the session description (§12.13).
     Rendezvous {
         exchange: u32,
         flags: u32,
-        description: String,
+        description: Span,
     },
     /// OBS_SCOPE: create, reattach or close usage-observation custody (§12.4); `require` = the OBS_REQUIRE classes.
     ObsScope {
         check: u32,
         op: u32,
         scope: Option<[u8; 32]>,
-        require: Vec<String>,
+        require: Span,
     },
     /// OBSERVE: one owned usage observation (§12.4); `counts` = (class, amount, scale).
     Observe {
@@ -154,31 +228,31 @@ pub enum Intent {
         rated_subject: u32,
         revision_order: u64,
         scope: [u8; 32],
-        event: Vec<u8>,
-        component: Vec<u8>,
-        revision: Option<Vec<u8>>,
-        counts: Vec<(String, u64, u32)>,
-        evidence: Option<Vec<u8>>,
+        event: Span,
+        component: Span,
+        revision: Option<Span>,
+        counts: Span,
+        evidence: Option<Span>,
     },
     /// SIGHT: the plane observed `party` offering `items` (name, SHA-256 digest); no answer (§12.14).
     Sight {
-        party: String,
+        party: Span,
         catalog: Option<[u8; 32]>,
-        items: Vec<(String, [u8; 32])>,
+        items: Span,
     },
     /// TRUST: `op` = TRUST_SERVES (with its optional item) or TRUST_STATE (§12.14).
     Trust {
         check: u32,
         op: u32,
-        party: String,
-        item: Option<(String, Option<[u8; 32]>)>,
+        party: Span,
+        item: Option<(Span, Option<[u8; 32]>)>,
     },
     /// TRUST_VERIFY: `signatures` (a JSON array) over `payload`, against the root core holds for `party`.
     TrustVerify {
         check: u32,
-        party: String,
-        payload: Vec<u8>,
-        signatures: Vec<u8>,
+        party: Span,
+        payload: Span,
+        signatures: Span,
     },
     /// CHANNEL: attach `exchange` to a shared upstream channel (§12.19); `head` = the nested HTTP head records.
     Channel {
@@ -186,13 +260,13 @@ pub enum Intent {
         carrier: u32,
         flags: u32,
         framing: u32,
-        key: String,
-        head: Vec<u8>,
+        key: Span,
+        head: Span,
     },
     /// CH_READY: the greeting session's greeting is done; `tail` is handed to later attachers.
     ChReady {
         exchange: u32,
-        tail: Vec<u8>,
+        tail: Span,
     },
 }
 
@@ -514,7 +588,12 @@ impl<'h> Resolver<'h> {
 
     /// Applies `intents` in answer order and returns the pieces to deliver, in the IF order.
     #[must_use]
-    pub fn resolve<'i>(&self, intents: &'i [Intent], held: &mut Channels) -> Pieces<'i> {
+    pub fn resolve<'i>(
+        &self,
+        intents: &[Intent],
+        lent: &'i Lent,
+        held: &mut Channels,
+    ) -> Pieces<'i> {
         // STORE, DELETE, COMMIT, PUSH and SIGNAL first, in answer order; LOOKUP and WORK read what they wrote.
         // A failed write's key is the first kind of piece, so it is delivered from here as it fails.
         let mut pieces = Pieces::new();
@@ -529,6 +608,7 @@ impl<'h> Resolver<'h> {
                     key,
                     value,
                 } => {
+                    let (key, value) = (lent.bytes(*key), lent.bytes(*value));
                     let done = self
                         .scope(flags & LK_CALLER != 0)
                         .ok_or(RecordsDenied::Invalid)
@@ -538,6 +618,7 @@ impl<'h> Resolver<'h> {
                     }
                 }
                 Intent::Delete { flags, key } => {
+                    let key = lent.bytes(*key);
                     let done = self
                         .scope(flags & LK_CALLER != 0)
                         .ok_or(RecordsDenied::Invalid)
@@ -550,16 +631,17 @@ impl<'h> Resolver<'h> {
                     // A Reply refuses only past its cap; a commit answer is a few words.
                     let put = encode_committed(
                         committed.get_or_insert_with(Reply::new),
-                        &[self.commit(*check, ops)],
+                        &[self.commit(*check, lent.bytes(*ops))],
                     );
                     debug_assert!(put.is_ok(), "COMMITTED answers fit a Reply");
                 }
                 Intent::Push { ttl_s, recs } => {
-                    if let Err(denied) = self.host.push(*ttl_s, recs) {
+                    if let Err(denied) = self.host.push(*ttl_s, lent.bytes(*recs)) {
                         tracing::warn!(?denied, "a plane push was not queued");
                     }
                 }
                 Intent::Signal { flags, key } => {
+                    let key = lent.bytes(*key);
                     if let Some(pending) = self.pending {
                         if let Some(admitted) = pending.admitted() {
                             signal_admitted(
@@ -590,31 +672,35 @@ impl<'h> Resolver<'h> {
                         carrier: *carrier,
                         flags: *flags,
                         framing: *framing,
-                        key,
+                        key: lent.text(*key),
                         subject: self.subject,
-                        head,
+                        head: lent.bytes(*head),
                     },
                 )),
                 Intent::ChReady { exchange, tail } => {
                     if let Some(channel) = held.get_mut(exchange) {
-                        channel.ready(tail);
+                        channel.ready(lent.bytes(*tail));
                     }
                 }
                 Intent::Rendezvous {
                     exchange,
                     flags,
                     description,
-                } => {
-                    rendezvous_pieces.extend(self.rendezvous(held, *exchange, *flags, description))
-                }
+                } => rendezvous_pieces.extend(self.rendezvous(
+                    held,
+                    *exchange,
+                    *flags,
+                    lent.text(*description),
+                )),
                 Intent::Sight {
                     party,
                     catalog,
                     items,
                 } => {
+                    let party = lent.text(*party);
                     let mut seen: smallvec::SmallVec<[(&str, [u8; 32]); 16]> =
                         smallvec::SmallVec::new();
-                    seen.extend(items.iter().map(|(name, d)| (name.as_str(), *d)));
+                    seen.extend(sighted_items(lent, *items));
                     if let Err(denied) = self.host.sight(party, *catalog, &seen) {
                         tracing::warn!(?denied, party, "a plane sighting was not recorded");
                     }
@@ -633,16 +719,16 @@ impl<'h> Resolver<'h> {
             }
         }
         let kinds = [
-            records_piece(P_LOOKUP, self.lookups(intents)),
+            records_piece(P_LOOKUP, self.lookups(intents, lent)),
             records_piece(P_COMMITTED, committed),
-            records_piece(P_OBSERVED, self.observeds(intents)),
-            records_piece(P_WORK, self.works(intents)),
-            records_piece(P_ENTITLE, self.entitles(intents)),
-            records_piece(P_JUDGED, self.judges(intents)),
-            records_piece(P_TRUST, self.trusts(intents)),
-            records_piece(P_MINTED, self.mints(intents)),
-            records_piece(P_SIGNED, self.signs(intents)),
-            records_piece(P_CONNECT, self.connects(intents)),
+            records_piece(P_OBSERVED, self.observeds(intents, lent)),
+            records_piece(P_WORK, self.works(intents, lent)),
+            records_piece(P_ENTITLE, self.entitles(intents, lent)),
+            records_piece(P_JUDGED, self.judges(intents, lent)),
+            records_piece(P_TRUST, self.trusts(intents, lent)),
+            records_piece(P_MINTED, self.mints(intents, lent)),
+            records_piece(P_SIGNED, self.signs(intents, lent)),
+            records_piece(P_CONNECT, self.connects(intents, lent)),
         ];
         pieces.extend(kinds.into_iter().flatten());
         pieces.extend(channel_pieces);
@@ -762,7 +848,7 @@ impl<'h> Resolver<'h> {
 
     /// The LOOKUP_HIT* (and CHAIN_STATE) of every LOOKUP of the answer, by index; `None` when it has none. Each
     /// record is encoded as its hit is read (the encoders write one record per element, in order).
-    fn lookups(&self, intents: &[Intent]) -> Option<Reply> {
+    fn lookups(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         let mut index = 0u32;
         for intent in intents {
@@ -773,7 +859,7 @@ impl<'h> Resolver<'h> {
             let at = index;
             index += 1;
             let looked = match self.scope(flags & LK_CALLER != 0) {
-                Some(scope) => match self.host.lookup(scope, *flags, *limit, key) {
+                Some(scope) => match self.host.lookup(scope, *flags, *limit, lent.bytes(*key)) {
                     Ok(looked) => looked,
                     Err(denied) => {
                         tracing::warn!(?denied, "a plane lookup was refused; it reads as a miss");
@@ -797,7 +883,7 @@ impl<'h> Resolver<'h> {
 
     /// The ENTITLE_ANS of every ENTITLE of the answer, in intent order; `None` when it has none. Without a
     /// verified principal there is no grant set to ask: not granted, and the host is not asked.
-    fn entitles(&self, intents: &[Intent]) -> Option<Reply> {
+    fn entitles(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Entitle { check, grant } = intent else {
@@ -805,7 +891,7 @@ impl<'h> Resolver<'h> {
             };
             let granted = self
                 .principal
-                .is_some_and(|p| self.host.entitle(p.identity, grant));
+                .is_some_and(|p| self.host.entitle(p.identity, lent.text(*grant)));
             let put =
                 encode_entitle_answers(reply.get_or_insert_with(Reply::new), &[(*check, granted)]);
             debug_assert!(put.is_ok(), "ENTITLE_ANS records fit a Reply");
@@ -814,7 +900,7 @@ impl<'h> Resolver<'h> {
     }
 
     /// The JUDGE_ANS of every JUDGE of the answer, in intent order; `None` when it has none.
-    fn judges(&self, intents: &[Intent]) -> Option<Reply> {
+    fn judges(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Judge {
@@ -826,7 +912,7 @@ impl<'h> Resolver<'h> {
             else {
                 continue;
             };
-            let verdict = self.host.judge(dest, *class, *flags);
+            let verdict = self.host.judge(lent.text(*dest), *class, *flags);
             let put = encode_judged(reply.get_or_insert_with(Reply::new), &[(*check, verdict)]);
             debug_assert!(put.is_ok(), "JUDGE_ANS records fit a Reply");
         }
@@ -868,7 +954,7 @@ impl<'h> Resolver<'h> {
     /// The OBS_SCOPE_ANS and OBS_RECEIPT of the answer's OBS_SCOPE and OBSERVE, in intent order; `None` when it
     /// has none. Custody is the verified principal's: without one every answer is OBS_REFUSED and the host is
     /// not asked. The host's calls are durable before they return, so the piece is delivered after the commit.
-    fn observeds(&self, intents: &[Intent]) -> Option<Reply> {
+    fn observeds(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             match intent {
@@ -883,7 +969,7 @@ impl<'h> Resolver<'h> {
                         Some(p) => {
                             let mut classes: smallvec::SmallVec<[&str; 16]> =
                                 smallvec::SmallVec::new();
-                            classes.extend(require.iter().map(String::as_str));
+                            classes.extend(required_classes(lent, *require));
                             self.host.obs_scope(p.identity, *op, *scope, &classes)
                         }
                     };
@@ -907,30 +993,27 @@ impl<'h> Resolver<'h> {
                     counts,
                     evidence,
                 } => {
-                    let (status, receipt) =
-                        match self.principal {
-                            None => (OBS_REFUSED, Vec::new()),
-                            Some(p) => {
-                                let mut counted: smallvec::SmallVec<[(&str, u64, u32); 16]> =
-                                    smallvec::SmallVec::new();
-                                counted.extend(counts.iter().map(|(class, amount, scale)| {
-                                    (class.as_str(), *amount, *scale)
-                                }));
-                                self.host.observe(
-                                    p.identity,
-                                    &ObservationIn {
-                                        scope: *scope,
-                                        event,
-                                        component,
-                                        revision: revision.as_deref().map(|r| (r, *revision_order)),
-                                        state: *state,
-                                        counts: &counted,
-                                        rated_subject: *rated_subject,
-                                        evidence: evidence.as_deref().unwrap_or(&[]),
-                                    },
-                                )
-                            }
-                        };
+                    let (status, receipt) = match self.principal {
+                        None => (OBS_REFUSED, Vec::new()),
+                        Some(p) => {
+                            let mut counted: smallvec::SmallVec<[(&str, u64, u32); 16]> =
+                                smallvec::SmallVec::new();
+                            counted.extend(observed_counts(lent, *counts));
+                            self.host.observe(
+                                p.identity,
+                                &ObservationIn {
+                                    scope: *scope,
+                                    event: lent.bytes(*event),
+                                    component: lent.bytes(*component),
+                                    revision: revision.map(|r| (lent.bytes(r), *revision_order)),
+                                    state: *state,
+                                    counts: &counted,
+                                    rated_subject: *rated_subject,
+                                    evidence: evidence.map_or(&[][..], |e| lent.bytes(e)),
+                                },
+                            )
+                        }
+                    };
                     let answer = ObservedAnswer::Receipt {
                         check: *check,
                         status,
@@ -946,7 +1029,7 @@ impl<'h> Resolver<'h> {
     }
 
     /// The TRUST_ANS of every TRUST and TRUST_VERIFY of the answer, in intent order; `None` when it has none.
-    fn trusts(&self, intents: &[Intent]) -> Option<Reply> {
+    fn trusts(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             // (verdict, item states of a STATE, the named member of a VERIFY, the listing's catalog hash)
@@ -954,7 +1037,7 @@ impl<'h> Resolver<'h> {
                 Intent::Trust {
                     check, op, party, ..
                 } if *op == TRUST_STATE => {
-                    let (verdict, catalog, items) = self.host.trust_state(party);
+                    let (verdict, catalog, items) = self.host.trust_state(lent.text(*party));
                     (*check, verdict, items, String::new(), catalog)
                 }
                 Intent::Trust {
@@ -963,8 +1046,8 @@ impl<'h> Resolver<'h> {
                     party,
                     item,
                 } if *op == TRUST_SERVES => {
-                    let item = item.as_ref().map(|(name, digest)| (name.as_str(), *digest));
-                    let verdict = self.host.trust_serves(party, item);
+                    let item = item.map(|(name, digest)| (lent.text(name), digest));
+                    let verdict = self.host.trust_serves(lent.text(*party), item);
                     (*check, verdict, Vec::new(), String::new(), None)
                 }
                 Intent::Trust { check, .. } => {
@@ -977,7 +1060,11 @@ impl<'h> Resolver<'h> {
                     payload,
                     signatures,
                 } => {
-                    let (verdict, named) = self.host.trust_verify(party, payload, signatures);
+                    let (verdict, named) = self.host.trust_verify(
+                        lent.text(*party),
+                        lent.bytes(*payload),
+                        lent.bytes(*signatures),
+                    );
                     (*check, verdict, Vec::new(), named, None)
                 }
                 _ => continue,
@@ -1004,7 +1091,7 @@ impl<'h> Resolver<'h> {
 
     /// The MINTED of every MINT of the answer, in intent order; `None` when it has none. A ticket binds the
     /// verified subject: without one the answer is `R_DENIED` and the host is not asked.
-    fn mints(&self, intents: &[Intent]) -> Option<Reply> {
+    fn mints(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Mint {
@@ -1023,12 +1110,12 @@ impl<'h> Resolver<'h> {
                 None => Err(R_DENIED),
                 Some(p) => self.host.mint(TicketMint {
                     subject: p.subject,
-                    scope: scope.as_deref().unwrap_or(""),
-                    audience: audience.as_deref().unwrap_or("ticket"),
+                    scope: scope.map_or("", |s| lent.text(s)),
+                    audience: audience.map_or("ticket", |s| lent.text(s)),
                     ttl_s: *ttl_s,
                     once: flags & MINT_ONCE != 0,
-                    prefix: prefix.as_deref().unwrap_or(""),
-                    record: record.as_deref().unwrap_or(&[]),
+                    prefix: prefix.map_or("", |s| lent.text(s)),
+                    record: record.map_or(&[][..], |r| lent.bytes(r)),
                 }),
             };
             let reply = reply.get_or_insert_with(Reply::new);
@@ -1044,7 +1131,7 @@ impl<'h> Resolver<'h> {
     }
 
     /// The SIGNED of every SIGN of the answer, in intent order; `None` when it has none.
-    fn signs(&self, intents: &[Intent]) -> Option<Reply> {
+    fn signs(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Sign {
@@ -1056,7 +1143,7 @@ impl<'h> Resolver<'h> {
                 continue;
             };
             let detached = *flags == SIGN_JWS_DETACHED;
-            let jws = self.host.sign(payload, detached);
+            let jws = self.host.sign(lent.bytes(*payload), detached);
             let answer = match &jws {
                 Ok(SignedJws::Compact(jws)) if !detached => {
                     SignedAnswer::Compact { check: *check, jws }
@@ -1087,7 +1174,7 @@ impl<'h> Resolver<'h> {
 
     /// The CONNECT_ANS of every CONNECT of the answer, in intent order; `None` when it has none. A connection
     /// is the verified subject's: without one the state is `CONN_REFUSED` and the host is not asked.
-    fn connects(&self, intents: &[Intent]) -> Option<Reply> {
+    fn connects(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Connect {
@@ -1101,9 +1188,12 @@ impl<'h> Resolver<'h> {
             };
             let (state, url) = match self.principal {
                 None => (CONN_REFUSED, None),
-                Some(p) => self
-                    .host
-                    .connect(*op, p.subject, upstream, return_to.as_deref()),
+                Some(p) => self.host.connect(
+                    *op,
+                    p.subject,
+                    lent.text(*upstream),
+                    return_to.map(|r| lent.text(r)),
+                ),
             };
             // Only a BEGIN carries a URL.
             let url = url.filter(|_| *op == CONNECT_BEGIN);
@@ -1117,7 +1207,7 @@ impl<'h> Resolver<'h> {
     }
 
     /// The WORK_ANS of every WORK of the answer, in intent order; `None` when it has none.
-    fn works(&self, intents: &[Intent]) -> Option<Reply> {
+    fn works(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Work {
@@ -1135,8 +1225,8 @@ impl<'h> Resolver<'h> {
             } else {
                 self.host.work(&WorkIntent {
                     op: *op,
-                    target: target.as_deref(),
-                    reference: reference.as_deref(),
+                    target: target.map(|t| lent.text(t)),
+                    reference: reference.map(|r| lent.text(r)),
                     identity: self.principal.map_or(&[], |p| p.identity),
                 })
             };
@@ -1249,6 +1339,7 @@ impl<K: Calls + ?Sized> Task<'_, K> {
                 return Err(SessionError::Violation(Violation::BadRecords));
             }
             let intents = std::mem::take(&mut answer.intents);
+            let lent = std::mem::take(&mut answer.lent);
             if screening && !intents.is_empty() {
                 let reads = intents.iter().any(prerequisite);
                 let writes = intents.iter().any(|intent| !prerequisite(intent));
@@ -1260,6 +1351,7 @@ impl<K: Calls + ?Sized> Task<'_, K> {
                 if writes {
                     held_effects = true;
                     answer.intents = intents;
+                    answer.lent = lent;
                     out.push(answer);
                     continue;
                 }
@@ -1272,7 +1364,7 @@ impl<K: Calls + ?Sized> Task<'_, K> {
             if rounds > MAX_ROUNDS {
                 return Err(SessionError::Violation(Violation::IntentStorm));
             }
-            for piece in resolver.resolve(&intents, &mut self.held) {
+            for piece in resolver.resolve(&intents, &lent, &mut self.held) {
                 let next = self.piece(
                     FROM_CORE,
                     piece.exchange,

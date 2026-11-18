@@ -29,7 +29,7 @@ use busbar_ports::plane::{PlaneIn, PlaneOut, PlanePort, PlaneSession, TargetIn};
 use busbar_ports::{FactRef, FactVal, PortError};
 
 use super::port_channels::Channels;
-use super::port_intents::{Detach, Intent};
+use super::port_intents::{Detach, Intent, Lent};
 use super::port_money::AuditRow;
 use super::usage::{SessionUsage, UsageInvalid};
 use super::{CallerEnd, HeadFields};
@@ -403,6 +403,8 @@ pub struct Answer {
     pub ex_msgs: Vec<ExMsgItem>,
     /// The intents of the answer, in answer order: core resolves them (`Task::resolve`) before any other call.
     pub intents: Vec<Intent>,
+    /// The bytes the intents name, copied once from the plane's output.
+    pub lent: Lent,
     /// WAKE_AT: the monotonic time (ns) core answers with `P_TIMER` when it passes.
     pub wake_at: Option<u64>,
     /// DETACH: the session outlives its client response.
@@ -940,15 +942,22 @@ impl Answer {
                 audience,
                 prefix,
                 record,
-            } => self.intents.push(Intent::Mint {
-                check,
-                flags,
-                ttl_s,
-                scope: scope.map(str::to_owned),
-                audience: audience.map(str::to_owned),
-                prefix: prefix.map(str::to_owned),
-                record: record.map(<[u8]>::to_vec),
-            }),
+            } => {
+                let lent = &mut self.lent;
+                let scope = scope.map(|s| lent.put(s.as_bytes()));
+                let audience = audience.map(|s| lent.put(s.as_bytes()));
+                let prefix = prefix.map(|s| lent.put(s.as_bytes()));
+                let record = record.map(|r| lent.put(r));
+                self.intents.push(Intent::Mint {
+                    check,
+                    flags,
+                    ttl_s,
+                    scope,
+                    audience,
+                    prefix,
+                    record,
+                });
+            }
             PlaneOut::Sign {
                 check,
                 flags,
@@ -956,19 +965,23 @@ impl Answer {
             } => self.intents.push(Intent::Sign {
                 check,
                 flags,
-                payload: payload.to_vec(),
+                payload: self.lent.put(payload),
             }),
             PlaneOut::Connect {
                 check,
                 op,
                 upstream,
                 return_to,
-            } => self.intents.push(Intent::Connect {
-                check,
-                op,
-                upstream: upstream.to_owned(),
-                return_to: return_to.map(str::to_owned),
-            }),
+            } => {
+                let upstream = self.lent.put(upstream.as_bytes());
+                let return_to = return_to.map(|r| self.lent.put(r.as_bytes()));
+                self.intents.push(Intent::Connect {
+                    check,
+                    op,
+                    upstream,
+                    return_to,
+                });
+            }
             PlaneOut::Rendezvous {
                 exchange,
                 flags,
@@ -976,7 +989,7 @@ impl Answer {
             } => self.intents.push(Intent::Rendezvous {
                 exchange,
                 flags,
-                description: description.to_owned(),
+                description: self.lent.put(description.as_bytes()),
             }),
             PlaneOut::ObsScope {
                 check,
@@ -984,16 +997,15 @@ impl Answer {
                 scope,
                 require,
             } => {
-                let mut classes = Vec::new();
                 for rec in require {
                     let rec = rec.map_err(|_| Violation::BadRecords)?;
-                    classes.push(rec.text().map_err(|_| Violation::BadRecords)?.to_owned());
+                    rec.text().map_err(|_| Violation::BadRecords)?;
                 }
                 self.intents.push(Intent::ObsScope {
                     check,
                     op,
                     scope,
-                    require: classes,
+                    require: self.lent.put(require.rest()),
                 });
             }
             PlaneOut::Observe {
@@ -1008,26 +1020,30 @@ impl Answer {
                 counts,
                 evidence,
             } => {
-                let mut seen = Vec::new();
                 for rec in counts {
                     let rec = rec.map_err(|_| Violation::BadRecords)?;
-                    let (head, class) = rec
+                    let (_, class) = rec
                         .pod_tail::<UsageRec>()
                         .map_err(|_| Violation::BadRecords)?;
-                    let class = std::str::from_utf8(class).map_err(|_| Violation::BadRecords)?;
-                    seen.push((class.to_owned(), head.amount, head.scale));
+                    std::str::from_utf8(class).map_err(|_| Violation::BadRecords)?;
                 }
+                let lent = &mut self.lent;
+                let event = lent.put(event);
+                let component = lent.put(component);
+                let revision = revision.map(|r| lent.put(r));
+                let counts = lent.put(counts.rest());
+                let evidence = evidence.map(|e| lent.put(e));
                 self.intents.push(Intent::Observe {
                     check,
                     state,
                     rated_subject,
                     revision_order,
                     scope,
-                    event: event.to_vec(),
-                    component: component.to_vec(),
-                    revision: revision.map(<[u8]>::to_vec),
-                    counts: seen,
-                    evidence: evidence.map(<[u8]>::to_vec),
+                    event,
+                    component,
+                    revision,
+                    counts,
+                    evidence,
                 });
             }
             PlaneOut::Sight {
@@ -1035,18 +1051,18 @@ impl Answer {
                 catalog,
                 items,
             } => {
-                let mut seen = Vec::new();
                 for rec in items {
-                    let (name, digest) = rec
+                    let (_, digest) = rec
                         .and_then(|rec| rec.pair())
                         .map_err(|_| Violation::BadRecords)?;
-                    let digest = <[u8; 32]>::try_from(digest).map_err(|_| Violation::BadRecords)?;
-                    seen.push((name.to_owned(), digest));
+                    <[u8; 32]>::try_from(digest).map_err(|_| Violation::BadRecords)?;
                 }
+                let party = self.lent.put(party.as_bytes());
+                let items = self.lent.put(items.rest());
                 self.intents.push(Intent::Sight {
-                    party: party.to_owned(),
+                    party,
                     catalog,
-                    items: seen,
+                    items,
                 });
             }
             PlaneOut::Trust {
@@ -1054,26 +1070,36 @@ impl Answer {
                 op,
                 party,
                 item,
-            } => self.intents.push(Intent::Trust {
-                check,
-                op,
-                party: party.to_owned(),
-                item: item.map(|(name, digest)| (name.to_owned(), digest)),
-            }),
+            } => {
+                let party = self.lent.put(party.as_bytes());
+                let item = item.map(|(name, digest)| (self.lent.put(name.as_bytes()), digest));
+                self.intents.push(Intent::Trust {
+                    check,
+                    op,
+                    party,
+                    item,
+                });
+            }
             PlaneOut::TrustVerify {
                 check,
                 party,
                 payload,
                 signatures,
-            } => self.intents.push(Intent::TrustVerify {
-                check,
-                party: party.to_owned(),
-                payload: payload.to_vec(),
-                signatures: signatures.to_vec(),
-            }),
+            } => {
+                let lent = &mut self.lent;
+                let party = lent.put(party.as_bytes());
+                let payload = lent.put(payload);
+                let signatures = lent.put(signatures);
+                self.intents.push(Intent::TrustVerify {
+                    check,
+                    party,
+                    payload,
+                    signatures,
+                });
+            }
             PlaneOut::Entitle { check, grant } => self.intents.push(Intent::Entitle {
                 check,
-                grant: grant.to_owned(),
+                grant: self.lent.put(grant.as_bytes()),
             }),
             PlaneOut::Judge {
                 check,
@@ -1093,51 +1119,59 @@ impl Answer {
                     check,
                     class,
                     flags,
-                    dest: dest.to_owned(),
+                    dest: self.lent.put(dest.as_bytes()),
                 });
             }
             PlaneOut::Lookup { flags, limit, key } => self.intents.push(Intent::Lookup {
                 flags,
                 limit,
-                key: key.to_vec(),
+                key: self.lent.put(key),
             }),
             PlaneOut::Store {
                 flags,
                 ttl_s,
                 key,
                 value,
-            } => self.intents.push(Intent::Store {
-                flags,
-                ttl_s,
-                key: key.to_vec(),
-                value: value.to_vec(),
-            }),
+            } => {
+                let key = self.lent.put(key);
+                let value = self.lent.put(value);
+                self.intents.push(Intent::Store {
+                    flags,
+                    ttl_s,
+                    key,
+                    value,
+                });
+            }
             PlaneOut::Delete { flags, key } => self.intents.push(Intent::Delete {
                 flags,
-                key: key.to_vec(),
+                key: self.lent.put(key),
             }),
             PlaneOut::Commit { check, ops } => self.intents.push(Intent::Commit {
                 check,
-                ops: ops.rest().to_vec(),
+                ops: self.lent.put(ops.rest()),
             }),
             PlaneOut::Work {
                 check,
                 op,
                 target,
                 reference,
-            } => self.intents.push(Intent::Work {
-                check,
-                op,
-                target: target.map(str::to_owned),
-                reference: reference.map(str::to_owned),
-            }),
+            } => {
+                let target = target.map(|t| self.lent.put(t.as_bytes()));
+                let reference = reference.map(|r| self.lent.put(r.as_bytes()));
+                self.intents.push(Intent::Work {
+                    check,
+                    op,
+                    target,
+                    reference,
+                });
+            }
             PlaneOut::Push { ttl_s, recs } => self.intents.push(Intent::Push {
                 ttl_s,
-                recs: recs.rest().to_vec(),
+                recs: self.lent.put(recs.rest()),
             }),
             PlaneOut::Signal { flags, key } => self.intents.push(Intent::Signal {
                 flags,
-                key: key.to_vec(),
+                key: self.lent.put(key),
             }),
             PlaneOut::Channel {
                 exchange,
@@ -1148,18 +1182,20 @@ impl Answer {
                 head,
             } => {
                 self.command_channel = origin == Origin::Channel;
+                let key = self.lent.put(key.as_bytes());
+                let head = self.lent.put(head.rest());
                 self.intents.push(Intent::Channel {
                     exchange,
                     carrier,
                     flags,
                     framing,
-                    key: key.to_owned(),
-                    head: head.rest().to_vec(),
+                    key,
+                    head,
                 });
             }
             PlaneOut::ChReady { exchange, tail } => self.intents.push(Intent::ChReady {
                 exchange,
-                tail: tail.to_vec(),
+                tail: self.lent.put(tail),
             }),
             PlaneOut::WakeAt(mono_ns) => self.wake_at = Some(mono_ns),
             PlaneOut::Detach { ttl_s, flags, key } => {
@@ -1675,10 +1711,14 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         session_classes.extend(answer.usage.iter().map(|usage| usage.class.to_string()));
         for intent in &answer.intents {
             match intent {
-                Intent::Observe { counts, .. } => {
-                    session_classes.extend(counts.iter().map(|(class, _, _)| class.clone()))
-                }
-                Intent::ObsScope { require, .. } => session_classes.extend(require.iter().cloned()),
+                Intent::Observe { counts, .. } => session_classes.extend(
+                    super::port_intents::observed_counts(&answer.lent, *counts)
+                        .map(|(class, _, _)| class.to_owned()),
+                ),
+                Intent::ObsScope { require, .. } => session_classes.extend(
+                    super::port_intents::required_classes(&answer.lent, *require)
+                        .map(str::to_owned),
+                ),
                 _ => {}
             }
         }

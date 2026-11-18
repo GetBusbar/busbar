@@ -464,7 +464,9 @@ fn drive_answers<K: Calls + ?Sized>(
     // STORE, COMMIT and PUSH of the end answer apply; a session that has ended can be told no result.
     let end_intents = std::mem::take(&mut last.intents);
     if !end_intents.is_empty() {
-        let _ = drive.resolver.resolve(&end_intents, &mut task.held);
+        let _ = drive
+            .resolver
+            .resolve(&end_intents, &last.lent, &mut task.held);
     }
     absorb(&mut ran, &mut None, vec![last], drive.books);
     ran.usage = task.usage().clone();

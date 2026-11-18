@@ -19,7 +19,7 @@ use busbar_kernel::channels::SessionSignals;
 use busbar_kernel::connections::{ConnectLogins, StoreConnections};
 use busbar_kernel::persistence::facade::{CoreStore, Limits};
 use busbar_kernel::persistence::startup::{Progress, Startup};
-use busbar_kernel::plane_driver::port_intents::{Intent, KernelIntents, Namespace, Resolver};
+use busbar_kernel::plane_driver::port_intents::{Intent, KernelIntents, Lent, Namespace, Resolver};
 use busbar_kernel::plane_driver::port_services::Services;
 use busbar_kernel::plane_grants::{CoreJwsSigner, GrantResolver, RequestGrants, SealedTickets};
 use busbar_kernel::plugin_records::StoreRecords;
@@ -380,47 +380,48 @@ pub(crate) struct Piece {
 /// in the reverse of the §8.6 delivery order, resolved by core as the verified `SUBJECT`. Called off the runtime
 /// (the production host blocks on it, as it does from `spawn_blocking`).
 pub fn resolve(host: &KernelIntents<StoreRecords>, connect_op: u32) -> Vec<Piece> {
+    let mut lent = Lent::default();
     let answer = vec![
         Intent::Connect {
             check: 5,
             op: connect_op,
-            upstream: CONNECTED.to_owned(),
-            return_to: Some("/settings/connections".to_owned()),
+            upstream: lent.put(CONNECTED.as_bytes()),
+            return_to: Some(lent.put(b"/settings/connections")),
         },
         Intent::Sign {
             check: 4,
             flags: busbar_plugin_abi::plane::SIGN_JWS_COMPACT,
-            payload: br#"{"name":"agent-card"}"#.to_vec(),
+            payload: lent.put(br#"{"name":"agent-card"}"#),
         },
         Intent::Mint {
             check: 3,
             flags: busbar_plugin_abi::plane::MINT_ONCE,
             ttl_s: 60,
-            scope: Some("realtime".to_owned()),
-            audience: Some("calls".to_owned()),
-            prefix: Some("ek_".to_owned()),
+            scope: Some(lent.put(b"realtime")),
+            audience: Some(lent.put(b"calls")),
+            prefix: Some(lent.put(b"ek_")),
             record: None,
         },
         Intent::Entitle {
             check: 2,
-            grant: "chat".to_owned(),
+            grant: lent.put(b"chat"),
         },
         Intent::Store {
             flags: 0,
             ttl_s: 0,
-            key: b"k".to_vec(),
-            value: b"v".to_vec(),
+            key: lent.put(b"k"),
+            value: lent.put(b"v"),
         },
         Intent::Lookup {
             flags: 0,
             limit: 1,
-            key: b"k".to_vec(),
+            key: lent.put(b"k"),
         },
     ];
     let identity = b"identity-records".as_slice();
     let resolver = Resolver::new(host, None).with_principal(SUBJECT, identity);
     resolver
-        .resolve(&answer, &mut HashMap::new())
+        .resolve(&answer, &lent, &mut HashMap::new())
         .into_iter()
         .map(|p| Piece {
             flags: p.flags,
