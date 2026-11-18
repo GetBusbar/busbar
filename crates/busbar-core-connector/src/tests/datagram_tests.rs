@@ -2735,3 +2735,55 @@ fn a_split_mixed_opening_waits_for_its_channel_before_mirroring_either_line() {
         ]
     );
 }
+
+/// THE RELEASE PROOF FOR A DATAGRAM FRAMING'S WORKING SET (owner's ruling on allocation, addendum; GROUP-storage
+/// R2.5 item 1, B1 and B2: its host buffers and its `ROUTES_CAP` route slots). Needed: every crossing of the
+/// association writes into them for its whole life. After one warm framing, 20 framings begun, settled and
+/// dropped leave less than one framing's wire buffer held.
+#[test]
+fn a_datagram_framing_begun_and_dropped_returns_its_working_set() {
+    drop(settled(scripted(Knobs::default())));
+    let start = crate::support::held_bytes();
+    let mut peak = 0;
+    for _ in 0..20 {
+        let framing = settled(scripted(Knobs::default()));
+        peak = peak.max(crate::support::held_bytes() - start);
+        drop(framing);
+    }
+    let wire = isize::try_from(crate::framer::WIRE_CAP).unwrap();
+    assert!(
+        peak >= 2 * wire,
+        "a live datagram framing holds its set ({peak} bytes)"
+    );
+    let held = crate::support::held_bytes() - start;
+    assert!(
+        held < wire,
+        "20 datagram framings dropped still hold {held} bytes"
+    );
+}
+
+/// THE RELEASE PROOF FOR A DIALLED LEG'S READ BUFFER (B3: `MAX_DATAGRAM` bytes, read into by every drive of the
+/// leg for its life). After one warm leg (the runtime's driver), 10 legs dialled and dropped leave less than one
+/// read buffer held.
+#[test]
+fn a_dialled_leg_dropped_returns_its_read_buffer() {
+    crate::support::worker().block_on(async {
+        let sink = Arc::new(Sink::default());
+        let pairing = super::Pairing::new(sink.clone(), p("127.0.0.1:3478"));
+        drop(leg(&pairing));
+        let start = crate::support::held_bytes();
+        let mut peak = 0;
+        for _ in 0..10 {
+            let dialled = leg(&pairing);
+            peak = peak.max(crate::support::held_bytes() - start);
+            drop(dialled);
+        }
+        let buffer = isize::try_from(crate::udp::MAX_DATAGRAM).unwrap();
+        assert!(
+            peak >= buffer,
+            "a live leg holds its read buffer ({peak} bytes)"
+        );
+        let held = crate::support::held_bytes() - start;
+        assert!(held < buffer, "10 legs dropped still hold {held} bytes");
+    });
+}

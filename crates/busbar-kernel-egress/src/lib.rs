@@ -169,7 +169,8 @@ mod cold;
 mod off_path;
 
 pub use pool::{
-    Failover, Member, OnExhausted, Pool, DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS,
+    Failover, Member, OnExhausted, Pool, QueueDepth, DEFAULT_FAILOVER_CAP,
+    DEFAULT_FAILOVER_DEADLINE_SECS,
 };
 pub use select::{RequestCtx, WeightedFloor};
 pub use walk::{Shape, Step, Taken, Walk, WalkPorts};

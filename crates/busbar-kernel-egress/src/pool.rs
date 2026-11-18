@@ -5,6 +5,7 @@
 
 use crate::ports::DestinationId;
 use crate::select::WeightedFloor;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 /// The walk's deadline when the pool names none. Whole seconds, and the deadline is checked before
 pub const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
@@ -106,6 +107,43 @@ pub struct Pool {
     /// `members` less the blocklist, in the same order. `None` when the blocklist names no member of
     /// this pool: then `members` is the admissible list and nothing is held twice.
     pub(crate) admissible: Option<Vec<Member>>,
+    /// The pool's waiters now.
+    pub queued: QueueDepth,
+}
+
+/// How many requests are parked in this pool's wait terminal now. It belongs to the pool, as
+/// its rotation memory does: a change looks no pool name up.
+#[derive(Debug, Default)]
+pub struct QueueDepth(AtomicI64);
+
+/// A copy of a pool is a copy of its configuration; the depth starts at zero.
+impl Clone for QueueDepth {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+/// The depth is not part of what a pool is: two pools configured alike are equal.
+impl PartialEq for QueueDepth {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for QueueDepth {}
+
+impl QueueDepth {
+    /// One waiter more (`1`) or fewer (`-1`): the depth after the change, never below zero.
+    pub(crate) fn change(&self, delta: i64) -> i64 {
+        let step = |depth: i64| depth.saturating_add(delta).max(0);
+        match self
+            .0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+                Some(step(depth))
+            }) {
+            Ok(before) | Err(before) => step(before),
+        }
+    }
 }
 
 impl Pool {

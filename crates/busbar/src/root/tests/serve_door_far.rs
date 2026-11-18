@@ -238,7 +238,7 @@ impl Telemetry for Quiet {
     fn upstream_failure(&self, _: &str, _: DestinationId, _: &'static str) {}
     fn failover(&self, _: &str, _: &'static str) {}
     fn breaker_trip(&self, _: &str, _: DestinationId) {}
-    fn queued(&self, _: &str, _: i64) {}
+    fn queued(&self, _: &str, _: i64, _: i64) {}
 }
 
 #[tokio::test]

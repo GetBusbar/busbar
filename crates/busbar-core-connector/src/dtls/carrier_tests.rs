@@ -184,3 +184,32 @@ fn a_ufrag_already_live_on_the_port_is_refused() {
         drop(first);
     });
 }
+
+/// THE RELEASE PROOF FOR A PORT'S READER BUFFER (owner's ruling on allocation, addendum; GROUP-storage R2.5
+/// item 1, B5: `udp::MAX_DATAGRAM` bytes, read into for the port's life). A carrier binds its listener's port on
+/// the first accept; when the leg and the carrier let the port go, the reader ends on its next tick and frees the
+/// buffer. After one warm carrier (the runtime's driver), five carriers that accepted once and were dropped
+/// leave less than one reader buffer held.
+#[test]
+fn a_port_let_go_returns_its_reader_buffer() {
+    crate::support::worker().block_on(async {
+        let cycle = || async {
+            let (carrier, _many) = carrier(&[("rfrag", "r-password-0123456789012")]);
+            let accepted = carrier.accept(7, "offer").await;
+            assert!(accepted.is_ok(), "the rendezvous is accepted");
+            drop(accepted);
+            drop(carrier);
+            tokio::time::sleep(TICK * 5).await;
+        };
+        cycle().await;
+        let start = crate::support::held_bytes();
+        for _ in 0..5 {
+            cycle().await;
+        }
+        let held = crate::support::held_bytes() - start;
+        assert!(
+            held < isize::try_from(crate::udp::MAX_DATAGRAM).unwrap(),
+            "five carriers let go still hold {held} bytes"
+        );
+    });
+}

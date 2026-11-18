@@ -166,43 +166,38 @@ impl<T> Items<T> {
         })
     }
 
+    /// Grows the owner's own array in place: the larger extent is charged while the smaller one is still
+    /// charged, then the old charge is let go. Nothing is copied into a second array.
     pub(crate) fn push(&mut self, value: T) -> Result<(), StorageDenied> {
         if self.values.len() == self.values.capacity() {
+            let held = self.values.capacity();
             let capacity = self.values.len().saturating_mul(2).max(1);
             let bytes = capacity
                 .checked_mul(std::mem::size_of::<T>())
                 .ok_or(StorageDenied)?;
             let credit = self.credit.source().try_reserve(bytes)?;
-            let mut next = Vec::new();
-            next.try_reserve_exact(capacity)
+            self.values
+                .try_reserve_exact(capacity - self.values.len())
                 .map_err(|_| StorageDenied)?;
-            if next
+            if self
+                .values
                 .capacity()
                 .checked_mul(std::mem::size_of::<T>())
                 .is_none_or(|n| n > credit.len())
             {
+                self.values.shrink_to(held);
                 return Err(StorageDenied);
             }
-            next.append(&mut self.values);
-            let old_values = std::mem::replace(&mut self.values, next);
-            let old_credit = std::mem::replace(&mut self.credit, credit);
-            drop(old_values);
-            drop(old_credit);
+            let old = std::mem::replace(&mut self.credit, credit);
+            drop(old);
         }
         self.values.push(value);
         Ok(())
     }
 
-    pub(crate) fn take(&mut self) -> Result<Self, StorageDenied> {
-        let empty = Self::new(self.credit.source())?;
-        Ok(std::mem::replace(self, empty))
-    }
-
-    pub(crate) fn append(&mut self, other: Self) -> Result<(), StorageDenied> {
-        for value in other {
-            self.push(value)?;
-        }
-        Ok(())
+    /// The items, taken out in order; the array and its charge stay with the owner for its next use.
+    pub(crate) fn drain(&mut self) -> std::vec::Drain<'_, T> {
+        self.values.drain(..)
     }
 
     pub(crate) fn clear(&mut self) {

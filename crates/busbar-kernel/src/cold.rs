@@ -128,30 +128,6 @@ pub(crate) fn refusal_frame(body: &[u8]) -> std::sync::Arc<[u8]> {
     std::sync::Arc::from(body)
 }
 
-// --- plane_driver::port_observations ---
-
-/// `plane_driver::port_observations`: a principal's first in-flight unit, keyed once by its
-/// instance and subject names; its later units and every lookup borrow them.
-#[cold]
-pub(crate) fn first_observing_principal(
-    book: &mut crate::plane_driver::port_observations::ByPrincipal,
-    instance: &str,
-    subject: &str,
-) {
-    let instance: std::sync::Arc<str> = std::sync::Arc::from(instance);
-    let subject: std::sync::Arc<str> = std::sync::Arc::from(subject);
-    book.entry(std::sync::Arc::clone(&instance))
-        .or_default()
-        .insert(
-            std::sync::Arc::clone(&subject),
-            crate::plane_driver::port_observations::PrincipalUnits {
-                instance,
-                subject,
-                units: Vec::new(),
-            },
-        );
-}
-
 // --- plane_driver::port_hooks ---
 
 /// `plane_driver::port_hooks`: a route-policy rejection counter's `status` label, spelled once per

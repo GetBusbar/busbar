@@ -35,6 +35,7 @@ impl Pool {
             on_exhausted: OnExhausted::default(),
             floor: WeightedFloor::default(),
             admissible: None,
+            queued: crate::pool::QueueDepth::default(),
         }
     }
 

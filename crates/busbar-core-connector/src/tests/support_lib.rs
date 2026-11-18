@@ -63,6 +63,15 @@ pub fn allocations_during<T>(run: impl FnOnce() -> T) -> (T, u64) {
     (result, after.wrapping_sub(before))
 }
 
+/// THE RELEASE PROOFS (owner's ruling on allocation, addendum): the bytes the process holds through this
+/// allocator now, on every thread. Under nextest each test is its own process, so a test reads its own.
+static HELD_BYTES: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Bytes held now (see [`HELD_BYTES`]).
+pub fn held_bytes() -> isize {
+    HELD_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 struct ObservingAllocator;
 
 #[global_allocator]
@@ -74,7 +83,14 @@ unsafe impl std::alloc::GlobalAlloc for ObservingAllocator {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
         let _ = ALLOCATIONS.try_with(|count| count.set(count.get().wrapping_add(1)));
         // SAFETY: the caller supplied GlobalAlloc's layout.
-        unsafe { std::alloc::GlobalAlloc::alloc(&std::alloc::System, layout) }
+        let pointer = unsafe { std::alloc::GlobalAlloc::alloc(&std::alloc::System, layout) };
+        if !pointer.is_null() {
+            HELD_BYTES.fetch_add(
+                isize::try_from(layout.size()).unwrap_or(isize::MAX),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+        pointer
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: std::alloc::Layout) {
@@ -124,6 +140,10 @@ unsafe impl std::alloc::GlobalAlloc for ObservingAllocator {
                 watch.set(state);
             }
         });
+        HELD_BYTES.fetch_sub(
+            isize::try_from(layout.size()).unwrap_or(isize::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         // SAFETY: the caller returned the allocation and original layout to its allocator.
         unsafe { std::alloc::GlobalAlloc::dealloc(&std::alloc::System, pointer, layout) };
     }

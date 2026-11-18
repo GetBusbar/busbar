@@ -693,3 +693,46 @@ fn a_retired_listener_stops_accepting_while_a_fork_copy_of_its_descriptor_is_ope
         }
     });
 }
+
+/// THE RELEASE PROOF FOR THE HANDLE TABLE'S SEGMENTS (owner's ruling on allocation, addendum; GROUP-storage R2.5
+/// item 3, T2: a block of slots made the first time a handle needs it, kept for the table's life). Needed: every
+/// `io.*` call reads its handle's slot without a lock, so the slot must exist before the handle does. The owner is
+/// the host's I/O: after one warm table, five tables that each made 70 handles (two segments) and closed them, then
+/// were dropped, leave less than one table's two segments held.
+#[test]
+fn a_host_io_dropped_returns_its_handle_segments() {
+    worker().block_on(async {
+        let cycle = |base: u32| {
+            let io = HostIo::new();
+            let mut held = Vec::with_capacity(70);
+            for n in 0..70 {
+                io.admit(ticket(base + n), Admission::Bind("127.0.0.1:0".into()));
+                let (handle, _) = io.listen(OWNER, ticket(base + n), "127.0.0.1:0").unwrap();
+                held.push(handle);
+            }
+            for handle in held {
+                io.close(OWNER, handle).unwrap();
+            }
+            assert_eq!(io.held(), 0);
+            drop(io);
+        };
+        cycle(1_000);
+        // The runtime's I/O driver releases a closed socket's registration on its next turn.
+        let turn = || tokio::time::sleep(std::time::Duration::from_millis(20));
+        turn().await;
+        let start = crate::support::held_bytes();
+        for round in 0..5 {
+            cycle(2_000 + round * 100);
+            turn().await;
+        }
+        let segments = isize::try_from(
+            (64 + 128) * std::mem::size_of::<arc_swap::ArcSwapOption<crate::hostio::Entry>>(),
+        )
+        .unwrap();
+        let held = crate::support::held_bytes() - start;
+        assert!(
+            held < segments,
+            "five host I/O tables dropped still hold {held} bytes"
+        );
+    });
+}

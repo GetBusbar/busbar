@@ -795,3 +795,20 @@ fn expired_cached_proof_refuses_bind_and_rebind_without_reporting_success() {
         assert!(t.s.poll_wire().is_none());
     }
 }
+
+/// THE RELEASE PROOF FOR AN ASSOCIATION'S RECORD BUFFER (owner's ruling on allocation, addendum; GROUP-storage
+/// R2.5 item 1, B4: `RECORD_BUF` bytes, the engine's output record for the association's whole life). After one
+/// warm pair, 20 pairs made and dropped leave less than one record buffer held.
+#[test]
+fn an_association_dropped_returns_its_record_buffer() {
+    drop(pair(false));
+    let start = crate::support::held_bytes();
+    for _ in 0..20 {
+        drop(pair(false));
+    }
+    let held = crate::support::held_bytes() - start;
+    assert!(
+        held < isize::try_from(super::RECORD_BUF).unwrap(),
+        "20 association pairs dropped still hold {held} bytes"
+    );
+}
