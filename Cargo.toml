@@ -141,7 +141,7 @@ serde_path_to_error = "0.1.20"
 smallvec = "1"
 socket2 = { version = "0.6", features = ["all"] }
 # THE JSON SEAM (DEP-3): sonic-rs behind `busbar_contract::json`. `arbitrary_precision` keeps every
-# number's lexeme (SERDE-NUMBERS r17), through the MattJackson fork in [patch.crates-io].
+# number's lexeme (SERDE-NUMBERS r17), through the MattJackson fork in the crates-io patch table below.
 # `sort_keys` keeps a built or edited `Value` object in key order (sonic's default is a hash map, so
 # its members would be written in no fixed order): core's JSON answers, audit lines and digests stay
 # byte-stable, in the key order serde_json's `Map` wrote (#162, SERDE-JSON-EXIT CORE-A).
