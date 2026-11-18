@@ -282,10 +282,6 @@ pub fn fallback_error_response(
     crate::ingress::native::native_error(planes.ingress_of(path), status, kind, message)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "config: the refusal renderer receives every field of the refusal it renders"
-)]
 pub(crate) fn kernel_refusal_response(
     handle: &state::AppHandle,
     planes: &crate::plane_driver::dispatch::PlaneDispatch,
@@ -1139,10 +1135,6 @@ pub fn build_split_routers_serving_doors(
     )
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "boot: a listener's routers are built once from every input the listener serves"
-)]
 pub fn build_split_routers_serving_listener(
     app: std::sync::Arc<state::App>,
     data_plugins: &crate::plugin_routes::PluginRouteTable,
@@ -1214,10 +1206,6 @@ pub fn build_admin_router_on_with_dispatch_layer(
     )
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "boot: a listener's routers are built once from every input the listener serves"
-)]
 pub fn build_data_router_on(
     handle: &std::sync::Arc<state::AppHandle>,
     plugins: &crate::plugin_routes::PluginRouteTable,

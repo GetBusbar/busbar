@@ -7,7 +7,6 @@ use busbar_contract::caps::Pass;
 use busbar_contract::DestinationId;
 use busbar_kernel_egress::exhaustion::AT_CAPACITY_RETRY_AFTER_SECS;
 use busbar_kernel_egress::pool::OnExhausted;
-use busbar_kernel_egress::ports::Clock;
 use busbar_kernel_egress::wire::{DETAIL_OVERLOADED, KIND_OVERLOADED, STATUS_SERVICE_UNAVAILABLE};
 
 fn exhausted_pool(n: usize, cooldowns: &[u64]) -> Node {
@@ -1249,11 +1248,12 @@ fn queue_won_permit_but_breaker_now_open_never_dispatches() {
         shape: _,
     } = &mut walker;
     let ports = super::ports(n, pools);
-    let Step::Wait(wait) = walk.next(&ports, n.affinity, token) else {
+    let at = n.clock.now();
+    let Step::Wait(wait) = walk.next(&ports, n.affinity, token, at) else {
         panic!("expected the queue terminal's wait");
     };
     let parked = walk
-        .park(&ports, &wait, token)
+        .park(&ports, &wait, token, at)
         .unwrap_or_else(|shed| panic!("expected a wait, got the shed {shed:?}"));
 
     node.breaker.set(
@@ -1265,8 +1265,9 @@ fn queue_won_permit_but_breaker_now_open_never_dispatches() {
     );
     let started = node.clock.now_millis();
     let waited = node.rt.block_on(parked.wait(&ports));
+    let woke = waited.at();
     let shed = walk
-        .waited(&ports, waited, token)
+        .waited(&ports, waited, token, woke)
         .expect_err("a member whose breaker opened while queued must never be dispatched to");
 
     assert_eq!(shed.status, STATUS_SERVICE_UNAVAILABLE);

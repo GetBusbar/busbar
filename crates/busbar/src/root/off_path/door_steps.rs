@@ -265,10 +265,6 @@ pub(crate) fn label_bound(
     bound
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the egress composition takes each configured part unbundled"
-)]
 pub(crate) fn compose_egress(
     facts: &DoorFacts,
     pools: &DoorPools,
@@ -276,7 +272,7 @@ pub(crate) fn compose_egress(
     conns: Arc<dyn busbar_contract::conn::PollConns>,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
-    clock: Arc<dyn busbar_kernel_egress::ports::Clock>,
+    clock: busbar_ports::clock::HostClock,
     stream_ceiling_secs: u64,
 ) -> Result<busbar_kernel::plane_driver::Egress, String> {
     use busbar_kernel_egress::{Member, OnExhausted, Pool};
@@ -384,9 +380,6 @@ pub(crate) fn compose_egress(
         );
     let unit = busbar_kernel_breaker::BreakerUnit::new()
         .with_limits(hard_down_cooldown_secs, max_honored_retry_after_secs);
-    busbar_kernel::plane_driver::declare_providers(
-        sealed.values().map(|route| route.provider.as_str()),
-    );
     Ok(busbar_kernel::plane_driver::Egress {
         caller,
         conns,
@@ -397,12 +390,11 @@ pub(crate) fn compose_egress(
         clock,
         journal,
         telemetry: Arc::new(
-            crate::root::egress_ports::WalkTelemetry::new(names, built.keys().map(String::as_str))
-                .bounded(label_bound(
-                    facts.plane.lane_prefix(),
-                    pools,
-                    &facts.metric_lanes,
-                )),
+            crate::root::egress_ports::WalkTelemetry::new(names).bounded(label_bound(
+                facts.plane.lane_prefix(),
+                pools,
+                &facts.metric_lanes,
+            )),
         ),
         pools: built,
         routes: sealed,

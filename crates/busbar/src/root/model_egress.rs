@@ -223,17 +223,16 @@ pub(crate) struct WalkCells {
     budgets: std::sync::Mutex<SpentBudgets>,
 }
 
+/// A won probe, held on the very cell the admission acted on: its drop gives the probe back to that cell (owner-
+/// checked by epoch), with no name kept and no lookup.
 struct HeldProbe {
-    unit: Arc<busbar_kernel_breaker::BreakerUnit>,
-    pool: Arc<str>,
-    destination: DestinationId,
+    cell: Arc<busbar_kernel_breaker::cell::BreakerCell>,
     epoch: u64,
 }
 
 impl Drop for HeldProbe {
     fn drop(&mut self) {
-        self.unit
-            .release_probe(&self.pool, self.destination, self.epoch);
+        self.cell.release_probe_owned(self.epoch);
     }
 }
 
@@ -263,15 +262,6 @@ impl WalkCells {
             ""
         } else {
             pool
-        }
-    }
-
-    /// The cell's name, shared from the plan's ladder keys: no copy per held probe.
-    fn cell_name(&self, pool: &str) -> Arc<str> {
-        let cell = self.cell(pool);
-        match self.plan.records.get_key_value(cell) {
-            Some((name, _)) => Arc::clone(name),
-            None => crate::root::cold::unplanned_cell_name(cell),
         }
     }
 
@@ -310,10 +300,9 @@ impl Breaker for WalkCells {
             .ok_or(Unavailable::Dead)?;
         let mut admit = adapters::try_admit(&bound.unit, self.cell(pool), translated, now)?;
         if let Some(epoch) = admit.probe_epoch {
+            // The cell the admission acted on exists now (cells are never removed), so this is a lookup.
             let held = HeldProbe {
-                unit: Arc::clone(&bound.unit),
-                pool: self.cell_name(pool),
-                destination: translated,
+                cell: bound.unit.cell(self.cell(pool), translated),
                 epoch,
             };
             let ticket = self

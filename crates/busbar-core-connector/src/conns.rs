@@ -4020,10 +4020,6 @@ impl Connector {
     }
 
     /// THE COMPOSED OPEN of a held session's upstream leg over a datagram framer's need ([`dialled`]):
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the composed open carries the open's every input to the exchange it dials"
-    )]
     fn open_dialled(
         &self,
         caller: InstanceId,
@@ -4107,10 +4103,6 @@ impl Connector {
 
     /// THE RENDEZVOUS EXCHANGE of a datagram association: [`Connector::dial_exchange`]'s dial,
     /// never pooled, because its exchange carries the association's own session description.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the dialled exchange takes the open's every input as its callers resolved them"
-    )]
     fn dial_rendezvous_exchange(
         &self,
         caller: InstanceId,
@@ -4141,10 +4133,6 @@ impl Connector {
 
     /// THE DIALLED EXCHANGE over `door`, pooled (a prepared one too: preparing means only that its
     /// opening is written at its commit, never that its line may not be shared).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the dialled exchange takes the open's every input as its callers resolved them"
-    )]
     fn dial_exchange(
         &self,
         caller: InstanceId,
@@ -4175,10 +4163,6 @@ impl Connector {
     }
 
     /// THE DIALLED EXCHANGE over `door` (a framer of a stream, or a carrier carried as itself):
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the dialled exchange takes the open's every input as its callers resolved them"
-    )]
     fn dial_exchange_pooling(
         &self,
         caller: InstanceId,

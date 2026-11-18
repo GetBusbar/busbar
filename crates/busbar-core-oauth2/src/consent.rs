@@ -143,7 +143,6 @@ pub(crate) fn handled_key(key: &str, handle: &str) -> String {
 fn staked_key(request: &ApprovalRequest<'_>) -> String {
     let request_uri = request.uri.query().and_then(|q| {
         super::routes::form_urlencoded_pairs(q)
-            .into_iter()
             .find(|(k, _)| k == "request_uri")
             .map(|(_, v)| v)
     });
@@ -178,6 +177,27 @@ pub(crate) fn is_handle(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A handle ([`is_handle`]: 64 lowercase hex digits) held by value: no heap text to make or free.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Handle([u8; 64]);
+
+impl Handle {
+    /// `text` as a handle, when it is one.
+    pub(crate) fn of(text: &str) -> Option<Self> {
+        if !is_handle(text) {
+            return None;
+        }
+        let mut bytes = [0u8; 64];
+        bytes.copy_from_slice(text.as_bytes());
+        Some(Self(bytes))
+    }
+
+    /// The handle's text.
+    pub(crate) fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.0).unwrap_or_default()
+    }
 }
 
 /// 32 fresh random bytes as 64 lowercase hex digits; `None` when the system has no entropy.
@@ -235,7 +255,7 @@ pub(crate) fn split_handle(path_and_query: &str) -> Option<(&str, &str)> {
 /// one request being answered.
 pub(crate) struct Browser {
     pub(crate) session: String,
-    pub(crate) handle: Option<String>,
+    pub(crate) handle: Option<Handle>,
 }
 
 tokio::task_local! {
@@ -267,7 +287,7 @@ pub(crate) fn approval_resolver(
 ) -> impl Fn(&ApprovalRequest<'_>) -> ApprovalDecision + Send + Sync + 'static {
     move |request| {
         let Ok((session, handle)) =
-            BROWSER.try_with(|browser| (browser.session.clone(), browser.handle.clone()))
+            BROWSER.try_with(|browser| (browser.session.clone(), browser.handle))
         else {
             return ApprovalDecision::Respond(Box::new(no_browser()));
         };
@@ -275,7 +295,10 @@ pub(crate) fn approval_resolver(
             return redirect(&login_url, request, &session);
         }
         if let Some(handle) = handle {
-            match sessions.spend(&session, &handled_key(&staked_key(request), &handle)) {
+            match sessions.spend(
+                &session,
+                &handled_key(&staked_key(request), handle.as_str()),
+            ) {
                 Some(true) => return ApprovalDecision::Approve,
                 Some(false) => return ApprovalDecision::Deny,
                 None => {}

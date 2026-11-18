@@ -810,10 +810,6 @@ impl GovState {
         })
         .await
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "config: the mint's inputs are its contract"
-    )]
     pub async fn mint_ticket_bound(
         &self,
         key_id: &str,

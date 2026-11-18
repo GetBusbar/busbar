@@ -99,7 +99,6 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn execute(
         &self,
         verb: KernelVerb,

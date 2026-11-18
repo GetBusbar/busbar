@@ -2786,10 +2786,6 @@ impl Dispatcher {
     }
 
     test_support_pub! {
-        #[expect(
-            clippy::too_many_arguments,
-            reason = "a submission names its plugin, ticket, slot, frame, class, deadline and loans apart"
-        )]
         fn submit_lent<K: Kind, I: InFrame, O: OutFrame>(
             &self,
             plugin: &Plugin<K>,
@@ -2815,10 +2811,6 @@ impl Dispatcher {
     }
 
     test_support_pub! {
-        #[expect(
-            clippy::too_many_arguments,
-            reason = "a submission names its plugin, ticket, slot, frame, class, deadline and loans apart"
-        )]
         fn submit_watched<K: Kind, I: InFrame, O: OutFrame>(
             &self,
             plugin: &Plugin<K>,
@@ -2844,10 +2836,6 @@ impl Dispatcher {
         }
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a submission names its plugin, ticket, slot, frame, class, deadline and loans apart"
-    )]
     pub(crate) fn submit_unit<K: Kind, I: InFrame, O: OutFrame>(
         &self,
         plugin: &Plugin<K>,
@@ -2923,10 +2911,6 @@ impl Dispatcher {
         reply
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a submission names its plugin, ticket, slot, frame, class, deadline and loans apart"
-    )]
     fn submit_with<K: Kind, I: InFrame, O: OutFrame>(
         &self,
         plugin: &Plugin<K>,

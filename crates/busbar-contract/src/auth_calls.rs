@@ -59,6 +59,35 @@ impl Drop for VerifyRequest {
     }
 }
 
+impl VerifyRequest {
+    /// Wipe this request for reuse by the next one on the same connection or worker: every text
+    /// and byte value is wiped in place and emptied, keeping its allocation (`peer` and `body` stay
+    /// `Some` with an empty buffer when they were set, as `query` does; refill or reset them), the credential is
+    /// dropped and the line list emptied (its own allocation kept). The fields are then refilled
+    /// with `push_str` / `extend_from_slice`, so a kept request costs no allocation per call once
+    /// its buffers have grown to the traffic.
+    pub fn clear(&mut self) {
+        use zeroize::Zeroize as _;
+        if let Some(peer) = &mut self.peer {
+            peer.zeroize();
+        }
+        if let Some(body) = &mut self.body {
+            body.zeroize();
+        }
+        self.method.zeroize();
+        self.authority.zeroize();
+        self.path.zeroize();
+        if let Some(query) = &mut self.query {
+            query.zeroize();
+        }
+        for (name, _) in &mut self.lines {
+            name.zeroize();
+        }
+        self.lines.clear();
+        self.credential = None;
+    }
+}
+
 impl Default for VerifyRequest {
     /// A request at [`AuthPoint::Head`] with nothing in it.
     fn default() -> Self {
@@ -799,4 +828,36 @@ pub fn prepare_references(
         &|reference| resolver.resolve_at_config(reference, scope),
         crate::plugin_settings::ReferenceDelivery::Strip(field_base),
     )
+}
+
+#[cfg(test)]
+mod reuse_tests {
+    use super::VerifyRequest;
+    use crate::redacted::Secret;
+
+    /// A kept request is wiped and emptied for the next call, its buffers kept; a secret value
+    /// refills its own allocation.
+    #[test]
+    fn a_cleared_request_keeps_its_buffers_and_a_secret_refills_in_place() {
+        let mut req = VerifyRequest::default();
+        req.method.push_str("POST");
+        req.path.push_str("/v1/items");
+        req.query = Some("a=1".into());
+        req.body = Some(b"payload".to_vec());
+        req.lines.push(("x-key".into(), Secret::new(b"k".to_vec())));
+        req.credential = Some(Secret::new(b"cred".to_vec()));
+        let (path_cap, body_cap) = (req.path.capacity(), req.body.as_ref().unwrap().capacity());
+        req.clear();
+        assert!(req.method.is_empty() && req.path.is_empty() && req.lines.is_empty());
+        assert_eq!(req.path.capacity(), path_cap);
+        assert_eq!(req.body.as_ref().map(Vec::capacity), Some(body_cap));
+        assert_eq!(req.query.as_deref(), Some(""));
+        assert!(req.credential.is_none());
+        req.path.push_str("/v1/other");
+        assert_eq!(req.path, "/v1/other");
+
+        let mut value = Secret::new(b"longer-value".to_vec());
+        value.refill(b"short");
+        assert_eq!(value, Secret::new(b"short".to_vec()));
+    }
 }

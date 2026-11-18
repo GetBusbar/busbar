@@ -193,10 +193,6 @@ impl ModelServing {
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the egress is composed from the door's facts and every port it is given"
-)]
 pub fn compose(
     facts: &crate::root::door_steps::DoorFacts,
     serving: &ModelServing,
@@ -204,7 +200,7 @@ pub fn compose(
     conns: Arc<dyn busbar_contract::conn::PollConns>,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
-    clock: Arc<dyn busbar_kernel_egress::ports::Clock>,
+    clock: busbar_ports::clock::HostClock,
     stream_ceiling_secs: u64,
 ) -> Result<(busbar_kernel::plane_driver::Egress, ModelShown), String> {
     let plan = &serving.pools;
@@ -295,9 +291,6 @@ pub fn compose(
         Arc::new(move || -> Arc<dyn Breaker> {
             Arc::new(WalkCells::over(app.clone(), Arc::clone(&cells)))
         });
-    busbar_kernel::plane_driver::declare_providers(
-        sealed.values().map(|route| route.provider.as_str()),
-    );
     Ok((
         busbar_kernel::plane_driver::Egress {
             caller,
@@ -309,10 +302,7 @@ pub fn compose(
             telemetry: Arc::new(ModelTelemetry {
                 app: serving.app.clone(),
                 names: stable_names,
-                queued: crate::root::egress_ports::WalkTelemetry::new(
-                    names,
-                    built.keys().map(String::as_str),
-                ),
+                queued: crate::root::egress_ports::WalkTelemetry::new(names),
             }),
             pools: built,
             routes: sealed,

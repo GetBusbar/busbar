@@ -1454,7 +1454,6 @@ pub(crate) struct ProductionUnits {
 
 impl ProductionUnits {
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn new(
         kernel: &busbar_kernel::teller::Kernel,
@@ -1465,7 +1464,6 @@ impl ProductionUnits {
         ProductionUnits::new_sharing(kernel, Arc::new(Mutex::new(durability)), admin, store)
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub(crate) fn new_sharing(
         kernel: &busbar_kernel::teller::Kernel,

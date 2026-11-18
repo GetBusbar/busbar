@@ -167,16 +167,3 @@ impl PlaneDriver {
         Ok(())
     }
 }
-
-/// Make the credential-warning seats for a generation's providers: one for each name given, and
-/// the table's spare seats for any other. Called when a generation's egress is built; the far end
-/// only reads the table it finds here (`far_end::warn_credential_refused`).
-pub fn declare_providers<'p>(providers: impl IntoIterator<Item = &'p str>) {
-    let table = crate::plane_driver::CREDENTIAL_WARNED.get_or_init(std::sync::Mutex::default);
-    let mut table = table
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    for provider in providers {
-        table.plan(provider, None);
-    }
-}

@@ -42,7 +42,7 @@ fn an_access() -> AmendBody {
     )
 }
 
-#[allow(clippy::too_many_arguments, clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps)]
 fn correction(
     amends: &str,
     subject: Subject,

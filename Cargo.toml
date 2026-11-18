@@ -203,6 +203,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(linked_section_pools)", "c
 # (clippy-crate-wide/clippy.toml) run in a second clippy pass that raises these three on the command
 # line, which outranks this table.
 [workspace.lints.clippy]
+# clippy's stock too_many_arguments threshold (7) is not a fleet rule; turned off by the owner on 18 Nov 2026.
+# No replacement rule: the number of parameters is not what the lints judge.
+too_many_arguments = "allow"
 disallowed_macros = "allow"
 disallowed_methods = "allow"
 disallowed_types = "allow"

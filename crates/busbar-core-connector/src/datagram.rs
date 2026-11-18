@@ -2336,10 +2336,6 @@ impl PortAssociations {
     }
 
     /// One message's bytes for `stream` on association `id`: whether it was taken (`false` = no
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "an emit carries the message's every flag and the port's two sinks"
-    )]
     pub fn emit(
         &self,
         id: u64,
@@ -2361,10 +2357,6 @@ impl PortAssociations {
     }
 
     /// Wait for this association's emission turn without accepting or copying a busy write.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "an emit carries the message's every flag and the port's two sinks"
-    )]
     pub async fn emit_ready(
         &self,
         id: u64,

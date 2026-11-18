@@ -8,6 +8,12 @@
 
 use foldhash::HashMap;
 
+/// `egress_ports`: a configured pool's depth cell, keyed once, on its first queued wait.
+#[cold]
+pub(crate) fn first_queued(depths: &mut HashMap<String, i64>, pool: &str, depth: i64) {
+    depths.insert(pool.to_owned(), depth);
+}
+
 /// `observe`: a plugin's observation owner and its name, made and shared once, on its first
 /// observation.
 #[cold]
@@ -31,13 +37,6 @@ pub(crate) fn first_observed(
 #[cold]
 pub(crate) fn need_refusal_code(need: u32, reason: &str) -> String {
     format!("need.{need}.{reason}")
-}
-
-/// `model_egress`: the name of a pool outside the plan, which has no breaker ladder to share
-/// a name from, copied once per held probe.
-#[cold]
-pub(crate) fn unplanned_cell_name(cell: &str) -> std::sync::Arc<str> {
-    std::sync::Arc::from(cell)
 }
 
 /// `plane_node`: a registered lane's name, keyed once, on its first resolve.

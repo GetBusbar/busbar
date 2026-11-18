@@ -43,7 +43,6 @@ pub struct MeasurementContext {
     era: RawRateEra,
 }
 impl MeasurementContext {
-    #[allow(clippy::too_many_arguments)]
     pub fn request(
         _seal: &KernelSeal,
         unit: u64,

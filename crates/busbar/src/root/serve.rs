@@ -1149,7 +1149,7 @@ pub(crate) struct DoorApply {
 
     pub(crate) scope_kinds: Vec<&'static str>,
 
-    pub(crate) clock: Arc<dyn busbar_kernel_egress::ports::Clock>,
+    pub(crate) clock: busbar_ports::clock::HostClock,
 
     pub(crate) units: Arc<busbar_kernel::host_units::UnitRecords>,
 }
@@ -2315,10 +2315,6 @@ impl DataRoutes {
         reply.answer_nested_bound(Box::pin(unit), reply_bound).await
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one unit's parts, moved into the drive that owns it"
-    )]
     pub(crate) async fn drive<C: SessionCaller + Stated + Send + Sync>(
         &self,
         plane: usize,

@@ -485,6 +485,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "socket2",
+ "tikv-jemallocator",
  "time",
  "tokio",
  "tokio-rustls",
@@ -653,6 +654,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "foldhash",
+ "tikv-jemallocator",
 ]
 
 [[package]]
@@ -661,9 +663,9 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
+ "busbar-ports",
  "busbar-plugin-abi",
  "foldhash",
- "futures",
 ]
 
 [[package]]

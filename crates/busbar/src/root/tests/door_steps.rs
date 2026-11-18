@@ -4679,7 +4679,7 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         std::sync::Arc::clone(&table) as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
         &routes,
         post as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
-        std::sync::Arc::new(crate::root::egress_ports::NodeClock::new()),
+        busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         1,
     )
     .expect("the egress composes");
@@ -4792,8 +4792,7 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
                 crate::root::plane_node::Node::new(),
             )));
-        let clock: Arc<dyn busbar_kernel_egress::ports::Clock> =
-            Arc::new(crate::root::egress_ports::NodeClock::new());
+        let clock = busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep);
         let ordinary = super::compose_egress(
             &facts,
             &pools,
@@ -4801,7 +4800,7 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             Arc::clone(&conns),
             &routes,
             Arc::clone(&journal),
-            Arc::clone(&clock),
+            clock.clone(),
             1,
         )
         .expect("ordinary egress");

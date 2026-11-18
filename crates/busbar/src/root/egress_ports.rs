@@ -6,57 +6,17 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
-use busbar_core_connector::framer::now_ns;
 use foldhash::HashMap;
 
 use busbar_kernel_egress::ports::{
-    BoxFut, Capacity, Clock, DestinationId, Permit, PermitHandle, StatedLabels, Telemetry,
+    BoxFut, Capacity, DestinationId, Permit, PermitHandle, StatedLabels, Telemetry,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-/// THE NODE'S CLOCK, as the walk reads it: the wall clock's whole seconds for every deadline, a
-/// monotonic millisecond reading from the clock's own start for the waits, and the runtime's timer
-/// for its one sleep. Both readings are the host's shared clocks (the store vocabulary's wall
-/// seconds and the framer's monotonic nanoseconds).
-#[derive(Debug, Clone, Copy)]
-pub struct NodeClock {
-    /// The host monotonic reading (`framer::now_ns`) this clock started at.
-    origin: u64,
-}
-
-impl NodeClock {
-    #[must_use]
-    pub fn new() -> Self {
-        NodeClock { origin: now_ns() }
-    }
-
-    fn since_origin(&self) -> std::time::Duration {
-        std::time::Duration::from_nanos(now_ns().saturating_sub(self.origin))
-    }
-}
-
-impl Default for NodeClock {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Clock for NodeClock {
-    fn now_secs(&self) -> u64 {
-        busbar_kernel::store::now()
-    }
-
-    fn now_millis(&self) -> u128 {
-        self.since_origin().as_millis()
-    }
-
-    fn now_micros(&self) -> u128 {
-        self.since_origin().as_micros()
-    }
-
-    fn sleep(&self, ms: u64) -> BoxFut<'_, ()> {
-        Box::pin(tokio::time::sleep(std::time::Duration::from_millis(ms)))
-    }
+/// How the node's one host clock sleeps: the runtime's timer, until an absolute `Instant` (GROUP-time 3.2).
+/// The root builds the clock with it once: `HostClock::system(tokio_sleep)`.
+pub fn tokio_sleep(at: std::time::Instant) -> busbar_ports::clock::Sleep {
+    Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(at)))
 }
 
 /// THE MEMBERS' CONCURRENCY PERMITS: a member with a `max_concurrent` holds that many slots, handed
@@ -150,7 +110,7 @@ impl Capacity for MemberPermits {
 #[derive(Debug, Default)]
 pub struct WalkTelemetry {
     pub(crate) names: HashMap<DestinationId, String>,
-    pub(crate) depths: Mutex<busbar_contract::fixed::Seats<i64>>,
+    pub(crate) depths: Mutex<HashMap<String, i64>>,
     pub(crate) bound: LabelBound,
 }
 
@@ -287,12 +247,14 @@ impl Telemetry for WalkTelemetry {
                 .depths
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Ok(depth) = depths.claim(pool) else {
-                // Not planned and no spare seat left: this pool's depth is not kept.
-                return;
-            };
-            *depth = depth.saturating_add(delta).max(0);
-            *depth
+            if let Some(depth) = depths.get_mut(pool) {
+                *depth = depth.saturating_add(delta).max(0);
+                *depth
+            } else {
+                let depth = 0_i64.saturating_add(delta).max(0);
+                crate::root::cold::first_queued(&mut depths, pool, depth);
+                depth
+            }
         };
         busbar_kernel::telemetry::pool_queued_on(pool, depth);
     }

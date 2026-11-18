@@ -737,7 +737,6 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
     results
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_case(
     env: &Env,
     s: &Scenario,

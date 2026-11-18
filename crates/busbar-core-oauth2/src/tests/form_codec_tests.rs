@@ -8,7 +8,10 @@ use super::form_urlencoded_pairs;
 
 #[test]
 fn form_pairs_decode_plus_escapes_and_drop_pairs_without_an_equals() {
-    let pairs = form_urlencoded_pairs("a=1&b=x+y&c=%2B&d&e=%zz&f=%C3%A9&g=%FF&=v&k=a=b&&h=%4");
+    let pairs: Vec<(String, String)> =
+        form_urlencoded_pairs("a=1&b=x+y&c=%2B&d&e=%zz&f=%C3%A9&g=%FF&=v&k=a=b&&h=%4")
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
     let expected: Vec<(String, String)> = [
         ("a", "1"),
         ("b", "x y"),
@@ -25,7 +28,9 @@ fn form_pairs_decode_plus_escapes_and_drop_pairs_without_an_equals() {
     .collect();
     assert_eq!(pairs, expected);
     assert_eq!(
-        form_urlencoded_pairs("x=%+41&y=%2+"),
+        form_urlencoded_pairs("x=%+41&y=%2+")
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect::<Vec<_>>(),
         vec![
             ("x".to_owned(), "% 41".to_owned()),
             ("y".to_owned(), "%2 ".to_owned())

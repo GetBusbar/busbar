@@ -90,23 +90,6 @@ pub mod ports;
         clippy::allow_attributes_without_reason
     )
 )]
-pub mod race;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
 pub mod select;
 
 // busbar:request-path
@@ -189,7 +172,7 @@ pub use pool::{
     Failover, Member, OnExhausted, Pool, DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS,
 };
 pub use select::{RequestCtx, WeightedFloor};
-pub use walk::{Shape, Step, Taken, Walk, WalkNow, WalkPorts};
+pub use walk::{Shape, Step, Taken, Walk, WalkPorts};
 pub use wire::Shed;
 
 #[cfg(test)]

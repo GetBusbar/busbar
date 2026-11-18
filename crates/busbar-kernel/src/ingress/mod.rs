@@ -248,7 +248,6 @@ pub fn pool_label<'a>(app: &Arc<App>, model: &'a str) -> &'a str {
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
 pub fn finish(
     app: &Arc<App>,
     _gov: &crate::governance::GovCtx,
@@ -262,10 +261,6 @@ pub fn finish(
     finish_inner(app, ingress_protocol, pool, started, resp, Some(charge))
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the ingress terminal's public signature carries the whole admission context"
-)]
 pub fn finish_admitted(
     app: &Arc<App>,
     _gov: &crate::governance::GovCtx,

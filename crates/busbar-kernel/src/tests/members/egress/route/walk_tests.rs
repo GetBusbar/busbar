@@ -552,7 +552,7 @@ use busbar_kernel_breaker::cfg::{BreakerCfg, TripConfig, TripMode};
 use busbar_kernel_breaker::{BreakerUnit, LaneState};
 use busbar_kernel_egress::pool::OnExhausted;
 use busbar_kernel_egress::ports::{
-    Admit, Breaker, Capacity, Classified, Clock, Unavailable, UpstreamStatus,
+    Admit, Breaker, Capacity, Classified, Unavailable, UpstreamStatus,
 };
 use busbar_kernel_egress::wire::STATUS_SERVICE_UNAVAILABLE;
 

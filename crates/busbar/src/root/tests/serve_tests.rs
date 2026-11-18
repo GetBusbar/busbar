@@ -47,7 +47,6 @@ pub(crate) async fn process_store() -> std::sync::Arc<busbar_kernel::persistence
         .clone()
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn build_process_app(
     cfg: busbar_kernel::config::RootCfg,
     plugins: busbar_kernel::config::PluginsCfg,

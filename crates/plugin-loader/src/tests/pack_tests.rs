@@ -13,8 +13,12 @@ fn native_library() -> std::path::PathBuf {
         .and_then(std::path::Path::parent)
         .unwrap()
         .join("examples")
-        .join(busbar_plugin_loader::plugin_library_filename(
-            "native_pack_fixture",
+        // The platform's library file name (what `plugin_library_filename` answers; that helper is
+        // test-support only, and this binary's test build does not enable the feature).
+        .join(format!(
+            "{}native_pack_fixture{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
         ));
     assert!(
         path.is_file(),

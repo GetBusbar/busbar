@@ -809,10 +809,6 @@ impl AuthMiddleware {
         })
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one chain walk carries the head, the clock reading and both of its outputs"
-    )]
     async fn walk(
         &self,
         head: &ChainHead,

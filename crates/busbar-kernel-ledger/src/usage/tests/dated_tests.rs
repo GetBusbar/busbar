@@ -516,3 +516,62 @@ fn measurement_dated_readback_prices_only_reported_classes_at_the_serving_entry(
         Err(MoneyError::ClassUnpriced { .. })
     ));
 }
+
+/// The fee eras against the list they replaced: a fixed pseudo-random run of charges and refunds
+/// over a handful of eras (legacy zero included) gives the same rows in first-seen order, the same
+/// counts, and the same split of any billable total.
+#[test]
+fn fee_eras_equal_the_list_they_replaced_over_a_random_run() {
+    let mut state = 0x2545_F491_4F6C_DD1D_u64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    // The list as it was: one entry per era in first-seen order, and the dated total.
+    let mut model: Vec<(u64, u64)> = Vec::new();
+    let mut total = 0u64;
+    let mut eras = FeeEras::<u64>::default();
+    for step in 0..4_000 {
+        let roll = next();
+        let era = (roll >> 8) % 6; // 0 is the implicit remainder
+        if roll % 3 == 0 {
+            eras.refund(era);
+            if let Some((_, n)) = model.iter_mut().find(|(e, n)| *e == era && *n > 0) {
+                *n -= 1;
+                total -= 1;
+            }
+        } else {
+            eras.charge(era);
+            if era != 0 {
+                match model.iter_mut().find(|(e, _)| *e == era) {
+                    Some((_, n)) => *n += 1,
+                    None => model.push((era, 1)),
+                }
+                total += 1;
+            }
+        }
+        if step % 11 == 0 {
+            assert_eq!(eras.dated(), model.as_slice(), "step {step}");
+            let want: Vec<(u64, u64)> = model
+                .iter()
+                .copied()
+                .chain([(0, 500u64.saturating_sub(total))])
+                .collect();
+            assert_eq!(eras.split(500).collect::<Vec<_>>(), want, "step {step}");
+        }
+    }
+}
+
+/// A split read back from durable rows keeps the first-seen order and finds each era again.
+#[test]
+fn fee_eras_read_back_are_found_by_era() {
+    let mut eras = FeeEras::<u64>::of([(9, 2), (0, 5), (4, 0), (7, 1)]);
+    assert_eq!(eras.dated(), &[(9, 2), (7, 1)]);
+    eras.charge(7);
+    eras.charge(5);
+    eras.refund(9);
+    assert_eq!(eras.dated(), &[(9, 1), (7, 2), (5, 1)]);
+    assert_eq!(eras, FeeEras::<u64>::of([(9, 1), (7, 2), (5, 1)]));
+}

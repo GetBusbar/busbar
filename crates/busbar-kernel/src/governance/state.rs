@@ -450,10 +450,6 @@ impl GovState {
         self.record_usage_served(cost, key, pool, model, None, units, now);
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the accrual inputs are distinct scalars of one request"
-    )]
     pub fn record_usage_served(
         &self,
         cost: &crate::cost::CostModel,
@@ -468,10 +464,6 @@ impl GovState {
         self.record_usage_served_in_era(cost, key, pool, model, provider, units, now, era);
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the accrual inputs are distinct scalars of one request"
-    )]
     pub fn record_usage_served_in_era(
         &self,
         cost: &crate::cost::CostModel,
@@ -496,10 +488,6 @@ impl GovState {
         .expect("whole usage accrual exceeds Count range");
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the accrual inputs are distinct scalars of one request"
-    )]
     pub fn record_counts_served_in_era(
         &self,
         cost: &crate::cost::CostModel,
@@ -516,10 +504,6 @@ impl GovState {
 
     /// [`Self::record_counts_served_in_era`] over the budget chain the unit's admission resolved
     /// and carried ([`crate::governance::FeeCharge::chain`]), where it carried one.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the accrual inputs are distinct scalars of one request"
-    )]
     pub fn record_counts_served_on(
         &self,
         cost: &crate::cost::CostModel,
@@ -688,10 +672,6 @@ impl GovState {
         Ok(())
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the accrual inputs are distinct scalars of one request"
-    )]
     fn record_lane_metering_attributed(
         &self,
         key_id: &str,
@@ -789,10 +769,6 @@ impl GovState {
         );
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the accrual inputs are distinct scalars of one request"
-    )]
     pub(crate) fn record_metered_request_dated<E: Into<RawRateEra>>(
         &self,
         key_id: &str,
@@ -816,10 +792,6 @@ impl GovState {
         );
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the accrual inputs are distinct scalars of one request"
-    )]
     pub(crate) fn record_metered_request_in_era(
         &self,
         key_id: &str,
@@ -842,10 +814,6 @@ impl GovState {
         .expect("metering accumulation exceeds Count range");
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the accrual inputs are distinct scalars of one request"
-    )]
     fn try_record_metered_request_in_era(
         &self,
         key_id: &str,

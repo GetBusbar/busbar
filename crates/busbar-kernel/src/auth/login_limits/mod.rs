@@ -336,7 +336,7 @@ pub struct Canonical {
 
 /// A declared name was posted more than once.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DuplicateField(pub String);
+pub struct DuplicateField(pub std::sync::Arc<str>);
 
 /// Reduce a posted form to the declared one.
 pub fn canonicalise(
@@ -347,10 +347,10 @@ pub fn canonicalise(
     let mut account = None;
     let mut seen_text = false;
     for field in &form.fields {
-        let mut values = posted.iter().filter(|(k, _)| *k == field.name);
+        let mut values = posted.iter().filter(|(k, _)| k.as_str() == &*field.name);
         let value = values.next();
         if values.next().is_some() {
-            return Err(DuplicateField(field.name.clone()));
+            return Err(DuplicateField(std::sync::Arc::clone(&field.name)));
         }
         if field.kind == FieldKind::Text && !seen_text {
             seen_text = true;

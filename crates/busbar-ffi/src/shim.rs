@@ -180,7 +180,6 @@ pub trait Session3<A1: RawArg, A2: RawArg, A3: RawArg, const S: usize>: Image {
     ) -> Status;
 }
 pub trait Session4<A1: RawArg, A2: RawArg, A3: RawArg, A4: RawArg, const S: usize>: Image {
-    #[allow(clippy::too_many_arguments)]
     fn on(
         p: &Self::Plugin,
         h: &'static Host,
@@ -576,7 +575,6 @@ pub(crate) unsafe extern "C" fn session3<
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 /// # Safety
 /// Uphold the module entry contract and `vt::EntryFn5`. Exclude every other access/removal of this
 /// session token until the adapter's mutable session borrow ends; the slot remains instance-owned.

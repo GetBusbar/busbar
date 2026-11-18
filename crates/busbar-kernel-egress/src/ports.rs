@@ -252,23 +252,6 @@ impl std::fmt::Display for DurabilityUnavailable {
 
 impl std::error::Error for DurabilityUnavailable {}
 
-/// `// contract:` the node's clock and its only sleep.
-pub trait Clock: Send + Sync {
-    /// Whole seconds since the epoch. Every deadline in the walk is second-granular, exactly as
-    fn now_secs(&self) -> u64;
-
-    /// Milliseconds since an arbitrary fixed point, for the one wait that needs sub-second
-    fn now_millis(&self) -> u128;
-
-    /// Microseconds since the same fixed point, for a latency sample: 1.5.5 measured an
-    fn now_micros(&self) -> u128 {
-        self.now_millis().saturating_mul(1000)
-    }
-
-    /// A future that completes no earlier than `ms` milliseconds from now.
-    fn sleep(&self, ms: u64) -> BoxFut<'_, ()>;
-}
-
 /// THE LABELS A PLANE STATED for one attempt's counters (`OnPieceOut::metric_pool` /
 /// `metric_lane`): each `None` where it stated none. Words, never trusted: the counters take a
 /// stated word only from the bound their implementation holds, and keep their own otherwise.

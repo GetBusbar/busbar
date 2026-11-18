@@ -6,7 +6,7 @@ use super::{member, Node, Refusal, Routed, STREAM_CEILING_SECS};
 use busbar_contract::conn::ConnError;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::DestinationId;
-use busbar_kernel_egress::ports::{disposition, Clock};
+use busbar_kernel_egress::ports::disposition;
 
 const CEILING_MS: u64 = STREAM_CEILING_SECS * 1000;
 

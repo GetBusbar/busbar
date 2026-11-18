@@ -142,6 +142,13 @@ impl Secret<Vec<u8>> {
         (self.0.as_mut_ptr(), self.0.len())
     }
 
+    /// Replace the held bytes with `bytes`: the old ones are wiped first and the allocation is
+    /// reused (it grows only when `bytes` is longer than any value it held).
+    pub fn refill(&mut self, bytes: &[u8]) {
+        self.0.zeroize();
+        self.0.extend_from_slice(bytes);
+    }
+
     /// Keep the first `n` bytes, the value a plugin wrote: the bytes past them are wiped in place
     pub fn keep(&mut self, n: usize) {
         let n = n.min(self.0.len());

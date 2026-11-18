@@ -1878,10 +1878,6 @@ impl Framing {
         self.token
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a begin states every input its ABI call carries"
-    )]
     fn begin_on(
         door: Arc<dyn FramerDoor>,
         ticket: Option<Box<dyn crate::carrier::Side>>,

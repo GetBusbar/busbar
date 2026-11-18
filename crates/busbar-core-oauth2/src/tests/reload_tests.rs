@@ -132,7 +132,7 @@ async fn a_reload_that_moves_the_admin_listener_is_refused() {
         config.authoring(&busbar_kernel::test_hooks::tokens::seal()),
     )
     .expect("the owner config serializes");
-    let refused = crate::plane::seam_build::<crate::NoConnections>(
+    let Err(refused) = crate::plane::seam_build::<crate::NoConnections>(
         block,
         Vec::new(),
         Vec::new(),
@@ -141,8 +141,9 @@ async fn a_reload_that_moves_the_admin_listener_is_refused() {
         "https://127.0.0.1:8081".to_string(),
     )
     .await
-    .err()
-    .expect("a generation that moves the admin origin must not build");
+    else {
+        panic!("a generation that moves the admin origin must not build");
+    };
     assert!(
         refused.contains("Restart busbar") && refused.contains(crate::testkit::ADMIN_ORIGIN),
         "{refused}"

@@ -3,13 +3,15 @@
 
 //! THE WALK: the one stepper that answers, attempt by attempt, which member is next or what the
 
+use std::time::Duration;
+
 use busbar_contract::caps::{Pass, Route};
+use busbar_ports::clock::{Deadline, HostClock, Reading};
 use foldhash::HashMap;
 
 use crate::exhaustion::{least_bad, retry_after_secs};
 use crate::pool::{Member, OnExhausted, Pool};
-use crate::ports::{Breaker, Capacity, Clock, DestinationId, Permit, Telemetry, Unavailable};
-use crate::race;
+use crate::ports::{Breaker, Capacity, DestinationId, Permit, Telemetry, Unavailable};
 use crate::select::{pick_among, PickInput, RequestCtx};
 use crate::wire::Shed;
 
@@ -19,8 +21,8 @@ pub struct WalkPorts<'p> {
     pub breaker: &'p dyn Breaker,
     /// The pools' permit store.
     pub capacity: &'p dyn Capacity,
-    /// The clock and its sleep.
-    pub clock: &'p dyn Clock,
+    /// The host clock: the walk's waits sleep on it; the walk reads it only as the wake of a wait.
+    pub clock: &'p HostClock,
     /// The counters.
     pub telemetry: &'p dyn Telemetry,
     /// The pools, by name.
@@ -109,8 +111,10 @@ pub struct Parked<'p> {
     /// The members the hooks kept ([`Wait`]'s), handed on to the shed.
     members: Vec<Member>,
     waiting: Vec<DestinationId>,
-    bound_ms: u64,
-    started: u128,
+    /// When the wait gives up: the pool's bound from the park, capped by the walk's deadline.
+    until: Deadline,
+    /// The reading the park was made at.
+    at: Reading,
 }
 
 /// What a wait came back with: the member that freed a slot, its permit and the probe its breaker
@@ -119,17 +123,17 @@ pub struct Waited<'p> {
     pool: &'p Pool,
     members: Vec<Member>,
     won: Option<(Member, Permit, Option<u64>)>,
+    /// The reading of the wake that ended the wait: the wake's own, or the deadline's time when it ran out.
+    at: Reading,
 }
 
-/// The op's one reading of the egress clock's two scales, taken at its entry and handed to the walk (which reads
-/// no clock itself): `secs` (epoch seconds, the deadline) and `millis` (the monotonic point the bounded wait
-/// measures from).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WalkNow {
-    /// `Clock::now_secs`: whole seconds since the epoch.
-    pub secs: u64,
-    /// `Clock::now_millis`: milliseconds since the clock's fixed point.
-    pub millis: u128,
+impl Waited<'_> {
+    /// The reading of the wake that ended the wait (the deadline's time when the wait ran out): the time
+    /// [`Walk::waited`] is judged at.
+    #[must_use]
+    pub fn at(&self) -> Reading {
+        self.at
+    }
 }
 
 /// ONE UNIT'S WALK: its request context (deadline, every member tried, every pool visited), where
@@ -146,9 +150,9 @@ pub struct Walk {
 impl Walk {
     /// A walk over `pool` starting now: its budget is the pool's request timeout.
     #[must_use]
-    pub fn start(ports: &WalkPorts<'_>, pool: &str, now: WalkNow) -> Self {
+    pub fn start(ports: &WalkPorts<'_>, pool: &str, at: Reading) -> Self {
         Self {
-            ctx: RequestCtx::new(budget_secs(ports.pools, pool), now.secs, now.millis),
+            ctx: RequestCtx::new(budget_secs(ports.pools, pool), secs(at), millis(at)),
             phase: Phase::Primary(pool.to_string()),
             hops: 0,
             taken: 0,
@@ -157,9 +161,9 @@ impl Walk {
 
     /// A walk with no pool to walk, bounded by `budget_secs` from now: one health probe's. Its one
     #[must_use]
-    pub fn pinned(budget_secs: u64, now: WalkNow) -> Self {
+    pub fn pinned(budget_secs: u64, at: Reading) -> Self {
         Self {
-            ctx: RequestCtx::new(budget_secs, now.secs, now.millis),
+            ctx: RequestCtx::new(budget_secs, secs(at), millis(at)),
             phase: Phase::Shed(Shed::empty_pool()),
             hops: 0,
             taken: 0,
@@ -200,8 +204,9 @@ impl Walk {
         ports: &WalkPorts<'_>,
         affinity: Option<u64>,
         token: &Pass<Route>,
+        at: Reading,
     ) -> Step {
-        self.next_shaped(ports, affinity, None, token)
+        self.next_shaped(ports, affinity, None, token, at)
     }
 
     /// [`Self::next`], each pick's members as the unit's hooks `shape` them.
@@ -211,8 +216,9 @@ impl Walk {
         affinity: Option<u64>,
         shape: Option<&dyn Shape>,
         token: &Pass<Route>,
+        at: Reading,
     ) -> Step {
-        let now = ports.clock.now_secs();
+        let now = secs(at);
         loop {
             if self.ctx.expired(now) {
                 return Step::Shed(Shed::request_timeout());
@@ -336,8 +342,9 @@ impl Walk {
         destination: DestinationId,
         shape: &dyn Shape,
         token: &Pass<Route>,
+        at: Reading,
     ) -> Option<Taken> {
-        let now = ports.clock.now_secs();
+        let now = secs(at);
         if matches!(self.phase, Phase::Shed(_))
             || self.ctx.expired(now)
             || !self.ctx.is_excluded(destination)
@@ -460,15 +467,11 @@ impl Walk {
         ports: &WalkPorts<'p>,
         wait: &Wait,
         token: &Pass<Route>,
+        at: Reading,
     ) -> Result<Parked<'p>, Shed> {
+        let now = secs(at);
         let Some(pool) = ports.pools.get(&wait.pool) else {
-            return Err(pool_shed(
-                ports,
-                &wait.pool,
-                &[],
-                ports.clock.now_secs(),
-                token,
-            ));
+            return Err(pool_shed(ports, &wait.pool, &[], now, token));
         };
         let mut waiting: Vec<DestinationId> = Vec::new();
         for (destination, reason) in self.ctx.excluded_reasons() {
@@ -477,24 +480,19 @@ impl Walk {
             }
         }
         if waiting.is_empty() {
-            let shed = pool_shed(
-                ports,
-                &wait.pool,
-                &wait.members,
-                ports.clock.now_secs(),
-                token,
-            );
+            let shed = pool_shed(ports, &wait.pool, &wait.members, now, token);
             self.phase = Phase::Shed(shed.clone());
             return Err(shed);
         }
-        let started = ports.clock.now_millis();
+        let until =
+            Deadline::after(at, Duration::from_millis(wait.max_ms)).min(self.ctx.deadline());
         Ok(Parked {
             name: wait.pool.clone(),
             pool,
             members: wait.members.clone(),
             waiting,
-            bound_ms: wait.max_ms.min(self.ctx.remaining_ms(started)),
-            started,
+            until,
+            at,
         })
     }
 
@@ -504,17 +502,12 @@ impl Walk {
         ports: &WalkPorts<'_>,
         waited: Waited<'_>,
         token: &Pass<Route>,
+        at: Reading,
     ) -> Result<Taken, Shed> {
         let taken = waited.won.map(|(member, permit, probe)| {
             self.take(&waited.pool.name, member, permit, probe, true)
         });
-        let shed = pool_shed(
-            ports,
-            &waited.name,
-            &waited.members,
-            ports.clock.now_secs(),
-            token,
-        );
+        let shed = pool_shed(ports, &waited.name, &waited.members, secs(at), token);
         self.phase = Phase::Shed(shed.clone());
         taken.ok_or(shed)
     }
@@ -526,23 +519,27 @@ impl<'p> Parked<'p> {
         let pool = self.pool;
         let members = pool.admissible_members();
         let _parked = QueuedGuard::park(ports.telemetry, &pool.name);
+        let mut at = self.at;
         let won = loop {
             if self.waiting.is_empty() {
                 break None;
             }
-            let spent = ports.clock.now_millis().saturating_sub(self.started);
-            let left = self
-                .bound_ms
-                .saturating_sub(u64::try_from(spent).unwrap_or(u64::MAX));
-            let raced = race::deadline_first(
+            let Ok(woke) = busbar_ports::clock::until(
+                ports.clock,
+                self.until,
                 ports.capacity.acquire_any(&self.waiting),
-                ports.clock.sleep(left),
             )
-            .await;
-            let Ok(Some((destination, permit))) = raced else {
+            .await
+            else {
+                // The deadline's timer finished first: the time is the deadline's, read nowhere.
+                at = due(at, self.until);
                 break None;
             };
-            let now = ports.clock.now_secs();
+            at = woke.at;
+            let Some((destination, permit)) = woke.value else {
+                break None;
+            };
+            let now = secs(woke.at);
             match ports.breaker.try_admit(&pool.name, destination, now) {
                 Ok(admit) => {
                     let Some(member) = members.iter().find(|m| m.destination == destination) else {
@@ -566,7 +563,17 @@ impl<'p> Parked<'p> {
             pool,
             members: self.members,
             won,
+            at,
         }
+    }
+}
+
+/// The time a deadline names, as a reading: its monotonic point, and the wall clock moved on from `from` by as much.
+fn due(from: Reading, until: Deadline) -> Reading {
+    let by = until.mono_ns().saturating_sub(from.mono_ns);
+    Reading {
+        wall_ns: from.wall_ns.saturating_add(by),
+        mono_ns: from.mono_ns.max(until.mono_ns()),
     }
 }
 
@@ -623,4 +630,14 @@ pub(crate) fn exclude_smaller_windows(members: &[Member], failed: &Member, ctx: 
             }
         }
     }
+}
+
+/// A reading's whole wall seconds: the scale every deadline of the walk is stated in.
+fn secs(at: Reading) -> u64 {
+    at.wall_ns / 1_000_000_000
+}
+
+/// A reading's monotonic milliseconds: the scale the walk's bounded wait is measured in.
+fn millis(at: Reading) -> u128 {
+    u128::from(at.mono_ns / 1_000_000)
 }

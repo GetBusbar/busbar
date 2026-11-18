@@ -93,7 +93,6 @@ pub(crate) async fn hydrated(
 
 /// Build a test App through the actual native Store admission used at boot. Reloads
 /// reuse their carrier's admitted CoreStore, including its writer and pending custody.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn build_app(
     cfg: busbar_kernel::config::RootCfg,
     plugins: busbar_kernel::config::PluginsCfg,

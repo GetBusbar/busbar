@@ -467,10 +467,6 @@ impl LeaseTick {
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "composition takes every boot part it wires together"
-)]
 pub(crate) async fn compose_served_checked(
     native: Option<Arc<crate::root::min3_boot::Booted>>,
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
@@ -801,10 +797,6 @@ pub(crate) struct DoorEgress<'a> {
     pub(crate) journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "composition takes every boot part it wires together"
-)]
 pub(crate) async fn compose_planes(
     doors: &[(String, DoorPlane)],
     dispatcher: &Arc<Dispatcher>,
@@ -819,8 +811,8 @@ pub(crate) async fn compose_planes(
 ) -> Result<Served, String> {
     let scope = busbar_contract::config_time::ConfigScope::config_time();
 
-    let clock: Arc<dyn busbar_kernel_egress::ports::Clock> =
-        Arc::new(crate::root::egress_ports::NodeClock::new());
+    let clock: busbar_ports::clock::HostClock =
+        busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep);
     compose_planes_over(
         &crate::LINKED,
         doors,
@@ -839,10 +831,6 @@ pub(crate) async fn compose_planes(
     .await
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "composition takes every boot part it wires together"
-)]
 pub(crate) async fn compose_planes_over(
     linked: &crate::root::linked::Linked,
     doors: &[(String, DoorPlane)],
@@ -854,7 +842,7 @@ pub(crate) async fn compose_planes_over(
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
     journal: Option<&Arc<dyn busbar_kernel::plane_driver::HookJournal>>,
-    clock: &Arc<dyn busbar_kernel_egress::ports::Clock>,
+    clock: &busbar_ports::clock::HostClock,
     scope: &busbar_contract::config_time::ConfigScope,
     tables: &ServeTables,
 ) -> Result<Served, String> {
@@ -1136,7 +1124,7 @@ pub(crate) async fn compose_planes_over(
             driver: Arc::clone(&driver),
             probe_schedule,
             scope_kinds: declared.scope_kinds.clone(),
-            clock: Arc::clone(clock),
+            clock: clock.clone(),
             units: Arc::clone(kernel.units()),
         });
         served.planes.push(ServedPlane {
@@ -1269,10 +1257,6 @@ pub(crate) fn seal_secondary_scopes(
         .insert(entry.to_string(), kind.to_string());
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "composition takes every boot part it wires together"
-)]
 pub(crate) fn seal_live(
     instance: &str,
     plugin: &DoorPlane,
@@ -1280,7 +1264,7 @@ pub(crate) fn seal_live(
     scope_kinds: &[&str],
     section: &busbar_contract::yaml::Value,
     egress: Option<&DoorEgress<'_>>,
-    clock: &Arc<dyn busbar_kernel_egress::ports::Clock>,
+    clock: &busbar_ports::clock::HostClock,
     generation: u64,
     bench_below_trip_threshold: Option<bool>,
     scope: &busbar_contract::config_time::ConfigScope,
@@ -1368,7 +1352,7 @@ pub(crate) fn seal_live(
                     bound_conns(binding.clone(), Arc::clone(&egress.reach.conns)),
                     &routes,
                     Arc::clone(&egress.journal),
-                    Arc::clone(clock),
+                    clock.clone(),
                     egress.reach.stream_ceiling_secs,
                 )
                 .map(|(e, shown)| (e, Some(shown))),
@@ -1379,7 +1363,7 @@ pub(crate) fn seal_live(
                     bound_conns(binding.clone(), Arc::clone(&egress.reach.conns)),
                     &routes,
                     Arc::clone(&egress.journal),
-                    Arc::clone(clock),
+                    clock.clone(),
                     egress.reach.stream_ceiling_secs,
                 )
                 .map(|e| (e, None)),
@@ -2784,7 +2768,7 @@ impl DoorApply {
                     bound_conns(binding.clone(), Arc::clone(&r.conns)),
                     &routes,
                     Arc::clone(&r.journal),
-                    Arc::clone(&self.clock),
+                    self.clock.clone(),
                     r.stream_ceiling_secs,
                 )?;
 

@@ -1219,7 +1219,6 @@ pub(crate) struct ReplayScope<'a> {
     pub actor: &'a str,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn replayable<F, Fut>(
     cache: &ReplayCache,
     store: Option<&ReplayStore>,

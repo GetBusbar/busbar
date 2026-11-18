@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use std::borrow::Cow;
+
 use axum::response::{IntoResponse, Response};
 
 pub(super) fn as_plane(app: &busbar_kernel::state::App) -> Option<&super::plane::AsPlane> {
@@ -57,7 +59,7 @@ pub(crate) async fn authorize(
     //    the request: the stake's key is computed from the request's exact bytes.
     let (request, handle) = match without_handle(request) {
         Ok(split) => split,
-        Err(refused) => return refused,
+        Err(refused) => return *refused,
     };
     let browser = super::consent::Browser {
         session: super::consent::session_of(&start),
@@ -86,22 +88,29 @@ pub(crate) async fn authorize(
 /// The request without its trailing `busbar_consent=<T>`, and T.
 fn without_handle(
     request: axum::extract::Request,
-) -> Result<(axum::extract::Request, Option<String>), Response> {
+) -> Result<(axum::extract::Request, Option<super::consent::Handle>), Box<Response>> {
     let split = request
         .uri()
         .path_and_query()
         .and_then(|pq| super::consent::split_handle(pq.as_str()))
-        .map(|(base, handle)| (base.parse::<axum::http::Uri>(), handle.to_string()));
+        .and_then(|(base, handle)| {
+            Some((
+                base.parse::<axum::http::Uri>(),
+                super::consent::Handle::of(handle)?,
+            ))
+        });
     let Some((uri, handle)) = split else {
         return Ok((request, None));
     };
     let Ok(uri) = uri else {
-        return Err((
-            axum::http::StatusCode::BAD_REQUEST,
-            [(axum::http::header::CACHE_CONTROL, "no-store")],
-            crate::page::Page(PAGE_NO_REQUEST),
-        )
-            .into_response());
+        return Err(Box::new(
+            (
+                axum::http::StatusCode::BAD_REQUEST,
+                [(axum::http::header::CACHE_CONTROL, "no-store")],
+                crate::page::Page(PAGE_NO_REQUEST),
+            )
+                .into_response(),
+        ));
     };
     let (mut parts, body) = request.into_parts();
     parts.uri = uri;
@@ -111,25 +120,30 @@ fn without_handle(
     ))
 }
 
-struct GateInputs {
-    client_id: String,
-    request_uri: String,
-    target: String,
+/// What the pushed-request gate reads off the request, borrowed from its URI.
+struct GateInputs<'q> {
+    client_id: Cow<'q, str>,
+    request_uri: Cow<'q, str>,
+    target: &'q str,
 }
 
-impl GateInputs {
-    fn of(request: &axum::extract::Request) -> Option<Self> {
-        let pairs = form_urlencoded_pairs(request.uri().query()?);
-        let param = |name: &str| {
-            pairs
-                .iter()
-                .find(|(k, _)| k == name)
-                .map(|(_, v)| v.clone())
-        };
+impl<'q> GateInputs<'q> {
+    fn of(request: &'q axum::extract::Request) -> Option<Self> {
+        let (mut client_id, mut request_uri) = (None, None);
+        for (name, value) in form_urlencoded_pairs(request.uri().query()?) {
+            let slot = match &*name {
+                "client_id" => &mut client_id,
+                "request_uri" => &mut request_uri,
+                _ => continue,
+            };
+            if slot.is_none() {
+                *slot = Some(value);
+            }
+        }
         Some(Self {
-            client_id: param("client_id")?,
-            request_uri: param("request_uri")?,
-            target: request.uri().path_and_query()?.as_str().to_string(),
+            client_id: client_id?,
+            request_uri: request_uri?,
+            target: request.uri().path_and_query()?.as_str(),
         })
     }
 }
@@ -139,18 +153,21 @@ impl GateInputs {
 /// so it cannot burn the one-time `request_uri`.
 async fn pushed_request_gate(
     plane: &super::plane::AsPlane,
-    gate: GateInputs,
+    gate: GateInputs<'_>,
     browser: &super::consent::Browser,
 ) -> Option<oauth_as::http::Response> {
     let pushed = plane.pushed(&gate.request_uri).await?;
-    if pushed.client_id != gate.client_id {
+    if pushed.client_id != *gate.client_id {
         return None;
     }
     let key = super::consent::pushed_key(&gate.client_id, &gate.request_uri);
     let decided = match &browser.handle {
         Some(handle) => {
             plane
-                .is_staked(&browser.session, &super::consent::handled_key(&key, handle))
+                .is_staked(
+                    &browser.session,
+                    &super::consent::handled_key(&key, handle.as_str()),
+                )
                 .await
         }
         None => false,
@@ -160,7 +177,7 @@ async fn pushed_request_gate(
     }
     Some(super::consent::login_redirect(
         &plane.consent_url(),
-        &gate.target,
+        gate.target,
         &browser.session,
     ))
 }
@@ -194,15 +211,14 @@ pub(super) fn unresolved_grant(error: &oauth_as::store::StorageError) -> Respons
         .into_response()
 }
 
-pub(super) fn query_value(target: &str, name: &str) -> Option<String> {
+pub(super) fn query_value<'t>(target: &'t str, name: &str) -> Option<Cow<'t, str>> {
     form_urlencoded_pairs(target.split_once('?')?.1)
-        .into_iter()
         .find(|(k, _)| k == name)
         .map(|(_, v)| v)
 }
 
-pub(super) struct Pending {
-    pub(super) client_id: String,
+pub(super) struct Pending<'t> {
+    pub(super) client_id: Cow<'t, str>,
 
     pub(super) scope: String,
     pub(super) redirect_host: String,
@@ -210,25 +226,25 @@ pub(super) struct Pending {
     pub(super) revisit: bool,
 }
 
-pub(super) async fn pending_request(
+pub(super) async fn pending_request<'t>(
     plane: &super::plane::AsPlane,
-    target: &str,
-) -> Result<Pending, oauth_as::store::StorageError> {
+    target: &'t str,
+) -> Result<Pending<'t>, oauth_as::store::StorageError> {
     let (client_id, scope, redirect_host) = client_and_scope_of(target)
-        .unwrap_or_else(|| ("(unnamed)".to_string(), None, String::new()));
+        .unwrap_or_else(|| (Cow::Borrowed("(unnamed)"), None, String::new()));
     let mut pushed = None;
     if let Some(handle) = query_value(target, "request_uri") {
         if let Some(p) = plane
             .pushed(&handle)
             .await
-            .filter(|p| p.client_id == client_id)
+            .filter(|p| p.client_id == *client_id)
         {
             let revisit = plane.mark_pushed_shown(&handle).await;
             pushed = Some((p, revisit));
         }
     }
     let (requested, redirect_host, revisit) = match pushed {
-        Some((p, revisit)) => (p.scope, host_of(&p.redirect_uri), revisit),
+        Some((p, revisit)) => (p.scope.map(Cow::Owned), host_of(&p.redirect_uri), revisit),
         None => (scope, redirect_host, false),
     };
     Ok(Pending {
@@ -250,13 +266,15 @@ pub(super) fn is_local_path(value: &str) -> bool {
             .any(|c| c == '\\' || c.is_control() || c.is_whitespace())
 }
 
-pub(super) fn client_and_scope_of(target: &str) -> Option<(String, Option<String>, String)> {
+pub(super) fn client_and_scope_of(
+    target: &str,
+) -> Option<(Cow<'_, str>, Option<Cow<'_, str>>, String)> {
     let query = target.split_once('?')?.1;
     let mut client_id = None;
     let mut scope = None;
     let mut redirect_uri = None;
     for (name, value) in form_urlencoded_pairs(query) {
-        let slot = match name.as_str() {
+        let slot = match &*name {
             "client_id" => &mut client_id,
             "scope" => &mut scope,
             "redirect_uri" => &mut redirect_uri,
@@ -281,29 +299,37 @@ fn host_of(redirect_uri: &str) -> String {
     if busbar_contract::net::target_host(redirect_uri).is_none() {
         return String::new();
     }
-    let host = if parts.host.contains(':') {
-        format!("[{}]", parts.host)
-    } else {
-        parts.host
-    };
-    match parts.port {
-        Some(port) => format!("{host}:{port}"),
-        None => host,
+    // Into the parse's own host text: bracketed when it is an IPv6 literal, the port appended.
+    let mut host = parts.host;
+    if host.contains(':') {
+        host.insert(0, '[');
+        host.push(']');
     }
+    if let Some(port) = parts.port {
+        use std::fmt::Write as _;
+        let _ = write!(host, ":{port}");
+    }
+    host
 }
 
-pub(super) fn form_urlencoded_pairs(query: &str) -> Vec<(String, String)> {
+/// A query's `name=value` pairs, read lazily and decoded as forms decode them: a component with no
+/// `+` or `%` is borrowed as written.
+pub(super) fn form_urlencoded_pairs(
+    query: &str,
+) -> impl Iterator<Item = (Cow<'_, str>, Cow<'_, str>)> + '_ {
     query
         .split('&')
         .filter_map(|pair| pair.split_once('='))
         .map(|(k, v)| (form_decoded(k), form_decoded(v)))
-        .collect()
 }
 
 /// One form component: `+` is a space and every `%XX` escape is decoded by percent-encoding (a `%`
 /// short of two hex digits stays); invalid UTF-8 is replaced. `+` is not a hex digit, so no escape
 /// spans a `+`.
-fn form_decoded(s: &str) -> String {
+fn form_decoded(s: &str) -> Cow<'_, str> {
+    if !s.contains(['+', '%']) {
+        return Cow::Borrowed(s);
+    }
     let mut out = Vec::with_capacity(s.len());
     for (i, piece) in s.split('+').enumerate() {
         if i > 0 {
@@ -311,10 +337,10 @@ fn form_decoded(s: &str) -> String {
         }
         out.extend(percent_encoding::percent_decode_str(piece));
     }
-    match String::from_utf8(out) {
+    Cow::Owned(match String::from_utf8(out) {
         Ok(text) => text,
         Err(invalid) => super::cold::lossy_form_component(invalid.as_bytes()),
-    }
+    })
 }
 
 pub(super) fn no_entropy() -> Response {
