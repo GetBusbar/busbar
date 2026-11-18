@@ -830,7 +830,7 @@ fn wire_dial_timeout_and_upgrade_flags_reach_the_host_unchanged() {
         let host = make_host(Security::Clear, true, []);
         let (answer, parked) = enter(&pool, &host, None, move |wire| {
             Box::pin(async move {
-                wire.connect_timed(0, Some(std::sync::Arc::from("store.example:5432")), 300)
+                wire.connect_timed(0, Some("store.example:5432"), 300)
                     .await?;
                 if unverified {
                     wire.upgrade_secure_unverified(None).await?;
@@ -856,8 +856,7 @@ fn a_unix_store_target_and_its_bytes_reach_the_host_unchanged() {
     let host = make_host(Security::Clear, false, []);
     let (answer, parked) = enter(&pool, &host, None, |wire| {
         Box::pin(async move {
-            wire.connect(0, Some(std::sync::Arc::from("unix:/operator/db.sock")))
-                .await?;
+            wire.connect(0, Some("unix:/operator/db.sock")).await?;
             wire.write_all(b"hello").await
         })
     });

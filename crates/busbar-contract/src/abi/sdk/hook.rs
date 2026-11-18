@@ -33,7 +33,8 @@ use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::exchange::{Context, Exchange, Op as KindGenericOp, Parks};
 use crate::abi::sdk::life::{settings_object, Held, Life, Refreshed, Refusal};
 use crate::abi::sdk::settings::{
-    configure_settings, describe_bytes, empty_admin_json, status_bytes, AdminJson, SettingsMap,
+    configure_settings, describe_bytes, empty_admin_json, status_bytes, AdminJson, JsonValue,
+    SettingsMap,
 };
 use crate::abi::sdk::{Instance as KindGenericInstance, Lent, LentList, Out, SafeSlot};
 use crate::signal::{Signal, SignalBag, SignalValue};
@@ -288,16 +289,10 @@ impl<'a> Decoded<'a> {
     }
 
     /// Append the canonical 1.5.5 projection envelope, with `op` last, directly to `out`.
-    pub fn write_projection(&self, op: &str, out: &mut Vec<u8>) -> Result<(), serde_json::Error> {
-        projection::write::<()>(self, None, false, op, &[], out)
-    }
-
-    /// [`Decoded::write_projection`] with the caller's `extra` members merged in (by name, in the
-    /// envelope's own order; a member named `op` is skipped), each written as `serde_json` writes it.
-    pub fn write_projection_with<V: serde::Serialize>(
+    pub fn write_projection(
         &self,
         op: &str,
-        extra: &[(&str, V)],
+        extra: Option<&serde_json::Map<String, serde_json::Value>>,
         out: &mut Vec<u8>,
     ) -> Result<(), serde_json::Error> {
         projection::write(self, None, false, op, extra, out)
@@ -379,16 +374,10 @@ impl<'a> DecodedTap<'a> {
     }
 
     /// Append this tap's canonical projection envelope, with `op` last, directly to `out`.
-    pub fn write_projection(&self, op: &str, out: &mut Vec<u8>) -> Result<(), serde_json::Error> {
-        projection::write::<()>(&self.request, self.stage.as_ref(), true, op, &[], out)
-    }
-
-    /// [`DecodedTap::write_projection`] with the caller's `extra` members merged in, as
-    /// [`Decoded::write_projection_with`].
-    pub fn write_projection_with<V: serde::Serialize>(
+    pub fn write_projection(
         &self,
         op: &str,
-        extra: &[(&str, V)],
+        extra: Option<&serde_json::Map<String, serde_json::Value>>,
         out: &mut Vec<u8>,
     ) -> Result<(), serde_json::Error> {
         projection::write(&self.request, self.stage.as_ref(), true, op, extra, out)
@@ -551,139 +540,62 @@ const INVALID_DECISION: &str = "hook decision reply has invalid order or abstain
 const INVALID_RESTRICTION: &str = "hook restriction must contain a tags_any array of strings";
 const INVALID_REWRITE: &str = "hook rewrite must be an object with a messages array";
 
-/// One member of a reply object as written, `null` included (a missing member is `Absent`): the
-/// reply is read in place, never into a JSON tree.
-#[derive(Default, Clone, Copy)]
-enum Raw<'a> {
-    #[default]
-    Absent,
-    Present(&'a serde_json::value::RawValue),
-}
-
-impl<'de: 'a, 'a> serde::Deserialize<'de> for Raw<'a> {
-    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        <&'a serde_json::value::RawValue as serde::Deserialize>::deserialize(de).map(Raw::Present)
-    }
-}
-
-impl<'a> Raw<'a> {
-    /// The member's JSON text; `None` when absent.
-    fn text(self) -> Option<&'a str> {
-        match self {
-            Raw::Absent => None,
-            Raw::Present(raw) => Some(raw.get()),
-        }
-    }
-
-    /// A present reply verb: anything but explicit false or null. Refusal verbs remain
-    /// conservative: malformed details cannot turn an expressed refusal into permission.
-    fn verb(self) -> Option<&'a str> {
-        self.text().filter(|t| *t != "null" && *t != "false")
-    }
-}
-
-/// The members a reply's lowering reads, each borrowed from the reply; the rest are skipped.
-#[derive(serde::Deserialize, Default)]
-struct ReplyFields<'a> {
-    #[serde(default, borrow)]
-    reject: Raw<'a>,
-    #[serde(default, borrow)]
-    restrict: Raw<'a>,
-    #[serde(default, borrow)]
-    rewrite: Raw<'a>,
-    #[serde(default, borrow)]
-    abstain: Raw<'a>,
-}
-
-/// A reject's own members, borrowed.
-#[derive(serde::Deserialize, Default)]
-struct RejectFields<'a> {
-    #[serde(default, borrow)]
-    status: Raw<'a>,
-    #[serde(default, borrow)]
-    message: Raw<'a>,
-}
-
-/// A restrict's or a rewrite's one member the lowering reads, borrowed.
-#[derive(serde::Deserialize, Default)]
-struct ListField<'a> {
-    #[serde(default, borrow)]
-    tags_any: Raw<'a>,
-    #[serde(default, borrow)]
-    messages: Raw<'a>,
-}
-
-/// `text`'s members, read only from a JSON object (a derived reader would also take an array's
-/// elements in order): `None` for anything else or a malformed one.
-fn object<'a, T: serde::Deserialize<'a>>(text: &'a [u8]) -> Option<T> {
-    let start = text.iter().position(|b| !b.is_ascii_whitespace())?;
-    if text[start] != b'{' {
-        return None;
-    }
-    serde_json::from_slice(text).ok()
-}
-
-/// The reply's members, or `None` when the reply is not a JSON object.
-fn reply_fields(reply: &[u8]) -> Option<ReplyFields<'_>> {
-    object(reply)
-}
-
 /// A reject's status as the hook stated it: an integer that fits a `u16`, else none (the host then
-/// answers 403); its message, a string, else empty. A reject that is not an object states neither.
-fn reject_of(r: &str) -> (Option<u16>, String) {
-    let fields: RejectFields<'_> = object(r.as_bytes()).unwrap_or_default();
-    let status = fields
-        .status
-        .text()
-        .and_then(|s| serde_json::from_str::<i64>(s).ok())
+fn reject_of(r: &serde_json::Value) -> (Option<u16>, String) {
+    let status = r
+        .get("status")
+        .and_then(serde_json::Value::as_i64)
         .and_then(|s| u16::try_from(s).ok());
-    // The verdict owns its message (the host copies it into its buffer when the verdict is written).
-    let message = fields
-        .message
-        .text()
-        .and_then(|m| serde_json::from_str::<std::borrow::Cow<'_, str>>(m).ok())
-        .map(std::borrow::Cow::into_owned)
-        .unwrap_or_default();
+    let message = r
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
     (status, message)
 }
 
-/// Read a current decision response, the reply's bytes as the hook's endpoint answered them.
-/// Malformed decision fields fail the call so the configured failure policy applies; a reject or
-/// restrict always takes precedence.
+/// A present reply verb: anything but explicit false or null. Refusal verbs remain
+/// conservative: malformed details cannot turn an expressed refusal into permission.
+fn verb(v: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
+    v.filter(|v| !v.is_null() && **v != serde_json::Value::Bool(false))
+}
+
+/// Read a current decision response. Malformed decision fields fail the call so the
+/// configured failure policy applies; a reject or restrict always takes precedence.
 #[must_use]
-pub fn lower_decide_reply(reply: Result<&[u8], String>) -> Verdict {
-    let bytes = match reply {
-        Ok(bytes) => bytes,
+pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
+    let v = match reply {
+        Ok(v) => JsonValue(v),
         Err(message) => return Verdict::Failed(message),
     };
-    let Some(fields) = reply_fields(bytes) else {
+    let Some(fields) = v.0.as_object() else {
         return Verdict::Failed(INVALID_REPLY.into());
     };
-    if let Some(r) = fields.reject.verb() {
+    if let Some(r) = verb(fields.get("reject")) {
         let (status, message) = reject_of(r);
         return Verdict::Reject { status, message };
     }
-    if let Some(r) = fields.restrict.verb() {
-        let Some(tags) = object::<ListField<'_>>(r.as_bytes())
-            .and_then(|l| l.tags_any.text())
-            .and_then(|t| serde_json::from_str::<Vec<std::borrow::Cow<'_, str>>>(t).ok())
-        else {
+    if let Some(r) = verb(fields.get("restrict")) {
+        let Some(tags) = r.get("tags_any").and_then(serde_json::Value::as_array) else {
             return Verdict::Failed(INVALID_RESTRICTION.into());
         };
         // A NUL is the wire's tag separator: a tag holding one would split into two on the host.
-        if tags.iter().any(|t| t.contains('\0')) {
+        if tags
+            .iter()
+            .any(|tag| tag.as_str().is_none_or(|t| t.contains('\0')))
+        {
             return Verdict::Failed(INVALID_RESTRICTION.into());
         }
-        // The verdict owns its tags, as it owns a reject's message.
         return Verdict::Restrict(
             tags.iter()
-                .map(|tag| tag.trim())
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
                 .filter(|tag| !tag.is_empty())
                 .map(str::to_owned)
                 .collect(),
         );
     }
-    let Ok(parsed) = serde_json::from_slice::<DecisionReply>(bytes) else {
+    let Ok(parsed) = <DecisionReply as serde::Deserialize>::deserialize(&v.0) else {
         return Verdict::Failed(INVALID_DECISION.into());
     };
     if parsed.abstain {
@@ -702,43 +614,34 @@ pub fn lower_decide_reply(reply: Result<&[u8], String>) -> Verdict {
     }
 }
 
-/// Read a current transform response, the reply's bytes as the hook's endpoint answered them. A
-/// malformed requested rewrite fails the call; decision-only fields cannot discard a valid rewrite
-/// or an explicit rejection.
+/// Read a current transform response. A malformed requested rewrite fails the call;
+/// decision-only fields cannot discard a valid rewrite or an explicit rejection.
 #[must_use]
-pub fn lower_transform_reply(reply: Result<&[u8], String>) -> RewriteVerdict {
-    let bytes = match reply {
-        Ok(bytes) => bytes,
+pub fn lower_transform_reply(reply: Result<serde_json::Value, String>) -> RewriteVerdict {
+    let v = match reply {
+        Ok(v) => JsonValue(v),
         Err(message) => return RewriteVerdict::Failed(message),
     };
-    let Some(fields) = reply_fields(bytes) else {
+    let Some(fields) = v.0.as_object() else {
         return RewriteVerdict::Failed(INVALID_REPLY.into());
     };
-    if let Some(r) = fields.reject.verb() {
+    if let Some(r) = verb(fields.get("reject")) {
         let (status, message) = reject_of(r);
         return RewriteVerdict::Reject { status, message };
     }
-    let Some(rw) = fields.rewrite.verb() else {
-        if fields
-            .abstain
-            .text()
-            .is_some_and(|a| a != "true" && a != "false")
-        {
+    let Some(rw) = verb(fields.get("rewrite")) else {
+        if fields.get("abstain").is_some_and(|v| !v.is_boolean()) {
             return RewriteVerdict::Failed(INVALID_DECISION.into());
         }
         return RewriteVerdict::Abstain;
     };
-    let Some(messages) = object::<ListField<'_>>(rw.as_bytes())
-        .and_then(|l| l.messages.text())
-        .and_then(|m| serde_json::from_str::<Vec<serde::de::IgnoredAny>>(m).ok())
-    else {
+    let Some(messages) = rw.get("messages").and_then(serde_json::Value::as_array) else {
         return RewriteVerdict::Failed(INVALID_REWRITE.into());
     };
     if messages.is_empty() {
         return RewriteVerdict::Abstain;
     }
-    // The rewrite as the hook wrote it (the host parses it fail-closed); the verdict owns it.
-    RewriteVerdict::Rewrite(rw.as_bytes().to_vec())
+    RewriteVerdict::Rewrite(serde_json::to_vec(rw).expect("a JSON value serializes"))
 }
 
 /// A hook plugin, over typed views: the SDK reads the host's `in` (after the kind's own checks on

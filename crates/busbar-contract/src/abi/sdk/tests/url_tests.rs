@@ -5,34 +5,6 @@
 
 use super::*;
 
-// The pieces write into the caller's buffer; these read each one back as an owned value.
-fn percent_decode(s: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    super::percent_decode(s, |b| out.push(b));
-    out
-}
-
-fn basic_authorization(username: &str, password: Option<&str>, read: Userinfo) -> Option<String> {
-    let mut out = String::new();
-    super::basic_authorization(username, password, read, &mut out).then_some(out)
-}
-
-fn cut_userinfo(url: &str, with: &str) -> String {
-    let mut out = String::new();
-    super::cut_userinfo(url, with, &mut out);
-    out
-}
-
-/// A sink's scrub list: `parts`, then each of them percent-decoded in custody and read lossily.
-fn and_decoded(mut parts: Vec<String>) -> Vec<String> {
-    for at in 0..parts.len() {
-        let decoded = super::decoded_in_custody(parts[at].as_bytes());
-        let text = String::from_utf8_lossy(&decoded).into_owned();
-        parts.push(text);
-    }
-    parts
-}
-
 #[test]
 fn a_percent_escape_decodes_only_with_two_hex_digits() {
     assert_eq!(percent_decode(b"a%20b%zz%4"), b"a b%zz%4");

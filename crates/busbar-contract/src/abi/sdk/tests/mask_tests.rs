@@ -3,12 +3,7 @@
 
 //! The one URL masker: the userinfo cut to the last `@`, secret-looking query and fragment values
 
-// The masker writes into the caller's buffer; the tests read it back owned.
-fn mask_url(url: &str) -> String {
-    let mut out = String::new();
-    super::mask_url(url, &mut out);
-    out
-}
+use super::*;
 
 /// 1.5.5's masked form for an ordinary URL with userinfo: host, port and path kept.
 #[test]

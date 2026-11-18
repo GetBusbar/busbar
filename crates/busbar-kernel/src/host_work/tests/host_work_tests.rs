@@ -21,13 +21,6 @@ impl ReadyAdmission for crate::host_services::KernelServices {
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// The recovery poll record for `target` (the SDK appends it into the caller's buffer).
-fn poll_record(target: &str) -> Vec<u8> {
-    let mut record = Vec::new();
-    busbar_contract::abi::sdk::recovery::poll_record(target, &mut record).unwrap();
-    record
-}
-
 use busbar_contract::abi::host::service::{self as svc, MAX_WORK_RECORD, WORK_LIVE, WORK_SETTLED};
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::ids::RecordSchemaId;
@@ -698,7 +691,7 @@ fn recovery_work_reopens_only_durable_original_owner_and_settles_normally() {
     let r = rig();
     let key = recovery_principal(&r);
     ready(r.store.identity().put_key(&key)).unwrap();
-    let record = poll_record("/jobs/42");
+    let record = busbar_contract::abi::sdk::recovery::poll_record("/jobs/42").unwrap();
     let (_, reference) = open(&r, 1, &record);
     let restarted = rig_over(r.store.clone(), WorkBounds::default());
     let gov = ready(crate::governance::GovState::new_with_core(
@@ -750,7 +743,7 @@ fn recovery_work_reopens_only_durable_original_owner_and_settles_normally() {
 fn recovery_work_refuses_missing_standing_and_reissued_or_disabled_identity() {
     let r = rig();
     assert!(!r.s.supports_unit_recovery(&caller("inst"), 1));
-    let record = poll_record("/jobs/42");
+    let record = busbar_contract::abi::sdk::recovery::poll_record("/jobs/42").unwrap();
     assert_eq!(
         run(|later| r
             .s
@@ -879,7 +872,11 @@ fn recovery_work_scan_keeps_later_items_when_batches_are_bounded() {
     let r = rig();
     recovery_principal(&r);
     for id in 0..12 {
-        open(&r, 1, &poll_record(&format!("/jobs/{id}")));
+        open(
+            &r,
+            1,
+            &busbar_contract::abi::sdk::recovery::poll_record(&format!("/jobs/{id}")).unwrap(),
+        );
     }
     let first = ready(r.s.recovery_work(&caller("inst"))).unwrap();
     let second = ready(r.s.recovery_work(&caller("inst"))).unwrap();

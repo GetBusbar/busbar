@@ -166,7 +166,7 @@ fn a_store_declaring_a_tcp_need_receives_a_connector() {
     let host = host(false);
     let mut op = Op::enter(TICKET, Some(&host), None, None);
     assert_eq!(
-        op.checkout(0, Some(&std::sync::Arc::<str>::from("db.internal:5432"))),
+        op.checkout(0, Some("db.internal:5432")),
         Poll::Ready(Ok(42))
     );
     assert_eq!(
@@ -174,7 +174,7 @@ fn a_store_declaring_a_tcp_need_receives_a_connector() {
         vec![(0, "db.internal:5432".into())]
     );
     assert_eq!(
-        op.checkout(0, Some(&std::sync::Arc::<str>::from("db.internal:5432"))),
+        op.checkout(0, Some("db.internal:5432")),
         Poll::Ready(Ok(42))
     );
     assert_eq!(
@@ -189,7 +189,7 @@ fn a_store_connects_over_the_hosts_table_at_open() {
     let host = host(false);
     let mut op = Op::enter(TICKET, Some(&host), None, None);
     assert_eq!(
-        op.checkout(0, Some(&std::sync::Arc::<str>::from("db.internal:5432"))),
+        op.checkout(0, Some("db.internal:5432")),
         Poll::Ready(Ok(42))
     );
     drop(op.into_parked());
@@ -208,7 +208,7 @@ fn an_unreachable_backend_fails_the_load_with_the_stores_message() {
     let host = host(true);
     let mut op = Op::enter(TICKET, Some(&host), None, None);
     assert_eq!(
-        op.checkout(0, Some(&std::sync::Arc::<str>::from("db.internal:5432"))),
+        op.checkout(0, Some("db.internal:5432")),
         Poll::Ready(Err(ConnFailure::Refused(
             String::from_utf8(REFUSAL.to_vec()).unwrap()
         )))
@@ -235,8 +235,7 @@ fn a_wire_body_pends_on_its_reads_and_answers_the_backends_reply() {
             let mut op = Op::enter(TICKET, Some(&host), parked.take(), None);
             let answer = drive(&mut op, |wire: Wire| {
                 Box::pin(async move {
-                    wire.connect(0, Some(std::sync::Arc::from("db.internal:5432")))
-                        .await?;
+                    wire.connect(0, Some("db.internal:5432")).await?;
                     wire.write_all(b"hello\n").await?;
                     loop {
                         if let Some(line) = wire.input(|bytes| {
@@ -333,10 +332,7 @@ fn pending_on_the_connector_with_no_service_in_flight_is_fault() {
     let drops = Arc::new(AtomicUsize::new(0));
     let mut waiting = Op::enter(TICKET, Some(&host), None, None);
     waiting.park(DropProbe(drops.clone()));
-    assert_eq!(
-        waiting.checkout(0, Some(&std::sync::Arc::<str>::from("db.internal:5432"))),
-        Poll::Pending
-    );
+    assert_eq!(waiting.checkout(0, Some("db.internal:5432")), Poll::Pending);
     let parked = pending_parked(waiting, 0)
         .expect("the actual pending HostTables service arms a zero-wake wait");
     assert_eq!(
@@ -367,8 +363,7 @@ fn always_ready_stream_yields_keeps_partial_writes_and_never_replays_ready_io() 
             let answer = drive(&mut op, move |wire| {
                 started.fetch_add(1, Ordering::SeqCst);
                 Box::pin(async move {
-                    wire.connect(0, Some(std::sync::Arc::from("ready.internal:6379")))
-                        .await?;
+                    wire.connect(0, Some("ready.internal:6379")).await?;
                     let payload: Vec<u8> = (0..=255).collect();
                     wire.write_all(&payload).await?;
                     for byte in 0..96u8 {

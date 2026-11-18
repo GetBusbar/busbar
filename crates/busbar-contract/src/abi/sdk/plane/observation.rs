@@ -60,16 +60,16 @@ impl ScopeRequest {
         }
     }
     /// Reserve only when host policy prices every required declared usage class.
-    pub fn create_requiring(classes: Vec<u32>) -> Self {
+    pub fn create_requiring(classes: impl IntoIterator<Item = u32>) -> Self {
         Self {
-            required_classes: classes,
+            required_classes: classes.into_iter().collect(),
             ..Self::create()
         }
     }
     /// Reattach only when original custody prices every required usage class.
-    pub fn attach_requiring(scope: ScopeId, classes: Vec<u32>) -> Self {
+    pub fn attach_requiring(scope: ScopeId, classes: impl IntoIterator<Item = u32>) -> Self {
         Self {
-            required_classes: classes,
+            required_classes: classes.into_iter().collect(),
             ..Self::attach(scope)
         }
     }
@@ -83,10 +83,14 @@ impl ScopeRequest {
         }
         Ok(())
     }
-    /// Bounded wire encoding, appended to `out` (the caller's buffer; left as it was on a refusal).
-    pub fn encode(&self, out: &mut Vec<u8>) -> Result<(), InvalidObservation> {
+    /// Bounded owned wire encoding.
+    pub fn encode(&self) -> Result<Vec<u8>, InvalidObservation> {
         self.validate()?;
-        write_bounded(self, 1024, out)
+        let bytes = serde_json::to_vec(self).map_err(|_| InvalidObservation)?;
+        if bytes.len() > 1024 {
+            return Err(InvalidObservation);
+        }
+        Ok(bytes)
     }
     /// Parse a bounded request, without inferring authorization from its bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, InvalidObservation> {
@@ -97,9 +101,9 @@ impl ScopeRequest {
         request.validate()?;
         Ok(request)
     }
-    /// Encode the normal plane output extension, appended to `out` (the caller's buffer).
-    pub fn extension(&self, out: &mut Vec<u8>) -> Result<(), InvalidObservation> {
-        extensions::entry_into(out, SCOPE_INTENT, |value| self.encode(value))
+    /// Encode the normal owned plane output extension.
+    pub fn extension(&self) -> Result<Vec<u8>, InvalidObservation> {
+        Ok(extensions::encode(&[(SCOPE_INTENT, &self.encode()?)]))
     }
     /// Strictly parse one unique request from an extension blob.
     pub fn from_extensions(bytes: &[u8]) -> Result<Option<Self>, InvalidObservation> {
@@ -348,11 +352,14 @@ impl Observation {
         }
         Ok(())
     }
-    /// Encode this intent as bounded bytes, appended to `out` (the caller's buffer; left as it was
-    /// on a refusal).
-    pub fn encode(&self, out: &mut Vec<u8>) -> Result<(), InvalidObservation> {
+    /// Encode this intent as bounded bytes, retaining the source for exact retry.
+    pub fn encode(&self) -> Result<Vec<u8>, InvalidObservation> {
         self.validate()?;
-        write_bounded(self, MAX_BYTES, out)
+        let bytes = serde_json::to_vec(self).map_err(|_| InvalidObservation)?;
+        if bytes.len() > MAX_BYTES {
+            return Err(InvalidObservation);
+        }
+        Ok(bytes)
     }
     /// Decode and validate bounded bytes; no host authorization is inferred.
     pub fn decode(bytes: &[u8]) -> Result<Self, InvalidObservation> {
@@ -363,9 +370,9 @@ impl Observation {
         value.validate()?;
         Ok(value)
     }
-    /// Encode the versioned extension for the normal SDK output publisher, appended to `out`.
-    pub fn extension(&self, out: &mut Vec<u8>) -> Result<(), InvalidObservation> {
-        extensions::entry_into(out, INTENT, |value| self.encode(value))
+    /// Encode the versioned extension for the normal SDK owned output publisher.
+    pub fn extension(&self) -> Result<Vec<u8>, InvalidObservation> {
+        Ok(extensions::encode(&[(INTENT, &self.encode()?)]))
     }
     /// Strictly read a unique observation extension, including complete blob framing.
     pub fn from_extensions(bytes: &[u8]) -> Result<Option<Self>, InvalidObservation> {
@@ -374,20 +381,6 @@ impl Observation {
             .map(Self::decode)
             .transpose()
     }
-}
-
-/// `value` as JSON appended to `out`, refused (and `out` left as it was) past `max` bytes.
-fn write_bounded(
-    value: &impl serde::Serialize,
-    max: usize,
-    out: &mut Vec<u8>,
-) -> Result<(), InvalidObservation> {
-    let start = out.len();
-    if serde_json::to_writer(&mut *out, value).is_err() || out.len() - start > max {
-        out.truncate(start);
-        return Err(InvalidObservation);
-    }
-    Ok(())
 }
 
 /// Whether an intent's own (at most 64) counts hold a negative one.
@@ -403,13 +396,6 @@ fn has_duplicate(classes: &[u32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // The encoders append to the caller's buffer; the tests read them back owned.
-    fn ext(
-        f: impl FnOnce(&mut Vec<u8>) -> Result<(), InvalidObservation>,
-    ) -> Result<Vec<u8>, InvalidObservation> {
-        let mut out = Vec::new();
-        f(&mut out).map(|()| out)
-    }
     #[test]
     fn owned_observation_roundtrips_exact_counts_and_keeps_legacy_layout() {
         let value = Observation::new([1; 32], vec![2], vec![3])
@@ -417,7 +403,7 @@ mod tests {
             .unwrap()
             .final_totals();
         assert_eq!(
-            Observation::from_extensions(&ext(|o| value.extension(o)).unwrap()).unwrap(),
+            Observation::from_extensions(&value.extension().unwrap()).unwrap(),
             Some(value)
         );
         assert_eq!(std::mem::size_of::<crate::abi::plane::UnitCount>(), 16);
@@ -428,22 +414,23 @@ mod tests {
             ScopeRequest::create(),
             ScopeRequest::attach([1; 32]),
             ScopeRequest::close([1; 32]),
-            ScopeRequest::create_requiring(vec![0, 1, 2]),
-            ScopeRequest::attach_requiring([1; 32], vec![0, 1, 2]),
+            ScopeRequest::create_requiring([0, 1, 2]),
+            ScopeRequest::attach_requiring([1; 32], [0, 1, 2]),
         ] {
             assert_eq!(
-                ScopeRequest::from_extensions(&ext(|o| request.extension(o)).unwrap()).unwrap(),
+                ScopeRequest::from_extensions(&request.extension().unwrap()).unwrap(),
                 Some(request)
             );
         }
-        let refused = ScopeRequest {
+        assert!(ScopeRequest {
             scope: None,
             close: true,
             required_classes: Vec::new(),
-        };
-        assert!(ext(|o| refused.encode(o)).is_err());
-        assert!(ext(|o| ScopeRequest::create_requiring(vec![1, 1]).encode(o)).is_err());
-        assert!(ext(|o| ScopeRequest::create_requiring((0..65).collect()).encode(o)).is_err());
+        }
+        .encode()
+        .is_err());
+        assert!(ScopeRequest::create_requiring([1, 1]).encode().is_err());
+        assert!(ScopeRequest::create_requiring(0..65).encode().is_err());
         assert!(
             ScopeRequest::decode(br#"{"scope":null,"close":false,"required_classes":[1,1]}"#)
                 .is_err()
@@ -469,19 +456,21 @@ mod tests {
     }
     #[test]
     fn malformed_and_duplicate_counts_are_refused() {
-        let zero = Observation::new([0; 32], vec![1], vec![2]);
-        assert!(ext(|o| zero.encode(o)).is_err());
+        assert!(Observation::new([0; 32], vec![1], vec![2])
+            .encode()
+            .is_err());
         assert!(Observation::new([1; 32], vec![1], vec![2])
             .count(0, Count::ONE)
             .unwrap()
             .count(0, Count::ONE)
             .is_err());
         assert!(Observation::decode(&vec![b' '; MAX_BYTES + 1]).is_err());
-        let one = Observation::new([1; 32], vec![1], vec![2])
+        let encoded = Observation::new([1; 32], vec![1], vec![2])
             .count(0, Count::ONE)
             .unwrap()
-            .final_totals();
-        let encoded = ext(|o| one.encode(o)).unwrap();
+            .final_totals()
+            .encode()
+            .unwrap();
         let duplicate = String::from_utf8(encoded)
             .unwrap()
             .replace("\"counts\":{\"0\":1}", "\"counts\":{\"0\":1,\"0\":2}");

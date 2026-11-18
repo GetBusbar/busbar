@@ -96,12 +96,7 @@ impl HeldSlot for Check {
         input: Lent<'_, CheckIn>,
         mut out: Out<'_, CheckOut>,
     ) -> Outcome {
-        let lines = one_instance_reason(
-            &instance_names(input)
-                .map(std::borrow::Cow::into_owned)
-                .collect::<Vec<_>>(),
-            WHY,
-        );
+        let lines = one_instance_reason(&instance_names(input), WHY);
         if !lines.is_empty() {
             let json = serde_json::to_vec(&lines).unwrap_or_default();
             out.lease(|o| &o.findings, held.leases(), json, BLOB_JSON);

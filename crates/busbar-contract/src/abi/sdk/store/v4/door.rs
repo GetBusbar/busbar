@@ -142,14 +142,14 @@ impl<B: Backend> Life for Served<B> {
             }
         }
     }
-    fn extensions(&self, out: &mut Vec<u8>) {
-        if let Some(bytes) = self
-            .info
+    fn extensions(&self) -> Vec<u8> {
+        self.info
             .get()
             .and_then(|info| metadata::encode(*info).ok())
-        {
-            crate::abi::mechanism::extensions::encode_into(out, &[(metadata::EXTENSION, &bytes)]);
-        }
+            .map(|bytes| {
+                crate::abi::mechanism::extensions::encode(&[(metadata::EXTENSION, &bytes)])
+            })
+            .unwrap_or_default()
     }
     fn cancel(&self, ticket: Ticket) -> u32 {
         let key = ReplyKey::of(ticket);

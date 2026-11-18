@@ -4228,10 +4228,10 @@ fn sdk_facts_replay_always_retains_the_observed_security_state() {
         let host = sdk_host(&p);
         let observed = || {
             let mut c = host.connector_from(T, 1);
-            let Poll::Ready(Ok(Some(secure))) = c.facts(stream, None) else {
+            let Poll::Ready(Ok(Some(facts))) = c.facts(stream) else {
                 panic!("a real host READY, including replay, must carry its FACTS");
             };
-            secure
+            facts.secure
         };
         assert_eq!(observed(), secure);
         *table.facts.lock().unwrap() = None;
@@ -4242,7 +4242,7 @@ fn sdk_facts_replay_always_retains_the_observed_security_state() {
         );
         let mut fresh = host.connector_from(T, 2);
         assert!(
-            matches!(fresh.facts(stream, None), Poll::Ready(Err(_))),
+            matches!(fresh.facts(stream), Poll::Ready(Err(_))),
             "fresh missing facts fail closed"
         );
     }

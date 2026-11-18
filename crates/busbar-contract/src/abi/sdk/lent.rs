@@ -130,10 +130,13 @@ impl<'a> Lent<'a, AbiStr> {
         std::str::from_utf8(self.bytes())
     }
 
-    /// The string, borrowed, when the host states one: UTF-8 and not empty. An absent string, an
+    /// The string, owned, when the host states one: UTF-8 and not empty. An absent string, an
     #[must_use]
-    pub fn stated(self) -> Option<&'a str> {
-        self.as_str().ok().filter(|s| !s.is_empty())
+    pub fn stated(self) -> Option<String> {
+        self.as_str()
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
     }
 }
 
@@ -1479,17 +1482,17 @@ mod tests;
 impl<'a> Lent<'a, LineEntry> {
     /// The line's route as the route vocabulary reads it ([`RouteView`]): what an accepting
     #[must_use]
-    ///
-    /// The field predicates are written into `fields`, the caller's reused list (cleared first),
-    /// which the view then carries.
-    pub fn route_view(self, mut fields: Vec<(u32, &'a str, &'a [u8])>) -> Option<RouteView<'a>> {
+    pub fn route_view(self) -> Option<RouteView<'a>> {
         let route = self.field(|l| &l.route);
         let path = route.field(|r| &r.path).as_str().ok()?;
-        fields.clear();
-        for p in route.fields().iter() {
-            let name = p.field(|f| &f.name).as_str().ok()?;
-            fields.push((p.get().op, name, p.field(|f| &f.value).bytes()));
-        }
+        let fields = route
+            .fields()
+            .iter()
+            .map(|p| {
+                let name = p.field(|f| &f.name).as_str().ok()?;
+                Some((p.get().op, name, p.field(|f| &f.value).bytes()))
+            })
+            .collect::<Option<Vec<_>>>()?;
         let r = route.get();
         Some(RouteView {
             methods: r.methods,

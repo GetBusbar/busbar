@@ -422,10 +422,7 @@ fn configure_owned_dom_is_wiped_on_ack_and_nack_from_the_actual_hook_callback() 
 
 #[cfg(target_os = "linux")]
 #[test]
-/// The lowering reads the reply's bytes in place (no JSON tree, so none is left to wipe): unknown and
-/// wrongly typed members are skipped, an expressed refusal still refuses. The observer still sees
-/// an unwiped control.
-fn replies_are_read_in_place_with_an_unwiped_control() {
+fn reply_trees_wipe_unknown_and_typed_refusal_fields_with_an_unwiped_control() {
     use crate::alloc_counter::{watch_initialized_payload, InitializedPayloadProbe};
 
     for (raw, rejecting) in [
@@ -438,13 +435,32 @@ fn replies_are_read_in_place_with_an_unwiped_control() {
             true,
         ),
     ] {
-        let verdict = crate::abi::sdk::hook::lower_decide_reply(Ok(raw.as_bytes()));
+        let reply = serde_json::from_str(raw).unwrap();
+        // SAFETY: production lowering owns, wipes and drops these initialized trees on this thread.
+        let probe = unsafe { InitializedPayloadProbe::start().expect("Linux memory observer") };
+        watch_json(&reply);
+        let verdict = lower_decide_reply(Ok(reply));
         if rejecting {
             assert!(
                 matches!(&verdict, Verdict::Reject { status: None, message } if message == "MESSAGECANARY")
             );
         } else {
             assert_eq!(verdict, Verdict::Abstain);
+        }
+        // A returned rejection owns its message until the caller consumes it.
+        // Drop it before checking that all observed reply allocations were wiped.
+        drop(verdict);
+        let seen = probe.finish();
+        assert!(!seen.reentered && !seen.payloads.is_empty());
+        for payload in seen.payloads {
+            assert!(
+                payload.freed && payload.complete_read && payload.wiped,
+                "{payload:?}"
+            );
+            assert!(
+                !payload.reallocated && payload.read_error.is_none(),
+                "{payload:?}"
+            );
         }
     }
     // SAFETY: exclusively owned initialized String, dropped before observation ends.

@@ -18,6 +18,7 @@ enum Field<'a> {
     Bool(bool),
     Signal(&'a SignalValue),
     Signals(Vec<&'a SignalValue>),
+    Extra(&'a serde_json::Value),
     Request(&'a Decoded<'a>),
     Candidates(&'a [DecodedCandidate<'a>]),
     Context(&'a Decoded<'a>),
@@ -40,6 +41,7 @@ impl Serialize for Field<'_> {
             Self::Bool(v) => v.serialize(serializer),
             Self::Signal(v) => v.serialize(serializer),
             Self::Signals(v) => v.serialize(serializer),
+            Self::Extra(v) => v.serialize(serializer),
             Self::Request(v) => request(v).serialize(serializer),
             Self::Candidates(v) => {
                 let mut seq = serializer.serialize_seq(Some(v.len()))?;
@@ -232,56 +234,39 @@ fn candidate_fields<'a>(view: &'a DecodedCandidate<'a>) -> BTreeMap<&'a str, Fie
     fields
 }
 
-/// One member of the envelope: one of the view's own, or a caller's extra value.
-enum Member<'a, V> {
-    Field(Field<'a>),
-    Extra(&'a V),
-}
-
-impl<V: Serialize> Serialize for Member<'_, V> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Field(field) => field.serialize(serializer),
-            Self::Extra(value) => value.serialize(serializer),
-        }
-    }
-}
-
-struct Envelope<'a, V> {
+struct Envelope<'a> {
     view: &'a Decoded<'a>,
     stage: Option<&'a Stage<'a>>,
     tap: bool,
     op: &'a str,
-    extra: &'a [(&'a str, V)],
+    extra: Option<&'a serde_json::Map<String, serde_json::Value>>,
 }
 
-impl<V: Serialize> Serialize for Envelope<'_, V> {
+impl Serialize for Envelope<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut fields = BTreeMap::from([
             (
                 "candidates",
-                Member::Field(Field::Candidates(if self.tap {
-                    &[]
-                } else {
-                    &self.view.candidates
-                })),
+                Field::Candidates(if self.tap { &[] } else { &self.view.candidates }),
             ),
             (
                 "context",
-                Member::Field(if self.tap {
+                if self.tap {
                     Field::EmptyObject
                 } else {
                     Field::Context(self.view)
-                }),
+                },
             ),
-            ("request", Member::Field(Field::Request(self.view))),
+            ("request", Field::Request(self.view)),
         ]);
         if let Some(stage) = self.stage {
-            fields.insert("stage", Member::Field(Field::Stage(stage)));
+            fields.insert("stage", Field::Stage(stage));
         }
-        for (name, value) in self.extra {
-            if *name != "op" {
-                fields.insert(*name, Member::Extra(value));
+        if let Some(extra) = self.extra {
+            for (name, value) in extra {
+                if name != "op" {
+                    fields.insert(name, Field::Extra(value));
+                }
             }
         }
         let mut map = serializer.serialize_map(Some(fields.len() + 1))?;
@@ -293,12 +278,12 @@ impl<V: Serialize> Serialize for Envelope<'_, V> {
     }
 }
 
-pub(super) fn write<V: Serialize>(
+pub(super) fn write(
     view: &Decoded<'_>,
     stage: Option<&Stage<'_>>,
     tap: bool,
     op: &str,
-    extra: &[(&str, V)],
+    extra: Option<&serde_json::Map<String, serde_json::Value>>,
     out: &mut Vec<u8>,
 ) -> Result<(), serde_json::Error> {
     serde_json::to_writer(

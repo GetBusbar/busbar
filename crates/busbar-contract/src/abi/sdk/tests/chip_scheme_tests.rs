@@ -63,7 +63,7 @@ fn a_sealed_authorization_frames_the_head_the_plain_one_framed() {
         )
         .expect("frames");
         assert_eq!(framed_head(&new), framed_head(&old));
-        assert_eq!(new.framed_fields().nth(1).unwrap().1, b"<sealed>");
+        assert_eq!(new.framed_fields()[1].1, b"<sealed>");
     }
 }
 

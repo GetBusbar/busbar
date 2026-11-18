@@ -361,8 +361,7 @@ impl KernelServices {
         done: Done,
     ) -> Result<(), &'static str> {
         let pool = self.pool.as_ref().ok_or(REFUSED)?;
-        let mut intent = Vec::new();
-        observation.extension(&mut intent).map_err(|_| REFUSED)?;
+        let intent = observation.extension().map_err(|_| REFUSED)?;
         let Some(completion) = self.begin_observation(caller, ticket, unit, intent, done)? else {
             return Ok(());
         };
@@ -391,8 +390,7 @@ impl KernelServices {
         done: Done,
     ) -> Result<(), &'static str> {
         let pool = self.pool.as_ref().ok_or(REFUSED)?;
-        let mut intent = Vec::new();
-        request.extension(&mut intent).map_err(|_| REFUSED)?;
+        let intent = request.extension().map_err(|_| REFUSED)?;
         let Some(completion) = self.begin_observation(caller, ticket, unit, intent, done)? else {
             return Ok(());
         };

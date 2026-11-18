@@ -19,12 +19,7 @@ fn publish_then_drop(gens: &Generations<PlaneSnapshot>, generation: u64) -> *con
     let mut target = format!("/echo/{generation}");
     let mut openapi = br#"{"paths":{}}"#.to_vec();
     let spec = SnapshotSpec {
-        claims: vec![ClaimSpec::new(
-            verb.clone(),
-            target.clone(),
-            "door",
-            CLAIM_EXACT,
-        )],
+        claims: vec![ClaimSpec::new(&verb, &target, "door", CLAIM_EXACT)],
         admin_routes: vec![AdminRouteSpec::new("GET", "/door/status", ROUTE_PUBLIC)],
         openapi: Some(openapi.clone()),
         audience: Some("aud".to_string()),

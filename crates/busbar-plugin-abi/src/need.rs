@@ -232,14 +232,7 @@ impl TrustHandle {
     pub const NONE: TrustHandle = TrustHandle(0);
 }
 
-/// The frozen IF path `need::need::*`, kept as an alias of [`steps`] (PM ruling, 2026-11-18) while these 13
-/// plugins still name it: auth-github, auth-header, auth-ldap, auth-oauth, auth-oidc, auth-sigv4, export-otlp,
-/// export-webhook, hook-webrequest, secret-vault, store-mysql, store-postgres, store-valkey. It goes when they
-/// have repinned onto `need::steps`.
-pub use steps as need;
-
-/// The plugin-side Need API: the requests a step parks on and their answers (IF §6.2, §6.3).
-pub mod steps {
+pub mod need {
     use core::pin::Pin;
     use core::task::{Context, Poll};
 
@@ -852,7 +845,7 @@ pub mod steps {
             Req::Batch { items, sent } => {
                 *sent = 0;
                 for item in items.iter() {
-                    let Ok((rec, args)) = wire(item, serial) else {
+                    let Wire::Need(rec, args) = wire(item, serial) else {
                         break;
                     };
                     if put_need(&mut mail.needs, rec, args).is_err() {
@@ -867,14 +860,14 @@ pub mod steps {
                 *sent
             }
             single => match wire(single, serial) {
-                Ok((rec, args)) => {
+                Wire::Need(rec, args) => {
                     if put_need(&mut mail.needs, rec, args).is_err() {
                         mail.needs.truncate(start);
                         return Wrote::Local(NeedErr::Limit);
                     }
                     1
                 }
-                Err(err) => return Wrote::Local(err),
+                Wire::Local(err) => return Wrote::Local(err),
             },
         };
         mail.count = first.saturating_add(u32::try_from(sent).unwrap_or(u32::MAX));
@@ -1087,8 +1080,11 @@ pub mod steps {
         Ok(())
     }
 
-    /// A request on the wire (its record and four arguments), or its local answer.
-    type Wire<'x> = Result<(NeedRec, [Arg<'x>; 4]), NeedErr>;
+    /// A request on the wire, or its local answer.
+    enum Wire<'x> {
+        Need(NeedRec, [Arg<'x>; 4]),
+        Local(NeedErr),
+    }
 
     const fn need(op: u32, flags: u32, a: u64, b: u64, secret: u32, trust: u32) -> NeedRec {
         NeedRec {
@@ -1162,12 +1158,12 @@ pub mod steps {
     /// The NEED for `req` (§6.1 table), or its local answer.
     fn wire<'x>(req: &'x Req<'_>, serial: u64) -> Wire<'x> {
         if req.chain().is_some_and(|chain| chain != serial) {
-            return Err(NeedErr::Invalid);
+            return Wire::Local(NeedErr::Invalid);
         }
         match req {
             Req::Open { dest, tls, egress } => {
                 let t = tls_parts(*tls);
-                Ok((
+                Wire::Need(
                     need(
                         op::OPEN,
                         t.mode | egress_bits(*egress),
@@ -1182,18 +1178,18 @@ pub mod steps {
                         Arg::Alpn(t.alpn),
                         EMPTY,
                     ],
-                ))
+                )
             }
             Req::StartTls { conn, tls, .. } => {
                 let mode = match tls {
-                    Tls::None => return Err(NeedErr::Invalid),
+                    Tls::None => return Wire::Local(NeedErr::Invalid),
                     Tls::Required { .. } | Tls::Inband { cert: None, .. } => {
                         need_flag::TLS_REQUIRED
                     }
                     Tls::Mutual { .. } | Tls::Inband { cert: Some(_), .. } => need_flag::TLS_MUTUAL,
                 };
                 let t = tls_parts(*tls);
-                Ok((
+                Wire::Need(
                     need(op::STARTTLS, mode, *conn, 0, t.cert, t.trust),
                     [
                         Arg::Bytes(t.sni.as_bytes()),
@@ -1201,18 +1197,18 @@ pub mod steps {
                         EMPTY,
                         EMPTY,
                     ],
-                ))
+                )
             }
-            Req::Write { conn, bytes, .. } => Ok((
+            Req::Write { conn, bytes, .. } => Wire::Need(
                 need(op::WRITE, 0, *conn, 0, 0, 0),
                 [Arg::Bytes(bytes), EMPTY, EMPTY, EMPTY],
-            )),
+            ),
             Req::Read { conn, max, .. } | Req::ReadInto { conn, max, .. } => {
-                Ok((need(op::READ, 0, *conn, u64::from(*max), 0, 0), [EMPTY; 4]))
+                Wire::Need(need(op::READ, 0, *conn, u64::from(*max), 0, 0), [EMPTY; 4])
             }
             Req::Close { conn, reusable, .. } => {
                 let flags = if *reusable { need_flag::REUSABLE } else { 0 };
-                Ok((need(op::CLOSE, flags, *conn, 0, 0, 0), [EMPTY; 4]))
+                Wire::Need(need(op::CLOSE, flags, *conn, 0, 0, 0), [EMPTY; 4])
             }
             Req::Fetch(fetch) => {
                 let mode = if fetch.cert.is_some() {
@@ -1220,7 +1216,7 @@ pub mod steps {
                 } else {
                     need_flag::TLS_NONE
                 };
-                Ok((
+                Wire::Need(
                     need(
                         op::FETCH,
                         mode | egress_bits(fetch.egress),
@@ -1235,42 +1231,42 @@ pub mod steps {
                         Arg::Pairs(fetch.headers),
                         Arg::Bytes(fetch.body),
                     ],
-                ))
+                )
             }
-            Req::Secret(handle) => Ok((need(op::SECRET, 0, 0, 0, handle.0, 0), [EMPTY; 4])),
+            Req::Secret(handle) => Wire::Need(need(op::SECRET, 0, 0, 0, handle.0, 0), [EMPTY; 4]),
             Req::Record(record) => record_wire(*record),
             Req::Directory(op) => directory_wire(*op),
-            Req::Batch { .. } => Err(NeedErr::Invalid),
+            Req::Batch { .. } => Wire::Local(NeedErr::Invalid),
         }
     }
 
     fn record_wire(record: Record<'_>) -> Wire<'_> {
         let rec = |flags: u32, a: u64, b: u64| need(op::RECORD, flags, a, b, 0, 0);
         match record {
-            Record::Get { key } => Ok((
+            Record::Get { key } => Wire::Need(
                 rec(need_flag::REC_GET, 0, 0),
                 [Arg::Bytes(key), EMPTY, EMPTY, EMPTY],
-            )),
-            Record::Put { key, value, ttl_s } => Ok((
+            ),
+            Record::Put { key, value, ttl_s } => Wire::Need(
                 rec(need_flag::REC_PUT, ttl_s, 0),
                 [Arg::Bytes(key), Arg::Bytes(value), EMPTY, EMPTY],
-            )),
-            Record::Claim { key, value, ttl_s } => Ok((
+            ),
+            Record::Claim { key, value, ttl_s } => Wire::Need(
                 rec(need_flag::REC_CLAIM, ttl_s, 0),
                 [Arg::Bytes(key), Arg::Bytes(value), EMPTY, EMPTY],
-            )),
-            Record::Del { key } => Ok((
+            ),
+            Record::Del { key } => Wire::Need(
                 rec(need_flag::REC_DEL, 0, 0),
                 [Arg::Bytes(key), EMPTY, EMPTY, EMPTY],
-            )),
-            Record::List { prefix, limit } => Ok((
+            ),
+            Record::List { prefix, limit } => Wire::Need(
                 rec(need_flag::REC_LIST, 0, u64::from(limit)),
                 [Arg::Bytes(prefix), EMPTY, EMPTY, EMPTY],
-            )),
-            Record::Commit(c) => Ok((
+            ),
+            Record::Commit(c) => Wire::Need(
                 rec(need_flag::REC_COMMIT, 0, 0),
                 [Arg::Commit(c), EMPTY, EMPTY, EMPTY],
-            )),
+            ),
         }
     }
 
@@ -1286,11 +1282,11 @@ pub mod steps {
             )
         };
         match op {
-            Dir::Get { kind, id } => Ok((
+            Dir::Get { kind, id } => Wire::Need(
                 rec(dir::GET, kind, 0, 0),
                 [Arg::Bytes(id.as_bytes()), EMPTY, EMPTY, EMPTY],
-            )),
-            Dir::Lookup { kind, index, value } => Ok((
+            ),
+            Dir::Lookup { kind, index, value } => Wire::Need(
                 rec(dir::LOOKUP, kind, 0, 0),
                 [
                     Arg::Bytes(index.as_bytes()),
@@ -1298,13 +1294,13 @@ pub mod steps {
                     EMPTY,
                     EMPTY,
                 ],
-            )),
+            ),
             Dir::Scan {
                 kind,
                 scope,
                 after,
                 limit,
-            } => Ok((
+            } => Wire::Need(
                 rec(dir::SCAN, kind, 0, u64::from(limit)),
                 [
                     Arg::Bytes(scope.as_bytes()),
@@ -1312,11 +1308,11 @@ pub mod steps {
                     EMPTY,
                     EMPTY,
                 ],
-            )),
-            Dir::Count { kind, scope } => Ok((
+            ),
+            Dir::Count { kind, scope } => Wire::Need(
                 rec(dir::COUNT, kind, 0, 0),
                 [Arg::Bytes(scope.as_bytes()), EMPTY, EMPTY, EMPTY],
-            )),
+            ),
             Dir::Create {
                 kind,
                 state,
@@ -1325,10 +1321,10 @@ pub mod steps {
                 indexes,
             } => {
                 let pulled = if pull { dir::PULL } else { 0 };
-                Ok((
+                Wire::Need(
                     rec(dir::CREATE, kind, (state << dir::STATE_SHIFT) | pulled, 0),
                     [EMPTY, Arg::Bytes(document), Arg::Pairs(indexes), EMPTY],
-                ))
+                )
             }
             Dir::Apply {
                 kind,
@@ -1341,7 +1337,7 @@ pub mod steps {
                 add,
                 remove,
                 replace,
-            } => Ok((
+            } => Wire::Need(
                 rec(
                     dir::APPLY,
                     kind,
@@ -1358,15 +1354,15 @@ pub mod steps {
                         replace,
                     },
                 ],
-            )),
+            ),
             Dir::Delete {
                 kind,
                 id,
                 expected_version,
-            } => Ok((
+            } => Wire::Need(
                 rec(dir::DELETE, kind, 0, expected_version),
                 [Arg::Bytes(id.as_bytes()), EMPTY, EMPTY, EMPTY],
-            )),
+            ),
         }
     }
 
@@ -1704,7 +1700,7 @@ pub mod steps {
         }
 
         fn written(req: &Req<'_>) -> (NeedRec, Vec<Vec<u8>>) {
-            let Ok((rec, args)) = wire(req, 9) else {
+            let Wire::Need(rec, args) = wire(req, 9) else {
                 panic!("local")
             };
             let mut w = Reply::new();
@@ -1785,7 +1781,7 @@ pub mod steps {
                 tls: Tls::None,
                 egress: 2,
             };
-            let Ok((rec, args)) = wire(&request, 9) else {
+            let Wire::Need(rec, args) = wire(&request, 9) else {
                 panic!("wire")
             };
             let mut out = Reply::new();
@@ -1951,13 +1947,13 @@ pub mod steps {
                 chain: 8,
                 bytes: b"x",
             };
-            assert!(matches!(wire(&foreign, 9), Err(NeedErr::Invalid)));
+            assert!(matches!(wire(&foreign, 9), Wire::Local(NeedErr::Invalid)));
             let plain = Req::StartTls {
                 conn: 1,
                 chain: 9,
                 tls: Tls::None,
             };
-            assert!(matches!(wire(&plain, 9), Err(NeedErr::Invalid)));
+            assert!(matches!(wire(&plain, 9), Wire::Local(NeedErr::Invalid)));
         }
 
         fn result(w: &mut Reply, op: u32, status: u32, a: u64, b: u64, d0: &[u8], d1: &[u8]) {

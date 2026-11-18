@@ -44,8 +44,8 @@ impl<T> Step<T> {
 pub struct Checkout {
     /// The declared need.
     pub need: u32,
-    /// The target (`None` = the need's own), shared with its owner (never copied per connection).
-    pub target: Option<std::sync::Arc<str>>,
+    /// The target (`None` = the need's own).
+    pub target: Option<String>,
     /// The stream.
     pub stream: u64,
 }
@@ -245,7 +245,7 @@ impl<'a> Op<'a> {
 
     /// The op's ONE connection, for declared need `need` to `target`: established once (the answer
     /// is its stream handle) and kept for the op's later calls; a different need or target is refused.
-    pub fn checkout(&mut self, need: u32, target: Option<&std::sync::Arc<str>>) -> Answer<u64> {
+    pub fn checkout(&mut self, need: u32, target: Option<&str>) -> Answer<u64> {
         self.checkout_timed(need, target, 0)
     }
 
@@ -254,31 +254,28 @@ impl<'a> Op<'a> {
     pub fn checkout_timed(
         &mut self,
         need: u32,
-        target: Option<&std::sync::Arc<str>>,
+        target: Option<&str>,
         timeout_ms: u32,
     ) -> Answer<u64> {
         if let Some(c) = &self.checkout {
-            return std::task::Poll::Ready(
-                if c.need == need && c.target.as_deref() == target.map(|t| &**t) {
-                    Ok(c.stream)
-                } else {
-                    Err(ConnFailure::Refused(
-                        "one op holds one connection: this op's is for another need or target"
-                            .into(),
-                    ))
-                },
-            );
+            return std::task::Poll::Ready(if c.need == need && c.target.as_deref() == target {
+                Ok(c.stream)
+            } else {
+                Err(ConnFailure::Refused(
+                    "one op holds one connection: this op's is for another need or target".into(),
+                ))
+            });
         }
         let mut services = match self.connector() {
             Ok(s) => s,
             Err(e) => return std::task::Poll::Ready(Err(e)),
         };
-        let answer = services.establish_timed(need, target.map(|t| &**t), "", timeout_ms);
+        let answer = services.establish_timed(need, target, "", timeout_ms);
         drop(services);
         if let std::task::Poll::Ready(Ok(stream)) = answer {
             self.checkout = Some(Checkout {
                 need,
-                target: target.cloned(),
+                target: target.map(str::to_owned),
                 stream,
             });
         } else if answer.is_pending() {

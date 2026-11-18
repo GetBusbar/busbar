@@ -839,7 +839,7 @@ impl SeatPool {
             }
             let key_pin = match def.tls.pin_spki.as_slice() {
                 [] => None,
-                [one] => Some(busbar_contract::transport::trust::digest_key_pin(one)),
+                [one] => Some(busbar_contract::abi::sdk::digest::tagged(one)),
                 _ => {
                     return Err(format!(
                         "`upstreams.{name}.tls.pin_spki` names more than one key, and plane `{instance}` can hold \

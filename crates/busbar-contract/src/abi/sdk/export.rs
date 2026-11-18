@@ -55,14 +55,16 @@ pub fn declare_recorder<L: Life<Kind = crate::plugin::markers::ExportKind>>(
     if let Err(error) = requirements.validate() {
         return out.fail(Refusal::refused(error));
     }
-    // The host reads the findings after this call: they are written into the lease's own buffer.
-    match out.lease_written(
-        |o| &o.findings,
-        held.leases(),
-        crate::abi::mechanism::call::BLOB_JSON,
-        |bytes| serde_json::to_writer(bytes, &requirements),
-    ) {
-        Ok(()) => Outcome::Ready,
+    match serde_json::to_vec(&requirements) {
+        Ok(bytes) => {
+            out.lease(
+                |o| &o.findings,
+                held.leases(),
+                bytes,
+                crate::abi::mechanism::call::BLOB_JSON,
+            );
+            Outcome::Ready
+        }
         Err(error) => out.fail(Refusal::failed(super::cold::wire::display_text(&error))),
     }
 }
@@ -113,15 +115,14 @@ impl<L: Life<Kind = crate::plugin::markers::ExportKind>> SafeSlot for Quiet<L> {
     }
 }
 
-/// The instance names `check` is handed, in configuration order (an absent name reads empty),
-/// borrowed from the host's `in` for the call (lossily UTF-8: a copy only where a name is not).
-pub fn instance_names<'a>(
-    input: Lent<'a, CheckIn>,
-) -> impl ExactSizeIterator<Item = std::borrow::Cow<'a, str>> + 'a {
+/// The instance names `check` is handed, in configuration order (an absent name reads empty).
+#[must_use]
+pub fn instance_names(input: Lent<'_, CheckIn>) -> Vec<String> {
     input
         .instances()
         .iter()
-        .map(|c| String::from_utf8_lossy(c.field(|c| &c.name).bytes()))
+        .map(|c| String::from_utf8_lossy(c.field(|c| &c.name).bytes()).into_owned())
+        .collect()
 }
 
 /// THE `one_instance` LIMITS CHECK: with more than one instance of the sink configured (`names`,
@@ -132,6 +133,22 @@ pub fn one_instance_reason(names: &[String], why: &str) -> Vec<String> {
     } else {
         Vec::new()
     }
+}
+
+/// THE `one_instance` LIMITS CHECK WORDED BY THE SINK (deprecated: the host words the refusal
+#[must_use]
+pub fn second_instances(names: &[String], alias: &str, why: &str) -> Vec<String> {
+    let Some((first, rest)) = names.split_first() else {
+        return Vec::new();
+    };
+    rest.iter()
+        .map(|name| {
+            format!(
+                "export.{name}: a second `module: {alias}` instance (already defined as \
+                 '{first}'). {why}"
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]

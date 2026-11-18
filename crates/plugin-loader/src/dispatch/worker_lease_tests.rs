@@ -352,8 +352,7 @@ fn close_host_callback_keeps_the_submitted_framing_scope_outside_both_locks() {
         if entered_tx.send(()).is_err() || held.lock().unwrap().recv_timeout(WAIT).is_err() {
             return;
         }
-        let mut refusal = busbar_contract::abi::sdk::services::RefusalCopy::default();
-        let answered = services.unit_refuse(
+        let refusal = services.unit_refuse(
             CompletionHandle {
                 ticket,
                 seq: 1,
@@ -370,9 +369,8 @@ fn close_host_callback_keeps_the_submitted_framing_scope_outside_both_locks() {
                 scheme: SCHEME_PLAIN,
                 ..HeadViewArgs::default()
             },
-            &mut refusal,
         );
-        service_called.store(answered.is_ok() && refusal.status == 404, Ordering::SeqCst);
+        service_called.store(refusal.is_ok_and(|r| r.status == 404), Ordering::SeqCst);
     }));
     let ticket = d.mint(0).unwrap();
     let reply = super::super::framing_context::with_context(Some(scope.clone()), || {

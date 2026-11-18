@@ -190,7 +190,7 @@ async fn neutral_runtime_custody_reserves_settles_and_reattaches_original_tariff
             &caller,
             ticket,
             1,
-            ScopeRequest::create_requiring(vec![0, 1])
+            ScopeRequest::create_requiring([0, 1])
         )
         .await,
         Err(REFUSED)
@@ -205,7 +205,7 @@ async fn neutral_runtime_custody_reserves_settles_and_reattaches_original_tariff
         &caller,
         ticket,
         1,
-        ScopeRequest::create_requiring(vec![0]),
+        ScopeRequest::create_requiring([0]),
     )
     .await
     .unwrap();
@@ -326,7 +326,7 @@ async fn neutral_runtime_custody_reserves_settles_and_reattaches_original_tariff
             &caller,
             ticket,
             2,
-            ScopeRequest::attach_requiring(id, vec![0, 1])
+            ScopeRequest::attach_requiring(id, [0, 1])
         )
         .await,
         Err(REFUSED)
@@ -336,7 +336,7 @@ async fn neutral_runtime_custody_reserves_settles_and_reattaches_original_tariff
         &caller,
         ticket,
         2,
-        ScopeRequest::attach_requiring(id, vec![0]),
+        ScopeRequest::attach_requiring(id, [0]),
     )
     .await
     .unwrap();

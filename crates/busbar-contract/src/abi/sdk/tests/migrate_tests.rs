@@ -414,19 +414,17 @@ fn an_octet_input_is_refused_for_every_kind() {
         }
     }
     let bytes = b"SYNTHETIC_CREDENTIAL";
-    let mut buffer = [0; 256];
-    let mut input = ValidateIn {
-        settings: Blob {
-            ptr: bytes.as_ptr(),
-            len: bytes.len(),
-            fmt: BLOB_OCTETS,
-            flags: crate::abi::mechanism::call::BLOB_SECRET,
-        },
-        err_buf: buffer.as_mut_ptr(),
-        err_cap: buffer.len(),
-        ..ValidateIn::default()
+    let mut input = ValidateIn::default();
+    input.settings = Blob {
+        ptr: bytes.as_ptr(),
+        len: bytes.len(),
+        fmt: BLOB_OCTETS,
+        flags: crate::abi::mechanism::call::BLOB_SECRET,
     };
     input.head.extensions = Blob::of(b"1.5.5");
+    let mut buffer = [0; 256];
+    input.err_buf = buffer.as_mut_ptr();
+    input.err_cap = buffer.len();
     let mut out = OutHead::default();
     // SAFETY: all lent buffers live for the complete synchronous call.
     let auth = unsafe { Migrator::<Auth>::call(std::ptr::null_mut(), &input, &mut out) };

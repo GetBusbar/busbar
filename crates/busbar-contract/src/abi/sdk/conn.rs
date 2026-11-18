@@ -453,36 +453,13 @@ const fn absent() -> AbiStr {
     AbiStr::ZERO
 }
 
-/// The host's text, borrowed only for the copy that follows at once: the host keeps it until its
-/// next service on this ticket, and every caller copies it out before that.
-fn host_bytes<'h>(s: AbiStr) -> &'h [u8] {
+/// The host's error text, copied (it is the host's until the next service on the ticket).
+fn host_text(s: AbiStr) -> String {
     if s.ptr.is_null() || s.len == 0 {
-        return &[];
+        return String::new();
     }
-    // SAFETY: the host's text, `len` bytes, live until its next service on this ticket; every
-    // caller copies it out before it makes another.
-    unsafe { std::slice::from_raw_parts(s.ptr, s.len) }
-}
-
-/// `into` (the caller's kept buffer) cleared and refilled with the host's text, read lossily as
-/// UTF-8: no buffer of its own.
-fn fill(into: &mut String, s: AbiStr) {
-    into.clear();
-    into.push_str(&String::from_utf8_lossy(host_bytes(s)));
-}
-
-/// [`fill`] for a text that may be absent: an empty one is `None`.
-fn fill_opt(into: &mut Option<String>, s: AbiStr) {
-    if host_bytes(s).is_empty() {
-        *into = None;
-    } else {
-        fill(into.get_or_insert_with(String::new), s);
-    }
-}
-
-/// The host's failure words, owned: a [`ConnFailure`] owns its text (the cold path).
-fn host_failure(s: AbiStr) -> String {
-    super::cold::wire::lossy_text(host_bytes(s))
+    // SAFETY: the host's text, `len` bytes, live until its next service on this ticket.
+    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
 }
 
 fn text(s: Option<&str>) -> AbiStr {
@@ -567,14 +544,14 @@ impl<K: KindMarker> Connector<'_, K> {
             Outcome::Pending => Poll::Pending,
             Outcome::Failed => {
                 self.cause.set(out.value);
-                Poll::Ready(Err(ConnFailure::Failed(host_failure(out.error))))
+                Poll::Ready(Err(ConnFailure::Failed(host_text(out.error))))
             }
             Outcome::Refused => {
                 self.cause.set(out.value);
                 Poll::Ready(Err(if out.value == CAUSE_CREDENTIAL_UNAVAILABLE {
                     ConnFailure::CredentialUnavailable
                 } else {
-                    ConnFailure::Refused(host_failure(out.error))
+                    ConnFailure::Refused(host_text(out.error))
                 }))
             }
             Outcome::Fault => {
@@ -702,12 +679,7 @@ impl<K: KindMarker> Connector<'_, K> {
     }
 
     /// WHAT `stream`'s CONNECTION SECURITY ESTABLISHED, as the host connector observed it
-    ///
-    ///
-    /// Answers whether the stream is secured, `None` (and `into` untouched) when the host has no
-    /// facts for it; the facts are written into `into` when given (the caller's kept facts, its text
-    /// buffers reused), so a caller that asks only whether it is secured copies nothing.
-    pub fn facts(&mut self, stream: u64, into: Option<&mut Observed>) -> Answer<Option<bool>> {
+    pub fn facts(&mut self, stream: u64) -> Answer<Option<Observed>> {
         let mut slot = StreamFacts {
             size: 0,
             secure: 0,
@@ -725,25 +697,21 @@ impl<K: KindMarker> Connector<'_, K> {
         };
         self.call(service::FACTS, |s| s.facts, input).map(|r| {
             r.map(|_| {
-                if slot.size == 0 {
-                    return None;
-                }
-                let secure = slot.secure == 1;
-                if let Some(into) = into {
-                    into.secure = secure;
-                    fill_opt(&mut into.agreed_protocol, slot.agreed_protocol);
-                    fill_opt(&mut into.peer_key_pin, slot.peer_key_pin);
-                    into.client_identity = slot.client_identity == 1;
-                }
-                Some(secure)
+                (slot.size != 0).then(|| {
+                    let owned = |t: AbiStr| Some(host_text(t)).filter(|t| !t.is_empty());
+                    Observed {
+                        secure: slot.secure == 1,
+                        agreed_protocol: owned(slot.agreed_protocol),
+                        peer_key_pin: owned(slot.peer_key_pin),
+                        client_identity: slot.client_identity == 1,
+                    }
+                })
             })
         })
     }
 
     /// THE PROCESS IDENTITY (`service::IDENTITY`): the pid, OS user and program the host presents
-    ///
-    /// Written into `into` (the caller's kept identity, its text buffers reused).
-    pub fn identity(&mut self, into: &mut ProcessId) -> Answer<()> {
+    pub fn identity(&mut self) -> Answer<ProcessId> {
         let mut slot = ProcessIdentity {
             size: 0,
             _reserved: 0,
@@ -757,10 +725,10 @@ impl<K: KindMarker> Connector<'_, K> {
         };
         self.call(service::IDENTITY, |s| s.identity, input)
             .map(|r| {
-                r.map(|_| {
-                    into.pid = slot.pid;
-                    fill(&mut into.os_user, slot.os_user);
-                    fill(&mut into.program, slot.program);
+                r.map(|_| ProcessId {
+                    pid: slot.pid,
+                    os_user: host_text(slot.os_user),
+                    program: host_text(slot.program),
                 })
             })
     }
@@ -924,9 +892,9 @@ impl<K: KindMarker> Connector<'_, K> {
             Outcome::Failed => fail(
                 out.value,
                 rotation,
-                ConnFailure::Failed(host_failure(out.error)),
+                ConnFailure::Failed(host_text(out.error)),
             ),
-            Outcome::Refused => fail(0, rotation, ConnFailure::Refused(host_failure(out.error))),
+            Outcome::Refused => fail(0, rotation, ConnFailure::Refused(host_text(out.error))),
             Outcome::Fault => fail(0, blank, ConnFailure::Fault),
         }
     }

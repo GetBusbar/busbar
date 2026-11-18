@@ -11,15 +11,15 @@ use base64::Engine as _;
 const CUT: &str = "***";
 
 /// `%XX` (two hex digits, either case) decoded to its octet; any other byte, a `%` not followed by
-/// two hex digits included, passes as itself. Each octet is handed to `push` in order: the decoder
-/// keeps no buffer of its own.
-pub fn percent_decode(s: &[u8], mut push: impl FnMut(u8)) {
+#[must_use]
+pub fn percent_decode(s: &[u8]) -> Vec<u8> {
     let hex = |c: u8| match c {
         b'0'..=b'9' => Some(c - b'0'),
         b'a'..=b'f' => Some(c - b'a' + 10),
         b'A'..=b'F' => Some(c - b'A' + 10),
         _ => None,
     };
+    let mut out = Vec::with_capacity(s.len());
     let mut i = 0;
     while let Some(&c) = s.get(i) {
         if c == b'%' {
@@ -27,21 +27,14 @@ pub fn percent_decode(s: &[u8], mut push: impl FnMut(u8)) {
                 s.get(i + 1).copied().and_then(hex),
                 s.get(i + 2).copied().and_then(hex),
             ) {
-                push((hi << 4) | lo);
+                out.push((hi << 4) | lo);
                 i += 3;
                 continue;
             }
         }
-        push(c);
+        out.push(c);
         i += 1;
     }
-}
-
-/// `s` percent-decoded in custody: one wiping buffer with room for all of `s` (decoding only
-/// shrinks), so it never grows.
-fn decoded_in_custody(s: &[u8]) -> SecureVec {
-    let mut out = SecureVec::with_capacity(s.len()).unwrap_or_default();
-    percent_decode(s, |b| out.extend_from_slice(&[b]));
     #[cfg(test)]
     tests::watch_scratch(&out);
     out
@@ -59,31 +52,26 @@ pub enum Userinfo {
 }
 
 /// THE USERINFO AS A BASIC CREDENTIAL: `Basic ` and the padded standard base64 (RFC 4648 section 4)
-/// of `username:password`, each half percent-decoded, appended to `out` (the caller's buffer, in its
-/// custody). `false`, and nothing written, when the userinfo states no credential `read` accepts.
 #[must_use]
 pub fn basic_authorization(
     username: &str,
     password: Option<&str>,
     read: Userinfo,
-    out: &mut String,
-) -> bool {
-    let username = decoded_in_custody(username.as_bytes());
+) -> Option<String> {
+    let username = SecureVec::from(percent_decode(username.as_bytes()));
     if username.contains(&b':') {
-        return false;
+        return None;
     }
-    let password = password.map(|p| decoded_in_custody(p.as_bytes()));
+    let password = password.map(|p| SecureVec::from(percent_decode(p.as_bytes())));
     let password = match read {
         Userinfo::Octets => password,
         Userinfo::Utf8 => {
-            if std::str::from_utf8(&username).is_err() {
-                return false;
-            }
+            std::str::from_utf8(&username).ok()?;
             password.filter(|p| std::str::from_utf8(p).is_ok())
         }
     };
     if username.is_empty() && password.is_none() {
-        return false;
+        return None;
     }
 
     // One exact allocation, made in custody: the wiping buffer never grows (LINT-RULES LR-117).
@@ -95,17 +83,17 @@ pub fn basic_authorization(
     user_pass.extend_from_slice(pass);
     #[cfg(test)]
     tests::watch_scratch(&user_pass);
-    out.push_str("Basic ");
-    STANDARD.encode_string(&*user_pass, out);
-    true
+    let encoded = SecureString::from(STANDARD.encode(&*user_pass));
+    #[cfg(test)]
+    tests::watch_scratch(encoded.as_bytes());
+    Some(format!("Basic {}", encoded.as_str()))
 }
 
 /// `url` with its credential-bearing prefix through the LAST `@` replaced by `with` (`with`
-/// carries its own `@` if one is wanted), appended to `out`; a `url` with no `@` is appended whole.
-pub fn cut_userinfo(url: &str, with: &str, out: &mut String) {
+#[must_use]
+pub fn cut_userinfo(url: &str, with: &str) -> String {
     let Some(at) = url.rfind('@') else {
-        out.push_str(url);
-        return;
+        return url.to_string();
     };
 
     if let Some((scheme, _)) = url[..at].split_once("://") {
@@ -117,12 +105,10 @@ pub fn cut_userinfo(url: &str, with: &str, out: &mut String) {
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'+' | b'-' | b'.'))
         {
-            out.push_str(scheme);
-            out.push_str("://");
+            return format!("{scheme}://{with}{}", &url[at + 1..]);
         }
     }
-    out.push_str(with);
-    out.push_str(&url[at + 1..]);
+    format!("{with}{}", &url[at + 1..])
 }
 
 /// Returns a refusal for an ambiguous credential-bearing URL, without exposing its credential.
@@ -132,6 +118,19 @@ pub fn ambiguous_url(url: &str, from_path: &str) -> Option<String> {
         return None;
     }
     Some(super::cold::wire::ambiguous_url(url))
+}
+
+/// `parts` followed by each of them percent-decoded (lossily read as text), in the same order: the
+#[must_use]
+pub fn and_decoded(mut parts: Vec<String>) -> Vec<String> {
+    let given = parts.len();
+    parts.reserve(given);
+    for at in 0..given {
+        let decoded = SecureVec::from(percent_decode(parts[at].as_bytes()));
+        let text = String::from_utf8_lossy(&decoded).into_owned();
+        parts.push(text);
+    }
+    parts
 }
 
 /// Strings that wipe their whole allocations when the list drops; its own block holds only

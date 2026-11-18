@@ -8,14 +8,12 @@ use std::borrow::Cow;
 /// `url::ambiguous_url`'s refusal, the URL's credential cut.
 #[cold]
 pub(in crate::abi::sdk) fn ambiguous_url(url: &str) -> String {
-    let mut cut = String::new();
-    crate::abi::sdk::url::cut_userinfo(url, "***@", &mut cut);
     format!(
         "settings: url `{}` is ambiguous: it has an `@` after its host, so what comes before that \
          `@` would be read as the host and path, not as a credential. Percent-encode a `/`, `?` or \
          `#` inside the credential (`%2F`, `%3F`, `%23`), or write an `@` meant for the path as \
          `%40`",
-        cut
+        crate::abi::sdk::url::cut_userinfo(url, "***@")
     )
 }
 

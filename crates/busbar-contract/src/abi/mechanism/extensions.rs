@@ -24,36 +24,6 @@ pub fn encode_into(out: &mut Vec<u8>, entries: &[(&str, &[u8])]) {
     }
 }
 
-/// One entry appended to `out` as [`encode_into`] writes it, its value written in place by `value`
-/// (no buffer of its own for the value). A key or value past its length writes nothing, as
-/// [`encode_into`] skips it; a failed `value` leaves `out` as it was.
-///
-/// # Errors
-/// `value`'s error.
-pub fn entry_into<E>(
-    out: &mut Vec<u8>,
-    key: &str,
-    value: impl FnOnce(&mut Vec<u8>) -> Result<(), E>,
-) -> Result<(), E> {
-    let start = out.len();
-    let Ok(k) = u16::try_from(key.len()) else {
-        return Ok(());
-    };
-    out.extend_from_slice(&k.to_le_bytes());
-    out.extend_from_slice(key.as_bytes());
-    let len_at = out.len();
-    out.extend_from_slice(&[0; 4]);
-    if let Err(e) = value(out) {
-        out.truncate(start);
-        return Err(e);
-    }
-    match u32::try_from(out.len() - len_at - 4) {
-        Ok(v) => out[len_at..len_at + 4].copy_from_slice(&v.to_le_bytes()),
-        Err(_) => out.truncate(start),
-    }
-    Ok(())
-}
-
 /// The length of the one entry `key` and `value` encode to: what [`entry`] is sized by.
 #[must_use]
 pub const fn entry_len(key: &str, value: &[u8]) -> usize {

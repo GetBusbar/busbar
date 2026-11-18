@@ -51,20 +51,16 @@ impl Sha256Stream {
 /// The tag a SHA-256 digest is shown under: `sha256/`.
 pub const SHA256_TAG: &str = "sha256/";
 
-/// The SHA-256 digest of `data`, tagged: `sha256/<standard base64>`, appended to `out`.
-pub fn sha256_tagged(data: &[u8], out: &mut String) {
-    tagged(&sha256(data), out);
+/// The SHA-256 digest of `data`, tagged: `sha256/<standard base64>`.
+#[must_use]
+pub fn sha256_tagged(data: &[u8]) -> String {
+    tagged(&sha256(data))
 }
 
-/// The length of a tagged digest: the tag and 44 base64 characters.
-pub const TAGGED_LEN: usize = SHA256_TAG.len() + 44;
-
 /// A SHA-256 `digest`, tagged: `sha256/<standard base64, padded>`. The ONE place a tagged digest is
-///
-/// Appended to `out` (the caller's buffer; [`TAGGED_LEN`] bytes).
-pub fn tagged(digest: &[u8; 32], out: &mut String) {
-    out.push_str(SHA256_TAG);
-    STANDARD.encode_string(digest, out);
+#[must_use]
+pub fn tagged(digest: &[u8; 32]) -> String {
+    format!("{SHA256_TAG}{}", STANDARD.encode(digest))
 }
 
 /// `bytes` as lower-case hex, two digits a byte: the one spelling a plugin renders a digest or a

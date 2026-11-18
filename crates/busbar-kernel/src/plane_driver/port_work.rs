@@ -186,9 +186,8 @@ impl DurableWork for StoreWork {
     ) -> BoxFut<'a, Result<Box<str>, u32>> {
         Box::pin(async move {
             let subject = subject_of(principal).ok_or(R_DENIED)?;
-            let mut record = Vec::new();
-            busbar_contract::abi::sdk::recovery::poll_record(target, &mut record)
-                .map_err(|_| R_INVALID)?;
+            let record =
+                busbar_contract::abi::sdk::recovery::poll_record(target).map_err(|_| R_INVALID)?;
             if !self.ready.load(Ordering::Acquire) {
                 return Err(R_UNSUPPORTED);
             }

@@ -27,18 +27,12 @@ fn sha256_hex_is_this_digest_in_lower_hex() {
 /// The tag 1.5.5 wrote for a document fingerprint: `sha256/` and the standard (padded) base64.
 #[test]
 fn sha256_tagged_is_the_standard_base64_tag() {
-    let of = |data: &[u8]| {
-        let mut out = String::new();
-        sha256_tagged(data, &mut out);
-        assert_eq!(out.len(), super::TAGGED_LEN);
-        out
-    };
     assert_eq!(
-        of(b"abc"),
+        sha256_tagged(b"abc"),
         "sha256/ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="
     );
     assert_eq!(
-        of(b""),
+        sha256_tagged(b""),
         "sha256/47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
     );
 }

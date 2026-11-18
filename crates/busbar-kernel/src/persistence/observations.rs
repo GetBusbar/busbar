@@ -473,11 +473,10 @@ impl ObservationStore {
                     .iter()
                     .map(|b| address(b'b', b.id.as_bytes())),
             );
-            let mut encoded = Vec::new();
-            observation
-                .encode(&mut encoded)
-                .map_err(|_| Error::Invalid)?;
-            let intent_address = address(b'r', &Sha256::digest(&encoded));
+            let intent_address = address(
+                b'r',
+                &Sha256::digest(observation.encode().map_err(|_| Error::Invalid)?),
+            );
             addresses.push(intent_address.clone());
             let values = self.read(&addresses).await?;
             if let Some(value) = values.last().and_then(Option::as_ref) {

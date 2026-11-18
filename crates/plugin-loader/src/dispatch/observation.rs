@@ -325,12 +325,6 @@ pub(crate) unsafe fn answer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    // The observation encoders append to the caller's buffer; these tests read them back owned.
-    fn ext(f: impl FnOnce(&mut Vec<u8>) -> Result<(), wire::InvalidObservation>) -> Vec<u8> {
-        let mut out = Vec::new();
-        f(&mut out).unwrap();
-        out
-    }
 
     #[test]
     fn observation_input_cannot_override_custody_or_hide_malformed_framing() {
@@ -354,7 +348,7 @@ mod tests {
             .count(0, busbar_contract::Count::ZERO)
             .unwrap()
             .final_totals();
-        let encoded = ext(|o| observation.extension(o));
+        let encoded = observation.extension().unwrap();
         assert_eq!(
             decode(&encoded).unwrap(),
             Some(Intent::Observe(observation))
@@ -378,11 +372,13 @@ mod tests {
         );
         let scope = wire::ScopeRequest::create();
         assert_eq!(
-            decode(&ext(|o| scope.extension(o))),
+            decode(&scope.extension().unwrap()),
             Ok(Some(Intent::Scope(scope)))
         );
-        let mut combined = ext(|o| wire::Observation::new([1; 32], vec![2], vec![3]).extension(o));
-        combined.extend_from_slice(&ext(|o| wire::ScopeRequest::attach([1; 32]).extension(o)));
+        let mut combined = wire::Observation::new([1; 32], vec![2], vec![3])
+            .extension()
+            .unwrap();
+        combined.extend_from_slice(&wire::ScopeRequest::attach([1; 32]).extension().unwrap());
         assert_eq!(decode(&combined), Err(AnswerError::Malformed));
     }
 
@@ -429,7 +425,9 @@ mod tests {
             answer(wake, KindCode::Plane, ticket, Some(7), &out.head, &frame)
         };
         assert_eq!(result, Err(AnswerError::Malformed));
-        let bytes = ext(|o| wire::Observation::new([1; 32], vec![2], vec![3]).extension(o));
+        let bytes = wire::Observation::new([1; 32], vec![2], vec![3])
+            .extension()
+            .unwrap();
         out.head.extensions.ptr = bytes.as_ptr();
         out.head.extensions.len = bytes.len();
         // SAFETY: both frames and encoded bytes remain alive for every crossing.

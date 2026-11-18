@@ -46,7 +46,6 @@
 //! ```
 
 use std::any::Any;
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -178,48 +177,43 @@ pub trait Publish: sealed::Sealed + Copy + 'static {
     fn lower(spec: &Self::Spec, generation: u64, backing: &mut Backing) -> Self;
 }
 
-/// One claim, owned: see [`Claim`]. Its texts are usually `'static` (borrowed, never copied); a
-/// spec built from runtime text owns it.
+/// One claim, owned: see [`Claim`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClaimSpec {
     /// The verb.
-    pub verb: Cow<'static, str>,
+    pub verb: String,
     /// The target path.
-    pub target: Cow<'static, str>,
+    pub target: String,
     /// The transport claim it arrives over.
-    pub carrier: Cow<'static, str>,
+    pub carrier: String,
     /// `CLAIM_OPEN`, and `CLAIM_PATTERN` or `CLAIM_EXACT` (see [`ServedRoute::claim_flags`]).
     pub flags: u32,
     /// The dialect a refusal on this route wears before `arrive` has read the arrival (see
     /// [`Claim::refusal_dialect`]); `0` for a plane with no dialects.
     pub refusal_dialect: u16,
     /// The span an arrival on it opens ([`PlaneSnapshot::arrival_spans`]); empty = none.
-    pub arrival_span: Cow<'static, str>,
+    pub arrival_span: String,
 }
 
 impl ClaimSpec {
     /// A claim of `verb` on `target` over `carrier`.
     #[must_use]
-    pub fn new(
-        verb: impl Into<Cow<'static, str>>,
-        target: impl Into<Cow<'static, str>>,
-        carrier: impl Into<Cow<'static, str>>,
-        flags: u32,
-    ) -> Self {
+    pub fn new(verb: &str, target: &str, carrier: &str, flags: u32) -> Self {
         Self {
-            verb: verb.into(),
-            target: target.into(),
-            carrier: carrier.into(),
+            verb: verb.to_string(),
+            target: target.to_string(),
+            carrier: carrier.to_string(),
             flags,
             refusal_dialect: 0,
-            arrival_span: Cow::Borrowed(""),
+            arrival_span: String::new(),
         }
     }
 
     /// The claim, its arrivals opening the span `name` ([`PlaneSnapshot::arrival_spans`]).
     #[must_use]
-    pub fn with_arrival_span(mut self, name: impl Into<Cow<'static, str>>) -> Self {
-        self.arrival_span = name.into();
+    pub fn with_arrival_span(mut self, name: &str) -> Self {
+        self.arrival_span.clear();
+        self.arrival_span.push_str(name);
         self
     }
 }
@@ -238,39 +232,36 @@ impl Publish for Claim {
     }
 }
 
-/// One admin route, owned: see [`AdminRoute`]. Its texts are usually `'static`, as a claim's are.
+/// One admin route, owned: see [`AdminRoute`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdminRouteSpec {
     /// The verb.
-    pub verb: Cow<'static, str>,
+    pub verb: String,
     /// The target path.
-    pub target: Cow<'static, str>,
+    pub target: String,
     /// `ROUTE_PUBLIC` or `0`.
     pub flags: u32,
     /// The word the kernel audits it under; empty = never audited.
-    pub audit_verb: Cow<'static, str>,
+    pub audit_verb: String,
 }
 
 impl AdminRouteSpec {
     /// A route of `verb` on `target`, never audited.
     #[must_use]
-    pub fn new(
-        verb: impl Into<Cow<'static, str>>,
-        target: impl Into<Cow<'static, str>>,
-        flags: u32,
-    ) -> Self {
+    pub fn new(verb: &str, target: &str, flags: u32) -> Self {
         Self {
-            verb: verb.into(),
-            target: target.into(),
+            verb: verb.to_string(),
+            target: target.to_string(),
             flags,
-            audit_verb: Cow::Borrowed(""),
+            audit_verb: String::new(),
         }
     }
 
     /// The route, audited under `word`.
     #[must_use]
-    pub fn audited(mut self, word: impl Into<Cow<'static, str>>) -> Self {
-        self.audit_verb = word.into();
+    pub fn audited(mut self, word: &str) -> Self {
+        self.audit_verb.clear();
+        self.audit_verb.push_str(word);
         self
     }
 }
@@ -318,7 +309,7 @@ impl Publish for PlaneSnapshot {
         // Each claim's span, read in place; none at all when no claim opens one.
         let (arrival_spans, arrival_spans_len) =
             if spec.claims.iter().any(|c| !c.arrival_span.is_empty()) {
-                backing.strs(spec.claims.iter().map(|c| &*c.arrival_span))
+                backing.strs(spec.claims.iter().map(|c| c.arrival_span.as_str()))
             } else {
                 (std::ptr::null(), 0)
             };
