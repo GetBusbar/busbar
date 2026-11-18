@@ -756,11 +756,14 @@ impl<'a> StoreJournal<'a> {
 }
 
 impl StoreJournal<'_> {
-    /// Change several selected rows of one namespace in one CAS against this node's originals
-    /// (SHUTDOWN-HANG F3): every row's originals are pinned at their `located` ordinals (row by
-    /// row, in order) and every row's expected value is a predicate, so the rows apply together
-    /// or not at all. One row is exactly `change_selection_at` with no guards, so a single
-    /// selection and a batch of one are the same attempt.
+    /// Change several selected rows in one CAS against this node's originals (SHUTDOWN-HANG F3):
+    /// every row's originals are pinned at their `located` ordinals (row by row, in order) and
+    /// every row's expected value is a predicate, so the rows apply together or not at all. The
+    /// rows may lie in different namespaces (a recovery batch selects operations whose rows are
+    /// partitioned by operation id): one dataset is one atomicity domain over all its namespaces
+    /// (`BackendInfo::atomic_domain`). No row may lie in this journal's or the control namespace,
+    /// and no two rows share a key. One row is exactly `change_selection_at` with no guards, so a
+    /// single selection and a batch of one are the same attempt.
     pub(in crate::persistence::journal) async fn change_rows_at(
         &self,
         proof: &VerifiedHead,
@@ -795,11 +798,11 @@ impl StoreJournal<'_> {
             || total > self.store.limits().scan_items
             || located.len() != total
             || operation_id == [0; 16]
-            || namespace == self.namespace.0
-            || namespace == control::NAMESPACE.0
-            || rows
-                .iter()
-                .any(|row| row.records.is_empty() || row.address.namespace != namespace)
+            || rows.iter().any(|row| {
+                row.records.is_empty()
+                    || row.address.namespace == self.namespace.0
+                    || row.address.namespace == control::NAMESPACE.0
+            })
         {
             return Err(Error::Invalid);
         }
@@ -831,6 +834,12 @@ impl StoreJournal<'_> {
         }
         digest.update((rows.len() as u64).to_be_bytes());
         for row in rows {
+            // A row outside the first row's namespace names its own; a one-namespace change
+            // digests exactly as before.
+            if row.address.namespace != namespace {
+                digest.update(b"namespace/1\0");
+                digest.update(row.address.namespace);
+            }
             digest.update((row.address.key.len() as u64).to_be_bytes());
             digest.update(&row.address.key);
             match &row.expected {
