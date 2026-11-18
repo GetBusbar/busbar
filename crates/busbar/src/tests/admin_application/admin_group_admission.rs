@@ -64,7 +64,7 @@ async fn test_patch_key_three_state_group_and_enabled() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     let (addr, handle, _book) =
@@ -217,7 +217,7 @@ async fn test_mint_auto_provisions_leaf_from_child_default() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     let (addr, handle, _book) =
@@ -362,7 +362,7 @@ async fn test_mint_parent_mismatch_is_409() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     let (addr, handle, _book) =
@@ -444,7 +444,7 @@ async fn test_max_keys_per_principal_cap_trips() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     document["limits"] = json::json!({"max_keys_per_principal": 2});
@@ -520,7 +520,7 @@ async fn test_admin_v1_idempotency_reservation_frees_on_at_cap_refusal() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     document["limits"] = json::json!({"max_keys_per_principal": 1});
@@ -619,7 +619,7 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
     document["limits"] = json::json!({"max_keys_per_principal": 3});

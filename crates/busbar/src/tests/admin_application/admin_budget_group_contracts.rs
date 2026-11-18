@@ -64,7 +64,7 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the original group definitions serialize");
     let (addr, handle, _book) =
@@ -165,7 +165,7 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::to_value(&groups).expect("the original group definitions serialize");
     document["limits"] = json::json!({"max_keys_per_principal": 1});

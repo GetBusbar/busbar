@@ -177,7 +177,7 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
-        "identity-providers": serde_json::json!({(operator): {"module":operator,"token":{"file":operator_secret}}}),
+        "identity-providers": serde_json::json!({(operator): {"module":operator,"settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_secret) }}}),
         "auth": { "chain": ["keys"], "admin_auth": [operator], "signing_key": {"file": signing},
             "role_bindings": {} },
         "per_request_fee": 1,
@@ -328,7 +328,7 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
-        "identity-providers": serde_json::json!({(operator): {"module":operator,"token":{"file":operator_secret}}}),
+        "identity-providers": serde_json::json!({(operator): {"module":operator,"settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_secret) }}}),
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": {"file": signing},
             "role_bindings": {} },
         "per_request_fee": 1,
@@ -552,7 +552,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
-        "identity-providers": serde_json::json!({"ordinary-oidc":{"module":oidc_module,"settings":common::credentials::settings(AUDIENCE)}, (operator):{"module":operator,"token":{"file":operator_secret}}}),
+        "identity-providers": serde_json::json!({"ordinary-oidc":{"module":oidc_module,"settings":common::credentials::settings(AUDIENCE)}, (operator):{"module":operator,"settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_secret) }}}),
         "auth": { "chain": ["ordinary-oidc"], "admin_auth": [operator], "signing_key": {"file": signing},
             "role_bindings": {"ordinary-oidc":{"bound":{}}} },
         "per_request_fee": 1,

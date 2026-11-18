@@ -52,7 +52,7 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module":oidc_module,"settings":common::credentials::settings(AUDIENCE),"max_admin_scope":"full",
@@ -293,7 +293,7 @@ async fn test_admin_v1_overlay_reset_stale_if_match_conflicts() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::json!({"team":{"limits":[{"budget":20000,"per":"month"}]}});
     let dir = directory.clone();
@@ -423,7 +423,7 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");
@@ -556,7 +556,7 @@ async fn test_admin_v1_overlay_reset_requires_full_scope() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");
@@ -665,7 +665,7 @@ async fn test_admin_v1_config_settings_survives_a_real_store_reload() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");
@@ -797,7 +797,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");
@@ -950,7 +950,7 @@ async fn test_admin_v1_config_settings_reset_reverts_to_base() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");

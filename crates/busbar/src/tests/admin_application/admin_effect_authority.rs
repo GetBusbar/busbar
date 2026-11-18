@@ -67,8 +67,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         document.clone(),
         &crate::root::boot::axis_test_grammar(),

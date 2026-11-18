@@ -62,8 +62,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,

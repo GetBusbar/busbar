@@ -96,7 +96,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["rate_card"] = json::to_value(&rate_card).expect("serialize the original token rates");
     document["per_request_fee"] = json::json!(1);

@@ -63,7 +63,7 @@ async fn application_with_native_keys(
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     if native_keys {
         document["auth"]["admin_auth"] = json::json!([operator, "keys"]);

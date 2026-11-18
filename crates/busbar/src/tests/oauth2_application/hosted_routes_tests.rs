@@ -29,7 +29,7 @@ async fn keys_application() -> Arc<busbar_kernel::state::App> {
     });
     document["identity-providers"] = serde_json::json!({});
     document["identity-providers"][operator] = serde_json::json!({
-        "module": operator, "token": {"file": operator_token},
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     application_with_document(document).await
 }

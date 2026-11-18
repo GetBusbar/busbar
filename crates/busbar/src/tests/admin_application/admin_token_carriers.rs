@@ -34,7 +34,7 @@ async fn test_admin_blank_header_token_rejected() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root_unhydrated(document, &directory, &module).await;
@@ -107,7 +107,7 @@ async fn test_admin_x_admin_token_beside_a_bearer_is_ignored() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root_unhydrated(document, &directory, &module).await;
@@ -188,7 +188,7 @@ async fn test_admin_token_not_acceptable_via_vendor_carriers() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let (addr, handle, _book) =
         crate::distribution::rig::actual_root_unhydrated(document, &directory, &module).await;

@@ -102,7 +102,7 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = serde_json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     // Each actual plane supplies its own valid configuration through its kind test fixture.
     // The census owns coverage, but has no knowledge of any plane's configuration grammar.

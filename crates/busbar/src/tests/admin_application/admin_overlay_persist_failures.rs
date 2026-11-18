@@ -81,7 +81,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let upstream_key = directory.join("provider-key");

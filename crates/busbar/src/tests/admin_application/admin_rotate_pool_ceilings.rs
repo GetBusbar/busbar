@@ -48,7 +48,7 @@ async fn proof_role_pool_ceiling_refuses_an_over_ceiling_rotate() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -211,7 +211,7 @@ async fn proof_role_pool_ceiling_rotates_an_in_ceiling_key() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -365,7 +365,7 @@ async fn a_past_ceiling_rotate_releases_its_idempotency_claim() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,

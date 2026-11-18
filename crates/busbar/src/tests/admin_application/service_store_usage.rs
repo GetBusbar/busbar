@@ -153,8 +153,7 @@ async fn get_group_usage_reads_the_store_off_the_async_worker() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,
@@ -287,8 +286,7 @@ async fn usage_read_store_failure_logs_the_real_error() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,

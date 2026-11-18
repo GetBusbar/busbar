@@ -59,7 +59,7 @@ async fn data_router(doors: Vec<PlaneRouteSpec>) -> Router {
         "advanced": {  },
     });
     document["identity-providers"][operator] = serde_json::json!({
-        "module": operator, "token": {"file": operator_token},
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let deploy =
         kernel::config::deploy_from_deserializer(document, &crate::root::boot::axis_test_grammar())

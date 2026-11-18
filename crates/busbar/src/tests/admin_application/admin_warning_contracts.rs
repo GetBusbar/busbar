@@ -64,7 +64,7 @@ async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let upstream_key = directory.join("provider-key");
     std::fs::write(&upstream_key, "unused-upstream-key")
@@ -205,7 +205,7 @@ async fn test_get_config_settings_warns_when_overlay_is_unreadable() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         &document,

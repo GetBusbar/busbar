@@ -38,7 +38,7 @@ async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_appl
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = directory.join("config.json");
@@ -160,7 +160,7 @@ async fn test_admin_v1_config_settings_max_inbound_concurrent_flagged_reload_to_
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = directory.join("config.json");
@@ -280,7 +280,7 @@ async fn test_admin_v1_config_settings_boot_scoped_observability_flagged_reload_
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = directory.join("config.json");
@@ -434,7 +434,7 @@ async fn test_admin_v1_config_settings_stale_if_match_conflicts() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = directory.join("config.json");
@@ -551,7 +551,7 @@ async fn test_admin_v1_config_settings_unknown_field_400() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = directory.join("config.json");

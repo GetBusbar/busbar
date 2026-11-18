@@ -139,8 +139,7 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,
@@ -292,8 +291,7 @@ async fn get_group_usage_unknown_group_not_found() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,
@@ -404,8 +402,7 @@ async fn get_group_usage_governance_off_zero_usage_caps_projected() {
         "store": { "module": module, "settings": settings },
         "advanced": {  },
     });
-    document["identity-providers"][operator] =
-        serde_json::json!({"module": operator, "token": {"file": operator_token}});
+    document["identity-providers"][operator] = serde_json::json!({"module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) }});
     let provider_defs = super::admin_usage_history::complete_usage_fixture(
         &mut document,
         &directory,

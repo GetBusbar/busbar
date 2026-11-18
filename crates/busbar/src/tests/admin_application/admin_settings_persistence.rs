@@ -70,7 +70,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module, "settings": common::credentials::settings(AUDIENCE), "max_admin_scope": "full",
@@ -319,7 +319,7 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let upstream_key = directory.join("provider-key");
@@ -507,7 +507,7 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let upstream_key = directory.join("provider-key");
@@ -661,7 +661,7 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let upstream_key = directory.join("provider-key");
@@ -823,7 +823,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let upstream_key = directory.join("provider-key");

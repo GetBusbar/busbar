@@ -34,7 +34,7 @@ async fn admin_responses_are_private_and_snapshot_consistent() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let upstream_key = directory.join("provider-key");
     std::fs::write(&upstream_key, "unused-upstream-credential").expect("write provider input");

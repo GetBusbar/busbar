@@ -35,7 +35,7 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");
@@ -151,7 +151,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let upstream_key = directory.join("provider-key");
     std::fs::write(&upstream_key, "unused-upstream-credential").expect("write provider input");
@@ -294,7 +294,7 @@ async fn test_admin_v1_config_settings_put_on_locked_config_is_refused() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");
@@ -407,7 +407,7 @@ async fn test_admin_v1_config_settings_put_refuses_locked_store_mutation() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");
@@ -526,7 +526,7 @@ async fn test_admin_v1_config_settings_put_rejects_retired_persist() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");
@@ -636,7 +636,7 @@ async fn test_admin_v1_config_settings_put_still_rejects_an_unknown_field_includ
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");

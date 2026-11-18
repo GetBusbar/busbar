@@ -42,7 +42,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");
@@ -203,7 +203,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let config_path = dir.join("config.json");

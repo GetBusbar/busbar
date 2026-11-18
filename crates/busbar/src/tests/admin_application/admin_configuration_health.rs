@@ -96,7 +96,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let dir = directory.clone();
     let upstream_key = directory.join("provider-key");
@@ -295,7 +295,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     let identity = busbar_contract::crypto::testing::rcgen::generate_simple_self_signed(vec![
         "127.0.0.1".into(),

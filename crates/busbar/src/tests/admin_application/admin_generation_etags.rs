@@ -69,7 +69,7 @@ async fn serve_with_effect(
         &crate::root::test_plugins::trusted_config(&directory),
     );
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["groups"] = json::json!({"team":{"limits":[{"budget":20000,"per":"month"}]}});
     let config_path = directory.join("config.json");

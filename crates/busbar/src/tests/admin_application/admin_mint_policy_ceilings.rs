@@ -68,7 +68,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -213,7 +213,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -341,7 +341,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["auth"]["policy"] = json::json!({"max_ttl":"24h"});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -452,7 +452,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["auth"]["policy"] = json::json!({"max_ttl":"24h"});
     let deploy = busbar_kernel::config::deploy_from_deserializer(
@@ -588,7 +588,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -736,7 +736,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,
@@ -884,7 +884,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
         "identity-providers": {},
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": { "file": operator_token },
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     document["identity-providers"]["test-scope-module"] = json::json!({
         "module": oidc_module,

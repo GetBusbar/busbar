@@ -114,7 +114,7 @@ async fn app_generation(
         "advanced": {  },
     });
     document["identity-providers"][operator] = json::json!({
-        "module": operator, "token": {"file": operator_token},
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
     if reader {
         let path = crate::test_common::plugins::token_verifier_cdylib_path()
