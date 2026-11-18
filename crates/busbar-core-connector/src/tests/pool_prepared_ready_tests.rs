@@ -436,11 +436,11 @@ fn connector(
     let view = Transports::new(vec![
         Entry {
             door: framer,
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         Entry {
             door: carrier,
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
     ])
     .unwrap();

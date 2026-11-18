@@ -124,12 +124,19 @@ async fn a_full_payload_has_the_same_bound_with_lf_crlf_or_eof() {
     }
 }
 
+#[test]
+fn an_output_line_is_allocated_at_its_final_size_with_one_terminator() {
+    let line = output_line(b"answer");
+    assert_eq!(line, b"answer\n");
+    assert_eq!(line.capacity(), b"answer\n".len());
+    assert_eq!(output_line(b"answer\n"), b"answer\n");
+}
+
 fn caller_over<R: AsyncRead + Unpin + Send>(reader: R) -> LineCaller<R> {
     LineCaller {
         lines: AsyncMutex::new(tokio::io::BufReader::new(reader)),
         max_line: 1024,
         out: mpsc::channel(LINE_OUTPUT_QUEUE_CAPACITY).0,
-        spare: Arc::default(),
         failure: Arc::new(IoFailure::default()),
     }
 }
@@ -182,6 +189,43 @@ async fn a_unit_still_running_past_the_drain_grace_is_ended() {
 const TEST_CARRIER: &str = "test-line-carrier";
 const QUEUED_LINE: &[u8] = b"queued";
 const OUTPUT_ERROR: &str = "test output failure";
+
+/// Every line's buffers (the input read, the answer written) are freed by the time the session
+/// ends: the second session's bytes return to where they started. The first session warms the
+/// runtime's own storage so only the session's allocations are compared.
+#[cfg(not(target_env = "msvc"))]
+#[tokio::test(flavor = "current_thread")]
+async fn a_line_session_returns_every_line_buffer_when_it_ends() {
+    async fn session() -> i32 {
+        run_io(
+            TEST_CARRIER,
+            &b"one\ntwo\n\nthree\nfour\nfive\nsix\nseven\neight\n"[..],
+            tokio::io::sink(),
+            ProcessAdmission::new(0),
+            std::future::pending::<()>(),
+            |caller| {
+                (
+                    move |line: OwnedInput| {
+                        let caller = Arc::clone(&caller);
+                        async move {
+                            assert!(caller.write(line.as_ref()).await);
+                        }
+                    },
+                    || {},
+                )
+            },
+        )
+        .await
+    }
+    assert_eq!(session().await, 0);
+    let region = stats_alloc::Region::new(&crate::GLOBAL);
+    assert_eq!(session().await, 0);
+    let change = region.change();
+    let held = change.bytes_allocated as isize + change.bytes_reallocated
+        - change.bytes_deallocated as isize;
+    assert!(change.allocations > 0, "the session allocated its lines");
+    assert_eq!(held, 0, "bytes still held once the line session ended");
+}
 
 async fn shutdown_result(serve: impl std::future::Future<Output = i32>) -> i32 {
     tokio::time::timeout(busbar_kernel::detached::DETACHED_DRAIN_GRACE * 2, serve)
@@ -321,7 +365,7 @@ async fn eof_and_stop_retire_a_writer_stuck_in_write_or_flush() {
                 stop,
                 move |caller| {
                     *observed_failure = Some(Arc::clone(&caller.failure));
-                    caller.out.try_send(terminated(QUEUED_LINE)).unwrap();
+                    caller.out.try_send(output_line(QUEUED_LINE)).unwrap();
                     (
                         |_| std::future::ready(()),
                         move || {
@@ -362,8 +406,8 @@ async fn queued_lines_and_a_units_answer_drain_whole_and_in_order() {
         ProcessAdmission::new(0),
         std::future::pending::<()>(),
         |caller| {
-            caller.out.try_send(terminated(b"first")).unwrap();
-            caller.out.try_send(terminated(b"second\n")).unwrap();
+            caller.out.try_send(output_line(b"first")).unwrap();
+            caller.out.try_send(output_line(b"second\n")).unwrap();
             (
                 move |line: OwnedInput| {
                     let caller = Arc::clone(&caller);
@@ -504,7 +548,7 @@ async fn writer_errors_and_panics_end_the_serve_without_repolling_a_finished_joi
                 std::future::pending::<()>(),
                 |caller| {
                     failure = Some(Arc::clone(&caller.failure));
-                    caller.out.try_send(terminated(QUEUED_LINE)).unwrap();
+                    caller.out.try_send(output_line(QUEUED_LINE)).unwrap();
                     (|_| std::future::ready(()), || {})
                 },
             ))
@@ -546,7 +590,7 @@ async fn an_existing_input_error_survives_the_output_drain_timeout() {
         std::future::pending::<()>(),
         |caller| {
             failure = Some(Arc::clone(&caller.failure));
-            caller.out.try_send(terminated(QUEUED_LINE)).unwrap();
+            caller.out.try_send(output_line(QUEUED_LINE)).unwrap();
             (|_| std::future::ready(()), || {})
         },
     ))
@@ -1033,7 +1077,7 @@ async fn output_failure_cancels_a_global_waiter_without_local_units() {
             writer,
             std::future::pending::<()>(),
             |caller| {
-                caller.out.try_send(terminated(QUEUED_LINE)).unwrap();
+                caller.out.try_send(output_line(QUEUED_LINE)).unwrap();
                 (
                     |_| async {
                         panic!("a network-owned slot does not admit stdio");

@@ -42,11 +42,6 @@ pub(crate) fn seal_registration<V>(members: &mut BTreeMap<String, V>, member: &s
     members.insert(member.to_owned(), sealed);
 }
 
-/// A need's declaration (or a listener's bind) keeps its own copy of the entry's protocol list.
-pub(crate) fn declared_alpn(alpn: &[Vec<u8>]) -> Vec<Vec<u8>> {
-    alpn.to_vec()
-}
-
 /// A member-program need's members, declared once: a member whose program is unchanged from
 /// `before` is kept (its environment reloaded), every other is declared afresh over `door`.
 pub(crate) fn declare_members(
@@ -55,7 +50,7 @@ pub(crate) fn declare_members(
     scope: &busbar_contract::config_time::ConfigScope,
     secrets: Option<crate::conns::spawn_env::SpawnSecretFn>,
     (door, io): (&Arc<dyn FramerDoor>, &Arc<HostIo>),
-    alpn: &[Vec<u8>],
+    alpn: &Arc<[Vec<u8>]>,
 ) -> Result<Members, ConnError> {
     programs
         .iter()
@@ -80,7 +75,7 @@ pub(crate) fn declare_members(
                         door: Arc::clone(door),
                         io: Arc::clone(io),
                     },
-                    alpn.to_vec(),
+                    Arc::clone(alpn),
                 )?)),
             };
             Ok((name.clone(), member))

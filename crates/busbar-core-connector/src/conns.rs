@@ -425,7 +425,7 @@ fn request_head_is_refused(
 pub(crate) struct DeclaredNeed {
     door: Arc<dyn FramerDoor>,
     /// The protocols the serving entry offers in the TLS handshake.
-    alpn: Vec<Vec<u8>>,
+    alpn: Arc<[Vec<u8>]>,
     egress_class: u32,
     /// The target the need's `target_from` resolved to; `None` = the plugin names it per open.
     declared_target: Option<Arc<str>>,
@@ -1892,7 +1892,7 @@ impl Connector {
             view.dialing(transport).map(|served| {
                 (
                     Arc::clone(&served.entry.door),
-                    crate::off_path::conns::declared_alpn(&served.entry.alpn),
+                    Arc::clone(&served.entry.alpn),
                 )
             })
         };
@@ -2035,7 +2035,7 @@ impl Connector {
                 .map(|served| {
                     (
                         Arc::clone(&served.entry.door),
-                        crate::off_path::conns::declared_alpn(&served.entry.alpn),
+                        Arc::clone(&served.entry.alpn),
                     )
                 })
         };
@@ -2106,7 +2106,7 @@ impl Connector {
                 .map(|served| {
                     (
                         Arc::clone(&served.entry.door),
-                        crate::off_path::conns::declared_alpn(&served.entry.alpn),
+                        Arc::clone(&served.entry.alpn),
                     )
                 })
         };
@@ -3400,7 +3400,7 @@ impl DeclaredConns for Connector {
                         None => self.tls_for(&named)?,
                     },
                     target: named,
-                    alpn: crate::off_path::conns::copied(&declared.alpn),
+                    alpn: Arc::clone(&declared.alpn),
                     open_timeout: held.open_timeout,
                     anchors: None,
                     opening: Some((opening_fields(desc.fields, None), desc.body.clone())),
@@ -3929,7 +3929,7 @@ impl Connector {
         caller: InstanceId,
         need: NeedId,
         desc: &OpenDesc<'_>,
-        door: (Arc<dyn FramerDoor>, Vec<Vec<u8>>),
+        door: (Arc<dyn FramerDoor>, Arc<[Vec<u8>]>),
         target: &str,
         timing: (std::time::Instant, Duration),
         declared: (u32, Option<&str>, Option<Arc<rustls::ClientConfig>>),
@@ -3959,7 +3959,7 @@ impl Connector {
         caller: InstanceId,
         need: NeedId,
         desc: &OpenDesc<'_>,
-        door: (Arc<dyn FramerDoor>, Vec<Vec<u8>>),
+        door: (Arc<dyn FramerDoor>, Arc<[Vec<u8>]>),
         target: &str,
         timing: (std::time::Instant, Duration),
         declared: (u32, Option<&str>, Option<Arc<rustls::ClientConfig>>),
@@ -3989,7 +3989,7 @@ impl Connector {
         caller: InstanceId,
         need: NeedId,
         desc: &OpenDesc<'_>,
-        (door, alpn): (Arc<dyn FramerDoor>, Vec<Vec<u8>>),
+        (door, alpn): (Arc<dyn FramerDoor>, Arc<[Vec<u8>]>),
         target: &str,
         (now, open_timeout): (std::time::Instant, Duration),
         (egress_class, declared_target, tls): (
@@ -4397,7 +4397,7 @@ impl Connector {
                 anchors: None,
                 target: program.command.clone(),
                 tls: None,
-                alpn: alpn.clone(),
+                alpn: Arc::clone(alpn),
                 open_timeout,
                 opening: Some((opening_fields(desc.fields, owned), desc.body.clone())),
                 head_words: (
@@ -4461,7 +4461,7 @@ impl Connector {
                 anchors: None,
                 target: crate::off_path::conns::owned(target),
                 tls: None,
-                alpn: alpn.clone(),
+                alpn: Arc::clone(alpn),
                 open_timeout,
                 opening: Some((opening_fields(desc.fields, owned), desc.body.clone())),
                 head_words: (
@@ -4485,7 +4485,7 @@ impl Connector {
             caller,
             need,
             desc,
-            (Arc::clone(door), alpn.clone()),
+            (Arc::clone(door), Arc::clone(alpn)),
             target,
             (started, open_timeout),
             (egress_class, declared_target, tls.clone()),

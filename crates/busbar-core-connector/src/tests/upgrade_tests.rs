@@ -97,7 +97,7 @@ async fn far_end(leaf: Vec<u8>, key: Vec<u8>, starttls: &'static [u8]) -> String
 fn raw_connector() -> Connector {
     let view = Transports::new(vec![Entry {
         door: Arc::new(TestDoor::identity("bytes")),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }])
     .unwrap();
     let tls = crate::tls::client::build_client_config(&Default::default()).expect("the config");

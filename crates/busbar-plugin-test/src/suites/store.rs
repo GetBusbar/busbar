@@ -5,7 +5,7 @@
 //! through [`Harness`], opens it through `Registry::open_store` (the real adapter, so encode, decode, the entry
 //! guard and zeroize run as in production) and drives the resulting `PersistenceBackend` with raw candidates.
 //!
-//! The slot-row cases come from `busbar_contract::abi::sdk::store::v4::conformance` (STORE-TRANSACTIONS §8
+//! The slot-row cases come from `busbar_contract::persistence::conformance` (STORE-TRANSACTIONS §8
 //! item 18: 8.1, 8.2, 8.2b, 8.2c, 8.3, 8.4); the cases written here are C13 and C20 plus the C-STORE-INFO
 //! checks. Every case runs on its own instance, so the `config` must open an empty dataset on every open
 //! (store-memory does; for a file-backed store write the instance name into the path with the literal token
@@ -42,7 +42,7 @@ pub(super) fn run(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
 mod cases {
     use std::sync::Arc;
 
-    use busbar_contract::abi::sdk::store::v4::conformance::{self as sdk, Subject};
+    use busbar_contract::persistence::conformance::{self as sdk, Subject};
     use busbar_contract::persistence::{
         control, Address, AttemptId, Candidate, CommitKey, Decision, Durability, ExpectedValue,
         Mutation, PersistenceBackend, Predicate, PreparedCandidate, Read, ReadResult, SelfFenced,

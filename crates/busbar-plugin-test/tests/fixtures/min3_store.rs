@@ -665,7 +665,7 @@ pub fn initialization(
     busbar_contract::persistence::CommitKey,
 ) {
     use busbar_contract::persistence::{CommitKey, SelfFenced};
-    let init = busbar_contract::abi::sdk::store::v4::conformance::initialization(b, WRITER, 1);
+    let init = busbar_contract::persistence::conformance::initialization(b, WRITER, 1);
     let key =
         CommitKey::self_fenced(&SelfFenced::check(&init).expect("a self-fenced initialization"));
     (init, key)

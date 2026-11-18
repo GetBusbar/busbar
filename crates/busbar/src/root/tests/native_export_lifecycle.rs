@@ -7,7 +7,7 @@ use super::*;
 use crate::root::export_observer::{ExportGeneration, ExportObservers};
 use busbar_contract::export_calls::{Delivered, ExportCalls, ExportDropReason, ExportLossKind};
 use busbar_contract::export_stream::ExportStream;
-use busbar_plugin_loader::export_door::port::{PortDoor, StopReport};
+use busbar_plugin_loader::export_pump::{PortDoor, StopReport};
 use std::path::{Path, PathBuf};
 use tokio::sync::{mpsc, oneshot, Notify};
 

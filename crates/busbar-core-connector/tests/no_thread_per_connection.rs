@@ -53,7 +53,7 @@ fn dial(target: &str, first: Vec<u8>) -> Dial {
         plaintext_accepted: false,
         target: target.to_owned(),
         tls: None,
-        alpn: Vec::new(),
+        alpn: Arc::default(),
         open_timeout: Duration::from_secs(5),
         opening: Some((Vec::new(), first.into())),
         head_words: Default::default(),

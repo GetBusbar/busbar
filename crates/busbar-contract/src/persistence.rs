@@ -16,6 +16,8 @@ pub mod archive;
 pub mod axis;
 pub mod cells;
 mod commit_key;
+#[cfg(feature = "test-seal")]
+pub mod conformance;
 pub mod control;
 pub mod legacy_row;
 pub mod lifecycle;

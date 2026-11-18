@@ -46,7 +46,7 @@ fn core() -> Arc<CoreStore> {
     ready(crate::real_store::core())
 }
 fn scoped(store: &Arc<CoreStore>) -> ScopedStore {
-    ScopedStore::host_private(store.clone(), "inst", [WORK_SCHEMA.as_str().into()]).unwrap()
+    ScopedStore::host_private(store.clone(), "inst", [WORK_SCHEMA.as_str()]).unwrap()
 }
 fn read_row(store: &Arc<CoreStore>, reference: &[u8]) -> Option<Vec<u8>> {
     ready(scoped(store).get(WORK_SCHEMA.as_str(), reference))

@@ -114,6 +114,24 @@ pub mod export_axis;
     )
 )]
 pub mod export_door;
+// busbar:request-path
+#[cfg_attr(
+    not(test),
+    deny(
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::disallowed_types,
+        clippy::redundant_clone,
+        clippy::format_push_string,
+        clippy::needless_collect,
+        clippy::or_fun_call,
+        clippy::needless_pass_by_value,
+        clippy::allow_attributes,
+        clippy::allow_attributes_without_reason
+    )
+)]
+#[deny(unsafe_code)]
+pub mod export_pump;
 #[deny(unsafe_code)]
 pub mod fetch;
 // busbar:request-path

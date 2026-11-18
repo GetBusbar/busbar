@@ -14,6 +14,7 @@ use zeroize::Zeroize;
 
 use super::settings_json::wipe;
 use super::Cred;
+use crate::secret_fields::SECRET_MARKER;
 
 /// Why settings did not parse: the field path and what was wrong, never the value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,9 +123,6 @@ impl de::Error for SettingsError {
 pub fn settings<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, SettingsError> {
     T::deserialize(Node::new(document(bytes)?, String::new()))
 }
-
-/// The key of the marker a host writes where it took a value at a declared wildcard secret path
-pub const SECRET_MARKER: &str = "$secret";
 
 /// [`settings`] over a document the host lent secrets with: each `{"$secret": <index>}` marker is
 pub fn settings_lent<T: DeserializeOwned>(doc: &[u8], lent: &[&[u8]]) -> Result<T, SettingsError> {

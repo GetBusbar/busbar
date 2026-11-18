@@ -111,7 +111,7 @@ async fn fixture() -> (Arc<GateBackend>, Arc<AsyncRecords>) {
         AsyncRecords::authorized(
             core,
             INSTANCE,
-            [SCHEMA.as_str().into(), CHAIN_LIFE_SCHEMA.as_str().into()],
+            [SCHEMA.as_str(), CHAIN_LIFE_SCHEMA.as_str()],
         )
         .unwrap(),
     );

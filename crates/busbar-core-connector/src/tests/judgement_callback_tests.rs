@@ -138,14 +138,14 @@ fn completing_a_later_replay_drops_the_earlier_public_waker_outside_guards() {
                             &["bytes"],
                             Default::default(),
                         )),
-                        alpn: Vec::new(),
+                        alpn: Arc::default(),
                     },
                     Entry {
                         door: Arc::new(HeldProxyWrite {
                             inner: TestDoor::identity("bytes"),
                             gate: gate.clone(),
                         }),
-                        alpn: Vec::new(),
+                        alpn: Arc::default(),
                     },
                 ])
                 .unwrap(),
@@ -254,7 +254,7 @@ fn a_judgement_completion_wakes_a_public_wait_without_holding_its_answer() {
     let c = Arc::new(Connector::serving(
         Transports::new(vec![Entry {
             door: Arc::new(TestDoor::identity("bytes")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         }])
         .unwrap(),
         Arc::new(move |_: &str, _: u32, done: crate::Judged| {
@@ -305,11 +305,11 @@ fn a_proxy_judgement_can_reenter_the_same_connections_public_wait() {
                         &["bytes"],
                         Default::default(),
                     )),
-                    alpn: Vec::new(),
+                    alpn: Arc::default(),
                 },
                 Entry {
                     door: Arc::new(TestDoor::identity("bytes")),
-                    alpn: Vec::new(),
+                    alpn: Arc::default(),
                 },
             ])
             .unwrap(),
@@ -371,11 +371,11 @@ fn refusal_connector(
             Transports::new(vec![
                 Entry {
                     door: Arc::new(TestDoor::new("frames", &["frames"], &["bytes"], knobs)),
-                    alpn: Vec::new(),
+                    alpn: Arc::default(),
                 },
                 Entry {
                     door: Arc::new(TestDoor::identity("bytes")),
-                    alpn: Vec::new(),
+                    alpn: Arc::default(),
                 },
             ])
             .unwrap(),

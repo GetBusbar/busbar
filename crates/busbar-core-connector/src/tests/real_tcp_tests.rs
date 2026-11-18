@@ -88,7 +88,7 @@ fn actual_transport(name: &str, row: &LinkedRow) -> Entry {
     .expect("the actual transport opens");
     Entry {
         door: Arc::new(door),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }
 }
 

@@ -188,7 +188,7 @@ fn dial(target: &str) -> Dial {
         plaintext_accepted: false,
         target: target.to_owned(),
         tls: None,
-        alpn: Vec::new(),
+        alpn: Arc::default(),
         open_timeout: Duration::from_secs(5),
         opening: None,
         head_words: HeadWords::default(),
@@ -243,7 +243,7 @@ async fn tls_far() -> Dial {
     d.tls = Some(Arc::new(
         crate::tls::client::build_client_config(&trust).unwrap(),
     ));
-    d.alpn = vec![b"h2".to_vec()];
+    d.alpn = vec![b"h2".to_vec()].into();
     d.opening = Some((Vec::new(), b"first".to_vec().into()));
     d
 }

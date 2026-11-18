@@ -322,7 +322,7 @@ impl PersistenceBackend for MemoryBackend {
 }
 
 /// The shared Store v4 conformance cases run against this store as against every store.
-impl busbar_contract::abi::sdk::store::v4::conformance::Subject for MemoryBackend {
+impl busbar_contract::persistence::conformance::Subject for MemoryBackend {
     fn backend(&self) -> &dyn PersistenceBackend {
         self
     }

@@ -2095,7 +2095,7 @@ pub(super) async fn finish_with_store(
                 Arc::clone(&built.binder),
                 super::linked::disk_lane(),
             ));
-            let door = busbar_plugin_loader::export_door::port::PortDoor::prepare(
+            let door = busbar_plugin_loader::export_pump::PortDoor::prepare(
                 &instance.name,
                 Arc::clone(port),
                 disk,
