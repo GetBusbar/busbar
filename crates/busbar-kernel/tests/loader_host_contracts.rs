@@ -30,7 +30,7 @@ async fn admitted_over(store: Arc<persistence::facade::CoreStore>) -> Host {
     )));
     h = h.with_persistence(store);
     h.admit(
-        "plane",
+        &"plane".into(),
         InstanceFacts {
             record_kinds: vec![RecordSchemaId::new("tasks"), RecordSchemaId::new("journal")],
             record_chains: vec![RecordChain {
@@ -303,7 +303,7 @@ async fn a_chained_kinds_writes_are_appended_to_their_chain_and_read_whole() {
 async fn trust_host() -> Host {
     let h = Host::new();
     h.admit(
-        "plane",
+        &"plane".into(),
         InstanceFacts {
             trust: vec![(
                 "fs".into(),
@@ -419,7 +419,7 @@ async fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
         .expect("a fresh record attaches");
     let h = Host::new().with_demotions(record, "");
     h.admit(
-        "plane",
+        &"plane".into(),
         InstanceFacts {
             trust: vec![("agent".into(), entry()), ("pending".into(), entry())],
             ..InstanceFacts::default()

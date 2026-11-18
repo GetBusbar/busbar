@@ -122,7 +122,7 @@ async fn services_over(store: &Arc<CoreStore>, framing: u32, flags: u32) -> Kern
     let mut s = KernelServices::new().with_pool(Arc::new(Inline));
     s = s.with_persistence(store.clone());
     s.admit(
-        INST,
+        &INST.into(),
         InstanceFacts {
             record_kinds: vec![EV],
             record_chains: vec![RecordChain {
@@ -489,7 +489,7 @@ async fn a_chained_kind_refuses_what_it_cannot_hold() {
 async fn two_instances_never_share_a_chain_and_an_undeclared_kind_is_not_chained() {
     let (s, store) = rig().await;
     s.admit(
-        "other",
+        &"other".into(),
         InstanceFacts {
             record_kinds: vec![EV],
             record_chains: vec![RecordChain {
@@ -567,7 +567,7 @@ async fn services_with_plain_kind(store: &Arc<CoreStore>) -> KernelServices {
     let mut s = KernelServices::new().with_pool(Arc::new(Inline));
     s = s.with_persistence(store.clone());
     s.admit(
-        INST,
+        &INST.into(),
         InstanceFacts {
             record_kinds: vec![RecordSchemaId::new("plain")],
             ..InstanceFacts::default()

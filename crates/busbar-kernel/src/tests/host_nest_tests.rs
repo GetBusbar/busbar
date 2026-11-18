@@ -14,7 +14,7 @@ impl ReadyAdmission for crate::host_services::KernelServices {
         instance: &str,
         facts: crate::host_services::InstanceFacts,
     ) -> Result<(), crate::host_services::AdmitRefused> {
-        futures::FutureExt::now_or_never(self.admit(instance, facts))
+        futures::FutureExt::now_or_never(self.admit(&instance.into(), facts))
             .expect("in-memory fixture admission finishes in one poll")
     }
 }

@@ -223,7 +223,7 @@ impl Rig {
                 .with_demotions(record.clone(), INSTANCE)
                 .with_wall_clock(Arc::new(move || clock.load(Ordering::SeqCst))),
         );
-        node.admit(INSTANCE, facts()).await.unwrap();
+        node.admit(&INSTANCE.into(), facts()).await.unwrap();
         (node, record)
     }
     pub async fn follower(

@@ -242,8 +242,11 @@ where
                 authenticated: gov.key().is_some(),
             };
             let sink = Arc::clone(&caller);
-            let carrier = open_driver
-                .open_carrier(&principal, Arc::new(move |bytes: &[u8]| sink.emit(bytes)));
+            // The carrier session shares the line caller's one principal name.
+            let carrier = open_driver.open_carrier(
+                &line_caller.principal,
+                Arc::new(move |bytes: &[u8]| sink.emit(bytes)),
+            );
             let _ = opened_here.set(carrier);
             let requests = std::sync::atomic::AtomicU64::new(1);
             let answer = move |line: OwnedInput| {

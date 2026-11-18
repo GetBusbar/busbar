@@ -136,7 +136,7 @@ async fn services_over(
     let mut s = KernelServices::new().with_pool(pool);
     s = s.with_persistence(store.clone());
     s.admit(
-        "inst",
+        &"inst".into(),
         InstanceFacts {
             record_kinds: vec![task()],
             ..InstanceFacts::default()
@@ -290,7 +290,7 @@ async fn a_claim_is_spent_in_the_store_before_it_answers() {
     fresh = fresh.with_persistence(store.clone());
     fresh
         .admit(
-            "inst",
+            &"inst".into(),
             InstanceFacts {
                 record_kinds: vec![task()],
                 ..InstanceFacts::default()

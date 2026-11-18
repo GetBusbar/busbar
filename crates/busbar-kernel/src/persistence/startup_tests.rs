@@ -790,7 +790,9 @@ async fn first_start_entitlement_is_exact_caller_scoped_and_ends_at_confirmed_re
     proof.freeze(vec![initial_binding("one", 1)]).await.unwrap();
     let mut host = KernelServices::new();
     host = host.with_persistence(store);
-    host.admit("one", InstanceFacts::default()).await.unwrap();
+    host.admit(&"one".into(), InstanceFacts::default())
+        .await
+        .unwrap();
     let caller = Caller::for_test(Arc::from("one"), KindCode::Plane);
     host.bind_native_record_bootstrap(&caller).await.unwrap();
     assert!(host.entitled(&caller, None, ENTITLEMENT));
@@ -798,7 +800,10 @@ async fn first_start_entitlement_is_exact_caller_scoped_and_ends_at_confirmed_re
     let replacement = Caller::for_test(Arc::from("one"), KindCode::Plane);
     assert!(!host.entitled(&replacement, None, ENTITLEMENT));
     assert!(!host.entitled(&caller, None, "record-quota-bootstrap:forged"));
-    assert!(host.admit("one", InstanceFacts::default()).await.is_err());
+    assert!(host
+        .admit(&"one".into(), InstanceFacts::default())
+        .await
+        .is_err());
     proof.complete("one").await.unwrap();
     host.revoke_native_record_bootstrap(&caller).unwrap();
     assert!(!host.entitled(&caller, None, ENTITLEMENT));
@@ -808,7 +813,9 @@ async fn first_start_entitlement_is_exact_caller_scoped_and_ends_at_confirmed_re
         "per-instance Done cannot regrant even before global publication"
     );
     proof.publish().await.unwrap();
-    host.admit("one", InstanceFacts::default()).await.unwrap();
+    host.admit(&"one".into(), InstanceFacts::default())
+        .await
+        .unwrap();
     host.bind_native_record_bootstrap(&replacement)
         .await
         .unwrap();

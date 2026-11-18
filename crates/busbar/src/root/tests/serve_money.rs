@@ -2295,7 +2295,7 @@ async fn only_the_host_line_carrier_adds_a_session_after_external_fields_are_fil
             "line-session-custody".into(),
             busbar_contract::abi::mechanism::KindCode::Plane,
         ),
-        "fixture-principal",
+        &"fixture-principal".into(),
         Arc::new(|_: &[u8]| true),
     ))
     .expect("the real host session is nonzero");

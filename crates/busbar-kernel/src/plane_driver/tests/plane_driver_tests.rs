@@ -143,7 +143,7 @@ async fn a_refused_admission_commit_preserves_live_approval_and_work_bounds() {
     let services = approved().await;
     services
         .admit(
-            "other",
+            &"other".into(),
             InstanceFacts {
                 signing: Some(Signing {
                     domain: "held-domain".into(),
