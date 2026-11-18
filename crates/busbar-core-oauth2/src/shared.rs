@@ -5,12 +5,10 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use busbar_contract::host_records::conditional::{
-    Decision, Expected, Mutation, Predicate, Request,
-};
+use busbar_contract::host_records::conditional::Decision;
 use busbar_contract::Secret;
 use busbar_kernel::persistence::facade::PendingId;
-use busbar_kernel::persistence::scoped::{self, ScopedStore};
+use busbar_kernel::persistence::scoped::{self, Expected, Mutation, Predicate, ScopedStore};
 use oauth_as::authorization::{AuthorizationCodeRecord, AuthorizationCodeState};
 use oauth_as::client::{Client, ClientId};
 use oauth_as::consent::ConsentRecord;
@@ -36,6 +34,22 @@ pub(crate) const SWAP_ATTEMPTS: u32 = 64;
 // Preserve the OAuth logical-cell admission boundary that preceded the native
 // port. This is a domain budget, independent of plane and generic Store bounds.
 const MAX_LOGICAL_CELL_BYTES: usize = 16 * 1024 * 1024;
+
+/// A conditional request as this adapter builds it: the store's own predicate and mutation
+/// records, made where they are written and moved whole into the store's request at submit (no
+/// second list, no conversion).
+pub(crate) struct Candidate {
+    pub(crate) predicates: Vec<Predicate>,
+    pub(crate) mutations: Vec<Mutation>,
+}
+
+/// The guard a predicate states over the raw cell it read: absent, or exactly those bytes (held
+/// as the store's secret value).
+pub(crate) fn guard(raw: Option<Vec<u8>>) -> Expected {
+    raw.map_or(Expected::Absent, |bytes| {
+        Expected::Exact(Secret::new(bytes))
+    })
+}
 
 pub(crate) fn kind(name: &str) -> String {
     format!("{LABEL}{name}")
@@ -307,20 +321,27 @@ impl Shared {
         }
     }
 
-    pub(crate) async fn submit(&self, request: Arc<Request>) -> Result<Decision, StorageError> {
-        let oversized = request.mutations.iter().any(|mutation| matches!(mutation,
-            Mutation::Put {schema,value,..} if schema.ends_with(".atomic.v1") && value.len()>MAX_LOGICAL_CELL_BYTES
-        )) || request.predicates.iter().any(|predicate| matches!(&predicate.expected,
-            Expected::Bytes(value) if predicate.schema.ends_with(".atomic.v1") && value.len()>MAX_LOGICAL_CELL_BYTES
-        ));
+    pub(crate) async fn submit(&self, candidate: Candidate) -> Result<Decision, StorageError> {
+        let oversized = {
+            let seal = busbar_kernel::seal::lend();
+            let over = |schema: &str, value: &Secret<Vec<u8>>| {
+                schema.ends_with(".atomic.v1") && value.expose(&seal).len() > MAX_LOGICAL_CELL_BYTES
+            };
+            candidate.mutations.iter().any(|mutation| {
+                matches!(mutation,
+                    Mutation::Put {schema,value,..} if over(schema, value)
+                )
+            }) || candidate.predicates.iter().any(|predicate| {
+                matches!(&predicate.expected,
+                    Expected::Exact(value) if over(&predicate.schema, value)
+                )
+            })
+        };
         if oversized {
             return Err(StorageError::new(
                 "oauth_as store: logical cell exceeds byte budget",
             ));
         }
-        // The candidate is this call's own: its parts move into the store's request, uncopied.
-        let mut request = request;
-        let owned: &mut Request = Arc::make_mut(&mut request);
         // The receipt identity is a held class-M op minted here (DES-264): the pending entry
         // keeps it with the request until the definitive decision drops both.
         let op = self
@@ -328,43 +349,12 @@ impl Shared {
             .record_op()
             .await
             .map_err(|e| failed("conditional record identity", e))?;
-        let request = scoped::Request {
+        // The candidate is this call's own: its lists move into the store's request whole.
+        let request = Arc::new(scoped::Request {
             op,
-            predicates: owned
-                .predicates
-                .drain(..)
-                .map(|p| scoped::Predicate {
-                    schema: p.schema,
-                    key: p.key,
-                    expected: match p.expected {
-                        Expected::Absent => scoped::Expected::Absent,
-                        Expected::Bytes(bytes) => scoped::Expected::Exact(Secret::new(bytes)),
-                    },
-                })
-                .collect(),
-            mutations: owned
-                .mutations
-                .drain(..)
-                .map(|m| match m {
-                    Mutation::Put { schema, key, value } => scoped::Mutation::Put {
-                        schema,
-                        key,
-                        value: Secret::new(value),
-                    },
-                    Mutation::Delete { schema, key } => scoped::Mutation::Delete { schema, key },
-                    Mutation::DeleteRange {
-                        schema,
-                        prefix,
-                        exact_key_length,
-                    } => scoped::Mutation::DeleteRange {
-                        schema,
-                        prefix,
-                        exact_key_length,
-                    },
-                })
-                .collect(),
-        };
-        let request = Arc::new(request);
+            predicates: candidate.predicates,
+            mutations: candidate.mutations,
+        });
         let mut addresses: Vec<_> = request
             .predicates
             .iter()
@@ -441,26 +431,24 @@ impl Shared {
         id: &str,
         expected: Option<Vec<u8>>,
         value: Vec<u8>,
-    ) -> Arc<Request> {
-        Arc::new(Request {
-            version: busbar_contract::host_records::conditional::VERSION,
-            op_id: busbar_kernel::door::op_id(),
+    ) -> Candidate {
+        Candidate {
             predicates: vec![Predicate {
                 schema: schema.to_string(),
                 key: id.as_bytes().to_vec(),
-                expected: expected.map_or(Expected::Absent, Expected::Bytes),
+                expected: guard(expected),
             }],
             mutations: vec![Mutation::Put {
                 schema: schema.to_string(),
                 key: id.as_bytes().to_vec(),
-                value,
+                value: Secret::new(value),
             }],
-        })
+        }
     }
 
     async fn bucket_indexes(
         &self,
-        request: &mut Request,
+        request: &mut Candidate,
         bucket: &Bucket,
         now: u64,
     ) -> Result<(), StorageError> {
@@ -496,7 +484,7 @@ impl Shared {
             request.mutations.push(Mutation::Put {
                 schema: atomic_schema(&format!("ix.{ix}")),
                 key: id.into_bytes(),
-                value,
+                value: Secret::new(value),
             });
         }
         let mut subjects = BTreeMap::new();
@@ -538,12 +526,12 @@ impl Shared {
             request.predicates.push(Predicate {
                 schema: schema.clone(),
                 key: id.as_bytes().to_vec(),
-                expected: raw.map_or(Expected::Absent, Expected::Bytes),
+                expected: guard(raw),
             });
             request.mutations.push(Mutation::Put {
                 schema,
                 key: id.into_bytes(),
-                value: encode(SUBJECT_INDEX, &cell)?,
+                value: Secret::new(encode(SUBJECT_INDEX, &cell)?),
             });
         }
         let mut codes = BTreeMap::new();
@@ -556,7 +544,7 @@ impl Shared {
             .iter()
             .find(|p| p.schema == atomic_schema("bucket"))
             .and_then(|p| match &p.expected {
-                Expected::Bytes(body) => Some(body.as_slice()),
+                Expected::Exact(body) => Some(body.expose(&busbar_kernel::seal::lend()).as_slice()),
                 Expected::Absent => None,
             })
             .map(authority_body)
@@ -604,12 +592,12 @@ impl Shared {
             request.predicates.push(Predicate {
                 schema: schema.clone(),
                 key: id.as_bytes().to_vec(),
-                expected: raw.map_or(Expected::Absent, Expected::Bytes),
+                expected: guard(raw),
             });
             request.mutations.push(Mutation::Put {
                 schema,
                 key: id.into_bytes(),
-                value,
+                value: Secret::new(value),
             });
         }
         for (id, owner) in codes {
@@ -643,12 +631,12 @@ impl Shared {
             request.predicates.push(Predicate {
                 schema: schema.clone(),
                 key: id.as_bytes().to_vec(),
-                expected: raw.map_or(Expected::Absent, Expected::Bytes),
+                expected: guard(raw),
             });
             request.mutations.push(Mutation::Put {
                 schema,
                 key: id.into_bytes(),
-                value: encode("uc", &cell)?,
+                value: Secret::new(encode("uc", &cell)?),
             });
         }
         Ok(())
@@ -719,16 +707,14 @@ impl Shared {
         }
         let schema = Self::schema(name);
         self.settle(&schema, Some(id.as_bytes())).await?;
-        self.submit(Arc::new(Request {
-            version: busbar_contract::host_records::conditional::VERSION,
-            op_id: busbar_kernel::door::op_id(),
+        self.submit(Candidate {
             predicates: vec![],
             mutations: vec![Mutation::Put {
                 schema,
                 key: id.as_bytes().to_vec(),
-                value: body,
+                value: Secret::new(body),
             }],
-        }))
+        })
         .await
         .map(drop)
     }
@@ -779,15 +765,13 @@ impl Shared {
         }
         let schema = Self::schema(name);
         self.settle(&schema, Some(id.as_bytes())).await?;
-        self.submit(Arc::new(Request {
-            version: busbar_contract::host_records::conditional::VERSION,
-            op_id: busbar_kernel::door::op_id(),
+        self.submit(Candidate {
             predicates: vec![],
             mutations: vec![Mutation::Delete {
                 schema,
                 key: id.as_bytes().to_vec(),
             }],
-        }))
+        })
         .await
         .map(drop)
     }
@@ -906,7 +890,7 @@ impl Shared {
                 Some(Predicate {
                     schema: atomic_schema("family"),
                     key: family_id.into_bytes(),
-                    expected: raw.map_or(Expected::Absent, Expected::Bytes),
+                    expected: guard(raw),
                 })
             } else {
                 None
@@ -954,7 +938,7 @@ impl Shared {
                 encode(kind_name, &cell)?
             };
             let mut candidate = Self::candidate(&schema, id, raw, body);
-            let request = Arc::make_mut(&mut candidate);
+            let request = &mut candidate;
             if let Some(guard) = family_guard {
                 request.predicates.push(guard);
             }
@@ -1144,7 +1128,7 @@ impl Shared {
             Times::merge(&mut cell.b.times, window);
             let mut request =
                 Self::candidate(&atomic_schema("family"), &id, raw, encode("family", &cell)?);
-            let request_body = Arc::make_mut(&mut request);
+            let request_body = &mut request;
 
             let index = self.authority("ix.fam", &id).await?;
             let owner: Option<IndexRow> = index
@@ -1157,7 +1141,7 @@ impl Shared {
             request_body.predicates.push(Predicate {
                 schema: atomic_schema("ix.fam"),
                 key: id.as_bytes().to_vec(),
-                expected: index.map_or(Expected::Absent, Expected::Bytes),
+                expected: guard(index),
             });
             let mut removed = 0;
             if let Some(owner) = owner {
@@ -1182,7 +1166,7 @@ impl Shared {
                     request_body.predicates.push(Predicate {
                         schema: atomic_schema("bucket"),
                         key: bucket_id.as_bytes().to_vec(),
-                        expected: bucket_raw.map_or(Expected::Absent, Expected::Bytes),
+                        expected: guard(bucket_raw),
                     });
                     if removed != 0 {
                         bucket.v = bucket.v.checked_add(1).ok_or_else(|| {
@@ -1193,7 +1177,7 @@ impl Shared {
                         request_body.mutations.push(Mutation::Put {
                             schema: atomic_schema("bucket"),
                             key: bucket_id.into_bytes(),
-                            value: encode("bucket", &bucket)?,
+                            value: Secret::new(encode("bucket", &bucket)?),
                         });
                         self.bucket_indexes(request_body, &bucket.b, now).await?;
                     }
@@ -1201,7 +1185,7 @@ impl Shared {
                     request_body.predicates.push(Predicate {
                         schema: atomic_schema("bucket"),
                         key: bucket_id.into_bytes(),
-                        expected: bucket_raw.map_or(Expected::Absent, Expected::Bytes),
+                        expected: guard(bucket_raw),
                     });
                 }
             }
