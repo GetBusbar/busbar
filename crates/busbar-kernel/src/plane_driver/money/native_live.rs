@@ -9,20 +9,20 @@ use crate::governance::selected_resource::{
 use crate::governance::unit_checkpoint::partitions::ValidatedSelectedCheckpoint;
 
 pub(crate) enum NativeCommitError {
+    /// Refused before the rate was committed: the still-provisional reservation comes back.
     Before {
-        error: NativeAttemptError,
         reservation: RateReservation,
     },
     Rate(RateRejected),
 }
 
 enum CommitFailure {
-    Before(NativeAttemptError),
+    Before,
     Rate(RateRejected),
 }
 impl From<NativeAttemptError> for CommitFailure {
-    fn from(error: NativeAttemptError) -> Self {
-        Self::Before(error)
+    fn from(_: NativeAttemptError) -> Self {
+        Self::Before
     }
 }
 
@@ -35,8 +35,7 @@ impl NativeRequestMoney {
     ) -> Result<NativeAttempt, NativeCommitError> {
         let mut held = Some(reservation);
         self.commit_inner(&mut held).map_err(|error| match error {
-            CommitFailure::Before(error) => NativeCommitError::Before {
-                error,
+            CommitFailure::Before => NativeCommitError::Before {
                 reservation: held.take().expect("preflight never consumes reservation"),
             },
             CommitFailure::Rate(error) => NativeCommitError::Rate(error),
@@ -105,9 +104,7 @@ impl NativeRequestMoney {
                     .try_commit()
             })
             .map_err(|error| match error {
-                SelectedCommitError::Custody(error) => {
-                    CommitFailure::Before(NativeAttemptError::Custody(error))
-                }
+                SelectedCommitError::Custody(_) => CommitFailure::Before,
                 SelectedCommitError::Commit(error) => CommitFailure::Rate(error),
             })?;
         // Everything after irrevocable rate commitment is an infallible ownership transfer.
@@ -190,12 +187,6 @@ impl NativeAttempt {
         native.publish_incurred(&self.service.money.gov, snapshot)
     }
 
-    pub(crate) fn checkpoint(
-        &self,
-    ) -> Result<crate::plane_driver::cancel::Checkpoint, NativeAttemptError> {
-        self.service.checkpoint()
-    }
-
     pub(super) fn new(service: NativeRequestMoney, rate: CommittedRate) -> Self {
         Self {
             service,
@@ -216,16 +207,6 @@ impl NativeAttempt {
 
     pub(crate) fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
         self.rate.as_ref()?.prepared()._prepared.data()
-    }
-
-    /// The immutable exchange retained by the same committed preparation.
-    pub(crate) fn exchange(&self) -> &crate::plane_driver::port_session::UpExchange {
-        self.rate
-            .as_ref()
-            .expect("live guard retains committed rate")
-            .prepared()
-            ._prepared
-            .exchange()
     }
 
     /// Validate the complete answer before any effect, then retain all actual source facts.
