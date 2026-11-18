@@ -226,10 +226,10 @@ impl GovState {
         );
         // Each target's captured hot cell, beside the durable cell its reload publishes.
         let capture = || -> RecordStoreResult<Vec<(Option<BudgetCell>, Option<BudgetCell>)>> {
-            let guards = crate::off_path::governance::runtime::unit_checkpoint_counts_guards(
-                &shards,
-                |index| self.budget.shard_at(index).read(),
-            );
+            let guards: smallvec::SmallVec<[_; 4]> = shards
+                .iter()
+                .map(|&index| self.budget.shard_at(index).read())
+                .collect();
             let flights = self
                 .budget_flushes
                 .lock()
@@ -305,10 +305,10 @@ impl GovState {
                 "recovery selection changed during unit reload".into(),
             ));
         }
-        let mut guards =
-            crate::off_path::governance::runtime::unit_checkpoint_counts_guards(&shards, |index| {
-                self.budget.shard_at(index).write()
-            });
+        let mut guards: smallvec::SmallVec<[_; 4]> = shards
+            .iter()
+            .map(|&index| self.budget.shard_at(index).write())
+            .collect();
         let flights = self
             .budget_flushes
             .lock()
@@ -339,12 +339,12 @@ impl GovState {
                 let index = shards
                     .binary_search(&self.budget.shard_index(&target.bucket))
                     .expect("target shard held");
-                guards[index].insert(
-                    crate::off_path::governance::runtime::unit_checkpoint_counts_bucket(
-                        &target.bucket,
-                    ),
-                    cell,
-                );
+                match guards[index].get_mut(&target.bucket) {
+                    Some(slot) => *slot = cell,
+                    None => {
+                        guards[index].insert(target.bucket.as_str().into(), cell);
+                    }
+                }
             }
         }
         Ok(())
@@ -395,7 +395,7 @@ impl GovState {
         let grouped = projection
             .billed_by_lane()
             .map_err(|_| CountError::Overflow)?;
-        let lanes: Vec<_> = grouped
+        let lanes: smallvec::SmallVec<[_; 4]> = grouped
             .iter()
             .map(|(lane, counts)| (lane.as_str(), counts))
             .collect();
