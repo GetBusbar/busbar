@@ -477,9 +477,79 @@ impl<'ast> Visit<'ast> for StmtScan {
     fn visit_item_fn(&mut self, _: &'ast syn::ItemFn) {}
 }
 
+/// The type a SHA-256 over secret values takes (PM ruling 2026-11-17): recognised by this name.
+const SECRET_DIGEST: &str = "SecretDigest";
+
+/// `SecretDigest` keeps its contract: never printed (no derived Debug, Serialize or Display; a manual
+/// Debug does not read the value), compared only in constant time (no derived equality or hash; a
+/// manual `eq` calls `constant_time_eq`), and built only where it is defined (no public field).
+fn digest_rules(src: &Source, out: &mut Vec<Finding>) {
+    let items: Vec<&syn::Item> = walk::items(&src.file.items).collect();
+    for item in &items {
+        let syn::Item::Struct(s) = item else { continue };
+        if s.ident != SECRET_DIGEST || walk::is_cfg_test(&s.attrs) {
+            continue;
+        }
+        let d = derives(&s.attrs);
+        let mut push = |rule: &str| out.push((rule.into(), src.rel.clone(), SECRET_DIGEST.into()));
+        if d.iter().any(|x| x == "Debug" || x == "Serialize") {
+            push("digest-printable");
+        }
+        if d.iter().any(|x| {
+            x == "PartialEq" || x == "Eq" || x == "Hash" || x == "Ord" || x == "PartialOrd"
+        }) {
+            push("digest-equality");
+        }
+        if s.fields
+            .iter()
+            .any(|f| matches!(f.vis, syn::Visibility::Public(_)))
+        {
+            push("digest-constructible");
+        }
+    }
+    for item in &items {
+        let syn::Item::Impl(i) = item else { continue };
+        if walk::is_cfg_test(&i.attrs)
+            || !matches!(&*i.self_ty, syn::Type::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == SECRET_DIGEST))
+        {
+            continue;
+        }
+        let Some(trait_name) = i
+            .trait_
+            .as_ref()
+            .and_then(|(_, p, _)| p.segments.last().map(|s| s.ident.to_string()))
+        else {
+            continue;
+        };
+        let body_idents = |name: &str| -> Vec<String> {
+            i.items
+                .iter()
+                .filter_map(|it| match it {
+                    syn::ImplItem::Fn(f) if f.sig.ident == name => {
+                        Some(walk::idents(&walk::tokens(&f.block)))
+                    }
+                    _ => None,
+                })
+                .flatten()
+                .collect()
+        };
+        let mut push = |rule: &str| out.push((rule.into(), src.rel.clone(), SECRET_DIGEST.into()));
+        match trait_name.as_str() {
+            "Display" | "Serialize" | "LowerHex" | "UpperHex" => push("digest-printable"),
+            "Debug" if body_idents("fmt").iter().any(|id| id == "self") => push("digest-printable"),
+            "PartialEq" if !body_idents("eq").iter().any(|id| id == "constant_time_eq") => {
+                push("digest-equality")
+            }
+            "Hash" | "Ord" | "PartialOrd" => push("digest-equality"),
+            _ => {}
+        }
+    }
+}
+
 fn scan(src: &Source) -> Vec<Finding> {
     let mut out = Vec::new();
     field_rules(src, &mut out);
+    digest_rules(src, &mut out);
     let mut fns = FnScan {
         rel: &src.rel,
         owner: None,
