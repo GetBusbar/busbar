@@ -123,12 +123,12 @@ async fn fixture() -> Fixture {
     let custody = ObsCustody::new(Arc::new(|| 100_000));
     let registration = custody
         .register(
-            "fixture",
-            "owner",
+            &Arc::from("fixture"),
+            &Arc::from("owner"),
             ActiveUnit {
                 money: money.clone(),
                 unit: UnitKey::new(1),
-                policy: policy(),
+                policy: Arc::new(policy()),
                 classes: Arc::from(vec!["work_units".to_owned(), "other_units".to_owned()]),
             },
         )
@@ -349,6 +349,114 @@ async fn a_class_the_unit_does_not_name_is_refused_and_so_is_an_unknown_state() 
     assert_ne!(OBS_PENDING, OBS_REFUSED);
 }
 
+/// Every slot is made at boot: the 4,096th live registration is admitted, the next is refused, and one given back
+/// admits again.
+#[tokio::test]
+async fn the_register_holds_its_stated_units_and_refuses_the_next() {
+    let f = fixture().await;
+    let (instance, policy) = (Arc::from("fixture"), Arc::new(policy()));
+    let mut held = Vec::with_capacity(MAX_UNITS);
+    // The fixture holds one; fill the rest over many principals.
+    for n in 1..MAX_UNITS {
+        let subject: Arc<str> = Arc::from(format!("owner-{}", n % 97));
+        held.push(
+            f.custody
+                .register(&instance, &subject, cost_unit(&f.money, &policy))
+                .expect("a slot is free"),
+        );
+    }
+    let book_len = || f.custody.book.lock().unwrap().len();
+    assert_eq!(book_len(), MAX_UNITS);
+    let late: Arc<str> = Arc::from("late");
+    assert_eq!(
+        f.custody
+            .register(&instance, &late, cost_unit(&f.money, &policy))
+            .err(),
+        Some("usage observation refused")
+    );
+    drop(held.pop());
+    let again = f
+        .custody
+        .register(&instance, &late, cost_unit(&f.money, &policy))
+        .expect("a slot given back is claimed again");
+    assert_eq!(book_len(), MAX_UNITS);
+    drop((again, held));
+    assert_eq!(book_len(), 1, "only the fixture's unit is left");
+}
+
+/// Register and drop in a churn of principals: the book ends empty, every slot is free, and neither the slots,
+/// the free list nor the principal map ever grew (the no-allocation proof).
+#[tokio::test]
+async fn registrations_churned_leave_every_slot_free_and_nothing_grown() {
+    let f = fixture().await;
+    drop(f.registration);
+    let (instance, policy) = (Arc::from("fixture"), Arc::new(policy()));
+    let subjects: Vec<Arc<str>> = (0..64).map(|n| Arc::from(format!("owner-{n}"))).collect();
+    let capacities = |book: &Book| {
+        (
+            book.slots.capacity(),
+            book.free.capacity(),
+            book.by_principal.capacity(),
+        )
+    };
+    let before = capacities(&f.custody.book.lock().unwrap());
+    let mut live: std::collections::VecDeque<Registration> =
+        std::collections::VecDeque::with_capacity(MAX_UNITS);
+    for round in 0..100_000usize {
+        let subject = &subjects[round.wrapping_mul(31) % subjects.len()];
+        live.push_back(
+            f.custody
+                .register(&instance, subject, cost_unit(&f.money, &policy))
+                .expect("churn stays under the slot count"),
+        );
+        // Hold up to 3,000 at once, released oldest first and, every seventh round, newest first.
+        if live.len() > 3_000 || round % 7 == 0 {
+            if round % 7 == 0 {
+                drop(live.pop_back());
+            } else {
+                drop(live.pop_front());
+            }
+        }
+    }
+    drop(live);
+    let book = f.custody.book.lock().unwrap();
+    assert_eq!(book.len(), 0);
+    assert_eq!(book.free.len(), MAX_UNITS, "every slot is free");
+    assert!(book.slots.iter().all(Option::is_none));
+    assert!(book.by_principal.is_empty());
+    assert_eq!(capacities(&book), before, "nothing grew");
+}
+
+/// A principal's units are told apart after others of its chain are released from the middle.
+#[tokio::test]
+async fn a_unit_released_from_the_middle_of_its_principals_chain_keeps_the_rest_reachable() {
+    let f = fixture().await;
+    let (instance, owner) = (Arc::from("fixture"), Arc::from("owner"));
+    let policy = Arc::new(policy());
+    let middle = f
+        .custody
+        .register(&instance, &owner, cost_unit(&f.money, &policy))
+        .unwrap();
+    let newest = f
+        .custody
+        .register(&instance, &owner, cost_unit(&f.money, &policy))
+        .unwrap();
+    let identity = subject_identity("owner");
+    assert!(
+        f.custody.resolve("fixture", &identity, None).is_none(),
+        "three unattached units cannot be told apart"
+    );
+    drop(middle);
+    drop(newest);
+    assert!(
+        f.custody.resolve("fixture", &identity, None).is_some(),
+        "the fixture's unit is the one left"
+    );
+    drop(f.registration);
+    assert!(f.custody.resolve("fixture", &identity, None).is_none());
+    assert!(f.custody.book.lock().unwrap().by_principal.is_empty());
+}
+
 /// B-OBSERVE, the register's cost (GROUP-storage step 4): one round is `register`, `resolve` and the
 /// registration's drop, each thread on its own principal of one instance, 1 and 8 threads; median and p99 ns per
 /// round over `B_OBSERVE_ROUNDS` rounds a thread (default 100,000). The units are built before the clock starts.
@@ -369,15 +477,17 @@ async fn observation_register_cost() {
             let workers: Vec<_> = (0..threads)
                 .map(|t| {
                     scope.spawn(move || {
-                        let subject = format!("owner-{t}");
+                        let instance: Arc<str> = Arc::from("fixture");
+                        let subject: Arc<str> = Arc::from(format!("owner-{t}"));
                         let identity = subject_identity(&subject);
+                        let policy = Arc::new(policy());
                         let mut units: Vec<ActiveUnit> =
-                            (0..rounds).map(|_| cost_unit(money)).collect();
+                            (0..rounds).map(|_| cost_unit(money, &policy)).collect();
                         let mut taken = Vec::with_capacity(rounds);
                         started.wait();
                         for unit in units.drain(..) {
                             let at = std::time::Instant::now();
-                            let held = register_for_cost(custody, &subject, unit);
+                            let held = register_for_cost(custody, &instance, &subject, unit);
                             std::hint::black_box(custody.resolve("fixture", &identity, None));
                             drop(held);
                             taken.push(u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX));
@@ -401,18 +511,23 @@ async fn observation_register_cost() {
     drop(f.registration);
 }
 
-fn cost_unit(money: &Arc<PlaneMoney>) -> ActiveUnit {
+fn cost_unit(money: &Arc<PlaneMoney>, policy: &Arc<ObservationPolicy>) -> ActiveUnit {
     ActiveUnit {
         money: money.clone(),
         unit: UnitKey::new(1),
-        policy: policy(),
+        policy: Arc::clone(policy),
         classes: Arc::from(vec!["work_units".to_owned()]),
     }
 }
 
-fn register_for_cost(custody: &ObsCustody, subject: &str, unit: ActiveUnit) -> Registration {
+fn register_for_cost(
+    custody: &ObsCustody,
+    instance: &Arc<str>,
+    subject: &Arc<str>,
+    unit: ActiveUnit,
+) -> Registration {
     custody
-        .register("fixture", subject, unit)
+        .register(instance, subject, unit)
         .expect("a cost round registers")
 }
 
@@ -438,12 +553,12 @@ async fn ending_the_request_releases_the_unit_and_a_policy_naming_another_instan
     foreign.instance = "elsewhere".into();
     assert!(custody
         .register(
-            "fixture",
-            "owner",
+            &Arc::from("fixture"),
+            &Arc::from("owner"),
             ActiveUnit {
                 money,
                 unit: UnitKey::new(1),
-                policy: foreign,
+                policy: Arc::new(foreign),
                 classes: Arc::from(vec!["work_units".to_owned()]),
             },
         )

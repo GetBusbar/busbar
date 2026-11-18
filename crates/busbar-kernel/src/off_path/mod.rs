@@ -24,6 +24,7 @@ pub(crate) mod plane_needs;
 pub(crate) mod plane_port;
 pub(crate) mod plane_port_egress;
 pub(crate) mod plane_port_hooks;
+pub(crate) mod plane_port_observations;
 pub(crate) mod plane_provider_catalog;
 pub(crate) mod plane_registry;
 pub(crate) mod plane_route_tables;
