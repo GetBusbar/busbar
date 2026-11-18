@@ -308,7 +308,7 @@ impl EnvelopeObserver {
     ) -> Self {
         Self {
             observing,
-            plugin: crate::cold::observe::shared_name(plugin),
+            plugin: std::sync::Arc::from(plugin),
             kind,
             families,
             then: None,
@@ -409,7 +409,7 @@ struct Granted {
     series: Vec<busbar_contract::abi::mechanism::observe::SeriesDecl>,
 }
 
-static GRANTS: std::sync::RwLock<Option<foldhash::HashMap<String, Granted>>> =
+static GRANTS: std::sync::RwLock<Option<foldhash::HashMap<busbar_contract::kept::Text, Granted>>> =
     std::sync::RwLock::new(None);
 
 /// One first-party instance's hold on its plugin's grant ([`grant_series`]): dropped with the
@@ -419,7 +419,7 @@ static GRANTS: std::sync::RwLock<Option<foldhash::HashMap<String, Granted>>> =
 #[derive(Debug)]
 #[must_use = "the grant lasts only while it is held"]
 pub struct SeriesGrant {
-    plugin: Option<String>,
+    plugin: Option<busbar_contract::kept::Text>,
 }
 
 impl Drop for SeriesGrant {
@@ -464,14 +464,11 @@ pub fn grant_series(
             ));
         }
     }
-    let granted = grants
-        .entry(crate::cold::observe::granted_name(plugin))
-        .or_default();
+    let name = busbar_contract::kept::off_path::text(plugin);
+    let granted = grants.entry(name.clone()).or_default();
     granted.holders += 1;
-    granted.series = crate::cold::observe::granted_series(declared);
-    Ok(SeriesGrant {
-        plugin: Some(crate::cold::observe::granted_name(plugin)),
-    })
+    granted.series = declared.to_vec();
+    Ok(SeriesGrant { plugin: Some(name) })
 }
 
 pub fn first_party(plugin: &str) -> bool {
