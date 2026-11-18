@@ -59,7 +59,7 @@ impl Configs {
         let epoch = self.epoch();
         let key = CacheKey {
             epoch,
-            host: crate::tls::store::host_only(host),
+            host: crate::need::dialled_host(host),
             waived: plan.waive,
             anchor: plan.trust.as_ref().map_or([0; 32], |anchor| anchor.sha256),
             alpn: alpn.to_vec(),

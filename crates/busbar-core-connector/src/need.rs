@@ -49,6 +49,18 @@ pub mod network;
 pub mod observations;
 pub mod policy;
 pub mod table;
+
+/// The dialled host of `target` (`host`, `host:port`, `[v6]:port`, a URL), without port or brackets, as
+/// an owned name: an IP as written, a name lowercased in its ASCII (IDNA) form; `target` itself when it
+/// names no host. The Need cache key and the TLS server name both take it once per dial.
+pub(crate) fn dialled_host(target: &str) -> String {
+    use crate::tls::store::{dialled, Dialled};
+    match dialled(target) {
+        Some(Dialled::Ip(ip)) => ip.to_string(),
+        Some(Dialled::Name(n)) => n.to_ascii_lowercase(),
+        None => target.to_owned(),
+    }
+}
 pub mod tlsconf;
 pub mod unix;
 

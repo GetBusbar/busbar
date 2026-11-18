@@ -27,8 +27,6 @@ pub(crate) struct Session {
     pub(crate) cfg: Cfg,
     /// The judge binary.
     pub(crate) bin: PathBuf,
-    /// What record.sh and the product scripts run (`BUSBAR_ORACLE_BIN`).
-    pub(crate) entry: PathBuf,
     /// Exports every child carries.
     pub(crate) envs: Vec<(String, String)>,
     /// `BUSBAR_ORACLE_DATA`.
@@ -172,7 +170,6 @@ impl Session {
         let session = Self {
             cfg,
             bin,
-            entry,
             envs,
             data,
             product,

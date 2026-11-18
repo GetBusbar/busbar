@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::{Binder, ConfigBinder};
 use std::sync::Arc;
 fn binder(_: &str) -> Binder {
