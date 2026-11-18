@@ -33,6 +33,9 @@
 //!   `opens_saw`: the 16 bytes, or empty for None) (C-DEPLOYMENT-ID).
 //! - `"install": text`: the install binding `check` decides on once `deployment_id()` is Some: 16 bytes other than
 //!   the id refuse R_CONFIG with [`INSTALL_REFUSAL`] (whose URL carries [`INSTALL_PASSWORD`]); None skips.
+//! - `"check_recovery": true`: `check` also asks the `"recovery"` gate (`Host::migrate_admit`), which the
+//!   config-only CHECK denies. Every open runs `check` first, and `check` calls no host service unless
+//!   `"deployment"`, `"install"` or this asks it to.
 //!
 //! It answers `read` with READ_DONE (READ_VALUES) and one absent VALUE per ADDRESS, `scan` with an exhausted
 //! empty page, `commit` with COMMITTED (evaluating nothing) and `clock` with CLOCK.
@@ -225,6 +228,7 @@ pub struct Plan {
     ignore_recovery: bool,
     teardown_probe: bool,
     recovery_fail: bool,
+    check_recovery: bool,
 }
 
 impl Plan {
@@ -260,6 +264,7 @@ impl Plan {
             ignore_recovery: config.get("ignore_recovery").and_then(Value::as_bool) == Some(true),
             teardown_probe: config.get("teardown_probe").and_then(Value::as_bool) == Some(true),
             recovery_fail: config.get("recovery_fail").and_then(Value::as_bool) == Some(true),
+            check_recovery: config.get("check_recovery").and_then(Value::as_bool) == Some(true),
         }
     }
 }
@@ -333,10 +338,18 @@ impl<const MODE: u8> Open for Fixture<MODE> {
 
     fn check(h: &Host, config: &[u8], _ends: &mut Endpoints<'_>) -> Result<(), Fail> {
         let plan = Plan::of(&object(config)?);
-        if let Some(count) = plan.recovery {
-            h.migrate_admit(count)?;
+        // Every open runs this check first under the config-only CHECK host (694764d34e), where any host call
+        // faults the check: host services are asked for only when the config asks this check to.
+        if plan.check_recovery {
+            if let Some(count) = plan.recovery {
+                h.migrate_admit(count)?;
+            }
         }
-        let seen = deployment_seen(h);
+        let seen = if plan.deployment || plan.install.is_some() {
+            deployment_seen(h)
+        } else {
+            Vec::new()
+        };
         if plan.deployment {
             bump(&plan.id, |c| c.checks_saw.push(seen.clone()));
         }

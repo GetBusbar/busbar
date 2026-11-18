@@ -171,10 +171,15 @@ fn store_recovery_gate_is_scoped_to_initial_and_resumed_open() {
             .expect("initial and resumed Store gate admit"),
     );
     assert_eq!(admission.first_refused(), None);
+    // The check that asks the gate itself (every open runs the config-only CHECK first, 694764d34e).
+    let checked = br#"{"id":"gate-resume","recovery":7,"check_recovery":true,"secret":{"module":"file","path":"synthetic"}}"#;
+    let mut check = h.spec("store", checked);
+    check.store_migration = Some(Arc::clone(&admission));
     assert!(
-        h.check_spec(&spec).is_err(),
+        h.check_spec(&check).is_err(),
         "DRY_RUN has no recovery authority"
     );
+    drop(check);
     assert_eq!(
         admission.first_refused(),
         None,
