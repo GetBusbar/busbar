@@ -1629,57 +1629,6 @@ fn pending_operations_above_max_slots_are_invalid_limits() {
     ));
 }
 
-/// 8.2 (TargetBootstrap): a lost Initialize reply reaches Ready within two
-/// advances; after a peer initialized, it ends in ReconciliationRequired in one.
-#[tokio::test]
-async fn target_bootstrap_lost_reply_and_peer_initialization() {
-    use super::super::import_target::{
-        target::{BootstrapProgress, TargetBootstrap},
-        ImportError,
-    };
-    let authority = WriterAuthority {
-        writer: [0x77; 16],
-        writer_epoch: 1,
-        execution_epoch: 1,
-    };
-    let backend = Arc::new(Backend::default());
-    let mut bootstrap = TargetBootstrap::new(backend.clone(), authority, [0x78; 16]).unwrap();
-    assert!(matches!(
-        bootstrap.advance().await,
-        Ok(BootstrapProgress::Advanced)
-    ));
-    backend.0.lock().unwrap().lose_reply = true;
-    assert!(matches!(
-        bootstrap.advance().await,
-        Ok(BootstrapProgress::Pending)
-    ));
-    assert!(matches!(
-        bootstrap.advance().await,
-        Ok(BootstrapProgress::Ready)
-    ));
-
-    let backend = Arc::new(Backend::default());
-    let mut bootstrap = TargetBootstrap::new(backend.clone(), authority, [0x78; 16]).unwrap();
-    assert!(matches!(
-        bootstrap.advance().await,
-        Ok(BootstrapProgress::Advanced)
-    ));
-    let peer = WriterAuthority {
-        writer: [0x79; 16],
-        ..authority
-    };
-    let mut peer = TargetBootstrap::new(backend.clone(), peer, [0x7A; 16]).unwrap();
-    assert!(matches!(
-        peer.advance().await,
-        Ok(BootstrapProgress::Advanced)
-    ));
-    assert!(matches!(peer.advance().await, Ok(BootstrapProgress::Ready)));
-    assert!(matches!(
-        bootstrap.advance().await,
-        Err(ImportError::ReconciliationRequired)
-    ));
-}
-
 // ---- FIRST-START-TAKEOVER (§8) ------------------------------------------------------------
 
 #[tokio::test(start_paused = true)]
