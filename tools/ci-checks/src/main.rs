@@ -736,11 +736,6 @@ fn cargo_tree(root: &Path, select: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// Each seam-only crate in a `cargo tree --prefix depth` listing, with the path that reaches it.
-fn seam_only_reached(tree: &str) -> Vec<String> {
-    reached(tree, &SEAM_ONLY, "outside busbar-crypto*", &BTreeMap::new()).0
-}
-
 /// Each backend-only crate in the facade's listing (backend pruned), with the path that reaches it.
 fn backend_only_reached(tree: &str) -> Vec<String> {
     reached(
