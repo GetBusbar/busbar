@@ -416,14 +416,8 @@ pub(crate) fn ingress_metadata_fields() -> crate::plane_driver::HeadFields {
 
 /// door: a verify refusal's message, rendered once on the refusal path.
 #[cold]
-pub(crate) fn door_refusal_message(refusal: &crate::door::VerifyRefusal) -> String {
+pub(crate) fn door_refusal_message(refusal: &crate::door::VerifyRefusal<'_>) -> String {
     refusal.to_string()
-}
-
-/// door: the owned model name a `NoRate` refusal carries, copied once on the refusal path.
-#[cold]
-pub(crate) fn door_refused_name(name: &str) -> String {
-    name.to_owned()
 }
 
 /// json: the log line for an unparseable body, rendered once on the error path.

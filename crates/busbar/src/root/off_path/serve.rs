@@ -2214,7 +2214,9 @@ pub(crate) fn door_mounts_planned(
                 {
                     return None;
                 }
-                let refusal = crate::root::native_refusals::client(r.reason, r.status, r.text);
+                // The kernel lends its words for this call only; the refusal keeps its own copy.
+                let refusal =
+                    crate::root::native_refusals::client(r.reason, r.status, r.text.to_owned());
                 return Some(crate::root::port_mount::render_kernel_refusal(
                     seat,
                     line.route.rung,

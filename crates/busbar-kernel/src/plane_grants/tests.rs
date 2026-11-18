@@ -361,6 +361,28 @@ fn standard_webhooks_accepts_a_good_signature_and_refuses_the_rest() {
     assert!(check(KEY, &pairs("msg_1", &ts, &good)[..2], body, NOW).is_none());
 }
 
+/// The signature is compared whole: a prefix of the right tag, the right tag with a byte added, and
+/// an empty tag verify nothing, alone or beside each other; the right tag still verifies after them.
+#[test]
+fn standard_webhooks_refuses_a_tag_of_another_length() {
+    let ts = NOW.to_string();
+    let body = b"{\"event\":1}";
+    let mut msg = format!("msg_1.{ts}.").into_bytes();
+    msg.extend_from_slice(body);
+    let tag = crypto::hmac_sha256(KEY, &msg).unwrap();
+    let short = format!("v1,{}", STANDARD.encode(&tag[..16]));
+    let mut longer = tag.to_vec();
+    longer.push(0);
+    let long = format!("v1,{}", STANDARD.encode(&longer));
+    for refused in [short.as_str(), long.as_str(), "v1,"] {
+        assert!(check(KEY, &pairs("msg_1", &ts, refused), body, NOW).is_none());
+    }
+    let none = format!("{short} {long} v1,");
+    assert!(check(KEY, &pairs("msg_1", &ts, &none), body, NOW).is_none());
+    let last = format!("{short} {long} v1,{}", STANDARD.encode(tag));
+    assert!(check(KEY, &pairs("msg_1", &ts, &last), body, NOW).is_some());
+}
+
 #[test]
 fn standard_webhooks_whsec_keys_are_base64() {
     let raw = b"0123456789abcdef";

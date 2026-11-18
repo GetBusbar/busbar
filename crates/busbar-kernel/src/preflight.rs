@@ -342,7 +342,7 @@ pub(crate) fn linked_hook_answers(module: &str) -> bool {
 
 /// Whether a linked native (MIN-3) image of `kind` (its kind word) answers `module`: its identity or its linked alias.
 /// A linked image needs no plugins directory: it is compiled in and admitted at process start.
-pub fn linked_image_answers(kind: &str, module: &str) -> bool {
+fn linked_image_answers(kind: &str, module: &str) -> bool {
     root_rows()
         .linked_images
         .iter()

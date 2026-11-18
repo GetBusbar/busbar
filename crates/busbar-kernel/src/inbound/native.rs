@@ -188,11 +188,12 @@ impl PhysicalPlan {
     }
 
     fn route(&self, head: &Head) -> Result<Arc<RouteBinding>, ArrivalRefusal> {
-        let fields: Vec<_> = head
-            .fields
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_slice()))
-            .collect();
+        // The head's fields as borrowed pairs, on the stack for any ordinary head (as the framed
+        // path lends them): the route match reads them and keeps nothing.
+        let mut fields: smallvec::SmallVec<[(&str, &[u8]); 32]> = smallvec::SmallVec::new();
+        for (name, value) in &head.fields {
+            fields.push((name.as_str(), value.as_slice()));
+        }
         let line = match self.guests.matched(&head.method, &head.target, &fields) {
             Matched::Line(line) => line,
             Matched::MethodMiss(_) => return Err(ArrivalRefusal::Method),

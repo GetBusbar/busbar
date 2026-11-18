@@ -8,11 +8,8 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-// `ConfigRefused` is shared by §12.25 (`hooks::strategy`) and §12.26; it lives here, beside the one of the two that
-// is off the request path.
-
 /// Core-written refusal text for config load (operator vocabulary only); the caller wraps it in its existing
-/// config error. Shared by §12.25 and §12.26.
+/// config error. §12.26's; §12.25 (`hooks::strategy`) refuses with its own typed `StrategyRefused`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigRefused(pub String);
 /// Which listener a claim is mounted on. `Export(i)` = the dedicated listener of export instance index i, when

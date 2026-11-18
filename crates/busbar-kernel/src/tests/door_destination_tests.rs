@@ -94,9 +94,7 @@ fn an_unconfigured_unpriced_name_has_no_rate_and_the_acl_is_asked_first() {
     };
     assert_eq!(
         destination_guard(&v, "m"),
-        Err(VerifyRefusal::NoRate {
-            name: "m".to_owned()
-        })
+        Err(VerifyRefusal::NoRate { name: "m" })
     );
     let denied = View {
         key: true,
@@ -125,9 +123,7 @@ fn each_refusal_names_its_status_kind_and_reason() {
         (403, busbar_contract::protocol::KIND_PERMISSION)
     );
     assert_eq!(na.reason(), ReasonCode::PoolNotPermitted);
-    let nr = VerifyRefusal::NoRate {
-        name: "m".to_owned(),
-    };
+    let nr = VerifyRefusal::NoRate { name: "m" };
     assert_eq!(
         (nr.status(), nr.kind()),
         (400, busbar_contract::protocol::KIND_INVALID_REQUEST)
