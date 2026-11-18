@@ -1980,14 +1980,12 @@ fn capture_target(
                 ))?;
             }
         }
-        let fees = ledger_off_path::ledger_correction_fee_eras(local.fee_eras.dated());
-        let flushed = ledger_off_path::ledger_correction_fee_eras(local.flushed_fee_eras.dated());
-        for era in crate::governance::sorted_union(fees.keys(), flushed.keys()) {
-            let difference = i128::from(fees.get(era).copied().unwrap_or(0))
-                - i128::from(flushed.get(era).copied().unwrap_or(0));
+        let (fees, flushed) = (local.fee_eras.dated(), local.flushed_fee_eras.dated());
+        for era in eras_ascending(eras_of(fees), eras_of(flushed)) {
+            let difference = i128::from(fee_count(fees, era)) - i128::from(fee_count(flushed, era));
             exact(move_unit(
                 &mut combined_dated,
-                &era_tag(*era),
+                &era_tag(era),
                 ERA_FEE_UNIT,
                 difference * 1_000_000,
             ))?;
@@ -2047,6 +2045,48 @@ fn checked_move(count: u64, change: i128) -> Result<u64, &'static str> {
             .ok_or("raw usage correction count overflow")?,
     )
     .map_err(|_| "raw usage correction count out of range")
+}
+
+/// The eras a fee split names, as recorded.
+fn eras_of(split: &[(RawRateEra, u64)]) -> impl Iterator<Item = RawRateEra> + Clone + '_ {
+    split.iter().map(|(era, _)| *era)
+}
+
+/// The count a fee split holds for `era`, zero when it names no such era. A split names a few
+/// eras in the order each was first charged, so it is read where it lies; were an era ever named
+/// twice its later count stands, as it did when the split was folded into a map.
+fn fee_count(split: &[(RawRateEra, u64)], era: RawRateEra) -> u64 {
+    split
+        .iter()
+        .rev()
+        .find(|(at, _)| *at == era)
+        .map_or(0, |(_, count)| *count)
+}
+
+/// The requests a fee split's eras hold in all, each era counted once.
+fn fee_total(split: &[(RawRateEra, u64)]) -> i128 {
+    eras_ascending(eras_of(split), std::iter::empty())
+        .map(|era| i128::from(fee_count(split, era)))
+        .sum()
+}
+
+/// Every era `a` or `b` names, ascending and each once. Both name a few eras in no order, so the
+/// next era is the least one after the last given: neither is sorted and neither is copied.
+fn eras_ascending<A, B>(a: A, b: B) -> impl Iterator<Item = RawRateEra>
+where
+    A: Iterator<Item = RawRateEra> + Clone,
+    B: Iterator<Item = RawRateEra> + Clone,
+{
+    let mut last: Option<RawRateEra> = None;
+    std::iter::from_fn(move || {
+        let next = a
+            .clone()
+            .chain(b.clone())
+            .filter(|era| last.is_none_or(|after| *era > after))
+            .min()?;
+        last = Some(next);
+        Some(next)
+    })
 }
 fn add_difference(
     row: &mut UsageLedger,

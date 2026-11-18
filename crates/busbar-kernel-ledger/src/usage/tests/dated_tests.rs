@@ -575,3 +575,27 @@ fn fee_eras_read_back_are_found_by_era() {
     assert_eq!(eras.dated(), &[(9, 1), (7, 2), (5, 1)]);
     assert_eq!(eras, FeeEras::<u64>::of([(9, 1), (7, 2), (5, 1)]));
 }
+
+/// A split built from counts that may each be refused is the split `of` builds from the same
+/// counts, total included; the first refusal met ends it, and nothing after it is read.
+#[test]
+fn fee_eras_built_from_refusable_counts_are_the_same_split_or_the_first_refusal() {
+    let rows = [(9u64, 2u64), (0, 5), (4, 0), (7, 1)];
+    let built = FeeEras::<u64>::try_of(rows.into_iter().map(Ok::<_, &str>)).unwrap();
+    assert_eq!(built, FeeEras::<u64>::of(rows));
+    assert_eq!(built.dated(), &[(9, 2), (7, 1)]);
+    assert_eq!(
+        built.split(10).collect::<Vec<_>>(),
+        FeeEras::<u64>::of(rows).split(10).collect::<Vec<_>>(),
+        "the request total rides the split as it does when `of` builds it"
+    );
+
+    let mut read = 0;
+    let refused = FeeEras::<u64>::try_of(
+        [Ok((9, 2)), Err("second"), Err("third"), Ok((7, 1))]
+            .into_iter()
+            .inspect(|_| read += 1),
+    );
+    assert_eq!(refused, Err("second"));
+    assert_eq!(read, 2, "the split stops reading at its first refusal");
+}
