@@ -143,6 +143,13 @@ impl<'de> Deserialize<'de> for StoreCfg {
     }
 }
 
+/// A secret instance without `module`: the 1.5.5 module-keyed shape, which the 1.6.0 upgrade
+/// (migrate-on-boot) converts by naming the module after the instance key (IF §8.2).
+pub(crate) const MODULE_KEYED_SECRET: &str = "missing field `module`: a 1.5.5 module-keyed secret \
+     instance is converted by the 1.6.0 upgrade, which names `module` after the instance key; boot \
+     the unstamped 1.5.5 config once so migrate-on-boot rewrites it, or add `module:` \
+     (docs/migration-1.6)";
+
 impl<'de> Deserialize<'de> for SecretModuleCfg {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct Block;
@@ -155,7 +162,17 @@ impl<'de> Deserialize<'de> for SecretModuleCfg {
                 self,
                 map: A,
             ) -> Result<SecretModuleCfg, A::Error> {
+                use serde::de::Error as _;
                 SecretModuleCfg::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map_err(|error| {
+                        // 01149013b8: `module` is required; a 1.5.5 module-keyed instance reaches
+                        // 1.6.0 through the upgrade, which names the module after the instance key.
+                        if error.to_string().starts_with("missing field `module`") {
+                            A::Error::custom(MODULE_KEYED_SECRET)
+                        } else {
+                            error
+                        }
+                    })
             }
             fn visit_seq<A: serde::de::SeqAccess<'de>>(
                 self,
