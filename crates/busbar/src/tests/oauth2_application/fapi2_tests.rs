@@ -267,7 +267,7 @@ impl RsaKey {
 struct Subject {
     app: Arc<busbar_kernel::state::App>,
     origin: String,
-    client: reqwest::Client,
+    client: super::Client,
 
     key: Key,
 
@@ -311,10 +311,7 @@ async fn serve(fapi2: bool) -> Subject {
     Subject {
         app,
         origin,
-        client: super::client_builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("client"),
+        client: super::client(),
         key,
         other,
         rsa,

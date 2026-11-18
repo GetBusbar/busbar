@@ -90,10 +90,7 @@ pub(super) async fn register_client(origin: &str, redirect: &str, scopes: &str) 
 async fn a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent() {
     let (origin, _app) = serve(&["read", "write"], false).await;
     let multi = register_client(&origin, REDIRECT_URI, "read write").await;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
+    let client = super::Client::plain();
 
     for scope in ["&scope=write%20read", "&scope=read%20read%20write", ""] {
         let mut jar = Jar::new(false);
@@ -142,10 +139,7 @@ async fn a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent
 async fn the_consent_screen_names_the_client_and_the_redirect_host() {
     let (origin, _app) = serve(&[SCOPE], false).await;
     let offsite_client_id = register_client(&origin, OFFSITE_REDIRECT_URI, SCOPE).await;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
+    let client = super::Client::plain();
     let mut jar = Jar::new(false);
 
     let authorize = format!(
@@ -197,10 +191,7 @@ fn strip_hidden_return(page: &str) -> String {
 async fn an_unauthenticated_visitor_is_never_shown_the_consent_screen() {
     let (origin, _app) = serve(&[SCOPE], true).await;
     let client_id = register_client(&origin, REDIRECT_URI, SCOPE).await;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
+    let client = super::Client::plain();
     let mut jar = Jar::new(false);
 
     let authorize = format!(
@@ -239,10 +230,7 @@ async fn an_unauthenticated_visitor_is_never_shown_the_consent_screen() {
 async fn a_return_target_a_browser_reads_as_off_site_is_refused_on_approve_and_deny() {
     let (origin, _app) = serve(&[SCOPE], false).await;
     let client_id = register_client(&origin, REDIRECT_URI, SCOPE).await;
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("client");
+    let client = super::Client::plain();
     let mut jar = Jar::new(false);
     let authorize = format!(
         "{origin}/authorize?response_type=code&client_id={client_id}\

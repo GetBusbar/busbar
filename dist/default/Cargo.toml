@@ -960,8 +960,9 @@ proc-macro2 = { version = "1", features = ["span-locations"] }
 # The C header generator and the source rules (busbar-contract tests) print parsed items back to tokens.
 quote = "1"
 # The floor shared by the dependency and dev-dependency uses; busbar adds `http2` to one and `json`
-# to the other. Both decline default features — rustls only, so no second crypto backend enters.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+# to the other. No TLS feature: reqwest's rustls-tls brings ring, a second crypto backend (ARC-6). Test
+# clients that speak TLS use busbar_core_connector::test_support::https with a config from the seam.
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 webpki-roots = "1"
 # The ring signature verifier the dtls engine checks a peer's DTLS signature with (rustls's own).

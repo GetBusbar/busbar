@@ -60,7 +60,7 @@ struct Subject {
     /// The admin listener's origin, where the operator's approval page lives.
     admin: String,
     app: Arc<busbar_kernel::state::App>,
-    client: reqwest::Client,
+    client: super::Client,
     key: Key,
 }
 
@@ -89,10 +89,7 @@ async fn setup() -> Subject {
         origin,
         admin: format!("http://{admin_listen}"),
         app,
-        client: super::client_builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap(),
+        client: super::client(),
         key,
     }
 }
@@ -155,7 +152,7 @@ fn csrf(page: &str) -> String {
     after.split('"').next().unwrap().to_string()
 }
 
-async fn screen(client: &reqwest::Client, jar: &mut Jar, origin: &str, grant: &Value) -> String {
+async fn screen(client: &super::Client, jar: &mut Jar, origin: &str, grant: &Value) -> String {
     let target = format!(
         "{origin}/oauth/device?user_code={}",
         grant["user_code"].as_str().unwrap()
@@ -170,7 +167,7 @@ async fn screen(client: &reqwest::Client, jar: &mut Jar, origin: &str, grant: &V
 }
 
 async fn submit(
-    client: &reqwest::Client,
+    client: &super::Client,
     jar: &mut Jar,
     origin: &str,
     grant: &Value,
@@ -471,7 +468,7 @@ async fn the_verification_uri_names_the_admin_listener_and_the_page_confirms_bef
         .await
         .unwrap();
     assert_eq!(response.status(), 200);
-    let grant: Value = response.json().await.unwrap();
+    let grant: Value = super::read_json(response).await;
     assert_eq!(
         grant["verification_uri"],
         format!("{admin}/oauth/device"),
