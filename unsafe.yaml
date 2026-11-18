@@ -245,7 +245,7 @@ interim:
   crates/plugin-loader/src/dispatch/kinds/auth.rs: { tokens: 17, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/kinds/export.rs: { tokens: 16, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/kinds/hook.rs: { tokens: 13, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/dispatch/kinds/plane.rs: { tokens: 53, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/dispatch/kinds/plane.rs: { tokens: 51, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/kinds/transport.rs: { tokens: 45, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/lifecycle.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/dispatch/load.rs: { tokens: 30, by: "W2 / W3 (old dispatch and doors)" }

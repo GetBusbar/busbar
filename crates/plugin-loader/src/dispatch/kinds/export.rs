@@ -5,14 +5,18 @@ use busbar_contract::abi::export::{
     self, slot, validate, CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
     StatusOut, Tail,
 };
-use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
+use busbar_contract::abi::mechanism::call::AbiStr;
+use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::Fault;
-use busbar_contract::abi::mechanism::door::Statement;
-use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
+use busbar_contract::abi::mechanism::door::{MetricFamily, Statement};
+use busbar_contract::abi::mechanism::route::Route;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::export_stream::ExportStream;
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
+// The export kind's Statement read (once per load and bind) lives in `off_path::kinds_export`.
+use crate::off_path::kinds_export::facts;
+pub(crate) use crate::off_path::kinds_export::{family, owned, route};
 
 /// WHAT AN EXPORT INSTANCE STATES, copied out once at bind: the streams it carries, the routes it
 /// serves, and each metric family's name, kind and label keys (what its envelope's metrics are
@@ -40,11 +44,10 @@ pub struct ExportFacts {
     pub whole_batches: bool,
 }
 
-pub(crate) fn owned(s: AbiStr) -> Option<String> {
-    crate::dispatch::plugin::str_bytes(s)
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .map(crate::cold::dispatch::kinds::statement_text)
-}
+const EXPORT_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
+
+// THE PLUGIN MEMORY THE EXPORT KIND'S STATEMENT READ (`off_path::kinds_export`, once per load and
+// bind) READS, formed and checked here beside the kind's other unsafe code.
 
 /// A `'static` Statement list of `len` entries at `ptr`, which the caller's check bounded and
 /// refused behind NULL.
@@ -60,45 +63,22 @@ unsafe fn listed<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
     unsafe { std::slice::from_raw_parts(ptr, len) }
 }
 
-pub(crate) fn route(r: &export::Route) -> Result<Route, String> {
-    let path = owned(r.path).ok_or("an export route's path is over-long")?;
-    let method = owned(r.method).ok_or("an export route's method is over-long")?;
-    let methods = [
-        RouteMethod::Get,
-        RouteMethod::Post,
-        RouteMethod::Put,
-        RouteMethod::Patch,
-        RouteMethod::Delete,
-    ];
-    let method = methods
-        .into_iter()
-        .find(|m| m.as_str() == method)
-        .ok_or_else(|| crate::cold::dispatch::kinds::export_route_method(&path, &method))?;
-    let auth = match r.auth {
-        export::ROUTE_AUTH_NONE => RouteAuth::None,
-        export::ROUTE_AUTH_KEY => RouteAuth::Key,
-        _ => RouteAuth::Admin,
-    };
-    Ok(Route { path, method, auth })
+/// An export Statement's tail lists, its declared families and its extensions, as
+/// [`stated_tail`] forms them.
+pub(crate) struct StatedTail {
+    /// The tail's streams, as `ExportStream` bytes.
+    pub(crate) streams: &'static [u8],
+    /// The tail's routes.
+    pub(crate) routes: &'static [export::Route],
+    /// The Statement's metric families.
+    pub(crate) families: &'static [MetricFamily],
+    /// The Statement's extensions (a NULL blob reads as none).
+    pub(crate) ext: &'static [u8],
 }
 
-/// One declared metric family, copied out once at bind: its name, its `FAMILY_*` kind and its
-/// label keys.
-pub(crate) fn family(
-    f: &busbar_contract::abi::mechanism::door::MetricFamily,
-) -> Result<(String, u8, Vec<String>), String> {
-    // SAFETY: the loader's Statement check bounded each family's label keys and refused them
-    // behind NULL; they are `'static` plugin data.
-    let keys = unsafe { listed(f.label_keys, f.label_keys_len) };
-    let keys = crate::cold::dispatch::kinds::export_label_keys(keys)
-        .ok_or("a metric family's label key is over-long")?;
-    let name = owned(f.name).ok_or("a metric family's name is over-long")?;
-    Ok((name, f.kind, keys))
-}
-
-const EXPORT_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
-
-fn facts(st: &Statement) -> Result<ExportFacts, String> {
+/// The export tail `st` states, judged by `check_tail` and `check_tail_entries`, with its lists,
+/// the Statement's families and its extensions formed over the plugin's `'static` data.
+pub(crate) fn stated_tail(st: &Statement) -> Result<StatedTail, String> {
     // SAFETY: `Tail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid: NULL
     // lists of length 0); a non-NULL kind tail is `'static` plugin data of its stated size.
     let t: Tail =
@@ -115,46 +95,24 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
     };
     // SAFETY: the loaded Statement owns the static route path bytes for this plugin lifetime.
     unsafe { validate::check_tail_entries(streams, routes) }.map_err(why)?;
-    let routes = crate::cold::dispatch::kinds::export_routes(routes)?;
     // SAFETY: the loader's Statement check bounded `families` and refused it behind NULL.
-    let declared = unsafe { listed(st.families, st.families_len) };
-    let families = crate::cold::dispatch::kinds::export_families(declared)?;
+    let families = unsafe { listed(st.families, st.families_len) };
     // SAFETY: a door's Statement is `'static` plugin data; its extensions blob holds its stated
     // length (a NULL one reads as none).
     let ext = unsafe { crate::dispatch::plugin::blob_bytes(st.extensions) };
-    let span_records = busbar_contract::abi::mechanism::extensions::span_records(ext)?;
-    let whole_batches = busbar_contract::abi::mechanism::extensions::whole_batches(ext)?;
-    use busbar_contract::abi::mechanism::extensions;
-    let public_routes = extensions::route_paths(ext, extensions::EXT_PUBLIC_ROUTES)?;
-    let persistent_routes = extensions::route_paths(ext, extensions::EXT_PERSISTENT_ROUTES)?;
-    if public_routes
-        .iter()
-        .any(|path| !routes.iter().any(|route| route.path == *path))
-        || persistent_routes
-            .iter()
-            .any(|path| !public_routes.contains(path))
-    {
-        return Err(
-            "listener route policy names an undeclared route or a non-public persistent route"
-                .into(),
-        );
-    }
-    let recorder = busbar_contract::export_calls::recorder_protocol(ext)?;
-    if recorder && !streams.contains(&(ExportStream::Metrics as u8)) {
-        return Err("a recorder declaration requires the metrics stream".into());
-    }
-    let streams = crate::cold::dispatch::kinds::statement_list(streams);
-    Ok(ExportFacts {
-        recorder,
-        span_records,
-        whole_batches,
-        public_routes,
-        persistent_routes,
+    Ok(StatedTail {
         streams,
         routes,
         families,
-        one_instance: st.marks & busbar_contract::abi::mechanism::door::MARK_ONE_INSTANCE != 0,
+        ext,
     })
+}
+
+/// One declared metric family's label keys.
+pub(crate) fn label_keys(f: &MetricFamily) -> &'static [AbiStr] {
+    // SAFETY: the loader's Statement check bounded each family's label keys and refused them
+    // behind NULL; they are `'static` plugin data.
+    unsafe { listed(f.label_keys, f.label_keys_len) }
 }
 
 /// The export kind.

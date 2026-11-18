@@ -3,109 +3,59 @@
 
 use busbar_contract::abi::hook::{
     self, slot, validate, ConfigureIn, ConfigureOut, DecideIn, DecideOut, DescribeOut, NotifyIn,
-    ServeIn, ServeOut, StatusOut, Tail, TransformOut, CLASS_GATE, CLASS_TAP, PROMPT_RW, USER_RO,
+    ServeIn, ServeOut, StatusOut, Tail, TransformOut,
 };
 use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::Fault;
-use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_HOOK};
-use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
+use busbar_contract::abi::mechanism::door::{MarkWord, Statement};
+#[cfg(test)]
+use busbar_contract::abi::mechanism::route::Route;
 use busbar_contract::abi::mechanism::KindCode;
 pub use busbar_contract::hook_calls::HookFacts;
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
-
-pub(crate) fn owned(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<String> {
-    crate::dispatch::plugin::str_bytes(s)
-        .and_then(|b| std::str::from_utf8(b).ok())
-        .map(crate::cold::dispatch::kinds::statement_text)
-}
-
-const HOOK_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
+// The hook's Statement read (once per load and bind) lives in `off_path::kinds_hook`.
+#[cfg(test)]
+use crate::off_path::kinds_hook::owned;
+use crate::off_path::kinds_hook::read;
+pub(crate) use crate::off_path::kinds_hook::route;
 
 pub const NO_TAIL: &str = "a hook Statement states no hook tail: a hook states its class and grants (abi::sdk::hook::tail)";
 
 pub const SIGNALS_REFUSED: &str = "the hook tail states requested_signals: the signals a hook is \
      lent are the operator's `hooks:` configuration, never its tail; a hook states none";
 
-/// One declared hook route, copied out once at bind.
-pub(crate) fn route(r: &hook::Route) -> Result<Route, String> {
-    use crate::cold::dispatch::kinds as cold;
-    let path = owned(r.path).ok_or("a hook route's path is malformed")?;
-    let method = owned(r.method).ok_or("a hook route's method is malformed")?;
-    if !path.starts_with('/') {
-        return Err("a hook route's path must start with '/'".into());
-    }
-    let method = [
-        RouteMethod::Get,
-        RouteMethod::Post,
-        RouteMethod::Put,
-        RouteMethod::Patch,
-        RouteMethod::Delete,
-    ]
-    .into_iter()
-    .find(|m| m.as_str() == method)
-    .ok_or_else(|| cold::hook_route_method(&path))?;
-    let auth = match r.auth {
-        hook::ROUTE_AUTH_NONE => RouteAuth::None,
-        hook::ROUTE_AUTH_KEY => RouteAuth::Key,
-        hook::ROUTE_AUTH_ADMIN => RouteAuth::Admin,
-        _ => return Err(cold::hook_route_auth(&path)),
-    };
-    Ok(Route { path, method, auth })
-}
+const HOOK_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
 
-fn read(st: &Statement) -> Result<(HookFacts, Vec<Route>), String> {
-    use crate::cold::dispatch::kinds as cold;
-    let name = owned(st.name).ok_or("a hook's name is over-long")?;
-    if st.kind_tail.is_null() {
-        return Err(cold::refusal(NO_TAIL));
-    }
+// THE PLUGIN MEMORY THE HOOK'S STATEMENT READ (`off_path::kinds_hook`, once per load and bind)
+// READS, read here beside the kind's other unsafe code.
+
+/// The hook tail `st` states (THE KIND TAIL GROWTH RULE, `dispatch::plugin::kind_tail`).
+pub(crate) fn hook_tail(st: &Statement) -> Result<Tail, String> {
     // SAFETY: `Tail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid: NULL
     // lists of length 0); a non-NULL kind tail is `'static` plugin data of its stated size.
-    let t: Tail = unsafe { crate::dispatch::plugin::kind_tail(st, "a hook", HOOK_TAIL_FROZEN) }?;
-    if t.kind_class != CLASS_GATE && t.kind_class != CLASS_TAP {
-        return Err(cold::hook_tail_states("class", t.kind_class));
-    }
-    if t.prompt_access > PROMPT_RW {
-        return Err(cold::hook_tail_states("prompt access", t.prompt_access));
-    }
-    if t.user_access > USER_RO {
-        return Err(cold::hook_tail_states("user access", t.user_access));
-    }
-    if (t.routes_len != 0 && t.routes.is_null())
-        || t.routes_len as u64 > busbar_contract::abi::export::validate::HARD_MAX_ROUTES
-    {
-        return Err("the hook tail's route list is null or exceeds the route bound".into());
-    }
-    if t.requested_signals_len != 0 {
-        return Err(cold::refusal(SIGNALS_REFUSED));
-    }
-    let mut facts = HookFacts {
-        name,
-        class: t.kind_class,
-        prompt: t.prompt_access,
-        user: t.user_access,
-        infallible: t.infallible != 0,
-        words: Vec::new(),
-    };
+    unsafe { crate::dispatch::plugin::kind_tail(st, "a hook", HOOK_TAIL_FROZEN) }
+}
+
+/// The bound tail's route list, or `None` when [`lent`] refuses it (misaligned or over the byte
+/// bound). The caller refuses a NULL list with a count and a count over the route bound first.
+///
+/// [`lent`]: crate::dispatch::validate::lent
+pub(crate) fn tail_routes(t: &Tail) -> Option<&'static [hook::Route]> {
     // SAFETY: a nonempty route list is static plugin data. `lent` checks alignment and the byte
-    // bound before forming a slice; the existing route count and NULL checks remain above.
-    let routes = unsafe { crate::dispatch::validate::lent(t.routes, t.routes_len) }
-        .ok_or("the hook tail's route list is misaligned or exceeds the byte bound")?;
-    let declared_routes = cold::hook_routes(routes)?;
-    let marks: &[MarkWord] = if st.mark_words_len == 0 || st.mark_words.is_null() {
+    // bound before forming a slice; the route count and NULL checks come first (the caller's).
+    unsafe { crate::dispatch::validate::lent(t.routes, t.routes_len) }
+}
+
+/// The bound Statement's mark words.
+pub(crate) fn mark_words(st: &Statement) -> &'static [MarkWord] {
+    if st.mark_words_len == 0 || st.mark_words.is_null() {
         &[]
     } else {
         // SAFETY: the loader's Statement check bounded `mark_words` and refused it behind NULL; it
         // is `'static` plugin data.
         unsafe { std::slice::from_raw_parts(st.mark_words, st.mark_words_len) }
-    };
-    for m in marks.iter().filter(|m| m.class == MARK_WORD_HOOK) {
-        facts
-            .words
-            .push(owned(m.word).ok_or("a hook word is over-long")?);
     }
-    Ok((facts, declared_routes))
 }
 
 #[cfg(test)]
