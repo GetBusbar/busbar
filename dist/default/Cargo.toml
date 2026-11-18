@@ -470,13 +470,8 @@ node = "plane_node"
 # tests that read a test-linked plane wait for their port to the linked MIN-3 plane images.
 # Source-owned root fixtures from any plugin kind, compiled only in root test builds.
 [package.metadata.busbar.root-test-sources]
-file_export = "busbar-export-file"
 ranking_hook = "busbar-hook-ranking"
 source_file = "busbar-secret-file"
-metrics_fixture = "busbar-export-prometheus"
-
-[package.metadata.busbar.test-common-sources]
-metrics_fixture = "busbar-export-prometheus"
 
 [package.metadata.busbar.test-source-contexts]
 listener_framed = "busbar-transport-http"
@@ -508,8 +503,6 @@ busbar-store-postgres = { workspace = true }
 busbar-auth-webhook-signature = { workspace = true }
 busbar-export-webhook = { workspace = true }
 busbar-hook-ranking = { workspace = true }
-# The source-owned metrics fixture is available even when its runtime row is disabled.
-busbar-export-prometheus = { workspace = true }
 busbar-plugin-loader = { path = "../../crates/plugin-loader", features = ["test-support"] }
 tokio-tungstenite = { workspace = true }
 h2 = { workspace = true }
