@@ -199,7 +199,7 @@ fn failed_reservation_terminates_without_publishing_an_arena() {
     if std::env::var_os(CHILD).is_some() {
         // Deterministic reserve failure proves the fatal branch, not physical-OOM injection.
         let _impossible = reserved::<u8>(usize::MAX);
-        std::process::exit(0);
+        return;
     }
     let full = concat!(
         module_path!(),
