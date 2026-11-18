@@ -270,12 +270,15 @@ fn run_pending_session<K: Calls + ?Sized>(
             let stage = stage::enforce(hooks, &mut task, &mut answers, req, &mut drive, &buffered)?;
             let observed = Observed::new(drive.effects, stage);
             buffered.release();
-            let mut resolved = Vec::new();
+            let mut resolved = None;
             for answer in answers {
                 if let (Some(carrier), Some(forward)) = (drive.carrier, &answer.forward) {
                     carrier.map.point_wanted(&Wants::from_facts(&forward.wants));
                 }
-                resolved.extend(task.resolve(answer, drive.resolver, &observed)?);
+                gather(
+                    &mut resolved,
+                    task.resolve(answer, drive.resolver, &observed)?,
+                );
             }
             let mut allowed = Drive {
                 resolver: drive.resolver,
@@ -287,17 +290,20 @@ fn run_pending_session<K: Calls + ?Sized>(
                 books: drive.books,
                 carrier: drive.carrier,
             };
-            drive_answers(&mut task, resolved, req, &mut allowed)
+            drive_answers(&mut task, resolved.unwrap_or_default(), req, &mut allowed)
         } else {
             buffered.release();
-            let mut resolved = Vec::new();
+            let mut resolved = None;
             for answer in answers {
                 if let (Some(carrier), Some(forward)) = (drive.carrier, &answer.forward) {
                     carrier.map.point_wanted(&Wants::from_facts(&forward.wants));
                 }
-                resolved.extend(task.resolve(answer, drive.resolver, drive.effects)?);
+                gather(
+                    &mut resolved,
+                    task.resolve(answer, drive.resolver, drive.effects)?,
+                );
             }
-            drive_answers(&mut task, resolved, req, &mut drive)
+            drive_answers(&mut task, resolved.unwrap_or_default(), req, &mut drive)
         }
     })();
     if outcome.is_err() {
@@ -332,12 +338,15 @@ fn run_hook_session<K: Calls + ?Sized>(
         let stage = stage::enforce(hooks, &mut task, &mut answers, req, &mut drive, &buffered)?;
         let observed = Observed::new(drive.effects, stage);
         buffered.release();
-        let mut resolved = Vec::new();
+        let mut resolved = None;
         for answer in answers {
             if let (Some(carrier), Some(forward)) = (drive.carrier, &answer.forward) {
                 carrier.map.point_wanted(&Wants::from_facts(&forward.wants));
             }
-            resolved.extend(task.resolve(answer, drive.resolver, &observed)?);
+            gather(
+                &mut resolved,
+                task.resolve(answer, drive.resolver, &observed)?,
+            );
         }
         let mut allowed = Drive {
             resolver: drive.resolver,
@@ -349,12 +358,21 @@ fn run_hook_session<K: Calls + ?Sized>(
             books: drive.books,
             carrier: drive.carrier,
         };
-        drive_answers(&mut task, resolved, req, &mut allowed)
+        drive_answers(&mut task, resolved.unwrap_or_default(), req, &mut allowed)
     })();
     if outcome.is_err() {
         drive.books.ended(Ending::Failed, task.usage());
     }
     outcome
+}
+
+/// The answers resolved so far, gathered without a fresh buffer: the first resolution's own Vec
+/// becomes the list (the common one-answer case copies nothing) and later ones extend it.
+fn gather(resolved: &mut Option<Vec<Answer>>, more: Vec<Answer>) {
+    match resolved {
+        Some(held) => held.extend(more),
+        None => *resolved = Some(more),
+    }
 }
 
 /// The end user a plane projected on its request answer (PJ_END_USER), when it stated one.
