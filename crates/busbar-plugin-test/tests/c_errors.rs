@@ -73,7 +73,6 @@ fn the_file_matches_describe_and_every_number_the_suite_saw() {
         .registry()
         .described(PROBE)
         .unwrap_or_else(|| panic!("the probe image is described"));
-    assert!(described.error_codes_refused.is_none());
     let declared: Vec<u16> = described
         .items
         .iter()

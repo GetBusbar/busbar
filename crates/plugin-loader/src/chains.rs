@@ -309,7 +309,6 @@ pub(crate) fn decode_described(
         items,
         schema,
         metrics,
-        error_codes_refused: None,
     })
 }
 

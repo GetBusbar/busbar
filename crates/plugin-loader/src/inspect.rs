@@ -267,7 +267,7 @@ pub fn describe(
         });
         let answer = match answer {
             Ok(described) => described.and_then(|(described, _)| {
-                crate::instance::inspect_checks(&v.name, &v.stamp.name, &described)?;
+                crate::instance::inspect_checks(&v.name, &described)?;
                 Ok(described)
             }),
             Err(_) => return refused(host_panic(&v.name), false),
@@ -490,7 +490,7 @@ fn open_and_describe(
     };
     let answer = match described {
         Ok(described) => described.and_then(|(described, _)| {
-            crate::instance::inspect_checks(&v.name, &v.stamp.name, &described)?;
+            crate::instance::inspect_checks(&v.name, &described)?;
             Ok(described)
         }),
         Err(_) => {

@@ -72,7 +72,6 @@ fn registry(ids: Arc<crate::process::InstanceIds>, slots: Arc<SlotTable>) -> Reg
                 items: Vec::new(),
                 schema: None,
                 metrics: Vec::new(),
-                error_codes_refused: None,
             },
         )
         .expect("valid described image");

@@ -1221,11 +1221,11 @@ diagnostics! {
         "A plugin or hook sent text longer than its documented cap: a hook reject message, a metric help, label, unit or label value, or a plugin diagnostic message or field. busbar kept the first `cap` sanitised characters exactly as 1.5.5 did, with nothing appended (for a reject whose kept text is all whitespace, clients see the default reject message instead). This warning fires once per plugin and field for the life of the process; `busbar_plugin_text_cut_total{plugin,field}` counts over-cap values received in plugin and hook replies (counted at parse, including values in metrics later refused).",
         "Shorten the named plugin's text for the named field to within the cap; the log gives the cap and the text's length after sanitising (control and format characters removed).";
 
-    /// A plugin's D_ERRORS declaration is malformed: the plugin is admitted, its error codes are dropped (PLUGIN-ERROR-CODES §2.4). WARN once at admission, beside one `plugin.error_codes_refused` audit row.
-    PLUGIN_ERROR_CODES_REFUSED = 6018, Plugins, Actionable, "plugin-error-codes-refused", "1.6.0", false,
-        "A plugin's error-number declaration was refused; it runs without error codes",
-        "The plugin declared its error numbers (D_ERRORS) in a form core does not accept: more than one declaration, an empty, odd or over-long body, a number 0 or above 9999, numbers out of ascending order (or repeated), or a plugin name that cannot form a code. The plugin was admitted and serves; its failures and log lines carry their text with no `BUSBAR-<plugin>-NNNN` code. `have` names the fault (counts, numbers and byte positions only) and `want` the accepted form. The image's admission record carries the same fault.",
-        "Report the plugin to its author: its declared numbers must be 1..=256 numbers, each 1..=9999, strictly ascending, under a name matching ^[a-z][a-z0-9-]{0,63}$ that does not end in '-'. Nothing to change in the configuration.";
+    /// RETIRED: nothing emits it; the host no longer reports a refused D_ERRORS declaration (the plugin is still admitted without error codes). The number is kept so a log line from a pre-release build still resolves.
+    PLUGIN_ERROR_CODES_REFUSED = 6018, Plugins, Actionable, "plugin-error-codes-refused", "1.6.0", true,
+        "A plugin's error-number declaration was refused; it runs without error codes — RETIRED",
+        "RETIRED. Nothing emits this code: a refused error-number declaration is no longer reported.",
+        "Nothing emits this code.";
 
     /// A plugin reported an error number it did not declare in D_ERRORS (PLUGIN-ERROR-CODES §2.5). WARN once per instance slot; the text is kept without a code; no audit row.
     PLUGIN_ERROR_NUMBER_UNDECLARED = 6019, Plugins, Actionable, "plugin-error-number-undeclared", "1.6.0", false,
