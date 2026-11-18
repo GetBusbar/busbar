@@ -4,17 +4,22 @@
 //! WHAT A TRANSPORT INSTANCE HOLDS BY TOKEN (its framings, its connections, its calls), with no lock
 
 use std::ops::{Deref, DerefMut};
-use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
+
+/// The first segment's slots; segment `k` holds `BASE << k`.
+const BASE: usize = 64;
+/// Segments: `BASE * (2^SEGMENTS - 1)` values at most (about four million).
+const SEGMENTS: usize = 16;
 
 /// A slot's state: the generation of the token that last named it, and the value it holds.
-pub(crate) struct SlotState<T> {
-    pub(crate) generation: u32,
-    pub(crate) held: Option<T>,
+struct SlotState<T> {
+    generation: u32,
+    held: Option<Box<T>>,
 }
 
 /// One slot, alone on its cache lines.
 #[repr(align(128))]
-pub(crate) struct Slot<T>(pub(crate) Mutex<SlotState<T>>);
+struct Slot<T>(Mutex<SlotState<T>>);
 
 impl<T> Default for Slot<T> {
     fn default() -> Self {
@@ -26,9 +31,10 @@ impl<T> Default for Slot<T> {
 }
 
 /// Slots minted and given back.
-pub(crate) struct Free {
-    pub(crate) idle: Vec<u32>,
-    pub(crate) next: u32,
+#[derive(Default)]
+struct Free {
+    idle: Vec<u32>,
+    next: u32,
 }
 
 /// Why a token reached no value.
@@ -53,14 +59,29 @@ impl Reach {
 
 /// The values of type `T` an instance holds, by token.
 pub struct Table<T> {
-    pub(crate) slots: Box<[Slot<T>]>,
-    pub(crate) free: Mutex<Free>,
+    segments: [OnceLock<Box<[Slot<T>]>>; SEGMENTS],
+    free: Mutex<Free>,
+}
+
+impl<T> Default for Table<T> {
+    fn default() -> Self {
+        Self {
+            segments: std::array::from_fn(|_| OnceLock::new()),
+            free: Mutex::new(Free::default()),
+        }
+    }
 }
 
 impl<T> std::fmt::Debug for Table<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Table").finish_non_exhaustive()
     }
+}
+
+/// Which segment holds slot `index`, and where in it.
+fn place(index: usize) -> (usize, usize) {
+    let k = (usize::BITS - 1 - (index / BASE + 1).leading_zeros()) as usize;
+    (k, index - BASE * ((1 << k) - 1))
 }
 
 fn token(index: u32, generation: u32) -> u64 {
@@ -92,7 +113,7 @@ impl<T> Deref for Held<'_, T> {
     fn deref(&self) -> &T {
         self.state
             .held
-            .as_ref()
+            .as_deref()
             .expect("a held slot holds its value")
     }
 }
@@ -101,7 +122,7 @@ impl<T> DerefMut for Held<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         self.state
             .held
-            .as_mut()
+            .as_deref_mut()
             .expect("a held slot holds its value")
     }
 }
@@ -114,7 +135,7 @@ impl<T> Held<'_, T> {
         let (table, index) = (self.table, self.index);
         drop(self);
         table.lock_free().idle.push(index);
-        value
+        *value
     }
 }
 
@@ -126,7 +147,13 @@ impl<T> Table<T> {
     /// The slot `token` names, and its index.
     fn slot(&self, token: u64) -> Result<(&Slot<T>, u32, u32), Reach> {
         let (index, generation) = untoken(token).ok_or(Reach::Gone)?;
-        let slot = self.slots.get(index as usize).ok_or(Reach::Gone)?;
+        let (k, at) = place(index as usize);
+        let slot = self
+            .segments
+            .get(k)
+            .and_then(OnceLock::get)
+            .and_then(|s| s.get(at))
+            .ok_or(Reach::Gone)?;
         Ok((slot, index, generation))
     }
 
@@ -153,7 +180,7 @@ impl<T> Table<T> {
             match free.idle.pop() {
                 Some(i) => i,
                 None => {
-                    if free.next as usize >= self.slots.len() {
+                    if free.next as usize >= BASE * ((1 << SEGMENTS) - 1) {
                         return None;
                     }
                     free.next += 1;
@@ -161,10 +188,13 @@ impl<T> Table<T> {
                 }
             }
         };
-        let slot = self.slots.get(index as usize)?;
-        let mut slot = slot.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let (k, at) = place(index as usize);
+        let segment =
+            self.segments[k].get_or_init(|| (0..BASE << k).map(|_| Slot::default()).collect());
+
+        let mut slot = segment[at].0.lock().unwrap_or_else(PoisonError::into_inner);
         slot.generation = slot.generation.wrapping_add(1);
-        slot.held = Some(value);
+        slot.held = Some(Box::new(value));
         Some(token(index, slot.generation))
     }
 
