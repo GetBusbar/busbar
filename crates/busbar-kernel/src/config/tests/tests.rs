@@ -2783,8 +2783,8 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
          `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, \
          `hooks`, `groups`, `rate_card`, `per_request_fee`, `store`, \
          `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`, \
-         `telemetry`, `records`, `audit` at line 3, column 1. `bogus_key` is not a core section \
-         and no admitted plane answers to it; plane sections are: (none) at line 3 column 1"
+         `telemetry`, `records`, `audit`. `bogus_key` is not a core section and no admitted \
+         plane answers to it; plane sections are: (none) at line 3 column 1"
     );
     for field in ["oauth_as"] {
         let duplicate =
