@@ -243,7 +243,7 @@ impl NativeAttempt {
             reports,
             end,
         )
-        .map_err(NativeAttemptError::Usage)?;
+        .map_err(|_| NativeAttemptError::Usage)?;
         let physical_classes = prepared.physical_classes().to_vec();
         let rate_view = effective_tokens(&physical_classes, &staged.partition);
         *parts
@@ -264,7 +264,9 @@ impl NativeAttempt {
         let published = native.publish_incurred(&self.service.money.gov, snapshot);
         // The checkpoint book lock is released before entering rate cells. The money shard
         // retains the current attempt's source/authority while both owners observe the batch.
-        let observed = rate.observe(&rate_view).map_err(NativeAttemptError::Rate);
+        let observed = rate
+            .observe(&rate_view)
+            .map_err(|_| NativeAttemptError::Rate);
         published?;
         observed?;
         Ok(staged.rounded)
@@ -309,7 +311,7 @@ impl NativeAttempt {
         })();
         match outcome {
             Ok((coverage, published)) => {
-                let sealed = rate.seal(coverage).map_err(NativeAttemptError::Rate);
+                let sealed = rate.seal(coverage).map_err(|_| NativeAttemptError::Rate);
                 published?;
                 sealed
             }

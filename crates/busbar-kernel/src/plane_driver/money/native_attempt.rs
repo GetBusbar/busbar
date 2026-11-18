@@ -21,8 +21,10 @@ pub(crate) enum NativeAttemptError {
     Unavailable,
     Binding,
     Custody(busbar_contract::records::RecordStoreError),
-    Usage(RecErr),
-    Rate(crate::governance::selected_resource::RateObservationError),
+    /// The answer's usage records were refused (the session reports BadRecords).
+    Usage,
+    /// The rate owner refused the observation or the seal.
+    Rate,
 }
 
 /// The book-accepted complete checkpoint is the runtime's single factual source as well.
@@ -178,11 +180,15 @@ impl NativeRequestMoney {
             .physical_classes()
             .map(Box::<str>::from)
             .collect();
-        if physical_classes
+        // The same set as the checkpoint's (as the owned set comparison judged it): each declared
+        // class is in the checkpoint's set, and each of the checkpoint's is declared.
+        if !physical_classes
             .iter()
-            .map(|class| class.to_string())
-            .collect::<BTreeSet<_>>()
-            != parts.physical_classes
+            .all(|class| parts.physical_classes.contains(&**class))
+            || !parts
+                .physical_classes
+                .iter()
+                .all(|held| physical_classes.iter().any(|class| **class == **held))
         {
             return Err(NativeAttemptError::Binding);
         }
@@ -444,12 +450,14 @@ fn stage_attempt_facts(
         }
     }
     if let Some(end) = end {
-        let reported: Vec<&str> = partition
-            .usage
-            .classes
-            .iter()
-            .filter_map(|(class, facts)| facts.reported.is_some().then_some(class.as_str()))
-            .collect();
+        let mut reported = smallvec::SmallVec::<[&str; 8]>::new();
+        reported.extend(
+            partition
+                .usage
+                .classes
+                .iter()
+                .filter_map(|(class, facts)| facts.reported.is_some().then_some(class.as_str())),
+        );
         declaration.validate_attempt_end(state, end, &reported)?;
         partition.finality = match end.completeness {
             Completeness::Complete => Finality::Complete,

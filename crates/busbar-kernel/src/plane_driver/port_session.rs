@@ -1765,7 +1765,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                 .map_err(|error| {
                     self.session = None;
                     match error {
-                        super::NativeAttemptError::Usage(_) => {
+                        super::NativeAttemptError::Usage => {
                             SessionError::Violation(Violation::BadRecords)
                         }
                         _ => SessionError::NotDriven,
@@ -1861,9 +1861,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         let rounded = money
             .observe_session(&self.request_declaration()?, usage)
             .map_err(|error| match error {
-                super::NativeAttemptError::Usage(_) => {
-                    SessionError::Violation(Violation::BadRecords)
-                }
+                super::NativeAttemptError::Usage => SessionError::Violation(Violation::BadRecords),
                 _ => SessionError::NotDriven,
             })?;
         match money.checkpoint().map_err(|_| SessionError::NotDriven)? {

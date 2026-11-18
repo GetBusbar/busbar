@@ -51,7 +51,7 @@ impl NativeRequestMoney {
             declaration
                 .declaration()
                 .validate_session_class(&report.class)
-                .map_err(NativeAttemptError::Usage)?;
+                .map_err(|_| NativeAttemptError::Usage)?;
             let index = open
                 .money
                 .classes
@@ -61,10 +61,10 @@ impl NativeRequestMoney {
                 .ok_or(NativeAttemptError::Binding)?;
             let (quantity, was_rounded) =
                 crate::plane_driver::usage::scaled(report.amount, report.scale)
-                    .ok_or(NativeAttemptError::Usage(RecErr::Size))?;
+                    .ok_or(NativeAttemptError::Usage)?;
             rounded |= was_rounded;
             if !matches!(report.source, SRC_REPORTED | SRC_FLOOR | SRC_ESTIMATED) {
-                return Err(NativeAttemptError::Usage(RecErr::Size));
+                return Err(NativeAttemptError::Usage);
             }
             if open.money.fee.is_fee(index) {
                 continue;
