@@ -6,9 +6,7 @@
 use std::sync::Arc;
 
 use crate::governance::selected_policy::SelectedPolicyRefusal;
-use crate::governance::selected_resource::{
-    RateRefusal, RateRejected, RateReservation, RateSnapshot,
-};
+use crate::governance::selected_resource::{RateRejected, RateReservation};
 use crate::plane_driver::{
     NativeAttempt, NativeCommitError, NativeRequestMoney, PreparedRateAttempt,
 };

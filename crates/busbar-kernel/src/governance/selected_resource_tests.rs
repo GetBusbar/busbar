@@ -58,8 +58,28 @@ fn reserve(rates: &Arc<SelectedRates>, terms: Vec<RateTerms>) -> RateHold {
     rates.reserve_terms(terms, &[INPUT]).unwrap()
 }
 
+/// The rate state of `terms` as a read-only observation (no cell is created, nothing is reserved).
+fn headroom_terms(
+    rates: &SelectedRates,
+    terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
+) -> Result<Vec<RateSnapshot>, RateRefusal> {
+    let captures = rates.capture(terms)?;
+    if captures.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut locks = rates.lock(&captures);
+    let minute = rates.minute()?;
+    Ok(captures
+        .iter()
+        .map(|row| {
+            rates.prune_scope(row.map(&mut locks), &row.key, minute);
+            rates.snapshot(row, &mut locks, minute, minute)
+        })
+        .collect())
+}
+
 fn inspect(rates: &SelectedRates, term: RateTerms) -> RateSnapshot {
-    rates.headroom_terms(vec![term]).unwrap().remove(0)
+    headroom_terms(rates, vec![term]).unwrap().remove(0)
 }
 
 #[test]
@@ -373,7 +393,7 @@ fn no_matching_rows_are_a_noop_even_without_a_usable_rate_clock() {
     let mut hold = rates.reserve_terms(Vec::new(), &[] as &[&str]).unwrap();
     hold.commit().unwrap();
     hold.finish(TokenCoverage::Complete).unwrap();
-    assert!(rates.headroom_terms(Vec::new()).unwrap().is_empty());
+    assert!(headroom_terms(&rates, Vec::new()).unwrap().is_empty());
     assert_eq!(rates.leases.load(Ordering::Relaxed), 0);
 }
 

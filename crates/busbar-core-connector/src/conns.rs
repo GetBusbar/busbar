@@ -79,7 +79,6 @@ use crate::compose::{
 use crate::framer::FramerDoor;
 use crate::hostio::HostIo;
 use crate::line::{Line, EVERY};
-use crate::listen::{AcceptLimits, Listening};
 use crate::pool::{Fill, Joined, Leader, PoolKey, PoolPosture, Pools, Same, Take};
 use crate::registry::Transports;
 
@@ -605,13 +604,6 @@ struct Wakers {
 }
 
 impl Wakers {
-    /// Hold `waker` unless one that wakes the same task is held already.
-    fn hold(&mut self, waker: &Waker) {
-        if self.held.insert(waker_key(waker)) {
-            self.order.push(waker.clone());
-        }
-    }
-
     #[cfg(test)]
     fn len(&self) -> usize {
         self.order.len()

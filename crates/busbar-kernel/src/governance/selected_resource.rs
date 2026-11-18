@@ -354,15 +354,6 @@ impl SelectedRates {
         }
     }
 
-    /// The current-policy resolver has already bound the authenticated caller and candidate.
-    /// Missing rows yield no headroom facts; this never creates cells or reserves capacity.
-    pub(crate) fn headroom(
-        &self,
-        resolved: &ResolvedSelectedRules,
-    ) -> Result<Vec<RateSnapshot>, RateRefusal> {
-        self.headroom_terms(Self::terms(resolved)?)
-    }
-
     fn capture(
         &self,
         terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
@@ -598,25 +589,6 @@ impl SelectedRates {
                 })
                 .collect(),
         })
-    }
-
-    fn headroom_terms(
-        &self,
-        terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
-    ) -> Result<Vec<RateSnapshot>, RateRefusal> {
-        let captures = self.capture(terms)?;
-        if captures.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut locks = self.lock(&captures);
-        let minute = self.minute()?;
-        Ok(captures
-            .iter()
-            .map(|row| {
-                self.prune_scope(row.map(&mut locks), &row.key, minute);
-                self.snapshot(row, &mut locks, minute, minute)
-            })
-            .collect())
     }
 }
 

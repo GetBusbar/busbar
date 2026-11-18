@@ -213,15 +213,6 @@ impl crate::Connector {
     }
 }
 
-/// Take every entry of `map` whose key `owned` names out, as an instance retires.
-pub(crate) fn take_owned<K: Copy + Eq + Hash, V>(
-    map: &mut HashMap<K, V>,
-    owned: impl Fn(&K) -> bool,
-) -> Vec<V> {
-    let keys: Vec<K> = map.keys().filter(|k| owned(*k)).copied().collect();
-    keys.iter().filter_map(|k| map.remove(k)).collect()
-}
-
 /// Every need `owner` declared in `over`, as it retires.
 pub(crate) fn needs_of<V>(
     over: &HashMap<(InstanceId, NeedId), V>,

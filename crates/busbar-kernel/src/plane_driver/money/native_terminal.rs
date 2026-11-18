@@ -165,35 +165,6 @@ impl NativeRequestMoney {
     }
 }
 
-fn delivery_facts(
-    ending: crate::plane_driver::usage::Ending,
-    observed: busbar_contract::response_delivery::DeliverySnapshot,
-) -> Result<
-    (
-        crate::governance::unit_checkpoint::partitions::Disposition,
-        bool,
-        bool,
-    ),
-    NativeAdmissionError,
-> {
-    use crate::governance::unit_checkpoint::partitions::Disposition;
-    use crate::plane_driver::usage::Ending;
-    use busbar_contract::response_delivery::DeliveryTerminal;
-    let terminal = observed.terminal.ok_or(NativeAdmissionError::NotLive)?;
-    let disposition = match ending {
-        Ending::End => Disposition::End,
-        Ending::Failed => Disposition::Failed,
-        Ending::Cancel { cause, .. } => Disposition::Cancel {
-            reason: cause.as_str().to_owned(),
-        },
-    };
-    Ok((
-        disposition,
-        observed.first_payload_written,
-        matches!(terminal, DeliveryTerminal::Failed(_)),
-    ))
-}
-
 impl PlaneMoney {
     /// The callback guard proves no Task effect or connector attempt has started. Transfer its
     /// failed terminal before consuming the original fee participant outside money locks.

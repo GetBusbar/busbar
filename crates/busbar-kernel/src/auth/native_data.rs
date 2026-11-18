@@ -21,7 +21,6 @@ use crate::inbound::native::{
 };
 use crate::plane_driver::port::PortSeat;
 use crate::plane_driver::port_admission::{AdmittedUnit, Pending};
-use crate::plane_driver::port_session::RequestDeclaration;
 use crate::plane_driver::request_admission::{
     AdmittedRequest, RequestAllocation, RequestPoolReceipt, RequestRoutes,
 };

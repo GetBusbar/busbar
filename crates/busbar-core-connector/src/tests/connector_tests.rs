@@ -35,19 +35,6 @@ impl ConnectorDiagnostics {
     fn messages(&self) -> Vec<String> {
         self.events.lock().unwrap().clone()
     }
-
-    fn contains(&self, text: &str) -> bool {
-        self.events.lock().unwrap().iter().any(|s| s.contains(text))
-    }
-
-    fn count(&self, text: &str) -> usize {
-        self.events
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|s| s.contains(text))
-            .count()
-    }
 }
 
 impl tracing::Subscriber for ConnectorDiagnostics {

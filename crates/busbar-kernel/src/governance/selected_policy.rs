@@ -130,33 +130,6 @@ impl SelectedPolicy {
         self.bind_rows(&key, prepared.instance(), prepared.resource())
     }
 
-    /// Read-only candidate evidence for hooks. It grants no dispatch and creates no holds.
-    /// Metadata must come from the actual original candidate/TargetDefinition; authority
-    /// remains the admitted request plus its retained original route and current credential.
-    pub(crate) fn resolve_headroom(
-        &self,
-        current: &App,
-        receipt: &crate::plane_driver::request_admission::AdmittedRequest,
-        origin: &crate::plane_driver::route_identity::OriginalPlaneRoute,
-        candidate: &crate::plane_driver::port_upstream::Candidate,
-        definition: &crate::upstreams::UpstreamDef,
-        now: u64,
-    ) -> Result<ResolvedSelectedRules, SelectedPolicyRefusal> {
-        let CurrentRequest { key, seat } = self.current_request(current, receipt, origin, now)?;
-        if !seat
-            .request_routes
-            .allows_current_candidate(receipt, candidate, &key)
-        {
-            return Err(SelectedPolicyRefusal::StalePolicyTarget);
-        }
-        check_current_target(seat, candidate, definition)?;
-        self.bind_rows(
-            &key,
-            receipt.context().instance(),
-            candidate.resource.as_deref(),
-        )
-    }
-
     /// One shared authentication/image check for reservation and read-only headroom.
     /// Refresh scheduling belongs outside the gate; current_key uses hydrated cached state.
     fn current_request<'a>(
