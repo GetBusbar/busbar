@@ -343,20 +343,17 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         clock: busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
-        pools: foldhash::HashMap::from_iter([(
-            pool_name.clone(),
-            Pool {
-                name: pool_name.clone(),
-                members: vec![Member::new(destination, "e", 1)],
-                failover: Failover {
-                    timeout_secs: 30,
-                    max_hops: 1,
-                    exclusions: Vec::new(),
-                },
-                on_exhausted: OnExhausted::Status503,
-                floor: WeightedFloor::new(),
-            },
-        )]),
+        pools: foldhash::HashMap::from_iter([(pool_name.clone(), {
+            let mut pool = Pool::new(pool_name.clone(), vec![Member::new(destination, "e", 1)]);
+            pool.set_failover(Failover {
+                timeout_secs: 30,
+                max_hops: 1,
+                exclusions: Vec::new(),
+            });
+            pool.on_exhausted = OnExhausted::Status503;
+            pool.floor = WeightedFloor::new();
+            pool
+        })]),
         routes: foldhash::HashMap::from_iter([(
             destination,
             MemberRoute {

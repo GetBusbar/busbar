@@ -71,7 +71,12 @@ fn the_walk_takes_the_hop_cap_plus_one_attempts() {
             .map(|d| member(DestinationId::new(d), &format!("m{d}")))
             .collect(),
     );
-    node.tune("primary", |p| p.failover.max_hops = 3);
+    node.tune("primary", |p| {
+        p.set_failover(busbar_kernel_egress::Failover {
+            max_hops: 3,
+            ..p.failover().clone()
+        });
+    });
     for lane in ["a", "b", "c", "d", "e"] {
         node.conns
             .script(lane, Script::DialError(ConnError::Refused));
@@ -1014,7 +1019,12 @@ fn test_failover_exclusions_remove_member_from_pool() {
     let (alpha, beta) = (DestinationId::new(0), DestinationId::new(1));
     let mut node = Node::with_lanes(&["a", "b"]);
     node.pool("pe", vec![member(alpha, "alpha"), member(beta, "beta")]);
-    node.tune("pe", |p| p.failover.exclusions = vec!["beta".to_string()]);
+    node.tune("pe", |p| {
+        p.set_failover(busbar_kernel_egress::Failover {
+            exclusions: vec!["beta".to_string()],
+            ..p.failover().clone()
+        });
+    });
     node.conns.script("a", Script::Frames(answer(200)));
     node.conns.script("b", Script::Frames(answer(200)));
     let real = RealBreaker::new();

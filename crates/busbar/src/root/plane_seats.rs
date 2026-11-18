@@ -698,7 +698,7 @@ fn extend_catalog(
             .collect::<Result<Vec<_>, String>>()?;
         let mut pool = busbar_kernel_egress::Pool::new(name, members);
         if let Some(failover) = &cfg.failover {
-            pool.failover = busbar_kernel_egress::Failover {
+            pool.set_failover(busbar_kernel_egress::Failover {
                 timeout_secs: failover.timeout_secs,
                 max_hops: failover.max_hops,
                 exclusions: failover
@@ -712,7 +712,7 @@ fn extend_catalog(
                         )
                     })
                     .collect(),
-            };
+            });
         }
         pool.on_exhausted = match &cfg.on_exhausted {
             None | Some(busbar_kernel::config::OnExhaustedCfg::Reject) => {

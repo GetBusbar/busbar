@@ -34,6 +34,25 @@ impl Pool {
             failover: Failover::default(),
             on_exhausted: OnExhausted::default(),
             floor: WeightedFloor::default(),
+            admissible: None,
         }
+    }
+
+    /// Set what bounds the walk and apply its blocklist, once. A blocklist that names no member of
+    /// this pool leaves `admissible` empty, so nothing is held twice. Call it after the members are
+    /// final.
+    pub fn set_failover(&mut self, failover: Failover) {
+        let names_a_member = self
+            .members
+            .iter()
+            .any(|member| failover.exclusions.contains(&member.name));
+        self.admissible = names_a_member.then(|| {
+            self.members
+                .iter()
+                .filter(|member| !failover.exclusions.contains(&member.name))
+                .cloned()
+                .collect()
+        });
+        self.failover = failover;
     }
 }

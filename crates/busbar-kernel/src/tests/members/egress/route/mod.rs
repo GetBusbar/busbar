@@ -137,7 +137,10 @@ impl Node {
     fn timed_pools(&self) -> HashMap<String, Pool> {
         let mut pools = self.pools.clone();
         for pool in pools.values_mut() {
-            pool.failover.timeout_secs = self.timeout_secs;
+            pool.set_failover(busbar_kernel_egress::Failover {
+                timeout_secs: self.timeout_secs,
+                ..pool.failover().clone()
+            });
         }
         pools
     }

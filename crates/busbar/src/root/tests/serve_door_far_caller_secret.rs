@@ -83,20 +83,17 @@ fn egress_over(pool_name: &str) -> Egress {
         clock: Arc::new(Wall),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
-        pools: foldhash::HashMap::from_iter([(
-            pool_name.to_owned(),
-            Pool {
-                name: pool_name.to_owned(),
-                members: vec![Member::new(destination, "e", 1)],
-                failover: Failover {
-                    timeout_secs: 30,
-                    max_hops: 1,
-                    exclusions: Vec::new(),
-                },
-                on_exhausted: OnExhausted::Status503,
-                floor: WeightedFloor::new(),
-            },
-        )]),
+        pools: foldhash::HashMap::from_iter([(pool_name.to_owned(), {
+            let mut pool = Pool::new(pool_name.to_owned(), vec![Member::new(destination, "e", 1)]);
+            pool.set_failover(Failover {
+                timeout_secs: 30,
+                max_hops: 1,
+                exclusions: Vec::new(),
+            });
+            pool.on_exhausted = OnExhausted::Status503;
+            pool.floor = WeightedFloor::new();
+            pool
+        })]),
         routes: foldhash::HashMap::from_iter([(
             destination,
             MemberRoute {

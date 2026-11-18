@@ -414,9 +414,9 @@ async fn catalog_seat_uses_sealed_routes_policies_targets_and_shared_capacity() 
     let fast_pool = &pool.pools[&fast];
     assert_eq!(fast_pool.members[0].weight, 7);
     assert_eq!(fast_pool.members[0].attempt_timeout_ms, Some(321));
-    assert_eq!(fast_pool.failover.timeout_secs, 17);
-    assert_eq!(fast_pool.failover.max_hops, 2);
-    assert_eq!(fast_pool.failover.exclusions, ["mcp\u{1f}m"]);
+    assert_eq!(fast_pool.failover().timeout_secs, 17);
+    assert_eq!(fast_pool.failover().max_hops, 2);
+    assert_eq!(fast_pool.failover().exclusions, ["mcp\u{1f}m"]);
     assert_eq!(
         fast_pool.on_exhausted,
         busbar_kernel_egress::OnExhausted::FallbackPool(slow.clone())

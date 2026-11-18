@@ -3016,7 +3016,7 @@ impl FarEnd for EgressFarEnd<'_> {
         };
         let pool = self.egress.pools.get(name)?;
         let members = self
-            .shape(&pool.name, pool.admissible_members().into_owned(), primary)
+            .shape(&pool.name, pool.admissible_members().to_vec(), primary)
             .map(|(members, _)| members)
             .unwrap_or_default();
         Some(

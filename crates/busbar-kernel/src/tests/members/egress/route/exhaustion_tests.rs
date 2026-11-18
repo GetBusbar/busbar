@@ -210,7 +210,10 @@ fn a_spill_applies_the_target_pools_own_blocklist() {
     });
 
     node.tune("overflow", |p| {
-        p.failover.exclusions = vec!["b".to_string()];
+        p.set_failover(busbar_kernel_egress::Failover {
+            exclusions: vec!["b".to_string()],
+            ..p.failover().clone()
+        });
     });
     node.breaker.set(
         DestinationId::new(0),
@@ -365,7 +368,12 @@ fn the_last_resort_skips_a_saturated_best_member_for_a_free_sibling() {
 #[test]
 fn the_last_resort_never_reaches_a_blocklisted_member() {
     let mut node = least_bad_node();
-    node.tune("primary", |p| p.failover.exclusions = vec!["b".to_string()]);
+    node.tune("primary", |p| {
+        p.set_failover(busbar_kernel_egress::Failover {
+            exclusions: vec!["b".to_string()],
+            ..p.failover().clone()
+        });
+    });
     node.breaker.set(
         DestinationId::new(0),
         Health {

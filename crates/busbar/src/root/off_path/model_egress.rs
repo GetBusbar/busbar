@@ -251,7 +251,7 @@ pub fn compose(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut p = Pool::new(name.clone(), members);
-        p.failover = pool.failover.clone();
+        p.set_failover(pool.failover.clone());
         p.on_exhausted = pool.on_exhausted.clone();
         built.insert(name.clone(), p);
     }
@@ -262,11 +262,11 @@ pub fn compose(
         }
         let member = member_of(model, 1, None, plan.passthrough)?;
         let mut p = Pool::new(model.clone(), vec![member]);
-        p.failover = Failover {
+        p.set_failover(Failover {
             timeout_secs: busbar_kernel::config::DEFAULT_FAILOVER_DEADLINE_SECS,
             max_hops: busbar_kernel::config::DEFAULT_FAILOVER_CAP,
             exclusions: Vec::new(),
-        };
+        });
         built.insert(model.clone(), p);
         direct.insert(model.clone());
     }

@@ -94,29 +94,32 @@ pub struct Pool {
     /// The pool's name. This is the breaker cell key every attempt in this walk records against,
     /// and the empty name is the default cell a direct route uses.
     pub name: String,
-    /// The members, in the operator's configured order.
+    /// The members, in the operator's configured order, blocklisted ones included.
     pub members: Vec<Member>,
-    /// What bounds the walk.
-    pub failover: Failover,
+    /// What bounds the walk. Private: its blocklist decides `admissible`, so it is set through
+    /// [`Pool::set_failover`] alone.
+    pub(crate) failover: Failover,
     /// What to do when the walk finds nowhere to send.
     pub on_exhausted: OnExhausted,
     /// The weighted floor's rotation memory over this pool's members.
     pub floor: WeightedFloor,
+    /// `members` less the blocklist, in the same order. `None` when the blocklist names no member of
+    /// this pool: then `members` is the admissible list and nothing is held twice.
+    pub(crate) admissible: Option<Vec<Member>>,
 }
 
 impl Pool {
-    /// This pool's membership with its own blocklist applied.
+    /// This pool's membership with its own blocklist applied, in the configured order.
     #[must_use]
-    pub fn admissible_members(&self) -> std::borrow::Cow<'_, [Member]> {
-        if self.failover.exclusions.is_empty() {
-            return std::borrow::Cow::Borrowed(&self.members);
-        }
-        std::borrow::Cow::Owned(
-            self.members
-                .iter()
-                .filter(|m| !self.failover.exclusions.contains(&m.name))
-                .cloned()
-                .collect(),
-        )
+    #[inline]
+    pub fn admissible_members(&self) -> &[Member] {
+        self.admissible.as_deref().unwrap_or(&self.members)
+    }
+
+    /// What bounds the walk.
+    #[must_use]
+    #[inline]
+    pub fn failover(&self) -> &Failover {
+        &self.failover
     }
 }

@@ -43,7 +43,7 @@ pub trait Shape {
 /// The walk's whole budget over `pool`, seconds: the pool's request timeout, `0` for a pool that is
 #[must_use]
 pub fn budget_secs(pools: &HashMap<String, Pool>, pool: &str) -> u64 {
-    pools.get(pool).map_or(0, |p| p.failover.timeout_secs)
+    pools.get(pool).map_or(0, |p| p.failover().timeout_secs)
 }
 
 /// Where the walk is.
@@ -194,7 +194,7 @@ impl Walk {
     /// A refusal for size from `failed` of `pool`: every ADMISSIBLE member whose window is at or
     pub fn refused_for_size(&mut self, ports: &WalkPorts<'_>, pool: &str, failed: &Member) {
         if let Some(pool) = ports.pools.get(pool) {
-            exclude_smaller_windows(&pool.admissible_members(), failed, &mut self.ctx);
+            exclude_smaller_windows(pool.admissible_members(), failed, &mut self.ctx);
         }
     }
 
@@ -232,7 +232,7 @@ impl Walk {
                     if pool.admissible_members().is_empty() {
                         return Step::Shed(Shed::empty_pool());
                     }
-                    if self.hops <= pool.failover.max_hops {
+                    if self.hops <= pool.failover().max_hops {
                         match self.pick(
                             ports,
                             pool,
@@ -429,7 +429,7 @@ impl Walk {
         shape: Option<&dyn Shape>,
         primary: bool,
     ) -> Result<(Vec<Member>, Vec<DestinationId>), Shed> {
-        let admissible = pool.admissible_members().into_owned();
+        let admissible = pool.admissible_members().to_vec();
         let Some(shape) = shape else {
             return Ok((admissible, Vec::new()));
         };

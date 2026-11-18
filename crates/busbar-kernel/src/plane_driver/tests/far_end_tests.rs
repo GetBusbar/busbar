@@ -680,17 +680,13 @@ fn rig(
             )
         })
         .collect();
-    let pool = Pool {
-        name: POOL.into(),
-        members,
-        failover: Failover {
-            timeout_secs: 30,
-            max_hops: 3,
-            exclusions: Vec::new(),
-        },
-        on_exhausted,
-        floor: Default::default(),
-    };
+    let mut pool = Pool::new(POOL, members);
+    pool.set_failover(Failover {
+        timeout_secs: 30,
+        max_hops: 3,
+        exclusions: Vec::new(),
+    });
+    pool.on_exhausted = on_exhausted;
     let egress = Egress {
         caller: InstanceId(9),
         conns: table.clone(),
@@ -2313,7 +2309,10 @@ async fn a_context_length_refusal_excludes_only_admissible_smaller_windows() {
     for (member, window) in pool.members.iter_mut().zip([8_000, 4_000, 16_000]) {
         member.context_max = Some(window);
     }
-    pool.failover.exclusions = vec!["m1".into()];
+    pool.set_failover(Failover {
+        exclusions: vec!["m1".into()],
+        ..pool.failover().clone()
+    });
     let t = token();
     let far = r.egress.unit(route());
     assert!(
@@ -2406,17 +2405,12 @@ async fn a_required_restrict_refuses_at_the_fallback_pool() {
         OnExhausted::FallbackPool("fb".into()),
         None,
     );
-    let fallback = Pool {
-        name: "fb".into(),
-        members: vec![Member::new(DestinationId::new(1), "m0", 1)],
-        failover: Failover {
-            timeout_secs: 30,
-            max_hops: 3,
-            exclusions: Vec::new(),
-        },
-        on_exhausted: OnExhausted::Status503,
-        floor: Default::default(),
-    };
+    let mut fallback = Pool::new("fb", vec![Member::new(DestinationId::new(1), "m0", 1)]);
+    fallback.set_failover(Failover {
+        timeout_secs: 30,
+        max_hops: 3,
+        exclusions: Vec::new(),
+    });
     r.egress.pools.insert("fb".to_string(), fallback);
     let t = token();
     let far = r.egress.unit(route());
@@ -2454,7 +2448,13 @@ async fn prioritize_keeps_ranking_inside_groups_and_all_eligible_fallbacks() {
         OnExhausted::Status503,
         None,
     );
-    r.egress.pools.get_mut(POOL).unwrap().failover.max_hops = 4;
+    {
+        let pool = r.egress.pools.get_mut(POOL).unwrap();
+        pool.set_failover(Failover {
+            max_hops: 4,
+            ..pool.failover().clone()
+        });
+    }
     let t = token();
     let far = r.egress.unit(route());
     far.constrain(
