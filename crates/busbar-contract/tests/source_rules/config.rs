@@ -325,7 +325,7 @@ fn descriptor_provider_entries(
     assert!(tokens.contains("entry . options = options"));
     let catalog = sources
         .iter()
-        .find(|s| s.rel == "crates/busbar-kernel/src/plane_driver/provider_catalog.rs")
+        .find(|s| s.rel == "crates/busbar-kernel/src/off_path/plane_provider_catalog.rs")
         .expect("the provider catalog source");
     let catalog = &catalog.file;
     let projection = quote::quote!(#catalog).to_string();

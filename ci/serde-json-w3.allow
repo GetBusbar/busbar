@@ -169,10 +169,10 @@ crates/busbar-kernel/src/oauth_as/seam.rs                                       
 crates/busbar-kernel/src/observe.rs                                                        # D
 crates/busbar-kernel/src/off_path/export.rs                                                # D
 crates/busbar-kernel/src/off_path/governance/principal_transition.rs                       # D
+crates/busbar-kernel/src/off_path/plane_provider_catalog.rs                                # D
 crates/busbar-kernel/src/off_path/plane_registry.rs                                        # D
 crates/busbar-kernel/src/persistence/observations.rs                                       # D
 crates/busbar-kernel/src/plane_driver/port_hooks/tests.rs                                  # D
-crates/busbar-kernel/src/plane_driver/provider_catalog.rs                                  # D
 crates/busbar-kernel/src/plane_driver/tests/door_tests.rs                                  # D
 crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs                               # D
 crates/busbar-kernel/src/plugin_config/binder.rs                                           # D
