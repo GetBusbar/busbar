@@ -14,7 +14,7 @@ use busbar_contract::{
 use super::digest_fields;
 use busbar_kernel_audit::expose;
 use busbar_kernel_audit::heads::{HeadHistory, HEAD_SAMPLE_SECONDS};
-use busbar_kernel_audit::recipe::{digest_over, DigestValue};
+use busbar_kernel_audit::recipe::DigestValue;
 use busbar_kernel_audit::record::{
     Audit, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass, HookApplied, HookHead,
     OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
@@ -133,12 +133,15 @@ fn the_published_recipe_hashes_to_the_digest_the_chain_seals() {
         ),
         chain.seal(inputs(3), &Pass::<AuditStep>::mint(&crate::seal::acquire())),
     ] {
+        // Every sealed line is a link line since SF-4 part 2 (4bc8cfec86): the published recipe is
+        // the link recipe over the same published field list.
+        assert!(record.recipe.is_link(), "a sealed line is a link line");
         assert_eq!(
-            digest_over(&digest_fields(&record)),
+            super::published_link_digest(&record),
             AuditChain::digest_of(&record),
             "the published recipe does not reproduce the sealed digest"
         );
-        assert_eq!(record.hash, digest_over(&digest_fields(&record)));
+        assert_eq!(record.hash, super::published_link_digest(&record));
     }
 }
 
@@ -231,8 +234,11 @@ fn altering_any_field_breaks_the_signature_including_the_cosmetic_ones() {
         }),
         ("the lease epoch", |r| r.controls.lease_epoch += 1),
         ("the position in the chain", |r| r.seq += 1),
+        // Since SF-4 part 2 (4bc8cfec86) a sealed line is a link line whose trailer frames the
+        // predecessor's 32 fingerprint bytes; genesis is the empty link, which is the ZERO
+        // fingerprint, so `"0" x 64` names the same predecessor. Point it at another one.
         ("the link to the predecessor", |r| {
-            r.prev_hash = "0".repeat(64)
+            r.prev_hash = "1".repeat(64)
         }),
         ("the fee count", |r| r.usage.fee_count += 1),
         ("the destination", |r| {

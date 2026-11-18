@@ -20,11 +20,9 @@ fn declared(name: &str) -> Option<MeterClassId> {
 const SEALING_NODE: u64 = 13;
 
 fn sealed(n: u64) -> Vec<busbar_kernel_audit::record::AuditRecord> {
-    let key = AuditSigningKey::from_hex_seed(
-        "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
-    )
-    .expect("the test seed is 64 lowercase hex");
-    let mut chain = AuditChain::new().signing_with(key).sealing_as(SEALING_NODE);
+    // As production seals since SF-4 part 2 (4bc8cfec86): link lines, signed by no line (a page
+    // stamp covers them), so nothing the journal must keep is held outside it.
+    let mut chain = AuditChain::new().sealing_as(SEALING_NODE);
     (1..=n)
         .map(|unit| {
             let mut inputs = super::sign_tests::rich_inputs(unit);
@@ -89,6 +87,9 @@ fn whole_fractional_whole_chain_keeps_v5_bytes_and_verifies_v6() {
             );
             record.recipe = if index == 1 { Recipe::V6 } else { Recipe::V5 };
             record.unit = busbar_kernel_audit::UnitFacts::default();
+            // A v5/v6 line carries no link date: since SF-4 part 2 (4bc8cfec86) `seal` makes a link line,
+            // whose `linked_ms` the legacy recipe neither frames nor journals.
+            record.linked_ms = 0;
             record.prev_hash = std::mem::take(&mut previous);
             record.hash = AuditChain::digest_of(&record);
             record.signature = Some(legacy.sign_digest(&record.hash));
@@ -239,9 +240,59 @@ fn v7_frames_whole_and_fractional_quantities() {
             )
         })
         .collect();
+    // Since SF-4 part 2 (4bc8cfec86) `seal` makes link lines, and the link line binds every fact the
+    // v7 line does: each forged fact changes its fingerprint.
+    assert!(
+        records.iter().all(|r| r.recipe.is_link()),
+        "every new seal is a link line, whole or fractional"
+    );
+    let mut forged = records[0].clone();
+    forged.unit.wall_ms += 1;
+    assert_ne!(
+        AuditChain::digest_of(&forged),
+        records[0].hash,
+        "link wall_ms"
+    );
+    let mut forged = records[0].clone();
+    forged.unit.attempts[1] = None;
+    assert_ne!(
+        AuditChain::digest_of(&forged),
+        records[0].hash,
+        "link attempts"
+    );
+    let mut forged = records[0].clone();
+    forged.unit.attribution = busbar_kernel_audit::attribution("team-b", "default", "acme");
+    assert_ne!(
+        AuditChain::digest_of(&forged),
+        records[0].hash,
+        "link attribution"
+    );
+    let mut forged = records[1].clone();
+    forged.usage.lines[0].quantity = busbar_contract::Count::parse("27.6").unwrap();
+    assert_ne!(
+        AuditChain::digest_of(&forged),
+        records[1].hash,
+        "link quantity"
+    );
+    // v7 is verify-only now, as v5 and v6 are: the chain a previous build sealed is rebuilt here as
+    // it was sealed (v7, no link date), linked and signed again.
+    let legacy = AuditSigningKey::from_seed(&[73; 32]);
+    let mut previous = String::new();
+    let records: Vec<_> = records
+        .into_iter()
+        .map(|mut record| {
+            record.recipe = Recipe::V7;
+            record.linked_ms = 0;
+            record.prev_hash = std::mem::take(&mut previous);
+            record.hash = AuditChain::digest_of(&record);
+            record.signature = Some(legacy.sign_digest(&record.hash));
+            previous.clone_from(&record.hash);
+            record
+        })
+        .collect();
     assert!(
         records.iter().all(|r| r.recipe == Recipe::V7),
-        "every new seal is v7, whole or fractional"
+        "the rebuilt chain is v7, whole or fractional"
     );
     for (record, count) in records.iter().zip(counts) {
         let fields = super::digest_fields(record);
@@ -314,10 +365,8 @@ fn v7_frames_whole_and_fractional_quantities() {
 fn v7_records_tail_is_sealed_only_when_kept() {
     use busbar_kernel_audit::record::UnitFacts;
     use busbar_kernel_audit::{Audit, RecordFacts};
-    let signer = AuditSigningKey::from_seed(&[74; 32]);
-    let mut chain = AuditChain::new()
-        .signing_with(signer)
-        .sealing_as(SEALING_NODE);
+    // Production link lines (SF-4 part 2, 4bc8cfec86): signed by no line, the position last.
+    let mut chain = AuditChain::new().sealing_as(SEALING_NODE);
     let mut seal = |records: RecordFacts, unit: u64| {
         let mut inputs = super::sign_tests::rich_inputs(unit);
         inputs.unit = UnitFacts {
@@ -350,11 +399,18 @@ fn v7_records_tail_is_sealed_only_when_kept() {
         3,
     );
 
+    // The record's content fields: a link line's trailer (linked_ms, seq, prev_hash) is its position,
+    // framed after the content and the tail.
     let names = |record: &busbar_kernel_audit::AuditRecord| -> Vec<&'static str> {
-        super::digest_fields(record)
+        let mut names: Vec<&'static str> = super::digest_fields(record)
             .iter()
             .map(|field| field.name)
-            .collect()
+            .collect();
+        if record.recipe.is_link() {
+            assert_eq!(&names[names.len() - 3..], ["linked_ms", "seq", "prev_hash"]);
+            names.truncate(names.len() - 3);
+        }
+        names
     };
     assert_eq!(
         names(&bare).last(),
