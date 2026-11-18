@@ -181,6 +181,12 @@ impl ExactUsageDelta {
     pub(super) fn try_from_signed(delta: &UsageDelta) -> Result<Self, CountError> {
         crate::off_path::governance::runtime::exact_debt_from_signed(delta)
     }
+    /// A signed delta handed over as exact debt: its model and unit names move into the debt,
+    /// none is copied. Equal to `from_signed` of the same delta.
+    pub(super) fn from_signed_owned(delta: UsageDelta) -> Self {
+        crate::off_path::governance::runtime::exact_debt_from_signed_owned(delta)
+            .expect("internally generated raw debt has a valid scale")
+    }
     /// This debt as the signed wire delta a flush chunk sends, when it fits. The debt is handed
     /// over: its model and unit names move into the chunk, none is copied.
     pub(super) fn signed(self) -> Option<UsageDelta> {
