@@ -23,8 +23,7 @@ use crate::channels::line_carriers::{CarrierSink, LineCarriers};
 use crate::host_services::{KernelServices, RecoveryWork};
 
 use super::port_auth::{
-    admit, catalog, refuse, subject_identity, Admitted, Credentials, NoTickets, Principal,
-    TicketDoor,
+    admit, catalog, refuse, Admitted, Credentials, NoTickets, Principal, Subject, TicketDoor,
 };
 use super::port_carrier::PortCarrier;
 use super::port_channels::{decode_tick, TickOut};
@@ -350,7 +349,6 @@ impl PortDriver {
         input.http.body = snapshot.body_bytes();
         input.invocation = Some(data.context().clone());
         input.admission = Some(Arc::clone(data.pending()));
-        input.principal = Some(Arc::from(data.identity().subject()));
         let served = self.serve_inner(input, Some(data.clone())).await?;
         let decision = match &served {
             Served::Refused(refused) => Some(refused.decision.clone()),
@@ -419,7 +417,7 @@ impl PortDriver {
         let ServeIn {
             request,
             http,
-            principal,
+            creds,
             unit,
             upstream,
             client,
@@ -430,6 +428,12 @@ impl PortDriver {
             admission: pending_admission,
             ..
         } = input;
+        // Who the request is served as: a DATA request's verified identity, else the credentials' verified subject.
+        let principal = match (&admission, creds.principal) {
+            (ServingAdmission::Data(data), _) => Some(Subject::Identity(data.identity().clone())),
+            (_, Principal::Verified(subject)) => Some(subject),
+            _ => None,
+        };
         let port = Arc::clone(&self.port);
         let refusals = Arc::clone(&self.refusals);
         let audit = Arc::clone(&self.audit);
@@ -644,9 +648,8 @@ pub(crate) async fn admit_line(
     caller: &LineCaller,
     refusals: &dyn RefusalMap,
 ) -> Result<Admitted, ClientRefusal> {
-    let identity = subject_identity(&caller.principal);
     let principal = if caller.authenticated {
-        Principal::Verified(&identity)
+        Principal::Verified(Subject::Shared(Arc::clone(&caller.principal)))
     } else {
         Principal::Anonymous
     };
@@ -908,7 +911,11 @@ fn line_blocking(
             return line_of(refuse(&*seated.port, &req, &refusal, &effects));
         }
     };
-    let req = build(admitted.auth, &admitted.identity, admitted.ticket_record());
+    let req = build(
+        admitted.auth,
+        admitted.identity_records(),
+        admitted.ticket_record(),
+    );
     let served = drive_blocking(
         &seated.driving(&effects),
         route.route,
@@ -937,8 +944,8 @@ fn recover_blocking(
     request_id: u64,
 ) -> Result<(), ServeError> {
     let effects = seated.effects();
-    let identity = subject_identity(subject);
-    let req = recovery_request(route, work, &identity, target, request_id);
+    let identity = busbar_ports::auth::Identity::of_subject(subject);
+    let req = recovery_request(route, work, identity.identity_records(), target, request_id);
     drive_blocking(
         &seated.driving(&effects),
         route.route,
@@ -1085,8 +1092,6 @@ pub struct ServeIn<'a> {
     /// The audience a ticket must match (the config block's `canonical_uri`).
     pub audience: &'a str,
     pub now_s: u64,
-    /// The verified principal's ID_SUBJECT text: the scope of its caller-bound records, its audit rows and its WORK.
-    pub principal: Option<Arc<str>>,
     /// The unit the request bills to; `None` = not a billed unit (audit rows only).
     pub unit: Option<Unit>,
     /// The member walk and the far end for a FORWARD; `None` = the route never forwards.
@@ -1182,7 +1187,8 @@ struct Serving {
     route: Arc<Mounted>,
     admission: ServingAdmission,
     http: HttpIn,
-    principal: Option<Arc<str>>,
+    /// Who the request is served as: the scope of its caller-bound records, its audit rows and its WORK.
+    principal: Option<Subject>,
     unit: Option<Unit>,
     upstream: Option<Arc<dyn PortUpstream>>,
     client: Option<Arc<dyn ClientSink>>,
@@ -1245,6 +1251,11 @@ fn serve_blocking(
             .map(|(binder, (unit, journal))| super::port_hooks::Invocation {
                 binder,
                 principal: principal.clone(),
+                identity: match &admission {
+                    ServingAdmission::Data(data) => Some(data.identity().clone()),
+                    ServingAdmission::Credentials(Ok(admitted)) => admitted.identity.clone(),
+                    ServingAdmission::Credentials(Err(_)) => None,
+                },
                 now_s,
                 classes: Arc::clone(&classes),
                 journal,
@@ -1293,9 +1304,11 @@ fn serve_blocking(
             data.identity().identity_records(),
             &[],
         ),
-        ServingAdmission::Credentials(Ok(admitted)) => {
-            build(admitted.auth, &admitted.identity, admitted.ticket_record())
-        }
+        ServingAdmission::Credentials(Ok(admitted)) => build(
+            admitted.auth,
+            admitted.identity_records(),
+            admitted.ticket_record(),
+        ),
         ServingAdmission::Credentials(Err(refusal)) => {
             let lowest = route.effective & route.effective.wrapping_neg();
             let req = build(lowest, &[], &[]);
@@ -1330,7 +1343,7 @@ fn serve_blocking(
         route.route,
         &req,
         &http.body,
-        principal.as_deref(),
+        principal.as_ref().map(Subject::as_str),
         unit.as_ref(),
     )
 }

@@ -630,7 +630,6 @@ pub(super) async fn prepare(
                         },
                         audience: seat.audience.as_deref().unwrap_or_default(),
                         now_s,
-                        principal: None,
                         unit: None,
                         upstream: seat.upstream.clone(),
                         client: Some(sink.clone()),

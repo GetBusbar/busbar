@@ -14,6 +14,8 @@
 //! outcome in as a [`Principal`]. Tickets come through [`TicketDoor`], which the plane instance's boot binds to
 //! `plane_grants::Tickets` under the instance's own caller.
 
+use std::sync::Arc;
+
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::fail::failed::F_UNAVAILABLE;
 use busbar_plugin_abi::fail::refused::{
@@ -24,7 +26,8 @@ use busbar_plugin_abi::plane::{
     AUTH_OPERATOR, AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC, AUTH_SIGNED_INGRESS, AUTH_TICKET,
     RENDER_REFUSAL,
 };
-use busbar_plugin_abi::records::{tag as g, Reply, Writer};
+use busbar_plugin_abi::records::{Reply, Writer};
+use busbar_ports::auth::Identity;
 use busbar_ports::codec::plane::encode_refusal;
 use busbar_ports::plane::PlaneIn;
 use busbar_ports::PortError;
@@ -118,11 +121,37 @@ pub fn bearer<'a>(mut headers: impl Iterator<Item = (&'a str, &'a [u8])>) -> Opt
     })
 }
 
+/// Who a request is served as: the owner of the subject text, shared, never copied.
+#[derive(Clone, Debug)]
+pub enum Subject {
+    /// The auth chain's principal.
+    Principal(Arc<busbar_contract::auth::Principal>),
+    /// A name already shared (a carrier's principal).
+    Shared(Arc<str>),
+    /// A governance key: its id.
+    Key(Arc<busbar_contract::records::VirtualKey>),
+    /// A DATA request's verified identity: its subject.
+    Identity(Identity),
+}
+
+impl Subject {
+    /// The subject's text: its ID_SUBJECT.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Subject::Principal(p) => &p.id,
+            Subject::Shared(s) => s,
+            Subject::Key(k) => &k.id,
+            Subject::Identity(i) => i.subject(),
+        }
+    }
+}
+
 /// What the data auth chain made of the request's credential.
-#[derive(Clone, Copy, Debug)]
-pub enum Principal<'a> {
-    /// Verified: the ID_SUBJECT, ID_GROUP*, ID_CLAIM* records (`Identity::identity_records`).
-    Verified(&'a [u8]),
+#[derive(Debug)]
+pub enum Principal {
+    /// Verified: who it is.
+    Verified(Subject),
     /// No credential, or every auth instance answered NOT_MINE.
     Anonymous,
     /// An auth instance refused it: its kind code.
@@ -153,10 +182,10 @@ impl std::fmt::Debug for Presented<'_> {
 }
 
 /// What the request carries into admission.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct Credentials<'a> {
     pub bearer: Option<Presented<'a>>,
-    pub principal: Principal<'a>,
+    pub principal: Principal,
     /// An operator principal is present (AUTH_OPERATOR).
     pub operator: bool,
     /// The route's webhook signature check: `Some(verified)`, `None` when it was not run.
@@ -166,7 +195,8 @@ pub struct Credentials<'a> {
 /// An admitted request: the class it ran under and what the plane is handed.
 pub struct Admitted {
     pub auth: u32,
-    pub identity: Vec<u8>,
+    /// `None`: the plane is handed no identity.
+    pub identity: Option<Identity>,
     ticket_record: Option<SecureVec>,
 }
 
@@ -176,12 +206,20 @@ impl std::fmt::Debug for Admitted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Admitted")
             .field("auth", &self.auth)
-            .field("identity_len", &self.identity.len())
+            .field("identity_len", &self.identity_records().len())
             .finish_non_exhaustive()
     }
 }
 
 impl Admitted {
+    /// `PlaneIn::identity`: the identity records, empty when there is none.
+    #[must_use]
+    pub fn identity_records(&self) -> &[u8] {
+        self.identity
+            .as_ref()
+            .map_or(&[], Identity::identity_records)
+    }
+
     /// `PlaneReq.ticket_record`: non-empty only for a ticket that carried one.
     #[must_use]
     pub fn ticket_record(&self) -> &[u8] {
@@ -189,12 +227,14 @@ impl Admitted {
     }
 }
 
-/// One ID_SUBJECT record: the identity of a principal core verified outside the auth chain (a line carrier's).
+/// One ID_SUBJECT record in a fresh `Vec`, as the base built it: tests compare `Identity::of_subject` with it and
+/// hand it where a test needs identity bytes.
+#[cfg(test)]
 #[must_use]
-pub fn subject_identity(subject: &str) -> Vec<u8> {
+pub(crate) fn subject_identity(subject: &str) -> Vec<u8> {
     let mut w = Reply::with_capacity(16 + subject.len());
     // A Reply refuses only past its 16 MiB cap; a subject is bounded far below it.
-    let put = w.put_text(g::ID_SUBJECT, subject);
+    let put = w.put_text(busbar_plugin_abi::records::tag::ID_SUBJECT, subject);
     debug_assert!(put.is_ok(), "a subject identity fits a Reply");
     w.as_bytes().to_vec()
 }
@@ -230,23 +270,27 @@ pub async fn admit(
     now_s: u64,
 ) -> Result<Admitted, ClientRefusal> {
     let class = classify(effective, creds.bearer.map(|b| b.as_str()), tickets);
-    let admitted = |identity: Vec<u8>| Admitted {
+    let admitted = |identity: Option<Identity>| Admitted {
         auth: class,
         identity,
         ticket_record: None,
     };
     match class {
-        AUTH_PRINCIPAL => match creds.principal {
-            Principal::Verified(id) => Ok(admitted(id.to_vec())),
+        AUTH_PRINCIPAL => match &creds.principal {
+            Principal::Verified(subject) => {
+                Ok(admitted(Some(Identity::of_subject(subject.as_str()))))
+            }
             Principal::Anonymous => Err(refusals.for_core(route, R_AUTH_REQUIRED)),
-            Principal::Rejected(code) => Err(refusals.for_auth(route, code)),
+            Principal::Rejected(code) => Err(refusals.for_auth(route, *code)),
         },
-        AUTH_OPTIONAL => match creds.principal {
-            Principal::Verified(id) => Ok(admitted(id.to_vec())),
-            Principal::Anonymous => Ok(admitted(Vec::new())),
-            Principal::Rejected(code) => Err(refusals.for_auth(route, code)),
+        AUTH_OPTIONAL => match &creds.principal {
+            Principal::Verified(subject) => {
+                Ok(admitted(Some(Identity::of_subject(subject.as_str()))))
+            }
+            Principal::Anonymous => Ok(admitted(None)),
+            Principal::Rejected(code) => Err(refusals.for_auth(route, *code)),
         },
-        AUTH_PUBLIC => Ok(admitted(Vec::new())),
+        AUTH_PUBLIC => Ok(admitted(None)),
         AUTH_TICKET => {
             let Some(credential) = creds.bearer else {
                 return Err(refusals.for_core(route, R_AUTH_REQUIRED));
@@ -254,7 +298,7 @@ pub async fn admit(
             match tickets.admit(audience, credential.as_str(), now_s).await {
                 Ok(t) => Ok(Admitted {
                     auth: class,
-                    identity: t.identity.identity_records().to_vec(),
+                    identity: Some(t.identity),
                     ticket_record: t.record.filter(|r| !r.is_empty()),
                 }),
                 Err(denied) => Err(ticket_refusal(route, denied, refusals)),
@@ -262,7 +306,7 @@ pub async fn admit(
         }
         AUTH_SIGNED_INGRESS => {
             if creds.signed == Some(true) {
-                Ok(admitted(Vec::new()))
+                Ok(admitted(None))
             } else {
                 Err(refusals.for_core(route, R_BAD_CREDENTIAL))
             }
@@ -271,9 +315,11 @@ pub async fn admit(
             if !creds.operator {
                 return Err(refusals.for_core(route, R_POLICY));
             }
-            match creds.principal {
-                Principal::Verified(id) => Ok(admitted(id.to_vec())),
-                _ => Ok(admitted(Vec::new())),
+            match &creds.principal {
+                Principal::Verified(subject) => {
+                    Ok(admitted(Some(Identity::of_subject(subject.as_str()))))
+                }
+                _ => Ok(admitted(None)),
             }
         }
         // An empty or unknown set cannot come out of `effective_classes`.

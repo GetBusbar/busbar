@@ -924,6 +924,7 @@ fn a_native_hook_cannot_run_without_its_admitted_invocation() {
     let effects = Hooked(Invocation {
         binder: Arc::new(Required),
         principal: None,
+        identity: None,
         now_s: 1,
         classes: Arc::default(),
         journal: None,
@@ -1043,6 +1044,7 @@ async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
         invocation: Invocation {
             binder: Arc::new(Bound(selected)),
             principal: None,
+            identity: None,
             now_s: 1,
             classes: Arc::default(),
             journal: None,
@@ -1313,6 +1315,7 @@ async fn route_policy_selections_and_rejections_counters_move() {
                     invocation: Invocation {
                         binder: Arc::new(Bound(selected)),
                         principal: None,
+                        identity: None,
                         now_s: 1,
                         classes: Arc::default(),
                         journal: None,

@@ -24,7 +24,7 @@ pub(crate) struct Stage {
     scope: super::super::RoutedScope,
     route: u32,
     dialect: Arc<str>,
-    principal: Option<Arc<str>>,
+    principal: Option<super::super::port_auth::Subject>,
     identity: busbar_contract::secure::SecureVec,
     request_id: u64,
     now_s: u64,
@@ -39,7 +39,10 @@ impl Stage {
             pool: &self.scope.pool,
             container: &self.scope.container,
             dialect: &self.dialect,
-            principal: self.principal.as_deref(),
+            principal: self
+                .principal
+                .as_ref()
+                .map(super::super::port_auth::Subject::as_str),
             key: self.context.principal().map(AsRef::as_ref),
             request_id: self.request_id,
             now_s: self.now_s,
@@ -235,7 +238,10 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
         pool: &scope.pool,
         container: &scope.container,
         dialect: drive.dialect,
-        principal: invocation.principal.as_deref(),
+        principal: invocation
+            .principal
+            .as_ref()
+            .map(super::super::port_auth::Subject::as_str),
         key: context.principal().map(AsRef::as_ref),
         request_id: req.request_id,
         now_s: invocation.now_s,

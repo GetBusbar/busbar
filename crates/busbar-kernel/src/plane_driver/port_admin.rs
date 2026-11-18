@@ -114,7 +114,6 @@ pub async fn answer(seats: &[PortSeat], request: AdminRequest) -> Option<AdminAn
         },
         audience: "",
         now_s,
-        principal: None,
         unit: None,
         upstream: None,
         client: None,

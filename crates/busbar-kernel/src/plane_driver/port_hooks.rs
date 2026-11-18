@@ -30,7 +30,10 @@ use busbar_ports::{plane::UsageClass, FactVal};
 /// Per-unit service inputs. Its context belongs to the selected generation, never to Binder.
 pub struct Invocation {
     pub binder: Arc<dyn Binder>,
-    pub principal: Option<Arc<str>>,
+    /// Who the request is served as, shared by count.
+    pub principal: Option<super::port_auth::Subject>,
+    /// What the plane was handed as its identity, shared by count (step 2 hands it to the stage).
+    pub identity: Option<busbar_ports::auth::Identity>,
     pub now_s: u64,
     /// The instance's declared usage classes, shared with its driver (frozen when it bound).
     pub classes: Arc<[UsageClass]>,

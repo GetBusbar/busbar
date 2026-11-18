@@ -42,9 +42,7 @@ use busbar_kernel::plane_driver::port::{
 };
 use busbar_kernel::plane_driver::port_admin;
 use busbar_kernel::plane_driver::port_admission::{AdmittedUnit, Pending};
-use busbar_kernel::plane_driver::port_auth::{
-    self, subject_identity, Credentials, Presented, Principal,
-};
+use busbar_kernel::plane_driver::port_auth::{self, Credentials, Presented, Principal, Subject};
 use busbar_kernel::plane_driver::port_billing::{end_of, PortBilling};
 use busbar_kernel::plane_driver::port_intents::Namespace;
 use busbar_kernel::plane_driver::port_routes::Mounted;
@@ -318,8 +316,8 @@ fn finished(done: Result<Result<Served, ServeError>, tokio::task::JoinError>) ->
 pub(crate) enum Seen {
     /// No credential, or an open chain: the identity is empty.
     Anonymous,
-    /// The chain identified it: the principal's id is the subject.
-    Verified(Arc<str>),
+    /// The chain identified it: its principal, moved out of the verdict (the subject is its id).
+    Verified(busbar_contract::auth::Principal),
     /// A credential the chain (or the governance binding) refused.
     Rejected,
 }
@@ -327,7 +325,7 @@ pub(crate) enum Seen {
 /// The chain's verdict, as the principal the route is handed.
 pub(crate) fn seen_of(resolved: Result<(AuthPrincipal, GovCtx), IdentityRefusal>) -> Seen {
     match resolved {
-        Ok((AuthPrincipal(Some(principal)), _)) => Seen::Verified(Arc::from(principal.id.as_str())),
+        Ok((AuthPrincipal(Some(principal)), _)) => Seen::Verified(principal),
         Ok((AuthPrincipal(None), _)) => Seen::Anonymous,
         Err(_) => Seen::Rejected,
     }
@@ -568,8 +566,8 @@ async fn answer(
     let bearer = bearer_of(&ctx.headers, route.cred_header.as_deref());
     // Resolve the optional credential before billing. Retain the exact admitted key; the
     // principal's subject text alone cannot reconstruct external identity grants or budgets.
-    let seen = match ctx.principal.as_ref().and_then(|p| p.0.as_ref()) {
-        Some(p) => Seen::Verified(Arc::from(p.id.as_str())),
+    let seen = match ctx.principal.take().and_then(|p| p.0) {
+        Some(p) => Seen::Verified(p),
         None if resolves_credential(route.effective) => {
             let (seen, gov, signed_authority) = chain_principal(&ctx, bearer.as_deref()).await;
             ctx.gov = gov;
@@ -676,10 +674,6 @@ async fn answer(
         (None, None, _) => None,
         _ => return failed(StatusCode::SERVICE_UNAVAILABLE),
     };
-    let (principal, identity) = match &seen {
-        Seen::Verified(id) => (Some(Arc::clone(id)), Some(subject_identity(id))),
-        Seen::Anonymous | Seen::Rejected => (None, None),
-    };
     let http = http_in(&mut ctx);
     let request = ctx.request.clone();
     let signed = match ingress {
@@ -706,10 +700,10 @@ async fn answer(
     let mut session = tokio::spawn(async move {
         let creds = Credentials {
             bearer: bearer.as_deref().map(Presented::new),
-            principal: match (&seen, &identity) {
-                (Seen::Verified(_), Some(records)) => Principal::Verified(records),
-                (Seen::Rejected, _) => Principal::Rejected(R_BAD_CREDENTIAL),
-                _ => Principal::Anonymous,
+            principal: match seen {
+                Seen::Verified(p) => Principal::Verified(Subject::Principal(Arc::new(p))),
+                Seen::Rejected => Principal::Rejected(R_BAD_CREDENTIAL),
+                Seen::Anonymous => Principal::Anonymous,
             },
             operator: false,
             signed,
@@ -723,7 +717,6 @@ async fn answer(
             creds,
             audience: seat.audience.as_deref().unwrap_or_default(),
             now_s,
-            principal,
             unit: None,
             upstream: seat.upstream.clone(),
             client: Some(Arc::new(pipe)),

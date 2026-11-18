@@ -212,7 +212,6 @@ async fn blocking_input_lifetime(payload: &[u8], cancel: bool) {
                 },
                 audience: "",
                 now_s: 0,
-                principal: None,
                 unit: None,
                 upstream: None,
                 client: None,

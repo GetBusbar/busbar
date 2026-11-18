@@ -17,7 +17,7 @@ use busbar_ports::auth::Identity;
 
 use super::{
     admit, bearer, classify, effective_classes, plain_refusal, subject_identity, Credentials,
-    Presented, Principal, TicketDoor,
+    Presented, Principal, Subject, TicketDoor,
 };
 use crate::plane_driver::port_session::ToClient;
 use crate::plane_grants::{TicketAdmitted, TicketDenied};
@@ -58,6 +58,10 @@ impl TicketDoor for Door {
 
 fn door(outcome: Result<(&'static str, Option<&'static [u8]>), TicketDenied>) -> Door {
     Door { outcome }
+}
+
+fn ada() -> Principal {
+    Principal::Verified(Subject::Shared(std::sync::Arc::from("ada")))
 }
 
 fn anonymous<'a>() -> Credentials<'a> {
@@ -138,14 +142,13 @@ async fn principal_without_an_identity_is_refused_and_a_bad_credential_is_named(
 #[tokio::test]
 async fn principal_hands_the_plane_the_verified_identity_records() {
     let d = door(Err(TicketDenied::Invalid));
-    let id = subject_identity("ada");
     let creds = Credentials {
-        principal: Principal::Verified(&id),
+        principal: ada(),
         ..anonymous()
     };
     let a = run(AUTH_PRINCIPAL, creds, &d).await.unwrap();
     assert_eq!(a.auth, AUTH_PRINCIPAL);
-    assert_eq!(a.identity, id);
+    assert_eq!(a.identity_records(), subject_identity("ada").as_slice());
     assert!(a.ticket_record().is_empty());
 }
 
@@ -155,7 +158,8 @@ async fn optional_and_public_admit_without_credentials_and_with_an_empty_identit
     for class in [AUTH_OPTIONAL, AUTH_PUBLIC] {
         let a = run(class, anonymous(), &d).await.unwrap();
         assert_eq!(a.auth, class);
-        assert!(a.identity.is_empty());
+        assert!(a.identity.is_none());
+        assert!(a.identity_records().is_empty());
     }
 }
 
@@ -180,7 +184,7 @@ async fn a_ticket_admits_with_its_subject_and_record() {
     let a = run(AUTH_TICKET, creds, &d).await.unwrap();
     assert_eq!(a.auth, AUTH_TICKET);
     assert_eq!(a.ticket_record(), b"state");
-    let mut recs = Records::new(&a.identity);
+    let mut recs = Records::new(a.identity_records());
     let first = recs.next().unwrap().unwrap();
     assert_eq!(first.tag, g::ID_SUBJECT);
     assert_eq!(first.text().unwrap(), "sess-1");
@@ -188,7 +192,6 @@ async fn a_ticket_admits_with_its_subject_and_record() {
 
 #[tokio::test]
 async fn a_ticket_denial_is_final_and_maps_to_the_generic_codes() {
-    let id = subject_identity("ada");
     for (denied, code, status) in [
         (TicketDenied::Invalid, R_BAD_CREDENTIAL, 401),
         (TicketDenied::Expired, R_EXPIRED, 401),
@@ -203,7 +206,7 @@ async fn a_ticket_denial_is_final_and_maps_to_the_generic_codes() {
         // The same request also carries a verified principal: it is never tried after a ticket refusal.
         let creds = Credentials {
             bearer: Some(Presented::new(TICKET)),
-            principal: Principal::Verified(&id),
+            principal: ada(),
             ..anonymous()
         };
         let r = run(AUTH_PRINCIPAL | AUTH_TICKET, creds, &d)
@@ -216,10 +219,9 @@ async fn a_ticket_denial_is_final_and_maps_to_the_generic_codes() {
 #[tokio::test]
 async fn a_key_on_a_principal_and_ticket_route_runs_principal() {
     let d = door(Err(TicketDenied::Invalid));
-    let id = subject_identity("ada");
     let creds = Credentials {
         bearer: Some(Presented::new("sk-key")),
-        principal: Principal::Verified(&id),
+        principal: ada(),
         ..anonymous()
     };
     let a = run(AUTH_PRINCIPAL | AUTH_TICKET, creds, &d).await.unwrap();
@@ -281,4 +283,92 @@ fn the_plain_refusal_is_a_head_the_text_and_an_end() {
         ToClient::Body(b"authentication required".to_vec())
     );
     assert_eq!(items[2], ToClient::End);
+}
+
+#[tokio::test]
+async fn two_requests_as_one_principal_hand_the_plane_the_same_identity_bytes() {
+    let d = door(Err(TicketDenied::Invalid));
+    let key: std::sync::Arc<str> = std::sync::Arc::from("key-alice");
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let creds = Credentials {
+            principal: Principal::Verified(Subject::Shared(std::sync::Arc::clone(&key))),
+            ..anonymous()
+        };
+        seen.push(
+            run(AUTH_PRINCIPAL, creds, &d)
+                .await
+                .unwrap()
+                .identity_records()
+                .to_vec(),
+        );
+    }
+    assert_eq!(seen[0], seen[1]);
+    assert_eq!(seen[0], subject_identity("key-alice"));
+}
+
+/// This thread's bytes allocated and freed so far (jemalloc's own per-thread counters).
+#[cfg(not(target_env = "msvc"))]
+fn thread_bytes() -> (u64, u64) {
+    (
+        tikv_jemalloc_ctl::thread::allocatedp::read().map_or(0, |m| m.get()),
+        tikv_jemalloc_ctl::thread::deallocatedp::read().map_or(0, |m| m.get()),
+    )
+}
+
+/// B-IDENTITY: one verified request's identity as the plane is handed it, on this thread: the
+/// credentials carry the subject's owner (shared), `admit` writes its one ID_SUBJECT record once,
+/// and the plane's bytes are read from it. Nanoseconds and bytes allocated per request, and the
+/// bytes still held once every request has ended (must be 0). `B_IDENTITY_REQUESTS` sets the count.
+#[cfg(not(target_env = "msvc"))]
+fn b_identity_on_this_thread(requests: usize) -> (f64, f64, i64) {
+    let d = door(Err(TicketDenied::Invalid));
+    let name: std::sync::Arc<str> = std::sync::Arc::from("a-principal-subject-of-ordinary-length");
+    let one = || {
+        futures::executor::block_on(async {
+            let creds = Credentials {
+                principal: Principal::Verified(Subject::Shared(std::sync::Arc::clone(&name))),
+                ..anonymous()
+            };
+            let a = run(AUTH_PRINCIPAL, creds, &d).await.unwrap();
+            std::hint::black_box(a.identity_records());
+        });
+    };
+    for _ in 0..requests.min(1000) {
+        one();
+    }
+    let (a0, d0) = thread_bytes();
+    let start = std::time::Instant::now();
+    for _ in 0..requests {
+        one();
+    }
+    let ns = start.elapsed().as_nanos() as f64 / requests as f64;
+    let (a1, d1) = thread_bytes();
+    let held = (a1 - a0) as i64 - (d1 - d0) as i64;
+    (ns, (a1 - a0) as f64 / requests as f64, held)
+}
+
+#[test]
+#[cfg(not(target_env = "msvc"))]
+fn b_identity() {
+    let requests = std::env::var("B_IDENTITY_REQUESTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+    let (ns, bytes, held) = b_identity_on_this_thread(requests);
+    eprintln!("B-IDENTITY 1 thread: {ns:.0} ns/request, {bytes:.0} bytes allocated/request, {held} bytes held after");
+    assert_eq!(held, 0, "every request's identity is released when it ends");
+    let runs: Vec<(f64, f64, i64)> = std::thread::scope(|s| {
+        let joins: Vec<_> = (0..8)
+            .map(|_| s.spawn(|| b_identity_on_this_thread(requests)))
+            .collect();
+        joins.into_iter().map(|j| j.join().unwrap()).collect()
+    });
+    let ns = runs.iter().map(|r| r.0).sum::<f64>() / 8.0;
+    let bytes = runs.iter().map(|r| r.1).sum::<f64>() / 8.0;
+    eprintln!("B-IDENTITY 8 threads: {ns:.0} ns/request, {bytes:.0} bytes allocated/request, held after {:?}", runs.iter().map(|r| r.2).collect::<Vec<_>>());
+    assert!(
+        runs.iter().all(|r| r.2 == 0),
+        "every request's identity is released when it ends"
+    );
 }
