@@ -815,6 +815,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-plugin-abi",
+ "stats_alloc",
  "zeroize",
 ]
 

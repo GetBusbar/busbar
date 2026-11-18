@@ -18,12 +18,19 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
+stats_alloc = { workspace = true }
 
 [lints]
 workspace = true
 
-# B-FRAME: take, share and drop of a request frame, timed against a fresh allocation.
+# B-FRAME: three hand-off shapes (copy, fresh, pool), timed.
 [[bench]]
 name = "frame"
 path = "benches/frame.rs"
+harness = false
+
+# B-FRAME (allocations): the same runs, every allocation counted.
+[[bench]]
+name = "frame_allocs"
+path = "benches/frame_allocs.rs"
 harness = false
