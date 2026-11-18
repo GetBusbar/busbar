@@ -2,61 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::off_path::auth::login::{missing_login_axis, select_inbound_provider};
-
-#[test]
-fn inbound_default_selects_declared_styles_and_refuses_provider_names() {
-    let declared = busbar_contract::auth_calls::InboundStyle {
-        module: "idp-plugin".into(),
-        names: vec!["idp-plugin".into(), "request-signature".into()],
-        points: busbar_contract::abi::auth::AuthPoints::HEAD,
-    };
-    let select = |style| select_inbound_provider(style, [("tenant-one", &declared)].into_iter());
-    assert_eq!(select("request-signature").unwrap(), Some("tenant-one"));
-    assert_eq!(select("idp-plugin").unwrap(), Some("tenant-one"));
-    assert!(select("tenant-one").is_err());
-    assert!(select("outbound-style").is_err());
-    assert_eq!(select("").unwrap(), None);
-}
-
-#[test]
-fn inbound_default_refuses_ambiguous_providers_and_unconfigured_styles() {
-    let declared = busbar_contract::auth_calls::InboundStyle {
-        module: "idp-plugin".into(),
-        names: vec!["request-signature".into()],
-        points: busbar_contract::abi::auth::AuthPoints::HEAD,
-    };
-    let error = select_inbound_provider(
-        "request-signature",
-        [("tenant-one", &declared), ("tenant-two", &declared)].into_iter(),
-    )
-    .expect_err("shared module style does not select between two configured providers");
-    assert!(error.contains("tenant-one") && error.contains("tenant-two"));
-    assert!(select_inbound_provider("request-signature", std::iter::empty()).is_err());
-    assert_eq!(
-        select_inbound_provider("", std::iter::empty()).unwrap(),
-        None
-    );
-}
-
-#[test]
-fn inbound_default_cannot_reinterpret_a_provider_name_as_host_auth() {
-    let declared = busbar_contract::auth_calls::InboundStyle {
-        module: "idp-plugin".into(),
-        names: vec!["request-signature".into()],
-        points: busbar_contract::abi::auth::AuthPoints::HEAD,
-    };
-    for name in crate::config::builtin_identity_providers() {
-        let error = select_inbound_provider("request-signature", [(name, &declared)].into_iter())
-            .expect_err("a provider name cannot select a host auth arm");
-        assert!(error.contains("reserved") && error.contains(name));
-    }
-    assert_eq!(
-        select_inbound_provider("request-signature", [("ordinary", &declared)].into_iter())
-            .unwrap(),
-        Some("ordinary")
-    );
-}
+use crate::off_path::auth::login::missing_login_axis;
 
 fn idp_with_secret(env: &str) -> crate::config::AuthCfg {
     let mut cfg = crate::config::AuthCfg::default_none();

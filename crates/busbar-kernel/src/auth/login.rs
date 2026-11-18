@@ -48,16 +48,6 @@ pub(crate) struct LoginMethods {
     pub(crate) methods: IndexMap<String, LoginMethod>,
 }
 
-pub struct InboundAuthProvider {
-    pub provider: String,
-
-    pub module: String,
-
-    pub calls: Arc<dyn AuthCalls>,
-
-    pub points: busbar_contract::abi::auth::AuthPoints,
-}
-
 const LOGIN_OFFLOAD_MAX_INFLIGHT: usize = 16;
 
 const LOGIN_OFFLOAD_WAIT: Duration = Duration::from_secs(5);
