@@ -225,7 +225,6 @@ pub(crate) fn prepare_fixture<'k, 'w, K: super::port_session::Calls + ?Sized, F:
     effects: &dyn super::port_session::Effects,
     pending: Arc<super::port_admission::Pending>,
     walk: EgressWalk<'w, F>,
-    (dialect, model): (&str, &str),
 ) -> Result<
     (
         super::port_session::Task<'k, K>,
@@ -255,7 +254,7 @@ pub(crate) fn prepare_fixture<'k, 'w, K: super::port_session::Calls + ?Sized, F:
     held.release();
     let target = members.next(&wants).ok_or(SessionError::NotDriven)?;
     let prepared = task
-        .prepare_selected(&target, 1, dialect, model, effects)?
+        .prepare_selected(&target, 1, "", "", effects)?
         .ok_or(SessionError::NotDriven)?;
     let selection = walk
         .sender()

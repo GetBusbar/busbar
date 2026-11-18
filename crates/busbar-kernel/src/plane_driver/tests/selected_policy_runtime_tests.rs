@@ -498,16 +498,8 @@ fn signed_selected_preparation_rechecks_current_policy_and_revocation_before_han
     let make = |_: &Wants, _: Option<&RequestPoolReceipt>| NoSend;
     let runtime = rt.handle().clone();
     let walk = EgressWalk::new(&make, &route, &runtime, &*targets);
-    let (mut task, prepared, _walk) = prepare_fixture(
-        &script,
-        &request,
-        b"{}",
-        &effects,
-        pending.clone(),
-        walk,
-        ("", ""),
-    )
-    .unwrap();
+    let (mut task, prepared, _walk) =
+        prepare_fixture(&script, &request, b"{}", &effects, pending.clone(), walk).unwrap();
     assert_eq!(money.open_units(), 1);
     assert!(Arc::ptr_eq(prepared.receipt().cost(), &original_cost));
     assert!(Arc::ptr_eq(prepared.receipt().key(), &original_key));
@@ -907,16 +899,9 @@ fn a_selected_catalog_attempt_records_its_instance_qualified_pool() {
     };
     let runtime = rt.handle().clone();
     let walk = EgressWalk::new(&make, &route, &runtime, &*targets);
-    let (_task, prepared, _walk) = prepare_fixture(
-        &script,
-        &request,
-        b"{}",
-        &effects,
-        pending.clone(),
-        walk,
-        ("", ""),
-    )
-    .expect("a selected attempt over a catalog pool is prepared");
+    let (_task, prepared, _walk) =
+        prepare_fixture(&script, &request, b"{}", &effects, pending.clone(), walk)
+            .expect("a selected attempt over a catalog pool is prepared");
     let unit_key = prepared.receipt().unit();
     let view = money.usage_view(unit_key).unwrap();
     let crate::plane_driver::money::UsageView::Partitioned(snapshot) = view.as_ref() else {
