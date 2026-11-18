@@ -1278,11 +1278,14 @@ mod tests {
     fn a_parked_chain_drops_before_its_plugin() {
         type I = Inst<Plugin, (), (), ()>;
         static SAW_ALIVE: AtomicBool = AtomicBool::new(false);
-        let address = Box::new(I::new(Plugin {
+        // The instance pointer as `into_instance` makes it (`Box::into_raw`), kept as a pointer: through the
+        // integer handle Miri sees a wildcard provenance and cannot check this drop's borrows (and the
+        // miri job's -Zmiri-strict-provenance refuses the round trip).
+        let raw = Box::into_raw(Box::new(I::new(Plugin {
             alive: AtomicBool::new(true),
-        }))
-        .into_instance();
-        let raw = core::ptr::with_exposed_provenance::<c_void>(address as usize);
+        })))
+        .cast::<c_void>()
+        .cast_const();
         // SAFETY: `raw` is the live boxed instance just made; it is only read until `drop_inst` below.
         let inst = unsafe { &*raw.cast::<I>() };
         let parked = Parked {
@@ -1299,7 +1302,7 @@ mod tests {
         let mut cb = ChainBox::new(tie(fut), id, ());
         assert!(ChainRef::new(&mut cb).poll().is_pending());
         assert!(inst.chains().insert_raw(cb).is_some());
-        // SAFETY: `raw` came from `into_instance` and is not used again.
+        // SAFETY: `raw` came from `Box::into_raw` of an `I` and is not used again.
         unsafe { drop_inst::<I>(raw) };
         assert!(SAW_ALIVE.load(std::sync::atomic::Ordering::SeqCst));
     }
