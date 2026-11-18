@@ -80,13 +80,6 @@ pub(crate) fn services_demotion_key(instance: &str, counterparty: &str) -> Strin
     )
 }
 
-/// The default instance's unprefixed demotion row, settled only when a sighting changes trust
-/// state.
-#[cold]
-pub(crate) fn services_counterparty_row(counterparty: &str) -> String {
-    counterparty.to_owned()
-}
-
 /// An opened instance's caller-binding store handle, bound once, at its first session.
 #[cold]
 pub(crate) fn services_caller_rows(
