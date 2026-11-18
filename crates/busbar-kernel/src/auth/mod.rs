@@ -3295,6 +3295,10 @@ mod ticket_single_path;
 #[path = "tests/verified_caller_policy.rs"]
 mod verified_caller_policy;
 
+#[cfg(test)]
+#[path = "tests/caller_custody_tests.rs"]
+mod caller_custody_tests;
+
 // Script only the plugin boundary; the regression runs the ordinary inbound host.
 #[cfg(test)]
 impl AuthMiddleware {
