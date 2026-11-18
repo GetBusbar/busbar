@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
 
 use busbar_contract::response_delivery::{
-    CarrierProgress, CompletionRequirement, DeliveryReader, DeliverySnapshot, DeliveryTerminal,
-    ResponseKey, ResponseStop, WireClass,
+    CarrierProgress, CompletionRequirement, DeliverySnapshot, DeliveryTerminal, ResponseKey,
+    ResponseStop, WireClass,
 };
 use busbar_contract::storage::{StorageCredit, StorageSource};
 use futures::task::AtomicWaker;
@@ -89,15 +89,6 @@ impl DeliveryWatch {
             }
             changed.await;
         }
-    }
-}
-
-impl DeliveryReader for DeliveryWatch {
-    fn key(&self) -> ResponseKey {
-        self.key()
-    }
-    fn snapshot(&self) -> DeliverySnapshot {
-        self.snapshot()
     }
 }
 

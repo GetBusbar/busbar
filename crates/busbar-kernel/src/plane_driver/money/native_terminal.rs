@@ -148,18 +148,16 @@ impl NativeRequestMoney {
     pub fn finish_delivery(
         &self,
         admission: &AdmittedRequest,
-        delivery: &dyn busbar_contract::response_delivery::DeliveryReader,
+        key: busbar_contract::response_delivery::ResponseKey,
+        observed: busbar_contract::response_delivery::DeliverySnapshot,
         mut end: super::UnitEnd,
     ) -> Result<super::UnitEnd, NativeAdmissionError> {
         use crate::governance::unit_checkpoint::partitions::{
             Disposition, Finality, ValidatedSelectedCheckpoint,
         };
-        if !self.request.same_admission(admission)
-            || delivery.key().unit != Some(self.request.unit())
-        {
+        if !self.request.same_admission(admission) || key.unit != Some(self.request.unit()) {
             return Err(NativeAdmissionError::NotLive);
         }
-        let observed = delivery.snapshot();
         let (mut removed, terminal, release_request) = {
             let mut all = self.money.shard(self.request.unit());
             let open = all

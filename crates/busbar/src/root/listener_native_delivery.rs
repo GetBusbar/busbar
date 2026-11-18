@@ -5,9 +5,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::response_delivery::{
-    DeliveryReader, DeliverySnapshot, ResponseKey, ResponseStop,
-};
+use busbar_contract::response_delivery::{DeliverySnapshot, ResponseKey, ResponseStop};
 use busbar_core_connector::framed_stream::session::{Feed, Payload, Piece, RegisterResponse};
 use busbar_core_connector::response_delivery::{DeliveryInput, DeliveryWatch, ResponseHandles};
 use busbar_kernel::auth::native_data::NativeDataPending;
@@ -64,7 +62,7 @@ impl RegisteredDelivery {
     pub(crate) fn key(&self) -> ResponseKey {
         self.key
     }
-    pub(crate) fn reader(&self) -> &dyn DeliveryReader {
+    pub(crate) fn reader(&self) -> &DeliveryWatch {
         &self.watch
     }
     pub(crate) fn admission(&self) -> Option<&AdmittedRequest> {
