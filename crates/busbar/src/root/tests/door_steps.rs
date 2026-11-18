@@ -5555,11 +5555,9 @@ async fn asking_whether_a_name_is_configured_allocates_nothing() {
         key: None,
         app: &app,
     };
-    let allocated = || {
-        tikv_jemalloc_ctl::thread::allocatedp::read()
-            .map(|m| m.get())
-            .expect("jemalloc's per-thread counter reads")
-    };
+    // The test build's counting allocator (UNSAFE-MIN §4.4, 4793e7b460), as the root's other
+    // allocation proofs read it: tikv-jemalloc-ctl is not in the distribution graph (f47845ac8b).
+    let allocated = || crate::GLOBAL.stats().bytes_allocated;
 
     let _ = allocated();
     let before = allocated();

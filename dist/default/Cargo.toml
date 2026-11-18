@@ -643,9 +643,9 @@ proc-macro2 = { workspace = true }
 syn = { workspace = true }
 busbar-migrate = { path = "../../crates/busbar-migrate", features = ["counted"] }
 
-# The root tests' allocation counters (UNSAFE-MIN QJ and §4.4, 4793e7b460), as crates/busbar has them.
+# The root tests' counting allocator (UNSAFE-MIN §4.4, 4793e7b460). Not tikv-jemalloc-ctl: the distribution
+# graph carries no `paste` (f47845ac8b); the root tests read allocations through this allocator.
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
-tikv-jemalloc-ctl = { workspace = true }
 stats_alloc = { workspace = true }
 
 # THE PLANE DRIVER'S TEST PLANE (`tests/plane_driver.rs`): one source, compiled into the test as a
@@ -1010,10 +1010,8 @@ sonic-rs = "0.5"
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 # No `xattr`: the loader unpacks in memory and restores nothing to disk.
 tar = { version = "0.4", default-features = false }
-# Test-only (the root tests' dev-dependencies, as in the core workspace): per-thread allocation counters (UNSAFE-MIN QJ;
-# `paste` is a recorded cargo-deny exception, RUSTSEC-2024-0436, dev graph only) and `StatsAlloc<Jemalloc>` (§4.4;
-# `nightly` only makes `StatsAlloc::new` a `const fn`).
-tikv-jemalloc-ctl = { version = "=0.6.1", default-features = false, features = ["stats"] }
+# Test-only (the root tests' counting allocator, UNSAFE-MIN §4.4): `StatsAlloc<Jemalloc>`; `nightly` only makes
+# `StatsAlloc::new` a `const fn`.
 tikv-jemallocator = "0.6"
 stats_alloc = { version = "0.1.10", features = ["nightly"] }
 # No feature floor: each consumer needs a different slice of the runtime and tokio's default set is
