@@ -15,6 +15,16 @@ use busbar_contract::abi::sdk::auth_door::{
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
 
+/// The carrier selection a READY reply's extension `blob` makes, as an open or refresh reads it: the
+/// door's check of the blob, then the selection.
+fn instance_carriers(
+    blob: Blob,
+    previous: &[String],
+    facts: &AuthFacts,
+) -> Result<Vec<String>, String> {
+    crate::off_path::auth_door::instance_carriers(super::reply_extensions(blob), previous, facts)
+}
+
 struct Choice {
     variant: String,
     refreshed: AtomicBool,

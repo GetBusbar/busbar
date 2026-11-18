@@ -628,10 +628,10 @@ fn grown(out: &IdentifyOut, held: &Held) -> Option<(usize, u32, u32)> {
     ))
 }
 
-struct FlushSink {
-    plugin: String,
-    family: Mutex<Option<u32>>,
-    flushed: AtomicU64,
+pub(crate) struct FlushSink {
+    pub(crate) plugin: String,
+    pub(crate) family: Mutex<Option<u32>>,
+    pub(crate) flushed: AtomicU64,
 }
 
 impl EnvelopeSink for FlushSink {
@@ -661,18 +661,9 @@ impl EnvelopeSink for FlushSink {
 
 /// The sink an auth instance binds with, before it is opened.
 #[derive(Clone)]
-pub struct AuthSink(Arc<FlushSink>);
+pub struct AuthSink(pub(crate) Arc<FlushSink>);
 
 impl AuthSink {
-    #[must_use]
-    pub fn new(plugin: &str) -> Self {
-        Self(Arc::new(FlushSink {
-            plugin: cold::sink_plugin(plugin),
-            family: Mutex::new(None),
-            flushed: AtomicU64::new(0),
-        }))
-    }
-
     #[must_use]
     pub fn bind(&self) -> Arc<dyn EnvelopeSink> {
         self.0.clone()
@@ -758,12 +749,12 @@ impl Shared {
 }
 
 #[derive(Clone)]
-struct InstanceMetadata {
-    carriers: Arc<[String]>,
-    presentation: Option<busbar_contract::auth_calls::LoginPresentation>,
-    generation: u64,
+pub(crate) struct InstanceMetadata {
+    pub(crate) carriers: Arc<[String]>,
+    pub(crate) presentation: Option<busbar_contract::auth_calls::LoginPresentation>,
+    pub(crate) generation: u64,
     // An attempted epoch is never reused, even when the plugin's reply cannot be admitted.
-    attempted_generation: u64,
+    pub(crate) attempted_generation: u64,
 }
 
 pub struct AuthInstance {
@@ -809,7 +800,7 @@ pub fn split_secrets(
     settings.lend_secrets(refs)
 }
 
-pub(crate) struct KeptSecrets(Vec<busbar_contract::Secret<Vec<u8>>>);
+pub(crate) struct KeptSecrets(pub(crate) Vec<busbar_contract::Secret<Vec<u8>>>);
 
 impl KeptSecrets {
     fn new(secrets: Vec<busbar_contract::Secret<Vec<u8>>>) -> Self {
@@ -826,17 +817,6 @@ impl KeptSecrets {
             ),
             None => busbar_contract::redacted::fingerprint(std::iter::empty()),
         }
-    }
-
-    fn blobs(
-        &self,
-        seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
-    ) -> Result<Vec<Blob>, String> {
-        if self.0.is_empty() {
-            return Ok(Vec::new());
-        }
-        let seal = seal.ok_or("credential lending requires the host settings seal")?;
-        Ok(cold::lent_blobs(self, seal))
     }
 
     /// One secret blob per kept secret, pointing into the material `self` holds.
@@ -861,85 +841,28 @@ impl std::fmt::Debug for KeptSecrets {
     }
 }
 
-fn instance_carriers(
-    blob: Blob,
-    previous: &[String],
-    facts: &AuthFacts,
-) -> Result<Vec<String>, String> {
-    use busbar_contract::abi::auth::{EXT_CARRIERS, FACT_DEFAULT_INBOUND_STYLE};
-    use busbar_contract::abi::mechanism::extensions;
-
-    let invalid = cold::invalid_carriers;
-    if blob.fmt == BLOB_ABSENT && blob.len == 0 {
-        return Ok(cold::kept_carriers(previous));
-    }
-    if blob.fmt != BLOB_OCTETS || (blob.len != 0 && blob.ptr.is_null()) {
-        return Err(invalid());
-    }
-    // SAFETY: the validated READY reply owns these bytes until its lease is released by the caller.
-    let bytes = unsafe { crate::dispatch::plugin::blob_bytes(blob) };
-    let mut consumed = 0;
-    let mut selection = None;
-    for (key, value) in extensions::entries(bytes) {
-        consumed += 2 + key.len() + 4 + value.len();
-        if key != EXT_CARRIERS.as_bytes() {
-            continue;
-        }
-        if selection.is_some() {
-            return Err(invalid());
-        }
-        // The selection is the stated names themselves, lowered and deduplicated in place
-        // (first occurrence kept, in order).
-        let mut selected: Vec<String> = serde_json::from_slice(value).map_err(|_| invalid())?;
-        for name in &mut selected {
-            if !facts
-                .carriers
-                .iter()
-                .any(|declared| declared.eq_ignore_ascii_case(name.as_str()))
-            {
-                return Err(invalid());
-            }
-            name.make_ascii_lowercase();
-        }
-        let mut kept = 0;
-        for at in 0..selected.len() {
-            if !selected[..kept].contains(&selected[at]) {
-                selected.swap(kept, at);
-                kept += 1;
-            }
-        }
-        selected.truncate(kept);
-        if selected.is_empty() && facts.facts & FACT_DEFAULT_INBOUND_STYLE != 0 {
-            return Err(invalid());
-        }
-        selection = Some(selected);
-    }
-    if consumed != bytes.len() {
-        return Err(invalid());
-    }
-    Ok(selection.unwrap_or_else(|| cold::kept_carriers(previous)))
+/// A READY reply's metadata extensions, checked before any byte of them is read.
+#[derive(Clone, Copy)]
+pub(crate) enum ReplyExtensions<'b> {
+    /// The reply states none.
+    Absent,
+    /// Well-formed octets.
+    Bytes(&'b [u8]),
 }
 
-fn instance_metadata(
-    blob: Blob,
-    previous: &[String],
-    facts: &AuthFacts,
-    generation: u64,
-) -> Result<InstanceMetadata, String> {
-    let carriers = instance_carriers(blob, previous, facts)?;
-    // SAFETY: instance_carriers checked the envelope; the caller retains the READY reply lease.
-    let bytes = unsafe { crate::dispatch::plugin::blob_bytes(blob) };
-    let presentation = busbar_contract::auth_calls::presentation::login_presentation(bytes)
-        .map_err(cold::presentation_refused)?;
-    if presentation.is_some() && facts.caps & busbar_contract::abi::auth::CAP_LOGIN == 0 {
-        return Err("auth login presentation requires the login capability".into());
+/// The READY reply's extension `blob`, checked: absent, octets the reply owns, or `None` (malformed). The caller holds
+/// the reply's lease for as long as it reads the bytes.
+fn reply_extensions<'b>(blob: Blob) -> Option<ReplyExtensions<'b>> {
+    if blob.fmt == BLOB_ABSENT && blob.len == 0 {
+        return Some(ReplyExtensions::Absent);
     }
-    Ok(InstanceMetadata {
-        carriers: cold::shared_carriers(carriers),
-        presentation,
-        generation,
-        attempted_generation: generation,
-    })
+    if blob.fmt != BLOB_OCTETS || (blob.len != 0 && blob.ptr.is_null()) {
+        return None;
+    }
+    // SAFETY: the validated READY reply owns these bytes until its lease is released by the caller.
+    Some(ReplyExtensions::Bytes(unsafe {
+        crate::dispatch::plugin::blob_bytes(blob)
+    }))
 }
 
 impl AuthInstance {
@@ -1007,7 +930,12 @@ impl AuthInstance {
             return Err((bytes, why(called.outcome, called.error)));
         }
         let current = self.carriers();
-        let metadata = instance_metadata(f.out.extensions, &current, &self.facts, generation);
+        let metadata = crate::off_path::auth_door::instance_metadata(
+            reply_extensions(f.out.extensions),
+            &current,
+            &self.facts,
+            generation,
+        );
         match metadata {
             Ok(metadata) => {
                 *self
@@ -1052,7 +980,12 @@ impl AuthInstance {
         if called.outcome != Outcome::Ready {
             return Err(why(called.outcome, called.error));
         }
-        let metadata = instance_metadata(f.out.head.extensions, &facts.carriers, &facts, 1);
+        let metadata = crate::off_path::auth_door::instance_metadata(
+            reply_extensions(f.out.head.extensions),
+            &facts.carriers,
+            &facts,
+            1,
+        );
         release(&plugin, called.lease);
         let metadata = match metadata {
             Ok(metadata) => metadata,

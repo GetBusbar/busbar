@@ -41,6 +41,9 @@ pub mod boot;
 #[deny(unsafe_code)]
 mod cold;
 
+#[deny(unsafe_code)]
+mod off_path;
+
 // busbar:request-path
 #[cfg_attr(
     not(test),
