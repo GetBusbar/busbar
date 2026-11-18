@@ -636,6 +636,7 @@ pub(crate) fn has_units(units: &std::collections::BTreeMap<String, Count>) -> bo
 pub(crate) fn whole_count(n: u64) -> Count {
     Count::from_integer(i128::from(n)).expect("u64 whole units fit Count")
 }
+#[cfg(any(test, feature = "test-support"))]
 fn whole_counts(
     units: &std::collections::BTreeMap<String, u64>,
 ) -> std::collections::BTreeMap<String, Count> {
@@ -933,6 +934,8 @@ pub mod mint_policy;
 pub mod group_provision;
 
 mod state;
+#[cfg(any(test, feature = "test-support"))]
+mod test_recorders;
 pub use state::admitted_view::{AdmissionViewUnavailable, AdmittedView};
 pub use state::identity_runtime::{IdentityClaimKey, IdentityMutationGuard};
 pub(crate) use state::key_row_expired;
