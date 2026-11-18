@@ -56,6 +56,10 @@ pub const OPEN_DRY_RUN: u32 = 1;
 pub const SYMBOL: &[u8] = b"busbar_plugin\0";
 }
 
+/// The type of the one exported symbol, `busbar_plugin` (IF §7.1). UNSAFE-MIN r3.1: `export!` emits it as a
+/// safe `extern "C" fn` (it only returns the address of a `'static` header), so the pointer type is safe too.
+pub type EntryFn = extern "C" fn() -> *const Plugin;
+
 /// Byte offsets of `Plugin`'s private fields, for busbar-plugin-abi's C-HEADER static asserts (IF §7.8).
 pub const PLUGIN_STAMP_AT: usize = core::mem::offset_of!(Plugin, stamp);
 /// Byte offset of `Plugin::kind_vt`.
