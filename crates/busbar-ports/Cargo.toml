@@ -18,25 +18,6 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
-stats_alloc = { workspace = true }
 
 [lints]
 workspace = true
-
-# B-FRAME: three hand-off shapes (copy, fresh, pool), timed.
-[[bench]]
-name = "frame"
-path = "benches/frame.rs"
-harness = false
-
-# B-FRAME (allocations): the same runs, every allocation counted.
-[[bench]]
-name = "frame_allocs"
-path = "benches/frame_allocs.rs"
-harness = false
-
-# B-FRAME (three readers): one payload handed to three readers, on 1 and 8 threads, with allocations and bytes held.
-[[bench]]
-name = "frame_readers"
-path = "benches/frame_readers.rs"
-harness = false
