@@ -19,16 +19,16 @@ pub fn supported(extensions: &[u8]) -> bool {
     )
 }
 
-/// Encode the local GET target for `Services::work_open`.
-pub fn poll_record(target: &str) -> Result<Vec<u8>, &'static str> {
+/// Encode the local GET target for `Services::work_open`, appended to `out` (the caller's buffer).
+pub fn poll_record(target: &str, out: &mut Vec<u8>) -> Result<(), &'static str> {
     if !valid_target(target)
         || PREFIX.len() + target.len() > crate::abi::host::service::MAX_WORK_RECORD
     {
         return Err("invalid or overlong recovery poll target");
     }
-    let mut record = PREFIX.to_vec();
-    record.extend_from_slice(target.as_bytes());
-    Ok(record)
+    out.extend_from_slice(PREFIX);
+    out.extend_from_slice(target.as_bytes());
+    Ok(())
 }
 
 /// Decode an opt-in polling record. Ordinary opaque work records return `Ok(None)`.
@@ -55,6 +55,10 @@ fn valid_target(target: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn poll_record(target: &str) -> Result<Vec<u8>, &'static str> {
+        let mut out = Vec::new();
+        super::poll_record(target, &mut out).map(|()| out)
+    }
     #[test]
     fn recovery_poll_codec_is_local_bounded_and_opt_in() {
         let record = poll_record("/jobs/42?cursor=7").unwrap();

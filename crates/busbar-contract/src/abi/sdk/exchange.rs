@@ -1241,12 +1241,16 @@ fn observe<K: KindMarker>(c: &mut Connector<'_, K>, state: &mut Exchange, stream
     if !state.observe {
         return Poll::Ready(());
     }
-    match bounded_step(c, state.expires_at_ns, |c| c.facts(stream)) {
+    // Read into the kept facts (their text buffers reused); a first read that finds none keeps none.
+    let expires_at_ns = state.expires_at_ns;
+    let had = state.observed.is_some();
+    let into = state.observed.get_or_insert_with(Observed::default);
+    let answer = bounded_step(c, expires_at_ns, |c| c.facts(stream, Some(into)));
+    if !had && !matches!(answer, Poll::Ready(Ok(Some(_)))) {
+        state.observed = None;
+    }
+    match answer {
         Poll::Pending => Poll::Pending,
-        Poll::Ready(Ok(Some(observed))) => {
-            state.observed = Some(observed);
-            Poll::Ready(())
-        }
         Poll::Ready(_) => Poll::Ready(()),
     }
 }

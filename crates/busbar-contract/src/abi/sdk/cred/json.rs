@@ -100,11 +100,25 @@ impl Cred {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+/// A member's value: a public value already encoded as JSON (in custody), or a credential.
+#[derive(Clone)]
 enum Member {
-    Public(serde_json::Value),
+    Public(crate::secure::SecureVec),
     Sealed(Cred),
 }
+
+/// Equal when the encodings (or the credentials) are equal.
+impl PartialEq for Member {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Public(a), Self::Public(b)) => a[..] == b[..],
+            (Self::Sealed(a), Self::Sealed(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Member {}
 
 /// A JSON object whose members are public values or credentials, in the order named. The SDK
 /// encodes it ([`SealedJson::encoded`]) as `serde_json::to_vec` writes the same members in the same
@@ -166,11 +180,12 @@ impl SealedJson {
         Self::default()
     }
 
-    /// Append `name: value` (public).
+    /// Append `name: value` (public), encoded as `serde_json` writes `value` (no JSON tree is kept).
     #[must_use]
-    pub fn public(mut self, name: &str, value: impl Into<serde_json::Value>) -> Self {
+    pub fn public(mut self, name: &str, value: impl serde::Serialize) -> Self {
+        let encoded = erased::Json::to_json(&value);
         self.members
-            .push((SecureString::from(name), Member::Public(value.into())));
+            .push((SecureString::from(name), Member::Public(encoded)));
         self
     }
 
@@ -210,7 +225,7 @@ impl SealedJson {
             put(&json(&name.as_str()));
             put(b":");
             match member {
-                Member::Public(v) => put(&json(v)),
+                Member::Public(encoded) => put(encoded),
                 Member::Sealed(c) => {
                     let text = core::str::from_utf8(c.wire()).map_err(|_| NotJsonText {
                         member: crate::abi::sdk::cold::cred::member_name(name),

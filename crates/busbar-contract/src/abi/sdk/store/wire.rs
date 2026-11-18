@@ -1303,11 +1303,16 @@ fn serve(
                 Ok(s) => s,
                 Err(e) => return Served::Answer(Err(e)),
             };
-            return match services.identity() {
-                Poll::Ready(Ok(id)) => {
-                    wire.state().identity = Some(id);
-                    Served::Answer(Ok(0))
-                }
+            // Read into the kept identity (its text buffers reused); a failed read keeps what was.
+            let kept = wire.state().identity.take();
+            let had = kept.is_some();
+            let mut id = kept.unwrap_or_default();
+            let answer = services.identity(&mut id);
+            if had || matches!(answer, Poll::Ready(Ok(()))) {
+                wire.state().identity = Some(id);
+            }
+            return match answer {
+                Poll::Ready(Ok(())) => Served::Answer(Ok(0)),
                 Poll::Ready(Err(e)) => Served::Answer(Err(e)),
                 Poll::Pending => Served::Pending {
                     wake_at_ns: 0,

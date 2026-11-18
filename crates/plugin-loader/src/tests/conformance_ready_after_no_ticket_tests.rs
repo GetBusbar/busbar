@@ -71,7 +71,8 @@ thread_local! {
 /// One connector service on the call's own ticket: its failure, if any.
 fn connector(instance: &Instance<'_, Held<Toy>, ExportKind>) -> Option<ConnFailure> {
     let host = instance.get()?.host()?;
-    match host.connector(instance.ticket()).identity() {
+    let mut identity = busbar_contract::abi::sdk::conn::ProcessId::default();
+    match host.connector(instance.ticket()).identity(&mut identity) {
         std::task::Poll::Ready(Err(e)) => Some(e),
         _ => None,
     }

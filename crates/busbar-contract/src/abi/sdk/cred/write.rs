@@ -100,9 +100,9 @@ pub(crate) fn confirm_secure<K: crate::plugin::KindMarker>(
     stream: u64,
     previously_confirmed: bool,
 ) -> Answer<()> {
-    match c.facts(stream) {
+    match c.facts(stream, None) {
         Poll::Pending => Poll::Pending,
-        Poll::Ready(Ok(Some(o))) if o.secure => Poll::Ready(Ok(())),
+        Poll::Ready(Ok(Some(true))) => Poll::Ready(Ok(())),
         Poll::Ready(Ok(None)) if previously_confirmed => Poll::Ready(Ok(())),
         Poll::Ready(Ok(_) | Err(_)) => Poll::Ready(Err(
             crate::abi::sdk::conn::ConnFailure::Refused(super::NOT_SECURE.into()),
