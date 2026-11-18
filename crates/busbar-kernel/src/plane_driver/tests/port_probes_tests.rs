@@ -126,7 +126,7 @@ impl Effects for Quiet {
 struct Far;
 
 impl UpSend for Far {
-    fn send(&mut self, _: &Candidate, _: &UpExchange) -> Result<UpReply, SendFailed> {
+    fn send(&mut self, _: &Candidate, _: UpExchange) -> Result<UpReply, SendFailed> {
         Ok(UpReply {
             status: 200,
             headers: Vec::new(),

@@ -525,22 +525,31 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
     }
 }
 
-/// The far end's request for `exchange` as `member` in `pool`, attempt `attempt`. `None` = an exchange this
-/// carrier does not send (another carrier, no method or path).
+/// The far end's request for `exchange` as `member` in `pool`, attempt `attempt`: the exchange moves
+/// in, its header list, method, path and body become the request's own with no copy. `None` = an
+/// exchange this carrier does not send (another carrier, no method or path).
 fn request_of(
     member: &str,
     pool: &str,
     attempt: u32,
-    exchange: &UpExchange,
+    exchange: UpExchange,
 ) -> Option<OutboundRequest> {
     if !matches!(exchange.carrier, CARRIER_DEFAULT | CARRIER_HTTP) {
         return None;
     }
-    let mut fields = exchange.headers.clone();
-    if exchange.outbound == OUTBOUND_NONE {
+    let outbound = exchange.outbound;
+    let UpExchange {
+        method,
+        path,
+        scope,
+        headers: mut fields,
+        body,
+        ..
+    } = exchange;
+    if outbound == OUTBOUND_NONE {
         fields.push((NO_MEMBER_AUTH_FIELD.as_bytes().to_vec(), b"1".to_vec()));
     }
-    if let Some(scope) = &exchange.scope {
+    if let Some(scope) = &scope {
         fields.push((
             busbar_contract::abi::auth::SCOPE_REQUEST_FIELD
                 .as_bytes()
@@ -552,13 +561,52 @@ fn request_of(
         member: member.to_owned(),
         pool: pool.to_owned(),
         attempt_no: attempt,
-        verb: exchange.method.as_deref()?.as_bytes().to_vec(),
-        target: exchange.path.as_deref()?.as_bytes().to_vec(),
+        verb: method?.into_boxed_bytes().into_vec(),
+        target: path?.into_boxed_bytes().into_vec(),
         fields,
-        body: exchange.body.clone(),
+        body,
         need: 0,
         text: false,
     })
+}
+
+/// Whether `request` is what [`request_of`] builds from these parts for `request.attempt_no`, compared in
+/// place: the selected path's custody keeps its exchange and asks only whether a request is its own.
+pub(super) fn is_request_of(
+    request: &OutboundRequest,
+    member: &str,
+    pool: &str,
+    exchange: &UpExchange,
+) -> bool {
+    if !matches!(exchange.carrier, CARRIER_DEFAULT | CARRIER_HTTP) {
+        return false;
+    }
+    let (Some(method), Some(path)) = (exchange.method.as_deref(), exchange.path.as_deref()) else {
+        return false;
+    };
+    let mut fields = request.fields.iter();
+    let mut same = request.member == member
+        && request.pool == pool
+        && request.verb == method.as_bytes()
+        && request.target == path.as_bytes()
+        && request.body == exchange.body
+        && request.need == 0
+        && !request.text;
+    for expected in &exchange.headers {
+        same &= fields.next() == Some(expected);
+    }
+    if exchange.outbound == OUTBOUND_NONE {
+        same &= fields
+            .next()
+            .is_some_and(|(name, value)| name == NO_MEMBER_AUTH_FIELD.as_bytes() && value == b"1");
+    }
+    if let Some(scope) = &exchange.scope {
+        same &= fields.next().is_some_and(|(name, value)| {
+            name == busbar_contract::abi::auth::SCOPE_REQUEST_FIELD.as_bytes()
+                && value == scope.as_bytes()
+        });
+    }
+    same && fields.next().is_none()
 }
 
 /// The rest of a reply, read from the far end as the plane takes it.
@@ -697,7 +745,12 @@ impl<F: FarEnd> UpSend for WalkSend<'_, '_, F> {
             &s.member.borrow(),
             &s.pool.borrow(),
             s.picks.get(),
-            handoff.exchange().ok_or_else(SelectedSendError::internal)?,
+            // The attempt's custody keeps its exchange for `commit` and `accepts_request`: the copy is
+            // written here, once, where it is made.
+            handoff
+                .exchange()
+                .ok_or_else(SelectedSendError::internal)?
+                .clone(),
         )
         .ok_or_else(SelectedSendError::internal)?;
         let sent = s
@@ -714,7 +767,7 @@ impl<F: FarEnd> UpSend for WalkSend<'_, '_, F> {
         })
     }
 
-    fn send(&mut self, member: &Candidate, exchange: &UpExchange) -> Result<UpReply, SendFailed> {
+    fn send(&mut self, member: &Candidate, exchange: UpExchange) -> Result<UpReply, SendFailed> {
         let mut open = self.open(member, exchange)?;
         Ok(UpReply {
             status: open.status,
@@ -726,7 +779,7 @@ impl<F: FarEnd> UpSend for WalkSend<'_, '_, F> {
     fn open<'a>(
         &'a mut self,
         _member: &Candidate,
-        exchange: &UpExchange,
+        exchange: UpExchange,
     ) -> Result<UpOpen<'a>, SendFailed> {
         let s = self.0;
         if s.request_walk.is_some() && !s.admitted.get().is_some_and(AdmittedRequest::is_live) {
@@ -922,7 +975,7 @@ struct ProbeSender {
 }
 
 impl UpSend for ProbeSender {
-    fn send(&mut self, member: &Candidate, exchange: &UpExchange) -> Result<UpReply, SendFailed> {
+    fn send(&mut self, member: &Candidate, exchange: UpExchange) -> Result<UpReply, SendFailed> {
         if member.pool.as_ref() != self.selected.pool
             || member.qualified_member.as_ref() != self.selected.qualified_member
         {

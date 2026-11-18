@@ -262,13 +262,13 @@ pub trait UpSend {
     }
     /// The whole reply. A carrier that streams implements [`open`](Self::open) and need not implement this one's
     /// buffering; a carrier that does not stream implements this one and gets `open` for free.
-    fn send(&mut self, member: &Candidate, exchange: &UpExchange) -> Result<UpReply, SendFailed>;
+    fn send(&mut self, member: &Candidate, exchange: UpExchange) -> Result<UpReply, SendFailed>;
 
     /// The reply's head and a reader for the rest. The default reads the whole reply with [`send`](Self::send).
     fn open<'a>(
         &'a mut self,
         member: &Candidate,
-        exchange: &UpExchange,
+        exchange: UpExchange,
     ) -> Result<UpOpen<'a>, SendFailed> {
         let reply = self.send(member, exchange)?;
         Ok(UpOpen {
@@ -510,7 +510,7 @@ pub fn run_attempts<K: Calls + ?Sized>(
                 continue;
             }
             let exchange = exchange_zero(answer.exchanges)?;
-            let Ok(reply) = send.open(&member, &exchange) else {
+            let Ok(reply) = send.open(&member, exchange) else {
                 members.failed(&member, &unsent);
                 continue;
             };
@@ -581,7 +581,7 @@ pub fn probe_member<K: Calls + ?Sized>(
         return Ok(ProbeOutcome::Declined);
     }
     let exchange = exchange_zero(answer.exchanges)?;
-    let Ok(reply) = send.open(member, &exchange) else {
+    let Ok(reply) = send.open(member, exchange) else {
         return Ok(ProbeOutcome::Unhealthy);
     };
     feed(&mut task, reply, effects)?;

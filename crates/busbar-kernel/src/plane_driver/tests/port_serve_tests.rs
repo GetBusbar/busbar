@@ -325,7 +325,7 @@ impl UpSend for Far {
     fn send(
         &mut self,
         _: &Candidate,
-        _: &crate::plane_driver::port_session::UpExchange,
+        _: crate::plane_driver::port_session::UpExchange,
     ) -> Result<UpReply, SendFailed> {
         Ok(UpReply {
             status: 200,

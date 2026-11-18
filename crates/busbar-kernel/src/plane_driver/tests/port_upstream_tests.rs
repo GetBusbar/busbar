@@ -329,7 +329,7 @@ struct Far {
 }
 
 impl UpSend for Far {
-    fn send(&mut self, c: &Candidate, ex: &UpExchange) -> Result<UpReply, SendFailed> {
+    fn send(&mut self, c: &Candidate, ex: UpExchange) -> Result<UpReply, SendFailed> {
         self.sent.push((
             c.upstream.to_string(),
             ex.method.as_deref().unwrap_or_default().to_string(),
@@ -362,7 +362,7 @@ fn selected_quota_skips_do_not_damage_the_breaker_and_infrastructure_stops() {
     };
     struct Refuse(bool);
     impl UpSend for Refuse {
-        fn send(&mut self, _: &Candidate, _: &UpExchange) -> Result<UpReply, SendFailed> {
+        fn send(&mut self, _: &Candidate, _: UpExchange) -> Result<UpReply, SendFailed> {
             panic!("no legacy send")
         }
         fn open_selected<'a>(
@@ -984,11 +984,11 @@ struct Streamer {
 }
 
 impl UpSend for Streamer {
-    fn send(&mut self, _: &Candidate, _: &UpExchange) -> Result<UpReply, SendFailed> {
+    fn send(&mut self, _: &Candidate, _: UpExchange) -> Result<UpReply, SendFailed> {
         Err(SendFailed)
     }
 
-    fn open<'a>(&'a mut self, _: &Candidate, _: &UpExchange) -> Result<UpOpen<'a>, SendFailed> {
+    fn open<'a>(&'a mut self, _: &Candidate, _: UpExchange) -> Result<UpOpen<'a>, SendFailed> {
         let (status, chunks) = self.replies.pop_front().ok_or(SendFailed)?;
         Ok(UpOpen {
             status,
