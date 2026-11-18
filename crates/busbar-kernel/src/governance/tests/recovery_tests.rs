@@ -390,6 +390,7 @@ async fn raw_intent(gov: &super::super::GovState, requests: i128) -> RecoveryEve
             ..Default::default()
         },
         super::super::ExactUsageDelta::default(),
+        crate::store::now_ms(),
     )
     .unwrap()
     .unwrap();
@@ -477,6 +478,7 @@ async fn unknown_usage_absorbs_negative_then_not_landed_reposts_only_net_raw_deb
             negative,
             super::super::ExactUsageDelta::default(),
             &gov.capture_foreign_settled_snapshot().await,
+            crate::store::now_ms(),
         )
         .unwrap();
     assert!(captured.child.is_none());
@@ -552,6 +554,7 @@ async fn selected_parent_checkpoint_reconstructs_exact_missing_usage_child() {
             ..Default::default()
         },
         super::super::ExactUsageDelta::default(),
+        crate::store::now_ms(),
     )
     .unwrap()
     .unwrap();
@@ -627,6 +630,7 @@ async fn two_unknown_positives_cannot_release_each_others_dependent_negatives() 
             },
             Default::default(),
             &gov.capture_foreign_settled_snapshot().await,
+            crate::store::now_ms(),
         )
         .unwrap();
     assert!(captured.child.is_none());
@@ -639,6 +643,7 @@ async fn two_unknown_positives_cannot_release_each_others_dependent_negatives() 
             captured.deferred_plain,
             captured.deferred_dated,
             &gov.capture_foreign_settled_snapshot().await,
+            crate::store::now_ms(),
         )
         .unwrap();
     assert!(remaining.child.is_none());
@@ -1075,6 +1080,7 @@ async fn foreign_settled_child_is_observed_as_receipt_without_adoption_or_repost
             ..Default::default()
         },
         Default::default(),
+        crate::store::now_ms(),
     )
     .unwrap()
     .unwrap();
@@ -1247,6 +1253,7 @@ async fn admin_resume_can_advance_a_captured_prerequisite_without_wedging_its_fl
             ..Default::default()
         },
         Default::default(),
+        crate::store::now_ms(),
     )
     .unwrap()
     .unwrap();
@@ -1280,6 +1287,7 @@ async fn admin_resume_can_advance_a_captured_prerequisite_without_wedging_its_fl
             },
             Default::default(),
             &gov.capture_foreign_settled_snapshot().await,
+            crate::store::now_ms(),
         )
         .unwrap();
     let prerequisite = captured.prerequisite.as_ref().unwrap().clone();
@@ -1384,6 +1392,7 @@ async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtr
                 ..Default::default()
             },
             Default::default(),
+            crate::store::now_ms(),
         )
         .unwrap()
         .unwrap();
@@ -1418,6 +1427,7 @@ async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtr
                 ..Default::default()
             },
             Default::default(),
+            crate::store::now_ms(),
         )
         .unwrap()
         .unwrap();
@@ -1526,6 +1536,7 @@ async fn reused_host_flushes_fresh_refund_only_after_exact_foreign_settled_subtr
                     },
                     Default::default(),
                     &proof,
+                    crate::store::now_ms(),
                 )
                 .unwrap();
             assert_eq!(
@@ -1609,6 +1620,7 @@ async fn settled_parent_with_handoffs(
                 ..Default::default()
             },
             super::super::ExactUsageDelta::default(),
+            crate::store::now_ms(),
         )
         .unwrap()
         .unwrap();

@@ -217,6 +217,7 @@ async fn absorbing_owner() -> (
             ..Default::default()
         },
         super::super::ExactUsageDelta::default(),
+        crate::store::now_ms(),
     )
     .unwrap()
     .unwrap();
@@ -241,6 +242,7 @@ async fn absorbing_owner() -> (
             },
             Default::default(),
             &gov.capture_foreign_settled_snapshot().await,
+            crate::store::now_ms(),
         )
         .unwrap();
     assert_eq!(

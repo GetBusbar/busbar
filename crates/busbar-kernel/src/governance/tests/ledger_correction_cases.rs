@@ -1489,6 +1489,7 @@ async fn independent_entry_refund_posts_while_only_the_matching_entry_negative_i
             plain.clone(),
             dated.clone(),
             &Default::default(),
+            crate::store::now_ms(),
         )
         .unwrap();
     assert!(
@@ -1497,8 +1498,15 @@ async fn independent_entry_refund_posts_while_only_the_matching_entry_negative_i
     );
     let journal_len = journal.selected.lock().unwrap().len();
     assert!(
-        gov.capture_usage_recovery(&key.id, 0, plain, dated, &Default::default())
-            .is_err(),
+        gov.capture_usage_recovery(
+            &key.id,
+            0,
+            plain,
+            dated,
+            &Default::default(),
+            crate::store::now_ms()
+        )
+        .is_err(),
         "an unconfirmed immutable take cannot spend the same selected capacity twice"
     );
     assert_eq!(journal.selected.lock().unwrap().len(), journal_len);

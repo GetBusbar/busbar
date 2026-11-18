@@ -709,9 +709,11 @@ impl GovState {
             )
         });
         let durable = if self.recovery_enabled() {
+            // The capture's one reading: the child it makes, by either arm, is first sent at it.
+            let sent_at_ms = crate::store::now_ms();
             let prepared = if correcting {
-                Self::usage_recovery_child(bucket, window, plain.clone(), dated.clone()).and_then(
-                    |child| {
+                Self::usage_recovery_child(bucket, window, plain.clone(), dated.clone(), sent_at_ms)
+                    .and_then(|child| {
                         let Some(child) = child else {
                             return Ok(super::raw_recovery::DurableUsageFlight {
                                 child: None,
@@ -728,10 +730,16 @@ impl GovState {
                             deferred_plain: ExactUsageDelta::default(),
                             deferred_dated: ExactUsageDelta::default(),
                         })
-                    },
-                )
+                    })
             } else {
-                self.capture_usage_recovery(bucket, window, plain.clone(), dated.clone(), settled)
+                self.capture_usage_recovery(
+                    bucket,
+                    window,
+                    plain.clone(),
+                    dated.clone(),
+                    settled,
+                    sent_at_ms,
+                )
             };
             match prepared {
                 Ok(flight) => Some(flight),

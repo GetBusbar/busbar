@@ -12,8 +12,11 @@ impl GovState {
         &self,
         snapshot: &UnitCheckpoint,
     ) -> RecordStoreResult<Vec<RecoveryEvent>> {
+        // The unit's terminal is one transfer: every child it makes, usage and metering alike,
+        // is first sent at this one reading.
+        let sent_at_ms = crate::store::now_ms();
         if snapshot.partitions.is_some() {
-            return Self::selected_terminal_events(snapshot);
+            return Self::selected_terminal_events(snapshot, sent_at_ms);
         }
         let mut cell = BudgetCell::default();
         // No counts, no row (#42): accrue_raw creates a lane row only from a non-zero count.
@@ -31,6 +34,7 @@ impl GovState {
                         target.window,
                         plain.clone(),
                         dated.clone(),
+                        sent_at_ms,
                     )?
                     else {
                         return Ok(None);
@@ -99,7 +103,6 @@ impl GovState {
                 .unwrap_or_default(),
         )
             .into();
-        let sent_at_ms = crate::store::now_ms();
         while !counts.is_zero() {
             let (delta, remaining) = metering_flush::metering_chunk(&key, &counts);
             events.push(self.metering_recovery_intent(
@@ -114,8 +117,11 @@ impl GovState {
 
     /// Build all selected children without touching the recovery book. One usage child per
     /// admitted target includes every original lane, and each meter retains its exact provider.
+    /// Every child is first sent at `sent_at_ms`: the selected terminal is one transfer, and this
+    /// builder reads no clock.
     fn selected_terminal_events(
         snapshot: &UnitCheckpoint,
+        sent_at_ms: u64,
     ) -> RecordStoreResult<Vec<RecoveryEvent>> {
         use super::unit_checkpoint::partitions::{
             ValidatedSelectedCheckpoint, MAX_TERMINAL_EVENTS,
@@ -145,11 +151,11 @@ impl GovState {
                 target.window,
                 plain.clone(),
                 dated.clone(),
+                sent_at_ms,
             )? {
                 events.push(initial(child));
             }
         }
-        let sent_at_ms = crate::store::now_ms();
         for (key, mut counts) in selected_meter_counts(&projection) {
             while !counts.is_zero() {
                 if events.len() == MAX_TERMINAL_EVENTS {
@@ -179,7 +185,13 @@ impl GovState {
         let Some(actual) = &snapshot.terminal else {
             return Ok(());
         };
-        let expected = Self::selected_terminal_events(snapshot)?;
+        // The expected vector, dated as the sealed one is: the comparison below reads kind,
+        // fingerprint and payload, never a first-sent time, so validating reads no clock.
+        let dated = actual
+            .first()
+            .and_then(|event| event.first_sent_at_ms)
+            .unwrap_or_default();
+        let expected = Self::selected_terminal_events(snapshot, dated)?;
         if actual.len() != expected.len()
             || actual.iter().zip(expected).any(|(a, e)| {
                 a.revision != 0
@@ -204,7 +216,8 @@ impl GovState {
         if snapshot.partitions.is_none() {
             return Ok(());
         }
-        let events = Self::selected_terminal_events(snapshot)?;
+        // Measured as it would be sealed now: the first-sent time is part of the encoded size.
+        let events = Self::selected_terminal_events(snapshot, crate::store::now_ms())?;
         let mut sealed = snapshot.clone();
         sealed.terminal = Some(events);
         super::unit_checkpoint::partitions::check_size(&sealed)
