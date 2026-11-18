@@ -86,7 +86,7 @@ fn answered(
     let mut once = Once::default();
     let mut answer = Answer::default();
     for item in items {
-        answer.take(item, Origin::Request, &mut once, &effects);
+        answer.take(&item, Origin::Request, &mut once, &effects);
     }
     line_of(answer.seal().client)
 }

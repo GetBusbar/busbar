@@ -87,24 +87,32 @@ impl Stage {
             });
         }
     }
+    /// Every tap but the last takes a copy of the facts; the last takes the facts themselves.
     fn taps(&self, calls: &[Arc<super::Call>], facts: Vec<(u32, FactVal)>) {
+        let mut calls = calls.iter();
+        let Some(last) = calls.next_back() else {
+            return;
+        };
         for call in calls {
-            let mut held = self.clone();
-            if !facts.is_empty() {
-                held.projection = held.projection.shape();
-            }
-            let facts = facts.clone();
-            let call = Arc::clone(call);
-            crate::hooks::taps::spawn_bounded_tap(async move {
-                let selection = held.selection();
-                let input = held.input(&selection, &facts);
-                let result = call::one(&call, abi::POINT_NOTIFY, &input).await;
-                held.report(vec![call::record(
-                    &call,
-                    result.as_ref().ok().map(|reply| &**reply),
-                )]);
-            });
+            self.tap(call, facts.clone());
         }
+        self.tap(last, facts);
+    }
+    fn tap(&self, call: &Arc<super::Call>, facts: Vec<(u32, FactVal)>) {
+        let mut held = self.clone();
+        if !facts.is_empty() {
+            held.projection = held.projection.shape();
+        }
+        let call = Arc::clone(call);
+        crate::hooks::taps::spawn_bounded_tap(async move {
+            let selection = held.selection();
+            let input = held.input(&selection, &facts);
+            let result = call::one(&call, abi::POINT_NOTIFY, &input).await;
+            held.report(vec![call::record(
+                &call,
+                result.as_ref().ok().map(|reply| &**reply),
+            )]);
+        });
     }
 }
 

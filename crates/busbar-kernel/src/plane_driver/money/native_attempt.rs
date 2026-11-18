@@ -221,6 +221,13 @@ impl NativeRequestMoney {
     /// A quota/eligibility refusal consumes the original preparation without creating a dispatch.
     /// Minute-expired provisional reservations instead return this same token for re-admission.
     pub(crate) fn no_send(&self, prepared: PreparedRateAttempt) -> Result<(), NativeAttemptError> {
+        // The token is spent here, on every path, after the shard guard of the check is released.
+        let result = self.no_send_checked(&prepared);
+        drop(prepared);
+        result
+    }
+
+    fn no_send_checked(&self, prepared: &PreparedRateAttempt) -> Result<(), NativeAttemptError> {
         let mut all = self.money.shard(self.request.unit());
         let open = all
             .get_mut(&self.request.unit())

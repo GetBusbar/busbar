@@ -899,7 +899,7 @@ impl<'h> Resolver<'h> {
             RV_REMOTE => match held.get_mut(&exchange) {
                 Some(bridge) => match bridge.remote(description) {
                     Ok(()) => None,
-                    Err(denied) => Some(rv_failed(exchange, &denied, bridge.refusal())),
+                    Err(denied) => Some(rv_failed(exchange, &denied, bridge.refusal().as_deref())),
                 },
                 None => Some(rv_failed(exchange, &RecordsDenied::Invalid, None)),
             },
@@ -1259,7 +1259,7 @@ fn split_key(tail: &[u8], key_len: u32) -> Option<(&[u8], &[u8])> {
 
 /// P_RV_FAILED's bytes: one REFUSAL in core's own fixed text for the cause (§12.15), or `mirrored`'s text when the
 /// media bridge says why the far end's answer was refused.
-fn rv_failed(exchange: u32, denied: &RecordsDenied, text: Option<String>) -> Piece {
+fn rv_failed(exchange: u32, denied: &RecordsDenied, text: Option<&str>) -> Piece {
     let (status, code, fixed) = match denied {
         RecordsDenied::Invalid | RecordsDenied::TooLarge => {
             (400, R_INVALID, "the media session description was refused")
@@ -1268,7 +1268,7 @@ fn rv_failed(exchange: u32, denied: &RecordsDenied, text: Option<String>) -> Pie
         RecordsDenied::Unavailable => (502, F_UNAVAILABLE, "the media session is unavailable"),
     };
     let mut reply = Reply::new();
-    let put = encode_refusal(&mut reply, status, code, text.as_deref().unwrap_or(fixed));
+    let put = encode_refusal(&mut reply, status, code, text.unwrap_or(fixed));
     debug_assert!(put.is_ok(), "a REFUSAL fits a Reply");
     Piece {
         exchange,

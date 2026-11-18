@@ -183,7 +183,7 @@ pub(crate) fn render_kernel_refusal(
         body: Bytes::new(),
         request_id: REQUEST_IDS.fetch_add(1, Ordering::Relaxed),
     };
-    match seat.driver.render_refusal_now(route, http, refusal.clone()) {
+    match seat.driver.render_refusal_now(route, &http, &refusal) {
         Ok(items) => response_of(items),
         Err(_) => response_of(port_auth::plain_refusal(&refusal)),
     }

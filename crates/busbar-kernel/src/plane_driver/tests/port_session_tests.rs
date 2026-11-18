@@ -183,11 +183,11 @@ fn command_callback_rejects_trailing_effects_and_duplicate_channels() {
             key: "command",
             head: busbar_plugin_abi::records::Records::new(&[]),
         };
-        answer.take(channel(), Origin::Channel, &mut once, &effects);
+        answer.take(&channel(), Origin::Channel, &mut once, &effects);
         assert_eq!(answer.intents.len(), 1);
         assert!(answer.violation.is_none());
         answer.take(
-            if duplicate {
+            &if duplicate {
                 channel()
             } else {
                 PlaneOut::Emit {
@@ -250,7 +250,7 @@ fn the_actual_resource_echo_is_retained_on_exchange_zero() {
         let mut answer = super::Answer::default();
         let mut once = super::Once::default();
         let fx = Emitted::default();
-        let mut take = |out| answer.take(out, Origin::Upstream, &mut once, &fx);
+        let mut take = |out| answer.take(&out, Origin::Upstream, &mut once, &fx);
         if echo_first {
             take(PlaneOut::ResourceEcho(echo));
         }

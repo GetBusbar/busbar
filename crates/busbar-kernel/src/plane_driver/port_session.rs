@@ -647,7 +647,7 @@ impl Answer {
     /// returns normally.
     pub fn take(
         &mut self,
-        out: PlaneOut<'_>,
+        out: &PlaneOut<'_>,
         origin: Origin,
         once: &mut Once,
         effects: &dyn Effects,
@@ -659,13 +659,13 @@ impl Answer {
 
     fn place(
         &mut self,
-        out: PlaneOut<'_>,
+        out: &PlaneOut<'_>,
         origin: Origin,
         once: &mut Once,
         effects: &dyn Effects,
     ) -> Result<(), Violation> {
         if origin == Origin::Channel {
-            match &out {
+            match out {
                 PlaneOut::Channel { carrier, .. }
                     if *carrier == busbar_plugin_abi::plane::CARRIER_STDIO
                         && self.intents.is_empty() => {}
@@ -673,7 +673,7 @@ impl Answer {
                 _ => return Err(Violation::BadRecords),
             }
         }
-        match out {
+        match *out {
             PlaneOut::SelectedResource(selected) => {
                 if origin != Origin::Upstream {
                     return Err(Violation::BadRecords);
@@ -1189,6 +1189,14 @@ impl Answer {
     }
 }
 
+/// The least class after `after`. Walked from `None`, the rounded classes come out ascending and each once (the
+/// order and dedup of the degraded audit rows) without collecting them into a set.
+fn next_class<'a>(classes: impl Iterator<Item = &'a str>, after: Option<&str>) -> Option<&'a str> {
+    classes
+        .filter(|class| after.is_none_or(|after| *class > after))
+        .min()
+}
+
 /// Upstream exchange items come in `upstream`, `piece` and `probe` answers only.
 fn upstream_placed(origin: Origin) -> Result<(), Violation> {
     match origin {
@@ -1278,7 +1286,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         let mut answer = Answer::default();
         let session = calls
             .request(req, body, &mut |out| {
-                answer.take(out, Origin::Request, &mut once, &buffered);
+                answer.take(&out, Origin::Request, &mut once, &buffered);
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
@@ -1315,7 +1323,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         let mut answer = Answer::default();
         let session = calls
             .probe(target, &mut |out| {
-                answer.take(out, Origin::Probe, &mut once, &buffered);
+                answer.take(&out, Origin::Probe, &mut once, &buffered);
             })
             .map_err(SessionError::Port)?;
         let mut task = Self {
@@ -1393,7 +1401,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         let session = self.session.as_mut().ok_or(SessionError::Over)?;
         let once = &mut self.once;
         let called = self.calls.channel(session, &target, &mut |out| {
-            answer.take(out, Origin::Channel, once, &buffered);
+            answer.take(&out, Origin::Channel, once, &buffered);
         });
         if answer.intents.len() != 1 {
             answer.violation.get_or_insert(Violation::BadRecords);
@@ -1494,7 +1502,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         let session = self.session.as_mut().ok_or(SessionError::Over)?;
         let mut answer = Answer::for_exchange(exchange);
         let called = calls.piece(session, from, exchange, flags, bytes, &mut |out| {
-            answer.take(out, origin, once, &buffered);
+            answer.take(&out, origin, once, &buffered);
         });
         let answer = self.settle(called, answer)?;
         buffered.release();
@@ -1513,7 +1521,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         let session = self.session.as_mut().ok_or(SessionError::Over)?;
         let mut answer = Answer::default();
         let called = calls.rewrite(session, conversation, &mut |out| {
-            answer.take(out, Origin::Rewrite, once, &buffered);
+            answer.take(&out, Origin::Rewrite, once, &buffered);
         });
         // IF §8.6: a rewrite that does not fit leaves the original request usable.
         // This exception belongs only to rewrite; other failed operations cancel the session.
@@ -1539,7 +1547,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         let once = &mut self.once;
         self.calls
             .end(session, &mut |out| {
-                answer.take(out, Origin::End, once, &buffered);
+                answer.take(&out, Origin::End, once, &buffered);
             })
             .map_err(SessionError::Port)?;
         let answer = self.checked(answer)?;
@@ -1567,7 +1575,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         let session = self.session.as_mut().ok_or(SessionError::Over)?;
         let mut answer = Answer::default();
         let called = calls.upstream(session, target, &mut |out| {
-            answer.take(out, Origin::Upstream, once, &buffered);
+            answer.take(&out, Origin::Upstream, once, &buffered);
         });
         let declined = answer
             .attempt
@@ -1723,16 +1731,19 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                     }
                 })?;
             if rounded {
-                for class in answer
-                    .attempt_usage
-                    .iter()
-                    .filter(|usage| {
-                        super::usage::scaled(usage.amount, usage.scale)
-                            .is_some_and(|(_, rounded)| rounded)
-                    })
-                    .map(|usage| &usage.class)
-                    .collect::<std::collections::BTreeSet<_>>()
-                {
+                let mut after = None;
+                while let Some(class) = next_class(
+                    answer
+                        .attempt_usage
+                        .iter()
+                        .filter(|usage| {
+                            super::usage::scaled(usage.amount, usage.scale)
+                                .is_some_and(|(_, rounded)| rounded)
+                        })
+                        .map(|usage| &*usage.class),
+                    after,
+                ) {
+                    after = Some(class);
                     answer.audits.push(AuditRow {
                         verdict: AUDIT_DEGRADED,
                         action: super::port_money::ACTION_ROUNDED.into(),
@@ -1750,16 +1761,19 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         }
         let session_rounded = self.selected_session_usage(&usage)?;
         if session_rounded {
-            for class in usage
-                .last()
-                .iter()
-                .filter(|usage| {
-                    super::usage::scaled(usage.amount, usage.scale)
-                        .is_some_and(|(_, rounded)| rounded)
-                })
-                .map(|usage| &usage.class)
-                .collect::<std::collections::BTreeSet<_>>()
-            {
+            let mut after = None;
+            while let Some(class) = next_class(
+                usage
+                    .last()
+                    .iter()
+                    .filter(|usage| {
+                        super::usage::scaled(usage.amount, usage.scale)
+                            .is_some_and(|(_, rounded)| rounded)
+                    })
+                    .map(|usage| &*usage.class),
+                after,
+            ) {
+                after = Some(class);
                 answer.audits.push(AuditRow {
                     verdict: AUDIT_DEGRADED,
                     action: super::port_money::ACTION_ROUNDED.into(),
@@ -1871,7 +1885,7 @@ pub fn render<K: Calls + ?Sized>(
     let mut answer = Answer::default();
     calls
         .render(req, what, arg, &mut |out| {
-            answer.take(out, Origin::Render, &mut once, effects);
+            answer.take(&out, Origin::Render, &mut once, effects);
         })
         .map_err(SessionError::Port)?;
     if let Some(v) = answer.violation {

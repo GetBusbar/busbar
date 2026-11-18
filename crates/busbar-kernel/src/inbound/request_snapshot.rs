@@ -15,6 +15,8 @@ use busbar_ports::PortError;
 use crate::limits::process_admission::{ByteCredit, CapacityDenied, RequestLease};
 
 /// Borrowed original facts. Physical callers map their existing header array without allocating Pair views.
+/// Every field borrows or is a scalar, so the input is `Copy` whenever its header source is.
+#[derive(Clone, Copy)]
 pub struct SnapshotInput<'a, H> {
     pub method: &'a str,
     pub path: &'a str,

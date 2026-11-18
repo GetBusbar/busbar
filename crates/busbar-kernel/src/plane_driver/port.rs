@@ -479,27 +479,27 @@ impl PortDriver {
             // Capture the count owner itself, including when the HTTP body is empty.
             // Cancelling the caller's await does not cancel an executing blocking call.
             let _request = request;
-            serve_blocking(
-                &*port,
-                &*refusals,
-                &*audit,
-                services.line_carriers(),
-                &owner,
-                &route,
-                admission,
-                http,
-                principal,
-                unit,
-                upstream,
+            serve_blocking(ServeBlocking {
+                port: &*port,
+                refusals: &*refusals,
+                audit: &*audit,
+                carriers: services.line_carriers(),
+                owner: &owner,
+                route: &route,
+                admission: &admission,
+                http: &http,
+                principal: principal.as_ref(),
+                unit: unit.as_ref(),
+                upstream: upstream.as_ref(),
                 client,
-                carrier,
-                &*intents,
-                &models,
+                carrier: carrier.as_ref(),
+                intents: &*intents,
+                models: &models,
                 invocation,
                 pending_admission,
                 hook_binder,
-                arrived,
-            )
+                now_s: arrived,
+            })
         })
         .await
         .map_err(|_| ServeError::Cancelled)?
@@ -509,8 +509,8 @@ impl PortDriver {
     pub fn render_refusal_now(
         &self,
         route: u32,
-        http: HttpIn,
-        refusal: ClientRefusal,
+        http: &HttpIn,
+        refusal: &ClientRefusal,
     ) -> Result<Vec<ToClient>, ServeError> {
         let auth = self.refusal_auth(route)?;
         Ok(render_native_refusal(
@@ -533,7 +533,7 @@ impl PortDriver {
         let port = Arc::clone(&self.port);
         tokio::task::spawn_blocking(move || {
             let _request = request;
-            render_native_refusal(&*port, route, auth, http, refusal)
+            render_native_refusal(&*port, route, auth, &http, &refusal)
         })
         .await
         .map_err(|_| ServeError::Cancelled)
@@ -626,8 +626,8 @@ fn render_native_refusal(
     port: &dyn PlanePort,
     route: u32,
     auth: u32,
-    http: HttpIn,
-    refusal: ClientRefusal,
+    http: &HttpIn,
+    refusal: &ClientRefusal,
 ) -> Vec<ToClient> {
     struct RenderOnly;
     impl Effects for RenderOnly {
@@ -655,7 +655,7 @@ fn render_native_refusal(
         work: "",
         ticket_record: &[],
     };
-    refuse(port, &req, &refusal, &RenderOnly)
+    refuse(port, &req, refusal, &RenderOnly)
 }
 
 /// The carrier's own binding, as its lines see it: the principal its session was bound as, and whether that was a
@@ -765,6 +765,18 @@ struct Seated {
 }
 
 impl Seated {
+    /// What this seat's sessions are driven over.
+    fn over(&self) -> Over<'_> {
+        Over {
+            port: &*self.port,
+            refusals: &*self.refusals,
+            audit: &*self.audit,
+            upstream: self.upstream.as_ref(),
+            carrier: self.carrier.as_ref(),
+            intents: &*self.intents,
+        }
+    }
+
     /// A session's effects: emits to the line carriers; no client sink (the items are collected).
     fn effects(&self) -> ServeEffects<'_> {
         ServeEffects {
@@ -928,18 +940,13 @@ fn line_blocking(
     };
     let req = build(admitted.auth, &admitted.identity, admitted.ticket_record());
     let served = drive_blocking(
-        &*seated.port,
-        &*seated.refusals,
-        &*seated.audit,
+        seated.over(),
         &effects,
         route.route,
         &req,
         line,
         principal,
         None,
-        seated.upstream.as_ref(),
-        seated.carrier.as_ref(),
-        &*seated.intents,
     );
     match served {
         Ok(Served::Ran(ran)) => line_of(ran.client),
@@ -964,18 +971,13 @@ fn recover_blocking(
     let identity = subject_identity(subject);
     let req = recovery_request(route, work, &identity, target, request_id);
     drive_blocking(
-        &*seated.port,
-        &*seated.refusals,
-        &*seated.audit,
+        seated.over(),
         &effects,
         route.route,
         &req,
         &[],
         Some(subject),
         None,
-        seated.upstream.as_ref(),
-        seated.carrier.as_ref(),
-        &*seated.intents,
     )
     .map(|_| ())
 }
@@ -1107,28 +1109,52 @@ enum ServingAdmission {
     Data(Arc<crate::auth::native_data::NativeDataPending>),
 }
 
-#[allow(clippy::too_many_arguments)]
-fn serve_blocking(
-    port: &dyn PlanePort,
-    refusals: &dyn RefusalMap,
-    audit: &dyn AuditSink,
-    carriers: &LineCarriers,
-    owner: &Incarnation,
-    route: &Mounted,
-    admission: ServingAdmission,
-    http: HttpIn,
-    principal: Option<Arc<str>>,
-    unit: Option<Unit>,
-    upstream: Option<Arc<dyn PortUpstream>>,
+/// One mounted-route request on its blocking thread: what `serve_blocking` borrows from the request's task, and
+/// the sinks and owners it hands on to the session.
+struct ServeBlocking<'s> {
+    port: &'s dyn PlanePort,
+    refusals: &'s dyn RefusalMap,
+    audit: &'s dyn AuditSink,
+    carriers: &'s LineCarriers,
+    owner: &'s Incarnation,
+    route: &'s Mounted,
+    admission: &'s ServingAdmission,
+    http: &'s HttpIn,
+    principal: Option<&'s Arc<str>>,
+    unit: Option<&'s Unit>,
+    upstream: Option<&'s Arc<dyn PortUpstream>>,
     client: Option<Arc<dyn ClientSink>>,
-    carrier: Option<Arc<PortCarrier>>,
-    intents: &dyn IntentHost,
-    models: &[String],
+    carrier: Option<&'s Arc<PortCarrier>>,
+    intents: &'s dyn IntentHost,
+    models: &'s [String],
     invocation: Option<crate::host_services::InvocationContext>,
     pending_admission: Option<Arc<super::port_admission::Pending>>,
     hook_binder: Option<Arc<dyn super::port_hooks::Binder>>,
     now_s: u64,
-) -> Result<Served, ServeError> {
+}
+
+fn serve_blocking(input: ServeBlocking<'_>) -> Result<Served, ServeError> {
+    let ServeBlocking {
+        port,
+        refusals,
+        audit,
+        carriers,
+        owner,
+        route,
+        admission,
+        http,
+        principal,
+        unit,
+        upstream,
+        client,
+        carrier,
+        intents,
+        models,
+        invocation,
+        pending_admission,
+        hook_binder,
+        now_s,
+    } = input;
     let hook_binder = hook_binder.filter(|binder| binder.active(route.route));
     if hook_binder.is_some()
         && (invocation.is_none() || (unit.is_none() && pending_admission.is_none()))
@@ -1138,7 +1164,6 @@ fn serve_blocking(
         ));
     }
     let hook_unit = unit
-        .as_ref()
         .map(|unit| (unit.ctx.key, unit.journal.clone()))
         .or_else(|| {
             pending_admission.as_ref().map(|pending| {
@@ -1153,14 +1178,14 @@ fn serve_blocking(
             .zip(hook_unit)
             .map(|(binder, (unit, journal))| super::port_hooks::Invocation {
                 binder,
-                principal: principal.clone(),
+                principal: principal.cloned(),
                 now_s,
                 classes: port.usage_classes().to_vec(),
                 journal,
                 unit,
             });
     let effects = ServeEffects {
-        data: match &admission {
+        data: match admission {
             ServingAdmission::Data(data) => Some(Arc::clone(data)),
             ServingAdmission::Credentials(_) => None,
         },
@@ -1187,7 +1212,6 @@ fn serve_blocking(
             .and_then(|pending| pending.journal())
             .is_some_and(|journal| journal.keeps_end_user())
         || unit
-            .as_ref()
             .and_then(|u| u.journal.as_deref())
             .is_some_and(|journal| journal.keeps_end_user());
     let build = one_lifetime(|auth, identity, ticket_record| PlaneIn {
@@ -1204,7 +1228,7 @@ fn serve_blocking(
         work: "",
         ticket_record,
     });
-    let req = match &admission {
+    let req = match admission {
         ServingAdmission::Data(data) => build(
             busbar_plugin_abi::plane::AUTH_PRINCIPAL,
             data.identity().identity_records(),
@@ -1234,40 +1258,56 @@ fn serve_blocking(
         };
     }
     drive_blocking(
-        port,
-        refusals,
-        audit,
+        Over {
+            port,
+            refusals,
+            audit,
+            upstream,
+            carrier,
+            intents,
+        },
         &effects,
         route.route,
         &req,
         &http.body,
-        principal.as_deref(),
-        unit.as_ref(),
-        upstream.as_ref(),
-        carrier.as_ref(),
-        intents,
+        principal.map(|principal| &**principal),
+        unit,
     )
+}
+
+/// What a session is driven over: the plane, its refusals and audit, the seat's (or the request's) upstream walk,
+/// channel carrier and intent host.
+#[derive(Clone, Copy)]
+struct Over<'s> {
+    port: &'s dyn PlanePort,
+    refusals: &'s dyn RefusalMap,
+    audit: &'s dyn AuditSink,
+    upstream: Option<&'s Arc<dyn PortUpstream>>,
+    carrier: Option<&'s Arc<PortCarrier>>,
+    intents: &'s dyn IntentHost,
 }
 
 /// One admitted request's whole session, on a blocking thread, for every origin (a mounted route, a line, a
 /// recovery poll): intents resolved under the verified `principal`, a FORWARD walked over `upstream`, channels over
 /// `carrier`, the books (`unit`, else audit rows only). A request the plane refused or failed is rendered by the
 /// plane; a broken session charges the image.
-#[allow(clippy::too_many_arguments)]
 fn drive_blocking(
-    port: &dyn PlanePort,
-    refusals: &dyn RefusalMap,
-    audit: &dyn AuditSink,
+    over: Over<'_>,
     effects: &ServeEffects<'_>,
     route: u32,
     req: &PlaneIn<'_>,
     body: &[u8],
     principal: Option<&str>,
     unit: Option<&Unit>,
-    upstream: Option<&Arc<dyn PortUpstream>>,
-    carrier: Option<&Arc<PortCarrier>>,
-    intents: &dyn IntentHost,
 ) -> Result<Served, ServeError> {
+    let Over {
+        port,
+        refusals,
+        audit,
+        upstream,
+        carrier,
+        intents,
+    } = over;
     let resolver = match principal {
         Some(subject) => Resolver::new(intents, None).with_principal(subject, req.identity),
         None => Resolver::new(intents, None),
