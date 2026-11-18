@@ -55,7 +55,18 @@ const REMOVED_IN_1_6: [&str; 5] = [
     "/api/v1/admin/identity-providers",
 ];
 
+/// Single 1.5.5 operations 1.6.0 deletes outright (not per-kind roots): POST /signing-key/rotate
+/// (ADMIN-API-1.6-ONE-MODEL §2 row 68; deleted by 46a8c81e66, #306), which reported the key id and
+/// changed nothing.
+const REMOVED_ROUTES_IN_1_6: [(&str, &str); 1] = [("POST", "/api/v1/admin/signing-key/rotate")];
+
 fn removed_in_1_6(op: &FixtureOp) -> bool {
+    if REMOVED_ROUTES_IN_1_6
+        .iter()
+        .any(|(method, path)| op.method == *method && op.path == *path)
+    {
+        return true;
+    }
     REMOVED_IN_1_6.iter().any(|root| {
         op.path
             .strip_prefix(root)
@@ -110,7 +121,7 @@ fn every_fixture_operation_is_in_the_table_with_the_same_scope() {
     let table: BTreeSet<_> = table_ops().into_iter().collect();
 
     // Every 1.5.5 operation is in the table with its scope, except the per-kind operations 1.6.0
-    // removes, which are all absent.
+    // removes and the single routes it deletes (REMOVED_ROUTES_IN_1_6), which are all absent.
     let missing: Vec<_> = fixture.difference(&table).collect();
     let unexpected: Vec<_> = missing.iter().filter(|op| !removed_in_1_6(op)).collect();
     assert!(
@@ -121,8 +132,8 @@ fn every_fixture_operation_is_in_the_table_with_the_same_scope() {
     let removed: Vec<_> = fixture.iter().filter(|op| removed_in_1_6(op)).collect();
     assert_eq!(
         removed.len(),
-        14,
-        "the fourteen per-kind operations: {removed:?}"
+        15,
+        "the fourteen per-kind operations and POST /signing-key/rotate: {removed:?}"
     );
     assert_eq!(
         missing.len(),
@@ -175,7 +186,8 @@ fn scope_split_is_34_read_only_32_full() {
         .filter(|r| r.scope == VerbScope::Full)
         .count();
     // The architecture document's 34 read-only / 32 full, less the per-kind operations removed in
-    // 1.6.0 (ADMIN-API-1.6 §0.2): eight reads and six writes.
+    // 1.6.0 (ADMIN-API-1.6 §0.2): eight reads and six writes; plus the deleted POST /signing-key/rotate
+    // (ADMIN-API-1.6-ONE-MODEL §2 row 68, a write).
     let removed = fixture_ops()
         .into_iter()
         .filter(removed_in_1_6)
@@ -183,7 +195,7 @@ fn scope_split_is_34_read_only_32_full() {
     let removed_read_only = removed.iter().filter(|op| op.scope == "read-only").count();
     assert_eq!(
         (removed_read_only, removed.len() - removed_read_only),
-        (8, 6)
+        (8, 7)
     );
     assert_eq!(
         read_only + removed_read_only,

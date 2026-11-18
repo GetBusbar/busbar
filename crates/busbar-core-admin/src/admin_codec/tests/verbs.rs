@@ -169,6 +169,11 @@ const REMOVED_IN_1_6: [&str; 5] = [
     "/api/v1/admin/identity-providers",
 ];
 
+/// Single 1.5.5 operations 1.6.0 deletes outright (not per-kind roots): POST /signing-key/rotate
+/// (ADMIN-API-1.6-ONE-MODEL §2 row 68; deleted by 46a8c81e66, #306), which reported the key id and
+/// changed nothing.
+const REMOVED_ROUTES_IN_1_6: [(&str, &str); 1] = [("POST", "/api/v1/admin/signing-key/rotate")];
+
 /// The table test required by the crate's design brief: for every one of the 66 operations the
 #[test]
 fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
@@ -199,7 +204,10 @@ fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
             if REMOVED_IN_1_6.iter().any(|root| {
                 path.strip_prefix(root)
                     .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-            }) {
+            }) || REMOVED_ROUTES_IN_1_6
+                .iter()
+                .any(|(m, p)| method == *m && &path[..] == *p)
+            {
                 assert!(
                     find_verb(&method, path).is_none(),
                     "{method} {path} is removed in 1.6.0 and must resolve to no table row"
