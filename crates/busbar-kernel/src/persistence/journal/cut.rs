@@ -206,12 +206,6 @@ impl JournalCut {
         self.attempt.is_some()
     }
 
-    /// The journal ordinal every row at or below which is deleted.
-    #[must_use]
-    pub fn deleted_through(&self) -> u64 {
-        self.deleted_through
-    }
-
     async fn drive(&mut self) -> CutProgress {
         loop {
             let step = match self.attempt.clone() {
