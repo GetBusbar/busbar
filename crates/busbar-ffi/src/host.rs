@@ -361,13 +361,18 @@ impl OutLease<'static> {
         // lease. The fixed ACTIVE entry contains no pointer into the lender.
         let _registration = FixedRegistration(serial);
         buf.fill(0);
-        let raw = RawOut::over(buf);
+        // The channel points through the reference the lease keeps, taken after `buf` is stored:
+        // moving `buf` into the lease retags it, which would invalidate a pointer taken from it
+        // before the move (Miri, stacked borrows: the plugin's first append wrote through a dead tag).
         let mut lease = OutLease {
-            raw,
+            raw: RawOut::over(&mut []),
             serial,
             fixed: Some(buf),
             _thread: PhantomData,
         };
+        if let Some(fixed) = lease.fixed.as_deref_mut() {
+            lease.raw.repoint(fixed);
+        }
         Some(call(&mut lease))
     }
 }
