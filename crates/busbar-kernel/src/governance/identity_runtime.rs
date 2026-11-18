@@ -82,6 +82,19 @@ impl GovState {
         self.core.identity().list_keys().await
     }
 
+    /// Publish one exact live row the caller already holds shared, when a re-read under the key
+    /// claim found nothing to change: the cache effect of a commit that carries only that row
+    /// (no credentials, no denials), without copying the row or building a commit around it.
+    pub(crate) fn publish_unchanged_key(&self, key: Arc<VirtualKey>) {
+        self.refresh_order.patch(|| {
+            let mut cache = self.caches_write();
+            cache.revision = cache.revision.max(key.revision);
+            if admit_key_row(&mut cache, &key) {
+                install_live_key(&mut cache, key);
+            }
+        });
+    }
+
     /// Apply only exact rows returned after a native Applied decision. Tombstone
     /// revisions survive eviction, and older same-key deltas cannot resurrect it.
     pub(crate) fn publish_identity(&self, commit: IdentityCommit) {
@@ -93,28 +106,8 @@ impl GovState {
                 self.denylist.insert(&subject);
             }
             for key in commit.keys {
-                if cache
-                    .key_revisions
-                    .get(&key.id)
-                    .is_some_and(|rev| *rev > key.revision)
-                {
-                    continue;
-                }
-                cache.key_revisions.insert(key.id.clone(), key.revision);
-                if key.deleted_at.is_some() {
-                    cache.by_id.remove(&key.id);
-                    crate::off_path::governance::runtime::identity_runtime_retain_credentials(
-                        &mut cache.by_credential,
-                        |(owner, _)| owner.id != key.id,
-                    );
-                } else {
-                    let key = Arc::new(key);
-                    for (owner, _) in cache.by_credential.values_mut() {
-                        if owner.id == key.id {
-                            *owner = key.clone();
-                        }
-                    }
-                    cache.by_id.insert(key.id.clone(), key);
+                if admit_key_row(&mut cache, &key) {
+                    install_live_key(&mut cache, Arc::new(key));
                 }
             }
             for credential in commit.credentials {
@@ -529,6 +522,39 @@ impl GovState {
         }
         Ok(pass)
     }
+}
+
+/// One exact key row's revision and tombstone, applied to the cache. `true` when the row is live
+/// and not older than what the cache holds, so the caller installs it. A tombstone revision
+/// survives eviction, and an older same-key row cannot resurrect it.
+fn admit_key_row(cache: &mut GovCaches, key: &VirtualKey) -> bool {
+    if cache
+        .key_revisions
+        .get(&key.id)
+        .is_some_and(|rev| *rev > key.revision)
+    {
+        return false;
+    }
+    cache.key_revisions.insert(key.id.clone(), key.revision);
+    if key.deleted_at.is_some() {
+        cache.by_id.remove(&key.id);
+        crate::off_path::governance::runtime::identity_runtime_retain_credentials(
+            &mut cache.by_credential,
+            |(owner, _)| owner.id != key.id,
+        );
+        return false;
+    }
+    true
+}
+
+/// Install a live key row: every credential it owns and the id index hold this one shared row.
+fn install_live_key(cache: &mut GovCaches, key: Arc<VirtualKey>) {
+    for (owner, _) in cache.by_credential.values_mut() {
+        if owner.id == key.id {
+            *owner = key.clone();
+        }
+    }
+    cache.by_id.insert(key.id.clone(), key);
 }
 
 pub(super) fn committed_key(commit: &IdentityCommit, id: &str) -> RecordStoreResult<VirtualKey> {
