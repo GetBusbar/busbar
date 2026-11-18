@@ -19,9 +19,7 @@ use busbar_kernel::channels::SessionSignals;
 use busbar_kernel::connections::{ConnectLogins, StoreConnections};
 use busbar_kernel::persistence::facade::{CoreStore, Limits};
 use busbar_kernel::persistence::startup::{Progress, Startup};
-use busbar_kernel::plane_driver::port_intents::{
-    Intent, KernelIntents, Namespace, Piece, Resolver,
-};
+use busbar_kernel::plane_driver::port_intents::{Intent, KernelIntents, Namespace, Resolver};
 use busbar_kernel::plane_driver::port_services::Services;
 use busbar_kernel::plane_grants::{CoreJwsSigner, GrantResolver, RequestGrants, SealedTickets};
 use busbar_kernel::plugin_records::StoreRecords;
@@ -372,6 +370,12 @@ impl SessionSignals for NoSignals {
     }
 }
 
+/// A delivered result piece, copied out of the resolver's lent pieces for the cases to read.
+pub(crate) struct Piece {
+    pub(crate) flags: u32,
+    pub(crate) bytes: Vec<u8>,
+}
+
 /// One plane answer with a CONNECT, a SIGN, a MINT, an ENTITLE and a LOOKUP (after the STORE it reads), stated
 /// in the reverse of the §8.6 delivery order, resolved by core as the verified `SUBJECT`. Called off the runtime
 /// (the production host blocks on it, as it does from `spawn_blocking`).
@@ -415,7 +419,14 @@ pub fn resolve(host: &KernelIntents<StoreRecords>, connect_op: u32) -> Vec<Piece
     ];
     let identity = b"identity-records".as_slice();
     let resolver = Resolver::new(host, None).with_principal(SUBJECT, identity);
-    resolver.resolve(&answer, &mut HashMap::new())
+    resolver
+        .resolve(&answer, &mut HashMap::new())
+        .into_iter()
+        .map(|p| Piece {
+            flags: p.flags,
+            bytes: p.bytes.as_bytes().to_vec(),
+        })
+        .collect()
 }
 
 /// The FROM_CORE piece flags in delivery order.

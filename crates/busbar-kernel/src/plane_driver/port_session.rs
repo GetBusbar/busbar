@@ -1231,6 +1231,8 @@ pub struct Task<'k, K: Calls + ?Sized> {
     usage: SessionUsage,
     /// The channels this session holds, by exchange; dropping the task detaches them.
     pub(super) held: Channels,
+    /// The answers a resolve stage still has to resolve, reused stage to stage (`Task::resolve`).
+    pub(super) queue: std::collections::VecDeque<Answer>,
 }
 
 impl<'k, K: Calls + ?Sized> Task<'k, K> {
@@ -1303,6 +1305,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             once,
             usage: SessionUsage::new(),
             held: Channels::new(),
+            queue: std::collections::VecDeque::new(),
         };
         let answer = task.checked(answer)?;
         buffered.release();
@@ -1340,6 +1343,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
             once,
             usage: SessionUsage::new(),
             held: Channels::new(),
+            queue: std::collections::VecDeque::new(),
         };
         let answer = task.checked(answer)?;
         buffered.release();
@@ -1714,11 +1718,8 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                 self.session = None;
                 return Err(SessionError::Violation(Violation::BadRecords));
             };
-            let reports: Vec<_> = answer
-                .attempt_usage
-                .iter()
-                .map(AttemptUsageItem::borrowed)
-                .collect();
+            let mut reports: smallvec::SmallVec<[_; 8]> = smallvec::SmallVec::new();
+            reports.extend(answer.attempt_usage.iter().map(AttemptUsageItem::borrowed));
             let rounded = attempt
                 .observe(&reports, answer.attempt_end)
                 .map_err(|error| {
