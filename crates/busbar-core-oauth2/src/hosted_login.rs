@@ -329,7 +329,7 @@ fn issue_page(base_url: &str, module_name: &str, issue: SelfKeyIssue) -> Respons
         SelfKeyIssue::Held(reason) => error_page(
             StatusCode::FORBIDDEN,
             "Your key is on hold",
-            &reason.message(),
+            reason.message(),
         ),
         SelfKeyIssue::NoGrant | SelfKeyIssue::Unbound => error_page(
             StatusCode::FORBIDDEN,

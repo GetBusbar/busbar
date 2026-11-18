@@ -139,12 +139,13 @@ async fn mint_provisioned_self_key(
     exp: u64,
     now: u64,
 ) -> Result<IssuedKey, ExchangeError> {
-    let (user_sub, provider, allowed_scopes) =
-        crate::cold::auth::keys::self_mint_parts(&principal.id, provider, allowed_scopes);
+    // The subject and the provider are lent to the mint; only the minted key's own scope list
+    // is made here, because the key record keeps it.
+    let allowed_scopes = crate::cold::auth::keys::self_mint_scopes(allowed_scopes);
     let (binding, token) = crate::governance::mint_self_offloaded(
         gov,
         op,
-        user_sub,
+        &principal.id,
         provider,
         allowed_scopes,
         exp,

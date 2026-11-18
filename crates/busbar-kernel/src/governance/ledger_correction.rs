@@ -805,11 +805,9 @@ impl GovState {
                 delta: &intent.delta,
                 now: crate::store::now(),
             };
-            let delta = ledger_off_path::ledger_adjust_nonzero_delta(&intent.delta);
             self.correct_usage_with_parent(
                 cost,
                 &adj,
-                &delta,
                 pending.request.day_start,
                 Some(parent.operation_id),
                 intent.action_id.as_deref(),
@@ -1494,11 +1492,10 @@ impl GovState {
         &self,
         cost: &crate::cost::CostModel,
         adj: &Adjustment<'_, Count>,
-        delta: &BTreeMap<&str, Count>,
         day: u64,
         action_id: Option<&str>,
     ) -> RecordStoreResult<Result<(), AdjustRefused>> {
-        self.correct_usage_with_parent(cost, adj, delta, day, None, action_id)
+        self.correct_usage_with_parent(cost, adj, day, None, action_id)
             .await
     }
 
@@ -1506,7 +1503,6 @@ impl GovState {
         &self,
         cost: &crate::cost::CostModel,
         adj: &Adjustment<'_, Count>,
-        delta: &BTreeMap<&str, Count>,
         day: u64,
         parent_operation_id: Option<[u8; 16]>,
         action_id: Option<&str>,
@@ -1613,7 +1609,6 @@ impl GovState {
             }
             if let Err(refused) = check_metered(
                 adj,
-                delta,
                 day,
                 &metering,
                 &snapshots[&address(ADJUST_UP_BUCKET, day)],
@@ -1667,30 +1662,31 @@ impl GovState {
                     } else {
                         segment_at(&target.models, adj.model, adj.card_epoch_ms)
                     };
-                    if segment.is_none() && delta.values().any(|count| *count < Count::ZERO) {
-                        let (class, _) = delta
-                            .iter()
-                            .find(|(_, count)| **count < Count::ZERO)
-                            .expect("negative delta");
-                        return Ok(Err(ledger_cold::ledger_correction_unplaced(
-                            bucket, *window, class,
-                        )));
+                    if segment.is_none() {
+                        // The first downward class, in class order, has nowhere to land.
+                        if let Some((class, _)) =
+                            nonzero(adj.delta).find(|(_, count)| *count < Count::ZERO)
+                        {
+                            return Ok(Err(ledger_cold::ledger_correction_unplaced(
+                                bucket, *window, class,
+                            )));
+                        }
                     }
                     let era = segment.map_or(metered_era, |index| target.models[index].era);
-                    for (class, change) in delta {
+                    for (class, change) in nonzero(adj.delta) {
                         let held = segment.map_or(Count::ZERO, |index| {
                             target.models[index]
                                 .cur
-                                .get(*class)
+                                .get(class)
                                 .copied()
                                 .unwrap_or_default()
                         });
-                        if moved(held, *change).is_none() {
+                        if moved(held, change).is_none() {
                             return Ok(Err(AdjustRefused::Exceeds {
                                 bucket: bucket.clone(),
-                                class: (*class).into(),
+                                class: class.into(),
                                 count: held,
-                                delta: *change,
+                                delta: change,
                             }));
                         }
                         prepare!(move_unit(
@@ -1737,8 +1733,8 @@ impl GovState {
                     branches.push((bucket.clone(), *window, before, accepted));
                 }
                 let slot = adjustment_slot(adj.key_id, adj.model, metered_era);
-                for (class, change) in delta {
-                    let bucket = if *change > Count::ZERO {
+                for (class, change) in nonzero(adj.delta) {
+                    let bucket = if change > Count::ZERO {
                         ADJUST_UP_BUCKET
                     } else {
                         ADJUST_DOWN_BUCKET
@@ -1818,7 +1814,7 @@ fn unique_metered_era(
 ) -> RecordStoreResult<RawRateEra> {
     let mut captured = None;
     for row in rows.iter().filter(|row| {
-        row.priced_from_ms == adj.entry_era && metering_lane(&row.model, &row.provider) == adj.model
+        row.priced_from_ms == adj.entry_era && on_lane(&row.model, &row.provider, adj.model)
     }) {
         let id = match EntryId::parse_metering_version(&row.pricing_version) {
             Some(Some(id)) => Some(id),
@@ -1856,14 +1852,13 @@ fn unique_metered_era(
 
 fn check_metered(
     adj: &Adjustment<'_, Count>,
-    delta: &BTreeMap<&str, Count>,
     day: u64,
     metering: &[MeteringRow],
     up: &UsageLedger,
     down: &UsageLedger,
     era: RawRateEra,
 ) -> Result<(), AdjustRefused> {
-    let in_lane = |row: &MeteringRow| metering_lane(&row.model, &row.provider) == adj.model;
+    let in_lane = |row: &MeteringRow| on_lane(&row.model, &row.provider, adj.model);
     if let Some(in_force) = metering
         .iter()
         .filter(|row| in_lane(row))
@@ -1888,11 +1883,11 @@ fn check_metered(
         return Err(AdjustRefused::NotMetered { day });
     }
     let slot = adjustment_slot(adj.key_id, adj.model, era);
-    for (class, change) in delta {
+    for (class, change) in nonzero(adj.delta) {
         let adjusted = |ledger: &UsageLedger| -> Option<Count> {
             match ledger.models.iter().find(|row| row.model == slot) {
                 Some(row) => {
-                    Count::from_stored(row.usage_units.get(*class).copied().unwrap_or(0), row.scale)
+                    Count::from_stored(row.usage_units.get(class).copied().unwrap_or(0), row.scale)
                         .ok()
                 }
                 None => Some(Count::ZERO),
@@ -1911,12 +1906,12 @@ fn check_metered(
                 day,
                 class,
                 Count::ZERO,
-                *change,
+                change,
             ));
         };
-        if moved(count, *change).is_none() {
+        if moved(count, change).is_none() {
             return Err(ledger_cold::ledger_correction_metering_exceeds(
-                day, class, count, *change,
+                day, class, count, change,
             ));
         }
     }

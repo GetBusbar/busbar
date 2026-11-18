@@ -48,19 +48,32 @@ pub(crate) struct ExactUsageDelta {
     pub(crate) models: Vec<ExactModelDelta>,
 }
 impl ExactUsageDelta {
+    /// Take an acknowledged chunk off this debt, reading the chunk where it lies: its model and
+    /// unit names are not copied into a second delta first.
     pub(super) fn subtract(&mut self, chunk: &UsageDelta) {
-        let acknowledged = Self::from_signed(chunk);
+        let micros = |count: i128, scale: u32| {
+            Count::from_stored(count, scale)
+                .expect("internally generated raw debt has a valid scale")
+                .micros()
+        };
+        // Every count is read at its scale before anything is taken off, as it was when the
+        // chunk was converted whole: a chunk with an invalid scale changes nothing.
+        for model in &chunk.models {
+            for count in model.usage_units.values() {
+                let _ = micros(*count, model.scale);
+            }
+        }
         self.requests = self
             .requests
-            .checked_sub(acknowledged.requests)
+            .checked_sub(i128::from(chunk.requests))
             .expect("acknowledged request debt overflow");
         self.billable_requests = self
             .billable_requests
-            .checked_sub(acknowledged.billable_requests)
+            .checked_sub(i128::from(chunk.billable_requests))
             .expect("acknowledged fee debt overflow");
-        for model in &acknowledged.models {
+        for model in &chunk.models {
             for (unit, count) in &model.usage_units {
-                self.subtract_unit(&model.model, unit, *count)
+                self.subtract_unit(&model.model, unit, micros(*count, model.scale))
                     .expect("acknowledged raw debt overflow");
             }
         }
@@ -82,6 +95,39 @@ impl ExactUsageDelta {
             None => {
                 self.models.push(ExactModelDelta {
                     model: model.into(),
+                    scale: COUNT_SCALE,
+                    usage_units: BTreeMap::new(),
+                });
+                self.models.last_mut().expect("just inserted raw model")
+            }
+        };
+        let slot = row.usage_units.entry(unit.into()).or_default();
+        *slot = slot
+            .checked_add(change)
+            .expect("raw debt exceeds Count range");
+    }
+    /// [`Self::unit`] for the dated row of `model` in `era`, whose name is `era SEP model`: an
+    /// existing row is found by its parts, and the dated name is built only for a new row, which
+    /// keeps it.
+    fn unit_in_era(&mut self, era: &str, model: &str, unit: &str, change: i128) {
+        if change == 0 {
+            return;
+        }
+        let position = crate::off_path::governance::runtime::exact_debt_era_model_index(
+            &self.models,
+            era,
+            ERA_MODEL_SEP,
+            model,
+        );
+        let row = match position {
+            Some(position) => &mut self.models[position],
+            None => {
+                self.models.push(ExactModelDelta {
+                    model: crate::off_path::governance::runtime::exact_debt_era_model(
+                        era,
+                        ERA_MODEL_SEP,
+                        model,
+                    ),
                     scale: COUNT_SCALE,
                     usage_units: BTreeMap::new(),
                 });
@@ -135,7 +181,9 @@ impl ExactUsageDelta {
     pub(super) fn try_from_signed(delta: &UsageDelta) -> Result<Self, CountError> {
         crate::off_path::governance::runtime::exact_debt_from_signed(delta)
     }
-    pub(super) fn signed(&self) -> Option<UsageDelta> {
+    /// This debt as the signed wire delta a flush chunk sends, when it fits. The debt is handed
+    /// over: its model and unit names move into the chunk, none is copied.
+    pub(super) fn signed(self) -> Option<UsageDelta> {
         crate::off_path::governance::runtime::exact_debt_signed(self)
     }
     pub(super) fn of(cell: &BudgetCell, dated: bool) -> Self {
@@ -390,23 +438,16 @@ impl SegmentedUsage {
             UsageSegment::Unit { model, unit, era } => {
                 plain.unit(model, unit, count);
                 if let Some(era) = era {
-                    dated.unit(
-                        &crate::off_path::governance::runtime::exact_debt_era_model(
-                            era,
-                            ERA_MODEL_SEP,
-                            model,
-                        ),
-                        unit,
-                        count,
-                    );
+                    dated.unit_in_era(era, model, unit, count);
                 }
             }
         }
     }
-    pub(super) fn positive(&self) -> Self {
-        Self(crate::off_path::governance::runtime::exact_debt_positive(
-            &self.0,
-        ))
+    /// Only the positive segments, in place: every caller owns the usage it narrows and does not
+    /// read it again, so no segment is copied.
+    pub(super) fn positive(mut self) -> Self {
+        crate::off_path::governance::runtime::exact_debt_keep_positive(&mut self.0);
+        self
     }
     pub(super) fn merge(&mut self, other: &Self) {
         for (segment, count) in &other.0 {

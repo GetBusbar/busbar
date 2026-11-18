@@ -41,17 +41,6 @@ pub(crate) fn ledger_adjust_whole_delta(delta: &BTreeMap<String, i64>) -> BTreeM
         .collect()
 }
 
-/// `ledger_adjust`: the classes a correction actually moves (its non-zero deltas).
-pub(crate) fn ledger_adjust_nonzero_delta(
-    delta: &BTreeMap<String, Count>,
-) -> BTreeMap<&str, Count> {
-    delta
-        .iter()
-        .filter(|(_, count)| **count != Count::ZERO)
-        .map(|(class, count)| (class.as_str(), *count))
-        .collect()
-}
-
 /// `ledger_adjust`: the admin usage-adjustment view in whole units; a fractional net is refused.
 pub(crate) fn ledger_adjust_whole_adjustments(
     rows: Vec<UsageAdjustment<Count>>,

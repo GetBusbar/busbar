@@ -972,6 +972,36 @@ pub enum SelfMintRefusal {
     Held,
 }
 
+/// A hold's user-facing reason, written once: [`SelfMintRefusal::reason`] answers it and
+/// [`SelfMintRefusal::message`] wraps it.
+macro_rules! self_mint_reason {
+    (disabled) => {
+        "an administrator disabled it; ask your Busbar administrator to re-enable or delete it"
+    };
+    (revoked) => {
+        "an administrator revoked it, and a revoked key is never re-enabled; ask your Busbar \
+         administrator to delete it so your next sign-in issues a new key"
+    };
+    (other_provider) => {
+        "it was issued through a different sign-in provider; sign in with that provider, or ask \
+         your Busbar administrator to delete it"
+    };
+    (held) => {
+        "your account is on hold; ask your Busbar administrator"
+    };
+}
+
+/// A hold's coded refusal (BUSBAR-4043) over its reason, as one fixed text.
+macro_rules! self_mint_message {
+    ($hold:ident) => {
+        concat!(
+            "BUSBAR-4043: your self-serve key is on hold: ",
+            self_mint_reason!($hold),
+            ". See https://getbusbar.com/docs/1.6/errors/BUSBAR-4043"
+        )
+    };
+}
+
 impl SelfMintRefusal {
     /// The stable token naming this hold in the admin log (`key:<id>#<token>`) and in diagnostics.
     #[must_use]
@@ -988,29 +1018,24 @@ impl SelfMintRefusal {
     #[must_use]
     pub fn reason(self) -> &'static str {
         match self {
-            Self::Disabled => {
-                "an administrator disabled it; ask your Busbar administrator to re-enable or \
-                 delete it"
-            }
-            Self::Revoked => {
-                "an administrator revoked it, and a revoked key is never re-enabled; ask your \
-                 Busbar administrator to delete it so your next sign-in issues a new key"
-            }
-            Self::OtherProvider => {
-                "it was issued through a different sign-in provider; sign in with that provider, \
-                 or ask your Busbar administrator to delete it"
-            }
-            Self::Held => "your account is on hold; ask your Busbar administrator",
+            Self::Disabled => self_mint_reason!(disabled),
+            Self::Revoked => self_mint_reason!(revoked),
+            Self::OtherProvider => self_mint_reason!(other_provider),
+            Self::Held => self_mint_reason!(held),
         }
     }
 
-    /// The coded refusal the exchange body and the hosted page carry (BUSBAR-4043).
+    /// The coded refusal the exchange body and the hosted page carry (BUSBAR-4043): fixed text,
+    /// one per hold, exactly what `diagnostics::coded` renders for `SELF_MINT_HELD` over the
+    /// reason (a test holds the two equal). Answering a held subject builds no message.
     #[must_use]
-    pub fn message(self) -> String {
-        crate::diagnostics::coded(
-            &crate::diagnostics::SELF_MINT_HELD,
-            format_args!("your self-serve key is on hold: {}", self.reason()),
-        )
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Disabled => self_mint_message!(disabled),
+            Self::Revoked => self_mint_message!(revoked),
+            Self::OtherProvider => self_mint_message!(other_provider),
+            Self::Held => self_mint_message!(held),
+        }
     }
 
     /// Which hold a subject with several held rows answers: the most final one.
@@ -1063,19 +1088,19 @@ impl std::fmt::Display for SelfMintError {
 pub async fn mint_self_offloaded(
     gov: Arc<GovState>,
     op: SelfMintOp,
-    user_sub: String,
-    provider: String,
+    user_sub: &str,
+    provider: &str,
     allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
     exp: u64,
     now: u64,
 ) -> Result<(VirtualKey, String), SelfMintError> {
     match op {
         SelfMintOp::Issue => {
-            gov.issue_self_scoped(&user_sub, &provider, allowed_scopes, exp, now)
+            gov.issue_self_scoped(user_sub, provider, allowed_scopes, exp, now)
                 .await
         }
         SelfMintOp::Refresh => {
-            gov.refresh_self_scoped(&user_sub, &provider, allowed_scopes, exp, now)
+            gov.refresh_self_scoped(user_sub, provider, allowed_scopes, exp, now)
                 .await
         }
     }
