@@ -5,7 +5,7 @@
 //! RPM is reserved until handoff; TPM observes high-water usage and explicit uncertainty.
 
 use std::collections::BTreeMap;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLockWriteGuard};
@@ -171,7 +171,7 @@ struct RateClock {
     epoch: [u8; 16],
     boot_ms: Option<u64>,
     started: Instant,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     elapsed: Option<Arc<AtomicU64>>,
 }
 
@@ -186,7 +186,7 @@ impl RateClock {
             epoch: crate::snapshot::boot_nonce(),
             boot_ms,
             started,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             elapsed: None,
         }
     }
@@ -195,12 +195,12 @@ impl RateClock {
         if self.epoch == [0; 16] {
             return None;
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let elapsed = match &self.elapsed {
             Some(elapsed) => Some(elapsed.load(Ordering::Relaxed)),
             None => u64::try_from(self.started.elapsed().as_millis()).ok(),
         };
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-support")))]
         let elapsed = u64::try_from(self.started.elapsed().as_millis()).ok();
         let minute = self.boot_ms?.checked_add(elapsed?)? / MINUTE_MS;
         minute.checked_add(1)?.checked_mul(MINUTE_MS)?;
@@ -286,6 +286,24 @@ impl SelectedRates {
         Self {
             cells: Sharded::new(),
             clock: RateClock::new(),
+            unavailable: AtomicBool::new(false),
+            capacity: CELL_CAPACITY,
+            leases: AtomicUsize::new(0),
+            sweep_cursor: AtomicUsize::new(0),
+        }
+    }
+
+    /// A governor whose minute is `elapsed_ms / 60_000`, moved by the caller: B-RATE-HOLD's.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn stepped(started: Instant, elapsed_ms: Arc<AtomicU64>) -> Self {
+        Self {
+            cells: Sharded::new(),
+            clock: RateClock {
+                epoch: [1; 16],
+                boot_ms: Some(0),
+                started,
+                elapsed: Some(elapsed_ms),
+            },
             unavailable: AtomicBool::new(false),
             capacity: CELL_CAPACITY,
             leases: AtomicUsize::new(0),
@@ -527,7 +545,7 @@ impl SelectedRates {
         })
     }
 
-    fn reserve_terms<C: AsRef<str>>(
+    pub(crate) fn reserve_terms<C: AsRef<str>>(
         self: &Arc<Self>,
         terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
         classes: &[C],
@@ -633,7 +651,7 @@ struct ClassHighwater {
     authoritative: bool,
 }
 
-struct RateHold {
+pub(crate) struct RateHold {
     rates: Arc<SelectedRates>,
     captures: Captures,
     minute: u64,
@@ -654,7 +672,7 @@ impl RateHold {
         self.phase = Phase::Finished;
     }
 
-    fn commit(&mut self) -> Result<(), RateRefusal> {
+    pub(crate) fn commit(&mut self) -> Result<(), RateRefusal> {
         if self.phase != Phase::Reserved {
             return Err(RateRefusal::bare(RateRefusalKind::InvalidBinding));
         }
@@ -707,7 +725,10 @@ impl RateHold {
         }
     }
 
-    fn observe(&mut self, view: &EffectiveTokenView<'_>) -> Result<(), RateObservationError> {
+    pub(crate) fn observe(
+        &mut self,
+        view: &EffectiveTokenView<'_>,
+    ) -> Result<(), RateObservationError> {
         if self.phase != Phase::Committed {
             return Err(RateObservationError::Sealed);
         }
@@ -778,7 +799,7 @@ impl RateHold {
         Ok(())
     }
 
-    fn finish(
+    pub(crate) fn finish(
         &mut self,
         coverage: TokenCoverage,
     ) -> Result<RateFinalSnapshot, RateObservationError> {

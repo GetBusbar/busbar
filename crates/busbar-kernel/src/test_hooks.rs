@@ -75,3 +75,100 @@ pub fn merged_boot_plane_decls(
 ) -> Vec<&'static crate::plane_driver::registry::PlaneDecl> {
     crate::off_path::plane_registry::merged_boot_plane_decls(installed, builtins)
 }
+
+/// B-RATE-HOLD's way in: one rate hold's whole life against the governor.
+pub mod rate_hold {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    use busbar_contract::Count;
+
+    use crate::governance::selected_resource::{
+        EffectiveToken, EffectiveTokenView, RateHold, RateMetric, RateTerms, SelectedRates,
+        TokenCoverage,
+    };
+
+    /// A governor on a stepped clock, with its rules, classes and view built once.
+    pub struct Bench {
+        rates: Arc<SelectedRates>,
+        terms: Vec<RateTerms>,
+        classes: Vec<&'static str>,
+        view: EffectiveTokenView<'static>,
+        /// Holds reserved in earlier minutes and never committed: they keep those minutes' cells.
+        _earlier: Vec<RateHold>,
+    }
+
+    impl Bench {
+        /// `rules` rules (1..=32) and `classes` classes (1..=64), beside `earlier_minutes` earlier
+        /// minutes in which every scope still has a referenced cell.
+        pub fn new(rules: usize, classes: usize, earlier_minutes: u64) -> Self {
+            let clock = Arc::new(AtomicU64::new(0));
+            let rates = Arc::new(SelectedRates::stepped(
+                std::time::Instant::now(),
+                Arc::clone(&clock),
+            ));
+            let terms: Vec<RateTerms> = (0..rules)
+                .map(|i| RateTerms {
+                    group_id: "g".into(),
+                    rule_id: format!("r{i}").into(),
+                    key_id: "k".into(),
+                    instance: "p".into(),
+                    resource: "x".into(),
+                    metric: if i % 2 == 0 {
+                        RateMetric::Requests
+                    } else {
+                        RateMetric::Tokens
+                    },
+                    // Large, because `blocked` multiplies it by 1,000,000 into an `i128`.
+                    threshold: u64::MAX / 4_000_000,
+                    policy_revision: 1,
+                    activated_minute: 0,
+                })
+                .collect();
+            // The rig is built a few times per run; the leak is the rig's, in a test-support build.
+            let classes: Vec<&'static str> = (0..classes)
+                .map(|j| &*Box::leak(format!("tokens.c{j:02}").into_boxed_str()))
+                .collect();
+            let view = EffectiveTokenView(
+                classes
+                    .iter()
+                    .map(|class| EffectiveToken {
+                        class,
+                        quantity: Some(Count::from_integer(1).unwrap()),
+                        authoritative: true,
+                    })
+                    .collect(),
+            );
+            let mut earlier = Vec::new();
+            for minute in 0..earlier_minutes {
+                clock.store(minute * 60_000, Ordering::Relaxed);
+                earlier.push(
+                    rates
+                        .reserve_terms(terms.iter().cloned(), &classes)
+                        .unwrap(),
+                );
+            }
+            clock.store(earlier_minutes * 60_000, Ordering::Relaxed);
+            Self {
+                rates,
+                terms,
+                classes,
+                view,
+                _earlier: earlier,
+            }
+        }
+
+        /// Reserve, commit, observe, finish, once. `true` when all four answered `Ok`.
+        pub fn cycle(&mut self) -> bool {
+            let Ok(mut hold) = self
+                .rates
+                .reserve_terms(self.terms.iter().cloned(), &self.classes)
+            else {
+                return false;
+            };
+            hold.commit().is_ok()
+                && hold.observe(&self.view).is_ok()
+                && hold.finish(TokenCoverage::Complete).is_ok()
+        }
+    }
+}
