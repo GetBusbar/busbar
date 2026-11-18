@@ -87,12 +87,12 @@ fn run(door: &Arc<dyn FramerDoor>, opens: usize) -> Vec<u64> {
         open(door, &established);
         times.push(u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX));
     }
-    times.sort_unstable();
+    times.sort();
     times
 }
 
 fn report(label: &str, mut all: Vec<u64>) {
-    all.sort_unstable();
+    all.sort();
     let at = |q: usize| all[(all.len() * q / 100).min(all.len() - 1)];
     println!(
         "B-FRAMING-OPEN {label}: median {} ns, p99 {} ns per open ({} opens)",
