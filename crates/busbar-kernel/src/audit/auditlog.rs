@@ -1019,9 +1019,14 @@ pub(crate) fn stamp_request_context(row: &mut AuditRowInput) {
 }
 
 /// Write one row under hash scheme 4, stamped with the request in flight.
-pub fn emit_row_now(mut row: AuditRowInput) {
+pub fn emit_row_now(row: AuditRowInput) {
+    emit_row_at(row, busbar_kernel::store::now_ms());
+}
+
+/// [`emit_row_now`], stamped `at_ms` (the op's one wall reading, milliseconds).
+pub fn emit_row_at(mut row: AuditRowInput, at_ms: u64) {
     stamp_request_context(&mut row);
-    let suffix = row4_suffix(busbar_kernel::store::now_ms(), &row);
+    let suffix = row4_suffix(at_ms, &row);
     drain_pending_audit();
     enqueue_pending_audit(ADMIN_LOG, suffix, EventOrigin::Mutation);
     drain_pending_audit();
