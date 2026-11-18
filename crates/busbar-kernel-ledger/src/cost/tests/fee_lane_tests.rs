@@ -52,7 +52,7 @@ fn card() -> RateCard {
 
 fn posting(lane: String, quantities: &[(&'static str, u64)], fee_count: u64) -> Posting {
     Posting {
-        lane,
+        lane: busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(lane)),
         quantities: quantities
             .iter()
             .map(|(class, amount)| Quantity::new(class, *amount))
@@ -162,4 +162,84 @@ fn a_stray_class_on_a_fee_lane_still_refuses_and_an_ordinary_lane_is_untouched()
     let priced = price_at_card(EntryKey::new(0, [0; 8], 0), &card, &served).expect("priced");
     assert_eq!(priced.priced_nanos, expected);
     assert!(!priced.lane_unpriced);
+}
+
+/// Plane keys the fee-lane readings are held equal over: ordinary keys, the flat (empty) key, keys
+/// that hold the separator, and keys shaped like a common measurement lane, well formed and not.
+fn plane_keys() -> Vec<String> {
+    let sep = crate::cost::PLANE_LANE_SEP;
+    let measured = crate::cost::MEASUREMENT_LANE_PREFIX;
+    vec![
+        String::new(),
+        "p".into(),
+        "s".into(),
+        "absent".into(),
+        format!("{sep}"),
+        format!("{sep}p"),
+        format!("p{sep}"),
+        format!("p{sep}{LANE}"),
+        format!("absent{sep}x{sep}y"),
+        // A measurement lane whose kind is the key's own tail, exactly and with a namespace after.
+        format!("{measured}4:kind"),
+        format!("{measured}4:kindspace"),
+        format!("{measured}4:kindé"),
+        format!("{measured}7:unknown"),
+        // Ill formed: a zero length, a length past the end, a length inside a character, no number.
+        format!("{measured}0:kind"),
+        format!("{measured}5:kind"),
+        format!("{measured}9:kind"),
+        format!("{measured}1:é"),
+        format!("{measured}x:kind"),
+        format!("{measured}kind"),
+        measured.to_string(),
+    ]
+}
+
+/// `RateCard::plane_fee_card` answers the very card `plane_lane` answers for the spelled fee lane:
+/// the same card by address, for every key, so a fee read through it is the fee read before.
+#[test]
+fn the_fee_card_by_plane_key_is_the_card_of_the_spelled_fee_lane() {
+    let mut card = card();
+    card.measurements.insert(
+        "kind".to_string(),
+        RateCard::from_config(None::<std::iter::Empty<(&str, TierRates)>>, 9),
+    );
+    for plane in plane_keys() {
+        let spelled = plane_fee_lane(&plane);
+        let by_lane = card.plane_lane(&spelled).0;
+        let by_key = card.plane_fee_card(&plane);
+        assert!(
+            std::ptr::eq(by_lane, by_key),
+            "plane key {plane:?}: the card by key is not the card of its fee lane"
+        );
+        assert_eq!(by_key.fee(), by_lane.fee(), "plane key {plane:?}");
+    }
+    // The readings differ card to card, so the address check above is not vacuous.
+    assert_eq!(card.plane_fee_card("").fee(), 5);
+    assert_eq!(card.plane_fee_card("p").fee(), 3);
+    assert_eq!(card.plane_fee_card("s").fee(), 2);
+    assert_eq!(card.plane_fee_card("absent").fee(), 0);
+    let measured = format!("{}4:kind", crate::cost::MEASUREMENT_LANE_PREFIX);
+    assert_eq!(card.plane_fee_card(&measured).fee(), 9);
+}
+
+/// `fee_lane_of` is the spelled fee lane of a qualified lane's plane, borrowed from the lane, and
+/// nothing for a lane with no plane: what the callers of `plane_fee_lane` computed before.
+#[test]
+fn the_borrowed_fee_lane_is_the_spelled_fee_lane_of_the_lanes_plane() {
+    for qualified in plane_keys() {
+        let (plane, _) = crate::cost::split_plane_lane(&qualified);
+        let spelled = (!plane.is_empty()).then(|| plane_fee_lane(plane));
+        assert_eq!(
+            crate::cost::fee_lane_of(&qualified),
+            spelled.as_deref(),
+            "qualified lane {qualified:?}"
+        );
+    }
+    let lane = format!("p{}{LANE}", crate::cost::PLANE_LANE_SEP);
+    assert_eq!(
+        crate::cost::fee_lane_of(&lane),
+        Some(plane_fee_lane("p").as_str())
+    );
+    assert_eq!(crate::cost::fee_lane_of(LANE), None);
 }
