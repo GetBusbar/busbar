@@ -265,28 +265,6 @@ use crate::governance::exact_debt::{BudgetFlushFlight, ExactModelDelta, ExactUsa
 use busbar_contract::count::{Count, CountError, COUNT_SCALE};
 use busbar_contract::records::UsageDelta;
 
-/// `exact_debt`: a stored raw debt row's unit counts rescaled to micro-units, decoded once when
-/// its custody is restored.
-pub(crate) fn exact_debt_stored_units(
-    units: std::collections::BTreeMap<String, i128>,
-    scale: u32,
-) -> Result<std::collections::BTreeMap<String, i128>, CountError> {
-    units
-        .into_iter()
-        .map(|(unit, n)| Count::from_stored(n, scale).map(|n| (unit, n.micros())))
-        .collect()
-}
-
-/// `exact_debt`: stored decimal unit counts parsed, decoded once when custody is restored.
-pub(crate) fn exact_debt_parse_units<E: serde::de::Error>(
-    units: std::collections::BTreeMap<String, String>,
-) -> Result<std::collections::BTreeMap<String, i128>, E> {
-    units
-        .into_iter()
-        .map(|(unit, count)| count.parse().map(|count| (unit, count)).map_err(E::custom))
-        .collect()
-}
-
 /// `exact_debt`: whether every model row of a flush debt is zero (flusher and window roll).
 pub(crate) fn exact_debt_models_zero(models: &[ExactModelDelta]) -> bool {
     models

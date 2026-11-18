@@ -24,15 +24,17 @@ impl<'de> serde::Deserialize<'de> for ExactModelDelta {
             #[serde(with = "decimal_units")]
             usage_units: BTreeMap<String, i128>,
         }
-        let row = Stored::deserialize(deserializer)?;
+        let mut row = Stored::deserialize(deserializer)?;
+        // Rescaled to micro-units in place: each count is replaced where it sits.
+        for count in row.usage_units.values_mut() {
+            *count = Count::from_stored(*count, row.scale)
+                .map_err(serde::de::Error::custom)?
+                .micros();
+        }
         Ok(Self {
             model: row.model,
             scale: COUNT_SCALE,
-            usage_units: crate::off_path::governance::runtime::exact_debt_stored_units(
-                row.usage_units,
-                row.scale,
-            )
-            .map_err(serde::de::Error::custom)?,
+            usage_units: row.usage_units,
         })
     }
 }
@@ -221,7 +223,7 @@ mod decimal_count {
 }
 mod decimal_units {
     use super::BTreeMap;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserializer, Serialize, Serializer};
     /// A count written as its decimal string, in place.
     struct Decimal<'a>(&'a i128);
     impl Serialize for Decimal<'_> {
@@ -239,9 +241,24 @@ mod decimal_units {
     pub fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<BTreeMap<String, i128>, D::Error> {
-        crate::off_path::governance::runtime::exact_debt_parse_units(
-            BTreeMap::<String, String>::deserialize(deserializer)?,
-        )
+        struct Units;
+        impl<'de> serde::de::Visitor<'de> for Units {
+            type Value = BTreeMap<String, i128>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a map")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut entries: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut units = BTreeMap::new();
+                while let Some((unit, count)) = entries.next_entry::<String, String>()? {
+                    units.insert(unit, count.parse().map_err(serde::de::Error::custom)?);
+                }
+                Ok(units)
+            }
+        }
+        deserializer.deserialize_map(Units)
     }
 }
 
@@ -563,7 +580,7 @@ impl BudgetFlushRunner {
 
 pub(super) struct BudgetDeleteGuard<'a> {
     state: &'a GovState,
-    bucket: String,
+    bucket: &'a str,
 }
 impl Drop for BudgetDeleteGuard<'_> {
     fn drop(&mut self) {
@@ -571,12 +588,15 @@ impl Drop for BudgetDeleteGuard<'_> {
             .deleting_budget_buckets
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .remove(&self.bucket);
+            .remove(self.bucket);
     }
 }
 
 impl GovState {
-    pub(super) fn hold_budget_flush_deletion(&self, bucket: &str) -> BudgetDeleteGuard<'_> {
+    pub(super) fn hold_budget_flush_deletion<'a>(
+        &'a self,
+        bucket: &'a str,
+    ) -> BudgetDeleteGuard<'a> {
         let _cells = self.budget.write(bucket);
         self.deleting_budget_buckets
             .lock()
@@ -584,7 +604,7 @@ impl GovState {
             .insert(bucket.into());
         BudgetDeleteGuard {
             state: self,
-            bucket: crate::off_path::governance::runtime::exact_debt_bucket(bucket),
+            bucket,
         }
     }
 
