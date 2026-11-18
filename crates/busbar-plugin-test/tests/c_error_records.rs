@@ -270,9 +270,3 @@ fn a_raw_log_over_9999_renders_no_code_and_warns_once() {
 fn a_raw_log_and_an_error_over_9999_render_no_code_and_warn_once() {
     todo!("owner: W1-L2 (C-ERROR-RECORDS)")
 }
-
-#[test]
-#[ignore = "owner: W1-K8D; blocked (re-checked on dev 2026-11-16): the kernel admission path that reads error_codes_refused and the crypto self-test row is not on dev (OUTSTANDING row 5)"]
-fn a_bad_d_errors_admits_without_codes_and_a_store_and_gate_hook_still_serve() {
-    todo!("owner: W1-K8D (C-ERROR-RECORDS)")
-}

@@ -89,7 +89,6 @@ fn plane(routes: &[u32]) -> Described {
             .collect(),
         schema: None,
         metrics: Vec::new(),
-        error_codes_refused: None,
     }
 }
 

@@ -1558,8 +1558,6 @@ pub(crate) fn listener_method_bits(method: RouteMethod) -> u32 {
         }
 }
 
-const SESSION_QUEUE: usize = 64;
-
 pub(crate) fn routed(claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim) -> bool {
     claim.flags & (CLAIM_RAW_AFFIX | CLAIM_ENTRY) == 0
 }
@@ -1637,44 +1635,6 @@ impl DataRoutes {
                 (refusal_status(ReasonCode::PlanePanic), Vec::new()),
                 Body::empty(),
             ),
-        }
-    }
-
-    pub(crate) async fn open_session(
-        self: Arc<Self>,
-        plane: usize,
-        claim: u32,
-        req: DoorRequest,
-    ) -> busbar_kernel::plane_routes::SessionAnswer {
-        use busbar_kernel::plane_routes::{SessionAnswer, SessionPipe};
-        let (door, arrival, _) = self.arrived(plane, claim, req);
-        let (from_caller, from_rx) = mpsc::channel(SESSION_QUEUE);
-        let (to_tx, to_caller) = mpsc::channel(SESSION_QUEUE);
-        let caller = PipeCaller {
-            from: tokio::sync::Mutex::new(from_rx),
-            to: to_tx,
-        };
-        let (verdict, said) = oneshot::channel();
-        busbar_kernel::detached::spawn_detached(self.session(
-            door,
-            ClosingCaller::new(caller),
-            arrival,
-            verdict,
-            Attach::switched(),
-        ));
-        match said.await {
-            Ok(Ok(())) => SessionAnswer::Accepted(SessionPipe {
-                from_caller,
-                to_caller,
-            }),
-            Ok(Err(Some(rendered))) => SessionAnswer::Refused(stated(
-                (rendered.status, rendered.fields),
-                Body::from(rendered.body),
-            )),
-            Ok(Err(None)) | Err(_) => SessionAnswer::Refused(stated(
-                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
-                Body::empty(),
-            )),
         }
     }
 
@@ -2803,8 +2763,6 @@ impl FarEnd for DoorFar<'_, '_> {
     }
 }
 
-const SWITCHED: u32 = 101;
-
 const CREATED: u32 = 201;
 
 const OPEN_HEAD_WAIT: std::time::Duration = busbar_core_connector::compose::DEFAULT_OPEN_TIMEOUT;
@@ -2928,16 +2886,6 @@ impl Drop for CarrierEnd {
     }
 }
 
-impl Attach {
-    fn switched() -> Self {
-        Attach {
-            answered: SWITCHED,
-            admitted: None,
-            ended: None,
-        }
-    }
-}
-
 pub(crate) struct SessionDoor {
     pub(crate) request: busbar_kernel::limits::process_admission::RequestLease,
     pub(crate) admission: Option<busbar_kernel::inbound::RequestAdmission>,
@@ -3016,42 +2964,6 @@ impl<C: SessionCaller> SessionCaller for ClosingCaller<C> {
             () = busbar_kernel::detached::shutdown_fired(self.shutdown.clone()) => None,
             piece = self.inner.read() => piece,
         }
-    }
-}
-
-pub(crate) struct PipeCaller {
-    pub(crate) from: tokio::sync::Mutex<mpsc::Receiver<busbar_kernel::plane_driver::SessionInput>>,
-    pub(crate) to: mpsc::Sender<busbar_kernel::plane_routes::SessionOut>,
-}
-
-impl CallerEnd for PipeCaller {
-    fn head(&self, _status: u32, _fields: HeadFields) {}
-
-    async fn write(&self, bytes: &[u8]) -> bool {
-        let out = busbar_kernel::plane_routes::SessionOut {
-            bytes: bytes.to_vec(),
-            text: false,
-        };
-        self.to.send(out).await.is_ok()
-    }
-
-    async fn write_text(&self, bytes: &[u8]) -> bool {
-        let out = busbar_kernel::plane_routes::SessionOut {
-            bytes: bytes.to_vec(),
-            text: true,
-        };
-        self.to.send(out).await.is_ok()
-    }
-}
-
-impl busbar_kernel::plane_driver::SessionCaller for PipeCaller {
-    /// Budgeted callers require owned reads; bare reads must not dequeue or strip custody.
-    async fn read(&self) -> Option<Vec<u8>> {
-        None
-    }
-
-    async fn read_owned(&self) -> Option<busbar_kernel::plane_driver::SessionInput> {
-        self.from.lock().await.recv().await
     }
 }
 

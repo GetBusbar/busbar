@@ -486,6 +486,23 @@ async fn an_unbidden_message_goes_to_the_head_of_the_ask_line_and_leaves_its_ask
     );
 }
 
+/// The sum of the counter `name` in the real recorder's snapshot (the driver counts on its own tasks, so a thread-local recorder cannot see it).
+fn dropped_total(name: &str) -> f64 {
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
+    crate::snapshot::snapshot()
+        .expect("the actual recorder is installed")
+        .iter()
+        .flat_map(|family| &family.samples)
+        .filter(|sample| sample.name == name)
+        .map(|sample| {
+            sample
+                .value
+                .parse::<f64>()
+                .expect("a numeric metric sample")
+        })
+        .sum()
+}
+
 #[tokio::test]
 async fn an_unbidden_message_with_no_ask_open_writes_the_planes_fallback_or_is_counted() {
     let up = Arc::new(upstream(300));
@@ -501,17 +518,17 @@ async fn an_unbidden_message_with_no_ask_open_writes_the_planes_fallback_or_is_c
         "{\"error\":\"no\"}\n",
         "the fallback, framed"
     );
-    assert_eq!(f.driver.counts().unattributed(), 0);
+    let before = dropped_total(crate::snapshot::PLANE_CHANNEL_UNATTRIBUTED_TOTAL);
     child.says("o|").await;
     for _ in 0..100 {
-        if f.driver.counts().unattributed() == 1 {
+        if dropped_total(crate::snapshot::PLANE_CHANNEL_UNATTRIBUTED_TOTAL) > before {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(
-        f.driver.counts().unattributed(),
-        1,
+        dropped_total(crate::snapshot::PLANE_CHANNEL_UNATTRIBUTED_TOTAL) - before,
+        1.0,
         "no fallback: dropped and counted"
     );
 }

@@ -5,7 +5,7 @@
 //! RPM is reserved until handoff; TPM observes high-water usage and explicit uncertainty.
 
 use std::collections::BTreeMap;
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLockWriteGuard};
@@ -40,8 +40,6 @@ pub(crate) struct RateTerms {
     pub(crate) resource: Arc<str>,
     pub(crate) metric: RateMetric,
     pub(crate) threshold: u64,
-    pub(crate) policy_revision: u64,
-    pub(crate) activated_minute: u64,
 }
 
 impl RateTerms {
@@ -91,10 +89,6 @@ fn decimal_digits(n: usize) -> usize {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RateSnapshot {
-    pub(crate) rule: RateTerms,
-    pub(crate) process_epoch: [u8; 16],
-    pub(crate) window_start_ms: u64,
-    pub(crate) window_end_ms: u64,
     pub(crate) provisional_requests: u64,
     pub(crate) committed_requests: u64,
     pub(crate) known_tokens: Count,
@@ -117,15 +111,11 @@ pub(crate) enum RateRefusalKind {
 #[derive(Debug)]
 pub(crate) struct RateRefusal {
     pub(crate) kind: RateRefusalKind,
-    pub(crate) snapshots: Vec<RateSnapshot>,
 }
 
 impl RateRefusal {
     fn bare(kind: RateRefusalKind) -> Self {
-        Self {
-            kind,
-            snapshots: Vec::new(),
-        }
+        Self { kind }
     }
 }
 
@@ -161,17 +151,11 @@ pub(crate) enum RateObservationError {
     Sealed,
 }
 
-#[derive(Debug)]
-pub(crate) struct RateFinalSnapshot {
-    pub(crate) rules: Vec<RateSnapshot>,
-    pub(crate) highwater: Vec<(Box<str>, Count)>,
-}
-
 struct RateClock {
     epoch: [u8; 16],
     boot_ms: Option<u64>,
     started: Instant,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     elapsed: Option<Arc<AtomicU64>>,
 }
 
@@ -186,7 +170,7 @@ impl RateClock {
             epoch: crate::snapshot::boot_nonce(),
             boot_ms,
             started,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(test)]
             elapsed: None,
         }
     }
@@ -195,12 +179,12 @@ impl RateClock {
         if self.epoch == [0; 16] {
             return None;
         }
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(test)]
         let elapsed = match &self.elapsed {
             Some(elapsed) => Some(elapsed.load(Ordering::Relaxed)),
             None => u64::try_from(self.started.elapsed().as_millis()).ok(),
         };
-        #[cfg(not(any(test, feature = "test-support")))]
+        #[cfg(not(test))]
         let elapsed = u64::try_from(self.started.elapsed().as_millis()).ok();
         let minute = self.boot_ms?.checked_add(elapsed?)? / MINUTE_MS;
         minute.checked_add(1)?.checked_mul(MINUTE_MS)?;
@@ -293,24 +277,6 @@ impl SelectedRates {
         }
     }
 
-    /// A governor whose minute is `elapsed_ms / 60_000`, moved by the caller: B-RATE-HOLD's.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn stepped(started: Instant, elapsed_ms: Arc<AtomicU64>) -> Self {
-        Self {
-            cells: Sharded::new(),
-            clock: RateClock {
-                epoch: [1; 16],
-                boot_ms: Some(0),
-                started,
-                elapsed: Some(elapsed_ms),
-            },
-            unavailable: AtomicBool::new(false),
-            capacity: CELL_CAPACITY,
-            leases: AtomicUsize::new(0),
-            sweep_cursor: AtomicUsize::new(0),
-        }
-    }
-
     fn minute(&self) -> Result<u64, RateRefusal> {
         if !self.unavailable.load(Ordering::Acquire) {
             if let Some(minute) = self.clock.minute() {
@@ -343,8 +309,6 @@ impl SelectedRates {
             resource: resolved.resource_handle().cloned().unwrap_or_default(),
             metric: row.metric(),
             threshold: row.threshold(),
-            policy_revision: row.policy_revision(),
-            activated_minute: row.activated_minute(),
         }))
     }
 
@@ -370,15 +334,6 @@ impl SelectedRates {
             Ok(hold) => Ok(RateReservation { hold, prepared }),
             Err(reason) => Err(RateRejected { reason, prepared }),
         }
-    }
-
-    /// The current-policy resolver has already bound the authenticated caller and candidate.
-    /// Missing rows yield no headroom facts; this never creates cells or reserves capacity.
-    pub(crate) fn headroom(
-        &self,
-        resolved: &ResolvedSelectedRules,
-    ) -> Result<Vec<RateSnapshot>, RateRefusal> {
-        self.headroom_terms(Self::terms(resolved)?)
     }
 
     fn capture(
@@ -496,10 +451,6 @@ impl SelectedRates {
         let scope = row.map(locks).get(&row.key);
         let cell = scope.and_then(|scope| scope.windows.get(&cell_minute));
         RateSnapshot {
-            rule: row.terms.clone(),
-            process_epoch: self.clock.epoch,
-            window_start_ms: cell_minute * MINUTE_MS,
-            window_end_ms: (cell_minute + 1) * MINUTE_MS,
             provisional_requests: cell.map_or(0, |cell| cell.provisional),
             committed_requests: cell.map_or(0, |cell| cell.committed),
             known_tokens: cell.map_or(Count::ZERO, |cell| cell.known),
@@ -539,13 +490,10 @@ impl SelectedRates {
                 _ => None,
             }
         };
-        kind.map(|kind| RateRefusal {
-            kind,
-            snapshots: vec![snapshot],
-        })
+        kind.map(|kind| RateRefusal { kind })
     }
 
-    pub(crate) fn reserve_terms<C: AsRef<str>>(
+    fn reserve_terms<C: AsRef<str>>(
         self: &Arc<Self>,
         terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
         classes: &[C],
@@ -617,25 +565,6 @@ impl SelectedRates {
                 .collect(),
         })
     }
-
-    fn headroom_terms(
-        &self,
-        terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
-    ) -> Result<Vec<RateSnapshot>, RateRefusal> {
-        let captures = self.capture(terms)?;
-        if captures.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut locks = self.lock(&captures);
-        let minute = self.minute()?;
-        Ok(captures
-            .iter()
-            .map(|row| {
-                self.prune_scope(row.map(&mut locks), &row.key, minute);
-                self.snapshot(row, &mut locks, minute, minute)
-            })
-            .collect())
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -651,7 +580,7 @@ struct ClassHighwater {
     authoritative: bool,
 }
 
-pub(crate) struct RateHold {
+struct RateHold {
     rates: Arc<SelectedRates>,
     captures: Captures,
     minute: u64,
@@ -672,7 +601,7 @@ impl RateHold {
         self.phase = Phase::Finished;
     }
 
-    pub(crate) fn commit(&mut self) -> Result<(), RateRefusal> {
+    fn commit(&mut self) -> Result<(), RateRefusal> {
         if self.phase != Phase::Reserved {
             return Err(RateRefusal::bare(RateRefusalKind::InvalidBinding));
         }
@@ -725,10 +654,7 @@ impl RateHold {
         }
     }
 
-    pub(crate) fn observe(
-        &mut self,
-        view: &EffectiveTokenView<'_>,
-    ) -> Result<(), RateObservationError> {
+    fn observe(&mut self, view: &EffectiveTokenView<'_>) -> Result<(), RateObservationError> {
         if self.phase != Phase::Committed {
             return Err(RateObservationError::Sealed);
         }
@@ -799,10 +725,7 @@ impl RateHold {
         Ok(())
     }
 
-    pub(crate) fn finish(
-        &mut self,
-        coverage: TokenCoverage,
-    ) -> Result<RateFinalSnapshot, RateObservationError> {
+    fn finish(&mut self, coverage: TokenCoverage) -> Result<(), RateObservationError> {
         if self.phase != Phase::Committed {
             return Err(RateObservationError::Sealed);
         }
@@ -826,11 +749,6 @@ impl RateHold {
             }
             cell.references -= 1;
         }
-        let rules = self
-            .captures
-            .iter()
-            .map(|row| rates.snapshot(row, &mut locks, self.minute, now))
-            .collect();
         for row in &self.captures {
             rates.prune_scope(row.map(&mut locks), &row.key, now);
         }
@@ -838,14 +756,7 @@ impl RateHold {
         if invalid {
             return Err(RateObservationError::Incomplete);
         }
-        Ok(RateFinalSnapshot {
-            rules,
-            highwater: self
-                .classes
-                .iter()
-                .map(|held| (held.class.clone(), held.amount))
-                .collect(),
-        })
+        Ok(())
     }
 }
 
@@ -909,10 +820,7 @@ impl CommittedRate {
         self.hold.observe(view)
     }
 
-    pub(crate) fn seal(
-        mut self,
-        coverage: TokenCoverage,
-    ) -> Result<RateFinalSnapshot, RateObservationError> {
+    pub(crate) fn seal(mut self, coverage: TokenCoverage) -> Result<(), RateObservationError> {
         self.hold.finish(coverage)
     }
 }

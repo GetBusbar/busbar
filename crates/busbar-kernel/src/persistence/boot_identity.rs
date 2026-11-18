@@ -816,7 +816,6 @@ impl BootIdentity {
                                 assignment_key: key,
                                 primary: true,
                                 released: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                                restore: super::restore::gate(),
                             }),
                         });
                     }
@@ -905,7 +904,6 @@ impl BootIdentity {
                         assignment_key: target,
                         primary,
                         released: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                        restore: super::restore::gate(),
                     }),
                 });
             }
@@ -1379,10 +1377,6 @@ impl PredecessorFence {
     pub async fn run(&self, stop: tokio::sync::watch::Receiver<bool>) -> ExpiredPass {
         let stopped = || *stop.borrow();
         let mut pass = ExpiredPass::default();
-        // DES-331 §B5.2: no writer is closed on a restored Store until the restore is declared.
-        if super::restore::gate().quarantined() {
-            return pass;
-        }
         let scan = match self
             .identity
             .expired_writers(LEASE_TTL_MS, EXPIRED_PASS_MAX)
@@ -1564,8 +1558,6 @@ pub struct NodeLease {
     assignment_key: Vec<u8>,
     primary: bool,
     released: Arc<std::sync::atomic::AtomicBool>,
-    /// The restore quarantine each refresh feeds with the restore row it read (DES-331 §B5.1).
-    restore: &'static super::restore::Gate,
 }
 impl NodeLease {
     pub async fn refresh(&self) -> Result<bool, String> {
@@ -1574,9 +1566,7 @@ impl NodeLease {
     pub async fn release(&self) -> Result<(), String> {
         self.change(true).await.map(|_| ())
     }
-    /// The assignment, host-lease and writer-lease rows in one backend read with the restore row,
-    /// whose state feeds this lease's restore quarantine (DES-331 §B5.1). Answers the three lease
-    /// rows in that order.
+    /// The assignment, host-lease and writer-lease rows in one backend read, in that order.
     async fn observe(
         &self,
         host: &[u8],
@@ -1585,14 +1575,13 @@ impl NodeLease {
     ) -> Result<Vec<Option<Secret<Vec<u8>>>>, String> {
         use busbar_contract::persistence::{Read, ReadResult};
         let core = &self.owner.core;
-        let mut addresses = Vec::with_capacity(4);
+        let mut addresses = Vec::with_capacity(3);
         for row in [host, key, writer_key] {
             addresses.push(
                 super::scoped::migration_address(true, INSTANCE, NODE_SCHEMA, row)
                     .map_err(error)?,
             );
         }
-        addresses.push(super::restore::address());
         let info = core.info();
         let result = core
             .backend()
@@ -1605,19 +1594,14 @@ impl NodeLease {
             .map_err(error)?;
         let ReadResult::Values {
             observed_at,
-            mut values,
+            values,
         } = result
         else {
             return Err("node lease observation was not coherent".into());
         };
-        if observed_at.authority != info.clock_authority || values.len() != 4 {
+        if observed_at.authority != info.clock_authority || values.len() != 3 {
             return Err("node lease observation authority changed".into());
         }
-        let restore = values.pop().flatten();
-        let seal = crate::seal::lend();
-        self.restore.observe(super::restore::decode(
-            restore.as_ref().map(|value| value.expose(&seal).as_slice()),
-        )?);
         Ok(values)
     }
     async fn change(&self, release: bool) -> Result<bool, String> {
@@ -1633,7 +1617,7 @@ impl NodeLease {
             let key = lease_key(&self.host);
             let authority = owner.core.authority().map_err(error)?;
             let writer_key = writer_lease_key(authority.writer_epoch, authority.writer);
-            // One backend read of the three lease rows and the restore row (DES-331 §B5.1): the
+            // One backend read of the three lease rows: the
             // scoped store cannot address the control namespace, so the read is native.
             let mut values = self.observe(&host, &key, &writer_key).await?.into_iter();
             let assignment = values.next().ok_or("node observation missing")?;

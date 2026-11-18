@@ -180,12 +180,6 @@ impl crate::Connector {
         }
         self.pools.forget(owner);
 
-        // The listeners it bound are dropped with no lock held.
-        let gone: Vec<Arc<crate::conns::Accepting>> =
-            take_owned(&mut *self.listeners.lock().expect("listeners"), |(o, _)| {
-                *o == owner
-            });
-        drop(gone);
         let needs = needs_of(&*self.over.lock().expect("needs"), owner);
         for need in needs {
             self.set_need(owner, need, None);
@@ -217,15 +211,6 @@ impl crate::Connector {
             .expect("plaintext owners")
             .remove(&owner);
     }
-}
-
-/// Take every entry of `map` whose key `owned` names out, as an instance retires.
-pub(crate) fn take_owned<K: Copy + Eq + Hash, V>(
-    map: &mut HashMap<K, V>,
-    owned: impl Fn(&K) -> bool,
-) -> Vec<V> {
-    let keys: Vec<K> = map.keys().filter(|k| owned(*k)).copied().collect();
-    keys.iter().filter_map(|k| map.remove(k)).collect()
 }
 
 /// Every need `owner` declared in `over`, as it retires.

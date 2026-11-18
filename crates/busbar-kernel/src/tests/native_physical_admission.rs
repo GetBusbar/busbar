@@ -189,7 +189,6 @@ fn prepared_with_auth(
             &crate::plugin_routes::PluginRouteTable::empty(),
             Vec::new(),
             Vec::new(),
-            Vec::new(),
             None,
             false,
         )

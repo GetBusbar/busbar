@@ -79,7 +79,6 @@ use crate::compose::{
 use crate::framer::FramerDoor;
 use crate::hostio::HostIo;
 use crate::line::{Line, EVERY};
-use crate::listen::{AcceptLimits, Listening};
 use crate::pool::{Fill, Joined, Leader, PoolKey, PoolPosture, Pools, Same, Take};
 use crate::registry::Transports;
 
@@ -595,19 +594,6 @@ pub(crate) type Auths = HashMap<
     HashMap<NeedId, HashMap<String, HashMap<String, busbar_contract::conn::ConnAuth>>>,
 >;
 
-/// The listeners, one per inbound need, by the need's owner and need.
-pub(crate) type Listeners = Mutex<HashMap<(InstanceId, NeedId), Arc<Accepting>>>;
-
-/// ONE INBOUND LISTENER, driven under no lock (`BUSBAR-1.6.0.md` §11: no plugin code runs under a
-/// host lock): an accept takes the listener out, crosses the carrier's `accept` (and closes a
-/// connection past the cap) with nothing held, and puts it back. An accept that finds it out
-/// (another accept has it, or its bind is still crossing) answers PENDING, woken when it is back.
-#[derive(Default)]
-pub(crate) struct Accepting {
-    /// The listener while no accept has it out, and the accepts that found it out (each once).
-    slot: Mutex<(Option<Listening>, Wakers)>,
-}
-
 /// Wakers held once each, in the order they first registered (woken first registered, first
 /// woken): a repeat registration is found by its [`waker_key`] in `held`, never by a scan of those
 /// held.
@@ -618,13 +604,6 @@ struct Wakers {
 }
 
 impl Wakers {
-    /// Hold `waker` unless one that wakes the same task is held already.
-    fn hold(&mut self, waker: &Waker) {
-        if self.held.insert(waker_key(waker)) {
-            self.order.push(waker.clone());
-        }
-    }
-
     #[cfg(test)]
     fn len(&self) -> usize {
         self.order.len()
@@ -649,42 +628,6 @@ fn waker_key(waker: &Waker) -> (usize, usize) {
         waker.data().addr(),
         std::ptr::from_ref(waker.vtable()).addr(),
     )
-}
-
-impl Accepting {
-    /// Take the listener out; `None` (with `waker` woken once it is back) while it is out.
-    fn take(&self, waker: &Waker) -> Option<Listening> {
-        let mut slot = self.slot.lock().expect("listener");
-        let taken = slot.0.take();
-        if taken.is_none() {
-            slot.1.hold(waker);
-        }
-        taken
-    }
-
-    /// Put `listening` back (`None`: it is gone), waking every accept that found it out.
-    fn put(&self, listening: Option<Listening>) {
-        let waiting = {
-            let mut slot = self.slot.lock().expect("listener");
-            slot.0 = listening;
-            std::mem::take(&mut slot.1)
-        };
-        waiting.wake_all();
-    }
-}
-
-/// A listener an accept has out: put back however the accept ends, an unwind included.
-struct AcceptingOut<'a> {
-    home: &'a Accepting,
-    listening: Option<Listening>,
-}
-
-impl Drop for AcceptingOut<'_> {
-    fn drop(&mut self) {
-        if let Some(l) = self.listening.take() {
-            self.home.put(Some(l));
-        }
-    }
 }
 
 /// The address set a pended dial's pinned address must be in, held inline for the usual few.
@@ -1294,7 +1237,6 @@ pub struct Connector {
     wake: WakeTicket,
     judge: Arc<dyn DialJudge>,
     /// One listener per inbound need.
-    pub(crate) listeners: Listeners,
     /// The per-worker pools of dialled connections.
     pub(crate) pools: Pools,
     /// The trust anchors each sealed destination's connections are held to.
@@ -1351,7 +1293,6 @@ impl Default for Connector {
             tls_policy: None,
             wake: Arc::new(|_, _| {}),
             judge: Arc::new(LiteralsOnly(guard::Guard::default())),
-            listeners: Mutex::new(HashMap::new()),
             pools: Pools::new(PoolPosture::NONE),
             anchored: Mutex::new(HashMap::new()),
             member_anchored: Mutex::default(),
@@ -2197,130 +2138,6 @@ impl Connector {
             }),
         );
         Ok(())
-    }
-
-    /// Bind the one listener for `owner`'s INBOUND `need` on `bind` (`ip:port`), over the transport
-    pub fn listen(
-        &self,
-        owner: InstanceId,
-        need: NeedId,
-        bind: &str,
-        tls: Option<Arc<rustls::ServerConfig>>,
-        limits: AcceptLimits,
-    ) -> Result<SocketAddr, ConnError> {
-        self.slab.check_need(owner, need)?;
-
-        let (door, registered) = self
-            .over
-            .lock()
-            .expect("needs")
-            .get(&(owner, need))
-            .map(|d| {
-                (
-                    Arc::clone(&d.door),
-                    crate::off_path::conns::declared_alpn(&d.alpn),
-                )
-            })
-            .ok_or(ConnError::Refused)?;
-
-        let alpn = match framer::accept_offer(door.as_ref()) {
-            Ok(offer) if !offer.is_empty() => offer,
-            Ok(_) => registered,
-            Err(refused) => {
-                tracing::warn!(
-                    owner = owner.0,
-                    need = need.0,
-                    error = %refused,
-                    "inbound listener: the entry's locate refused the accepting-side protocol \
-                     offer; the listener binds with the transport's registered protocol list"
-                );
-                registered
-            }
-        };
-
-        let held = Arc::new(Accepting::default());
-        {
-            let mut listeners = self.listeners.lock().expect("listeners");
-            if listeners.contains_key(&(owner, need)) {
-                return Err(ConnError::Refused);
-            }
-            listeners.insert((owner, need), Arc::clone(&held));
-        }
-        let bound = self
-            .ride_on(&door)
-            .ok_or(ConnError::Refused)
-            .and_then(|(framer, via)| {
-                Listening::bind(framer, &via, bind, tls, alpn, limits).map_err(|error| {
-                    tracing::warn!(
-                        owner = owner.0,
-                        need = need.0,
-                        kind = ?error.kind(),
-                        "inbound listener bind failed"
-                    );
-                    ConnError::Fault
-                })
-            });
-        match bound {
-            Ok(l) => {
-                let addr = l.local_addr();
-                held.put(Some(l));
-                Ok(addr)
-            }
-            Err(e) => {
-                let gone = {
-                    let mut listeners = self.listeners.lock().expect("listeners");
-                    let ours = listeners
-                        .get(&(owner, need))
-                        .is_some_and(|a| Arc::ptr_eq(a, &held));
-                    ours.then(|| listeners.remove(&(owner, need))).flatten()
-                };
-                drop(gone);
-                held.put(None);
-                Err(e)
-            }
-        }
-    }
-
-    /// The next connection `owner`'s inbound `need` admitted, held for `owner` like one it
-    pub fn accept(
-        &self,
-        owner: InstanceId,
-        need: NeedId,
-        ticket: Ticket,
-    ) -> Result<(ConnId, SocketAddr), ConnError> {
-        self.slab.check_need(owner, need)?;
-        let l = self
-            .listeners
-            .lock()
-            .expect("listeners")
-            .get(&(owner, need))
-            .cloned()
-            .ok_or(ConnError::Refused)?;
-        let waker = self.waker(owner, ticket);
-        let Some(listening) = l.take(&waker) else {
-            return Err(ConnError::Pending);
-        };
-        let mut out = AcceptingOut {
-            home: &l,
-            listening: Some(listening),
-        };
-        let got = out
-            .listening
-            .as_mut()
-            .expect("the listener is out")
-            .poll_accept(&mut Context::from_waker(&waker));
-        drop(out);
-        match got {
-            Poll::Pending => Err(ConnError::Pending),
-            Poll::Ready(Err(f)) => Err(map(&f)),
-            Poll::Ready(Ok(a)) => {
-                let line = Line::new(a.conn);
-                let id =
-                    self.slab
-                        .insert(owner, need, Held::over(Some((line, EVERY)), None, None))?;
-                Ok((id, a.peer))
-            }
-        }
     }
 
     /// Offer `bytes` on `stream` of `caller`'s connection `conn` (`end` = the stream's message is

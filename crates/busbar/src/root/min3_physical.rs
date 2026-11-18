@@ -246,7 +246,6 @@ pub(crate) fn assemble_slot(
     let DoorMounts {
         data: dispatch,
         routes,
-        sessions,
         refusals,
         refuse_by_path,
     } = mounts;
@@ -255,7 +254,6 @@ pub(crate) fn assemble_slot(
         app,
         &plugins,
         routes,
-        sessions,
         refusals,
         refuse_by_path,
         slot == "listen",

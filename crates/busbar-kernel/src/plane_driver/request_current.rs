@@ -7,22 +7,6 @@ use crate::config::OnExhaustedCfg;
 use crate::plane_driver::port_egress::SelectedWalkAttempt;
 
 impl RequestRoutes {
-    /// Read-only candidate routing check. The current-policy caller separately validates the
-    /// original credential/route and actual target definition; this never admits a dispatch.
-    pub(crate) fn allows_current_candidate(
-        &self,
-        request: &AdmittedRequest,
-        candidate: &crate::plane_driver::port_upstream::Candidate,
-        current_key: &VirtualKey,
-    ) -> bool {
-        self.allows_current_pair(
-            request,
-            current_key,
-            &candidate.pool,
-            &candidate.qualified_member,
-        )
-    }
-
     /// The caller lends the actual current seat under its publication guard and supplies the
     /// current key validated from this request's original credential. Ingress/target provenance
     /// is checked by that caller; this check cannot grant a request, member or monetary admission.

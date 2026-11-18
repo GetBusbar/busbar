@@ -174,7 +174,6 @@ pub(crate) struct PreparedExchange {
     dialect: Box<str>,
     model: Box<str>,
     exchange: PreparedOperands,
-    estimates: Option<Estimates>,
     declaration: Arc<FrozenUsage>,
 }
 
@@ -301,11 +300,6 @@ impl PreparedExchange {
         self.exchange = PreparedOperands::Resource { forward, data };
         Ok(self)
     }
-    pub(crate) fn estimates(&self) -> Option<&[(Box<str>, EstimateValue)]> {
-        self.estimates
-            .as_ref()
-            .map(|estimates| estimates.entries.as_slice())
-    }
     pub(crate) fn declaration(&self) -> Declaration<'_> {
         self.declaration.declaration()
     }
@@ -429,7 +423,6 @@ impl<K: Calls + ?Sized> Task<'_, K> {
             dialect,
             model,
             exchange: PreparedOperands::Plain(exchange),
-            estimates: answer.preparation.estimates,
             declaration: Arc::clone(&self.declaration),
         };
         buffered.release();

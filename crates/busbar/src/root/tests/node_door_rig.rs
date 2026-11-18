@@ -446,7 +446,6 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
     let (router, _admin, _handle) = busbar_kernel::build_split_routers_serving_doors(
         Arc::clone(&app),
         mounts.routes,
-        mounts.sessions,
         mounts.refusals,
         1 << 20,
         0,

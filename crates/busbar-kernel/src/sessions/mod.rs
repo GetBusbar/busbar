@@ -51,9 +51,6 @@ const SCHEMA: &str = "busbar.login-states.v1";
 pub struct StoreLoginStates {
     store: Arc<CoreStore>,
     clock: fn() -> u64,
-    /// The restore epoch this store keys its states under (DES-331 §B4): a state put before a declared restore is
-    /// not found after it.
-    restore_epoch: u64,
     in_doubt: InDoubt,
 }
 
@@ -67,34 +64,16 @@ impl StoreLoginStates {
     /// Login states over `store`; `clock` answers UNIX seconds.
     #[must_use]
     pub fn with_clock(store: Arc<CoreStore>, clock: fn() -> u64) -> Self {
-        Self::at_restore_epoch(
-            store,
-            clock,
-            crate::persistence::restore::gate().booted_epoch(),
-        )
-    }
-
-    /// Login states over `store`, timed by `clock`, keyed under `restore_epoch` (DES-331 §B4). Epoch 0 keeps the
-    /// original key layout; a later epoch prefixes each key with the epoch, so the states put before a declared
-    /// restore are unreachable at once and their rows age out through [`StoreLoginStates::sweep_expired`].
-    #[must_use]
-    pub fn at_restore_epoch(store: Arc<CoreStore>, clock: fn() -> u64, restore_epoch: u64) -> Self {
         Self {
             in_doubt: InDoubt::new(Arc::clone(&store)),
             store,
             clock,
-            restore_epoch,
         }
     }
 
-    /// The stored key of state `key` under this store's restore epoch.
+    /// The stored key of state `key`.
     fn stored(&self, key: &str) -> Vec<u8> {
-        let mut stored = Vec::with_capacity(8 + key.len());
-        if self.restore_epoch != 0 {
-            stored.extend_from_slice(&self.restore_epoch.to_be_bytes());
-        }
-        stored.extend_from_slice(key.as_bytes());
-        stored
+        key.as_bytes().to_vec()
     }
 
     /// Delete expired (abandoned) login states of `auth`, at most one batch. Ok(n) = deleted. A `take` never

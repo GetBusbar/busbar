@@ -10210,37 +10210,6 @@
         "http": 409,
         "retryable": false
       },
-      "restore_quarantine": {
-        "code": "unavailable",
-        "details_schema": {
-          "properties": {
-            "allowed": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "restore_epoch": {
-              "type": "integer"
-            }
-          },
-          "required": [
-            "restore_epoch",
-            "allowed"
-          ],
-          "type": "object"
-        },
-        "http": 503,
-        "retryable": true
-      },
-      "restore_tail_too_large": {
-        "code": "request_too_large",
-        "details_schema": {
-          "type": "object"
-        },
-        "http": 413,
-        "retryable": false
-      },
       "reviewed_digest_required": {
         "code": "invalid_request",
         "details_schema": {
@@ -10364,54 +10333,6 @@
           "type": "object"
         },
         "http": 409,
-        "retryable": false
-      },
-      "tail_chain_broken": {
-        "code": "invalid_request",
-        "details_schema": {
-          "type": "object"
-        },
-        "http": 422,
-        "retryable": false
-      },
-      "tail_digest_mismatch": {
-        "code": "invalid_request",
-        "details_schema": {
-          "type": "object"
-        },
-        "http": 422,
-        "retryable": false
-      },
-      "tail_encoding_invalid": {
-        "code": "invalid_request",
-        "details_schema": {
-          "type": "object"
-        },
-        "http": 422,
-        "retryable": false
-      },
-      "tail_missing_chain": {
-        "code": "invalid_request",
-        "details_schema": {
-          "type": "object"
-        },
-        "http": 422,
-        "retryable": false
-      },
-      "tail_seal_invalid": {
-        "code": "invalid_request",
-        "details_schema": {
-          "type": "object"
-        },
-        "http": 422,
-        "retryable": false
-      },
-      "tail_unsealed_end": {
-        "code": "invalid_request",
-        "details_schema": {
-          "type": "object"
-        },
-        "http": 422,
         "retryable": false
       },
       "telemetry_disabled": {

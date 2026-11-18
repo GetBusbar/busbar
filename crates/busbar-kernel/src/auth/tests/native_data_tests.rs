@@ -332,7 +332,6 @@ fn fixture(allowed: bool) -> Fixture {
             &crate::plugin_routes::PluginRouteTable::empty(),
             vec![],
             vec![],
-            vec![],
             None,
             false,
         )

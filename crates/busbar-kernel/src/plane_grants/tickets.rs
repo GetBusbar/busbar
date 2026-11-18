@@ -57,37 +57,13 @@ pub struct SealedTickets<R> {
 }
 
 impl<R: PluginRecords> SealedTickets<R> {
-    /// Tickets over `records`, sealed under `host_key` (32 bytes), timed by `clock` (UNIX seconds), under the restore
-    /// epoch this process booted with. `None` when the key is not 32 bytes or the key derivation is refused.
+    /// Tickets over `records`, sealed under `host_key` (32 bytes), timed by `clock` (UNIX seconds).
+    /// `None` when the key is not 32 bytes or the key derivation is refused.
     pub fn new(records: R, host_key: &[u8], clock: fn() -> u64) -> Option<Self> {
-        Self::at_restore_epoch(
-            records,
-            host_key,
-            clock,
-            crate::persistence::restore::gate().booted_epoch(),
-        )
-    }
-
-    /// [`SealedTickets::new`] under `restore_epoch` (DES-331 §B4): the seal keys bind the epoch, so after a declared
-    /// restore every ticket sealed before it fails to open and fresh tickets work at once. Epoch 0 keeps the
-    /// original derivation, so tickets sealed before this rule survive the upgrade.
-    pub fn at_restore_epoch(
-        records: R,
-        host_key: &[u8],
-        clock: fn() -> u64,
-        restore_epoch: u64,
-    ) -> Option<Self> {
         if host_key.len() != 32 {
             return None;
         }
-        let info = |purpose: &[u8]| {
-            let mut info = purpose.to_vec();
-            if restore_epoch != 0 {
-                info.extend_from_slice(b"/r");
-                info.extend_from_slice(&restore_epoch.to_be_bytes());
-            }
-            info
-        };
+        let info = |purpose: &[u8]| purpose.to_vec();
         let mut enc = SecureVec::zeroed(32);
         let mut mac = SecureVec::zeroed(32);
         crypto::hkdf_sha256(b"busbar.ticket.v1", host_key, &info(b"enc"), &mut enc[..]).ok()?;

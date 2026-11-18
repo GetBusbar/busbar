@@ -88,7 +88,7 @@ impl NativeRequestMoney {
                 &snapshot,
             )
             .and_then(|checked| checked.project())
-            .map_err(NativeAttemptError::Custody)?
+            .map_err(|_| NativeAttemptError::Custody)?
             .partitions
             .iter()
             .any(|partition| {
@@ -138,6 +138,6 @@ impl NativeRequestMoney {
                     Checkpoint::Continue
                 }
             })
-            .map_err(NativeAttemptError::Custody)
+            .map_err(|_| NativeAttemptError::Custody)
     }
 }

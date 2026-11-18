@@ -128,11 +128,8 @@ impl ImagesBuilder {
             .collect();
         let errors: &'static ErrorBook =
             match decode_errors(&bodies, || crate::scan::error_identity(stamp_name)) {
-                Ok(book) => Box::leak(Box::new(book)),
-                Err(refused) => {
-                    described.error_codes_refused = Some(refused);
-                    &ErrorBook::Refused
-                }
+                Some(book) => Box::leak(Box::new(book)),
+                None => &ErrorBook::Refused,
             };
         let declared: Vec<(u64, u64)> = described
             .items
@@ -183,22 +180,12 @@ impl ImagesBuilder {
     /// `NameConflict` (§4.3) when the plugin's identity or a `former_names` word (§7.1) equals an already-admitted
     /// plugin's identity or word; the generic `module:` match resolves identity, then words.
     /// **Round 34 (PLUGIN-ERROR-CODES §2.2-§2.4):** in the same describe pass it decodes D_ERRORS and builds the
-    /// image's `ErrorBook` (below), on both load paths. A bad declaration is exactly one of: more than one D_ERRORS
-    /// item (`have` "2 D_ERRORS items"); body empty, odd or over 512 bytes ("body 3 bytes"); a number 0 or above 9999
-    /// ("10000 at index 4"); not strictly ascending ("7071 after 7071 at index 2"); an identity that cannot form a
-    /// code (`scan::error_identity`, L1: "bad character at byte 4", "length 70 > 64"). The check runs before any
-    /// allocation. Every fault ends the same way: **the image is admitted with `ErrorBook::Refused`** (never a
-    /// `Refusal`, never DescribeInvalid; a store or gate hook still serves, boot continues) and the fault is kept
-    /// as `Described::error_codes_refused`; the kernel's admission path reads it once and writes one WARN (core
-    /// diagnostic BUSBAR-6xxx "plugin error numbers refused", `field: "errors"`, `have`, `want`) and one audit row
-    /// `plugin.error_codes_refused` (outcome `degraded`, severity `warning`, `data` = `ErrorCodesRefused {field,
-    /// have, want}`, principal `node:<id>`, resource `plugin:<file>`, `kind`, `instance: null`, a core-written
-    /// `message` naming the file and the library SHA-256) (K8D), and the admin API shows
-    /// `image.admission.error_codes_refused` = that `data`, or `null` (K8C, ADMIN-API-1.6 §B.9). `have` is built only from
-    /// the templates above (decimal counts, declared numbers, byte offsets and lengths), never a stamp or name byte;
-    /// `want` is the constant "1..=256 numbers, each 1..=9999, strictly ascending; name ^[a-z][a-z0-9-]{0,63}$ not
-    /// ending '-'". A malformed describe frame stays DescribeInvalid. An image without D_ERRORS gets
-    /// `ErrorBook::None` and no identity check.
+    /// image's `ErrorBook` (below), on both load paths. A bad declaration (more than one D_ERRORS item; a
+    /// body empty, odd or over 512 bytes; a number 0 or above 9999; numbers not strictly ascending; an identity that cannot
+    /// form a code) admits the image with `ErrorBook::Refused` (never a `Refusal`, never DescribeInvalid; a store or gate
+    /// hook still serves, boot continues): the image runs without error codes. The check runs before any allocation. A
+    /// malformed describe frame stays DescribeInvalid. An image without D_ERRORS gets `ErrorBook::None` and no identity
+    /// check.
     pub fn admit(&mut self, admitted: Admitted) -> Result<(), Refusal> {
         let identity = admitted.identity().to_owned();
         let (header, kind) = (admitted.plugin(), admitted.kind());
@@ -1536,8 +1523,6 @@ pub struct Described {
     pub items: Vec<(u16, Vec<u8>)>,
     pub schema: Option<Box<str>>,
     pub metrics: Vec<MetricInfo>,
-    /// Round 34: Some when D_ERRORS was present and refused (`Registry::add`); the image runs without codes.
-    pub error_codes_refused: Option<ErrorCodesRefused>,
 }
 
 impl Described {
@@ -1549,15 +1534,6 @@ impl Described {
                 .flatten()
         })
     }
-}
-
-/// Round 34: the one schema for the WARN, the audit `data` and `image.admission.error_codes_refused`.
-/// `field` is always "errors"; `have` is template-built (never a plugin byte); `want` is the constant of `add`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ErrorCodesRefused {
-    pub field: &'static str,
-    pub have: Box<str>,
-    pub want: &'static str,
 }
 
 /// Indices into the `instances` slice given to `boot_plan`, in execution order, with the r6 phase of each.
@@ -1663,52 +1639,31 @@ impl ErrorBook {
     }
 }
 
-/// The D_ERRORS faults' fixed `want` (PLUGIN-ERROR-CODES §2.4).
-const ERRORS_WANT: &str = "1..=256 numbers, each 1..=9999, strictly ascending; name ^[a-z][a-z0-9-]{0,63}$ not ending '-'";
-
-/// PLUGIN-ERROR-CODES §2.4: decode the image's D_ERRORS bodies into its book. Every check runs before any
-/// allocation; `have` is built only from counts, declared numbers, offsets and lengths, never a plugin byte.
-/// `identity` is `scan::error_identity` over the stamp name, called only when the list itself was good.
+/// PLUGIN-ERROR-CODES §2.4: decode the image's D_ERRORS bodies into its book. `None` is a refused list: the image
+/// is admitted without codes. Every check runs before any allocation. `identity` is `scan::error_identity` over
+/// the stamp name, called only when the list itself was good.
 fn decode_errors<'a>(
     bodies: &[&[u8]],
     identity: impl FnOnce() -> Result<&'a str, crate::scan::IdentityFault>,
-) -> Result<ErrorBook, ErrorCodesRefused> {
-    use crate::scan::IdentityFault;
-    let refuse = |have: String| ErrorCodesRefused {
-        field: "errors",
-        have: have.into(),
-        want: ERRORS_WANT,
-    };
+) -> Option<ErrorBook> {
     let body = match bodies {
-        [] => return Ok(ErrorBook::None),
+        [] => return Some(ErrorBook::None),
         [one] => *one,
-        many => return Err(refuse(format!("{} D_ERRORS items", many.len()))),
+        _ => return None,
     };
     if body.is_empty() || body.len() % 2 != 0 || body.len() > 512 {
-        return Err(refuse(format!("body {} bytes", body.len())));
+        return None;
     }
     let mut numbers: Vec<u16> = Vec::with_capacity(body.len() / 2);
-    for (index, pair) in body.as_chunks::<2>().0.iter().enumerate() {
+    for pair in body.as_chunks::<2>().0 {
         let n = u16::from_le_bytes(*pair);
-        if n == 0 || n > 9999 {
-            return Err(refuse(format!("{n} at index {index}")));
-        }
-        if let Some(&prev) = numbers.last() {
-            if n <= prev {
-                return Err(refuse(format!("{n} after {prev} at index {index}")));
-            }
+        if n == 0 || n > 9999 || numbers.last().is_some_and(|prev| n <= *prev) {
+            return None;
         }
         numbers.push(n);
     }
-    let name = identity().map_err(|fault| {
-        refuse(match fault {
-            IdentityFault::Empty => "empty name".to_owned(),
-            IdentityFault::BadChar { byte } => format!("bad character at byte {byte}"),
-            IdentityFault::Length { len } => format!("length {len} > 64"),
-            IdentityFault::TrailingDash => "name ends in '-'".to_owned(),
-        })
-    })?;
-    Ok(ErrorBook::Declared {
+    let name = identity().ok()?;
+    Some(ErrorBook::Declared {
         identity: Box::leak(name.to_owned().into_boxed_str()),
         numbers: Box::leak(numbers.into_boxed_slice()),
     })
@@ -2239,32 +2194,22 @@ mod l2_tests {
     }
 
     #[test]
-    fn a_bad_d_errors_list_is_refused_with_template_text() {
+    fn a_bad_d_errors_list_is_refused() {
         let ok = || Ok("acme");
         let b = body(&[7071, 7071]);
-        let e = decode_errors(&[&b], ok).err().unwrap();
-        assert_eq!(&*e.have, "7071 after 7071 at index 1");
+        assert!(decode_errors(&[&b], ok).is_none());
         let b = body(&[10000]);
-        assert_eq!(
-            &*decode_errors(&[&b], ok).err().unwrap().have,
-            "10000 at index 0"
-        );
+        assert!(decode_errors(&[&b], ok).is_none());
         let b = body(&[1]);
-        assert_eq!(
-            &*decode_errors(&[&b, &b], ok).err().unwrap().have,
-            "2 D_ERRORS items"
-        );
-        assert_eq!(
-            &*decode_errors(&[&b[..1]], ok).err().unwrap().have,
-            "body 1 bytes"
-        );
-        assert!(matches!(decode_errors(&[], ok), Ok(ErrorBook::None)));
+        assert!(decode_errors(&[&b, &b], ok).is_none());
+        assert!(decode_errors(&[&b[..1]], ok).is_none());
+        assert!(matches!(decode_errors(&[], ok), Some(ErrorBook::None)));
     }
 
     #[test]
     fn a_declared_number_resolves_and_an_undeclared_one_does_not() {
         let b = body(&[3, 7]);
-        let book = decode_errors(&[&b], || Ok("acme-store")).ok().unwrap();
+        let book = decode_errors(&[&b], || Ok("acme-store")).unwrap();
         let latch = AtomicBool::new(false);
         assert_eq!(
             book.resolve(7, &latch).unwrap().to_string(),
@@ -2671,22 +2616,8 @@ pub(crate) fn describe_with(
 }
 
 /// The checks `admit_described` applies after describe that read only the decoded describe, for an inspection
-/// (DES-443 r3 §3.3): D_ERRORS decoded into an owned book and dropped (no `Box::leak`), and the §10.6 ceiling
-/// row. NameConflict is not an inspection's concern (no configuration is admitted).
-pub(crate) fn inspect_checks(
-    identity: &str,
-    stamp_name: &[u8; 64],
-    described: &Described,
-) -> Result<(), Refusal> {
-    let bodies: Vec<&[u8]> = described
-        .items
-        .iter()
-        .filter(|(t, _)| *t == tag::D_ERRORS)
-        .map(|(_, b)| b.as_slice())
-        .collect();
-    drop(decode_errors(&bodies, || {
-        crate::scan::error_identity(stamp_name)
-    }));
+/// (DES-443 r3 §3.3): the §10.6 ceiling row. NameConflict is not an inspection's concern (no configuration is admitted).
+pub(crate) fn inspect_checks(identity: &str, described: &Described) -> Result<(), Refusal> {
     let declared: Vec<(u64, u64)> = described
         .items
         .iter()

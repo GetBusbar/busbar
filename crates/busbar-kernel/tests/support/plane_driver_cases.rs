@@ -58,8 +58,6 @@ pub(crate) struct Far {
     ceiling: Option<Duration>,
 
     picks: std::sync::atomic::AtomicU32,
-
-    names_its_pool: bool,
 }
 
 pub(crate) const GREETING: &[u8] = b"hello";
@@ -94,7 +92,6 @@ impl Far {
             arrived: tokio::sync::Notify::new(),
             ceiling: None,
             picks: std::sync::atomic::AtomicU32::new(0),
-            names_its_pool: false,
         }
     }
 
@@ -150,22 +147,7 @@ const OVERLOADED: &str = "overloaded";
 
 impl FarEnd for Far {
     fn candidates(&self, _: &Pass<Route>) -> Option<busbar_kernel::plane_driver::Candidates> {
-        self.names_its_pool
-            .then(|| busbar_kernel::plane_driver::Candidates {
-                pool: POOL.to_string(),
-                members: self
-                    .members
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, m)| busbar_kernel::plane_driver::CandidateFacts {
-                        idx,
-                        model: (*m).to_string(),
-                        provider: PROVIDER.to_string(),
-                        weight: 1,
-                        ..Default::default()
-                    })
-                    .collect(),
-            })
+        None
     }
 
     fn deadline_ns(&self, now_ns: u64) -> u64 {

@@ -179,31 +179,3 @@ pub fn witness_address(
     scoped::migration_address(binding.private, binding.instance, schema, logical)
         .map_err(|error| format!("record witness owner address: {error:?}"))
 }
-
-/// Validate the original legacy audit recipe through its live owner. Callers
-/// separately prove that this is the complete frozen source inventory.
-pub fn verify_audit_chain<'a>(
-    records: impl IntoIterator<Item = &'a AuditRecord>,
-) -> Result<(), String> {
-    let framed = records
-        .into_iter()
-        .map(|record| {
-            crate::audit::stream_registry::StreamRecord::from_parts(
-                String::new(),
-                record.seq,
-                record.prev_hash.clone(),
-                record.hash.clone(),
-                crate::audit::auditlog::audit_suffix(
-                    record.ts,
-                    &record.action,
-                    &record.resource,
-                    &record.outcome,
-                    &record.principal,
-                ),
-                crate::audit::Framing::PipeSeparated,
-                false,
-            )
-        })
-        .collect::<Vec<_>>();
-    crate::audit::verify_chain(&framed).map_err(|error| error.to_string())
-}

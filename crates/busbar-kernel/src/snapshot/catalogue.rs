@@ -476,6 +476,20 @@ pub const HOST_METRICS: &[MetricDecl] = &[
         "Plugin back-channels (reported metrics and diagnostics) dropped because the bounded observer intake was full",
     ),
     row(
+        PLANE_CHANNEL_UNATTRIBUTED_TOTAL,
+        Counter,
+        &[],
+        None,
+        "Plane channel messages dropped because no ask was open and there was no fallback to write them to",
+    ),
+    row(
+        PLANE_CHANNEL_SLOT_FULL_TOTAL,
+        Counter,
+        &[],
+        None,
+        "Plane channel messages dropped because the receiving slot's queue was full",
+    ),
+    row(
         PLUGIN_TEXT_CUT_TOTAL,
         Counter,
         &["plugin", "field"],

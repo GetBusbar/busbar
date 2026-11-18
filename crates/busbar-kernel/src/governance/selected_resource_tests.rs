@@ -37,8 +37,6 @@ fn rule(metric: RateMetric, threshold: u64) -> RateTerms {
         resource: "resource-a".into(),
         metric,
         threshold,
-        policy_revision: 1,
-        activated_minute: 0,
     }
 }
 
@@ -58,8 +56,28 @@ fn reserve(rates: &Arc<SelectedRates>, terms: Vec<RateTerms>) -> RateHold {
     rates.reserve_terms(terms, &[INPUT]).unwrap()
 }
 
+/// The rate state of `terms` as a read-only observation (no cell is created, nothing is reserved).
+fn headroom_terms(
+    rates: &SelectedRates,
+    terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
+) -> Result<Vec<RateSnapshot>, RateRefusal> {
+    let captures = rates.capture(terms)?;
+    if captures.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut locks = rates.lock(&captures);
+    let minute = rates.minute()?;
+    Ok(captures
+        .iter()
+        .map(|row| {
+            rates.prune_scope(row.map(&mut locks), &row.key, minute);
+            rates.snapshot(row, &mut locks, minute, minute)
+        })
+        .collect())
+}
+
 fn inspect(rates: &SelectedRates, term: RateTerms) -> RateSnapshot {
-    rates.headroom_terms(vec![term]).unwrap().remove(0)
+    headroom_terms(rates, vec![term]).unwrap().remove(0)
 }
 
 #[test]
@@ -132,7 +150,6 @@ fn reservation_expiry_refunds_old_cell_and_never_current_committed_work() {
     let snapshot = inspect(&rates, rpm);
     assert_eq!(snapshot.committed_requests, 1);
     assert_eq!(snapshot.provisional_requests, 0);
-    assert_eq!(snapshot.window_start_ms, 60_000);
 }
 
 #[test]
@@ -325,7 +342,6 @@ fn stable_rule_revision_shares_and_structured_scope_keys_do_not_alias() {
     let mut held = reserve(&rates, vec![original.clone()]);
     held.commit().unwrap();
     let mut revised = original.clone();
-    revised.policy_revision = 9;
     assert_eq!(
         rates
             .reserve_terms(vec![revised.clone()], &[INPUT])
@@ -373,7 +389,7 @@ fn no_matching_rows_are_a_noop_even_without_a_usable_rate_clock() {
     let mut hold = rates.reserve_terms(Vec::new(), &[] as &[&str]).unwrap();
     hold.commit().unwrap();
     hold.finish(TokenCoverage::Complete).unwrap();
-    assert!(rates.headroom_terms(Vec::new()).unwrap().is_empty());
+    assert!(headroom_terms(&rates, Vec::new()).unwrap().is_empty());
     assert_eq!(rates.leases.load(Ordering::Relaxed), 0);
 }
 
@@ -568,18 +584,9 @@ fn native_dynamic_physical_classes_survive_their_declaring_storage_and_reject_ne
         inspect(&rates, tpm).known_tokens,
         Count::from_integer(3).unwrap()
     );
-    let finished = hold.finish(TokenCoverage::Complete).unwrap();
+    hold.finish(TokenCoverage::Complete).unwrap();
     drop(input);
     drop(output);
-    assert!(finished
-        .highwater
-        .iter()
-        .any(|(class, amount)| class.as_ref() == "tokens.native_input_41"
-            && *amount == Count::from_integer(3).unwrap()));
-    assert!(finished
-        .highwater
-        .iter()
-        .any(|(class, amount)| class.as_ref() == "tokens.native_output_41" && amount.is_zero()));
 }
 
 #[tokio::test]

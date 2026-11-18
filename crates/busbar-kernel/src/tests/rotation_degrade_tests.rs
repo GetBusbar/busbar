@@ -41,6 +41,11 @@ impl crate::refresh::Report for Captured {
     }
 }
 
+/// The cause's own word as the error text the secret owner hands the streak.
+fn rotation_text(cause: RelendCause) -> String {
+    format!("rotation {}", cause.as_str())
+}
+
 fn degraded(cause: RelendCause) -> Captured {
     let report = Captured::default();
     let mut streak = RelendStreak::default();
@@ -49,7 +54,7 @@ fn degraded(cause: RelendCause) -> Captured {
         "hooks.audit-sink",
         &RelendRefused {
             cause,
-            text: super::rotation_text(cause).to_owned(),
+            text: rotation_text(cause),
         },
         Instant::now(),
     );
@@ -67,9 +72,6 @@ fn a_non_export_rotation_reports_8028_reload_or_restart_required() {
     assert_eq!(*level, tracing::Level::WARN);
     assert!(message.contains("reload or restart"), "{message}");
     assert!(fields.contains(&("cause", "reload-required".to_owned())));
-    assert!(fields
-        .iter()
-        .any(|(k, v)| *k == "error" && v.contains("reload or restart")));
     assert_eq!(
         *report.audits.lock().unwrap(),
         vec![(
@@ -99,12 +101,12 @@ fn every_rotation_cause_has_core_text_and_its_own_word() {
     ];
     for (cause, word) in causes {
         assert_eq!(cause.as_str(), word);
-        let text = super::rotation_text(cause);
+        let text = rotation_text(cause);
         assert!(!text.is_empty(), "{word} has core text");
         let report = degraded(cause);
         let diags = report.diags.lock().unwrap();
         let (_, _, _, fields) = diags.first().expect("one 8028");
         assert!(fields.contains(&("cause", word.to_owned())));
-        assert!(fields.contains(&("error", text.to_owned())));
+        assert!(fields.contains(&("error", text.clone())));
     }
 }

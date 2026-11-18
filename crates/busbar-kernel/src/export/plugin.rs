@@ -485,11 +485,8 @@ pub fn assemble_routes(
     seats: Vec<crate::plane_driver::port::PortSeat>,
     exports: Exports,
 ) -> Result<crate::state::App, String> {
-    let (routes, withheld) = crate::off_path::export::project_routes(cfg, &exports.sinks);
-    let routes = app
-        .plugin_routes
-        .with_export_routes(routes)?
-        .with_withheld_public_exports(withheld);
+    let routes = crate::off_path::export::project_routes(cfg, &exports.sinks);
+    let routes = app.plugin_routes.with_export_routes(routes)?;
     app.boot_route_paths = Arc::new(routes.paths());
     app.plugin_routes = Arc::new(routes);
     app.port_seats = seats.into();

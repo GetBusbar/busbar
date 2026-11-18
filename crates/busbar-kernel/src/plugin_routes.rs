@@ -114,23 +114,9 @@ pub struct PluginRouteTable {
     /// is over however many methods THAT path declared, which is one or two.
     by_path: HashMap<String, Vec<(RouteMethod, Registered)>>,
     persistent: std::collections::HashSet<String>,
-    withheld_public_exports: std::collections::HashSet<String>,
 }
 
 impl PluginRouteTable {
-    /// Exact opened export instances whose complete public surface was withheld
-    pub fn public_export_withheld(&self, instance: &str) -> bool {
-        self.withheld_public_exports.contains(instance)
-    }
-
-    pub(crate) fn with_withheld_public_exports(
-        mut self,
-        instances: std::collections::HashSet<String>,
-    ) -> Self {
-        self.withheld_public_exports = instances;
-        self
-    }
-
     /// Replace the unpublished candidate's export declarations with its actual opened routes.
     pub fn with_export_routes(&self, mut declarations: Vec<RouteDecl>) -> Result<Self, String> {
         if declarations
@@ -181,7 +167,6 @@ impl PluginRouteTable {
         Self {
             by_path,
             persistent: self.persistent.clone(),
-            withheld_public_exports: self.withheld_public_exports.clone(),
         }
     }
 
@@ -331,7 +316,6 @@ pub fn build_route_table(decls: Vec<RouteDecl>) -> Result<PluginRouteTable, Stri
     Ok(PluginRouteTable {
         by_path,
         persistent,
-        withheld_public_exports: Default::default(),
     })
 }
 
