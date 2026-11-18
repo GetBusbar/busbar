@@ -460,6 +460,26 @@ impl Rotations {
             items.insert(id, item);
         }
     }
+
+    /// A config apply: every item of this custody polls now (I4).
+    pub(crate) fn due_now(&self) {
+        let items: Vec<_> = lock(&self.items).values().cloned().collect();
+        for item in &items {
+            item.due_now();
+        }
+        busbar_kernel::refresh::process().due_now(&|kept| {
+            items
+                .iter()
+                .any(|item| std::ptr::addr_eq(Arc::as_ptr(kept), Arc::as_ptr(item)))
+        });
+    }
+}
+
+impl BootSecrets {
+    /// A config apply re-reads every source a running instance holds (DES-454 §2.2 step 1, I4).
+    pub(crate) fn rotate_now(&self) {
+        self.rotations.due_now();
+    }
 }
 
 /// The source references `reference` reads: itself, or each fill of a template.
