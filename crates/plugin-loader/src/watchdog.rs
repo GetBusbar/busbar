@@ -146,21 +146,6 @@ pub(crate) fn ceiling_row(declared: &[(u64, u64)], blocking: bool) -> Result<Row
     Ok(Row { row, clamped })
 }
 
-/// The registry's watchdog thread: a scan every 100 ms (§10.6; ceilings are enforced to +100 ms), each report
-/// handed to `SlotTable::hung`, which quarantines exactly the owner of that slot epoch.
-pub(crate) fn spawn(table: Arc<SlotTable>) -> std::thread::JoinHandle<()> {
-    std::thread::Builder::new()
-        .name("busbar-plugin-watchdog".into())
-        .spawn(move || loop {
-            busbar_plugin_abi::host_side::watch::scan(
-                |slot, entry| table.watch_view(slot, entry),
-                |slot, epoch, entry, busy_ms| table.hung(slot, epoch, entry, busy_ms),
-            );
-            std::thread::sleep(Duration::from_millis(100));
-        })
-        .expect("the OS refused the plugin watchdog thread")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

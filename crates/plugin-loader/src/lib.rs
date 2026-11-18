@@ -237,9 +237,7 @@ mod chains;
 #[deny(unsafe_code)]
 pub mod inspect;
 #[deny(unsafe_code)]
-#[deny(unsafe_code)]
 pub mod instance;
-#[deny(unsafe_code)]
 #[deny(unsafe_code)]
 pub mod refusal;
 #[deny(unsafe_code)]
@@ -518,10 +516,6 @@ mod ordinary_plane_deadline;
 #[cfg(test)]
 #[path = "tests/ordinary_plane_fault_outputs.rs"]
 mod ordinary_plane_fault_outputs;
-
-#[cfg(test)]
-#[path = "tests/retired_store_fixture.rs"]
-mod retired_store_fixture;
 
 #[cfg(test)]
 #[path = "tests/neutral_transport.rs"]

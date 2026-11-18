@@ -453,13 +453,3 @@ pub(crate) fn test_settings(
 ) -> busbar_contract::plugin_settings::ResolvedSettings {
     value.clone().into()
 }
-#[cfg(test)]
-pub(crate) fn test_settings_json(text: &str) -> busbar_contract::plugin_settings::ResolvedSettings {
-    test_settings(&serde_json::from_str(text).expect("fixture is a JSON settings document"))
-}
-#[cfg(test)]
-pub(crate) fn test_authored_settings(
-    value: &serde_json::Value,
-) -> busbar_contract::plugin_settings::Settings {
-    serde_json::from_value(value.clone()).expect("fixture is an authored settings object")
-}

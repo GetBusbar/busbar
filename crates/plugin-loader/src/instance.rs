@@ -614,11 +614,6 @@ impl Registry {
         })
     }
 
-    /// The registry's slot table (the watchdog thread and the adapters' leases).
-    pub(crate) fn slots(&self) -> &Arc<SlotTable> {
-        &self.slots
-    }
-
     /// The scrub set of the instance that owns watchdog slot `slot` (its slot record, §10.6): what custody
     /// registers every value it hands that instance in (§12.2 step 5). None: the slot is not live.
     pub fn scrub_of(&self, slot: u32) -> Option<Arc<Scrub>> {
@@ -961,7 +956,7 @@ impl Registry {
         prepared: PreparedInstance,
         needs: &Arc<N>,
         refs: &Arc<dyn RefSource>,
-    ) -> BoxFut<'_, Result<(Arc<dyn HookPort>, InstanceLimits), OpenError>> {
+    ) -> BoxFut<'_, HookOpened> {
         let owned = OwnedSpec::new(&prepared.spec());
         let needs = Arc::clone(needs);
         let refs = Arc::clone(refs);
@@ -1699,8 +1694,8 @@ fn decode_errors<'a>(
         return Err(refuse(format!("body {} bytes", body.len())));
     }
     let mut numbers: Vec<u16> = Vec::with_capacity(body.len() / 2);
-    for (index, pair) in body.chunks_exact(2).enumerate() {
-        let n = u16::from_le_bytes([pair[0], pair[1]]);
+    for (index, pair) in body.as_chunks::<2>().0.iter().enumerate() {
+        let n = u16::from_le_bytes(*pair);
         if n == 0 || n > 9999 {
             return Err(refuse(format!("{n} at index {index}")));
         }
@@ -2175,6 +2170,9 @@ pub enum OpenedPort {
     Plane(Arc<dyn PlanePort>),
     Transport(Arc<dyn TransportPort>),
 }
+
+/// An opened hook: its port and the limits the instance settled at open.
+type HookOpened = Result<(Arc<dyn HookPort>, InstanceLimits), OpenError>;
 
 /// Round 34: the three plugin-answer variants carry the resolved ERROR number (`ErrorBook::resolve`; None for a
 /// core-made refusal). Its `Display` writes core's own words and the code only; the plugin text is a separate

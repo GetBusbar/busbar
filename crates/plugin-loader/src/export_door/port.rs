@@ -991,9 +991,12 @@ fn sample_shape<'f>(
     (role, bound, kept)
 }
 
+/// One sample as the port borrows it: its kind, value and labels.
+type SampleShape<'a> = (u32, f64, Vec<(&'a str, &'a str)>);
+
 /// Lowers the recorder snapshot into the port's borrowed snapshot and runs `f` over it.
 fn with_snapshot<R>(families: &[Family], f: impl FnOnce(&[FamilyIn<'_>]) -> R) -> R {
-    let shapes: Vec<Vec<(u32, f64, Vec<(&str, &str)>)>> = families
+    let shapes: Vec<Vec<SampleShape<'_>>> = families
         .iter()
         .map(|fam| {
             fam.samples

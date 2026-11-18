@@ -2771,19 +2771,6 @@ std::thread_local! {
     static TEST_SLOT_OVERRIDE: std::cell::Cell<Option<TestSlotOverride>> = const { std::cell::Cell::new(None) };
 }
 
-/// Scope an adversarial ABI boundary around a real image at bind, before its slots are shared.
-#[cfg(test)]
-pub(crate) fn with_test_slot_override<R>(change: TestSlotOverride, bind: impl FnOnce() -> R) -> R {
-    struct Restore(Option<TestSlotOverride>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            TEST_SLOT_OVERRIDE.with(|slot| slot.set(self.0));
-        }
-    }
-    let _restore = Restore(TEST_SLOT_OVERRIDE.with(|slot| slot.replace(Some(change))));
-    bind()
-}
-
 /// A retained connection authority generation for host-side routes.
 #[derive(Clone)]
 pub struct ConnectionBinding {

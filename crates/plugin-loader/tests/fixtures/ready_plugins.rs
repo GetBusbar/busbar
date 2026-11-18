@@ -5,11 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
 use std::time::Duration;
 
-use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
-use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
-use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
+use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
 
 pub struct Discovers<
     K: busbar_contract::plugin::KindMarker = busbar_contract::plugin::markers::SecretKind,
@@ -62,45 +59,6 @@ impl<K: busbar_contract::plugin::KindMarker> Discovers<K> {
             return Poll::Pending;
         }
         Poll::Ready(Ok(()))
-    }
-}
-
-pub struct Resolve;
-impl SafeSlot for Resolve {
-    type Kind = busbar_contract::plugin::markers::SecretKind;
-    type In = ResolveIn;
-    type Out = ResolveOut;
-    type State = Held<Discovers>;
-    fn call(
-        _: Instance<'_, Held<Discovers>, Self::Kind>,
-        _: Lent<'_, ResolveIn>,
-        _: Out<'_, ResolveOut>,
-    ) -> Outcome {
-        Outcome::Refused
-    }
-}
-
-pub mod with_ready {
-
-    pub const NAME: &str = "ready-witness";
-
-    busbar_contract::plugin_door! {
-        ops: busbar_contract::abi::secret::Ops,
-        statement: busbar_contract::abi::sdk::door::statement(NAME, "0", 4),
-        lifecycle: life(super::Discovers, ready),
-        kind_ops: { resolve: busbar_contract::abi::sdk::Safe<super::Resolve> },
-    }
-}
-
-pub mod without_ready {
-
-    pub const NAME: &str = "no-ready-witness";
-
-    busbar_contract::plugin_door! {
-        ops: busbar_contract::abi::secret::Ops,
-        statement: busbar_contract::abi::sdk::door::statement(NAME, "0", 4),
-        lifecycle: life(super::Discovers),
-        kind_ops: { resolve: busbar_contract::abi::sdk::Safe<super::Resolve> },
     }
 }
 

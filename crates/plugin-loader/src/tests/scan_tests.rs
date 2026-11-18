@@ -104,9 +104,12 @@ fn retired_flags_format_1_and_size_320_are_malformed() {
     assert_eq!(malformed_at(&s), 20);
 }
 
+/// One field rule's breach of a good stamp, and the byte the refusal must name.
+type FieldCase = (fn(&mut [u8; STAMP_SIZE]), u32);
+
 #[test]
 fn each_field_rule_names_its_byte_and_never_echoes_the_bytes() {
-    let cases: [(fn(&mut [u8; STAMP_SIZE]), u32); 10] = [
+    let cases: [FieldCase; 10] = [
         (|s| s[78] = 1, 78),                                     // engine_min._reserved
         (|s| s[86] = 1, 86),                                     // engine_max._reserved
         (|s| s[88] = b'_', 88),                                  // name charset

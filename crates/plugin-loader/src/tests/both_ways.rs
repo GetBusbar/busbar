@@ -50,11 +50,6 @@ pub(crate) fn example_cdylib(name: &str) -> PathBuf {
 
 const FIXTURE_ROOT_SEED: u8 = 81;
 
-/// The embedded release root that verifies [`sealed_first_party`]'s seals.
-pub(crate) fn first_party_roots() -> Vec<crate::sign::FirstPartyKey> {
-    vec![crate::release_trust::tests::TestSigner::ed25519(FIXTURE_ROOT_SEED).root("fixture-root")]
-}
-
 /// A first-party plugin as busbar ships it (#300/#357): a release seal whose keys document the
 /// fixture root signs and whose targets document the plugins signer signs, naming the canonical
 /// manifest. Returns the sealed manifest and the embedded root that verifies it.

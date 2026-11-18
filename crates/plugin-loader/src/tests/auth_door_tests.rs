@@ -1989,14 +1989,13 @@ fn a_peer_row_whose_statement_does_not_read_back_does_not_block_a_healthy_row() 
     .expect("an unreadable, never-serving peer does not block a healthy row");
 }
 
-/// One captured event: its level and every field by name, as the stock formatter would receive them.
+/// One captured event: every field by name, as the stock formatter would receive them.
 #[derive(Debug, Default)]
 struct Captured {
-    level: Option<tracing::Level>,
     fields: Vec<(String, String)>,
 }
 
-/// A subscriber that keeps each event's level and fields, so a test can see which field a plugin's
+/// A subscriber that keeps each event's fields, so a test can see which field a plugin's
 /// text reached (`message` is core's words; plugin text is the plain `text` field, IF §12.16).
 #[derive(Clone, Default)]
 struct EventCapture(Arc<std::sync::Mutex<Vec<Captured>>>);
@@ -2024,10 +2023,7 @@ impl tracing::Subscriber for EventCapture {
     fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
     fn event(&self, event: &tracing::Event<'_>) {
-        let mut captured = Captured {
-            level: Some(*event.metadata().level()),
-            ..Captured::default()
-        };
+        let mut captured = Captured::default();
         event.record(&mut FieldVisit(&mut captured));
         self.0.lock().unwrap().push(captured);
     }

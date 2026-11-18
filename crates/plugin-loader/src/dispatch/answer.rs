@@ -77,10 +77,6 @@ impl<'a> Answer<'a> {
         self.operations.get(slot as usize).copied().unwrap_or(false)
     }
 
-    pub(crate) fn frames(&self) -> (*const InHead, usize, *const OutHead, usize) {
-        (self.input, self.in_size, self.out, self.out_size)
-    }
-
     pub fn input<T: InFrame>(&self) -> Result<&T, Fault> {
         if self.in_size < size_of::<T>() {
             return Err(fault(Rule::Foreign, "in"));

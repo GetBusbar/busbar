@@ -202,6 +202,9 @@ fn transport_undeclared_acceptance_kept() {
     .is_ok());
 }
 
+/// A refused request list, named by what is wrong with it.
+type BadCase<'a> = (&'a str, Vec<(u32, u32, &'a [u8])>);
+
 /// Test 10: the ENDPOINT records decode in answer order; more than 16, an over-long dest, an unknown op, an
 /// egress class above 4, the retired bit 0x200, any stray flag bit or a dest that is not UTF-8 is INVALID, which
 /// refuses CONFIG naming the instance.
@@ -241,7 +244,7 @@ fn endpoint_record_decode() {
     let long = vec![b'a'; 2_049];
     let max = vec![b'a'; 2_048];
     assert!(decoded(&[(op::OPEN, TLS_REQUIRED, &max[..])]).is_ok());
-    let bad: [(&str, Vec<(u32, u32, &[u8])>); 7] = [
+    let bad: [BadCase<'_>; 7] = [
         ("more than 16", seventeen),
         (
             "dest over 2,048 bytes",

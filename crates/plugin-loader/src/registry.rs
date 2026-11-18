@@ -379,15 +379,6 @@ impl LinkedPlugin {
     ) -> Self {
         Self::auth_entry(name, alias, door)
     }
-
-    pub(crate) fn door_of_kind_raw(
-        kind: &str,
-        name: &str,
-        door: busbar_contract::abi::sdk::door::RawDoorFn,
-    ) -> Self {
-        let abi = supported_abi(kind).unwrap_or_default();
-        Self::built_in(name, &[], kind, abi, LinkedEntry::Door(door), false)
-    }
 }
 
 /// A plugin that failed phase 2 (untrusted, no matching opt-in; or an anti-downgrade reject) and is

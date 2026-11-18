@@ -231,8 +231,7 @@ fn a_min3_transport_image_is_left_to_the_min3_registry_and_another_kinds_stamp_i
     // manifest whose kind is not its stamp's, before any open path sees the row.
     let lib = min3_lib(KindCode::Plane, busbar_plugin_abi::plane::FP);
     let why = crate::both_ways::scanned("min3-plane-as-transport", manifest(), &lib)
-        .err()
-        .expect("a row declared transport whose stamp names another kind is refused")
+        .expect_err("a row declared transport whose stamp names another kind is refused")
         .join("; ");
     assert!(
         why.contains("native manifest name/version/kind/ABI must match its validated stamp"),
