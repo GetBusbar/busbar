@@ -843,26 +843,26 @@ impl Dialled {
         self.running(waker)?;
         self.leg.wait_ready(waker);
         let mut cx = Context::from_waker(waker);
+        let body = |(n, end): (usize, bool)| Piece {
+            kind: PieceKind::Body,
+            stream: StreamId(0),
+            len: n,
+            end,
+            status: None,
+            status_code: None,
+            status_namespace: None,
+            retry_after_secs: None,
+            fault: None,
+            reason: None,
+            declared_len: None,
+        };
+        if let Some(ready) = take_ready(&self.leg.ready, buf) {
+            return Ok(body(ready));
+        }
         // One clock reading per read, taken only once nothing is ready: the keying bound and the
         // drive both judge by it.
-        let mut read_at: Option<Instant> = None;
+        let now = crate::framer::now();
         loop {
-            if let Some((n, end)) = take_ready(&self.leg.ready, buf) {
-                return Ok(Piece {
-                    kind: PieceKind::Body,
-                    stream: StreamId(0),
-                    len: n,
-                    end,
-                    status: None,
-                    status_code: None,
-                    status_namespace: None,
-                    retry_after_secs: None,
-                    fault: None,
-                    reason: None,
-                    declared_len: None,
-                });
-            }
-            let now = *read_at.get_or_insert_with(crate::framer::now);
             let keyed = self.leg.presented();
             if !keyed && self.due.is_some_and(|d| now >= d) {
                 return Err(ConnError::Timeout);
@@ -872,6 +872,9 @@ impl Dialled {
             }
             if lock(&self.leg.ready).is_empty() {
                 return Err(ConnError::Pending);
+            }
+            if let Some(ready) = take_ready(&self.leg.ready, buf) {
+                return Ok(body(ready));
             }
         }
     }
