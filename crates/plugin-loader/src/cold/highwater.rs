@@ -31,7 +31,7 @@ pub(crate) fn load(dir: &Path) -> (PathBuf, BTreeMap<String, String>, Option<Str
             return (path, BTreeMap::new(), Some(note));
         }
     };
-    let parsed: BTreeMap<String, String> = match serde_json::from_slice(&bytes) {
+    let parsed: BTreeMap<String, String> = match busbar_contract::json::parse(&bytes) {
         Ok(m) => m,
         Err(e) => {
             let note = format!(
@@ -84,7 +84,7 @@ pub(crate) fn entry(name: &str, version: &str) -> (String, String) {
 /// The floor's file body, persisted after a registry load raises it.
 #[cold]
 pub(crate) fn body(marks: &BTreeMap<String, String>) -> std::io::Result<Vec<u8>> {
-    let mut body = serde_json::to_vec_pretty(marks)
+    let mut body = busbar_contract::json::to_vec_pretty(marks)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     body.push(b'\n');
     Ok(body)

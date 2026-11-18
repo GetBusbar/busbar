@@ -309,7 +309,6 @@ crates/busbar/src/tests/tests.rs                                                
 crates/plugin-loader/Cargo.toml                                                            # D
 crates/plugin-loader/src/cold/auth_axis.rs                                                 # D
 crates/plugin-loader/src/cold/export_axis.rs                                               # D
-crates/plugin-loader/src/cold/highwater.rs                                                 # D
 crates/plugin-loader/src/export_axis.rs                                                    # D
 crates/plugin-loader/src/tests/auth_axis_tests.rs                                          # D
 crates/plugin-loader/src/tests/auth_carriers_tests.rs                                      # D
@@ -327,7 +326,6 @@ crates/plugin-loader/src/tests/ordinary_auth_short.rs                           
 crates/plugin-loader/src/tests/pack_tests.rs                                               # D
 crates/plugin-loader/src/tests/public_settings_tests.rs                                    # D
 crates/plugin-loader/src/tests/release_seal_tests.rs                                       # D
-crates/plugin-loader/src/tests/tarball_tests.rs                                            # D
 crates/plugin-loader/tests/fixtures/neutral_export_plugin.rs                               # D
 crates/plugin-loader/tests/fixtures/ready_plugins.rs                                       # D
 dist/default/Cargo.toml                                                                    # D
