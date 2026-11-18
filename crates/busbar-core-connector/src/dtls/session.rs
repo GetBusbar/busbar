@@ -323,8 +323,8 @@ fn line_of(head: Records<'_>) -> Option<Line> {
     label.map(|l| Line::Channel(Box::from(l.trim())))
 }
 
-fn capture(out: TransportOut<'_>, into: &mut Vec<Act>) {
-    match out {
+fn capture(out: &TransportOut<'_>, into: &mut Vec<Act>) {
+    match *out {
         TransportOut::SendTo {
             path,
             secured,
@@ -435,7 +435,7 @@ impl Session {
         };
         let mut acts = Vec::new();
         let handle = opener
-            .begin(&conn, &mut |out| capture(out, &mut acts))
+            .begin(&conn, &mut |out| capture(&out, &mut acts))
             .map_err(|e| refused(&e))?;
         let mut session = Session {
             handle: Some(handle),
@@ -591,7 +591,7 @@ impl Session {
         let mut handle = self.handle.take()?;
         let mut acts = Vec::new();
         let result = call(&mut *handle, &mut |out| {
-            capture(out, &mut acts);
+            capture(&out, &mut acts);
         });
         self.handle = Some(handle);
         match result {

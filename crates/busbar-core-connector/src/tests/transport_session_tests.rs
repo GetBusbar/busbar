@@ -167,13 +167,13 @@ async fn rejected_upgrade_retires_original_tcp_writer_before_failed_receipt() {
     let io = crate::raw_progress::tcp(socket);
     let progress = io.progress();
     let script = scripted(Box::new(|_| Vec::new()), None, false);
-    let outcome = Outcome::Upgraded {
+    let outcome = Outcome::Upgraded(Box::new(Upgrade {
         delivery: Delivery::new(ledger, progress),
         conn: script.conn,
         io,
         protocol: Name::copy(&source, "websocket").unwrap(),
         leftover: Payload::copy(&source, &[]).unwrap(),
-    };
+    }));
     assert!(handles.watch.snapshot().terminal.is_none());
     outcome.retire();
     assert_eq!(
@@ -233,7 +233,7 @@ fn answer(
 ) -> Result<Actions, FaultReason> {
     answers.start(called, Instant::now());
     for out in outs {
-        answers.take(out);
+        answers.take(&out);
     }
     answers.finish()
 }
@@ -687,7 +687,7 @@ fn the_stall_deadline_is_armed_once_at_the_first_stream_full() {
     let t0 = Instant::now();
     let mut answers = Answers::new(None, t0);
     answers.start(emit(4, E_BODY), t0);
-    answers.take(TransportOut::StreamFull(4));
+    answers.take(&TransportOut::StreamFull(4));
     answers.finish().expect("held");
     answers.start(emit(4, E_RESET), t0 + Duration::from_secs(1));
     answers.finish().expect("reset");
@@ -697,13 +697,13 @@ fn the_stall_deadline_is_armed_once_at_the_first_stream_full() {
     );
 
     answers.start(emit(3, E_BODY), t0);
-    answers.take(TransportOut::StreamFull(3));
+    answers.take(&TransportOut::StreamFull(3));
     answers.finish().expect("held");
     // Released by a WRITABLE, then held again later: a fresh hold arms a fresh deadline. Until then, a repeated
     // STREAM_FULL on a stream still held never pushes its deadline out.
     let later = t0 + Duration::from_secs(30);
     answers.start(emit(5, E_BODY), t0);
-    answers.take(TransportOut::StreamFull(5));
+    answers.take(&TransportOut::StreamFull(5));
     answers.finish().expect("held");
     answers.start(emit(5, E_RESET), later);
     answers.finish().expect("reset 5");
@@ -715,10 +715,10 @@ fn the_stall_deadline_is_armed_once_at_the_first_stream_full() {
     );
     let mut again = Answers::new(None, t0);
     again.start(emit(3, E_BODY), t0);
-    again.take(TransportOut::StreamFull(3));
+    again.take(&TransportOut::StreamFull(3));
     again.finish().expect("held");
     again.start(emit(3, E_BODY), later);
-    again.take(TransportOut::StreamFull(3));
+    again.take(&TransportOut::StreamFull(3));
     again.finish().expect("still held");
     assert_eq!(
         again.next_stall(),
@@ -1231,16 +1231,16 @@ fn attributed_output_is_retained_without_becoming_unattributed_write() {
     use busbar_contract::response_delivery::{CompletionRequirement, WireClass};
     let mut answers = Answers::new(None, Instant::now());
     answers.start(Called::Timer, Instant::now());
-    answers.take(TransportOut::WirePart {
+    answers.take(&TransportOut::WirePart {
         stream: 3,
         class: WireClass::Payload,
         bytes: b"body",
     });
-    answers.take(TransportOut::WireEnd {
+    answers.take(&TransportOut::WireEnd {
         stream: 3,
         requirement: CompletionRequirement::Flush,
     });
-    answers.take(TransportOut::ResponseQuiescent(3));
+    answers.take(&TransportOut::ResponseQuiescent(3));
     let acts = answers.finish().expect("attributed native answer");
     assert!(
         matches!(&acts[0], Act::WirePart { stream: 3, class: WireClass::Payload, bytes } if bytes.as_slice() == b"body")

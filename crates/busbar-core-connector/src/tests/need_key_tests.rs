@@ -7,6 +7,21 @@ use std::hash::{BuildHasher, Hasher};
 
 use super::*;
 
+/// Every part of a [`NeedKey`], in its declared order and type.
+type KeyFields = (
+    busbar_contract::conn::InstanceId,
+    u32,
+    busbar_ports::binder::NetworkLease,
+    Box<str>,
+    Box<str>,
+    Box<str>,
+    u32,
+    Tls,
+    [u8; 32],
+    [u8; 32],
+    bool,
+);
+
 fn key(dest: &str) -> NeedKey {
     NeedKey {
         instance: busbar_contract::conn::InstanceId(1),
@@ -209,19 +224,7 @@ fn pool_key_has_no_u64_hash_and_production_uses_random_state() {
         cert,
         waived,
     } = key("a.test:443");
-    let _: (
-        busbar_contract::conn::InstanceId,
-        u32,
-        busbar_ports::binder::NetworkLease,
-        Box<str>,
-        Box<str>,
-        Box<str>,
-        u32,
-        Tls,
-        [u8; 32],
-        [u8; 32],
-        bool,
-    ) = (
+    let _: KeyFields = (
         instance,
         registration,
         lease,

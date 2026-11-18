@@ -267,7 +267,7 @@ impl Answers {
     }
 
     /// One record of the answer, in order. After a breach the rest is ignored.
-    pub(crate) fn take(&mut self, out: TransportOut<'_>) {
+    pub(crate) fn take(&mut self, out: &TransportOut<'_>) {
         if self.capture(out).is_err() {
             self.capacity_failed = true;
         }
@@ -275,7 +275,7 @@ impl Answers {
 
     fn capture(
         &mut self,
-        out: TransportOut<'_>,
+        out: &TransportOut<'_>,
     ) -> Result<(), busbar_contract::storage::StorageDenied> {
         if self.broke.is_some() || self.capacity_failed {
             return Ok(());
@@ -285,7 +285,7 @@ impl Answers {
             return Ok(());
         }
         if self.called == Called::Close {
-            match out {
+            match *out {
                 TransportOut::Write(bytes) if !self.closing => {
                     self.acts
                         .push(Act::Write(Payload::copy(&self.source, bytes)?))?;
@@ -331,7 +331,7 @@ impl Answers {
             self.breach();
             return Ok(());
         }
-        match out {
+        match *out {
             TransportOut::WirePart {
                 stream,
                 class,
@@ -588,7 +588,7 @@ impl TransportConn {
         answers.provenance = port.facts() & wire::FB_WIRE_PROVENANCE != 0;
         answers.start(Called::Begin, now);
         let handle = port
-            .begin(conn, &mut |out| answers.take(out))
+            .begin(conn, &mut |out| answers.take(&out))
             .map_err(Ended::Port)?;
         let mut session = Self {
             backend: Some(Backend::Port { port, handle }),
@@ -770,7 +770,7 @@ impl TransportConn {
             return Err(Ended::Misuse("a call after the session was over"));
         };
         answers.start(called, now);
-        let sink = &mut |out: TransportOut<'_>| answers.take(out);
+        let sink = &mut |out: TransportOut<'_>| answers.take(&out);
         let answered = match live {
             Backend::Port { port, handle } => match call {
                 Call::Ingest(bytes) => port.ingest(handle, bytes, sink),
@@ -949,29 +949,34 @@ pub enum Outcome<S> {
     Ended(Ended),
     /// The framer answered UPGRADE to an `emit(E_HEAD)` of H_STATUS(101) (§12.27): the connection, the
     /// session (which still owns the response until the next transport's `begin` returns OK), the protocol
-    /// and the leftover bytes go back to core.
-    Upgraded {
-        /// Original progress and response ownership survive the transport handoff.
-        delivery: Delivery,
-        /// The HTTP session.
-        conn: TransportConn,
-        /// The connection.
-        io: S,
-        /// The protocol named.
-        protocol: Name,
-        /// The bytes read past the head.
-        leftover: Payload,
-    },
+    /// and the leftover bytes go back to core (boxed: every other outcome is small, and an upgrade
+    /// ends a session once).
+    Upgraded(Box<Upgrade<S>>),
+}
+
+/// What an UPGRADE hands back to core ([`Outcome::Upgraded`]).
+#[derive(Debug)]
+pub struct Upgrade<S> {
+    /// Original progress and response ownership survive the transport handoff.
+    pub delivery: Delivery,
+    /// The HTTP session.
+    pub conn: TransportConn,
+    /// The connection.
+    pub io: S,
+    /// The protocol named.
+    pub protocol: Name,
+    /// The bytes read past the head.
+    pub leftover: Payload,
 }
 
 impl<S> Outcome<S> {
     /// Dispose an unadopted upgrade's exact writer before freezing its failed delivery facts.
     /// Other outcomes have already disposed their writer inside the original session owner.
     pub fn retire(self) {
-        if let Self::Upgraded {
-            delivery, io, conn, ..
-        } = self
-        {
+        if let Self::Upgraded(upgrade) = self {
+            let Upgrade {
+                delivery, io, conn, ..
+            } = *upgrade;
             drop(conn);
             drop(io);
             delivery.writer_retired();
@@ -1348,13 +1353,13 @@ where
         }
         Flow::Upgrade(protocol, leftover) => {
             let (io, delivery) = io.into_parts();
-            return Outcome::Upgraded {
+            return Outcome::Upgraded(Box::new(Upgrade {
                 delivery,
                 conn,
                 io,
                 protocol,
                 leftover,
-            };
+            }));
         }
     }
 
@@ -1543,13 +1548,13 @@ where
             }
             Flow::Upgrade(protocol, leftover) => {
                 let (io, delivery) = io.into_parts();
-                return Outcome::Upgraded {
+                return Outcome::Upgraded(Box::new(Upgrade {
                     delivery,
                     conn,
                     io,
                     protocol,
                     leftover,
-                };
+                }));
             }
         }
         if let Some(stream) = settlement {

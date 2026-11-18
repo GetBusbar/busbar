@@ -693,6 +693,7 @@ impl DeliveryLedger {
     }
 
     /// The earliest unresolved finite-prefix fence; later wire output must wait for its operation.
+    #[cfg(test)]
     pub(crate) fn next_fence(&self) -> Option<(u64, CompletionRequirement)> {
         self.entries
             .iter()

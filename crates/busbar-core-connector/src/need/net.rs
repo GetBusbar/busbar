@@ -104,7 +104,7 @@ impl Stream {
     fn net(&self) -> &Net {
         match self {
             Stream::Plain(n) => n,
-            Stream::Tls(t) => &t.get_ref().0,
+            Stream::Tls(t) => t.get_ref().0,
         }
     }
 
