@@ -389,15 +389,8 @@ impl GovState {
                     let token = material.signer.mint(&updated.id, exp, generation);
                     Ok((updated, token))
                 } else {
-                    self.publish_identity(
-                        crate::governance::persistence::identity::IdentityCommit {
-                            changed: false,
-                            revision: existing.revision,
-                            keys: vec![(*existing).clone()],
-                            credentials: Vec::new(),
-                            denied: Vec::new(),
-                        },
-                    );
+                    // Nothing changed: the cache takes the row just re-read, shared, not a copy.
+                    self.publish_unchanged_key(Arc::clone(&existing));
                     let generation = binding_generation(&existing.generation_hash);
                     let token = material.signer.mint(&existing.id, exp, generation);
                     Ok(((*existing).clone(), token))
