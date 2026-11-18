@@ -24,16 +24,6 @@ const INPUT: u32 = 0;
 #[path = "../money/selected_view_tests.rs"]
 mod selected_views;
 
-impl PlaneMoney {
-    #[must_use]
-    pub(crate) fn last_counts(&self, key: UnitKey) -> Option<Vec<(u32, Count)>> {
-        self.usage_fold(key)?
-            .by_class()
-            .map(|(class, count)| count.map(|count| (class, count)))
-            .collect()
-    }
-}
-
 fn ctx(key: u64) -> UnitCtx {
     UnitCtx {
         call: busbar_contract::caps::CallId::UNBOUND,
