@@ -271,7 +271,7 @@ impl IntentHost for Store {
     fn commit(&self, _: Scope, _: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied> {
         Ok(CommitOutcome::Applied)
     }
-    fn work(&self, _: &crate::plane_driver::port_intents::WorkIntent) -> WorkOutcome {
+    fn work<'a>(&self, _: &crate::plane_driver::port_intents::WorkIntent<'a>) -> WorkOutcome<'a> {
         WorkOutcome::unsupported()
     }
     fn push(&self, _: u64, _: &[u8]) -> Result<(), RecordsDenied> {

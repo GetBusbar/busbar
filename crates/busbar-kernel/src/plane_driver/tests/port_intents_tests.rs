@@ -403,7 +403,7 @@ struct Host {
     store_denied: bool,
     conflict_at: Option<u32>,
     commit_denied: bool,
-    work: Option<WorkOutcome>,
+    work: Option<WorkOutcome<'static>>,
     granted: Vec<&'static str>,
     verdict: u32,
     refuse: Option<u32>,
@@ -495,7 +495,7 @@ impl IntentHost for Host {
         })
     }
 
-    fn work(&self, w: &WorkIntent) -> WorkOutcome {
+    fn work<'a>(&self, w: &WorkIntent<'a>) -> WorkOutcome<'a> {
         *self.work_identity.lock().unwrap() = w.identity.to_vec();
         self.note(format!("work op={} target={:?}", w.op, w.target));
         self.work.clone().unwrap_or_else(WorkOutcome::unsupported)
@@ -1024,7 +1024,7 @@ fn work_without_a_recovery_runtime_is_refused_unsupported_and_with_one_it_is_ans
             status: 0,
             state: busbar_plugin_abi::plane::WORK_LIVE,
             reference: "ref1".into(),
-            target: String::new(),
+            target: "".into(),
         }),
         ..Host::default()
     });
@@ -2084,12 +2084,12 @@ fn namespace() -> Namespace {
 }
 
 /// Runs `decide` for `intent` as the principal `ID` against `ledger`; recovery routes match `/poll...`.
-fn decide(
+fn decide<'a>(
     ledger: Arc<Ledger>,
     op: u32,
-    target: Option<&str>,
-    reference: Option<&str>,
-) -> WorkOutcome {
+    target: Option<&'a str>,
+    reference: Option<&'a str>,
+) -> WorkOutcome<'a> {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let decider = DurableDecider::new(
         ledger,
@@ -2114,12 +2114,7 @@ fn work_open_on_a_recovery_route_opens_durable_work_for_the_principal_and_answer
     let out = decide(ledger.clone(), WORK_OPEN, Some("/poll?id=1"), None);
     assert_eq!(*ledger.asked.lock().unwrap(), ["open ID /poll?id=1"]);
     assert_eq!(
-        (
-            out.status,
-            out.state,
-            out.reference.as_str(),
-            out.target.as_str()
-        ),
+        (out.status, out.state, &*out.reference, &*out.target),
         (0, WORK_LIVE, "ref-1", "")
     );
 }
@@ -2155,12 +2150,7 @@ fn work_find_answers_the_state_the_reference_and_the_target_and_passes_a_refusal
     let out = decide(ledger.clone(), WORK_FIND, None, Some("ref-1"));
     assert_eq!(*ledger.asked.lock().unwrap(), ["find ID ref-1"]);
     assert_eq!(
-        (
-            out.status,
-            out.state,
-            out.reference.as_str(),
-            out.target.as_str()
-        ),
+        (out.status, out.state, &*out.reference, &*out.target),
         (0, WORK_SETTLED, "ref-1", "/poll?id=1")
     );
     // Another principal's row, or an unknown one.

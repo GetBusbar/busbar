@@ -20,6 +20,7 @@
 //! paid dispatch as it does without a recovery runtime. The store-backed [`DurableWork`] over `host_work/` and
 //! `host_recovery.rs` is the next piece (it needs the recovery binding the governance standing captures).
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -304,14 +305,14 @@ pub struct WorkIntent<'a> {
 
 /// One WORK_ANS (§8.6): `status` 0 = done, else a generic REFUSED code.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkOutcome {
+pub struct WorkOutcome<'a> {
     pub status: u32,
     pub state: u32,
-    pub reference: String,
-    pub target: String,
+    pub reference: Cow<'a, str>,
+    pub target: Cow<'a, str>,
 }
 
-impl WorkOutcome {
+impl WorkOutcome<'_> {
     /// Core cannot recover here (no store or no recovery runtime, §12.24).
     #[must_use]
     pub fn unsupported() -> Self {
@@ -322,8 +323,8 @@ impl WorkOutcome {
         Self {
             status,
             state: 0,
-            reference: String::new(),
-            target: String::new(),
+            reference: Cow::Borrowed(""),
+            target: Cow::Borrowed(""),
         }
     }
 }
@@ -352,7 +353,7 @@ pub trait IntentHost: Send + Sync {
     fn delete(&self, scope: Scope, key: &[u8]) -> Result<(), RecordsDenied>;
     fn commit(&self, scope: Scope, ops: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied>;
     /// WORK under the request's verified principal. The default is the fail-closed answer.
-    fn work(&self, _intent: &WorkIntent<'_>) -> WorkOutcome {
+    fn work<'a>(&self, _intent: &WorkIntent<'a>) -> WorkOutcome<'a> {
         WorkOutcome::unsupported()
     }
     fn push(&self, ttl_s: u64, recs: &[u8]) -> Result<(), RecordsDenied>;
@@ -1438,7 +1439,7 @@ pub struct KernelIntents<R: PluginRecords> {
 
 /// Decides WORK intents (§12.24).
 pub trait WorkDecider: Send + Sync + 'static {
-    fn decide(&self, who: &Namespace, intent: &WorkIntent<'_>) -> WorkOutcome;
+    fn decide<'a>(&self, who: &Namespace, intent: &WorkIntent<'a>) -> WorkOutcome<'a>;
 }
 
 /// Durable paid work (IF §12.24): the store-backed rows over `host_work/` and the recovery runtime over
@@ -1498,7 +1499,7 @@ impl DurableDecider {
 }
 
 impl WorkDecider for DurableDecider {
-    fn decide(&self, who: &Namespace, intent: &WorkIntent<'_>) -> WorkOutcome {
+    fn decide<'a>(&self, who: &Namespace, intent: &WorkIntent<'a>) -> WorkOutcome<'a> {
         let plane = who.caller();
         match intent.op {
             WORK_OPEN => {
@@ -1512,8 +1513,8 @@ impl WorkDecider for DurableDecider {
                     Ok(reference) => WorkOutcome {
                         status: 0,
                         state: WORK_LIVE,
-                        reference: reference.into(),
-                        target: String::new(),
+                        reference: Cow::Owned(reference.into()),
+                        target: Cow::Borrowed(""),
                     },
                     Err(code) => WorkOutcome::refused(code),
                 }
@@ -1529,8 +1530,8 @@ impl WorkDecider for DurableDecider {
                     Ok((state, target)) => WorkOutcome {
                         status: 0,
                         state,
-                        reference: reference.to_owned(),
-                        target: target.into(),
+                        reference: Cow::Borrowed(reference),
+                        target: Cow::Owned(target.into()),
                     },
                     Err(code) => WorkOutcome::refused(code),
                 }
@@ -1546,8 +1547,8 @@ impl WorkDecider for DurableDecider {
                     Ok(()) => WorkOutcome {
                         status: 0,
                         state: WORK_SETTLED,
-                        reference: String::new(),
-                        target: String::new(),
+                        reference: Cow::Borrowed(""),
+                        target: Cow::Borrowed(""),
                     },
                     Err(code) => WorkOutcome::refused(code),
                 }
@@ -1561,7 +1562,7 @@ impl WorkDecider for DurableDecider {
 pub struct NoWork;
 
 impl WorkDecider for NoWork {
-    fn decide(&self, _: &Namespace, _: &WorkIntent<'_>) -> WorkOutcome {
+    fn decide<'a>(&self, _: &Namespace, _: &WorkIntent<'a>) -> WorkOutcome<'a> {
         WorkOutcome::unsupported()
     }
 }
@@ -1695,7 +1696,7 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
         self.rt.block_on(self.records.commit(&who, scope, ops))
     }
 
-    fn work(&self, intent: &WorkIntent<'_>) -> WorkOutcome {
+    fn work<'a>(&self, intent: &WorkIntent<'a>) -> WorkOutcome<'a> {
         self.work.decide(&self.who, intent)
     }
 
