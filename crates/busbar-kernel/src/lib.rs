@@ -448,8 +448,6 @@ pub mod plugin_routes;
 pub mod ratelimit;
 pub mod refresh;
 pub mod retry;
-/// DES-454: secret rotation for running instances.
-pub mod rotation;
 
 pub mod persistence;
 // busbar:request-path
