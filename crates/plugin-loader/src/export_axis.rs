@@ -333,25 +333,6 @@ impl<'r> ExportRows<'r> {
     }
 }
 
-/// W2-SW-EXPORT: one export instance on the MIN-3 path. Opens `spec` through the registry (`open_export`, L2/L7)
-/// and hands the kernel's export lane a [`export_door::port::PortDoor`] over the port: the round-33 pump
-/// (core-minted `delivery`, counted `attempt`), the image's FB_SPAN_RECORDS and custody ceiling read through
-/// L7, APPEND answers handed to `disk` (core's bound destinations, §12.21).
-pub async fn open_min3<N: busbar_plugin_abi::host_side::needs::Needs>(
-    registry: &crate::instance::Registry,
-    spec: &crate::instance::InstanceSpec<'_>,
-    needs: &Arc<N>,
-    refs: &Arc<dyn busbar_ports::binder::RefSource>,
-    disk: Arc<dyn export_door::port::DestAppend>,
-    observer: Arc<dyn busbar_contract::export_calls::ExportObserver>,
-) -> Result<Arc<export_door::port::PortDoor>, String> {
-    let port = registry
-        .open_export(spec, needs, refs)
-        .await
-        .map_err(|e| crate::cold::export_axis::not_opened(spec.name, &e))?;
-    export_door::port::PortDoor::open(spec.name, port, disk, &spec.limits, observer)
-}
-
 #[cfg(test)]
 pub(crate) fn test_opening(settings: &serde_json::Value) -> PreparedExport {
     let admitted: busbar_contract::export_calls::ExportOpening =

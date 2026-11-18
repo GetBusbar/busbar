@@ -28,16 +28,7 @@ use crate::dispatch::lifecycle::{
     self, copy_blob, lend, lend_opt, open_frame, release, validate_call, why, AnswerLease,
 };
 use crate::dispatch::{in_head, out_head, Dispatcher, Frame, Plugin, NO_BLOB};
-
-pub mod port;
-
-pub const MAX_QUEUED_LINES: usize = 4096;
-
-pub const MAX_BATCH_LINES: usize = 256;
-
-pub const MAX_BATCH_BYTES: usize = 1024 * 1024;
-
-pub const DELIVER_ATTEMPTS: u32 = 3;
+use crate::export_pump::{DELIVER_ATTEMPTS, MAX_BATCH_BYTES, MAX_BATCH_LINES, MAX_QUEUED_LINES};
 
 pub const STOP_GRACE: Duration = Duration::from_secs(2);
 
