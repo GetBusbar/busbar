@@ -733,3 +733,72 @@ fn declared_for_keyed_audit(name: &str) -> Option<busbar_contract::MeterClassId>
         _ => None,
     }
 }
+
+/// One hook row of [`hooked_record`].
+fn hook(name: &'static str, head: HookHead, failed: bool) -> HookApplied {
+    HookApplied {
+        hook: name.into(),
+        head,
+        failed,
+    }
+}
+
+/// [`frozen_record`] with three hook rows: what a record with hooks stores.
+fn hooked_record() -> busbar_kernel_audit::record::AuditRecord {
+    let mut record = frozen_record();
+    record.controls.hooks_applied = vec![
+        hook("compress", HookHead::Modify, false),
+        hook("guard", HookHead::Veto, false),
+        hook("ranker", HookHead::Pass, true),
+    ];
+    record.hash = AuditChain::digest_of(&record);
+    record
+}
+
+/// The journal body of [`hooked_record`], hex, as the base commit (`HookApplied.hook: String`)
+/// wrote it.
+const FROZEN_HOOKED_BODY: &str = "0000000861756469742e7634000000166275736261722e61756469742e6469676573742e7634000000000000000100000000000000406136306237333239306135653963613663363762336131373036616461636235663965376134323766306536613935313565653161366131306564343138653900000000000000000000000000000000000000097072696e636970616c0000000b70736575646f6e796d2d31000000000000000100000000000000030000000f636861742e636f6d706c6574696f6e00000000000000010000000a757073747265616d2d610000000000000000000000000000000100000010686f6f6b2d686561642d6265666f726500000000000000010000000f686f6f6b2d686561642d6166746572000000006553f10100000000000003e8000000000000000900000006636c69656e740000001a526566757365642841646d69742c204f7665724275646765742900000000000000010000000541646d6974000000054572726f7200000000000000000000000130000000000000000000000000000000010000000a746f6b656e735f6f75740000000000000078000000000000000500000008526573706f6e7365000000142f75736167652f6f75747075745f746f6b656e7300000000000000000000000000002328000000000000000100000000000000030000000f636861696e3a667265653e70616964000000000000000100000006686f6c642d31000000000000000100000008736574746c652d31000000000000000100000007736c6963652d310000000000000001000000076c656173652d3100000000000000040000000000000007000000000000000300000008636f6d7072657373000000066d6f646966790000000000000000000000056775617264000000047665746f00000000000000000000000672616e6b6572000000047061737300000000000000010000000000000000000000000000000100000000000003e900000000000000010000004037326537623834353831626336663433363263623364396564343462663133663865623233376236666533323266323865643936616537626364666434336532";
+
+/// The digest of [`hooked_record`], as the base commit sealed it.
+const FROZEN_HOOKED_DIGEST: &str =
+    "a60b73290a5e9ca6c67b3a1706adacb5f9e7a427f0e6a9515ee1a6a10ed418e9";
+
+#[test]
+fn the_stored_bytes_of_a_record_with_hooks_are_frozen() {
+    use std::fmt::Write as _;
+    let record = hooked_record();
+    let body = busbar_kernel_audit::journal_body(&record).expect("the body fits");
+    let hex = body.iter().fold(String::new(), |mut hex, b| {
+        let _ = write!(hex, "{b:02x}");
+        hex
+    });
+    assert_eq!(
+        hex, FROZEN_HOOKED_BODY,
+        "the stored journal body of a record with hooks moved"
+    );
+    assert_eq!(
+        AuditChain::digest_of(&record),
+        FROZEN_HOOKED_DIGEST,
+        "the digest of a record with hooks moved"
+    );
+    let declared = |name: &str| {
+        (name == "tokens_out").then(|| busbar_contract::caps::MeterClassId::new("tokens_out"))
+    };
+    let back = busbar_kernel_audit::from_journal_body(&body, &declared)
+        .expect("the body decodes")
+        .expect("the body is an audit record");
+    let rows: Vec<(&str, HookHead, bool)> = back
+        .controls
+        .hooks_applied
+        .iter()
+        .map(|row| (&*row.hook, row.head, row.failed))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("compress", HookHead::Modify, false),
+            ("guard", HookHead::Veto, false),
+            ("ranker", HookHead::Pass, true),
+        ]
+    );
+}
