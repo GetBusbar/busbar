@@ -638,7 +638,7 @@ fn ran(
     failed: bool,
 ) -> busbar_kernel_audit::HookApplied {
     busbar_kernel_audit::HookApplied {
-        hook: hook.to_string(),
+        hook: hook.into(),
         head,
         failed,
     }

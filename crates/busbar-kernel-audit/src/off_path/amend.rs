@@ -13,7 +13,7 @@ use crate::record::{displays_as, Subject, SubjectValue};
 /// The subject [`crate::amend::subject_fields`] wrote, or `None` for a pair it never writes.
 pub fn subject_from_fields(tag: &str, value: &str) -> Option<Subject> {
     let subject = match tag {
-        "principal" => Subject::PrincipalId(value.to_string()),
+        "principal" => Subject::principal(value),
         "arrival" => Subject::Arrival,
         "node" => Subject::Node(value.parse().ok()?),
         "aggregate" => Subject::Aggregate,

@@ -710,6 +710,13 @@ impl NodeAmendments {
     }
 }
 
+/// The subject of a content access. The amendment keeps the principal's name for as long as the
+/// journal holds it, and the reader's fact lends the name as plain text, so the one copy is made
+/// here, in place.
 fn subject_of(principal: Option<&str>) -> Subject {
-    principal.map_or(Subject::Arrival, |p| Subject::PrincipalId(p.to_string()))
+    principal.map_or(Subject::Arrival, |p| {
+        Subject::PrincipalId(busbar_contract::kept::Text::from(
+            std::sync::Arc::<str>::from(p),
+        ))
+    })
 }

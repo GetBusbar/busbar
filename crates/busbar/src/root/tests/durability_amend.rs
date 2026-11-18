@@ -24,7 +24,7 @@ async fn malformed_amendments_are_counted_without_changing_the_accepted_run() {
         amend::content_access(
             Reader::Hook,
             "kept",
-            busbar_kernel_audit::Subject::PrincipalId("principal".to_string()),
+            busbar_kernel_audit::Subject::principal("principal"),
             OpClassId::new("chat"),
             Vec::new(),
             1,

@@ -273,7 +273,7 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
     assert_eq!(seen[0].name, "port-hook");
     assert_eq!(
         seen[0].subject,
-        kernel::audit::amend::Subject::PrincipalId("key-1".to_string())
+        kernel::audit::amend::Subject::principal("key-1")
     );
     assert_eq!(
         seen[0].fields,
