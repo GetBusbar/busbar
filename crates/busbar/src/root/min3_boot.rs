@@ -1611,12 +1611,12 @@ fn prepare_serving_owned(
     let planes: Vec<PlaneImage> = effective_images
         .aliases
         .iter()
-        .cloned()
         .filter(|(id, _)| {
             images
                 .described(id)
                 .is_some_and(|facts| facts.kind == KindCode::Plane)
         })
+        .cloned()
         .map(|(identity, alias)| PlaneImage { identity, alias })
         .collect();
     let sugars = candidate_secrets.sugars().clone();
