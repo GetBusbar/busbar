@@ -10,11 +10,11 @@ use busbar_kernel::plane_driver::{CallerEnd, HeadFields, SessionCaller};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
-pub(crate) use crate::root::off_path::serve_lines::session;
-pub(crate) use crate::root::off_path::serve_lines::{env_credential, line_carrier};
-pub(crate) use crate::root::off_path::serve_lines::serve_lines;
 #[cfg(test)]
 use crate::root::off_path::serve_lines::one_line_plane;
+pub(crate) use crate::root::off_path::serve_lines::serve_lines;
+pub(crate) use crate::root::off_path::serve_lines::session;
+pub(crate) use crate::root::off_path::serve_lines::{env_credential, line_carrier};
 
 /// The label a MIN-3 line session is bound and logged under: the process's own stdin/stdout (IF §12.23).
 pub(crate) const PORT_LINE_CARRIER: &str = "stdio";
