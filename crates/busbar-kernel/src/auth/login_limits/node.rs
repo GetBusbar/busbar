@@ -20,7 +20,7 @@ pub(crate) const MAX_TRACKED: usize = 65_536;
 /// A failure reservation in the source table, settled after the plugin answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SourceTicket {
-    buckets: Vec<SourceBucket>,
+    ip: IpAddr,
     id: u64,
 }
 
@@ -93,41 +93,37 @@ impl SourceTable {
                 n
             }
         };
-        let hierarchy = SourceBucket::hierarchy(ip);
         let ceilings = [p.failures.max, p.aggregate_48, p.aggregate_32];
         let submissions = cut(p.submissions_per_minute, 3);
         self.make_room(now, window);
-        for (i, b) in hierarchy.iter().enumerate() {
-            let bucket = self.buckets.entry(*b).or_default();
+        for (i, b) in SourceBucket::hierarchy(ip).enumerate() {
+            let bucket = self.buckets.entry(b).or_default();
             bucket.prune(now, window);
             bucket.touched = now;
             if i == 0 {
                 if bucket.submissions.len() >= submissions as usize {
-                    return Err(SourceRefusal::Submissions(*b));
+                    return Err(SourceRefusal::Submissions(b));
                 }
                 bucket.submissions.push_back(now);
             }
             if bucket.failures.len() >= cut(ceilings[i], 4) as usize {
-                return Err(SourceRefusal::Failures(*b));
+                return Err(SourceRefusal::Failures(b));
             }
         }
         self.next_id = self.next_id.wrapping_add(1);
         let id = self.next_id;
-        for b in &hierarchy {
-            if let Some(bucket) = self.buckets.get_mut(b) {
+        for b in SourceBucket::hierarchy(ip) {
+            if let Some(bucket) = self.buckets.get_mut(&b) {
                 bucket.failures.push_back((now, id));
             }
         }
-        Ok(SourceTicket {
-            buckets: hierarchy,
-            id,
-        })
+        Ok(SourceTicket { ip, id })
     }
 
     /// Return a reservation: the attempt was not a failure.
     pub(crate) fn refund(&mut self, ticket: &SourceTicket) {
-        for b in &ticket.buckets {
-            if let Some(bucket) = self.buckets.get_mut(b) {
+        for b in SourceBucket::hierarchy(ticket.ip) {
+            if let Some(bucket) = self.buckets.get_mut(&b) {
                 bucket.failures.retain(|(_, id)| *id != ticket.id);
             }
         }
