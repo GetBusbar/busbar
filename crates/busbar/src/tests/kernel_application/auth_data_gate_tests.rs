@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait as _};
 use std::sync::Arc;
 
@@ -52,13 +53,14 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store bootstraps its config authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store bootstraps its config authority")
+        .admit()
+        .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -217,13 +219,14 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store bootstraps its config authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store bootstraps its config authority")
+        .admit()
+        .await;
     anchor
         .identity()
         .put_key(&busbar_kernel::governance::VirtualKey {
@@ -341,13 +344,14 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store bootstraps its config authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store bootstraps its config authority")
+        .admit()
+        .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -446,13 +450,14 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store bootstraps its config authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store bootstraps its config authority")
+        .admit()
+        .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -576,13 +581,14 @@ async fn test_admin_prefix_is_boundary_safe() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store bootstraps its config authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store bootstraps its config authority")
+        .admit()
+        .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -703,13 +709,14 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store bootstraps its config authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store bootstraps its config authority")
+        .admit()
+        .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional config records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(

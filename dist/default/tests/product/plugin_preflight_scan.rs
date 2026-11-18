@@ -38,6 +38,7 @@ fn gov_with_store(store: &str) -> StoreCfg {
     StoreCfg {
         module: store.to_string(),
         settings: serde_json::Map::new().into(),
+        insecure_transport: None,
     }
 }
 

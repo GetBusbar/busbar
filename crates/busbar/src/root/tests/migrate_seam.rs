@@ -295,7 +295,8 @@ fn a_stamped_boot_enters_nothing_and_an_unstamped_one_plans_writes_and_execs_onc
 
     // The re-executed image: stamped, so step 1 enters no busbar_migrate function at all.
     let stamped = entries();
-    assert_eq!(step1(&config, true, false, &accept), Ok(None));
+    let stepped = step1(&config, true, false, &accept);
+    assert!(matches!(stepped, Ok(None)), "{stepped:?}");
     assert_eq!(
         entries(),
         stamped,

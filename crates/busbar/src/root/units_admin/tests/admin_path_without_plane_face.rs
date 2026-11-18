@@ -33,6 +33,7 @@
 //! rather than inherited by pretending an operator's request is somebody's traffic.
 
 use super::*;
+use busbar_contract::json::JsonValueTrait as _;
 
 const THE_OPERATORS_CREDENTIAL: &str = "admin-token";
 

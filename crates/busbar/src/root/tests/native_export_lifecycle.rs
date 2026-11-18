@@ -667,7 +667,7 @@ impl NativeExport {
             lines: None,
             threads: Vec::new(),
             work_recovery: tokio::spawn(async {}),
-            generation_workers: crate::root::boot::workers::PreparedWorkers::new().start(),
+            generation_workers: crate::root::min3_candidate::Workers::idle(),
             exports: self.pumps.take().expect("one root pump owner"),
             export_captures: app.exports.clone(),
             export_observer_retry: ExportRetry::start(observers.clone()),

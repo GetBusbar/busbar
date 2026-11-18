@@ -122,7 +122,7 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     let b =
         json::parse_value(&mint(&delegated_token).await.unwrap().bytes().await.unwrap()).unwrap();
 
-    assert!(a["id"].is_string() && b["id"].is_string());
+    assert!(a["id"].is_str() && b["id"].is_str());
     assert_ne!(
         a["id"], b["id"],
         "a second principal's identical Idempotency-Key must mint a NEW key, not replay A's"
@@ -554,7 +554,7 @@ async fn test_admin_v1_equal_subjects_from_distinct_issuers_cannot_replay_secret
 
     let b = json::parse_value(&mint(&token_b).await.unwrap().bytes().await.unwrap()).unwrap();
 
-    assert!(a["id"].is_string() && b["id"].is_string());
+    assert!(a["id"].is_str() && b["id"].is_str());
     assert_ne!(
         a["id"], b["id"],
         "a second principal's identical Idempotency-Key must mint a NEW key, not replay A's"

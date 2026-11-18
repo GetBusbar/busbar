@@ -124,9 +124,21 @@ fn dropped(tag: &str, third_party: bool) -> PluginRegistry {
     }
     let mut policy = test_plugins::release_policy(&release);
     if third_party {
-        policy.publishers = [(publisher.to_string(), signer.verifying_key())]
-            .into_iter()
-            .collect();
+        // A publisher key signs only the artifact names it is scoped to (02d28120e5).
+        policy.publishers = [(
+            publisher.to_string(),
+            crate::root::loader::sign::PublisherTrust {
+                plugins: [AUTH_NAME.to_string(), HOOK_NAME.to_string()]
+                    .into_iter()
+                    .collect(),
+                keys: vec![crate::root::loader::sign::PublisherKey {
+                    key: signer.verifying_key(),
+                    revoked: false,
+                }],
+            },
+        )]
+        .into_iter()
+        .collect();
     }
     let registry = test_plugins::boot_with(&dir, &policy);
     std::fs::remove_dir_all(dir).unwrap();

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::json;
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_contract::persistence::*;
 use busbar_kernel::governance::NewKeySpec;
 use std::collections::HashSet;
@@ -105,6 +106,7 @@ async fn test_single_key_reads_use_get_key_not_list_keys() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: anchor,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the actual Store opens the configuration authority");
@@ -309,6 +311,7 @@ async fn test_single_key_writes_use_get_key_for_their_existence_check() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: anchor,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the actual Store opens the configuration authority");

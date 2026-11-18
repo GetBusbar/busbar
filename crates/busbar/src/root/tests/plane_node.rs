@@ -835,6 +835,14 @@ async fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
 
     let who = PrincipalId::new("acct:swept");
     let key = UnitKey::new(41);
+    let call = node.kernel.next_call();
+    let reservation = node
+        .reserve_terminal(
+            busbar_kernel::limits::process_admission::AdmissionClass::Data,
+            key,
+            call,
+        )
+        .expect("the fixture terminal book reserves the unit's slot (e5b8ff5fb8)");
     let slot = node
         .inflight
         .insert(busbar_kernel::inflight::Enter {
@@ -843,18 +851,14 @@ async fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
             session: None,
             admin_listener: false,
             zero_hold_tick: false,
-            arrival: busbar_kernel::inflight::arrival_hold(
-                &node.kernel,
-                &node.door,
-                who,
-                node.kernel.next_call(),
-            ),
+            arrival: busbar_kernel::inflight::arrival_hold(&node.kernel, &node.door, who, call),
             now: EPOCH * 1_000,
         })
         .expect("the uncapped table takes the unit");
 
     drop(Occupied {
         node: &node,
+        reservation,
         slot: Arc::clone(&slot),
         arrived: Arrived::at(EPOCH * 1_000, 7),
         op_class: busbar_contract::caps::OpClassId::new("call"),
@@ -900,6 +904,14 @@ async fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
     assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 6, 100)), 0);
 
     let key = UnitKey::new(42);
+    let call = node.kernel.next_call();
+    let reservation = node
+        .reserve_terminal(
+            busbar_kernel::limits::process_admission::AdmissionClass::Data,
+            key,
+            call,
+        )
+        .expect("the fixture terminal book reserves the unit's slot (e5b8ff5fb8)");
     let slot = node
         .inflight
         .insert(busbar_kernel::inflight::Enter {
@@ -912,13 +924,14 @@ async fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
                 &node.kernel,
                 &node.door,
                 PrincipalId::new("acct:finished"),
-                node.kernel.next_call(),
+                call,
             ),
             now: EPOCH * 1_000,
         })
         .expect("the uncapped table takes the unit");
     drop(Occupied {
         node: &node,
+        reservation,
         slot: Arc::clone(&slot),
         arrived: Arrived::at(EPOCH * 1_000, 8),
         op_class: busbar_contract::caps::OpClassId::new("call"),
@@ -944,6 +957,16 @@ async fn swept_node() -> (
 }
 
 fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str, _hold: Option<u64>) {
+    // The unit's terminal slot is reserved before it enters, as every occupied constructor
+    // reserves its original slot (e5b8ff5fb8, STORAGE-JOIN-r2).
+    let call = node.kernel.next_call();
+    let reservation = node
+        .reserve_terminal(
+            busbar_kernel::limits::process_admission::AdmissionClass::Data,
+            key,
+            call,
+        )
+        .expect("the fixture terminal book reserves the unit's slot");
     let slot = node
         .inflight
         .insert(busbar_kernel::inflight::Enter {
@@ -956,13 +979,14 @@ fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str, _hold: Option<
                 &node.kernel,
                 &node.door,
                 PrincipalId::new("acct:swept"),
-                node.kernel.next_call(),
+                call,
             ),
             now: EPOCH * 1_000,
         })
         .expect("the uncapped table takes the unit");
     drop(Occupied {
         node,
+        reservation,
         slot,
         arrived: Arrived::at(EPOCH * 1_000, key.get()),
         op_class: busbar_contract::caps::OpClassId::new(op_class),

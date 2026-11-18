@@ -3,6 +3,8 @@
 
 //! ADMIN-API-1.6 §3.3 (MR3): `GET /records`, the per-unit records feed.
 
+use busbar_contract::json::JsonContainerTrait as _;
+use busbar_contract::json::JsonValueTrait as _;
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::json::{self, Value};

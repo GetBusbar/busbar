@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 mod linked {
     use busbar_kernel::plane_driver::registry::PlaneDecl;
     pub(super) fn install() {
@@ -243,11 +244,8 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
     );
     cfg.store = Some(busbar_kernel::config::StoreCfg {
         module,
-        settings: settings
-            .as_object()
-            .expect("product settings object")
-            .clone()
-            .into(),
+        settings: busbar_contract::json::from_value(&settings).expect("product settings object"),
+        insecure_transport: None,
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -347,11 +345,8 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     );
     cfg.store = Some(busbar_kernel::config::StoreCfg {
         module,
-        settings: settings
-            .as_object()
-            .expect("product settings object")
-            .clone()
-            .into(),
+        settings: busbar_contract::json::from_value(&settings).expect("product settings object"),
+        insecure_transport: None,
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -471,11 +466,8 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     );
     cfg.store = Some(busbar_kernel::config::StoreCfg {
         module,
-        settings: settings
-            .as_object()
-            .expect("product settings object")
-            .clone()
-            .into(),
+        settings: busbar_contract::json::from_value(&settings).expect("product settings object"),
+        insecure_transport: None,
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -619,11 +611,8 @@ async fn plane_slot_is_none_when_the_plane_is_not_configured() {
     );
     cfg.store = Some(busbar_kernel::config::StoreCfg {
         module,
-        settings: settings
-            .as_object()
-            .expect("product settings object")
-            .clone()
-            .into(),
+        settings: busbar_contract::json::from_value(&settings).expect("product settings object"),
+        insecure_transport: None,
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -672,6 +661,7 @@ async fn plane_slot_is_none_when_the_plane_is_not_configured() {
 #[cfg(test)]
 mod metrics_scrape {
     use super::*;
+    use busbar_contract::json::JsonContainerTrait as _;
 
     fn series_for<'a>(exposition: &'a str, family: &str, plane: &str) -> Vec<&'a str> {
         let want = format!("plane=\"{plane}\"");
@@ -773,11 +763,9 @@ mod metrics_scrape {
         );
         cfg.store = Some(busbar_kernel::config::StoreCfg {
             module,
-            settings: settings
-                .as_object()
-                .expect("product settings object")
-                .clone()
-                .into(),
+            settings: busbar_contract::json::from_value(&settings)
+                .expect("product settings object"),
+            insecure_transport: None,
         });
         let plugin_config = plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -838,7 +826,7 @@ mod metrics_scrape {
                 (plugin.name.clone(), calls)
             })
             .collect();
-        busbar_kernel::export::plugin::open_prepared(&exports, &opened)
+        busbar_kernel::export::plugin::open_prepared(&exports, &opened, app.amendments.clone())
             .expect("the configured export projection retains its real exporter");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
@@ -1077,11 +1065,8 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     );
     cfg.store = Some(busbar_kernel::config::StoreCfg {
         module,
-        settings: settings
-            .as_object()
-            .expect("product settings object")
-            .clone()
-            .into(),
+        settings: busbar_contract::json::from_value(&settings).expect("product settings object"),
+        insecure_transport: None,
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -1523,6 +1508,7 @@ async fn plane_router(
         &dispatcher,
         &services,
         &configured,
+        &Default::default(),
         Some("https://busbar.example"),
         &|| {
             Arc::new(busbar_kernel::plane_driver::PlaneMoney::new(

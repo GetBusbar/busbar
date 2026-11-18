@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::json;
+use busbar_contract::json::JsonValueTrait as _;
 
 const X_ADMIN_TOKEN: &str = "x-admin-token";
 

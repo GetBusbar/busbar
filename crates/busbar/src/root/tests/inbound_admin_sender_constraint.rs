@@ -55,17 +55,18 @@ async fn actual_admin_doors_refuse_sender_downgrade_and_preserve_service_and_sco
         upgrade: None,
         offered: crate::root::doors::offers_unstated(),
     };
-    let mut auths: std::collections::HashMap<_, _> = app
+    let mut auths: foldhash::HashMap<_, _> = app
         .admin_modules
         .modules
         .iter()
         .map(|(provider, module)| (provider.clone(), module.calls.clone()))
         .collect();
-    if let busbar_kernel::auth::OperatorCredential::Module(calls) = &*app.admin_modules.operator {
-        auths.insert(
-            busbar_kernel::config::operator_provider().to_owned(),
-            calls.clone(),
-        );
+    // The operator credential is one opened instance per backed provider (c1b9b9e234), each
+    // answering its own provider as the one compiled-in module answered the operator provider.
+    if let busbar_kernel::auth::OperatorCredential::Opened(opened) = &*app.admin_modules.operator {
+        for (provider, calls) in opened {
+            auths.insert(provider.clone(), calls.clone());
+        }
     }
     let listener = kin::Listener {
         guests: GuestList::seal(vec![line(METHOD_GET), line(METHOD_POST)]).unwrap(),

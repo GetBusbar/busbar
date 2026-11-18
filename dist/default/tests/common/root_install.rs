@@ -77,8 +77,8 @@ pub fn link_exports(exports: &'static [ExportDoor]) {
     install();
     for &(name, alias, _) in exports {
         assert!(
-            crate::root::exports::EXPORTS.linked(name)
-                || crate::root::exports::EXPORTS.linked(alias),
+            crate::root::exports::EXPORTS.linked(name, None)
+                || crate::root::exports::EXPORTS.linked(alias, None),
             "the distribution must link the export plugin {name} ({alias})",
         );
     }

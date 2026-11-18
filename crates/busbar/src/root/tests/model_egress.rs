@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait};
 use std::collections::HashMap;
 
@@ -25,7 +26,7 @@ async fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models = "{}";
         let pools = "{}";
@@ -155,7 +156,7 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models = "{m-z: {provider: wire}}";
         let pools = "{}";
@@ -220,7 +221,7 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models = "{m-a: {provider: wire}, m-z: {provider: wire}}";
         let pools = "{}";
@@ -285,7 +286,7 @@ async fn retained_destinations_follow_the_model_name_across_reorder_and_removal(
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models = "{m-a: {provider: wire}}";
         let pools = "{}";
@@ -410,7 +411,7 @@ async fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models = "{m-z: {provider: wire, max_requests: 2}}";
         let pools = "{}";
@@ -475,7 +476,7 @@ async fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models =
             "{m-a: {provider: wire, max_requests: 11}, m-z: {provider: wire, max_requests: 7}}";
@@ -580,7 +581,7 @@ async fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models = "{m0: {provider: wire}}";
         let pools = "{first: {members: [m0]}, second: {members: [m0]}, third: {members: [m0]}}";
@@ -667,7 +668,7 @@ async fn a_success_is_recorded_on_the_walks_clock() {
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models = "{m0: {provider: wire}}";
         let pools = "{p: {members: [m0]}}";
@@ -765,7 +766,7 @@ async fn a_probe_success_joins_the_walks_window() {
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models = "{m0: {provider: wire}}";
         let pools = "{p: {members: [m0]}}";
@@ -868,7 +869,7 @@ async fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
                     .expect("the actual linked dialects are recorded");
             let dialect = dialects["body_model"]
                 .as_object()
-                .and_then(|rows| rows.keys().next())
+                .and_then(|rows| rows.iter().next().map(|(key, _)| key))
                 .expect("the distribution links a model dialect");
             let models = "{m0: {provider: wire}}";
             let pools = "{p: {members: [m0]}}";
@@ -1009,7 +1010,7 @@ async fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models = "{m0: {provider: wire}}";
         let pools = "{}";
@@ -1104,7 +1105,7 @@ async fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models = "{m0: {provider: wire}}";
         let pools = "{p: {members: [m0]}}";
@@ -1198,7 +1199,7 @@ async fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retire
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models = "{}";
         let pools = "{}";
@@ -1270,7 +1271,7 @@ async fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retire
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models = "{}";
         let pools = "{}";
@@ -1375,7 +1376,7 @@ async fn a_keyless_lane_is_not_probed() {
                     .expect("the actual linked dialects are recorded");
             let dialect = dialects["body_model"]
                 .as_object()
-                .and_then(|rows| rows.keys().next())
+                .and_then(|rows| rows.iter().next().map(|(key, _)| key))
                 .expect("the distribution links a model dialect");
             let models = "{}";
             let pools = "{}";
@@ -1452,7 +1453,7 @@ async fn semantic_rate_limit_preserves_the_store_ladder_without_reading_protocol
                 .expect("the actual linked dialects are recorded");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the distribution links a model dialect");
         let models = "{m0: {provider: wire}}";
         let pools = "{p: {members: [m0]}}";

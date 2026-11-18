@@ -956,7 +956,8 @@ async fn admin_physical_fixture_with_body(
                 method: "GET".into(),
                 target: path.into(),
                 fields,
-                ..Default::default()
+                authority: String::new(),
+                query: None,
             },
             lease,
             None,

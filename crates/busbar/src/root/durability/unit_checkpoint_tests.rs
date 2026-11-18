@@ -3,6 +3,7 @@
 
 use super::*;
 use busbar_contract::json;
+use busbar_contract::json::JsonValueTrait as _;
 use busbar_contract::persistence::{
     Address, AttemptId, Candidate, Decision, ExpectedValue, Mutation, PersistenceBackend,
     Predicate, PreparedCandidate, Read, ReadResult, CANDIDATE_VERSION,

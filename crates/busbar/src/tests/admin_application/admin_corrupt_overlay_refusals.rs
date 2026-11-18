@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonValueTrait as _;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -58,13 +59,14 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store opens the configuration authority")
+        .admit()
+        .await;
     let calls = ScopedStore::host_private(
         anchor.clone(),
         "busbar.config.overlay",
@@ -218,13 +220,14 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store opens the configuration authority")
+        .admit()
+        .await;
     let calls = ScopedStore::host_private(
         anchor.clone(),
         "busbar.config.overlay",

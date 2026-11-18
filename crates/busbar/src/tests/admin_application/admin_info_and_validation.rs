@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait as _};
 
 #[tokio::test]
@@ -411,7 +412,7 @@ async fn process_state_crypto_members() {
     std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
     std::fs::write(&operator_token, "admintok").expect("write the test operator input");
     let operator = busbar_kernel::config::operator_provider();
-    let mut document = serde_json::json!({
+    let mut document = json::json!({
         "providers": {},
         "models": {},
         "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
@@ -419,7 +420,7 @@ async fn process_state_crypto_members() {
         "advanced": {  },
         "identity-providers": {},
     });
-    document["identity-providers"][operator] = serde_json::json!({
+    document["identity-providers"][operator] = json::json!({
         "module": operator, "token": { "file": operator_token },
     });
     let (addr, handle, _book) =

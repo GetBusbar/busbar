@@ -550,7 +550,6 @@ mod bootstrap_destination_tests {
     fn the_installed_bootstrap_seam_receives_the_complete_recovered_security_policy() {
         let policy = |block_private_addresses| config::Destinations {
             block_private_addresses,
-            allow: Vec::new(),
             blocked: Vec::new(),
         };
         let holder = BootstrapDestJudge::new(root::connector::guard_for(&policy(false)).unwrap());

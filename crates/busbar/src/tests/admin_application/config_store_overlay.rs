@@ -119,6 +119,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         let crate::root::min3_boot::fixture::Fixture {
             backend: actual,
             rules,
+            owners: _owners,
         } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
             .await
             .expect("actual native Store opens");
@@ -285,6 +286,7 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("actual native Store opens");
@@ -458,6 +460,7 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
         let crate::root::min3_boot::fixture::Fixture {
             backend: actual,
             rules,
+            owners: _owners,
         } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
             .await
             .expect("actual native Store opens");
@@ -579,6 +582,7 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("actual native Store opens");
@@ -734,6 +738,7 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("actual native Store opens");
@@ -969,6 +974,7 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("actual native Store opens");
@@ -1109,6 +1115,7 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("actual native Store opens");

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonValueTrait as _;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -117,6 +118,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
     let crate::root::min3_boot::fixture::Fixture {
         backend: anchor,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the actual Store opens the configuration authority");
@@ -271,6 +273,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
     let crate::root::min3_boot::fixture::Fixture {
         backend: anchor,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the actual Store opens the configuration authority");

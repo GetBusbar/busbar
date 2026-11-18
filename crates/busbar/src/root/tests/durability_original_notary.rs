@@ -452,7 +452,7 @@ async fn original_bootstrap_binding_rejects_foreign_owners_and_starts_after_reco
         .is_err());
     assert!(feed.original.page(1, feed.head()).is_none());
     let clock = busbar_kernel::governance::drain::DrainClock::new(Duration::from_secs(5));
-    assert!(services.start_notary(10, clock));
+    assert!(services.start_notary(10, clock, None, Arc::clone(&book)));
     assert!(
         feed.original_ready().is_none(),
         "no Node receiver was registered"

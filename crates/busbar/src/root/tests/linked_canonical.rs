@@ -93,11 +93,11 @@ fn linked_rows() -> (Vec<Row>, Vec<String>) {
     let entries = entries(REGISTRY);
     let mut skipped = Vec::new();
 
-    for t in crate::LINKED.transports {
+    for (key, _) in crate::LINKED_TRANSPORT_DOORS.iter() {
         skipped.push(format!(
             "linked transport '{}': a wire is keyed by its scheme, not a registry row with a \
              manifest name",
-            (t.claims)()[0]
+            key
         ));
     }
     (rows, skipped)

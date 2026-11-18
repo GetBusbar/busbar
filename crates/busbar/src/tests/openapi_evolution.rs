@@ -8,6 +8,7 @@
 //! `x-busbar-extensible-enum: true` or is closed with `x-busbar-closed-enum: "<reason>"`, never
 //! both. The request side is not checked here: request objects and request enums stay closed.
 
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::BTreeSet;
 

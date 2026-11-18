@@ -317,7 +317,9 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         .admit_serving()
         .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        cfg.clone(),
+        // RootCfg is not Clone (3e5b860ca5): the app takes its own resolution of the same document.
+        busbar_kernel::config::resolve(&deploy, &definitions)
+            .expect("actual decisions deployment resolves"),
         plugins,
         None,
         HashSet::new(),
@@ -415,7 +417,10 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
     let (router, _, handle) =
         busbar_kernel::build_split_routers_serving(app, doors, 1 << 20, 0, false);
     let workers = std::mem::replace(
-        &mut fixture.workers,
+        fixture
+            .workers
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
         crate::root::boot::workers::PreparedWorkers::new(),
     )
     .start();

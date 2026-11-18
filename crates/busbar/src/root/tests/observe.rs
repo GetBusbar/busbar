@@ -128,7 +128,7 @@ fn a_third_party_plugins_cuts_warn_once_per_field_naming_it_and_count_every_time
                 plugin,
                 owner: &owner,
             },
-            &Output(plugin, KindCode::Store.word()),
+            &Output(&std::sync::Arc::from(plugin), KindCode::Store.word()),
             KindCode::Store,
             &metrics,
             &diagnostics,

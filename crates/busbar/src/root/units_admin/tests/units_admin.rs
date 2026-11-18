@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait};
 
 #[test]
@@ -255,9 +256,11 @@ async fn an_unreadable_amendment_is_told_what_the_body_must_carry() {
         ReasonCode::DecodeFailed,
     );
     let mut amend = a_request();
-    amend.method = "POST".to_string();
-    amend.path = "/api/v1/admin/ledger/amend-rate-history".to_string();
-    amend.body = br#"{"rate_card":{},"window":{}}"#.to_vec();
+    amend.edit_for_test(|r| {
+        r.method = "POST".to_string();
+        r.path = "/api/v1/admin/ledger/amend-rate-history".to_string();
+        r.body = br#"{"rate_card":{},"window":{}}"#.to_vec();
+    });
     let answer = explained_answer(&amend, refused).expect("the amendment's refusal is explained");
     assert_eq!(answer.status, 400);
     assert_eq!(
@@ -492,8 +495,10 @@ async fn a_verb_the_allow_list_does_not_name_is_refused_with_the_scope_answer() 
          requires `read-only`\"}}"
     );
     let mut mutation = a_request();
-    mutation.method = "POST".to_string();
-    mutation.path = "/api/v1/admin/hooks".to_string();
+    mutation.edit_for_test(|r| {
+        r.method = "POST".to_string();
+        r.path = "/api/v1/admin/hooks".to_string();
+    });
     assert_eq!(
         answered_under(door(), mutation.clone()).await,
         scope_answer(&mutation),
@@ -555,8 +560,10 @@ async fn a_grant_with_no_verbs_key_is_decided_by_its_rung_as_before() {
     assert_eq!(approved_under(rung(Scope::Full), "GET", read), Ok(()));
     assert_eq!(approved_under(rung(Scope::Full), "POST", mutation), Ok(()));
     let mut refused = a_request();
-    refused.method = "POST".to_string();
-    refused.path = mutation.to_string();
+    refused.edit_for_test(|r| {
+        r.method = "POST".to_string();
+        r.path = mutation.to_string();
+    });
     assert_eq!(
         answered_under(rung(Scope::ReadOnly), refused.clone()).await,
         scope_answer(&refused)
@@ -951,7 +958,9 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
     let principal = PrincipalId::new("admin");
 
     let mut unknown = a_request();
-    unknown.path = "/api/v1/admin/not-a-real-operation".to_string();
+    unknown.edit_for_test(|r| {
+        r.path = "/api/v1/admin/not-a-real-operation".to_string();
+    });
     let mut walk = a_bound_unit(unknown);
     assert!(
         walk.verb.is_none(),
@@ -978,8 +987,10 @@ fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere
 #[test]
 fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
     let mut mutating = a_request();
-    mutating.method = "POST".to_string();
-    mutating.path = "/api/v1/admin/plane-record-write".to_string();
+    mutating.edit_for_test(|r| {
+        r.method = "POST".to_string();
+        r.path = "/api/v1/admin/plane-record-write".to_string();
+    });
     let mut walk = a_bound_unit(mutating.clone());
     let resolved = walk
         .verb
@@ -1057,7 +1068,7 @@ async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals
         "the actual Store settings are an object"
     );
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        json::json!({
+        &json::json!({
             "providers": {}, "models": {},
             "auth": {"chain": []},
             "store": {"module": module, "settings": settings},
@@ -1512,8 +1523,10 @@ fn an_unresolved_unit_is_sealed_by_the_method_it_asked_with() {
 #[test]
 fn the_refused_door_seals_the_refusal_that_happened() {
     let mut unrouted = a_request();
-    unrouted.method = "DELETE".to_string();
-    unrouted.path = "/api/v1/admin/nothing-declares-this".to_string();
+    unrouted.edit_for_test(|r| {
+        r.method = "DELETE".to_string();
+        r.path = "/api/v1/admin/nothing-declares-this".to_string();
+    });
     let walk = a_bound_unit(unrouted);
     assert!(
         walk.verb.is_none(),
@@ -1661,14 +1674,14 @@ async fn answer_over_counts(
             .expect("the actual model dialects are recorded");
     let dialect = dialects["body_model"]
         .as_object()
-        .and_then(|rows| rows.keys().next())
+        .and_then(|rows| rows.iter().next().map(|(key, _)| key))
         .expect("the distribution links a model dialect");
     let providers = busbar_kernel::config::providers::catalog_from_str(
         &format!("wire:\n  protocol: {dialect}\n  base_url: http://127.0.0.1:9\n"),
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the actual wire provider has its catalog declaration");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(json::json!({
+    let deploy = busbar_kernel::config::deploy_from_deserializer(&json::json!({
         "providers": {"wire": {"protocol": dialect, "base_url": "http://127.0.0.1:9", "api_key": "none"}},
         "models": {"m": {"provider": "wire"}},
         "rate_card": one_lane_rates(),
@@ -1928,7 +1941,7 @@ async fn real_admin_dispatch() -> RouterDispatch {
         "the actual Store settings are an object"
     );
     let deploy = busbar_kernel::config::deploy_from_deserializer(
-        json::json!({
+        &json::json!({
             "providers": {}, "models": {},
             "identity-providers": {
                 (operator): {"module": operator, "settings": {"sha256": digest}},
@@ -2681,8 +2694,8 @@ async fn the_one_document_describes_the_ledger_views() {
     let pinned_paths = pinned["paths"].as_object().expect("it declares paths");
     assert!(
         !pinned_paths
-            .keys()
-            .any(|p| p.starts_with("/api/v1/admin/ledger/")),
+            .iter()
+            .any(|(p, _)| p.starts_with("/api/v1/admin/ledger/")),
         "the ledger views are 1.6.0 surface; the pinned 1.5.5 document must not carry them"
     );
 }

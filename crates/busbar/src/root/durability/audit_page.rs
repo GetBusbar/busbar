@@ -512,6 +512,7 @@ mod tests {
     use super::*;
     use crate::root::durability::tests::{seal, NativeFixture};
     use crate::root::units_admin::{AuditView, NodeAudit};
+    use busbar_contract::json::JsonContainerTrait as _;
     use busbar_contract::json::JsonValueTrait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};

@@ -170,7 +170,7 @@ async fn governed_full(
         &crate::root::boot::axis_test_grammar(),
     )
     .expect("the money deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    let mut config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let services = composed_services();
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
@@ -1159,7 +1159,7 @@ async fn a_failed_session_attachment_records_its_fault_and_cleans_up_once() {
         );
         let book = g.book.lock().expect("unpoisoned");
         assert_eq!(book.audit_records().len(), 1, "one final session record");
-        let record = book.audit_records()[0];
+        let record = &book.audit_records()[0];
         assert_eq!(record.what.unit_key.get(), admitted[0]);
         assert_eq!(
             record.outcome.unit_end,
@@ -1234,7 +1234,10 @@ async fn a_nested_declared_length_reply_stops_its_producer_at_the_existing_bound
 
     tokio::time::timeout(super::OPEN_HEAD_WAIT, async {
         loop {
-            g.post.node().sweep(g.post.node().arrived());
+            g.post
+                .node()
+                .expect("the fixture Node is alive")
+                .sweep(g.post.node().expect("the fixture Node is alive").arrived());
             if g.post.open_units() == 0
                 && g.money.open_units() == 0
                 && g.book.lock().expect("unpoisoned").audit_records().len() == 2
@@ -1448,10 +1451,11 @@ async fn an_admitted_session_exposes_its_parent_frame_until_cleanup() {
             let node_live = reads
                 .post
                 .node()
+                .expect("the fixture Node is alive")
                 .parent(busbar_contract::UnitKey::new(unit))
                 .is_some();
-            let same_app = reads.parent_of(&nest).is_some_and(|(app, parent)| {
-                parent.key().get() == unit && Arc::ptr_eq(&app, &expected_app)
+            let same_app = reads.parent_of(&nest).is_some_and(|(frame, parent)| {
+                parent.key().get() == unit && Arc::ptr_eq(&frame.app, &expected_app)
             });
             *capture.lock().expect("unpoisoned") = Some((unit, node_live, same_app));
             Err("finish after inspecting the admitted session".to_string())
@@ -1475,6 +1479,7 @@ async fn an_admitted_session_exposes_its_parent_frame_until_cleanup() {
     assert!(routes
         .post
         .node()
+        .expect("the fixture Node is alive")
         .parent(busbar_contract::UnitKey::new(unit))
         .is_none());
     assert_eq!(g.post.open_units(), 0);
@@ -1499,15 +1504,16 @@ async fn nested_anonymous_admission_matches_the_arrival_rule() {
         let routes = session_custody_routes(&mut g, pools);
         let bound = Arc::new(std::sync::Mutex::new(None));
         let capture = Arc::clone(&bound);
-        let node = Arc::clone(g.post.node());
-        let app = Arc::clone(&g.app);
+        let reads = Arc::clone(&routes);
         let attach = super::Attach {
             answered: 101,
             admitted: Some(Box::new(move |unit| {
-                let parent = node
-                    .parent(busbar_contract::UnitKey::new(unit))
+                // The bound continuation is the admitted unit's own dispatch frame (its App and its
+                // original request lease, 57d90746ad) with its live parent.
+                let bound = reads
+                    .parent_of(&session_custody_nest(unit, "/call/local"))
                     .expect("live parent");
-                *capture.lock().expect("unpoisoned") = Some((app, parent));
+                *capture.lock().expect("unpoisoned") = Some(bound);
                 Err("finish the parent after binding its continuation".to_string())
             })),
             ended: None,
@@ -1567,15 +1573,16 @@ async fn nested_ordinary_child_never_spends_the_parent_key_on_a_protected_claim(
         let routes = session_custody_routes(&mut g, true);
         let bound = Arc::new(std::sync::Mutex::new(None));
         let capture = Arc::clone(&bound);
-        let node = Arc::clone(g.post.node());
-        let app = Arc::clone(&g.app);
+        let reads = Arc::clone(&routes);
         let attach = super::Attach {
             answered: 101,
             admitted: Some(Box::new(move |unit| {
-                let parent = node
-                    .parent(busbar_contract::UnitKey::new(unit))
+                // The bound continuation is the admitted unit's own dispatch frame (its App and its
+                // original request lease, 57d90746ad) with its live parent.
+                let bound = reads
+                    .parent_of(&session_custody_nest(unit, "/call/local"))
                     .expect("live parent");
-                *capture.lock().expect("unpoisoned") = Some((app, parent));
+                *capture.lock().expect("unpoisoned") = Some(bound);
                 Err("finish the parent after binding its continuation".to_string())
             })),
             ended: None,
@@ -1695,7 +1702,7 @@ fn reserved_source_for(
     use busbar_contract::caps::{Hold, OriginKind, PrincipalId};
     use busbar_kernel::plane_driver::{FeeRefund, UnitMoney};
     let money = Arc::clone(&g.served.planes[0].money);
-    let node = g.post.node();
+    let node = g.post.node().expect("the fixture Node is alive");
     let unit = node.mint();
     let (kernel, _) = node.kernel_and_keys();
     let call = kernel.next_call();
@@ -2131,7 +2138,12 @@ async fn cancelling_an_actual_owned_session_retires_money_even_without_source_re
             from: tokio::sync::Mutex::new(from),
             to,
         };
-        let custody = Arc::clone(&g.post.node().ticket_custody);
+        let custody = Arc::clone(
+            &g.post
+                .node()
+                .expect("the fixture Node is alive")
+                .ticket_custody,
+        );
         let attach = super::Attach {
             answered: super::SWITCHED,
             admitted: Some(Box::new(move |unit| {
@@ -2173,7 +2185,10 @@ async fn cancelling_an_actual_owned_session_retires_money_even_without_source_re
         assert_eq!(g.post.open_units(), 0);
         assert!(routes.frames_lock().is_empty());
         assert_eq!(
-            g.post.node().sweep(g.post.node().arrived()),
+            g.post
+                .node()
+                .expect("the fixture Node is alive")
+                .sweep(g.post.node().expect("the fixture Node is alive").arrived()),
             0,
             "the real Own terminal already retired its slot"
         );

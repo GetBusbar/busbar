@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait};
 use busbar_contract::persistence::*;
 use std::sync::{
@@ -113,6 +114,7 @@ async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the configured native backend opens");
@@ -241,6 +243,7 @@ async fn get_named_def_reads_the_overlay_off_the_async_worker() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the configured native backend opens");
@@ -369,6 +372,7 @@ async fn named_defs_still_flag_an_unparseable_overlay_entry() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the configured native backend opens");
@@ -501,6 +505,7 @@ async fn named_defs_propagate_store_overlay_read_failures() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: actual,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the configured native backend opens");

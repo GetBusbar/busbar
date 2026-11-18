@@ -166,10 +166,9 @@ async fn operator_first_auth_identity_survives_reload_and_seals_once_without_cha
             offered: AuthPoints::HEAD,
         }])
         .unwrap(),
-        auths: std::collections::HashMap::from([(
-            PROVIDER.into(),
-            Arc::new(Identity) as Arc<dyn AuthCalls>,
-        )]),
+        auths: [(PROVIDER.into(), Arc::new(Identity) as Arc<dyn AuthCalls>)]
+            .into_iter()
+            .collect(),
         body_limit: 4096,
         app: Arc::clone(&pinned),
         door_refusals: Vec::new(),

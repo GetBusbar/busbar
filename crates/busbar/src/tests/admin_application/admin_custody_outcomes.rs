@@ -902,7 +902,7 @@ async fn committed_mint_publishes_without_refresh_and_same_idempotency_cannot_mi
     assert_eq!(response.status(), StatusCode::CREATED);
     let answer = body(response).await;
     let id = answer["id"].as_str().unwrap().to_string();
-    assert!(answer["token"].is_string());
+    assert!(answer["token"].is_str());
     // Applied carries the exact committed rows into governance's cache. A failed
     // full refresh cannot erase confirmation or manufacture an unknown outcome.
     let listed = request(

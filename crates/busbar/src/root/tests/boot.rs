@@ -938,7 +938,7 @@ pub(super) fn constructor_child(validate: bool) -> ! {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(crate::run(late, catalogue, crate::ControlWork::new()));
+        .block_on(crate::run(catalogue, crate::ControlWork::new(), None));
     panic!("the constructor-only fixture must be refused for its missing plugin door");
 }
 

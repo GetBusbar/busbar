@@ -55,7 +55,7 @@ pub(crate) fn described(
         .ok_or_else(|| format!("fixture image `{identity}` has no admitted describe"))
 }
 
-struct Owners {
+pub(crate) struct Owners {
     admitted_images: Arc<crate::root::boot::images::FileImages>,
     channel_accounts: ChannelAccounts,
     built: Built,
@@ -69,7 +69,9 @@ struct Owners {
 pub(crate) struct Fixture {
     pub(crate) backend: busbar_contract::persistence::axis::OpenedBackend,
     pub(crate) rules: Arc<dyn RootRules>,
-    owners: Arc<Owners>,
+    /// The native image and secret owners the opened backend came from: a caller that takes the
+    /// backend apart keeps them (`owners: _owners`) for as long as it uses it.
+    pub(crate) owners: Arc<Owners>,
 }
 
 pub(crate) struct Admitted {

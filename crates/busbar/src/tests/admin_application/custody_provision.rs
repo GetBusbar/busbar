@@ -103,6 +103,7 @@ async fn mint_failure_after_the_provision_commit_still_records_the_committed_gro
     let crate::root::min3_boot::fixture::Fixture {
         backend: opened,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("the actual signed Store opens through the normal bootstrap");

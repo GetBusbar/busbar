@@ -144,6 +144,20 @@ impl Workers {
         }))
     }
 
+    /// A controller with no generation running: what a post-serve fixture that served no native
+    /// generation drains (f94371980d made PostServe hold the controller, not bare workers).
+    #[cfg(test)]
+    pub(crate) fn idle() -> Arc<Self> {
+        Arc::new(Self {
+            state: Mutex::new(WorkerState {
+                active: None,
+                stopped: false,
+                failure: None,
+            }),
+            retiring: tokio::sync::Mutex::new(None),
+        })
+    }
+
     pub(crate) fn bind(self: &Arc<Self>, app: &busbar_kernel::state::AppHandle) {
         let owner = Arc::clone(self);
         app.on_apply(Box::new(move |next| owner.activate(next)));

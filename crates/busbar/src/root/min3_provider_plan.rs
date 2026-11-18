@@ -294,7 +294,7 @@ mod tests {
         let mut config = json::json!({"style":"bearer","credential":{"file":"key"},"settings":{"audience":"authored"}});
         fill_config(
             &mut config,
-            &[
+            &vec![
                 ("audience", "generated".into()),
                 ("scope", "scope-a".into()),
             ],
@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn fills_refuse_non_object_settings_without_echoing_values() {
         let mut config = json::json!({"settings":"private-value"});
-        let error = fill_config(&mut config, &[("scope", "private-fill".into())]).unwrap_err();
+        let error = fill_config(&mut config, &vec![("scope", "private-fill".into())]).unwrap_err();
         assert!(!error.contains("private"));
     }
 

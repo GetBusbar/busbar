@@ -168,13 +168,15 @@ async fn synchronous_config_resolution_progresses_on_the_owned_io_executor() {
     use busbar_contract::secret::SecretResolve;
     let io = crate::root::boot::process::ProcessIo::new().unwrap();
     let secrets = Box::leak(Box::new(secrets()));
-    let secrets = secrets.with_opened(
-        "configured-source",
-        SecretSource {
-            instance: 41,
-            port: Port::new("owned-source-material"),
-        },
-    );
+    let secrets = secrets
+        .with_opened(
+            "configured-source",
+            SecretSource {
+                instance: 41,
+                port: Port::new("owned-source-material"),
+            },
+        )
+        .expect("a reserved open extends custody");
     let resolver = secrets.resolver(io.handle(), Default::default());
     let held = resolver
         .resolve(&source("configured-source", "{}"))

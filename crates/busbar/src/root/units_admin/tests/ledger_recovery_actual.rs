@@ -3,6 +3,7 @@
 
 //! A real retained usage operation, observed and resolved through the mounted operator surface.
 
+use busbar_contract::json::JsonContainerTrait as _;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

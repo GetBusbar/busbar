@@ -80,7 +80,7 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
             input_utok: 1.0,
             output_utok: 1.0,
             cache_read_utok: 0.0,
-            cache_write_utok: 0.0,
+            cache_write_utok: Some(0.0),
             ..Default::default()
         },
     )]);

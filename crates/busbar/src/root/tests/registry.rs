@@ -356,11 +356,13 @@ fn a_planes_own_claims_may_overlap() {
 #[cfg(linked_axis_transport_door)]
 #[test]
 fn no_shipped_transport_names_a_layer() {
-    for row in crate::LINKED.transports {
+    // The layers are read off each linked door's Statement (the row stopped carrying them, 040c52e0cc).
+    for (key, door) in crate::LINKED_TRANSPORT_DOORS.iter() {
         assert!(
-            (row.composes_over)().is_empty(),
-            "`{}` names a layer",
-            (row.claims)()[0]
+            busbar_core_connector::doors::row_facts(*door)
+                .composes_over
+                .is_empty(),
+            "`{key}` names a layer"
         );
     }
 }
@@ -552,7 +554,8 @@ fn a_dropped_in_wire_is_served_beside_the_linked_rows_and_answers_the_check() {
     );
 
     let mut schemes = linked_schemes();
-    schemes.extend(wire.claims.iter().copied());
+    // A dropped door no longer lists its claims (040c52e0cc); its registry key is its own claim.
+    schemes.push(wire.key);
     check(crate::LINKED.claims, &|s| schemes.contains(&s))
         .expect("the composition answers with the dropped-in wire beside the linked rows");
 }

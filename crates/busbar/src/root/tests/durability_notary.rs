@@ -5,6 +5,8 @@
 //! parks when idle and wakes on the next line; the request path moves its record and signs
 //! nothing; the book holds no signing capability.
 
+use busbar_contract::json::JsonContainerTrait as _;
+use busbar_contract::json::JsonValueTrait as _;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -338,7 +340,6 @@ fn the_book_holds_no_signing_capability() {
             resumed,
             audit_hints,
             head,
-            resumed_head_node_seq,
             boot_records,
         } = book;
         no_signer(journal);
@@ -354,7 +355,6 @@ fn the_book_holds_no_signing_capability() {
         no_signer(resumed);
         no_signer(audit_hints);
         no_signer(head);
-        no_signer(resumed_head_node_seq);
         no_signer(boot_records);
     }
 }

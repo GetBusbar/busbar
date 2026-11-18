@@ -3,6 +3,7 @@
 
 use crate::root::test_plugins as plugins;
 use base64::Engine as _;
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait};
 use busbar_kernel::admission::{Admitted, Inventoried, Judged, PluginAdmission, Refusal, Stated};
 use busbar_kernel::config::PluginsCfg;

@@ -550,7 +550,7 @@ impl Fixture {
                 .map(|code| Box::pin(async move { code }) as Pin<Box<dyn Future<Output = i32>>>),
             threads: Vec::new(),
             work_recovery: tokio::spawn(async {}),
-            generation_workers: crate::root::boot::workers::PreparedWorkers::new().start(),
+            generation_workers: crate::root::min3_candidate::Workers::idle(),
             exports: crate::root::exports::ports::Exports::new(Vec::new())
                 .expect("no configured exports"),
             export_captures: Arc::default(),

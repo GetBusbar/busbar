@@ -18,6 +18,7 @@ fn routes(entries: &[(u32, &str, u32)]) -> PortRoutes {
                 effective: AUTH_PRINCIPAL,
                 pattern: (*pattern).into(),
                 cred_header: None,
+                resource_kinds: Vec::new(),
                 catalog: false,
             })
             .collect(),

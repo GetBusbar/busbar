@@ -61,6 +61,7 @@ async fn slow_store_read_does_not_stall_the_executor() {
     let crate::root::min3_boot::fixture::Fixture {
         backend: backend,
         rules,
+        owners: _owners,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
         .expect("configured native backend");

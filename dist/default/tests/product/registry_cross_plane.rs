@@ -710,7 +710,11 @@ fn r2_a_mounted_plane_with_no_admission_refuses_boot() {
     };
     let dispatch = build_dispatch(&[&MOUNTS_NOTHING], &slots, false)
         .expect("a plane that claims no path needs no admission");
-    assert!(dispatch.mounted_keys().is_empty(), "and it mounts nothing");
+    // `mounted_keys` went with its lint escape (caa7d06374); a plane mounts iff it has a mount.
+    assert!(
+        dispatch.mount_of(MOUNTS_NOTHING.key).is_none(),
+        "and it mounts nothing"
+    );
 }
 
 #[tokio::test]
@@ -974,10 +978,9 @@ fn r3_no_vocabulary_collision_across_the_mounted_set() {
     let dispatch =
         build_dispatch(builtin_plane_decls(), &slots, false).expect("the dispatch table builds");
 
-    let mounted_keys = dispatch.mounted_keys();
     let mounted: Vec<&&PlaneDecl> = builtin_plane_decls()
         .iter()
-        .filter(|d| mounted_keys.contains(&d.key))
+        .filter(|d| dispatch.mount_of(d.key).is_some())
         .collect();
 
     let mut scope_kinds: Vec<&str> = mounted
@@ -1003,7 +1006,7 @@ fn r3_no_vocabulary_collision_across_the_mounted_set() {
         "audit kinds collide across the mounted set: {audit_kinds:?}"
     );
 
-    let mut keys = mounted_keys;
+    let mut keys: Vec<&str> = mounted.iter().map(|d| d.key).collect();
     keys.sort();
     let mut want = vec![owning("tools").key, owning("agents").key];
     want.sort();
@@ -1064,7 +1067,9 @@ fn a_delegation_only_multi_binding_plane_mounts_nothing() {
     let dispatch =
         build_dispatch(builtin_plane_decls(), &slots, false).expect("no path, no refusal");
     assert!(
-        dispatch.mounted_keys().is_empty(),
+        builtin_plane_decls()
+            .iter()
+            .all(|d| dispatch.mount_of(d.key).is_none()),
         "a delegation-only deployment claims no path"
     );
     assert!(dispatch

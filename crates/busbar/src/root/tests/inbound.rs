@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::JsonValueTrait as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -147,7 +148,7 @@ async fn app_generation(
                 .expect("the actual linked model dialect fixture reads");
         let dialect = dialects["body_model"]
             .as_object()
-            .and_then(|rows| rows.keys().next())
+            .and_then(|rows| rows.iter().next().map(|(key, _)| key))
             .expect("the actual model plane declares a body-model dialect");
         let credential = directory.join("unused-provider-credential");
         std::fs::write(&credential, "inbound-context-provider-credential")

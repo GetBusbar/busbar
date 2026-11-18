@@ -48,6 +48,7 @@ async fn stdio_without_a_line_route_is_refused_before_any_write() {
 
     let images = crate::root::boot::images::fixture(resources, &plugins).expect("images admit");
     let refused = crate::root::min3_boot::prepare_bootstrap(
+        tokio::runtime::Handle::current(),
         resources,
         images,
         &cfg,

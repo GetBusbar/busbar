@@ -150,8 +150,8 @@ async fn records_after(rig: &NodeRig, count: usize) -> Vec<busbar_kernel_audit::
         rig.book
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .audit_records
-            .clone()
+            .audit_records()
+            .to_vec()
     };
     for _ in 0..500 {
         if read().len() >= count {
@@ -194,7 +194,7 @@ async fn every_unit_the_door_answers_served_or_refused_seals_one_record_on_one_t
     let _ = records_after(&rig, 2).await;
 
     let durability = rig.book.lock().expect("unpoisoned");
-    let records = durability.audit_records.clone();
+    let records = durability.audit_records().to_vec();
     assert_eq!(records.len(), 2, "one record per unit: {records:?}");
     let (served, refused) = (&records[0], &records[1]);
     assert_eq!(
@@ -669,12 +669,12 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     {
         let durability = books.rig.book.lock().expect("unpoisoned");
         assert_eq!(
-            durability.audit_records.len(),
+            durability.audit_records().len(),
             1,
             "one record per unit: {:?}",
-            durability.audit_records
+            durability.audit_records()
         );
-        let record = &durability.audit_records[0];
+        let record = &durability.audit_records()[0];
         assert_eq!(record.what.incarnation, durability.incarnation);
         assert_eq!(
             record.outcome.unit_end,

@@ -163,11 +163,11 @@ fn actual_definition_is_retained_in_the_model_table_and_exact_target_association
     let allocations = allocated(&plan);
     let staged = stage(&cfg, &plan, &allocations).unwrap();
     for (key, row) in &staged.rows {
-        let definition = staged.upstreams.get(&row.definition.name).unwrap();
-        assert!(Arc::ptr_eq(&definition, &row.definition));
+        // The staged upstreams table went with its unread fields (d86e447ebb); the target still
+        // retains the row's exact definition.
         assert!(Arc::ptr_eq(
             row.target.definition.as_ref().unwrap().as_arc(),
-            &definition,
+            &row.definition,
         ));
         assert_eq!(row.allocation.destination, allocations[key].destination);
         assert_eq!(

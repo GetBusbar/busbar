@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -191,7 +192,7 @@ fn a_linked_dialect() -> String {
     let fixture: json::Value = json::parse_value(text.as_bytes()).expect("the fixture is JSON");
     fixture["body_model"]
         .as_object()
-        .and_then(|dialects| dialects.keys().next().map(str::to_string))
+        .and_then(|dialects| dialects.iter().next().map(|(key, _)| key.to_string()))
         .expect("the fixture names a body-model dialect")
 }
 

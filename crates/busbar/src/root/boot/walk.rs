@@ -308,8 +308,9 @@ pub fn deployment_bytes(text: &str) -> Result<[u8; 16], String> {
 }
 
 /// The root's deployment-row read over the opened store; the future owns what it needs (the store's `Arc`).
-pub type DeploymentRead =
-    dyn Fn(&busbar_ports::store::StoreHandle) -> BoxFut<'static, Result<[u8; 16], String>> + Sync;
+pub type DeploymentRead = dyn Fn(&busbar_ports::store::StoreHandle) -> BoxFut<'static, Result<[u8; 16], String>>
+    + Send
+    + Sync;
 
 /// The fixture registry as the walk's steps: `instances[i]` is configured instance `i` with its kind, exactly the
 /// slice `Registry::boot_plan` was given. The kind picks the registry's typed `open_<kind>`; this table is the

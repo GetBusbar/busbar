@@ -326,7 +326,9 @@ async fn operator_slot_is_built_from_actual_admin_handlers_and_preserves_head_he
             busbar_kernel::inbound::Head {
                 method: "HEAD".into(),
                 target: busbar_kernel::auth::HEALTHZ_PATH.into(),
-                ..Default::default()
+                authority: String::new(),
+                query: None,
+                fields: Vec::new(),
             },
             budget.try_enter(AdmissionClass::Operator).unwrap(),
             None,

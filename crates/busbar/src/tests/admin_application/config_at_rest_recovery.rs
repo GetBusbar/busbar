@@ -115,6 +115,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         let crate::root::min3_boot::fixture::Fixture {
             backend: native,
             rules,
+            owners: _owners,
         } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
             .await
             .expect("the actual native Store bootstraps");
@@ -295,9 +296,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         assert!(at_rest::is_plain(&pending.secret));
         let current_keys = AtRestKeys::from_signing_secret(&[4_u8; 32]);
         assert_eq!(
-            at_rest::open(Some(&current_keys), &pending.meta, &pending.secret)
-                .as_deref()
-                .map(String::as_str),
+            at_rest::open(Some(&current_keys), &pending.meta, &pending.secret).as_deref(),
             Some("recoverable-test-secret")
         );
         let calls = store.listings.load(Ordering::SeqCst);
@@ -324,9 +323,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             Some(current_keys.kid())
         );
         assert_eq!(
-            at_rest::open(Some(&current_keys), &sealed.meta, &sealed.secret)
-                .as_deref()
-                .map(String::as_str),
+            at_rest::open(Some(&current_keys), &sealed.meta, &sealed.secret).as_deref(),
             Some("recoverable-test-secret")
         );
 

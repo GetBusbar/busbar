@@ -4,6 +4,7 @@
 //! Explicit creation of a real durable namespace for subprocess protocol fixtures.
 //! A Memory Store cannot carry a cold CLI baseline into the later stdio process.
 
+use busbar_contract::json::JsonContainerTrait as _;
 use busbar_contract::json::{self, JsonValueTrait};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -225,6 +226,7 @@ pub async fn admit_in_process(directory: &Path) -> Owner {
             .unwrap();
     let spec = busbar_plugin_loader::instance::InstanceSpec {
         purpose: busbar_plugin_loader::instance::OpenPurpose::Canonical,
+        store_migration: None,
         identity: &identity,
         name: "fixture-in-process-writer",
         config_json: &config,

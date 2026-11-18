@@ -128,7 +128,7 @@ impl NodeRig {
     pub(crate) async fn open(
         &self,
         path: &str,
-        body: &serde_json::Value,
+        body: &(impl std::fmt::Display + ?Sized),
     ) -> axum::response::Response {
         self.open_raw(path, body.to_string(), true).await
     }

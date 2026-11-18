@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use busbar_contract::json::JsonContainerTrait as _;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -99,11 +100,17 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     });
     document["rate_card"] = json::to_value(&rate_card).expect("serialize the original token rates");
     document["per_request_fee"] = json::json!(1);
+    // The shared usage fixture still edits a serde_json document; this file's document is the
+    // JSON facade's since 0327903243 (#162), so it crosses as text both ways.
+    let mut shared: serde_json::Value =
+        serde_json::from_str(&document.to_string()).expect("the facade document is JSON");
     let provider_defs = super::admin_usage_history::complete_usage_fixture(
-        &mut document,
+        &mut shared,
         &directory,
         &[("model-1", "vendor-a"), ("model-2", "acme")],
     );
+    document =
+        json::parse_value(shared.to_string().as_bytes()).expect("the completed document is JSON");
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         &document,
         &crate::root::boot::axis_test_grammar(),
@@ -114,13 +121,14 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
-    let crate::root::min3_boot::fixture::Fixture {
-        backend: anchor,
+    let crate::root::min3_boot::fixture::Admitted {
+        core: anchor,
         rules,
     } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())
         .await
-        .expect("the actual Store opens the configuration authority");
-    let anchor = crate::root::real_store::core_over(anchor).await;
+        .expect("the actual Store opens the configuration authority")
+        .admit()
+        .await;
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
         .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(

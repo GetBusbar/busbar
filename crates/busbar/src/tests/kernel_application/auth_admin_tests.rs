@@ -871,7 +871,8 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
             let plugin_config = crate::root::test_plugins::trusted_config(&directory);
             let rules = Arc::new(crate::root::door_steps::Rules::default())
                 as Arc<dyn busbar_kernel::appbuild::RootRules>;
-            let crate::root::min3_boot::fixture::Fixture { backend: anchor, rules } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules).await.expect("the actual Store bootstraps its config authority");
+            let crate::root::min3_boot::fixture::Fixture { backend: anchor, rules,
+        owners: _owners, } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules).await.expect("the actual Store bootstraps its config authority");
             let anchor = crate::root::real_store::core_over(anchor).await;
             let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
             .expect("the actual Store supports conditional config records");

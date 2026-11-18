@@ -42,7 +42,14 @@ struct Unit {
 
 async fn unit(classes: &[&'static str]) -> Unit {
     let (app, key) = downgrade_book(Vec::new(), None).await;
-    let facts = super::door_facts("", &["pool"], classes, &[], "door", Vec::new());
+    let facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("").unwrap(),
+        &["pool"],
+        classes,
+        &[],
+        "door",
+        Vec::new(),
+    );
     let gov = Arc::clone(app.governance.as_ref().expect("actual governance"));
     let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
         crate::root::plane_node::Node::new(),

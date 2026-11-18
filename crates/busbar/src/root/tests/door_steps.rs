@@ -1830,7 +1830,14 @@ async fn exhausted_pool_walk_bills_under_a_member_lane() {
     .await;
     let pools = llm_pools();
     let gov = Arc::clone(app.governance.as_ref().expect("a governed generation"));
-    let facts = super::door_facts("", &["pool"], &[], &[], "door", Vec::new());
+    let facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("").unwrap(),
+        &["pool"],
+        &[],
+        &[],
+        "door",
+        Vec::new(),
+    );
     let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
         crate::root::plane_node::Node::new(),
     )));
@@ -1941,6 +1948,7 @@ fn llm_pool_member_scope_is_judged_at_the_pool_not_the_member() {
             Some(k),
             (ROUTE_POOL, Some(pool.as_bytes())),
             member.map(str::as_bytes),
+            None,
         )
     };
     assert!(
@@ -1970,7 +1978,14 @@ async fn child_grant_on_a_pooled_llm_target_walks_only_the_target() {
 
     let (app, key) = downgrade_book(Vec::new(), None).await;
     let pools = llm_pools();
-    let facts = super::door_facts("p", &["pool"], &[], &[], "door", Vec::new());
+    let facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("p").unwrap(),
+        &["pool"],
+        &[],
+        &[],
+        "door",
+        Vec::new(),
+    );
     let gov = Arc::clone(app.governance.as_ref().expect("a governed generation"));
     let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
         crate::root::plane_node::Node::new(),
@@ -2090,7 +2105,7 @@ async fn a_routed_unit_with_no_member_is_refused_before_admission_charges() {
     let (app, key) = downgrade_book(vec![one_request_a_day()], None).await;
     let pools = pools(DOWNGRADE_SECTION);
     let facts = super::door_facts(
-        "",
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("").unwrap(),
         &["pool"],
         &["input", "per_request"],
         &["per_request"],
@@ -2188,7 +2203,14 @@ async fn a_downgrade_into_a_pool_with_no_member_is_refused_uncharged() {
         crate::root::plane_node::Node::new(),
     )));
     let money = PlaneMoney::new(Arc::clone(&gov), post as Arc<dyn EndPost>);
-    let facts = super::door_facts("", &["pool"], &[], &[], "door", Vec::new());
+    let facts = super::door_facts(
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("").unwrap(),
+        &["pool"],
+        &[],
+        &[],
+        "door",
+        Vec::new(),
+    );
     let arrived = busbar_kernel::store::now();
     let charge = |unit: u64| {
         let steps = super::DoorSteps::new(
@@ -2259,7 +2281,7 @@ async fn a_child_of_a_routed_unit_with_no_member_opens_no_money() {
     let (app, key) = downgrade_book(vec![one_request_a_day()], None).await;
     let pools = pools(DOWNGRADE_SECTION);
     let facts = super::door_facts(
-        "",
+        busbar_kernel::plane_driver::dispatch::LaneQualifier::parse("").unwrap(),
         &["pool"],
         &["input", "per_request"],
         &["per_request"],
@@ -2643,10 +2665,12 @@ fn a_provider_base_url_with_userinfo_is_reached_at_its_stripped_authority() {
     )
     .expect("a provider entry");
     let routes = super::provider_routes(
-        &std::collections::HashMap::from([(
+        &[(
             "p".to_string(),
             busbar_kernel::config::ResolvedProvider::from(provider),
-        )]),
+        )]
+        .into_iter()
+        .collect::<busbar_kernel::config::ResolvedProviders>(),
         &busbar_kernel::config_validate::MetadataPosture::default(),
     );
     let route = &routes["p"];

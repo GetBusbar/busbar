@@ -6,6 +6,7 @@
 //! seat's walk and carrier over the shared upstream table, its needs on the connection table, the transport
 //! acceptance it is held to, and the process-tree containment of a stdio child.
 
+use busbar_contract::json::JsonContainerTrait as _;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::task::{Context, Poll};

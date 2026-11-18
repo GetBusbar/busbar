@@ -24,7 +24,6 @@ fn make_root_cfg(
 
         endpoint_resources: Default::default(),
         oauth_as: None,
-        credentials: Default::default(),
         public_url: None,
         tls: None,
         admin_listen: busbar_kernel::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),

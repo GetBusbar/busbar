@@ -178,10 +178,20 @@ fn export_row_registry(
     )
     .unwrap();
     let mut policy = test_plugins::release_policy(&test_plugins::key(7));
-    policy.publishers = [(publisher.to_string(), signer.verifying_key())]
-        .into_iter()
-        .filter(|_| publisher != "busbar")
-        .collect();
+    // A publisher key signs only the artifact names it is scoped to (02d28120e5).
+    policy.publishers = [(
+        publisher.to_string(),
+        crate::root::loader::sign::PublisherTrust {
+            plugins: [name.to_string()].into_iter().collect(),
+            keys: vec![crate::root::loader::sign::PublisherKey {
+                key: signer.verifying_key(),
+                revoked: false,
+            }],
+        },
+    )]
+    .into_iter()
+    .filter(|_| publisher != "busbar")
+    .collect();
     let registry = test_plugins::boot_with(&dir, &policy);
     let _ = std::fs::remove_dir_all(&dir);
     registry
