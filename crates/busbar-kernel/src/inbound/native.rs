@@ -677,7 +677,8 @@ impl RequestBinding {
     pub async fn cancelled(&self) {
         self.state.cancelled.cancelled().await;
     }
-    pub fn check_live(&self) -> Result<(), ArrivalRefusal> {
+    /// Neither cancelled nor refusing, under the phase lock.
+    fn check_not_cancelled(&self) -> Result<(), ArrivalRefusal> {
         if matches!(
             *self
                 .state
@@ -688,10 +689,26 @@ impl RequestBinding {
         ) {
             return Err(ArrivalRefusal::Cancelled);
         }
+        Ok(())
+    }
+    pub fn check_live(&self) -> Result<(), ArrivalRefusal> {
+        self.check_not_cancelled()?;
         if self.deadline.is_some_and(|at| Instant::now() >= at) {
             return Err(ArrivalRefusal::Deadline);
         }
         Ok(())
+    }
+    /// [`Self::check_live`], answering the reading it judged the deadline at: taken after the
+    /// phase lock, as `check_live`'s is. A caller with a deadline of its own to judge in the same
+    /// step judges it at this reading instead of reading again. It is good for that step only:
+    /// never across an await, and never for a check that sits behind a lock or other work.
+    pub fn check_live_now(&self) -> Result<Instant, ArrivalRefusal> {
+        self.check_not_cancelled()?;
+        let now = Instant::now();
+        if self.deadline.is_some_and(|at| now >= at) {
+            return Err(ArrivalRefusal::Deadline);
+        }
+        Ok(now)
     }
     /// The effect gate requires the final physical execution transition, not mere liveness.
     pub fn check_executing(&self) -> Result<(), ArrivalRefusal> {
