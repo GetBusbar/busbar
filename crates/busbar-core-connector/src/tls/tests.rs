@@ -494,6 +494,134 @@ async fn the_tls_wrap_serves_a_client_whose_certificate_chains_to_the_client_ca(
     server_task.await.unwrap();
 }
 
+/// What one served mutual-TLS accept left with the caller, measured while it is still held.
+struct HeldAccept {
+    alpn: usize,
+    sni: usize,
+    certificate: Vec<u8>,
+    charged: usize,
+}
+
+/// A client trusting `server_ca_pem` and presenting `leaf_pem` under `key_pem`.
+fn mtls_client(server_ca_pem: &str, leaf_pem: &str, key_pem: &str) -> Arc<rustls::ClientConfig> {
+    let chain: Vec<rustls::pki_types::CertificateDer<'static>> =
+        rustls::pki_types::CertificateDer::pem_slice_iter(leaf_pem.as_bytes())
+            .collect::<Result<_, _>>()
+            .unwrap();
+    let key = rustls::pki_types::PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).unwrap();
+    busbar_contract::crypto::tls::client_config(|b| {
+        b.with_root_certificates(roots_of(server_ca_pem))
+            .with_client_auth_cert(chain, key)
+    })
+    .unwrap()
+}
+
+/// One accept through `security` on a connection account of `budget`. The client stays open
+/// until the server side has answered; only the server side's outcome is returned.
+async fn mtls_accept_on(
+    security: &Arc<dyn ConnectionSecurity>,
+    client: &Arc<rustls::ClientConfig>,
+    budget: &Arc<busbar_kernel::limits::process_admission::ProcessAdmission>,
+) -> std::io::Result<HeldAccept> {
+    use busbar_kernel::limits::process_admission::AdmissionClass;
+    let (server_io, client_io) = tokio::io::duplex(8192);
+    let security = security.clone();
+    let storage = budget.connection_storage(AdmissionClass::Data);
+    let account = budget.clone();
+    let server = tokio::spawn(async move {
+        let raw: Box<dyn busbar_contract::transport::wire::RawIo> =
+            Box::new(TokioAsyncReadCompatExt::compat(server_io));
+        let wrapped = security
+            .wrap(crate::raw_progress::test_io(raw, storage))
+            .await?;
+        let charged = account.used().0;
+        let handshake = wrapped
+            .tls_handshake
+            .as_ref()
+            .expect("a TLS accept records its handshake");
+        Ok::<_, std::io::Error>(HeldAccept {
+            alpn: handshake.alpn().map_or(0, <[u8]>::len),
+            sni: handshake.server_name().map_or(0, str::len),
+            certificate: wrapped.peer_certificate.to_vec(),
+            charged,
+        })
+    });
+    let connector = tokio_rustls::TlsConnector::from(client.clone());
+    let client = connector
+        .connect(
+            rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+            client_io,
+        )
+        .await;
+    let served = server.await.unwrap();
+    drop(client);
+    served
+}
+
+/// The client's certificate is identity evidence a peer brings before any request: the wrap holds
+/// it only in storage charged to the connection's account, reserved before the bytes are held.
+/// A certificate the account cannot fund fails the accept the way an unfunded handshake capture
+/// does, and leaves nothing charged.
+#[tokio::test]
+async fn the_mtls_wrap_charges_the_client_certificate_before_holding_it() {
+    use busbar_kernel::limits::process_admission::ProcessAdmission;
+    let (server_ca_pem, server_cert_pem, server_key_pem) =
+        gen_ca_and_leaf(vec!["localhost".into()]);
+    let (client_ca_pem, client_leaf_pem, client_key_pem) =
+        gen_ca_and_leaf(vec!["busbar-client".into()]);
+    let tls = tls_cfg_from(&server_cert_pem, &server_key_pem, Some(&client_ca_pem));
+    let config = build_server_config(&tls, &fixture_resolver(&tls)).unwrap();
+    let plan = busbar_contract::crypto::tls::write_progress::server_plan(&config)
+        .unwrap()
+        .requested_bytes();
+    let security: Arc<dyn ConnectionSecurity> = Arc::new(Tls::new(config));
+    let client = mtls_client(&server_ca_pem, &client_leaf_pem, &client_key_pem);
+    let leaf = leaf_der(&client_leaf_pem);
+
+    let ample = ProcessAdmission::with_limits(1, 1 << 20, 0);
+    let held = mtls_accept_on(&security, &client, &ample)
+        .await
+        .expect("an account with room serves the accept");
+    assert_eq!(held.certificate, leaf, "the leaf the handshake verified");
+    let expected = plan + held.alpn + held.sni + leaf.len();
+    assert_eq!(
+        held.charged,
+        expected,
+        "charged while held: output plan {plan} + ALPN {} + SNI {} + certificate {}",
+        held.alpn,
+        held.sni,
+        leaf.len()
+    );
+    assert_eq!(
+        ample.used(),
+        (0, 0),
+        "all of it is released with the connection"
+    );
+
+    let limit = |bytes: usize| u32::try_from(bytes).unwrap();
+    let short = ProcessAdmission::with_limits(1, limit(expected - 1), 0);
+    let refused = match mtls_accept_on(&security, &client, &short).await {
+        Ok(_) => panic!("an account one byte short of the certificate must refuse the accept"),
+        Err(refused) => refused,
+    };
+    assert!(
+        refused
+            .get_ref()
+            .is_some_and(|inner| inner.is::<busbar_contract::storage::StorageDenied>()),
+        "refused as a storage denial: {refused:?}"
+    );
+    assert_eq!(
+        short.used(),
+        (0, 0),
+        "a refused accept leaves nothing charged"
+    );
+
+    let exact = ProcessAdmission::with_limits(1, limit(expected), 0);
+    mtls_accept_on(&security, &client, &exact)
+        .await
+        .expect("an account with exactly the certificate's room serves the accept");
+}
+
 /// A client CA that resolves to bytes with no certificate in it — an operator who pointed the
 #[test]
 fn a_client_ca_with_no_certificates_in_it_is_refused() {
