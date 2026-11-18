@@ -15,49 +15,35 @@ use busbar_ports::{plane::PlaneIn, FactVal, PortError};
 
 pub(crate) use super::super::port_session::Buffered;
 
+/// One request's hook stage. What a hook call or a tap may keep after the request has moved on
+/// (the selection, the scope, the identity, the candidates, the quantities) is held shared, so a
+/// call's worker and a tap's copy of the stage take a count of each and copy none of it.
 #[derive(Clone)]
 pub(crate) struct Stage {
-    selected: Selected,
+    selected: Arc<Selected>,
     projection: Projection,
-    candidates: Vec<CandidateView>,
-    quantities: Vec<(Box<str>, f64)>,
-    scope: super::super::RoutedScope,
-    route: u32,
+    candidates: Arc<Vec<CandidateView>>,
+    quantities: Arc<Vec<(Box<str>, f64)>>,
+    scope: Arc<super::super::RoutedScope>,
     dialect: Arc<str>,
     principal: Option<super::super::port_auth::Subject>,
-    identity: busbar_contract::secure::SecureVec,
+    identity: Arc<busbar_contract::secure::SecureVec>,
     request_id: u64,
-    now_s: u64,
     context: InvocationContext,
     journal: Option<Arc<dyn super::HookJournal>>,
     unit: busbar_contract::UnitKey,
 }
 impl Stage {
-    fn selection(&self) -> Selection<'_> {
-        Selection {
-            route: self.route,
-            pool: &self.scope.pool,
-            container: &self.scope.container,
-            dialect: &self.dialect,
-            principal: self
-                .principal
-                .as_ref()
-                .map(super::super::port_auth::Subject::as_str),
-            key: self.context.principal().map(AsRef::as_ref),
-            request_id: self.request_id,
-            now_s: self.now_s,
-        }
-    }
-    fn input<'a>(
-        &'a self,
-        selection: &'a Selection<'a>,
-        stage: &'a [(u32, FactVal)],
-    ) -> call::Input<'a> {
+    /// The stage as one hook call is shown it; `stage` is a tap's facts, absent on a request call.
+    fn input<'a>(&'a self, stage: Option<&'a Arc<call::StageFacts>>) -> call::Input<'a> {
         call::Input {
             projection: &self.projection,
             selected: &self.selected,
-            selection,
-            identity: &self.identity,
+            scope: &self.scope,
+            dialect: &self.dialect,
+            principal: self.principal.as_ref(),
+            request_id: self.request_id,
+            identity: Some(&self.identity),
             candidates: &self.candidates,
             quantities: &self.quantities,
             stage,
@@ -65,6 +51,10 @@ impl Stage {
         }
     }
     fn response_tap(&self, status: u16, gate: bool, output: Option<u64>) {
+        // No response tap is configured: no facts are made.
+        if self.selected.taps.response.is_empty() {
+            return;
+        }
         let outcome = if gate {
             "rejected_by_gate"
         } else if (200..300).contains(&status) {
@@ -72,17 +62,16 @@ impl Stage {
         } else {
             "failed"
         };
-        let mut facts = vec![
-            (abi::S_STAGE, FactVal::U(abi::STAGE_RESPONSE)),
-            (abi::S_STATUS, FactVal::U(status.into())),
-            (abi::S_OUTCOME, FactVal::Text(outcome.into())),
-        ];
+        let mut facts = call::StageFacts::new();
+        facts.push((abi::S_STAGE, FactVal::U(abi::STAGE_RESPONSE)));
+        facts.push((abi::S_STATUS, FactVal::U(status.into())));
+        facts.push((abi::S_OUTCOME, FactVal::Text(outcome.into())));
         if let Some(output) = output {
             facts.push((abi::S_RESPONSE_TOKENS_OUT, FactVal::U(output)));
         }
         self.taps(&self.selected.taps.response, facts);
     }
-    fn report(&self, hooks: Vec<busbar_kernel_audit::record::HookApplied>) {
+    fn report(&self, hooks: &[busbar_kernel_audit::record::HookApplied]) {
         if let Some(journal) = &self.journal {
             journal.hooks_ran(&HooksRan {
                 unit: self.unit,
@@ -90,32 +79,41 @@ impl Stage {
             });
         }
     }
-    /// Every tap but the last takes a copy of the facts; the last takes the facts themselves.
-    fn taps(&self, calls: &[Arc<super::Call>], facts: Vec<(u32, FactVal)>) {
-        let mut calls = calls.iter();
-        let Some(last) = calls.next_back() else {
+    /// Every tap of one stage event shares the event's one list of facts.
+    fn taps(&self, calls: &[Arc<super::Call>], facts: call::StageFacts) {
+        if calls.is_empty() {
             return;
-        };
-        for call in calls {
-            self.tap(call, facts.clone());
         }
-        self.tap(last, facts);
+        let shared = (!facts.is_empty()).then(|| Arc::new(facts));
+        for call in calls {
+            self.tap(call, shared.clone());
+        }
     }
-    fn tap(&self, call: &Arc<super::Call>, facts: Vec<(u32, FactVal)>) {
+    fn tap(&self, call: &Arc<super::Call>, facts: Option<Arc<call::StageFacts>>) {
         let mut held = self.clone();
-        if !facts.is_empty() {
+        if facts.is_some() {
             held.projection.shape();
         }
         let call = Arc::clone(call);
         crate::hooks::taps::spawn_bounded_tap(async move {
-            let selection = held.selection();
-            let input = held.input(&selection, &facts);
+            let input = held.input(facts.as_ref());
             let result = call::one(&call, abi::POINT_NOTIFY, &input).await;
-            held.report(vec![call::record(
+            held.report(&[call::record(
                 &call,
                 result.as_ref().ok().map(|reply| &**reply),
             )]);
         });
+    }
+}
+
+/// Keep only the candidates `kept` names. The list is shared with any hook call or tap still
+/// holding it, so it is narrowed in its own copy, and only when a member is really removed.
+fn keep_only(candidates: &mut Arc<Vec<CandidateView>>, kept: &[usize]) {
+    if candidates
+        .iter()
+        .any(|candidate| !kept.contains(&candidate.facts.idx))
+    {
+        Arc::make_mut(candidates).retain(|candidate| kept.contains(&candidate.facts.idx));
     }
 }
 
@@ -156,18 +154,21 @@ impl Effects for Observed<'_> {
         self.inner.client()
     }
     fn routing(&self, attempt: u32, model: &str, remaining: Option<usize>, failed: Option<&str>) {
-        let mut facts = vec![
-            (abi::S_STAGE, FactVal::U(abi::STAGE_ROUTING)),
-            (abi::S_ATTEMPT, FactVal::U(attempt.into())),
-            (abi::S_STAGE_MODEL, FactVal::Text(model.into())),
-        ];
-        if let Some(remaining) = remaining {
-            facts.push((abi::S_REMAINING_CANDIDATES, FactVal::U(remaining as u64)));
+        // The facts (and their copies of the model and the failure) are made only for a
+        // configured routing tap.
+        if !self.stage.selected.taps.routing.is_empty() {
+            let mut facts = call::StageFacts::new();
+            facts.push((abi::S_STAGE, FactVal::U(abi::STAGE_ROUTING)));
+            facts.push((abi::S_ATTEMPT, FactVal::U(attempt.into())));
+            facts.push((abi::S_STAGE_MODEL, FactVal::Text(model.into())));
+            if let Some(remaining) = remaining {
+                facts.push((abi::S_REMAINING_CANDIDATES, FactVal::U(remaining as u64)));
+            }
+            if let Some(failed) = failed {
+                facts.push((abi::S_PREVIOUS_FAILURE, FactVal::Text(failed.into())));
+            }
+            self.stage.taps(&self.stage.selected.taps.routing, facts);
         }
-        if let Some(failed) = failed {
-            facts.push((abi::S_PREVIOUS_FAILURE, FactVal::Text(failed.into())));
-        }
-        self.stage.taps(&self.stage.selected.taps.routing, facts);
         self.inner.routing(attempt, model, remaining, failed);
     }
     fn observed_usage(&self, usage: &super::super::usage::SessionUsage) {
@@ -251,29 +252,26 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
         .select(&selection)
         .map_err(|_| SessionError::HookPrerequisite)?;
     let mut stage = Stage {
-        selected,
+        selected: Arc::new(selected),
         projection,
-        candidates,
-        quantities: Vec::new(),
-        scope,
-        route: req.route,
+        candidates: Arc::new(candidates),
+        quantities: Arc::default(),
+        scope: Arc::new(scope),
         dialect: drive.dialect.into(),
         principal: invocation.principal.clone(),
-        identity: req.identity.to_vec().into(),
+        identity: Arc::new(req.identity.to_vec().into()),
         request_id: req.request_id,
-        now_s: invocation.now_s,
         context,
         journal: invocation.journal.clone(),
         unit: invocation.unit,
     };
     let handle = tokio::runtime::Handle::current();
-    let mut ran = Vec::new();
+    let mut ran: Vec<busbar_kernel_audit::record::HookApplied> = Vec::new();
     let result = (|| {
         // The stage is rewritten inside the loop, so each rewrite call is held by its own Arc.
         for at in 0..stage.selected.rewrites.len() {
             let rewrite = Arc::clone(&stage.selected.rewrites[at]);
-            let selection = stage.selection();
-            let input = stage.input(&selection, &[]);
+            let input = stage.input(None);
             let (called, mut answer) = handle
                 .block_on(call::chain(&rewrite, abi::POINT_REWRITE, &input, &mut ran))
                 .map_err(|_| unavailable(req.route, drive.refusals))?;
@@ -304,19 +302,22 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                 }
             }
         }
+        // The quantities are written once, here, into the stage's own list: no hook call or tap
+        // holds it yet unless a rewrite's timed-out worker still does, and that one keeps its own.
         super::quantities(
             &invocation.classes,
             &stage.projection.expects,
-            &mut stage.quantities,
+            Arc::make_mut(&mut stage.quantities),
         )?;
-        stage.taps(&stage.selected.taps.request, Vec::new());
-        let selection = stage.selection();
-        let input = stage.input(&selection, &[]);
+        stage.taps(&stage.selected.taps.request, call::StageFacts::new());
+        let input = stage.input(None);
         let gate_results = handle.block_on(futures::future::join_all(
             stage.selected.gates.iter().map(|gate| {
                 let input = &input;
                 async move {
-                    let mut records = Vec::new();
+                    // One gate's records: its own and its fallbacks', in this gate's frame.
+                    let mut records =
+                        smallvec::SmallVec::<[busbar_kernel_audit::record::HookApplied; 2]>::new();
                     let result = call::chain(gate, abi::POINT_ROUTE, input, &mut records).await;
                     (result, records)
                 }
@@ -345,7 +346,7 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
         }
         let mut constraint = Constraint::default();
         // Restrictions are reconciled before any order.
-        for (called, answer) in &judged {
+        for (called, answer) in &mut judged {
             if answer.verb == abi::VERB_RESTRICT {
                 apply(
                     &mut constraint,
@@ -366,10 +367,8 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                     .map(|c| (c.facts.idx, c.facts.tags.as_slice())),
             )
             .map_err(|_| unavailable(req.route, drive.refusals))?;
-        stage
-            .candidates
-            .retain(|candidate| kept.contains(&candidate.facts.idx));
-        for (called, answer) in &judged {
+        keep_only(&mut stage.candidates, &kept);
+        for (called, answer) in &mut judged {
             if matches!(answer.verb, abi::VERB_PREFER | abi::VERB_PRIORITIZE) {
                 apply(
                     &mut constraint,
@@ -382,8 +381,7 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                 )?;
             }
         }
-        let selection = stage.selection();
-        let input = stage.input(&selection, &[]);
+        let input = stage.input(None);
         if constraint.order.is_none() {
             if let Some(policy) = &stage.selected.policy {
                 let (called, mut answer) = handle
@@ -393,7 +391,7 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                 apply(
                     &mut constraint,
                     &called,
-                    &answer,
+                    &mut answer,
                     req.route,
                     drive.refusals,
                     &stage.candidates,
@@ -410,9 +408,7 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
             )
             .map_err(|_| unavailable(req.route, drive.refusals))?;
         if !constraint.restricts.is_empty() {
-            stage
-                .candidates
-                .retain(|candidate| kept.contains(&candidate.facts.idx));
+            keep_only(&mut stage.candidates, &kept);
             constraint.keep = Some(kept);
         }
         let ordered = constraint.order.is_some() || constraint.prioritize.is_some();
@@ -429,19 +425,19 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
         if let (Some(counters), Some(decider)) = (stage.selected.counters.as_deref(), &decided) {
             counters.selected(decider);
         }
-        stage.taps(
-            &stage.selected.taps.candidate,
-            vec![
-                (abi::S_STAGE, FactVal::U(abi::STAGE_CANDIDATE)),
-                (
-                    abi::S_REMAINING_CANDIDATES,
-                    FactVal::U(stage.candidates.len() as u64),
-                ),
-            ],
-        );
+        // The facts are made only for a configured candidate tap.
+        if !stage.selected.taps.candidate.is_empty() {
+            let mut facts = call::StageFacts::new();
+            facts.push((abi::S_STAGE, FactVal::U(abi::STAGE_CANDIDATE)));
+            facts.push((
+                abi::S_REMAINING_CANDIDATES,
+                FactVal::U(stage.candidates.len() as u64),
+            ));
+            stage.taps(&stage.selected.taps.candidate, facts);
+        }
         Ok(())
     })();
-    stage.report(ran);
+    stage.report(&ran);
     if let Err(SessionError::HookRefused(refusal)) = &result {
         stage.response_tap(refusal.status, true, None);
     }
@@ -451,10 +447,24 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
     Ok(stage)
 }
 
+/// A restricting hook's own tags, as its restrict keeps them: moved out of the answer, each
+/// without surrounding space, the empty ones dropped. A tag is copied only when it has space to
+/// trim off.
+fn restrict_tags(mut tags: Vec<Box<str>>) -> Vec<Box<str>> {
+    tags.retain_mut(|tag| {
+        let kept = tag.trim();
+        if kept.len() != tag.len() {
+            *tag = Box::from(kept);
+        }
+        !tag.is_empty()
+    });
+    tags
+}
+
 fn apply(
     constraint: &mut Constraint,
     call: &super::Call,
-    answer: &busbar_ports::hook::HookAnswer,
+    answer: &mut busbar_ports::hook::HookAnswer,
     route: u32,
     refusals: &dyn crate::refusal::RefusalMap,
     candidates: &[CandidateView],
@@ -462,17 +472,13 @@ fn apply(
 ) -> Result<(), SessionError> {
     match answer.verb {
         abi::VERB_REJECT => return Err(rejected(call, answer, route, refusals, counters)),
-        abi::VERB_RESTRICT => constraint.restricts.push(Restrict {
-            tags_any: answer
-                .restrict
-                .iter()
-                .map(|tag| tag.trim())
-                .filter(|tag| !tag.is_empty())
-                .map(str::to_owned)
-                .collect(),
-            on_empty: call.on_empty.clone(),
-            name: call.name.clone(),
-        }),
+        abi::VERB_RESTRICT => {
+            constraint.restricts.push(Restrict {
+                tags_any: restrict_tags(std::mem::take(&mut answer.restrict)),
+                on_empty: call.on_empty.clone(),
+                name: call.name.clone(),
+            });
+        }
         abi::VERB_PREFER | abi::VERB_PRIORITIZE => {
             let order: Vec<_> = answer
                 .order
@@ -551,4 +557,31 @@ fn unavailable(route: u32, refusals: &dyn crate::refusal::RefusalMap) -> Session
             error: None,
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::restrict_tags;
+
+    #[test]
+    fn a_restricts_tags_are_the_hooks_own_trimmed_with_the_empty_ones_dropped() {
+        let tags: Vec<Box<str>> = vec![
+            " baa ".into(),
+            "".into(),
+            "gpu".into(),
+            "   ".into(),
+            "\teu\n".into(),
+        ];
+        let untouched = tags[2].as_ptr();
+        let kept = restrict_tags(tags);
+        assert_eq!(
+            kept,
+            vec![Box::<str>::from("baa"), "gpu".into(), "eu".into()]
+        );
+        assert_eq!(
+            kept[1].as_ptr(),
+            untouched,
+            "a tag with nothing to trim is moved, never copied"
+        );
+    }
 }

@@ -2418,7 +2418,7 @@ async fn a_required_restrict_refuses_at_the_fallback_pool() {
         &t,
         Constraint {
             restricts: vec![Restrict {
-                tags_any: vec!["baa".to_string()],
+                tags_any: vec!["baa".into()],
                 on_empty: crate::config::PolicyOnError::Reject,
                 name: "compliance".into(),
             }],

@@ -622,7 +622,7 @@ impl RouteAwait for Hooked<'_> {
                 self.post,
                 &busbar_kernel::plane_driver::HooksRan {
                     unit: ctx.key,
-                    hooks: hooks.clone(),
+                    hooks,
                 },
             );
         }

@@ -44,7 +44,9 @@ pub struct Invocation {
 #[derive(Clone, Default)]
 struct Projection {
     facts: Vec<(u32, FactVal)>,
-    conversation: Option<SecureVec>,
+    /// The conversation, one wiping buffer shared by every holder (the stage, a granted call's
+    /// worker, a request tap): wiped when its last holder lets go, never copied between them.
+    conversation: Option<Arc<SecureVec>>,
     expects: Vec<ExpectItem>,
 }
 
@@ -85,7 +87,7 @@ impl Projection {
             }
         }
         if let Some(conversation) = &answer.conversation {
-            self.conversation = Some(conversation.clone());
+            self.conversation = Some(Arc::new(conversation.clone()));
         }
         for expected in &answer.expects {
             self.expects.retain(|held| held.class != expected.class);
@@ -95,7 +97,7 @@ impl Projection {
 
     fn rewritten(&mut self, bytes: SecureVec, answer: &Answer) {
         use busbar_plugin_abi::fail::fact::*;
-        self.conversation = Some(bytes);
+        self.conversation = Some(Arc::new(bytes));
         self.facts.retain(|(key, _)| {
             !matches!(
                 *key,

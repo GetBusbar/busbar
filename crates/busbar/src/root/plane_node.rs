@@ -2156,7 +2156,7 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
 }
 
 impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
-    fn hooks_ran(&self, record: &busbar_kernel::plane_driver::HooksRan) {
+    fn hooks_ran(&self, record: &busbar_kernel::plane_driver::HooksRan<'_>) {
         if let Some(open) = self.lock(record.unit).get_mut(&record.unit) {
             open.sealing.ran.hooks.extend(record.hooks.iter().cloned());
         }
