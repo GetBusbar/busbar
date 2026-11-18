@@ -1038,12 +1038,13 @@ impl OpenedSecrets {
                         &crate::refresh::HOST_REPORT,
                     ));
                     if opened.relends() {
+                        // A source that cannot be kept fresh is not handed out: the open is refused.
                         crate::refresh::keep(
                             Arc::downgrade(&source)
                                 as std::sync::Weak<dyn crate::refresh::Refreshable>,
                             std::time::Instant::now()
                                 + crate::retry::spread(RELEND_EVERY, 0.1, crate::retry::unit()),
-                        );
+                        )?;
                     }
                     sources.insert(key.to_string(), source);
                     (opened, None)

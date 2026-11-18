@@ -9,7 +9,8 @@
 //! - [`WORKERS`] threads take due items earliest deadline first. An item is never queued twice,
 //!   and one hung item holds one worker, never the others' renewals.
 //! - Each item schedules itself: [`Refreshable::refresh`] answers when it is next due.
-//! - A thread that cannot start stops the process (exit 2): a refresher that silently never runs
+//! - A thread that cannot start is an error to whoever asked for the refresher ([`keep`]): what
+//!   it would have kept fresh is refused, with the reason. A refresher that silently never runs
 //!   would let every lease lapse with nothing said.
 //! - [`begin_stopping`] latches the process's drain: no item starts after it, and an item that is
 //!   mid-flight reports at debug and commits nothing.
@@ -196,21 +197,23 @@ fn earlier(a: PickKey, b: PickKey) -> bool {
     }
 }
 
-/// THE PROCESS'S REFRESHER, its workers started the first time it is reached; exits 2 if they
-/// cannot start.
-pub fn process() -> &'static Refresher {
-    static ONE: OnceLock<Refresher> = OnceLock::new();
-    ONE.get_or_init(|| {
-        Refresher::start("busbar-refresh", WORKERS).unwrap_or_else(|e| {
-            eprintln!("busbar: {e}");
-            std::process::exit(2);
-        })
-    })
+/// THE PROCESS'S REFRESHER, its workers started the first time it is reached. If a worker cannot
+/// start, the reason is the answer, now and on every later call (the start is tried once): the
+/// caller refuses what needed the refresher, and the process leaves, if it must, through the
+/// root's one exit path, never from here.
+pub fn process() -> Result<&'static Refresher, &'static str> {
+    static ONE: OnceLock<Result<Refresher, String>> = OnceLock::new();
+    ONE.get_or_init(|| Refresher::start("busbar-refresh", WORKERS))
+        .as_ref()
+        .map_err(String::as_str)
 }
 
-/// Keep `item` in the process's refresher, first due at `due`.
-pub fn keep(item: Weak<dyn Refreshable>, due: Instant) {
-    process().keep(item, due);
+/// Keep `item` in the process's refresher, first due at `due`; the reason if the refresher's
+/// workers did not start (nothing is kept, so the caller must not hand out what it would have
+/// kept fresh).
+pub fn keep(item: Weak<dyn Refreshable>, due: Instant) -> Result<(), &'static str> {
+    process()?.keep(item, due);
+    Ok(())
 }
 
 static STOPPING: AtomicBool = AtomicBool::new(false);

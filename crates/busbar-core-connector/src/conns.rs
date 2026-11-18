@@ -2117,6 +2117,12 @@ impl Connector {
             self.set_need(owner, need, None);
             return Err(ConnError::Refused);
         };
+        // Loaded before the need is declared: an environment the host cannot keep fresh leaves
+        // the need undeclared, as a refused declaration does (the load says why).
+        let Ok(env) = spawn_env::HeldEnv::load(&program.env_refs, self.spawn_secrets, scope) else {
+            self.set_need(owner, need, None);
+            return Err(ConnError::Fault);
+        };
         self.slab.declare(owner, need);
         self.set_need(
             owner,
@@ -2128,10 +2134,7 @@ impl Connector {
                 declared_target: None,
                 tls: None,
                 tls_policy: None,
-                program: Some((
-                    program.clone(),
-                    spawn_env::HeldEnv::load(&program.env_refs, self.spawn_secrets, scope),
-                )),
+                program: Some((program.clone(), env)),
                 members: None,
                 member_spec: None,
                 declared_place: Mutex::new(None),

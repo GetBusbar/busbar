@@ -72,7 +72,10 @@ pub(crate) fn declare_members(
                 Some(kept) => kept,
                 None => Arc::new(Declaration::new(Member::new(
                     p.clone(),
-                    crate::conns::spawn_env::HeldEnv::load(&p.env_refs, secrets, scope),
+                    // An environment the host cannot keep fresh fails the declaration (the load
+                    // says why).
+                    crate::conns::spawn_env::HeldEnv::load(&p.env_refs, secrets, scope)
+                        .map_err(|_| ConnError::Fault)?,
                     crate::conns::compose::Via {
                         door: Arc::clone(door),
                         io: Arc::clone(io),

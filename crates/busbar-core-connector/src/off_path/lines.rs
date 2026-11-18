@@ -374,14 +374,13 @@ pub(crate) fn listen_through(
 // programs' declaration).
 impl crate::spawn_env::HeldEnv {
     /// `refs` RESOLVED NOW through `secrets` (the resolver the connector was handed; `None`
-    #[must_use]
     pub fn load(
         refs: &[(String, busbar_contract::secret_ref::SecretRef)],
         secrets: Option<crate::spawn_env::SpawnSecretFn>,
         scope: &busbar_contract::config_time::ConfigScope,
-    ) -> Self {
+    ) -> Result<Self, &'static str> {
         if refs.is_empty() {
-            return Self::written_only();
+            return Ok(Self::written_only());
         }
         let held = Self(std::sync::Arc::new(crate::spawn_env::SpawnEnv {
             refs: held_refs(refs),
@@ -389,8 +388,16 @@ impl crate::spawn_env::HeldEnv {
             held: arc_swap::ArcSwap::from_pointee(crate::spawn_env::resolve(refs, secrets, scope)),
             reloading: std::sync::Mutex::new(()),
         }));
-        crate::spawn_env::keep(&held.0);
-        held
+        // An environment that cannot be kept fresh is not held: the declaration that asked for
+        // it is refused, and the reason is said here (the declaration's own error carries none).
+        if let Err(why) = crate::spawn_env::keep(&held.0) {
+            tracing::error!(
+                reason = why,
+                "a program's environment cannot be kept fresh; its declaration is refused"
+            );
+            return Err(why);
+        }
+        Ok(held)
     }
 }
 

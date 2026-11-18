@@ -54,7 +54,7 @@
 //! there: the canary must still be found, so the later "absent" is the drop at the end, not an
 //! early free.
 
-use busbar_contract::secure::{SecureString, SecureVec};
+use crate::secure::{SecureString, SecureVec};
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 

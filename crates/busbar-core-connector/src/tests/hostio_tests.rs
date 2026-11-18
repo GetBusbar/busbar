@@ -529,7 +529,8 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
             &program.env_refs,
             Some(crate::spawn_env::counting_source),
             &scope(),
-        );
+        )
+        .expect("the environment is held");
         assert!(
             !format!("{held:?}").contains("hostio-spawn-value"),
             "a held environment names no value"
@@ -552,7 +553,8 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
             &unresolved.env_refs,
             Some(crate::spawn_env::counting_source),
             &scope(),
-        );
+        )
+        .expect("the environment is held");
         io.admit(ticket(31), Admission::Spawn(unresolved, held));
         match env_lines(&io, 31).await {
             Err(IoRefusal::Refused(why)) => {
@@ -587,7 +589,8 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
             &program.env_refs,
             Some(crate::spawn_env::counting_source),
             &scope(),
-        );
+        )
+        .expect("the environment is held");
         let loaded = crate::spawn_env::resolutions_of(VAR);
         assert!(loaded >= 1, "the load resolved the reference");
         let want = |v: &str| vec!["DECLARED=yes".to_owned(), format!("ROTATED={v}")];
