@@ -61,7 +61,7 @@ impl UnitCheckpointAudit for AuditAdapter {
         match &self.signer {
             CheckpointSigner::Thread(handle) => {
                 handle.sign_checkpoints(bodies).await.map_err(|why| {
-                    RecordStoreError(format!("unit checkpoint signature unavailable: {why}"))
+                    RecordStoreError::from(format!("unit checkpoint signature unavailable: {why}"))
                 })
             }
             // Test builds: a legacy-signing book signs in place (its fixtures predate the signer

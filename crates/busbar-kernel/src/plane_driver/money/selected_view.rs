@@ -19,8 +19,9 @@ pub enum UsageView {
     Partitioned(Arc<UnitCheckpoint>),
 }
 
+/// A refused selected view: its message is a fixed word of the program, so nothing is allocated.
 fn refused(message: &'static str) -> RecordStoreError {
-    crate::cold::selected_view_refusal(message)
+    RecordStoreError::fixed(message)
 }
 
 impl PlaneMoney {

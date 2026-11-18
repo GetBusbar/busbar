@@ -1797,7 +1797,10 @@ trait IntoStoreResult<T> {
 impl<T> IntoStoreResult<T> for Result<T, busbar_contract::crypto::RngError> {
     fn store(self) -> RecordStoreResult<T> {
         self.map_err(|e| {
-            rendered_error(RecordStoreError, format_args!("OS CSPRNG unavailable: {e}"))
+            rendered_error(
+                RecordStoreError::from,
+                format_args!("OS CSPRNG unavailable: {e}"),
+            )
         })
     }
 }
@@ -1851,7 +1854,7 @@ impl std::io::Write for DigestWriter<'_> {
 
 /// [`rendered_error`] into the store's error type: `.map_err(store_error)`.
 pub(crate) fn store_error(error: impl std::fmt::Display) -> RecordStoreError {
-    rendered_error(RecordStoreError, error)
+    rendered_error(RecordStoreError::from, error)
 }
 
 pub fn spawn_budget_flusher(

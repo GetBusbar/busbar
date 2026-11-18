@@ -28,7 +28,7 @@ fn neutral_decode(scope: &str, body: &[u8]) -> RecordStoreResult<StreamRecord> {
 }
 
 fn failing_decode(_scope: &str, _body: &[u8]) -> RecordStoreResult<StreamRecord> {
-    Err(RecordStoreError("the stream's own reason".to_string()))
+    Err(RecordStoreError::fixed("the stream's own reason"))
 }
 
 fn register_ram(kind_id: u32, decode: Decode) {

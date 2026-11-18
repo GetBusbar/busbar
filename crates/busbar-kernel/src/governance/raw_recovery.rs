@@ -69,7 +69,7 @@ struct Links {
 
 fn invalid(error: impl std::fmt::Display) -> RecordStoreError {
     rendered_error(
-        RecordStoreError,
+        RecordStoreError::from,
         format_args!("invalid raw recovery custody: {error}"),
     )
 }

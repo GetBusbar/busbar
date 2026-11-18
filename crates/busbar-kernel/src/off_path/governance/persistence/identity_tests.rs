@@ -535,7 +535,7 @@ async fn native_identity_snapshot_preserves_tombstone_and_confidential_destructi
         .unwrap();
     store.identity().delete_key("owner").await.unwrap();
     let snapshot = store.identity().snapshot().await.unwrap();
-    assert_eq!(snapshot.denied, ["owner"]);
+    assert_eq!(snapshot.denied.iter().collect::<Vec<_>>(), ["owner"]);
     assert_eq!(snapshot.keys.len(), 1);
     assert!(snapshot.keys[0].deleted_at.is_some());
     assert_eq!(snapshot.credentials.len(), 1);

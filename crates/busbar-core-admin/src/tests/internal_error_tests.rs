@@ -6,7 +6,7 @@ use busbar_kernel::governance::RecordStoreError;
 
 #[tokio::test]
 async fn projects_a_500_internal_error_envelope() {
-    let resp = internal_error("test_op", &RecordStoreError("boom".to_string()));
+    let resp = internal_error("test_op", &RecordStoreError::fixed("boom"));
     assert_eq!(
         resp.status(),
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,

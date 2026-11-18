@@ -473,16 +473,15 @@ fn submit_async(
 }
 
 pub trait SignKey: Send + Sync {
-    /// Signs `data` in `domain`: appends the signature to `sig` (the answer's own buffer) and
-    /// answers the signing key's id. `None` = no key, and `sig` is left as it was.
-    fn sign(&self, domain: &str, data: &[u8], sig: &mut Vec<u8>) -> Option<String>;
+    /// Signs `data` in `domain`: appends the signature, then the signing key's id, to `out` (the
+    /// answer's own buffer) and answers the signature's length. `None` = no key, and `out` is
+    /// left as it was.
+    fn sign(&self, domain: &str, data: &[u8], out: &mut Vec<u8>) -> Option<usize>;
 }
 
 impl SignKey for crate::governance::GovState {
-    fn sign(&self, domain: &str, data: &[u8], sig: &mut Vec<u8>) -> Option<String> {
-        let (kid, signature) = self.sign_in_domain(domain, data)?;
-        sig.extend_from_slice(&signature);
-        Some(kid)
+    fn sign(&self, domain: &str, data: &[u8], out: &mut Vec<u8>) -> Option<usize> {
+        self.sign_in_domain(domain, data, out)
     }
 }
 
@@ -3408,23 +3407,23 @@ impl HostServices for KernelServices {
         let Some(signing) = facts.signing.as_ref() else {
             return Stored::refused(NO_DOMAIN);
         };
-        // The key (prefix + kid) leads the answer, the signature follows: signed first into the
-        // answer's own buffer, then the key appended and rotated to the front, in place.
+        // The key (prefix + kid) leads the answer, the signature follows. The prefix is written
+        // first; the signer appends the signature and then its key id to the answer's own buffer;
+        // the key id is rotated in front of the signature, in place.
         let mut stored = Stored::ready(0);
-        let Some(kid) = self
+        let prefix_len = signing.kid_prefix.len();
+        stored
+            .bytes
+            .extend_from_slice(signing.kid_prefix.as_bytes());
+        let Some(sig_len) = self
             .signer
             .as_ref()
             .and_then(|s| s.sign(&signing.domain, data, &mut stored.bytes))
         else {
             return Stored::refused(NO_KEY);
         };
-        let sig_len = stored.bytes.len();
-        stored
-            .bytes
-            .extend_from_slice(signing.kid_prefix.as_bytes());
-        stored.bytes.extend_from_slice(kid.as_bytes());
         let key_len = stored.bytes.len() - sig_len;
-        stored.bytes.rotate_right(key_len);
+        stored.bytes[prefix_len..].rotate_right(key_len - prefix_len);
         stored.spans.push(span(0, key_len, key_len, sig_len));
         stored
     }

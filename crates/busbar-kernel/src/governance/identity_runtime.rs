@@ -49,15 +49,14 @@ impl GovState {
         core.register_claim_scope(crate::auth::AUTH_REPLAY_OWNER, crate::auth::AUTH_REPLAY)
             .map_err(|error| {
                 rendered_error(
-                    RecordStoreError,
+                    RecordStoreError::from,
                     format_args!("auth replay maintenance scope: {error:?}"),
                 )
             })?;
         core.identity().settle_pending().await?;
         let mut snapshot = core.identity().snapshot().await?;
-        let denied = crate::off_path::governance::runtime::identity_runtime_denied(std::mem::take(
-            &mut snapshot.denied,
-        ));
+        // The snapshot read its denied subjects straight into the set the revocation list keeps.
+        let denied = std::mem::take(&mut snapshot.denied);
         let caches = Arc::new(RwLock::new(cache_snapshot(snapshot)));
         let order = Arc::new(CacheOrder::default());
         let denylist = revocation::RevocationSync::native(
@@ -286,7 +285,7 @@ impl GovState {
         };
         let secret = keys
             .seal(&meta, plain.expose(&crate::seal::lend()).as_bytes())
-            .map_err(RecordStoreError)?;
+            .map_err(RecordStoreError::from)?;
         let commit = self
             .core
             .identity()
@@ -507,7 +506,7 @@ impl GovState {
             let _claim = self.identity_key_guard(&row.meta.key_id).await;
             let sealed = keys
                 .seal(&row.meta, plain.as_bytes())
-                .map_err(RecordStoreError)?;
+                .map_err(RecordStoreError::from)?;
             let commit = self.core.identity().rewrap_committed(&row, &sealed).await?;
             if commit.changed {
                 pass.resealed += 1;

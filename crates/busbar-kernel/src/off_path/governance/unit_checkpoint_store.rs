@@ -45,8 +45,8 @@ fn checkpoint_tag(snapshot: &UnitCheckpoint) -> &'static str {
 fn error(e: impl std::fmt::Debug) -> RecordStoreError {
     crate::cold::governance::runtime::unit_checkpoint_store_error(&e)
 }
-fn refusal(message: &str) -> RecordStoreError {
-    RecordStoreError(message.into())
+fn refusal(message: &'static str) -> RecordStoreError {
+    RecordStoreError::fixed(message)
 }
 /// A read against carried evidence: a different original at that place is named as such.
 fn carried_error(e: RuntimeError) -> RecordStoreError {
@@ -635,7 +635,7 @@ impl StoreUnitCheckpoints {
         let mut out = Vec::with_capacity(first.rows.len());
         let mut limit = first.rows.len().max(1);
         let mut reduced = false;
-        let mut blocked: Option<String> = None;
+        let mut blocked: Option<std::borrow::Cow<'static, str>> = None;
         let mut work = vec![first];
         while let Some(next) = work.pop() {
             if let Some(why) = &blocked {

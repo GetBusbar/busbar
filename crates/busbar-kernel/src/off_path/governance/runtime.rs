@@ -434,7 +434,7 @@ use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 /// `unit_checkpoint`: a running-unit checkpoint's shape checked (boot replay, the flusher, the
 /// checkpoint Store).
 pub(crate) fn unit_checkpoint_validate(snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
-    let error = |message: &str| RecordStoreError(message.to_owned());
+    let error = |message: &'static str| RecordStoreError::fixed(message);
     if let Some(partitions) = &snapshot.partitions {
         partitions.validate(snapshot)?;
     }
@@ -467,7 +467,7 @@ pub(crate) fn unit_checkpoint_validate(snapshot: &UnitCheckpoint) -> RecordStore
         for event in events {
             event
                 .follows(None)
-                .map_err(|e| RecordStoreError(e.to_string()))?;
+                .map_err(|e| RecordStoreError::from(e.to_string()))?;
             if !operations.insert(event.operation_id) {
                 return Err(error("duplicate unit terminal operation"));
             }
@@ -571,7 +571,7 @@ pub(crate) async fn unit_checkpoint_store_find_audit(
     incarnation: u64,
 ) -> RecordStoreResult<Option<(u64, busbar_kernel_audit::AuditRecord)>> {
     use busbar_kernel_wal::{JournalRecord, RecordClass};
-    let error = |e: &dyn std::fmt::Debug| RecordStoreError(format!("unit checkpoint: {e:?}"));
+    let error = |e: &dyn std::fmt::Debug| RecordStoreError::from(format!("unit checkpoint: {e:?}"));
     journal.flush().await.map_err(|e| error(&e))?;
     let history = journal.history().map_err(|e| error(&e))?;
     // One walk from the replay base (SEALING-FIX §3.9): a cut during it restarts it, with its
@@ -643,11 +643,6 @@ pub(crate) fn unit_checkpoint_store_replayed(
 }
 
 use crate::governance::{CredentialIndex, CredentialSecret, VirtualKey};
-
-/// `identity_runtime`: the revocation set, seeded once at boot from the identity snapshot.
-pub(crate) fn identity_runtime_denied<C: FromIterator<String>>(denied: Vec<String>) -> C {
-    denied.into_iter().collect()
-}
 
 /// `identity_runtime`: drop the cached credentials an identity mutation retired (control plane).
 pub(crate) fn identity_runtime_retain_credentials(
@@ -876,11 +871,11 @@ pub(crate) async fn native_runtime_observation_totals(
         return Ok(none());
     }
     let store =
-        ObservationStore::open(core.clone()).map_err(|e| RecordStoreError(e.to_string()))?;
+        ObservationStore::open(core.clone()).map_err(|e| RecordStoreError::from(e.to_string()))?;
     if !store
         .has_accounting()
         .await
-        .map_err(|e| RecordStoreError(e.to_string()))?
+        .map_err(|e| RecordStoreError::from(e.to_string()))?
     {
         return Ok(none());
     }
@@ -892,7 +887,7 @@ pub(crate) async fn native_runtime_observation_totals(
     let totals = store
         .budgets(&ids)
         .await
-        .map_err(|e| RecordStoreError(e.to_string()))?;
+        .map_err(|e| RecordStoreError::from(e.to_string()))?;
     for ((bucket, window), total) in buckets.iter().zip(&totals) {
         state.cache_observation_total(bucket, *window, total.clone());
     }

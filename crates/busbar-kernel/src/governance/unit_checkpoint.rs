@@ -158,9 +158,9 @@ impl UnitCheckpointBook {
     }
 }
 
-/// A checkpoint refusal, rendered once on the error path.
-fn error(message: &str) -> RecordStoreError {
-    crate::cold::governance::runtime::unit_checkpoint_refusal(message)
+/// A checkpoint refusal: its message is a fixed word of the program, so nothing is allocated.
+fn error(message: &'static str) -> RecordStoreError {
+    RecordStoreError::fixed(message)
 }
 
 /// Keeps a new, unpublished entry invisible to flush until admission commits. Removal also
@@ -755,7 +755,10 @@ impl GovState {
                     }
                     Err(failed) => {
                         first_error.get_or_insert_with(|| {
-                            error(&crate::cold::governance::selected_policy::unit_checkpoint_selected_unresolved(&failed))
+                            // The rendered text is moved into the error: made once, never copied.
+                            RecordStoreError::from(
+                                crate::cold::governance::selected_policy::unit_checkpoint_selected_unresolved(&failed),
+                            )
                         });
                     }
                 }

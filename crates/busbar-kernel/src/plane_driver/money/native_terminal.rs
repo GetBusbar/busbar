@@ -97,7 +97,7 @@ impl SelectedTerminalReceipt {
         }
         match self.terminal.as_mut().expect("terminal transferred") {
             Ok(terminal) => terminal.wait().await,
-            Err(error) => Err(RecordStoreError(error.clone())),
+            Err(error) => Err(RecordStoreError::from(error.clone())),
         }
     }
 }

@@ -874,7 +874,7 @@ impl PlaneAuditLog {
 
     fn seed_chain(&self, scope: &str, bodies: &[Vec<u8>]) -> RecordStoreResult<Option<ChainBreak>> {
         let broke = stream_registry::seed(self.kind_id, scope, bodies).map_err(|()| {
-            RecordStoreError("admin audit chain seed failed at the durable seam".to_string())
+            RecordStoreError::fixed("admin audit chain seed failed at the durable seam")
         })?;
         if !broke {
             return Ok(None);
@@ -1322,8 +1322,9 @@ fn enqueue_export_failure(
     // The loss is observed in whole seconds; its scheme 4 instant is that second.
     let suffix = row4_suffix(facts.observed_at.saturating_mul(1000), &row);
     let mut operation = [0; 16];
-    busbar_contract::crypto::fill(&mut operation)
-        .map_err(|error| RecordStoreError(format!("export audit operation entropy: {error}")))?;
+    busbar_contract::crypto::fill(&mut operation).map_err(|error| {
+        RecordStoreError::from(format!("export audit operation entropy: {error}"))
+    })?;
     let confirmed = Arc::new(AtomicBool::new(false));
     queue.try_enqueue_background(PendingAudit {
         scope: ADMIN_LOG.into(),
@@ -1344,7 +1345,7 @@ fn pending_audit(
     let mut operation = [0; 16];
     busbar_contract::crypto::fill(&mut operation).map_err(|error| {
         request_failed();
-        RecordStoreError(format!("admin audit operation entropy: {error}"))
+        RecordStoreError::from(format!("admin audit operation entropy: {error}"))
     })?;
     Ok(PendingAudit {
         scope: scope.to_string(),
@@ -2000,7 +2001,7 @@ fn publish_export_observers_on(
 }
 
 fn native_error(error: crate::host_records_async::HistoryError) -> RecordStoreError {
-    RecordStoreError(format!("native audit persistence: {error:?}"))
+    RecordStoreError::from(format!("native audit persistence: {error:?}"))
 }
 
 /// Read both canonical representations. Old pipe-record fields keep their exact
@@ -2230,7 +2231,7 @@ async fn drain_native(
                 ));
             }
             Ok(outcome) => {
-                return Err(RecordStoreError(format!(
+                return Err(RecordStoreError::from(format!(
                     "audit original remains pending or refused: {outcome:?}"
                 )));
             }

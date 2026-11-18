@@ -29,12 +29,12 @@ pub fn plane_owned_kind(plane: &str, kind: &str) -> Option<String> {
 
 pub fn encode<T: serde::Serialize>(row: &T) -> RecordStoreResult<Vec<u8>> {
     busbar_contract::json::to_vec(row)
-        .map_err(|e| RecordStoreError(format!("plane body encode: {e}")))
+        .map_err(|e| RecordStoreError::from(format!("plane body encode: {e}")))
 }
 
 pub fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> RecordStoreResult<T> {
     busbar_contract::json::parse(body)
-        .map_err(|e| RecordStoreError(format!("plane body decode: {e}")))
+        .map_err(|e| RecordStoreError::from(format!("plane body decode: {e}")))
 }
 
 #[cfg(test)]

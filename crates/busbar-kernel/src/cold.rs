@@ -139,15 +139,6 @@ pub(crate) fn route_policy_status_label(status: u16) -> String {
 
 // --- plane_driver::money ---
 
-/// `plane_driver::money::selected_view`: a selected checkpoint's refusal, spelled only when the
-/// capture or its budget view is refused.
-#[cold]
-pub(crate) fn selected_view_refusal(
-    message: &'static str,
-) -> busbar_contract::records::RecordStoreError {
-    busbar_contract::records::RecordStoreError(message.to_owned())
-}
-
 /// `plane_driver::money::native_admission`: a refused selected startup transfer, as the text the
 /// response confirmation reports.
 #[cold]

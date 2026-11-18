@@ -25,8 +25,9 @@ mod fee;
 pub(crate) use decode::check_encoded;
 pub use fee::{CapturedFee, FeeBasis, FeeResult, SelectedFeeCompletion};
 
-fn invalid(message: &str) -> RecordStoreError {
-    RecordStoreError(message.to_owned())
+/// An invalid partition: its message is a fixed word of the program, so nothing is allocated.
+fn invalid(message: &'static str) -> RecordStoreError {
+    RecordStoreError::fixed(message)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

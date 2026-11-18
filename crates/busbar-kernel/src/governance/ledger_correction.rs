@@ -98,12 +98,12 @@ impl PendingCorrection {
 
 fn unresolved(reason: impl std::fmt::Display) -> RecordStoreError {
     crate::governance::rendered_error(
-        RecordStoreError,
+        RecordStoreError::from,
         format_args!("usage correction unresolved: {reason}"),
     )
 }
 fn exact<T>(result: Result<T, &'static str>) -> RecordStoreResult<T> {
-    result.map_err(|reason| RecordStoreError(reason.into()))
+    result.map_err(RecordStoreError::fixed)
 }
 fn address(bucket: &str, window: u64) -> UsageAddress {
     UsageAddress {

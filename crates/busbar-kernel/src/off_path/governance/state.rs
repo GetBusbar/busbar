@@ -320,7 +320,7 @@ pub(crate) fn state_durable_cell(
     for e in eras.models {
         for raw in e.usage_units.values() {
             let count = Count::from_stored(*raw, e.scale)
-                .map_err(|e| rendered_error(RecordStoreError, e))?;
+                .map_err(|e| rendered_error(RecordStoreError::from, e))?;
             if count.is_negative() {
                 return Err(RecordStoreError("negative durable era usage total".into()));
             }
@@ -340,12 +340,12 @@ pub(crate) fn state_durable_cell(
                 e.usage_units.get(ERA_FEE_UNIT).copied().unwrap_or(0),
                 e.scale,
             )
-            .map_err(|e| rendered_error(RecordStoreError, e))?;
+            .map_err(|e| rendered_error(RecordStoreError::from, e))?;
             if count.micros() % 1_000_000 != 0 {
                 return Err(RecordStoreError("fractional fee count".into()));
             }
             let n = u64::try_from(count.micros() / 1_000_000)
-                .map_err(|e| rendered_error(RecordStoreError, e))?
+                .map_err(|e| rendered_error(RecordStoreError::from, e))?
                 .min(undated_fees);
             undated_fees -= n;
             fees.push((era, n));
@@ -359,8 +359,8 @@ pub(crate) fn state_durable_cell(
         let mut cur = BTreeMap::new();
         for (unit, n) in e.usage_units {
             let left = rest.cur.get(&unit).copied().unwrap_or_default();
-            let n =
-                Count::from_stored(n, e.scale).map_err(|e| rendered_error(RecordStoreError, e))?;
+            let n = Count::from_stored(n, e.scale)
+                .map_err(|e| rendered_error(RecordStoreError::from, e))?;
             let n = n.min(left);
             if n.is_zero() {
                 continue;
@@ -371,7 +371,7 @@ pub(crate) fn state_durable_cell(
                 rest.cur.insert(
                     unit.clone(),
                     left.checked_sub(n)
-                        .map_err(|e| rendered_error(RecordStoreError, e))?,
+                        .map_err(|e| rendered_error(RecordStoreError::from, e))?,
                 );
             }
             cur.insert(unit, n);
@@ -410,7 +410,7 @@ fn state_durable_segments(
                 .into_iter()
                 .map(|(unit, n)| {
                     let count = Count::from_stored(n, m.scale)
-                        .map_err(|e| rendered_error(RecordStoreError, e))?;
+                        .map_err(|e| rendered_error(RecordStoreError::from, e))?;
                     if count.is_negative() {
                         return Err(RecordStoreError("negative durable usage total".into()));
                     }

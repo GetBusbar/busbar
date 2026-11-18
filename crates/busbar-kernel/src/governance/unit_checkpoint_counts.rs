@@ -265,7 +265,7 @@ impl GovState {
                 );
                 if store.has_pending_namespace(namespace).map_err(|e| {
                     rendered_error(
-                        RecordStoreError,
+                        RecordStoreError::from,
                         format_args!("checkpoint ledger custody: {e:?}"),
                     )
                 })? {

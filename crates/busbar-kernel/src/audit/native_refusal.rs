@@ -123,7 +123,7 @@ pub fn record_native_refusal(
     if let Err(error) = busbar_contract::crypto::fill(&mut operation) {
         return Err(NativeRefusalError::Unprepared {
             refusal,
-            error: RecordStoreError(format!("native refusal entropy: {error}")),
+            error: RecordStoreError::from(format!("native refusal entropy: {error}")),
         });
     }
     let pending = PendingAudit {
@@ -189,7 +189,7 @@ fn prepare_refusal(
         .as_ref()
         .ok_or_else(|| RecordStoreError("native refusal has no governance attachment".into()))?
         .core_store_handle()
-        .map_err(|error| RecordStoreError(error.to_string()))?;
+        .map_err(|error| RecordStoreError::from(error.to_string()))?;
     let native = native_owner(KIND_ID_AUDIT)
         .ok_or_else(|| RecordStoreError("native refusal audit is not installed".into()))?;
     validate_attachment(&native, &store)?;
