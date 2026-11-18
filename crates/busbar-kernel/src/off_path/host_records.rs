@@ -28,14 +28,15 @@ impl NativeWrite {
         book: &crate::host_chains::ChainBook,
     ) -> Option<Result<(), &'static str>> {
         use crate::persistence::scoped::{Mutation, Outcome, Predicate, Request, ScopedStore};
+        // The two schemas by their own fixed names: named, never copied.
         let schemas = [
-            self.write.schema.as_str().to_string(),
-            crate::host_chains::CHAIN_LIFE_SCHEMA.as_str().to_string(),
+            self.write.schema.as_str(),
+            crate::host_chains::CHAIN_LIFE_SCHEMA.as_str(),
         ];
         let scoped = match if self.private {
-            ScopedStore::host_private(Arc::clone(store), &self.write.instance, schemas.clone())
+            ScopedStore::host_private(Arc::clone(store), &self.write.instance, schemas)
         } else {
-            ScopedStore::authorized(Arc::clone(store), &self.write.instance, schemas.clone())
+            ScopedStore::authorized(Arc::clone(store), &self.write.instance, schemas)
         } {
             Ok(scoped) => scoped,
             Err(_) => return Some(Err(WRITE_FAILED)),

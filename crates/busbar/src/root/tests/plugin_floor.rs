@@ -30,7 +30,7 @@ impl Fixture {
         let records = ScopedStore::host_private(
             core.clone(),
             INSTANCE,
-            [PLUGIN_FLOOR_SCHEMA.into(), RELEASE_KEYS_FLOOR_SCHEMA.into()],
+            [PLUGIN_FLOOR_SCHEMA, RELEASE_KEYS_FLOOR_SCHEMA],
         )
         .unwrap();
         faults.clear_observations();

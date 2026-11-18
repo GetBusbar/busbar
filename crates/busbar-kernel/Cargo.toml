@@ -107,5 +107,12 @@ busbar-kernel-egress = { path = "../busbar-kernel-egress", features = ["test-sup
 tikv-jemallocator = { workspace = true }
 tikv-jemalloc-ctl = { workspace = true }
 
+# B-RECORD-WRITE: one record write through the write-behind batcher, made and released
+# (overlay, chained, plain; 64 bytes and the largest chained record; median, p99).
+[[bench]]
+name = "b_record_write"
+path = "benches/b_record_write.rs"
+harness = false
+
 [lints]
 workspace = true

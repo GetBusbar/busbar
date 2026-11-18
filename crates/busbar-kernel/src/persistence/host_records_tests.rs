@@ -467,13 +467,15 @@ async fn native_write_queue_cancellation_requeues_exact_request_and_callback_aft
     let chains = crate::host_chains::ChainBook::default();
     let answers = Arc::new(Mutex::new(Vec::new()));
     let answered = Arc::clone(&answers);
-    let seq = pending.enqueue("instance", "schema", b"key", vec![8]);
+    let instance: Arc<str> = Arc::from("instance");
+    let value = Arc::new(RecordBytes::new(vec![8]).unwrap());
+    let seq = pending.enqueue(&instance, "schema", b"key", &value);
     assert_eq!(
         batcher.push_native_with(|| Write {
-            instance: Arc::from("instance"),
+            instance,
             schema: RecordSchemaId::new("schema"),
             key: b"key".to_vec(),
-            value: RecordBytes::new(vec![8]).unwrap(),
+            value: crate::host_records::WriteBytes::Shared(value),
             seq,
             owed: Owed::new(Box::new(move |result| answered
                 .lock()
@@ -530,7 +532,7 @@ async fn native_chain_queue_appends_and_drops_atomically_with_legacy_framing() {
                 instance: Arc::from("instance"),
                 schema,
                 key: b"stream".to_vec(),
-                value: RecordBytes::new(value).unwrap(),
+                value: crate::host_records::WriteBytes::Own(RecordBytes::new(value).unwrap()),
                 seq: 0,
                 owed: Owed::new(Box::new(move |result| answered
                     .lock()
@@ -668,7 +670,9 @@ async fn native_ordinary_chain_continues_beyond_occupied_unreadable_tail() {
             instance: Arc::from("instance"),
             schema: RecordSchemaId::new("schema"),
             key: b"stream".to_vec(),
-            value: RecordBytes::new(b"continues".to_vec()).unwrap(),
+            value: crate::host_records::WriteBytes::Own(
+                RecordBytes::new(b"continues".to_vec()).unwrap(),
+            ),
             seq: 0,
             owed: Owed::new(Box::new(move |result| answered
                 .lock()
@@ -712,12 +716,14 @@ async fn native_queue_keeps_newer_put_behind_cancelled_older_attempt() {
     let answers = Arc::new(Mutex::new(Vec::new()));
     let make = |value: u8| {
         let answers = Arc::clone(&answers);
-        let seq = pending.enqueue("instance", "schema", b"key", vec![value]);
+        let instance: Arc<str> = Arc::from("instance");
+        let bytes = Arc::new(RecordBytes::new(vec![value]).unwrap());
+        let seq = pending.enqueue(&instance, "schema", b"key", &bytes);
         Write {
-            instance: Arc::from("instance"),
+            instance,
             schema: RecordSchemaId::new("schema"),
             key: b"key".to_vec(),
-            value: RecordBytes::new(vec![value]).unwrap(),
+            value: crate::host_records::WriteBytes::Shared(bytes),
             seq,
             owed: Owed::new(Box::new(move |result| {
                 answers.lock().unwrap().push((value, result))

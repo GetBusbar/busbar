@@ -23,18 +23,20 @@ use std::sync::Arc;
 pub(crate) struct AsyncRecords {
     store: Arc<CoreStore>,
     instance: String,
-    schemas: Vec<String>,
+    /// The authorized schema names. A schema's own fixed name (`RecordSchemaId::as_str()`, a
+    /// constant) is held as it is, never copied; a name read off a request is held owned.
+    schemas: Vec<std::borrow::Cow<'static, str>>,
 }
 impl AsyncRecords {
-    pub(crate) fn authorized(
+    pub(crate) fn authorized<S: Into<std::borrow::Cow<'static, str>>>(
         store: Arc<CoreStore>,
         instance: &str,
-        schemas: impl IntoIterator<Item = String>,
+        schemas: impl IntoIterator<Item = S>,
     ) -> Result<Self, host_records::Error> {
         let result = Self {
             store,
             instance: instance.into(),
-            schemas: schemas.into_iter().collect(),
+            schemas: schemas.into_iter().map(Into::into).collect(),
         };
         result.owner()?;
         Ok(result)
@@ -43,7 +45,7 @@ impl AsyncRecords {
         HostRecords::authorized(
             &self.store,
             &self.instance,
-            self.schemas.iter().map(String::as_str),
+            self.schemas.iter().map(|schema| &**schema),
         )
     }
     pub(crate) async fn get(
@@ -94,39 +96,6 @@ pub use crate::persistence::history::{
     Collection as HistoryCollection, Error as HistoryError, Mode as HistoryMode,
     Outcome as HistoryOutcome,
 };
-
-/// Native rows produced by the trusted historical framing helpers.
-pub type MigrationRows = Vec<(busbar_contract::persistence::Address, Secret<Vec<u8>>)>;
-
-pub fn migration_rows<'a>(
-    owner: &str,
-    declarations: impl IntoIterator<Item = HistoryCollection<'a>>,
-    record: PlaneRecordRef<'_>,
-    parent_life: Option<u64>,
-) -> Result<MigrationRows, HistoryError> {
-    history::migration_rows(owner, declarations, record, parent_life)
-}
-
-pub fn migration_authorizes<'a>(
-    owner: &str,
-    declarations: impl IntoIterator<Item = HistoryCollection<'a>>,
-    address: &busbar_contract::persistence::Address,
-) -> bool {
-    history::migration_authorizes(owner, declarations, address)
-}
-
-pub fn migration_audit_rows(
-    owner: &str,
-    record: &busbar_contract::records::AuditRecord,
-) -> Result<MigrationRows, HistoryError> {
-    history::migration_audit_rows(owner, record)
-}
-pub fn migration_audit_authorizes(
-    owner: &str,
-    address: &busbar_contract::persistence::Address,
-) -> bool {
-    history::migration_audit_authorizes(owner, address)
-}
 
 pub(crate) struct Declaration {
     pub(crate) kind: String,

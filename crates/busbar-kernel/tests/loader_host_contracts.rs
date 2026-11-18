@@ -259,9 +259,8 @@ async fn a_chained_kinds_writes_are_appended_to_their_chain_and_read_whole() {
     keep(&h, 1, b"task-b", b"other");
     keep(&h, 1, b"task-a", b"second");
 
-    let scoped_rows =
-        persistence::scoped::ScopedStore::authorized(store, "plane", ["journal".into()])
-            .expect("the fixture owns the admitted instance's journal scope");
+    let scoped_rows = persistence::scoped::ScopedStore::authorized(store, "plane", ["journal"])
+        .expect("the fixture owns the admitted instance's journal scope");
     assert_eq!(
         scoped_rows
             .put(
