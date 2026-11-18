@@ -231,6 +231,7 @@ The thousands digit is the area.
 | [BUSBAR-5049](/docs/1.6/errors/BUSBAR-5049/) | A trust anchor file changed; restart to apply | 1.6.0 |
 | [BUSBAR-5050](/docs/1.6/errors/BUSBAR-5050/) | Routing policy made no choice and no member has a known routing cost | 1.6.0 |
 | [BUSBAR-5051](/docs/1.6/errors/BUSBAR-5051/) | An outbound dial was refused | 1.6.0 |
+| [BUSBAR-5052](/docs/1.6/errors/BUSBAR-5052/) | The local egress framer failed | 1.6.0 |
 
 ## 6xxx: Plugins
 
