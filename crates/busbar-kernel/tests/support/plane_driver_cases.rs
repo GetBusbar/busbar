@@ -98,11 +98,6 @@ impl Far {
         }
     }
 
-    pub(crate) fn naming_its_pool(mut self) -> Self {
-        self.names_its_pool = true;
-        self
-    }
-
     pub(crate) fn stating(self, ceiling: Duration) -> Self {
         Far {
             ceiling: Some(ceiling),
