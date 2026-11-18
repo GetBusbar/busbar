@@ -465,16 +465,14 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
                     let Some(target) = (s.targets)(&pool, &name) else {
                         continue;
                     };
-                    let operator =
-                        String::from_utf8_lossy(operator_name(name.as_bytes())).into_owned();
                     s.member.borrow_mut().clone_from(&name);
                     s.pool.borrow_mut().clone_from(&pool);
                     let candidate = Candidate {
                         pool: pool.into(),
+                        upstream: String::from_utf8_lossy(operator_name(name.as_bytes())).into(),
                         qualified_member: name.into(),
                         identity: target.identity,
                         resource: target.resource,
-                        upstream: operator.into(),
                         provider: target.provider,
                         base_path: target.base_path,
                         flags: target.flags,
@@ -548,12 +546,12 @@ fn request_of(
     if outbound == OUTBOUND_NONE {
         fields.push((NO_MEMBER_AUTH_FIELD.as_bytes().to_vec(), b"1".to_vec()));
     }
-    if let Some(scope) = &scope {
+    if let Some(scope) = scope {
         fields.push((
             busbar_contract::abi::auth::SCOPE_REQUEST_FIELD
                 .as_bytes()
                 .to_vec(),
-            scope.as_bytes().to_vec(),
+            scope.into_boxed_bytes().into_vec(),
         ));
     }
     Some(OutboundRequest {
