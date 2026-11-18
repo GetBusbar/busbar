@@ -345,17 +345,10 @@ pub async fn open_min3<N: busbar_plugin_abi::host_side::needs::Needs>(
     disk: Arc<dyn export_door::port::DestAppend>,
     observer: Arc<dyn busbar_contract::export_calls::ExportObserver>,
 ) -> Result<Arc<export_door::port::PortDoor>, String> {
-    use crate::instance::OpenError;
-    let port = registry.open_export(spec, needs, refs).await.map_err(|e| {
-        let why = match &e {
-            OpenError::Refused { .. } => "refused".to_string(),
-            OpenError::Config { code, .. } => format!("config refused, code {code}"),
-            OpenError::Failed { code, .. } => format!("failed, code {code}"),
-            OpenError::Call(c) => format!("{c:?}"),
-            OpenError::Unknown(_) => "unknown".to_string(),
-        };
-        format!("export instance `{}` did not open ({why})", spec.name)
-    })?;
+    let port = registry
+        .open_export(spec, needs, refs)
+        .await
+        .map_err(|e| crate::cold::export_axis::not_opened(spec.name, &e))?;
     export_door::port::PortDoor::open(spec.name, port, disk, &spec.limits, observer)
 }
 

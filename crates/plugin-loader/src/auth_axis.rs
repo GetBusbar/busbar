@@ -109,13 +109,19 @@ impl AuthRows {
             .filter(|p| p.manifest.kind == AUTH)
     }
 
-    fn load(&self, row: &LoadablePlugin, label: &str, serving: bool) -> Result<Door, String> {
-        let name = row.key();
-        #[cfg(test)]
+    /// Tests only: remember that `name` was bound.
+    #[cfg(test)]
+    fn record_bound(&self, name: &str) {
         self.bound
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(name.to_string());
+    }
+
+    fn load(&self, row: &LoadablePlugin, label: &str, serving: bool) -> Result<Door, String> {
+        let name = row.key();
+        #[cfg(test)]
+        self.record_bound(name);
         let sink = AuthSink::new(name);
 
         let envelope = match self.logs.filter(|_| serving) {

@@ -85,9 +85,15 @@ fn draw(source: impl FnOnce(&mut [u8]) -> Result<(), String>) -> Result<(u64, u6
 pub(crate) fn key() -> Result<(u64, u64), LoadError> {
     #[cfg(test)]
     if ENTROPY_FAILS.with(std::cell::Cell::get) {
-        return draw(|_| Err("the test seam's failing entropy source".to_string()));
+        return failing_draw();
     }
     drawn_key()
+}
+
+/// THE TEST SEAM's draw: the OS random source fails.
+#[cfg(test)]
+fn failing_draw() -> Result<(u64, u64), LoadError> {
+    draw(|_| Err("the test seam's failing entropy source".to_string()))
 }
 
 fn drawn_key() -> Result<(u64, u64), LoadError> {
