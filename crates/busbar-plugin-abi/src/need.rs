@@ -232,7 +232,14 @@ impl TrustHandle {
     pub const NONE: TrustHandle = TrustHandle(0);
 }
 
-pub mod need {
+/// The frozen IF path `need::need::*`, kept as an alias of [`steps`] (PM ruling, 2026-11-18) while these 13
+/// plugins still name it: auth-github, auth-header, auth-ldap, auth-oauth, auth-oidc, auth-sigv4, export-otlp,
+/// export-webhook, hook-webrequest, secret-vault, store-mysql, store-postgres, store-valkey. It goes when they
+/// have repinned onto `need::steps`.
+pub use steps as need;
+
+/// The plugin-side Need API: the requests a step parks on and their answers (IF §6.2, §6.3).
+pub mod steps {
     use core::pin::Pin;
     use core::task::{Context, Poll};
 
