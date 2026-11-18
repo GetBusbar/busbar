@@ -1126,7 +1126,8 @@ mod tests {
                 0b11_1111,
                 0b11,
                 0b111,
-                0b1_1111_1111,
+                // Plane: slots 0-8, select_resources at 9 (880432c87e) and channel at 10 (d1f06e6381).
+                0b111_1111_1111,
                 0b111_1111
             ]
         );
