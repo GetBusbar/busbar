@@ -277,9 +277,7 @@ auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
 auth-oauth = "busbar-auth-oauth"
 auth-webhook-signature = "busbar-auth-webhook-signature"
-# THE COLD-KIND AXIS's in-process row: the default store (a required dependency: every build links
-# it). Hooks and secret sources are native images (WP3), not linked rows.
-store-memory = "busbar-store-memory"
+# Stores, hooks and secret sources are native images (WP3), not linked rows.
 # THE TRANSPORT AXIS (#3, #30): the wires this build links, one row each, folded bottom-up by the boot
 # seal. A row whose crate is a required dependency is linked in every build (its key names the row);
 # `ws` rides its optional edge. ONE ENTRY PER PLUGIN: a row is one crate's one entry, and the seal
@@ -322,7 +320,6 @@ auth-header = "auths"
 auth-sigv4 = "auths"
 auth-oauth = "auths"
 auth-webhook-signature = "auths"
-store-memory = "stores"
 transport-tcp = "transport transport-door"
 # `connector-door`: the framer's door is opened on the root's one Connector, so an outbound need on
 # its schemes is served compiled-in (the streaming door's ws needs bind on the ws row). Every
