@@ -96,11 +96,10 @@ impl Events for LogEvents {
     }
 }
 
-/// What the driver counts (`plane_channel_unattributed_total`, and the messages a full slot dropped).
+/// What the driver counts (`plane_channel_unattributed_total`).
 #[derive(Debug, Default)]
 pub struct Counts {
     unattributed: AtomicU64,
-    slot_full: AtomicU64,
 }
 
 impl Counts {
@@ -108,12 +107,6 @@ impl Counts {
     #[must_use]
     pub fn unattributed(&self) -> u64 {
         self.unattributed.load(Ordering::Relaxed)
-    }
-
-    /// Messages dropped because the slot's queue was full.
-    #[must_use]
-    pub fn slot_full(&self) -> u64 {
-        self.slot_full.load(Ordering::Relaxed)
     }
 }
 
@@ -716,9 +709,8 @@ impl Run {
         let tx = self.generation.slots().get(&slot).cloned();
         match tx {
             Some(tx) => {
-                if tx.try_send(ChannelMsg::Message(message)).is_err() {
-                    self.shared.counts.slot_full.fetch_add(1, Ordering::Relaxed);
-                }
+                // A full slot drops the message.
+                let _ = tx.try_send(ChannelMsg::Message(message));
             }
             None => tracing::debug!(slot, "a channel message named a slot that is gone"),
         }
