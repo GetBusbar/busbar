@@ -422,14 +422,6 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     (
-        "Steps",
-        SecretBearing::NotInResolvedConfig(
-            "the boot walk's step table (busbar::root::min3_boot): it holds a clone of `auth.signing_key`, \
-             copied from `AuthCfg`, which IS walked, so the reference is already enumerated and validated; \
-             `Steps` is built from a loaded `RootCfg` and is never part of it.",
-        ),
-    ),
-    (
         "BootstrapSteps",
         SecretBearing::NotInResolvedConfig(
             "the bootstrap (S5/S6) step owner in busbar::root::min3_boot: `at_rest` is a clone of \
@@ -567,15 +559,6 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
             "the `#[cfg(test)]` neutral source fixture's table row in \
              `busbar-core-connector::spawn_env` (52237f7b88), standing in for a secret source in \
              config-time custody tests; a test fixture, never part of `RootCfg`.",
-        ),
-    ),
-    (
-        "Ingress",
-        SecretBearing::NotInResolvedConfig(
-            "the root binary's signed-route verifier bundle built at boot from process custody \
-             (`busbar::root::port_mount`); its `secrets` closure hands back the webhook secret \
-             reference the operator configured, already reported by the walk of the plane's \
-             section; a runtime carrier, never part of `RootCfg`.",
         ),
     ),
     (
