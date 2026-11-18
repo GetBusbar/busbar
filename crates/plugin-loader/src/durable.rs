@@ -27,8 +27,9 @@
 use std::io;
 use std::path::Path;
 
-#[path = "durable_documents.rs"]
-pub(crate) mod documents;
+// The config documents' durable replacement runs at startup and config conversion only, never per
+// request: it lives in `off_path::durable_documents` (LINT-BOUNDARY.md L5d-2).
+pub(crate) use crate::off_path::durable_documents as documents;
 pub use busbar_contract::persistence::archive::spool;
 pub use spool::{SpoolReader, SpoolWriter};
 

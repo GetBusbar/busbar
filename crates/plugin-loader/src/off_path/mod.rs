@@ -11,8 +11,16 @@
 //! rows are never added or raised): a submodule here reads plugin memory through the safe
 //! primitives its request-path module keeps, or is declared at its own path (`#[path]`).
 
+#[deny(unsafe_code)]
 pub(crate) mod auth_door;
+// Kept at its path (the unsafe register, unsafe.yaml, pins its count per file).
+#[path = "../durable_documents.rs"]
+pub(crate) mod durable_documents;
+#[deny(unsafe_code)]
 pub(crate) mod kinds_export;
+#[deny(unsafe_code)]
 pub(crate) mod kinds_hook;
+#[deny(unsafe_code)]
 pub(crate) mod kinds_plane;
+#[deny(unsafe_code)]
 pub(crate) mod kinds_transport;

@@ -41,7 +41,7 @@ pub mod boot;
 #[deny(unsafe_code)]
 mod cold;
 
-#[deny(unsafe_code)]
+// Each submodule but the path-pinned `durable_documents` (its unsafe is registered in unsafe.yaml) denies unsafe code.
 mod off_path;
 
 // busbar:request-path
