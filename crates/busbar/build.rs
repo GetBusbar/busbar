@@ -137,6 +137,13 @@ fn main() {
         let var = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));
         always_on.iter().any(|k| k == feature) || env::var_os(var).is_some()
     };
+    // An always-on row's former cargo feature reads as on (691cb5d50f: "every cfg(feature) naming
+    // them ... is resolved as if on"): the plugin-owned test sources this package mounts through its
+    // test contexts still gate on the row's name, and are compiled in, not configured out.
+    for key in &always_on {
+        println!("cargo::rustc-check-cfg=cfg(feature, values(\"{key}\"))");
+        println!("cargo::rustc-cfg=feature=\"{key}\"");
+    }
     let (source, _) = linked_source(&manifest, &enabled);
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("linked.rs");
     std::fs::write(out, source).expect("write linked.rs");
