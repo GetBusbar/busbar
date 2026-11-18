@@ -234,7 +234,6 @@ allow-git = [
     "https://github.com/MattJackson/jobserver-rs",
     "https://github.com/MattJackson/rust-stringprep",
     "https://github.com/MattJackson/dunce",
-    "https://github.com/MattJackson/fs_extra",
     # YAML: busbar's opt-in serde_yaml-compatibility patches, offered upstream; exact revisions in
     # the root/dist [patch.crates-io] rows and locks.
     "https://github.com/MattJackson/serde-saphyr",
