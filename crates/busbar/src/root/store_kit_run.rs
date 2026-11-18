@@ -201,7 +201,7 @@ impl<O: Opener> Fixture for KitFixture<O> {
 /// Run every kit case over `fixture` on `runtime`, each within `case`, all within `total`. `Err`
 /// names the failing case (the kit's own panic text) or the deadline that passed.
 pub(crate) fn run_kit<O: Opener>(
-    runtime: &tokio::runtime::Runtime,
+    runtime: &busbar_kernel::rt::Runtime,
     fixture: &KitFixture<O>,
     case: Duration,
     total: Duration,
@@ -432,7 +432,7 @@ pub(crate) fn command(words: &[String]) -> i32 {
 
 /// Everything one run needs, kept alive for it.
 struct Prepared {
-    runtime: tokio::runtime::Runtime,
+    runtime: busbar_kernel::rt::Runtime,
     fixture: KitFixture<KitStore>,
     /// The plugin process resources the registry's slots and ids come from, as `main` keeps
     /// them for the process.
@@ -462,7 +462,7 @@ fn prepare(args: Args) -> Result<Prepared, String> {
             ..busbar_kernel::config::sections::Destinations::default()
         },
     )?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    let runtime = busbar_kernel::rt::multi_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("a runtime: {error}"))?;
