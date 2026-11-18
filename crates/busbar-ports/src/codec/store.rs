@@ -14,6 +14,7 @@ use busbar_contract::plugin::KernelSeal;
 use busbar_contract::secure::SecureVec;
 use busbar_contract::Secret;
 use busbar_plugin_abi::host_side::answer::Answer;
+use busbar_plugin_abi::host_side::pool::PooledOut;
 use busbar_plugin_abi::kinds::store::store as wire;
 use busbar_plugin_abi::records::{tag, Full, Pod, Rec, RecErr, Records, Writer};
 
@@ -204,9 +205,11 @@ pub fn encode_candidate(
     w.put(wire::tag::RESULT, candidate.result.expose(seal))
 }
 
-/// The `clock` request: the dataset's 16 bytes in one CLOCK record (the tag also names the answer).
-pub fn encode_dataset(w: &mut impl Writer, d: &DatasetId) -> Result<(), Full> {
-    w.put(wire::tag::CLOCK, &d.0)
+/// The `clock` request: the dataset's 16 bytes, as they are (ABI-MIN3-INTERFACE §8.8 "Authoritative UTC for
+/// `dataset` (16 bytes). Answer: CLOCK."). CLOCK is the answer's record only; a request in a CLOCK record is
+/// refused by every MIN-3 store ("a dataset is 16 bytes").
+pub fn encode_dataset(w: &mut PooledOut, d: &DatasetId) -> Result<(), Full> {
+    w.put_bytes(&d.0)
 }
 
 pub fn decode_read(a: &Answer<'_>, n: usize) -> Result<ReadResult, RecErr> {

@@ -140,6 +140,13 @@ impl PooledOut {
             held.clear();
         }
     }
+    /// Appends `bytes` as they are, no record head: a request argument the interface states as plain bytes (a
+    /// store `clock`'s 16-byte dataset, ABI-MIN3-INTERFACE §8.8). Full: nothing changed.
+    pub fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), Full> {
+        self.room(bytes.len())?;
+        self.append(bytes);
+        Ok(())
+    }
     /// Round 9: false for the empty handle (`PooledOut::default()`: no buffer, Drop does nothing, no queue op).
     pub fn is_held(&self) -> bool {
         self.buf.is_some()
