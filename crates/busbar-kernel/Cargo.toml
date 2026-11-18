@@ -107,12 +107,5 @@ busbar-kernel-egress = { path = "../busbar-kernel-egress", features = ["test-sup
 tikv-jemallocator = { workspace = true }
 tikv-jemalloc-ctl = { workspace = true }
 
-# B-RATE-HOLD: one rate hold's whole life against the governor (median, p99).
-[[bench]]
-name = "b_rate_hold"
-path = "benches/b_rate_hold.rs"
-harness = false
-required-features = ["test-support"]
-
 [lints]
 workspace = true
