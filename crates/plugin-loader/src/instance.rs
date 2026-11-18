@@ -31,6 +31,7 @@ use busbar_plugin_abi::host_side::pool::Pool;
 use busbar_plugin_abi::host_side::scrub::Scrub;
 use busbar_plugin_abi::host_side::watch::ENTRY_DESCRIBE;
 use busbar_plugin_abi::need::{egress, need_flag, op};
+use busbar_plugin_abi::plugin::{ENDPOINTS_MAX, ENDPOINT_DEST_MAX};
 use busbar_plugin_abi::records::{tag, CeilingRec, EndpointRec, Records};
 use busbar_plugin_abi::types::KindCode;
 
@@ -1763,13 +1764,9 @@ pub struct DeclaredEndpoint {
     pub op: u32,
     /// The `NeedRec.flags` encoding: TLS bits 0..=3 and the egress class in bits 16..=19.
     pub flags: u32,
-    /// The destination the plugin declared, at most `MAX_DEST` bytes of UTF-8.
+    /// The destination the plugin declared, at most `ENDPOINT_DEST_MAX` bytes of UTF-8.
     pub dest: Box<str>,
 }
-
-/// The most ENDPOINT records an answer may carry and the longest dest (§3, round 32).
-const MAX_ENDPOINTS: usize = 16;
-const MAX_DEST: usize = 2_048;
 
 /// §3: the ENDPOINT records of a CHECK answer, in answer order. More than 16, a dest over 2,048 bytes or not
 /// UTF-8, an op other than OPEN/FETCH, an egress above `LOOPBACK_ALLOWED`, the retired 0x200 or any other
@@ -1786,7 +1783,7 @@ fn decode_endpoints(answer: &[u8], name: &str) -> Result<Vec<DeclaredEndpoint>, 
         if rec.tag != tag::ENDPOINT {
             continue;
         }
-        if out.len() == MAX_ENDPOINTS {
+        if out.len() == ENDPOINTS_MAX {
             return Err(invalid("more than 16"));
         }
         let (head, dest) = rec
@@ -1799,7 +1796,7 @@ fn decode_endpoints(answer: &[u8], name: &str) -> Result<Vec<DeclaredEndpoint>, 
         if head.flags & !known != 0 || (head.flags >> 16) & 0xF > egress::LOOPBACK_ALLOWED {
             return Err(invalid("flags"));
         }
-        if dest.len() > MAX_DEST {
+        if dest.len() > ENDPOINT_DEST_MAX {
             return Err(invalid("dest over 2,048 bytes"));
         }
         let dest = core::str::from_utf8(dest).map_err(|_| invalid("dest not UTF-8"))?;

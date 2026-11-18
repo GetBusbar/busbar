@@ -571,7 +571,7 @@ impl ConfigBinder for Binder {
     ) -> Result<(), BindError> {
         let bad = || BindError::BadNetwork;
         let entry = self.entry(instance).ok_or_else(bad)?;
-        if endpoints.len() > 16 {
+        if endpoints.len() > busbar_plugin_abi::plugin::ENDPOINTS_MAX {
             return Err(BindError::TooMany);
         }
         let frozen = NetworkEndpoint::canonical_set(endpoints).ok_or_else(bad)?;
