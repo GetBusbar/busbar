@@ -51,13 +51,12 @@ impl Plan {
         for event in &self.queue {
             match event {
                 SerializedEvent::Span { len, .. } => bytes += len,
-                SerializedEvent::ReleaseBarrier { stream } => {
+                SerializedEvent::ReleaseBarrier { stream }
                     if !self
                         .response(*stream)
-                        .is_some_and(|r| r.released && !r.aborted)
-                    {
-                        break;
-                    }
+                        .is_some_and(|r| r.released && !r.aborted) =>
+                {
+                    break;
                 }
                 _ => {}
             }
@@ -556,10 +555,10 @@ impl MemIo {
         let before = pipes.write.len();
         let Pipes { plan, write, .. } = &mut *pipes;
         let done = plan.as_mut().ok_or_else(invalid)?.drain(write, out).is_ok();
-        if pipes.write.len() < before {
-            if let Some(waker) = pipes.writer.take() {
-                waker.wake();
-            }
+        if pipes.write.len() < before
+            && let Some(waker) = pipes.writer.take()
+        {
+            waker.wake();
         }
         Ok(done)
     }

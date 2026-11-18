@@ -449,7 +449,6 @@ pub fn open<T: Open>(
 ) -> busbar_ffi::shim::Opening<Outcome<T>, Inbox> {
     use busbar_ffi::shim::Opening;
     if flags & OPEN_DRY_RUN != 0 {
-        drop(chained);
         return Opening::Done(check::<T>(h, config.get(), out));
     }
     Opening::Chain(

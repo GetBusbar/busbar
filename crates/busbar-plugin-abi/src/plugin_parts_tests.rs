@@ -29,7 +29,7 @@ struct Fx;
 impl crate::Auth for Fx {}
 impl Open for Fx {
     async fn open(_: &'static Host, _: ChainBytes) -> Result<Self, Fail> {
-        let port_bytes = [b'5', b'4', b'3', b'2'];
+        let port_bytes = *b"5432";
         let port = std::str::from_utf8(&port_bytes).unwrap();
         let parts = ["db.test", ":", port];
         let _ = crate::need::need::open_parts(&parts, crate::need::need::Tls::None, 2).await?;

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::{MeteringDelta, MeteringRow};
-use crate::json::{self, JsonValueMutTrait as _};
+use crate::json;
 
 fn selected(role: &str) -> json::Value {
     let pricing = if role == "fee" {

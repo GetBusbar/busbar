@@ -362,7 +362,7 @@ pub fn linked_source(
          static LINKED_FORMER: ::std::sync::LazyLock<::std::vec::Vec<crate::root::linked::LinkedFormer>> =\n    \
          ::std::sync::LazyLock::new(|| ::std::vec![",
     );
-    for (((entry, axes), door), (feature, _)) in linked.iter().zip(&doors).zip(&on) {
+    for (((_, axes), door), (feature, _)) in linked.iter().zip(&doors).zip(&on) {
         let row = |axis: &str, key: &str, door: &str, former: &str| {
             format!(
                 "crate::root::linked::LinkedFormer {{ axis: {axis:?}, key: {key}, door: {door}, \

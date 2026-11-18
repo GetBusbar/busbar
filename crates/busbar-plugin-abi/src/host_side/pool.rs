@@ -18,7 +18,6 @@ use std::sync::OnceLock;
 
 use busbar_ffi::host::OutLease;
 use crossbeam_queue::ArrayQueue;
-use zerocopy::IntoBytes;
 
 use crate::records::{
     Full, Nested, Pod, RawWrite, Writer, put_fact_in, put_fact_text_in, put_metric_in,

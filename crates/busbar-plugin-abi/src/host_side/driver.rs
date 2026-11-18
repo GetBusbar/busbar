@@ -16,7 +16,6 @@
 //! an op outside the chain's `NeedRow` is FAULT NeedNotAllowed for the whole chain (§6.1 "Allowed Needs").
 
 use core::any::Any;
-use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;

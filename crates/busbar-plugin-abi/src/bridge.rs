@@ -298,7 +298,7 @@ pub(crate) fn write_fail<W: RawWrite + ?Sized>(out: &mut W, fail: &Fail) -> Resu
         status: fail.status().0,
         code: fail.code(),
     };
-    put_parts(out, tag::FAIL, &[head.as_bytes(), text[..cut].as_bytes()])?;
+    put_parts(out, tag::FAIL, &[head.as_bytes(), &text.as_bytes()[..cut]])?;
     if fail.error() != 0 {
         let error = U32Rec {
             value: u32::from(fail.error()),
