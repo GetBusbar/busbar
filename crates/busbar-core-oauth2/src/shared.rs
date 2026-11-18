@@ -41,6 +41,22 @@ pub(crate) fn kind(name: &str) -> String {
     format!("{LABEL}{name}")
 }
 
+/// The stored name of index `ix` (`tok`, `rt`, `code`, `par`, `dev`, `cons`, `fam`): `ix.` and
+/// its name, from the fixed set the plane registers (plane.rs), so no text is made per call.
+fn ix_name(ix: &str) -> &'static str {
+    match ix {
+        "tok" => "ix.tok",
+        "rt" => "ix.rt",
+        "code" => "ix.code",
+        "par" => "ix.par",
+        "dev" => "ix.dev",
+        "cons" => "ix.cons",
+        "fam" => "ix.fam",
+        // Every caller names one of the above; an unregistered index has no store name.
+        _ => "ix.",
+    }
+}
+
 fn atomic_kind(name: &str) -> bool {
     matches!(name, "bucket" | "family" | "uc" | "key") || name.starts_with("ix.")
 }
@@ -448,17 +464,18 @@ impl Shared {
         now: u64,
     ) -> Result<(), StorageError> {
         let mut indexes = BTreeMap::new();
-        for (ix, keys) in [
-            ("tok", bucket.tokens.keys().collect::<Vec<_>>()),
-            ("rt", bucket.refresh.keys().collect()),
-            ("code", bucket.codes.keys().collect()),
-            ("par", bucket.pushed.keys().collect()),
-            ("dev", bucket.devices.keys().collect()),
-            ("cons", bucket.consents.keys().collect()),
-        ] {
-            for key in keys {
-                indexes.insert((ix, digest(key)), ());
-            }
+        // Each map's keys read in place, in the same order as before.
+        let keyed = bucket
+            .tokens
+            .keys()
+            .map(|k| ("tok", k))
+            .chain(bucket.refresh.keys().map(|k| ("rt", k)))
+            .chain(bucket.codes.keys().map(|k| ("code", k)))
+            .chain(bucket.pushed.keys().map(|k| ("par", k)))
+            .chain(bucket.devices.keys().map(|k| ("dev", k)))
+            .chain(bucket.consents.keys().map(|k| ("cons", k)));
+        for (ix, key) in keyed {
+            indexes.insert((ix, digest(key)), ());
         }
         for family in bucket
             .tokens
@@ -1014,7 +1031,7 @@ impl Shared {
             key: id.as_str(),
             at: now,
         };
-        let name = format!("ix.{ix}");
+        let name = ix_name(ix);
         for _ in 0..SWAP_ATTEMPTS {
             let raw = self.authority(&name, &id).await?;
             let candidate = Self::candidate(&atomic_schema(&name), &id, raw, encode(&name, &row)?);
@@ -1028,7 +1045,7 @@ impl Shared {
     }
 
     async fn client_of(&self, ix: &str, key: &str) -> Result<Option<String>, StorageError> {
-        let Some(body) = self.get_body(&format!("ix.{ix}"), &digest(key)).await? else {
+        let Some(body) = self.get_body(ix_name(ix), &digest(key)).await? else {
             return Ok(None);
         };
         decode::<IndexRow>(ix, &body).map(|row| Some(row.client))
@@ -1232,12 +1249,13 @@ impl Shared {
         subject: &str,
         ttl: Duration,
     ) -> Result<(), StorageError> {
-        let row = SessionRow {
-            subject: subject.to_string(),
+        let key = digest(id);
+        let row = SessionRowOut {
+            subject,
             until: now_secs() + ttl.as_secs(),
-            id: digest(id),
+            id: &key,
         };
-        self.put("session", &digest(id), &row).await
+        self.put("session", &key, &row).await
     }
 
     pub(crate) async fn session_subject(&self, id: &str) -> Result<Option<String>, StorageError> {
@@ -1263,19 +1281,20 @@ impl Shared {
         if self.session_subject_at(id, now).await?.is_none() {
             return Ok(());
         }
-        let row_id = format!("{}:{}", digest(id), digest(key));
-        let row = StakeRow {
+        let row_id = StakeId::of(id, key);
+        let nonce = nonce()?;
+        let row = StakeRowOut {
             approve,
             until: now + ttl.as_secs(),
-            id: row_id,
-            nonce: nonce()?,
+            id: row_id.as_str(),
+            nonce: &nonce,
         };
-        self.put("stake", &row.id, &row).await
+        self.put("stake", row.id, &row).await
     }
 
     async fn stake_row(&self, id: &str, key: &str) -> Result<Option<StakeRow>, StorageError> {
         Ok(self
-            .get::<StakeRow>("stake", &format!("{}:{}", digest(id), digest(key)))
+            .get::<StakeRow>("stake", StakeId::of(id, key).as_str())
             .await?
             .filter(|row| row.until > now_secs()))
     }
@@ -1288,12 +1307,14 @@ impl Shared {
         let Some(row) = self.stake_row(id, key).await? else {
             return Ok(None);
         };
-        let mut token = format!("{}:{}", digest(id), digest(key));
-        if !row.nonce.is_empty() {
-            token = format!("{token}:{}", row.nonce);
+        let mut token = StakeId::of(id, key);
+        if !row.nonce.is_empty() && !token.push(&row.nonce) {
+            return Err(StorageError::new(
+                "oauth_as store: a stake row's nonce is longer than any this store writes",
+            ));
         }
         Ok(self
-            .claim("spent", &token, row.until)
+            .claim("spent", token.as_str(), row.until)
             .await?
             .then_some(row.approve))
     }
@@ -1360,6 +1381,15 @@ impl Shared {
     }
 }
 
+/// A [`SessionRow`] as it is written: the same fields in the same order (the same stored bytes),
+/// borrowed from the caller, since the row is only encoded here.
+#[derive(Serialize)]
+struct SessionRowOut<'a> {
+    subject: &'a str,
+    until: u64,
+    id: &'a str,
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct SessionRow {
     pub(crate) subject: String,
@@ -1367,6 +1397,61 @@ pub(crate) struct SessionRow {
     /// The row's own id, so the sweep can delete it.
     #[serde(default)]
     pub(crate) id: String,
+}
+
+/// A stake row's id, `digest(id):digest(key)` (64 + 1 + 64 hex digits), and a spend token's
+/// `:nonce` after it, written on the stack.
+struct StakeId {
+    buf: [u8; STAKE_ID + 1 + STAKE_NONCE_MAX],
+    len: usize,
+}
+
+/// The length of `digest(id):digest(key)`.
+const STAKE_ID: usize = 64 + 1 + 64;
+/// The longest nonce a spend token carries: twice what [`nonce`] writes (32 hex digits).
+const STAKE_NONCE_MAX: usize = 64;
+
+impl StakeId {
+    fn of(id: &str, key: &str) -> Self {
+        let mut buf = [0u8; STAKE_ID + 1 + STAKE_NONCE_MAX];
+        // Lowercase hex, as `digest` writes it; each half is exactly 64 digits.
+        let _ = hex::encode_to_slice(
+            busbar_contract::crypto::sha256(id.as_bytes()),
+            &mut buf[..64],
+        );
+        buf[64] = b':';
+        let _ = hex::encode_to_slice(
+            busbar_contract::crypto::sha256(key.as_bytes()),
+            &mut buf[65..STAKE_ID],
+        );
+        Self { buf, len: STAKE_ID }
+    }
+
+    /// Append `:nonce`; `false`, and nothing appended, when it does not fit.
+    fn push(&mut self, nonce: &str) -> bool {
+        let end = self.len + 1 + nonce.len();
+        let Some(room) = self.buf.get_mut(self.len..end) else {
+            return false;
+        };
+        room[0] = b':';
+        room[1..].copy_from_slice(nonce.as_bytes());
+        self.len = end;
+        true
+    }
+
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.buf[..self.len]).unwrap_or_default()
+    }
+}
+
+/// A [`StakeRow`] as it is written: the same fields in the same order (the same stored bytes),
+/// borrowed, since the row is only encoded here.
+#[derive(Serialize)]
+struct StakeRowOut<'a> {
+    approve: bool,
+    until: u64,
+    id: &'a str,
+    nonce: &'a str,
 }
 
 #[derive(Serialize, Deserialize)]

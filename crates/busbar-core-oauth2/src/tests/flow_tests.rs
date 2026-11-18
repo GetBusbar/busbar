@@ -281,7 +281,8 @@ async fn a_metadata_document_client_naming_no_scope_is_shown_the_default_it_is_g
     let granted = record.scope.to_string();
     assert_eq!(granted, SCOPE, "the operator's default_grant is granted");
     assert_eq!(
-        shown, granted,
+        shown.to_string(),
+        granted,
         "the consent grant resolver must name the scope the approval grants"
     );
 }
@@ -313,7 +314,8 @@ async fn a_failed_default_scope_lookup_refuses_consent_and_recovers() {
         "the recovered request grants its registered default"
     );
     assert_eq!(
-        shown, granted,
+        shown.to_string(),
+        granted,
         "the recovered consent resolver names the grant"
     );
     const EMPTY: &str = "flow-test-shared-empty-default";
@@ -331,7 +333,7 @@ async fn a_failed_default_scope_lookup_refuses_consent_and_recovers() {
         "",
         "a successfully resolved empty default remains valid"
     );
-    assert_eq!(shown, "");
+    assert_eq!(shown.to_string(), "");
 }
 
 const CIMD_CLIENT_ID: &str = "https://client.example/oauth-client";
