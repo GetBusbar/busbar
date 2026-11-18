@@ -2642,8 +2642,19 @@ impl KernelServices {
 
     /// Settle dropped callers before final billing flushes, retaining pending work on timeout.
     pub async fn drain_plane_cleanup(&self, deadline: std::time::Duration) -> bool {
-        crate::off_path::host_services::drain_cleanup_until(deadline, |cx| self.cleanup_planes(cx))
-            .await
+        // Sweep until idle, every 2 ms, under the runtime's own timer: no clock is read here.
+        let sweep = || std::future::poll_fn(|cx| std::task::Poll::Ready(self.cleanup_planes(cx)));
+        let swept = tokio::time::timeout(deadline, async {
+            while !sweep().await {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        })
+        .await;
+        // The deadline passed: one last sweep decides, as the loop's own last pass did.
+        match swept {
+            Ok(()) => true,
+            Err(_) => sweep().await,
+        }
     }
 
     /// Every unit still open in the planes registered for cleanup (every composed plane), read
@@ -2659,8 +2670,11 @@ impl KernelServices {
     pub async fn flushes(&self) {
         use futures::StreamExt as _;
         let every = crate::host_records::FLUSH_INTERVAL;
-        let mut at = crate::off_path::host_services::flush_ticks(every);
+        let mut at = tokio::time::interval(every);
         at.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // A new interval's first tick is immediate: taken here, so the first flush comes one
+        // interval after the flusher starts, as before.
+        at.tick().await;
         let mut jobs = futures::stream::FuturesUnordered::new();
         loop {
             tokio::select! {
