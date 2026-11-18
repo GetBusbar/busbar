@@ -211,11 +211,41 @@ pub(crate) struct Answers {
     capacity_failed: bool,
     provenance: bool,
     /// STREAM_FULL streams of this answer, judged at its end (STREAM_OPENED may come later in it).
-    full: storage::Items<u64>,
+    full: FullStreams,
     opened: Option<u64>,
     /// An `emit(E_CLOSE)` answer already carried its CLOSE.
     closing: bool,
     broke: Option<FaultReason>,
+}
+
+/// The STREAM_FULL streams one answer named, as far as the answer's judgement needs them: whether there
+/// was one, the first, and whether any other differed from it (no list is kept).
+#[derive(Default)]
+struct FullStreams {
+    first: Option<u64>,
+    mixed: bool,
+}
+
+impl FullStreams {
+    fn push(&mut self, stream: u64) {
+        match self.first {
+            None => self.first = Some(stream),
+            Some(first) => self.mixed |= first != stream,
+        }
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn is_empty(&self) -> bool {
+        self.first.is_none()
+    }
+
+    /// Whether any stream named is not `mine`.
+    fn any_but(&self, mine: Option<u64>) -> bool {
+        self.mixed || self.first.is_some_and(|first| Some(first) != mine)
+    }
 }
 
 impl Answers {
@@ -229,7 +259,7 @@ impl Answers {
             called: Called::Begin,
             now,
             acts: Actions::new(&source)?,
-            full: storage::Items::new(&source)?,
+            full: FullStreams::default(),
             source,
             capacity_failed: false,
             provenance: false,
@@ -403,7 +433,7 @@ impl Answers {
                 Called::Emit { piece, .. }
                     if !matches!(piece, wire::E_RELEASE | wire::E_DELIVERY_SETTLED) =>
                 {
-                    self.full.push(stream)?
+                    self.full.push(stream);
                 }
                 _ => self.breach(),
             },
@@ -450,7 +480,7 @@ impl Answers {
             } else {
                 Some(stream)
             };
-            if self.full.iter().any(|full| Some(*full) != mine) {
+            if self.full.any_but(mine) {
                 self.acts.clear();
                 self.full.clear();
                 return Err(GRAMMAR);
@@ -483,8 +513,12 @@ impl Answers {
         self.holds.next_deadline()
     }
 
-    pub(crate) fn take_stalled(&mut self, now: Instant) -> Vec<u64> {
+    pub(crate) fn take_stalled(&mut self, now: Instant) -> &[u64] {
         self.holds.take_stalled(now)
+    }
+
+    pub(crate) fn stalled(&self) -> &[u64] {
+        self.holds.stalled()
     }
 }
 
@@ -705,14 +739,15 @@ impl TransportConn {
     /// Every held stream whose stall deadline has passed at `now` is reset with
     /// `emit(stream, E_RESET, RESET_STALLED)`. Returns those streams, ascending (the caller ends each feed as for
     /// a peer reset and counts `transport_stream_stalled_total`), and what the answers asked of core.
-    pub fn stall(&mut self, now: Instant) -> Result<(Vec<u64>, Actions), Ended> {
-        let stalled = self.answers.take_stalled(now);
+    pub fn stall(&mut self, now: Instant) -> Result<(&[u64], Actions), Ended> {
+        let count = self.answers.take_stalled(now).len();
         let mut acts = Actions::new(&self.answers.source).map_err(|_| Ended::Capacity)?;
-        for &stream in &stalled {
+        for at in 0..count {
+            let stream = self.answers.stalled()[at];
             acts.append(self.emit(stream, wire::E_RESET, wire::RESET_STALLED, &[], now)?)
                 .map_err(|_| Ended::Capacity)?;
         }
-        Ok((stalled, acts))
+        Ok((self.answers.stalled(), acts))
     }
 
     /// The socket failed: nothing more can be written, so no E_CLOSE will be sent.
@@ -1472,7 +1507,7 @@ where
                 if conn.next_stall().is_some_and(|due| due <= now) {
                     match conn.stall(now) {
                         Ok((stalled, more)) => {
-                            for stream in stalled {
+                            for &stream in stalled {
                                 task.slots.by_stream.remove(&stream);
                                 task.pending.push_back(Inbound::Stalled(stream));
                                 wiring.counters.stalled.fetch_add(1, Ordering::Relaxed);

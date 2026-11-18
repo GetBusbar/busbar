@@ -367,6 +367,11 @@ pub const STREAM_STALL_MAX_MS: u32 = 600_000;
 pub struct StreamHolds {
     stall: std::time::Duration,
     held: foldhash::HashMap<u64, std::time::Instant>,
+    /// The held streams by deadline (kept with `held`): the soonest is the first, and the due ones are
+    /// taken from the front, not found by a sweep.
+    by_deadline: std::collections::BTreeSet<(std::time::Instant, u64)>,
+    /// The streams the last [`Self::take_stalled`] returned (cleared per call, kept for the next).
+    stalled: Vec<u64>,
 }
 
 impl StreamHolds {
@@ -380,18 +385,29 @@ impl StreamHolds {
         Self {
             stall: std::time::Duration::from_millis(u64::from(ms)),
             held: foldhash::HashMap::default(),
+            by_deadline: std::collections::BTreeSet::new(),
+            stalled: Vec::new(),
         }
     }
 
     /// STREAM_FULL for `stream` at `now`: held, and the deadline armed if it was not already held.
     pub fn hold(&mut self, stream: u64, now: std::time::Instant) {
         let deadline = now + self.stall;
-        self.held.entry(stream).or_insert(deadline);
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.held.entry(stream) {
+            slot.insert(deadline);
+            self.by_deadline.insert((deadline, stream));
+        }
     }
 
     /// STREAM_WRITABLE for `stream`, or its end: no longer held. True when it was held.
     pub fn release(&mut self, stream: u64) -> bool {
-        self.held.remove(&stream).is_some()
+        match self.held.remove(&stream) {
+            Some(deadline) => {
+                self.by_deadline.remove(&(deadline, stream));
+                true
+            }
+            None => false,
+        }
     }
 
     /// Whether the task must leave `stream` alone (no `emit`, no polling of its feed).
@@ -415,17 +431,30 @@ impl StreamHolds {
     /// The soonest stall deadline, for the session task's timer; `None` when nothing is held.
     #[must_use]
     pub fn next_deadline(&self) -> Option<std::time::Instant> {
-        self.held.values().min().copied()
+        self.by_deadline.first().map(|(deadline, _)| *deadline)
     }
 
     /// Every stream whose deadline is at or before `now`, ascending; each leaves the held set (the
     /// stream is reset, so it is not reported twice).
-    pub fn take_stalled(&mut self, now: std::time::Instant) -> Vec<u64> {
-        let due = crate::off_path::framing::stalled_streams(self.held.iter(), now);
-        for stream in &due {
-            self.held.remove(stream);
+    pub fn take_stalled(&mut self, now: std::time::Instant) -> &[u64] {
+        self.stalled.clear();
+        while let Some(&(deadline, stream)) = self.by_deadline.first() {
+            if deadline > now {
+                break;
+            }
+            self.by_deadline.pop_first();
+            self.held.remove(&stream);
+            // Ascending by stream id: each one goes where it belongs (stream ids are unique).
+            let at = self.stalled.partition_point(|s| *s < stream);
+            self.stalled.insert(at, stream);
         }
-        due
+        &self.stalled
+    }
+
+    /// What the last [`Self::take_stalled`] returned.
+    #[must_use]
+    pub fn stalled(&self) -> &[u64] {
+        &self.stalled
     }
 }
 
