@@ -331,7 +331,7 @@ async fn running_notary_keeps_actual_signed_run_through_unknown_ack_and_delivery
     .unwrap();
     fixture.faults.clear_observations();
     fixture.faults.lose_acks.store(true, Ordering::Release);
-    let task = notary::spawn(
+    let task = notary::spawn_with_floor(
         notary::NotaryConfig {
             node: 7,
             host: "receipt-test".into(),
@@ -342,6 +342,7 @@ async fn running_notary_keeps_actual_signed_run_through_unknown_ack_and_delivery
         fixture.journal.clone(),
         feed.clone(),
         signers.live,
+        None,
         None,
     );
     assert_eq!(feed.original_ready().unwrap().retention_bytes(), bytes);

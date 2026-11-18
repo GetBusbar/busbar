@@ -1546,40 +1546,29 @@ async fn plane_router(
         })
         .collect();
 
-    let mut transports = crate::LINKED.transports.to_vec();
-    for row in [
-        crate::root::linked::linked_transport!(busbar_transport_http::door),
-        crate::root::linked::linked_transport!(busbar_transport_grpc::door),
-    ] {
-        if !transports
-            .iter()
-            .any(|present| (present.claims)()[0] == (row.claims)()[0])
-        {
-            transports.push(row);
-        }
-    }
-    let offers = crate::root::serve::transport_offers(&transports, &[]);
-
-    let initial = crate::root::boot::configured_listener_needs(&cfg, &configured)
-        .expect("the actual configured root declares its physical listener assignments");
-    let framer_for = |scheme: &str| crate::root::connector::the().framer_for(scheme);
-    let plan = crate::root::serve::ListenerPlan::new(initial, offers.clone(), &framer_for);
-    let ((routes, sessions, refusals, refuse_by_path), _) =
-        crate::root::serve::data_routes_with_dispatch(
-            served,
-            &app,
-            &plan,
-            "listen",
-            &data_chain,
-            &busbar_kernel::base_data_core_lines(&app),
-            &[],
-            &offers,
-        )
-        .expect("the actual root mounts the planes' own declared doors on the HTTP listener");
+    // The planes' doors mount through the production composition (`door_mounts`): the legacy
+    // ListenerPlan, `data_routes_with_dispatch` and the transport offers it took were deleted as dead
+    // (040c52e0cc, 4074625463: native listeners use NativeListenerPlan; no native consumer of offers).
+    let core_lines = busbar_kernel::base_data_core_lines(&app);
+    let mounts = crate::root::serve::door_mounts(
+        served,
+        || crate::root::kernel::ROOT_CARD.pin(),
+        &data_chain,
+        &core_lines,
+        &[],
+        &[],
+    )
+    .expect("the actual root mounts the planes' own declared doors on the HTTP listener");
     let (router, _, handle) = busbar_kernel::build_split_routers_serving_doors(
-        app, routes, sessions, refusals, body_limit, 16, false,
+        app,
+        mounts.routes,
+        mounts.sessions,
+        mounts.refusals,
+        body_limit,
+        16,
+        false,
     );
-    if let Some(refuser) = refuse_by_path {
+    if let Some(refuser) = mounts.refuse_by_path {
         handle.bind_door_refuser(refuser);
     }
     router

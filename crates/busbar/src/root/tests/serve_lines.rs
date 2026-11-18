@@ -45,7 +45,12 @@ fn two_claims_opening_on_their_first_line_are_refused() {
 
 #[test]
 fn the_builds_carrier_is_read_off_its_linked_rows() {
-    assert_eq!(refusal(), None, "the build states one line carrier at most");
+    // The `refusal()` accessor went with the legacy chooser (368dfb336a); it read this same value.
+    assert_eq!(
+        line_carrier(crate::LINKED.transports).err(),
+        None,
+        "the build states one line carrier at most"
+    );
     assert_eq!(
         carrier(),
         line_carrier(crate::LINKED.transports).expect("one line carrier")

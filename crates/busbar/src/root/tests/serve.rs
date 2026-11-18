@@ -557,7 +557,7 @@ async fn constructed_services_sign_and_write_trust_changes_down() {
     };
     // Decisions need bound custody (r3 §10.1 (F), A-C1): a record over an in-memory Store whose
     // owner is not this caller, so this source's drift is still not written down.
-    let custody = Arc::new(DemotionRecord::default());
+    let custody = Arc::new(busbar_kernel::trust::DemotionRecord::default());
     custody
         .set_store(crate::root::real_store::core().await)
         .expect("a fresh record attaches");
@@ -627,7 +627,7 @@ async fn constructed_services_sign_and_write_trust_changes_down() {
     .expect("approved");
     assert_eq!(sight("h1"), (svc::TRUST_SAME, false));
     assert_eq!(sight("h2"), (svc::TRUST_DRIFTED, false), "not written down");
-    let demotions = Arc::new(DemotionRecord::default());
+    let demotions = Arc::new(busbar_kernel::trust::DemotionRecord::default());
     demotions
         .set_store(crate::root::real_store::core().await)
         .expect("the native Store owns trust changes");

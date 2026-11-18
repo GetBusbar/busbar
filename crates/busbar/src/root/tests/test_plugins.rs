@@ -325,7 +325,7 @@ pub(crate) fn trusted_config_with_key(
             plugins: archives
                 .iter()
                 .map(|path| {
-                    crate::root::loader::unpack(
+                    crate::root::loader::tarball::unpack(
                         &std::fs::read(path).expect("fixture archive reads"),
                     )
                     .expect("fixture archive unpacks")

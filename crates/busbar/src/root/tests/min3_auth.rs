@@ -889,7 +889,7 @@ async fn admin_physical_fixture_with_body(
             app,
         )
     };
-    let transport = crate::root::min3_transports::tests::framer(&["http"]);
+    let transport = crate::root::min3_boot::transports::tests::framer(&["http"]);
     let line = Line {
         route: Route {
             methods: METHOD_GET,

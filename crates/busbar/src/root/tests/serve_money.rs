@@ -1256,7 +1256,9 @@ async fn a_nested_declared_length_reply_stops_its_producer_at_the_existing_bound
     const RETAINED_WINDOWS: usize = 3;
     assert!(produced > super::NEST_REPLY_MAX);
     assert!(
-        produced <= super::NEST_REPLY_MAX + RETAINED_WINDOWS * super::BufferCaps::default().reply,
+        produced
+            <= super::NEST_REPLY_MAX
+                + RETAINED_WINDOWS * busbar_kernel::plane_driver::BufferCaps::default().reply,
         "the producer ran beyond the bounded ingress windows: {produced}"
     );
     assert!(
@@ -1557,7 +1559,7 @@ async fn nested_ordinary_child_never_spends_the_parent_key_on_a_protected_claim(
         ("nested-keyed-closed-pools", true, 401),
         ("nested-keyed-open-pools", false, 200),
     ] {
-        let mut g = governed_full(instance, keys, None, Screen::Nothing, None, None, true).await;
+        let mut g = governed_full(instance, keys, None, None, None, true).await;
         let key = g
             .gov
             .lookup_by_sub(&g.key.id)

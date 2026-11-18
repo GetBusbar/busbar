@@ -3,7 +3,9 @@
 
 use super::{
     application_with_resource_auth_at,
-    browser::{answer_consent, encode_component, location, path_of, query_param, send, Jar},
+    browser::{
+        answer_consent, encode_component, location, path_of, percent_decode, query_param, send, Jar,
+    },
 };
 use base64::Engine as _;
 use busbar_contract::json::{self, JsonValueTrait as _};

@@ -5,11 +5,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use busbar_contract::json::{self, Value};
 use busbar_contract::plane::PlaneDeclaration;
 use busbar_kernel_audit::{
     attribution, Audit, AuditChain, AuditInputs, AuditKeySet, AuditRecord, Recipe, UnitFacts,
 };
-use json::Value;
 
 use crate::root::durability::tests::{audit_inputs, audit_pass, NativeFixture};
 use crate::root::durability::{Durability, AUDIT_RING};

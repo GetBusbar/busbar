@@ -6,9 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use busbar_contract::abi::host::service::{UnitRef, LINE_NONE};
+use busbar_contract::json::{self, Value};
 use busbar_kernel::guest::{GuestList, Matched};
 use busbar_kernel::inbound::{self as kin, Inbound};
-use json::Value;
 
 use crate::root::loader::dispatch::auth_handle::{self, RefSpace};
 

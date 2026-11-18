@@ -317,7 +317,6 @@ fn the_book_holds_no_signing_capability() {
     impl NoSigner for crate::root::durability::AuditRing {}
     impl NoSigner for crate::root::durability::HeadFeed {}
     impl NoSigner for busbar_kernel::governance::GovState {}
-    impl NoSigner for busbar_kernel_wal::JournalRecord {}
     impl<T: NoSigner> NoSigner for Arc<T> {}
     impl<T: NoSigner> NoSigner for std::sync::Weak<T> {}
     impl<T: NoSigner> NoSigner for Option<T> {}
@@ -429,7 +428,7 @@ async fn ephemeral_journal_is_bounded_after_n_requests() {
             .prepare_audit_page(1, sample, None)
             .unwrap();
         let page: busbar_contract::json::Value =
-            busbar_contract::json::from_slice(&plan.finish().await.unwrap()).unwrap();
+            busbar_contract::json::parse(&plan.finish().await.unwrap()).unwrap();
         let base_seq = page["truncated_below_base"]["base_seq"]
             .as_str()
             .unwrap()
