@@ -312,12 +312,12 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                 }
             }),
         ));
-        let mut outcomes = Vec::new();
+        let mut outcomes = smallvec::SmallVec::<[_; 8]>::new();
         for (outcome, records) in gate_results {
             ran.extend(records);
             outcomes.push(outcome);
         }
-        let mut judged = Vec::new();
+        let mut judged = smallvec::SmallVec::<[_; 8]>::new();
         for outcome in outcomes {
             let (called, mut answer) =
                 outcome.map_err(|_| unavailable(req.route, drive.refusals))?;
@@ -513,7 +513,7 @@ fn rejected(
 
 fn normalize(answer: &mut busbar_ports::hook::HookAnswer, candidates: &[CandidateView]) {
     if matches!(answer.verb, abi::VERB_PREFER | abi::VERB_PRIORITIZE) {
-        let mut seen = Vec::new();
+        let mut seen = smallvec::SmallVec::<[_; 16]>::new();
         answer.order.retain(|index| {
             let valid = candidates
                 .iter()
