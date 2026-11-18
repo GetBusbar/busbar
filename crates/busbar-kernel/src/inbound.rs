@@ -1599,7 +1599,7 @@ fn signed_then_keys(
                             (key.enabled
                                 && !crate::governance::key_row_expired(&key, now)
                                 && cred.meta.is_live(now)
-                                && !g.is_revoked(&key.id))
+                                && !g.is_revoked_at(&key.id, now))
                             .then_some(key)
                         })
                     });

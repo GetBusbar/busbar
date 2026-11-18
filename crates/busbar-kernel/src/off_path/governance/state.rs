@@ -502,11 +502,6 @@ pub(crate) fn metering_flush_fresh_cells<K, V>(shards: &[Mutex<foldhash::HashMap
         .sum()
 }
 
-/// `revocation`: the refresh clock's origin, read once when the identity cache is built.
-pub(crate) fn revocation_clock_origin() -> std::time::Instant {
-    std::time::Instant::now()
-}
-
 /// `revocation`: a revocation recorded once, when a key or subject is revoked (control plane).
 pub(crate) fn revocation_insert(set: &mut foldhash::HashSet<String>, sub: &str) {
     set.insert(sub.to_owned());

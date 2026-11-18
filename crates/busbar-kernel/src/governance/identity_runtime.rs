@@ -58,12 +58,19 @@ impl GovState {
         let denied = crate::off_path::governance::runtime::identity_runtime_denied(std::mem::take(
             &mut snapshot.denied,
         ));
-        let caches = Arc::new(RwLock::new(cache_snapshot(snapshot)));
+        // The build's one reading, taken after the snapshot's read: the cache's credential
+        // liveness, the denylist's wall stamp and its monotonic origin.
+        let built = crate::store::Stamp::now();
+        let caches = Arc::new(RwLock::new(cache_snapshot(
+            snapshot,
+            built.wall_ns / 1_000_000_000,
+        )));
         let order = Arc::new(CacheOrder::default());
         let denylist = revocation::RevocationSync::native(
             core.clone(),
             denied,
-            crate::store::now(),
+            built.wall_ns / 1_000_000_000,
+            built.mono_ns,
             caches.clone(),
             order.clone(),
         );
@@ -540,12 +547,14 @@ pub(super) fn committed_key(commit: &IdentityCommit, id: &str) -> RecordStoreRes
         .ok_or_else(|| RecordStoreError("confirmed identity change omitted its key".into()))
 }
 
-fn cache_snapshot(snapshot: IdentitySnapshot) -> GovCaches {
+/// The caches of `snapshot` as they stand at `now`: the caller's reading, taken after it read the
+/// snapshot.
+fn cache_snapshot(snapshot: IdentitySnapshot, now: u64) -> GovCaches {
     let (key_revisions, credential_revisions, by_id, by_credential) =
         crate::off_path::governance::runtime::identity_runtime_cache_maps(
             snapshot.keys,
             snapshot.credentials,
-            crate::store::now(),
+            now,
         );
     GovCaches {
         revision: snapshot.revision,
@@ -565,7 +574,8 @@ pub(crate) async fn reload_native(
         let ticket = order.ticket();
         let mut snapshot = core.identity().snapshot_for_refresh().await?;
         let denied = std::mem::take(&mut snapshot.denied);
-        let mut fresh = cache_snapshot(snapshot);
+        // Each attempt reads after its own snapshot: a later attempt sees a later time.
+        let mut fresh = cache_snapshot(snapshot, crate::store::now());
         match order.turn(ticket) {
             CacheTurn::Swap(_turn) => {
                 let mut current = caches.write().unwrap_or_else(|p| p.into_inner());

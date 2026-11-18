@@ -64,6 +64,7 @@ async fn faulty_sync(now: u64) -> (Arc<ReadFault>, Arc<RevocationSync>) {
         core,
         HashSet::default(),
         now,
+        crate::store::monotonic_ns(),
         Arc::new(RwLock::new(crate::governance::GovCaches {
             by_id: Default::default(),
             by_credential: Default::default(),
@@ -138,6 +139,7 @@ async fn a_successful_read_unions_and_closes_the_window() {
         core,
         HashSet::from_iter(["vk_local".into()]),
         0,
+        crate::store::monotonic_ns(),
         Arc::new(RwLock::new(crate::governance::GovCaches {
             by_id: Default::default(),
             by_credential: Default::default(),

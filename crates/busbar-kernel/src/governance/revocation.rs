@@ -10,7 +10,6 @@ use crate::diagnostics::{diag_warn, REVOCATION_RESYNC_FAILED, REVOCATION_RESYNC_
 use foldhash::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Instant;
 
 use super::REVOCATION_SYNC_TTL_SECS;
 
@@ -21,7 +20,9 @@ pub(crate) struct RevocationSync {
 
     synced_at: AtomicU64,
 
-    clock: Instant,
+    /// The kernel's monotonic clock when this sync was built (`store::monotonic_ns`): a tick is
+    /// the milliseconds since it.
+    origin_ns: u64,
     synced_tick: AtomicU64,
 
     attempted: Mutex<Attempt>,
@@ -49,14 +50,16 @@ impl Drop for RefreshFlight {
 }
 
 impl RevocationSync {
+    /// `now` and `origin_ns` are the builder's one reading: the wall clock in seconds and the
+    /// kernel's monotonic clock in nanoseconds at the same instant.
     pub(super) fn native(
         core: Arc<crate::persistence::facade::CoreStore>,
         initial: HashSet<String>,
         now: u64,
+        origin_ns: u64,
         caches: Arc<RwLock<super::GovCaches>>,
         order: Arc<super::CacheOrder>,
     ) -> Arc<Self> {
-        let clock = crate::off_path::governance::state::revocation_clock_origin();
         Arc::new(Self {
             native: NativeRefresh {
                 core,
@@ -65,7 +68,7 @@ impl RevocationSync {
             },
             set: RwLock::new(initial),
             synced_at: AtomicU64::new(now),
-            clock,
+            origin_ns,
             synced_tick: AtomicU64::new(0),
             attempted: Mutex::new(Attempt { wall: now, tick: 0 }),
             inflight: AtomicBool::new(false),
@@ -90,7 +93,8 @@ impl RevocationSync {
     }
 
     pub(crate) fn refresh_if_stale(self: &Arc<Self>, now: u64) {
-        let tick = u64::try_from(self.clock.elapsed().as_millis()).unwrap_or(u64::MAX);
+        // Milliseconds on the monotonic clock since this sync was built, read at the check.
+        let tick = crate::store::monotonic_ns().saturating_sub(self.origin_ns) / 1_000_000;
         self.refresh_if_stale_at(now, tick);
     }
 
