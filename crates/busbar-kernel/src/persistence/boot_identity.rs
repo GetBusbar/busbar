@@ -507,8 +507,12 @@ pub(crate) struct BootRecords {
 impl BootRecords {
     pub(crate) fn new(core: Arc<CoreStore>, schemas: &[&str]) -> Result<Self, String> {
         Ok(Self {
-            records: ScopedStore::host_private(core, INSTANCE, schemas.iter().map(|s| (*s).into()))
-                .map_err(error)?,
+            records: ScopedStore::host_private(
+                core,
+                INSTANCE,
+                schemas.iter().map(|s| (*s).to_owned()),
+            )
+            .map_err(error)?,
             gate: tokio::sync::Mutex::new(()),
             pending: Mutex::new(None),
         })

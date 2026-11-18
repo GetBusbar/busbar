@@ -41,10 +41,29 @@ pub mod ledger {
     };
 }
 pub mod history {
-    pub use crate::host_records_async::{
-        migration_audit_authorizes, migration_audit_rows, migration_authorizes, migration_rows,
-        HistoryCollection, HistoryError, HistoryMode,
-    };
+    use super::*;
+    pub use crate::host_records_async::{HistoryCollection, HistoryError, HistoryMode};
+    pub fn migration_rows<'a>(
+        owner: &str,
+        declarations: impl IntoIterator<Item = HistoryCollection<'a>>,
+        record: PlaneRecordRef<'_>,
+        parent_life: Option<u64>,
+    ) -> Result<Rows, HistoryError> {
+        crate::persistence::history::migration_rows(owner, declarations, record, parent_life)
+    }
+    pub fn migration_authorizes<'a>(
+        owner: &str,
+        declarations: impl IntoIterator<Item = HistoryCollection<'a>>,
+        address: &Address,
+    ) -> bool {
+        crate::persistence::history::migration_authorizes(owner, declarations, address)
+    }
+    pub fn migration_audit_rows(owner: &str, record: &AuditRecord) -> Result<Rows, HistoryError> {
+        crate::persistence::history::migration_audit_rows(owner, record)
+    }
+    pub fn migration_audit_authorizes(owner: &str, address: &Address) -> bool {
+        crate::persistence::history::migration_audit_authorizes(owner, address)
+    }
 }
 pub mod scoped {
     pub use crate::persistence::scoped::{

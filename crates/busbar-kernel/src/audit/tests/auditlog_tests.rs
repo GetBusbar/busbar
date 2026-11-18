@@ -156,7 +156,8 @@ fn audit_history(store: Arc<CoreStore>) -> AsyncHistory {
 }
 async fn seed_legacy(store: &CoreStore, record: &busbar_contract::records::AuditRecord) {
     use busbar_contract::persistence::{Candidate, Mutation, PreparedCandidate, CANDIDATE_VERSION};
-    let rows = crate::host_records_async::migration_audit_rows(PERSISTENCE_OWNER, record).unwrap();
+    let rows =
+        crate::persistence::history::migration_audit_rows(PERSISTENCE_OWNER, record).unwrap();
     let prepared = PreparedCandidate::new(Candidate {
         id: store.next_id().unwrap(),
         codec: CANDIDATE_VERSION,

@@ -119,12 +119,8 @@ impl StoreWork {
     async fn rows(&self, plane: &Caller<'_>) -> Result<(ScopedStore, Arc<str>), u32> {
         let store = &self.store;
         let instance: Arc<str> = Arc::from(plane.name);
-        let rows = ScopedStore::host_private(
-            Arc::clone(store),
-            &instance,
-            [WORK_SCHEMA.as_str().to_string()],
-        )
-        .map_err(|_| R_UNSUPPORTED)?;
+        let rows = ScopedStore::host_private(Arc::clone(store), &instance, [WORK_SCHEMA.as_str()])
+            .map_err(|_| R_UNSUPPORTED)?;
         self.book
             .load_native(&rows, &instance)
             .await

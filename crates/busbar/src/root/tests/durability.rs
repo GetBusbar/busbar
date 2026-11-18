@@ -552,7 +552,7 @@ async fn unreadable_or_malformed_registry_cannot_report_complete_verification() 
         .is_empty());
     fixture.faults.unreadable.store(false, Ordering::Release);
     let rows =
-        ScopedStore::host_private(fixture.core.clone(), INSTANCE, [NODE_SCHEMA.into()]).unwrap();
+        ScopedStore::host_private(fixture.core.clone(), INSTANCE, [NODE_SCHEMA]).unwrap();
     assert!(matches!(
         rows.put(
             NODE_SCHEMA,

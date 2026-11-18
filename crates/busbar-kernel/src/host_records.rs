@@ -70,8 +70,9 @@ pub fn record_scope_len(instance: &str) -> usize {
 
 type Queued = (u64, Vec<u8>);
 
-/// One instance's unacknowledged writes, by record kind and then key: a lookup borrows both.
-type KindQueues = BTreeMap<String, BTreeMap<Vec<u8>, Queued>>;
+/// One instance's unacknowledged writes, by record kind and then key: a lookup borrows both. A
+/// kind is named by its schema's own fixed name.
+type KindQueues = BTreeMap<&'static str, BTreeMap<Vec<u8>, Queued>>;
 
 type Queues = HashMap<Arc<str>, KindQueues>;
 
@@ -87,24 +88,25 @@ impl PendingRecords {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn enqueue(&self, instance: &str, kind: &str, key: &[u8], value: Vec<u8>) -> u64 {
+    /// Lay one unacknowledged write on the overlay and answer its sequence. `kind` is the record
+    /// schema's own name. The instance label is the caller's, shared: the overlay does not copy
+    /// it. The key and the bytes are the overlay's own, held until the write is acknowledged.
+    pub fn enqueue(
+        &self,
+        instance: &Arc<str>,
+        kind: &'static str,
+        key: &[u8],
+        value: Vec<u8>,
+    ) -> u64 {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         let mut map = self.lock();
-        if !map.contains_key(instance) {
-            map.insert(
-                crate::cold::host::records_instance_row(instance),
-                KindQueues::default(),
-            );
+        if !map.contains_key(instance.as_ref()) {
+            map.insert(Arc::clone(instance), KindQueues::default());
         }
-        let Some(kinds) = map.get_mut(instance) else {
+        let Some(kinds) = map.get_mut(instance.as_ref()) else {
             return seq;
         };
-        let keys = match kinds.get_mut(kind) {
-            Some(keys) => keys,
-            None => kinds
-                .entry(crate::cold::host::records_kind_row(kind))
-                .or_default(),
-        };
+        let keys = kinds.entry(kind).or_default();
         match keys.get_mut(key) {
             Some(queued) => *queued = (seq, value),
             None => {

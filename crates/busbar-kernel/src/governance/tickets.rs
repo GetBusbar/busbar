@@ -225,11 +225,7 @@ fn scope(core: Arc<CoreStore>) -> Option<ScopedStore> {
     ScopedStore::host_private(
         core,
         OWNER,
-        [
-            TICKET_RECORD_KIND.into(),
-            TICKET_SPENT_KIND.into(),
-            EXPIRY_SCHEMA.into(),
-        ],
+        [TICKET_RECORD_KIND, TICKET_SPENT_KIND, EXPIRY_SCHEMA],
     )
     .ok()
 }

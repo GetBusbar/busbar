@@ -814,7 +814,7 @@ impl NativeWorkWriter {
         crate::persistence::scoped::ScopedStore::host_private(
             Arc::clone(&self.store),
             &self.instance,
-            [WORK_SCHEMA.as_str().to_string()],
+            [WORK_SCHEMA.as_str()],
         )
     }
     fn put(&self, key: Vec<u8>, value: RecordBytes, acked: Acked) {
@@ -1751,9 +1751,9 @@ impl KernelServices {
             facts
                 .record_kinds
                 .iter()
-                .map(|schema| schema.as_str().to_string())
+                .map(|schema| schema.as_str())
                 .chain(std::iter::once(
-                    crate::host_chains::CHAIN_LIFE_SCHEMA.as_str().to_string(),
+                    crate::host_chains::CHAIN_LIFE_SCHEMA.as_str(),
                 )),
         );
         rows.map(|rows| {
@@ -2264,7 +2264,12 @@ impl KernelServices {
         let make = || {
             let seq = match chain {
                 Some(_) => 0,
-                None => pending.enqueue(caller.namespace(), kind, key, value.as_slice().to_vec()),
+                None => pending.enqueue(
+                    caller.namespace(),
+                    schema.as_str(),
+                    key,
+                    value.as_slice().to_vec(),
+                ),
             };
             let key = key.to_vec();
             Write {

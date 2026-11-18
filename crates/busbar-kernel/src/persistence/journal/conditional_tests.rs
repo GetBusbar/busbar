@@ -240,7 +240,7 @@ async fn participant_budget_and_scope_refusals_submit_nothing() {
             crate::persistence::facade::AccessError::Overloaded
         ))
     ));
-    let untrusted = ScopedStore::authorized(store, "receipt-test", ["receipts".into()]).unwrap();
+    let untrusted = ScopedStore::authorized(store, "receipt-test", ["receipts"]).unwrap();
     assert!(matches!(
         untrusted.prepare_participant(&[], &mutations, 4096),
         Err(scoped::Error::Unauthorized)

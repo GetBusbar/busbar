@@ -467,10 +467,11 @@ async fn native_write_queue_cancellation_requeues_exact_request_and_callback_aft
     let chains = crate::host_chains::ChainBook::default();
     let answers = Arc::new(Mutex::new(Vec::new()));
     let answered = Arc::clone(&answers);
-    let seq = pending.enqueue("instance", "schema", b"key", vec![8]);
+    let instance: Arc<str> = Arc::from("instance");
+    let seq = pending.enqueue(&instance, "schema", b"key", vec![8]);
     assert_eq!(
         batcher.push_native_with(|| Write {
-            instance: Arc::from("instance"),
+            instance,
             schema: RecordSchemaId::new("schema"),
             key: b"key".to_vec(),
             value: RecordBytes::new(vec![8]).unwrap(),
@@ -712,9 +713,10 @@ async fn native_queue_keeps_newer_put_behind_cancelled_older_attempt() {
     let answers = Arc::new(Mutex::new(Vec::new()));
     let make = |value: u8| {
         let answers = Arc::clone(&answers);
-        let seq = pending.enqueue("instance", "schema", b"key", vec![value]);
+        let instance: Arc<str> = Arc::from("instance");
+        let seq = pending.enqueue(&instance, "schema", b"key", vec![value]);
         Write {
-            instance: Arc::from("instance"),
+            instance,
             schema: RecordSchemaId::new("schema"),
             key: b"key".to_vec(),
             value: RecordBytes::new(vec![value]).unwrap(),
