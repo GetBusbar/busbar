@@ -232,6 +232,8 @@ loom-model = ["busbar-kernel/loom-model"]
 
 [package.metadata.busbar.always-on]
 plane-llm-door = "busbar-plane-llm"
+secret-env = "busbar-secret-env"
+secret-file = "busbar-secret-file"
 plane-mcp-door = "busbar-plane-mcp"
 plane-a2a-door = "busbar-plane-a2a"
 plane-streaming = "busbar-plane-streaming"
@@ -279,7 +281,13 @@ auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
 auth-oauth = "busbar-auth-oauth"
 auth-webhook-signature = "busbar-auth-webhook-signature"
-# Stores, hooks and secret sources are native images (WP3), not linked rows.
+# THE SECRET SOURCES (`{ env: VAR }`, `{ file: PATH }`): MIN-3 images (each logic crate's `PLUGIN` header), linked in
+# every build on the `min3-images` axis (THE DESIGN, "Plugins": env and file secrets are ordinary plugins, linked in the
+# default build; ARCHITECT 2026-10-02 WIRE-SECRET). 044034749a dropped their door-era rows when the `secret-doors` axis
+# went; without these rows the default binary admits no secret source and refuses every `{ env: .. }` reference
+# (BUSBAR-3121). Stores and hooks are native images (WP3), not linked rows.
+secret-env = "busbar-secret-env"
+secret-file = "busbar-secret-file"
 # THE TRANSPORT AXIS (#3, #30): the wires this build links, one row each, folded bottom-up by the boot
 # seal. A row whose crate is a required dependency is linked in every build (its key names the row);
 # `ws` rides its optional edge. ONE ENTRY PER PLUGIN: a row is one crate's one entry, and the seal
@@ -339,6 +347,9 @@ plane-llm-door = "min3-images"
 plane-mcp-door = "min3-images"
 plane-streaming = "min3-images"
 plane-a2a-door = "min3-images"
+# MIN-3 secret sources register their PLUGIN header; describe declares their source shorthand.
+secret-env = "min3-images"
+secret-file = "min3-images"
 
 # A linked crate whose entry module is not `<crate>::linked`.
 [package.metadata.busbar.linked-entry]
