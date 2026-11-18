@@ -1257,12 +1257,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 StepAnswer::refuse(token, Refusal::new(ReasonCode::BreakerOpen))
             }
             route::End::Vetoed(status, text) => {
-                let rendered = self.render_as(
-                    ReasonCode::HookVeto,
-                    Some((status, None)),
-                    Some(&text),
-                    None,
-                );
+                let rendered =
+                    self.render_as(ReasonCode::HookVeto, Some((status, None)), Some(text), None);
                 self.lock().rendered = Some(rendered);
                 StepAnswer::refuse(token, Refusal::new(ReasonCode::HookVeto))
             }

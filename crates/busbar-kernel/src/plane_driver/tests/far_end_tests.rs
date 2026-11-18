@@ -2451,8 +2451,7 @@ async fn a_required_restrict_refuses_at_the_fallback_pool() {
         far.member(&t, 2).await,
         Pick::Vetoed {
             status: 503,
-            text: "No upstream satisfies a required gate's restriction. Please retry shortly."
-                .to_string(),
+            text: "No upstream satisfies a required gate's restriction. Please retry shortly.",
         }
     );
 }

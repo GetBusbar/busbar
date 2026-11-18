@@ -115,8 +115,8 @@ pub enum Pick {
     Vetoed {
         /// The status number.
         status: u32,
-        /// The words.
-        text: String,
+        /// The words (the walk's own, fixed).
+        text: &'static str,
     },
     /// The walk refuses the unit for `0` before any member was dialled: the member's credential,
     /// re-resolved for this attempt, is unavailable (`ReasonCode::CredentialUnavailable`). The
@@ -572,7 +572,7 @@ pub(crate) enum End {
 
     Exhausted(u32, Option<u32>, &'static str),
 
-    Vetoed(u32, String),
+    Vetoed(u32, &'static str),
 
     Cancel(ReasonCode, Option<Answered>),
 }

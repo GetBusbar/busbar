@@ -915,7 +915,7 @@ fn shed_pick(shed: &Shed) -> Pick {
     if shed.gate_rejected {
         Pick::Vetoed {
             status: u32::from(shed.status),
-            text: shed.detail.to_string(),
+            text: shed.detail,
         }
     } else {
         exhausted(shed)
