@@ -820,6 +820,11 @@ impl Line {
             .unwrap_or(false)
     }
 
+    /// Whether the line still holds a connection that names a dial target (it is not closing).
+    pub(crate) fn holds_target(&self) -> bool {
+        self.fact(|_| (), |_| ()).is_some()
+    }
+
     /// The dial target the line's connection names, if it still holds one.
     pub(crate) fn target(&self) -> Option<String> {
         self.fact(

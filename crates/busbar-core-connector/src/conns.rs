@@ -3545,7 +3545,9 @@ impl DeclaredConns for Connector {
         // The line may have been dialled for another target on the same key: the commit plans
         // its own. The line's own target is read only as its liveness (a closing line answers
         // `Closed`).
-        line.target().ok_or(ConnError::Closed)?;
+        if !line.holds_target() {
+            return Err(ConnError::Closed);
+        }
         let planned = self
             .plan_declared(
                 &declared,

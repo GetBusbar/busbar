@@ -1495,6 +1495,29 @@ fn locate_as(
     accept: bool,
     deadline_ns: u64,
 ) -> Result<Located, Refused> {
+    let mut alpn = LOCATE_ALPN.with(std::cell::Cell::take);
+    let mut defaults = LOCATE_DEFAULTS.with(std::cell::Cell::take);
+    let located = locate_in(
+        door,
+        target,
+        (accept, deadline_ns),
+        &mut alpn,
+        &mut defaults,
+    );
+    LOCATE_ALPN.with(|kept| kept.set(alpn));
+    LOCATE_DEFAULTS.with(|kept| kept.set(defaults));
+    located
+}
+
+/// [`locate_as`] with the protocol offer and head lines written into `alpn` and `defaults`, the
+/// thread's reused locate buffers (each cleared and zeroed to its room before it is lent).
+fn locate_in(
+    door: &dyn FramerDoor,
+    target: &str,
+    (accept, deadline_ns): (bool, u64),
+    alpn: &mut Vec<u8>,
+    defaults: &mut Vec<u8>,
+) -> Result<Located, Refused> {
     if !accept {
         door.facts().require_dial()?;
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::Locate);
@@ -1504,8 +1527,10 @@ fn locate_as(
     for _ in 0..2 {
         let mut authority = vec![0_u8; auth_cap];
         let mut name = vec![0_u8; name_cap];
-        let mut alpn = vec![0_u8; alpn_cap];
-        let mut defaults = vec![0_u8; defaults_cap];
+        alpn.clear();
+        alpn.resize(alpn_cap, 0);
+        defaults.clear();
+        defaults.resize(defaults_cap, 0);
         let mut i: LocateIn = blank_in();
         i.head.deadline_ns = deadline_ns;
         i.target = abi(target.as_bytes());
@@ -1598,6 +1623,10 @@ const LINE_PREDICATES_INLINE: usize = 4;
 thread_local! {
     /// The buffer a stream's final status is laid out in, reused across finishes on this thread.
     static FINAL_BYTES: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
+    /// The buffers a `locate` answer writes its protocol offer and head lines into, reused across
+    /// locates on this thread (they are read into the answer's own values before the next one).
+    static LOCATE_ALPN: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
+    static LOCATE_DEFAULTS: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
 /// `encode`: an envelope as the entry's own wire bytes.
