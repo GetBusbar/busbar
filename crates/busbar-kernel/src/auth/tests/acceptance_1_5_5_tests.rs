@@ -132,7 +132,7 @@ fn admin_module_unresolved_diag_fires_and_falls_through_to_pass() {
     let (verdict, buf) = capture(|| {
         let judged = unresolved_admin_module("ghost-module");
         assert_eq!(judged.verdict, AuthVerdict::Pass);
-        complete_chain(chain_position_verdict("ghost-module", judged.verdict))
+        complete_chain(chain_position_verdict(&"ghost-module".into(),judged.verdict))
     });
     assert_eq!(
         verdict,
@@ -183,7 +183,7 @@ fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
 
     let (judged, said) = captured_on_paused_clock(async {
         data_verdict_of("door", Verified::Overloaded.into(), false).map(|judged| {
-            chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied)
+            chain_position_verdict(&"door".into(),judged.verdict).unwrap_or(ChainVerdict::Denied)
         })
     });
     assert_eq!(
@@ -202,7 +202,7 @@ fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
             Err(refused) => refused,
         };
         drop(held);
-        chain_position_verdict("door", refused.verdict).expect("a refusal is terminal")
+        chain_position_verdict(&"door".into(),refused.verdict).expect("a refusal is terminal")
     });
     assert_eq!(
         verdict,
@@ -217,7 +217,7 @@ fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
     let (verdict, said) = captured_on_paused_clock(async {
         let judged =
             data_verdict_of("door", Verified::Reject.into(), false).expect("an actual refusal");
-        chain_position_verdict("door", judged.verdict).expect("a refusal is terminal")
+        chain_position_verdict(&"door".into(),judged.verdict).expect("a refusal is terminal")
     });
     assert_eq!(verdict, ChainVerdict::Denied);
     assert!(!said.text().contains("BUSBAR-4005"), "{:?}", said.text());
@@ -229,7 +229,7 @@ fn a_faulted_data_plane_verify_says_4006_in_1_5_5_words_and_denies() {
 
     let (verdict, said) = captured_on_paused_clock(async {
         deny_unavailable_chain(data_verdict_of("door", Verified::Failed.into(), true).map(
-            |judged| chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied),
+            |judged| chain_position_verdict(&"door".into(),judged.verdict).unwrap_or(ChainVerdict::Denied),
         ))
     });
     assert_eq!(verdict, ChainVerdict::Denied);
@@ -238,7 +238,7 @@ fn a_faulted_data_plane_verify_says_4006_in_1_5_5_words_and_denies() {
     assert!(text.contains(AUTH_PANICKED_TEXT), "1.5.5's text: {text:?}");
     let (verdict, said) = captured_on_paused_clock(async {
         deny_unavailable_chain(data_verdict_of("door", Verified::Failed.into(), false).map(
-            |judged| chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied),
+            |judged| chain_position_verdict(&"door".into(),judged.verdict).unwrap_or(ChainVerdict::Denied),
         ))
     });
     assert_eq!(verdict, ChainVerdict::Denied);
@@ -251,7 +251,7 @@ fn a_saturated_admin_verifier_says_4008_in_1_5_5_words_and_denies() {
 
     let (verdict, said) = captured_on_paused_clock(async {
         let judged = admin_verdict_of(Verified::Overloaded.into(), false);
-        chain_position_verdict("ext", judged.verdict).expect("overload is terminal")
+        chain_position_verdict(&"ext".into(),judged.verdict).expect("overload is terminal")
     });
     assert_eq!(verdict, ChainVerdict::Denied);
     let text = said.text();
@@ -270,7 +270,7 @@ fn a_saturated_admin_verifier_says_4008_in_1_5_5_words_and_denies() {
             Err(refused) => refused,
         };
         drop(held);
-        chain_position_verdict("ext", refused.verdict).expect("a refusal is terminal")
+        chain_position_verdict(&"ext".into(),refused.verdict).expect("a refusal is terminal")
     });
     assert_eq!(verdict, ChainVerdict::Denied);
     assert!(
@@ -280,7 +280,7 @@ fn a_saturated_admin_verifier_says_4008_in_1_5_5_words_and_denies() {
     );
     let (verdict, said) = captured_on_paused_clock(async {
         let judged = admin_verdict_of(Verified::Reject.into(), false);
-        chain_position_verdict("ext", judged.verdict).expect("a refusal is terminal")
+        chain_position_verdict(&"ext".into(),judged.verdict).expect("a refusal is terminal")
     });
     assert_eq!(verdict, ChainVerdict::Denied);
     assert!(!said.text().contains("BUSBAR-4008"), "{:?}", said.text());
@@ -300,7 +300,7 @@ fn a_stalled_or_faulted_admin_verify_says_4009_in_1_5_5_words_and_denies() {
             } else {
                 admin_verdict_of(Verified::Failed.into(), true)
             };
-            chain_position_verdict("ext", judged.verdict).expect("no verdict is terminal")
+            chain_position_verdict(&"ext".into(),judged.verdict).expect("no verdict is terminal")
         });
         assert_eq!(verdict, ChainVerdict::Denied);
         let text = said.text();
@@ -309,7 +309,7 @@ fn a_stalled_or_faulted_admin_verify_says_4009_in_1_5_5_words_and_denies() {
     }
     let (verdict, said) = captured_on_paused_clock(async {
         let judged = admin_verdict_of(Verified::Failed.into(), false);
-        chain_position_verdict("ext", judged.verdict).expect("a failed verification is terminal")
+        chain_position_verdict(&"ext".into(),judged.verdict).expect("a failed verification is terminal")
     });
     assert_eq!(verdict, ChainVerdict::Denied);
     assert!(!said.text().contains("BUSBAR-4009"), "{:?}", said.text());

@@ -749,8 +749,8 @@ fn probe_targets(pool: &SeatPool) -> Vec<ProbeTarget> {
         .flat_map(|walked| {
             walked.members.iter().map(|member| ProbeTarget {
                 destination: member.destination,
-                pool: walked.name.clone(),
-                qualified_member: member.name.clone(),
+                pool: walked.name.as_str().to_owned(),
+                qualified_member: member.name.as_str().to_owned(),
             })
         })
         .collect();
@@ -794,7 +794,7 @@ fn egress_of(
         .pools
         .values()
         .flat_map(|walked| walked.members.iter())
-        .map(|member| (member.destination, member.name.clone()))
+        .map(|member| (member.destination, member.name.as_str().to_owned()))
         .collect();
     let cell = || busbar_kernel::store::pool_breaker_cfg(None);
     let policy = pool.pools.keys().fold(

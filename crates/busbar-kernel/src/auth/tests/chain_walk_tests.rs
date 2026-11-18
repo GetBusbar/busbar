@@ -80,7 +80,7 @@ fn chain(modules: &[(&str, &Arc<Canned>)], keys_in_chain: bool) -> AuthMiddlewar
         chain: modules
             .iter()
             .map(|(provider, calls)| ChainEntry {
-                provider: (*provider).to_string(),
+                provider: (*provider).into(),
                 calls: Arc::clone(calls) as Arc<dyn AuthCalls>,
                 name: (*provider).to_string(),
             })

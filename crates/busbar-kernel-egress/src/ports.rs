@@ -221,8 +221,8 @@ pub struct Dispatched {
     pub leg: u8,
     /// Which attempt of the walk this is, counted from one.
     pub attempt: u32,
-    /// Which pool cell the attempt is recorded against.
-    pub pool: String,
+    /// Which pool cell the attempt is recorded against: the pool's own shared name.
+    pub pool: busbar_contract::kept::Text,
     /// Which member of the verified set is being dialled.
     pub destination: DestinationId,
     /// The lane the destination was sealed on.

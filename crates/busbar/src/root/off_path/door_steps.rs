@@ -353,8 +353,8 @@ pub(crate) fn compose_egress(
     }
     for member in members.values() {
         built.insert(
-            member.name.clone(),
-            Pool::new(member.name.clone(), vec![member.clone()]),
+            member.name.as_str().to_owned(),
+            Pool::new(member.name.as_str(), vec![member.clone()]),
         );
     }
 

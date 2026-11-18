@@ -198,7 +198,7 @@ async fn actual_replay_claim_is_once_per_admission_and_denied_after_exit_or_dead
     };
     let claim = || ReplayAdmission {
         pending: crate::auth::PendingClaim::for_identity(
-            "actual-owner-policy",
+            &"actual-owner-policy".into(),
             &identity,
             Some(gov.clone()),
             now,

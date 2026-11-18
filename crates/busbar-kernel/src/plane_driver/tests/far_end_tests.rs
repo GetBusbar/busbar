@@ -3821,7 +3821,8 @@ async fn delegated_users_dispatch_with_their_own_auth_and_no_shared_fallback() {
     // Root qualifies member ledger names, while the plane selects its configured entry.
     for pool in r.egress.pools.values_mut() {
         for member in &mut pool.members {
-            member.name = format!("plane{}{}", crate::governance::PLANE_LANE_SEP, member.name);
+            member.name =
+                format!("plane{}{}", crate::governance::PLANE_LANE_SEP, member.name).as_str().into();
         }
     }
     let services = crate::host_services::KernelServices::new();

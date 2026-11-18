@@ -55,6 +55,7 @@ use busbar_contract::abi::transport::{
 };
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{CallId, Pass, ReasonCode, Route};
+use busbar_contract::kept::Text;
 use busbar_contract::conn::{
     ConnCause, ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
@@ -466,7 +467,7 @@ impl Egress {
             .flat_map(|p| &p.members)
             .find(|m| m.destination == destination)?
             .clone();
-        Some(self.probe_member(String::new(), member, timeout))
+        Some(self.probe_member(Text::EMPTY, member, timeout))
     }
 
     /// A native probe retains the exact configured pool/member selection.
@@ -485,9 +486,8 @@ impl Egress {
             Some(AuthBinding::Configured(binding)) if binding.passthrough => return None,
             _ => {}
         }
-        let member = self
-            .pools
-            .get(pool)?
+        let found = self.pools.get(pool)?;
+        let member = found
             .members
             .iter()
             .find(|member| {
@@ -496,10 +496,10 @@ impl Egress {
                     && member.destination == destination
             })?
             .clone();
-        Some(self.probe_member(pool.to_owned(), member, timeout))
+        Some(self.probe_member(found.name.clone(), member, timeout))
     }
 
-    fn probe_member(&self, pool: String, member: Member, timeout: Duration) -> EgressFarEnd<'_> {
+    fn probe_member(&self, pool: Text, member: Member, timeout: Duration) -> EgressFarEnd<'_> {
         let destination = member.destination;
         let breaker = (self.breaker)();
         let walk = Walk::pinned(timeout.as_secs().max(1), self.clock.now());
@@ -507,7 +507,7 @@ impl Egress {
             egress: self,
             breaker,
             route: UnitRoute {
-                pool,
+                pool: pool.as_str().to_owned(),
                 ..UnitRoute::default()
             },
             state: Mutex::new(State {
@@ -536,7 +536,7 @@ impl Egress {
 }
 
 struct Live {
-    pool: String,
+    pool: Text,
     member: Member,
     permit: Option<Permit>,
 
@@ -619,7 +619,7 @@ struct State {
     walk_refusal: Option<Shed>,
     live: Option<Live>,
     // A fully consumed response can authorize one new exchange on this same member.
-    completed: Option<(String, Member, CallId)>,
+    completed: Option<(Text, Member, CallId)>,
     probe: Option<Member>,
 
     refused: Option<ReasonCode>,
@@ -708,8 +708,8 @@ impl Drop for Retirement<'_, '_> {
 }
 
 struct Reading {
-    pool: String,
-    metric_pool: String,
+    pool: Text,
+    metric_pool: Text,
     destination: DestinationId,
     passthrough: bool,
     probe: Option<u64>,
@@ -724,7 +724,7 @@ impl Reading {
     fn take(owner: &EgressFarEnd<'_>, live: &mut Live) -> Self {
         Reading {
             pool: live.pool.clone(),
-            metric_pool: EgressFarEnd::metric_pool(&live.pool, &live.member).to_string(),
+            metric_pool: EgressFarEnd::metric_pool(&live.pool, &live.member).clone(),
             destination: live.member.destination,
             passthrough: live.passthrough,
             stated: live.stated.clone(),
@@ -829,7 +829,9 @@ impl EgressFarEnd<'_> {
     }
 
     fn facts_of(&self, member: &Member) -> Option<&MemberFacts> {
-        self.described.as_ref().and_then(|d| d.get(&member.name))
+        self.described
+            .as_ref()
+            .and_then(|d| d.get(member.name.as_str()))
     }
 
     fn tags_of(&self, member: &Member) -> &[String] {
@@ -914,7 +916,7 @@ impl Shape for EgressFarEnd<'_> {
             members.retain(|m| {
                 grants
                     .get(pool)
-                    .is_some_and(|allowed| allowed.iter().any(|name| name == &m.name))
+                    .is_some_and(|allowed| allowed.iter().any(|name| m.name == *name))
             });
             order.retain(|id| members.iter().any(|m| m.destination == *id));
         }
@@ -1296,7 +1298,19 @@ impl EgressFarEnd<'_> {
         live.probe = read.probe.take();
     }
 
-    fn metric_pool<'m>(pool: &'m str, member: &'m Member) -> &'m str {
+    /// The unit's pool by its shared name: the configured pool's own, or (a pool the generation
+    /// does not hold) the route's name made shared once.
+    fn route_pool(&self) -> Text {
+        self.egress
+            .pools
+            .get(&self.route.pool)
+            .map_or_else(
+                || Text::from(Arc::<str>::from(self.route.pool.as_str())),
+                |pool| pool.name.clone(),
+            )
+    }
+
+    fn metric_pool<'m>(pool: &'m Text, member: &'m Member) -> &'m Text {
         if pool.is_empty() {
             &member.name
         } else {
@@ -1318,7 +1332,7 @@ impl EgressFarEnd<'_> {
 
     fn claim_member(
         &self,
-        pool: String,
+        pool: Text,
         member: Member,
         permit: Option<Permit>,
         probe: Option<u64>,
@@ -1333,7 +1347,10 @@ impl EgressFarEnd<'_> {
             lane: member.lane,
             unit: self.route.unit,
         };
-        let name = member.name.clone();
+        // The pick answers with owned names (`Pick::Member`): one copy of each, made here. The
+        // dispatch record and the live attempt share the pool's own name.
+        let name = member.name.as_str().to_owned();
+        let picked_pool = pool.as_str().to_owned();
         let route = self.egress.routes.get(&member.destination);
 
         let passthrough = member.passthrough
@@ -1342,7 +1359,7 @@ impl EgressFarEnd<'_> {
                 .is_some_and(|a| a.passthrough());
         let provider = route.map(|r| r.provider.clone()).unwrap_or_default();
         let live = Live {
-            pool: pool.clone(),
+            pool,
             member,
             permit,
             probe,
@@ -1375,7 +1392,7 @@ impl EgressFarEnd<'_> {
         self.retire(old);
         Pick::Member {
             name,
-            pool,
+            pool: picked_pool,
             passthrough,
             provider,
         }
@@ -1412,7 +1429,7 @@ impl EgressFarEnd<'_> {
         };
         if let Some(member) = probe {
             return self.claim_member(
-                self.route.pool.clone(),
+                self.route_pool(),
                 member,
                 None,
                 None,
@@ -1707,17 +1724,16 @@ impl EgressFarEnd<'_> {
                     live.member.destination,
                     live.pool.clone(),
                     live.member.name.clone(),
-                    busbar_kernel_ledger::cost::split_plane_lane(&live.member.name)
-                        .1
-                        .to_owned(),
                     live.record.clone(),
                 )
             })
         };
-        let Some((destination, selected_pool, qualified_member, member, record)) = live else {
+        let Some((destination, selected_pool, qualified_member, record)) = live else {
             self.lock().unsent = Some(RefusalCode::UnsentNoAttempt);
             return false;
         };
+        // The member's own name within its lane: read off the shared qualified name, not copied.
+        let member = busbar_kernel_ledger::cost::split_plane_lane(&qualified_member).1;
         if selected.as_ref().is_some_and(|handoff| {
             !handoff.accepts(&selected_pool, &qualified_member, self.route.unit)
                 || request.attempt_no != record.attempt
@@ -2027,7 +2043,7 @@ impl EgressFarEnd<'_> {
             let w = self.lock();
             w.live.as_ref().map_or_else(Default::default, |l| {
                 (
-                    Self::metric_pool(&l.pool, &l.member).to_string(),
+                    Self::metric_pool(&l.pool, &l.member).clone(),
                     l.stated.clone(),
                     l.degraded,
                 )
@@ -2384,7 +2400,7 @@ impl EgressFarEnd<'_> {
                     (
                         live.record.attempt,
                         live.pool.clone(),
-                        Self::metric_pool(&live.pool, &live.member).to_string(),
+                        Self::metric_pool(&live.pool, &live.member).clone(),
                         live.member.destination,
                     )
                 })
@@ -2687,7 +2703,7 @@ impl EgressFarEnd<'_> {
             let mut retirement = Retirement { owner: self, live };
             let live = &mut retirement.live;
             if let Some(classified) = live.failing.take() {
-                let pool = Self::metric_pool(&live.pool, &live.member).to_string();
+                let pool = Self::metric_pool(&live.pool, &live.member).clone();
                 let destination = live.member.destination;
                 self.record(live, token, classified, secs_of(e.clock.now()));
                 e.telemetry.upstream_failure_stated(
@@ -2892,7 +2908,7 @@ impl FarEnd for EgressFarEnd<'_> {
             let Some((pool, member, call)) = w.completed.take() else {
                 return false;
             };
-            if call != token.call() || request.pool != pool || request.member != member.name {
+            if call != token.call() || pool != request.pool || member.name != request.member {
                 return false;
             }
             // Shape consults this far end's locks, so call it outside the state lock.
@@ -2919,7 +2935,7 @@ impl FarEnd for EgressFarEnd<'_> {
         let pool = self.egress.pools.get(&self.route.pool)?;
         let members = pool.admissible_members();
         Some(Candidates {
-            pool: pool.name.clone(),
+            pool: pool.name.as_str().to_owned(),
             members: members
                 .iter()
                 .enumerate()
@@ -2929,13 +2945,13 @@ impl FarEnd for EgressFarEnd<'_> {
                         .as_ref()
                         .is_none_or(|grants| {
                             grants
-                                .get(&pool.name)
-                                .is_some_and(|allowed| allowed.iter().any(|name| name == &m.name))
+                                .get(pool.name.as_str())
+                                .is_some_and(|allowed| allowed.iter().any(|name| m.name == *name))
                         })
                 })
                 .filter(|(_, m)| {
                     self.route.member_grants.as_ref().is_none_or(|grants| {
-                        grants.get(&pool.name).is_some_and(|allowed| {
+                        grants.get(pool.name.as_str()).is_some_and(|allowed| {
                             allowed.iter().any(|name| {
                                 super::route::operator_name(m.name.as_bytes()) == name.as_bytes()
                             })
@@ -2958,7 +2974,7 @@ impl FarEnd for EgressFarEnd<'_> {
                         idx,
                         model: facts
                             .filter(|f| !f.model.is_empty())
-                            .map_or_else(|| m.name.clone(), |f| f.model.clone()),
+                            .map_or_else(|| m.name.as_str().to_owned(), |f| f.model.clone()),
                         provider: self
                             .egress
                             .routes
@@ -2986,7 +3002,7 @@ impl FarEnd for EgressFarEnd<'_> {
     fn scope(&self, _token: &Pass<Route>) -> Option<super::RoutedScope> {
         let pool = self.egress.pools.get(&self.route.pool)?;
         Some(super::RoutedScope {
-            pool: pool.name.clone(),
+            pool: pool.name.as_str().to_owned(),
             container: String::new(),
         })
     }
@@ -3006,7 +3022,7 @@ impl FarEnd for EgressFarEnd<'_> {
             .get(&self.route.pool)?
             .admissible_members()
             .get(index)
-            .map(|member| member.name.clone())
+            .map(|member| member.name.as_str().to_owned())
     }
 
     fn remaining(&self, _token: &Pass<Route>) -> Option<usize> {

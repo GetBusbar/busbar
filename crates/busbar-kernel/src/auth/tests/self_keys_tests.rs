@@ -61,7 +61,7 @@ fn bindings(module: &str, role: &str, group: Option<&str>) -> RoleBindings {
 
 fn identified(module: &str, p: Principal) -> ChainVerdict {
     ChainVerdict::Identified {
-        module: module.to_string(),
+        module: module.into(),
         principal: p,
         resolved: None,
         signed_authority: None,

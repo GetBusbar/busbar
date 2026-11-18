@@ -26,7 +26,8 @@ enum Surface {
 /// groups feed the same binding table as the existing ingress; no claim grants authority itself.
 pub struct BindingsPolicy {
     instance: u64,
-    provider: Box<str>,
+    /// The configured provider name, made shared once here: a verdict under it copies nothing.
+    provider: busbar_contract::kept::Text,
     epoch: u64,
     current_epoch: Arc<AtomicU64>,
     bindings: crate::config::RoleBindings,
@@ -41,7 +42,7 @@ impl BindingsPolicy {
     pub fn data(app: &crate::state::App, instance: u64, provider: &str, epoch: u64) -> Self {
         Self {
             instance,
-            provider: provider.into(),
+            provider: busbar_contract::kept::Text::from(Arc::<str>::from(provider)),
             epoch,
             current_epoch: Arc::clone(&app.config_generation),
             bindings: app.role_bindings.clone(),
@@ -64,7 +65,7 @@ impl BindingsPolicy {
 
     fn verdict(&self, identity: &Identity) -> ChainVerdict {
         ChainVerdict::Identified {
-            module: self.provider.to_string(),
+            module: self.provider.clone(),
             principal: Principal {
                 id: identity.subject().to_owned(),
                 name: None,

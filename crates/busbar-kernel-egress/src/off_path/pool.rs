@@ -7,13 +7,18 @@ use crate::pool::{Failover, Member, OnExhausted, Pool};
 use crate::ports::DestinationId;
 use crate::select::WeightedFloor;
 
+/// A configured name as shared text: made here once, as the pool is built.
+fn shared(name: String) -> busbar_contract::kept::Text {
+    busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(name))
+}
+
 impl Member {
     /// A member with only the two things every member has.
     #[must_use]
     pub fn new(destination: DestinationId, name: impl Into<String>, weight: u32) -> Self {
         Self {
             destination,
-            name: name.into(),
+            name: shared(name.into()),
             weight,
             tier: 0,
             attempt_timeout_ms: None,
@@ -29,7 +34,7 @@ impl Pool {
     #[must_use]
     pub fn new(name: impl Into<String>, members: Vec<Member>) -> Self {
         Self {
-            name: name.into(),
+            name: shared(name.into()),
             members,
             failover: Failover::default(),
             on_exhausted: OnExhausted::default(),
@@ -46,11 +51,11 @@ impl Pool {
         let names_a_member = self
             .members
             .iter()
-            .any(|member| failover.exclusions.contains(&member.name));
+            .any(|member| failover.exclusions.iter().any(|name| member.name == *name));
         self.admissible = names_a_member.then(|| {
             self.members
                 .iter()
-                .filter(|member| !failover.exclusions.contains(&member.name))
+                .filter(|member| !failover.exclusions.iter().any(|name| member.name == *name))
                 .cloned()
                 .collect()
         });

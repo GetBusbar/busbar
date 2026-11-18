@@ -6,7 +6,7 @@ use busbar_contract::abi::auth::AuthPoints;
 
 #[test]
 fn mixed_peer_answers_never_replace_their_per_request_verdicts() {
-    let providers = vec!["mixed".to_string()];
+    let providers = vec![busbar_contract::kept::Text::fixed("mixed")];
     let request_auths = HashSet::from_iter(["mixed".to_string()]);
     for provisional in [Judged::Identity, Judged::Pass] {
         assert!(
@@ -26,7 +26,10 @@ fn mixed_peer_answers_never_replace_their_per_request_verdicts() {
 
 #[test]
 fn peer_only_identity_survives_an_earlier_head_pass_and_a_mixed_provisional_identity() {
-    let providers = vec!["mixed".to_string(), "fallback".to_string()];
+    let providers = vec![
+        busbar_contract::kept::Text::fixed("mixed"),
+        busbar_contract::kept::Text::fixed("fallback"),
+    ];
     let request_auths = HashSet::from_iter(["mixed".to_string()]);
     for first in [None, Some(Judged::Identity), Some(Judged::Pass)] {
         let peer_identity = VerifiedIdentity {
@@ -81,7 +84,7 @@ async fn inherited_peer_positions_keep_the_exact_replay_authority_and_provider_o
     };
     let replay = Arc::new(ReplayAdmission {
         pending: crate::auth::PendingClaim::for_identity(
-            "peer-policy",
+            &"peer-policy".into(),
             &identity,
             Some(gov),
             crate::store::now(),
@@ -91,9 +94,9 @@ async fn inherited_peer_positions_keep_the_exact_replay_authority_and_provider_o
         execution: std::sync::OnceLock::new(),
     });
     let providers = vec![
-        "request".to_string(),
-        "peer".to_string(),
-        "unanswered".to_string(),
+        busbar_contract::kept::Text::fixed("request"),
+        busbar_contract::kept::Text::fixed("peer"),
+        busbar_contract::kept::Text::fixed("unanswered"),
     ];
     let copied: Vec<_> = inherited_peer_answers(
         &providers,

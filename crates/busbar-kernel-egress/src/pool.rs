@@ -18,8 +18,9 @@ pub const DEFAULT_FAILOVER_CAP: usize = 3;
 pub struct Member {
     /// Which destination of the verified set this is.
     pub destination: DestinationId,
-    /// The operator's name for it — the name a blocklist and a diagnostic say.
-    pub name: String,
+    /// The operator's name for it — the name a blocklist and a diagnostic say. Shared text, made
+    /// once when the pool is built: an attempt that names its member copies nothing.
+    pub name: busbar_contract::kept::Text,
     /// Its share of the weighted order. Zero means drain: the operator is bleeding this member off
     /// before decommissioning it, so no path may select it — not the weighted walk, not a ranked
     /// preference, and not the sticky fast path.
@@ -93,8 +94,9 @@ pub enum OnExhausted {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pool {
     /// The pool's name. This is the breaker cell key every attempt in this walk records against,
-    /// and the empty name is the default cell a direct route uses.
-    pub name: String,
+    /// and the empty name is the default cell a direct route uses. Shared text, made once when
+    /// the pool is built: an attempt that records its pool copies nothing.
+    pub name: busbar_contract::kept::Text,
     /// The members, in the operator's configured order, blocklisted ones included.
     pub members: Vec<Member>,
     /// What bounds the walk. Private: its blocklist decides `admissible`, so it is set through

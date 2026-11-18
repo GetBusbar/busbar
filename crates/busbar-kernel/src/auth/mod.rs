@@ -73,7 +73,7 @@ pub enum ChainVerdict {
     /// of the named-definition pattern) get INDEPENDENT bindings and ceilings instead of
     /// silently collapsing onto the plugin's single self-reported name.
     Identified {
-        module: String,
+        module: busbar_contract::kept::Text,
         principal: Principal,
         /// ENGINE-ONLY resolved governance key. Populated ONLY by engine arms (the built-in `keys`
         /// verifier and the ingress-protocol AWS SigV4 request-signing pre-step), which authenticate
@@ -115,7 +115,7 @@ pub(crate) struct CredentialReader {
 }
 
 pub(crate) struct ChainEntry {
-    pub(crate) provider: String,
+    pub(crate) provider: busbar_contract::kept::Text,
 
     pub(crate) calls: std::sync::Arc<dyn AuthCalls>,
 
@@ -133,10 +133,21 @@ fn chain_verdict_of(answer: VerifyAnswer) -> Judgement {
     Judgement::answered(answer)
 }
 
-fn chain_position_verdict(module: &str, verdict: AuthVerdict) -> Option<ChainVerdict> {
+/// An admin chain position's name as the verdict holds it. The admin chain is a list of plain
+/// names in the configuration, so an identifying admin position makes its one name here, as it
+/// did before; a data line's names are shared from its table and never come through this.
+fn admin_module(name: &str) -> busbar_contract::kept::Text {
+    busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(name))
+}
+
+/// A chain position's verdict under the provider name `module`: the name is shared, never copied.
+fn chain_position_verdict(
+    module: &busbar_contract::kept::Text,
+    verdict: AuthVerdict,
+) -> Option<ChainVerdict> {
     match verdict {
         AuthVerdict::Identify(principal) => Some(ChainVerdict::Identified {
-            module: module.to_string(),
+            module: module.clone(),
             principal,
             resolved: None,
             signed_authority: None,
@@ -242,15 +253,20 @@ pub(crate) async fn replay_claimed(
 /// inside the window is a replay" says.
 #[derive(Debug, Clone)]
 struct ReplayClaim {
-    provider: String,
+    /// The provider's name, shared with the table it came from: a claim copies no name.
+    provider: busbar_contract::kept::Text,
     replay: Box<Replay>,
     now: u64,
 }
 
 impl ReplayClaim {
-    fn of(provider: &str, replay: Option<Box<Replay>>, now: u64) -> Option<Self> {
+    fn of(
+        provider: &busbar_contract::kept::Text,
+        replay: Option<Box<Replay>>,
+        now: u64,
+    ) -> Option<Self> {
         replay.map(|replay| ReplayClaim {
-            provider: provider.to_string(),
+            provider: provider.clone(),
             replay,
             now,
         })
@@ -279,7 +295,7 @@ impl std::fmt::Debug for PendingClaim {
 
 impl PendingClaim {
     pub(crate) fn for_identity(
-        provider: &str,
+        provider: &busbar_contract::kept::Text,
         identity: &busbar_contract::auth_calls::VerifiedIdentity,
         gov: Option<std::sync::Arc<crate::governance::GovState>>,
         now: u64,
@@ -379,7 +395,7 @@ async fn signed_replay_claimed(
     id: &busbar_contract::auth_calls::VerifiedIdentity,
     now: u64,
 ) -> bool {
-    match ReplayClaim::of(reader, id.replay.clone(), now) {
+    match ReplayClaim::of(&admin_module(reader), id.replay.clone(), now) {
         None => true,
         Some(claim) => claim.win(gov).await,
     }
@@ -1016,7 +1032,7 @@ pub(crate) fn keys_arm_verdict(
 
     match gov.verify_token_authority(token, now, expected_aud) {
         Some(authority) => ChainVerdict::Identified {
-            module: crate::config::KEYS_MODULE.to_string(),
+            module: busbar_contract::kept::Text::fixed(crate::config::KEYS_MODULE),
             principal: principal_from_vkey(authority.original_key()),
             resolved: Some(authority.original_key().clone()),
             signed_authority: Some(SignedRequestAuthority::verified(authority)),
@@ -1311,7 +1327,7 @@ async fn run_admin_chain(
                         .strips
                         .extend(identity.strip().map(|name| Strip::field(name.to_owned())));
                     let verdict = ChainVerdict::Identified {
-                        module: name.clone(),
+                        module: admin_module(name),
                         principal: Principal {
                             id: identity.subject().to_owned(),
                             name: None,
@@ -1355,7 +1371,13 @@ async fn run_admin_chain(
         }
         .unwrap_or_else(|| unresolved_admin_module(name));
         let (verdict, replay) = carry_admin_outcome(carried, name, outcome);
-        if let Some(verdict) = chain_position_verdict(name, verdict) {
+        // Only an identifying position names its module: a pass or a refusal makes no name.
+        let position = match verdict {
+            AuthVerdict::Identify(_) => chain_position_verdict(&admin_module(name), verdict),
+            AuthVerdict::Reject => Some(ChainVerdict::Denied),
+            AuthVerdict::Pass => None,
+        };
+        if let Some(verdict) = position {
             if matches!(verdict, ChainVerdict::Identified { .. }) {
                 if admin_sender_constraint::downgraded(app, name, headers) {
                     return (ChainVerdict::Denied, None);
@@ -1502,7 +1524,7 @@ fn unclaimed_admin_replay(
 ) -> Option<ReplayClaim> {
     replay
         .filter(|_| identified)
-        .and_then(|(provider, replay)| ReplayClaim::of(&provider, Some(replay), now))
+        .and_then(|(provider, replay)| ReplayClaim::of(&admin_module(&provider), Some(replay), now))
 }
 
 async fn judge_admin_door(
@@ -1753,14 +1775,14 @@ fn admin_who_of(
             crate::config::operator_principal_id(),
         ) =>
         {
-            ("operator", None, Some(module.clone()), None)
+            ("operator", None, Some(module.as_str().to_owned()), None)
         }
         ChainVerdict::Identified {
             module, principal, ..
         } => (
             "identity_provider",
             Some(principal.id.clone()),
-            Some(module.clone()),
+            Some(module.as_str().to_owned()),
             None,
         ),
     };
@@ -2248,7 +2270,7 @@ async fn claimed_ticket_verdict(
             };
             Ok(Some((
                 ChainVerdict::Identified {
-                    module: crate::config::KEYS_MODULE.to_string(),
+                    module: busbar_contract::kept::Text::fixed(crate::config::KEYS_MODULE),
                     principal: principal_from_vkey(&key),
                     resolved: Some(key),
                     signed_authority: None,
@@ -2924,12 +2946,18 @@ pub(crate) async fn auth_middleware(
                     });
 
                     pending = PendingClaim::of(
-                        ReplayClaim::of(&reader.name, id.replay, now),
+                        ReplayClaim::of(
+                            &busbar_contract::kept::Text::from(std::sync::Arc::clone(
+                                &reader.name,
+                            )),
+                            id.replay,
+                            now,
+                        ),
                         app.governance.clone(),
                     );
                     match key {
                         Some(key) => Some(ChainVerdict::Identified {
-                            module: crate::config::KEYS_MODULE.to_string(),
+                            module: busbar_contract::kept::Text::fixed(crate::config::KEYS_MODULE),
                             principal: principal_from_vkey(&key),
                             resolved: Some(std::sync::Arc::new(key)),
                             signed_authority: None,

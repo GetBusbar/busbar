@@ -193,7 +193,7 @@ fn test_extract_bearer_token_malformed_no_panic() {
 #[test]
 fn an_identified_principal_with_no_grant_is_refused() {
     let identified = |module: &str, principal: Principal| ChainVerdict::Identified {
-        module: module.to_string(),
+        module: module.into(),
         principal,
         resolved: None,
         signed_authority: None,
@@ -504,7 +504,7 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
 
 #[test]
 fn an_all_pass_admin_continuation_retains_the_401_refusal() {
-    let verdict = complete_chain(chain_position_verdict("slow-oidc", AuthVerdict::Pass));
+    let verdict = complete_chain(chain_position_verdict(&"slow-oidc".into(),AuthVerdict::Pass));
     let door = admin_door_from_bindings(
         &Default::default(),
         &Operator::new("operator-provider"),
@@ -626,7 +626,7 @@ fn operator_answer_continuation_preserves_identified_and_refusal_types() {
     let outcome = |verified: Verified| {
         let answered = Judgement::answered(verified.into());
         let verdict = complete_chain(chain_position_verdict(
-            "operator-provider",
+            &"operator-provider".into(),
             answered.verdict,
         ));
         let operator = Operator::new("operator-provider");
@@ -694,7 +694,7 @@ async fn operator_answer_response_projection_preserves_503_and_legacy_401() {
         admin_probe_projection(
             admin_chain_outcome(
                 complete_chain(chain_position_verdict(
-                    "operator-provider",
+                    &"operator-provider".into(),
                     answered.verdict,
                 )),
                 answered.no_verdict,
@@ -770,7 +770,7 @@ async fn external_admin_answer_projection_preserves_failed_faulted_and_reject_re
         let answered = admin_verdict_of(verified.into(), faulted);
         admin_probe_projection(
             admin_chain_outcome(
-                complete_chain(chain_position_verdict("ext", answered.verdict)),
+                complete_chain(chain_position_verdict(&"ext".into(),answered.verdict)),
                 answered.no_verdict,
             ),
             project,
@@ -825,7 +825,7 @@ fn the_sync_admin_door_probe_fails_closed_when_the_operator_verifier_is_overload
     let (door, _) = admin_probe_projection(
         admin_chain_outcome(
             complete_chain(chain_position_verdict(
-                "operator-provider",
+                &"operator-provider".into(),
                 answered.verdict,
             )),
             answered.no_verdict,
@@ -854,7 +854,7 @@ fn the_sync_admin_door_keeps_no_verdict_for_the_root_http_projection() {
             } else {
                 admin_verdict_of(verified.clone().into(), false)
             };
-            let verdict = complete_chain(chain_position_verdict("provider", answered.verdict));
+            let verdict = complete_chain(chain_position_verdict(&"provider".into(),answered.verdict));
             let (door, claim) = admin_probe_projection(
                 admin_chain_outcome(verdict, answered.no_verdict),
                 |verdict| {
@@ -923,7 +923,7 @@ fn a_data_plane_door_overloaded_or_without_a_verdict_denies_the_chain() {
 
     for verified in [Verified::Overloaded, Verified::Failed] {
         let judged = data_verdict_of("door", verified.clone().into(), false).map(|judged| {
-            chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied)
+            chain_position_verdict(&"door".into(),judged.verdict).unwrap_or(ChainVerdict::Denied)
         });
         assert_eq!(
             deny_unavailable_chain(judged),
@@ -938,7 +938,7 @@ fn the_data_plane_walk_hands_an_overloaded_or_verdict_less_door_back_apart() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
     let judged = |verified: Verified| {
         data_verdict_of("door", verified.into(), false).map(|judged| {
-            chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied)
+            chain_position_verdict(&"door".into(),judged.verdict).unwrap_or(ChainVerdict::Denied)
         })
     };
     assert_eq!(
@@ -965,7 +965,7 @@ fn the_data_plane_walk_hands_an_overloaded_or_verdict_less_door_back_apart() {
         .into(),
         true,
     )
-    .map(|judged| chain_position_verdict("door", judged.verdict).unwrap_or(ChainVerdict::Denied));
+    .map(|judged| chain_position_verdict(&"door".into(),judged.verdict).unwrap_or(ChainVerdict::Denied));
     assert_eq!(
         faulted,
         Err(VerifierUnavailable::NoVerdict),
@@ -1075,7 +1075,7 @@ fn external_admin_answer_projection_keeps_identity_and_all_refusal_types() {
 
     let project = |verified: Verified| {
         let answered = admin_verdict_of(verified.into(), false);
-        let verdict = complete_chain(chain_position_verdict("ext-door", answered.verdict));
+        let verdict = complete_chain(chain_position_verdict(&"ext-door".into(),answered.verdict));
         let operator = Operator::new("operator-provider");
         let cap = if matches!(&verdict, ChainVerdict::Identified { .. }) {
             module_scope_cap(&Default::default(), &operator, "ext-door")
@@ -1122,7 +1122,7 @@ fn successive_admin_answer_projections_do_not_reuse_an_earlier_identity() {
     use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
     let project = |verified: Verified| {
         let answer = admin_verdict_of(verified.into(), false);
-        let verdict = complete_chain(chain_position_verdict("ext-door", answer.verdict));
+        let verdict = complete_chain(chain_position_verdict(&"ext-door".into(),answer.verdict));
         let cap = if matches!(&verdict, ChainVerdict::Identified { .. }) {
             module_scope_cap(
                 &Default::default(),
@@ -1289,9 +1289,9 @@ async fn a_replayed_verified_identity_inside_its_ttl_is_denied() {
 
     let run = |key: &str, gov: Option<std::sync::Arc<crate::governance::GovState>>| {
         let answered = chain_verdict_of(hook_answer(Some(key), Vec::new()));
-        let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+        let verdict = complete_chain(chain_position_verdict(&"door".into(),answered.verdict));
         let pending = PendingClaim::of(
-            ReplayClaim::of("door", answered.replay, busbar_kernel::store::now()),
+            ReplayClaim::of(&"door".into(),answered.replay, busbar_kernel::store::now()),
             gov,
         );
         async move {
@@ -1326,9 +1326,9 @@ async fn a_replayed_verified_delivery_is_denied_before_dispatch() {
     let bindings = bindings_for("door", &[("hooks", binding(None, None, None))]);
     let run = || {
         let answered = chain_verdict_of(hook_answer(Some("standard-webhooks/msg_1"), Vec::new()));
-        let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+        let verdict = complete_chain(chain_position_verdict(&"door".into(),answered.verdict));
         let pending = PendingClaim::of(
-            ReplayClaim::of("door", answered.replay, busbar_kernel::store::now()),
+            ReplayClaim::of(&"door".into(),answered.replay, busbar_kernel::store::now()),
             Some(gov.clone()),
         );
         (verdict, pending)
@@ -1404,7 +1404,7 @@ async fn an_admin_identity_replayed_is_denied_and_its_named_lines_ride_out() {
                 vec![Strip::field("x-hook-secret")],
             )),
         );
-        let verdict = complete_chain(chain_position_verdict("ext-door", verdict));
+        let verdict = complete_chain(chain_position_verdict(&"ext-door".into(),verdict));
         let pending = PendingClaim::of(
             unclaimed_admin_replay(
                 matches!(&verdict, ChainVerdict::Identified { .. }),
@@ -1464,9 +1464,9 @@ async fn a_delivery_refused_for_its_grant_leaves_its_replay_key_unclaimed() {
     let gov = replay_gov().await;
     let run = || {
         let answered = chain_verdict_of(hook_answer(Some("standard-webhooks/msg_r6"), Vec::new()));
-        let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+        let verdict = complete_chain(chain_position_verdict(&"door".into(),answered.verdict));
         let pending = PendingClaim::of(
-            ReplayClaim::of("door", answered.replay, busbar_kernel::store::now()),
+            ReplayClaim::of(&"door".into(),answered.replay, busbar_kernel::store::now()),
             Some(gov.clone()),
         );
         (verdict, pending)
@@ -1502,9 +1502,9 @@ async fn a_session_refused_for_its_grant_claims_no_replay_key() {
     let now = busbar_kernel::store::now();
     for _ in 0..2 {
         let answered = chain_verdict_of(hook_answer(Some("standard-webhooks/msg_r6s"), Vec::new()));
-        let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+        let verdict = complete_chain(chain_position_verdict(&"door".into(),answered.verdict));
         let pending = PendingClaim::of(
-            ReplayClaim::of("door", answered.replay, now),
+            ReplayClaim::of(&"door".into(),answered.replay, now),
             Some(gov.clone()),
         );
         let refused = admit_verified_session(&Default::default(), verdict, pending.as_ref())
@@ -1526,7 +1526,7 @@ async fn an_admin_identity_refused_for_scope_leaves_its_replay_key_unclaimed() {
 
     let project = || {
         let answered = chain_verdict_of(hook_answer(Some("signed/admin_r6"), Vec::new()));
-        let verdict = complete_chain(chain_position_verdict("ext-door", answered.verdict));
+        let verdict = complete_chain(chain_position_verdict(&"ext-door".into(),answered.verdict));
         let pending = PendingClaim::of(
             unclaimed_admin_replay(true, answered.replay.map(|r| ("ext-door".into(), r)), now),
             Some(gov.clone()),
@@ -1594,9 +1594,9 @@ async fn two_racing_identical_deliveries_admit_at_most_one() {
         racing.push(tokio::spawn(async move {
             let answered =
                 chain_verdict_of(hook_answer(Some("standard-webhooks/msg_race"), Vec::new()));
-            let verdict = complete_chain(chain_position_verdict("door", answered.verdict));
+            let verdict = complete_chain(chain_position_verdict(&"door".into(),answered.verdict));
             let pending = PendingClaim::of(
-                ReplayClaim::of("door", answered.replay, busbar_kernel::store::now()),
+                ReplayClaim::of(&"door".into(),answered.replay, busbar_kernel::store::now()),
                 Some(gov),
             );
             barrier.wait().await;
@@ -1715,7 +1715,7 @@ fn a_role_granting_verbs_by_name_is_identified_with_its_allow_list() {
         ("get_keys", Scope::ReadOnly),
     ]);
     let identified = || ChainVerdict::Identified {
-        module: "test-scope-module".to_string(),
+        module: "test-scope-module".into(),
         principal: grp_principal("test:ops", &["ops"]),
         resolved: None,
         signed_authority: None,
@@ -1771,7 +1771,7 @@ fn verbs_star_is_exactly_admin_scope_full() {
         ("get_keys", Scope::ReadOnly),
     ]);
     let identified = || ChainVerdict::Identified {
-        module: "test-scope-module".to_string(),
+        module: "test-scope-module".into(),
         principal: grp_principal("test:ops", &["ops"]),
         resolved: None,
         signed_authority: None,
@@ -1823,7 +1823,7 @@ fn a_binding_without_verbs_is_judged_by_its_rung_alone() {
         ("get_keys", Scope::ReadOnly),
     ]);
     let identified = || ChainVerdict::Identified {
-        module: "test-scope-module".to_string(),
+        module: "test-scope-module".into(),
         principal: grp_principal("test:ops", &["ops"]),
         resolved: None,
         signed_authority: None,
@@ -1859,7 +1859,7 @@ fn the_providers_ceiling_caps_a_named_verb() {
         ("get_keys", Scope::ReadOnly),
     ]);
     let identified = || ChainVerdict::Identified {
-        module: "test-scope-module".to_string(),
+        module: "test-scope-module".into(),
         principal: grp_principal("test:ops", &["ops"]),
         resolved: None,
         signed_authority: None,

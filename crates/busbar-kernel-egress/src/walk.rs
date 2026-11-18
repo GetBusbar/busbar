@@ -65,8 +65,8 @@ enum Phase {
 /// outcome.
 #[derive(Debug)]
 pub struct Taken {
-    /// The pool it was taken from.
-    pub pool: String,
+    /// The pool it was taken from: the pool's own shared name.
+    pub pool: busbar_contract::kept::Text,
     /// The member.
     pub member: Member,
     /// Its concurrency slot.
@@ -371,7 +371,7 @@ impl Walk {
             &mut ctx,
         )?;
         let probe = picked.take_probe_epoch();
-        Some(self.take(pool_name, member.clone(), picked.permit, probe, !primary))
+        Some(self.take(&pool.name, member.clone(), picked.permit, probe, !primary))
     }
 
     /// THE ONE PICK, over `pool`'s members this unit has not tried: the walk's own pool
@@ -443,7 +443,7 @@ impl Walk {
     /// Take `member` of `pool` for the next attempt: excluded from every pick of the unit after it.
     fn take(
         &mut self,
-        pool: &str,
+        pool: &busbar_contract::kept::Text,
         member: Member,
         permit: Permit,
         probe: Option<u64>,
@@ -452,7 +452,7 @@ impl Walk {
         self.ctx.exclude(member.destination);
         self.taken = self.taken.saturating_add(1);
         Taken {
-            pool: pool.to_string(),
+            pool: pool.clone(),
             member,
             permit,
             probe,

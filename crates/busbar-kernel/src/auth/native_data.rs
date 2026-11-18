@@ -227,7 +227,7 @@ impl PendingData {
                     let (_, gov) = super::resolve_identity_from_bindings(
                         &app.role_bindings,
                         super::ChainVerdict::Identified {
-                            module: self.prepared.provider().to_owned(),
+                            module: super::admin_module(self.prepared.provider()),
                             principal: super::Principal {
                                 id: identity.subject().to_owned(),
                                 name: None,
