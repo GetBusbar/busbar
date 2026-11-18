@@ -75,7 +75,7 @@ pub(crate) async fn authorize(
     };
     if minted {
         let cookie = super::consent::start_cookie(plane.identity(), &start);
-        let Ok(cookie) = axum::http::HeaderValue::from_str(&cookie) else {
+        let Ok(cookie) = axum::http::HeaderValue::try_from(cookie) else {
             return not_representable();
         };
         response
@@ -166,7 +166,7 @@ async fn pushed_request_gate(
             plane
                 .is_staked(
                     &browser.session,
-                    &super::consent::handled_key(&key, handle.as_str()),
+                    &super::consent::handled_key(key, handle.as_str()),
                 )
                 .await
         }

@@ -349,7 +349,7 @@ impl AsPlane {
         ) else {
             return;
         };
-        let key = crate::consent::handled_key(&key, handle);
+        let key = crate::consent::handled_key(key, handle);
         match store.spend(id, &key).await {
             Ok(Some(approve)) => self.sessions.plant(id, key, approve),
             Ok(None) => {}

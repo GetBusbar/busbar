@@ -253,7 +253,8 @@ struct PendingState {
     decision: Option<Decision>,
 }
 
-type ClaimAddress = (String, String);
+/// A claim's (kind, token), made once per claim and shared by the gate map and its lease.
+type ClaimAddress = Arc<(String, String)>;
 struct ClaimState {
     expires_at: u64,
     pending: Option<scoped::PendingClaim>,
@@ -792,15 +793,15 @@ impl Shared {
     }
 
     async fn claim(&self, name: &str, token: &str, expires_at: u64) -> Result<bool, StorageError> {
-        let kind = kind(name);
+        let address: ClaimAddress = Arc::new((kind(name), token.to_string()));
+        let kind = address.0.as_str();
         self.store
-            .register_claims(&kind)
+            .register_claims(kind)
             .map_err(|error| failed("register claim cleanup", error))?;
-        let address = (kind.clone(), token.to_string());
         let state = {
             let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
             claims
-                .entry(address.clone())
+                .entry(Arc::clone(&address))
                 .or_insert_with(|| {
                     Arc::new(tokio::sync::Mutex::new(ClaimState {
                         expires_at,
@@ -812,7 +813,7 @@ impl Shared {
         };
         let lease = ClaimLease {
             entries: &self.claims,
-            address,
+            address: Arc::clone(&address),
             state,
         };
         // One delivery owner resolves this address at a time. A competing caller
@@ -829,8 +830,8 @@ impl Shared {
             ));
         }
         let outcome = match claim.pending {
-            Some(claim) => self.store.retry_claim(&kind, claim).await,
-            None => self.store.redeem(&kind, token, expires_at).await,
+            Some(claim) => self.store.retry_claim(kind, claim).await,
+            None => self.store.redeem(kind, token, expires_at).await,
         }
         .map_err(|e| failed("redeem", e))?;
         match outcome {
@@ -1470,6 +1471,13 @@ pub(crate) const LOST_ROW: &str = "oauth_as: a lapsed row was not reclaimed this
 pub(crate) const LOST_REPLAY: &str = "oauth_as: a lapsed replay row was not reclaimed this tick";
 
 /// One claimed replay id, kept beside its claim so the sweep can count what it reclaims.
+/// A [`ReplayRow`] as it is written: the same fields in the same order, borrowing the id.
+#[derive(Serialize)]
+struct ReplayRowOut<'a> {
+    id: &'a str,
+    until: u64,
+}
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ReplayRow {
     pub(crate) id: String,
@@ -2094,8 +2102,8 @@ impl Storage for SharedStorage {
         let key = digest(id);
         let won = s.claim("replay", &key, secs_of(expires_at)).await?;
         if won {
-            let row = ReplayRow {
-                id: key.clone(),
+            let row = ReplayRowOut {
+                id: &key,
                 until: secs_of(expires_at),
             };
             s.put("replay", &key, &row).await?;

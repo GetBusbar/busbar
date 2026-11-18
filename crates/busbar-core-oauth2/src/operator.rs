@@ -372,7 +372,7 @@ pub(crate) async fn consent_submit(
         if let Err(error) = plane
             .stake(
                 reference,
-                crate::consent::handled_key(&key, &handle),
+                crate::consent::handled_key(key, &handle),
                 approve,
             )
             .await
