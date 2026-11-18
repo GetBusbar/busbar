@@ -68,6 +68,7 @@ pub mod io_host;
 pub mod ir;
 pub mod json;
 pub mod jsonrpc;
+pub mod kept;
 pub mod kinds;
 
 #[allow(missing_docs, missing_debug_implementations)]
