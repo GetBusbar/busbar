@@ -1163,7 +1163,7 @@ fn endpoint_pairs(declared: &[DeclaredEndpoint]) -> Vec<(&str, bool)> {
 /// The core refusal an open answered, when core (not the plugin) refused.
 pub fn core_refusal(error: &OpenError) -> Option<&Refusal> {
     match error {
-        OpenError::Refused { refusal, .. } => Some(refusal),
+        OpenError::Refused { refusal, .. } => Some(std::borrow::Borrow::<Refusal>::borrow(refusal)),
         _ => None,
     }
 }
