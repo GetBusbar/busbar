@@ -534,15 +534,16 @@ pub fn cdylib(snake: &str) -> Option<Vec<u8>> {
 #[cfg(all(test, not(oracle_lookup)))]
 include!(concat!(env!("OUT_DIR"), "/common_test_sources.rs"));
 
-/// The oracle package compiles no plugin source: `token_verifier` is the cdylib lookup alone (the
-/// token-verifying `kind: auth` cdylib ci/qa.yml placed in the test profile directory).
-#[cfg(all(test, oracle_lookup))]
+/// `token_verifier` is the cdylib lookup alone (the token-verifying `kind: auth` cdylib in the test
+/// profile directory): busbar-auth-oidc publishes no root test sources since its MIN-3 port (c882ae1), so
+/// the default distribution and the oracle package look it up the same way.
+#[cfg(test)]
 pub(crate) mod token_verifier {
     pub fn token_verifier_cdylib_path() -> Option<std::path::PathBuf> {
         super::cdylib_path("busbar_auth_oidc_plugin")
     }
 }
-#[cfg(all(test, oracle_lookup))]
+#[cfg(test)]
 pub use token_verifier::*;
 
 fn libraries() -> Vec<PathBuf> {
