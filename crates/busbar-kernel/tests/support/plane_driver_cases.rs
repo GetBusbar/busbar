@@ -164,10 +164,10 @@ impl FarEnd for Far {
         self.picks.fetch_add(1, Ordering::SeqCst);
         let pick = match self.members.get(attempt_no as usize - 1) {
             Some(m) => Pick::Member {
-                name: (*m).to_string(),
-                pool: POOL.to_string(),
+                name: (*m).into(),
+                pool: POOL.into(),
                 passthrough: false,
-                provider: PROVIDER.to_string(),
+                provider: PROVIDER.into(),
             },
             None => Pick::Exhausted {
                 status: 503,

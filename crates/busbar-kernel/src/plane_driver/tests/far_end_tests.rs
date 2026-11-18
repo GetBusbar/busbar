@@ -655,7 +655,7 @@ fn rig(
                     connection_required: false,
                     need: NeedId(0),
                     base_url: format!("https://{host}/v1/"),
-                    provider: format!("p{k}"),
+                    provider: format!("p{k}").as_str().into(),
                     keep: super::ResponseKeep::default(),
                     rides: Vec::new(),
                     spelled: Vec::new(),
@@ -695,7 +695,7 @@ fn rig(
         clock: busbar_ports::clock::HostClock::system(tokio_sleep),
         journal: Arc::clone(&journal) as Arc<dyn Journal>,
         telemetry: Arc::new(Quiet),
-        pools: [(POOL.to_string(), pool)].into_iter().collect(),
+        pools: [(POOL.into(), pool)].into_iter().collect(),
         routes,
         stream_ceiling_secs: 600,
         stated_ceiling_secs: 0,
@@ -749,8 +749,8 @@ async fn selected_registration_probes_retain_the_exact_pool_and_member() {
 fn request() -> OutboundRequest {
     OutboundRequest {
         text: false,
-        member: String::new(),
-        pool: String::new(),
+        member: busbar_contract::kept::Text::EMPTY,
+        pool: busbar_contract::kept::Text::EMPTY,
         attempt_no: 1,
         verb: b"POST".to_vec(),
         target: b"/chat".to_vec(),
@@ -1642,12 +1642,12 @@ async fn test_metric_pool_label_resolves_model_for_default_cell() {
     r.egress.telemetry = Arc::clone(&labels) as Arc<dyn Telemetry>;
     let t = token();
     let direct = || UnitRoute {
-        pool: String::new(),
+        pool: busbar_contract::kept::Text::EMPTY,
         ..UnitRoute::default()
     };
 
     r.egress.pools.insert(
-        String::new(),
+        busbar_contract::kept::Text::EMPTY,
         Pool::new(
             String::new(),
             vec![Member::new(DestinationId::new(1), "claude-sonnet", 1)],
@@ -1661,7 +1661,7 @@ async fn test_metric_pool_label_resolves_model_for_default_cell() {
     }
 
     r.egress.pools.insert(
-        String::new(),
+        busbar_contract::kept::Text::EMPTY,
         Pool::new(
             String::new(),
             vec![Member::new(DestinationId::new(2), "gpt-4o", 1)],
@@ -1675,7 +1675,7 @@ async fn test_metric_pool_label_resolves_model_for_default_cell() {
     }
 
     r.egress.pools.insert(
-        "prod-pool".to_string(),
+        "prod-pool".into(),
         Pool::new(
             "prod-pool",
             vec![Member::new(DestinationId::new(1), "claude-sonnet", 1)],
@@ -2411,7 +2411,7 @@ async fn a_required_restrict_refuses_at_the_fallback_pool() {
         max_hops: 3,
         exclusions: Vec::new(),
     });
-    r.egress.pools.insert("fb".to_string(), fallback);
+    r.egress.pools.insert("fb".into(), fallback);
     let t = token();
     let far = r.egress.unit(route());
     far.constrain(

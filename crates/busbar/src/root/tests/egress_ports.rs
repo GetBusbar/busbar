@@ -275,7 +275,7 @@ async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
         need: busbar_contract::conn::NeedId(0),
         base_url: "https://far.invalid".to_string(),
         auth: None,
-        provider: provider.to_string(),
+        provider: busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(provider)),
         keep: busbar_kernel::plane_driver::ResponseKeep::default(),
         rides: Vec::new(),
         anchors: busbar_contract::transport::trust::Anchors::default(),

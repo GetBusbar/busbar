@@ -29,8 +29,9 @@ pub struct RequestCtx {
     /// Why each member was passed over on the LAST pick. Replaced wholesale each pick, so a spill
     /// into another pool reports that pool's own exhaustion and never a stale earlier one.
     excluded_reasons: Vec<(DestinationId, Unavailable)>,
-    /// Every pool this request has already routed through, for the spill loop guard.
-    visited_pools: HashSet<String>,
+    /// Every pool this request has already routed through, for the spill loop guard: the pools'
+    /// own shared names.
+    visited_pools: HashSet<busbar_contract::kept::Text>,
     /// The pick's working lists, kept from one pick to the next so a pick allocates nothing.
     scratch: PickScratch,
 }
@@ -109,9 +110,9 @@ impl RequestCtx {
     }
 
     /// Mark a pool as routed through, for the spill loop guard.
-    pub fn mark_pool_visited(&mut self, pool: &str) {
-        if !self.visited_pools.contains(pool) {
-            self.visited_pools.insert(crate::cold::visited_pool(pool));
+    pub fn mark_pool_visited(&mut self, pool: &busbar_contract::kept::Text) {
+        if !self.visited_pools.contains(pool.as_str()) {
+            self.visited_pools.insert(pool.clone());
         }
     }
 

@@ -331,7 +331,9 @@ pub(crate) fn compose_egress(
         sealed.insert(destination, route);
         names.push((destination, name));
     }
-    let mut built: foldhash::HashMap<String, Pool> = foldhash::HashMap::default();
+    // Each pool is keyed by its own name: one shared text for both.
+    let mut built: foldhash::HashMap<busbar_contract::kept::Text, Pool> =
+        foldhash::HashMap::default();
     for (label, entries) in pools.pools() {
         let list = entries
             .iter()
@@ -349,13 +351,11 @@ pub(crate) fn compose_egress(
             let fallback = fallback.to_string();
             pool.on_exhausted = OnExhausted::FallbackPool(fallback);
         }
-        built.insert(label.clone(), pool);
+        built.insert(pool.name.clone(), pool);
     }
     for member in members.values() {
-        built.insert(
-            member.name.as_str().to_owned(),
-            Pool::new(member.name.as_str(), vec![member.clone()]),
-        );
+        let pool = Pool::new(member.name.as_str(), vec![member.clone()]);
+        built.insert(pool.name.clone(), pool);
     }
 
     let cell = |pool: Option<&str>| {
@@ -2907,7 +2907,7 @@ pub(crate) fn member_routes(
                 need,
                 base_url,
                 auth: auth.map(busbar_kernel::plane_driver::AuthBinding::Configured),
-                provider: entry,
+                provider: busbar_contract::kept::Text::from(Arc::<str>::from(entry)),
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 anchors,
                 spelled,
@@ -2925,7 +2925,7 @@ pub(crate) fn member_routes(
                 need,
                 base_url: entry.clone(),
                 auth: None,
-                provider: entry,
+                provider: busbar_contract::kept::Text::from(Arc::<str>::from(entry)),
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 anchors: busbar_contract::transport::trust::Anchors::default(),
                 spelled: Vec::new(),
@@ -3012,7 +3012,7 @@ pub(crate) fn member_routes(
                         per_request: None,
                     },
                 )),
-                provider: r.name,
+                provider: busbar_contract::kept::Text::from(Arc::<str>::from(r.name)),
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 rides,
                 anchors: busbar_contract::transport::trust::Anchors::default(),

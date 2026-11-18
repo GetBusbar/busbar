@@ -1379,17 +1379,21 @@ fn a_stated_member_reads_its_own_wait_and_a_stranger_reads_none() {
 struct Restrict(Vec<DestinationId>);
 
 impl busbar_kernel_egress::walk::Shape for Restrict {
-    fn shape(
+    fn shape<'m>(
         &self,
         _pool: &str,
-        members: Vec<busbar_kernel_egress::pool::Member>,
+        members: &'m [busbar_kernel_egress::pool::Member],
         _primary: bool,
-    ) -> Option<(Vec<busbar_kernel_egress::pool::Member>, Vec<DestinationId>)> {
+    ) -> Option<(
+        std::borrow::Cow<'m, [busbar_kernel_egress::pool::Member]>,
+        Vec<DestinationId>,
+    )> {
         let kept: Vec<_> = members
-            .into_iter()
+            .iter()
             .filter(|m| self.0.contains(&m.destination))
+            .cloned()
             .collect();
-        (!kept.is_empty()).then_some((kept, Vec::new()))
+        (!kept.is_empty()).then_some((std::borrow::Cow::Owned(kept), Vec::new()))
     }
 }
 

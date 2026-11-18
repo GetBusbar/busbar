@@ -4,11 +4,6 @@
 //! THE EGRESS CRATE'S COLD CODE (LINT-RULES LR-167): refusal text and rare owned copies its
 //! request-path modules reach only off the priced path, out of line.
 
-/// A pool's name, owned: a walk marks a pool visited only when it exhausts it or spills from it.
-#[cold]
-pub(crate) fn visited_pool(pool: &str) -> String {
-    pool.to_string()
-}
 
 /// The scheme a string CLAIMS, for a refusal message. Nothing is decided from it.
 #[cold]

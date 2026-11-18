@@ -583,7 +583,7 @@ fn extend_sections(
         })
         .collect();
     for (name, configured) in &walked {
-        if seat.pools.contains_key(name) {
+        if seat.pools.contains_key(name.as_str()) {
             return Err(format!(
                 "section pool `{name}` collides with a pool this plane already walks"
             ));
@@ -616,7 +616,8 @@ fn extend_sections(
             Some(fallback) => busbar_kernel_egress::OnExhausted::FallbackPool(fallback.clone()),
             None => busbar_kernel_egress::OnExhausted::Status503,
         };
-        seat.pools.insert(name.clone(), pool);
+        // Keyed by the pool's own name: one shared text for both.
+        seat.pools.insert(pool.name.clone(), pool);
     }
     // A fallback that is not itself walked is dropped from the routing record as from egress.
     Ok(walked
@@ -666,7 +667,7 @@ fn extend_catalog(
         return Err("catalog belongs to another plane instance".into());
     }
     for (name, configured) in &catalog.pools {
-        if seat.pools.contains_key(name) {
+        if seat.pools.contains_key(name.as_str()) {
             return Err("catalog pool collides with the registration pool".into());
         }
         let cfg = &configured.config;
@@ -730,7 +731,8 @@ fn extend_catalog(
                 busbar_kernel_egress::OnExhausted::FallbackPool(actual.clone())
             }
         };
-        seat.pools.insert(name.clone(), pool);
+        // Keyed by the pool's own name: one shared text for both.
+        seat.pools.insert(pool.name.clone(), pool);
     }
     for (destination, route) in &catalog.sealed.routes {
         if seat.routes.insert(*destination, route.clone()).is_some() {
@@ -800,7 +802,7 @@ fn egress_of(
     let policy = pool.pools.keys().fold(
         super::adapters::BreakerPolicy::new().with_default_cell(cell()),
         |policy, name| {
-            let configured = catalog.and_then(|catalog| catalog.pools.get(name));
+            let configured = catalog.and_then(|catalog| catalog.pools.get(name.as_str()));
             policy.with_pool(
                 name.as_str(),
                 busbar_kernel::store::pool_breaker_cfg(

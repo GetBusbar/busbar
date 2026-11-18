@@ -652,7 +652,7 @@ impl FarEnd for CatalogNoSend {
     async fn member(&self, _: &Pass<Route>, _: u32) -> Pick {
         Pick::Member {
             name: "seat\u{1f}m".into(),
-            pool: self.walk.clone(),
+            pool: self.walk.as_str().into(),
             passthrough: false,
             provider: "provider".into(),
         }
