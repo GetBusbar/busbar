@@ -1535,8 +1535,11 @@ pub(crate) fn admitted_grammar(
         return Ok(None);
     };
     let sugars = crate::root::native_secrets::NATIVE.sugars();
+    // The shorthand resolves through the native source that declares it: without the sources the published
+    // sugar names nothing, and `{ env: .. }` was refused (BUSBAR-3121) on every default install.
     Ok(Some(
         busbar_kernel::config::Grammar::new(sugars, owners_of(registry), Vec::new())
+            .with_secret_sources(crate::root::native_secrets::NATIVE.sources())
             .with_items(classify(registry, None)),
     ))
 }
