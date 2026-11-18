@@ -985,8 +985,11 @@ fn admitted_min3_store_refusal_goes_through_store_boot_refusal() {
 
 #[test]
 fn main_runs_the_crypto_self_test_before_anything_else() {
+    // Comment lines are not code: `main` explains its first call in a comment line inside its body.
     let source: String = include_str!("../main.rs")
-        .chars()
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .flat_map(str::chars)
         .filter(|c| !c.is_whitespace())
         .collect();
     let head = concat!(
