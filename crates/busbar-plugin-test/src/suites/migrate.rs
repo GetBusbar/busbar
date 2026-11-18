@@ -62,6 +62,7 @@ pub(super) fn run(
         MigrateExpect::Settled { config, core_cfg } => {
             let canonical = settled_case(&harness, &case, config, core_cfg);
             let canonical = lifted(&harness, &canonical, core_cfg);
+            let canonical = visible(&harness, &canonical);
             fixed_point_case(&harness, &canonical, case.limits);
             newer_case(&harness, &canonical, case.limits);
         }
@@ -239,6 +240,53 @@ fn lifted(harness: &Harness, canonical: &[u8], core_cfg: &[(u32, &str, &[u8])]) 
         *slot = facade::json!({ "file": format!("secrets/lifted{pointer}") });
     }
     facade::to_vec(&doc).unwrap_or_else(|e| panic!("migrate: the lifted settings ({e})"))
+}
+
+/// The members core takes out of a declared plane registration before the plane sees it (busbar-kernel
+/// `upstreams::declared` `CORE_KEYS`, 39451a9603): core owns these and keeps them; the plane is handed the rest.
+const CORE_REGISTRATION_KEYS: [&str; 7] = [
+    "url",
+    "command",
+    "tls",
+    "auth",
+    "upstream_credentials",
+    "allow_private",
+    "resource",
+];
+
+/// The canonical settings as core hands them to every later open of a plane that declares D_UPSTREAM_PATH
+/// registrations: each registration object under a declared `/<parent>/*` has its core-owned members removed
+/// (the plane's `visible_bag`, root `min3_boot` `declared_planes` over busbar-kernel `upstreams::declared`).
+/// Settings of an image that declares no registration path are returned unchanged.
+fn visible(harness: &Harness, canonical: &[u8]) -> Vec<u8> {
+    use busbar_plugin_abi::records::tag::D_UPSTREAM_PATH;
+    let Some(described) = harness.registry().described(harness.identity()) else {
+        return canonical.to_vec();
+    };
+    let parents: Vec<String> = described
+        .paths(D_UPSTREAM_PATH)
+        .filter_map(|path| path.strip_suffix("/*").map(str::to_owned))
+        .collect();
+    if parents.is_empty() {
+        return canonical.to_vec();
+    }
+    let mut doc: Value = facade::parse_typed(canonical)
+        .unwrap_or_else(|e| panic!("migrate: the canonical settings are not JSON ({e})"));
+    for parent in &parents {
+        let Some(members) =
+            facade::pointer_mut(&mut doc, parent).and_then(|node| node.as_object_mut())
+        else {
+            continue;
+        };
+        for (_, member) in members.iter_mut() {
+            if let Some(member) = member.as_object_mut() {
+                for key in CORE_REGISTRATION_KEYS {
+                    member.remove(&key);
+                }
+            }
+        }
+    }
+    facade::to_vec(&doc).unwrap_or_else(|e| panic!("migrate: the visible settings ({e})"))
 }
 
 /// Case 2: canonical settings are a fixed point, and a current open writes nothing.

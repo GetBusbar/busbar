@@ -768,3 +768,119 @@ fn a_lifted_literal_reopens_as_the_reference_core_writes_for_it() {
         },
     );
 }
+
+mod visible_fixture {
+    use super::*;
+    use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
+    use busbar_plugin_abi::plane::{PlaneReq, Target};
+    use busbar_plugin_abi::plugin::Describe;
+    use busbar_plugin_abi::types::Bytes;
+
+    /// The canonical settings this plane converts an older `{"old_url": ..}` to: one registration whose `url`
+    /// core takes over.
+    pub const CONVERTED: &[u8] =
+        br#"{"upstreams":{"a":{"model":"m","url":"https://upstream.example"}}}"#;
+
+    /// A plane that declares `/upstreams/*` registrations and, like a real plane's strict schema, refuses a
+    /// core-owned member (`url`) inside one: core takes those members out before every open after a
+    /// conversion (the plane's visible bag).
+    pub struct Fixture(Option<Vec<u8>>);
+
+    impl Open for Fixture {
+        async fn open(_: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
+            let config = config.to_vec();
+            let value = json::parse_value(&config).map_err(|_| Fail::refused(refused::R_CONFIG))?;
+            if value.get("old_url").is_some() {
+                return Ok(Self(Some(CONVERTED.to_vec())));
+            }
+            let owned = value
+                .get("upstreams")
+                .and_then(|u| u.as_object())
+                .is_some_and(|members| members.iter().any(|(_, m)| m.get("url").is_some()));
+            if owned {
+                return Err(Fail::refused_because(
+                    refused::R_CONFIG,
+                    "unknown field `url` in a registration",
+                ));
+            }
+            Ok(Self(None))
+        }
+
+        fn check(_: &Host, _: &[u8], _: &mut Endpoints<'_>) -> Result<(), Fail> {
+            Ok(())
+        }
+
+        fn describe(d: &mut Describe<'_>) {
+            d.schema(r#"{"type":"object"}"#)
+                .upstream_path("/upstreams/*");
+        }
+
+        fn settled(&self, out: &mut Out<'_>) -> Result<(), Full> {
+            match &self.0 {
+                Some(bag) => settled::config(out, bag),
+                None => Ok(()),
+            }
+        }
+    }
+
+    impl busbar_plugin_abi::Plane for Fixture {
+        type Session = ();
+        fn request(
+            &self,
+            _: &Host,
+            _: &PlaneReq<'_>,
+            _: Bytes<'_>,
+            _: &mut Out<'_>,
+        ) -> Result<(), Fail> {
+            Err(Fail::unsupported())
+        }
+        fn upstream(
+            &self,
+            _: &Host,
+            _: &mut (),
+            _: &Target<'_>,
+            _: &mut Out<'_>,
+        ) -> Result<(), Fail> {
+            Ok(())
+        }
+        fn piece(
+            &self,
+            _: &Host,
+            _: &mut (),
+            _: u32,
+            _: u32,
+            _: u32,
+            _: Bytes<'_>,
+            _: &mut Out<'_>,
+        ) -> Result<(), Fail> {
+            Ok(())
+        }
+        fn end(&self, _: &Host, _: (), _: &mut Out<'_>) -> Result<(), Fail> {
+            Ok(())
+        }
+    }
+
+    busbar_plugin_abi::plugin!(Plane, Fixture, name: "fixture-migration-visible");
+}
+
+/// A plane that declares D_UPSTREAM_PATH and converts an older bag into registrations carrying core-owned
+/// members (`url`) is reopened, as core reopens it, with its visible bag: core keeps the members it owns
+/// (busbar-kernel `upstreams::declared`, root `min3_boot` `declared_planes`, 39451a9603) and hands the plane
+/// the rest, so the fixed-point and newer opens never see `url` there.
+#[test]
+fn a_converted_registration_reopens_as_the_visible_bag_core_hands_the_plane() {
+    use busbar_plugin_test::suites::{migrate_case, MigrateCase, MigrateExpect};
+    migrate_case(
+        visible_fixture::PLUGIN.plugin(),
+        MigrateCase {
+            bag: br#"{"old_url":"https://upstream.example"}"#,
+            purpose: busbar_plugin_test::suites::harness::OpenPurpose::ConvertUnstamped,
+            limits: Default::default(),
+        },
+        busbar_plugin_test::FakeNeeds::new(),
+        MigrateExpect::Settled {
+            config: Some(visible_fixture::CONVERTED),
+            core_cfg: &[],
+        },
+    );
+}
