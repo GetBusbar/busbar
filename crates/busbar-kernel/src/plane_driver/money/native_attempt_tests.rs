@@ -287,9 +287,9 @@ fn rate_observation_keeps_peak_and_requires_reported_coverage_including_zero() {
 
 #[test]
 fn spill_member_scope_does_not_replace_original_request_pool() {
-    let grants = BTreeMap::from([
-        ("seat\u{1f}p".to_owned(), vec!["seat\u{1f}a".to_owned()]),
-        ("seat\u{1f}q".to_owned(), vec!["seat\u{1f}b".to_owned()]),
+    let grants = crate::plane_driver::request_admission::MemberGrants::from([
+        ("seat\u{1f}p".into(), ["seat\u{1f}a".into()].into()),
+        ("seat\u{1f}q".into(), ["seat\u{1f}b".into()].into()),
     ]);
     assert!(super::member_granted(&grants, "seat\u{1f}q", "seat\u{1f}b"));
     assert!(!super::member_granted(

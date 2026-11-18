@@ -4087,7 +4087,8 @@ impl HostServices for KernelServices {
                 let book = Arc::clone(&self.work);
                 let bounds = self.work_bounds_of(caller.namespace());
                 let wall_ms = Arc::clone(&self.wall_ms);
-                let (kind, record) = (kind.to_string(), record.to_vec());
+                let kind = busbar_contract::kept::Text::from(Arc::<str>::from(kind));
+                let record = record.to_vec();
                 let owed = Owed(Some(later));
                 let pool = Arc::clone(&writer.pool);
                 pool.run_async(Box::pin(async move {

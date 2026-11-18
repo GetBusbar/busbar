@@ -37,7 +37,7 @@ impl RequestRoutes {
             || !request
                 .member_grants()
                 .get(selected_pool)
-                .is_some_and(|members| members.iter().any(|m| m == member))
+                .is_some_and(|members| members.iter().any(|m| *m == member))
         {
             return false;
         }

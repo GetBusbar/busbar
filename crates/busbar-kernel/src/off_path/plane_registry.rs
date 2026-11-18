@@ -51,12 +51,15 @@ pub(crate) fn stated_schemas(
     }
 }
 
+/// The fold of the installed declarations, then `registered` (a test binary's own, empty at
+/// boot), then the built-ins: read in that order off the three lists, never joined first.
 pub(crate) fn merged_boot_plane_decls(
     installed: &[&'static PlaneDecl],
+    registered: &[&'static PlaneDecl],
     builtins: &[&'static PlaneDecl],
 ) -> Vec<&'static PlaneDecl> {
     let mut decls: Vec<&'static PlaneDecl> = Vec::new();
-    for d in installed.iter().chain(builtins) {
+    for d in installed.iter().chain(registered).chain(builtins) {
         if decls.iter().any(|p| p.key == d.key) {
             tracing::info!(
                 plane = d.key,
@@ -70,7 +73,7 @@ pub(crate) fn merged_boot_plane_decls(
 
     // Every key is distinct (deduplicated above) and has a distinct canonical position, so a
     // stable sort orders them exactly as one without ties would.
-    let canonical = canonical_key_order(installed, builtins);
+    let canonical = canonical_key_order(installed, registered, builtins);
     decls.sort_by_key(|d| {
         canonical
             .iter()
@@ -90,26 +93,16 @@ pub(crate) fn merged_boot_plane_decls(
 
 pub(crate) fn canonical_key_order(
     installed: &[&'static PlaneDecl],
+    registered: &[&'static PlaneDecl],
     builtins: &[&'static PlaneDecl],
 ) -> Vec<&'static str> {
     let mut order: Vec<&'static str> = Vec::new();
-    for d in builtins.iter().chain(installed) {
+    for d in builtins.iter().chain(installed).chain(registered) {
         if !order.contains(&d.key) {
             order.push(d.key);
         }
     }
     order
-}
-
-/// The fold of the installed declarations plus `registered` (ahead of the built-ins), leaked for
-/// the process: what [`crate::plane_driver::registry::publish_planes`] publishes.
-pub(crate) fn published_fold(
-    installed: &[&'static PlaneDecl],
-    registered: &[&'static PlaneDecl],
-) -> &'static [&'static PlaneDecl] {
-    let mut all: Vec<&'static PlaneDecl> = installed.to_vec();
-    all.extend_from_slice(registered);
-    merged_boot_plane_decls(&all, crate::plane_driver::registry::builtin_plane_decls()).leak()
 }
 
 pub fn build_dispatch(

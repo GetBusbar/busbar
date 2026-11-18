@@ -210,11 +210,11 @@ fn named_pool_and_direct_model_have_distinct_admitted_scope() {
         assert_eq!(receipt.domain(), &domain);
         assert_eq!(receipt.pool(), pool);
         assert_eq!(
-            receipt
+            **receipt
                 .member_grants()
                 .get(receipt.walk_key().unwrap())
                 .unwrap(),
-            &["seat\u{1f}m"]
+            ["seat\u{1f}m"]
         );
         assert_ne!(
             receipt.walk_key(),

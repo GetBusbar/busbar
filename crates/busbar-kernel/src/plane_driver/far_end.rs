@@ -259,8 +259,9 @@ pub struct Egress {
 /// What one unit's walk is told at its start.
 #[derive(Debug, Clone)]
 pub struct UnitRoute {
-    /// Native receipt grants retain full member identity, including the instance prefix.
-    pub native_member_grants: Option<std::collections::BTreeMap<String, Vec<String>>>,
+    /// Native receipt grants retain full member identity, including the instance prefix. The
+    /// receipt's own map, shared: a unit's route copies no grant.
+    pub native_member_grants: Option<Arc<super::request_admission::MemberGrants>>,
     /// Core-owned member grants, keyed by the actual pool being walked.
     /// A present map denies pools absent from it, including on fallback and retry.
     pub member_grants: Option<std::collections::BTreeMap<String, Vec<String>>>,
