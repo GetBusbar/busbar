@@ -194,7 +194,7 @@ impl NativeRequestMoney {
                 TargetIdentity::Model { .. } => TargetKind::Model,
             },
             instance: self.request.context().instance().to_owned(),
-            selected_pool: selected.pool().to_owned(),
+            selected_pool: partition_pool(&self.request, selected.pool()),
             resource: selected.resource().map(str::to_owned),
             usage: UsagePartition {
                 lane: selected.qualified_member().to_owned(),
@@ -456,3 +456,17 @@ fn stage_attempt_facts(
 #[cfg(test)]
 #[path = "native_attempt_tests.rs"]
 mod tests;
+
+/// The pool a selected attempt partition records: an instance-qualified identity
+/// (`instance\u{1f}pool`, required by the partition rule of ddd61a377f), never an internal walk
+/// key (request_admission: "Operator domain is distinct from the internal walk key"). A seat walks
+/// its own pool under the bare instance key (`SeatPool::of`); `prepare` has already bound the
+/// attempt to the request's walk, so that pool's qualified name is the request's own pool
+/// (`instance\u{1f}domain`). Any other walk key is recorded as it was.
+fn partition_pool(request: &AdmittedRequest, walk_pool: &str) -> String {
+    if walk_pool == request.context().instance() {
+        request.pool().to_owned()
+    } else {
+        walk_pool.to_owned()
+    }
+}
