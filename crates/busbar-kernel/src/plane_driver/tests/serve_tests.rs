@@ -488,12 +488,15 @@ async fn a_trust_kernel(
 }
 
 /// [`Echo`] published as `instance` with a mutating admin route `POST /{instance}/{name}/decide`
-/// and a read route `GET /{instance}/{name}/peek`, its records keyed by its plane caller.
+/// and a read route `GET /{instance}/{name}/peek`, its records keyed by its plane caller. The
+/// caller is returned too: the plugin decides through that very binding (a trust decision grant is
+/// keyed by the binding's incarnation and the ticket, 32ab284dd9), never through another one.
 fn a_relaying_plane(
     instance: &str,
     services: &Arc<crate::host_services::KernelServices>,
-) -> (ServeTables, Arc<Echo>) {
+) -> (ServeTables, Arc<Echo>, Caller) {
     let echo = Arc::new(Echo::default());
+    let caller = a_plane(instance);
     let tables = ServeTables::default();
     let route = |verb: &str, at: &str| ServeRoute {
         verb: verb.to_string(),
@@ -509,19 +512,19 @@ fn a_relaying_plane(
                 calls: echo.clone(),
                 caps: BufferCaps::default(),
                 routes: vec![route("POST", "decide"), route("GET", "peek")],
-                records: Some((Arc::clone(services), a_plane(instance))),
+                records: Some((Arc::clone(services), caller.clone())),
             },
             &[],
         )
         .expect("publishes");
-    (tables, echo)
+    (tables, echo, caller)
 }
 
 /// One admin request at `path` (relative to the admin mount) as the inner router receives it after
 /// the admin gate admitted `op`: with `authority`, the trust decision authority the gate built
 /// from its own verdict; `None`, none.
 async fn relayed(
-    (tables, echo): &(ServeTables, Arc<Echo>),
+    (tables, echo, caller): &(ServeTables, Arc<Echo>, Caller),
     instance: &str,
     services: &Arc<crate::host_services::KernelServices>,
     (method, path): (&str, &str),
@@ -529,10 +532,15 @@ async fn relayed(
     (expected, approve): (Option<&str>, bool),
     request_id: &str,
 ) -> Stored {
+    assert_eq!(
+        caller.namespace().as_ref(),
+        instance,
+        "the plane's own binding"
+    );
     let (answers, mut answered) = tokio::sync::mpsc::unbounded_channel();
     *echo.relay.lock().unwrap() = Some(Relay {
         services: Arc::clone(services),
-        caller: a_plane(instance),
+        caller: caller.clone(),
         counterparty: "peer".to_string(),
         expected: expected.map(str::to_string),
         approve,
