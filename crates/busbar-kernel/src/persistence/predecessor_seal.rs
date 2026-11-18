@@ -418,12 +418,6 @@ impl PredecessorFence {
             .map_err(RetireError::from)
     }
 
-    /// Settle a seal write this task left retained (one round trip on a store that answers).
-    pub async fn settle_seal(&self) -> Result<(), String> {
-        let _gate = self.seals.gate.lock().await;
-        self.seals.resume().await.map(|_| ())
-    }
-
     /// The predecessor's journal head and owner (`None`: it never wrote a record).
     pub async fn journal_tail(&self, node: u64) -> Result<Option<TailView>, RetireError> {
         super::super::journal::StoreJournal::new(&self.core, node)
