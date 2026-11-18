@@ -306,7 +306,10 @@ pub fn compose(
             telemetry: Arc::new(ModelTelemetry {
                 app: serving.app.clone(),
                 names: stable_names,
-                queued: crate::root::egress_ports::WalkTelemetry::new(names),
+                queued: crate::root::egress_ports::WalkTelemetry::new(
+                    names,
+                    built.keys().map(String::as_str),
+                ),
             }),
             pools: built,
             routes: sealed,
