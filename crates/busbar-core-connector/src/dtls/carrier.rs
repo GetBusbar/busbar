@@ -277,7 +277,8 @@ impl Port {
 /// A port's reader: datagrams in, timers on a short tick. It holds the port only while it works.
 async fn run(weak: Weak<Port>) {
     let mut buf = vec![0_u8; udp::MAX_DATAGRAM];
-    let mut next_tick = crate::framer::now();
+    // The first wake ticks: no reading is taken before it.
+    let mut next_tick: Option<Instant> = None;
     loop {
         let Some(port) = weak.upgrade() else {
             return;
@@ -300,9 +301,9 @@ async fn run(weak: Weak<Port>) {
             }
             Err(_) => {}
         }
-        if now >= next_tick {
+        if next_tick.is_none_or(|at| now >= at) {
             port.tick(now);
-            next_tick = now + TICK;
+            next_tick = Some(now + TICK);
         }
     }
 }
@@ -436,6 +437,7 @@ impl DatagramCarrier {
         route: MediaRoute,
         dial: bool,
         opening: &[u8],
+        now: Instant,
     ) -> Result<Session, RecordsDenied> {
         Session::begin(
             &*self.opener,
@@ -447,7 +449,7 @@ impl DatagramCarrier {
                 opening,
                 judge: Some((Arc::clone(&self.judge), route.class)),
             },
-            crate::framer::now(),
+            now,
         )
     }
 }
@@ -464,11 +466,13 @@ impl MediaCarrier for DatagramCarrier {
                 .listener(route)
                 .ok_or(RecordsDenied::Unavailable)?;
             let port = self.listener_port(media.bind)?;
-            let session = self.begin(&port, media, false, &[])?;
+            // The accept's one reading: its session begins and takes the offer at it.
+            let now = crate::framer::now();
+            let session = self.begin(&port, media, false, &[], now)?;
             let cell = port.admit(session)?;
             let answer = {
                 let mut inner = cell.lock();
-                let taken = inner.session.rendezvous(offer, crate::framer::now());
+                let taken = inner.session.rendezvous(offer, now);
                 port.after(&cell, &mut inner);
                 if !taken {
                     return Err(RecordsDenied::Invalid);
@@ -497,7 +501,7 @@ impl MediaCarrier for DatagramCarrier {
             // A port of its own, on the listener's address: two calls to one far end would share the 5-tuple.
             let own = SocketAddr::new(media.bind.ip(), 0);
             let port = Port::open(own).map_err(|_| RecordsDenied::Unavailable)?;
-            let session = self.begin(&port, media, true, opening)?;
+            let session = self.begin(&port, media, true, opening, crate::framer::now())?;
             let cell = port.admit(session)?;
             let offer = cell.lock().session.take_rendezvous();
             let Some(offer) = offer else {
