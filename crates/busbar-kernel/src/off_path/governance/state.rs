@@ -273,11 +273,6 @@ pub(crate) fn state_any_unsettled<V: Clone>(
     copies.iter().any(unsettled)
 }
 
-/// `state`: the budget flush tick's backstop clock reading, once per tick.
-pub(crate) fn state_flush_instant() -> std::time::Instant {
-    std::time::Instant::now()
-}
-
 /// `state`: the budget flush's second walk over the selected shards. `visit` captures one dirty
 /// cell's flights into the list and answers whether the cell is left dirty; a shard holding a
 /// cell left dirty is handed to `reflag` while its lock is held.
@@ -488,11 +483,6 @@ pub(crate) fn metering_flush_take_unretained<K, V, T>(
         flight.extend(map.drain().filter_map(&mut make));
         map.extend(kept);
     }
-}
-
-/// `metering_flush`: a first attempt's first-send wall time in milliseconds.
-pub(crate) fn metering_flush_attempt_clock() -> u64 {
-    crate::store::now_ms()
 }
 
 /// `metering_flush`: the fresh pending cells a failed shutdown flush leaves behind.

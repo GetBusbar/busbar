@@ -1777,7 +1777,10 @@ impl GovState {
                     }));
                     crate::governance::sharded::put(&mut guards[index].1, &bucket, before);
                 }
-                let sent_at = ledger_off_path::ledger_correction_sent_clock();
+                // The wall seconds this fresh operation is sent at (its durable first-send
+                // time): read once per sent operation, after this attempt's awaits and with its
+                // target shards held; a condition-conflict retry sends a new operation.
+                let sent_at = crate::store::now();
                 let pending = PendingCorrection {
                     request,
                     intent: Intent::of(adj, action_id),

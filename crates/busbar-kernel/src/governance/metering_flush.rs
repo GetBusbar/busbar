@@ -201,8 +201,9 @@ impl GovState {
                 return flushed;
             };
             let op = write.op.unwrap_or_else(|| {
-                let first_sent_at_ms =
-                    crate::off_path::governance::state::metering_flush_attempt_clock();
+                // A first attempt's first-send wall time, read after the awaits that came
+                // before it in this pass.
+                let first_sent_at_ms = crate::store::now_ms();
                 let op = MeteringAttempt {
                     id: crate::door::op_id(),
                     first_sent_at_ms,

@@ -146,13 +146,6 @@ pub(crate) fn ledger_corrections_snapshot<T: Clone>(
     corrections.values().cloned().collect()
 }
 
-/// `ledger_correction`: the wall seconds a fresh correction operation is sent at (its durable
-/// first-send time). Read once per sent operation; a condition-conflict retry sends a new
-/// operation.
-pub(crate) fn ledger_correction_sent_clock() -> u64 {
-    crate::store::now()
-}
-
 /// `ledger_correction`: a settled correction's selected raw cuts, keyed by (bucket, window).
 pub(crate) fn ledger_correction_cuts_by_target<C>(
     cuts: Vec<(String, u64, C)>,

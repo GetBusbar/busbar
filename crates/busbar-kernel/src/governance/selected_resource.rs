@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLockWriteGuard};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use busbar_contract::Count;
 use busbar_plugin_abi::fallback_usage::class_text;
@@ -151,42 +150,47 @@ pub(crate) enum RateObservationError {
     Sealed,
 }
 
+/// The rate windows' clock: wall time at boot plus monotonic time since, so a wall-clock step
+/// cannot move a window. Anchored by one reading of both clocks.
 struct RateClock {
     epoch: [u8; 16],
+    /// The anchor's wall reading in milliseconds; `None` when the wall clock read the epoch or
+    /// earlier (unavailable).
     boot_ms: Option<u64>,
-    started: Instant,
+    /// The anchor's monotonic reading in nanoseconds.
+    started_ns: u64,
     #[cfg(test)]
     elapsed: Option<Arc<AtomicU64>>,
 }
 
 impl RateClock {
     fn new() -> Self {
-        let started = Instant::now();
-        let boot_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|n| u64::try_from(n.as_millis()).ok());
+        let at = crate::store::Stamp::now();
         Self {
             epoch: crate::snapshot::boot_nonce(),
-            boot_ms,
-            started,
+            boot_ms: (at.wall_ns != 0).then_some(at.wall_ns / 1_000_000),
+            started_ns: at.mono_ns,
             #[cfg(test)]
             elapsed: None,
         }
     }
 
+    /// The current minute, read on the monotonic clock against the anchor (once per call; a test
+    /// steps `elapsed` in its place).
     fn minute(&self) -> Option<u64> {
         if self.epoch == [0; 16] {
             return None;
         }
         #[cfg(test)]
-        let elapsed = match &self.elapsed {
-            Some(elapsed) => Some(elapsed.load(Ordering::Relaxed)),
-            None => u64::try_from(self.started.elapsed().as_millis()).ok(),
-        };
-        #[cfg(not(test))]
-        let elapsed = u64::try_from(self.started.elapsed().as_millis()).ok();
-        let minute = self.boot_ms?.checked_add(elapsed?)? / MINUTE_MS;
+        if let Some(elapsed) = &self.elapsed {
+            return self.minute_after(elapsed.load(Ordering::Relaxed));
+        }
+        self.minute_after(crate::store::monotonic_ns().saturating_sub(self.started_ns) / 1_000_000)
+    }
+
+    /// The minute `elapsed` milliseconds after the anchor.
+    fn minute_after(&self, elapsed: u64) -> Option<u64> {
+        let minute = self.boot_ms?.checked_add(elapsed)? / MINUTE_MS;
         minute.checked_add(1)?.checked_mul(MINUTE_MS)?;
         Some(minute)
     }
