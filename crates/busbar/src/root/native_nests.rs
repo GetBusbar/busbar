@@ -11,7 +11,7 @@ use busbar_contract::UnitKey;
 use busbar_kernel::guest::{Claimant, GuestList, Matched};
 use busbar_kernel::host_services::{InvocationContext, KernelServices, Nest, NestReply};
 use busbar_kernel::host_units::UnitRecord;
-use busbar_kernel::plane_driver::port::{HttpIn, ServeIn, Served};
+use busbar_kernel::plane_driver::port::{HttpHead, HttpIn, ServeIn, Served};
 use busbar_kernel::plane_driver::port_auth::{subject_identity, Credentials, Principal};
 use busbar_kernel::plane_driver::port_billing::{end_of, PortBilling};
 use busbar_kernel::plane_driver::port_session::{ClientSink, ToClient};
@@ -174,14 +174,16 @@ impl NativeNests {
                 admission: None,
                 invocation: Some(invocation),
                 route,
-                http: HttpIn {
-                    method: nest.ask.verb.clone(),
-                    path: path.into(),
-                    query: query.into(),
-                    headers: Vec::new(),
+                http: HttpIn::new(
+                    HttpHead::Text {
+                        method: nest.ask.verb.clone(),
+                        path: path.into(),
+                        query: query.into(),
+                        headers: Vec::new(),
+                    },
                     body,
-                    request_id: id.get(),
-                },
+                    id.get(),
+                ),
                 creds: Credentials {
                     bearer: None,
                     principal: Principal::Verified(&identity),

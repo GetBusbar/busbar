@@ -303,7 +303,18 @@ mod signed_ingress {
     }
 
     async fn check(ingress: &Ingress, effective: u32) -> Option<bool> {
-        signed_of(ingress, &who(), &route(effective), &[], b"{}", 1_000).await
+        // No header fields, a `{}` body.
+        let http = HttpIn::new(
+            HttpHead::Text {
+                method: "POST".into(),
+                path: "/".into(),
+                query: String::new(),
+                headers: Vec::new(),
+            },
+            Bytes::from_static(b"{}"),
+            0,
+        );
+        signed_of(ingress, &who(), &route(effective), &http, 1_000).await
     }
 
     #[tokio::test]

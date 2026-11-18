@@ -16,7 +16,7 @@ use busbar_ports::plane::{
 };
 use busbar_ports::{CallCx, PortError};
 
-use super::{HttpIn, PortDriver, ServeIn};
+use super::{HttpHead, HttpIn, PortDriver, ServeIn};
 use crate::host_services::KernelServices;
 use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
 use crate::plane_driver::port_auth::{Credentials, Principal};
@@ -194,14 +194,16 @@ async fn blocking_input_lifetime(payload: &[u8], cancel: bool) {
                 request,
                 admission: None,
                 route: 1,
-                http: HttpIn {
-                    method: "GET".into(),
-                    path: "/input".into(),
-                    query: String::new(),
-                    headers: Vec::new(),
+                http: HttpIn::new(
+                    HttpHead::Text {
+                        method: "GET".into(),
+                        path: "/input".into(),
+                        query: String::new(),
+                        headers: Vec::new(),
+                    },
                     body,
-                    request_id: 1,
-                },
+                    1,
+                ),
                 creds: Credentials {
                     bearer: None,
                     principal: Principal::Anonymous,
@@ -264,14 +266,16 @@ async fn native_input_retires_after_normal_blocking_completion() {
 fn partial_native_body_backing_survives_http_owner_drop() {
     let budget = ProcessAdmission::with_limits(2, 64, 8);
     let request = budget.try_enter(AdmissionClass::Data).unwrap();
-    let http = HttpIn {
-        method: "POST".into(),
-        path: "/input".into(),
-        query: String::new(),
-        headers: Vec::new(),
-        body: request.copy_input(b"payload").unwrap().into_bytes(),
-        request_id: 1,
-    };
+    let http = HttpIn::new(
+        HttpHead::Text {
+            method: "POST".into(),
+            path: "/input".into(),
+            query: String::new(),
+            headers: Vec::new(),
+        },
+        request.copy_input(b"payload").unwrap().into_bytes(),
+        1,
+    );
     let tail = http.body.slice(3..);
     drop(request);
     drop(http);

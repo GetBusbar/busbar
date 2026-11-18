@@ -341,17 +341,9 @@ impl PortDriver {
             || input.unit.is_some()
             || !input.request.same_request(snapshot.request())
             || input.http.request_id != data.binding().invocation().request_id().get()
-            || input.http.method != snapshot.method()
-            || input.http.path != snapshot.path()
-            || input.http.query != snapshot.query()
+            || !input.http.same_head(snapshot)
             || input.http.body.as_ref() != snapshot.body()
             || input.now_s != snapshot.now_s()
-            || !input
-                .http
-                .headers
-                .iter()
-                .map(|(name, value)| (name.as_str(), value.as_slice()))
-                .eq(snapshot.headers())
             || input
                 .invocation
                 .as_ref()
@@ -617,9 +609,9 @@ fn render_native_refusal(
         route,
         flags: 0,
         auth,
-        method: &http.method,
-        path: &http.path,
-        query: &http.query,
+        method: http.method(),
+        path: http.path(),
+        query: http.query(),
         headers: &headers,
         identity: &[],
         request_id: http.request_id,
@@ -636,10 +628,12 @@ type LentPairs<'a> = smallvec::SmallVec<[Pair<'a>; 32]>;
 /// The request's header fields as the plane reads them, borrowed from `http`.
 fn lent_headers(http: &HttpIn) -> LentPairs<'_> {
     let mut headers = LentPairs::new();
-    headers.extend(http.headers.iter().map(|(name, value)| Pair {
-        name: Str::new(name),
-        value: Bytes::new(value),
-    }));
+    http.each_header(|name, value| {
+        headers.push(Pair {
+            name: Str::new(name),
+            value: Bytes::new(value),
+        });
+    });
     headers
 }
 
@@ -966,15 +960,115 @@ fn recover_blocking(
     .map(|_| ())
 }
 
-/// One request of a mounted route, as the route layer read it.
+/// One request of a mounted route, as the route layer read it. Its head is held as it arrived, never copied to be
+/// served: the inbound request's own parts (moved in), the admitted DATA request's charged snapshot (shared), or the
+/// text a core-built request (an admin call, a nested dispatch, a refusal render) already owns.
 pub struct HttpIn {
-    pub method: String,
-    pub path: String,
-    pub query: String,
-    pub headers: Vec<(String, Vec<u8>)>,
+    head: HttpHead,
     /// Shared inbound backing; clones retain its process byte credit without copying payload.
     pub body: bytes::Bytes,
     pub request_id: u64,
+}
+
+/// Where a request's method, target and header fields live (see [`HttpIn`]).
+pub enum HttpHead {
+    /// The inbound request's parts: its route method, its URI (path and query read from it) and its header map.
+    Parts {
+        method: &'static str,
+        uri: http::Uri,
+        headers: http::HeaderMap,
+    },
+    /// The admitted DATA request's charged snapshot.
+    Snapshot(Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot>),
+    /// A head core built itself, already owned by its caller.
+    Text {
+        method: String,
+        path: String,
+        query: String,
+        headers: Vec<(String, Vec<u8>)>,
+    },
+}
+
+impl HttpIn {
+    #[must_use]
+    pub fn new(head: HttpHead, body: bytes::Bytes, request_id: u64) -> Self {
+        Self {
+            head,
+            body,
+            request_id,
+        }
+    }
+
+    #[must_use]
+    pub fn method(&self) -> &str {
+        match &self.head {
+            HttpHead::Parts { method, .. } => method,
+            HttpHead::Snapshot(snapshot) => snapshot.method(),
+            HttpHead::Text { method, .. } => method,
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &str {
+        match &self.head {
+            HttpHead::Parts { uri, .. } => uri.path(),
+            HttpHead::Snapshot(snapshot) => snapshot.path(),
+            HttpHead::Text { path, .. } => path,
+        }
+    }
+
+    /// The query without its `?`; empty when the target has none.
+    #[must_use]
+    pub fn query(&self) -> &str {
+        match &self.head {
+            HttpHead::Parts { uri, .. } => uri.query().unwrap_or_default(),
+            HttpHead::Snapshot(snapshot) => snapshot.query(),
+            HttpHead::Text { query, .. } => query,
+        }
+    }
+
+    /// Each header field (name, value) in the order the head holds them.
+    pub fn each_header<'a>(&'a self, mut field: impl FnMut(&'a str, &'a [u8])) {
+        match &self.head {
+            HttpHead::Parts { headers, .. } => {
+                for (name, value) in headers {
+                    field(name.as_str(), value.as_bytes());
+                }
+            }
+            HttpHead::Snapshot(snapshot) => {
+                for (name, value) in snapshot.headers() {
+                    field(name, value);
+                }
+            }
+            HttpHead::Text { headers, .. } => {
+                for (name, value) in headers {
+                    field(name, value);
+                }
+            }
+        }
+    }
+
+    /// Whether this head is `snapshot`'s: the same snapshot, or the same method, target and header fields in order.
+    fn same_head(
+        &self,
+        snapshot: &Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot>,
+    ) -> bool {
+        if let HttpHead::Snapshot(own) = &self.head {
+            if Arc::ptr_eq(own, snapshot) {
+                return true;
+            }
+        }
+        if self.method() != snapshot.method()
+            || self.path() != snapshot.path()
+            || self.query() != snapshot.query()
+        {
+            return false;
+        }
+        let mut theirs = snapshot.headers();
+        let mut same = true;
+        self.each_header(|name, value| same &= theirs.next() == Some((name, value)));
+        same && theirs.next().is_none()
+    }
 }
 
 /// The billed unit a request runs as: its money seam and the unit it posts to.
@@ -1193,9 +1287,9 @@ fn serve_blocking(
         route: route.route,
         flags: if project { RQ_PROJECT } else { 0 },
         auth,
-        method: &http.method,
-        path: &http.path,
-        query: &http.query,
+        method: http.method(),
+        path: http.path(),
+        query: http.query(),
         headers: &headers,
         identity,
         request_id: http.request_id,

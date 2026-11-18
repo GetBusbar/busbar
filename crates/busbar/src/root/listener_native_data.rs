@@ -15,7 +15,7 @@ use busbar_contract::storage::{StorageCredit, StorageSource};
 use busbar_kernel::auth::native_data::{NativeDataAllocation, NativeDataPending};
 use busbar_kernel::inbound::native::{CompletingPhysicalRequest, RouteTarget, StreamOwner};
 use busbar_kernel::plane_driver::port::{
-    HttpIn, NativeServed, NativeTaskRetirement, ServeError, ServeIn, Served,
+    HttpHead, HttpIn, NativeServed, NativeTaskRetirement, ServeError, ServeIn, Served,
 };
 use busbar_kernel::plane_driver::port_admission::AdmittedUnit;
 use busbar_kernel::plane_driver::port_auth::{Credentials, Principal};
@@ -589,17 +589,12 @@ pub(super) async fn prepare(
             .storage()
             .try_reserve(header_extent)
             .map_err(|_| InputError::Capacity)?;
-        let http = HttpIn {
-            method: snapshot.method().to_owned(),
-            path: snapshot.path().to_owned(),
-            query: snapshot.query().to_owned(),
-            headers: snapshot
-                .headers()
-                .map(|(name, value)| (name.to_owned(), value.to_vec()))
-                .collect(),
-            body: snapshot.body_bytes(),
-            request_id: binding.invocation().request_id().get(),
-        };
+        // The DATA request's head is its charged snapshot, shared, not copied.
+        let http = HttpIn::new(
+            HttpHead::Snapshot(Arc::clone(snapshot)),
+            snapshot.body_bytes(),
+            binding.invocation().request_id().get(),
+        );
         let lease = snapshot.request().clone();
         let now_s = snapshot.now_s();
         let (head_tx, mut head_rx) = oneshot::channel();
