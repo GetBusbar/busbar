@@ -349,6 +349,73 @@ async fn a_class_the_unit_does_not_name_is_refused_and_so_is_an_unknown_state() 
     assert_ne!(OBS_PENDING, OBS_REFUSED);
 }
 
+/// B-OBSERVE, the register's cost (GROUP-storage step 4): one round is `register`, `resolve` and the
+/// registration's drop, each thread on its own principal of one instance, 1 and 8 threads; median and p99 ns per
+/// round over `B_OBSERVE_ROUNDS` rounds a thread (default 100,000). The units are built before the clock starts.
+/// Run explicitly on the build machine: `--run-ignored only`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "run explicitly on the build machine for observation register cost qualification"]
+async fn observation_register_cost() {
+    let f = fixture().await;
+    let rounds = std::env::var("B_OBSERVE_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100_000usize);
+    for threads in [1usize, 8] {
+        let started = std::sync::Barrier::new(threads);
+        let started = &started;
+        let mut samples: Vec<u64> = std::thread::scope(|scope| {
+            let (custody, money) = (&f.custody, &f.money);
+            let workers: Vec<_> = (0..threads)
+                .map(|t| {
+                    scope.spawn(move || {
+                        let subject = format!("owner-{t}");
+                        let identity = subject_identity(&subject);
+                        let mut units: Vec<ActiveUnit> =
+                            (0..rounds).map(|_| cost_unit(money)).collect();
+                        let mut taken = Vec::with_capacity(rounds);
+                        started.wait();
+                        for unit in units.drain(..) {
+                            let at = std::time::Instant::now();
+                            let held = register_for_cost(custody, &subject, unit);
+                            std::hint::black_box(custody.resolve("fixture", &identity, None));
+                            drop(held);
+                            taken.push(u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX));
+                        }
+                        taken
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|w| w.join().expect("a cost worker"))
+                .collect()
+        });
+        samples.sort();
+        let median = samples[samples.len() / 2];
+        let p99 = samples[samples.len() * 99 / 100];
+        eprintln!(
+            "B-OBSERVE register+resolve+drop threads={threads} rounds={rounds} median_ns={median} p99_ns={p99}"
+        );
+    }
+    drop(f.registration);
+}
+
+fn cost_unit(money: &Arc<PlaneMoney>) -> ActiveUnit {
+    ActiveUnit {
+        money: money.clone(),
+        unit: UnitKey::new(1),
+        policy: policy(),
+        classes: Arc::from(vec!["work_units".to_owned()]),
+    }
+}
+
+fn register_for_cost(custody: &ObsCustody, subject: &str, unit: ActiveUnit) -> Registration {
+    custody
+        .register("fixture", subject, unit)
+        .expect("a cost round registers")
+}
+
 #[tokio::test]
 async fn ending_the_request_releases_the_unit_and_a_policy_naming_another_instance_is_not_registered(
 ) {
