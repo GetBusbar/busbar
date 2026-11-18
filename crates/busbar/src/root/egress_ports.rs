@@ -150,7 +150,7 @@ impl Capacity for MemberPermits {
 #[derive(Debug, Default)]
 pub struct WalkTelemetry {
     pub(crate) names: HashMap<DestinationId, String>,
-    pub(crate) depths: Mutex<busbar_contract::fixed::Seats<i64>>,
+    pub(crate) depths: Mutex<HashMap<String, i64>>,
     pub(crate) bound: LabelBound,
 }
 
@@ -287,12 +287,14 @@ impl Telemetry for WalkTelemetry {
                 .depths
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Ok(depth) = depths.claim(pool) else {
-                // Not planned and no spare seat left: this pool's depth is not kept.
-                return;
-            };
-            *depth = depth.saturating_add(delta).max(0);
-            *depth
+            if let Some(depth) = depths.get_mut(pool) {
+                *depth = depth.saturating_add(delta).max(0);
+                *depth
+            } else {
+                let depth = 0_i64.saturating_add(delta).max(0);
+                crate::root::cold::first_queued(&mut depths, pool, depth);
+                depth
+            }
         };
         busbar_kernel::telemetry::pool_queued_on(pool, depth);
     }

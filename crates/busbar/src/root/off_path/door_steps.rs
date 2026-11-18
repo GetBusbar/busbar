@@ -394,12 +394,11 @@ pub(crate) fn compose_egress(
         clock,
         journal,
         telemetry: Arc::new(
-            crate::root::egress_ports::WalkTelemetry::new(names, built.keys().map(String::as_str))
-                .bounded(label_bound(
-                    facts.plane.lane_prefix(),
-                    pools,
-                    &facts.metric_lanes,
-                )),
+            crate::root::egress_ports::WalkTelemetry::new(names).bounded(label_bound(
+                facts.plane.lane_prefix(),
+                pools,
+                &facts.metric_lanes,
+            )),
         ),
         pools: built,
         routes: sealed,
