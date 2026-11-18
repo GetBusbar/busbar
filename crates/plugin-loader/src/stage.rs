@@ -721,8 +721,11 @@ pub(crate) fn sealed_memfd(bytes: &[u8]) -> Result<std::os::fd::OwnedFd, String>
     let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
     {
         let mut f = std::fs::File::from(fd.try_clone().map_err(|e| format!("memfd dup: {e}"))?);
+        // The dup shares the file offset: rewind it, so a reader of the returned fd (admit's
+        // `verify`, which reads the image once from its fd) starts at the first byte, not at EOF.
         f.write_all(bytes)
             .and_then(|()| f.flush())
+            .and_then(|()| std::io::Seek::rewind(&mut f))
             .map_err(|e| format!("memfd write: {e}"))?;
     }
     // SEAL before the map: from here the memfd's content can never change again, through this fd,
