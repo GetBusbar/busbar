@@ -87,18 +87,6 @@ pub(crate) struct Rig {
 }
 
 impl Rig {
-    pub(crate) fn projects(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
-        self.plane.projects.lock().unwrap().clone()
-    }
-
-    pub(crate) fn project_flags(&self) -> Vec<u32> {
-        self.plane.project_flags.lock().unwrap().clone()
-    }
-
-    pub(crate) fn regrown(&self) -> Vec<(usize, usize, usize)> {
-        self.plane.regrown.lock().unwrap().clone()
-    }
-
     pub(crate) fn stats(&self) -> [u64; stat::COUNT] {
         let mut out = [0; stat::COUNT];
         for (k, v) in out.iter_mut().enumerate() {
