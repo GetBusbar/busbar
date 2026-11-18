@@ -53,7 +53,7 @@ fn connector_over(
 ) -> Arc<Connector> {
     let view = Transports::new(vec![Entry {
         door: Arc::new(TestDoor::identity("bytes")),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }])
     .expect("the view");
     let guard = Guard::from_config(&Destinations {
@@ -339,7 +339,7 @@ fn a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal() {
         let up = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let view = Transports::new(vec![Entry {
             door: Arc::new(TestDoor::identity("bytes")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         }])
         .expect("the view");
         let resolver = Flaky {

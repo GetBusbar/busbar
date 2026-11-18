@@ -243,6 +243,32 @@ async fn a_backwards_wall_clock_still_observes_shared_store_rotation_and_revocat
     assert!(b.denylist.contains(&key.id));
 }
 
+/// A node that serves no request while a peer revokes a key refuses that key on its first request
+/// after the quiet spell: the set it judges by is at most about two windows old (the promise in
+/// docs/admin-api.md), never the set it held when it went quiet.
+#[tokio::test]
+async fn an_idle_node_refuses_a_peer_revoked_key_on_its_first_request() {
+    let core = crate::real_store::core().await;
+    let (a, b) = (node(core.clone()).await, node(core).await);
+    let t0 = crate::store::now();
+    let (key, token) = a
+        .mint_signed_async(crate::governance::NewKeySpec::default(), t0 + 7_200, t0)
+        .await
+        .unwrap();
+    b.refresh_async().await.unwrap();
+    let token = token.expose(&crate::seal::lend());
+    assert!(b.verify_token(token, crate::store::now(), None).is_some());
+    a.revoke_async(&key.id, "peer revoke while b is idle")
+        .await
+        .unwrap();
+    // No request reaches `b` for longer than two windows.
+    tokio::time::sleep(Duration::from_secs(REVOCATION_SYNC_TTL_SECS * 2 + 1)).await;
+    assert!(
+        b.verify_token(token, crate::store::now(), None).is_none(),
+        "the first request after an idle spell was judged against the revocations of before it"
+    );
+}
+
 #[tokio::test]
 async fn failed_refreshes_under_a_regressing_clock_are_rate_limited_by_monotonic_age() {
     let (backend, rev) = faulty_sync(10_000).await;

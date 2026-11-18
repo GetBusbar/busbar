@@ -65,11 +65,11 @@ fn secure_connector() -> Connector {
                     ..Knobs::default()
                 },
             )),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         Entry {
             door: Arc::new(TestDoor::identity("carrier")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
     ])
     .unwrap();

@@ -23,7 +23,7 @@ const OWNER: InstanceId = InstanceId(1);
 fn connector(wakes: Arc<AtomicU64>) -> Connector {
     let view = Transports::new(vec![Entry {
         door: Arc::new(TestDoor::identity("tcp")),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }])
     .unwrap();
     Connector::serving(

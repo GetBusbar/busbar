@@ -11,7 +11,7 @@ use crate::support::{Knobs, TestDoor};
 fn entry(name: &str, claims: &[&'static str], under: &[&'static str]) -> Entry {
     Entry {
         door: Arc::new(TestDoor::new(name, claims, under, Knobs::default())),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }
 }
 
@@ -91,7 +91,7 @@ fn a_layer_nobody_serves_and_an_entry_with_no_claim_are_refused() {
 fn door(d: TestDoor) -> Entry {
     Entry {
         door: Arc::new(d),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }
 }
 

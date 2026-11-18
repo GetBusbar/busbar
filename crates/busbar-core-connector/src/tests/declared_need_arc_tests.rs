@@ -49,7 +49,7 @@ fn declared_need_is_not_clone() {
 fn connector() -> Connector {
     let view = Transports::new(vec![Entry {
         door: Arc::new(TestDoor::identity("bytes")),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }])
     .unwrap();
     Connector::serving(

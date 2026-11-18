@@ -35,13 +35,13 @@ use busbar_ports::export::{Delivered, ExportPort, FamilyIn, SampleIn};
 use busbar_ports::{CallCx, PortError};
 
 /// Lines one instance holds queued before the kernel's next line is shed (the old door's bound).
-pub const MAX_QUEUED_LINES: usize = super::MAX_QUEUED_LINES;
+pub const MAX_QUEUED_LINES: usize = 4096;
 /// Lines in one delivered line set at most.
-pub const MAX_BATCH_LINES: usize = super::MAX_BATCH_LINES;
+pub const MAX_BATCH_LINES: usize = 256;
 /// Bytes in one delivered line set at most (a single larger line still goes alone).
-pub const MAX_BATCH_BYTES: usize = super::MAX_BATCH_BYTES;
+pub const MAX_BATCH_BYTES: usize = 1024 * 1024;
 /// Sends of one line set at most before its lines are dropped and counted.
-pub const DELIVER_ATTEMPTS: u32 = super::DELIVER_ATTEMPTS;
+pub const DELIVER_ATTEMPTS: u32 = 3;
 /// The per-delivery deadline when the instance's `limits.timeout_ms` is 0 (no extra cap).
 pub const DEFAULT_DELIVER_TIMEOUT: Duration = Duration::from_secs(30);
 /// The Retry-After clamp of `RetrySite::ExportDeliver` (§12.3).
@@ -1035,6 +1035,25 @@ fn with_snapshot<R>(families: &[Family], f: impl FnOnce(&[FamilyIn<'_>]) -> R) -
     f(&snapshot)
 }
 
+/// W2-SW-EXPORT: one export instance on the MIN-3 path. Opens `spec` through the registry (`open_export`, L2/L7)
+/// and hands the kernel's export lane a [`PortDoor`] over the port: the round-33 pump
+/// (core-minted `delivery`, counted `attempt`), the image's FB_SPAN_RECORDS and custody ceiling read through
+/// L7, APPEND answers handed to `disk` (core's bound destinations, §12.21).
+pub async fn open_min3<N: busbar_plugin_abi::host_side::needs::Needs>(
+    registry: &crate::instance::Registry,
+    spec: &crate::instance::InstanceSpec<'_>,
+    needs: &Arc<N>,
+    refs: &Arc<dyn busbar_ports::binder::RefSource>,
+    disk: Arc<dyn DestAppend>,
+    observer: Arc<dyn ExportObserver>,
+) -> Result<Arc<PortDoor>, String> {
+    let port = registry
+        .open_export(spec, needs, refs)
+        .await
+        .map_err(|e| crate::cold::export_pump::not_opened(spec.name, &e))?;
+    PortDoor::open(spec.name, port, disk, &spec.limits, observer)
+}
+
 #[cfg(test)]
-#[path = "../tests/export_port_door_tests.rs"]
+#[path = "tests/export_pump_tests.rs"]
 mod tests;

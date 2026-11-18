@@ -92,11 +92,11 @@ fn pending_connector(
         Transports::new(vec![
             Entry {
                 door: framing.clone(),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
             Entry {
                 door: carrier,
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
         ])
         .unwrap(),

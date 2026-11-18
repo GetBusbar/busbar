@@ -47,7 +47,7 @@ pub(super) async fn fixture() -> (Arc<crate::persistence::facade::CoreStore>, As
     let rows = AsyncRecords::authorized(
         store.clone(),
         INSTANCE,
-        [SCHEMA.as_str().into(), CHAIN_LIFE_SCHEMA.as_str().into()],
+        [SCHEMA.as_str(), CHAIN_LIFE_SCHEMA.as_str()],
     )
     .unwrap();
     (store, rows)
@@ -168,7 +168,7 @@ async fn neutral_records_survive_a_restart_and_the_chain_verifies() {
     let rows = AsyncRecords::authorized(
         store,
         INSTANCE,
-        [SCHEMA.as_str().into(), CHAIN_LIFE_SCHEMA.as_str().into()],
+        [SCHEMA.as_str(), CHAIN_LIFE_SCHEMA.as_str()],
     )
     .unwrap();
     let recovered = records(&rows, "acme").await;

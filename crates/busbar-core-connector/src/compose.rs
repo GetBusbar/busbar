@@ -88,8 +88,9 @@ pub struct Dial {
     /// set per dial: the entry's own, else `alpn`).
     pub tls: Option<Arc<rustls::ClientConfig>>,
     /// The protocols offered in the TLS handshake, most preferred first, where the entry's
-    /// `locate` answers no offer of its own.
-    pub alpn: Vec<Vec<u8>>,
+    /// `locate` answers no offer of its own. Shared with the entry it came from (a reference
+    /// count): a dial never copies it.
+    pub alpn: Arc<[Vec<u8>]>,
     /// The bound on the open: connect and handshake.
     pub open_timeout: Duration,
     /// The first message, as envelope fields and a body; `None` sends nothing first.
@@ -1052,7 +1053,7 @@ impl Planned {
         let Self {
             door,
             via,
-            mut dial,
+            dial,
             mut located,
         } = self;
         let presented = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1074,12 +1075,12 @@ impl Planned {
             let mut config = (*base).clone();
 
             // rustls owns the protocol offer of the client config each connection's handshake is
-            // set up with: the dial's own list is moved into it, not copied, and so is the
-            // entry's where this plan owns the answer (a shared answer's list is copied, once,
-            // for this new connection). A secured dial reads neither again (a single located
-            // protocol is the agreed one only in the clear).
+            // set up with: the list is copied into it here, once for this new connection, from
+            // the dial's shared list (or the located answer's, which an owning plan gives up
+            // without a copy). A secured dial reads neither again (a single located protocol is
+            // the agreed one only in the clear).
             let protocols = if located.offer().is_empty() {
-                std::mem::take(&mut dial.alpn)
+                dial.alpn.to_vec()
             } else {
                 located.offer_for_handshake()
             };

@@ -703,7 +703,7 @@ async fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key
     let legacy = dir.0.join("deployment-keyset");
     std::fs::write(&legacy, seed.as_bytes()).unwrap();
     let records =
-        ScopedStore::host_private(core.clone(), INSTANCE, [KEYSET_SCHEMA.into()]).unwrap();
+        ScopedStore::host_private(core.clone(), INSTANCE, [KEYSET_SCHEMA]).unwrap();
     let corrupt = Request {
         op: records.record_op().await.unwrap(),
         predicates: vec![Predicate {

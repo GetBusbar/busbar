@@ -20,7 +20,7 @@ pub(crate) fn clocked_native_backend() -> (
     Arc<dyn busbar_contract::persistence::PersistenceBackend>,
     impl Fn(u64),
 ) {
-    use busbar_contract::abi::sdk::store::v4::conformance::Subject;
+    use busbar_contract::persistence::conformance::Subject;
     let backend = Arc::new(memory_backend::MemoryBackend::default());
     let clock = Arc::clone(&backend);
     (backend, move |seconds| {
