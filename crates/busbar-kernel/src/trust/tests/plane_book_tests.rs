@@ -5,7 +5,7 @@
 //! (today's `trust.verify` body), the operator's approve/revoke/release, durability across a restart, and the
 //! TRUST_APPROVAL value reader.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
@@ -33,31 +33,6 @@ const NOW_MS: u64 = 1_800_000_000_000;
 
 fn clock() -> u64 {
     NOW_MS
-}
-
-#[derive(Default)]
-struct Recorded(Mutex<Vec<(String, String, String, String)>>);
-
-impl TrustAudit for Recorded {
-    fn record(&self, action: &'static str, plane: &str, party: &str, detail: &str) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).push((
-            action.to_owned(),
-            plane.to_owned(),
-            party.to_owned(),
-            detail.to_owned(),
-        ));
-    }
-}
-
-impl Recorded {
-    fn actions(&self) -> Vec<String> {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .map(|(a, ..)| a.clone())
-            .collect()
-    }
 }
 
 fn plane() -> Caller<'static> {
@@ -109,14 +84,14 @@ fn approvals() -> Vec<(String, TrustEntry)> {
 
 struct Rig {
     store: Arc<crate::persistence::facade::CoreStore>,
-    audit: Arc<Recorded>,
+    audit: Arc<TrustAudit>,
 }
 
 impl Rig {
     async fn new() -> Self {
         Self {
             store: crate::real_store::core().await,
-            audit: Arc::new(Recorded::default()),
+            audit: Arc::new(TrustAudit::recording()),
         }
     }
 
@@ -125,7 +100,7 @@ impl Rig {
         let book = CoreTrustBook::new(
             Arc::new(Judge::default()),
             StoreRecords::new(Arc::clone(&self.store)),
-            Arc::clone(&self.audit) as Arc<dyn TrustAudit>,
+            Arc::clone(&self.audit),
             clock,
         );
         book.admit("agents", approvals()).await.expect("admitted");
@@ -238,7 +213,7 @@ async fn a_catalogue_that_moves_from_its_pin_quarantines_until_released() {
     let book = CoreTrustBook::new(
         Arc::new(Judge::default()),
         StoreRecords::new(Arc::clone(&rig.store)),
-        Arc::clone(&rig.audit) as Arc<dyn TrustAudit>,
+        Arc::clone(&rig.audit),
         clock,
     );
     let pinned = approval_entry(
@@ -268,7 +243,7 @@ async fn a_catalogue_that_moves_from_its_pin_quarantines_until_released() {
     let restarted = CoreTrustBook::new(
         Arc::new(Judge::default()),
         StoreRecords::new(Arc::clone(&rig.store)),
-        Arc::clone(&rig.audit) as Arc<dyn TrustAudit>,
+        Arc::clone(&rig.audit),
         clock,
     );
     let pinned = approval_entry(
@@ -457,7 +432,7 @@ async fn approval_root_valid_key_admits_and_verifies() {
     let book = CoreTrustBook::new(
         Arc::new(Judge::default()),
         StoreRecords::new(Arc::clone(&rig.store)),
-        Arc::clone(&rig.audit) as Arc<dyn TrustAudit>,
+        Arc::clone(&rig.audit),
         clock,
     );
     book.admit("agents", vec![("remote".to_owned(), entry)])

@@ -103,17 +103,53 @@ pub const MAX_NAMED: usize = 128;
 /// The approval digests' text form: `sha256:` and 64 lowercase hex digits (IF §12.10 TRUST_APPROVAL).
 pub const DIGEST_PREFIX: &str = "sha256:";
 
-/// Where the book's trust actions are audited. Core text only: names and verdict numbers, never a payload.
-pub trait TrustAudit: Send + Sync + 'static {
-    fn record(&self, action: &'static str, plane: &str, party: &str, detail: &str);
+/// Where the book's trust actions are audited: one `busbar::audit` event per action. Core text only:
+/// names and verdict numbers, never a payload. One concrete sink (arch lints section 3.1: a trait needs two
+/// production implementations); the kernel's own tests also read the actions back.
+#[derive(Default)]
+pub struct TrustAudit {
+    #[cfg(test)]
+    recorded: Option<std::sync::Mutex<Vec<&'static str>>>,
 }
 
-/// The default audit sink: one `busbar::audit` event per action.
-pub struct TracingAudit;
+impl TrustAudit {
+    /// The audit sink: every action is a `busbar::audit` event.
+    #[must_use]
+    pub fn tracing() -> Self {
+        Self::default()
+    }
 
-impl TrustAudit for TracingAudit {
-    fn record(&self, action: &'static str, plane: &str, party: &str, detail: &str) {
+    /// Audit one trust action.
+    pub fn record(&self, action: &'static str, plane: &str, party: &str, detail: &str) {
         tracing::info!(target: "busbar::audit", action, plane, party, detail, "trust");
+        #[cfg(test)]
+        if let Some(recorded) = &self.recorded {
+            recorded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(action);
+        }
+    }
+
+    /// A sink that also keeps the actions it audited, for the kernel's tests.
+    #[cfg(test)]
+    pub(crate) fn recording() -> Self {
+        Self {
+            recorded: Some(std::sync::Mutex::default()),
+        }
+    }
+
+    /// The actions audited so far (a recording sink only).
+    #[cfg(test)]
+    pub(crate) fn actions(&self) -> Vec<String> {
+        self.recorded.as_ref().map_or_else(Vec::new, |recorded| {
+            recorded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .map(|action| (*action).to_owned())
+                .collect()
+        })
     }
 }
 
@@ -269,7 +305,7 @@ fn fingerprint_pin(fingerprint: String) -> DeclaredPin {
 pub struct CoreTrustBook<R> {
     book: Arc<kernel_book::TrustBook>,
     records: R,
-    audit: Arc<dyn TrustAudit>,
+    audit: Arc<TrustAudit>,
     clock_ms: fn() -> u64,
 }
 
@@ -279,7 +315,7 @@ impl<R: PluginRecords> CoreTrustBook<R> {
     pub fn new(
         book: Arc<kernel_book::TrustBook>,
         records: R,
-        audit: Arc<dyn TrustAudit>,
+        audit: Arc<TrustAudit>,
         clock_ms: fn() -> u64,
     ) -> Self {
         Self {
