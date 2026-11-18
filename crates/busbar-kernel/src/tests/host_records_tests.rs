@@ -3,7 +3,7 @@
 
 use super::*;
 
-/// One write laid on the overlay as a caller lays it: its instance label shared.
+/// One write laid on the overlay as a caller lays it: its instance label and its bytes shared.
 fn queue(
     p: &PendingRecords,
     instance: &str,
@@ -11,7 +11,12 @@ fn queue(
     key: &[u8],
     value: Vec<u8>,
 ) -> u64 {
-    p.enqueue(&Arc::from(instance), kind, key, value)
+    p.enqueue(
+        &Arc::from(instance),
+        kind,
+        key,
+        &Arc::new(RecordBytes::new(value).unwrap()),
+    )
 }
 
 #[test]

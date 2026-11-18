@@ -68,7 +68,9 @@ pub fn record_scope_len(instance: &str) -> usize {
     2 + instance.len()
 }
 
-type Queued = (u64, Vec<u8>);
+/// One unacknowledged write: its sequence and its bytes, the same bytes its [`Write`] carries to
+/// the store (shared, never copied).
+type Queued = (u64, Arc<RecordBytes>);
 
 /// One instance's unacknowledged writes, by record kind and then key: a lookup borrows both. A
 /// kind is named by its schema's own fixed name.
@@ -89,14 +91,14 @@ impl PendingRecords {
     }
 
     /// Lay one unacknowledged write on the overlay and answer its sequence. `kind` is the record
-    /// schema's own name. The instance label is the caller's, shared: the overlay does not copy
-    /// it. The key and the bytes are the overlay's own, held until the write is acknowledged.
+    /// schema's own name. The instance label and the bytes are the caller's, shared: the overlay
+    /// copies neither. The key is the overlay's own, held until the write is acknowledged.
     pub fn enqueue(
         &self,
         instance: &Arc<str>,
         kind: &'static str,
         key: &[u8],
-        value: Vec<u8>,
+        value: &Arc<RecordBytes>,
     ) -> u64 {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         let mut map = self.lock();
@@ -108,9 +110,9 @@ impl PendingRecords {
         };
         let keys = kinds.entry(kind).or_default();
         match keys.get_mut(key) {
-            Some(queued) => *queued = (seq, value),
+            Some(queued) => *queued = (seq, Arc::clone(value)),
             None => {
-                keys.insert(key.to_vec(), (seq, value));
+                keys.insert(key.to_vec(), (seq, Arc::clone(value)));
             }
         }
         seq
@@ -132,7 +134,7 @@ impl PendingRecords {
             .get(instance)?
             .get(kind)?
             .get(key)
-            .map(|(_, v)| v.to_vec())
+            .map(|(_, v)| v.as_slice().to_vec())
     }
 
     #[must_use]
@@ -144,7 +146,7 @@ impl PendingRecords {
         };
         keys.range::<[u8], _>((Bound::Included(prefix), Bound::Unbounded))
             .take_while(|(key, _)| key.starts_with(prefix))
-            .map(|(key, (_, v))| (key.to_vec(), v.to_vec()))
+            .map(|(key, (_, v))| (key.to_vec(), v.as_slice().to_vec()))
             .collect()
     }
 
@@ -199,6 +201,28 @@ impl std::fmt::Debug for Owed {
     }
 }
 
+/// A queued write's bytes. A write laid on the overlay shares them with its overlay row, so
+/// they are not copied for it; a write with no overlay row (a chained write, a private work
+/// write) holds them alone, exactly as it was handed them.
+#[derive(Debug)]
+pub enum WriteBytes {
+    /// The write's own bytes: nothing else holds them.
+    Own(RecordBytes),
+    /// The bytes this write's overlay row holds too.
+    Shared(Arc<RecordBytes>),
+}
+
+impl std::ops::Deref for WriteBytes {
+    type Target = RecordBytes;
+
+    fn deref(&self) -> &RecordBytes {
+        match self {
+            Self::Own(bytes) => bytes,
+            Self::Shared(bytes) => bytes,
+        }
+    }
+}
+
 /// One write on its way to the store.
 #[derive(Debug)]
 pub struct Write {
@@ -208,8 +232,8 @@ pub struct Write {
     pub schema: RecordSchemaId,
     /// The writer's key, unscoped.
     pub key: Vec<u8>,
-    /// The bytes.
-    pub value: RecordBytes,
+    /// The bytes: shared with this write's overlay row when it has one, its own otherwise.
+    pub value: WriteBytes,
     /// Its sequence in [`PendingRecords`].
     pub seq: u64,
     /// Its writer's answer.

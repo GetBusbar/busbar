@@ -177,7 +177,8 @@ fn demotions(store: &Arc<CoreStore>) -> Arc<DemotionRecord> {
     Arc::new(demotions)
 }
 
-/// One write laid on the host's overlay as a caller lays it: its instance label shared.
+/// One write laid on the host's overlay as a caller lays it: its instance label and its bytes
+/// shared.
 fn queue(
     pending: &PendingRecords,
     instance: &str,
@@ -185,7 +186,12 @@ fn queue(
     key: &[u8],
     value: Vec<u8>,
 ) -> u64 {
-    pending.enqueue(&Arc::from(instance), kind, key, value)
+    pending.enqueue(
+        &Arc::from(instance),
+        kind,
+        key,
+        &Arc::new(RecordBytes::new(value).unwrap()),
+    )
 }
 
 fn run(f: impl FnOnce(Later) -> Ran) -> Stored {
