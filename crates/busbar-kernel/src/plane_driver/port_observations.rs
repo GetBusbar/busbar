@@ -15,7 +15,6 @@
 //! scope is attached to, else the one unit that has none attached. Two candidates and no way to tell them apart are
 //! refused (fail closed) rather than guessed.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use busbar_contract::UnitKey;
@@ -45,11 +44,21 @@ pub struct ActiveUnit {
     pub classes: Arc<[String]>,
 }
 
-type Principal = (Arc<str>, Box<str>);
+/// One principal's in-flight units, with the names that key it (shared, so a registration holds them
+/// without a copy).
+pub(crate) struct PrincipalUnits {
+    pub(crate) instance: Arc<str>,
+    pub(crate) subject: Arc<str>,
+    pub(crate) units: Vec<Arc<ActiveUnit>>,
+}
+
+/// Instance, then subject: a call looks its principal up by the borrowed names it carries.
+pub(crate) type ByPrincipal =
+    foldhash::HashMap<Arc<str>, foldhash::HashMap<Arc<str>, PrincipalUnits>>;
 
 #[derive(Default)]
 struct Book {
-    by_principal: HashMap<Principal, Vec<Arc<ActiveUnit>>>,
+    by_principal: ByPrincipal,
     len: usize,
 }
 
@@ -65,23 +74,37 @@ pub struct ObsCustody {
 #[must_use = "dropping a registration releases the unit"]
 pub struct Registration {
     book: Arc<Mutex<Book>>,
-    key: Principal,
+    instance: Arc<str>,
+    subject: Arc<str>,
     unit: Arc<ActiveUnit>,
 }
 
 impl Drop for Registration {
     fn drop(&mut self) {
         let mut book = self.book.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(units) = book.by_principal.get_mut(&self.key) else {
+        let Some(subjects) = book.by_principal.get_mut(&*self.instance) else {
             return;
         };
-        let before = units.len();
-        units.retain(|held| !Arc::ptr_eq(held, &self.unit));
-        let removed = before - units.len();
-        if units.is_empty() {
-            book.by_principal.remove(&self.key);
+        let Some(held) = subjects.get_mut(&*self.subject) else {
+            return;
+        };
+        // A registration holds the one entry for its unit; the order of a principal's units is not
+        // observed (a call picks by scope), so the entry is swapped out.
+        let Some(at) = held
+            .units
+            .iter()
+            .position(|unit| Arc::ptr_eq(unit, &self.unit))
+        else {
+            return;
+        };
+        held.units.swap_remove(at);
+        if held.units.is_empty() {
+            subjects.remove(&*self.subject);
+            if subjects.is_empty() {
+                book.by_principal.remove(&*self.instance);
+            }
         }
-        book.len -= removed;
+        book.len -= 1;
     }
 }
 
@@ -117,16 +140,30 @@ impl ObsCustody {
         if book.len >= MAX_UNITS {
             return Err(REFUSED);
         }
-        let key: Principal = (Arc::from(instance), Box::from(subject));
         let unit = Arc::new(unit);
-        book.by_principal
-            .entry(key.clone())
-            .or_default()
-            .push(Arc::clone(&unit));
+        let book = &mut *book;
+        if !book
+            .by_principal
+            .get(instance)
+            .is_some_and(|subjects| subjects.contains_key(subject))
+        {
+            // The principal's first unit in flight keys its names once.
+            crate::cold::first_observing_principal(&mut book.by_principal, instance, subject);
+        }
+        let Some(held) = book
+            .by_principal
+            .get_mut(instance)
+            .and_then(|subjects| subjects.get_mut(subject))
+        else {
+            return Err(REFUSED);
+        };
+        held.units.push(Arc::clone(&unit));
+        let (instance, subject) = (Arc::clone(&held.instance), Arc::clone(&held.subject));
         book.len += 1;
         Ok(Registration {
             book: Arc::clone(&self.book),
-            key,
+            instance,
+            subject,
             unit,
         })
     }
@@ -139,13 +176,14 @@ impl ObsCustody {
         scope: Option<[u8; 32]>,
     ) -> Option<Arc<ActiveUnit>> {
         let subject = subject_of(identity)?;
-        let key: Principal = (Arc::from(instance), Box::from(subject));
         let candidates: Vec<Arc<ActiveUnit>> = self
             .book
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .by_principal
-            .get(&key)?
+            .get(instance)?
+            .get(subject)?
+            .units
             .clone();
         if let [only] = candidates.as_slice() {
             return Some(Arc::clone(only));
@@ -195,7 +233,7 @@ impl UsageObservations for ObsCustody {
             let Some(active) = self.resolve(plane.name, principal, scope) else {
                 return (OBS_REFUSED, None);
             };
-            let mut required = Vec::with_capacity(require.len());
+            let mut required = smallvec::SmallVec::<[u32; 8]>::new();
             for name in require {
                 let Some(class) = class_of(&active.classes, name) else {
                     return (OBS_REFUSED, None);
