@@ -459,12 +459,13 @@ mod tests;
 
 /// The pool a selected attempt partition records: an instance-qualified identity
 /// (`instance\u{1f}pool`, required by the partition rule of ddd61a377f), never an internal walk
-/// key (request_admission: "Operator domain is distinct from the internal walk key"). A seat walks
-/// its own pool under the bare instance key (`SeatPool::of`); `prepare` has already bound the
-/// attempt to the request's walk, so that pool's qualified name is the request's own pool
-/// (`instance\u{1f}domain`). Any other walk key is recorded as it was.
+/// key (request_admission: "Operator domain is distinct from the internal walk key"). Every walk
+/// key is internal: a seat walks its own pool under the bare instance (`SeatPool::of`), a catalog
+/// pool under a length-framed key (`provider_catalog::walk_key`). An attempt in the request's own
+/// walk records the request's own qualified pool (`instance\u{1f}domain`). Any other walk key is
+/// recorded as it is, and the partition rule judges it.
 fn partition_pool(request: &AdmittedRequest, walk_pool: &str) -> String {
-    if walk_pool == request.context().instance() {
+    if request.walk_key() == Some(walk_pool) {
         request.pool().to_owned()
     } else {
         walk_pool.to_owned()
