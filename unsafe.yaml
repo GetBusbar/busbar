@@ -109,7 +109,7 @@ interim:
   crates/busbar-contract/src/abi/sdk/tests/expand_tests.rs: { tokens: 35, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/tests/export_tests.rs: { tokens: 17, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/tests/form_body_wipe_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/hook_deadline_tests.rs: { tokens: 16, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/hook_deadline_tests.rs: { tokens: 15, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/tests/hook_tests.rs: { tokens: 33, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/tests/inspection_tests.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/tests/io_tests.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }

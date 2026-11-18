@@ -38,7 +38,6 @@ crates/busbar/src/root/tests/serve_door_far.rs                                  
 crates/busbar/src/root/tests/serve_door_far_caller_secret.rs                               # W3-D-CONTRACT
 crates/busbar/src/root/units_admin/tests/admin_path_without_plane_face.rs                  # W3-D-CONTRACT
 crates/busbar/src/tests/kernel_application/misc_router_door.rs                             # W3-D-CONTRACT
-crates/plugin-loader/src/auth_door.rs                                                      # W3-D-CONTRACT
 crates/plugin-loader/src/boot.rs                                                           # W3-D-CONTRACT
 crates/plugin-loader/src/cold/export_door.rs                                               # W3-D-CONTRACT
 crates/plugin-loader/src/export_door.rs                                                    # W3-D-CONTRACT

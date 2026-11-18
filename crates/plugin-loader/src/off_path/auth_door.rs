@@ -66,7 +66,8 @@ pub(crate) fn instance_carriers(
         }
         // The selection is the stated names themselves, lowered and deduplicated in place
         // (first occurrence kept, in order).
-        let mut selected: Vec<String> = serde_json::from_slice(value).map_err(|_| invalid())?;
+        let mut selected: Vec<String> =
+            busbar_contract::json::parse(value).map_err(|_| invalid())?;
         for name in &mut selected {
             if !facts
                 .carriers

@@ -107,7 +107,11 @@ fn main() {
     assert!(dispatcher.lend_seal(busbar_contract::plugin::TestKernelSeal));
     let rows = AuthRows::new(Arc::new(registry), dispatcher);
     let calls_on: Arc<dyn AuthCalls> = rows
-        .open("bench-identifies", "bench", &serde_json::json!({}).into())
+        .open(
+            "bench-identifies",
+            "bench",
+            &busbar_contract::plugin_settings::ResolvedSettings::default(),
+        )
         .expect("the verifier opens");
     let request = {
         let mut r = VerifyRequest::default();
