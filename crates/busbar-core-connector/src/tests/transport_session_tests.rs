@@ -448,8 +448,11 @@ fn upgrade_leftover_stays_in_wiping_custody() {
     };
     assert_eq!(protocol.as_ref(), "test-protocol");
     assert_eq!(leftover.as_slice(), b"first-private-message");
-    drop(acts);
+    // Since 403829b816 the leftover starts as an empty funded payload that the first Leftover
+    // replaces with an exactly funded buffer: the retired buffer is wiped, then the leftover itself.
     assert_eq!(busbar_contract::secure::wipe_counts().1 - before, 1);
+    drop(acts);
+    assert_eq!(busbar_contract::secure::wipe_counts().1 - before, 2);
 }
 
 struct PendingRead;
