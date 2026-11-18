@@ -430,12 +430,3 @@ pub fn refuse_cross_plane_reference(
 
 pub const NAMED_MAP_SECTIONS: [&str; 2] = [Kind::Auth.root(), Kind::Export.root()];
 
-pub fn attach_list(section: &[String], own: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::with_capacity(section.len() + own.len());
-    for h in section.iter().chain(own) {
-        if !out.iter().any(|e| e == h) {
-            out.push(h.clone());
-        }
-    }
-    out
-}
