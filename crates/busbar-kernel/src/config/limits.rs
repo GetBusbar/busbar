@@ -432,13 +432,6 @@ impl LimitsResolved {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_request_body_max_bytes(request_body_max_bytes: usize) -> Self {
-        Self {
-            request_body_max_bytes,
-            ..Self::default()
-        }
-    }
 }
 
 static INSTALLED: std::sync::RwLock<Option<LimitsResolved>> = std::sync::RwLock::new(None);
@@ -488,17 +481,6 @@ pub fn publish(resolved: &LimitsResolved) {
 pub fn install(resolved: &LimitsResolved) {
     *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(resolved.clone());
     mirror_derived_caps(Some(resolved));
-}
-
-/// Put `slot` in the live slot (the uninstalled `None` included) and hand back what was there,
-/// mirroring the derived caps as every other mutation does. Production writes the slot only through
-/// [`publish`]; this is the test fixtures' one write (the kernel testkit's `InstallGuard`, and the
-/// guard's own restore-on-drop tests), which must be able to put the slot back exactly as it found it.
-#[doc(hidden)]
-pub fn swap_installed(slot: Option<LimitsResolved>) -> Option<LimitsResolved> {
-    let mut installed = INSTALLED.write().unwrap_or_else(|e| e.into_inner());
-    mirror_derived_caps(slot.as_ref());
-    std::mem::replace(&mut *installed, slot)
 }
 
 fn mirror_derived_caps(slot: Option<&LimitsResolved>) {
