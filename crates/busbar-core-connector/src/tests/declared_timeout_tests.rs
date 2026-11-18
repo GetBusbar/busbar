@@ -55,7 +55,7 @@ fn pending_waking(
     let c = Connector::serving(
         Transports::new(vec![Entry {
             door: carrier.clone(),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         }])
         .unwrap(),
         Arc::new(move |_: &str, _: u32, done: crate::Judged| {
@@ -283,7 +283,7 @@ fn landing_spends_only_the_dial_bound_and_the_first_reply_spends_the_request_bou
         let c = Connector::serving(
             Transports::new(vec![Entry {
                 door: Arc::new(TestDoor::identity("bytes")),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             }])
             .unwrap(),
             loopback_literals(),
@@ -372,11 +372,11 @@ fn a_pended_dns_dial_carries_its_expired_original_bound_into_the_tls_stage() {
             Transports::new(vec![
                 Entry {
                     door: framing.clone(),
-                    alpn: Vec::new(),
+                    alpn: Arc::default(),
                 },
                 Entry {
                     door: carrier.clone(),
-                    alpn: Vec::new(),
+                    alpn: Arc::default(),
                 },
             ])
             .unwrap(),

@@ -14,8 +14,9 @@ use crate::framer::FramerDoor;
 pub struct Entry {
     /// The entry's table.
     pub door: Arc<dyn FramerDoor>,
-    /// The protocols its connections offer in the TLS handshake, most preferred first.
-    pub alpn: Vec<Vec<u8>>,
+    /// The protocols its connections offer in the TLS handshake, most preferred first. Made once
+    /// with the entry and shared (a reference count) by every declaration and dial that offers it.
+    pub alpn: Arc<[Vec<u8>]>,
 }
 
 impl std::fmt::Debug for Entry {

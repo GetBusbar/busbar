@@ -120,7 +120,7 @@ fn connector() -> Connector {
 fn connector_over(door: TestDoor) -> Connector {
     let view = Transports::new(vec![Entry {
         door: Arc::new(door),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }])
     .unwrap();
     Connector::serving(
@@ -617,7 +617,7 @@ fn the_host_holds_no_restart_policy_of_its_own() {
         let door = Arc::new(TestDoor::identity("bytes"));
         let view = Transports::new(vec![Entry {
             door: Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         }])
         .unwrap();
         let c = Connector::serving(
@@ -826,7 +826,7 @@ fn a_members_spawn_carries_its_supervision_key_and_a_changed_member_a_new_one() 
         let door = Arc::new(TestDoor::identity("bytes"));
         let view = Transports::new(vec![Entry {
             door: Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         }])
         .unwrap();
         let c = Connector::serving(
@@ -996,7 +996,7 @@ fn a_hung_carrier_read_on_one_lease_never_blocks_the_members_other_callers() {
         let c = Arc::new(Connector::serving(
             Transports::new(vec![Entry {
                 door: Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             }])
             .unwrap(),
             Arc::new(crate::LiteralsOnly(crate::guard::Guard::default())),
@@ -1070,7 +1070,7 @@ fn a_retired_members_supervision_key_is_signalled_retired_once() {
         let door = Arc::new(TestDoor::identity("bytes"));
         let view = Transports::new(vec![Entry {
             door: Arc::clone(&door) as Arc<dyn crate::framer::FramerDoor>,
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         }])
         .unwrap();
         let c = Connector::serving(

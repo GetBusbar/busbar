@@ -479,11 +479,11 @@ fn rig(door: BreakingDoor, cas: &[Vec<u8>], judge: Arc<dyn crate::DialJudge>) ->
     let view = Transports::new(vec![
         Entry {
             door: Arc::clone(&door) as Arc<dyn FramerDoor>,
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         Entry {
             door: Arc::clone(&carrier) as Arc<dyn FramerDoor>,
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
     ])
     .unwrap();

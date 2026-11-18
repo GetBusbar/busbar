@@ -125,7 +125,7 @@ fn a_carrier_wake_runs_public_waker_callbacks_outside_the_fan_lock() {
                     inner: TestDoor::identity(CARRIER_CLAIM),
                     wake: Arc::clone(&captured),
                 }),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             }])
             .unwrap(),
             loopback_literals(),
@@ -200,14 +200,14 @@ fn a_piece_wakes_its_public_reader_after_the_line_is_unlocked() {
                                 ..Default::default()
                             },
                         )),
-                        alpn: Vec::new(),
+                        alpn: Arc::default(),
                     },
                     Entry {
                         door: Arc::new(CapturedCarrier {
                             inner: TestDoor::identity(CARRIER_CLAIM),
                             wake: Arc::default(),
                         }),
-                        alpn: Vec::new(),
+                        alpn: Arc::default(),
                     },
                 ])
                 .unwrap(),

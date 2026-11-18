@@ -227,7 +227,7 @@ pub(crate) struct Member {
     env: crate::spawn_env::HeldEnv,
     /// The carrier the member's program rides.
     via: Via,
-    alpn: Vec<Vec<u8>>,
+    alpn: Arc<[Vec<u8>]>,
     state: Mutex<State>,
     /// Signalled as a spawn comes to its end.
     spawned: Condvar,
@@ -457,7 +457,7 @@ impl Member {
         program: Program,
         env: crate::spawn_env::HeldEnv,
         via: Via,
-        alpn: Vec<Vec<u8>>,
+        alpn: Arc<[Vec<u8>]>,
     ) -> Result<Self, ConnError> {
         let supervision_key = next_supervision_key(&NEXT_SUPERVISION_KEY)?;
         let lease_tail = crate::off_path::lines::lease_tail(supervision_key, &program);

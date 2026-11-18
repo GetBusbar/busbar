@@ -73,11 +73,11 @@ fn a_dial_that_finishes_after_forget_retires_its_refused_insert() {
                                 ..crate::support::Knobs::default()
                             },
                         )),
-                        alpn: Vec::new(),
+                        alpn: Arc::default(),
                     },
                     Entry {
                         door: Arc::clone(&carrier) as Arc<dyn FramerDoor>,
-                        alpn: Vec::new(),
+                        alpn: Arc::default(),
                     },
                 ])
                 .unwrap(),

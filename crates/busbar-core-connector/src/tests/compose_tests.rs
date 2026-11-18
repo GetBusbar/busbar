@@ -59,7 +59,7 @@ fn dial(target: &str) -> Dial {
         plaintext_accepted: false,
         target: target.to_owned(),
         tls: None,
-        alpn: Vec::new(),
+        alpn: Arc::default(),
         open_timeout: Duration::from_secs(5),
         opening: None,
         head_words: Default::default(),
@@ -280,7 +280,7 @@ fn tls_and_the_protocol_offer_are_the_connectors() {
         d.tls = Some(Arc::new(
             crate::tls::client::build_client_config(&trust).expect("a usable client config"),
         ));
-        d.alpn = vec![b"h2".to_vec()];
+        d.alpn = vec![b"h2".to_vec()].into();
         d.opening = Some((Vec::new(), b"hello".to_vec().into()));
         let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
         assert_eq!(gather(&mut c, 5).await, b"hello");
@@ -345,7 +345,7 @@ fn the_handshake_offers_what_the_framer_located() {
             d.tls = Some(Arc::new(
                 crate::tls::client::build_client_config(&trust).expect("a usable client config"),
             ));
-            d.alpn = registered;
+            d.alpn = registered.into();
             d.opening = Some((Vec::new(), b"hello".to_vec().into()));
             let mut c = Connection::dial(door, &crate::support::via(), d).unwrap();
             assert_eq!(gather(&mut c, 5).await, b"hello");
