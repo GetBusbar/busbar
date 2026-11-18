@@ -119,6 +119,150 @@ async fn refused_original_stage_leaves_no_amendment_chain_hole() {
     journal.verify().unwrap();
 }
 
+/// What a sink was handed, kept exactly as it was handed it.
+struct Keep(std::sync::Mutex<Vec<Amendment>>);
+impl AmendSink for Keep {
+    fn sealed(
+        &self,
+        amendment: &Amendment,
+    ) -> Result<
+        busbar_kernel_audit::amend::AmendCommit,
+        busbar_kernel_audit::amend::AmendPersistError,
+    > {
+        self.sealed_many(std::slice::from_ref(amendment))
+    }
+    fn sealed_many(
+        &self,
+        amendments: &[Amendment],
+    ) -> Result<
+        busbar_kernel_audit::amend::AmendCommit,
+        busbar_kernel_audit::amend::AmendPersistError,
+    > {
+        self.0.lock().unwrap().extend_from_slice(amendments);
+        Ok(Box::pin(async { Ok(()) }))
+    }
+}
+
+/// A RECORDED READ IS SEALED EXACTLY AS THE CHAIN SEALS ITS BODY. Hook and export reads go through
+/// the node journal; what the sink is handed, what the journal holds, and what `AmendChain::append`
+/// seals for the same bodies at the same places are one and the same: seq, link, digest, every
+/// field. `AmendChain`'s digest is pinned to frozen hex in the audit members tests, so this pins
+/// the journal's digests to it. The facts of one call share one reading of the clock.
+#[tokio::test]
+async fn a_recorded_read_is_sealed_exactly_as_the_chain_seals_its_body() {
+    use crate::export::projection::{Members, ProjectedRecord, Projection};
+    use busbar_contract::abi::export::ExportField;
+    use busbar_contract::export_stream::ExportStream;
+
+    let journal = NodeAmendments::new();
+    let sink = std::sync::Arc::new(Keep(std::sync::Mutex::new(Vec::new())));
+    journal
+        .bind(
+            Some(sink.clone() as std::sync::Arc<dyn AmendSink>),
+            0,
+            &crate::teller::Kernel::new().durability_token(),
+        )
+        .await
+        .unwrap();
+    hook_reads(
+        &journal,
+        &["compress", "redact"],
+        Some("pseudonym-1"),
+        "openai",
+        true,
+    )
+    .await
+    .unwrap();
+    hook_reads(&journal, &["h"], None, "anthropic", false)
+        .await
+        .unwrap();
+    let projection = Projection::for_test(
+        &[ExportStream::Traces],
+        &[ExportField::Ts, ExportField::Pool],
+    );
+    let mut record = ProjectedRecord::new(projection, ExportStream::Traces);
+    record
+        .set(ExportField::Ts, 1_700_000_000u64)
+        .set(ExportField::Pool, "p");
+    let members = record.finish().members;
+    let exported: Vec<&str> = members.names().collect();
+    assert_eq!(exported.len(), 2, "{exported:?}");
+    export_reads(
+        &journal,
+        "logs",
+        &[
+            (std::sync::Arc::from("sink-a"), members),
+            (std::sync::Arc::from("sink-b"), Members::default()),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let handed = sink.0.lock().unwrap().clone();
+    let held = journal.recent();
+    assert_eq!(
+        handed, held,
+        "the sink took custody of exactly what the journal holds"
+    );
+    let principal = Subject::principal("pseudonym-1");
+    let expected: [(Reader, &str, &Subject, &str, &[&str]); 5] = [
+        (
+            Reader::Hook,
+            "compress",
+            &principal,
+            "openai",
+            &["content", "identity"],
+        ),
+        (
+            Reader::Hook,
+            "redact",
+            &principal,
+            "openai",
+            &["content", "identity"],
+        ),
+        (
+            Reader::Hook,
+            "h",
+            &Subject::Arrival,
+            "anthropic",
+            &["content"],
+        ),
+        (
+            Reader::Export,
+            "sink-a",
+            &Subject::Arrival,
+            "logs",
+            &exported,
+        ),
+        (Reader::Export, "sink-b", &Subject::Arrival, "logs", &[]),
+    ];
+    assert_eq!(held.len(), expected.len());
+    let mut chain = busbar_kernel_audit::amend::AmendChain::new();
+    let mut walls = Vec::new();
+    for (amendment, (reader, name, subject, op, fields)) in held.iter().zip(expected) {
+        let AmendBody::Access(access) = &amendment.body else {
+            panic!("a read sealed as something other than an access: {amendment:?}");
+        };
+        assert_eq!(access.reader, reader);
+        assert_eq!(access.name, name);
+        assert_eq!(&access.subject, subject);
+        assert_eq!(access.op_class.as_str(), op);
+        assert_eq!(access.fields, fields);
+        walls.push(access.wall);
+        let sealed = chain.append(amendment.body.clone(), &pass());
+        assert_eq!(
+            &sealed, amendment,
+            "the journal sealed a read differently from the chain"
+        );
+    }
+    assert_eq!(walls[0], walls[1], "one call, one reading");
+    assert_eq!(walls[3], walls[4], "one call, one reading");
+    assert_eq!(held[0].seq, 1);
+    assert_eq!(held[0].prev_hash, "");
+    assert_eq!(chain.head(), held[4].hash);
+    journal.verify().unwrap();
+}
+
 /// W1: a notify fan-out of three content taps is recorded as one set: three amendments with
 /// consecutive seqs, handed to the sink as one unit (one `sealed_many`), confirmed by one await.
 #[tokio::test]
