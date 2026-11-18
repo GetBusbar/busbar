@@ -72,8 +72,6 @@ pub(crate) struct ClaimDoor {
     closed: AtomicBool,
     assocs: PortAssociations,
     legs: Mutex<HashMap<u64, Arc<CallerLeg>>>,
-    /// The legs one wake found expired, kept so the next wake reuses its room.
-    expiring: Mutex<Vec<Arc<CallerLeg>>>,
 
     joined: Notify,
 }
@@ -106,7 +104,6 @@ impl ClaimDoor {
             closed: AtomicBool::new(false),
             assocs: PortAssociations::new(),
             legs: Mutex::new(HashMap::default()),
-            expiring: Mutex::new(Vec::new()),
             joined: Notify::new(),
         });
         door.spawn(Arc::clone(&door).run());
@@ -304,21 +301,18 @@ impl ClaimDoor {
     }
 
     fn expire(&self, now: Instant) {
-        let mut expired = std::mem::take(&mut *lock(&self.expiring));
-        expired.extend(
-            lock(&self.legs)
-                .values()
-                .filter(|leg| {
-                    lock(&leg.lease)
-                        .as_ref()
-                        .is_some_and(|lease| lease.expires <= now)
-                })
-                .cloned(),
-        );
-        for leg in expired.drain(..) {
+        let expired: Vec<Arc<CallerLeg>> = lock(&self.legs)
+            .values()
+            .filter(|leg| {
+                lock(&leg.lease)
+                    .as_ref()
+                    .is_some_and(|lease| lease.expires <= now)
+            })
+            .cloned()
+            .collect();
+        for leg in expired {
             leg.failed();
         }
-        *lock(&self.expiring) = expired;
     }
 
     #[cfg(test)]
