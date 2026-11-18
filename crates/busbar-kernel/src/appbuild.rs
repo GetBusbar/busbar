@@ -272,36 +272,6 @@ pub fn load_config_from_disk_compacting_document_patches(
     raw.typed_prepared(read)
 }
 
-/// THE BOOT POST-STORE RECOMPUTE (SECRET-SHORTHAND-BOOT §3.7): once the Store is open, the
-/// generation's documents are `config.yaml` and the providers catalog with the Store's durable
-/// document patches applied, and its grammar is phase 1 over that read's own block with the
-/// overlay's plugin version pins. The documents are typed under that grammar, never under the
-/// start grammar. The caller compares the two on what the documents use (BUSBAR-3170).
-pub fn load_config_under_store(
-    config_path: &std::path::Path,
-    providers_override: Option<&std::path::Path>,
-    env_mode: config::EnvSubst,
-    rules: &dyn RootRules,
-    doc: &config::overlay::OverlayDoc,
-) -> Result<LoadedConfig, String> {
-    let mut patch = doc.document_patch.clone();
-    let mut providers_patch = doc.providers_patch.clone();
-    let raw = read_config_documents(
-        config_path,
-        providers_override,
-        false,
-        env_mode,
-        rules,
-        DocumentPatchLoad {
-            patch: patch.as_mut(),
-            providers_patch: providers_patch.as_mut(),
-            admission: None,
-        },
-    )?;
-    let read = Arc::new(raw.read_with_pins(&doc.plugin_versions)?);
-    raw.typed_prepared(read)
-}
-
 /// The deployment document as one read sees it before its typed parse: read, normalized,
 /// interpolated in the read's env mode, judged for legacy markers and unloaded plane sections, and
 /// with the durable document patch applied. What the read's grammar is computed from
@@ -341,7 +311,7 @@ impl RawDocuments<'_> {
         self.read_with_pins(&Default::default())
     }
 
-    pub fn read_with_pins(
+    fn read_with_pins(
         &self,
         pins: &std::collections::BTreeMap<String, String>,
     ) -> Result<config::grammar::PreparedConfigRead, String> {
@@ -1261,7 +1231,6 @@ pub async fn bootstrap_store_inputs(
         .as_ref()
         .map(|s| crate::governance::at_rest::AtRestKeys::from_signing_secret(&s.secret_bytes()));
     publish_bootstrap_at_rest(Ok(at_rest.is_some()));
-    publish_records_keys(RecordsKeys { at_rest, signer });
     Ok(registry)
 }
 
@@ -1273,14 +1242,6 @@ pub struct RecordsKeys {
     pub at_rest: Option<crate::governance::at_rest::AtRestKeys>,
     /// `auth.signing_key`, `None` when it is absent.
     pub signer: Option<crate::governance::signing::TokenSigner>,
-}
-
-static BOOTSTRAP_RECORDS_KEYS: std::sync::Mutex<Option<RecordsKeys>> = std::sync::Mutex::new(None);
-
-fn publish_records_keys(keys: RecordsKeys) {
-    *BOOTSTRAP_RECORDS_KEYS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(keys);
 }
 
 /// [`RecordsKeys`] from the raw secret bytes a MIN-3 boot's walk resolved (its core secrets), parsed exactly as the
@@ -1303,15 +1264,6 @@ pub fn records_keys_from(signing_key: Option<&[u8]>) -> Result<RecordsKeys, Stri
         .as_ref()
         .map(|s| crate::governance::at_rest::AtRestKeys::from_signing_secret(&s.secret_bytes()));
     Ok(RecordsKeys { at_rest, signer })
-}
-
-/// The latest store bootstrap's [`RecordsKeys`], moved out: `None` before any bootstrap or once taken.
-#[must_use]
-pub fn take_bootstrap_records_keys() -> Option<RecordsKeys> {
-    BOOTSTRAP_RECORDS_KEYS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
 }
 
 /// What the latest store bootstrap resolved of `credentials.at_rest`, before the store opened:
