@@ -651,7 +651,7 @@ fn decode_record(node: u64, bytes: &[u8]) -> Result<JournalRecord> {
     // Reuse the original verifier and digest recipe, including reserved bytes.
     busbar_kernel_wal::journal::verify(std::slice::from_ref(&decoded))
         .map_err(|_| Error::Verification(()))?;
-    if decoded.node != node || decoded.node_seq == 0 || decoded.encode() != bytes {
+    if decoded.node != node || decoded.node_seq == 0 || !decoded.encodes_as(bytes) {
         return Err(Error::Corrupt);
     }
     Ok(decoded)

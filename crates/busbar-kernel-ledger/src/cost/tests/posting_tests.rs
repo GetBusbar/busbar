@@ -127,7 +127,7 @@ fn the_neutral_tier_moves_no_ordinary_amount() {
 fn fifteen_nano_units_at_half_price_bill_seven() {
     let card = card("m", 0.015, 0.0, 0);
     let posting = Posting {
-        lane: "m".to_string(),
+        lane: busbar_contract::kept::Text::fixed("m"),
         quantities: vec![Quantity::new(INPUT, 1)],
         fee_count: 0,
         tier_bp: 5_000,

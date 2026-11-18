@@ -33,7 +33,7 @@ impl Posting {
         arrived_mono: u64,
     ) -> Self {
         Posting {
-            lane: lane.into(),
+            lane: busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(lane.into())),
             quantities: usage
                 .lines()
                 .iter()

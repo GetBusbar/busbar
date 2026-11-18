@@ -246,6 +246,38 @@ pub fn plane_fee_lane(plane: &str) -> String {
     format!("{plane}{}", crate::cost::PLANE_LANE_SEP)
 }
 
+/// The fee lane of the plane a QUALIFIED lane belongs to, read off the lane itself: a lane
+/// `"<plane>\u{1f}<lane>"` begins with its plane's fee lane `"<plane>\u{1f}"`, so this is that
+/// leading slice, borrowed. Exactly `plane_fee_lane(split_plane_lane(qualified).0)`, with nothing
+/// spelled. `None` for an unqualified lane (no plane, so no fee lane), as the callers of
+/// [`plane_fee_lane`] decide before they call it.
+pub fn fee_lane_of(qualified: &str) -> Option<&str> {
+    let (plane, _) = split_plane_lane(qualified);
+    if plane.is_empty() {
+        return None;
+    }
+    qualified.get(..plane.len() + crate::cost::PLANE_LANE_SEP.len_utf8())
+}
+
+/// The measurement kind a plane key's fee lane would decode to, if it decodes as a common
+/// measurement lane at all: [`split_measurement_lane`] of `"<plane>\u{1f}"`, read off the plane
+/// key (the lane is the key plus its one-byte separator, so the kind lies within the key).
+fn fee_lane_measurement_kind(plane: &str) -> Option<&str> {
+    let (length, rest) = plane
+        .strip_prefix(MEASUREMENT_LANE_PREFIX)?
+        .split_once(':')?;
+    let length: usize = length.parse().ok()?;
+    // `split_measurement_lane` refuses `length >= rest.len()` over the lane's rest, which is this
+    // rest and the separator after it.
+    if length == 0
+        || length >= rest.len() + crate::cost::PLANE_LANE_SEP.len_utf8()
+        || !rest.is_char_boundary(length)
+    {
+        return None;
+    }
+    rest.get(..length)
+}
+
 /// One plane's configured fees, in minor units (#44: `fees = { per_request | per_session }`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PlaneFees {
@@ -314,6 +346,25 @@ impl RateCard {
         match split_plane_lane(lane) {
             ("", _) => (self, lane),
             (plane, lane) => (self.planes.get(plane).unwrap_or(&NO_CARD), lane),
+        }
+    }
+
+    /// The card a plane's FEE LANE (`"<plane>\u{1f}"`, [`plane_fee_lane`]) is priced by, found by
+    /// the plane key itself: exactly `self.plane_lane(&plane_fee_lane(plane)).0`, with no lane
+    /// spelled. A request that reads its plane's fee asks this.
+    pub fn plane_fee_card(&self, plane: &str) -> &RateCard {
+        if let Some(kind) = fee_lane_measurement_kind(plane) {
+            return self.measurements.get(kind).unwrap_or(&NO_MEASUREMENT_CARD);
+        }
+        // `split_plane_lane` of the fee lane splits at its first separator: the key's own first
+        // one if it holds any, else the one the fee lane ends on.
+        let head = plane
+            .split_once(crate::cost::PLANE_LANE_SEP)
+            .map_or(plane, |(head, _)| head);
+        if head.is_empty() {
+            self
+        } else {
+            self.planes.get(head).unwrap_or(&NO_CARD)
         }
     }
 

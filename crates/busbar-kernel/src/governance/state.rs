@@ -4,7 +4,8 @@
 use super::*;
 use busbar_contract::redacted::Secret;
 use busbar_kernel_ledger::cost::{
-    plane_fee_lane, split_plane_lane, History, Money, MoneyError, MICROS_PER_CENT, PER_REQUEST,
+    fee_lane_of, plane_fee_lane, split_plane_lane, History, Money, MoneyError, MICROS_PER_CENT,
+    PER_REQUEST,
 };
 use std::collections::BTreeMap;
 
@@ -1902,11 +1903,10 @@ impl GovState {
         era: Option<RawRateEra>,
         observer: &super::fee_debt::FeeDebtObserver,
     ) {
-        let (plane, _) = split_plane_lane(pool);
-        if plane.is_empty() {
+        // The plane's fee lane is the qualified pool's own leading `"<plane>\u{1f}"`, borrowed.
+        let Some(fee_lane) = fee_lane_of(pool) else {
             return;
-        }
-        let fee_lane = plane_fee_lane(plane);
+        };
         let mut leg = 0;
         while let Some((bucket, window, incarnation)) = observer.charged_leg(leg) {
             leg += 1;
@@ -1926,7 +1926,7 @@ impl GovState {
             cell.mutate(|cell| {
                 let held = (cell.models.iter_mut())
                     .filter(|m| {
-                        &*m.model == fee_lane.as_str()
+                        &*m.model == fee_lane
                             && era.is_none_or(|era| m.era == era)
                             && m.cur.get(fee_unit).is_some_and(|n| *n >= Count::ONE)
                     })
@@ -1949,12 +1949,12 @@ impl GovState {
         fee_unit: &str,
         era: Option<RawRateEra>,
     ) {
-        let (plane, pool) = split_plane_lane(pool);
-        if plane.is_empty() {
+        // The plane's fee lane is the qualified pool's own leading `"<plane>\u{1f}"`, borrowed.
+        let Some(fee_lane) = fee_lane_of(pool) else {
             return;
-        }
-        let fee_lane = plane_fee_lane(plane);
-        let lane = (fee_lane.as_str(), fee_unit);
+        };
+        let (_, pool) = split_plane_lane(pool);
+        let lane = (fee_lane, fee_unit);
         let Ok(chain) = cost.chain_for(key) else {
             self.refund_bucket(&key.id, super::WINDOW_TOTAL, now, lane, era);
             return;
