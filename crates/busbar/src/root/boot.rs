@@ -1530,7 +1530,6 @@ pub(crate) fn classify_against(
 pub(crate) fn admitted_grammar(
     rows: &dyn PluginRows,
 ) -> Result<Option<busbar_kernel::config::Grammar>, busbar_kernel::config::GrammarRefusal> {
-    let refused = busbar_kernel::config::GrammarRefusal;
     let Some(registry) = super::loader::rows::registry_of(rows) else {
         return Ok(None);
     };

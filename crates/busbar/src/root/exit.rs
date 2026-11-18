@@ -50,6 +50,16 @@ pub(crate) fn hand_over_before_exec() {
     }
 }
 
+/// THE ONE EXEC (FIRST-START-TAKEOVER §2.9 (d)): replace this image with `command`. Its one caller,
+/// the migrate-on-boot re-exec, reaches it through `migrate::restart`, which has already handed an
+/// armed first start over ([`hand_over_before_exec`]) while the store was open, then closed every
+/// instance. Returns only the failure.
+#[cfg(unix)]
+pub(crate) fn exec(command: &mut std::process::Command) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+    command.exec()
+}
+
 /// The first statement of `run`: until the listener's own handler owns signals, SIGTERM, SIGINT
 /// and a console close exit through [`exit`] (status 143), so an armed owner hands over. Send on
 /// the returned handoff (or drop it) once the listener's handler is installed.

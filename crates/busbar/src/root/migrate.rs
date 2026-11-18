@@ -51,6 +51,9 @@ pub(crate) struct Probe<'a> {
 /// it accepts the document, else its refusal text.
 pub(crate) type Parse<'a> = &'a dyn Fn(&str) -> Result<Vec<String>, String>;
 
+/// The admitted images' pure candidate check, run again inside the guarded writer.
+type CandidateCheck = std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
 /// Step 1. `Ok` when the boot may go on: stamped, absent (the config reader reports that in its own
 /// words), or planned and held for the boot's reads and [`finish`]. On every boot it first
 /// installs the recoverable gate's answer for the loader ([`migrate_admit`]): a stamped config can
@@ -269,7 +272,7 @@ pub(crate) async fn finish_settled(
 pub(crate) async fn finish_settled_checked(
     settled: Vec<busbar_migrate::Settled>,
     core: Option<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>>,
-    candidate: std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+    candidate: CandidateCheck,
 ) -> Result<Option<Written>, String> {
     let Some(plan) = PENDING.get() else {
         return Ok(None);
@@ -308,7 +311,7 @@ pub(crate) async fn convert_and_finish_checked(
     core: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
     keys: crate::root::migrate_records::Keys,
     settled: Vec<busbar_migrate::Settled>,
-    candidate: std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+    candidate: CandidateCheck,
 ) -> Result<Option<Written>, String> {
     let Some(plan) = PENDING.get() else {
         return Ok(None);
@@ -639,7 +642,6 @@ fn audit_rows(report: &[String]) -> Vec<(&'static str, String)> {
 /// Replace this process with a fresh image of itself: the same executable and argv, with
 /// `BUSBAR_MIGRATED=1`. Returns only the failure.
 pub(crate) fn reexec() -> String {
-    use std::os::unix::process::CommandExt;
     let executable: PathBuf = match std::env::current_exe() {
         Ok(path) => path,
         Err(error) => {
@@ -650,10 +652,11 @@ pub(crate) fn reexec() -> String {
         }
     };
     close_on_exec_from_3();
-    let error = std::process::Command::new(&executable)
-        .args(std::env::args_os().skip(1))
-        .env(busbar_migrate::MIGRATED_ENV, "1")
-        .exec();
+    let error = crate::root::exit::exec(
+        std::process::Command::new(&executable)
+            .args(std::env::args_os().skip(1))
+            .env(busbar_migrate::MIGRATED_ENV, "1"),
+    );
     format!(
         "config.yaml was upgraded, but busbar could not restart onto it ({}: {error}); start \
          busbar again",
@@ -701,7 +704,7 @@ pub(crate) fn normalization_source() -> Result<Option<(PathBuf, SecureString)>, 
 pub(crate) async fn normalize_settled(
     source: Option<(PathBuf, SecureString)>,
     settled: Vec<busbar_migrate::Settled>,
-    candidate: std::sync::Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>,
+    candidate: CandidateCheck,
 ) -> Result<(), String> {
     let Some((path, seen)) = source else {
         return Ok(());

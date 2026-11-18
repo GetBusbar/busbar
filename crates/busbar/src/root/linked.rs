@@ -577,7 +577,7 @@ fn catalogue_registry(
 ) -> Result<crate::root::loader::PluginRegistry, String> {
     use crate::root::loader::{LinkedPlugin, PluginRegistry};
 
-    let mut rows: Vec<_> = linked
+    let rows: Vec<_> = linked
         .auths
         .iter()
         .map(|(key, canonical, door)| {

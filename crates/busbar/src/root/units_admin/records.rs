@@ -598,7 +598,7 @@ fn price_selected(
         };
         let mut tally = Tally::at_card_seq(key, card);
         let exact = tally
-            .row(&p.lane, 0, STANDARD_TIER_BP, counts.into_iter(), zero)
+            .row(&p.lane, 0, STANDARD_TIER_BP, counts, zero)
             .and_then(|()| tally.exact());
         let Some(sum) = exact.ok().and_then(|n| total.checked_add(n)) else {
             complete = false;

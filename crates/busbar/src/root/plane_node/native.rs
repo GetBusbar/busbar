@@ -19,6 +19,11 @@ use busbar_kernel::teller::native_data_audit::{NativeAuditOwner, NativeAuditTerm
 use super::{Node, NodeEndPost, RetainedState, RetainedUnit};
 use crate::root::listener_native::{InputError, NativeCarrierRetired};
 
+/// What [`Node::install_native`] hands back: the entry's handle, its unit and its terminal slot.
+type NativeInstalled = (NativeNodeHandle, Unit, Arc<NativeOrdinaryTerminalSlot>);
+/// Why [`Node::install_native`] refused, with the handle when the entry was already made.
+type NativeInstallRefused = (InputError, Option<NativeNodeHandle>);
+
 pub(super) struct NativeUnit {
     // Live until the work/delivery join freezes it; then `terminal` keeps the same owner.
     owner: Option<NativeAuditOwner>,
@@ -120,10 +125,7 @@ impl Node {
         post: Arc<NodeEndPost>,
         billing: &PortBilling,
         classes: Arc<[String]>,
-    ) -> Result<
-        (NativeNodeHandle, Unit, Arc<NativeOrdinaryTerminalSlot>),
-        (InputError, Option<NativeNodeHandle>),
-    > {
+    ) -> Result<NativeInstalled, NativeInstallRefused> {
         let failure = |error| (error, None);
         // The book that will own this entry's fee observer must receive original captures.
         self.bind_fee_debt(billing);
@@ -272,7 +274,7 @@ impl OriginalPageReceiver for Node {
         let Some(book) = guard.as_mut() else {
             return PageFunding::Refused(cursor);
         };
-        let mut position = cursor.unwrap_or(OriginalPageCursor {
+        let mut position = cursor.unwrap_or_else(|| OriginalPageCursor {
             last: None,
             upper: book.max_key(),
         });
