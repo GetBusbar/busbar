@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! B-LEDGER: what one pricing lookup in the rate-card history costs, at 1, 8, 64 and 512 entries.
+//! B-LEDGER: what one pricing lookup in the rate-card history costs, at 1, 16 and 512 entries.
 //!
-//! - `HistoryView::card_at` (which entry prices an instant), at an instant the OPENING entry prices
-//!   (the walk from the newest entry visits every entry before it finds it) and at one the newest
-//!   entry prices.
+//! - `HistoryView::card_at` (which entry prices an instant), at an instant the NEWEST entry prices
+//!   (the present: the request-path case), one an entry half-way through prices, and one the
+//!   OPENING entry prices (a walk from the newest entry visits every entry before it finds it).
 //! - `HistoryView::card_for_raw_era` (the card counts accrued under one entry are priced with, any
 //!   later amendment applied), for the opening entry's era.
 //!
@@ -99,7 +99,7 @@ fn main() {
         samples: env_or("B_LEDGER_SAMPLES", 2_000),
         batch: env_or("B_LEDGER_BATCH", 256),
     };
-    for n in [1u64, 8, 64, 512] {
+    for n in [1u64, 16, 512] {
         let history = history(n);
         let view = history.current();
         let opening = &history.entries()[0];
@@ -107,13 +107,22 @@ fn main() {
         // The opening entry alone prices instant 1 at every size (later entries start at 750 or later).
         let early = 1u64;
         let late = 1_000 * n + 10;
-        assert!(view.card_at(early).is_some() && view.card_at(late).is_some());
+        // An instant an entry half-way through the history prices (the opening one at size 1).
+        let middle = 500 * n + 10;
+        assert!(
+            view.card_at(early).is_some()
+                && view.card_at(late).is_some()
+                && view.card_at(middle).is_some()
+        );
         assert!(view.card_for_raw_era(era, early).is_some());
         measure(&plan, &format!("card_at oldest entries={n}"), || {
             black_box(view.card_at(black_box(early)));
         });
         measure(&plan, &format!("card_at newest entries={n}"), || {
             black_box(view.card_at(black_box(late)));
+        });
+        measure(&plan, &format!("card_at middle entries={n}"), || {
+            black_box(view.card_at(black_box(middle)));
         });
         measure(&plan, &format!("card_for_raw_era entries={n}"), || {
             black_box(view.card_for_raw_era(black_box(era), black_box(early)));
