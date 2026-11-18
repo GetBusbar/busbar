@@ -57,12 +57,13 @@ impl Header {
             after: change.after(),
             transition: [0; 32],
         };
-        header.transition = transition(
+        header.transition = *transition(
             &header,
             change.encoded_key(),
             change.previous(),
             change.successor(),
-        );
+        )
+        .as_bytes();
         header
     }
     pub(super) fn encode(&self) -> Vec<u8> {
@@ -162,7 +163,7 @@ fn transition(
     key: &[u8],
     previous: Option<&Secret<Vec<u8>>>,
     next: &Secret<Vec<u8>>,
-) -> [u8; 32] {
+) -> crate::hashing::SecretDigest {
     let mut hash = crate::hashing::Sha256::new();
     hash.update(b"busbar.caller.transition/1\0");
     let encoded = header.encode();
@@ -176,7 +177,7 @@ fn transition(
         hash.update((bytes.len() as u64).to_be_bytes());
         hash.update(bytes);
     }
-    hash.finalize()
+    hash.finalize_secret()
 }
 
 fn context<'a>(
@@ -367,7 +368,7 @@ pub(super) fn prepared(
         ExpectedValue::Exact(value) => Some(value),
     };
     if previous.is_some() != header.before.is_some()
-        || transition(&header, key, previous, values[0]) != header.transition
+        || !transition(&header, key, previous, values[0]).matches(&header.transition)
     {
         return Err(Error::Corrupt);
     }
