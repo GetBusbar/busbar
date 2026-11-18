@@ -14,7 +14,8 @@ fn the_gauge_counts_units_and_gives_the_lease_back() {
     leases.take(bucket);
     gauge.acquire(&bucket, 2).expect("room");
     assert_eq!(gauge.count(&bucket), 2);
-    assert_eq!(gauge.acquire(&bucket, 2), Err(ReasonCode::OverBudget));
+    // A full concurrent-unit gauge is a rate refusal (bb904614fa).
+    assert_eq!(gauge.acquire(&bucket, 2), Err(ReasonCode::RateLimited));
 
     assert_eq!(leases.release_all(&gauge), 1);
     assert_eq!(gauge.count(&bucket), 1);
