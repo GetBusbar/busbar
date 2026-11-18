@@ -23,7 +23,6 @@ use busbar_contract::auth_calls::{
     AuthCalls, Decision, Strip, StripPlace, Verified, VerifiedIdentity, VerifyAnswer,
     VerifyRequest, Verifying,
 };
-use busbar_contract::fixed::{Lent, Stock};
 use busbar_contract::secure::{SecureString, SecureVec};
 
 use crate::cold::auth_door as cold;
@@ -39,7 +38,7 @@ use crate::dispatch::{
 
 pub const VERIFY_DEADLINE: Duration = Duration::from_secs(10);
 
-pub(crate) const IDENTITY_BUF_MAX: u64 = 1024 * 1024;
+const IDENTITY_BUF_MAX: u64 = 1024 * 1024;
 
 fn blob(b: &[u8], fmt: u32, flags: u32) -> Blob {
     if b.is_empty() && fmt != BLOB_OCTETS {
@@ -223,77 +222,70 @@ struct Held {
     groups: *mut Span,
     groups_cap: u32,
 
-    // The set the pointers above point into, lent by the door's stock. It is never touched again
-    // until it goes back (moving a `Vec` does not move its heap block), so the pointers stay valid;
-    // it goes back to its stock, wiped, when this drops.
-    store: Lent<Buffers>,
+    // The set the pointers above point into. It is never touched again until `Drop` (moving a
+    // `Vec` does not move its heap block), so the pointers stay valid.
+    store: Buffers,
+    /// Where `store` goes back, wiped, when the last holder lets go (`None`: a set of its own).
+    pool: Option<Arc<BufferPool>>,
 }
 
 /// An absent span: what every group span of a fresh set holds.
-pub(crate) const EMPTY_SPAN: Span = Span {
+const EMPTY_SPAN: Span = Span {
     offset: SPAN_ABSENT,
     len: 0,
 };
 
 /// An unnamed strip name: what every strip slot of a fresh set holds.
-pub(crate) const UNNAMED: StripName = StripName {
+const UNNAMED: StripName = StripName {
     name: EMPTY_SPAN,
     place: 0,
     _reserved: 0,
 };
 
-/// The default-sized sets one shard of a door's pool makes when the door opens (16 KiB of text and
-/// 2 KiB of spans each).
-pub(crate) const POOLED: usize = 16;
-
-/// The largest sets one door makes at open, for identities that outgrow the default set.
-pub(crate) const LARGE_SETS: usize = 2;
+/// The most spare default-sized sets one shard of a door's pool keeps (16 KiB of text and 2 KiB of spans each).
+const POOLED: usize = 16;
 
 /// The identity buffers one verify lends its plugin: the identity text, its group spans and the
-/// strip names. A door makes its sets when it opens ([`BufferPool`], made by
-/// `off_path::auth_door::buffer_pool`) and lends them; a verify that finds none is failed.
+/// strip names. A door lends the default-sized sets again ([`BufferPool`]); a grown recall and a
+/// login's identity lend a set of their own.
 #[derive(Default)]
-pub(crate) struct Buffers {
-    pub(crate) buf: Vec<u8>,
-    pub(crate) groups: Vec<Span>,
-    pub(crate) strip: Vec<StripName>,
-    /// How much of each the verify in hand was lent: only that much is wiped on the way back.
-    pub(crate) lent: (usize, u32, u32),
+struct Buffers {
+    buf: Vec<u8>,
+    groups: Vec<Span>,
+    strip: Vec<StripName>,
 }
 
 impl Buffers {
-    /// Back to a fresh set's contents in place: what was lent is wiped (the text held the plugin's
-    /// identity words), the spans and strip slots reset.
+    /// A fresh set: the text zeroed, every span absent, every strip slot unnamed.
+    fn new(buf_cap: usize, groups_cap: u32, strip_cap: u32) -> Self {
+        Self {
+            buf: vec![0u8; buf_cap],
+            groups: vec![EMPTY_SPAN; groups_cap as usize],
+            strip: vec![UNNAMED; strip_cap as usize],
+        }
+    }
+
+    /// Back to a fresh set's contents in place: the text wiped (it held the plugin's identity
+    /// words), the spans and strip slots reset.
     fn wipe(&mut self) {
-        let (buf, groups, strip) = self.lent;
-        let buf = buf.min(self.buf.len());
-        zero(&mut self.buf[..buf]);
-        let groups = (groups as usize).min(self.groups.len());
-        self.groups[..groups].fill(EMPTY_SPAN);
-        let strip = (strip as usize).min(self.strip.len());
-        self.strip[..strip].fill(UNNAMED);
-        self.lent = (0, 0, 0);
+        zero(&mut self.buf);
+        self.groups.fill(EMPTY_SPAN);
+        self.strip.fill(UNNAMED);
     }
 }
 
-impl busbar_contract::fixed::Reset for Buffers {
-    fn reset(&mut self) {
-        self.wipe();
-    }
-}
-
-/// One door's identity buffer sets, all made when the door opened: the default-sized sets in
-/// [`SHARDS`] stocks so verifies on different threads do not share a lock, and a few sets at the
-/// ceilings. A verify takes one and its `Held` gives it back wiped; none is ever made on a verify.
-pub(crate) struct BufferPool {
-    /// Default-sized sets, one stock per shard.
-    pub(crate) default: [Arc<Stock<Buffers>>; SHARDS],
-    /// Sets at the hard ceilings, for a grown recall or a login's identity.
-    pub(crate) large: Arc<Stock<Buffers>>,
-}
+/// One door's spare default-sized buffer sets, in [`SHARDS`] shards so verifies on different threads do not
+/// share a lock: a verify takes one from its thread's shard (a fresh set only when that shard has none spare:
+/// as many as verifies ever ran at once there, at most [`POOLED`] kept per shard) and its `Held` gives it back
+/// wiped, so a verify allocates no buffer once the door is warm.
+struct BufferPool([Shard; SHARDS]);
 
 /// Shards per pool (a power of two).
-pub(crate) const SHARDS: usize = 8;
+const SHARDS: usize = 8;
+
+/// One shard's spare sets, on a cache line of its own.
+#[repr(align(64))]
+struct Shard(Mutex<Vec<Buffers>>);
 
 std::thread_local! {
     /// This thread's shard of every door's pool, fixed by the order threads first verify.
@@ -304,25 +296,47 @@ std::thread_local! {
 }
 
 impl BufferPool {
-    /// This thread's shard first, then the others in order. `None`: every default set is out.
-    fn take(&self) -> Option<Lent<Buffers>> {
-        let first = SHARD.with(|s| *s);
-        for step in 0..SHARDS {
-            if let Some(set) = Lent::take(&self.default[(first + step) % SHARDS]) {
-                return Some(set);
-            }
-        }
-        None
+    /// An empty pool with room for [`POOLED`] sets per shard (once per opened door).
+    fn new() -> Self {
+        Self(std::array::from_fn(|_| {
+            Shard(Mutex::new(Vec::with_capacity(POOLED)))
+        }))
     }
 
-    /// A ceiling-sized set, or `None` when both are out.
-    fn take_large(&self) -> Option<Lent<Buffers>> {
-        Lent::take(&self.large)
+    fn shard(&self) -> &Mutex<Vec<Buffers>> {
+        &self.0[SHARD.with(|s| *s)].0
+    }
+
+    fn take(&self) -> Buffers {
+        let spare = self
+            .shard()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop();
+        spare.unwrap_or_else(|| Buffers::new(IDENTITY_BUF_BYTES, IDENTITY_GROUPS, FIELDS_MAX))
+    }
+
+    /// Keep a wiped default-sized `set` for the next verify on this thread's shard (freed, outside
+    /// the lock, when the shard is full).
+    fn give(&self, set: Buffers) {
+        let full = {
+            let mut spare = self
+                .shard()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if spare.len() < POOLED {
+                spare.push(set);
+                None
+            } else {
+                Some(set)
+            }
+        };
+        drop(full);
     }
 }
 
-// SAFETY: the three buffers point only into the set `Held` owns until it is dropped (then wiped, and given back
-// to its door's stock, where nothing lends it until the next verify takes it);
+// SAFETY: the three buffers point only into the set `Held` owns until it is dropped (then wiped, and freed
+// or given back to its door's pool, where nothing lends it until the next verify takes it);
 // after construction nothing writes through them but the plugin crossing under the dispatcher,
 // which never runs concurrently with the host's read (the host reads only after the op completed).
 unsafe impl Send for Held {}
@@ -351,50 +365,34 @@ impl Headers {
 }
 
 impl Held {
-    /// A verify lent one of `pool`'s default-sized sets, given back when it is done. `None`: every
-    /// default set is out.
-    fn pooled(input: Arc<VerifyInput>, pool: &BufferPool) -> Option<Arc<Self>> {
-        Some(Self::over(
+    /// A verify lent a set of its own, of the given capacities (a grown recall, a login's identity).
+    fn new(input: Arc<VerifyInput>, buf_cap: usize, groups_cap: u32, strip_cap: u32) -> Arc<Self> {
+        Self::over(
             input,
-            pool.take()?,
-            (IDENTITY_BUF_BYTES, IDENTITY_GROUPS, FIELDS_MAX),
-        ))
+            Buffers::new(buf_cap, groups_cap, strip_cap),
+            (groups_cap, strip_cap),
+            None,
+        )
     }
 
-    /// A grown recall lent one of the door's ceiling-sized sets, of which the verify uses the sizes
-    /// asked. `None`: both are out.
-    fn large(
-        input: Arc<VerifyInput>,
-        pool: &BufferPool,
-        cap: usize,
-        groups: u32,
-        strips: u32,
-    ) -> Option<Arc<Self>> {
-        Some(Self::over(input, pool.take_large()?, (cap, groups, strips)))
-    }
-
-    /// A login's identity buffers, of the sizes asked: a default set when they fit one, else a
-    /// ceiling-sized set. `None`: none of that size is left.
-    fn sized(
-        input: Arc<VerifyInput>,
-        pool: &BufferPool,
-        cap: usize,
-        groups: u32,
-        strips: u32,
-    ) -> Option<Arc<Self>> {
-        if cap <= IDENTITY_BUF_BYTES && groups <= IDENTITY_GROUPS && strips <= FIELDS_MAX {
-            return Some(Self::over(input, pool.take()?, (cap, groups, strips)));
-        }
-        Self::large(input, pool, cap, groups, strips)
+    /// A verify lent one of `pool`'s default-sized sets, given back when it is done.
+    fn pooled(input: Arc<VerifyInput>, pool: &Arc<BufferPool>) -> Arc<Self> {
+        Self::over(
+            input,
+            pool.take(),
+            (IDENTITY_GROUPS, FIELDS_MAX),
+            Some(Arc::clone(pool)),
+        )
     }
 
     fn over(
         input: Arc<VerifyInput>,
-        mut store: Lent<Buffers>,
-        (buf_cap, groups_cap, strip_cap): (usize, u32, u32),
+        mut store: Buffers,
+        (groups_cap, strip_cap): (u32, u32),
+        pool: Option<Arc<BufferPool>>,
     ) -> Arc<Self> {
-        store.lent = (buf_cap, groups_cap, strip_cap);
         let buf = store.buf.as_mut_ptr();
+        let buf_cap = store.buf.len();
         let groups = store.groups.as_mut_ptr();
         let strip = store.strip.as_mut_ptr();
         Arc::new(Self {
@@ -406,6 +404,7 @@ impl Held {
             groups,
             groups_cap,
             store,
+            pool,
         })
     }
 
@@ -555,6 +554,20 @@ impl Held {
             } else {
                 self.text(o.credential).map(Into::into)
             },
+        }
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // Nothing reads the buffers once the last `Arc` is dropped (the plugin's crossing is over):
+        // the text is wiped either way; a pooled set goes back reset for the next verify.
+        match self.pool.take() {
+            Some(pool) => {
+                self.store.wipe();
+                pool.give(std::mem::take(&mut self.store));
+            }
+            None => zero(&mut self.store.buf),
         }
     }
 }
@@ -1001,7 +1014,7 @@ impl AuthInstance {
                 plugin,
                 dispatcher,
                 minted: AtomicU64::new(0),
-                buffers: Arc::new(crate::off_path::auth_door::buffer_pool()),
+                buffers: Arc::new(BufferPool::new()),
             }),
             sink,
             facts,
@@ -1098,12 +1111,10 @@ impl AuthCalls for AuthInstance {
         if reveals(request) && seal.is_none() {
             return Some(Verified::Failed.into());
         }
-        let Some(held) = Held::pooled(
+        let held = Held::pooled(
             VerifyInput::copied(request, seal, &headers),
             &self.shared.buffers,
-        ) else {
-            return Some(Verified::Failed.into());
-        };
+        );
         let mut f = Frame::new(held.input(presented), identify_out());
         let called = plugin.call(slot::VERIFY, &mut f);
         let _lease = AnswerLease::new(plugin, called.lease);
@@ -1114,15 +1125,7 @@ impl AuthCalls for AuthInstance {
                 let Some((cap, groups, strips)) = grown(&f.out, &held) else {
                     return Some(Verified::Failed.into());
                 };
-                let Some(bigger) = Held::large(
-                    Arc::clone(&held.input),
-                    &self.shared.buffers,
-                    cap,
-                    groups,
-                    strips,
-                ) else {
-                    return Some(Verified::Failed.into());
-                };
+                let bigger = Held::new(Arc::clone(&held.input), cap, groups, strips);
                 let mut g = Frame::new(bigger.input(presented), identify_out());
                 let again = plugin.recall(token, slot::VERIFY, &mut g);
                 let _again = AnswerLease::new(plugin, again.lease);
@@ -1150,10 +1153,7 @@ impl AuthCalls for AuthInstance {
         if reveals(&request) && seal.is_none() {
             return Box::new(Settled(Some(Verified::Failed.into())));
         }
-        let Some(held) = Held::pooled(VerifyInput::taken(request, seal, &headers), &sh.buffers)
-        else {
-            return Box::new(Settled(Some(Verified::Failed.into())));
-        };
+        let held = Held::pooled(VerifyInput::taken(request, seal, &headers), &sh.buffers);
         sh.submit(&mut call, &held, presented);
         Box::new(Pending::new(
             call,
@@ -1323,12 +1323,7 @@ impl Answering<VerifyIn, IdentifyOut> for Verify {
             self.recalled = true;
             let grow = out.as_ref().and_then(|o| grown(o, &self.held));
             if let Some((cap, groups, strips)) = grow {
-                let input = Arc::clone(&self.held.input);
-                let Some(bigger) = Held::large(input, &self.shared.buffers, cap, groups, strips)
-                else {
-                    return Some(Verified::Failed.into());
-                };
-                self.held = bigger;
+                self.held = Held::new(Arc::clone(&self.held.input), cap, groups, strips);
                 self.shared.submit(call, &self.held, self.presented);
                 return None;
             }

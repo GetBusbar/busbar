@@ -1660,15 +1660,12 @@ fn a_verify_crossing_keeps_zeroising_request_facts_until_its_last_owner_retires(
         req.authority = "caller.example".into();
         req.path = "/private".into();
         req.query = Some("token=query-canary".into());
-        let pool = crate::off_path::auth_door::buffer_pool();
-        let held = super::Held::sized(
+        let held = super::Held::new(
             super::VerifyInput::copied(&req, None, &super::Headers::None),
-            &pool,
             16,
             1,
             1,
-        )
-        .expect("a set");
+        );
         wiped_when_dropped(&held.input.peer);
         wiped_when_dropped(&held.input.body);
         wiped_when_dropped(&held.input.method);
@@ -1917,8 +1914,7 @@ fn a_login_outages_retry_after_is_read_only_from_the_hosts_identity_buffer() {
     use busbar_contract::abi::auth::retry_after_extensions;
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
     const CAP: usize = 64;
-    let pool = crate::off_path::auth_door::buffer_pool();
-    let held = super::Held::sized(super::VerifyInput::empty(), &pool, CAP, 1, 0).expect("a set");
+    let held = super::Held::new(super::VerifyInput::empty(), CAP, 1, 0);
     let entry = retry_after_extensions(120);
     // SAFETY: `held.buf` is `CAP` writable bytes this test owns; nothing else reads them now.
     unsafe { std::ptr::copy_nonoverlapping(entry.as_ptr(), held.buf.add(8), entry.len()) };
@@ -2072,8 +2068,12 @@ fn an_auth_plugin_diagnostic_is_a_text_field_never_the_message() {
 /// the same allocation, holding no byte, span or strip name of the last one.
 #[test]
 fn a_pooled_identity_set_is_wiped_before_the_next_verify_takes_it() {
-    let pool = crate::off_path::auth_door::buffer_pool();
-    let mut dirty = pool.take().expect("a set");
+    let pool = Arc::new(super::BufferPool::new());
+    let mut dirty = super::Buffers::new(
+        busbar_contract::abi::auth::IDENTITY_BUF_BYTES,
+        busbar_contract::abi::auth::IDENTITY_GROUPS,
+        busbar_contract::abi::auth::FIELDS_MAX,
+    );
     dirty.buf.fill(0xA5);
     let used = busbar_contract::abi::mechanism::call::Span { offset: 3, len: 9 };
     dirty.groups.fill(used);
@@ -2087,13 +2087,13 @@ fn a_pooled_identity_set_is_wiped_before_the_next_verify_takes_it() {
         super::VerifyInput::empty(),
         dirty,
         (
-            busbar_contract::abi::auth::IDENTITY_BUF_BYTES,
             busbar_contract::abi::auth::IDENTITY_GROUPS,
             busbar_contract::abi::auth::FIELDS_MAX,
         ),
+        Some(Arc::clone(&pool)),
     );
     drop(held);
-    let next = pool.take().expect("the set is back");
+    let next = pool.take();
     assert_eq!(
         next.buf.as_ptr(),
         at,
@@ -2119,51 +2119,4 @@ fn a_pooled_identity_set_is_wiped_before_the_next_verify_takes_it() {
             busbar_contract::abi::auth::FIELDS_MAX as usize,
         )
     );
-}
-
-/// A door makes `SHARDS * POOLED` default sets when it opens and no more: the next verify finds none
-/// and is failed, and a set given back is taken again.
-#[test]
-fn the_129th_concurrent_verify_finds_no_set() {
-    let pool = crate::off_path::auth_door::buffer_pool();
-    let all = super::SHARDS * super::POOLED;
-    let mut out: Vec<_> = (0..all)
-        .map(|_| pool.take().expect("a set made at open"))
-        .collect();
-    assert!(pool.take().is_none(), "none left past what the door made");
-    assert!(
-        super::Held::pooled(super::VerifyInput::empty(), &pool).is_none(),
-        "a verify with no set is failed"
-    );
-    out.pop();
-    assert!(pool.take().is_some(), "a set given back is lent again");
-}
-
-/// A door makes two ceiling-sized sets for grown recalls: a third concurrent one finds none.
-#[test]
-fn a_third_concurrent_grown_recall_finds_no_set() {
-    let pool = crate::off_path::auth_door::buffer_pool();
-    let first = super::Held::large(super::VerifyInput::empty(), &pool, 4096, 300, 100);
-    let second = super::Held::large(super::VerifyInput::empty(), &pool, 4096, 300, 100);
-    assert!(first.is_some() && second.is_some());
-    assert!(super::Held::large(super::VerifyInput::empty(), &pool, 4096, 300, 100).is_none());
-    drop(first);
-    assert!(super::Held::large(super::VerifyInput::empty(), &pool, 4096, 300, 100).is_some());
-}
-
-/// A ceiling-sized set lent for a smaller ask goes back wiped over what was lent, and the plugin sees
-/// the sizes asked.
-#[test]
-fn a_large_set_is_lent_the_sizes_asked_and_wiped_when_it_goes_back() {
-    let pool = crate::off_path::auth_door::buffer_pool();
-    let held = super::Held::large(super::VerifyInput::empty(), &pool, 4096, 300, 100).expect("set");
-    assert_eq!(
-        (held.buf_cap, held.groups_cap, held.strip_cap),
-        (4096, 300, 100)
-    );
-    // SAFETY: `held.buf` is 4096 writable bytes this test owns.
-    unsafe { held.buf.write_bytes(0xA5, 4096) };
-    drop(held);
-    let again = pool.take_large().expect("back");
-    assert!(again.buf.iter().all(|b| *b == 0), "the text is wiped");
 }
