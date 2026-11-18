@@ -42,12 +42,6 @@ pub(crate) fn reap_handles(
     gone
 }
 
-/// A host listener's bound address, spelled once: a listener is bound at boot or at a config
-/// commit.
-pub(crate) fn bound_address(local: &std::net::SocketAddr) -> String {
-    local.to_string()
-}
-
 /// A held environment's references as a debug line names them: each name and its reference's
 /// source, never a value. Rendered only into a debug line.
 pub(crate) fn described_refs(
@@ -66,27 +60,29 @@ pub(crate) fn held_refs(
 }
 
 /// Every reference of a program's environment resolved through `secrets`: at load and at config
-/// time (a reload or the refresher's renewal), off every request path.
+/// time (a reload or the refresher's renewal), off every request path. A refusal's reason is made
+/// shared text here, once, so every spawn it later refuses shares the words.
 pub(crate) fn resolve_spawn_env(
     refs: &[(String, busbar_contract::secret_ref::SecretRef)],
     secrets: Option<crate::spawn_env::SpawnSecretFn>,
     scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Vec<(String, busbar_contract::redacted::Secret<String>)>, String> {
+) -> Result<Vec<(String, busbar_contract::redacted::Secret<String>)>, busbar_contract::kept::Text> {
+    let shared = |why: String| busbar_contract::kept::Text::from(std::sync::Arc::<str>::from(why));
     let mut env = Vec::with_capacity(refs.len());
     for (name, reference) in refs {
         let secret = secrets.ok_or_else(|| {
-            format!(
+            shared(format!(
                 "the program's environment `{name}` is a secret reference and no secret \
                  resolver is installed"
-            )
+            ))
         })?;
         let value = reference
             .resolve_template(&|r| secret(r, scope))
             .map_err(|e| {
-                format!(
+                shared(format!(
                     "the program's environment `{name}` ({}) did not resolve: {e}",
                     reference.describe()
-                )
+                ))
             })?;
         env.push((name.clone(), value));
     }

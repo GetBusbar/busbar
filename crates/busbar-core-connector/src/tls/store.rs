@@ -100,18 +100,20 @@ pub(crate) struct Entry {
 
 /// Why a dial has no client TLS configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TrustRefusal {
+pub enum TrustRefusal<'h> {
     /// The native Need supplied malformed identity material or requested identity under a waiver.
     InvalidNeed,
-    /// `roots: none` and nothing else applies to this destination (BUSBAR-3140).
-    NoAnchors(String),
-    /// Every anchor of the matching entries was withdrawn because it expired (BUSBAR-5048).
-    Withdrawn(String),
+    /// `roots: none` and nothing else applies to this destination (BUSBAR-3140). The host is the
+    /// caller's own, lent: a refusal copies no name.
+    NoAnchors(&'h str),
+    /// Every anchor of the matching entries was withdrawn because it expired (BUSBAR-5048). The
+    /// host is the caller's own, lent.
+    Withdrawn(&'h str),
     /// The configuration could not be built (a key pin or identity rustls refuses).
     Build(String),
 }
 
-impl std::fmt::Display for TrustRefusal {
+impl std::fmt::Display for TrustRefusal<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidNeed => f.write_str("invalid native TLS identity request"),
@@ -132,7 +134,7 @@ impl std::fmt::Display for TrustRefusal {
     }
 }
 
-impl std::error::Error for TrustRefusal {}
+impl std::error::Error for TrustRefusal<'_> {}
 
 /// The base set, as loaded.
 #[derive(Debug, Clone)]
@@ -245,15 +247,15 @@ impl TrustStore {
     /// THE CLIENT CONFIG for a dial of `host` (the guard-judged host: a name, or an IP literal,
     /// bracketed or not, with or without a port). `None` = the store is the default and the
     /// connector's own bundled-roots config applies.
-    pub fn config_for(
+    pub fn config_for<'h>(
         &self,
-        host: &str,
-    ) -> Result<Option<Arc<rustls::ClientConfig>>, TrustRefusal> {
+        host: &'h str,
+    ) -> Result<Option<Arc<rustls::ClientConfig>>, TrustRefusal<'h>> {
         if self.default {
             return Ok(None);
         }
         let Some(d) = dialled(host) else {
-            return Err(crate::cold::tls::no_anchors(host));
+            return Err(TrustRefusal::NoAnchors(host));
         };
         let mut buf = [0u8; NAME_MAX];
         let key = match &d {

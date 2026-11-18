@@ -8,13 +8,7 @@ use std::fmt::Write as _;
 
 use busbar_contract::crypto;
 
-use crate::tls::store::{dialled, Anchor, Entry, TrustRefusal, TrustStore};
-
-/// The refusal for a dial whose host names no destination and has no base set to fall back on.
-#[cold]
-pub(crate) fn no_anchors(host: &str) -> TrustRefusal {
-    TrustRefusal::NoAnchors(host.to_owned())
-}
+use crate::tls::store::{dialled, Anchor, Entry, TrustStore};
 
 /// The text a refusal `e` of a DIALLED handshake is reported with: rustls's own words, plus one
 /// sentence for an unknown issuer or a CA certificate served as the leaf, and exactly rustls's

@@ -228,7 +228,7 @@ fn native_windows_refused_connect_wakes_with_an_error() {
         let address = listener.local_addr().unwrap().to_string();
         drop(listener);
         let io = HostIo::new();
-        io.admit(ticket(704), Admission::Dial(vec![address.clone()]));
+        io.admit(ticket(704), Admission::Dial(address.clone()));
         if let Ok(handle) = io.open(OWNER, ticket(704), &address) {
             assert!(poll_fn(|cx| io.ready(OWNER, handle, DIR_WRITE, cx.waker()))
                 .await
@@ -244,7 +244,7 @@ fn native_windows_unix_target_is_explicitly_refused() {
     worker().block_on(async {
         let io = HostIo::new();
         let target = "unix:/run/busbar-unavailable.sock";
-        io.admit(ticket(705), Admission::Dial(vec![target.into()]));
+        io.admit(ticket(705), Admission::Dial(target.into()));
         assert!(matches!(
             io.open(OWNER, ticket(705), target),
             Err(IoRefusal::Failed(message)) if message.contains("unavailable on Windows")

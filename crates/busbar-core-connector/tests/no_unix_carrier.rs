@@ -33,8 +33,6 @@ fn a_need_over_a_unix_scheme_is_refused() {
 fn a_unix_target_names_no_host_and_is_refused_before_any_dial() {
     assert_eq!(
         endpoint::check(SOCKET),
-        Err(EndpointRefusal::NoHost {
-            target: SOCKET.to_owned(),
-        })
+        Err(EndpointRefusal::NoHost { target: SOCKET })
     );
 }

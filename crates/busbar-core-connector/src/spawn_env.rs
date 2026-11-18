@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use busbar_contract::config_time::ConfigScope;
+use busbar_contract::kept::Text;
 use busbar_contract::redacted::Secret;
 use busbar_contract::secret_ref::SecretRef;
 
@@ -25,12 +26,13 @@ pub fn linked_spawn_secret(
 pub(crate) const SPAWN_ENV_LEASE: Duration = Duration::from_secs(60);
 
 /// What a program's spawn hands its child now: every reference's value, name and value in the
-pub struct Resolved(pub(crate) Result<Vec<(String, Secret<String>)>, String>);
+pub struct Resolved(pub(crate) Result<Vec<(String, Secret<String>)>, Text>);
 
 impl Resolved {
-    /// The values, or the refusal.
-    pub fn env(&self) -> Result<&[(String, Secret<String>)], &str> {
-        self.0.as_deref().map_err(String::as_str)
+    /// The values, or the refusal: its reason as shared text, made once when the references were
+    /// resolved, so a spawn it refuses shares the words and copies none.
+    pub fn env(&self) -> Result<&[(String, Secret<String>)], &Text> {
+        self.0.as_deref()
     }
 }
 

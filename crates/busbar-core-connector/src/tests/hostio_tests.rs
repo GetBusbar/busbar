@@ -273,7 +273,7 @@ fn nothing_is_opened_bound_or_spawned_that_was_not_admitted() {
             Err(IoRefusal::Refused(_))
         ));
 
-        io.admit(ticket(1), Admission::Dial(vec!["127.0.0.1:8".into()]));
+        io.admit(ticket(1), Admission::Dial("127.0.0.1:8".into()));
         assert!(matches!(
             io.open(OWNER, ticket(1), "127.0.0.1:9"),
             Err(IoRefusal::Refused(_))
@@ -321,7 +321,7 @@ fn an_admitted_dial_moves_bytes_both_ways_and_a_handle_is_its_makers_alone() {
         let far = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let at = far.local_addr().unwrap().to_string();
         let io = HostIo::new();
-        io.admit(ticket(10), Admission::Dial(vec![at.clone()]));
+        io.admit(ticket(10), Admission::Dial(at.clone()));
         let h = io.open(OWNER, ticket(10), &at).unwrap();
         assert_eq!(io.settle(ticket(10)).0, Some(h));
         let (mut peer, _) = far.accept().await.unwrap();
@@ -647,7 +647,7 @@ fn reap_releases_every_handle_of_its_owner_and_no_other() {
             "reaped entry remains alive at {at}, other {other_at}"
         );
         assert!(
-            tokio::net::TcpStream::connect(&at).await.is_err(),
+            tokio::net::TcpStream::connect(at.as_str()).await.is_err(),
             "the reaped listener still accepts at {at}, other {other_at}"
         );
         assert!(matches!(io.close(OWNER, other), Err(IoRefusal::Refused(_))));
@@ -675,7 +675,7 @@ fn a_retired_listener_stops_accepting_while_a_fork_copy_of_its_descriptor_is_ope
             let original = std::sync::Arc::downgrade(&entry);
             drop(entry);
 
-            drop(tokio::net::TcpStream::connect(&at).await.unwrap());
+            drop(tokio::net::TcpStream::connect(at.as_str()).await.unwrap());
             match retirement {
                 "reap" => io.reap(OWNER),
                 "close" => io.close(OWNER, handle).unwrap(),
@@ -688,7 +688,7 @@ fn a_retired_listener_stops_accepting_while_a_fork_copy_of_its_descriptor_is_ope
                 "{retirement} retained the entry"
             );
             assert!(
-                tokio::net::TcpStream::connect(&at).await.is_err(),
+                tokio::net::TcpStream::connect(at.as_str()).await.is_err(),
                 "{retirement} left the copied socket listening at {at}"
             );
 

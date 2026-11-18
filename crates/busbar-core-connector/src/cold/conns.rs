@@ -10,7 +10,6 @@ use std::fmt::Display;
 use busbar_contract::conn::{ConnCause, InstanceId, NeedRefusal};
 
 use crate::conns::compose::Failure;
-use crate::conns::endpoint::EndpointRefusal;
 use crate::conns::Verdict;
 
 /// A guard verdict on the target (or, with `proxy`, the operator's egress proxy) as a reason: a
@@ -103,14 +102,6 @@ pub(crate) fn offered_name_refused(offered: &str, dialled: &str) -> String {
          name must be the dialled host (any name only for a dial to an IP literal), so the \
          upgrade is refused"
     )
-}
-
-/// The endpoint check's refusal of a `target` that names no host.
-#[cold]
-pub(crate) fn no_host(target: &str) -> EndpointRefusal {
-    EndpointRefusal::NoHost {
-        target: target.to_owned(),
-    }
 }
 
 /// Protocol bytes that are not UTF-8, as text (each bad sequence replaced).
