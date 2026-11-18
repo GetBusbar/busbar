@@ -142,7 +142,14 @@ impl PlanePort for BlockingPlane {
 struct NoIntents;
 
 impl IntentHost for NoIntents {
-    fn lookup(&self, _: Scope, _: u32, _: u32, _: &[u8]) -> Result<Looked, RecordsDenied> {
+    fn lookup(
+        &self,
+        _: Scope,
+        _: u32,
+        _: u32,
+        _: &[u8],
+        _: &mut Looked,
+    ) -> Result<(), RecordsDenied> {
         Err(RecordsDenied::Unavailable)
     }
     fn store(&self, _: Scope, _: u32, _: u64, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {

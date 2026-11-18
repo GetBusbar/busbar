@@ -25,9 +25,7 @@ use super::{ExchangeUpstreams, Mapped, PortCarrier};
 use crate::channels::link::Link;
 use crate::channels::signals::SignalRegistry;
 use crate::channels::{Attachment, ChannelMsg, ChannelReq, UpstreamChannels};
-use crate::plane_driver::port_intents::{
-    Hit, IntentHost, Looked, Namespace, Resolver, WorkOutcome,
-};
+use crate::plane_driver::port_intents::{IntentHost, Looked, Namespace, Resolver, WorkOutcome};
 use crate::plane_driver::port_money::AuditRow;
 use crate::plane_driver::port_serve::{run_session, Books, Drive, Ran};
 use crate::plane_driver::port_session::{Calls, Effects, SessionError, ToClient};
@@ -330,14 +328,16 @@ impl Books for NoBooks {
 struct Store;
 
 impl IntentHost for Store {
-    fn lookup(&self, _: Scope, _: u32, _: u32, key: &[u8]) -> Result<Looked, RecordsDenied> {
-        Ok(Looked {
-            hits: vec![Hit {
-                key: key.to_vec(),
-                value: b"v".to_vec(),
-            }],
-            chain: None,
-        })
+    fn lookup(
+        &self,
+        _: Scope,
+        _: u32,
+        _: u32,
+        key: &[u8],
+        looked: &mut Looked,
+    ) -> Result<(), RecordsDenied> {
+        looked.push(&[key], b"v");
+        Ok(())
     }
     fn store(&self, _: Scope, _: u32, _: u64, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {
         Ok(())

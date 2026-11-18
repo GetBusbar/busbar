@@ -42,16 +42,6 @@ pub struct Services {
     pub observations: Option<Arc<dyn UsageObservations>>,
 }
 
-/// One item of a TRUST_STATE answer, owned (the book's sink borrows end with the call).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrustItemOwned {
-    pub name: String,
-    /// DISTRUST_* for this item.
-    pub verdict: u32,
-    pub approved: Option<[u8; 32]>,
-    pub sighted: Option<[u8; 32]>,
-}
-
 /// Decoded from one OBSERVE (counts are (class, amount, scale) of declared classes).
 pub struct ObservationIn<'a> {
     pub scope: [u8; 32],
