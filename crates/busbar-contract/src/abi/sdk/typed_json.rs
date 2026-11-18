@@ -1,29 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The closed JSON span grammar: the one serialization busbar reads, read once.
+//! The old ABI's serde_json readers of settings documents: a typed reading and a wiping one
+//! (moved here from `json_grammar.rs` by #162 S1, DES-SONIC-WIPE r3 §1 #3). Only the old ABI's
+//! settings and lifecycle code calls them; they are deleted with `abi/` (W3-D-CONTRACT), never
+//! ported. Public JSON reads through `json::parse_value`.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
-pub use busbar_count::json_span::{resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH};
-
 use serde::{Deserialize, Deserializer};
 use serde_json::{value::RawValue, Value};
 use std::marker::PhantomData;
-
-/// Parse one document bounded by [`MAX_JSON_DEPTH`], preserving exact numeric lexemes and
-/// literal object keys, including serde's private number marker. Duplicate object keys keep
-/// their last value. This is for public JSON; decoded strings are ordinary owned strings.
-pub fn parse_value(bytes: &[u8]) -> Result<Value, serde_json::Error> {
-    if crate::spans::exceeds_max_depth(bytes, MAX_JSON_DEPTH) {
-        return Err(<serde_json::Error as serde::de::Error>::custom(format!(
-            "JSON nesting exceeds {MAX_JSON_DEPTH}"
-        )));
-    }
-    serde_json::from_slice::<Tokens<Exact>>(bytes).map(|value| value.0)
-}
 
 /// Parse one document as serde_json's typed reader reads it: the `Value` a typed field sees.
 ///
@@ -77,15 +66,6 @@ pub fn wipe(value: &mut Value) {
 /// How a document's scalar tokens are read; its containers are walked by [`Tokens`].
 trait Scalar {
     fn read(token: &str) -> Result<Value, serde_json::Error>;
-}
-
-/// Each scalar as `Value` reads it, numbers kept as their exact lexeme.
-struct Exact;
-
-impl Scalar for Exact {
-    fn read(token: &str) -> Result<Value, serde_json::Error> {
-        serde_json::from_str::<Value>(token)
-    }
 }
 
 /// Each number as serde_json's typed reader reads it; other scalars as `Value` reads them.
@@ -146,41 +126,5 @@ impl<'de, S: Scalar> serde::de::Visitor<'de> for ObjectVisitor<S> {
             object.insert(key, value.0);
         }
         Ok(Value::Object(object))
-    }
-}
-
-#[cfg(test)]
-mod exact_value_tests {
-    use super::*;
-
-    #[test]
-    fn exact_values_preserve_literal_marker_keys_numbers_and_duplicate_policy() {
-        let value = parse_value(br#"{"$serde_json::private::Number":"123","n":1e+400,"id":18446744073709551617,"x":1,"x":2}"#).unwrap();
-        assert_eq!(value["$serde_json::private::Number"], "123");
-        assert_eq!(value["n"].to_string(), "1e+400");
-        assert_eq!(value["id"].to_string(), "18446744073709551617");
-        assert_eq!(value["x"], 2);
-        assert!(parse_value(br#"{"x":1} trailing"#).is_err());
-        assert!(parse_value(b"[1,]").is_err());
-    }
-
-    #[test]
-    fn exact_values_bound_recursive_container_depth() {
-        let body = |depth| format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
-        assert!(parse_value(body(MAX_JSON_DEPTH - 1).as_bytes()).is_ok());
-        assert!(parse_value(body(MAX_JSON_DEPTH + 1).as_bytes()).is_err());
-    }
-}
-
-#[cfg(test)]
-mod bc2_depth_error_tests {
-    use super::*;
-
-    #[test]
-    fn over_depth_error_is_not_eof_and_names_depth() {
-        let doc = "[".repeat(MAX_JSON_DEPTH + 1) + &"]".repeat(MAX_JSON_DEPTH + 1);
-        let err = parse_value(doc.as_bytes()).unwrap_err();
-        assert!(!err.is_eof(), "got {err}");
-        assert!(err.to_string().contains("nesting"), "got {err}");
     }
 }

@@ -65,7 +65,6 @@ pub mod io_host;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod ir;
 pub mod json;
-pub(crate) mod json_grammar;
 pub mod jsonrpc;
 pub mod kinds;
 
@@ -103,6 +102,7 @@ pub mod settings_public;
 pub mod plugin_settings;
 
 pub mod secret_fields;
+pub mod secret_json;
 pub mod section;
 /// SemVer 2.0 precedence for plugin version floors (#359 SEC-L11); owned by the artifact metadata
 /// crate so the standalone artifact verifier compares floors with the same one comparator.

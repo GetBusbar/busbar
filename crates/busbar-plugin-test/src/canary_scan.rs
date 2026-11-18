@@ -47,7 +47,9 @@
 //! ```
 //!
 //! Code that holds the secret as text takes [`WipeProof::text`] and [`WipeProof::text_payload`] (the
-//! canary drawn from 64 ASCII characters). A test that must also show the secret is still owned
+//! canary drawn from 64 ASCII characters). [`WipeProof::short_text`] makes a short one: a
+//! [`SHORT_CANARY_LEN`]-character canary in a [`SHORT_PAYLOAD_LEN`]-byte payload, under the 30 bytes a
+//! small-string type stores inline, its sentinel and control in blocks of the same size. A test that must also show the secret is still owned
 //! part-way (a pending future, a shared owner not yet dropped) calls [`WipeProof::assert_held`]
 //! there: the canary must still be found, so the later "absent" is the drop at the end, not an
 //! early free.
@@ -64,6 +66,12 @@ pub const WINDOW: usize = 16;
 pub const OFFSET: usize = 32;
 /// A payload's length: small for jemalloc, with filler on both sides of the canary.
 pub const PAYLOAD_LEN: usize = 128;
+/// A short payload's length: at most 30 bytes, so a small-string type stores it inline.
+pub const SHORT_PAYLOAD_LEN: usize = 24;
+/// Characters in a short text canary (at least [`WINDOW`]).
+pub const SHORT_CANARY_LEN: usize = 20;
+/// Where a short canary sits in its payload: two filler bytes on each side.
+pub const SHORT_OFFSET: usize = 2;
 /// The filler around the canary.
 const FILLER: u8 = 0xA5;
 /// The filler around a text canary (ASCII, so the payload is a `String`).
@@ -73,19 +81,44 @@ const TEXT: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz01
 /// Alphanumeric-only canaries also survive URL/form encoding unchanged.
 const ALPHANUMERIC: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
-/// 32 random bytes held as `masked ^ mask`, so the plaintext is never at rest in this struct.
+/// Where a pattern sits: its payload's length and its offset there.
+#[derive(Clone, Copy)]
+struct Layout {
+    payload: usize,
+    offset: usize,
+}
+
+/// The [`PAYLOAD_LEN`] layout, the pattern at [`OFFSET`].
+const LONG: Layout = Layout {
+    payload: PAYLOAD_LEN,
+    offset: OFFSET,
+};
+
+/// The [`SHORT_PAYLOAD_LEN`] layout, the pattern at [`SHORT_OFFSET`].
+const SHORT: Layout = Layout {
+    payload: SHORT_PAYLOAD_LEN,
+    offset: SHORT_OFFSET,
+};
+
+/// `len` random bytes (at most [`CANARY_LEN`]) held as `masked ^ mask`, so the plaintext is never
+/// at rest in this struct.
 #[derive(Clone)]
 struct Pattern {
     masked: [u8; CANARY_LEN],
     mask: [u8; CANARY_LEN],
+    len: usize,
 }
 
 impl Pattern {
-    fn random() -> Self {
-        Self::random_from(None)
+    fn random(len: usize) -> Self {
+        Self::random_from(None, len)
     }
 
-    fn random_from(alphabet: Option<&[u8]>) -> Self {
+    fn random_from(alphabet: Option<&[u8]>, len: usize) -> Self {
+        assert!(
+            (WINDOW..=CANARY_LEN).contains(&len),
+            "a pattern is {WINDOW} to {CANARY_LEN} bytes"
+        );
         let mut draw = [0_u8; CANARY_LEN];
         let mut mask = [0_u8; CANARY_LEN];
         fill_random(&mut draw);
@@ -97,17 +130,18 @@ impl Pattern {
         }
         draw.fill(0);
         std::hint::black_box(&mut draw);
-        Self { masked, mask }
+        Self { masked, mask, len }
     }
 
-    /// 32 characters drawn from [`TEXT`], so the canary can stand in a `String` (192 random bits).
-    fn random_text() -> Self {
-        Self::random_from(Some(TEXT))
+    /// `len` characters drawn from [`TEXT`], so the canary can stand in a `String` (32 of them carry
+    /// 192 random bits).
+    fn random_text(len: usize) -> Self {
+        Self::random_from(Some(TEXT), len)
     }
 
     /// Whether every canary byte is one of [`TEXT`] (the pattern was drawn by [`Self::random_text`]).
     fn is_text(&self) -> bool {
-        (0..CANARY_LEN).all(|at| TEXT.contains(&self.byte(at)))
+        (0..self.len).all(|at| TEXT.contains(&self.byte(at)))
     }
 
     /// One plaintext byte, unmasked on the way out so no whole copy is made.
@@ -123,26 +157,32 @@ impl Pattern {
         seen ^ self.mask[at] == self.masked[at]
     }
 
-    /// Filler, the canary at [`OFFSET`], filler: written into `out` (a [`PAYLOAD_LEN`] block).
-    fn fill(&self, out: &mut [u8]) {
+    /// Filler, the pattern at `layout`'s offset, filler: written into `out` (a payload-sized block).
+    fn fill(&self, out: &mut [u8], layout: Layout) {
         out.fill(FILLER);
-        for (at, slot) in out[OFFSET..OFFSET + CANARY_LEN].iter_mut().enumerate() {
+        for (at, slot) in out[layout.offset..layout.offset + self.len]
+            .iter_mut()
+            .enumerate()
+        {
             *slot = self.byte(at);
         }
     }
 
     /// A payload in a [`SecureVec`] staging buffer.
-    fn payload(&self) -> SecureVec {
-        let mut out = SecureVec::zeroed(PAYLOAD_LEN);
-        self.fill(&mut out);
+    fn payload(&self, layout: Layout) -> SecureVec {
+        let mut out = SecureVec::zeroed(layout.payload);
+        self.fill(&mut out, layout);
         out
     }
 
-    /// A text payload (filler [`TEXT_FILLER`], the canary at [`OFFSET`]) in a [`SecureString`] staging
-    /// string. The pattern must be a text one ([`Self::random_text`]).
-    fn text_payload(&self) -> SecureString {
-        let mut out = vec![TEXT_FILLER; PAYLOAD_LEN];
-        for (at, slot) in out[OFFSET..OFFSET + CANARY_LEN].iter_mut().enumerate() {
+    /// A text payload (filler [`TEXT_FILLER`], the canary at `layout`'s offset) in a
+    /// [`SecureString`] staging string. The pattern must be a text one ([`Self::random_text`]).
+    fn text_payload(&self, layout: Layout) -> SecureString {
+        let mut out = vec![TEXT_FILLER; layout.payload];
+        for (at, slot) in out[layout.offset..layout.offset + self.len]
+            .iter_mut()
+            .enumerate()
+        {
             *slot = self.byte(at);
         }
         // ASCII throughout (checked by the caller), so this keeps the same block: no copy is made.
@@ -150,9 +190,9 @@ impl Pattern {
     }
 
     /// A payload in a plain block, made in place (no staging copy that could take a freed block).
-    fn block(&self) -> Vec<u8> {
-        let mut out = vec![0_u8; PAYLOAD_LEN];
-        self.fill(&mut out);
+    fn block(&self, layout: Layout) -> Vec<u8> {
+        let mut out = vec![0_u8; layout.payload];
+        self.fill(&mut out, layout);
         out
     }
 }
@@ -178,6 +218,8 @@ fn fill_random(out: &mut [u8]) {
 /// One wipe proof: a canary, a live sentinel, a positive control and the scanner that looks for them.
 pub struct WipeProof {
     canary: Pattern,
+    /// The payload size and canary offset every block of this proof uses.
+    layout: Layout,
     sentinel: Pattern,
     control: Pattern,
     /// The live sentinel block; it stays alive until the scan has read memory.
@@ -206,14 +248,24 @@ impl WipeProof {
     /// (unwiped) control.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_canary(Pattern::random())
+        Self::with_canary(Pattern::random(CANARY_LEN), LONG)
     }
 
     /// As [`Self::new`], with a text canary (32 characters of 64 ASCII ones), for code that holds
     /// the secret as a `String`: plant it with [`Self::text_payload`].
     #[must_use]
     pub fn text() -> Self {
-        Self::with_canary(Pattern::random_text())
+        Self::with_canary(Pattern::random_text(CANARY_LEN), LONG)
+    }
+
+    /// As [`Self::text`], short: a [`SHORT_CANARY_LEN`]-character canary in a
+    /// [`SHORT_PAYLOAD_LEN`]-byte payload (two filler bytes each side), so a small-string type
+    /// would store it inline. Its sentinel and positive control are blocks of the same size, so the
+    /// control shows that a dropped, unwiped [`SHORT_PAYLOAD_LEN`]-byte block is found. Plant it
+    /// with [`Self::text_payload`].
+    #[must_use]
+    pub fn short_text() -> Self {
+        Self::with_canary(Pattern::random_text(SHORT_CANARY_LEN), SHORT)
     }
 
     /// An ASCII alphanumeric canary, unchanged by URL/form encoding, using the same masked scanner and
@@ -221,19 +273,20 @@ impl WipeProof {
     /// [`Self::payload`] still has binary filler and is not a UTF-8 payload.
     #[must_use]
     pub fn new_text() -> Self {
-        Self::with_canary(Pattern::random_from(Some(ALPHANUMERIC)))
+        Self::with_canary(Pattern::random_from(Some(ALPHANUMERIC), CANARY_LEN), LONG)
     }
 
-    fn with_canary(canary: Pattern) -> Self {
-        let sentinel = Pattern::random();
-        let control = Pattern::random();
+    fn with_canary(canary: Pattern, layout: Layout) -> Self {
+        let sentinel = Pattern::random(canary.len);
+        let control = Pattern::random(canary.len);
         // First, so the scan never allocates after a block it must read is freed.
         #[cfg(target_os = "linux")]
         let scanner = linux::Scanner::open();
-        let live = sentinel.block();
-        let unwiped = control.block();
+        let live = sentinel.block(layout);
+        let unwiped = control.block(layout);
         Self {
             canary,
+            layout,
             sentinel,
             control,
             live,
@@ -247,22 +300,24 @@ impl WipeProof {
     /// [`OFFSET`]). It is [`SecureVec`]: drop it before [`Self::assert_absent`].
     #[must_use]
     pub fn payload(&self) -> SecureVec {
-        self.canary.payload()
+        self.canary.payload(self.layout)
     }
 
     /// A staging string holding the text canary (a [`PAYLOAD_LEN`]-byte ASCII payload, the canary at
-    /// [`OFFSET`]). It is [`SecureString`]: clone the text into the code under test and drop this
-    /// before [`Self::assert_absent`].
+    /// [`OFFSET`]; for [`Self::short_text`], [`SHORT_PAYLOAD_LEN`] bytes, the canary at
+    /// [`SHORT_OFFSET`]). It is [`SecureString`]: clone the text into the code under test and drop
+    /// this before [`Self::assert_absent`].
     ///
     /// # Panics
-    /// If the canary contains non-text bytes; use [`Self::text`] or [`Self::new_text`].
+    /// If the canary contains non-text bytes; use [`Self::text`], [`Self::short_text`] or
+    /// [`Self::new_text`].
     #[must_use]
     pub fn text_payload(&self) -> SecureString {
         assert!(
             self.canary.is_text(),
             "a text payload needs a proof made by WipeProof::text()"
         );
-        self.canary.text_payload()
+        self.canary.text_payload(self.layout)
     }
 
     /// Scan now, while the code under test must still own its copy of the canary (a pending future,
@@ -300,13 +355,14 @@ impl WipeProof {
         }
     }
 
-    /// Write the canary into `out` (which must be [`CANARY_LEN`] bytes), for code that takes the
-    /// secret as a slice.
+    /// Write the canary into `out` (which must be the canary's length: [`CANARY_LEN`] bytes, or
+    /// [`SHORT_CANARY_LEN`] for [`Self::short_text`]), for code that takes the secret as a slice.
     ///
     /// # Panics
-    /// If `out` is not [`CANARY_LEN`] bytes.
+    /// If `out` is not the canary's length.
     pub fn write_canary(&self, out: &mut [u8]) {
-        assert_eq!(out.len(), CANARY_LEN, "a canary is {CANARY_LEN} bytes");
+        let len = self.canary.len;
+        assert_eq!(out.len(), len, "a canary is {len} bytes");
         for (at, slot) in out.iter_mut().enumerate() {
             *slot = self.canary.byte(at);
         }
@@ -342,6 +398,7 @@ impl WipeProof {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = (
+                &self.layout,
                 &self.sentinel,
                 &self.control,
                 &self.canary,
@@ -372,6 +429,7 @@ impl WipeProof {
     fn scan(self, what: &str) -> [usize; 3] {
         let Self {
             canary,
+            layout: _,
             sentinel,
             control,
             live,
@@ -390,7 +448,7 @@ impl WipeProof {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{Pattern, CANARY_LEN, WINDOW};
+    use super::{Pattern, WINDOW};
     use std::fs::File;
     use std::io::{self, Read, Seek};
     use std::os::unix::fs::FileExt;
@@ -451,7 +509,7 @@ mod linux {
             let own = buf_low.saturating_sub(WINDOW as u64 - 1)..buf_low + self.buf.len() as u64;
             let mut tables = [[false; 256]; 3];
             for (pattern, starts) in patterns.iter().zip(&mut tables) {
-                for at in 0..=CANARY_LEN - WINDOW {
+                for at in 0..=pattern.len - WINDOW {
                     starts[usize::from(pattern.byte(at))] = true;
                 }
             }
@@ -492,7 +550,7 @@ mod linux {
                             if own.contains(&address) {
                                 continue; // the scan's own read buffer
                             }
-                            for offset in 0..=CANARY_LEN - WINDOW {
+                            for offset in 0..=pattern.len - WINDOW {
                                 if !(0..WINDOW).all(|k| pattern.is(offset + k, buf[place + k])) {
                                     continue;
                                 }

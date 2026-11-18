@@ -11,7 +11,8 @@ use crate::ir::subscribe::SubscribeIntent;
 fn invoke_facts_share_the_request_rather_than_cloning_it() {
     let req = Arc::new(InvokeReq {
         tool: "search".to_string(),
-        arguments: serde_json::json!({"q": "hello"}),
+        arguments: crate::secret_json::SecretJson::from_public(&crate::json::json!({"q": "hello"}))
+            .expect("a public fixture"),
         extra: Default::default(),
     });
     let arguments_ptr = std::ptr::addr_of!(req.arguments);

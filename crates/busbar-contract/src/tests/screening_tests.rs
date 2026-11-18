@@ -5,8 +5,8 @@
 
 use super::*;
 
-fn payload() -> serde_json::Value {
-    serde_json::json!({"query": "a tool call argument object", "rows": [1, 2, 3, 4, 5]})
+fn payload() -> crate::json::Value {
+    crate::json::json!({"query": "a tool call argument object", "rows": [1, 2, 3, 4, 5]})
 }
 
 /// A `Data` item renders its payload EVERY time it is asked for its screenable text — that is the
@@ -17,7 +17,7 @@ fn asking_a_data_item_for_its_text_renders_the_payload_every_time() {
         author: "assistant",
         slot: Slot::ToolArgs(0),
         label: "args",
-        value: &value,
+        value: DataRef::Tree(&value),
     };
     let _ = take_data_renders();
     for _ in 0..7 {
@@ -44,7 +44,7 @@ fn a_screening_pass_renders_each_data_payload_exactly_once() {
             author: "assistant",
             slot: Slot::ToolArgs(0),
             label: "args",
-            value: &value,
+            value: DataRef::Tree(&value),
         },
     ];
 
@@ -82,7 +82,7 @@ fn the_memo_answers_exactly_what_the_item_answers() {
             author: "assistant",
             slot: Slot::ToolArgs(0),
             label: "args",
-            value: &value,
+            value: DataRef::Tree(&value),
         },
         ContentItem::Opaque {
             author: "assistant",
@@ -122,7 +122,7 @@ fn selecting_a_subset_carries_the_rendered_text_across() {
             author: "assistant",
             slot: Slot::ToolArgs(0),
             label: "args",
-            value: &value,
+            value: DataRef::Tree(&value),
         },
         ContentItem::Text {
             author: "user",

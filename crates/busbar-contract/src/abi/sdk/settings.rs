@@ -25,7 +25,8 @@ pub fn dealt_section(settings: &[u8], verb: &str) -> Result<Option<serde_json::V
     if settings.is_empty() {
         return Ok(None);
     }
-    let value = crate::json_grammar::parse_typed_value(settings).map_err(|e| e.to_string())?;
+    let value =
+        crate::abi::sdk::typed_json::parse_typed_value(settings).map_err(|e| e.to_string())?;
     let serde_json::Value::Object(mut verbs) = value else {
         return Err(NOT_A_MAP.to_string());
     };
@@ -136,7 +137,7 @@ pub(crate) fn empty_admin_json() -> AdminJson {
 /// `settings: not valid JSON: <serde's words>`.
 pub(crate) fn configure_settings(bytes: &[u8]) -> Result<JsonValue, Refusal> {
     let bytes = if bytes.is_empty() { &b"{}"[..] } else { bytes };
-    crate::json_grammar::parse_typed_value_wiping(bytes)
+    crate::abi::sdk::typed_json::parse_typed_value_wiping(bytes)
         .map(JsonValue)
         .map_err(|e| Refusal::failed(format!("settings: not valid JSON: {e}")))
 }

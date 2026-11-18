@@ -154,7 +154,7 @@ pub fn settings_object(
 /// typed settings field reads it: `-0` is no integer.
 pub fn settings_value(bytes: &[u8]) -> Result<serde_json::Value, Refusal> {
     let bytes = if bytes.is_empty() { b"{}" } else { bytes };
-    crate::json_grammar::parse_typed_value(bytes)
+    crate::abi::sdk::typed_json::parse_typed_value(bytes)
         .map_err(|e| Refusal::failed(format!("settings: {e}")))
 }
 
