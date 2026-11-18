@@ -41,7 +41,6 @@ crates/busbar/src/tests/kernel_application/misc_router_door.rs                  
 crates/plugin-loader/src/auth_door.rs                                                      # W3-D-CONTRACT
 crates/plugin-loader/src/boot.rs                                                           # W3-D-CONTRACT
 crates/plugin-loader/src/cold/export_door.rs                                               # W3-D-CONTRACT
-crates/plugin-loader/src/cold/store_v4.rs                                                  # W3-D-CONTRACT
 crates/plugin-loader/src/export_door.rs                                                    # W3-D-CONTRACT
 crates/plugin-loader/src/integer_token.rs                                                  # W3-D-CONTRACT
 crates/plugin-loader/src/observe.rs                                                        # W3-D-CONTRACT
@@ -50,7 +49,6 @@ crates/plugin-loader/src/settings_schema.rs                                     
 crates/plugin-loader/src/tests/auth_door_tests.rs                                          # W3-D-CONTRACT
 crates/plugin-loader/tests/fixtures/hook_door_plugin.rs                                    # W3-D-CONTRACT
 dist/default/tests/traces_stream_both_doors.rs                                             # W3-D-CONTRACT
-tools/plugin-bench/                                                                        # W3-D-CONTRACT
 
 # W3-D-LOADER: the old dispatch and the loader modules it alone references.
 crates/plugin-loader/src/dispatch/                                                         # W3-D-LOADER
@@ -64,26 +62,17 @@ crates/busbar-contract/src/conn/inbound.rs                                      
 crates/busbar-contract/src/export_calls/opening.rs                                         # D
 crates/busbar-contract/src/hook_wire/reply.rs                                              # D
 crates/busbar-contract/src/hooks.rs                                                        # D
-crates/busbar-contract/src/ir/facts.rs                                                     # D
 crates/busbar-contract/src/ir/invoke.rs                                                    # D
-crates/busbar-contract/src/ir/mod.rs                                                       # D
 crates/busbar-contract/src/ir/subscribe.rs                                                 # D
-crates/busbar-contract/src/ir/tests/neutral_handles.rs                                     # D
-crates/busbar-contract/src/ir/tests/shape_custody_tests.rs                                 # D
-crates/busbar-contract/src/ir/tests/source_scoped_extra_tests.rs                           # D
-crates/busbar-contract/src/json_grammar.rs                                                 # D
 crates/busbar-contract/src/secret_fields.rs                                                # D
 crates/busbar-contract/src/secret_ref.rs                                                   # D
 crates/busbar-contract/src/secret_ref/context.rs                                           # D
 crates/busbar-contract/src/settings_public.rs                                              # D
 crates/busbar-contract/src/tests/conn_tests.rs                                             # D
 crates/busbar-contract/src/tests/inbound_tests.rs                                          # D
-crates/busbar-contract/src/tests/screening_tests.rs                                        # D
 crates/busbar-contract/src/tests/secret_fields_tests.rs                                    # D
 crates/busbar-contract/src/tests/secret_ref_tests.rs                                       # D
 crates/busbar-contract/src/tests/settings_public_tests.rs                                  # D
-crates/busbar-contract/tests/invoke_request_wipe.rs                                        # D
-crates/busbar-contract/tests/source_rules/secrets.rs                                       # D
 crates/busbar-contract/tests/text_cut_parity.rs                                            # D
 crates/busbar-core-admin/Cargo.toml                                                        # D
 crates/busbar-core-admin/src/admin_state.rs                                                # D
@@ -198,7 +187,6 @@ crates/busbar-kernel/tests/hook_message_cap_1_5_5.rs                            
 crates/busbar-kernel/tests/operator_patch_reference.rs                                     # D
 crates/busbar-kernel/tests/removed_w2g_keys.rs                                             # D
 crates/busbar-kernel/tests/resource_ownership.rs                                           # D
-crates/busbar/build.rs                                                                     # D
 crates/busbar/Cargo.toml                                                                   # D
 crates/busbar/src/root/boot.rs                                                             # D
 crates/busbar/src/root/durability/unit_checkpoint_tests.rs                                 # D
@@ -355,4 +343,3 @@ dist/default/tests/product/registry_cross_plane.rs                              
 dist/default/tests/product/residual_envelope_cross_plane.rs                                # D
 dist/default/tests/provider_key_never_surfaces.rs                                          # D
 testing/oracle/Cargo.toml                                                                  # D
-tools/ci-checks/src/no_serde_json_tests.rs                                                 # D

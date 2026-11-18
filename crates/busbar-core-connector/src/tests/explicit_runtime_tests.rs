@@ -166,11 +166,15 @@ fn explicit_host_open_has_a_real_pending_deadline_on_a_foreign_runtime() {
 
 #[cfg(unix)]
 fn echo_program() -> Program {
-    Program::from_settings(
-        &serde_json::json!({"command": "/bin/cat"}),
-        &Default::default(),
-    )
-    .unwrap()
+    // The program `{"command": "/bin/cat"}` settings read to, written directly: this file names no
+    // serde_json (no-serde-json ratchet, ci/serde-json-w3.allow).
+    Program {
+        command: "/bin/cat".into(),
+        cwd: None,
+        args: Vec::new(),
+        env: Vec::new(),
+        env_refs: Vec::new(),
+    }
 }
 
 #[cfg(windows)]
