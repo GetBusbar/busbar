@@ -1621,7 +1621,7 @@ fn accrue_pending_checked(
     key: PendingKey<'_>,
     add: MeterCounts,
     cap: usize,
-    warn: &CoalesceWarn,
+    coalesced: &Coalesced,
 ) -> Result<(), CountError> {
     add.validate()?;
     if key.get().role != add.pricing.as_ref().map(|pricing| pricing.identity()) {
@@ -1645,45 +1645,38 @@ fn accrue_pending_checked(
         crate::cold::governance::state::mod_overflow_sentinel(&key.common).into();
     pending.entry(sentinel).or_default().try_merge(&add)?;
     metrics::counter!(crate::snapshot::METERING_PENDING_COALESCED_TOTAL).increment(1);
-
-    let noted = warn.note(crate::cold::governance::state::mod_overflow_instant());
-    if let Some(coalesced) = noted {
-        crate::diagnostics::diag_warn!(
-            crate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED,
-            overflow_bucket = key.1,
-            coalesced,
-            "metering accumulator at cap ({cap}); coalesced {coalesced} cell(s) into the per-bucket \
-             overflow sentinel — totals preserved, per-key attribution collapsed until the store \
-             recovers"
-        );
-    }
+    coalesced.note(key.1);
     Ok(())
 }
 
-/// The once-per-window throttle on the overflow-coalescing warning: counts coalesced cells and
-/// releases the count at most once per [`COALESCE_WARN_WINDOW`].
+/// The overflow coalesces not yet reported. The accrual only counts (no clock, no lock of its
+/// own); the metering flusher reports the count from its pass, judged at its own reading, at most
+/// once per [`COALESCE_WARN_WINDOW`] (see [`PendingMetering::report_coalesced`]). If no flusher
+/// runs, nothing is logged; `METERING_PENDING_COALESCED_TOTAL` still counts every coalesce.
 #[derive(Default)]
-pub(crate) struct CoalesceWarn(std::sync::Mutex<(Option<std::time::Instant>, u64)>);
+pub(crate) struct Coalesced {
+    /// Coalesces since the last report.
+    count: std::sync::atomic::AtomicU64,
+    /// The bucket of the latest coalesce, named by the report.
+    bucket: std::sync::atomic::AtomicU64,
+}
 
-pub(crate) const COALESCE_WARN_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
-
-impl CoalesceWarn {
-    fn note(&self, now: std::time::Instant) -> Option<u64> {
-        let mut g = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        g.1 += 1;
-        match g.0 {
-            Some(last) if now.saturating_duration_since(last) < COALESCE_WARN_WINDOW => None,
-            _ => {
-                g.0 = Some(now);
-                Some(std::mem::take(&mut g.1))
-            }
-        }
+impl Coalesced {
+    fn note(&self, bucket: u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.bucket.store(bucket, Relaxed);
+        self.count.fetch_add(1, Relaxed);
     }
 }
 
+pub(crate) const COALESCE_WARN_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
 pub struct PendingMetering {
     shards: Box<[std::sync::Mutex<HashMap<MeterIdentity, MeterCounts>>; GOV_SHARDS]>,
-    coalesce_warn: CoalesceWarn,
+    coalesced: Coalesced,
+    /// The flusher's monotonic reading (nanoseconds) at its last coalesce report. Only the flush
+    /// pass takes this lock; the accrual never does.
+    coalesce_reported: std::sync::Mutex<Option<u64>>,
 
     flight: std::sync::Mutex<std::collections::VecDeque<metering_flush::MeteringWrite>>,
     flush_runner: BudgetFlushRunner,
@@ -1739,7 +1732,8 @@ impl PendingMetering {
             shards: Box::new(std::array::from_fn(|_| {
                 std::sync::Mutex::new(HashMap::new())
             })),
-            coalesce_warn: CoalesceWarn::default(),
+            coalesced: Coalesced::default(),
+            coalesce_reported: std::sync::Mutex::new(None),
             flight: std::sync::Mutex::new(std::collections::VecDeque::new()),
             flush_runner: BudgetFlushRunner::default(),
         }
@@ -1765,7 +1759,7 @@ impl PendingMetering {
             PendingKey::Owned(key.into()),
             add,
             MAX_PENDING_METERING_PER_SHARD,
-            &self.coalesce_warn,
+            &self.coalesced,
         )
     }
 
@@ -1782,7 +1776,7 @@ impl PendingMetering {
                 PendingKey::Probe(probe),
                 add,
                 MAX_PENDING_METERING_PER_SHARD,
-                &self.coalesce_warn,
+                &self.coalesced,
             )
         })
     }
@@ -1806,7 +1800,7 @@ impl PendingMetering {
                 PendingKey::Probe(probe),
                 first,
                 MAX_PENDING_METERING_PER_SHARD,
-                &self.coalesce_warn,
+                &self.coalesced,
             )
         })
     }
@@ -1864,6 +1858,49 @@ impl PendingMetering {
             len += shard.lock().unwrap_or_else(|e| e.into_inner()).len();
         }
         len + self.flight.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+
+    /// Whether any overflow coalesce awaits a report (the flusher reads its clock only then).
+    fn coalesced_unreported(&self) -> bool {
+        self.coalesced
+            .count
+            .load(std::sync::atomic::Ordering::Relaxed)
+            != 0
+    }
+
+    /// The flusher's report of the coalesces counted since its last one, judged at `now_ns` (the
+    /// pass's monotonic reading): one warning carrying the count, at most once per
+    /// [`COALESCE_WARN_WINDOW`]; the final (shutdown) pass reports whatever is left. Returns the
+    /// count reported. Never on the request path.
+    pub(crate) fn report_coalesced(&self, now_ns: u64, last_pass: bool) -> Option<u64> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut reported = self
+            .coalesce_reported
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if !last_pass
+            && reported.is_some_and(|at| {
+                u128::from(now_ns.saturating_sub(at)) < COALESCE_WARN_WINDOW.as_nanos()
+            })
+        {
+            return None;
+        }
+        let coalesced = self.coalesced.count.swap(0, Relaxed);
+        if coalesced == 0 {
+            return None;
+        }
+        *reported = Some(now_ns);
+        drop(reported);
+        let cap = MAX_PENDING_METERING_PER_SHARD;
+        crate::diagnostics::diag_warn!(
+            crate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED,
+            overflow_bucket = self.coalesced.bucket.load(Relaxed),
+            coalesced,
+            "metering accumulator at cap ({cap}); coalesced {coalesced} cell(s) into the per-bucket \
+             overflow sentinel — totals preserved, per-key attribution collapsed until the store \
+             recovers"
+        );
+        Some(coalesced)
     }
 
     #[cfg(test)]
