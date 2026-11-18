@@ -406,8 +406,10 @@ fn process(
     if let Some(process) = PROCESS.get() {
         return Ok(process);
     }
-    let made = busbar_plugin_loader::process::ProcessResources::new()?;
-    Ok(PROCESS.get_or_init(|| std::sync::Arc::new(made)))
+    // The process installs its plugin sinks once (a02080fd43): with nothing installed, the start
+    // stage's one set (`boot::images::process`), never a second.
+    let made = super::boot::images::process()?;
+    Ok(PROCESS.get_or_init(|| made))
 }
 
 /// `lib`'s D_SCHEMA text (None when it declares none), from the loader's describe-only inspection under `policy`

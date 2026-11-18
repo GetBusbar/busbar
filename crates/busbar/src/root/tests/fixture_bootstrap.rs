@@ -11,7 +11,9 @@ use std::sync::OnceLock;
 mod transport;
 
 struct Process {
-    resources: busbar_plugin_loader::process::ProcessResources,
+    /// The process's one loader resources (`boot::images::process`): a process installs its plugin
+    /// sinks once (a02080fd43), so the fixture shares the start stage's set rather than making a second.
+    resources: Arc<busbar_plugin_loader::process::ProcessResources>,
     io: crate::root::boot::process::ProcessIo,
 }
 
@@ -20,7 +22,7 @@ fn process() -> Result<&'static Process, String> {
     PROCESS
         .get_or_init(|| {
             Ok(Process {
-                resources: busbar_plugin_loader::process::ProcessResources::new()?,
+                resources: crate::root::boot::images::process()?,
                 io: crate::root::boot::process::ProcessIo::new()?,
             })
         })
@@ -31,7 +33,7 @@ fn process() -> Result<&'static Process, String> {
 /// The test process's one loader resources, shared by every fixture in it.
 pub(crate) fn resources() -> Result<&'static busbar_plugin_loader::process::ProcessResources, String>
 {
-    process().map(|process| &process.resources)
+    process().map(|process| &*process.resources)
 }
 
 pub(crate) fn grammar(plugins: &PluginsCfg) -> Result<busbar_kernel::config::Grammar, String> {
