@@ -220,15 +220,21 @@ fn recheck_arm(ids: bool) {
         // Every open runs its config-only CHECK first (694764d34e): a 2a/2b check sees None there (§5: "sees
         // `deployment_id()` None in its 2a/2b `check`/`open` and Some in this re-check"), and the re-check sees Some.
         let (none, some) = (Vec::<u8>::new(), ID.to_vec());
-        assert_eq!(probe_saw("dep-2a", "open.deployment"), [none.clone()]);
+        assert_eq!(
+            probe_saw("dep-2a", "open.deployment"),
+            std::slice::from_ref(&none)
+        );
         assert_eq!(
             probe_saw("dep-2a", "check.deployment"),
             [none.clone(), some.clone()]
         );
         let store_saw = store::counts("dep-2b");
-        assert_eq!(store_saw.opens_saw, [none.clone()]);
+        assert_eq!(store_saw.opens_saw, std::slice::from_ref(&none));
         assert_eq!(store_saw.checks_saw, [none, some.clone()]);
-        assert_eq!(probe_saw("dep-2c", "open.deployment"), [some.clone()]);
+        assert_eq!(
+            probe_saw("dep-2c", "open.deployment"),
+            std::slice::from_ref(&some)
+        );
         assert_eq!(
             probe_saw("dep-2c", "check.deployment"),
             [some],
