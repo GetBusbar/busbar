@@ -560,15 +560,15 @@ async fn root_router_errand_reuses_completed_native_admission_without_second_ver
         &tokio::runtime::Handle::current(),
         Arc::new(busbar_core_admin::keys::KeyReplayCache::new()),
     );
-    let mut request = AdminRequest::from_binding(f.binding.clone()).unwrap();
-    request
-        .attach_projection(
-            busbar_kernel::inbound::http_projection::HttpProjection::from_snapshot(Arc::clone(
-                request.snapshot(),
-            ))
-            .unwrap(),
-        )
-        .unwrap();
+    let snapshot = f.binding.snapshot().unwrap();
+    let mut request = AdminRequest::from_binding(
+        f.binding.clone(),
+        Some(
+            busbar_kernel::inbound::http_projection::HttpProjection::from_snapshot(snapshot)
+                .unwrap(),
+        ),
+    )
+    .unwrap();
     request.attach_physical(physical).unwrap();
     let resolved =
         busbar_core_admin::admin_codec::verbs::resolve(request.method(), request.path()).unwrap();

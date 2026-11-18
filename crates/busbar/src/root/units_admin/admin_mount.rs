@@ -826,10 +826,22 @@ pub(crate) fn mount(
                 }
                 drop(bytes);
                 let mut request = match physical.as_ref() {
-                    Some(pending) => match AdminRequest::from_binding(pending.binding().clone()) {
-                        Ok(request) => request,
-                        Err(_) => return http_response(unavailable_answer()),
-                    },
+                    Some(pending) => {
+                        let projection =
+                            match busbar_kernel::inbound::http_projection::HttpProjection::from_parts(
+                                parts,
+                            ) {
+                                Ok(projection) => projection,
+                                Err(_) => return http_response(unavailable_answer()),
+                            };
+                        match AdminRequest::from_binding(
+                            pending.binding().clone(),
+                            Some(projection),
+                        ) {
+                            Ok(request) => request,
+                            Err(_) => return http_response(unavailable_answer()),
+                        }
+                    }
                     None => {
                         let unit = admission.as_ref().map_or_else(
                             || node.next_unit(),
@@ -839,18 +851,6 @@ pub(crate) fn mount(
                     }
                 };
                 request.refusal_carrier = refusal_carrier;
-                if physical.is_some() {
-                    let projection =
-                        match busbar_kernel::inbound::http_projection::HttpProjection::from_parts(
-                            parts,
-                        ) {
-                            Ok(projection) => projection,
-                            Err(_) => return http_response(unavailable_answer()),
-                        };
-                    if request.attach_projection(projection).is_err() {
-                        return http_response(unavailable_answer());
-                    }
-                }
                 let unit = request.unit;
 
                 let exit = ExitPath { unit };
