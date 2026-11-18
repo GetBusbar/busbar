@@ -608,8 +608,8 @@ async fn delayed_cut_keeps_confirm_p99_within_ten_percent() {
     }
     releasing.await.unwrap();
     assert!(matches!(cutting.await.unwrap(), CutProgress::Cut { .. }));
-    without_cut.sort_unstable();
-    with_cut.sort_unstable();
+    without_cut.sort();
+    with_cut.sort();
     let percentile = (SAMPLES * 99).div_ceil(100) - 1;
     let baseline_p99 = without_cut[percentile].as_nanos();
     let delayed_p99 = with_cut[percentile].as_nanos();

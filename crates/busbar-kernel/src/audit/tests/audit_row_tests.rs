@@ -445,7 +445,7 @@ async fn audit_sees_other_node_change_and_asc_restart_safe() {
 #[test]
 fn audit_action_catalogue_closed() {
     let mut sorted = AUDIT_ACTIONS.to_vec();
-    sorted.sort_unstable();
+    sorted.sort();
     sorted.dedup();
     assert_eq!(sorted, AUDIT_ACTIONS.to_vec(), "sorted, no duplicates");
     for action in AUDIT_ACTIONS {

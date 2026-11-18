@@ -91,7 +91,7 @@ impl<K: Calls + ?Sized> Task<'_, K> {
     #[must_use]
     pub fn held_exchanges(&self) -> Vec<u32> {
         let mut held: Vec<u32> = self.held.keys().copied().collect();
-        held.sort_unstable();
+        held.sort();
         held
     }
 

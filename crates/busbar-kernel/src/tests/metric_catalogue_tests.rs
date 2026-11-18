@@ -14,7 +14,7 @@ fn golden_lines() -> String {
     let mut out = String::new();
     for d in rows {
         let mut labels = d.labels.to_vec();
-        labels.sort_unstable();
+        labels.sort();
         out.push_str(&format!(
             "{} {} [{}] {} {}\n",
             d.name,
@@ -174,7 +174,7 @@ fn the_plane_carried_series_are_the_catalogue_rows_with_their_labels() {
         assert_eq!(carries(d.name, d.labels), Ok(()), "{}", d.name);
     }
     let mut names: Vec<&str> = carried.iter().map(|(n, _)| *n).collect();
-    names.sort_unstable();
+    names.sort();
     assert_eq!(
         names,
         [

@@ -86,7 +86,7 @@ fn two_providers_of_two_dialects_get_two_implicit_bindings() {
     let (rows, styles) = (rows(), styles());
     let got = bind_providers(&plan(&members, &providers, &rows, &styles, &[])).unwrap();
     let mut names: Vec<_> = got.implicit.iter().map(|i| (&*i.name, &*i.style)).collect();
-    names.sort_unstable();
+    names.sort();
     assert_eq!(
         names,
         [
@@ -124,7 +124,7 @@ fn differing_rows_for_one_provider_dialect_name_by_the_first_plane() {
     let members = [a, b];
     let got = bind_providers(&plan(&members, &providers, &rows, &styles, &[])).unwrap();
     let mut names: Vec<_> = got.implicit.iter().map(|i| i.name.to_string()).collect();
-    names.sort_unstable();
+    names.sort();
     assert_eq!(names, ["p-openai-llm1-outbound", "p-openai-st1-outbound"]);
 }
 

@@ -137,7 +137,7 @@ fn nanos(start: Instant) -> u64 {
 }
 
 fn percentiles(mut samples: Vec<u64>) -> (u64, u64) {
-    samples.sort_unstable();
+    samples.sort();
     let at = |q: usize| samples.get(samples.len() * q / 100).copied().unwrap_or(0);
     (at(50), at(99))
 }

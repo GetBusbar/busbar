@@ -495,7 +495,7 @@ pub(super) fn run(
         );
     }
     let mut classes: Vec<&str> = port.usage_classes().iter().map(|u| &*u.class).collect();
-    classes.sort_unstable();
+    classes.sort();
     let declared = classes.len();
     classes.dedup();
     assert_eq!(
