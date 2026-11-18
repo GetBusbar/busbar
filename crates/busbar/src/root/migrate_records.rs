@@ -216,7 +216,13 @@ impl RecordStore for OwnerStore<'_> {
     }
 }
 
-impl records::FormatStore for OwnerStore<'_> {
+impl OwnerStore<'_> {
+    /// THE FINAL PUBLICATION: apply `c` (the last step's zero-payload completion: exact on the
+    /// manifest and the cursor, the cursor deleted, its evidence) atomically with the manifest at
+    /// `(format, 0)` under a fresh registrar and the dataset epoch advanced past this owner.
+    ///
+    /// # Errors
+    /// The store's failure (the outcome is then unknown; the next boot reinspects).
     fn finalize(&self, c: Candidate, format: u32) -> Result<Committed, StoreFail> {
         let Some((commit, audits)) = self.store.native(c)? else {
             return Ok(Committed::Conflict);
@@ -261,7 +267,7 @@ pub(crate) async fn evolve(
         };
         let (ns, key) = MigrationOwner::manifest_at();
         let encode = |format: u32, tail: u32| owner.encode_manifest(format, tail);
-        records::evolve_with(
+        let publication = records::evolve_with(
             &store,
             steps,
             records::RECORD_FORMAT,
@@ -275,7 +281,12 @@ pub(crate) async fn evolve(
             },
         )
         .map_err(|refusal| refusal.to_string())?
-        .ok_or_else(|| "VERIFY: a migration owner holds a current manifest".to_owned())
+        .ok_or_else(|| "VERIFY: a migration owner holds a current manifest".to_owned())?;
+        records::published(
+            store.finalize(publication.candidate, publication.format),
+            publication.rows,
+        )
+        .map_err(|refusal| refusal.to_string())
     })
     .await
     .map_err(|error| format!("the record-format step did not finish: {error}"))?

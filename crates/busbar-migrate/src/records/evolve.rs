@@ -16,7 +16,7 @@
 //!   committed and the store's continuation absent; a page shorter than asked is not the end);
 //! - a zero-payload step completion: between steps the manifest moves (f, f+1) → (f+1, f+2) with
 //!   the next step's initial cursor, so a chain never publishes an intermediate tail of zero; the
-//!   last step's completion is the final publication ([`FormatStore::finalize`]): (T, 0) under a
+//!   last step's completion is the final publication (the owner's `finalize`, applied through [`published`]): (T, 0) under a
 //!   fresh registrar and an advanced dataset epoch, the cursor deleted. Each completion carries
 //!   its RECORDS_EVOLVED.
 //!
@@ -27,7 +27,7 @@ use busbar_contract::persistence::cells::{self, Cell};
 use busbar_contract::persistence::NamespaceId;
 use busbar_contract::secure::SecureVec;
 
-use super::{continuation, Audit, Candidate, Committed, FormatStore, Refusal, PAGE};
+use super::{continuation, Audit, Candidate, Committed, RecordStore, Refusal, StoreFail, PAGE};
 
 /// The record format this busbar reads and writes (the kernel manifest's).
 pub const RECORD_FORMAT: u32 = 1;
@@ -209,14 +209,36 @@ impl Held {
 /// the step was not opened, a commit loses its predicates or is fenced (another owner), the cursor
 /// is missing or malformed, or a store page does not progress; STORE when the store refuses a
 /// one-row page or a zero-payload transition; a step's own refusal.
+/// The record-format chain's last commit. The migration owner publishes it.
+#[derive(Debug)]
+pub struct Publication {
+    /// The last step's zero-payload completion: exact on the manifest and the cursor, the cursor
+    /// deleted, its evidence.
+    pub candidate: Candidate,
+    /// The format the manifest is published at, with a zero tail.
+    pub format: u32,
+    /// The rows the whole chain converted.
+    pub rows: u64,
+}
+
+/// How the owner's final publication ended, read exactly as the chain read it.
+///
+/// # Errors
+/// The store's failure (the outcome is then unknown; the next boot reinspects), or the
+/// publication losing its predicates or being refused.
+pub fn published(outcome: Result<Committed, StoreFail>, rows: u64) -> Result<u64, Refusal> {
+    settle(outcome?, "the record-format publication")?;
+    Ok(rows)
+}
+
 #[cold]
 #[inline(never)]
 pub fn evolve_with(
-    store: &dyn FormatStore,
+    store: &dyn RecordStore,
     steps: &[RecordStep],
     current: u32,
     manifest: &Manifest<'_>,
-) -> Result<Option<u64>, Refusal> {
+) -> Result<Option<Publication>, Refusal> {
     let (mut format, tail) = (manifest.format, manifest.migrating_to);
     if format == current && tail == 0 {
         return Ok(None);
@@ -299,8 +321,11 @@ pub fn evolve_with(
             // The final publication: the kernel adds the fresh registrar, the dataset epoch and
             // the Current manifest to this completion, in one transaction (r4 §9).
             c.delete.push((manifest.ns, CURSOR_KEY.to_vec()));
-            settle(store.finalize(c, current)?, "the record-format publication")?;
-            return Ok(Some(total));
+            return Ok(Some(Publication {
+                candidate: c,
+                format: current,
+                rows: total,
+            }));
         }
         let next_step = step_from(format + 1)?;
         let next = Cursor::initial(next_step);
@@ -331,7 +356,7 @@ pub fn evolve_with(
 /// that committed. `Ok(true)` when the namespace is explicitly exhausted: every row of the page
 /// committed and the store's continuation absent.
 fn page(
-    store: &dyn FormatStore,
+    store: &dyn RecordStore,
     manifest: &Manifest<'_>,
     step: &RecordStep,
     ns: NamespaceId,

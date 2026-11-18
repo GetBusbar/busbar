@@ -782,6 +782,11 @@ fn evolve_once(mem: &Mem, steps: &[RecordStep], current: u32) -> Result<Option<u
             encode: &manifest_bytes,
         },
     )
+    .and_then(|publication| {
+        publication
+            .map(|p| published(mem.finalize(p.candidate, p.format), p.rows))
+            .transpose()
+    })
 }
 
 /// (h) The record-format chain: a format-1 store with 9,000 rows is admitted at 2, every row
@@ -1013,7 +1018,8 @@ impl RecordStore for Capped<'_> {
 }
 
 fn evolve_through(
-    store: &dyn FormatStore,
+    store: &dyn RecordStore,
+    finalize: &dyn Fn(Candidate, u32) -> Result<Committed, StoreFail>,
     mem: &Mem,
     steps: &[RecordStep],
     current: u32,
@@ -1032,6 +1038,11 @@ fn evolve_through(
             encode: &manifest_bytes,
         },
     )
+    .and_then(|publication| {
+        publication
+            .map(|p| published(finalize(p.candidate, p.format), p.rows))
+            .transpose()
+    })
 }
 
 fn data_values(mem: &Mem) -> Vec<Vec<u8>> {
@@ -1049,7 +1060,10 @@ fn data_values(mem: &Mem) -> Vec<Vec<u8>> {
 fn record_format_short_page_cannot_publish_current_with_unconverted_rows() {
     let mem = opened_store(9);
     let store = Capped::new(&mem, 2);
-    assert_eq!(evolve_through(&store, &mem, FIXTURE, 2), Ok(Some(9)));
+    assert_eq!(
+        evolve_through(&store, &|c, f| store.finalize(c, f), &mem, FIXTURE, 2),
+        Ok(Some(9))
+    );
     assert_eq!(manifest_of(&mem), manifest_bytes(2, 0));
     assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"2:v"));
     assert_eq!(
@@ -1091,7 +1105,10 @@ fn record_format_chain_never_publishes_intermediate_current() {
     let mem = opened_store(3);
     let mut store = Capped::new(&mem, PAGE);
     store.intermediate = Some(2);
-    assert_eq!(evolve_through(&store, &mem, CHAIN, 3), Ok(Some(6)));
+    assert_eq!(
+        evolve_through(&store, &|c, f| store.finalize(c, f), &mem, CHAIN, 3),
+        Ok(Some(6))
+    );
     assert!(
         !store.published_intermediate.get(),
         "a Current format-2 manifest admits a format-2 runtime during a target-3 migration"
@@ -1217,7 +1234,10 @@ fn the_final_publication_is_not_an_ordinary_commit() {
     let mem = opened_store(5);
     let mut store = Capped::new(&mem, PAGE);
     store.intermediate = Some(2);
-    assert_eq!(evolve_through(&store, &mem, FIXTURE, 2), Ok(Some(5)));
+    assert_eq!(
+        evolve_through(&store, &|c, f| store.finalize(c, f), &mem, FIXTURE, 2),
+        Ok(Some(5))
+    );
     assert!(
         !store.published_intermediate.get(),
         "an ordinary commit published the Current manifest"
@@ -1250,7 +1270,10 @@ fn a_refused_page_halves_to_complete_rows_and_converts_everything() {
         max: 2,
         sizes: RefCell::new(Vec::new()),
     };
-    assert_eq!(evolve_through(&store, &mem, FIXTURE, 2), Ok(Some(9)));
+    assert_eq!(
+        evolve_through(&store, &|c, f| store.finalize(c, f), &mem, FIXTURE, 2),
+        Ok(Some(9))
+    );
     assert!(data_values(&mem).iter().all(|v| v.as_slice() == b"2:v"));
     assert_eq!(manifest_of(&mem), manifest_bytes(2, 0));
     assert_eq!(
@@ -1279,7 +1302,9 @@ fn a_one_row_refusal_stops_after_bounded_halving() {
         sizes: RefCell::new(Vec::new()),
     };
     assert_eq!(
-        evolve_through(&store, &mem, FIXTURE, 2).unwrap_err().word(),
+        evolve_through(&store, &|c, f| store.finalize(c, f), &mem, FIXTURE, 2)
+            .unwrap_err()
+            .word(),
         "STORE"
     );
     assert_eq!(*store.sizes.borrow(), vec![9, 4, 2, 1]);
@@ -1320,7 +1345,7 @@ impl RecordStore for Refusing<'_> {
 }
 
 /// The final publication as the kernel applies it: the completion with the Current manifest.
-impl FormatStore for Mem {
+impl Mem {
     fn finalize(&self, mut c: Candidate, format: u32) -> Result<Committed, StoreFail> {
         c.put.push((
             MANIFEST_NS,
@@ -1331,13 +1356,13 @@ impl FormatStore for Mem {
     }
 }
 
-impl FormatStore for Capped<'_> {
+impl Capped<'_> {
     fn finalize(&self, c: Candidate, format: u32) -> Result<Committed, StoreFail> {
         self.mem.finalize(c, format)
     }
 }
 
-impl FormatStore for Refusing<'_> {
+impl Refusing<'_> {
     fn finalize(&self, c: Candidate, format: u32) -> Result<Committed, StoreFail> {
         self.mem.finalize(c, format)
     }
