@@ -19,11 +19,11 @@ pub struct Refusal {
     /// The field or check that failed ("kind_abi", "layout", "crypto", "manifest.version", ...).
     pub field: &'static str,
     /// The verified stamp name once decoded, else the manifest name if it passes valid_name, else None.
-    pub plugin: Option<String>,
+    pub plugin: Option<Box<str>>,
     pub have: String,
     pub want: String,
     /// https://getbusbar.com/plugins/n/<name>?engine=<x.y.z>&target=<target>, when a name is known.
-    pub link: Option<String>,
+    pub link: Option<Box<str>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,8 +90,8 @@ impl Refusal {
     #[must_use]
     pub fn named(mut self, name: &str) -> Self {
         if crate::sign::valid_name(name) && name.len() <= 64 {
-            self.link = Some(link(name));
-            self.plugin = Some(name.to_string());
+            self.link = Some(link(name).into_boxed_str());
+            self.plugin = Some(Box::from(name));
         }
         self
     }

@@ -148,7 +148,7 @@ impl ImagesBuilder {
         let row = crate::watchdog::ceiling_row(&declared, blocking).map_err(|have| Refusal {
             code: RefusalCode::DescribeInvalid,
             field: "describe.ceiling",
-            plugin: Some(identity.to_owned()),
+            plugin: Some(Box::from(identity)),
             have,
             want: "one CeilingRec per kind method bit 0..=55 or CEIL_OPEN".to_owned(),
             link: None,
@@ -1730,7 +1730,7 @@ fn name_conflict<'a, W: Iterator<Item = &'a str>>(
     let conflict = |field: &'static str, word: &str| Refusal {
         code: RefusalCode::NameConflict,
         field,
-        plugin: Some(identity.to_owned()),
+        plugin: Some(Box::from(identity)),
         have: word.to_owned(),
         want: "a word no other admitted plugin answers to".to_owned(),
         link: None,
@@ -2713,7 +2713,7 @@ pub(crate) fn inspect_checks(
         .map_err(|have| Refusal {
             code: RefusalCode::DescribeInvalid,
             field: "describe.ceiling",
-            plugin: Some(identity.to_owned()),
+            plugin: Some(Box::from(identity)),
             have,
             want: "one CeilingRec per kind method bit 0..=55 or CEIL_OPEN".to_owned(),
             link: None,
