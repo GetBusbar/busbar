@@ -625,6 +625,44 @@ async fn native_identity_publication_keeps_tombstone_revision_across_full_reload
 }
 
 #[tokio::test]
+async fn native_identity_publication_of_an_unchanged_row_shares_it_and_keeps_revision_order() {
+    let (_, store) = setup().await;
+    let core = Arc::new(store);
+    let initial = core.identity().compare_key(None, &key()).await.unwrap();
+    let before = initial.keys[0].clone();
+    let gov = crate::governance::GovState::new_with_core(core.clone(), None, None)
+        .await
+        .unwrap();
+    let mut updated = before.clone();
+    updated.name = "newer confirmed change".into();
+    let newer = core
+        .identity()
+        .compare_key(Some(&before), &updated)
+        .await
+        .unwrap();
+    let newest = Arc::new(newer.keys[0].clone());
+    gov.publish_unchanged_key(newest.clone());
+    let held = gov.lookup_by_sub(&before.id).expect("the row is published");
+    assert!(
+        Arc::ptr_eq(&held, &newest),
+        "the cache holds the shared row itself, not a copy of it"
+    );
+    gov.publish_unchanged_key(Arc::new(before.clone()));
+    assert_eq!(
+        gov.lookup_by_sub(&before.id).unwrap().name,
+        "newer confirmed change",
+        "an older row published the same way cannot replace a newer one"
+    );
+    let tombstone = core.identity().delete_key(&before.id).await.unwrap();
+    gov.publish_identity(tombstone);
+    gov.publish_unchanged_key(newest);
+    assert!(
+        gov.lookup_by_sub(&before.id).is_none(),
+        "a delayed unchanged row cannot resurrect the tombstone"
+    );
+}
+
+#[tokio::test]
 async fn native_identity_publication_cannot_restore_superseded_slot_owner() {
     let (_, store) = setup().await;
     let core = Arc::new(store);
