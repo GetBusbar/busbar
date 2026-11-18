@@ -63,6 +63,10 @@ impl PreparedConfigRead {
     pub fn has_context(&self) -> bool {
         self.context.is_some()
     }
+    /// The root's context for this read, shared (DES-NATIVE-FIRST-PARTY r3 §3.1: trust questions name it).
+    pub fn context_arc(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        self.context.clone()
+    }
 
     /// Bind the actual admission parameters, including runtime-only Store version pins.
     #[must_use]
@@ -704,6 +708,12 @@ impl GrammarField {
             Self::Bound(_, used) | Self::Prepared { used, .. } => Arc::make_mut(used).extend(more),
             Self::Unbound => {}
         }
+    }
+
+    /// The root's context for this field's prepared read, if any: the generation a trust question is about
+    /// (DES-NATIVE-FIRST-PARTY r3 §3.1).
+    pub fn read_context(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        self.prepared().and_then(|read| read.context_arc())
     }
 
     pub fn prepared(&self) -> Option<&Arc<PreparedConfigRead>> {

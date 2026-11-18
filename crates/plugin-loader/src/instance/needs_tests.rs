@@ -64,7 +64,7 @@ fn registry(ids: Arc<crate::process::InstanceIds>, slots: Arc<SlotTable>) -> Reg
             "test-secret",
             &[0; 64],
             &[],
-            true,
+            crate::admit::Signer::Linked,
             Described {
                 kind: KindCode::Secret,
                 methods: 0,

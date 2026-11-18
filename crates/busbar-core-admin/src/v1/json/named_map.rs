@@ -216,6 +216,7 @@ async fn get_one(
             &current.exports,
             &name,
             current.export_defs.get(&name),
+            current.grammar.read_context().as_deref(),
         ) {
             vec![format!("export.{name}")]
         } else {
@@ -675,6 +676,7 @@ async fn apply(
                     &installed.exports,
                     &txn_name,
                     installed.export_defs.get(&txn_name),
+                    installed.grammar.read_context().as_deref(),
                 )
             {
                 vec![format!("export.{txn_name}")]

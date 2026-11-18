@@ -42,6 +42,9 @@ pub(crate) struct PluginSink {
     pub(crate) sink: Arc<dyn ExportCalls>,
 
     pub(crate) scrape: bool,
+    /// The recorder grant this sink opened with (DES-NATIVE-FIRST-PARTY r3 §3.2): `requires_restart` compares a
+    /// candidate's judgement with it, never re-judges the open sink.
+    pub(crate) granted: Option<busbar_contract::export_calls::RecorderRequirements>,
     pub(crate) projection: Projection,
 
     pub(crate) span_record: bool,
