@@ -13,12 +13,16 @@ use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-use busbar_contract::abi::transport::{AcceptIn, AcceptOut, ListenIn, ListenOut, MAX_ADDR};
+use busbar_contract::abi::transport::{AcceptIn, AcceptOut, MAX_ADDR};
 
 use crate::carrier::{text, Carried, Carry, Driven};
 use crate::compose::{Accept, Connection, Failure, Slot, Via};
 use crate::framer::FramerDoor;
 use crate::hostio::HostListener;
+
+/// The room a carrier's `listen`/`accept` answer writes its address text into ([`MAX_ADDR`] bytes), on
+/// the stack.
+pub(crate) const ADDR_CAP: usize = MAX_ADDR as usize;
 
 /// A listener's connection cap when its settings name none (new in 1.6.0).
 pub const DEFAULT_MAX_CONNS: usize = 1024;
@@ -176,55 +180,14 @@ impl std::fmt::Debug for Listening {
     }
 }
 
-fn other(t: String) -> std::io::Error {
+pub(crate) fn other(t: String) -> std::io::Error {
     std::io::Error::other(t)
 }
 
 /// What a carrier's `listen` came to: its listener token, the side its accepts run on, the host's
 pub(crate) type Bound = (u64, Driven, Option<u64>, SocketAddr);
 
-/// The carrier's `listen` on `bind`, the host admitting exactly it: the listener, the host's
-pub(crate) fn listen_through(via: &Via, bind: &str) -> std::io::Result<Bound> {
-    let mut side = Driven::of(via.door.as_ref())
-        .ok_or_else(|| other("the transport is no carrier the host drives".into()))?;
-    // A listener is bound at boot or at a config commit: the host admits its bind once.
-    via.io
-        .admit(side.ticket(), crate::off_path::conns::bind_admission(bind));
-    let mut addr = vec![0_u8; usize::try_from(MAX_ADDR).unwrap_or(256)];
-    let mut i: ListenIn = blank_in();
-    i.bind = busbar_contract::abi::mechanism::call::AbiStr {
-        ptr: bind.as_ptr(),
-        len: bind.len(),
-    };
-    i.addr_buf = addr.as_mut_ptr();
-    i.addr_cap = addr.len();
-    let mut o: ListenOut = blank_out();
-    let c = side.cross(via.door.as_ref(), Carry::Listen(&mut i, &mut o), None);
-    match c {
-        Some(c) if c.outcome == Outcome::Ready => {
-            let (made, _) = via.io.settle(side.ticket());
-            let n = usize::try_from(o.addr_written).unwrap_or(0).min(addr.len());
-            let Ok(local) = String::from_utf8_lossy(&addr[..n]).parse::<SocketAddr>() else {
-                if let Some(h) = made {
-                    via.io.retire_listener(h);
-                }
-                return Err(other("the carrier bound no address".into()));
-            };
-            Ok((o.listener, side, made, local))
-        }
-        failed => {
-            side.cancel(via.door.as_ref());
-            let (made, _) = via.io.settle(side.ticket());
-            if let Some(h) = made {
-                via.io.retire_listener(h);
-            }
-            Err(other(failed.map_or_else(
-                || "a listen may not pend".into(),
-                |c| text(&c),
-            )))
-        }
-    }
-}
+use crate::off_path::lines::listen_through;
 
 impl Listening {
     /// Bind `bind` (`ip:port`) through the carrier `via`, framing every connection through `door`
@@ -427,7 +390,7 @@ pub(crate) fn accept_through(
     side: &mut Driven,
     cx: &mut Context<'_>,
 ) -> Poll<Result<(Got, SocketAddr), String>> {
-    let mut peer = vec![0_u8; usize::try_from(MAX_ADDR).unwrap_or(256)];
+    let mut peer = [0_u8; ADDR_CAP];
     let mut i: AcceptIn = blank_in();
     i.listener = listener;
     i.peer_buf = peer.as_mut_ptr();

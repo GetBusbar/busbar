@@ -7,8 +7,6 @@ pub use crate::off_path::egress::proxy::{from_env, parse_proxy, resolve_config};
 pub use crate::off_path::proxy::connect_request;
 pub use crate::proxy_route::{ProxyChoice, ProxyHop};
 
-use std::ffi::OsString;
-
 /// The raw proxy env, read once — a plain value bag so precedence resolution
 /// ([`resolve_config`]) is a pure function tests exercise WITHOUT mutating process env
 /// (parallel tests race on env mutation).
@@ -24,42 +22,10 @@ pub struct ProxyEnvValues {
     pub no: Option<String>,
 }
 
-const HTTPS_PROXY_KEYS: [&str; 2] = ["HTTPS_PROXY", "https_proxy"];
-const HTTP_PROXY_KEYS: [&str; 2] = ["HTTP_PROXY", "http_proxy"];
-const ALL_PROXY_KEYS: [&str; 2] = ["ALL_PROXY", "all_proxy"];
-const NO_PROXY_KEYS: [&str; 2] = ["NO_PROXY", "no_proxy"];
-
-impl ProxyEnvValues {
-    /// Uppercase read before lowercase, empty values treated as unset — hyper-util
-    pub(crate) fn from_process_env() -> Result<Self, String> {
-        Self::from_lookup(|key| std::env::var_os(key))
-    }
-
-    fn from_lookup(mut lookup: impl FnMut(&str) -> Option<OsString>) -> Result<Self, String> {
-        let mut first = |keys: [&str; 2]| -> Result<Option<String>, String> {
-            for key in keys {
-                let Some(value) = lookup(key) else {
-                    continue;
-                };
-                if value.is_empty() {
-                    continue;
-                }
-                return value
-                    .into_string()
-                    .map(Some)
-                    .map_err(|_| crate::off_path::egress::proxy::not_unicode(key));
-            }
-            Ok(None)
-        };
-        Ok(ProxyEnvValues {
-            https: first(HTTPS_PROXY_KEYS)?,
-
-            http: first(HTTP_PROXY_KEYS)?,
-            all: first(ALL_PROXY_KEYS)?,
-            no: first(NO_PROXY_KEYS)?,
-        })
-    }
-}
+pub(crate) const HTTPS_PROXY_KEYS: [&str; 2] = ["HTTPS_PROXY", "https_proxy"];
+pub(crate) const HTTP_PROXY_KEYS: [&str; 2] = ["HTTP_PROXY", "http_proxy"];
+pub(crate) const ALL_PROXY_KEYS: [&str; 2] = ["ALL_PROXY", "all_proxy"];
+pub(crate) const NO_PROXY_KEYS: [&str; 2] = ["NO_PROXY", "no_proxy"];
 
 /// Hard ceiling on the proxy's CONNECT response head; a real response is one status line + a few
 pub const CONNECT_HEAD_CAP: usize = 8 * 1024;

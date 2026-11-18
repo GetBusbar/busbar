@@ -5,6 +5,8 @@
 
 use super::*;
 
+use busbar_kernel::config::Destinations;
+
 use busbar_contract::abi::host::conn::connector::{
     EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
     EGRESS_PROVIDER,

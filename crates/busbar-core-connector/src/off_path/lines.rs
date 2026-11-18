@@ -127,6 +127,35 @@ pub(crate) fn pool_shards<T: Default>(count: usize) -> std::sync::Arc<[std::sync
         .collect()
 }
 
+// The pools are made once per connector and their posture replaced only by bootstrap recovery or a
+// config commit: off the request path (callers: the connector's construction and its `pooling`
+// builder at boot, `Connector::reconfigure_pools` in recovery and commit).
+impl crate::pool::Pools {
+    /// The pools for `posture`.
+    pub(crate) fn new(posture: crate::pool::PoolPosture) -> Self {
+        Self {
+            posture: std::sync::RwLock::new(posture),
+            shards: pool_shards(crate::pool::shard_count()),
+            epoch: crate::framer::now(),
+            reap_due: std::sync::atomic::AtomicU64::new(u64::MAX),
+            keys: foldhash::fast::RandomState::default(),
+        }
+    }
+
+    /// Bootstrap recovery replaces the posture without replacing the connector or its active
+    pub(crate) fn reconfigure(&self, posture: crate::pool::PoolPosture) {
+        let gone = {
+            let mut applied = self.posture.write().expect("pool posture");
+            *applied = posture;
+            let gone = take_shards(&self.shards);
+            self.reap_due
+                .store(u64::MAX, std::sync::atomic::Ordering::Release);
+            gone
+        };
+        crate::pool::let_go(gone);
+    }
+}
+
 /// Every shard's map taken out, each shard left empty: the pools' posture is replaced only by
 /// bootstrap recovery or a config commit.
 pub(crate) fn take_shards<T: Default>(shards: &[std::sync::Mutex<T>]) -> Vec<T> {
@@ -301,4 +330,60 @@ pub(crate) fn member_spawn_dial(command: &str, alpn: &[Vec<u8>]) -> crate::compo
 pub(crate) fn system_directory_path(wide: &[u16]) -> std::path::PathBuf {
     use std::os::windows::ffi::OsStringExt;
     std::path::PathBuf::from(std::ffi::OsString::from_wide(wide))
+}
+
+// A listener is bound at boot or at a config commit (callers: `Listening::bind` and `Listening::bind_stream`,
+// reached from the connector's inbound-listener open and the root's own binds): off the request path.
+/// The carrier's `listen` on `bind`, the host admitting exactly it: the listener, the host's
+pub(crate) fn listen_through(
+    via: &crate::compose::Via,
+    bind: &str,
+) -> std::io::Result<crate::listen::Bound> {
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+    use busbar_contract::abi::transport::{ListenIn, ListenOut};
+
+    use crate::carrier::{text, Carry, Driven};
+    use crate::listen::{other, ADDR_CAP};
+
+    let mut side = Driven::of(via.door.as_ref())
+        .ok_or_else(|| other("the transport is no carrier the host drives".into()))?;
+    // A listener is bound at boot or at a config commit: the host admits its bind once.
+    via.io
+        .admit(side.ticket(), crate::off_path::conns::bind_admission(bind));
+    let mut addr = [0_u8; ADDR_CAP];
+    let mut i: ListenIn = blank_in();
+    i.bind = busbar_contract::abi::mechanism::call::AbiStr {
+        ptr: bind.as_ptr(),
+        len: bind.len(),
+    };
+    i.addr_buf = addr.as_mut_ptr();
+    i.addr_cap = addr.len();
+    let mut o: ListenOut = blank_out();
+    let c = side.cross(via.door.as_ref(), Carry::Listen(&mut i, &mut o), None);
+    match c {
+        Some(c) if c.outcome == Outcome::Ready => {
+            let (made, _) = via.io.settle(side.ticket());
+            let n = usize::try_from(o.addr_written).unwrap_or(0).min(addr.len());
+            let Ok(local) = String::from_utf8_lossy(&addr[..n]).parse::<std::net::SocketAddr>()
+            else {
+                if let Some(h) = made {
+                    via.io.retire_listener(h);
+                }
+                return Err(other("the carrier bound no address".into()));
+            };
+            Ok((o.listener, side, made, local))
+        }
+        failed => {
+            side.cancel(via.door.as_ref());
+            let (made, _) = via.io.settle(side.ticket());
+            if let Some(h) = made {
+                via.io.retire_listener(h);
+            }
+            Err(other(failed.map_or_else(
+                || "a listen may not pend".into(),
+                |c| text(&c),
+            )))
+        }
+    }
 }

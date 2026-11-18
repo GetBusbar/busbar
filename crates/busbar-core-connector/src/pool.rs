@@ -256,6 +256,23 @@ pub(crate) fn wake_all(wakers: Vec<Waker>) {
     }
 }
 
+/// A flush (rule 6), as [`Pools::reconfigure`] takes the shards' maps out: every idle line closed,
+/// every claimed dial in flight ended with its slot and its followers woken, with no pool lock held.
+pub(crate) fn let_go(gone: Vec<HashMap<PoolKey, Slot>>) {
+    for map in gone {
+        for slot in map.into_values() {
+            for entry in slot.lines {
+                if entry.line.users() == 0 {
+                    entry.line.close();
+                }
+            }
+            if let Some(opening) = slot.opening {
+                wake_all(opening.end());
+            }
+        }
+    }
+}
+
 /// What [`Pools::take`] answers for an open's key (WASTE-EGRESS rule 1).
 pub(crate) enum Take {
     /// A line LENT (its holder counted): an in-use multiplexing one, or a fresh idle one.
@@ -442,15 +459,15 @@ impl Drop for Spent {
 
 /// The pools, one per shard.
 pub(crate) struct Pools {
-    posture: RwLock<PoolPosture>,
+    pub(crate) posture: RwLock<PoolPosture>,
     /// Shared with every claimed dial's [`Leader`], which ends its claim on its own shard.
     pub(crate) shards: Arc<[Shard]>,
     /// The instant the pools were made: what [`Self::reap_due`] counts from.
-    epoch: Instant,
+    pub(crate) epoch: Instant,
     /// When the earliest idle line's time runs out, in nanoseconds since [`Self::epoch`]
     pub(crate) reap_due: AtomicU64,
     /// The process's key hasher: [`Self::keyed`] hashes each key's fields with it once.
-    keys: foldhash::fast::RandomState,
+    pub(crate) keys: foldhash::fast::RandomState,
 }
 
 impl std::fmt::Debug for Pools {
@@ -463,7 +480,7 @@ impl std::fmt::Debug for Pools {
 }
 
 /// 1.5.5's shard count: the machine's parallelism, a power of two, at most 16.
-fn shard_count() -> usize {
+pub(crate) fn shard_count() -> usize {
     std::thread::available_parallelism()
         .map_or(1, std::num::NonZero::get)
         .next_power_of_two()
@@ -471,17 +488,6 @@ fn shard_count() -> usize {
 }
 
 impl Pools {
-    /// The pools for `posture`.
-    pub(crate) fn new(posture: PoolPosture) -> Self {
-        Self {
-            posture: RwLock::new(posture),
-            shards: crate::off_path::lines::pool_shards(shard_count()),
-            epoch: crate::framer::now(),
-            reap_due: AtomicU64::new(u64::MAX),
-            keys: foldhash::fast::RandomState::default(),
-        }
-    }
-
     /// `key` sealed for the pools: its fields hashed once, here, into its `hash`.
     pub(crate) fn keyed(&self, mut key: PoolKey) -> PoolKey {
         key.hash = self.keys.hash_one(Fields(&key));
@@ -498,31 +504,6 @@ impl Pools {
             0
         } else {
             posture.max_idle_per_host.div_ceil(self.shards.len()).max(1)
-        }
-    }
-
-    /// Bootstrap recovery replaces the posture without replacing the connector or its active
-    pub(crate) fn reconfigure(&self, posture: PoolPosture) {
-        let gone = {
-            let mut applied = self.posture.write().expect("pool posture");
-            *applied = posture;
-            let gone = crate::off_path::lines::take_shards(&self.shards);
-            self.reap_due.store(u64::MAX, Ordering::Release);
-            gone
-        };
-        // A flush (rule 6): every claimed dial in flight ends with its slot, and its followers
-        // are woken, with no pool lock held.
-        for map in gone {
-            for slot in map.into_values() {
-                for entry in slot.lines {
-                    if entry.line.users() == 0 {
-                        entry.line.close();
-                    }
-                }
-                if let Some(opening) = slot.opening {
-                    wake_all(opening.end());
-                }
-            }
         }
     }
 

@@ -166,6 +166,59 @@ pub(crate) fn bind_admission(bind: &str) -> Admission {
     Admission::Bind(bind.to_owned())
 }
 
+// An instance's retirement lets go of what it bound and declared, once: off the request path
+// (caller: `DeclaredConns::forget`, which the root calls when an instance is unloaded).
+impl crate::Connector {
+    /// THE INSTANCE IS GONE: its connections close (a member lease among them ends), then every
+    /// listener it bound, need it declared, anchor, registration, reach, auth binding and
+    /// authority or plaintext grant it held is let go.
+    pub(crate) fn retire(&self, owner: InstanceId) {
+        use busbar_contract::conn::Conns as _;
+
+        for conn in self.slab.forget(owner) {
+            let _ = self.close(owner, conn);
+        }
+        self.pools.forget(owner);
+
+        // The listeners it bound are dropped with no lock held.
+        let gone: Vec<Arc<crate::conns::Accepting>> =
+            take_owned(&mut *self.listeners.lock().expect("listeners"), |(o, _)| {
+                *o == owner
+            });
+        drop(gone);
+        let needs = needs_of(&*self.over.lock().expect("needs"), owner);
+        for need in needs {
+            self.set_need(owner, need, None);
+        }
+        forget_owned(
+            &mut *self.declared.lock().expect("declared needs"),
+            |(o, _)| *o == owner,
+        );
+        forget_owned(
+            &mut *self.anchored.lock().expect("anchored"),
+            |(o, _, _)| *o == owner,
+        );
+        self.member_anchored
+            .lock()
+            .expect("member anchored")
+            .forget(owner);
+        forget_owned(
+            &mut *self.registered.lock().expect("registered"),
+            |(o, _, _)| *o == owner,
+        );
+        self.reaching.lock().expect("reaching").forget(owner);
+        self.auths.lock().expect("auths").remove(&owner);
+        self.authority_held
+            .lock()
+            .expect("authority held")
+            .remove(&owner);
+        self.plaintext_owners
+            .lock()
+            .expect("plaintext owners")
+            .remove(&owner);
+    }
+}
+
 /// Take every entry of `map` whose key `owned` names out, as an instance retires.
 pub(crate) fn take_owned<K: Copy + Eq + Hash, V>(
     map: &mut HashMap<K, V>,

@@ -3,6 +3,7 @@
 
 //! THE PROXY ENVIRONMENT, AS THE CONNECTOR HONOURS IT, held to 1.5.5's
 
+use std::ffi::OsString;
 use std::sync::Arc;
 
 use busbar_contract::conn::{ConnError, Conns, NeedId, OpenDesc, Ticket};

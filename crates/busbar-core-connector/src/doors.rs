@@ -17,7 +17,7 @@ use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::transport::slot;
 use busbar_plugin_loader::dispatch::{
-    kinds::transport::Transport as TransportKind, Bind, DispatchConfig, Dispatcher, Frame, InFrame,
+    kinds::transport::Transport as TransportKind, DispatchConfig, Dispatcher, Frame, InFrame,
     OutFrame, Plugin, PluginLogConfig,
 };
 
@@ -66,21 +66,10 @@ pub(crate) fn plugin_logs() -> &'static PluginLogConfig {
     }
 }
 
-/// What a transport door is bound to. The instance label is the transport lane's own; every door
-pub fn bind() -> Bind {
-    bind_on(dispatcher())
-}
-
-/// [`bind`], adopted by `on`: a composition of its own (a root cell's rig) binds its doors on its
-pub fn bind_on(on: &Dispatcher) -> Bind {
-    // A door's binding is made once, when it is bound: off the request path.
-    crate::off_path::egress::doors::bind_as(on, "transport")
-}
-
-/// What a LINKED row's door is bound to: [`bind`], labelled with the row's name (its registry
-pub fn row_bind(row: &str) -> Result<Bind, String> {
-    crate::off_path::egress::doors::row_bind(row)
-}
+// A door is bound once, when it is bound, and a config apply refreshes the opened instances once: both off
+// the request path, so they are built in `off_path` (callers: the root's boot, linked-row loads and config
+// reload).
+pub use crate::off_path::egress::doors::{bind, bind_on, refresh_live, refresh_named, row_bind};
 
 /// One transport door, opened, as the connector reaches it: on the dispatcher it was bound on,
 pub struct Dispatched {
@@ -112,20 +101,6 @@ pub(crate) struct Live {
 
 /// EVERY TRANSPORT INSTANCE THIS PROCESS OPENED and still holds, linked and dropped in alike: what
 pub(crate) static LIVE: Mutex<Vec<Weak<Live>>> = Mutex::new(Vec::new());
-
-/// A CONFIG APPLY, as every opened transport instance takes it (`BUSBAR-1.6.0.md` §11.4, "a plugin
-pub fn refresh_live(settings: &busbar_contract::transport::TransportSettings) -> Vec<String> {
-    refresh_named(settings, |_| true)
-}
-
-/// [`refresh_live`] over the live instances whose name `named` keeps.
-pub fn refresh_named(
-    settings: &busbar_contract::transport::TransportSettings,
-    named: impl Fn(&str) -> bool,
-) -> Vec<String> {
-    // A config apply sweeps the opened instances once: off the request path.
-    crate::off_path::egress::doors::refresh_named(settings, named)
-}
 
 /// The settings blob a door that declares `declared` is opened with: each declared path the
 /// deployment deals, as one compact JSON object with its keys in byte order, written straight
