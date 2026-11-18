@@ -135,8 +135,18 @@ mod fixture {
     use busbar_plugin_abi::host::Host;
     use busbar_plugin_abi::need::{egress, ChainBytes, TrustHandle};
     use busbar_plugin_abi::plugin::{Describe, Endpoints, Open};
-    use busbar_plugin_abi::records::{Reply, Writer};
+    use busbar_plugin_abi::records::{tag, Records, Reply, Writer};
     use busbar_plugin_abi::Secret;
+
+    /// The reference a resolve was asked for: the host port sends it as one CONFIG record (IF 8.2, the
+    /// loader's `encode_reference`); a chain started raw (`start1` below) carries the bytes themselves.
+    fn asked(bytes: &[u8]) -> &[u8] {
+        Records::new(bytes)
+            .next()
+            .and_then(Result::ok)
+            .filter(|rec| rec.tag == tag::CONFIG)
+            .map_or(bytes, |rec| rec.body)
+    }
 
     pub const URL: &str = "https://custody.test/token";
     pub const DEST: &str = "custody.test:443";
@@ -180,7 +190,7 @@ mod fixture {
             _: &'static Host,
             reference: ChainBytes,
         ) -> Result<busbar_plugin_abi::records::Reply, Fail> {
-            if reference.with(|bytes| bytes == b"park") {
+            if reference.with(|bytes| asked(bytes) == b"park") {
                 let scratch = Scratch(SecureVec::from(&b"owned-request"[..]));
                 let request = need::Fetch {
                     method: "POST",
@@ -197,9 +207,9 @@ mod fixture {
                 panic!("the cancellation test must not answer its parked FETCH");
             }
             #[cfg(target_os = "linux")]
-            if reference.with(|bytes| bytes.len() == PAYLOAD_LEN + 1) {
+            if reference.with(|bytes| asked(bytes).len() == PAYLOAD_LEN + 1) {
                 let credential = need::secret(SecretHandle(1)).await?;
-                let mut scratch = reference.with(|bytes| SecureVec::from(bytes));
+                let mut scratch = reference.with(|bytes| SecureVec::from(asked(bytes)));
                 scratch.extend_from_slice(&credential);
                 let request = need::Fetch {
                     method: "POST",
@@ -215,8 +225,8 @@ mod fixture {
                 panic!("the cancellation test must not answer FETCH");
             }
             #[cfg(target_os = "linux")]
-            if reference.with(|bytes| bytes.len() == PAYLOAD_LEN) {
-                let mut scratch = reference.with(|bytes| SecureVec::from(bytes));
+            if reference.with(|bytes| asked(bytes).len() == PAYLOAD_LEN) {
+                let mut scratch = reference.with(|bytes| SecureVec::from(asked(bytes)));
                 scratch.extend_from_slice(&[0; 1024]);
                 let request = need::Fetch {
                     method: "POST",
@@ -232,7 +242,7 @@ mod fixture {
                 panic!("the cancellation test must not answer FETCH");
             }
 
-            if reference.with(|bytes| bytes == b"batch") {
+            if reference.with(|bytes| asked(bytes) == b"batch") {
                 let mut batch = need::Batch::new();
                 batch.secret(SecretHandle(1)).secret(SecretHandle(2));
                 let _ = batch.run().await?;
