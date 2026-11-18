@@ -49,6 +49,7 @@ The thousands digit is the area.
 | [BUSBAR-2055](/docs/1.6/errors/BUSBAR-2055/) | An audit chain is broken after its last valid stamp; the tail is recorded, never sealed | 1.6.0 |
 | [BUSBAR-2056](/docs/1.6/errors/BUSBAR-2056/) | A crashed predecessor on this host was not sealed | 1.6.0 |
 | [BUSBAR-2057](/docs/1.6/errors/BUSBAR-2057/) | Sealing a crashed predecessor is failing and is retried | 1.6.0 |
+| [BUSBAR-2059](/docs/1.6/errors/BUSBAR-2059/) | An amendment record names a class this build does not know | 1.6.0 |
 
 ## 3xxx: Config
 

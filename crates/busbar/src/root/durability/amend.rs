@@ -134,6 +134,19 @@ fn from_record(record: &JournalRecord) -> Option<Amendment> {
     })
 }
 
+/// The class word of an amendment record this build does not know, when that is what stops it
+/// decoding. Such a record is set aside like any other that does not decode (fail closed); this
+/// only lets the finding name the word.
+fn unknown_class(record: &JournalRecord) -> Option<&str> {
+    let mut body = BodyReader::new(&record.body);
+    if body.text()? != AMENDMENT {
+        return None;
+    }
+    let _ = (body.num()?, body.text()?, body.text()?);
+    let word = body.text()?;
+    AmendClass::parse(word).is_none().then_some(word)
+}
+
 fn linked_run(records: &[JournalRecord]) -> (Vec<Amendment>, usize) {
     let (mut run, mut set_aside) = (Vec::<Amendment>::new(), 0);
     for record in records {
@@ -165,12 +178,25 @@ impl Durability {
         if !self.keeps_chain() {
             return Ok(());
         }
-        let (run, set_aside) = match self.chain().await {
-            Ok(Ok(records)) => linked_run(&records),
+        let records = match self.chain().await {
+            Ok(Ok(records)) => records,
 
             Ok(Err(broken)) => return Err(format!("the journal does not verify: {broken}")),
             Err(e) => return Err(self.unreadable(&e)),
         };
+        let unknown: std::collections::BTreeSet<&str> =
+            records.iter().filter_map(unknown_class).collect();
+        for word in unknown {
+            let finding =
+                busbar_kernel::diagnostics::coded::audit_amend_class_unknown(word).to_string();
+            busbar_kernel::diag_error!(
+                busbar_kernel::diagnostics::AUDIT_AMEND_CLASS_UNKNOWN,
+                class = word,
+                "an amendment record names a class this build does not know; it was set aside"
+            );
+            self.restart_findings.push(finding);
+        }
+        let (run, set_aside) = linked_run(&records);
         if set_aside > 0 {
             let finding = format!(
                 "{set_aside} amendment record(s) do not link onto the amendment chain and were set \
