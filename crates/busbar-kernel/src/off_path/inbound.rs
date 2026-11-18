@@ -112,21 +112,6 @@ impl Inbound {
         drop(retired);
     }
 
-    /// Forget every generation of a listener, once, as it is removed.
-    pub fn forget_listener(&self, owner: u64, listener: u64) {
-        let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
-        let mut retired = Vec::new();
-        tables.retain(|(o, l, _), table| {
-            if *o == owner && *l == listener {
-                retired.push(Arc::clone(table));
-                false
-            } else {
-                true
-            }
-        });
-        drop(tables);
-        drop(retired);
-    }
 }
 
 /// A listener's line ids, indexed once when it is installed.
