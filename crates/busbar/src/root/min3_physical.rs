@@ -322,7 +322,6 @@ fn declared_core_auth(
     if !matches!(line.claimant, Claimant::Clean(_))
         || line.upgrade.is_some()
         || !line.route.fields.is_empty()
-        || !matches!(line.auth, LineAuth::None)
         || line.route.path_form
             != if line.route.path.contains('{') {
                 PATH_PATTERN
@@ -351,9 +350,12 @@ fn declared_core_auth(
     if methods != line.route.methods || methods == 0 {
         return Err("native core declaration does not cover the full physical line".into());
     }
-    match auth {
-        Some(class @ (RouteAuth::None | RouteAuth::Admin)) => Ok(class),
-        _ => Err("native core key authorization has no completed class producer".into()),
+    // A keyed core route (`/stats`, a plugin's keyed route) is the one core line the data chain
+    // gates: its completion is `listener_native_corekey`. Every other class's line is open.
+    match (auth, &line.auth) {
+        (Some(class @ (RouteAuth::None | RouteAuth::Admin)), LineAuth::None)
+        | (Some(class @ RouteAuth::Key), LineAuth::Chain(..)) => Ok(class),
+        _ => Err("native core line does not match an actual core route declaration".into()),
     }
 }
 
