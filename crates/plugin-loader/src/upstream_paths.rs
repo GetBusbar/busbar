@@ -46,6 +46,16 @@ fn overlaps(a: &[String], b: &[String]) -> bool {
 }
 
 pub(crate) fn validate(kind: KindCode, items: &[(u16, Vec<u8>)]) -> Result<(), Refusal> {
+    // Core 3.0 retired the generic path numbers (0x004D was the generic D_UPSTREAM_PATH): a retired number
+    // is a fault for ever, so a describe carrying one is refused, never kept unjudged in `items`.
+    if let Some((t, _)) = items.iter().find(|(t, _)| tag::RETIRED.contains(t)) {
+        return Err(Refusal::new(
+            RefusalCode::DescribeInvalid,
+            "describe.upstream_path",
+            format!("retired describe item {t:#06x}"),
+            "the kind's own describe item (plane D_UPSTREAM_PATH 0x4002)",
+        ));
+    }
     let mut upstreams: Vec<Vec<String>> = Vec::new();
     for (_, body) in items
         .iter()
@@ -106,6 +116,33 @@ mod tests {
     use busbar_plugin_abi::records::{tag, MaskRec, Records, Reply, Writer};
     use busbar_plugin_abi::types::KindCode;
 
+    /// The plane's own registration-map item (plane 2.0); the generic 0x004D is retired.
+    const UP: u16 = busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH;
+
+    #[test]
+    fn a_retired_generic_path_number_is_refused_never_kept() {
+        for retired in tag::RETIRED {
+            assert!(
+                decode(KindCode::Plane, &[(retired, "/servers/*")]).is_err(),
+                "{retired:#x}"
+            );
+            assert!(
+                decode(KindCode::Store, &[(retired, "/servers/*")]).is_err(),
+                "{retired:#x}"
+            );
+        }
+        // The old generic registration map pointing at a secret position is refused, not served.
+        assert!(decode(
+            KindCode::Plane,
+            &[
+                (0x004D, "/s~1ervers~0/*"),
+                (tag::D_SECRET_PATH, "/s~1ervers~0/*/auth/secret")
+            ]
+        )
+        .is_err());
+        assert!(decode(KindCode::Plane, &[(0x004D, "/*")]).is_err());
+    }
+
     fn decode(
         kind: KindCode,
         paths: &[(u16, &str)],
@@ -139,25 +176,22 @@ mod tests {
             "/s~/*",
             "/s/*/*",
         ] {
-            assert!(
-                decode(KindCode::Plane, &[(0x004D, path)]).is_err(),
-                "{path}"
-            );
+            assert!(decode(KindCode::Plane, &[(UP, path)]).is_err(), "{path}");
         }
-        assert!(decode(KindCode::Store, &[(0x004D, "/*")]).is_err());
+        assert!(decode(KindCode::Store, &[(UP, "/*")]).is_err());
         assert!(decode(
             KindCode::Plane,
             &[
-                (0x004D, "/a/*"),
-                (0x004D, "/b/*"),
-                (0x004D, "/c/*"),
-                (0x004D, "/d/*"),
-                (0x004D, "/e/*")
+                (UP, "/a/*"),
+                (UP, "/b/*"),
+                (UP, "/c/*"),
+                (UP, "/d/*"),
+                (UP, "/e/*")
             ]
         )
         .is_err());
         for other in ["/a/*", "/a/*/nested/*", "/a/specific/nested/*"] {
-            assert!(decode(KindCode::Plane, &[(0x004D, "/a/*"), (0x004D, other)]).is_err());
+            assert!(decode(KindCode::Plane, &[(UP, "/a/*"), (UP, other)]).is_err());
         }
     }
 
@@ -180,13 +214,13 @@ mod tests {
                 "/servers/*/*",
             ] {
                 assert!(
-                    decode(KindCode::Plane, &[(0x004D, "/servers/*"), (tag, path)]).is_err(),
+                    decode(KindCode::Plane, &[(UP, "/servers/*"), (tag, path)]).is_err(),
                     "{tag:x} {path}"
                 );
             }
             assert!(decode(
                 KindCode::Plane,
-                &[(0x004D, "/servers/*"), (tag, "/servers/*/custom_headers/*")]
+                &[(UP, "/servers/*"), (tag, "/servers/*/custom_headers/*")]
             )
             .is_ok());
         }
@@ -194,20 +228,20 @@ mod tests {
 
     #[test]
     fn escaped_tokens_and_root_map_are_supported() {
-        assert!(decode(KindCode::Plane, &[(0x004D, "/*")]).is_ok());
+        assert!(decode(KindCode::Plane, &[(UP, "/*")]).is_ok());
         assert!(decode(
             KindCode::Plane,
             &[
-                (0x004D, "/s~1ervers~0/*"),
+                (UP, "/s~1ervers~0/*"),
                 (tag::D_SECRET_PATH, "/s~1ervers~0/*/auth/secret")
             ]
         )
         .is_err());
-        let described = decode(KindCode::Plane, &[(0x004D, "/s~1ervers~0/*")]).unwrap();
+        let described = decode(KindCode::Plane, &[(UP, "/s~1ervers~0/*")]).unwrap();
         assert!(described
             .items
             .iter()
-            .any(|(tag, bytes)| *tag == 0x004D && bytes == b"/s~1ervers~0/*"));
+            .any(|(tag, bytes)| *tag == UP && bytes == b"/s~1ervers~0/*"));
         assert_eq!(
             described
                 .paths(busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH)

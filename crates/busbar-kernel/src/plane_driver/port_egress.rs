@@ -519,8 +519,7 @@ impl<F: FarEnd + Send> Members for WalkMembers<'_, '_, F> {
                     };
                     // A member whose lane the request's rate card cannot price is never dialled:
                     // the call is refused before it is served, never served as free (#42).
-                    if s
-                        .pending
+                    if s.pending
                         .as_ref()
                         .is_some_and(|pending| pending.lane_unpriced(money_lane(&candidate)))
                     {
