@@ -192,7 +192,6 @@ impl NativeDataRoute {
     ) -> Result<(RouteRecord, Admission), NotMounted> {
         let record = &mounted.record;
         let offered = Offered {
-            chain_yields_shared: chain.admits_anonymous(),
             challenge_unresolved: record.mounted_challenge(seat.public_url()).is_err(),
             ..offered
         };
@@ -202,21 +201,19 @@ impl NativeDataRoute {
 
     /// How the listener plan mounts `mounted` on `seat`: the one decision the plan makes about a
     /// declared route. `chain_reads_its_credential`: some configured instance reads the route's
-    /// credential (its own header's readers, else the data chain). `chain_admits_anonymous`: that
-    /// chain names the built-in member `anonymous`. Every route is mounted by its admission or left unmounted for a
+    /// credential (its own header's readers, else the data chain).
+    /// Every route is mounted by its admission or left unmounted for a
     /// reason that is the operator's configuration, logged once and listed by the admin API.
     pub fn planned(
         seat: &PortSeat,
         mounted: &Mounted,
         chain_reads_its_credential: bool,
-        chain_admits_anonymous: bool,
         upgrade_transport: bool,
         signature_verifier: bool,
     ) -> Planned {
         let record = &mounted.record;
         let offered = Offered {
             verifier_reads_header: chain_reads_its_credential,
-            chain_yields_shared: chain_admits_anonymous,
             upgrade_transport,
             signature_verifier,
             // Core's ticket store is open exactly where the boot gave the instance a desk.
