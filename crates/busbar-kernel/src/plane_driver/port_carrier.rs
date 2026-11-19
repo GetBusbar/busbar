@@ -458,6 +458,10 @@ impl CarrierSession {
                     Self::apply(task, answer, ran, resolver, effects, books).await?;
                 }
             }
+            // The unit reached its spend ceiling: a held session that has not finished ends here.
+            if !ran.finished {
+                super::port_session::within_budget(effects)?;
+            }
         }
     }
 }
