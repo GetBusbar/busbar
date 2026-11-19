@@ -16,7 +16,6 @@ const SRC: &str = "crates/busbar-kernel/src/";
 const LEFT_OUT_DIRS: &[&str] = &["crates/busbar-kernel/src/config/tests/"];
 
 const HANDOFF: &str = "W3-D-CONTRACT handoff (WBS rule 13)";
-const HOST_VIEW: &str = "implements PlaneCalls over raw ABI arguments (reads lent strings, writes the arena, units and records buffers): needs the HostView row (design 3.3, not built)";
 
 /// Files not in R131's path list, relative to the repository root, each with why.
 const LEFT_OUT: &[(&str, &str)] = &[
@@ -28,18 +27,7 @@ const LEFT_OUT: &[(&str, &str)] = &[
     ("crates/busbar-kernel/src/tests/trust_ordering_tests.rs", HANDOFF),
     ("crates/busbar-kernel/src/tests/trust_sight_ordering_tests.rs", HANDOFF),
     ("crates/busbar-kernel/src/host_work/tests/host_work_tests.rs", HANDOFF),
-    ("crates/busbar-kernel/src/plane_driver/tests/plane_driver_tests.rs", HANDOFF),
     // Rows not built.
-    (
-        "crates/busbar-kernel/src/tests/host_disk_export_tests.rs",
-        "crosses an ExportInstance's raw door with dispatch::Frame, Plugin::call/call_inline and inline tickets, and forwards ops through a hand-built Door to strip the #85 envelope: needs an Export instance-level crossing row, and a Mutant/Recorder row that rewrites an op's envelope (not built)",
-    ),
-    ("crates/busbar-kernel/src/plane_driver/tests/probe_unit_tests.rs", HOST_VIEW),
-    ("crates/busbar-kernel/src/plane_driver/tests/serve_tests.rs", HOST_VIEW),
-    (
-        "crates/busbar-kernel/src/plane_driver/tests/route_tests.rs",
-        "reads the head fields a piece frame lends through raw pointers: needs the HostView getters or a safe FieldList reader (the owning Vec is private to busbar-contract)",
-    ),
     (
         "crates/busbar-kernel/src/plane_driver/tests/retirement_tests.rs",
         "reads the far end's state mutex from inside a 'static effect callback through an AtomicPtr: needs a scoped-borrow probe row (or the far end's state behind an Arc)",
