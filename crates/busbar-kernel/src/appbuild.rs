@@ -1734,6 +1734,14 @@ async fn build_app_native(
         read.check_plugins(&plugins_cfg)?;
     }
     config::security_policy::check_candidate(prior, &cfg, &plugins_cfg)?;
+    // The operator credential is bound at process start: a rebuild that changes it is refused here,
+    // before any of its instances open (only a restart changes it, and boot audits it).
+    if let Some(running) = prior {
+        config::operator_file::operator_credential_unchanged(
+            &cfg.identity_providers,
+            &running.identity_providers,
+        )?;
+    }
     // The operator file-policy reference (§3.6.1): a disk read sets it on the candidate; every
     // other build carries the running generation's unchanged.
     let operator_file_defs = cfg

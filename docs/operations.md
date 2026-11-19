@@ -717,6 +717,8 @@ guarded by `auth.admin_auth` (the operator credential of the configured auth mod
 
 **No default admin credential ships.** Busbar has no built-in or fallback admin token. The `admin-tokens` module is configured with the SHA-256 digest of a token the operator generates, and refuses to open on a malformed digest or the digest of an empty token. The host only ever sees the digest, so it cannot measure the token's length: generate the token from at least 32 random bytes (see the [admin-tokens README](https://github.com/GetBusbar/busbar-auth-admin-tokens#config)) and keep it in an operator secret store.
 
+**The operator credential is bound at process start.** A configuration reload (`POST /config/reload`, and every other rebuild of the running configuration) whose operator credential differs from the running one (the operator-backed `identity-providers` definition, its `settings: {sha256: …}` included), or that removes it, or adds one where the process started with none, is refused as a whole: nothing is changed, the running configuration keeps serving with the credential it started with, the refusal names the definition and says a restart is required, and an `auth.operator.refused` audit row records it. Neither the refusal nor the row carries the credential. To change the operator credential, edit `config.yaml` and restart; the boot audits the credential it accepts (`auth.operator.accepted`).
+
 Minting, listing, rotating, and revoking keys (the routes, request/response shapes, the mint-body
 field reference, and the scope lattice) are owned by the **[Admin API reference](/docs/admin-api/)**.
 The limit/group model those keys charge through is owned by
