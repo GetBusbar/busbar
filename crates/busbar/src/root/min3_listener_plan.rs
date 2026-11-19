@@ -262,14 +262,25 @@ impl Reader<'_> {
 }
 
 /// The opened auth instances, in opening order, that a plane route's chain may be chosen from.
+/// SECURITY: an instance opened only for the admin chain (named in `auth.admin_auth`, not in the
+/// data chain, not named by any route's `auth_instances`) is never one: an operator credential is
+/// never verified on a data or plane route.
 pub(crate) fn route_readers<'a>(
     opened: impl IntoIterator<Item = (&'a str, &'a [Box<str>])>,
-    _data_chain: &[String],
-    _admin_chain: &[String],
-    _explicit: &busbar_kernel::config::min3::RouteAuthInstances,
+    data_chain: &[String],
+    admin_chain: &[String],
+    explicit: &busbar_kernel::config::min3::RouteAuthInstances,
 ) -> Vec<Reader<'a>> {
+    let named = |name: &str, list: &[String]| list.iter().any(|entry| entry == name);
     opened
         .into_iter()
+        .filter(|(name, _)| {
+            !named(name, admin_chain)
+                || named(name, data_chain)
+                || explicit
+                    .values()
+                    .any(|names| names.iter().any(|entry| &**entry == *name))
+        })
         .map(|(name, cred_headers)| Reader { name, cred_headers })
         .collect()
 }
