@@ -132,6 +132,60 @@ struct CandidateView {
     lane: String,
 }
 
+/// The stage's candidate list: one allocation, made when the stage is built and shared by count
+/// with every hook call's worker and every tap that holds it; released with its last holder.
+/// `live` is how many of its members are still candidates (the front of the list).
+#[derive(Clone)]
+struct Candidates {
+    all: Arc<[CandidateView]>,
+    live: usize,
+}
+
+impl Candidates {
+    /// The stage's list, moved into its one shared allocation.
+    fn new(list: Vec<CandidateView>) -> Self {
+        let live = list.len();
+        Self {
+            all: Arc::from(list),
+            live,
+        }
+    }
+
+    /// Keep only the candidates `kept` names, in their order. Nothing is done when every member
+    /// is kept. While the stage is the only holder, the kept members are moved to the front of the
+    /// list in place (the ones passed over stay in the allocation until it is released); with a
+    /// hook call or a tap still holding the list, the kept members are copied into a list of the
+    /// stage's own and the holder keeps the old one.
+    fn keep_only(&mut self, kept: &[usize]) {
+        let keeps = |candidate: &CandidateView| kept.contains(&candidate.facts.idx);
+        if self.iter().all(keeps) {
+            return;
+        }
+        let live = self.live;
+        if let Some(list) = Arc::get_mut(&mut self.all) {
+            let mut front = 0;
+            for at in 0..live {
+                if keeps(&list[at]) {
+                    list.swap(front, at);
+                    front += 1;
+                }
+            }
+            self.live = front;
+            return;
+        }
+        let mut own = Vec::with_capacity(live);
+        own.extend(self.iter().filter(|candidate| keeps(candidate)).cloned());
+        *self = Self::new(own);
+    }
+}
+
+impl std::ops::Deref for Candidates {
+    type Target = [CandidateView];
+    fn deref(&self) -> &[CandidateView] {
+        &self.all[..self.live]
+    }
+}
+
 /// The stage's expected quantity per declared class, written into the stage's own `out` (cleared first).
 fn quantities(
     classes: &[UsageClass],

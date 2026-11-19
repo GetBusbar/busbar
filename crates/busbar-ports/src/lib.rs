@@ -12,7 +12,6 @@
 #![doc(test(attr(forbid(unsafe_code))))]
 
 pub mod auth;
-pub mod clock;
 pub mod export;
 pub mod hook;
 pub mod network;

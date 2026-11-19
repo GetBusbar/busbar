@@ -7,10 +7,6 @@ rust-version = "1.97"
 description = "Host-side plugin port vocabulary and wire codecs"
 license = "Apache-2.0"
 
-[features]
-# The manual clock (`HostClock::manual`), for tests; dev-dependencies only, never a shipped build.
-test-support = []
-
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }

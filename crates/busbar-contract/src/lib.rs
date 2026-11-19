@@ -42,6 +42,7 @@ pub mod billing;
 pub mod bounded;
 pub mod caps;
 pub mod civil;
+pub mod clock;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod codec;
 pub mod config;

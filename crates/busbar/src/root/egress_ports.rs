@@ -15,7 +15,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// How the node's one host clock sleeps: the runtime's timer, until an absolute `Instant` (GROUP-time 3.2).
 /// The root builds the clock with it once: `HostClock::system(tokio_sleep)`.
-pub fn tokio_sleep(at: std::time::Instant) -> busbar_ports::clock::Sleep {
+pub fn tokio_sleep(at: std::time::Instant) -> busbar_contract::clock::Sleep {
     Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(at)))
 }
 

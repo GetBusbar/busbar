@@ -8,7 +8,9 @@ use super::super::hooks::{Constraint, HooksRan, Restrict};
 use super::super::port_serve::Drive;
 use super::super::port_session::{Answer, Calls, ClientSink, Effects, SessionError, Task};
 use super::super::port_upstream::Wants;
-use super::{call, CandidateView, Invocation, Projection, RouteCounters, Selected, Selection};
+use super::{
+    call, CandidateView, Candidates, Invocation, Projection, RouteCounters, Selected, Selection,
+};
 use crate::host_services::InvocationContext;
 use busbar_plugin_abi::kinds::hook::hook as abi;
 use busbar_ports::{plane::PlaneIn, FactVal, PortError};
@@ -22,8 +24,8 @@ pub(crate) use super::super::port_session::Buffered;
 pub(crate) struct Stage {
     selected: Arc<Selected>,
     projection: Projection,
-    candidates: Arc<Vec<CandidateView>>,
-    quantities: Arc<Vec<(Box<str>, f64)>>,
+    candidates: Candidates,
+    quantities: Arc<[(Box<str>, f64)]>,
     scope: Arc<super::super::RoutedScope>,
     dialect: Arc<str>,
     principal: Option<super::super::port_auth::Subject>,
@@ -103,17 +105,6 @@ impl Stage {
                 result.as_ref().ok().map(|reply| &**reply),
             )]);
         });
-    }
-}
-
-/// Keep only the candidates `kept` names. The list is shared with any hook call or tap still
-/// holding it, so it is narrowed in its own copy, and only when a member is really removed.
-fn keep_only(candidates: &mut Arc<Vec<CandidateView>>, kept: &[usize]) {
-    if candidates
-        .iter()
-        .any(|candidate| !kept.contains(&candidate.facts.idx))
-    {
-        Arc::make_mut(candidates).retain(|candidate| kept.contains(&candidate.facts.idx));
     }
 }
 
@@ -254,7 +245,7 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
     let mut stage = Stage {
         selected: Arc::new(selected),
         projection,
-        candidates: Arc::new(candidates),
+        candidates: Candidates::new(candidates),
         quantities: Arc::default(),
         scope: Arc::new(scope),
         dialect: drive.dialect.into(),
@@ -302,13 +293,15 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                 }
             }
         }
-        // The quantities are written once, here, into the stage's own list: no hook call or tap
-        // holds it yet unless a rewrite's timed-out worker still does, and that one keeps its own.
+        // The quantities are worked out once, here, and moved into the stage's one shared list
+        // (a rewrite's timed-out worker that still holds the empty one keeps it).
+        let mut quantities = Vec::with_capacity(invocation.classes.len());
         super::quantities(
             &invocation.classes,
             &stage.projection.expects,
-            Arc::make_mut(&mut stage.quantities),
+            &mut quantities,
         )?;
+        stage.quantities = Arc::from(quantities);
         stage.taps(&stage.selected.taps.request, call::StageFacts::new());
         let input = stage.input(None);
         let gate_results = handle.block_on(futures::future::join_all(
@@ -367,7 +360,7 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
                     .map(|c| (c.facts.idx, c.facts.tags.as_slice())),
             )
             .map_err(|_| unavailable(req.route, drive.refusals))?;
-        keep_only(&mut stage.candidates, &kept);
+        stage.candidates.keep_only(&kept);
         for (called, answer) in &mut judged {
             if matches!(answer.verb, abi::VERB_PREFER | abi::VERB_PRIORITIZE) {
                 apply(
@@ -408,7 +401,7 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
             )
             .map_err(|_| unavailable(req.route, drive.refusals))?;
         if !constraint.restricts.is_empty() {
-            keep_only(&mut stage.candidates, &kept);
+            stage.candidates.keep_only(&kept);
             constraint.keep = Some(kept);
         }
         let ordered = constraint.order.is_some() || constraint.prioritize.is_some();

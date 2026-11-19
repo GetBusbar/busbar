@@ -74,8 +74,8 @@ struct Lent {
     scope: Arc<crate::plane_driver::RoutedScope>,
     dialect: Arc<str>,
     identity: Arc<SecureVec>,
-    candidates: Arc<Vec<CandidateView>>,
-    quantities: Arc<Vec<(Box<str>, f64)>>,
+    candidates: Candidates,
+    quantities: Arc<[(Box<str>, f64)]>,
 }
 impl Lent {
     fn of(
@@ -92,8 +92,8 @@ impl Lent {
             }),
             dialect: Arc::from("test"),
             identity: Arc::new(identity.to_vec().into()),
-            candidates: Arc::new(candidates),
-            quantities: Arc::new(quantities),
+            candidates: Candidates::new(candidates),
+            quantities: Arc::from(quantities),
         }
     }
     fn input<'a>(&'a self, projection: &'a Projection, fixture: &'a Fixture) -> call::Input<'a> {
@@ -330,6 +330,40 @@ fn deferred_answers_keep_latest_expect_and_declared_defaults_without_fabricating
         &mut out,
     )
     .is_err());
+}
+
+/// The stage narrows its candidate list in place while it is the list's only holder, copies the
+/// kept members only when a hook call or a tap still holds the list and a member is really
+/// removed, and leaves the holder's list as it was.
+#[test]
+fn candidates_narrow_in_place_and_copy_only_for_a_live_holder() {
+    let view = |idx| CandidateView {
+        facts: CandidateFacts {
+            idx,
+            ..Default::default()
+        },
+        lane: format!("lane-{idx}"),
+    };
+    let idxs = |list: &Candidates| list.iter().map(|c| c.facts.idx).collect::<Vec<_>>();
+    let mut list = Candidates::new((0..4).map(view).collect());
+    let first = Arc::as_ptr(&list.all);
+    list.keep_only(&[0, 1, 2, 3]);
+    assert_eq!(Arc::as_ptr(&list.all), first);
+    assert_eq!(idxs(&list), [0, 1, 2, 3]);
+    // The only holder: narrowed in place, in the list's order.
+    list.keep_only(&[3, 1]);
+    assert_eq!(Arc::as_ptr(&list.all), first);
+    assert_eq!(idxs(&list), [1, 3]);
+    let held = list.clone();
+    // Held, but nothing removed: no copy.
+    list.keep_only(&[1, 3]);
+    assert_eq!(Arc::as_ptr(&list.all), first);
+    // Held, and a member removed: the stage copies what it keeps; the holder's list is untouched.
+    list.keep_only(&[3]);
+    assert_ne!(Arc::as_ptr(&list.all), first);
+    assert_eq!(idxs(&list), [3]);
+    assert_eq!(idxs(&held), [1, 3]);
+    assert_eq!(Arc::strong_count(&held.all), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

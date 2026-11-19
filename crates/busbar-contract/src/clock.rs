@@ -13,6 +13,10 @@
 //! plugins' host table shares its origin; the plugin boundary is frozen, so it lives here until the
 //! hold lifts, and the host table keeps its own origin meanwhile.
 //!
+//! It lives in the contract, not in `busbar-ports`, because the egress unit (`busbar-kernel-egress`)
+//! holds it and the shipping-edge policy (`ci/deny/default.toml`) does not let that crate depend on
+//! `busbar-ports` (GROUP-time open question 1, the design's answer for "no").
+//!
 //! `HostClock` is one concrete type with two modes: the system clock, and (tests only) a manual
 //! clock the test advances.
 
@@ -20,9 +24,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use busbar_contract::work_count::{self, Work};
+use crate::work_count::{self, Work};
 
-pub use busbar_contract::services::Reading; // { wall_ns: u64, mono_ns: u64 }, unchanged
+pub use crate::services::Reading; // { wall_ns: u64, mono_ns: u64 }, unchanged
 
 mod os {
     //! The engine's one reader of the operating-system clock (GROUP-time 3.2 `host_side::clock`,
@@ -259,7 +263,9 @@ pub fn system_now() -> Reading {
 /// Work that finished before its deadline, with the reading of the wake that finished it.
 #[derive(Debug)]
 pub struct Wake<T> {
+    /// What the work answered.
     pub value: T,
+    /// The reading of the wake that finished it.
     pub at: Reading,
 }
 
@@ -331,6 +337,12 @@ mod manual {
     #[derive(Clone)]
     pub struct Manual {
         state: Arc<Mutex<State>>,
+    }
+
+    impl core::fmt::Debug for Manual {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            f.write_str("Manual")
+        }
     }
 
     struct State {
