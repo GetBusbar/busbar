@@ -615,6 +615,97 @@ async fn a_route_with_no_hook_asks_its_money_once_and_calls_no_hook() {
     );
 }
 
+/// The record host of [`a_native_record_write_waits_for_the_money_and_is_never_made_without_it`]:
+/// each STORE it is asked to make goes into the order, as "store".
+struct Recording(Order);
+impl IntentHost for Recording {
+    fn lookup<'a>(
+        &'a self,
+        scope: Scope,
+        flags: u32,
+        limit: u32,
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Store.lookup(scope, flags, limit, key, looked)
+    }
+    fn store<'a>(
+        &'a self,
+        _: Scope,
+        _: u32,
+        _: u64,
+        _: &'a [u8],
+        _: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        self.0.lock().unwrap().push("store".into());
+        Box::pin(std::future::ready(Ok(())))
+    }
+    fn delete<'a>(&'a self, scope: Scope, key: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Store.delete(scope, key)
+    }
+    fn commit<'a>(
+        &'a self,
+        scope: Scope,
+        ops: &'a [CommitOp<'a>],
+    ) -> BoxFut<'a, Result<CommitOutcome, RecordsDenied>> {
+        Store.commit(scope, ops)
+    }
+    fn work<'a>(
+        &'a self,
+        work: &'a crate::plane_driver::port_intents::WorkIntent<'a>,
+    ) -> BoxFut<'a, WorkOutcome<'a>> {
+        Store.work(work)
+    }
+    fn push<'a>(&'a self, ttl_s: u64, recs: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Store.push(ttl_s, recs)
+    }
+    fn signal(&self, key: &[u8], subject: Option<[u8; 32]>) {
+        Store.signal(key, subject);
+    }
+}
+
+/// A native request's record write (the MCP session record an `initialize` stores) is held by the
+/// pending admission's screen: it is made only once the money admitted the request, so a request
+/// the money refuses never writes. The money is asked first, and the write never follows a refusal.
+#[tokio::test]
+async fn a_native_record_write_waits_for_the_money_and_is_never_made_without_it() {
+    let order = Order::default();
+    let request = request(&order);
+    let plane = Plane {
+        request: vec![It::Store(b"session"), It::Respond(200), It::End],
+        ..Plane::default()
+    };
+    let effects = Admitting {
+        pending: &request.pending,
+        hooks: None,
+    };
+    let host = Recording(Arc::clone(&order));
+    // The verified caller: a caller-scoped write has a scope to be made in.
+    let resolver = Resolver::new(&host, None).with_principal("payer", &[]);
+    let refusals = CoreRefusals::new();
+    let drive: Drive<'_> = Drive {
+        resolver: &resolver,
+        members: None,
+        send: None,
+        dialect: "test",
+        refusals: &refusals,
+        effects: &effects,
+        books: &request.pending,
+        carrier: None,
+    };
+    let result =
+        crate::plane_driver::port_serve::run_session(&plane, &req(), b"{}", drive).await;
+    assert!(
+        matches!(&result, Err(SessionError::AdmissionRefused(refusal)) if refusal.status == 402),
+        "{result:?}"
+    );
+    assert_eq!(
+        ordered(&order),
+        ["money"],
+        "the write waited for the money, and the refused request wrote nothing"
+    );
+}
+
 /// What a refusal's custody was handed: each record's hook, its head, and whether it failed.
 fn kept(records: &HookRecords) -> Vec<(String, busbar_kernel_audit::HookHead, bool)> {
     records

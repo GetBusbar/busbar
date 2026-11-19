@@ -64,6 +64,8 @@ enum It {
     Forward,
     Want(u32, &'static str),
     Lookup(&'static [u8]),
+    /// A STORE in the caller's scope (`LK_CALLER`) of this key.
+    Store(&'static [u8]),
     UpMethod(&'static str),
     UpPath(&'static str),
     UpEnd,
@@ -88,6 +90,12 @@ fn play(items: &[It], sink: &mut dyn FnMut(PlaneOut<'_>)) {
                 flags: 0,
                 limit: 1,
                 key,
+            },
+            It::Store(key) => PlaneOut::Store {
+                flags: busbar_plugin_abi::plane::LK_CALLER,
+                ttl_s: 60,
+                key,
+                value: b"record",
             },
             It::UpMethod(m) => PlaneOut::UpMethod(m),
             It::UpPath(p) => PlaneOut::UpPath(p),
