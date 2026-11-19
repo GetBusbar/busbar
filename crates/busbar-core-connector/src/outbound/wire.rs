@@ -77,6 +77,11 @@ pub(crate) struct Outcome {
     pub(crate) closing: bool,
     /// The answer queued bytes for the socket.
     pub(crate) wrote: bool,
+    /// CREDIT OWED NOW for inbound body bytes of streams the engine has left, as `(stream, bytes)`
+    /// with one entry per stream: `emit(stream, E_CONSUMED)` with `bytes` in the call's `credit`,
+    /// once the answer's own items are acted on. Empty on a session that did not state
+    /// `S_MULTIPLEX` (it is given no credit: the engine stops reading the socket instead).
+    pub(crate) left: smallvec::SmallVec<[(u64, u64); 2]>,
 }
 
 /// What pass one found a part to be.
@@ -276,8 +281,20 @@ impl Wire {
                 }
                 Out::Body { stream, len } => {
                     // A late body piece of a stream the engine has left is not a breach: the stream
-                    // was open once. It is not held, so it is not counted.
+                    // was open once. No reader will take it, so it is not held and stands against
+                    // no window of the engine's. But the far end spent its windows sending it, and a
+                    // multiplexing session reopens a window only by the credit the engine gives
+                    // (`E_CONSUMED`), never on its own. So the engine owes that credit at once, for
+                    // every such byte: credit is given for every inbound body byte, the tail of a
+                    // stream that ended or was left included. Without it the connection's window
+                    // would shrink by each left stream's tail until every request on it stalls.
                     let Some(at) = self.at(stream) else {
+                        if len != 0 && self.credit.as_ref().is_some_and(Credit::multiplexes) {
+                            match outcome.left.iter_mut().find(|(left, _)| *left == stream) {
+                                Some((_, owed)) => *owed += u64::from(len),
+                                None => outcome.left.push((stream, u64::from(len))),
+                            }
+                        }
                         continue;
                     };
                     let credit = self
@@ -941,7 +958,10 @@ mod tests {
             stream: 1,
             len: 4096,
         });
-        conn.answer(&late).unwrap();
+        let outcome = conn.answer(&late).unwrap();
+        // It is held by nobody, and its credit is owed at once: the connection window the far end
+        // spent on it is given back.
+        assert_eq!(outcome.left.as_slice(), [(1, 4096)]);
         // Stream 3 is untouched and still takes its own body.
         conn.answer(&Script::default().item(Out::Body {
             stream: 3,
@@ -952,6 +972,65 @@ mod tests {
             conn.wire.credit().map(|credit| credit.outstanding()),
             Some(4096)
         );
+    }
+
+    /// The transport design's credit rule: every inbound body byte is credited, the tail of a
+    /// stream the engine has left included. A far end that keeps sending on a left stream is
+    /// given all of it back, so the connection's window never shrinks behind cancelled requests.
+    #[test]
+    fn every_byte_of_a_left_streams_tail_is_credited_and_the_connection_window_stays_open() {
+        let mut conn = Conn::new();
+        conn.answer(&begin(true)).unwrap();
+        conn.wire.offer(Slots::default());
+        conn.answer(&head(1, 0)).unwrap();
+        // The reader held some of the stream when it left: that is credited as the stream goes.
+        let body = |stream, len| Script::default().item(Out::Body { stream, len });
+        conn.answer(&body(1, 1000)).unwrap();
+        conn.wire.stopping(1, Reason::Cancelled);
+        let (_, at_leaving) = conn.wire.over(1, false);
+        assert_eq!(at_leaving, Some(1000));
+        // Far more than the connection window (4 MiB) arrives for it afterwards, in pieces; two
+        // pieces in one answer are one credit for the stream. Each answer's bytes are owed in full.
+        let mut credited = 0_u64;
+        for _ in 0..64 {
+            let two = Script::default()
+                .item(Out::Body {
+                    stream: 1,
+                    len: 1 << 16,
+                })
+                .item(Out::Body {
+                    stream: 1,
+                    len: 1 << 16,
+                });
+            let outcome = conn.answer(&two).unwrap();
+            assert_eq!(outcome.left.as_slice(), [(1, 2 << 16)]);
+            credited += outcome.left[0].1;
+        }
+        assert_eq!(credited, 8 << 20, "every byte of the tail");
+        assert_eq!(
+            conn.wire.credit().map(|credit| credit.outstanding()),
+            Some(0),
+            "nothing of a left stream stands against the engine's windows"
+        );
+        // Another request on the connection still has its whole window.
+        conn.wire.offer(Slots::default());
+        conn.answer(&head(3, 0)).unwrap();
+        assert!(conn.answer(&body(3, 1 << 20)).unwrap().left.is_empty());
+    }
+
+    /// A session with one stream is given no credit at all: the engine stops reading its socket.
+    #[test]
+    fn a_session_that_does_not_multiplex_is_owed_no_credit_for_a_left_stream() {
+        let mut conn = Conn::new();
+        conn.answer(&begin(false)).unwrap();
+        conn.wire.offer(Slots::default());
+        conn.answer(&head(1, 0)).unwrap();
+        let _ = conn.wire.over(1, false);
+        let late = Script::default().item(Out::Body {
+            stream: 1,
+            len: 4096,
+        });
+        assert!(conn.answer(&late).unwrap().left.is_empty());
     }
 
     #[test]

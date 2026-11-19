@@ -1291,6 +1291,11 @@ impl NativeConnection {
                 }
             }
         }
+        // Last, because giving credit is a call into the session and replaces the answer just
+        // acted on: the body bytes this answer carried for streams the engine has left are
+        // credited in full now (no reader will ever take them), so the connection's window does
+        // not shrink behind a request that was cancelled or failed over.
+        self.credit_left(&outcome.left)?;
         Ok(opened)
     }
 

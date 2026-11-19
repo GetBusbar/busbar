@@ -514,6 +514,25 @@ impl NativeConnection {
         self.apply_outbound().map(|_| ())
     }
 
+    /// CALLED LAST in `apply_last`, once the answer's own items are acted on: the credit owed for
+    /// inbound body bytes of streams the engine has left ([`Outcome::left`]), given as
+    /// `emit(stream, E_CONSUMED)` with the count in the call's `credit`. Nobody reads those bytes,
+    /// so the whole of each is owed at once; a multiplexing session reopens the connection's
+    /// window by exactly that and no more. The transport's answer (a window update) is queued
+    /// through the outbound driver like any other.
+    pub(super) fn credit_left(&mut self, left: &[(u64, u64)]) -> Result<(), NativeFailure> {
+        for &(stream, count) in left {
+            let Some(session) = self.session.as_mut().filter(|session| session.is_live()) else {
+                return Ok(());
+            };
+            session
+                .consumed(stream, count, std::time::Instant::now())
+                .map_err(|ended| super::session_failure(&ended))?;
+            self.apply_outbound()?;
+        }
+        Ok(())
+    }
+
     /// CALLED in `fail` and in `Drop`: every open request's verdict is frozen and every sealed
     /// value wiped.
     pub(super) fn outbound_gone(&mut self, reason: Reason) {
