@@ -332,7 +332,14 @@ impl NativeConnection {
                         .last_connect_error
                         .take()
                         .unwrap_or_else(|| io::Error::other("no address answered the connect"));
-                    return Err(NativeFailure::at(stage::CONNECT, error.to_string()));
+                    // Through a proxy the addresses are the proxy's: the failure is the proxy's, and no
+                    // provider is charged for it.
+                    let stage = if self.dialling.tunnelled() {
+                        CAUSE_PROXY
+                    } else {
+                        stage::CONNECT
+                    };
+                    return Err(NativeFailure::at(stage, error.to_string()));
                 }
             }
         }
@@ -440,6 +447,24 @@ impl NativeConnection {
     pub(super) fn socket_took(&mut self) {
         // `flushed` counts what the socket took; what is still queued is not accepted.
         self.wire.accepted(self.flushed);
+    }
+
+    /// The open deadline passed. While the proxy's own steps were still running (its connect, its TLS, its
+    /// answer to the CONNECT) the failure is the proxy's; after the tunnel is open it is the target's.
+    pub(super) fn open_deadline_passed(&self) -> NativeFailure {
+        let at_proxy = self.dialling.tunnelled()
+            && matches!(
+                self.dialling.step(),
+                Step::Connecting | Step::ProxyHandshake | Step::Tunnelling
+            );
+        if at_proxy {
+            NativeFailure::at(
+                CAUSE_PROXY,
+                "the proxy did not open the tunnel before the open deadline",
+            )
+        } else {
+            NativeFailure::at(stage::DEADLINE, "the connection's open deadline passed")
+        }
     }
 
     /// The socket has not connected yet (the race over the name's addresses is still running): nothing is

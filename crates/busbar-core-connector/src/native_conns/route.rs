@@ -229,12 +229,14 @@ pub(crate) fn dial_through(
                 None,
                 &mut None,
             );
-            *why = Some(NeedRefusal::Policy(text::PROXY_UNREACHED));
+            *why = Some(NeedRefusal::ProxyUnreached(
+                text::PROXY_UNREACHED.to_owned(),
+            ));
             return Err(ConnError::Fault);
         }
     };
     if via.hop.secure() && via.trust.is_none() {
-        *why = Some(NeedRefusal::Policy(text::PROXY_UNTRUSTED));
+        *why = Some(NeedRefusal::ProxyPolicy(text::PROXY_UNTRUSTED));
         return Err(ConnError::Refused);
     }
     let PendingDial {

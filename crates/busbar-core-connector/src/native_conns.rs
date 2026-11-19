@@ -401,6 +401,17 @@ impl Exchange {
                 Poll::Ready(Ok(()))
             }
             Err(error) => {
+                // A dial refused or failed at the operator's proxy before any connection existed is the
+                // proxy's: the cause says so, and the walk charges no provider for it.
+                if let Some(NeedRefusal::ProxyPolicy(_) | NeedRefusal::ProxyUnreached(_)) = &why {
+                    self.cause = Some(ConnCause {
+                        stage: stage::PROXY,
+                        text: route::text::PROXY_UNREACHED.to_owned(),
+                        outbound: false,
+                    });
+                    self.evidence
+                        .push(crate::outbound::redial::Recorded::AtProxy);
+                }
                 self.failed = Some(error);
                 Poll::Ready(Err(error))
             }

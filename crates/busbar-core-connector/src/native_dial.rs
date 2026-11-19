@@ -531,9 +531,14 @@ impl NativeConnection {
                     }
                 }
                 RaceStep::Connect(Lane::Second, _) | RaceStep::Wait(_) | RaceStep::Failed => {
-                    return Err(io_failure(stage::CONNECT)(
-                        refused.unwrap_or_else(|| io::Error::other("no address to dial")),
-                    ));
+                    let error = refused.unwrap_or_else(|| io::Error::other("no address to dial"));
+                    // Through a proxy the addresses are the proxy's own.
+                    let stage = if dialling.tunnelled() {
+                        stage::PROXY
+                    } else {
+                        stage::CONNECT
+                    };
+                    return Err(NativeFailure::at(stage, error.to_string()));
                 }
             }
         };
@@ -907,10 +912,7 @@ impl NativeConnection {
         if matches!(self.phase, Phase::Connecting | Phase::Handshaking) {
             if let Some(deadline) = self.open_deadline.as_mut() {
                 if deadline.as_mut().poll(cx).is_ready() {
-                    return Err(NativeFailure::at(
-                        stage::DEADLINE,
-                        "the connection's open deadline passed",
-                    ));
+                    return Err(self.open_deadline_passed());
                 }
             }
         }
