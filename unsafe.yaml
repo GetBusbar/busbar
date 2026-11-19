@@ -90,6 +90,7 @@ interim:
   crates/busbar-contract/src/abi/sdk/test_support/restated_transport.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/test_support/sink.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/test_support/watch.rs: { tokens: 14, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/tests/store_conditional_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/wipe.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/secret/mod.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/shared.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
