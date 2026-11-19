@@ -137,3 +137,48 @@ fn the_pass_is_a_fixed_point() {
     assert_eq!(twice, once);
     assert!(report.is_empty());
 }
+
+/// The whole upgrade step, over a deployment's files (decision 16, end to end inside the migration): a config
+/// that 1.5.5-era tooling left naming both retired modules is PLANNED, never refused; the planned text holds no
+/// `transport:` section; the boot's report says so once per carrier. A section that names a living transport
+/// is refused CONFIG exactly as before.
+#[test]
+fn an_upgrade_plans_a_config_that_names_the_retired_carriers_and_reports_each_once() {
+    use crate::scratch::{accept, facts, Scratch};
+    use crate::{plan, Inputs};
+
+    let scratch = Scratch::new();
+    let path = scratch.config(
+        "listen: x\n\
+         transport:\n  wire: {module: tcp}\n  pipes: {module: stdio}\n  wire2: {module: tcp}\n\
+         store: {module: sqlite}\n",
+    );
+    let planned = plan(&Inputs::new(&path, &facts(), &accept)).unwrap_or_else(|refusal| {
+        panic!("decision 16: accepted and ignored, never refused: {refusal}")
+    });
+    assert!(
+        !planned.planned().contains("transport"),
+        "the planned config holds no transport section:\n{}",
+        planned.planned()
+    );
+    let lines: Vec<&String> = planned
+        .report()
+        .iter()
+        .filter(|line| line.contains("accepted and ignored"))
+        .collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "one line per carrier: {:?}",
+        planned.report()
+    );
+    assert!(lines[0].contains("busbar-transport-tcp"), "{}", lines[0]);
+    assert!(lines[1].contains("busbar-transport-stdio"), "{}", lines[1]);
+
+    let living = Scratch::new();
+    let path =
+        living.config("listen: x\ntransport:\n  web: {module: http}\nstore: {module: sqlite}\n");
+    let refused = plan(&Inputs::new(&path, &facts(), &accept)).unwrap_err();
+    assert_eq!(refused.word(), "CONFIG");
+    assert!(refused.to_string().contains("`transport:`"), "{refused}");
+}
