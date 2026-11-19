@@ -355,6 +355,14 @@ fn image_refusal(e: &ImageError) -> Refusal {
         ImageError::Null(what) => {
             Refusal::new(RefusalCode::DoorStampMismatch, what, "null", "an entry")
         }
+        // The header states its own size and how many table entries it has; a header smaller than this
+        // host reads, or a count past what a kind may have, is not a header this engine can call through.
+        ImageError::Header(what) => Refusal::new(
+            RefusalCode::ImageBounds,
+            what,
+            "a header size or entry count this engine cannot read",
+            "a header at least as large as core 3.0's, with at most 56 table entries",
+        ),
     }
 }
 
