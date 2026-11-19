@@ -124,7 +124,7 @@ async fn accepted(
     let ended = async {
         let stream = tokio::net::TcpStream::from_std(admitted.stream).map_err(InputError::Io)?;
         let opened = native.accepted(stream, security.as_deref()).await?;
-        supervise(opened, native, node, core, stopped).await
+        Box::pin(supervise(opened, native, node, core, stopped)).await
     }
     .await;
     if let Err(stop) = &ended {

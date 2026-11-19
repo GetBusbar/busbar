@@ -358,7 +358,7 @@ impl Node {
 
     pub(crate) fn bind_response_intents(
         &self,
-        store: Arc<busbar_kernel::persistence::facade::CoreStore>,
+        store: &Arc<busbar_kernel::persistence::facade::CoreStore>,
         service: Arc<crate::root::durability::response_intent::ResponseIntentService>,
     ) -> Result<(), &'static str> {
         let book = self
@@ -371,7 +371,7 @@ impl Node {
             .lane
             .get()
             .is_some_and(|journal| Arc::ptr_eq(journal, service.journal()))
-            || !service.journal().is_bound_to(&store)
+            || !service.journal().is_bound_to(store)
             || book.incarnation != service.incarnation()
             || book.record.node() != service.journal().node()
         {
