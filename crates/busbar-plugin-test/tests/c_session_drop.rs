@@ -159,7 +159,7 @@ fn cancel_and_close_drop_every_session() {
     };
     drop(out);
     let inst = Arc::new(inst);
-    let conn = ConnInfo {
+    let conn = busbar_plugin_abi::transport::ConnInfo {
         role: 0,
         flags: 0,
         alpn: Str::EMPTY,

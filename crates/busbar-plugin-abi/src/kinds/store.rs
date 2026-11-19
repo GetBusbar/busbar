@@ -366,10 +366,20 @@ crate::kind! {
 /// `CommitHead` carrier, and the receipt-era refusal. A store depends on busbar-plugin-abi only, so nothing here
 /// names busbar-contract: the replay mapping yields the wire `Committed` record, not a `Decision`.
 pub mod plumbing {
+    /// Whether exact native-encoded parts exceed an admitted deterministic bound.
+    /// No default limit or allocation policy is inferred. Overflow exceeds every
+    /// representable bound; allocation/driver errors are not inputs to this check.
+    pub fn capacity_exceeded(parts: impl IntoIterator<Item = usize>, limit: usize) -> bool {
+        parts
+            .into_iter()
+            .try_fold(0usize, |sum, part| sum.checked_add(part))
+            .is_none_or(|sum| sum > limit)
+    }
+
     use super::store::{
         self as wire, AttemptId, CandHead, Committed, MutationRec, PredicateRec, TimeGuard,
     };
-    use crate::records::{Rec, RecErr, Records, tag};
+    use crate::records::{tag, Rec, RecErr, Records};
     use crate::secure::{Overflow, SecureVec};
     use std::convert::Infallible;
     use zeroize::Zeroize;

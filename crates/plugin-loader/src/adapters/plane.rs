@@ -89,7 +89,14 @@ pub struct PlaneDescribe {
     pub route_admissions: Vec<RouteAdmission>,
     /// D_ROUTE_CHALLENGE, at most one per route: the `WWW-Authenticate` text of the route's refusal.
     pub route_challenges: Vec<(u32, Box<str>)>,
+    /// D_SESSION_CEILING_S, at most once: the plane's stated session ceiling in whole seconds, from its
+    /// protocol's specification or its own documented default. `None`: the plane states none (a
+    /// describe written before the item), and the engine puts no ceiling of its own in its place.
+    pub session_ceiling_s: Option<u64>,
 }
+
+/// The longest session ceiling the engine can enforce: whole seconds its nanosecond clock holds.
+const SESSION_CEILING_MAX_S: u64 = u64::MAX / 1_000_000_000;
 
 /// A describe the §8.6 rules refuse. The registry turns it into `Refusal { code: DescribeInvalid, field }`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,6 +261,15 @@ pub fn decode_describe(
                     return Err(bad);
                 }
                 d.route_challenges.push((h.route, text.into()));
+            }
+            t::D_SESSION_CEILING_S => {
+                let bad = DescribeInvalid("describe.session_ceiling_s");
+                let v: U64Rec = rec.pod().map_err(|_| bad)?;
+                if !(1..=SESSION_CEILING_MAX_S).contains(&v.value)
+                    || d.session_ceiling_s.replace(v.value).is_some()
+                {
+                    return Err(bad);
+                }
             }
             t::D_PROVIDER_SCHEMA | t::D_DIALECT_AUTH => {}
             tag if tag < 0x0100 => {}
@@ -1637,6 +1653,10 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
 
     fn tick_s(&self) -> Option<u64> {
         self.describe.tick_s
+    }
+
+    fn session_ceiling_s(&self) -> Option<u64> {
+        self.describe.session_ceiling_s
     }
 
     fn admin_openapi(&self) -> Option<&str> {

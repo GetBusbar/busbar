@@ -833,12 +833,15 @@ fn probe_targets(pool: &SeatPool) -> Vec<ProbeTarget> {
 }
 
 /// The seat's egress walk over `table`: its members' needs declared and their anchors sealed, then the walk.
+/// `stated_ceiling_secs`: the session ceiling the seat's plane states (D_SESSION_CEILING_S, `0` = none),
+/// the same value the listener bounds the seat's upgraded sessions by.
 fn egress_of(
     instance: &str,
     owner: InstanceId,
     table: &ConnTable,
     pool: &SeatPool,
     catalog: Option<&CatalogSeat>,
+    stated_ceiling_secs: u64,
 ) -> Result<busbar_kernel::plane_driver::Egress, String> {
     for member in &pool.members {
         table
@@ -920,7 +923,7 @@ fn egress_of(
             busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
             |l| l.upstream_request_timeout_secs,
         ),
-        stated_ceiling_secs: 0,
+        stated_ceiling_secs,
         error_body_max: limits
             .as_ref()
             .map_or(busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX, |l| {
@@ -1099,7 +1102,14 @@ pub(crate) fn compose(
     let inventory_targets = Arc::clone(&targets);
     let (upstream, held, probes) = match &shared.table {
         Some(table) => {
-            let egress = egress_of(instance, owner, table, &pool, catalog.map(Arc::as_ref))?;
+            let egress = egress_of(
+                instance,
+                owner,
+                table,
+                &pool,
+                catalog.map(Arc::as_ref),
+                busbar_kernel::plane_driver::port::session_ceiling_secs(port.as_ref()),
+            )?;
             let walk = PortEgress::new(
                 Arc::new(egress),
                 Arc::clone(&shared.kernel),

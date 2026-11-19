@@ -135,6 +135,25 @@ pub(crate) fn carrier_end_arg(carrier: u64) -> Reply {
     arg
 }
 
+/// The session ceiling `port`'s plane states (D_SESSION_CEILING_S), in whole seconds; `0` = it states
+/// none. OWNER DECISION: the time limit of a plane's sessions is the plane's own, stated from its
+/// protocol's specification or its own documented default. Core borrows no number for it.
+#[must_use]
+pub fn session_ceiling_secs(port: &dyn PlanePort) -> u64 {
+    port.session_ceiling_s().unwrap_or(0)
+}
+
+/// WHEN A SESSION ENDS AT THE LATEST: `ceiling_secs` (the plane's stated ceiling, `0` = none) after
+/// its request was taken up (`now`). `None`: the plane states no ceiling (or one the clock cannot
+/// hold), and no engine number takes its place.
+#[must_use]
+pub fn session_ends(now: std::time::Instant, ceiling_secs: u64) -> Option<std::time::Instant> {
+    if ceiling_secs == 0 {
+        return None;
+    }
+    now.checked_add(Duration::from_secs(ceiling_secs))
+}
+
 /// One served MIN-3 plane instance: its driver, the audience its line session is bound to (the `canonical_uri`
 /// of its config block, `None` when it states none), what its intents run against and who it is to the store.
 #[derive(Clone)]
@@ -169,6 +188,13 @@ impl PortSeat {
     /// The plane instance's configured public URL (D_PUBLIC_URL_PATH), if any.
     pub fn public_url(&self) -> Option<&str> {
         self.public_url.as_deref()
+    }
+
+    /// The session ceiling this seat's plane states, in whole seconds; `0` = it states none
+    /// ([`session_ceiling_secs`]). What the listener bounds an upgraded session of this seat by.
+    #[must_use]
+    pub fn session_ceiling_secs(&self) -> u64 {
+        self.driver.session_ceiling_secs()
     }
 
     /// One `admin(ADMIN_TICK)`: the plane's PUSHes are queued under this instance's namespace (EMITs already went
@@ -580,6 +606,12 @@ impl PortDriver {
     #[must_use]
     pub fn tick_s(&self) -> Option<u64> {
         self.port.tick_s()
+    }
+
+    /// D_SESSION_CEILING_S: the session ceiling the plane states, in whole seconds; `0` = none.
+    #[must_use]
+    pub fn session_ceiling_secs(&self) -> u64 {
+        session_ceiling_secs(self.port.as_ref())
     }
 
     /// One `admin(ADMIN_TICK)` (§8.6): the plane's EMITs are written to their carriers at once (an ended carrier,
@@ -1627,3 +1659,7 @@ mod input_custody_tests;
 #[cfg(test)]
 #[path = "tests/port_thread_tests.rs"]
 mod thread_tests;
+
+#[cfg(test)]
+#[path = "tests/session_ceiling_tests.rs"]
+mod session_ceiling_tests;
