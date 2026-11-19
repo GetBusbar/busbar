@@ -31,7 +31,15 @@ use busbar_contract::plugin_settings::sugar_words::kind;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-pub use busbar_artifact_verifier::supported_abi;
+/// The ONE abi_version this engine loads for `kind` (LINT-RULES R21: exact match, never a range or a
+/// set): the kind contract's first number as this source speaks it (`busbar_plugin_abi::versions`), the
+/// same number a native stamp's `kind_abi` must carry; `None` for a kind it does not know.
+pub fn supported_abi(kind: &str) -> Option<u32> {
+    (1..=7)
+        .filter_map(busbar_plugin_abi::types::KindCode::from_raw)
+        .find(|code| code.word() == kind)
+        .map(busbar_plugin_abi::versions::abi_of)
+}
 
 /// ONE ROW of the registry: a plugin it resolves by name or alias. A row passed phases 1 + 2: its signed
 /// manifest, the trust verdict, and the exact verified library bytes (what the loader will map,

@@ -1798,10 +1798,18 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                     .exchanges
                     .iter()
                     .any(|exchange| exchange.id != 0 || (!messages && !exchange.msgs.is_empty()))
+                // The reads, and the plane's own records (STORE, DELETE, COMMIT): a write is held by
+                // the pending admission's screen until the unit is admitted (`port_serve`), and is
+                // made in the verified caller's scope (the DATA identity is the session's subject).
                 || answer.intents.iter().any(|intent| {
                     !matches!(
                         intent,
-                        Intent::Lookup { .. } | Intent::Entitle { .. } | Intent::Judge { .. }
+                        Intent::Lookup { .. }
+                            | Intent::Entitle { .. }
+                            | Intent::Judge { .. }
+                            | Intent::Store { .. }
+                            | Intent::Delete { .. }
+                            | Intent::Commit { .. }
                     )
                 }))
         {

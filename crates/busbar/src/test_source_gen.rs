@@ -98,7 +98,13 @@ impl Owners {
     pub fn module(&self, owner: &str, source: &str, module: &str) -> String {
         identifier(module);
         let package = &self.0[owner];
-        let path = package["metadata"]["busbar"]["test-sources"][source]
+        let declared = &package["metadata"]["busbar"]["test-sources"];
+        // An owner that states no test sources at all contributes none. An owner
+        // that declares a table but not this source is still a refusal.
+        if declared.is_null() {
+            return String::new();
+        }
+        let path = declared[source]
             .as_str()
             .unwrap_or_else(|| panic!("{owner} does not declare test source {source}"));
         format!(
@@ -222,6 +228,33 @@ mod tests {
         assert_eq!(
             owners.context("fixture-owner", "host"),
             format!("include!({path:?});\n#[path = {path:?}] mod fixture;\n")
+        );
+    }
+
+    #[test]
+    fn an_owner_that_declares_no_test_sources_contributes_none() {
+        let fixture = Fixture::new("none");
+        let owners = Owners(BTreeMap::from([(
+            "silent-owner".into(),
+            serde_json::json!({
+                "manifest_path": fixture.0.join("Cargo.toml"),
+                "metadata": {"busbar": {"test-artifacts": {}}}
+            }),
+        )]));
+        assert_eq!(owners.module("silent-owner", "root", "root_silent"), "");
+        let bare = Owners(BTreeMap::from([(
+            "bare-owner".into(),
+            serde_json::json!({"manifest_path": fixture.0.join("Cargo.toml"), "metadata": null}),
+        )]));
+        assert_eq!(bare.module("bare-owner", "root", "root_bare"), "");
+    }
+
+    #[test]
+    fn an_owner_that_declares_test_sources_but_not_this_one_is_refused() {
+        let fixture = Fixture::new("missing");
+        let owners = Owners(BTreeMap::from([("o".into(), fixture.package())]));
+        assert!(
+            std::panic::catch_unwind(|| owners.module("o", "absent", "root_absent")).is_err()
         );
     }
 

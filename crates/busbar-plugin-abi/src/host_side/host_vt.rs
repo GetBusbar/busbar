@@ -61,6 +61,8 @@ fn contain<R>(fallback: R, body: impl FnOnce() -> R) -> R {
         Ok(answer) => answer,
         Err(_) => {
             HOST_FAULTS[HOST_PANIC].fetch_add(1, Relaxed);
+            #[cfg(test)]
+            injection::count();
             fallback
         }
     }
@@ -75,6 +77,18 @@ mod injection {
 
     std::thread_local! {
         static ARMED: Cell<bool> = const { Cell::new(false) };
+        /// The `HOST_PANIC`s caught on this thread: `HOST_FAULTS` is process-wide, so a test that counts
+        /// its own panics exactly reads this, never the shared counter other tests bump in parallel.
+        static CAUGHT: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn count() {
+        CAUGHT.with(|caught| caught.set(caught.get() + 1));
+    }
+
+    /// The `HOST_PANIC`s `contain` caught on this thread so far.
+    pub(super) fn caught() -> u64 {
+        CAUGHT.with(Cell::get)
     }
 
     /// The next `contain` on this thread panics once, inside its guarded body.
@@ -1485,19 +1499,20 @@ mod tests {
             assert_eq!(vt::deployment(), DeploymentId([0; 16]));
             injection::arm_panic();
             vt::log(3, 0, "dropped");
-            assert_eq!(faults(HOST_PANIC), before + 6);
+            // Exact counts are this thread's: HOST_FAULTS is shared with every test running in parallel.
+            assert_eq!(injection::caught(), 6);
             assert!(vt::now() > 1_600_000_000_000_000_000);
-            assert_eq!(
-                faults(HOST_PANIC),
-                before + 6,
-                "an armed injection fires once"
-            );
+            assert_eq!(injection::caught(), 6, "an armed injection fires once");
 
             // A sink that panics: the line is dropped and one HOST_PANIC counted, never an unwind.
             set_log_sink(test_sink);
             SINK_PANICS.with(|p| p.set(true));
             contain((), || log_body(1, 0, "line"));
-            assert_eq!(faults(HOST_PANIC), before + 7);
+            assert_eq!(injection::caught(), 7);
+            assert!(
+                faults(HOST_PANIC) >= before + 7,
+                "every caught panic reaches the process-wide counter the watchdog reads"
+            );
             SINK_PANICS.with(|p| p.set(false));
         });
     }

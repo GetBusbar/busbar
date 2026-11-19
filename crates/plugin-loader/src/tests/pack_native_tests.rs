@@ -132,7 +132,18 @@ fn incompatible_native_stamps_never_reach_staging_or_an_initializer() {
         crypto: "host",
     })
     .0;
-    for at in [28usize, 32, 40, 48, 56, 64, 72, 184, 248, 36] {
+    // Format 3 returned byte 64 (format 2's duplicate semantic word) to reserve: setting it is no
+    // longer an incompatible stamp but a malformed one, refused by the scan itself.
+    let mut reserved = good;
+    reserved[64] ^= 1;
+    assert!(matches!(
+        crate::scan::stamp(&reserved),
+        Err(crate::scan::StampScanErr::Malformed { byte: 64, .. })
+    ));
+    let before = crate::stage::STAGED_HERE.with(std::cell::Cell::get);
+    assert!(complete(&reserved, assertions(), None).is_err(), "offset 64");
+    assert_eq!(crate::stage::STAGED_HERE.with(std::cell::Cell::get), before);
+    for at in [28usize, 32, 40, 48, 56, 72, 184, 248, 36] {
         let mut bytes = good;
         match at {
             28 | 32 => bytes[at..at + 4].copy_from_slice(&999u32.to_le_bytes()),

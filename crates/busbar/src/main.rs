@@ -551,7 +551,6 @@ async fn run(
     // ... and their hook facts are what config validation reads of hooks (WP3 hook step).
     file_images.publish_hooks();
     // ... and the scope kinds their plane routes state are what role bindings are judged against.
-    file_images.publish_scope_kinds();
     let loaded = raw
         .typed(&file_images.grammar)
         .unwrap_or_else(|error| die(error));

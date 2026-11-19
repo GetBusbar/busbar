@@ -363,6 +363,17 @@ fn send(
     token: Option<&str>,
     body: (Option<&'static str>, Vec<u8>, bool),
 ) -> Answered {
+    try_send(rt, addr, method, path, token, body).expect("the request is answered, not cut")
+}
+
+fn try_send(
+    rt: &tokio::runtime::Runtime,
+    addr: &str,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: (Option<&'static str>, Vec<u8>, bool),
+) -> Result<Answered, reqwest::Error> {
     let (content_type, bytes, trailers) = body;
     rt.block_on(async {
         let client = reqwest::Client::builder()
@@ -381,24 +392,20 @@ fn send(
             // A chunked body announcing a trailer section; the listener answers 400 for it.
             req = req.header("trailer", "x-checksum").header("te", "trailers");
         }
-        let resp = req
-            .body(bytes)
-            .send()
-            .await
-            .expect("the request is answered, not cut");
+        let resp = req.body(bytes).send().await?;
         let header = |name: reqwest::header::HeaderName| {
             resp.headers()
                 .get(name)
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
         };
-        Answered {
+        Ok(Answered {
             status: resp.status().as_u16(),
             challenge: header(reqwest::header::WWW_AUTHENTICATE),
             allow: header(reqwest::header::ALLOW),
             content_type: header(reqwest::header::CONTENT_TYPE),
             body: resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default(),
-        }
+        })
     })
 }
 
@@ -652,15 +659,21 @@ fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
         } else {
             (&booted.data, good.as_str())
         };
-        let got = send(
+        let label = format!("{} {} ({} {})", row.id, row.route, row.method, row.path);
+        let got = match try_send(
             &rt,
             addr,
             &row.method,
             &row.path,
             Some(token),
             body_of(&row.body, BODY_CAP),
-        );
-        let label = format!("{} {} ({} {})", row.id, row.route, row.method, row.path);
+        ) {
+            Ok(got) => got,
+            Err(cut) => {
+                failures.push(format!("{label}: the request was cut, not answered: {cut:?}"));
+                continue;
+            }
+        };
         match row.outcome.as_str() {
             "answers" if row.admin => {
                 if matches!(got.status, 401 | 403 | 405 | 500 | 501)
@@ -702,7 +715,14 @@ fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
         refused,
         failures.len()
     );
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    let log = read_to_string(&booted.log);
+    let tail: Vec<&str> = log.lines().rev().take(15).collect();
+    assert!(
+        failures.is_empty(),
+        "{}\n--- the node's log, last lines (newest first):\n{}",
+        failures.join("\n"),
+        tail.join("\n")
+    );
 }
 
 /// The table itself is well formed without a binary: every row parses, ids are unique, every

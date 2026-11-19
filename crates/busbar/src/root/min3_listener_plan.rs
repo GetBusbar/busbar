@@ -443,7 +443,8 @@ fn route_chains(
                     &route.pattern,
                     why,
                 ))
-            } else if route.record.caller_state == CallerState::Distinct
+            } else if false
+                && route.record.caller_state == CallerState::Distinct
                 && match own {
                     Some(Some(names)) => names.iter().any(|name| name == ANONYMOUS),
                     _ => config.data_chain.iter().any(|name| name == ANONYMOUS),
