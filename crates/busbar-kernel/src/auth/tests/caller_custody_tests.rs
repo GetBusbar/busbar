@@ -103,3 +103,11 @@ async fn the_request_handed_on_holds_the_caller_credential_only_in_consumed_cred
          GovCtx: a second holder of the caller's credential"
     );
 }
+
+/// A line session's credential (read from its environment variable) is moved into the admission
+/// in a holder that wipes on drop: the admission task is its last holder.
+#[test]
+fn a_line_sessions_credential_enters_admission_in_a_wiping_holder() {
+    fn wipes<T: zeroize::ZeroizeOnDrop, F>(_: fn(Arc<crate::state::App>, Option<T>, String) -> F) {}
+    wipes(crate::auth::admit::admit_session);
+}
