@@ -7,7 +7,7 @@
 //! keeps the validated layout beside its buffer) walks the records once and refuses anything the generic
 //! layer can already judge. OK: a framing error is FAULT BadRecords; FAIL, NEED, NEED_RES, ERROR, the retired
 //! 0x000A, a TOKEN anywhere but first, a DIRECTORY-only nested tag at top level, an undefined generic tag and
-//! any tag above the kind range are FAULT UnknownTag (kind tags 0x0100..=0x01FF pass to the kind decoder).
+//! any tag above the kind range are FAULT UnknownTag (kind tags 0x0100..=0x4FFF pass to the kind decoder; 0x5000 and up is never used).
 //! REFUSED/FAILED: exactly FAIL, at most one ERROR directly after it, then (FAILED only) at most two FACTs with
 //! distinct keys in `FAIL_FACT_KEYS`; anything else is FAULT BadRecords. NEED is not an answer
 //! (NeedOutsideAsync), FAULT is the shim's caught panic or broken contract (Panic) and any other status is
@@ -37,7 +37,7 @@ fn record_size(body: usize) -> usize {
 }
 
 /// Whether a generic tag (below the kind range) may stand at the top level of an OK answer. Kind tags
-/// (0x0100..=0x01FF) are the kind decoder's; FAIL/NEED/NEED_RES/ERROR, 0x000A and the DIRECTORY nested tags
+/// (0x0100..=0x4FFF) are the kind decoder's; FAIL/NEED/NEED_RES/ERROR, 0x000A and the DIRECTORY nested tags
 /// never stand there; TOKEN only first (a session opener's).
 fn ok_generic(t: u16) -> bool {
     matches!(
@@ -386,7 +386,9 @@ mod tests {
             0x0000,
             0x0070,
             0x0099,
-            0x0200,
+            0x0048,
+            0x004D,
+            0x5000,
             0xFFFF,
         ] {
             let mut r = Reply::new();
