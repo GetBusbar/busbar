@@ -213,6 +213,12 @@ impl TransportPort for TransportAdapter {
                 return Err(self.fault(Bad::Token));
             };
             // On a bad answer the handle drops here, which cancels the session (§10.4).
+            // A session begun on an upgraded connection serves the upgraded exchange as stream 1: it
+            // is open from `begin`, before any record (the adopting transport writes the 101 as a
+            // part on it in this very answer).
+            if info.flags & t::CONN_UPGRADED != 0 {
+                handle.wire.adopt(1);
+            }
             self.answer(&a, Call::Begin, &mut handle.wire, sink)?;
             Ok(handle)
         })
@@ -678,6 +684,10 @@ fn walk(
                     return Err(GRAMMAR);
                 }
                 alone = true;
+                // Nothing was opened: what the dial's set said is no longer pending.
+                if let Some(wire) = wire.as_deref_mut() {
+                    wire.busy();
+                }
                 TransportOut::StreamBusy
             }
             // The session will open no further stream; the streams it carries go on.
@@ -1266,6 +1276,71 @@ mod tests {
         });
         assert_eq!(run(&twice, Call::Begin), Err(GRAMMAR));
         assert_eq!(run(&session(0, 0, 0), Call::Ingest), Err(GRAMMAR));
+    }
+
+    /// A dialled request sent as one set (head, body and end on stream 0) is answered whole in the
+    /// answer that opens its stream: what the set said waits for STREAM_OPENED (fit 1, from `wire`).
+    #[test]
+    fn a_dialled_request_sent_as_one_set_ends_whole_in_the_answer_that_opened_it() {
+        let mut wire = Wire::new();
+        let pieces = E_HEAD | E_BODY | t::E_END;
+        wire.asked(0, pieces, 2, &[]);
+        let out = answer(|w| {
+            w.put_pod(tag::STREAM_OPENED, &StreamFlow { stream: 7 })?;
+            part(w, 7, t::WIRE_CONTROL, b"POST / HTTP/1.1\r\n\r\n")?;
+            part(w, 7, t::WIRE_PAYLOAD, b"{}")?;
+            end(w, 7, t::END_FLUSH, 0)
+        });
+        let dial = Call::Emit {
+            piece: pieces,
+            stream: 0,
+            head: &[],
+        };
+        assert_eq!(
+            run_on(&mut wire, &out, dial).expect("one set, one answer"),
+            [
+                "opened 7",
+                "wire 7 control POST / HTTP/1.1\r\n\r\n",
+                "wire 7 payload {}",
+                "wire-end 7 1 0"
+            ]
+        );
+        assert_eq!(wire.open_streams(), 0);
+    }
+
+    /// An upgraded connection's stream 1 is open from `begin`: the adopting transport writes its 101
+    /// on it in the `begin` answer, after stating the session (fit 2, from `wire`).
+    #[test]
+    fn an_upgraded_sessions_stream_is_open_from_begin() {
+        let out = answer(|w| {
+            w.put_pod(
+                tag::SESSION,
+                &t::SessionRec {
+                    flags: 0,
+                    stream_window: 0,
+                    conn_window: 0,
+                    _r: 0,
+                },
+            )?;
+            part(
+                w,
+                1,
+                t::WIRE_CONTROL,
+                b"HTTP/1.1 101 Switching Protocols\r\n\r\n",
+            )
+        });
+        let mut adopted = Wire::new();
+        adopted.adopt(1);
+        assert_eq!(
+            run_on(&mut adopted, &out, Call::Begin).expect("the adopted stream"),
+            [
+                "session multiplex=false 0 0",
+                "wire 1 control HTTP/1.1 101 Switching Protocols\r\n\r\n"
+            ]
+        );
+        // Without the adoption the same answer names a stream that is not open.
+        let error = run(&out, Call::Begin).expect_err("not adopted");
+        assert!(matches!(error, Bad::Wire(breach) if breach.stream == 1));
     }
 
     /// STREAM_BUSY answers only an `emit` that asks a dialled session to open a stream, alone;

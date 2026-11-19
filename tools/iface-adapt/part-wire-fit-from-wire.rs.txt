@@ -1,0 +1,105 @@
+// TWO FITS for `crates/busbar-plugin-abi/src/wire.rs` (branch house/iface-solo; owner: `solo`). Not applied by
+// `wire`: that file is not mine. Without them every dialled request sent as one set, and every accepted
+// WebSocket upgrade, is FAULT BadRecords at the first boot, with a correct transport.
+//
+// FIT 1 (slice 2). `Wire::asked(0, ..)` keeps only the sealed lengths of a dial's E_HEAD; the body bytes
+// and the E_END (or E_REFUSE) of the SAME set are dropped. E.2 lets the engine send E_HEAD|E_BODY|E_END in
+// one `emit` on stream 0, and the transport then answers STREAM_OPENED, the parts and WIRE_END(END_FLUSH)
+// in that one answer: the validator sees an end "the engine did not ask for" (L5), or payload bytes it was
+// never told of (L6). What the set says must wait with the sealed lengths and attach at STREAM_OPENED.
+//
+// FIT 2 (WebSocket, both the accepted side in DONE and its conformance). In a session begun with
+// CONN_UPGRADED stream 1 is open from `begin` (delivery evidence G.3 rule 2; the adopting transport writes
+// the 101 as a WIRE_PART on stream 1, control, in its `begin` answer). The validator opens a stream only on
+// STREAM_HEAD or STREAM_OPENED, so that part is L2. The adapter calls `adopt(1)` before it judges the
+// `begin` answer of a CONN_UPGRADED session (mating surface with `adapt`: `adapters/transport.rs`, where
+// `begin` is decoded).
+
+// ---- replace the field `pending_sealed: Vec<u32>` of `Wire` with: ----
+
+    /// What an `emit` of E_HEAD on stream 0 (a dial) said, waiting for the STREAM_OPENED of its answer:
+    /// the sealed lengths, the body bytes given, and whether the set ended or refused the message.
+    pending: Option<Pending>,
+
+struct Pending {
+    sealed: Vec<u32>,
+    given: u64,
+    asked: Asked,
+}
+
+// ---- replace the `if stream == 0 { .. }` block at the top of `Wire::asked` with: ----
+
+        if stream == 0 {
+            if pieces & E_HEAD != 0 {
+                self.pending = Some(Pending {
+                    sealed: sealed.to_vec(),
+                    given: if pieces & E_BODY != 0 { body } else { 0 },
+                    asked: if pieces & E_REFUSE != 0 {
+                        Asked::Refuse
+                    } else if pieces & E_END != 0 {
+                        Asked::End
+                    } else {
+                        Asked::Nothing
+                    },
+                });
+            }
+            return;
+        }
+
+// ---- replace the body of the `tag::STREAM_OPENED` arm of `Wire::record` with: ----
+
+                let id = body
+                    .get(..8)
+                    .and_then(|b| b.try_into().ok())
+                    .map(u64::from_le_bytes)
+                    .unwrap_or(0);
+                if id != 0 && self.at(id).is_none() {
+                    let pending = self.pending.take();
+                    let mut stream = Stream::new(
+                        id,
+                        pending.as_ref().map_or_else(Vec::new, |p| p.sealed.clone()),
+                    );
+                    if let Some(p) = pending {
+                        stream.given = p.given;
+                        stream.asked = p.asked;
+                    }
+                    self.open.push(stream);
+                }
+                Ok(Part::Other)
+
+// ---- and an answer that is STREAM_BUSY alone opened nothing: the adapter calls this when it reads it ----
+
+    /// The dial's `emit(0, E_HEAD ..)` was answered STREAM_BUSY: nothing was opened, nothing is pending.
+    pub fn busy(&mut self) {
+        self.pending = None;
+    }
+
+// ---- add to `impl Wire` ----
+
+    /// A session begun with CONN_UPGRADED serves the upgraded exchange as `stream` (1): it is open from
+    /// `begin`, before any record. Called by the adapter before it judges the `begin` answer.
+    pub fn adopt(&mut self, stream: u64) {
+        if stream != 0 && self.at(stream).is_none() {
+            self.open.push(Stream::new(stream, Vec::new()));
+        }
+    }
+
+// ---- two tests to add to `mod tests` (red before the fits, green after) ----
+
+    #[test]
+    fn a_dialled_request_sent_as_one_set_ends_whole_in_the_answer_that_opened_it() {
+        let mut w = Wire::new();
+        w.asked(0, E_HEAD | E_BODY | E_END, 2, &[]);
+        assert!(w.record(tag::STREAM_OPENED, &7u64.to_le_bytes()).is_ok());
+        assert!(w.record(tag::WIRE_PART, &part(7, WIRE_CONTROL, b"POST / HTTP/1.1\r\n\r\n")).is_ok());
+        assert!(w.record(tag::WIRE_PART, &part(7, WIRE_PAYLOAD, b"{}")).is_ok());
+        assert!(w.record(tag::WIRE_END, &end(7, END_FLUSH, 0)).is_ok());
+        assert_eq!(w.open_streams(), 0);
+    }
+
+    #[test]
+    fn an_adopted_stream_is_open_from_begin() {
+        let mut w = Wire::new();
+        w.adopt(1);
+        assert!(w.record(tag::WIRE_PART, &part(1, WIRE_CONTROL, b"HTTP/1.1 101 \r\n\r\n")).is_ok());
+    }
