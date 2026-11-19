@@ -638,7 +638,7 @@ dependencies = [
 [[package]]
 name = "busbar-hook-webrequest"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-webrequest?rev=da8cb2f931f4257e41655ccff535757d3b2feeff#da8cb2f931f4257e41655ccff535757d3b2feeff"
+source = "git+https://github.com/GetBusbar/busbar-hook-webrequest?rev=b67d2c8910a418f5171d7ed347177b60aa255f28#b67d2c8910a418f5171d7ed347177b60aa255f28"
 dependencies = [
  "base64 0.22.1",
  "busbar-plugin-abi",
@@ -998,7 +998,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-sqlite"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=f2007ce3ec0a865dfc8e4826bc7a3dc383cf7bb8#f2007ce3ec0a865dfc8e4826bc7a3dc383cf7bb8"
+source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=2ca84cce797d58f4b9464f1cea203a4bdf4f8a82#2ca84cce797d58f4b9464f1cea203a4bdf4f8a82"
 dependencies = [
  "busbar-plugin-abi",
  "rusqlite",
