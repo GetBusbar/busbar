@@ -1979,7 +1979,7 @@ act yet).
 | Key | Type and unit | Default | Allowed range | What it does | Applies |
 |---|---|---|---|---|---|
 | `advanced.wait_for_commit` | boolean | `false` | `true` / `false` | Whether an answer waits until its audit, ledger and usage records are committed. *Arriving with the audit change.* | to be confirmed |
-| `advanced.usage_flush_interval_ms` | integer, milliseconds | `100` | 0 to 946,080,000,000 (30 years); `0` is not refused but should not be used | How often in-memory usage and budget counters are written out. | restart |
+| `advanced.usage_flush_interval_ms` | integer, milliseconds | `100` | 1 to 946,080,000,000 (30 years); `0` is raised to 1 with one warning | How often in-memory usage and budget counters are written out. | restart |
 | `advanced.rate_sweep_interval` | integer, count of admissions | `256` | 1 to 4,294,967,295; `0` is refused | How often a budget table drops entries that are no longer needed. | on apply |
 | `advanced.worker_threads` | integer, threads | one per CPU core | 1 to 65,535; `0` means the default, and above 65,535 is lowered to 65,535, each with one warning (`BUSBAR-9008`) | Number of data-plane worker threads. | restart |
 | `advanced.upstream_http1_only` | boolean | `false` | `true` / `false` | Pin the upstream HTTP client to HTTP/1.1. | restart |
@@ -2042,8 +2042,11 @@ widens the loss window.
 
 **What can be lost:** on a crash (kill -9, power loss) up to this many milliseconds of accrued
 spend and request counts. A graceful shutdown flushes fully. The code refuses values above
-946,080,000,000 ms (30 years) but does not refuse `0`; do not set `0`, since a zero interval makes
-the writer loop without pause.
+946,080,000,000 ms (30 years). The shortest interval is 1 ms: the writer waits on the runtime's
+timer, which has a resolution of one millisecond, and a wait of `0` would make the writer loop with
+no pause. A configured `0` is therefore converted to 1, with one warning line (`BUSBAR-3117`) at boot
+and on every configuration apply; nothing is refused. The store has no commit period of its own that
+would set a higher floor.
 
 ```yaml
 advanced:

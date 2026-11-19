@@ -48,6 +48,34 @@ pub const DEFAULT_RATE_SWEEP_INTERVAL: u32 = 256;
 
 pub const DEFAULT_USAGE_FLUSH_INTERVAL_MS: u64 = 100;
 
+/// The least `advanced.usage_flush_interval_ms` the writer can honour. The writer loop
+/// (`governance::run_budget_flusher`) waits `tokio::time::sleep(interval)` between passes, and
+/// Tokio's timer has a resolution of one millisecond (`runtime/time/mod.rs`: "The driver has a
+/// resolution of one millisecond"). A wait of 0 completes at once, so the loop would run its store
+/// passes back to back, and the same tick is the engine's housekeeping tick and the bound on what a
+/// crash can lose. The interval is written in whole milliseconds, so 1 is the shortest wait there
+/// is. The store has no commit period of its own that would set a higher floor.
+pub const MIN_USAGE_FLUSH_INTERVAL_MS: u64 = 1;
+
+/// The interval the writer uses for the configured `advanced.usage_flush_interval_ms`, and the one
+/// log line when it was converted (a value below [`MIN_USAGE_FLUSH_INTERVAL_MS`] becomes it). The
+/// caller logs the line; boot and every configuration apply say the same thing.
+#[must_use]
+pub fn effective_usage_flush_interval_ms(configured: u64) -> (u64, Option<String>) {
+    if configured < MIN_USAGE_FLUSH_INTERVAL_MS {
+        (
+            MIN_USAGE_FLUSH_INTERVAL_MS,
+            Some(format!(
+                "advanced.usage_flush_interval_ms: {configured} is below the shortest wait the \
+                 flush loop can make ({MIN_USAGE_FLUSH_INTERVAL_MS} ms); using \
+                 {MIN_USAGE_FLUSH_INTERVAL_MS} ms"
+            )),
+        )
+    } else {
+        (configured, None)
+    }
+}
+
 /// How often the budget flush walks every shard whatever its "may be dirty" flag, as a backstop
 /// (seconds, within [10 s, 10 min]).
 pub const DEFAULT_BUDGET_FLUSH_BACKSTOP_SECS: u64 = 60;
@@ -423,7 +451,10 @@ impl LimitsResolved {
             reasoning_effort_budgets: limits.reasoning_effort_budgets,
             key_gauge_limit,
             rate_sweep_interval: advanced.rate_sweep_interval,
-            usage_flush_interval_ms: advanced.usage_flush_interval_ms,
+            usage_flush_interval_ms: effective_usage_flush_interval_ms(
+                advanced.usage_flush_interval_ms,
+            )
+            .0,
             upstream_http1_only: advanced.upstream_http1_only,
             upstream_h2_prior_knowledge: advanced.upstream_h2_prior_knowledge,
             default_probe_interval_secs: health.default_probe_interval_secs,

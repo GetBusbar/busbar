@@ -1651,6 +1651,12 @@ pub fn resolve_with_provider_planes(
     planes: &[crate::plane_driver::provider_catalog::ProviderPlane],
 ) -> Result<ResolvedConfig, Vec<String>> {
     let mut errors = Vec::new();
+    // Boot and every configuration apply resolve here, so this is where a converted value is said.
+    if let (_, Some(note)) =
+        limits::effective_usage_flush_interval_ms(deploy.advanced.usage_flush_interval_ms)
+    {
+        diag_warn!(crate::diagnostics::CONFIG_SETTING_OUT_OF_RANGE, "{note}");
+    }
     for name in deploy
         .rate_card
         .iter()

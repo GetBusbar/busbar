@@ -14,7 +14,7 @@ BUSBAR-3117: <detail>. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3117
 
 ## What it means
 
-A value under `limits:`, `health:`, `routing:` or `advanced:` is outside what busbar can run with: a timeout or interval of 0 (which fails or disables the thing it bounds), a size below its floor or above its ceiling, a duration above the 30-year ceiling the runtime's clock arithmetic can hold, or reasoning-effort budgets that are zero or not ascending.
+A value under `limits:`, `health:`, `routing:` or `advanced:` is outside what busbar can run with: a timeout or interval of 0 (which fails or disables the thing it bounds), a size below its floor or above its ceiling, a duration above the 30-year ceiling the runtime's clock arithmetic can hold, or reasoning-effort budgets that are zero or not ascending. One case is converted, not refused: `advanced.usage_flush_interval_ms: 0` is raised to 1 ms and logged as a warning carrying this code.
 
 ## How to fix it
 

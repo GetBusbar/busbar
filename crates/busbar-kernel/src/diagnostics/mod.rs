@@ -1489,7 +1489,7 @@ diagnostics! {
 
     CONFIG_SETTING_OUT_OF_RANGE = 3117, Config, Fatal, "config-setting-out-of-range", "1.6.0", false,
         "A global limit or timing setting is out of range",
-        "A value under `limits:`, `health:`, `routing:` or `advanced:` is outside what busbar can run with: a timeout or interval of 0 (which fails or disables the thing it bounds), a size below its floor or above its ceiling, a duration above the 30-year ceiling the runtime's clock arithmetic can hold, or reasoning-effort budgets that are zero or not ascending.",
+        "A value under `limits:`, `health:`, `routing:` or `advanced:` is outside what busbar can run with: a timeout or interval of 0 (which fails or disables the thing it bounds), a size below its floor or above its ceiling, a duration above the 30-year ceiling the runtime's clock arithmetic can hold, or reasoning-effort budgets that are zero or not ascending. One case is converted, not refused: `advanced.usage_flush_interval_ms: 0` is raised to 1 ms and logged as a warning carrying this code.",
         "Set the named key within the range the message states, or omit it to take the default; docs/configuration.md lists every default."
         => config_setting_out_of_range(detail) "{detail}",
         example "limits:\n  upstream_request_timeout_secs: 0",
