@@ -273,7 +273,10 @@ impl NativeChain {
             cx,
             cutoff: None,
             core: None,
-            origin: Origin::Ticket(Arc::clone(verified.key())),
+            origin: Origin::Ticket {
+                key: Arc::clone(verified.key()),
+                record: busbar_contract::secure::SecureVec::from(verified.ticket_record()),
+            },
         })
     }
 
@@ -536,8 +539,14 @@ enum Origin {
     Anonymous,
     /// The built-in member `keys` verified a core-signed token.
     Keys,
-    /// A core ticket admitted the request; the issuer's governed key as it stands now.
-    Ticket(Arc<busbar_contract::records::VirtualKey>),
+    /// A core ticket admitted the request.
+    Ticket {
+        /// The issuer's governed key as it stands now.
+        key: Arc<busbar_contract::records::VirtualKey>,
+        /// The record the plane stored at the mint (empty when it stored none), with nothing of
+        /// the issuer binding: what `PlaneReq.ticket_record` is.
+        record: busbar_contract::secure::SecureVec,
+    },
 }
 
 impl std::fmt::Debug for PreparedNativeIdentity {
@@ -614,7 +623,7 @@ impl PreparedNativeIdentity {
         match (&self.instance, &self.origin) {
             (Some(instance), _) => &instance.opened.who.name,
             (None, Origin::Keys) => KEYS,
-            (None, Origin::Ticket(_)) => TICKET,
+            (None, Origin::Ticket { .. }) => TICKET,
             (None, Origin::Anonymous | Origin::Instance) => ANONYMOUS,
         }
     }
@@ -625,7 +634,7 @@ impl PreparedNativeIdentity {
                 busbar_contract::kept::Text::from(Arc::clone(&instance.opened.who.name))
             }
             (None, Origin::Keys) => busbar_contract::kept::Text::fixed(KEYS),
-            (None, Origin::Ticket(_)) => busbar_contract::kept::Text::fixed(TICKET),
+            (None, Origin::Ticket { .. }) => busbar_contract::kept::Text::fixed(TICKET),
             (None, Origin::Anonymous | Origin::Instance) => {
                 busbar_contract::kept::Text::fixed(ANONYMOUS)
             }
@@ -641,8 +650,16 @@ impl PreparedNativeIdentity {
     /// The issuer's governed key of a request a core ticket admitted, if this is one.
     pub(crate) fn ticket_key(&self) -> Option<&Arc<busbar_contract::records::VirtualKey>> {
         match &self.origin {
-            Origin::Ticket(key) => Some(key),
-            _ => None,
+            Origin::Ticket { key, .. } => Some(key),
+            Origin::Instance | Origin::Anonymous | Origin::Keys => None,
+        }
+    }
+    /// The record its plane stored with the ticket that admitted this request (empty when it
+    /// stored none); `None` when no ticket did.
+    pub(crate) fn ticket_record(&self) -> Option<&[u8]> {
+        match &self.origin {
+            Origin::Ticket { record, .. } => Some(&record[..]),
+            Origin::Instance | Origin::Anonymous | Origin::Keys => None,
         }
     }
     /// The core-signed token the built-in member `keys` verified for this identity, if it is one.

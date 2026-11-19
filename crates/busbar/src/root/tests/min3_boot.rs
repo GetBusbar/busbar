@@ -98,17 +98,36 @@ async fn a_process_with_no_destination_judge_answers_internal_for_every_destinat
 #[test]
 fn tickets_are_shut_without_a_signing_key_and_open_with_one() {
     let records = BootstrapRecords;
-    let shut = ticket_store(&records, None);
+    let issuers = Issuers::new();
+    let standing = || -> Option<Standing> {
+        Some(Arc::new(
+            |key: &Arc<busbar_contract::records::VirtualKey>, _now: u64| Some(Arc::clone(key)),
+        ))
+    };
+    let shut = ticket_store(&records, None, &issuers, standing());
     assert!(
-        !shut.is_ticket("bbt1.abc"),
+        !shut.tickets.is_ticket("bbt1.abc"),
         "no host key: nothing is a ticket"
     );
-    let signing = SecureVec::from(&[7u8; 32][..]);
-    let keyed = ticket_store(&records, Some(&signing));
     assert!(
-        !keyed.is_ticket("Bearer-token"),
+        shut.door.is_none(),
+        "no host key: no desk, so no ticket route is mounted"
+    );
+    let signing = SecureVec::from(&[7u8; 32][..]);
+    let keyed = ticket_store(&records, Some(&signing), &issuers, standing());
+    assert!(
+        !keyed.tickets.is_ticket("Bearer-token"),
         "a credential that is not a ticket is never one"
     );
+    // One bound store behind the MINT and the native door: what one seals the other opens.
+    let door = keyed
+        .door
+        .expect("a signing key opens the native ticket door");
+    assert!(!door.is_ticket("Bearer-token"));
+    // A ticket must die with its issuer key: with no standing re-check the store stays shut.
+    let unchecked = ticket_store(&records, Some(&signing), &issuers, None);
+    assert!(unchecked.door.is_none());
+    assert!(!unchecked.tickets.is_ticket("bbt1.abc"));
     let services = plane_services(&observations(), Arc::new(Open), None);
     let tickets = services.tickets.unwrap();
     assert!(tickets.is_ticket("bbt1.abc"));

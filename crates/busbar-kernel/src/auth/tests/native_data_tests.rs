@@ -481,6 +481,7 @@ fn fixture_of(
     // physical factory, real charged selection, concrete verifier, publication and replay.
     let admission = crate::auth::admission_table::admission_of(&record);
     let route = Arc::new(NativeDataRoute {
+        ticket: None,
         withheld: withheld_carriers(&chain, None),
         audience: None,
         challenge: None,

@@ -14,7 +14,10 @@ use busbar_ports::CallCx;
 
 use super::admission_table::{admission_of, Admission, NotMounted, Offered, Policy, Verified};
 use super::native_chain::{NativeChain, NativePreparedAnswer, PreparedNativeIdentity};
-use super::route_record::{CallerState, Money, RouteRecord};
+use super::native_ticket::{
+    Presented as TicketPresented, Serving, TicketDesk, TicketJudged, TicketRefused,
+};
+use super::route_record::{CallerState, Money, RouteRecord, Who};
 use crate::host_services::{InvocationContext, ServingGeneration};
 use crate::inbound::native::{
     AuthorizedPhysicalData, DataPreparation, DataPreparationDenied, DataPreparationSuccess,
@@ -119,6 +122,21 @@ pub struct NativeDataRoute {
     challenge: Option<Box<str>>,
     record: RouteRecord,
     admission: Admission,
+    /// The ticket desk of the route's plane instance; `None` where core's ticket store is shut.
+    /// A ticket route redeems at it ([`Self::prepare_ticket`]); every route of the instance
+    /// enters its authorized principals in it, so a mint made while they are served is bound to
+    /// their key ([`PendingData::complete`]).
+    ticket: Option<Arc<TicketDesk>>,
+}
+
+/// The class a request is handed to its plane as (`PlaneReq.auth`): a ticket's, where a ticket
+/// admitted it, else a principal's.
+const fn auth_class(ticket: bool) -> u32 {
+    if ticket {
+        busbar_plugin_abi::plane::AUTH_TICKET
+    } else {
+        busbar_plugin_abi::plane::AUTH_PRINCIPAL
+    }
 }
 
 /// How the listener plan mounts one declared route ([`NativeDataRoute::planned`]).
@@ -135,7 +153,6 @@ pub enum Planned {
     NotMounted(NotMounted),
 }
 
-const OTHER_PATH_TICKET: &str = "a ticket route is served by the listener's ticket class";
 const OTHER_PATH_SIGNED: &str = "a signed route is served by the listener's signed-ingress class";
 const OTHER_PATH_OPERATOR: &str = "an admin route is served by the admin door";
 
@@ -186,7 +203,6 @@ impl NativeDataRoute {
         chain_admits_anonymous: bool,
         upgrade_transport: bool,
         signature_verifier: bool,
-        ticket_store: bool,
     ) -> Planned {
         let record = &mounted.record;
         let offered = Offered {
@@ -194,7 +210,8 @@ impl NativeDataRoute {
             chain_yields_shared: chain_admits_anonymous,
             upgrade_transport,
             signature_verifier,
-            ticket_store,
+            // Core's ticket store is open exactly where the boot gave the instance a desk.
+            ticket_store: seat.driver.ticket_desk().is_some(),
             challenge_unresolved: record.mounted_challenge(seat.public_url()).is_err(),
         };
         match super::admission_table::mounted(record, offered) {
@@ -206,15 +223,19 @@ impl NativeDataRoute {
                 | Admission::Catalog
                 | Admission::Optional,
             ) => Planned::Data,
+            // A ticket route is bound like a data route: core's ticket verifier judges a
+            // presented ticket inside the route's own preparation, and its chain judges a request
+            // with none where the record also admits a principal. `mounted` above already left it
+            // unmounted where no ticket store is open.
+            Ok(Admission::Ticket) => Planned::Data,
             Ok(Admission::Upgrade) => Planned::Upgrade,
             // A public route is bound like a data route (its chain is never run: the listener
             // serves it by its admission) so no second mounting path exists.
             Ok(Admission::Public) => Planned::Data,
             // A plane's admin routes are mounted on the admin door by the admin plan.
             Ok(Admission::Operator) => Planned::Admin,
-            // No native verifier exists for a ticket or a sender's signature: such a route is
-            // left unmounted and says so, until its verifier is linked.
-            Ok(Admission::Ticket) => Planned::NotMounted(NotMounted::NoVerifierReadsItsHeader),
+            // No native verifier exists for a sender's signature: such a route is left unmounted
+            // and says so, until its verifier is linked.
             Ok(Admission::SignedIngress) => Planned::NotMounted(NotMounted::NoSignatureVerifier),
             Ok(Admission::Internal) => Planned::NotMounted(NotMounted::Internal),
         }
@@ -250,7 +271,14 @@ impl NativeDataRoute {
             // key, replay claim, unit and money on its head; its answer may be a 101.
             | Admission::Upgrade => {}
 
-            Admission::Ticket => return Err(OTHER_PATH_TICKET),
+            // A ticket is core's own credential, judged by core's ticket verifier in this path's
+            // preparation. Without a ticket store nothing could mint or redeem one: the route is
+            // not mounted, never answered 401 forever.
+            Admission::Ticket => {
+                if seat.driver.ticket_desk().is_none() {
+                    return Err(NotMounted::NoTicketStore.reason());
+                }
+            }
             Admission::SignedIngress => return Err(OTHER_PATH_SIGNED),
             Admission::Operator => return Err(OTHER_PATH_OPERATOR),
             Admission::Internal => return Err("an internal route is not on a listener"),
@@ -349,7 +377,17 @@ impl NativeDataRoute {
         }
         let withheld = withheld_carriers(&owners.chain, mounted.cred_header.as_deref());
         let admission = admission_of(&record);
+        // The desk is the seat's own: the one its plane's MINT is bound through. `admits` above
+        // refused a ticket route on a seat with none.
+        let ticket = seat.driver.ticket_desk().cloned();
+        if ticket
+            .as_ref()
+            .is_some_and(|desk| desk.instance() != seat.who.instance)
+        {
+            return Err(DataRefused::Binding);
+        }
         Ok(Arc::new(Self {
+            ticket,
             caller: target.caller().clone(),
             binding,
             owners,
@@ -416,6 +454,17 @@ impl NativeDataRoute {
         preparation: DataPreparation,
         cx: CallCx,
     ) -> Result<PendingData, DataPreparationFailed> {
+        // A ticket route: core's ticket verifier judges the head first. The chain below runs
+        // only for a request that presents no ticket, on a route whose record also admits a
+        // principal; a presented ticket that is refused never reaches it.
+        let preparation = if self.admission == Admission::Ticket {
+            match self.prepare_ticket(preparation, cx).await {
+                TicketStep::Chain(preparation) => preparation,
+                TicketStep::Judged(judged) => return judged,
+            }
+        } else {
+            preparation
+        };
         let binding = preparation.binding().clone();
         let result = async {
             // One reading for this step's two deadlines: the binding's own and the call's. No lock
@@ -505,6 +554,132 @@ impl NativeDataRoute {
             )),
         }
     }
+
+    /// Step 2 of a ticket route (`VerifyBy::TicketOrChain`): the head is judged by core's ticket
+    /// verifier at the desk of the route's plane instance. No instance of the chain is run and
+    /// nothing of the request is lent to anyone.
+    ///
+    /// * A ticket, alone on the head, that the desk admits: the request is verified as the
+    ///   ticket's subject under its issuer's governed key as that key stands now
+    ///   ([`NativeChain::ticket_identity`]). The ticket is spent: it admits this one request.
+    /// * A ticket the desk refuses (spent, expired, another door or instance, its issuer no
+    ///   longer standing, presented beside another credential): the one 401. A store that could
+    ///   not answer: 503. Neither falls through to the chain.
+    /// * No ticket: the chain judges the request where the record also admits a principal
+    ///   ([`TicketStep::Chain`]); where it admits a ticket alone, nobody does (the one 401).
+    async fn prepare_ticket(
+        self: &Arc<Self>,
+        preparation: DataPreparation,
+        cx: CallCx,
+    ) -> TicketStep {
+        let binding = preparation.binding().clone();
+        let judged = async {
+            // A ticket route bound with no desk admits nobody: it is never served by its chain
+            // in the ticket's place.
+            let Some(desk) = self.ticket.as_ref() else {
+                return Err(DataRefused::Unsupported);
+            };
+            // The same binding and deadline checks as the chain's preparation, on one reading.
+            let live_at = binding
+                .check_live_now()
+                .map_err(|_| DataRefused::Cancelled)?;
+            if !Arc::ptr_eq(binding.route(), &self.binding)
+                || cx.request_id != binding.invocation().request_id().get()
+                || binding.deadline().is_some_and(|at| cx.deadline > at)
+                || live_at >= cx.deadline
+            {
+                return Err(DataRefused::Binding);
+            }
+            let snapshot = binding.snapshot().map_err(|_| DataRefused::Capacity)?;
+            if !snapshot.request().same_request(binding.request()) {
+                return Err(DataRefused::Binding);
+            }
+            let verifier = desk.verifier();
+            match verifier.presented(snapshot.headers()) {
+                TicketPresented::NoTicket => return Ok(None),
+                // A ticket beside a credential in another carrier this route reads: which one
+                // the caller means cannot be said, and the ticket is not spent on a guess.
+                TicketPresented::Ticket(_)
+                    if snapshot.headers().any(|(name, _)| {
+                        !name.eq_ignore_ascii_case("authorization")
+                            && self
+                                .withheld
+                                .iter()
+                                .any(|carrier| carrier.eq_ignore_ascii_case(name))
+                    }) =>
+                {
+                    tracing::info!(reason = TicketRefused::Ambiguous.reason(), "ticket refused");
+                    return Err(DataRefused::Credential);
+                }
+                // The verifier refuses a ticket beside another `authorization` line itself.
+                TicketPresented::Ticket(_) | TicketPresented::Ambiguous => {}
+            }
+            // The one place the ticket is spent. The verifier re-asks the issuer's standing and
+            // answers the standing key.
+            let judged = verifier
+                .verify(&self.record, snapshot.headers(), snapshot.now_s())
+                .await;
+            binding.check_live().map_err(|_| DataRefused::Cancelled)?;
+            match judged {
+                TicketJudged::NoTicket => Ok(None),
+                // The store could not answer: not a denial (503, never 401).
+                TicketJudged::Refused(TicketRefused::Unavailable) => Err(DataRefused::Unavailable),
+                TicketJudged::Refused(
+                    TicketRefused::RouteTakesNoTicket
+                    | TicketRefused::Ambiguous
+                    | TicketRefused::Invalid
+                    | TicketRefused::Expired
+                    | TicketRefused::Replayed,
+                ) => Err(DataRefused::Credential),
+                TicketJudged::Admitted(verified) => {
+                    // Admitted at this route's own plane instance, or not at all.
+                    if verified.instance() != desk.instance() {
+                        return Err(DataRefused::Binding);
+                    }
+                    Ok(Some(
+                        self.owners.chain.ticket_identity(cx, snapshot, &verified),
+                    ))
+                }
+            }
+        }
+        .await;
+        match judged {
+            Ok(Some(prepared)) => TicketStep::Judged(Ok(PendingData {
+                preparation,
+                route: self.clone(),
+                selected: None,
+                prepared,
+                // A ticket is not a token: no audience scope of a minted token is asked of it.
+                minted_here: false,
+                deadline: cx.deadline,
+            })),
+            Ok(None) if self.record.who.has(Who::PRINCIPAL) => TicketStep::Chain(preparation),
+            // The record admits a ticket alone and none is presented: nobody verifies the caller.
+            Ok(None) => TicketStep::Judged(Err(preparation_failed(
+                preparation,
+                self.clone(),
+                None,
+                None,
+                DataRefused::Credential,
+            ))),
+            Err(reason) => TicketStep::Judged(Err(preparation_failed(
+                preparation,
+                self.clone(),
+                None,
+                None,
+                reason,
+            ))),
+        }
+    }
+}
+
+/// What a ticket route's first step leaves ([`NativeDataRoute::prepare_ticket`]).
+enum TicketStep {
+    /// No ticket is presented and the record also admits a principal: the route's chain judges
+    /// the request, with the preparation it was not spent on.
+    Chain(DataPreparation),
+    /// The request was judged here: admitted by its ticket, or refused.
+    Judged(Result<PendingData, DataPreparationFailed>),
 }
 
 /// The governed key a verified identity is admitted as, valid at `now` (enabled, not deleted, not
@@ -925,7 +1100,19 @@ impl PendingData {
                 reason: DataRefused::Cancelled,
             })
         })?;
+        // Issuance is an authenticated act: from here until this authorization is dropped (the
+        // end of the request's serve) a ticket its plane mints for this subject is bound to this
+        // key. Only a principal its route's chain verified is entered. A request a ticket
+        // admitted is not (a ticket never mints the next one), nor is the anonymous principal
+        // (every caller of an open relay shares it: a ticket for it would name nobody).
+        let issuing = self
+            .route
+            .ticket
+            .as_ref()
+            .filter(|_| self.prepared.ticket_key().is_none() && !self.prepared.is_anonymous())
+            .map(|desk| desk.serving(self.prepared.identity().subject(), &key));
         Ok(DataAuthorization {
+            _issuing: issuing,
             preparation,
             binding,
             route: self.route,
@@ -1034,8 +1221,28 @@ pub struct DataAuthorization {
     lease: AdmissionLease,
     key: Arc<VirtualKey>,
     deadline: Instant,
+    /// The principal's entry in its plane instance's ticket desk, held for the life of the
+    /// request; `None` where no ticket store is open, and for a request that may not have a
+    /// ticket minted for it ([`PendingData::complete`]).
+    _issuing: Option<Serving>,
 }
 impl DataAuthorization {
+    /// The record the plane stored with the ticket that admitted this request (empty when it
+    /// stored none); `None` when a principal's credential did, not a ticket.
+    pub fn ticket_record(&self) -> Option<&[u8]> {
+        self.prepared.ticket_record()
+    }
+
+    /// Whether this authorization was made on `route` of `driver`'s plane instance.
+    pub(crate) fn made_on(
+        &self,
+        driver: &crate::plane_driver::port::PortDriver,
+        route: u32,
+    ) -> bool {
+        self.route.caller.same_incarnation(driver.caller())
+            && self.route.binding.line().route.rung == route
+    }
+
     pub(crate) fn preparation(&self) -> &DataPreparationSuccess {
         &self.preparation
     }
@@ -1536,6 +1743,16 @@ impl NativeDataPending {
     }
     pub fn identity(&self) -> &busbar_ports::auth::Identity {
         self.prepared.identity()
+    }
+    /// The class the request is handed to its plane as (`PlaneReq.auth`): `AUTH_TICKET` where a
+    /// core ticket admitted it, else `AUTH_PRINCIPAL`.
+    pub(crate) fn auth_class(&self) -> u32 {
+        auth_class(self.prepared.ticket_record().is_some())
+    }
+    /// `PlaneReq.ticket_record`: the record the plane stored with the ticket that admitted this
+    /// request; empty when it stored none or no ticket did.
+    pub(crate) fn ticket_record(&self) -> &[u8] {
+        self.prepared.ticket_record().unwrap_or_default()
     }
     pub fn snapshot(&self) -> &Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot> {
         self.prepared.snapshot()

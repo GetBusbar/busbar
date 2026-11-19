@@ -45,6 +45,7 @@ impl PortDriver {
             routes,
             mounted,
             tickets: Arc::new(NoTickets),
+            ticket_desk: None,
             usage,
             classes: declared,
             hooks: None,

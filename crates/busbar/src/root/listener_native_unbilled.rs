@@ -180,6 +180,8 @@ async fn serve(
     let mut work = tokio::spawn(async move {
         let served = if executing.check_executing().is_ok() {
             seat.driver
+                // A request a core ticket admitted is handed to its plane as that ticket.
+                .admitted_by(&executing)
                 .serve(ServeIn {
                     request: lease,
                     admission: None,

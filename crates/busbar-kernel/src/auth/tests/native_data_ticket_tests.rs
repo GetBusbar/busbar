@@ -56,10 +56,7 @@ struct Book(Mutex<HashMap<String, Arc<VirtualKey>>>);
 
 impl Book {
     fn put(&self, key: VirtualKey) {
-        self.0
-            .lock()
-            .unwrap()
-            .insert(key.id.clone(), Arc::new(key));
+        self.0.lock().unwrap().insert(key.id.clone(), Arc::new(key));
     }
     fn standing(self: &Arc<Self>) -> Standing {
         let book = Arc::clone(self);
@@ -227,10 +224,7 @@ async fn a_minted_ticket_admits_one_request_on_its_route_as_its_issuer() {
     assert_eq!(authorization.key().id, "vk_alice");
     assert_eq!(authorization.identity().subject(), "alice");
     // The plane is handed the record it stored at the mint, and nothing of the issuer binding.
-    assert_eq!(
-        authorization.ticket_record(),
-        Some(&b"session-config"[..])
-    );
+    assert_eq!(authorization.ticket_record(), Some(&b"session-config"[..]));
     assert!(!authorization.is_shared());
     assert_eq!(rig.chain_calls(), 0, "a ticket is core's: no instance ran");
     assert_eq!(
