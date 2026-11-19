@@ -3337,3 +3337,12 @@ mod admin_grant_tests;
 #[cfg(test)]
 #[path = "tests/trust_authority_tests.rs"]
 mod trust_authority_tests;
+
+pub mod admission_table;
+pub mod core_answer;
+pub mod reference_plane;
+pub mod route_record;
+
+#[cfg(test)]
+#[path = "tests/inbound_table.rs"]
+mod inbound_table;
