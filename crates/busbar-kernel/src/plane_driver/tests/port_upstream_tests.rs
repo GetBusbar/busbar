@@ -1315,3 +1315,23 @@ fn a_client_that_went_away_stops_the_reading() {
     assert_eq!(flags_fed(&plane), vec![P_HEAD]);
     assert!(seen.lock().unwrap().is_empty(), "no chunk was read");
 }
+
+/// The attempt walk's DATA guard is exactly as narrow as it must be: a session with no native DATA
+/// unit runs either walk; a DATA unit with a resource selection runs only the selected-attempt
+/// cohort; a DATA unit with no selection (its route selects nothing) runs only the ordinary walk.
+#[test]
+fn a_data_unit_runs_the_attempt_walk_only_in_the_cohort_its_selection_names() {
+    use super::attempts_driven;
+    assert!(attempts_driven(None, false));
+    assert!(attempts_driven(None, true));
+    assert!(attempts_driven(Some(true), true));
+    assert!(
+        !attempts_driven(Some(true), false),
+        "a selection never runs the borrowed sender"
+    );
+    assert!(attempts_driven(Some(false), false));
+    assert!(
+        !attempts_driven(Some(false), true),
+        "no selection to prepare the cohort from"
+    );
+}

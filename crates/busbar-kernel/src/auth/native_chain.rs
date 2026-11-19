@@ -59,7 +59,15 @@ pub struct NativeChain {
     policy: ChainPolicy,
     owners: Arc<AuthOwners>,
     data: bool,
+    /// `Some` only for the operator's explicitly empty data chain (`auth.chain: []`, 1.5.5's open
+    /// relay): the one key every request on it is admitted as. Built once with the chain, kept by
+    /// it, released with it.
+    anonymous: Option<Arc<busbar_contract::records::VirtualKey>>,
 }
+
+/// The principal and key id of a request admitted through an explicitly empty data chain: 1.5.5's
+/// audit attribution for its open relay (`auth/mod.rs` `principal_id`: `anonymous`).
+pub const ANONYMOUS: &str = "anonymous";
 
 impl NativeChain {
     /// Assemble the existing operator preparation from actual opened owners and frozen policy.
@@ -73,7 +81,35 @@ impl NativeChain {
             policy,
             owners,
             data: false,
+            anonymous: None,
         }
+    }
+
+    /// The operator's explicitly empty data chain (`auth.chain: []`): every request is admitted as
+    /// the anonymous principal, as 1.5.5's open relay admitted it (no credential is read, no
+    /// verifier runs), and then goes through admission like any other: its unit, money and audit
+    /// record under the anonymous key. That key is unrestricted (1.5.5's open relay reached every
+    /// pool) and belongs to no group (1.5.5 charged no group for a keyless request).
+    pub fn open_data(epoch: u64, owners: Arc<AuthOwners>) -> Self {
+        let anonymous = busbar_contract::records::VirtualKey {
+            id: ANONYMOUS.into(),
+            generation_hash: ANONYMOUS.into(),
+            name: ANONYMOUS.into(),
+            enabled: true,
+            ..Default::default()
+        };
+        Self {
+            instances: Vec::new(),
+            policy: ChainPolicy::new(epoch, Vec::new()),
+            owners,
+            data: true,
+            anonymous: Some(Arc::new(anonymous)),
+        }
+    }
+
+    /// The anonymous key of an explicitly empty data chain ([`Self::open_data`]).
+    pub(crate) fn anonymous(&self) -> Option<&Arc<busbar_contract::records::VirtualKey>> {
+        self.anonymous.as_ref()
     }
 
     /// Assemble one explicit DATA chain from the actual opened reservations. This is
@@ -106,6 +142,7 @@ impl NativeChain {
             policy: ChainPolicy::new(epoch, Vec::new()),
             owners,
             data: true,
+            anonymous: None,
         })
     }
 
@@ -163,6 +200,18 @@ impl NativeChain {
         cx: CallCx,
         request: Arc<ChargedRequestSnapshot>,
     ) -> Result<NativePreparedAnswer, busbar_ports::PortError> {
+        if self.anonymous.is_some() {
+            return Ok(NativePreparedAnswer::Identity(Arc::new(
+                PreparedNativeIdentity {
+                    chain: Arc::clone(self),
+                    instance: None,
+                    request,
+                    identity: busbar_ports::auth::Identity::of_subject(ANONYMOUS),
+                    cx,
+                    cutoff: None,
+                },
+            )));
+        }
         for instance in &self.instances {
             let caller = caller(instance, cx);
             let services = AuthServices {
@@ -200,7 +249,7 @@ impl NativeChain {
                     return Ok(NativePreparedAnswer::Identity(Arc::new(
                         PreparedNativeIdentity {
                             chain: Arc::clone(self),
-                            instance: Arc::clone(instance),
+                            instance: Some(Arc::clone(instance)),
                             request,
                             identity,
                             cx,
@@ -280,7 +329,9 @@ fn caller(instance: &AuthInstance, cx: CallCx) -> Caller<'_> {
 
 pub struct PreparedNativeIdentity {
     chain: Arc<NativeChain>,
-    instance: Arc<AuthInstance>,
+    /// The instance that verified the credential; `None` for the anonymous principal of an
+    /// explicitly empty data chain (nothing was verified).
+    instance: Option<Arc<AuthInstance>>,
     request: Arc<ChargedRequestSnapshot>,
     identity: busbar_ports::auth::Identity,
     cx: CallCx,
@@ -295,27 +346,33 @@ impl std::fmt::Debug for PreparedNativeIdentity {
 
 impl PreparedNativeIdentity {
     pub fn credential_headers(&self) -> &[Box<str>] {
-        self.instance.opened.port.cred_headers()
+        self.instance
+            .as_ref()
+            .map_or(&[], |instance| instance.opened.port.cred_headers())
     }
     pub fn request(&self) -> &Arc<ChargedRequestSnapshot> {
         &self.request
     }
     pub fn authorize(&self, now_s: u64) -> Result<(), u32> {
         self.fresh(now_s)?;
+        // The anonymous principal was verified by no instance; no instance policy applies to it.
+        let Some(instance) = &self.instance else {
+            return Ok(());
+        };
         self.request
             .with_auth_input(|req| {
                 let now = AuthIn { now_s, ..*req };
                 self.chain
                     .policy
-                    .authorize(self.instance.opened.who.instance, &self.identity, &now)
+                    .authorize(instance.opened.who.instance, &self.identity, &now)
             })
             .map_err(|_| busbar_plugin_abi::fail::refused::R_POLICY)?
     }
     pub fn claim(&self) -> busbar_plugin_abi::host_side::caller::BoxFut<'_, bool> {
         Box::pin(async move {
-            match (self.identity.replay(), self.cutoff) {
-                (Some((key, _)), Some(until)) => {
-                    let who = caller(&self.instance, self.cx);
+            match (self.identity.replay(), self.cutoff, &self.instance) {
+                (Some((key, _)), Some(until), Some(instance)) => {
+                    let who = caller(instance, self.cx);
                     self.chain
                         .owners
                         .replay
@@ -323,7 +380,7 @@ impl PreparedNativeIdentity {
                         .await
                         .unwrap_or(false)
                 }
-                (None, None) => true,
+                (None, None, _) => true,
                 _ => false,
             }
         })
@@ -334,16 +391,16 @@ impl PreparedNativeIdentity {
     /// Invoked once by the consumed DATA preparation owner; never retries the claim.
     pub(crate) async fn claim_classified(&self) -> super::native_admin::NativeReplayClaim {
         use super::native_admin::NativeReplayClaim;
-        match (self.identity.replay(), self.cutoff) {
-            (Some((key, _)), Some(until)) => {
-                let who = caller(&self.instance, self.cx);
+        match (self.identity.replay(), self.cutoff, &self.instance) {
+            (Some((key, _)), Some(until), Some(instance)) => {
+                let who = caller(instance, self.cx);
                 match self.chain.owners.replay.claim_until(&who, key, until).await {
                     Ok(true) => NativeReplayClaim::Claimed,
                     Ok(false) => NativeReplayClaim::Duplicate,
                     Err(error) => NativeReplayClaim::Unknown(error),
                 }
             }
-            (None, None) => NativeReplayClaim::Claimed,
+            (None, None, _) => NativeReplayClaim::Claimed,
             _ => NativeReplayClaim::Inconsistent,
         }
     }
@@ -352,11 +409,22 @@ impl PreparedNativeIdentity {
         &self.request
     }
     pub fn provider(&self) -> &str {
-        &self.instance.opened.who.name
+        self.instance
+            .as_ref()
+            .map_or(ANONYMOUS, |instance| &instance.opened.who.name)
     }
     /// The provider's name as a verdict holds it: the instance's own shared name, not a copy.
     pub(crate) fn provider_text(&self) -> busbar_contract::kept::Text {
-        busbar_contract::kept::Text::from(Arc::clone(&self.instance.opened.who.name))
+        match &self.instance {
+            Some(instance) => {
+                busbar_contract::kept::Text::from(Arc::clone(&instance.opened.who.name))
+            }
+            None => busbar_contract::kept::Text::fixed(ANONYMOUS),
+        }
+    }
+    /// Whether this is the anonymous principal of an explicitly empty data chain.
+    pub(crate) fn is_anonymous(&self) -> bool {
+        self.instance.is_none()
     }
     pub fn identity(&self) -> &busbar_ports::auth::Identity {
         &self.identity
@@ -373,7 +441,9 @@ impl PreparedNativeIdentity {
                 .is_some_and(|until| now_s >= until)
             || self.cutoff.is_some_and(|until| now_s >= until)
             || std::time::Instant::now() >= self.cx.deadline
-            || crate::holds::held_by(Some(&self.instance.holds), self.identity.subject()).is_some()
+            || self.instance.as_ref().is_some_and(|instance| {
+                crate::holds::held_by(Some(&instance.holds), self.identity.subject()).is_some()
+            })
         {
             return Err(busbar_plugin_abi::fail::refused::R_POLICY);
         }
