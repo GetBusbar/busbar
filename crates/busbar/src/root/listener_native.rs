@@ -355,6 +355,10 @@ struct InputSlot {
     owner: Arc<StreamOwner>,
     node: Option<crate::root::plane_node::NativeNodeHandle>,
     carrier_reported: bool,
+    /// The request's own input refused it (a body over the cap, request trailers): the rest of
+    /// its body is discarded unbuffered, and at its end the request is answered with this row
+    /// instead of being served. The connection, and its other streams, are untouched.
+    refused: Option<busbar_kernel::auth::admission_table::Refusal>,
 }
 impl InputSlot {
     fn next_deadline(&self) -> Option<Instant> {
@@ -377,6 +381,9 @@ impl InputSlot {
 pub(crate) struct ReadyInput {
     pub(crate) request: CompletingPhysicalRequest,
     pub(crate) owner: Arc<StreamOwner>,
+    /// The request's own input refused it ([`InputError::refusal`]): dispatch verifies the caller
+    /// as for any request, then answers this row. `None`: serve it.
+    pub(crate) refused: Option<busbar_kernel::auth::admission_table::Refusal>,
 }
 
 /// The actual native stream event consumer. EOF completes input only; the physical owner stays
@@ -454,6 +461,7 @@ impl NativeIngress {
                     owner: Arc::new(owner),
                     node: None,
                     carrier_reported: false,
+                    refused: None,
                 });
                 if end_stream {
                     self.end(stream).map(Some)
@@ -482,11 +490,26 @@ impl NativeIngress {
                     .limits
                     .as_ref()
                     .map_or(self.body_limit, |limits| limits.request_body_max_bytes);
-                slot.body.as_mut().ok_or(InputError::Invalid)?.append(
-                    pending.binding().request(),
+                // A request its own input already refused takes no more of its body into memory.
+                if slot.refused.is_some() {
+                    return Ok(None);
+                }
+                let request = pending.binding().request().clone();
+                match slot.body.as_mut().ok_or(InputError::Invalid)?.append(
+                    &request,
                     bytes.as_slice(),
                     limit,
-                )?;
+                ) {
+                    Ok(()) => {}
+                    // Over the cap: what was read is released now, the rest is discarded as it
+                    // arrives, and the request is answered 413 at its end (refusal row 6).
+                    Err(InputError::TooLarge) => {
+                        slot.body = Some(InputBody::new(&request)?);
+                        slot.refused = InputError::TooLarge.refusal();
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(error),
+                }
                 if slot.body_bounds_exceeded() {
                     self.connection.cancel(&slot.owner);
                     slot.pending.take();
@@ -511,7 +534,18 @@ impl NativeIngress {
             }
             // The immutable request snapshot currently has no trailer authority field. Do not
             // silently discard or reinterpret trailer credentials as original head fields.
-            Inbound::Trailers { .. } => Err(InputError::Trailers),
+            // The request is answered 400 at its end (refusal row 8); its connection is kept.
+            Inbound::Trailers { stream, .. } => {
+                let slot = self
+                    .slots
+                    .iter_mut()
+                    .find(|slot| slot.stream == stream)
+                    .ok_or(InputError::Invalid)?;
+                if slot.refused.is_none() {
+                    slot.refused = InputError::Trailers.refusal();
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -535,6 +569,7 @@ impl NativeIngress {
         Ok(ReadyInput {
             request,
             owner: Arc::clone(&slot.owner),
+            refused: slot.refused.take(),
         })
     }
 

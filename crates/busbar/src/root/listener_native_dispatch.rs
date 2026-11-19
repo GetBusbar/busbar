@@ -135,6 +135,62 @@ fn unbilled(served: UnbilledResponse) -> Answered {
     )
 }
 
+/// The answer to a plane request its own input refused. A route that verifies runs its chain on
+/// the head first: a denial is the one 401 (or 503, 409) exactly as on a served request, and only
+/// a verified caller is told the row, rendered by the route's plane. A route that verifies
+/// nobody is answered the row by core.
+async fn input_refused(
+    mut request: busbar_kernel::inbound::native::CompletingPhysicalRequest,
+    slot: &crate::root::min3_physical::NativeSlot,
+    admission: Admission,
+    refusal: busbar_kernel::auth::admission_table::Refusal,
+) -> Result<Answered, InputError> {
+    let binding = request.binding().clone();
+    let verified_route = match admission {
+        Admission::Walk | Admission::Selected | Admission::PrincipalOnly | Admission::Catalog => {
+            true
+        }
+        Admission::Optional => {
+            let route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
+            answer::presented(&binding, route.withheld())
+        }
+        Admission::Public => false,
+        // An upgrade request carries no body to refuse; the rest are not a data listener's.
+        Admission::Upgrade
+        | Admission::Ticket
+        | Admission::SignedIngress
+        | Admission::Operator
+        | Admission::Internal => return Err(InputError::Invalid),
+    };
+    if !verified_route {
+        let response = answer::core(&binding, refusal, false, "", None)?;
+        let owner = Arc::new(request.complete_unverified()?);
+        return Ok((response, ResponseAuthority::Unbilled(owner), None));
+    }
+    let route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
+    let (seat, _) = super::unbilled::seat_of(&binding)?;
+    let deadline = binding.deadline().ok_or(InputError::Invalid)?;
+    let preparation = request
+        .begin_data_preparation()
+        .map_err(|_| InputError::Invalid)?;
+    let failed = match route
+        .prepare(
+            preparation,
+            busbar_ports::CallCx {
+                deadline,
+                request_id: binding.invocation().request_id().get(),
+                stack: Default::default(),
+            },
+        )
+        .await
+    {
+        Ok(pending) => pending.refuse_input(refusal),
+        Err(failed) => failed,
+    };
+    let (response, physical) = data::refuse_prepared(request, failed, &route, &seat)?;
+    Ok((response, ResponseAuthority::Refused(physical), None))
+}
+
 pub(super) async fn prepare(
     ready: ReadyInput,
     native: Arc<NativeListener>,
@@ -165,6 +221,26 @@ pub(super) async fn prepare(
     let work = async {
         let (response, authority, settlement): Answered =
             match (binding.route().target(), admission) {
+                // The request's own input refused it (a body over the cap, request trailers).
+                // Its caller is judged as for any request, so an unverified one still receives
+                // the one 401; a verified one is answered the row. Nothing is served.
+                (RouteTarget::Plane(_), Some(admission)) if ready.refused.is_some() => {
+                    let refusal = ready.refused.ok_or(InputError::Invalid)?;
+                    let slot =
+                        (native.select)(binding.app(), &native.slot).ok_or(InputError::Invalid)?;
+                    input_refused(ready.request, &slot, admission, refusal).await?
+                }
+                // A core route's own input refusal has no custody to answer under yet: the
+                // request ends as it did before (the connection is stopped).
+                (RouteTarget::Core(_), _) if ready.refused.is_some() => {
+                    return Err(match ready.refused {
+                        Some(busbar_kernel::auth::admission_table::Refusal::BodyTooLarge) => {
+                            InputError::TooLarge
+                        }
+                        _ => InputError::Trailers,
+                    }
+                    .into())
+                }
                 (RouteTarget::Plane(_), Some(admission)) => {
                     let slot =
                         (native.select)(binding.app(), &native.slot).ok_or(InputError::Invalid)?;

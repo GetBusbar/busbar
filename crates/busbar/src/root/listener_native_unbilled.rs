@@ -47,7 +47,7 @@ pub(super) struct UnbilledResponse {
     pub(super) work: UnbilledWork,
 }
 
-fn seat_of(
+pub(super) fn seat_of(
     binding: &busbar_kernel::inbound::native::RequestBinding,
 ) -> Result<(PortSeat, u32), InputError> {
     let RouteTarget::Plane(target) = binding.route().target() else {

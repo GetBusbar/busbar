@@ -41,6 +41,10 @@ pub enum DataRefused {
     Policy,
     /// The key is disabled (refusal row 3): a verified caller, refused 403.
     Disabled,
+    /// The request's body ran past the cap (refusal row 6): 413, to a verified caller.
+    TooLarge,
+    /// The request carried trailers (refusal row 8): 400, to a verified caller.
+    Trailers,
     /// The key does not hold what the request selected (refusal row 10): 403.
     Scope,
     Replay,
@@ -58,6 +62,8 @@ impl DataRefused {
             Self::Credential | Self::Policy => Some(Refusal::Unverified { presented }),
             Self::Disabled => Some(Refusal::KeyDisabled),
             Self::Scope => Some(Refusal::ScopeDenied),
+            Self::TooLarge => Some(Refusal::BodyTooLarge),
+            Self::Trailers => Some(Refusal::Trailers),
             Self::Replay => Some(Refusal::Replayed),
             // A verifier that could not answer is not a denial: 503, never 401 (row 2a).
             Self::Unavailable => Some(Refusal::VerifierUnavailable),
@@ -69,7 +75,10 @@ impl DataRefused {
 
     /// The caller was verified before this refusal, so its plane may render the answer.
     pub fn after_verification(self) -> bool {
-        matches!(self, Self::Disabled | Self::Scope)
+        matches!(
+            self,
+            Self::Disabled | Self::Scope | Self::TooLarge | Self::Trailers
+        )
     }
 }
 
@@ -641,6 +650,27 @@ impl PendingData {
                 reason,
             )),
         }
+    }
+
+    /// The request's own input refused it (a body over the cap, request trailers), found while
+    /// its body was read. The caller is verified by now, so the answer is that row, rendered by
+    /// the route's plane; an unverified caller never reaches here and receives the one 401, so
+    /// the order of the refusal table holds although the body arrived first.
+    pub fn refuse_input(self, refusal: super::admission_table::Refusal) -> DataPreparationFailed {
+        use super::admission_table::Refusal;
+        let reason = match refusal {
+            Refusal::BodyTooLarge => DataRefused::TooLarge,
+            Refusal::Trailers => DataRefused::Trailers,
+            // No other row is an input's own: nothing is answered, the request is cancelled.
+            _ => DataRefused::Binding,
+        };
+        preparation_failed(
+            self.preparation,
+            self.route,
+            self.selected,
+            Some(self.prepared),
+            reason,
+        )
     }
 
     /// Consumes the completion right before awaiting replay. Publication after this lease
