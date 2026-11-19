@@ -58,8 +58,16 @@ fn the_cancel_table() {
     assert_eq!(bill(cancel(false, true), &usage), Bill::Nothing);
     // After the head, before a byte reached the client: 0 (rule 3).
     assert_eq!(bill(cancel(true, false), &usage), Bill::Nothing);
-    // A plane FAULT, quarantine or failed end posts nothing.
-    assert_eq!(bill(Ending::Failed, &usage), Bill::Nothing);
+    // A failed session (a plane FAULT, a quarantine, a failed end, a refused USAGE) bills exactly
+    // the usage it accepted, once (owner decision P087B: "a session bills exactly the usage it
+    // accepted, whatever its ending"), and only its billing sources (rule 2): never an estimate.
+    assert_eq!(
+        amounts(&bill(Ending::Failed, &usage)),
+        vec![("tokens".into(), 40), ("floor".into(), 3)]
+    );
+    let mut guessed = SessionUsage::new();
+    guessed.answer("guess", rec(99, 0, SRC_ESTIMATED)).unwrap();
+    assert_eq!(bill(Ending::Failed, &guessed), Bill::Nothing);
     // A normal end posts every kept value, the estimated one included.
     assert_eq!(amounts(&bill(Ending::End, &usage)).len(), 3);
 }

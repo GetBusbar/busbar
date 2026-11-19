@@ -780,10 +780,243 @@ async fn unbilled_a_done_piece_cut_by_budget_bills_the_stated_usage() {
     assert_billed_the_stated_usage_once(&r, &caller, Checkpoint::Cut).await;
 }
 
-// The two other P087 cases (an unpriced done piece; a count-refused done piece) are owed, not
-// written here: on the port path the plane's running usage reaches the money only at the session's
-// end and a refused USAGE fails the session (which posts nothing), so neither "the last accepted
-// report bills" nor its `plane-usage-unread` row exists yet (D/pass1/NEEDS.tsv, card P087).
+// ---------------------------------------------------------------------------------------------
+// P087B: the unpriced done piece; the count-refused done piece; a session dropped before its end.
+// The rule (owner decision, P087B): a session bills exactly the usage it accepted, once, whatever
+// its ending. A final report the money cannot price is never billed as 0 nor at an invented price:
+// it is audited `plane-usage-unread` (BUSBAR-5046) with its raw stated counts and the unit is left
+// unread (unresolved), while the usage accepted before it bills at the admitted card.
+// ---------------------------------------------------------------------------------------------
+
+/// K0 `Unpriced`: the HEAD piece states (3, 4), which the money accepts as it comes; the done
+/// piece states (7, 11) and 5 `bytes`, a class lane `m`'s card names no price for, so the money
+/// cannot price that final report under the unit's spend ceiling. It is not billed (neither 0 nor
+/// an invented price): the unit is left unread, one `plane-usage-unread` row carries the unit, its
+/// lane and the raw stated counts, and the accepted (3, 4) bills exactly once.
+#[tokio::test]
+async fn unbilled_an_unpriced_done_piece_bills_the_accepted_usage_once_and_records_unread() {
+    let r = rig().await;
+    r.money
+        .limit_unit_spend(UnitKey::new(UNIT), 1_000)
+        .expect("the unit's spend ceiling");
+    let plane = Plane::answering(
+        vec![It::Usage("input", 3), It::Usage("output", 4)],
+        Vec::new(),
+        vec![
+            It::Respond(200),
+            It::Body(b"done"),
+            It::End,
+            It::Usage("input", 7),
+            It::Usage("output", 11),
+            It::Usage("bytes", 5),
+        ],
+    );
+    let caller = Caller::staying();
+    let mut walk = Walk::of_b();
+    serve(&r, &plane, &caller, &mut walk).await;
+    assert_eq!(caller.took(), ["head 200", "body done", "end"]);
+    assert_eq!(
+        r.seam.log(),
+        vec![
+            checkpointed(&[(0, 3), (1, 4)], Checkpoint::Continue),
+            checkpointed(&[(0, 7), (1, 11), (2, 5)], Checkpoint::Unpriced),
+            "unread Unpriced".to_string(),
+            "finished".to_string(),
+        ],
+        "the final report was asked once, answered Unpriced, and the unit was left unread"
+    );
+    assert_eq!(
+        *r.rows.0.lock().unwrap(),
+        [format!(
+            "plane-usage-unread unit:{UNIT} lane:m reason:unpriced \
+             stated:input=7/reported,output=11/reported,bytes=5/reported"
+        )],
+        "one unread row: the unit, its lane and the raw stated counts"
+    );
+    settle(&r, &caller);
+    assert_eq!(
+        ledgered(&r).await,
+        Count::from(7u64),
+        "the accepted (3 + 4), exactly: the unpriced report is neither 0 nor priced"
+    );
+    assert_eq!(r.money.open_units(), 0, "the settlement closed the unit");
+    settle(&r, &caller);
+    assert_eq!(
+        ledgered(&r).await,
+        Count::from(7u64),
+        "a second settlement bills nothing again"
+    );
+    assert_eq!(r.rows.0.lock().unwrap().len(), 1, "never audited twice");
+}
+
+/// K0b: the done piece states (7, 11) beside a USAGE the session may not keep (a class no plane
+/// may name). The session refuses the whole answer and fails. The rule is no longer "a failed
+/// session bills nothing": the usage it accepted, the HEAD's (3, 4), bills exactly once, at the
+/// owner's settlement of the failure; the refused report is never billed, and is audited
+/// `plane-usage-unread` with the reason it was refused.
+#[tokio::test]
+async fn unbilled_a_count_refused_done_piece_bills_the_accepted_usage_once_and_audits_the_refusal()
+{
+    let r = rig().await;
+    let plane = Plane::answering(
+        vec![It::Usage("input", 3), It::Usage("output", 4)],
+        Vec::new(),
+        vec![
+            It::Respond(200),
+            It::Body(b"done"),
+            It::End,
+            It::Usage("input", 7),
+            It::Usage("output", 11),
+            It::Usage("Bad", 1),
+        ],
+    );
+    let caller = Caller::staying();
+    let mut walk = Walk::of_b();
+    let ran = session(&r, &plane, &caller, &mut walk).await;
+    assert!(
+        matches!(
+            ran,
+            Err(crate::plane_driver::port_session::SessionError::Violation(
+                crate::plane_driver::port_session::Violation::Usage(
+                    crate::plane_driver::usage::UsageInvalid::Class
+                )
+            ))
+        ),
+        "the refused count failed the session: {ran:?}"
+    );
+    assert!(
+        caller.took().is_empty(),
+        "nothing of the refused answer reached the caller"
+    );
+    assert_eq!(
+        r.seam.log(),
+        vec![
+            checkpointed(&[(0, 3), (1, 4)], Checkpoint::Continue),
+            "unread Unpriced".to_string(),
+            checkpointed(&[(0, 3), (1, 4)], Checkpoint::Continue),
+            "finished".to_string(),
+        ],
+        "the accepted (3, 4) is the failed session's bill; nothing of the refused report was taken"
+    );
+    assert_eq!(
+        *r.rows.0.lock().unwrap(),
+        [format!(
+            "plane-usage-unread unit:{UNIT} lane:m reason:unpriced refused:class"
+        )],
+        "the refused report is audited with its reason"
+    );
+    settle_failed(&r);
+    assert_eq!(
+        ledgered(&r).await,
+        Count::from(7u64),
+        "the accepted (3 + 4), exactly; nothing of the refused (7, 11)"
+    );
+    assert_eq!(r.money.open_units(), 0, "the settlement closed the unit");
+    settle_failed(&r);
+    assert_eq!(
+        ledgered(&r).await,
+        Count::from(7u64),
+        "a second settlement bills nothing again"
+    );
+    assert_eq!(requests(&r).await, 1, "the request stays counted, once");
+}
+
+/// P090 (1): the session is dropped (its task cancelled) after the far end's HEAD piece stated
+/// (3, 4), while the head's write to the caller is pending, before the plane's end. The owner
+/// settles it as a failure that ran nothing; the usage the session accepted bills exactly once.
+#[tokio::test]
+async fn unbilled_a_session_dropped_before_its_end_bills_the_accepted_usage_once() {
+    let r = rig().await;
+    let plane = Plane::answering(
+        vec![
+            It::Respond(200),
+            It::Usage("input", 3),
+            It::Usage("output", 4),
+        ],
+        Vec::new(),
+        Vec::new(),
+    );
+    let caller = Caller::hanging_at(0);
+    let mut walk = Walk::of_b();
+    {
+        let mut running = Box::pin(session(&r, &plane, &caller, &mut walk));
+        std::future::poll_fn(|cx| {
+            assert!(
+                std::future::Future::poll(running.as_mut(), cx).is_pending(),
+                "the caller never takes the head"
+            );
+            Poll::Ready(())
+        })
+        .await;
+    }
+    assert_eq!(
+        caller.writes.load(Ordering::SeqCst),
+        1,
+        "dropped at the head's write"
+    );
+    assert_eq!(
+        r.seam.log(),
+        vec![checkpointed(&[(0, 3), (1, 4)], Checkpoint::Continue)],
+        "the HEAD's usage reached the books as it was accepted; the session never ended"
+    );
+    assert_eq!(r.money.open_units(), 1, "the unit waits for its owner");
+    settle_failed(&r);
+    assert_eq!(
+        ledgered(&r).await,
+        Count::from(7u64),
+        "the accepted (3 + 4), exactly"
+    );
+    assert_eq!(r.money.open_units(), 0, "the settlement closed the unit");
+    settle_failed(&r);
+    assert_eq!(
+        ledgered(&r).await,
+        Count::from(7u64),
+        "a second settlement bills nothing again"
+    );
+    assert_eq!(requests(&r).await, 1, "the request stays counted, once");
+    assert!(
+        r.rows.0.lock().unwrap().is_empty(),
+        "{:?}",
+        r.rows.0.lock().unwrap()
+    );
+}
+
+/// P090 (2): the far end is dialled and its HEAD reaches the plane, which states no usage yet; the
+/// session is dropped at the head's write. A dialled far end counts as run: the owner's "ran
+/// nothing" settlement does not release the request count admission took, and bills nothing.
+#[tokio::test]
+async fn unbilled_a_session_dropped_after_dialling_keeps_its_request_counted() {
+    let r = rig().await;
+    assert_eq!(requests(&r).await, 1, "admission counted the request");
+    let plane = Plane::answering(vec![It::Respond(200)], Vec::new(), Vec::new());
+    let caller = Caller::hanging_at(0);
+    let mut walk = Walk::of_b();
+    {
+        let mut running = Box::pin(session(&r, &plane, &caller, &mut walk));
+        std::future::poll_fn(|cx| {
+            assert!(
+                std::future::Future::poll(running.as_mut(), cx).is_pending(),
+                "the caller never takes the head"
+            );
+            Poll::Ready(())
+        })
+        .await;
+    }
+    assert_eq!(
+        caller.writes.load(Ordering::SeqCst),
+        1,
+        "the far end answered"
+    );
+    assert!(r.seam.log().is_empty(), "no usage was stated");
+    settle_failed(&r);
+    assert_eq!(r.money.open_units(), 0, "the settlement closed the unit");
+    assert_eq!(
+        requests(&r).await,
+        1,
+        "the far end was dialled: the request is counted"
+    );
+    assert_eq!(ledgered(&r).await, Count::ZERO, "nothing was stated");
+}
 
 // ---------------------------------------------------------------------------------------------
 // P088: the second half (a done piece straddling the deadline or a reload; a unit buried with its
