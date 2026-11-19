@@ -372,3 +372,115 @@ fn b_identity() {
         "every request's identity is released when it ends"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// OWED SECURITY PROOFS at the native listener's per-route auth step (ci/owed/cut-root and
+// ci/owed/cut SECURITY-OWED.tsv). The old door tests that proved these drove a whole listener;
+// the decision they asserted is made here, in `admit`, for every native route.
+// ---------------------------------------------------------------------------------------------
+
+/// SECURITY-OWED `actual_signed_reader_preserves_credential_body_gate_and_revocation_custody`:
+/// a signed-ingress route admits on the verified body signature and on nothing else. A verified
+/// principal, the operator credential, or both, never stand in for it; an unverified or absent
+/// signature is refused; and the admitted request carries NO identity, whatever else the caller
+/// presented beside the signature.
+#[tokio::test]
+async fn a_signed_ingress_route_admits_only_on_the_signature_and_carries_no_identity() {
+    let d = door(Err(TicketDenied::Invalid));
+    for signed in [None, Some(false)] {
+        for (principal, operator) in [
+            (Principal::Anonymous, false),
+            (ada(), false),
+            (Principal::Anonymous, true),
+            (ada(), true),
+        ] {
+            let creds = Credentials {
+                principal,
+                operator,
+                signed,
+                ..anonymous()
+            };
+            let refused = run(AUTH_SIGNED_INGRESS, creds, &d).await.unwrap_err();
+            assert_eq!(
+                refused.code, R_BAD_CREDENTIAL,
+                "signed={signed:?} operator={operator}: nothing stands in for the signature"
+            );
+        }
+    }
+    let creds = Credentials {
+        principal: ada(),
+        operator: true,
+        signed: Some(true),
+        ..anonymous()
+    };
+    let admitted = run(AUTH_SIGNED_INGRESS, creds, &d).await.unwrap();
+    assert_eq!(admitted.auth, AUTH_SIGNED_INGRESS);
+    assert!(
+        admitted.identity.is_none() && admitted.identity_records().is_empty(),
+        "a signed request is admitted with no identity"
+    );
+    assert!(admitted.ticket_record().is_empty());
+}
+
+/// SECURITY-OWED `the_agent_trust_verbs_refuse_a_caller_holding_no_admin_token_or_the_wrong_one`
+/// and `test_metrics_requires_auth_in_chain_mode`: a route that asks for the operator refuses
+/// every caller that is not the operator: no credential, a verified data-plane principal (the
+/// wrong token: it authenticates, as someone else), a rejected credential and a verified body
+/// signature. Only the operator is admitted.
+#[tokio::test]
+async fn an_operator_route_refuses_every_caller_that_is_not_the_operator() {
+    let d = door(Err(TicketDenied::Invalid));
+    let not_the_operator = [
+        anonymous(),
+        Credentials {
+            principal: ada(),
+            ..anonymous()
+        },
+        Credentials {
+            principal: Principal::Rejected(busbar_plugin_abi::kinds::auth::auth::BAD_CREDENTIAL),
+            ..anonymous()
+        },
+        Credentials {
+            principal: ada(),
+            signed: Some(true),
+            ..anonymous()
+        },
+    ];
+    for (case, creds) in not_the_operator.into_iter().enumerate() {
+        let refused = run(AUTH_OPERATOR, creds, &d).await.unwrap_err();
+        assert_eq!(
+            refused.code, R_POLICY,
+            "case {case}: a caller that is not the operator was not refused by policy"
+        );
+    }
+    let operator = Credentials {
+        operator: true,
+        ..anonymous()
+    };
+    assert_eq!(
+        run(AUTH_OPERATOR, operator, &d).await.unwrap().auth,
+        AUTH_OPERATOR
+    );
+}
+
+/// SECURITY-OWED `an_unkeyed_unit_on_a_credential_claim_is_refused` and the three cases of
+/// `plane_driver_principal_need.rs`: a route that requires a principal is satisfied by a verified
+/// principal only. Holding the operator credential or a verified body signature without one is
+/// still no identity, and is refused as unauthenticated.
+#[tokio::test]
+async fn a_principal_route_is_never_satisfied_by_the_operator_or_a_signature_alone() {
+    let d = door(Err(TicketDenied::Invalid));
+    for (operator, signed) in [(true, None), (false, Some(true)), (true, Some(true))] {
+        let creds = Credentials {
+            operator,
+            signed,
+            ..anonymous()
+        };
+        let refused = run(AUTH_PRINCIPAL, creds, &d).await.unwrap_err();
+        assert_eq!(
+            (refused.code, refused.status),
+            (R_AUTH_REQUIRED, 401),
+            "operator={operator} signed={signed:?}: admitted without a principal"
+        );
+    }
+}

@@ -321,3 +321,34 @@ async fn a_reload_that_adds_an_operator_credential_where_start_had_none_is_refus
     test.refused_as_a_whole(&added, "adds it");
     assert_eq!(held_refusals().len(), 1, "the refused reload is audited");
 }
+
+/// SECURITY-OWED `a_role_shadowing_the_operator_principal_is_refused` (ci/owed/cut-root): a role
+/// binding named as the operator principal would let a data-plane credential be judged as the
+/// operator. Validation refuses the deployment and names the binding. The deleted test reached
+/// this through the old linked auth axis; the rule is the kernel's and is reached here over the
+/// natively bound operator.
+#[test]
+fn a_role_named_as_the_operator_principal_is_refused_by_validation() {
+    use busbar_kernel::config::{self, AuthCfg, AuthChainEntry, RoleBindingCfg};
+    let fixture = OperatorReload::new();
+    let mut cfg = fixture.deployment(None);
+    let mut auth = AuthCfg::default_none();
+    auth.chain = vec![AuthChainEntry::bare(config::KEYS_MODULE)];
+    auth.role_bindings.insert(
+        config::KEYS_MODULE.to_string(),
+        std::iter::once((
+            config::operator_principal_id().to_string(),
+            RoleBindingCfg::default(),
+        ))
+        .collect(),
+    );
+    cfg.auth = Some(auth);
+    let errs = busbar_kernel::config_validate::validate(&cfg)
+        .expect_err("a role named as the operator principal is refused");
+    assert!(
+        errs.iter().any(|e| e.contains("role_bindings.keys")
+            && e.contains(&format!("'{}'", config::operator_principal_id()))
+            && e.contains("reserved")),
+        "expected the reserved-role-name refusal; got: {errs:?}"
+    );
+}
