@@ -173,9 +173,10 @@ impl PortSeat {
 
     /// One `admin(ADMIN_TICK)`: the plane's PUSHes are queued under this instance's namespace (EMITs already went
     /// to their carriers). A refused or failed tick, or a push the queue refuses, is logged and dropped: the next
-    /// tick is the retry. Answers how many pushes were queued. `at`: the timer's reading this tick fired at.
-    async fn tick_once(&self, queue: &StorePushQueue, at: Instant) -> usize {
-        let out = match self.driver.tick(at).await {
+    /// tick is the retry. Answers how many pushes were queued. `mono_ns`: the node's monotonic clock reading
+    /// this tick took as it fired.
+    async fn tick_once(&self, queue: &StorePushQueue, mono_ns: u64) -> usize {
+        let out = match self.driver.tick(mono_ns).await {
             Ok(out) => out,
             Err(error) => {
                 tracing::warn!(instance = %self.instance, ?error, "a plane tick failed");
@@ -206,9 +207,11 @@ impl PortSeat {
         // The first tick of an interval is immediate: the plane has just opened, its first period starts now.
         every.tick().await;
         loop {
-            // The timer's own reading of this tick is the one clock reading the tick takes.
-            let at = every.tick().await.into_std();
-            self.tick_once(&queue, at).await;
+            every.tick().await;
+            // The node's monotonic clock, read once as this tick fires: the deadline is set from
+            // it and the plane is handed it.
+            let mono_ns = crate::store::monotonic_ns();
+            self.tick_once(&queue, mono_ns).await;
         }
     }
 }
@@ -585,11 +588,12 @@ impl PortDriver {
     ///
     /// # Errors
     /// The plane refused, failed or faulted, or its answer is not records.
-    async fn tick(&self, at: Instant) -> Result<TickOut, PortError> {
+    async fn tick(&self, mono_ns: u64) -> Result<TickOut, PortError> {
         let cx = CallCx {
-            deadline: at + TICK_GRACE,
+            deadline: busbar_contract::mono_instant::instant_at(mono_ns) + TICK_GRACE,
             request_id: 0,
             stack: Default::default(),
+            mono_ns,
         };
         let answer = self.port.admin(cx, ADMIN_TICK, &[]).await?;
         let out = decode_tick(&answer).map_err(|_| PortError::Failed {

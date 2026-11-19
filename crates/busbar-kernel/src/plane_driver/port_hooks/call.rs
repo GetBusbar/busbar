@@ -178,7 +178,7 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
                 context: &context,
             };
             handle.block_on(async {
-                tokio::time::timeout_at(deadline.into(), invoke(&call, point, &input, deadline))
+                tokio::time::timeout_at(deadline.into(), invoke(&call, point, &input, deadline, mono_ns))
                     .await
                     .map_err(|_| Failed::Port)?
             })
@@ -209,6 +209,7 @@ async fn invoke(
     point: u32,
     input: &Input<'_>,
     deadline: Instant,
+    mono_ns: u64,
 ) -> Result<Reply, Failed> {
     let facts = call.port.facts();
     let content =
@@ -354,6 +355,7 @@ async fn invoke(
         deadline,
         request_id: input.request_id,
         stack: Default::default(),
+        mono_ns,
     };
     let answer = match call.port.on(cx, point, &view) {
         HookCall::Done(result) => result,
