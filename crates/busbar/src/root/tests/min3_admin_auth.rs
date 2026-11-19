@@ -98,20 +98,19 @@ fn issued_grants_keep_explicit_empty_policy_without_inventing_custody() {
 /// definition.
 fn operator_deployment(operator: &str, token: Option<&str>) -> busbar_kernel::config::RootCfg {
     crate::root::linked::register_stores();
-    let mut document = serde_json::json!({
-        "providers": {}, "models": {},
-        "store": {"module": "memory"},
-        "auth": {"chain": [], "admin_auth": [operator]},
-    });
+    // Written as the operator writes it (config.yaml text): this path names no serde_json.
+    let mut document = format!(
+        "providers: {{}}\nmodels: {{}}\nstore:\n  module: memory\nauth:\n  chain: []\n  \
+         admin_auth: [\"{operator}\"]\n"
+    );
     if let Some(token) = token {
-        document["identity-providers"] = serde_json::json!({
-            (operator): {
-                "module": operator,
-                "settings": {"sha256": crate::root::test_plugins::sha256(token.as_bytes())},
-            }
-        });
+        let digest = crate::root::test_plugins::sha256(token.as_bytes());
+        document.push_str(&format!(
+            "identity-providers:\n  \"{operator}\":\n    module: \"{operator}\"\n    settings:\n      \
+             sha256: \"{digest}\"\n"
+        ));
     }
-    let deploy = busbar_kernel::config::deploy_from_deserializer(
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
         &document,
         &crate::root::boot::axis_test_grammar(),
     )
