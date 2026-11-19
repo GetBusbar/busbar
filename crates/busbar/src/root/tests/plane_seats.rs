@@ -141,6 +141,8 @@ impl PlanePort for Quiet {
 struct Table {
     declared: Mutex<Vec<(InstanceId, NeedId, String)>>,
     anchored: Mutex<Vec<(NeedId, String, Option<String>)>>,
+    /// The private reach each anchoring sealed, by need.
+    reached: Mutex<Vec<(NeedId, bool)>>,
 }
 
 impl Conns for Table {
@@ -193,6 +195,10 @@ impl PollConns for Table {
             .lock()
             .unwrap()
             .push((need, target.to_owned(), anchors.key_pin.clone()));
+        self.reached
+            .lock()
+            .unwrap()
+            .push((need, anchors.private_reach));
         Ok(())
     }
 }

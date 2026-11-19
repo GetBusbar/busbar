@@ -433,6 +433,869 @@ async fn a_refused_declaration_leaves_no_need_to_open() {
     );
 }
 
+/// THE DECLARE/OPEN REFUSAL FIXTURE: a native need's refusals at declare and at open, each answered before the
+/// judge or any dial runs; the pin a config-targeted need is declared with; the admission of a pinned target.
+mod declare_open_refusals {
+    use super::*;
+
+    use std::sync::Mutex;
+
+    use busbar_contract::abi::host::conn::connector::{
+        EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_PROVIDER,
+    };
+    use busbar_contract::conn::Bytes;
+    use busbar_contract::services::codes::{DEST_INTERNAL, DEST_METADATA};
+
+    use crate::conns::refusal_text;
+    use crate::DialJudge;
+
+    /// A second owner, whose authority the host does not hold.
+    const OTHER: InstanceId = InstanceId(8);
+
+    /// How long a refused open is given to have dialled anyway (as the tests above wait).
+    const SETTLE: Duration = Duration::from_millis(200);
+
+    /// How long an admitted open's connect is given to land at its far end.
+    const LANDS: Duration = Duration::from_secs(10);
+
+    /// The fixture judge: it writes down every authority it is asked to judge and the class it is asked in. A
+    /// loopback literal (the tests' far ends) is admitted, except in `restricted`, a class whose rule refuses an
+    /// internal address; every other target is judged by the connector's own literal guard (a metadata address
+    /// refused in every class, a private one per the class's rule).
+    struct Recording {
+        guard: crate::conns::LiteralsOnly,
+        restricted: Option<u32>,
+        asked: Mutex<Vec<(String, u32)>>,
+    }
+
+    impl Recording {
+        fn new(restricted: Option<u32>) -> Arc<Self> {
+            Arc::new(Self {
+                guard: crate::conns::LiteralsOnly(crate::conns::guard::Guard::default()),
+                restricted,
+                asked: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn asked(&self) -> Vec<(String, u32)> {
+            self.asked.lock().expect("asked").clone()
+        }
+
+        fn count(&self) -> usize {
+            self.asked.lock().expect("asked").len()
+        }
+    }
+
+    impl DialJudge for Recording {
+        fn judge_dial(
+            &self,
+            dest: &str,
+            class: u32,
+            done: Judged,
+        ) -> Option<Result<SocketAddr, Verdict>> {
+            self.asked
+                .lock()
+                .expect("asked")
+                .push((dest.to_owned(), class));
+            match crate::conns::socket::address_of(dest) {
+                Some(addr) if addr.ip().is_loopback() => Some(if self.restricted == Some(class) {
+                    Err(DEST_INTERNAL)
+                } else {
+                    Ok(addr)
+                }),
+                _ => self.guard.judge_dial(dest, class, done),
+            }
+        }
+    }
+
+    /// A connector judging through `judge`, keeping no idle connection (every admitted open dials), its `http`
+    /// carrier handed over, and its owner carrying `insecure_transport.accept: plaintext` (SEC-2: the tests' far
+    /// ends are plaintext loopback; `open-web` never admits plaintext whatever the owner accepts).
+    fn judged_by(judge: &Arc<Recording>) -> Connector {
+        let connector = Connector::serving(
+            Arc::clone(judge) as Arc<dyn DialJudge>,
+            None,
+            Arc::new(|_, _| {}),
+        )
+        .pooling(PoolPosture::NONE);
+        connector
+            .carry_natively(vec![carrier(CARRIER_HTTP)], storage())
+            .expect("the hand-over");
+        DeclaredConns::accept_plaintext(&connector, OWNER);
+        connector
+    }
+
+    /// A listening far end that has not been dialled.
+    fn far_end() -> (TcpListener, SocketAddr) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a far end");
+        listener.set_nonblocking(true).expect("non-blocking");
+        let addr = listener.local_addr().expect("its address");
+        (listener, addr)
+    }
+
+    /// Whether `listener` is handed a connection within `wait`.
+    fn dialled(listener: &TcpListener, wait: Duration) -> bool {
+        let until = Instant::now() + wait;
+        loop {
+            if listener.accept().is_ok() {
+                return true;
+            }
+            if Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// An outbound `http` need in `class` whose target its config names (`target_from`).
+    fn pinned(class: u32) -> ReadNeed {
+        ReadNeed {
+            egress_class: class,
+            target_from: "settings.url".into(),
+            ..need()
+        }
+    }
+
+    fn declare(
+        connector: &Connector,
+        need: NeedId,
+        spec: &ReadNeed,
+        target: Option<&str>,
+    ) -> Result<(), ConnError> {
+        DeclaredConns::declare(connector, OWNER, need, spec, target, None)
+    }
+
+    /// The open of `need` at `desc`, its connection id dropped.
+    fn open(connector: &Connector, owner: InstanceId, need: NeedId, desc: &OpenDesc<'_>) -> Result<(), ConnError> {
+        connector.open(owner, need, desc).map(drop)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn actual_secure_and_undeclared_refusals_happen_before_any_destination_open() {
+        let (listener, addr) = far_end();
+        let judge = Recording::new(None);
+        let connector = judged_by(&judge);
+        declare(&connector, NEED, &need(), None).expect("a default-class need");
+        let open_web = NeedId(5);
+        let open_web_need = ReadNeed {
+            egress_class: EGRESS_OPEN_WEB,
+            ..need()
+        };
+        declare(&connector, open_web, &open_web_need, None).expect("an open-web need");
+        let target = format!("http://{addr}/v1");
+
+        assert_eq!(
+            DeclaredConns::open_request(&connector, OWNER, NEED, &desc(&target), true, 5_000)
+                .map(drop),
+            Err(ConnError::AuthRefused),
+            "an auth that must be delivered secured is refused a plaintext target"
+        );
+        assert_eq!(
+            open(&connector, OWNER, NeedId(9), &desc(&target)),
+            Err(ConnError::UndeclaredNeed),
+            "an undeclared need"
+        );
+        let refused_head = OpenDesc {
+            head_target: b"/v1\0",
+            ..desc(&target)
+        };
+        assert_eq!(
+            open(&connector, OWNER, NEED, &refused_head),
+            Err(ConnError::Refused),
+            "a refused head"
+        );
+        assert_eq!(
+            open(&connector, OWNER, open_web, &desc(&target)),
+            Err(ConnError::Refused),
+            "a plaintext target in a class that requires security"
+        );
+        assert_eq!(
+            connector.refusal(OWNER, open_web),
+            Some(NeedRefusal::Policy(refusal_text::PLAINTEXT))
+        );
+        assert_eq!(judge.count(), 0, "no refusal reached the judge");
+        assert!(!dialled(&listener, SETTLE), "no refusal dialled");
+
+        let conn = connector
+            .open(OWNER, NEED, &desc(&target))
+            .expect("the admitted open");
+        assert_eq!(
+            judge.asked(),
+            vec![(addr.to_string(), EGRESS_DEFAULT)],
+            "an admitted target crosses the judge exactly once"
+        );
+        assert!(dialled(&listener, LANDS), "and is dialled");
+        connector.close(OWNER, conn).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
+        let (listener, addr) = far_end();
+        let judge = Recording::new(Some(EGRESS_PROVIDER));
+        let connector = judged_by(&judge);
+        let restricted = NeedId(4);
+        declare(&connector, NEED, &need(), None).expect("the default-class need");
+        let provider = ReadNeed {
+            egress_class: EGRESS_PROVIDER,
+            ..need()
+        };
+        declare(&connector, restricted, &provider, None).expect("the restricted need");
+        let target = format!("http://{addr}/v1");
+
+        assert_eq!(
+            open(&connector, OWNER, restricted, &desc(&target)),
+            Err(ConnError::Refused),
+            "the restricted need is judged under its own class"
+        );
+        assert_eq!(
+            connector.refusal(OWNER, restricted),
+            Some(NeedRefusal::Policy(crate::conns::verdict_text(DEST_INTERNAL)))
+        );
+        assert!(!dialled(&listener, SETTLE), "the refused need dialled nothing");
+
+        let conn = connector
+            .open(OWNER, NEED, &desc(&target))
+            .expect("the default-class need opens the same target");
+        assert!(dialled(&listener, LANDS));
+        connector.close(OWNER, conn).unwrap();
+        let authority = addr.to_string();
+        assert_eq!(
+            judge.asked(),
+            vec![
+                (authority.clone(), EGRESS_PROVIDER),
+                (authority, EGRESS_DEFAULT)
+            ],
+            "each need was judged once, under its own class"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_config_targeted_need_dialing_elsewhere_is_refused() {
+        let (listener, addr) = far_end();
+        let (other_listener, other) = far_end();
+        let judge = Recording::new(None);
+        let connector = judged_by(&judge);
+        let declared = format!("http://{addr}/v1");
+        declare(&connector, NEED, &pinned(EGRESS_DEFAULT), Some(&declared))
+            .expect("the config target is admitted");
+        let judged_at_declare = judge.count();
+
+        for (elsewhere, what) in [
+            (
+                format!("http://127.0.0.2:{}/v1", addr.port()),
+                "another host",
+            ),
+            (format!("http://127.0.0.1:{}/v1", other.port()), "another port"),
+            (format!("https://{addr}/v1"), "the same authority secured"),
+        ] {
+            assert_eq!(
+                open(&connector, OWNER, NEED, &desc(&elsewhere)),
+                Err(ConnError::Refused),
+                "{what}"
+            );
+        }
+        assert_eq!(
+            judge.count(),
+            judged_at_declare,
+            "a target off the pin is refused before the judge"
+        );
+        assert!(!dialled(&other_listener, SETTLE), "another port is never dialled");
+        assert!(!dialled(&listener, SETTLE));
+
+        let conn = connector
+            .open(OWNER, NEED, &desc(&declared))
+            .expect("the declared target opens");
+        assert!(dialled(&listener, LANDS));
+        connector.close(OWNER, conn).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_fill_declared_need_is_pinned_to_its_resolved_target() {
+        let (first_listener, first) = far_end();
+        let (moved_listener, moved) = far_end();
+        let judge = Recording::new(None);
+        let connector = judged_by(&judge);
+        let spec = pinned(EGRESS_DEFAULT);
+        let first = format!("http://{first}/v1");
+        let moved = format!("http://{moved}/v1");
+
+        declare(&connector, NEED, &spec, Some(&first)).expect("the resolved target");
+        assert_eq!(
+            open(&connector, OWNER, NEED, &desc(&moved)),
+            Err(ConnError::Refused),
+            "a target other than the pin"
+        );
+        assert!(!dialled(&moved_listener, SETTLE));
+        let conn = connector
+            .open(OWNER, NEED, &desc(&first))
+            .expect("the resolved target opens");
+        assert!(dialled(&first_listener, LANDS));
+        connector.close(OWNER, conn).unwrap();
+
+        declare(&connector, NEED, &spec, Some(&moved)).expect("the re-declaration");
+        assert_eq!(
+            connector
+                .native_need(OWNER, NEED)
+                .and_then(|n| n.declared_target.clone())
+                .as_deref(),
+            Some(moved.as_str()),
+            "the re-declaration moved the pin"
+        );
+        assert_eq!(
+            open(&connector, OWNER, NEED, &desc(&first)),
+            Err(ConnError::Refused),
+            "the old pin"
+        );
+        assert!(!dialled(&first_listener, SETTLE), "the old pin is not dialled");
+        let conn = connector
+            .open(OWNER, NEED, &desc(&moved))
+            .expect("the re-declared target opens");
+        assert!(dialled(&moved_listener, LANDS));
+        connector.close(OWNER, conn).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_fill_declared_need_whose_target_resolved_to_nothing_is_refused() {
+        let (listener, addr) = far_end();
+        let judge = Recording::new(None);
+        let connector = judged_by(&judge);
+        let spec = ReadNeed {
+            target_from: "settings.upstream".into(),
+            ..need()
+        };
+        let resolved = format!("http://{addr}/v1");
+
+        // Never resolved: refused at declare, unjudged.
+        let never = NeedId(6);
+        assert_eq!(
+            declare(&connector, never, &spec, None),
+            Err(ConnError::Refused)
+        );
+        assert_eq!(
+            connector.refusal(OWNER, never),
+            Some(NeedRefusal::Policy(refusal_text::UNRESOLVED))
+        );
+        assert_eq!(judge.count(), 0, "a need resolved to nothing is not judged");
+
+        // Resolved once, then to nothing: the earlier pin does not survive.
+        declare(&connector, NEED, &spec, Some(&resolved)).expect("the resolved target");
+        assert_eq!(
+            declare(&connector, NEED, &spec, None),
+            Err(ConnError::Refused)
+        );
+        assert_eq!(
+            DeclaredConns::declared(&connector, OWNER, NEED),
+            Some(Err(ConnError::Refused)),
+            "the refusal is the answer kept"
+        );
+        assert_eq!(
+            connector.refusal(OWNER, NEED),
+            Some(NeedRefusal::Policy(refusal_text::UNRESOLVED))
+        );
+        assert!(connector.native_need(OWNER, NEED).is_none());
+        let judged = judge.count();
+        for target in [resolved.as_str(), ""] {
+            assert_eq!(
+                open(&connector, OWNER, NEED, &desc(target)),
+                Err(ConnError::Refused),
+                "{target:?}"
+            );
+            assert_eq!(
+                open(&connector, OWNER, never, &desc(target)),
+                Err(ConnError::Refused),
+                "{target:?}"
+            );
+        }
+        assert_eq!(judge.count(), judged, "the refused needs reach no judge");
+        assert!(!dialled(&listener, SETTLE), "and nothing is dialled");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_head_carrying_nul_or_its_own_framing_is_refused_before_any_dial() {
+        let (listener, addr) = far_end();
+        let judge = Recording::new(None);
+        let connector = judged_by(&judge);
+        declare(&connector, NEED, &need(), None).expect("the need");
+        let far = format!("http://{addr}/v1");
+        let nul_target = format!("http://{addr}/v1\0");
+        let crlf_target = format!("http://{addr}/v1\r\nX: y");
+        let refused: [(&str, OpenDesc<'_>); 15] = [
+            ("NUL in the target", desc(&nul_target)),
+            ("CRLF in the target", desc(&crlf_target)),
+            (
+                "NUL in the method",
+                OpenDesc {
+                    method: b"PO\0ST",
+                    ..desc(&far)
+                },
+            ),
+            (
+                "CR in the method",
+                OpenDesc {
+                    method: b"POST\r",
+                    ..desc(&far)
+                },
+            ),
+            (
+                "NUL in the request target",
+                OpenDesc {
+                    head_target: b"/v1/\0traces",
+                    ..desc(&far)
+                },
+            ),
+            (
+                "CRLF in the request target",
+                OpenDesc {
+                    head_target: b"/v1\r\nX: y",
+                    ..desc(&far)
+                },
+            ),
+            (
+                "NUL in a field name",
+                OpenDesc {
+                    fields: &[("x-\0nul", b"v".as_slice())],
+                    ..desc(&far)
+                },
+            ),
+            (
+                "LF in a field name",
+                OpenDesc {
+                    fields: &[("Bad\nName", b"v".as_slice())],
+                    ..desc(&far)
+                },
+            ),
+            (
+                "NUL in a field value",
+                OpenDesc {
+                    fields: &[("x-nul", b"a\0b".as_slice())],
+                    ..desc(&far)
+                },
+            ),
+            (
+                "CRLF in a field value",
+                OpenDesc {
+                    fields: &[("x-evil", b"a\r\nInjected: 1".as_slice())],
+                    ..desc(&far)
+                },
+            ),
+            (
+                "the caller's own content-length",
+                OpenDesc {
+                    fields: &[
+                        ("authorization", b"Bearer abc.def".as_slice()),
+                        ("content-length", b"5".as_slice()),
+                    ],
+                    body: Bytes::from_static(b"token"),
+                    ..desc(&far)
+                },
+            ),
+            (
+                "the caller's own Content-Length",
+                OpenDesc {
+                    fields: &[("Content-Length", b"0".as_slice())],
+                    ..desc(&far)
+                },
+            ),
+            (
+                "the caller's own transfer-encoding",
+                OpenDesc {
+                    fields: &[("Transfer-Encoding", b"chunked".as_slice())],
+                    body: Bytes::from_static(b"token"),
+                    ..desc(&far)
+                },
+            ),
+            (
+                "the caller's own TRANSFER-ENCODING",
+                OpenDesc {
+                    fields: &[("TRANSFER-ENCODING", b"identity".as_slice())],
+                    ..desc(&far)
+                },
+            ),
+            (
+                "a padded framing field name",
+                OpenDesc {
+                    fields: &[(" content-length", b"0".as_slice())],
+                    ..desc(&far)
+                },
+            ),
+        ];
+        for (why, refused) in &refused {
+            assert_eq!(
+                open(&connector, OWNER, NEED, refused),
+                Err(ConnError::Refused),
+                "{why}"
+            );
+        }
+        assert_eq!(judge.count(), 0, "a refused head reaches no judge");
+        assert!(!dialled(&listener, SETTLE), "a refused head dials nothing");
+
+        let conn = connector
+            .open(
+                OWNER,
+                NEED,
+                &OpenDesc {
+                    fields: &[("authorization", b"Bearer abc.def".as_slice())],
+                    method: b"POST",
+                    head_target: b"/v1/traces",
+                    body: Bytes::from_static(b"token"),
+                    ..desc(&far)
+                },
+            )
+            .expect("a clean head opens");
+        assert_eq!(judge.count(), 1);
+        assert!(dialled(&listener, LANDS));
+        connector.close(OWNER, conn).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_auth_instances_own_host_field_is_refused_before_any_dial() {
+        let (listener, addr) = far_end();
+        let judge = Recording::new(None);
+        let connector = judged_by(&judge);
+        DeclaredConns::hold_authority(&connector, OWNER);
+        for owner in [OWNER, OTHER] {
+            DeclaredConns::declare(&connector, owner, NEED, &need(), None, None)
+                .expect("the need");
+        }
+        let far = format!("http://{addr}/token");
+        let token = |fields| OpenDesc {
+            fields,
+            method: b"POST",
+            head_target: b"/token",
+            body: Bytes::from_static(b"grant_type=authorization_code"),
+            ..desc(&far)
+        };
+        for host in ["host", "Host", "HOST", " host"] {
+            let fields: &[(&str, &[u8])] = &[
+                (
+                    "content-type",
+                    b"application/x-www-form-urlencoded".as_slice(),
+                ),
+                (host, b"idp.example.com".as_slice()),
+            ];
+            assert_eq!(
+                open(&connector, OWNER, NEED, &token(fields)),
+                Err(ConnError::Refused),
+                "the auth instance's own {host:?} field"
+            );
+        }
+        assert_eq!(judge.count(), 0, "a refused head reaches no judge");
+        assert!(!dialled(&listener, SETTLE), "a refused head dials nothing");
+
+        let conn = connector
+            .open(
+                OWNER,
+                NEED,
+                &token(&[(
+                    "content-type",
+                    b"application/x-www-form-urlencoded".as_slice(),
+                )]),
+            )
+            .expect("the auth instance's clean head opens");
+        assert!(dialled(&listener, LANDS));
+        connector.close(OWNER, conn).unwrap();
+
+        let conn = connector
+            .open(
+                OTHER,
+                NEED,
+                &token(&[("host", b"upstream.example.com".as_slice())]),
+            )
+            .expect("an owner whose authority is not held states its own host field");
+        assert!(dialled(&listener, LANDS));
+        connector.close(OTHER, conn).unwrap();
+        assert_eq!(judge.count(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_settings_derived_target_is_declared_without_its_userinfo() {
+        const USER: &str = "the-user";
+        const SECRET: &str = "s3cret-pw";
+        let (listener, addr) = far_end();
+        let judge = Recording::new(None);
+        let connector = judged_by(&judge);
+        let mut said: Vec<String> = Vec::new();
+        for (credentialed, cleared) in [
+            (
+                format!("http://{USER}:{SECRET}@{addr}/v1/traces"),
+                format!("http://{addr}/v1/traces"),
+            ),
+            (format!("http://{USER}@{addr}"), format!("http://{addr}")),
+        ] {
+            assert_eq!(
+                declare(&connector, NEED, &pinned(EGRESS_DEFAULT), Some(&credentialed)),
+                Ok(()),
+                "a settings-derived target is declared"
+            );
+            assert_eq!(
+                connector
+                    .native_need(OWNER, NEED)
+                    .and_then(|n| n.declared_target.clone())
+                    .as_deref(),
+                Some(cleared.as_str()),
+                "pinned without its userinfo"
+            );
+            said.push(format!(
+                "{:?} {:?}",
+                connector.refusal(OWNER, NEED),
+                DeclaredConns::declared(&connector, OWNER, NEED)
+            ));
+            let conn = connector
+                .open(OWNER, NEED, &desc(""))
+                .expect("the cleared target opens");
+            assert!(dialled(&listener, LANDS), "at the stripped authority");
+            connector.close(OWNER, conn).unwrap();
+        }
+        assert!(
+            judge
+                .asked()
+                .iter()
+                .all(|(authority, _)| *authority == addr.to_string()),
+            "only the stripped authority was judged: {:?}",
+            judge.asked()
+        );
+        said.push(format!("{:?}", judge.asked()));
+
+        // A target the plugin's own settings did not derive keeps its userinfo, and is refused for it.
+        let named = NeedId(4);
+        let credentialed = format!("http://{USER}:{SECRET}@{addr}/v1");
+        assert_eq!(
+            declare(&connector, named, &need(), Some(&credentialed)),
+            Err(ConnError::Refused)
+        );
+        assert_eq!(
+            connector.refusal(OWNER, named),
+            Some(NeedRefusal::Policy(refusal_text::CREDENTIALED))
+        );
+        said.push(format!("{:?}", connector.refusal(OWNER, named)));
+        for line in &said {
+            assert!(
+                !line.contains(SECRET) && !line.contains(USER),
+                "the dropped userinfo was repeated: {line}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_pinned_carrier_need_uses_the_same_authority_as_its_dial() {
+        let (listener, addr) = far_end();
+        let judge = Recording::new(None);
+        let connector = judged_by(&judge);
+        let authority = addr.to_string();
+        for (id, pin) in [
+            (NeedId(10), format!("http://{addr}")),
+            (NeedId(11), format!("http://{addr}/v1/traces")),
+        ] {
+            let before = judge.count();
+            assert_eq!(declare(&connector, id, &pinned(EGRESS_DEFAULT), Some(&pin)), Ok(()));
+            assert_eq!(DeclaredConns::declared(&connector, OWNER, id), Some(Ok(())));
+            let conn = connector
+                .open(OWNER, id, &desc(""))
+                .expect("the pinned need opens");
+            assert!(dialled(&listener, LANDS), "{pin}");
+            connector.close(OWNER, conn).unwrap();
+            assert_eq!(
+                judge.asked()[before..].to_vec(),
+                vec![
+                    (authority.clone(), EGRESS_OPERATOR_INFRASTRUCTURE),
+                    (authority.clone(), EGRESS_OPERATOR_INFRASTRUCTURE)
+                ],
+                "{pin}: the declare judged the authority its dial was judged at, in the same class"
+            );
+        }
+
+        let before = judge.count();
+        for (id, pin, class, why) in [
+            (
+                NeedId(12),
+                authority.clone(),
+                EGRESS_DEFAULT,
+                NeedRefusal::Policy(refusal_text::UNLOCATED),
+            ),
+            (
+                NeedId(13),
+                "http://169.254.169.254:80".to_owned(),
+                EGRESS_DEFAULT,
+                NeedRefusal::Policy(crate::conns::verdict_text(DEST_METADATA)),
+            ),
+            (
+                NeedId(14),
+                format!("http://{addr}"),
+                EGRESS_OPEN_WEB,
+                NeedRefusal::Policy(refusal_text::PLAINTEXT),
+            ),
+        ] {
+            assert_eq!(
+                declare(&connector, id, &pinned(class), Some(&pin)),
+                Err(ConnError::Refused),
+                "{pin}"
+            );
+            assert_eq!(
+                DeclaredConns::declared(&connector, OWNER, id),
+                Some(Err(ConnError::Refused))
+            );
+            assert_eq!(connector.refusal(OWNER, id), Some(why), "{pin}");
+            assert!(connector.native_need(OWNER, id).is_none());
+            assert_eq!(
+                open(&connector, OWNER, id, &desc("")),
+                Err(ConnError::Refused),
+                "{pin}"
+            );
+        }
+        assert_eq!(
+            judge.asked()[before..].to_vec(),
+            vec![(
+                "169.254.169.254:80".to_owned(),
+                EGRESS_OPERATOR_INFRASTRUCTURE
+            )],
+            "only the metadata pin needed the judge to refuse it"
+        );
+        assert!(!dialled(&listener, SETTLE), "a refused pin dials nothing");
+    }
+
+    #[test]
+    fn an_open_web_need_pinned_to_a_plaintext_target_is_refused_at_declare() {
+        let judge = Recording::new(None);
+        let connector = judged_by(&judge);
+        let spec = pinned(EGRESS_OPEN_WEB);
+        for (id, pin) in [
+            (NeedId(0), "http://127.0.0.1:4318"),
+            (NeedId(1), "http://localhost:4318"),
+            (NeedId(2), "http://collector.example/v1/traces"),
+        ] {
+            assert_eq!(
+                declare(&connector, id, &spec, Some(pin)),
+                Err(ConnError::Refused),
+                "{pin}"
+            );
+            assert_eq!(
+                DeclaredConns::declared(&connector, OWNER, id),
+                Some(Err(ConnError::Refused)),
+                "{pin}: the admission the plugin reads"
+            );
+            assert_eq!(
+                connector.refusal(OWNER, id),
+                Some(NeedRefusal::Policy(refusal_text::PLAINTEXT)),
+                "{pin}"
+            );
+            assert_eq!(
+                open(&connector, OWNER, id, &desc(pin)),
+                Err(ConnError::Refused),
+                "{pin}"
+            );
+        }
+        assert_eq!(
+            judge.count(),
+            0,
+            "the owner's plaintext acceptance notwithstanding, refused before any judgement"
+        );
+    }
+
+    #[test]
+    fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
+        let judge = Recording::new(None);
+        let connector = judged_by(&judge);
+        let secure = pinned(EGRESS_OPEN_WEB);
+        for (id, pin) in [
+            (NeedId(0), "https://collector.example:443"),
+            (NeedId(1), "https://1.1.1.1:443/v1/traces"),
+        ] {
+            assert_eq!(declare(&connector, id, &secure, Some(pin)), Ok(()), "{pin}");
+            assert_eq!(
+                DeclaredConns::declared(&connector, OWNER, id),
+                Some(Ok(())),
+                "{pin}"
+            );
+            assert_eq!(connector.refusal(OWNER, id), None, "{pin}");
+            assert_eq!(
+                connector
+                    .native_need(OWNER, id)
+                    .and_then(|n| n.declared_target.clone())
+                    .as_deref(),
+                Some(pin)
+            );
+        }
+        let plain = pinned(EGRESS_DEFAULT);
+        assert_eq!(
+            declare(&connector, NeedId(2), &plain, Some("http://127.0.0.1:4318")),
+            Ok(())
+        );
+        assert_eq!(
+            DeclaredConns::declared(&connector, OWNER, NeedId(2)),
+            Some(Ok(()))
+        );
+        assert_eq!(
+            judge.asked(),
+            vec![
+                ("1.1.1.1:443".to_owned(), EGRESS_OPEN_WEB),
+                ("127.0.0.1:4318".to_owned(), EGRESS_OPERATOR_INFRASTRUCTURE)
+            ],
+            "a literal is judged as its dial judges it; a name is resolved only at its dial"
+        );
+    }
+
+    #[test]
+    fn an_open_web_need_pinned_to_a_private_literal_is_refused_at_declare() {
+        let judge = Recording::new(None);
+        let connector = judged_by(&judge);
+        let spec = pinned(EGRESS_OPEN_WEB);
+        for (id, pin) in [
+            (NeedId(0), "https://10.0.0.5:443"),
+            (NeedId(1), "https://192.168.1.5/v1"),
+        ] {
+            assert_eq!(
+                declare(&connector, id, &spec, Some(pin)),
+                Err(ConnError::Refused),
+                "{pin}"
+            );
+            assert_eq!(
+                DeclaredConns::declared(&connector, OWNER, id),
+                Some(Err(ConnError::Refused))
+            );
+            assert_eq!(
+                connector.refusal(OWNER, id),
+                Some(NeedRefusal::Policy(crate::conns::verdict_text(DEST_INTERNAL))),
+                "{pin}"
+            );
+            assert!(connector.native_need(OWNER, id).is_none(), "{pin}");
+        }
+    }
+
+    #[test]
+    fn a_pinned_metadata_literal_is_refused_at_declare() {
+        let judge = Recording::new(None);
+        let connector = judged_by(&judge);
+        let mut id = 0;
+        for class in [
+            EGRESS_DEFAULT,
+            EGRESS_PROVIDER,
+            EGRESS_OPERATOR_INFRASTRUCTURE,
+            EGRESS_OPEN_WEB,
+            EGRESS_LOOPBACK_ALLOWED,
+        ] {
+            for pin in ["https://169.254.169.254:443", "https://169.254.169.254/latest"] {
+                id += 1;
+                let need = NeedId(id);
+                assert_eq!(
+                    declare(&connector, need, &pinned(class), Some(pin)),
+                    Err(ConnError::Refused),
+                    "class {class}: {pin}"
+                );
+                assert_eq!(
+                    DeclaredConns::declared(&connector, OWNER, need),
+                    Some(Err(ConnError::Refused))
+                );
+                assert_eq!(
+                    connector.refusal(OWNER, need),
+                    Some(NeedRefusal::Policy(crate::conns::verdict_text(DEST_METADATA))),
+                    "class {class}: {pin}"
+                );
+                assert!(connector.native_need(OWNER, need).is_none());
+            }
+        }
+    }
+}
+
 // POOL ISOLATION, JUDGED ADDRESS SETS AND THE PROGRAM REFUSAL (P095-3): what a line, a binding and a dial are
 // never lent across, and what is refused before anything is dialled or spawned.
 

@@ -678,6 +678,7 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-plugin-test",
  "foldhash",
  "hex",
  "serde",
@@ -807,7 +808,6 @@ name = "busbar-ports"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-ffi",
  "busbar-plugin-abi",
  "zeroize",
 ]
