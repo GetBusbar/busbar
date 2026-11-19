@@ -246,6 +246,7 @@ fn kernel(blocked: &[&str]) -> KernelServices {
     let d = busbar_kernel::config::Destinations {
         block_private_addresses: true,
         blocked: blocked.iter().map(|h| (*h).to_string()).collect(),
+        listens: Vec::new(),
     };
     kernel_services(crate::root::connector::guard_for(&d).expect("the guard"))
 }
@@ -713,8 +714,7 @@ async fn constructed_services_keep_their_governance_record_store() {
     use busbar_kernel::persistence::scoped::{Outcome, ScopedStore};
     let core = crate::root::real_store::core().await;
     let rows =
-        ScopedStore::host_private(core.clone(), "busbar.attach-probe", ["attach-probe"])
-            .unwrap();
+        ScopedStore::host_private(core.clone(), "busbar.attach-probe", ["attach-probe"]).unwrap();
     assert_eq!(
         rows.put(
             "attach-probe",

@@ -162,6 +162,8 @@ busbar-export-otlp = { workspace = true }
 # not name the layer beneath it — so the root hands each wire's build the layer it built below it.
 # Which wires a build links is the `transport` rows of the linked table below; the source names none.
 busbar-transport-tcp = { workspace = true }
+# The http transport is a MIN-3 image (its logic crate's `PLUGIN` header) on `min3-images`: it declares the `listen`
+# and `admin_listen` slots and carries the `http` dial carrier (deletion plan E3).
 busbar-transport-http = { workspace = true }
 # gRPC: its own framer door over the carrier (OWNER 2026-09-29, "1 new transport"), linked on the
 # transport-door axis. Its row reads its crate root's `door` and everything else off its Statement.
@@ -340,7 +342,8 @@ transport-tcp = "transport transport-door"
 # Every transport row is a door row (`transport-door`): the seal folds it from its door's Statement,
 # every door is opened on the root's one Connector, and no transport names another (on this old path
 # the carrier is the connector's choice from the target's scheme).
-transport-http = "transport transport-door"
+# The http transport is a MIN-3 image: its PLUGIN header, admitted as one transport instance.
+transport-http = "min3-images"
 transport-ws = "transport transport-door"
 transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
@@ -441,11 +444,12 @@ row = "auth-admin-tokens"
 # The generator (src/linked_gen.rs `carrier_rows`) refuses an unknown key, a key stated twice, a value
 # that is not a linked row on `min3-images`, and one row under two keys (one image frames one carrier);
 # boot and every config read refuse an assigned image that is not an admitted transport with the
-# carrier's role. No transport row of this distribution is a MIN-3 image yet (each is a door row
-# above), so the table is not stated and no carrier is assigned: `busbar --list-plugins` and the boot
-# line print `none` for all four. Each key arrives with its row's move to `min3-images` (http with
-# deletion step E3, grpc E8, websocket E9b, rtc E10). The FIPS build's exclude script must drop an
+# carrier's role. http is assigned with its row's move to `min3-images` (deletion step E3); grpc (E8),
+# websocket (E9b) and rtc (E10) are not yet, so `busbar --list-plugins` and the boot line print `none`
+# for them. The FIPS build's exclude script must drop an
 # excluded row's key with its row (its post-check refuses any remaining mention of the package).
+[package.metadata.busbar.carriers]
+http = "transport-http"
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
@@ -487,9 +491,6 @@ ranking_hook = "busbar-hook-ranking"
 source_file = "busbar-secret-file"
 
 [package.metadata.busbar.test-source-contexts]
-listener_framed = "busbar-transport-http"
-root_http = "busbar-transport-http"
-listener_bindings = "busbar-transport-http"
 root_stdio = "busbar-transport-stdio"
 boot_carrier_locate = "busbar-transport-tcp"
 listener_session = "busbar-transport-ws"
@@ -765,13 +766,10 @@ busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", 
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "06a8ade187e1cd961b348d45face2f2b2a1add27" }
-# THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
-# The pin is transport-http's dev head on busbar e171 (fdb6a882df: #45 the framer states its own head
-# lines at locate and adds none after the auth; #46 the accepted side is this door's; #49 a framing
-# failure is the system's words alone, no op prefix), moved past
-# 12b0783's behaviour in its own PR with its own upgrade-test verdict (FLEET.md transport-http rule). The
-# door claims `https` again (the transport fold's row).
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "c5826a640274e171cb257c3a262d321e089c1f73" }
+# THE HTTP TRANSPORT (kind: transport), a MIN-3 image pulled at a pinned rev; the logic crate whose `PLUGIN` header
+# the root admits. The pin is house/boot c3ead54: dev 693464d plus four framing fixes (house/lean 3938603) and the
+# `listen` and `admin_listen` slot declarations (D_LISTENER_SLOT).
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "c3ead54ee453e1cfc1569a933e8acb47abce5172" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
 busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "7ba0ce7e4db6073ffa1126265174f5046bda92c7" }
