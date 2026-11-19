@@ -280,6 +280,11 @@ impl CardEntry {
         &self.author
     }
 
+    /// Whether this entry is VOID: it prices no instant, and its id stays known.
+    pub fn is_voided(&self) -> bool {
+        self.voided
+    }
+
     /// Whether this entry's interval covers `t`: `effective_from <= t < effective_until`.
     pub fn covers(&self, t: u64) -> bool {
         t >= self.effective_from && self.effective_until.is_none_or(|until| t < until)

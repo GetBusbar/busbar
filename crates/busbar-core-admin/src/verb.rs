@@ -203,6 +203,7 @@ pub enum KernelVerb {
     GetLedgerCheckpoints,
     GetLedgerReconciliation,
     GetLedgerMigration,
+    GetLedgerRateHistory,
 
     GetAuditHead,
     GetAuditRange,
@@ -302,6 +303,7 @@ pub const TABLE: &[VerbRow] = table! {
     Ledger GetLedgerCheckpoints "GET" "/api/v1/admin/ledger/checkpoints" "get_ledger_checkpoints";
     Ledger GetLedgerReconciliation "GET" "/api/v1/admin/ledger/reconciliation" "get_ledger_reconciliation";
     Ledger GetLedgerMigration "GET" "/api/v1/admin/ledger/migration" "get_ledger_migration";
+    Ledger GetLedgerRateHistory "GET" "/api/v1/admin/ledger/rate-history" "get_ledger_rate_history";
     Audit GetAuditHead "GET" "/api/v1/admin/audit/head" "get_audit_head";
     Audit GetAuditRange "GET" "/api/v1/admin/audit/range" "get_audit_range";
     Audit GetAuditKeys "GET" "/api/v1/admin/audit/keys" "get_audit_keys";

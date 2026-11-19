@@ -424,7 +424,9 @@ Read any report of an unrepresentable rate rather than assuming it was converted
 
 Rate-card changes price subsequent usage; they do not reprice booked usage. Corrections use
 `POST /api/v1/admin/ledger/amend-rate-history`. The ledger exposes totals, checkpoints,
-reconciliation and migration reads under `/api/v1/admin/ledger/`. Prices are abstract cost
+reconciliation and migration reads under `/api/v1/admin/ledger/`, and
+`GET /api/v1/admin/ledger/rate-history` reads the dated card history back, one row per entry,
+as the store holds it. Prices are abstract cost
 units; do not add a currency field. See [the admin API](admin-api.md).
 
 Card history follows the Store's durability. An ephemeral Store loses it on restart. Do not

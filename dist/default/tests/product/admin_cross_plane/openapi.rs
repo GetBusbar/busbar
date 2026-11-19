@@ -30,8 +30,8 @@ fn openapi_operations_carry_stable_operation_ids() {
     }
 
     assert_eq!(
-        checked, 102,
-        "expected the 102 operations; the telemetry read is deleted"
+        checked, 103,
+        "expected the 103 operations; the telemetry read is deleted, the rate-history read added"
     );
     assert!(doc["paths"].get("/api/v1/admin/telemetry").is_none());
     assert_eq!(

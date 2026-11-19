@@ -1320,6 +1320,33 @@ fn doc_for(
             schema_of(gen.subschema_for::<LedgerMigration>()),
             "Whether this deployment has migrated, and the marker if it has",
         ),
+        KernelVerb::GetLedgerRateHistory => {
+            let mut doc = ledger_read(
+                "The dated rate-card history: every entry, its window and its card",
+                "One row per entry of the fleet-shared rate-card history, read from the store \
+                 (never this node's copy of it), in key order: the entry's identity, its window \
+                 in milliseconds since the epoch, the spans in which it is the card in force, how \
+                 and by whom it was written, and every rate and fee of its card as exact decimal \
+                 text. A card prices an instant from its start, inclusive, to its end, \
+                 exclusive. Every node answers the same rows for the same store state; \
+                 `generation` names the state a page was read at. Pages with `cursor` and \
+                 `limit`.",
+                schema_of(gen.subschema_for::<crate::v1::rate_history::RateHistoryPage>()),
+                "A page of the history, in key order",
+            );
+            doc.query = super::kinds::doc::query(&["cursor", "limit"]);
+            doc.errors = vec![
+                (
+                    "400",
+                    "`invalid_request`: malformed or mismatched pagination cursor".to_string(),
+                ),
+                unavailable_503(
+                    "the node could not take the unit, its rate-card history is not loaded, or \
+                     the store did not answer",
+                ),
+            ];
+            doc
+        }
 
         KernelVerb::GetAuditHead => audit_read(
             "The audit record chain's tip: position, digest, signature, key identifier and clock",
