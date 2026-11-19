@@ -386,6 +386,31 @@ pub(crate) fn deliver_original_page(
 /// in for it, so an admitted native entry stays installed until that producer exists.
 const ORIGINAL_FEE_APPLIED_PRODUCER: bool = false;
 
+/// THE MONEY JOIN of one native entry's retirement, read under the entry lock: the facts an
+/// admitted entry must hold before it may leave the Node book. An entry that was never admitted
+/// holds no money and has nothing to join.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct MoneyJoin {
+    /// The entry's terminal carries an admission: money was opened for it.
+    pub(super) admitted: bool,
+    /// The ordinary checkpoint's removal was acknowledged by the Store
+    /// (`PortBilling::ordinary_checkpoint_confirmed`).
+    pub(super) checkpoint_confirmed: bool,
+    /// Every original fee target is Applied or honestly CancelledBeforeSend
+    /// (`NativeOrdinaryTerminalSlot::fee_join_complete`, FEE-DEBT r1).
+    pub(super) fee_join_complete: bool,
+}
+
+impl MoneyJoin {
+    /// Whether the money side lets the entry retire.
+    pub(super) fn complete(self) -> bool {
+        if !self.admitted {
+            return true;
+        }
+        self.checkpoint_confirmed && ORIGINAL_FEE_APPLIED_PRODUCER && self.fee_join_complete
+    }
+}
+
 /// The adopted bound on candidates one native pulse examines, irrelevant entries included.
 pub(crate) const NATIVE_PULSE_CANDIDATES: usize = 64;
 
@@ -665,16 +690,17 @@ impl Node {
             let Some(terminal) = native.terminal.as_ref() else {
                 return false;
             };
-            let money = if terminal.admission().is_some() {
-                native
-                    .billing
-                    .ordinary_checkpoint_confirmed(&native.ordinary)
-                    .unwrap_or(false)
-                    && ORIGINAL_FEE_APPLIED_PRODUCER
-                    && native.ordinary.fee_join_complete()
-            } else {
-                true
-            };
+            let admitted = terminal.admission().is_some();
+            let money = MoneyJoin {
+                admitted,
+                checkpoint_confirmed: admitted
+                    && native
+                        .billing
+                        .ordinary_checkpoint_confirmed(&native.ordinary)
+                        .unwrap_or(false),
+                fee_join_complete: admitted && native.ordinary.fee_join_complete(),
+            }
+            .complete();
             let notary = native
                 .staged
                 .as_ref()
@@ -842,3 +868,7 @@ pub(crate) mod retained_fixture {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "native_retire_tests.rs"]
+mod retire_tests;
