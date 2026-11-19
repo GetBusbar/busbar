@@ -1029,7 +1029,6 @@ dependencies = [
  "busbar-artifact-verifier",
  "busbar-contract",
  "busbar-ffi",
- "busbar-kernel-breaker",
  "busbar-plugin-abi",
  "busbar-ports",
  "flate2",
