@@ -2041,8 +2041,8 @@ core's outbox can be lost even though their clients already received answers. Th
 handed over since the last group commit, at most one flush interval (100 ms by default; for audit
 lines the flusher clamps the interval to 1 to 1,000 ms), and the refusal counts of that interval.
 This setting does not decide how money is recorded. Spend and request counts follow
-`advanced.usage_flush_interval_ms` below in both modes. A request's charge is keyed by its unit
-identity, so a recovery replay never counts it twice. A normal shutdown flushes everything first.
+`advanced.usage_flush_interval_ms` below in both modes. On a normal shutdown the flusher makes one
+last flush when shutdown begins.
 
 **When the flusher cannot commit** (store down, disk full) for longer than 2 seconds, new
 billable requests are refused with the "durability unavailable" refusal, and `BUSBAR-2060` is
