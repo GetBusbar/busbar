@@ -204,21 +204,23 @@ pub fn on_fixed<'o, K: Kind, H: Head, const T: usize, const B: usize>(
         .map_err(|reason| inst.charge(reason))
 }
 
-/// Shim 4: the call that ends a session. The token is spent whatever the answer; the caller drops `s`.
+/// Shim 4: the call that ends a session. It consumes the handle: the plugin removes the session
+/// whatever it answers, so nothing is cancelled afterwards.
 pub fn ends<'o, K: Kind, H: Head, const T: usize, const B: usize>(
-    s: &mut Sess<K>,
+    s: Sess<K>,
     method: u8,
     at: Mono,
     frame: &Frame<'_, H, T, B>,
     buf: &'o mut PooledOut,
 ) -> Result<Answer<'o>, CallError> {
     let Sess { inst, session } = s;
-    let inst = &**inst;
+    let inst = &*inst;
     if !inst.is_live() {
+        // `session` drops here: the boundary crate cancels the token.
         return Err(CallError::Quarantined);
     }
     let call = frame.call(at);
-    let token = ffi::token(session);
+    let token = ffi::token(&session);
     let status = ffi::guard(inst.slot, method, buf, |lease| {
         record::toward(inst, method, token, &call, &[]);
         ffi::ends(session, method, &call, lease)
@@ -263,7 +265,8 @@ pub async fn chain<'a, K: Kind, N: Needs, H: Head + Send + 'a>(
         ffi::starts(live, method, at.0, head.as_bytes(), bufs, blob_at, lease)
     })
     .await?;
-    record::back(inst, method, owned.answer().status, owned.bytes());
+    let answer = owned.answer();
+    record::back(inst, method, answer.status, answer.records().rest());
     Ok(owned)
 }
 

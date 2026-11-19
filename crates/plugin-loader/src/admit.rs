@@ -14,8 +14,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(unix)]
-use std::sync::Mutex;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use busbar_ffi::image::{Admitted as Header, ImageError};
 use busbar_ffi::{LinkedPlugin, Plugin};
@@ -25,9 +24,9 @@ use busbar_plugin_abi::host_side::driver::Image;
 use busbar_plugin_abi::host_side::driver::LoadedImage;
 use busbar_plugin_abi::stamp::{Stamp, STAMP_OUT_OF_PROCESS};
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_abi::versions::{EngineVersion, ENGINE};
+use busbar_plugin_abi::versions::{contract_of, EngineVersion, Version, CORE_CONTRACT, ENGINE};
 
-use crate::agree::{Agreed, Claim, Claims, Contract, Speaks, Version};
+use crate::agree::{Agreed, Claim, Claims};
 use crate::refusal::{Refusal, RefusalCode};
 use crate::scan;
 
@@ -202,49 +201,37 @@ pub fn crypto_gate(crypto: &str, out_of_process: bool, facts: &CryptoFacts) -> R
 
 pub use busbar_artifact_verifier::kind_word;
 
-/// What this engine speaks of the core and of each kind: the released lines of each contract's lock
-/// file and, in a dev build only, the unreleased line at the label. Built from the contract crates'
-/// own tables; the loader states no version and no fingerprint of its own.
-pub fn speaks() -> &'static Speaks {
-    static SPEAKS: OnceLock<Speaks> = OnceLock::new();
-    SPEAKS.get_or_init(|| {
-        let contract =
-            |name: &'static str, pins: &'static busbar_plugin_abi::pins::Pins| Contract {
-                name,
-                first: pins.first,
-                released: pins.released,
-                dev: pins.dev,
-            };
-        let speaks = Speaks {
-            core: contract("core", &busbar_plugin_abi::pins::CORE),
-            kinds: KindCode::ALL
-                .map(|kind| contract(kind_word(kind), busbar_plugin_abi::pins::of(kind))),
-        };
-        if let Err(fault) = speaks.well_formed() {
-            // A build fault of the engine: no image can be judged against a broken table.
-            panic!("the engine's contract tables are not well formed: {fault}");
-        }
-        speaks
-    })
+/// The fingerprint this engine's source computes for a kind's contract (`<kind>::FP`).
+fn kind_fp(kind: KindCode) -> u64 {
+    match kind {
+        KindCode::Store => busbar_plugin_abi::store::FP,
+        KindCode::Secret => busbar_plugin_abi::secret::FP,
+        KindCode::Auth => busbar_plugin_abi::auth::FP,
+        KindCode::Hook => busbar_plugin_abi::hook::FP,
+        KindCode::Export => busbar_plugin_abi::export::FP,
+        KindCode::Plane => busbar_plugin_abi::plane::FP,
+        KindCode::Transport => busbar_plugin_abi::transport::FP,
+    }
 }
 
-/// What a format-3 stamp states about the interface.
+/// What a format-3 stamp states about the interface: for the core and for the image's kind, the
+/// version it was built for and that version's wire fingerprint.
 fn claims(stamp: &Stamp, kind: KindCode) -> Claims {
     Claims {
         core: Claim {
             version: Version {
-                first: stamp.core_first,
-                second: stamp.core_second,
+                first: stamp.core_abi,
+                second: stamp.core_minor,
             },
-            wire: stamp.core_wire,
+            wire: stamp.core_layout,
         },
         kind,
         of_kind: Claim {
             version: Version {
-                first: stamp.kind_first,
-                second: stamp.kind_second,
+                first: stamp.kind_abi,
+                second: stamp.kind_minor,
             },
-            wire: stamp.kind_wire,
+            wire: stamp.layout,
         },
     }
 }
@@ -278,11 +265,15 @@ pub(crate) fn agreed(stamp: &Stamp, facts: &CryptoFacts) -> Result<Agreed, Refus
             "1 to 7".into(),
         );
     };
-    // Core first, then the kind: first number equal, second number not above this engine's newest
-    // line, fingerprint equal to this engine's record of that line (`agree`).
-    let agreed = speaks()
-        .agree(&claims(stamp, kind))
-        .map_err(|no| no.refusal().named(name))?;
+    // Core first, then the kind: first number equal, second number not above this engine's,
+    // fingerprint equal to this engine's record of exactly that version (`agree`).
+    let agreed = crate::agree::agree(
+        crate::agree::build(),
+        &claims(stamp, kind),
+        &CORE_CONTRACT,
+        &contract_of(kind, kind_fp(kind)),
+    )
+    .map_err(|no| no.refusal().named(name))?;
     let target = busbar_plugin_abi::stamp::target_now();
     if stamp.target != target {
         return refuse(

@@ -11,10 +11,10 @@
 //!   `head()`, `texts()`, `blobs()` (as on `house/iface-solo`; the session of a call is set by the host
 //!   handles, never here).
 //! - `busbar_ffi::Bytes::of_pairs`: a pair list lent as one blob, nothing rebuilt (as on `house/iface-solo`).
-//! - `busbar_ffi::host::Instance<K>`: `call(index, &Call, lease)`, `open_session(index, &Call, lease)`,
-//!   `start(index, mono_ns, head, bufs, blob_at, lease)`; a table index past the image's `entries`
+//! - `busbar_ffi::host::Instance<K>`: `call(slot, &Call, lease)`, `open_session(slot, &Call, lease)`,
+//!   `start(slot, bufs, pack, lease)` where `pack` builds the call from the kept buffers; a slot past the image's `entries`
 //!   answers `Status::FAULT` without a call.
-//! - `busbar_ffi::host::Session<K>`: `call(index, &Call, lease)`, `end(index, &Call, lease)`, `token()`;
+//! - `busbar_ffi::host::Session<K>`: `call(slot, &Call, lease)`, `end(self, slot, &Call, lease)`, `token()`;
 //!   `Drop` cancels.
 //! - `busbar_ffi::host::{ChainBufs, OutLease, Started<K>}` as today.
 //! - the host half (`busbar_plugin_abi::host_side`): `entry::guard`, `entry::guard_fixed`,
@@ -69,7 +69,7 @@ pub(crate) fn plain<K: Kind>(
     call: &Call<'_>,
     lease: &mut OutLease<'_>,
 ) -> Status {
-    live.call(u32::from(method), call, lease)
+    live.call(usize::from(method), call, lease)
 }
 
 /// Shim 2 of 5: a call that opens a session. The session exists if and only if the answer is OK with a
@@ -81,7 +81,7 @@ pub(crate) fn opens<K: Kind>(
     call: &Call<'_>,
     lease: &mut OutLease<'_>,
 ) -> (Status, Option<LiveSession<K>>) {
-    live.open_session(u32::from(method), call, lease)
+    live.open_session(usize::from(method), call, lease)
 }
 
 /// Shim 3 of 5: a call on a live session. The boundary crate sets the token as the call's session.
@@ -92,18 +92,19 @@ pub(crate) fn on<K: Kind>(
     call: &Call<'_>,
     lease: &mut OutLease<'_>,
 ) -> Status {
-    session.call(u32::from(method), call, lease)
+    session.call(usize::from(method), call, lease)
 }
 
-/// Shim 4 of 5: the call that ends a session.
+/// Shim 4 of 5: the call that ends a session. It consumes the handle: the plugin removes the session
+/// whatever it answers, and no cancel follows.
 #[inline(always)]
 pub(crate) fn ends<K: Kind>(
-    session: &mut LiveSession<K>,
+    session: LiveSession<K>,
     method: u8,
     call: &Call<'_>,
     lease: &mut OutLease<'_>,
 ) -> Status {
-    session.end(u32::from(method), call, lease)
+    session.end(usize::from(method), call, lease)
 }
 
 /// The token of a live session, for the recorder only.
@@ -124,8 +125,19 @@ pub(crate) fn starts<'i, K: Kind>(
     blob_at: Option<usize>,
     lease: &mut OutLease<'_>,
 ) -> First<'i, K> {
-    live.start(u32::from(method), mono_ns, head, bufs, blob_at, lease)
-        .into()
+    live.start(
+        usize::from(method),
+        bufs,
+        |bufs, cross| match blob_at {
+            Some(at) => {
+                let blobs = [bufs.get(at)];
+                cross(&Call::new(mono_ns, head, &[], &blobs))
+            }
+            None => cross(&Call::new(mono_ns, head, &[], &[])),
+        },
+        lease,
+    )
+    .into()
 }
 
 /// The chain's request block lent as buffer 0 (no copy, given back to the pool when the token retires).

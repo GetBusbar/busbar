@@ -364,8 +364,8 @@ impl OnSession for SessionHandle {
     }
 
     /// Ends the session. The handle is spent whatever the answer.
-    fn end<'o>(mut self, buf: &'o mut PooledOut, at: Mono) -> Result<Answer<'o>, CallError> {
-        call::ends(&mut self, END, at, &Frame::new((), [], []), buf)
+    fn end<'o>(self, buf: &'o mut PooledOut, at: Mono) -> Result<Answer<'o>, CallError> {
+        call::ends(self, END, at, &Frame::new((), [], []), buf)
     }
 
     /// `blobs[0]` = `conversation`.

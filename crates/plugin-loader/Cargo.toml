@@ -16,6 +16,10 @@ test-support = ["busbar-artifact-verifier/test-support"]
 # default binary from outside the process. Never enabled by shipped defaults: a release binary holds
 # no recorder and no code that reads those variables.
 crossing-witness = []
+# An engine built for release: at load it accepts released contract lines only, so a plugin stamped with
+# the unreleased version at the label (a dev build) is refused. The release distribution enables it;
+# every other build is a dev engine.
+release-engine = []
 # Tooling only: `jsonschema` must never reach the engine's graph. Build the CLI with `--features pack`.
 pack = ["dep:jsonschema"]
 
