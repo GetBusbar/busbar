@@ -22,7 +22,6 @@ use std::time::Instant;
 use busbar_plugin_abi::plane::{AUTH_OPTIONAL, AUTH_PUBLIC, AUTH_SIGNED_INGRESS};
 
 use super::refusal::PreparationState;
-
 use super::{
     ArrivalRefusal, BindError, CompletingPhysicalRequest, Phase, RequestBinding, RouteTarget,
 };
