@@ -1444,16 +1444,26 @@ pub async fn judge_unrouted(
         return (Some(Verified::Unavailable), None);
     };
     // A DPoP proof here names core's public URL: no plane's route matched.
-    let snapshot =
-        match judge_sender(app, snapshot, chain, None, app.public_url.as_deref(), false).await {
-            Ok(snapshot) => snapshot,
-            Err(DataRefused::Unavailable) => return (Some(Verified::Unavailable), None),
-            Err(_) => return (Some(Verified::Denied), None),
-        };
-    let prepared = match chain.prepare_snapshot(cx, snapshot).await {
+    let snapshot = match judge_sender(
+        app,
+        snapshot,
+        chain,
+        None,
+        app.public_url.as_deref(),
+        chain.admits_keys(),
+    )
+    .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(DataRefused::Unavailable) => return (Some(Verified::Unavailable), None),
+        Err(_) => return (Some(Verified::Denied), None),
+    };
+    let prepared = match core_or_chain(app, chain, cx, snapshot).await {
         Ok(NativePreparedAnswer::Identity(prepared)) => prepared,
-        Ok(_) => return (Some(Verified::Denied), None),
-        Err(_) => return (Some(Verified::Unavailable), None),
+        Err(DataRefused::Unavailable | DataRefused::Capacity) => {
+            return (Some(Verified::Unavailable), None)
+        }
+        Ok(_) | Err(_) => return (Some(Verified::Denied), None),
     };
     if binding.check_live().is_err() {
         return (Some(Verified::Unavailable), None);
@@ -2082,13 +2092,16 @@ pub async fn verify_core_key(
     let snapshot = binding.snapshot().map_err(|_| DataRefused::Capacity)?;
     // A core route's DPoP proof names core's public URL.
     let app = binding.app();
-    let snapshot =
-        judge_sender(app, snapshot, chain, None, app.public_url.as_deref(), false).await?;
-    let prepared = match chain
-        .prepare_snapshot(cx, snapshot)
-        .await
-        .map_err(|_| DataRefused::Unavailable)?
-    {
+    let snapshot = judge_sender(
+        app,
+        snapshot,
+        chain,
+        None,
+        app.public_url.as_deref(),
+        chain.admits_keys(),
+    )
+    .await?;
+    let prepared = match core_or_chain(app, chain, cx, snapshot).await? {
         NativePreparedAnswer::Identity(prepared) => prepared,
         _ => return Err(DataRefused::Credential),
     };

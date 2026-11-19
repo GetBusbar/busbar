@@ -13,41 +13,24 @@
 mod common;
 mod e2e_support;
 
-use e2e_support::{closed_port, Deployment, Node, WEBREQUEST_HOOK_IMAGE};
-use serde_json::{json, Value};
+use e2e_support::{closed_port, Deployment, Node, Reply, WEBREQUEST_HOOK_IMAGE};
+use serde_json::json;
 
-/// The `hooks:` definition map: one never-attached gate per name, asking nobody.
-fn hooks(names: &[&str]) -> String {
-    let target = format!("http://127.0.0.1:{}/decide", closed_port());
-    let mut yaml = String::from("hooks:\n");
-    for name in names {
-        yaml.push_str(&format!(
-            "  {name}:\n    module: webrequest\n    kind: gate\n    prompt: ro\n    \
-             timeout_ms: 2000\n    on_error: reject\n    settings: {{ url: \"{target}\" }}\n"
-        ));
-    }
-    yaml
+/// One gate definition asking nobody (it is never asked: no request is sent).
+fn gate(name: &str, target: &str) -> String {
+    format!(
+        "  {name}:\n    module: webrequest\n    kind: gate\n    prompt: ro\n    \
+         timeout_ms: 2000\n    on_error: reject\n    settings: {{ url: \"{target}\" }}\n"
+    )
 }
 
-/// The pool `e2e` over `test-model`, attaching `attached` when given.
-fn pools(attached: Option<&str>) -> String {
-    let mut yaml = String::from("pools:\n  e2e:\n    members:\n      - { model: test-model }\n");
-    if let Some(hook) = attached {
-        yaml.push_str(&format!("    hooks: [{hook}]\n"));
-    }
-    yaml
-}
-
-/// Replace the tail of the node's `config.yaml` and reload it: one new version from disk.
-fn reload_onto(node: &Node, old_tail: &str, new_tail: &str) -> u64 {
+/// Rename a hook everywhere in the node's `config.yaml` (its definition and any attachment; the
+/// boot may have rewritten the file into the 1.6 shape) and reload it: one new version from disk.
+fn reload_renaming(node: &Node, from: &str, to: &str) -> u64 {
     let path = node.config_path();
     let text = std::fs::read_to_string(&path).expect("read config.yaml");
-    assert!(
-        text.ends_with(old_tail),
-        "config.yaml ends with the sections this test wrote: {text}"
-    );
-    let rewritten = format!("{}{new_tail}", &text[..text.len() - old_tail.len()]);
-    std::fs::write(&path, rewritten).expect("rewrite config.yaml");
+    assert!(text.contains(from), "config.yaml names `{from}`: {text}");
+    std::fs::write(&path, text.replace(from, to)).expect("rewrite config.yaml");
     let reply = node.operator("POST", "/api/v1/admin/config/reload", None);
     assert_eq!(reply.status, 200, "the reload applies: {}", reply.text());
     reply.json()["config_version"]
@@ -69,7 +52,7 @@ fn running_hooks(node: &Node) -> Vec<String> {
     names
 }
 
-/// The `config.rollback` audit rows naming `resource`, newest first: their outcomes.
+/// The outcomes of the `config.rollback` audit rows naming `resource`, newest first.
 fn rollback_audit(node: &Node, resource: &str) -> Vec<String> {
     let reply = node.operator(
         "GET",
@@ -90,7 +73,7 @@ fn rollback_audit(node: &Node, resource: &str) -> Vec<String> {
         .collect()
 }
 
-fn rollback(node: &Node, version: u64) -> e2e_support::Reply {
+fn rollback(node: &Node, version: u64) -> Reply {
     node.operator(
         "POST",
         "/api/v1/admin/config/rollback",
@@ -98,16 +81,23 @@ fn rollback(node: &Node, version: u64) -> e2e_support::Reply {
     )
 }
 
-fn version_of(reply: &e2e_support::Reply, field: &str) -> u64 {
-    let body: Value = reply.json();
+fn version_of(reply: &Reply, field: &str) -> u64 {
+    let body = reply.json();
     body[field]
         .as_u64()
         .unwrap_or_else(|| panic!("the answer states `{field}`: {body}"))
 }
 
+fn history(node: &Node) -> String {
+    let versions = node.operator("GET", "/api/v1/admin/config/versions", None);
+    assert_eq!(versions.status, 200, "{}", versions.text());
+    versions.text()
+}
+
 #[test]
 fn config_rollback_restores_a_retained_version_and_refuses_unknown_or_invalid_targets() {
-    let boot_tail = format!("{}{}", hooks(&["first"]), pools(None));
+    let target = format!("http://127.0.0.1:{}/decide", closed_port());
+    // `rbkeep` is attached to the pool; `rbalpha` is defined and attached nowhere.
     let node = Deployment::new("config-rollback")
         .provider(
             "mock",
@@ -116,15 +106,20 @@ fn config_rollback_restores_a_retained_version_and_refuses_unknown_or_invalid_ta
         )
         .section("models:\n  test-model:\n    provider: mock\n")
         .plugin("hook", WEBREQUEST_HOOK_IMAGE)
-        .section(&boot_tail)
+        .section(&format!(
+            "hooks:\n{}{}",
+            gate("rbalpha", &target),
+            gate("rbkeep", &target)
+        ))
+        .section(
+            "pools:\n  e2e:\n    members:\n      - { model: test-model }\n    hooks: [rbkeep]\n",
+        )
         .boot();
-    assert_eq!(running_hooks(&node), ["first"], "v0 serves its own hooks");
+    assert_eq!(running_hooks(&node), ["rbalpha", "rbkeep"], "v0's hooks");
 
-    // v1: the hook surface moves on.
-    let v1_tail = format!("{}{}", hooks(&["second"]), pools(None));
-    let v1 = reload_onto(&node, &boot_tail, &v1_tail);
-    assert_eq!(v1, 1, "the first reload is version 1");
-    assert_eq!(running_hooks(&node), ["second"], "v1 serves its own hooks");
+    // v1: the unattached hook is renamed on disk and reloaded.
+    assert_eq!(reload_renaming(&node, "rbalpha", "rbbeta"), 1);
+    assert_eq!(running_hooks(&node), ["rbbeta", "rbkeep"], "v1's hooks");
 
     // Roll back to the boot version: a NEW version serving v0's hook surface, audited.
     let restored = rollback(&node, 0);
@@ -135,24 +130,24 @@ fn config_rollback_restores_a_retained_version_and_refuses_unknown_or_invalid_ta
         restored.text()
     );
     assert_eq!(version_of(&restored, "restored_version"), 0);
-    let v2 = version_of(&restored, "config_version");
-    assert_eq!(v2, 2, "a rollback is a new version; history is append-only");
+    assert_eq!(
+        version_of(&restored, "config_version"),
+        2,
+        "a rollback is a new version; history is append-only"
+    );
     assert_eq!(
         running_hooks(&node),
-        ["first"],
-        "the running config is the restored version's"
+        ["rbalpha", "rbkeep"],
+        "the running config serves the restored version's hooks"
     );
     assert_eq!(
         rollback_audit(&node, "config:v0"),
         ["applied"],
         "the rollback is audited as applied"
     );
-    let versions = node.operator("GET", "/api/v1/admin/config/versions", None);
-    assert_eq!(versions.status, 200, "{}", versions.text());
     assert!(
-        versions.text().contains("config.rollback to v0"),
-        "the rollback is recorded in the version history: {}",
-        versions.text()
+        history(&node).contains("config.rollback to v0"),
+        "the rollback is recorded in the version history"
     );
 
     // A version this process never recorded is refused, audited, and changes nothing.
@@ -166,15 +161,18 @@ fn config_rollback_restores_a_retained_version_and_refuses_unknown_or_invalid_ta
     assert_eq!(rollback_audit(&node, "config:v424242"), ["rejected"]);
     assert_eq!(
         running_hooks(&node),
-        ["first"],
+        ["rbalpha", "rbkeep"],
         "a refused rollback changes nothing"
     );
 
-    // v3: the disk config attaches `second` to the pool. Restoring v2's surface (`first` only)
-    // would leave the pool naming a hook that no longer exists: re-validation refuses it.
-    let v3_tail = format!("{}{}", hooks(&["second"]), pools(Some("second")));
-    let v3 = reload_onto(&node, &v1_tail, &v3_tail);
-    assert_eq!(v3, 3);
+    // v3: the pool's hook is renamed on disk. Restoring v2's surface (no `rbmove`) would leave
+    // the pool attaching a hook that does not exist: re-validation must refuse it.
+    assert_eq!(reload_renaming(&node, "rbkeep", "rbmove"), 3);
+    let before = running_hooks(&node);
+    assert!(
+        before.contains(&"rbmove".to_owned()),
+        "v3's hooks: {before:?}"
+    );
     let invalid = rollback(&node, 2);
     assert_eq!(
         invalid.status,
@@ -185,13 +183,11 @@ fn config_rollback_restores_a_retained_version_and_refuses_unknown_or_invalid_ta
     assert_eq!(rollback_audit(&node, "config:v2"), ["rejected"]);
     assert_eq!(
         running_hooks(&node),
-        ["second"],
+        before,
         "a refused rollback leaves the running config as it was"
     );
-    let info = node.operator("GET", "/api/v1/admin/config/versions", None);
     assert!(
-        !info.text().contains("config.rollback to v2"),
-        "a refused rollback records no version: {}",
-        info.text()
+        !history(&node).contains("config.rollback to v2"),
+        "a refused rollback records no version"
     );
 }

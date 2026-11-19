@@ -965,61 +965,20 @@ fn validate_hook_registry(
     Ok(())
 }
 
-/// A config rollback's candidate: the retained hook surface over the current disk documents and
-/// Store overlay, read, resolved, built and judged exactly as a reload is. It is never a clone of
-/// the serving generation: a clone carries that generation's native owners, which the root's rules
-/// refuse for any other version, and it would skip the build's validation of the restored surface
-/// against current reality.
-pub(crate) async fn build_with_registry(
+pub(crate) fn build_with_registry(
     current: &App,
     registry: std::collections::HashMap<String, HookCfg>,
     global_hooks: Vec<String>,
-) -> Result<
-    (
-        App,
-        Option<busbar_kernel::GovCredentialRotation>,
-        busbar_kernel::InstalledLimits,
-    ),
-    AdminError,
-> {
+) -> Result<App, AdminError> {
     validate_hook_registry(&registry, &global_hooks)?;
-    let (Some(config_path), Some(_)) = (current.config_path.clone(), current.providers_path.as_ref())
-    else {
-        return Err(AdminError::Validation(
-            "this busbar was started without config files (ephemeral mode); a rollback has no \
-             disk base to restore the hook surface onto"
-                .into(),
-        ));
-    };
-    let mut loaded =
-        read_disk_generation(current, &config_path, overlay_anchor(current), "config.rollback")
-            .await?;
-    let mut cfg = loaded.disk_candidate().map_err(AdminError::Validation)?;
-    let base_hook_names = loaded.resource_ownership.hook_names().clone();
-    let base_group_names = loaded.resource_ownership.group_names().clone();
-    if let Some(doc) = loaded.overlay_doc.take() {
-        busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
-    }
-    cfg.hooks = registry;
-    cfg.global_hooks = global_hooks;
-    let (mut next, rotate, limits) = Box::pin(busbar_kernel::build_app_from_config(
-        cfg,
-        loaded.deploy.plugins.clone(),
-        loaded.overlay_path,
-        base_hook_names,
-        base_group_names,
-        (Some(config_path), Some(loaded.providers_path)),
-        Some(current),
-        &current.root_rules,
-    ))
-    .await
-    .map_err(AdminError::Validation)?;
-    busbar_kernel::config::readback::ConfiguredView::capture_documents(
-        &mut next,
-        &loaded.deploy,
-        &loaded.defs,
-    );
-    Ok((next, rotate, limits))
+    let mut next = current.clone();
+    next.config_version = current.config_version.wrapping_add(1);
+    next.hook_registry = registry;
+    next.global_hooks = global_hooks;
+    Arc::clone(&next.root_rules)
+        .check_built(&mut next)
+        .map_err(AdminError::Validation)?;
+    Ok(next)
 }
 
 const MAX_INSPECT_SCHEMA_JSON_BYTES: usize = 256 * 1024;

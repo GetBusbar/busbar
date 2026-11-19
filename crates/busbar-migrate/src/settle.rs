@@ -245,7 +245,30 @@ fn settle_block(
                 "a whole-block CONFIG must be an object",
             ));
         };
-        block.clone_from(bag);
+        // Core's own words in a plane section (its card, fees, transport acceptance, routes and
+        // audience) are lifted off the section before the plane reads it, so the plane's bag never
+        // carries them: they stay as the operator wrote them. A bag that states one otherwise is a
+        // plane writing core's configuration: refused, nothing written.
+        let mut settled = bag.clone();
+        for key in busbar_kernel::config::prepass::PLANE_CORE_KEYS {
+            let written = block.get_key(key);
+            if settled
+                .get_key(key)
+                .is_some_and(|stated| Some(stated) != written)
+            {
+                return Err(refuse(
+                    answer.index,
+                    &format!(
+                        "the settled settings state `{key}`, which is core's in a plane section; \
+                         a plane never writes it"
+                    ),
+                ));
+            }
+            if let Some(written) = written {
+                settled.insert_key(key, written.clone());
+            }
+        }
+        block.clone_from(&settled);
         if let Some(limits) = wrapped.get_key("limits") {
             block.insert_key("limits", limits.clone());
         }

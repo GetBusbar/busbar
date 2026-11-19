@@ -452,15 +452,28 @@ type Streams = Arc<Mutex<HashMap<u64, Weak<StreamState>>>>;
 #[derive(Clone, Copy, Debug)]
 pub struct Arrival {
     mono_ns: u64,
+    /// The deadline on the arrival's own clock (`store::monotonic_ns`). Admission judges expiry
+    /// here, never through the `Instant` bridge, whose process anchor can sit later than the
+    /// reading it was paired with and would stretch the deadline by that lag.
+    deadline_ns: u64,
     deadline: Instant,
 }
 impl Arrival {
     /// The arrival at `mono_ns` (one reading of `store::monotonic_ns`), due `timeout` after it.
     /// `None` when that deadline lies beyond the clock's range.
     pub fn at(mono_ns: u64, timeout: std::time::Duration) -> Option<Arrival> {
+        let deadline_ns = mono_ns.checked_add(u64::try_from(timeout.as_nanos()).ok()?)?;
         busbar_contract::mono_instant::instant_at(mono_ns)
             .checked_add(timeout)
-            .map(|deadline| Arrival { mono_ns, deadline })
+            .map(|deadline| Arrival {
+                mono_ns,
+                deadline_ns,
+                deadline,
+            })
+    }
+    /// Whether the deadline has passed at `now_ns`, a reading of the same clock as `mono_ns`.
+    fn expired_at(&self, now_ns: u64) -> bool {
+        now_ns >= self.deadline_ns
     }
     pub fn deadline(&self) -> Instant {
         self.deadline
@@ -501,7 +514,9 @@ impl PhysicalConnection {
         if request.class() != self.listener.class {
             return Err(ArrivalRefusal::Class);
         }
-        if deadline.is_some_and(|at| Instant::now() >= at) {
+        // Expiry is judged on the arrival's own clock: a head due at or before this reading is
+        // refused before any stream, route or credit exists.
+        if arrival.is_some_and(|arrival| arrival.expired_at(crate::store::monotonic_ns())) {
             return Err(ArrivalRefusal::Deadline);
         }
         let (app, prepared) = self.listener.selected().map_err(ArrivalRefusal::Binding)?;
