@@ -736,6 +736,69 @@ async fn missing_native_admin_coverage_refuses_candidate_construction() {
     assert!(crate::root::min3_admin_auth::install(&mut app, empty, epoch).is_err());
 }
 
+/// E5: the admin chain never judges a request while a configured credential's instance is
+/// unopened. The operator credential's position may be left unset ("not mine") only when its
+/// definition carries nothing to judge; one that carries settings must have its native instance
+/// opened, or the candidate is refused before any listener can serve it.
+#[tokio::test]
+async fn an_operator_credential_with_settings_and_no_opened_instance_refuses_the_admin_chain() {
+    let (_, prior, owners, _) = admin_fixture().await;
+    let operator = |settings: &str| {
+        let mut app = (*prior).clone();
+        app.admin_chain = vec!["admin-tokens".into()];
+        app.identity_providers.insert(
+            "admin-tokens".into(),
+            busbar_contract::json::parse_str(&format!(
+                r#"{{"module":"admin-tokens","settings":{settings}}}"#
+            ))
+            .unwrap(),
+        );
+        // The door-era operator credential the kernel built: answered, nothing opened on its axis.
+        app.admin_modules = Arc::new(busbar_kernel::auth::AdminAuthChain {
+            modules: Default::default(),
+            operator: busbar_kernel::auth::Operator::open(
+                "admin-tokens",
+                std::iter::empty(),
+                &|module: &str| module == "admin-tokens",
+                true,
+                Default::default(),
+            ),
+        });
+        assert!(app.admin_modules.operator.unset("admin-tokens"));
+        app
+    };
+    let empty = || {
+        Arc::new(AuthSet {
+            instances: BTreeMap::new(),
+            owners: Arc::new(AuthOwners {
+                issued: owners.clone(),
+                replay: owners.clone(),
+                cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+            }),
+        })
+    };
+
+    let digest = busbar_contract::redacted::sha256_hex(b"e5-operator-token");
+    let mut configured = operator(&format!(r#"{{"sha256":"{digest}"}}"#));
+    let epoch = configured.config_generation.load(Ordering::Acquire);
+    let refused = crate::root::min3_admin_auth::install(&mut configured, empty(), epoch)
+        .expect_err("a configured operator credential with no opened instance is refused");
+    assert_eq!(
+        refused,
+        "auth.admin_auth: 'admin-tokens' has no opened native auth instance"
+    );
+    assert!(
+        !refused.contains(&digest),
+        "the refusal never echoes the credential"
+    );
+
+    let mut bare = operator("{}");
+    let epoch = bare.config_generation.load(Ordering::Acquire);
+    crate::root::min3_admin_auth::install(&mut bare, empty(), epoch)
+        .expect("a bare operator position has nothing to judge and stays unset");
+    assert!(bare.native_admin.is_some());
+}
+
 #[tokio::test]
 async fn shared_kernel_chain_preserves_admin_preparation_and_single_claim() {
     use busbar_kernel::auth::native_chain::NativeChain as KernelChain;

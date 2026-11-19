@@ -116,7 +116,7 @@ pub(crate) fn capture(
     let seal = busbar_contract::caps::Grant::<busbar_contract::caps::Sign>::mint(&kernel_seal);
     let mut operators = Vec::new();
     for (name, provider) in &cfg.identity_providers {
-        if busbar_kernel::config::is_builtin_identity_module(&provider.module) {
+        if !super::min3_auth::opens_instance(provider) {
             continue;
         }
         let identity = files
