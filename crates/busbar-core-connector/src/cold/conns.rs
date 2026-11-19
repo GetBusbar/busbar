@@ -104,6 +104,35 @@ pub(crate) fn offered_name_refused(offered: &str, dialled: &str) -> String {
     )
 }
 
+/// A native dial that did not begin, as its reason: its own cause.
+#[cold]
+pub(crate) fn native_unreached(failure: &crate::native_dial::NativeFailure) -> NeedRefusal {
+    NeedRefusal::Unreached(format!("{failure}"))
+}
+
+/// A native open whose destination's carrier no transport image carries in this build: one line naming it.
+#[cold]
+#[inline(never)]
+pub(crate) fn no_native_carrier(carrier: u32) {
+    tracing::warn!(
+        carrier,
+        "an upstream dial was refused: this build assigns no transport image the destination's carrier"
+    );
+}
+
+/// A native open refused because the operator's egress proxy selects its destination.
+#[cold]
+#[inline(never)]
+pub(crate) fn native_proxy_refused(authority: &str) {
+    crate::conns::egress_audit::dial_refused(
+        authority,
+        None,
+        "the egress proxy selects this destination and a native dial does not go through a proxy",
+        None,
+        &mut None,
+    );
+}
+
 /// Protocol bytes that are not UTF-8, as text (each bad sequence replaced).
 #[cold]
 pub(crate) fn lossy(bytes: &[u8]) -> String {
