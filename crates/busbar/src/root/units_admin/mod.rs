@@ -2656,6 +2656,10 @@ mod records_tests;
 #[path = "tests/ledger_recovery_actual.rs"]
 mod ledger_recovery_actual;
 
+#[cfg(test)]
+#[path = "tests/agent_approve.rs"]
+mod agent_approve_tests;
+
 /// Test transport boundary: use actual process admission and gathering, never a fabricated lease.
 /// These service fixtures exercise the Admin consumer, not native socket/physical admission.
 #[cfg(test)]

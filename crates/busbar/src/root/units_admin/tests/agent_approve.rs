@@ -8,8 +8,6 @@
 
 use std::sync::Arc;
 
-use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
-
 /// The agent the A2A plane instance `a2a` registers, and the card fingerprint `connect` reported.
 const INSTANCE: &str = "a2a";
 const AGENT: &str = "billing";
@@ -21,6 +19,9 @@ const A_READERS_CREDENTIAL: &str = "agent-approve-reader-token";
 /// Principals of this file's own, so the audit rows it counts are its own.
 const THE_OPERATOR: &str = "agent-approve-operator";
 const A_READER: &str = "agent-approve-reader";
+
+/// The item the A2A plane sights an agent's card under.
+const CARD: &str = "card";
 
 const PATH: &str = "/api/v1/admin/agents/billing/approve";
 
@@ -94,7 +95,7 @@ async fn a_kernel_that_sighted_the_card() -> Arc<busbar_kernel::host_services::K
     if let Ran::Later = kernel.trust_sight_item(
         &caller,
         AGENT,
-        crate::root::agents_approve::ITEM,
+        CARD,
         FINGERPRINT,
         Box::new(move |stored| {
             let _ = sent.send(stored);
@@ -174,10 +175,7 @@ async fn a_node(trust: Arc<busbar_kernel::host_services::KernelServices>) -> axu
             .await
             .expect("the configured Store boots its initial rate history");
     }
-    limits
-        .keep()
-        .await
-        .expect("the application limits commit");
+    limits.keep().await.expect("the application limits commit");
     if let Some(rotate) = rotate {
         rotate.await;
     }
@@ -213,7 +211,7 @@ async fn send(
     path: &str,
     body: &str,
     credential: Option<&str>,
-) -> (u16, busbar_contract::json::Value) {
+) -> (u16, serde_json::Value) {
     use tower::ServiceExt;
     let mut request = axum::http::Request::builder().method(method).uri(path);
     if let Some(credential) = credential {
@@ -235,13 +233,8 @@ async fn send(
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("the answer's body is readable");
-    let body = if bytes.is_empty() {
-        busbar_contract::json::Value::new_null()
-    } else {
-        busbar_contract::json::parse_value(&bytes).unwrap_or_else(|_| {
-            busbar_contract::json::Value::from(String::from_utf8_lossy(&bytes).as_ref())
-        })
-    };
+    let body = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| serde_json::Value::from(String::from_utf8_lossy(&bytes).into_owned()));
     (status, body)
 }
 
@@ -281,7 +274,7 @@ fn the_card_is_served(kernel: &busbar_kernel::host_services::KernelServices) -> 
             INSTANCE,
             &busbar_kernel::trust::book::TrustFacts {
                 counterparty: AGENT,
-                item: Some(crate::root::agents_approve::ITEM),
+                item: Some(CARD),
                 digest: Some(FINGERPRINT),
             },
         )
@@ -297,8 +290,15 @@ async fn agent_approve_refuses_no_token_and_a_wrong_token() {
     for credential in [None, Some("not-a-credential-this-node-minted")] {
         let (status, body) = send(&node, "POST", PATH, &approving(FINGERPRINT), credential).await;
         assert_eq!(status, 401, "{credential:?} is refused: {body:?}");
-        assert_eq!(kernel.trust_rows(), before, "{credential:?}: nothing changes");
-        assert!(!the_card_is_served(&kernel), "{credential:?}: nothing approved");
+        assert_eq!(
+            kernel.trust_rows(),
+            before,
+            "{credential:?}: nothing changes"
+        );
+        assert!(
+            !the_card_is_served(&kernel),
+            "{credential:?}: nothing approved"
+        );
     }
 }
 
@@ -317,7 +317,10 @@ async fn agent_approve_needs_the_operator() {
         Some(A_READERS_CREDENTIAL),
     )
     .await;
-    assert_eq!(status, 403, "a read-only credential may not approve: {body:?}");
+    assert_eq!(
+        status, 403,
+        "a read-only credential may not approve: {body:?}"
+    );
     assert_eq!(kernel.trust_rows(), before, "nothing changes");
     assert!(!the_card_is_served(&kernel), "nothing approved");
     let rows = rows_of(&node, A_READER).await;
@@ -380,10 +383,16 @@ async fn agent_approve_locks_the_card_at_the_reviewed_fingerprint_with_one_audit
     let rows_before = rows_of(&node, THE_OPERATOR).await;
     let (status, answer) = send(&node, "POST", PATH, &approving(CHANGED), op).await;
     assert_eq!(status, 409, "a stale review is refused: {answer:?}");
-    assert!(!the_card_is_served(&kernel), "a stale review approves nothing");
+    assert!(
+        !the_card_is_served(&kernel),
+        "a stale review approves nothing"
+    );
     let rows = rows_of(&node, THE_OPERATOR).await;
     assert_eq!(rows.len() - rows_before.len(), 1, "{rows:?}");
-    assert_eq!(rows[0], ("trust_approve".to_string(), "rejected".to_string()));
+    assert_eq!(
+        rows[0],
+        ("trust_approve".to_string(), "rejected".to_string())
+    );
 
     // The reviewed fingerprint: the card is approved there, and only the kernel's row is written.
     let rows_before = rows_of(&node, THE_OPERATOR).await;
@@ -400,7 +409,10 @@ async fn agent_approve_locks_the_card_at_the_reviewed_fingerprint_with_one_audit
         1,
         "exactly one audit row: {rows:?}"
     );
-    assert_eq!(rows[0], ("trust_approve".to_string(), "applied".to_string()));
+    assert_eq!(
+        rows[0],
+        ("trust_approve".to_string(), "applied".to_string())
+    );
     assert!(
         kernel
             .trust_rows()
