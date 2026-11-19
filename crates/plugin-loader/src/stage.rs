@@ -135,11 +135,24 @@ pub(crate) fn open_image(
             }
         }
     }
+    open_staged_file(bytes, &mut |_| {})
+}
+
+/// The pinned private temp file (where no sealed memfd can be used): stage the verified bytes, re-verify them at
+/// their name before the open and again after it, and unload the image if the file changed while it loaded.
+/// `before_verify` runs between staging and the first check (open_image passes nothing; the staging tests tamper
+/// with the file there).
+#[cfg(unix)]
+fn open_staged_file(
+    bytes: &[u8],
+    before_verify: &mut dyn FnMut(&std::path::Path),
+) -> Result<(busbar_ffi::image::Opened, Staged), Unopened> {
     let (path, pin) = stage_temp_file(bytes).map_err(Unopened::Stage)?;
     let abandon = |pin: std::fs::File, path: &PathBuf| {
         drop(pin);
         release_temp_file(path);
     };
+    before_verify(&path);
     if let Err(why) = verify_pinned(&pin, &path, bytes) {
         abandon(pin, &path);
         return Err(Unopened::Stage(format!("its staged file {why}")));
