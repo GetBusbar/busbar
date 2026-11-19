@@ -68,7 +68,10 @@ fn answer(ledger: &mut DeliveryLedger, items: &[Item]) -> Result<Checked, Fault>
 /// `items` holds them.
 fn given(ledger: &mut DeliveryLedger, items: &[Item]) -> Vec<u8> {
     let checked = answer(ledger, items).unwrap();
-    ledger.give(&checked, |index| items[index].1).pieces.concat()
+    ledger
+        .give(&checked, |index| items[index].1)
+        .pieces
+        .concat()
 }
 
 /// The connection's writer took `count` more bytes of the placed runs, counted as the writer counts.
