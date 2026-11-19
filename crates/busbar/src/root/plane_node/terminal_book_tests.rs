@@ -292,3 +292,43 @@ async fn native_pulse_examines_at_most_64_candidates() {
         "a pulse never removes legacy custody"
     );
 }
+
+/// Absent process storage binding refuses a new unit before any effect; no default account.
+#[test]
+fn unbound_terminal_storage_refuses_before_effects() {
+    let node = super::super::Node::new();
+    *node
+        .lost
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    let call = node.kernel.next_call();
+    assert!(node
+        .reserve_terminal(AdmissionClass::Data, UnitKey::new(1), call)
+        .is_none());
+    assert_eq!(node.terminal_pending(), 0);
+}
+
+/// Data saturation cannot consume the protected Operator reserve through the Node.
+#[test]
+fn saturated_data_terminal_storage_keeps_operator_reservations() {
+    let node = super::super::Node::new();
+    let process = budget(4, 2);
+    node.rebind_terminal_storage(&process);
+    let data = process.connection_storage(AdmissionClass::Data);
+    let _held = data.try_reserve(2 * Layout::new::<Entry>().size()).unwrap();
+    assert!(node
+        .reserve_terminal(
+            AdmissionClass::Data,
+            UnitKey::new(1),
+            node.kernel.next_call()
+        )
+        .is_none());
+    let operator = node
+        .reserve_terminal(
+            AdmissionClass::Operator,
+            UnitKey::new(2),
+            node.kernel.next_call(),
+        )
+        .expect("the Operator reserve remains available");
+    drop(operator);
+}

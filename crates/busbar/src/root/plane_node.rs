@@ -240,6 +240,42 @@ impl Node {
             .map_or(0, TerminalBook::len)
     }
 
+    /// Reserve `key`'s terminal-book entry in `class`'s partition before any effect; `None` when
+    /// the book is unbound or that partition is full. Test-only here: the door unit entries that
+    /// reserved through it are deleted, and a native unit inserts itself (`plane_node/native.rs`).
+    /// Kept so the book's two storage refusals stay proven through the node.
+    #[cfg(test)]
+    fn reserve_terminal(
+        &self,
+        class: AdmissionClass,
+        key: UnitKey,
+        call: CallId,
+    ) -> Option<TerminalReservation<'_>> {
+        self.lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()?
+            .insert(
+                class,
+                key,
+                RetainedUnit {
+                    call,
+                    state: RetainedState::Original {
+                        staged: None,
+                        receipt: None,
+                        credit: None,
+                    },
+                },
+            )
+            .ok()?;
+        Some(TerminalReservation {
+            node: self,
+            class,
+            key,
+            call,
+        })
+    }
+
     /// A node whose arrivals are read from `clock`.
     #[cfg(test)]
     #[must_use]
@@ -565,6 +601,34 @@ pub(crate) struct Report {
 pub(super) struct RetainedUnit {
     call: CallId,
     state: RetainedState,
+}
+
+/// A reserved terminal-book entry: dropping it removes the entry it reserved.
+#[cfg(test)]
+struct TerminalReservation<'n> {
+    node: &'n Node,
+    class: AdmissionClass,
+    key: UnitKey,
+    call: CallId,
+}
+#[cfg(test)]
+impl Drop for TerminalReservation<'_> {
+    fn drop(&mut self) {
+        let mut book = self
+            .node
+            .lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(book) = book.as_mut() else {
+            return;
+        };
+        if book
+            .get(self.class, self.key)
+            .is_some_and(|unit| unit.call == self.call)
+        {
+            book.remove(self.class, self.key);
+        }
+    }
 }
 enum RetainedState {
     Native(native::NativeUnit),
