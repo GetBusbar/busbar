@@ -1464,3 +1464,145 @@ async fn unbilled_a_unit_buried_with_its_done_piece_settled_is_attributed() {
         r.rows.0.lock().unwrap()
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// BUDGET-CUT: a spend-ceiling `Cut` reached mid-stream ends the stream.
+// ---------------------------------------------------------------------------------------------
+
+/// A second open unit of the same key, `unit`, on lane `m` (admitted as the rig's own is).
+fn open_another(r: &Rig, unit: u64) -> UnitCtx {
+    let grant = r
+        .gov
+        .try_admit(&r.cost, &r.key, "", NOW)
+        .expect("admitted, the request counted");
+    r.money.open(
+        UnitKey::new(unit),
+        UnitMoney {
+            key: Arc::clone(&r.key),
+            cost: Arc::clone(&r.cost),
+            pool: String::new(),
+            lane: "m".into(),
+            classes: classes(),
+            arrived: NOW,
+            mode: ExhaustionMode::FinishUnit,
+            fee: FeeRefund::CallerStatus,
+            charge: grant.charge().clone(),
+        },
+    );
+    UnitCtx {
+        key: UnitKey::new(unit),
+        ..unit_ctx()
+    }
+}
+
+/// The far end's HEAD piece states (3, 4), under the unit's spend ceiling (10 micro-units); its
+/// BODY piece streams `data: a` and states (5, 6), 11 micro-units: the running checkpoint that
+/// takes it answers `Cut`. The stream ends there, refused `R_BUDGET`: the done piece (`data: end`,
+/// (7, 11)) is never served and never billed. The bill is the accepted usage up to and including
+/// the crossing report, (5 + 6), exactly, once. Another unit of the same key, open beside it and
+/// under its own ceiling, is untouched: it streams to its end and bills its stated (7 + 11).
+#[tokio::test]
+async fn budget_cut_ends_stream() {
+    let r = rig().await;
+    let other = open_another(&r, 2);
+    r.money
+        .limit_unit_spend(UnitKey::new(UNIT), 10)
+        .expect("the unit's spend ceiling");
+    r.money
+        .limit_unit_spend(UnitKey::new(2), 1_000)
+        .expect("the other unit's spend ceiling");
+    let script = || {
+        Plane::answering(
+            vec![
+                It::Respond(200),
+                It::Usage("input", 3),
+                It::Usage("output", 4),
+            ],
+            vec![
+                It::Body(b"data: a"),
+                It::Usage("input", 5),
+                It::Usage("output", 6),
+            ],
+            vec![
+                It::Body(b"data: end"),
+                It::End,
+                It::Usage("input", 7),
+                It::Usage("output", 11),
+            ],
+        )
+    };
+    let plane = script();
+    let caller = Caller::staying();
+    let mut walk = Walk::of_b();
+    let outcome = session(&r, &plane, &caller, &mut walk).await;
+    assert!(
+        matches!(
+            outcome,
+            Err(crate::plane_driver::port_session::SessionError::CoreRefused(code))
+                if code == busbar_plugin_abi::fail::refused::R_BUDGET
+        ),
+        "the stream ends at the cut, refused for budget: {outcome:?}"
+    );
+    assert_eq!(
+        caller.took(),
+        ["head 200", "body data: a"],
+        "what streamed up to the crossing report; nothing after the cut"
+    );
+    assert_eq!(
+        plane.pieces.lock().unwrap().len(),
+        1,
+        "the done piece was never fed to the plane"
+    );
+    let log = r.seam.log();
+    assert_eq!(
+        log[..2],
+        [
+            checkpointed(&[(0, 3), (1, 4)], Checkpoint::Continue),
+            checkpointed(&[(0, 5), (1, 6)], Checkpoint::Cut),
+        ],
+        "each usage reached the books as it was accepted; the crossing report was taken"
+    );
+    assert!(
+        !log.iter().any(|line| line.contains("(0, 7)")),
+        "nothing stated after the cut reached the books: {log:?}"
+    );
+    assert_eq!(r.money.open_units(), 2, "both units wait for their owners");
+    settle_failed(&r);
+    assert_eq!(
+        ledgered(&r).await,
+        Count::from(11u64),
+        "the accepted usage up to and including the crossing report (5 + 6), exactly"
+    );
+    settle_failed(&r);
+    assert_eq!(
+        ledgered(&r).await,
+        Count::from(11u64),
+        "a second settlement bills nothing again"
+    );
+    assert_eq!(r.money.open_units(), 1, "the other unit is still open");
+
+    let plane = script();
+    let caller = Caller::staying();
+    let mut walk = Walk::of_b();
+    let ran = session_of(&r, &plane, &caller, &mut walk, other)
+        .await
+        .expect("the unit under its ceiling runs to its end");
+    assert_eq!(ran.member.as_deref(), Some("b"));
+    assert_eq!(
+        caller.took(),
+        ["head 200", "body data: a", "body data: end", "end"],
+        "the unit under its ceiling streamed to its end"
+    );
+    r.money.settle_end_as(UnitKey::new(2), end_of(200, true));
+    assert_eq!(
+        ledgered(&r).await,
+        Count::from(29u64),
+        "the other unit billed its stated (7 + 11), exactly, beside the cut unit's 11"
+    );
+    assert_eq!(r.money.open_units(), 0, "both units closed");
+    assert!(
+        r.rows.0.lock().unwrap().is_empty(),
+        "{:?}",
+        r.rows.0.lock().unwrap()
+    );
+}
