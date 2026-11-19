@@ -468,12 +468,18 @@ impl Inner {
         let now = clock();
         let shared = answer.map(Arc::new);
         let mut told = None;
+        let mut outcome = None;
         {
             let mut map = self.write(key.auth_instance);
             if let Some(entry) = map.get_mut(&key).filter(|entry| entry.minting(flight)) {
                 entry.flight = None;
                 match &shared {
                     Ok(answer) => {
+                        if std::mem::take(&mut entry.degraded) {
+                            outcome = Some(CredOutcome::Recovered);
+                        }
+                        entry.pending = None;
+                        entry.stop_lapse();
                         entry.streak = 0;
                         entry.failed_until = None;
                         entry.failure = None;
