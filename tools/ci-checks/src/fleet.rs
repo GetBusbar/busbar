@@ -10,10 +10,9 @@ use std::path::Path;
 
 use super::Outcome;
 
-/// The 33 ported OSS plugin repos (WBS: 33 ports + 2 archives; busbar-hook-headroom is discontinued).
+/// The 33 ported OSS plugin repos (busbar-hook-headroom is discontinued). TCP and stdio are core
+/// carriers, not plugins: their two old repos have no entry.
 pub(crate) const PORTED_REPOS: usize = 33;
-/// The two repos archived with no MIN-3 release (IF §8.7).
-pub(crate) const ARCHIVED: [&str; 2] = ["busbar-transport-tcp", "busbar-transport-stdio"];
 /// Never a plugin: kept in `excluded_repos` with no manifest entry.
 pub(crate) const EXCLUDED: [&str; 2] = ["hindsight-hook", "busbar-hook-headroom"];
 /// Crates a plugin's normal and build graph may not name (IF §15 rule 1a).
@@ -33,12 +32,11 @@ pub(crate) struct Entry {
     pub former_names: Vec<String>,
 }
 
-/// The entries and the two repo lists of a `plugins.yaml`.
+/// The entries and the excluded repo list of a `plugins.yaml`.
 #[derive(Debug, Default)]
 pub(crate) struct Registry {
     pub entries: Vec<Entry>,
     pub excluded: Vec<String>,
-    pub archived: Vec<String>,
 }
 
 fn strip_comment(value: &str) -> &str {
@@ -67,7 +65,7 @@ fn inline_list(value: &str) -> Vec<String> {
 
 pub(crate) fn parse_registry(text: &str) -> Registry {
     let mut registry = Registry::default();
-    let mut list: Option<&'static str> = None;
+    let mut in_excluded = false;
     for line in text.lines() {
         let trimmed = line.trim_start();
         if trimmed.starts_with('#') || trimmed.is_empty() {
@@ -75,20 +73,12 @@ pub(crate) fn parse_registry(text: &str) -> Registry {
         }
         let indent = line.len() - trimmed.len();
         if indent == 0 {
-            list = match trimmed.split(':').next() {
-                Some("excluded_repos") => Some("excluded"),
-                Some("archived_repos") => Some("archived"),
-                _ => None,
-            };
+            in_excluded = trimmed.split(':').next() == Some("excluded_repos");
             continue;
         }
-        if let Some(which) = list {
+        if in_excluded {
             if let Some(item) = trimmed.strip_prefix("- ") {
-                let word = unquote(strip_comment(item));
-                match which {
-                    "excluded" => registry.excluded.push(word),
-                    _ => registry.archived.push(word),
-                }
+                registry.excluded.push(unquote(strip_comment(item)));
             }
             continue;
         }
@@ -189,20 +179,7 @@ pub(crate) fn fleet_findings(deps_toml: &str, plugins_yaml: &str) -> Vec<String>
             findings.push(format!("plugins.yaml: excluded_repos lacks {name}"));
         }
     }
-    let mut archived: Vec<&str> = registry.archived.iter().map(String::as_str).collect();
-    archived.sort();
-    let mut want = ARCHIVED.to_vec();
-    want.sort();
-    if archived != want {
-        findings.push(format!(
-            "plugins.yaml: archived_repos is {archived:?}, must be exactly {want:?} (no MIN-3 release, no render, no re-pin)"
-        ));
-    }
-    let ported = registry
-        .entries
-        .iter()
-        .filter(|entry| !ARCHIVED.contains(&entry.repo.as_str()))
-        .count();
+    let ported = registry.entries.len();
     if ported != PORTED_REPOS {
         findings.push(format!(
             "plugins.yaml: {ported} ported repos, the MIN-3 fleet is {PORTED_REPOS}"
