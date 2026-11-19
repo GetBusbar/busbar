@@ -105,7 +105,8 @@ fn a_missing_anchor_symbol_is_named_and_a_present_one_is_not() {
         .iter()
         .any(|m| m.contains("busbar::root::migrate::run")));
     assert!(missing.iter().all(|m| m.contains("anchor not found")));
-    assert_eq!(anchors_missing(&[]).len(), 4);
+    // The three anchors that remain after the old plugin SDK and loader dispatcher were deleted.
+    assert_eq!(anchors_missing(&[]).len(), 3);
 }
 
 /// (3d) Linked plugins are counted from the manifest: the fixture row adds its `migrate::` prefix,
