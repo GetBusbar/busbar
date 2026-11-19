@@ -7,7 +7,13 @@
 //! what a caller is told when the session cannot be opened.
 
 #![cfg(unix)]
-#![cfg(linked_every_plane_door)]
+#![cfg(all(
+    linked_section_pools,
+    linked_section_tools,
+    linked_section_agents,
+    linked_section_decisions,
+    linked_section_streams
+))]
 
 mod common;
 mod e2e_support;

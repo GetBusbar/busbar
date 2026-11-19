@@ -35,6 +35,15 @@ pub(crate) struct LinkedCarrier {
     >,
 }
 
+/// One carrier the build assigns to a SEPARATELY INSTALLED transport image, generated from
+/// `[package.metadata.busbar.installed-carriers]` into `$OUT_DIR/linked.rs` (`INSTALLED_CARRIERS`): the carrier number
+/// and the identity of the image that carries it. The carrier has a supplier exactly when an admitted image of that
+/// identity is installed (owner ruling: a former built-in such as the websocket transport is a separate plugin).
+pub(crate) struct InstalledCarrier {
+    pub(crate) carrier: u32,
+    pub(crate) identity: &'static str,
+}
+
 /// Why a carrier number has no supplier. The number arrives in a plane's own record, so every value is checked
 /// before it indexes anything; no value panics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,28 +220,61 @@ impl<T> Carriers<T> {
 
 /// The build's assignment: each generated row admitted (a read of its static header) for its identity.
 pub(crate) fn assigned(rows: &[LinkedCarrier]) -> Result<Carriers<Arc<str>>, String> {
-    Carriers::of(rows.iter().map(|row| {
-        (row.admit)()
-            .map(|image| (row.carrier, Arc::from(image.identity())))
-            .map_err(|refusal| format!("an assigned carrier's image: {refusal}"))
-    }))
+    assignment(rows, &[], |_| false)
+}
+
+/// The build's whole assignment for one deployment: each linked row admitted for its identity, and each separately
+/// installed carrier whose image `installed` says the deployment has. An installed carrier whose image is absent has
+/// no supplier (it is not a fault of the deployment until a route needs it). The refusals are [`Carriers::of`]'s.
+pub(crate) fn assignment(
+    linked: &[LinkedCarrier],
+    installed: &[InstalledCarrier],
+    present: impl Fn(&str) -> bool,
+) -> Result<Carriers<Arc<str>>, String> {
+    Carriers::of(
+        linked
+            .iter()
+            .map(|row| {
+                (row.admit)()
+                    .map(|image| (row.carrier, Arc::from(image.identity())))
+                    .map_err(|refusal| format!("an assigned carrier's image: {refusal}"))
+            })
+            .chain(
+                installed
+                    .iter()
+                    .filter(|row| present(row.identity))
+                    .map(|row| Ok((row.carrier, Arc::from(row.identity)))),
+            ),
+    )
 }
 
 /// Configuration validation (every config read: boot, reload, admin apply, `--validate`): the build's
-/// assignment holds against these admitted images' described facts.
+/// assignment holds against these admitted images' described facts. An installed carrier's image, when admitted,
+/// holds to the carrier's role as a linked one does.
 pub(crate) fn validate(images: &busbar_plugin_loader::instance::Images) -> Result<(), String> {
-    assigned(crate::LINKED_CARRIERS)?
-        .check(|identity| images.described(identity).map(|one| (one.kind, one.facts)))
+    assignment(
+        crate::LINKED_CARRIERS,
+        crate::INSTALLED_CARRIERS,
+        |identity| images.described(identity).is_some(),
+    )?
+    .check(|identity| images.described(identity).map(|one| (one.kind, one.facts)))
 }
 
-/// `busbar --list-plugins`: each carrier and the image the build assigns it, or `none`.
+/// `busbar --list-plugins`: each carrier and the image the build assigns it, the separately installed image that
+/// carries it when installed, or `none`.
 pub(crate) fn listing() -> Result<Vec<String>, String> {
     let carriers = assigned(crate::LINKED_CARRIERS)?;
     Ok(CARRIERS
         .iter()
         .map(|(carrier, word)| match carriers.get(*carrier) {
             Ok(identity) => format!("  {word:<10} {identity} (assigned by the build)"),
-            Err(_) => format!("  {word:<10} none"),
+            Err(_) => match crate::INSTALLED_CARRIERS
+                .iter()
+                .find(|row| row.carrier == *carrier)
+            {
+                Some(row) => format!("  {word:<10} {} (when installed)", row.identity),
+                None => format!("  {word:<10} none"),
+            },
         })
         .collect())
 }
@@ -278,6 +320,17 @@ impl NativeFramers {
             }
         }
         Ok(self)
+    }
+
+    /// [`Self::carrying`] the build's whole assignment: the linked rows, and each separately installed carrier whose
+    /// image this generation opened.
+    pub(crate) fn carrying_assigned(self) -> Result<Self, String> {
+        let assigned = assignment(
+            crate::LINKED_CARRIERS,
+            crate::INSTALLED_CARRIERS,
+            |identity| self.served.iter().any(|one| &*one.instance == identity),
+        )?;
+        self.carrying(&assigned)
     }
 
     /// The instance that carries `carrier`, borrowed from this generation. The number is untrusted (it comes from

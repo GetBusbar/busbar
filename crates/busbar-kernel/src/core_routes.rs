@@ -171,6 +171,34 @@ impl CoreRouter {
         self
     }
 
+    /// Nest a whole surface at `prefix` and declare it in the same act: one `{prefix}/{*rest}` row
+    /// per method in `methods`, under `auth`. A nested router's own routes reach no table, so a
+    /// listener that routes only declared lines (the native operator slot) would refuse every
+    /// request to the surface at arrival; declared here, the table again says what is mounted.
+    pub fn nest(
+        mut self,
+        prefix: &str,
+        surface: Router<Arc<AppHandle>>,
+        methods: &[RouteMethod],
+        auth: RouteAuth,
+    ) -> Self {
+        self.router = self.router.nest(prefix, surface);
+        let path = format!("{prefix}/{{*rest}}");
+        for &method in methods {
+            self.table
+                .by_path
+                .entry(path.clone())
+                .or_default()
+                .push((method, auth));
+            self.table.routes.push(CoreRoute {
+                path: path.clone(),
+                method,
+                auth,
+            });
+        }
+        self
+    }
+
     pub fn map_router(
         mut self,
         f: impl FnOnce(Router<Arc<AppHandle>>) -> Router<Arc<AppHandle>>,

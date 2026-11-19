@@ -34,6 +34,15 @@ use std::time::{Duration, Instant};
 const ADMIN_TOKEN: &str = "min3-images-operator-token";
 const MODEL: &str = "min3-test-model";
 
+/// The data chain the boot test writes. `Keys`: the engine's own key verifier, its signing key generated for this run
+/// by the binary under test (`--generate-signing-key`), every data request carrying a key the operator minted. `Empty`:
+/// `auth.chain: []`, which the engine refuses at boot (BUSBAR-9007, nobody could be admitted).
+#[derive(Clone, Copy)]
+enum Chain {
+    Keys,
+    Empty,
+}
+
 /// One booted default binary on loopback ports, killed and cleaned up on drop.
 struct Node {
     process: boot::Reap,
@@ -46,16 +55,32 @@ impl Node {
     /// Boot on fresh loopback ports. `operator`: bind the admin listener behind the linked admin-tokens image; `upstream`:
     /// route one model to that loopback port.
     fn boot(upstream: Option<u16>, operator: bool) -> Self {
+        Self::boot_with_planes(upstream, operator, false)
+    }
+
+    /// `planes`: add the data listener's `public_url`, so the routes whose challenge names the plane's public URL
+    /// (mcp) are mounted too. (The documented `mcp: { canonical_uri }` is refused by this build's `mcp:` reader,
+    /// which reads server definitions there: BUSBAR-9007 "expected struct McpServerDefCfg".)
+    fn boot_with_planes(upstream: Option<u16>, operator: bool, planes: bool) -> Self {
         let dir = workdir();
         let (data, admin) = (boot::free_port(), boot::free_port());
         let digest = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes());
         let settings = format!("{{ sha256: \"{digest}\" }}");
+        let sections = if planes {
+            format!(
+                "public_url: \"http://127.0.0.1:{data}\"\n"
+            )
+        } else {
+            String::new()
+        };
         write_configs(
             &dir,
             data,
             admin,
             operator.then_some(settings.as_str()),
             upstream,
+            Chain::Keys,
+            &sections,
         );
         let log = std::fs::File::create(dir.join("out.log")).expect("the boot log");
         let process = boot::Reap(
@@ -117,6 +142,32 @@ impl Node {
             b"",
         )
     }
+
+    /// Mint a data-plane key through the admin API (the `keys` verifier's credential). `audience`: a plane that binds
+    /// one (MCP, its `canonical_uri`) admits only a key minted for exactly that audience.
+    fn mint(&self, name: &str, audience: Option<&str>) -> String {
+        let audience = audience
+            .map(|uri| format!(r#","audience":"{uri}""#))
+            .unwrap_or_default();
+        let (status, minted) = exchange(
+            self.admin,
+            "POST",
+            "/api/v1/admin/keys",
+            &format!("Authorization: Bearer {ADMIN_TOKEN}\r\n"),
+            format!(r#"{{"name":"{name}"{audience}}}"#).as_bytes(),
+        );
+        assert!(
+            (200..300).contains(&status),
+            "the operator mints a key ({status}); log:\n{}",
+            self.log()
+        );
+        minted
+            .split("\"token\":\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .map(str::to_owned)
+            .unwrap_or_else(|| panic!("the admin API minted no key token ({status})"))
+    }
 }
 
 impl Drop for Node {
@@ -140,13 +191,43 @@ fn workdir() -> PathBuf {
 }
 
 /// `operator`: the admin-tokens definition's `settings` (a YAML flow map) when the admin listener sits behind it.
-fn write_configs(dir: &Path, data: u16, admin: u16, operator: Option<&str>, upstream: Option<u16>) {
+/// `extra`: top-level sections appended as written.
+fn write_configs(
+    dir: &Path,
+    data: u16,
+    admin: u16,
+    operator: Option<&str>,
+    upstream: Option<u16>,
+    chain: Chain,
+    extra: &str,
+) {
+    let chain = match chain {
+        Chain::Empty => "  chain: []\n".to_owned(),
+        Chain::Keys => {
+            let key = Command::new(boot::exe())
+                .arg("--generate-signing-key")
+                .output()
+                .expect("generate a signing key");
+            assert!(key.status.success(), "--generate-signing-key");
+            let file = dir.join("signing.key");
+            std::fs::write(&file, &key.stdout).expect("signing.key");
+            format!(
+                "  chain: [keys]\n  signing_key: {{ file: \"{}\" }}\n",
+                file.display()
+            )
+        }
+    };
     let (catalog, routing) = upstream.map_or_else(
         || ("{}\n".to_owned(), String::new()),
         |upstream| {
             (
                 format!("mock:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{upstream}\"\n  error_map: {{}}\n"),
-                format!("providers:\n  mock:\n    api_key: {{ env: MOCK_KEY }}\nmodels:\n  {MODEL}:\n    provider: mock\n"),
+                // The upstream is plaintext loopback: only the llm plane's own audited acceptance
+                // admits that dial (TRANSPORT-SECURITY-POLICY §4; no loopback exemption).
+                format!(
+                    "providers:\n  mock:\n    api_key: {{ env: MOCK_KEY }}\nmodels:\n  {MODEL}:\n    provider: mock\n\
+                     llm:\n  insecure_transport: {{ accept: plaintext, reason: \"loopback test upstream\" }}\n"
+                ),
             )
         },
     );
@@ -170,8 +251,7 @@ admin_listen: "127.0.0.1:{admin}"
 admin_listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test admin listener" }}
 store: {{ module: memory }}
 {operator}auth:
-  chain: []
-{admin_auth}{routing}"#
+{chain}{admin_auth}{routing}{extra}"#
         ),
     )
     .expect("config.yaml");
@@ -318,8 +398,9 @@ fn assert_instance(node: &Node, kind: &str, identity: &str) {
 
 #[test]
 fn the_data_listener_is_served_by_the_linked_http_image_over_http1_and_http2() {
-    // `Node::boot` waited for HTTP/1.1 `/healthz`; no operator, no provider: only the transport is under test.
-    let node = Node::boot(None, false);
+    // `Node::boot` waited for HTTP/1.1 `/healthz`; no provider: only the transport is under test. The operator
+    // credential is there because the key chain needs one to mint a key (BUSBAR-3115).
+    let node = Node::boot(None, true);
     assert!(
         node.log().contains("busbar listening"),
         "the data listener came up; log:\n{}",
@@ -333,26 +414,63 @@ fn the_data_listener_is_served_by_the_linked_http_image_over_http1_and_http2() {
     );
 }
 
-/// A default configuration (no `identity-providers`, no `auth.admin_auth`) boots with no operator credential: the
-/// default admin chain's operator position is unset, the boot log says so, and the admin plane fails closed, as 1.5.5
-/// did with no admin token: every admin request is 401, whatever token it presents.
-#[test]
-fn with_no_operator_credential_the_default_boots_and_the_admin_plane_refuses_every_request() {
-    let node = Node::boot(None, false);
-    assert!(
-        node.log().contains("has no admin credential configured"),
-        "the boot log tells the operator the admin plane is closed; log:\n{}",
-        node.log()
+/// Boot the configuration written in `dir` and expect it refused: neither listener ever accepts, the process exits
+/// unsuccessfully, and no listener came up. The boot log.
+fn boot_is_refused(dir: &Path, data: u16, admin: u16) -> String {
+    let log = std::fs::File::create(dir.join("out.log")).expect("the boot log");
+    let mut process = boot::Reap(
+        Command::new(boot::exe())
+            .current_dir(dir)
+            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+            .stdout(log.try_clone().expect("the boot log"))
+            .stderr(log)
+            .spawn()
+            .expect("boot the default binary"),
     );
-    for headers in ["", "Authorization: Bearer any-token-at-all\r\n"] {
-        let (status, body) = exchange(node.admin, "GET", "/api/v1/admin/info", headers, b"");
-        assert_eq!(
-            status,
-            401,
-            "no admin credential configured: refused ({headers:?}): {body}; log:\n{}",
-            node.log()
+    let read_log = || std::fs::read_to_string(dir.join("out.log")).unwrap_or_default();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        for (port, which) in [(admin, "admin"), (data, "data")] {
+            assert!(
+                TcpStream::connect(("127.0.0.1", port)).is_err(),
+                "the {which} listener accepted a connection on a boot that must be refused; log:\n{}",
+                read_log()
+            );
+        }
+        if let Some(status) = process.try_wait().expect("try_wait") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the boot neither served nor stopped; log:\n{}",
+            read_log()
         );
-    }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let log = read_log();
+    let _ = std::fs::remove_dir_all(dir);
+    assert!(!status.success(), "the boot is refused; log:\n{log}");
+    assert!(
+        !log.contains("busbar listening"),
+        "no listener came up; log:\n{log}"
+    );
+    log
+}
+
+/// A configuration with no operator credential (no `identity-providers`, no `auth.admin_auth`) and the key chain is
+/// refused at boot: nobody could mint a key, so the data plane would refuse every request (BUSBAR-3115), and the admin
+/// plane never serves. (Before 2723c6e305 refused the empty chain this default booted with `chain: []` and answered
+/// every admin request 401; neither listener now accepts at all.)
+#[test]
+fn with_no_operator_credential_the_key_chain_is_refused_and_no_listener_accepts() {
+    let dir = workdir();
+    let (data, admin) = (boot::free_port(), boot::free_port());
+    write_configs(&dir, data, admin, None, None, Chain::Keys, "");
+    let log = boot_is_refused(&dir, data, admin);
+    assert!(
+        log.contains("BUSBAR-3115"),
+        "the refusal says no admin credential can mint a key; log:\n{log}"
+    );
 }
 
 #[test]
@@ -370,7 +488,12 @@ fn the_admin_listener_is_served_by_the_linked_http_image_and_lists_it_as_a_trans
         "Authorization: Bearer not-the-operator-token\r\n",
         b"",
     );
-    assert_eq!(wrong, 401, "another token is refused on the admin listener");
+    assert_eq!(
+        wrong,
+        401,
+        "another token is refused on the admin listener; log:\n{}",
+        node.log()
+    );
     assert_instance(&node, "transport", "busbar-transport-http");
 }
 
@@ -385,11 +508,12 @@ fn a_provider_call_dials_out_through_the_linked_http_image_and_the_memory_store_
     let (upstream, calls) = spawn_upstream();
     let node = Node::boot(Some(upstream), true);
     assert_instance(&node, "store", "busbar-store-memory");
+    let key = node.mint("min3-provider-call", None);
     let (status, body) = exchange(
         node.data,
         "POST",
         "/v1/chat/completions",
-        "",
+        &format!("Authorization: Bearer {key}\r\n"),
         format!(r#"{{"model":"{MODEL}","messages":[{{"role":"user","content":"ping"}}]}}"#)
             .as_bytes(),
     );
@@ -421,46 +545,106 @@ fn a_provider_call_dials_out_through_the_linked_http_image_and_the_memory_store_
 fn an_operator_credential_that_cannot_open_stops_the_boot_before_any_listener_accepts() {
     let dir = workdir();
     let (data, admin) = (boot::free_port(), boot::free_port());
-    write_configs(&dir, data, admin, Some("{ token: \"\" }"), None);
-    let log = std::fs::File::create(dir.join("out.log")).expect("the boot log");
-    let mut process = boot::Reap(
-        Command::new(boot::exe())
-            .current_dir(&dir)
-            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .stdout(log.try_clone().expect("the boot log"))
-            .stderr(log)
-            .spawn()
-            .expect("boot the default binary"),
+    write_configs(
+        &dir,
+        data,
+        admin,
+        Some("{ token: \"\" }"),
+        None,
+        Chain::Keys,
+        "",
     );
-    let read_log = || std::fs::read_to_string(dir.join("out.log")).unwrap_or_default();
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let status = loop {
-        for (port, which) in [(admin, "admin"), (data, "data")] {
-            assert!(
-                TcpStream::connect(("127.0.0.1", port)).is_err(),
-                "the {which} listener accepted while the operator's instance is unopened; log:\n{}",
-                read_log()
-            );
-        }
-        if let Some(status) = process.try_wait().expect("try_wait") {
-            break status;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the boot neither served nor stopped; log:\n{}",
-            read_log()
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    let log = read_log();
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(!status.success(), "the boot is refused; log:\n{log}");
-    assert!(
-        !log.contains("busbar listening"),
-        "no listener came up; log:\n{log}"
-    );
+    let log = boot_is_refused(&dir, data, admin);
     assert!(
         log.contains("serving auth"),
         "the boot stops at the operator instance's open, before listener assembly; log:\n{log}"
+    );
+}
+
+/// `auth.chain: []` names no verifier, so nobody could be admitted: the engine refuses the boot (BUSBAR-9007,
+/// 2723c6e305) and no listener ever accepts. The boot test's own configuration therefore carries the key verifier.
+#[test]
+fn an_empty_data_chain_is_refused_at_boot_before_any_listener_accepts() {
+    let dir = workdir();
+    let (data, admin) = (boot::free_port(), boot::free_port());
+    // With the operator credential, so the refusal is the empty chain's and no other.
+    let digest = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes());
+    let settings = format!("{{ sha256: \"{digest}\" }}");
+    write_configs(&dir, data, admin, Some(&settings), None, Chain::Empty, "");
+    let log = boot_is_refused(&dir, data, admin);
+    assert!(
+        log.contains("auth.chain is empty: no verifier"),
+        "the refusal names the empty chain (BUSBAR-9007); log:\n{log}"
+    );
+}
+
+/// The first boot reaches every linked plane: one request per plane (llm, mcp, a2a, decisions, streaming) carrying the
+/// operator-minted key. Each is admitted and answered by its plane, or its route is refused at boot with a stated
+/// reason (an "is not served" line naming the route in the boot log). A refused plane answer carries its reason.
+#[test]
+fn each_linked_plane_answers_one_keyed_request_or_states_its_refusal() {
+    let (upstream, _calls) = spawn_upstream();
+    let node = Node::boot_with_planes(Some(upstream), true, true);
+    let key = node.mint("min3-planes", None);
+    let mcp_key = node.mint(
+        "min3-planes-mcp",
+        Some(&format!("http://127.0.0.1:{}/mcp", node.data)),
+    );
+    let chat = format!(r#"{{"model":"{MODEL}","messages":[{{"role":"user","content":"ping"}}]}}"#);
+    let decide = format!(r#"{{"model":"{MODEL}","state":{{"amount":7}}}}"#);
+    let mint_session = format!(r#"{{"session":{{"type":"realtime","model":"{MODEL}"}}}}"#);
+    let (key, mcp_key) = (key.as_str(), mcp_key.as_str());
+    let planes: [(&str, &str, &str, &str, String); 5] = [
+        ("llm", "/v1/chat/completions", key, "", chat),
+        (
+            "mcp",
+            "/mcp",
+            mcp_key,
+            "Accept: application/json, text/event-stream\r\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"min3-planes","version":"1"}}}"#.to_owned(),
+        ),
+        (
+            "a2a",
+            "/a2a",
+            key,
+            "",
+            r#"{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"text","text":"hi"}],"messageId":"m1"}}}"#.to_owned(),
+        ),
+        ("decisions", "/v1/systemone", key, "", decide),
+        ("streaming", "/v1/realtime/client_secrets", key, "", mint_session),
+    ];
+    // The statuses admission answers: an admitted request is none of them.
+    const ADMISSION: [u16; 5] = [401, 403, 404, 405, 413];
+    let mut answers = Vec::new();
+    let mut failures = Vec::new();
+    for (plane, path, token, headers, body) in &planes {
+        let (status, text) = exchange(
+            node.data,
+            "POST",
+            path,
+            &format!("Authorization: Bearer {token}\r\n{headers}"),
+            body.as_bytes(),
+        );
+        let log = node.log();
+        let refused_at_boot = log
+            .lines()
+            .find(|line| line.contains("is not served") && line.contains(path))
+            .map(str::to_owned);
+        let short: String = text.chars().take(300).collect();
+        answers.push(format!("{plane} POST {path}: {status} {short}"));
+        let admitted = status != 0 && !ADMISSION.contains(&status);
+        let stated = admitted && ((200..300).contains(&status) || !text.trim().is_empty());
+        if !(stated || refused_at_boot.is_some()) {
+            failures.push(format!(
+                "{plane} POST {path}: {status} is neither a plane's answer nor a stated refusal: {short}"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{}\nanswers:\n{}\nlog:\n{}",
+        failures.join("\n"),
+        answers.join("\n"),
+        node.log()
     );
 }

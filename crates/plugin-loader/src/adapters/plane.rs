@@ -116,6 +116,7 @@ pub fn decode_describe(
     let mut attempt_classes: Vec<Box<str>> = Vec::new();
     let mut headers: Vec<(u32, &str)> = Vec::new();
     let mut resource_routes: Vec<(u32, Vec<Box<str>>)> = Vec::new();
+    let (mut public_url_path, mut caller_upstreams_path) = (false, false);
     for rec in describe {
         let rec = rec.map_err(|_| DescribeInvalid("describe"))?;
         match rec.tag {
@@ -271,7 +272,30 @@ pub fn decode_describe(
                     return Err(bad);
                 }
             }
-            t::D_PROVIDER_SCHEMA | t::D_DIALECT_AUTH => {}
+            // Plane 2.0: the positions core writes `public_url` and the caller's upstreams at
+            // (`chains::prepare_with_id`): an RFC 6901 pointer to a member, each at most once.
+            t::D_PUBLIC_URL_PATH | t::D_CALLER_UPSTREAMS_PATH => {
+                let (bad, seen) = if rec.tag == t::D_PUBLIC_URL_PATH {
+                    (
+                        DescribeInvalid("describe.public_url_path"),
+                        &mut public_url_path,
+                    )
+                } else {
+                    (
+                        DescribeInvalid("describe.caller_upstreams_path"),
+                        &mut caller_upstreams_path,
+                    )
+                };
+                let pointer = rec.text().map_err(|_| bad)?;
+                let member =
+                    crate::upstream_paths::tokens(pointer).is_some_and(|path| !path.is_empty());
+                if !member || core::mem::replace(seen, true) {
+                    return Err(bad);
+                }
+            }
+            // D_UPSTREAM_PATH is judged with every kind's describe (`upstream_paths::validate`, from
+            // `chains::decode_described`, before this decoder runs): `*`-final, at most four, disjoint.
+            t::D_UPSTREAM_PATH | t::D_PROVIDER_SCHEMA | t::D_DIALECT_AUTH => {}
             tag if tag < 0x0100 => {}
             _ => return Err(DescribeInvalid("describe")),
         }
@@ -2217,6 +2241,48 @@ mod tests {
         assert_eq!(d.usage_classes[0].expected_units, None);
         assert_eq!(d.tick_s, Some(30));
         assert_eq!(d.admin_openapi, None);
+    }
+
+    /// Plane 2.0: the plane-only path items (0x4000-0x4002) load; the two core-written positions are
+    /// RFC 6901 pointers to a member, each at most once (D_UPSTREAM_PATH is judged by
+    /// `upstream_paths::validate` before this decoder runs).
+    #[test]
+    fn a_plane_stating_its_path_items_loads_and_a_bad_or_second_position_refuses() {
+        let stated = |items: &[(u16, &str)]| {
+            let mut r = Reply::new();
+            route(&mut r, 1, POST, 0, p::AUTH_PRINCIPAL, "/v1/realtime");
+            for (tag, text) in items {
+                r.put_text(*tag, text).unwrap();
+            }
+            describe(&r, p::ALL, 0)
+        };
+        assert!(stated(&[
+            (t::D_PUBLIC_URL_PATH, "/public_url"),
+            (t::D_CALLER_UPSTREAMS_PATH, "/caller_upstreams"),
+            (t::D_UPSTREAM_PATH, "/upstreams/*"),
+        ])
+        .is_ok());
+        let url = DescribeInvalid("describe.public_url_path");
+        let callers = DescribeInvalid("describe.caller_upstreams_path");
+        for bad in ["", "public_url", "/a~2b"] {
+            assert_eq!(stated(&[(t::D_PUBLIC_URL_PATH, bad)]).err(), Some(url));
+            assert_eq!(
+                stated(&[(t::D_CALLER_UPSTREAMS_PATH, bad)]).err(),
+                Some(callers)
+            );
+        }
+        assert_eq!(
+            stated(&[(t::D_PUBLIC_URL_PATH, "/a"), (t::D_PUBLIC_URL_PATH, "/b")]).err(),
+            Some(url)
+        );
+        assert_eq!(
+            stated(&[
+                (t::D_CALLER_UPSTREAMS_PATH, "/a"),
+                (t::D_CALLER_UPSTREAMS_PATH, "/b")
+            ])
+            .err(),
+            Some(callers)
+        );
     }
 
     #[test]

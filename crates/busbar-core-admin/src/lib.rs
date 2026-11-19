@@ -89,7 +89,7 @@ fn seam_mount(
             RouteAuth::Admin,
             crate::v1::json::metrics::get_hooks,
         );
-    router.map_router(|router| crate::transport::mount(router, &crate::v1::json::JsonV1))
+    crate::transport::mount(router, &crate::v1::json::JsonV1)
 }
 
 #[cfg(any(test, feature = "test-support"))]

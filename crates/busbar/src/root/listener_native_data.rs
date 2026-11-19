@@ -500,14 +500,18 @@ pub(super) fn refuse_prepared(
     route: &busbar_kernel::auth::native_data::NativeDataRoute,
     seat: &PortSeat,
 ) -> Result<(Response, busbar_kernel::inbound::native::PhysicalRefusal), InputError> {
+    // A failure with no row ends the request unanswered: its reason is said here, or the close
+    // names no layer at all.
+    let reason = failed.reason();
     let busbar_kernel::auth::native_data::DataPreparationFailed::Denied(denial) = failed else {
+        tracing::warn!(?reason, "a data preparation ended with no answer (not a denial)");
         return Err(InputError::Invalid);
     };
     let binding = request.binding().clone();
-    let reason = denial.decision();
-    let refusal = reason
-        .refusal(super::answer::presented(&binding, route.withheld()))
-        .ok_or(InputError::Invalid)?;
+    let Some(refusal) = reason.refusal(super::answer::presented(&binding, route.withheld())) else {
+        tracing::warn!(?reason, "a data preparation denial has no refusal row: no answer");
+        return Err(InputError::Invalid);
+    };
     let response = if reason.after_verification() {
         let RouteTarget::Plane(target) = binding.route().target() else {
             return Err(InputError::Invalid);

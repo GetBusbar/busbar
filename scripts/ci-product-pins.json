@@ -1,5 +1,5 @@
 {
-  "sdk": "b425fa88fbe0c2ebcc2e2418364e4b09e8b977ec",
+  "sdk": "a869258e05a0ace9ed08201f8e6ba7cdbc0b35a9",
   "products": [
     {
       "repo": "busbar-auth-admin-tokens",
@@ -51,13 +51,13 @@
     {
       "repo": "busbar-auth-webhook-signature",
       "url": "https://github.com/GetBusbar/busbar-auth-webhook-signature",
-      "commit": "62636940044baee6a8ea5db2cb2fb21d281e1e4b",
+      "commit": "eede972bcc0f0c3eb4a53daf4fea02fde7eff156",
       "package": "busbar-auth-webhook-signature-plugin",
       "kind": "auth",
       "alias": "webhook-signature",
       "image": "libbusbar_auth_webhook_signature_plugin.so",
       "declares": "auth-webhook-signature/declares.json",
-      "lock_sha256": "5e81844191a6ef8978bce84b87cbdb93ccd635b1975bce165eb85607534294c5"
+      "lock_sha256": "ac51e91946c99b84da5cb312d5e228c7d5060f40d622f03d386d0d1986afe118"
     },
     {
       "repo": "busbar-export-file",
@@ -139,13 +139,13 @@
     {
       "repo": "busbar-store-sqlite",
       "url": "https://github.com/GetBusbar/busbar-store-sqlite",
-      "commit": "25a2f9ff5d91f0ce81f8287ec83d2852cdf66bbb",
+      "commit": "2ca84cce797d58f4b9464f1cea203a4bdf4f8a82",
       "package": "busbar-store-sqlite-plugin",
       "kind": "store",
       "alias": "sqlite",
       "image": "libbusbar_store_sqlite_plugin.so",
       "declares": "store-sqlite/declares.json",
-      "lock_sha256": "471478698b7d2f927b62f643722917ed1d33855293030f47024c58439087a64c",
+      "lock_sha256": "9212fb84fe3353790064ccb4a0bc80cf046fc70f9017aab1f2c25fe59b4fbc67",
       "former_names": [
         "busbar-store-sqlite-plugin"
       ]
@@ -186,13 +186,13 @@
     {
       "repo": "busbar-transport-ws",
       "url": "https://github.com/GetBusbar/busbar-transport-ws",
-      "commit": "1ebb877c5045b6934cd788f412b8bb294ea1b9b9",
+      "commit": "1657530c1928f10511bec266d137b2e61629e507",
       "package": "busbar-transport-ws-plugin",
       "kind": "transport",
       "alias": "ws",
       "image": "libbusbar_transport_ws_plugin.so",
       "declares": "transport-ws/declares.json",
-      "lock_sha256": "76c673a4e6a43d747d5471297fc07e0a329322f8f183c8d7a83f8413551277c8"
+      "lock_sha256": "e11352f30db1b43a12d730d7c7dfa9a55c21225b3ae0a41bfe028722f95c6f7e"
     },
     {
       "repo": "busbar-auth-github",
@@ -258,13 +258,13 @@
     {
       "repo": "busbar-hook-webrequest",
       "url": "https://github.com/GetBusbar/busbar-hook-webrequest",
-      "commit": "5329343a7ac68ee3a30549f6b56fb85676ab8ab2",
+      "commit": "b67d2c8910a418f5171d7ed347177b60aa255f28",
       "package": "busbar-hook-webrequest-plugin",
       "kind": "hook",
       "alias": "webrequest",
       "image": "libbusbar_hook_webrequest_plugin.so",
       "declares": "hook-webrequest/declares.json",
-      "lock_sha256": "884658c4177b76aca013245612ffd7b89a736664b37d31b8a4be1e71adef49c5",
+      "lock_sha256": "1663680487f800d6d39fc1902f4bf5ea5e8c74fe48d5db96da7d0ed26da51fe3",
       "former_names": [
         "busbar-webrequest"
       ]
@@ -330,13 +330,13 @@
     {
       "repo": "busbar-store-mysql",
       "url": "https://github.com/GetBusbar/busbar-store-mysql",
-      "commit": "f82e3286f6049ebd4cfd9e27f1166868970fe71f",
+      "commit": "c8078373b7c9fba292044994de2191ef9fcfa916",
       "package": "busbar-store-mysql-plugin",
       "kind": "store",
       "alias": "mysql",
       "image": "libbusbar_store_mysql_plugin.so",
       "declares": "store-mysql/declares.json",
-      "lock_sha256": "be744e941ebb507f61d02370419baa231bc132e7f8a971dd262ce8d396c53b31",
+      "lock_sha256": "ec41fd5819b970251932f049f666b54bd3bc56d9611b0641ee52d40058412693",
       "former_names": [
         "busbar-store-mysql-plugin"
       ]

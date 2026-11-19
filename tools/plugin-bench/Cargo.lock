@@ -297,14 +297,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "busbar-kernel-breaker"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
- "foldhash",
-]
-
-[[package]]
 name = "busbar-plugin-abi"
 version = "1.6.0"
 dependencies = [
@@ -357,6 +349,7 @@ dependencies = [
  "tokio",
  "tracing",
  "windows-sys 0.61.2",
+ "zerocopy",
  "zeroize",
 ]
 
@@ -365,6 +358,7 @@ name = "busbar-ports"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-ffi",
  "busbar-plugin-abi",
  "zeroize",
 ]

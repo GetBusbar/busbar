@@ -13,7 +13,8 @@ fn bad() -> Refusal {
     )
 }
 
-fn tokens(text: &str) -> Option<Vec<String>> {
+/// The decoded tokens of RFC 6901 pointer `text` (`""` = no token); `None` when it is not one.
+pub(crate) fn tokens(text: &str) -> Option<Vec<String>> {
     if text.is_empty() {
         return Some(Vec::new());
     }

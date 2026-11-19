@@ -650,7 +650,7 @@ fn a_real_created_namespace_retains_its_baseline_and_cannot_be_initialized_as_fr
     assert_eq!(creation["database"], selected["settings"]["db_path"]);
     assert_eq!(
         selected["settings"],
-        serde_json::to_value(common::plugins::application_store_settings(&dir))
+        json::to_value(&common::plugins::application_store_settings(&dir))
             .expect("the store settings are JSON")
     );
     let _ = std::fs::remove_dir_all(dir);
