@@ -183,8 +183,12 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   left before busbar read it, the line bills the last accepted report. The unit's checkpoint record
   then carries `unread` and the audit log has a `plane-usage-unread` row (`BUSBAR-5046`), both
   stating the reason. A refused final count bills that way whether or not a cancel overtook it
-  (1.5.5 billed 0 for a non-streaming answer); the refused count itself is never billed. A plane
-  fault still bills as before.
+  (1.5.5 billed 0 for a non-streaming answer); the refused count itself is never billed (it is
+  audited, not billed). A session bills exactly the usage it accepted, once, whatever its ending: a
+  session that fails (a plane fault, a refused count) bills the usage busbar accepted before it
+  failed, and no longer bills nothing; a session dropped before its end bills the usage accepted so
+  far, and a request whose far end was dialled stays counted. A final report that cannot be priced
+  writes `BUSBAR-5046` `plane-usage-unread` and leaves the unit unresolved.
 - **A request that asks for a stream gets a stream.**
   1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.
   1.5.5 relayed such an answer as one `application/json` body to a caller that asked for

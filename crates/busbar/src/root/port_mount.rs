@@ -552,7 +552,11 @@ fn allocate_unit(
 }
 
 /// A unit's settlement, owed once whatever becomes of the request: dropped unfinished (a panic, a cancelled
-/// task) it settles as a gateway failure that ran nothing, so the unit never stays open and its hold never leaks.
+/// task) it settles as `end_of(502, false)`, so the unit never stays open and its hold never leaks. The money
+/// rule is that a session bills exactly the usage it accepted, once, whatever its ending: a dropped or failed
+/// session bills what it accepted so far, a request whose far end was dialled stays counted as having run, an
+/// unpriced final report writes `BUSBAR-5046` `plane-usage-unread` and leaves the unit unresolved, and a
+/// refused report is audited, never billed.
 struct Settle {
     billing: PortBilling,
     key: busbar_contract::UnitKey,
