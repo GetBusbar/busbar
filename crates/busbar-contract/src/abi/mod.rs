@@ -26,58 +26,6 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-/// ONE DECLARATIVE LIST PER TABLE: each slot's fn-pointer type and the `#[repr(C)]` table holding
-/// one `Option` of each — the table's size header first, then the slots in the order listed, each
-/// named for the trait method it lowers, each answering the outcome byte the list states (`->
-/// Outcome`). The coverage witness (`tests/conn_slot_coverage.rs`) reads the list and holds it to
-/// the trait.
-///
-/// Every slot is `unsafe extern "C"`: its raw ranges need a caller's ownership proof. The C ABI
-/// (THE DESIGN, the signed kind-ABI design's finding M3: unwinding across
-/// a foreign cdylib is undefined behaviour, so a slot catches its own panic and answers its fault
-/// byte, and a panic that escapes it aborts).
-macro_rules! slot_table {
-    (
-        extern "C";
-        $(#[$doc:meta])*
-        pub struct $table:ident lowers $trait:ident -> $ret:ty {
-            $(
-                $(#[$sdoc:meta])*
-                $slot:ident: $alias:ident = fn($($arg:ident: $ty:ty),* $(,)?);
-            )*
-        }
-    ) => {
-        $(
-            $(#[$sdoc])*
-            ///
-            /// # Safety
-            /// The context is this table's live host-minted context. Numeric handles are checked
-            /// by the host as the slot specifies; they do not authorize pointer dereferences. Input
-            /// pointers name initialized, live, immutable ranges of their stated lengths;
-            /// output pointers name live, exclusive writable ranges of their stated capacities.
-            /// Nested ranges and returned borrows obey this slot's documented lifetime. The
-            /// caller keeps these owners alive and upholds the method's concurrency contract.
-            pub type $alias = unsafe extern "C" fn($($arg: $ty),*) -> $ret;
-        )*
-        slot_table!(@table $(#[$doc])* $table { $($slot: $alias),* });
-    };
-    (@table $(#[$doc:meta])* $table:ident { $($slot:ident: $alias:ident),* }) => {
-        $(#[$doc])*
-        #[repr(C)]
-        #[derive(Debug, Clone, Copy)]
-        pub struct $table {
-            #[doc = concat!("`size_of::<", stringify!($table), ">()` at construction.")]
-            pub size: u32,
-            /// Alignment padding.
-            pub _reserved: u32,
-            $(
-                #[doc = concat!("`", stringify!($slot), "`.")]
-                pub $slot: Option<$alias>,
-            )*
-        }
-    };
-}
-
 /// THE LIST FIELDS OF ONE ABI STRUCT, written and read through methods: a list
 /// is a pointer and a length, which these set together,
 /// to items that live for the program. The fields remain

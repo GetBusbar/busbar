@@ -150,10 +150,6 @@ pub const PIECE_HAS_RETRY_AFTER: u8 = 2;
 /// [`WirePiece::flags`]: the declared body length is present.
 pub const PIECE_HAS_DECLARED_LEN: u8 = 4;
 
-slot_table! {
-extern "C";
-}
-
 /// The heap-stable state behind a `ConnHost`: what its [`ConnCtx`] points at.
 struct HostState {
     conns: Arc<dyn Conns>,
