@@ -74,7 +74,7 @@ fn release_returns_exactly_the_chains_conns_and_leaves_no_row() {
     let other = t.insert(1, 11, held(3)).unwrap();
     assert!(t.release(1, 99).is_empty(), "a chain with no rows");
     let mut got: Vec<u8> = t.release(1, 10).into_iter().map(|h| h.conn).collect();
-    got.sort_unstable();
+    got.sort();
     assert_eq!(got, [1, 2]);
     assert_eq!(t.chains(), 1);
     assert_eq!(t.take(1, 11, other).unwrap().conn, 3);

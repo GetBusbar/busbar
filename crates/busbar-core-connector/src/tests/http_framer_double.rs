@@ -46,6 +46,7 @@ use busbar_contract::abi::transport::{
     STATUS_OTHER, STATUS_SUCCESS, YIELD_ENDED,
 };
 use busbar_contract::plugin::markers::TransportKind;
+use busbar_contract::secure::SecureVec;
 use busbar_contract::transport::registry::facts as tfacts;
 use busbar_contract::SelectorForm;
 
@@ -238,8 +239,8 @@ enum Chunk {
 struct Framing {
     /// The dialled target's own path and query: a request naming none takes it.
     dial_path: Vec<u8>,
-    /// Bytes owed to the far end.
-    out: VecDeque<u8>,
+    /// Bytes owed to the far end (a wiping queue: what is sent is wiped as it leaves).
+    out: SecureVec,
     /// A request head still arriving from the host (its request line not yet sent).
     head: Vec<u8>,
     /// Whether the current request's head has gone out (later bytes are its body).
@@ -269,7 +270,7 @@ impl Framing {
         let dial_path = if dial_path.is_empty() { "/" } else { dial_path };
         Ok(Self {
             dial_path: dial_path.as_bytes().to_vec(),
-            out: VecDeque::new(),
+            out: SecureVec::new(),
             head: Vec::new(),
             head_sent: false,
             inbound: Vec::new(),
@@ -300,16 +301,16 @@ impl Framing {
                 return Err("emit: the request line is not `method target version`");
             };
             let target = origin_form(target, &self.dial_path);
-            self.out.extend(method);
-            self.out.push_back(b' ');
-            self.out.extend(&target);
-            self.out.push_back(b' ');
-            self.out.extend(version);
-            self.out.extend(&head[line_end..]);
+            self.out.extend_from_slice(method);
+            self.out.extend_from_slice(b" ");
+            self.out.extend_from_slice(&target);
+            self.out.extend_from_slice(b" ");
+            self.out.extend_from_slice(version);
+            self.out.extend_from_slice(&head[line_end..]);
             self.head_sent = true;
             self.reading = Reading::Head;
         } else {
-            self.out.extend(bytes);
+            self.out.extend_from_slice(bytes);
         }
         if end {
             self.head_sent = false;
@@ -583,13 +584,8 @@ impl Owed<Vec<u8>> for Framing {
             .out
             .len()
             .min(into.cap().saturating_sub(into.written()));
-        let (front, back) = self.out.as_slices();
-        let first = n.min(front.len());
-        into.extend(&front[..first]);
-        if n > first {
-            into.extend(&back[..n - first]);
-        }
-        self.out.drain(..n);
+        into.extend(&self.out[..n]);
+        self.out.consume(n);
     }
     fn wire_pending(&self) -> bool {
         !self.out.is_empty()
