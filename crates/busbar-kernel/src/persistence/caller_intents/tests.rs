@@ -238,6 +238,7 @@ async fn restart_fences_original_writer_and_resolves_prepared_intent_without_mai
 
 #[tokio::test]
 async fn restarted_applied_terminal_preserves_grant_without_replaying_any_candidate() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let f = fixture().await;
     let mut operation = install(&f).await;
     assert_eq!(operation.drive().await.unwrap(), Outcome::Applied);
@@ -257,6 +258,7 @@ async fn restarted_applied_terminal_preserves_grant_without_replaying_any_candid
 
 #[tokio::test]
 async fn restart_after_lost_main_ack_recovers_atomic_terminal_without_issuing_a_new_operation() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let f = fixture().await;
     let operation = install(&f).await;
     let prepared = operation
@@ -301,6 +303,7 @@ async fn restart_after_lost_main_ack_recovers_atomic_terminal_without_issuing_a_
 
 #[tokio::test]
 async fn durable_guard_serializes_replicas_and_terminal_key_cannot_be_silently_discarded() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let f = fixture().await;
     let operation = install(&f).await;
     let prepared = operation
@@ -347,6 +350,7 @@ async fn durable_guard_serializes_replicas_and_terminal_key_cannot_be_silently_d
 
 #[tokio::test]
 async fn keyed_revoke_read_fences_before_await_and_unsubmitted_drop_releases_it() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let f = fixture().await;
     let mut installed = install(&f).await;
     assert_eq!(installed.drive().await.unwrap(), Outcome::Applied);
@@ -365,6 +369,7 @@ async fn keyed_revoke_read_fences_before_await_and_unsubmitted_drop_releases_it(
 
 #[tokio::test]
 async fn a_delayed_replica_preparation_cannot_resurrect_a_revoked_grant() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let f = fixture().await;
     let mut installed = install(&f).await;
     assert_eq!(installed.drive().await.unwrap(), Outcome::Applied);
