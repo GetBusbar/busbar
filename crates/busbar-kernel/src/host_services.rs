@@ -2427,9 +2427,10 @@ impl KernelServices {
         {
             return Err("record transactions are unsupported");
         }
-        // A request that opens no unit allows no effect: no record transaction runs under it.
-        if unit.is_some_and(|id| self.units.opens_no_unit(id)) {
-            return Err("a request that opens no unit allows no record transaction");
+        // A record transaction is an effect: none runs under a unit whose effects are not
+        // allowed, neither a request that opens no unit nor a billed one before its money.
+        if unit.is_some_and(|id| !self.units.generic_effects_allowed(id, caller)) {
+            return Err("a unit whose effects are not allowed runs no record transaction");
         }
         let unit = unit
             .map(|id| self.units.get(id).ok_or("record transaction unit ended"))
@@ -2813,10 +2814,11 @@ impl KernelServices {
 }
 
 impl KernelServices {
-    fn owner_of_unit(&self, unit: Option<u64>) -> Option<Owner> {
+    fn owner_of_unit(&self, caller: &Caller, unit: Option<u64>) -> Option<Owner> {
         let unit = unit?;
-        // A request that opens no unit allows no effect: nothing is written owned by it.
-        if self.units.opens_no_unit(unit) {
+        // Work owned by a unit is touched only once its effects are allowed: neither a request
+        // that opens no unit nor a billed one before its money owns any.
+        if !self.units.generic_effects_allowed(unit, caller) {
             return None;
         }
         let record = self.units.get(unit)?;
@@ -3089,7 +3091,9 @@ impl HostServices for KernelServices {
         }
         match query {
             InspectionQuery::Work { reference } => {
-                let owner = self.owner_of_unit(unit).ok_or(InspectionError::Refused)?;
+                let owner = self
+                    .owner_of_unit(caller, unit)
+                    .ok_or(InspectionError::Refused)?;
                 let reference = parse_reference(reference).ok_or(InspectionError::NotFound)?;
                 let (_, work) = self
                     .work
@@ -4041,7 +4045,7 @@ impl HostServices for KernelServices {
                 if record.len() > svc::MAX_WORK_RECORD {
                     return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
                 }
-                let Some(owner) = self.owner_of_unit(unit) else {
+                let Some(owner) = self.owner_of_unit(caller, unit) else {
                     return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
                 };
                 let book = Arc::clone(&self.work);
@@ -4116,7 +4120,7 @@ impl HostServices for KernelServices {
         match self.native_work_writer(caller) {
             Err(refused) => return Ran::Now(refused),
             Ok(Some(writer)) => {
-                let (Some(unit), Some(owner)) = (unit, self.owner_of_unit(unit)) else {
+                let (Some(unit), Some(owner)) = (unit, self.owner_of_unit(caller, unit)) else {
                     return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
                 };
                 let Some(reference) = parse_reference(reference) else {
@@ -4211,7 +4215,7 @@ impl HostServices for KernelServices {
                 if record.len() > svc::MAX_WORK_RECORD {
                     return Ran::Now(Stored::refused(work_refusal::TOO_LONG));
                 }
-                let owner = self.owner_of_unit(unit);
+                let owner = self.owner_of_unit(caller, unit);
                 let in_flight = |unit| self.units.get(unit).is_some();
                 let record = record.to_vec();
                 let settled = match self.work.settle(
@@ -4255,7 +4259,7 @@ impl HostServices for KernelServices {
         if self.facts(caller).is_none() {
             return Ran::Now(Stored::refused(NOT_ADMITTED));
         }
-        let (Some(unit), Some(owner)) = (unit, self.owner_of_unit(unit)) else {
+        let (Some(unit), Some(owner)) = (unit, self.owner_of_unit(caller, unit)) else {
             return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
         };
         Ran::Now(

@@ -679,7 +679,11 @@ fn unit_write_needs_effects_before_any_work_is_opened_under_it() {
         },
     );
     let s = run(|l| r.s.work_open(&plane, Some(40), "job", b"r", l));
-    assert_eq!((s.outcome, s.error), (Outcome::Ready, ""), "admitted: opened");
+    assert_eq!(
+        (s.outcome, s.error),
+        (Outcome::Ready, ""),
+        "admitted: opened"
+    );
 }
 
 #[test]
