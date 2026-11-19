@@ -275,7 +275,9 @@ mod nest_custody {
     use busbar_kernel::host_services::{
         NativeInvocationAdmission, NestDone, NestRoute, ServingGeneration,
     };
-    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission, RequestLease};
+    use busbar_kernel::limits::process_admission::{
+        AdmissionClass, ProcessAdmission, RequestLease,
+    };
     use busbar_kernel::plane_driver::port::{PortDriver, PortSeat, Unit};
     use busbar_kernel::plane_driver::port_billing::Admit;
     use busbar_kernel::plane_driver::port_intents::{IntentHost, Looked, Namespace};
@@ -698,16 +700,35 @@ mod nest_custody {
         }
 
         fn frames(&self) -> Vec<u64> {
-            let mut ids: Vec<u64> = self.snapshot.frames.lock().unwrap().keys().copied().collect();
+            let mut ids: Vec<u64> = self
+                .snapshot
+                .frames
+                .lock()
+                .unwrap()
+                .keys()
+                .copied()
+                .collect();
             ids.sort_unstable();
             ids
         }
 
         /// The refused nest ran nothing, opened no money, reserved no input and retained no frame.
         fn nothing_ran_or_charged(&self, open: usize, frames: &[u64], case: &str) {
-            assert_eq!(self.plane.calls.load(Ordering::SeqCst), 0, "{case}: the plane ran");
-            assert_eq!(self.money.open_units(), open, "{case}: the child opened money");
-            assert_eq!(self.budget.used(), (0, 0), "{case}: the child reserved input");
+            assert_eq!(
+                self.plane.calls.load(Ordering::SeqCst),
+                0,
+                "{case}: the plane ran"
+            );
+            assert_eq!(
+                self.money.open_units(),
+                open,
+                "{case}: the child opened money"
+            );
+            assert_eq!(
+                self.budget.used(),
+                (0, 0),
+                "{case}: the child reserved input"
+            );
             assert_eq!(self.frames(), frames, "{case}: the child retained a frame");
         }
     }
@@ -749,8 +770,16 @@ mod nest_custody {
             Some((ASK.to_vec(), (ASK.len(), ASK.len()), true, 2)),
             "the child ran on its parent's admitted request, its frame beside the parent's"
         );
-        assert_eq!(rig.frames(), [parent.id], "the ended child's frame is cleaned up");
-        assert_eq!(rig.money.open_units(), 1, "the ended child's unit is settled");
+        assert_eq!(
+            rig.frames(),
+            [parent.id],
+            "the ended child's frame is cleaned up"
+        );
+        assert_eq!(
+            rig.money.open_units(),
+            1,
+            "the ended child's unit is settled"
+        );
         assert_eq!(rig.budget.used(), (0, 0));
     }
 
@@ -780,18 +809,19 @@ mod nest_custody {
         } = parent;
         let core = Arc::clone(&rig.core);
         let billing = rig.billing.clone();
-        *rig.plane.on_enter.lock().unwrap() = Some(Box::new(move |snapshot: &Arc<DispatchSnapshot>| {
-            let mut frames = snapshot.frames.lock().unwrap();
-            frames.remove(&id);
-            if child_frame_too {
-                frames.clear();
-            }
-            drop(frames);
-            drop(lease);
-            billing.settle(UnitKey::new(id), end_of(200, true));
-            drop(unit);
-            core.units().ended(id);
-        }));
+        *rig.plane.on_enter.lock().unwrap() =
+            Some(Box::new(move |snapshot: &Arc<DispatchSnapshot>| {
+                let mut frames = snapshot.frames.lock().unwrap();
+                frames.remove(&id);
+                if child_frame_too {
+                    frames.clear();
+                }
+                drop(frames);
+                drop(lease);
+                billing.settle(UnitKey::new(id), end_of(200, true));
+                drop(unit);
+                core.units().ended(id);
+            }));
         drop(context);
     }
 
@@ -820,7 +850,11 @@ mod nest_custody {
             .unwrap()
             .take()
             .expect("the child reached its plane");
-        assert_eq!(rig.budget.used(), (0, 0), "the child's end released its input");
+        assert_eq!(
+            rig.budget.used(),
+            (0, 0),
+            "the child's end released its input"
+        );
         assert!(
             rig.budget.try_enter(AdmissionClass::Data).is_ok(),
             "the child's end released the one Data admission"
@@ -919,7 +953,10 @@ mod nest_custody {
             "the child's record ends with its collector"
         );
         assert_eq!(rig.frames(), [parent.id], "the child's frame is dropped");
-        assert!(rig.core.units().get(parent.id).is_some(), "the parent is untouched");
+        assert!(
+            rig.core.units().get(parent.id).is_some(),
+            "the parent is untouched"
+        );
         drop(child);
     }
 }
