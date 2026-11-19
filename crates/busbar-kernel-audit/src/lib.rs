@@ -197,8 +197,8 @@ pub use recipe::{
 pub use record::{
     attribution, Attempt, AttemptOutcome, Audit, AuditBreak, AuditBreakKind, AuditChain,
     AuditInputs, AuditRecord, Controls, FinishClass, HookApplied, HookHead, OpClassId,
-    OutcomeFacts, QuantitySource, RecordFacts, Subject, UnitFacts, UnitId, Usage, UsageLine, What,
-    ATTEMPT_SLOTS, ATTRIBUTION_SEP, LABEL_SLOTS,
+    OutcomeFacts, QuantitySource, RecordFacts, RecordVersion, Subject, UnitFacts, UnitId, Usage,
+    UsageLine, What, ATTEMPT_SLOTS, ATTRIBUTION_SEP, LABEL_SLOTS,
 };
 pub use sign::{
     checkpoint_preimage, AuditKeySet, AuditSigningKey, AuditVerifyingKey, KeyError,

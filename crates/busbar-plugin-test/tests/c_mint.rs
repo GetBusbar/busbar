@@ -16,8 +16,8 @@ use crate::k10_rig::{if_order, order, piece, records_of, resolve, runtime, Deplo
 fn mint_results_arrive_first_in_order() {
     let rt = runtime();
     let deployment = rt.block_on(Deployment::new());
-    let host = deployment.intents(&rt, std::sync::Arc::new(deployment.connections()));
-    let pieces = resolve(&host, CONNECT_STATUS);
+    let host = deployment.intents(std::sync::Arc::new(deployment.connections()));
+    let pieces = resolve(&rt, &host, CONNECT_STATUS);
     assert_eq!(order(&pieces), if_order());
     let minted = records_of::<MintedRec>(piece(&pieces, P_MINTED), tag::MINTED);
     assert_eq!(minted.len(), 1);

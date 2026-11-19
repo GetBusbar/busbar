@@ -23,9 +23,9 @@ fn connect_results_arrive_first_in_order() {
     let rt = runtime();
     let deployment = rt.block_on(Deployment::new());
     let connections = Arc::new(deployment.connections());
-    let host = deployment.intents(&rt, Arc::clone(&connections));
+    let host = deployment.intents(Arc::clone(&connections));
 
-    let pieces = resolve(&host, CONNECT_BEGIN);
+    let pieces = resolve(&rt, &host, CONNECT_BEGIN);
     assert_eq!(order(&pieces), if_order());
     let begun = records_of::<ConnectAns>(piece(&pieces, P_CONNECT), tag::CONNECT_ANS);
     assert_eq!(begun.len(), 1);
@@ -51,7 +51,7 @@ fn connect_results_arrive_first_in_order() {
         }
     );
 
-    let pieces = resolve(&host, CONNECT_STATUS);
+    let pieces = resolve(&rt, &host, CONNECT_STATUS);
     assert_eq!(order(&pieces), if_order());
     let status = records_of::<ConnectAns>(piece(&pieces, P_CONNECT), tag::CONNECT_ANS);
     assert_eq!(status.len(), 1);

@@ -104,8 +104,6 @@ pub struct Durability {
 
     pub audit_findings: Vec<String>,
 
-    pub audit_signed_from: Option<u64>,
-
     pub incarnation: u64,
 
     pub restart_findings: Vec<String>,
@@ -545,7 +543,6 @@ pub(crate) async fn build_on_store(
         record: AuditChain::new().sealing_as(node),
         audit_ring: AuditRing::new(),
         audit_findings: Vec::new(),
-        audit_signed_from: None,
         incarnation: 0,
         restart_findings: Vec::new(),
         voided_claims: Vec::new(),

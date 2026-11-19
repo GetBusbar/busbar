@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::cell::Cell;
 use std::sync::Arc;
 
 use super::super::hooks::{Constraint, HooksRan, Restrict};
 use super::super::port_serve::Drive;
-use super::super::port_session::{Answer, Calls, ClientSink, Effects, SessionError, Task};
-use super::super::port_upstream::Wants;
+use super::super::port_session::{Answer, Calls, ClientSink, Effects, Owned, SessionError, Task};
+use super::super::port_upstream::{Members, UpSend, Wants};
 use super::{
     call, CandidateView, Candidates, Invocation, Projection, RouteCounters, Selected, Selection,
 };
@@ -112,16 +111,16 @@ impl Stage {
 pub(crate) struct Observed<'a> {
     pub(crate) inner: &'a dyn Effects,
     pub(crate) stage: Stage,
-    responded: Cell<bool>,
-    output: Cell<Option<u64>>,
+    responded: Owned<bool>,
+    output: Owned<Option<u64>>,
 }
 impl<'a> Observed<'a> {
     pub(crate) fn new(inner: &'a dyn Effects, stage: Stage) -> Self {
         Self {
             inner,
             stage,
-            responded: Cell::new(false),
-            output: Cell::new(None),
+            responded: Owned::new(false),
+            output: Owned::new(None),
         }
     }
 }
@@ -185,12 +184,12 @@ impl Effects for Observed<'_> {
     }
 }
 
-pub(crate) fn enforce<K: Calls + ?Sized>(
+pub(crate) async fn enforce<K: Calls + ?Sized, M: Members, S: UpSend>(
     invocation: &Invocation,
     task: &mut Task<'_, K>,
     answers: &mut Vec<Answer>,
     req: &PlaneIn<'_>,
-    drive: &mut Drive<'_>,
+    drive: &mut Drive<'_, M, S>,
     effects: &dyn Effects,
 ) -> Result<Stage, SessionError> {
     let context = effects
@@ -256,15 +255,14 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
         journal: invocation.journal.clone(),
         unit: invocation.unit,
     };
-    let handle = tokio::runtime::Handle::current();
     let mut ran: Vec<busbar_kernel_audit::record::HookApplied> = Vec::new();
-    let result = (|| {
+    let result = async {
         // The stage is rewritten inside the loop, so each rewrite call is held by its own Arc.
         for at in 0..stage.selected.rewrites.len() {
             let rewrite = Arc::clone(&stage.selected.rewrites[at]);
             let input = stage.input(None);
-            let (called, mut answer) = handle
-                .block_on(call::chain(&rewrite, abi::POINT_REWRITE, &input, &mut ran))
+            let (called, mut answer) = call::chain(&rewrite, abi::POINT_REWRITE, &input, &mut ran)
+                .await
                 .map_err(|_| unavailable(req.route, drive.refusals))?;
             if answer.verb == abi::VERB_REJECT {
                 return Err(rejected(
@@ -304,18 +302,17 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
         stage.quantities = Arc::from(quantities);
         stage.taps(&stage.selected.taps.request, call::StageFacts::new());
         let input = stage.input(None);
-        let gate_results = handle.block_on(futures::future::join_all(
-            stage.selected.gates.iter().map(|gate| {
-                let input = &input;
-                async move {
-                    // One gate's records: its own and its fallbacks', in this gate's frame.
-                    let mut records =
-                        smallvec::SmallVec::<[busbar_kernel_audit::record::HookApplied; 2]>::new();
-                    let result = call::chain(gate, abi::POINT_ROUTE, input, &mut records).await;
-                    (result, records)
-                }
-            }),
-        ));
+        let gate_results = futures::future::join_all(stage.selected.gates.iter().map(|gate| {
+            let input = &input;
+            async move {
+                // One gate's records: its own and its fallbacks', in this gate's frame.
+                let mut records =
+                    smallvec::SmallVec::<[busbar_kernel_audit::record::HookApplied; 2]>::new();
+                let result = call::chain(gate, abi::POINT_ROUTE, input, &mut records).await;
+                (result, records)
+            }
+        }))
+        .await;
         let mut outcomes = smallvec::SmallVec::<[_; 8]>::new();
         for (outcome, records) in gate_results {
             ran.extend(records);
@@ -377,8 +374,8 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
         let input = stage.input(None);
         if constraint.order.is_none() {
             if let Some(policy) = &stage.selected.policy {
-                let (called, mut answer) = handle
-                    .block_on(call::chain(policy, abi::POINT_ROUTE, &input, &mut ran))
+                let (called, mut answer) = call::chain(policy, abi::POINT_ROUTE, &input, &mut ran)
+                    .await
                     .map_err(|_| unavailable(req.route, drive.refusals))?;
                 normalize(&mut answer, &stage.candidates);
                 apply(
@@ -429,7 +426,8 @@ pub(crate) fn enforce<K: Calls + ?Sized>(
             stage.taps(&stage.selected.taps.candidate, facts);
         }
         Ok(())
-    })();
+    }
+    .await;
     stage.report(&ran);
     if let Err(SessionError::HookRefused(refusal)) = &result {
         stage.response_tap(refusal.status, true, None);

@@ -87,8 +87,7 @@ pub(super) async fn prepare(
         authorization.withheld(),
         request_id,
         refusal,
-    )
-    .await;
+    );
     let response = super::data::refusal_response(items, &head.request().storage())?;
     let physical = request.refuse_upgrade(authorization)?;
     Ok((response, physical))

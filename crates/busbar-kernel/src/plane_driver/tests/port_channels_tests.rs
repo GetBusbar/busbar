@@ -20,7 +20,7 @@ use busbar_ports::{CallCx, PortError};
 
 use super::{decode_tick, demux, Attached, ChannelAttach, ChannelHost, Held};
 use crate::plane_driver::port_intents::Resolver;
-use crate::plane_driver::port_session::{Calls, Effects, Task};
+use crate::plane_driver::port_session::{finish, Calls, Effects, Task};
 use crate::plugin_records::RecordsDenied;
 
 fn refused() -> PortError {
@@ -145,38 +145,42 @@ impl Effects for Quiet {
 struct NoStore;
 
 impl crate::plane_driver::port_intents::IntentHost for NoStore {
-    fn lookup(
-        &self,
+    fn lookup<'a>(
+        &'a self,
         _: crate::plugin_records::Scope,
         _: u32,
         _: u32,
-        _: &[u8],
-        _: &mut crate::plane_driver::port_intents::Looked,
-    ) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+        _: &'a [u8],
+        _: &'a mut crate::plane_driver::port_intents::Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
-    fn store(
-        &self,
+    fn store<'a>(
+        &'a self,
         _: crate::plugin_records::Scope,
         _: u32,
         _: u64,
-        _: &[u8],
-        _: &[u8],
-    ) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+        _: &'a [u8],
+        _: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
-    fn delete(&self, _: crate::plugin_records::Scope, _: &[u8]) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
-    }
-    fn commit(
-        &self,
+    fn delete<'a>(
+        &'a self,
         _: crate::plugin_records::Scope,
-        _: &[crate::plugin_records::CommitOp<'_>],
-    ) -> Result<crate::plugin_records::CommitOutcome, RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+        _: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
-    fn push(&self, _: u64, _: &[u8]) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+    fn commit<'a>(
+        &'a self,
+        _: crate::plugin_records::Scope,
+        _: &'a [crate::plugin_records::CommitOp<'a>],
+    ) -> BoxFut<'a, Result<crate::plugin_records::CommitOutcome, RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
+    }
+    fn push<'a>(&'a self, _: u64, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
     fn signal(&self, _: &[u8], _: Option<[u8; 32]>) {}
 }
@@ -185,12 +189,16 @@ impl crate::plane_driver::port_intents::IntentHost for NoStore {
 struct Wire(Arc<Mutex<Vec<String>>>);
 
 impl Held for Wire {
-    fn send(&mut self, message: &[u8], ask: bool) -> Result<(), RecordsDenied> {
+    fn send<'a>(
+        &'a mut self,
+        message: &'a [u8],
+        ask: bool,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
         self.0.lock().unwrap().push(format!(
             "send {} ask={ask}",
             String::from_utf8_lossy(message)
         ));
-        Ok(())
+        Box::pin(std::future::ready(Ok(())))
     }
 
     fn ready(&mut self, tail: &[u8]) -> Result<(), RecordsDenied> {
@@ -209,21 +217,25 @@ struct Channels {
 }
 
 impl ChannelHost for Channels {
-    fn attach(&self, a: &ChannelAttach<'_>) -> Result<Attached, RecordsDenied> {
+    fn attach<'a>(
+        &'a self,
+        a: &'a ChannelAttach<'a>,
+    ) -> BoxFut<'a, Result<Attached, RecordsDenied>> {
         self.seen
             .lock()
             .unwrap()
             .push((a.exchange, a.key.to_owned(), a.carrier));
-        if self.deny {
-            return Err(RecordsDenied::Unavailable);
-        }
-        Ok(Attached {
-            generation: 3,
-            slot: 11,
-            greet: true,
-            ready_tail: bytes::Bytes::from_static(b"tail"),
-            held: Box::new(Wire(Arc::clone(&self.wire))),
-        })
+        Box::pin(std::future::ready(if self.deny {
+            Err(RecordsDenied::Unavailable)
+        } else {
+            Ok(Attached {
+                generation: 3,
+                slot: 11,
+                greet: true,
+                ready_tail: bytes::Bytes::from_static(b"tail"),
+                held: Box::new(Wire(Arc::clone(&self.wire))),
+            })
+        }))
     }
 }
 
@@ -263,11 +275,11 @@ fn an_attached_channel_is_a_p_channel_piece_on_its_exchange_carrying_the_attachm
     };
     let host = channels(false);
     let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
-    task.resolve(
+    finish(task.resolve(
         first,
         &Resolver::new(&NoStore, None).with_channels(&host),
         &Quiet,
-    )
+    ))
     .unwrap();
     assert_eq!(
         *host.seen.lock().unwrap(),
@@ -301,7 +313,7 @@ fn a_channel_that_cannot_attach_is_a_p_error_with_a_refusal_on_that_exchange() {
             resolver
         };
         let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
-        task.resolve(first, &resolver, &Quiet).unwrap();
+        finish(task.resolve(first, &resolver, &Quiet)).unwrap();
         let got = script.pieces.lock().unwrap().clone();
         assert_eq!((got[0].1, got[0].2), (2, P_ERROR));
         let rec = Records::new(&got[0].3).next().unwrap().unwrap();
@@ -335,11 +347,11 @@ fn ch_ready_reaches_the_held_channel_of_that_exchange_and_an_unheld_one_is_dropp
     ]]);
     let host = channels(false);
     let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
-    task.resolve(
+    finish(task.resolve(
         first,
         &Resolver::new(&NoStore, None).with_channels(&host),
         &Quiet,
-    )
+    ))
     .unwrap();
     assert_eq!(*host.wire.lock().unwrap(), vec!["ready caps".to_owned()]);
 }
@@ -355,15 +367,15 @@ fn a_held_channel_is_written_to_through_the_task_and_dropped_with_it() {
     };
     let host = channels(false);
     let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
-    task.resolve(
+    finish(task.resolve(
         first,
         &Resolver::new(&NoStore, None).with_channels(&host),
         &Quiet,
-    )
+    ))
     .unwrap();
-    assert!(task.send_channel(4, b"hello", true).unwrap());
+    assert!(finish(task.send_channel(4, b"hello", true)).unwrap());
     assert!(
-        !task.send_channel(5, b"x", false).unwrap(),
+        !finish(task.send_channel(5, b"x", false)).unwrap(),
         "no channel on exchange 5"
     );
     assert_eq!(

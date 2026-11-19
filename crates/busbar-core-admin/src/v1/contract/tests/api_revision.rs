@@ -9,10 +9,16 @@ use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _, Value}
 /// first. When `api_revision_moves_with_the_document_shape` fails because the document changed
 /// shape, raise `ADMIN_API_REVISION` by one and append one row with the digest the failure prints.
 /// Never edit or remove a row: an old row is what an older engine reported.
-const API_REVISION_DIGESTS: &[(u32, &str)] = &[(
-    1,
-    "1056059904688f1624efd1f074355e51a5d2c63c89d15e32feb2cc4ab9d25800",
-)];
+const API_REVISION_DIGESTS: &[(u32, &str)] = &[
+    (
+        1,
+        "1056059904688f1624efd1f074355e51a5d2c63c89d15e32feb2cc4ab9d25800",
+    ),
+    (
+        2,
+        "80315de24685e1fa65363fc5f0a77d48145c733bf83bd4d30de0be50e3719366",
+    ),
+];
 
 const COMMITTED_OPENAPI: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/v1/json/openapi.json");
 

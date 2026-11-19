@@ -8,7 +8,8 @@
 //!   [`ChannelHost`]: an attached channel is delivered as `piece(FROM_CORE, exchange, P_CHANNEL, CH_ATTACH)` and
 //!   held by the session's [`Task`] under its exchange (dropping the task detaches it); an attach that fails is
 //!   `P_ERROR` with one REFUSAL on that exchange. [`UpstreamHost`] is the production host over
-//!   [`UpstreamChannels`]; it blocks on a runtime handle, so it runs from `spawn_blocking`.
+//!   [`UpstreamChannels`]; its calls are awaited on the session's task. A held channel is a trait object the
+//!   session keeps by exchange, so its calls box their futures (CHANNEL routes only, never a plain request).
 //! * [`demux`] is the sessionless `PlanePort::demux`: where one inbound channel message goes.
 //! * [`decode_tick`] reads the `ADMIN_TICK` answer: PUSH and EMIT records only.
 //!
@@ -24,7 +25,6 @@ use busbar_plugin_abi::plane::{tag as t, EmitRec, PushRec};
 use busbar_plugin_abi::records::{RecErr, Records};
 use busbar_ports::plane::{PlaneOut, PlanePort};
 use busbar_ports::PortError;
-use tokio::runtime::Handle;
 
 use super::port_intents::Namespace;
 use super::port_session::{Calls, Task};
@@ -36,13 +36,17 @@ use crate::upstreams::UpstreamDef;
 /// One channel a session holds. Dropping it detaches it (and hands a pending greet to the next waiter).
 pub trait Held: Send {
     /// EX_MSG on the channel's exchange; `ask` = the message carried MSG_ASK (it enters the ask line).
-    fn send(&mut self, message: &[u8], ask: bool) -> Result<(), RecordsDenied>;
+    fn send<'a>(
+        &'a mut self,
+        message: &'a [u8],
+        ask: bool,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>>;
     /// CH_READY: `tail` is handed to later attachers (only the greeting session's takes effect).
     fn ready(&mut self, tail: &[u8]) -> Result<(), RecordsDenied>;
     /// RV_REMOTE: the far end's answer for a dialled media session (§12.13). Only a media bridge takes one; the
     /// default refuses.
-    fn remote(&mut self, _description: &str) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Invalid)
+    fn remote<'a>(&'a mut self, _description: &'a str) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Invalid)))
     }
     /// Why the last `remote` was refused, in core's words (a mirror failure names the lines), if it says.
     fn refusal(&self) -> Option<String> {
@@ -81,21 +85,24 @@ pub struct Attached {
     pub held: Box<dyn Held>,
 }
 
-/// Attaches CHANNEL intents.
-pub trait ChannelHost {
-    fn attach(&self, attach: &ChannelAttach<'_>) -> Result<Attached, RecordsDenied>;
+/// Attaches CHANNEL intents. `Sync`: the session's resolver borrows it across awaits.
+pub trait ChannelHost: Sync {
+    fn attach<'a>(
+        &'a self,
+        attach: &'a ChannelAttach<'a>,
+    ) -> BoxFut<'a, Result<Attached, RecordsDenied>>;
 }
 
 impl<K: Calls + ?Sized> Task<'_, K> {
     /// Writes `message` to the channel held on `exchange`. `Ok(false)` = no channel is held there.
-    pub fn send_channel(
+    pub async fn send_channel(
         &mut self,
         exchange: u32,
         message: &[u8],
         ask: bool,
     ) -> Result<bool, RecordsDenied> {
         match self.held.get_mut(&exchange) {
-            Some(channel) => channel.send(message, ask).map(|()| true),
+            Some(channel) => channel.send(message, ask).await.map(|()| true),
             None => Ok(false),
         }
     }
@@ -104,12 +111,15 @@ impl<K: Calls + ?Sized> Task<'_, K> {
 /// The attachment [`UpstreamHost`] hands a session.
 struct Link {
     attachment: Attachment,
-    rt: Handle,
 }
 
 impl Held for Link {
-    fn send(&mut self, message: &[u8], ask: bool) -> Result<(), RecordsDenied> {
-        self.rt.block_on(self.attachment.send(message, ask))
+    fn send<'a>(
+        &'a mut self,
+        message: &'a [u8],
+        ask: bool,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(self.attachment.send(message, ask))
     }
 
     fn ready(&mut self, tail: &[u8]) -> Result<(), RecordsDenied> {
@@ -146,7 +156,6 @@ pub struct UpstreamHost {
     channels: Arc<dyn UpstreamChannels>,
     who: Namespace,
     upstream_of: Box<dyn Fn(u32) -> Option<Arc<UpstreamDef>> + Send + Sync>,
-    rt: Handle,
 }
 
 impl UpstreamHost {
@@ -155,7 +164,6 @@ impl UpstreamHost {
         channels: Arc<dyn UpstreamChannels>,
         who: Namespace,
         upstream_of: Box<dyn Fn(u32) -> Option<Arc<UpstreamDef>> + Send + Sync>,
-        rt: Handle,
     ) -> Self {
         Self {
             pending: None,
@@ -163,7 +171,6 @@ impl UpstreamHost {
             channels,
             who,
             upstream_of,
-            rt,
         }
     }
     pub fn with_budget(mut self, budget: Option<crate::channels::budget::UnitBudget>) -> Self {
@@ -189,7 +196,16 @@ impl UpstreamHost {
 }
 
 impl ChannelHost for UpstreamHost {
-    fn attach(&self, attach: &ChannelAttach<'_>) -> Result<Attached, RecordsDenied> {
+    fn attach<'a>(
+        &'a self,
+        attach: &'a ChannelAttach<'a>,
+    ) -> BoxFut<'a, Result<Attached, RecordsDenied>> {
+        Box::pin(self.attached(attach))
+    }
+}
+
+impl UpstreamHost {
+    async fn attached(&self, attach: &ChannelAttach<'_>) -> Result<Attached, RecordsDenied> {
         let command = self.command()?;
         let upstream = if command.is_some() {
             self.pending
@@ -213,18 +229,13 @@ impl ChannelHost for UpstreamHost {
             subject: attach.subject,
             head: Records::new(attach.head),
         };
-        let attachment = self
-            .rt
-            .block_on(self.channels.attach(&who, &upstream, req))?;
+        let attachment = self.channels.attach(&who, &upstream, req).await?;
         Ok(Attached {
             generation: attachment.generation,
             slot: attachment.slot,
             greet: attachment.greet,
             ready_tail: attachment.ready_tail.clone(),
-            held: Box::new(Link {
-                attachment,
-                rt: self.rt.clone(),
-            }),
+            held: Box::new(Link { attachment }),
         })
     }
 }

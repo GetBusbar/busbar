@@ -309,7 +309,6 @@ impl Deployment {
     /// grants `chat`, MINT seals with a host key, SIGN uses an Ed25519 host signer, CONNECT runs `connections`.
     pub fn intents(
         &self,
-        rt: &tokio::runtime::Runtime,
         connections: Arc<StoreConnections<StoreRecords>>,
     ) -> KernelIntents<StoreRecords> {
         let tickets = SealedTickets::new(
@@ -340,7 +339,6 @@ impl Deployment {
                 instance: 1,
                 slot: 0,
             },
-            rt.handle().clone(),
         )
         .with_services(services)
     }
@@ -379,7 +377,12 @@ pub(crate) struct Piece {
 /// One plane answer with a CONNECT, a SIGN, a MINT, an ENTITLE and a LOOKUP (after the STORE it reads), stated
 /// in the reverse of the §8.6 delivery order, resolved by core as the verified `SUBJECT`. Called off the runtime
 /// (the production host blocks on it, as it does from `spawn_blocking`).
-pub fn resolve(host: &KernelIntents<StoreRecords>, connect_op: u32) -> Vec<Piece> {
+/// The intents are resolved on `rt`, as a request's task resolves them.
+pub fn resolve(
+    rt: &tokio::runtime::Runtime,
+    host: &KernelIntents<StoreRecords>,
+    connect_op: u32,
+) -> Vec<Piece> {
     let mut lent = Lent::default();
     let answer = vec![
         Intent::Connect {
@@ -420,8 +423,7 @@ pub fn resolve(host: &KernelIntents<StoreRecords>, connect_op: u32) -> Vec<Piece
     ];
     let identity = b"identity-records".as_slice();
     let resolver = Resolver::new(host, None).with_principal(SUBJECT, identity);
-    resolver
-        .resolve(&answer, &lent, &mut HashMap::new(), &mut Default::default())
+    rt.block_on(resolver.resolve(&answer, &lent, &mut HashMap::new(), &mut Default::default()))
         .into_iter()
         .map(|p| Piece {
             flags: p.flags,

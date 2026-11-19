@@ -601,7 +601,10 @@ async fn native_data_without_node_audit_custody_refuses_before_money_or_effects(
     let task = begin_task(&calls, &pending);
     let declaration = task.request_declaration().unwrap();
     assert!(
-        pending.pending().admit(None, None, declaration).is_err(),
+        pending
+            .pending()
+            .admit::<crate::plane_driver::port_serve::NoWalk>(None, None, declaration)
+            .is_err(),
         "original physical and money owners cannot replace Node audit custody"
     );
     assert_eq!(commits.load(Ordering::SeqCst), 0);
@@ -691,7 +694,10 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
     let calls = PlaneCalls(AtomicUsize::new(0));
     let mut task = begin_task(&calls, &pending);
     let declaration = task.request_declaration().unwrap();
-    pending.pending().admit(None, None, declaration).unwrap();
+    pending
+        .pending()
+        .admit::<crate::plane_driver::port_serve::NoWalk>(None, None, declaration)
+        .unwrap();
     task.bind_admission(pending.pending()).unwrap();
     assert_eq!(calls.0.load(Ordering::SeqCst), 1);
     task.end(&DataEffects(&pending)).unwrap();
@@ -864,7 +870,10 @@ async fn native_data_reset_after_registration_closes_the_exact_context() {
     let task = begin_task(&calls, &pending);
     let declaration = task.request_declaration().unwrap();
     assert!(f.connection.cancel(&owner));
-    assert!(pending.pending().admit(None, None, declaration).is_err());
+    assert!(pending
+        .pending()
+        .admit::<crate::plane_driver::port_serve::NoWalk>(None, None, declaration)
+        .is_err());
     drop(task);
     assert!(pending.execution().is_none());
     assert!(!context.effects_allowed());
@@ -1324,7 +1333,10 @@ async fn native_data_reset_after_money_rolls_back_exact_open_without_starting() 
     let calls = PlaneCalls(AtomicUsize::new(0));
     let task = begin_task(&calls, &pending);
     let declaration = task.request_declaration().unwrap();
-    assert!(pending.pending().admit(None, None, declaration).is_err());
+    assert!(pending
+        .pending()
+        .admit::<crate::plane_driver::port_serve::NoWalk>(None, None, declaration)
+        .is_err());
     assert_eq!(calls.0.load(Ordering::SeqCst), 1);
     assert!(pending.execution().is_none());
     assert!(binding.check_executing().is_err());
