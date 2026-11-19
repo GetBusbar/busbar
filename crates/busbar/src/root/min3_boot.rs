@@ -1117,6 +1117,7 @@ impl Steps<'_> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(PortSeat {
+                public_url: None,
                 image: self
                     .images
                     .plane_identity(&who.plugin)

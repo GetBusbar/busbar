@@ -48,6 +48,9 @@ pub struct Mounted {
     pub resource_kinds: Arc<[Box<str>]>,
     /// A `ROUTE_CATALOG` route.
     pub catalog: bool,
+    /// The route's record as its image stated it (D_ROUTE_ADMISSION, D_ROUTE_CHALLENGE), decoded
+    /// and validated at load. `None`: an image that predates the record.
+    pub record: Option<crate::auth::route_record::RouteRecord>,
 }
 
 /// The route table of one plane instance.
@@ -140,6 +143,8 @@ pub fn plan(
         let effective = effective_classes(r.auth, configured(r.route))
             .map_err(|_| RouteRefused::Classes { route: r.route })?;
         let mounted = Mounted {
+            // The stated record is built from PlanePort::route_admission / route_challenge (adapt) at mount: not wired yet.
+            record: None,
             route: r.route,
             methods: r.methods,
             flags: r.flags,

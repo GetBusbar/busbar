@@ -11,6 +11,7 @@ use super::*;
 
 fn admin(route: u32, methods: u32, pattern: &str) -> Mounted {
     Mounted {
+        record: None,
         route,
         methods,
         flags: ROUTE_ADMIN,

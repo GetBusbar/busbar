@@ -13,6 +13,7 @@ fn routes(entries: &[(u32, &str, u32)]) -> PortRoutes {
         data: entries
             .iter()
             .map(|(route, pattern, methods)| Mounted {
+                record: None,
                 route: *route,
                 methods: *methods,
                 flags: 0,

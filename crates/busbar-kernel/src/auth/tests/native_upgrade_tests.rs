@@ -227,6 +227,7 @@ fn fixture_on(bound: bool, cred_header: Option<&'static str>) -> Fixture {
     }
     let app = Arc::new(app);
     let mounted = Mounted {
+        record: None,
         route: 6,
         methods: METHOD_GET,
         flags: ROUTE_UPGRADE,

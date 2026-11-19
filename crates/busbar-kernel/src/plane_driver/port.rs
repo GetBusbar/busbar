@@ -149,6 +149,8 @@ pub struct PortSeat {
     pub channel_budget: crate::channels::budget::InstanceBudget,
     pub driver: Arc<PortDriver>,
     pub audience: Option<String>,
+    /// The plane instance's configured public URL (its D_PUBLIC_URL_PATH setting). `None` until the boot fills it.
+    pub public_url: Option<String>,
     /// What this instance's intents (records, push, signals, WORK) run against: [`PortDriver::serve`]'s `intents`.
     pub intents: Arc<dyn IntentHost>,
     /// The instance's record namespace (§12.5): the caller its pushes are queued under.
@@ -162,6 +164,11 @@ pub struct PortSeat {
 }
 
 impl PortSeat {
+    /// The plane instance's configured public URL (D_PUBLIC_URL_PATH), if any.
+    pub fn public_url(&self) -> Option<&str> {
+        self.public_url.as_deref()
+    }
+
     /// One `admin(ADMIN_TICK)`: the plane's PUSHes are queued under this instance's namespace (EMITs already went
     /// to their carriers). A refused or failed tick, or a push the queue refuses, is logged and dropped: the next
     /// tick is the retry. Answers how many pushes were queued. `at`: the timer's reading this tick fired at.

@@ -278,6 +278,7 @@ mod signed_ingress {
 
     fn route(effective: u32) -> Mounted {
         Mounted {
+            record: None,
             route: 4,
             methods: 0,
             flags: 0,
@@ -513,6 +514,7 @@ mod upgrade {
             offered: busbar_contract::route::AuthPoints::EMPTY,
         };
         let mounted = Mounted {
+            record: None,
             route,
             methods,
             flags,

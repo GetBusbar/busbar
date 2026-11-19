@@ -332,6 +332,7 @@ fn fixture_of(
     ));
     let app = Arc::new(app);
     let mounted = Mounted {
+        record: None,
         route: 3,
         methods: METHOD_POST,
         flags: 0,

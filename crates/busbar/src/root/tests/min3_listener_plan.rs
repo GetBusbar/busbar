@@ -165,6 +165,7 @@ mod route_credential_header {
 
     fn route(id: u32, cred_header: Option<&str>) -> Mounted {
         Mounted {
+            record: None,
             route: id,
             methods: 1,
             flags: 0,

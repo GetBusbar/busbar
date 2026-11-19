@@ -450,6 +450,7 @@ fn signed_selected_preparation_rechecks_current_policy_and_revocation_before_han
         .unwrap(),
     );
     let seat = PortSeat {
+        public_url: None,
         image: Arc::new(
             crate::plane_driver::image_identity::PlaneImageIdentity::new("scripted".into(), None)
                 .unwrap(),
@@ -826,6 +827,7 @@ fn a_selected_catalog_attempt_records_its_instance_qualified_pool() {
         .unwrap(),
     );
     let seat = PortSeat {
+        public_url: None,
         image: Arc::new(
             crate::plane_driver::image_identity::PlaneImageIdentity::new("scripted".into(), None)
                 .unwrap(),

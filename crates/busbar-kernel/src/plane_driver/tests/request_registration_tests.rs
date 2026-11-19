@@ -703,6 +703,7 @@ fn selected_rig_kind(
     )
     .unwrap();
     let mounted = crate::plane_driver::port_routes::Mounted {
+        record: None,
         route: 3,
         methods: 4,
         flags: 0,
