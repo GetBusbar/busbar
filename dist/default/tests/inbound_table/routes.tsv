@@ -1,0 +1,48 @@
+row	method	path	plane	admission	body	no_credential	bad_credential	good_key	key_without_the_grant	compare	note
+R01	GET	/healthz	core	public	-	200	200	200	200	RIGHT	core public route
+R02	GET	/stats	core	principal-free	-	401	401	200	200	RIGHT	answer filtered to the key's pools; no unit
+R03	GET	/metrics	export	principal-free	-	401	401	200	200	RIGHT	plugin route; admin listener also serves it
+R05	GET	/auth/token	core	public	-	200	200	200	200	RIGHT	the sign-in page
+R06	POST	/auth/token	core	principal-free	form	401	401	200	200	RIGHT	refusal bytes equal the one 401
+R07	GET	/v1/models	llm	catalog	-	401	401	200	200	RIGHT	restricted key lists only its pools' names
+R08	GET	/v1beta/models	llm	catalog	-	401	401	200	200	RIGHT	Gemini list shape
+N01	GET	/v1/models/gpt-test	llm	catalog	-	401	401	200	404	NEW	a name the key may not see is not found
+R09	POST	/pool-a/v1/messages	llm	walk:pool	anthropic-chat	401	401	200	403	RIGHT	named pool path
+R10	POST	/prov/model-a/v1/messages	llm	walk:pool	anthropic-chat	401	401	200	403	RIGHT	ad-hoc provider and model path
+R11	POST	/v1/chat/completions	llm	walk:pool	openai-chat	401	401	200	403	RIGHT	
+R12	POST	/v1/embeddings	llm	walk:pool	openai-embeddings	401	401	200	403	RIGHT	gap G5
+R13	POST	/v1/moderations	llm	walk:pool	openai-moderation	401	401	200	403	RIGHT	gap G5
+R14	POST	/v1/images/generations	llm	walk:pool	openai-image	401	401	200	403	RIGHT	gap G5
+R15	POST	/v1/audio/transcriptions	llm	walk:pool	multipart-audio	401	401	200	403	RIGHT	gap G5
+R16	POST	/v1/audio/translations	llm	walk:pool	multipart-audio	401	401	200	403	RIGHT	gap G5
+R17	POST	/v1/audio/speech	llm	walk:pool	openai-speech	401	401	200	403	RIGHT	gap G5
+R18	POST	/v1/responses	llm	walk:pool	openai-responses	401	401	200	403	RIGHT	
+R19	POST	/v1/messages	llm	walk:pool	anthropic-chat	401	401	200	403	RIGHT	
+R19x	POST	/anything/v1/messages	-	none	anthropic-chat	401	401	404	404	BETTER	suffix match dropped (decision 13c): a named pool path only
+R20	POST	/v2/chat	llm	walk:pool	cohere-chat	401	401	200	403	RIGHT	
+R21	POST	/v2/embed	llm	walk:pool	cohere-embed	401	401	200	403	RIGHT	gap G5
+R22	POST	/v2/rerank	llm	walk:pool	cohere-rerank	401	401	200	403	RIGHT	gap G5
+R23	POST	/v1beta/models/m:generateContent	llm	walk:pool	gemini-chat	401	401	200	403	BETTER	no credential was 400 in the Gemini dialect (decision 12)
+R24	POST	/v1beta/models/m:streamGenerateContent	llm	walk:pool	gemini-chat	401	401	200	403	BETTER	streamed to the last byte, settled once
+R25	POST	/v1beta/models/m:embedContent	llm	walk:pool	gemini-embed	401	401	200	403	BETTER	
+R26	POST	/v1beta/models/m:batchEmbedContents	llm	walk:pool	gemini-embed	401	401	200	403	BETTER	
+R27	POST	/v1beta/models/m:predict	llm	walk:pool	gemini-image	401	401	200	403	BETTER	
+R28	POST	/model/m/converse	llm	walk:pool	bedrock-chat	401	401	200	403	BETTER	no credential was 403 AccessDeniedException; needs a SigV4 instance opened
+R29	POST	/model/m/converse-stream	llm	walk:pool	bedrock-chat	401	401	200	403	BETTER	
+R30	POST	/model/m/invoke	llm	walk:pool	bedrock-invoke	401	401	200	403	BETTER	
+N03	POST	/v1beta/interactions	llm	walk:pool	gemini-interaction	401	401	200	403	NEW	
+N05a	GET	/.well-known/oauth-protected-resource/mcp	mcp	public	-	200	200	200	200	NEW	RFC 9728 metadata
+N05b	POST	/mcp	mcp	walk:mcp_server	mcp-initialize	401+challenge	401+challenge	200	403	NEW	WWW-Authenticate: Bearer resource_metadata=...; not served to anonymous
+N06a	GET	/.well-known/agent-card.json	a2a	public	-	200	200	200	200	NEW	
+N06b	GET	/agents/billing/.well-known/agent-card.json	a2a	public	-	200	200	200	200	NEW	
+N06c	POST	/agents/billing	a2a	walk:agent	a2a-send	401	401	200	403	NEW	not served to anonymous
+N06d	POST	/a2a	a2a	walk:agent	a2a-send	401	401	200	403	NEW	
+N07a	POST	/api/evaluate	decisions	walk:decisions	nanojev	401	401	200	403	NEW	
+N07b	POST	/v1/systemone	decisions	walk:decisions	jev	401	401	200	403	NEW	
+N07c	POST	/busbar/decisions/v1/classify	decisions	walk:decisions	classify	401	401	200	403	NEW	
+N08a	POST	/v1/realtime/client_secrets	streaming	principal-free	realtime-mint	401	401	200	200	NEW	mints a ticket; no unit
+N08b	GET	/v1/realtime	streaming	upgrade:streaming	-	401	401	101	403	NEW	400 when not an upgrade request; 501 with no websocket transport
+X01	GET	/nope	-	none	-	401	401	404	404	BETTER	gap G4: a good key on an unknown path is told 404
+X02	DELETE	/v1/chat/completions	-	wrong-method	-	401	401	405+Allow	405+Allow	BETTER	
+X03	POST	/v1/chat/completions	llm	walk:pool	oversized	401	401	413	413	RIGHT	answered, connection kept (gap G10)
+X04	POST	/v1/chat/completions	llm	walk:pool	trailers	401	401	400	400	BETTER	answered, connection kept (gap G10)
