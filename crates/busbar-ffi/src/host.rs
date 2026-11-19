@@ -320,6 +320,15 @@ impl OutLease<'static> {
     /// wiped, after each entry it was lent to, over every byte that entry wrote (busbar-plugin-abi's pooled
     /// blocks; IF §10.1 and decision 60, O(bytes written)). Zeroing it again here would be the second wipe of
     /// the same bytes on every crossing. None: the ACTIVE stack is `DEPTH` deep.
+    ///
+    /// Custody, plainly. The host guarantees: every block starts all zero; after each entry it wipes, in one
+    /// block, every byte the entry wrote as far as the length the entry stated (and every byte `grow` exposed)
+    /// before the block is lent again; it reads only `[0, len)` of an answer; a block grown for a large answer is
+    /// wiped and freed, not kept. It relies on the plugin for one thing: writing only within the length it
+    /// states. The SDK's `Out` can do nothing else (it appends, and zeroes what it cuts). A native plugin that
+    /// writes through the raw pointer past its stated length leaves those bytes for the next entry lent the
+    /// block on that thread; such a plugin shares the process's memory anyway, so a wipe of the whole block
+    /// would not stop a hostile one (IF decision 60, confirmed 18 Nov 2026; C-LEND-CUSTODY is the gate).
     pub fn clean(mut buf: Vec<u8>, max_out: usize) -> Option<Self> {
         let raw = RawOut::over(&mut buf);
         let serial = NEXT_LEASE.get().checked_add(1)?;

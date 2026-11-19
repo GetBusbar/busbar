@@ -197,9 +197,11 @@ impl PooledOut {
 
     /// Lends the buffer to one entry as busbar-ffi's `OutLease` (which grows it within `max_out`), runs `call`,
     /// and takes the buffer back with the plugin-stated length clamped to the buffer's own capacity (r4 H2;
-    /// round 13's mark update). The block is lent as it is (`OutLease::clean`): a held block is all zero past
-    /// nothing, because it was allocated zeroed and every use was wiped over its mark when it was reset or
-    /// released, so the lease does not zero it a second time. None: the handle is empty, or the thread's ACTIVE
+    /// round 13's mark update). The block is lent as it is (`OutLease::clean`): a held block is all zero,
+    /// because it was allocated zeroed and every use was wiped over its mark when it was reset or released, so
+    /// the lease does not zero it a second time. The mark is the length the plugin stated (and what `grow`
+    /// exposed): the host relies on the plugin writing only within it, which the SDK's `Out` always does; what
+    /// the host guarantees and what it relies on are set out on `OutLease::clean`. None: the handle is empty, or the thread's ACTIVE
     /// stack is full (busbar-ffi `DEPTH`); the handle is then empty and the block freed (it holds only zeros).
     /// If `call` unwinds, the lease's Drop zeroes the buffer and the handle stays empty.
     pub(crate) fn lend<R>(&mut self, call: impl FnOnce(&mut OutLease) -> R) -> Option<R> {

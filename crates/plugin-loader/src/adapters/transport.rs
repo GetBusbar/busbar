@@ -463,6 +463,10 @@ fn decode(
     call: Call<'_>,
     sink: &mut dyn FnMut(TransportOut<'_>),
 ) -> Result<(), Bad> {
+    // An answer with no records has nothing to check and nothing to deliver.
+    if recs.rest().is_empty() {
+        return Ok(());
+    }
     walk(recs, call, &mut |_: TransportOut<'_>| {})?;
     walk(recs, call, sink)
 }
