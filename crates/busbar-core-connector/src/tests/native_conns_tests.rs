@@ -1357,7 +1357,7 @@ fn accepted(listener: &TcpListener, wait: Duration) -> usize {
 /// A judge that answers a loopback literal at once, refuses any other literal as a metadata host, and pends a
 /// name until the test answers it; it keeps every destination it was asked.
 #[derive(Default)]
-struct Pending {
+struct PendingJudge {
     asked: std::sync::Mutex<Vec<String>>,
     pended: std::sync::Mutex<Vec<(String, Judged)>>,
 }

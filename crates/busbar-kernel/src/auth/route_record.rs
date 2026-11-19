@@ -472,7 +472,8 @@ impl RouteRecord {
         {
             return Err(RecordRefused::InternalAuth);
         }
-        if self.cred_header.is_some() && !busbar_plugin_abi::plane::cred_header_admitted(who.mask())
+        if self.cred_header.is_some()
+            && !(who.has(Who::PRINCIPAL) || who.is(Who::SIGNED_INGRESS) || who.is(Who::OPTIONAL))
         {
             return Err(RecordRefused::CredHeader);
         }
