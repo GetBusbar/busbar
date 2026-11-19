@@ -77,10 +77,10 @@ pub(crate) async fn walk_stored_chains(
     nodes.dedup();
     for node in nodes {
         walk.chains.push(node);
-        // Kept rows first (SEALING-FIX §3.9): after an Ephemeral journal cut the boot's
-        // `Bootstrap` row is below the base; its kept copy sets `keyed` exactly as the row would.
+        // Each record is proved by its own version's rule, so the kept rows of an Ephemeral
+        // journal cut (SEALING-FIX §3.9) are not needed to judge it.
         match lane.read_node_walk(node, budget).await {
-            Ok(walked) => verify_native_audits(node, &walked.kept, &walked.rows, keys, &mut walk),
+            Ok(walked) => verify_native_audits(node, &walked.rows, keys, &mut walk),
             Err(error) => walk.findings.push(format!(
                 "node {node}: native journal was not verified: {error:?}"
             )),
@@ -91,26 +91,14 @@ pub(crate) async fn walk_stored_chains(
 
 fn verify_native_audits(
     node: u64,
-    kept: &[busbar_kernel_wal::JournalRecord],
     decoded: &[busbar_kernel_wal::JournalRecord],
     keys: &AuditKeySet,
     walk: &mut StoredWalk,
 ) {
     let mut audits: Vec<AuditRecord> = Vec::new();
-    // A kept copy is context only, never a chain line.
-    let mut keyed = kept
-        .iter()
-        .any(|record| record.class == busbar_kernel_wal::RecordClass::Bootstrap);
-    let mut signed_from = None;
     for record in decoded {
-        keyed |= record.class == busbar_kernel_wal::RecordClass::Bootstrap;
         match super::decode_audit(record) {
-            Ok(Some(audit)) => {
-                if keyed && signed_from.is_none() {
-                    signed_from = Some(audit.seq);
-                }
-                audits.push(audit);
-            }
+            Ok(Some(audit)) => audits.push(audit),
             Ok(None) => {}
             Err(why) => walk
                 .findings
@@ -121,16 +109,20 @@ fn verify_native_audits(
         walk.findings
             .push(format!("node {node}: audit chain: {broken:?}"));
     }
+    // A record proves itself by its version's rule: version 2 (chained, unsigned: every line this
+    // build seals) by the window's links above up to a signed head; version 1 by its own signature.
     for record in &audits {
-        let Some(key_id) = record.key_id.as_deref() else {
-            if signed_from.is_some_and(|from| record.seq >= from) {
+        let key_id = match (record.record_version(), record.key_id.as_deref()) {
+            (Some(busbar_kernel_audit::RecordVersion::SignedHead), _) => continue,
+            (Some(busbar_kernel_audit::RecordVersion::SignedLine), Some(key_id)) => key_id,
+            _ => {
                 walk.findings.push(format!(
-                    "node {node}: audit record {} is unsigned, sealed after the keyset \
-                     was bound",
+                    "node {node}: audit record {} carries a signature without its key or a key \
+                     without its signature",
                     record.seq
                 ));
+                continue;
             }
-            continue;
         };
         let verified = keys
             .get(key_id)
