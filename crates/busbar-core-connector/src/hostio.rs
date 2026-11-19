@@ -474,6 +474,11 @@ impl HostListener {
         self.local
     }
 
+    /// The listening socket, borrowed (its listener's stop holds a second descriptor of it).
+    pub(crate) fn socket(&self) -> socket2::SockRef<'_> {
+        self.sock.socket()
+    }
+
     /// The next socket and its far end; an aborted or interrupted accept is retried at once (1.5.5).
     pub fn poll_accept(
         &mut self,

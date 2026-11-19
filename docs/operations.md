@@ -103,6 +103,18 @@ want Busbar to use. Scale up by default, tune down deliberately. The topology is
 the workers show up as threads named `busbar-core-0` … `busbar-core-N-1`, and `ss -tlnp` / `netstat`
 shows N listen sockets on the one data port.
 
+**A worker held by a hung plugin stops taking connections.** A plane plugin is called directly on the
+worker serving the request. If a plugin entry passes its watchdog ceiling, Busbar quarantines the
+instance (`plugin_hung` in the log), but the call still holds that worker's thread. Busbar then closes
+that worker's listener (`core_stopped` in the log, with the worker's index): it leaves the
+`SO_REUSEPORT` group and the kernel sends new connections to the other workers. Connections the kernel
+had already queued on that listener are **reset** (the client sees a connection reset and may retry)
+unless `net.ipv4.tcp_migrate_req = 1` (Linux 5.14+), which moves them to another worker's listener; set
+it on hosts where a reset at that moment is unacceptable. A stopped worker stays out of service until
+the process restarts; `ss -tlnp` then shows one listen socket fewer on the data port. With one worker
+there is no other listener to take its connections. This applies to the host's own data listener; a
+data door listening through a carrier plugin stops admitting but the carrier keeps what it queued.
+
 Startup is fail-loud: an unset `${VAR}`, an unknown provider reference, an unknown
 protocol or auth mode, or an invalid `on_exhausted` action stops the process with a
 diagnostic. A provider whose `api_key` reference does not resolve refuses boot
