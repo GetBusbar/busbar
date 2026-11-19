@@ -33,6 +33,16 @@ use std::time::{Duration, Instant};
 
 const ADMIN_TOKEN: &str = "min3-images-operator-token";
 const MODEL: &str = "min3-test-model";
+const PLANE_SECTIONS: &str = include_str!("fixtures/law7_plane_sections.yaml");
+
+/// The data chain the boot test writes. `Keys`: the engine's own key verifier, its signing key generated for this run
+/// by the binary under test (`--generate-signing-key`), every data request carrying a key the operator minted. `Empty`:
+/// `auth.chain: []`, which the engine refuses at boot (BUSBAR-9007, nobody could be admitted).
+#[derive(Clone, Copy)]
+enum Chain {
+    Keys,
+    Empty,
+}
 
 /// One booted default binary on loopback ports, killed and cleaned up on drop.
 struct Node {
@@ -46,16 +56,34 @@ impl Node {
     /// Boot on fresh loopback ports. `operator`: bind the admin listener behind the linked admin-tokens image; `upstream`:
     /// route one model to that loopback port.
     fn boot(upstream: Option<u16>, operator: bool) -> Self {
+        Self::boot_with_planes(upstream, operator, false)
+    }
+
+    /// `planes`: add the four plane sections of `fixtures/law7_plane_sections.yaml` (mcp, tools, agents, streams) and
+    /// the data listener's `public_url`, so every linked plane mounts its routes.
+    fn boot_with_planes(upstream: Option<u16>, operator: bool, planes: bool) -> Self {
         let dir = workdir();
         let (data, admin) = (boot::free_port(), boot::free_port());
         let digest = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes());
         let settings = format!("{{ sha256: \"{digest}\" }}");
+        let sections = if planes {
+            format!(
+                "public_url: \"http://127.0.0.1:{data}\"\n{}",
+                PLANE_SECTIONS
+                    .replace("{data_port}", &data.to_string())
+                    .replace("{admin_port}", &admin.to_string())
+            )
+        } else {
+            String::new()
+        };
         write_configs(
             &dir,
             data,
             admin,
             operator.then_some(settings.as_str()),
             upstream,
+            Chain::Keys,
+            &sections,
         );
         let log = std::fs::File::create(dir.join("out.log")).expect("the boot log");
         let process = boot::Reap(
@@ -117,6 +145,32 @@ impl Node {
             b"",
         )
     }
+
+    /// Mint a data-plane key through the admin API (the `keys` verifier's credential). `audience`: a plane that binds
+    /// one (MCP, its `canonical_uri`) admits only a key minted for exactly that audience.
+    fn mint(&self, name: &str, audience: Option<&str>) -> String {
+        let audience = audience
+            .map(|uri| format!(r#","audience":"{uri}""#))
+            .unwrap_or_default();
+        let (status, minted) = exchange(
+            self.admin,
+            "POST",
+            "/api/v1/admin/keys",
+            &format!("Authorization: Bearer {ADMIN_TOKEN}\r\n"),
+            format!(r#"{{"name":"{name}"{audience}}}"#).as_bytes(),
+        );
+        assert!(
+            (200..300).contains(&status),
+            "the operator mints a key ({status}); log:\n{}",
+            self.log()
+        );
+        minted
+            .split("\"token\":\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .map(str::to_owned)
+            .unwrap_or_else(|| panic!("the admin API minted no key token ({status})"))
+    }
 }
 
 impl Drop for Node {
@@ -140,7 +194,32 @@ fn workdir() -> PathBuf {
 }
 
 /// `operator`: the admin-tokens definition's `settings` (a YAML flow map) when the admin listener sits behind it.
-fn write_configs(dir: &Path, data: u16, admin: u16, operator: Option<&str>, upstream: Option<u16>) {
+/// `extra`: top-level sections appended as written.
+fn write_configs(
+    dir: &Path,
+    data: u16,
+    admin: u16,
+    operator: Option<&str>,
+    upstream: Option<u16>,
+    chain: Chain,
+    extra: &str,
+) {
+    let chain = match chain {
+        Chain::Empty => "  chain: []\n".to_owned(),
+        Chain::Keys => {
+            let key = Command::new(boot::exe())
+                .arg("--generate-signing-key")
+                .output()
+                .expect("generate a signing key");
+            assert!(key.status.success(), "--generate-signing-key");
+            let file = dir.join("signing.key");
+            std::fs::write(&file, &key.stdout).expect("signing.key");
+            format!(
+                "  chain: [keys]\n  signing_key: {{ file: \"{}\" }}\n",
+                file.display()
+            )
+        }
+    };
     let (catalog, routing) = upstream.map_or_else(
         || ("{}\n".to_owned(), String::new()),
         |upstream| {
@@ -170,8 +249,7 @@ admin_listen: "127.0.0.1:{admin}"
 admin_listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test admin listener" }}
 store: {{ module: memory }}
 {operator}auth:
-  chain: []
-{admin_auth}{routing}"#
+{chain}{admin_auth}{routing}{extra}"#
         ),
     )
     .expect("config.yaml");
