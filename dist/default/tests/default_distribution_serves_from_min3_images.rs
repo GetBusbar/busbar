@@ -586,6 +586,34 @@ fn an_empty_data_chain_is_refused_at_boot_before_any_listener_accepts() {
     );
 }
 
+/// `mcp: { canonical_uri }` naming no issuer is refused at boot with the plane's own refusal (core hands the plane
+/// the whole block, canonical_uri included); no listener ever accepts. The documented full block boots (below).
+#[test]
+fn an_mcp_block_with_a_canonical_uri_and_no_issuer_is_refused_at_boot_by_the_plane() {
+    let dir = workdir();
+    let (data, admin) = (boot::free_port(), boot::free_port());
+    let digest = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes());
+    let settings = format!("{{ sha256: \"{digest}\" }}");
+    let sections = format!(
+        "public_url: \"http://127.0.0.1:{data}\"\nmcp:\n  canonical_uri: \"{}\"\n",
+        mcp_audience(data)
+    );
+    write_configs(
+        &dir,
+        data,
+        admin,
+        Some(&settings),
+        None,
+        Chain::Keys,
+        &sections,
+    );
+    let log = boot_is_refused(&dir, data, admin);
+    assert!(
+        log.contains("mcp.authorization_servers must list at least one issuer"),
+        "the refusal is the plane's: a block naming no issuer; log:\n{log}"
+    );
+}
+
 /// The documented `mcp: { canonical_uri }` is accepted and is the MCP plane's audience (RFC 8707): a key minted for
 /// exactly that audience is admitted at `/mcp` (the plane answers `initialize`); a key minted for another resource,
 /// and a key bound to no audience, are refused there with the one unverified answer (401).

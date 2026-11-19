@@ -211,8 +211,8 @@ fn each_admitted_plane_image_is_one_instance_named_by_its_alias_with_its_section
         ("busbar-plane-mcp", "mcp")
     );
     assert_eq!(
-        planes[0].config, b"{}",
-        "the audience is core's word: lifted off the section, never handed to the plane's reader"
+        planes[0].config, br#"{"canonical_uri":"https://tools.example"}"#,
+        "the plane owns its whole block: the section reaches it unchanged, canonical_uri included"
     );
     assert_eq!(
         plane_audiences(&sections)
