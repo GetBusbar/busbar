@@ -893,3 +893,7 @@ mod scratch;
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/former_builtins_tests.rs"]
+mod former_builtins_tests;

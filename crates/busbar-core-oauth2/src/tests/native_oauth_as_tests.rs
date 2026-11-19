@@ -11,12 +11,11 @@
 
 use std::sync::Arc;
 
-use busbar_contract::json;
 use busbar_kernel::inbound::http_projection::HttpProjection;
 use busbar_kernel::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
 use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission, RequestLease};
-use http_body_util::BodyExt as _;
 use oauth_as::client::ClientId;
+use serde_json as json;
 
 use crate::config::OauthAsCfg;
 
@@ -99,12 +98,7 @@ async fn served(
     let response = plane.handle(request).await;
     drop(lease);
     let status = response.status().as_u16();
-    let bytes = response
-        .into_body()
-        .collect()
-        .await
-        .expect("the answer's body")
-        .to_bytes();
+    let bytes = response.into_body().into_bytes();
     let value = json::from_slice(&bytes).unwrap_or(json::Value::Null);
     (status, value)
 }

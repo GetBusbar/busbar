@@ -1,0 +1,26 @@
+# A deployment that used what 1.5.5 linked in: the four exporters and a webhook-signature identity
+# provider. In 1.6.0 each is a separately installed plugin, not linked into the default build. The
+# migrator carries the config as written and names the plugin to install for each. The signing
+# secret and the webhook url stay secret references.
+listen: "127.0.0.1:0"
+store: { module: memory }
+providers:
+  mock:
+    api_key: { env: MOCK_KEY }
+models:
+  test-model:
+    provider: mock
+export:
+  metrics: { module: prometheus, settings: { buffer_seconds: 60 } }
+  traces: { module: otlp, settings: { url: "https://otel.example.com/v1/traces" } }
+  req-log: { module: request-log-webhook, settings: { url: { env: REQ_LOG_URL } } }
+  req-file: { module: request-log-file, settings: { path: "/var/log/busbar/requests.log" } }
+identity-providers:
+  twilio:
+    module: webhook-signature
+    settings:
+      variant: twilio
+      origin: "wss://edge.example.com"
+      signing_secret: { env: TWILIO_AUTH_TOKEN }
+auth:
+  chain: [keys, twilio]
