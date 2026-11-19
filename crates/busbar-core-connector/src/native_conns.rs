@@ -628,7 +628,7 @@ impl Idle {
     }
 
     /// Share `exchange`'s connection on `core` once its session states that it multiplexes.
-    pub(crate) fn share(&self, core: usize, exchange: &mut Exchange) {
+    pub(crate) fn share(&self, core: usize, exchange: &mut Exchange, posture: PoolPosture) {
         if !matches!(&exchange.state, State::Dialled(conn) if conn.multiplexes()) {
             return;
         }
@@ -636,7 +636,14 @@ impl Idle {
             .cores
             .get_or_init(|| crate::off_path::conns::idle_cores(super::pool::shard_count()));
         if let Some(held) = cores.get(core) {
-            exchange.share(&mut held.in_use.lock().expect("native connections in use"));
+            let mut set = held.in_use.lock().expect("native connections in use");
+            exchange.share(&mut set);
+            // One pass over the core's shared connections, at a promotion (rare, never per request):
+            // those that failed, drained, or idled past the timeout leave the set and are closed.
+            let now = Instant::now();
+            set.sweep(|conn| {
+                !conn.in_use().finished() && !conn.idle_past(now, posture.idle_timeout)
+            });
         }
     }
 
@@ -1083,7 +1090,8 @@ impl super::Connector {
         let again = self.redial_native(&mut exchange, waker);
         // A connection whose session states that it multiplexes is shared from here on: later opens to the
         // same key on this core ride it.
-        self.native_idle.share(native.core, &mut exchange);
+        self.native_idle
+            .share(native.core, &mut exchange, self.pools.posture());
         native.end(exchange);
         again?;
         match read {
@@ -1132,7 +1140,8 @@ impl super::Connector {
         let again = self.redial_native(&mut exchange, waker);
         // A connection whose session states that it multiplexes is shared from here on: later opens to the
         // same key on this core ride it.
-        self.native_idle.share(native.core, &mut exchange);
+        self.native_idle
+            .share(native.core, &mut exchange, self.pools.posture());
         native.end(exchange);
         again?;
         wrote
@@ -1168,7 +1177,8 @@ impl super::Connector {
         let again = self.redial_native(&mut exchange, waker);
         // A connection whose session states that it multiplexes is shared from here on: later opens to the
         // same key on this core ride it.
-        self.native_idle.share(native.core, &mut exchange);
+        self.native_idle
+            .share(native.core, &mut exchange, self.pools.posture());
         native.end(exchange);
         again?;
         landed

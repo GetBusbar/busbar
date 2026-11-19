@@ -525,6 +525,20 @@ impl<K: Eq + Hash + Clone, C: Clone> InUse<K, C> {
         }
     }
 
+    /// Keep, over every key, only the connections `keep` admits; a key left with none, and no dial in
+    /// flight, is forgotten. Run when a connection comes into shared use, so what a key holds never
+    /// outlives its idle timeout by more than the time to the next promotion on its core.
+    pub(crate) fn sweep(&mut self, keep: impl Fn(&C) -> bool) {
+        self.keys.retain(|_, keyed| {
+            let before = keyed.conns.len();
+            keyed.conns.retain(&keep);
+            for _ in keyed.conns.len()..before {
+                keyed.entry.conn_gone();
+            }
+            !(keyed.conns.is_empty() && keyed.entry.empty())
+        });
+    }
+
     /// Keys with something in use.
     pub(crate) fn keys(&self) -> usize {
         self.keys.len()
@@ -645,5 +659,23 @@ mod tests {
         opened(&first);
         assert!(matches!(set.lend(&"k", view, true, true), Lent::Dial));
         assert!(matches!(set.lend(&"other", view, true, false), Lent::Idle));
+    }
+
+    #[test]
+    fn a_sweep_forgets_every_key_whose_connections_are_gone() {
+        let mut set: InUse<&str, Conn> = InUse::new();
+        let (live, dead) = (conn(&h2()), conn(&h2()));
+        set.insert(&"a", &live);
+        set.insert(&"b", &dead);
+        let mut gone = dead.get();
+        gone.gone();
+        dead.set(gone);
+        set.sweep(|conn| !conn.get().finished());
+        assert_eq!(set.keys(), 1);
+        assert!(matches!(
+            set.lend(&"a", view, false, false),
+            Lent::Stream(_)
+        ));
+        assert!(matches!(set.lend(&"b", view, false, false), Lent::Dial));
     }
 }
