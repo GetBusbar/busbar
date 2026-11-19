@@ -79,4 +79,67 @@ mod abi_tests {
         };
         assert_eq!(validate_abi(&current, &supported_abi), Ok(()));
     }
+
+    /// A minimal Statement rendering (secret kind, no lists, no blobs) stamped `mechanism`.
+    fn rendering(mechanism: u32) -> Vec<u8> {
+        let mut b = busbar_artifact_metadata::rendering::RENDERING_MAGIC.to_vec();
+        let u32s = |b: &mut Vec<u8>, words: &[u32]| {
+            for w in words {
+                b.extend_from_slice(&w.to_le_bytes());
+            }
+        };
+        let s = |b: &mut Vec<u8>, text: &str| {
+            b.extend_from_slice(&u32::try_from(text.len()).unwrap().to_le_bytes());
+            b.extend_from_slice(text.as_bytes());
+        };
+        // mechanism, kind, kind_abi, max_inflight
+        u32s(
+            &mut b,
+            &[mechanism, KindCode::Secret as u32, abi_of(KindCode::Secret), 1],
+        );
+        s(&mut b, "the-plugin");
+        s(&mut b, "1.0.0");
+        // families, diag_ids, kind_tail size, kind_tail_facts length
+        u32s(&mut b, &[0, 0, 0, 0]);
+        // extensions blob, secret_refs, settings_schema blob
+        u32s(&mut b, &[0, 0, 0, 0, 0, 0, 0]);
+        b.extend_from_slice(&0u64.to_le_bytes()); // marks
+        // mark_words, rewrites, sections, needs
+        u32s(&mut b, &[0, 0, 0, 0]);
+        s(&mut b, ""); // target_from
+        s(&mut b, ""); // trust_from
+        // answers, claims, measurement_classes
+        u32s(&mut b, &[0, 0, 0]);
+        b
+    }
+
+    /// ABI-MECH: the mechanism a Statement rendering is stamped with is busbar-plugin-abi's
+    /// `versions::CORE` (the number `ci/abi.pin` pins and the loader admits a native stamp at), and
+    /// only that exact number reads back: the previous generation and the next are refused.
+    #[test]
+    fn a_statement_stamped_with_another_mechanism_is_refused_and_core_is_admitted() {
+        use busbar_plugin_abi::versions::CORE;
+        let stamped = |mechanism: u32| Manifest {
+            kind: "secret".to_string(),
+            abi_version: abi_of(KindCode::Secret),
+            statement: Some(hex::encode(rendering(mechanism))),
+            ..Manifest::default()
+        };
+        let admitted = stamped(CORE).stated();
+        assert!(
+            admitted
+                .as_ref()
+                .is_ok_and(|s| s.as_ref().is_some_and(|s| s.mechanism_version == CORE)),
+            "{admitted:?}"
+        );
+        for wrong in [CORE - 1, CORE + 1] {
+            let refused = stamped(wrong).stated();
+            assert!(
+                refused
+                    .as_ref()
+                    .is_err_and(|why| why.contains("the current mechanism version")),
+                "mechanism {wrong}: {refused:?}"
+            );
+        }
+    }
 }

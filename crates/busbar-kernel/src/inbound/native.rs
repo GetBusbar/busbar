@@ -21,6 +21,7 @@ use super::request_snapshot::{ChargedRequestSnapshot, SnapshotError, SnapshotInp
 use super::Head;
 use crate::auth::native_admin::ExecutionAdmission;
 use crate::auth::native_data::{DataAuthorization, DataExecutionAdmission};
+use crate::governance::revocation::{RevocationCut, RevocationWatch};
 use crate::guest::{Claimant, GuestList, Line, Matched};
 use crate::limits::process_admission::{AdmissionClass, ByteCredit, RequestLease};
 use crate::plane_driver::port_routes::Mounted;
@@ -695,6 +696,25 @@ struct PhysicalBody {
     credit: ByteCredit,
 }
 impl RequestBinding {
+    /// Tie this admitted request to the revocation of `subject`, the governed key its credential
+    /// earned or the issuer key of the ticket (grant) that admitted it: while the request is live,
+    /// a revocation of that key, here or on a peer, fires its connection's cut. Called once the
+    /// request is admitted; a request already cancelled is not watched.
+    pub(crate) fn watch_revocation(&self, subject: &str) {
+        let Some(governance) = self.app.governance.as_deref() else {
+            return;
+        };
+        let mut held = self
+            .state
+            .revocation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *self.state.phase.lock().unwrap_or_else(PoisonError::into_inner) == Phase::Cancelled {
+            return;
+        }
+        *held = Some(governance.watch_revocation(subject, &self.revocation));
+    }
+
     /// Compare the exact retained physical owner, including after cancellation or retirement.
     /// An equal wire stream number on another connection conveys no matching authority.
     pub fn owns_stream(&self, owner: &StreamOwner) -> bool {
@@ -1073,6 +1093,7 @@ impl CompletingPhysicalRequest {
             }
             *phase = Phase::Admitted;
         }
+        self.binding.watch_revocation(&authorization.key().id);
         self.cancel_on_drop = false;
         Ok(AuthorizedPhysicalData {
             authorization,

@@ -277,49 +277,47 @@ impl ChargedRequestSnapshot {
     fn slice(&self, range: &Range<usize>) -> &[u8] {
         &self.bytes[range.clone()]
     }
-    fn text(&self, range: &Range<usize>) -> &str {
-        std::str::from_utf8(self.slice(range)).expect("snapshot text was copied from str")
-    }
     pub fn method(&self) -> &str {
-        self.text(&self.method)
+        self.fact_text(&self.method)
     }
     pub fn target(&self) -> &str {
-        self.text(&self.target)
+        self.fact_text(&self.target)
     }
     pub fn path(&self) -> &str {
-        self.text(&self.path)
+        self.fact_text(&self.path)
     }
     pub fn query(&self) -> &str {
-        self.text(&self.query)
+        self.fact_text(&self.query)
     }
     pub fn query_present(&self) -> bool {
         self.query_present
     }
     pub fn authority(&self) -> &str {
-        self.text(&self.authority)
+        self.fact_text(&self.authority)
     }
     pub fn peer(&self) -> &str {
-        self.text(&self.peer)
+        self.fact_text(&self.peer)
     }
     pub fn tls_peer_cert(&self) -> &[u8] {
-        self.slice(&self.certificate)
+        self.fact(&self.certificate)
     }
     pub fn body(&self) -> &[u8] {
-        self.slice(&self.body)
+        self.fact(&self.body)
     }
-    /// Share the body without copying; every nonempty Bytes clone/slice retains the full snapshot.
+    /// Share the body without copying; every nonempty Bytes clone/slice retains the full snapshot
+    /// that holds the body (the original, for a restated head).
     /// Empty operations must additionally retain the original request admission explicitly.
     pub fn body_bytes(self: &Arc<Self>) -> bytes::Bytes {
-        self.owned_bytes(self.body.clone())
+        self.facts().owned_bytes(self.body.clone())
     }
     /// Share the exact path and query, including an originally present empty query.
     /// Passing these Bytes to `http::Uri::from_maybe_shared` avoids a second payload copy.
     pub fn target_bytes(self: &Arc<Self>) -> bytes::Bytes {
-        self.owned_bytes(self.target.clone())
+        self.facts().owned_bytes(self.target.clone())
     }
     /// Share long HTTP methods through the maintained parser and its independent clones.
     pub fn method_bytes(self: &Arc<Self>) -> bytes::Bytes {
-        self.owned_bytes(self.method.clone())
+        self.facts().owned_bytes(self.method.clone())
     }
     fn owned_bytes(self: &Arc<Self>, range: Range<usize>) -> bytes::Bytes {
         bytes::Bytes::from_owner(SnapshotSpan {
