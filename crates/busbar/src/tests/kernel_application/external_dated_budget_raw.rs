@@ -80,6 +80,228 @@ fn confirm(holder: &Holder, at: u64, rate: f64, fee: i64, epoch: u64) -> RawRate
     era
 }
 
+fn accrue(
+    gov: &GovState,
+    cost: &CostModel,
+    key: &VirtualKey,
+    now: u64,
+) -> busbar_kernel::governance::AdmitGrant {
+    let grant = gov.try_admit(cost, key, "", now).unwrap();
+    let units = input(RAW_COUNT);
+    gov.record_usage(cost, key, "", RAW_MODEL, &units, now);
+    gov.record_lane_metering_in_era(
+        key,
+        RAW_MODEL,
+        Some(RAW_PROVIDER),
+        &units,
+        now,
+        grant.charge().raw_era(),
+    );
+    grant
+}
+
+#[tokio::test]
+async fn exact_opening_and_same_timestamp_cards_survive_later_day_and_restart() {
+    let (holder, _serial) = holder_opening(raw_card(1.0, OPENING_FEE)).await;
+    holder.1.store(true, std::sync::atomic::Ordering::Relaxed);
+    let store = real_store::core().await;
+    let key = team_key(store.as_ref(), RAW_KEY).await;
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
+
+    let later = metering_bucket(busbar_kernel::store::now());
+    let opening = raw_cost(1.0, OPENING_FEE);
+    let opening_grant = accrue(&gov, &opening, &key, later);
+    let opening_era = opening_grant.charge().raw_era();
+    assert_eq!(opening_era.effective_from, 0);
+    assert!(opening_era.entry_id.is_some());
+
+    let shared_start = later.saturating_sub(SECS_PER_DAY) * 1_000;
+    let first_era = confirm(holder, shared_start, 2.0, FIRST_FEE, 1);
+    let first = raw_cost(2.0, FIRST_FEE);
+    let first_grant = accrue(&gov, &first, &key, later);
+    assert_eq!(first_grant.charge().raw_era(), first_era);
+    assert_eq!(
+        gov.usage_for_async(&first, &key.id, later)
+            .await
+            .unwrap()
+            .unwrap()
+            .spend_cents,
+        42
+    );
+
+    let second_era = confirm(holder, shared_start, 3.0, SECOND_FEE, 2);
+    let second = raw_cost(3.0, SECOND_FEE);
+    accrue(&gov, &second, &key, later);
+    assert_eq!(first_era.effective_from, second_era.effective_from);
+    assert_ne!(first_era.entry_id, second_era.entry_id);
+    let reads = async |gov: &GovState| {
+        let key_read = gov
+            .usage_for_async(&second, &key.id, later)
+            .await
+            .unwrap()
+            .unwrap();
+        let group = &second.groups()[0].buckets[0];
+        let group_read = gov
+            .derived_bucket_usage_async(&second, &group.bucket_id, WINDOW_DAY, true, later)
+            .await
+            .unwrap();
+        assert_eq!(key_read, group_read);
+        (key_read.tokens, key_read.requests, key_read.spend_cents)
+    };
+    assert_eq!(
+        reads(&gov).await,
+        (busbar_contract::Count::from(3 * RAW_COUNT), 3, TOTAL_CENTS)
+    );
+    gov.refund_charge(opening_grant.charge());
+    assert_eq!(
+        reads(&gov).await,
+        (
+            busbar_contract::Count::from(3 * RAW_COUNT),
+            3,
+            TOTAL_CENTS - OPENING_FEE
+        )
+    );
+    gov.flush_budgets().await;
+    gov.flush_metering_final().await;
+    let rows = gov
+        .metering_for_async(metering_bucket(later))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 3);
+    for era in [opening_era, first_era, second_era] {
+        let row = rows
+            .iter()
+            .find(|row| row.pricing_version == era.entry_id.unwrap().metering_version())
+            .unwrap();
+        assert_eq!(row.priced_from_ms, era.effective_from);
+        assert_eq!(row.scale, busbar_contract::count::SCALE_MICRO_UNITS);
+        assert_eq!(
+            row.tokens_input,
+            busbar_contract::Count::from(RAW_COUNT).micros()
+        );
+        assert_eq!(row.requests, 1);
+    }
+    let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -1)]);
+    let ambiguous = busbar_kernel::governance::Adjustment {
+        key_id: &key.id,
+        pool: "",
+        model: RAW_MODEL,
+        entry_era: shared_start,
+        entry_id: None,
+        card_epoch_ms: later * 1_000,
+        delta: &delta,
+        now: later,
+    };
+    let future_epoch_ms = busbar_kernel::store::now_ms() + SECS_PER_DAY * 1_000;
+    let future = busbar_kernel::governance::Adjustment {
+        card_epoch_ms: future_epoch_ms,
+        ..ambiguous
+    };
+    assert!(matches!(
+        gov.adjust_usage_async(&second, &future).await.unwrap(),
+        Err(busbar_kernel::governance::AdjustRefused::FutureEpoch { at, now })
+            if at == future_epoch_ms && now < future_epoch_ms
+    ));
+    assert_eq!(
+        reads(&gov).await,
+        (
+            busbar_contract::Count::from(3 * RAW_COUNT),
+            3,
+            TOTAL_CENTS - OPENING_FEE
+        )
+    );
+    assert!(matches!(
+        gov.adjust_usage_async(&second, &ambiguous).await.unwrap(),
+        Err(busbar_kernel::governance::AdjustRefused::Preparation { reason })
+            if reason.contains("multiple raw rate entries")
+    ));
+    assert_eq!(
+        reads(&gov).await,
+        (
+            busbar_contract::Count::from(3 * RAW_COUNT),
+            3,
+            TOTAL_CENTS - OPENING_FEE
+        )
+    );
+    drop(gov);
+    let restarted = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        reads(&restarted).await,
+        (
+            busbar_contract::Count::from(3 * RAW_COUNT),
+            3,
+            TOTAL_CENTS - OPENING_FEE
+        )
+    );
+    restarted
+        .hydrate_budgets_async(&second, later)
+        .await
+        .unwrap();
+    assert_eq!(
+        reads(&restarted).await,
+        (
+            busbar_contract::Count::from(3 * RAW_COUNT),
+            3,
+            TOTAL_CENTS - OPENING_FEE
+        )
+    );
+
+    let legacy = team_key(store.as_ref(), "vk_legacy_zero").await;
+    restarted.record_usage_served_in_era(
+        &second,
+        &legacy,
+        "",
+        RAW_MODEL,
+        None,
+        &input(RAW_COUNT),
+        later,
+        RawRateEra::legacy(0),
+    );
+    assert_eq!(
+        restarted
+            .usage_for_async(&second, &legacy.id, later)
+            .await
+            .unwrap()
+            .unwrap()
+            .spend_cents,
+        10
+    );
+    let group = &second.groups()[0].buckets[0];
+    assert_eq!(
+        restarted
+            .derived_bucket_usage_async(&second, &group.bucket_id, WINDOW_DAY, true, later)
+            .await
+            .unwrap()
+            .spend_cents,
+        TOTAL_CENTS - OPENING_FEE + 30
+    );
+    restarted.flush_budgets_final().await;
+    drop(restarted);
+    let mixed = GovState::new_with_core(store, None, None).await.unwrap();
+    mixed.hydrate_budgets_async(&second, later).await.unwrap();
+    assert_eq!(
+        mixed
+            .derived_bucket_usage_async(&second, &group.bucket_id, WINDOW_DAY, true, later)
+            .await
+            .unwrap()
+            .spend_cents,
+        TOTAL_CENTS - OPENING_FEE + 30
+    );
+    assert_eq!(
+        mixed
+            .usage_for_async(&second, &legacy.id, later)
+            .await
+            .unwrap()
+            .unwrap()
+            .spend_cents,
+        10
+    );
+}
+
 #[tokio::test]
 async fn malformed_versioned_budget_provenance_refuses_instead_of_repricing_as_legacy() {
     use busbar_contract::records::{ModelTokens, UsageLedger};
@@ -141,3 +363,271 @@ async fn malformed_versioned_budget_provenance_refuses_instead_of_repricing_as_l
         .is_err());
 }
 
+#[tokio::test]
+async fn open_route_cancel_and_session_cleanup_keep_the_admissions_original_entry() {
+    use busbar_contract::abi::plane::UnitCount;
+    use busbar_contract::caps::{CallId, OriginKind, ReasonCode};
+    use busbar_contract::measurement::UNITS_REPORTED;
+    use busbar_contract::plane::codes::CANCEL_OK_PARTIAL;
+    use busbar_contract::UnitKey;
+    use busbar_kernel::config::groups::ExhaustionMode;
+    use busbar_kernel::plane_driver::{
+        CancelBill, EndPost, FeeRefund, MoneySeam, PlaneMoney, UnitMoney,
+    };
+    use busbar_kernel::registry::Generation;
+    use busbar_kernel::teller::{Ended, UnitCtx};
+    struct Post;
+    impl EndPost for Post {
+        fn post(&self, _: &UnitCtx, _: Ended) {}
+    }
+    let context = |key| UnitCtx {
+        call: CallId::UNBOUND,
+        key: UnitKey::new(key),
+        origin: OriginKind::Client,
+        session: None,
+        generation: Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    const INPUT_INDEX: u32 = 0;
+    let reported = [UnitCount {
+        class: INPUT_INDEX,
+        source: UNITS_REPORTED,
+        amount: RAW_COUNT,
+    }];
+    let (holder, _serial) = holder_opening(raw_card(1.0, OPENING_FEE)).await;
+    holder.1.store(true, std::sync::atomic::Ordering::Relaxed);
+    let store = real_store::core().await;
+    let key = Arc::new(team_key(store.as_ref(), "vk_open_raw_provenance").await);
+    let gov = Arc::new(GovState::new_with_core(store, None, None).await.unwrap());
+    let money = PlaneMoney::new(gov.clone(), Arc::new(Post));
+    let old_cost = Arc::new(raw_cost(1.0, OPENING_FEE));
+    let arrived = metering_bucket(busbar_kernel::store::now()) + SECS_PER_DAY;
+    let mut original = None;
+    for unit in 1..=3 {
+        let grant = gov.try_admit(&old_cost, &key, "", arrived).unwrap();
+        original = Some(grant.charge().raw_era());
+        money.open(
+            UnitKey::new(unit),
+            UnitMoney {
+                key: key.clone(),
+                cost: old_cost.clone(),
+                pool: String::new(),
+                lane: RAW_MODEL.to_string(),
+                classes: Arc::from(vec![UNIT_INPUT.to_string()]),
+                arrived,
+                mode: ExhaustionMode::FinishUnit,
+                fee: FeeRefund::CallerStatus,
+                charge: grant.charge().clone(),
+            },
+        );
+        money.served(&context(unit), RAW_MODEL, RAW_PROVIDER);
+        money.checkpoint(&context(unit), &reported);
+    }
+    money.session_opened(&context(3)).unwrap();
+    let current_era = confirm(
+        holder,
+        busbar_kernel::store::now_ms().saturating_sub(1),
+        3.0,
+        SECOND_FEE,
+        1,
+    );
+    let current = raw_cost(3.0, SECOND_FEE);
+    money.settle_end(UnitKey::new(1), u32::from(http::StatusCode::OK.as_u16()));
+    money.cancelled(
+        &context(2),
+        &CancelBill {
+            cause: ReasonCode::ClientGone,
+            disposition: CANCEL_OK_PARTIAL,
+            far_end_answered: true,
+            streamed: true,
+            billed: vec![(INPUT_INDEX, RAW_COUNT.into())],
+            unread: None,
+        },
+    );
+    money.settle_end(
+        UnitKey::new(2),
+        u32::from(http::StatusCode::SERVICE_UNAVAILABLE.as_u16()),
+    );
+    money.session_ended(&context(3));
+    money.session_ended(&context(3));
+    money.settle_end(UnitKey::new(3), u32::from(http::StatusCode::OK.as_u16()));
+    accrue(&gov, &current, &key, arrived);
+    assert_eq!(money.open_units(), 0);
+    let usage = gov
+        .usage_for_async(&current, &key.id, arrived)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (usage.tokens, usage.requests, usage.spend_cents),
+        (busbar_contract::Count::from(4 * RAW_COUNT), 4, 81)
+    );
+    gov.flush_budgets_final().await;
+    gov.flush_metering_final().await;
+    let rows = gov
+        .metering_for_async(metering_bucket(arrived))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    for (era, requests) in [(original.unwrap(), 3), (current_era, 1)] {
+        let row = rows
+            .iter()
+            .find(|row| row.pricing_version == era.entry_id.unwrap().metering_version())
+            .unwrap();
+        assert_eq!(row.requests, requests);
+        assert_eq!(row.scale, busbar_contract::count::SCALE_MICRO_UNITS);
+        assert_eq!(
+            row.tokens_input,
+            busbar_contract::Count::from(requests * RAW_COUNT).micros()
+        );
+    }
+}
+
+#[tokio::test]
+async fn scoped_pool_and_ancestor_buckets_keep_exact_raw_counts_and_partial_corrections() {
+    use busbar_contract::records::ScopeRef;
+    use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
+    const POOL: &str = "raw-pool";
+    const OTHER_POOL: &str = "other-pool";
+    const ANCESTOR: &str = "raw-ancestor";
+    const CORRECTED_COUNT: u64 = 90_000;
+    const OPEN_COUNT: u64 = 10_000;
+    let (holder, _serial) = holder_opening(raw_card(1.0, OPENING_FEE)).await;
+    holder.1.store(true, std::sync::atomic::Ordering::Relaxed);
+    let limit = |pool: Option<&str>| LimitCfg {
+        selected: None,
+        metric: LimitMetric::Budget,
+        amount: 1_000,
+        per: Some(LimitWindow::Day),
+        scope: pool.map(ScopeRef::pool),
+        on_exhaust: None,
+        downgrade_to: None,
+    };
+    let groups = BTreeMap::from([
+        (
+            "team".to_string(),
+            GroupCfg {
+                enabled: true,
+                parent: Some(ANCESTOR.to_string()),
+                limits: vec![limit(Some(POOL)), limit(Some(OTHER_POOL))],
+                ..Default::default()
+            },
+        ),
+        (
+            ANCESTOR.to_string(),
+            GroupCfg {
+                enabled: true,
+                limits: vec![limit(None)],
+                ..Default::default()
+            },
+        ),
+    ]);
+    let old = raw_cost(1.0, OPENING_FEE).with_groups(&groups);
+    let store = real_store::core().await;
+    let key = team_key(store.as_ref(), "vk_scoped_raw_identity").await;
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
+    let now = busbar_kernel::store::now();
+    let charged = gov.try_admit(&old, &key, POOL, now).unwrap();
+    let era = charged.charge().raw_era();
+    let units = BTreeMap::from([
+        (UNIT_INPUT.to_string(), RAW_COUNT),
+        (OPEN_UNIT.to_string(), OPEN_COUNT),
+    ]);
+    gov.record_usage_served_in_era(
+        &old,
+        &key,
+        POOL,
+        RAW_MODEL,
+        Some(RAW_PROVIDER),
+        &units,
+        now,
+        era,
+    );
+    gov.record_lane_metering_in_era(&key, RAW_MODEL, Some(RAW_PROVIDER), &units, now, era);
+    confirm(
+        holder,
+        busbar_kernel::store::now_ms().saturating_sub(1),
+        3.0,
+        SECOND_FEE,
+        1,
+    );
+    let current = raw_cost(3.0, SECOND_FEE).with_groups(&groups);
+    gov.flush_budgets().await;
+    gov.flush_metering_final().await;
+    let metered = gov.metering_for_async(metering_bucket(now)).await.unwrap();
+    assert_eq!(metered.len(), 1);
+    assert_eq!(metered[0].scale, busbar_contract::count::SCALE_MICRO_UNITS);
+    assert_eq!(
+        metered[0].usage_units.get(OPEN_UNIT),
+        Some(&busbar_contract::Count::from(OPEN_COUNT).micros())
+    );
+    assert_eq!(
+        metered[0].pricing_version,
+        era.entry_id.unwrap().metering_version()
+    );
+    let delta = BTreeMap::from([
+        (UNIT_INPUT.to_string(), -10_000),
+        (OPEN_UNIT.to_string(), -(OPEN_COUNT as i64)),
+    ]);
+    gov.adjust_usage_async(
+        &current,
+        &busbar_kernel::governance::Adjustment {
+            key_id: &key.id,
+            pool: POOL,
+            model: RAW_MODEL,
+            entry_era: era.effective_from,
+            entry_id: None,
+            card_epoch_ms: now * 1_000,
+            delta: &delta,
+            now,
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    gov.refund_charge(charged.charge());
+    for bucket in current.groups().iter().flat_map(|group| &group.buckets) {
+        let other = bucket
+            .scope
+            .as_ref()
+            .is_some_and(|scope| scope.value == OTHER_POOL);
+        let read = gov
+            .derived_bucket_usage_async(&current, &bucket.bucket_id, WINDOW_DAY, true, now)
+            .await
+            .unwrap();
+        assert_eq!(
+            (read.tokens, read.requests, read.spend_cents),
+            if other {
+                (busbar_contract::Count::ZERO, 0, 0)
+            } else {
+                (busbar_contract::Count::from(CORRECTED_COUNT), 1, 9)
+            }
+        );
+    }
+    let adjustment = gov
+        .usage_adjustments_async(metering_bucket(now))
+        .await
+        .unwrap();
+    assert_eq!(adjustment.len(), 1);
+    assert_eq!(adjustment[0].entry_id, era.entry_id);
+    assert_eq!(adjustment[0].era, era.effective_from);
+    assert_eq!(adjustment[0].delta.get(UNIT_INPUT), Some(&-10_000));
+    gov.flush_budgets_final().await;
+    let restarted = GovState::new_with_core(store, None, None).await.unwrap();
+    restarted
+        .hydrate_budgets_async(&current, now)
+        .await
+        .unwrap();
+    let usage = restarted
+        .usage_for_async(&current, &key.id, now)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (usage.tokens, usage.requests, usage.spend_cents),
+        (busbar_contract::Count::from(CORRECTED_COUNT), 1, 9)
+    );
+}

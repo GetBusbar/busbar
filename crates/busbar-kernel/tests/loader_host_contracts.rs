@@ -389,6 +389,74 @@ async fn item_sightings_refuse_wrong_owners_and_invalid_evidence_without_changin
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
+    use busbar_contract::abi::host::service::{
+        DISTRUST_NONE, DISTRUST_NOT_APPROVED, DISTRUST_UNKNOWN, DISTRUST_UNKNOWN_ITEM,
+    };
+    use busbar_kernel::trust::{
+        book::Ruling,
+        reverify::Policy,
+        section::{DeclaredPin, TrustEntry},
+    };
+    let entry = || TrustEntry {
+        pin: Some(DeclaredPin {
+            mechanism: "fingerprint".into(),
+            root: false,
+            peer_key: false,
+            key: None,
+            fingerprint: Some("one".into()),
+        }),
+        policy: Policy {
+            ttl_ms: 0,
+            recovery_backoff_ms: 0,
+        },
+        approved: std::collections::BTreeMap::from([("tool".into(), "one".into())]),
+    };
+    // Trust custody, as production has (TRUST-ADMIN-PRODUCER-DESIGN r3 §6, condition A-C1).
+    let record = Arc::new(busbar_kernel::trust::DemotionRecord::default());
+    record
+        .set_store(real_store::core().await)
+        .expect("a fresh record attaches");
+    let h = Host::new().with_demotions(record, "");
+    h.admit(
+        &"plane".into(),
+        InstanceFacts {
+            trust: vec![("agent".into(), entry()), ("pending".into(), entry())],
+            ..InstanceFacts::default()
+        },
+    )
+    .await
+    .unwrap();
+    h.trust_rule_by(
+        "plane/agent",
+        Ruling::Approve,
+        busbar_kernel::trust::book::Reviewed::Unsighted,
+        "op",
+        None,
+    )
+    .await
+    .result
+    .expect("actual authority approves declared fingerprint");
+    h.trust_rule_by(
+        "plane/agent/tool",
+        Ruling::Revoke,
+        busbar_kernel::trust::book::Reviewed::Unsighted,
+        "op",
+        None,
+    )
+    .await
+    .result
+    .expect("actual authority revokes declared item");
+    let c = caller("plane");
+    let verdict = |cp: &str, item: Option<&str>| h.trust_serves(&c, cp, item, None).value;
+    assert_eq!(verdict("agent", None), DISTRUST_NONE);
+    assert_eq!(verdict("agent", Some("tool")), DISTRUST_NOT_APPROVED);
+    assert_eq!(verdict("agent", Some("other")), DISTRUST_UNKNOWN_ITEM);
+    assert_eq!(verdict("pending", None), DISTRUST_NOT_APPROVED);
+    assert_eq!(verdict("stranger", None), DISTRUST_UNKNOWN);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sightings_never_rewrite_the_actual_configured_item_approval() {
     use busbar_contract::abi::host::service::{DISTRUST_NONE, DISTRUST_NOT_APPROVED};
     let h = trust_host().await;
