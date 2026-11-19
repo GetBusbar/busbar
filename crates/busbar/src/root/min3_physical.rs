@@ -234,6 +234,19 @@ pub(crate) fn is_upgrade(binding: &RouteBinding) -> bool {
         if target.mounted().flags == busbar_plugin_abi::plane::ROUTE_UPGRADE)
 }
 
+/// The data chain a data slot judges an unmatched path and a core keyed route (`/stats`) with.
+/// `names` is the configured `auth.chain`; `serves_data` is whether the slot mounts a plane route.
+fn slot_data_chain<C>(
+    names: &[Box<str>],
+    serves_data: bool,
+    build: impl FnOnce(&[Box<str>]) -> Result<C, String>,
+) -> Result<Option<Arc<C>>, String> {
+    if !serves_data {
+        return Ok(None);
+    }
+    build(names).map(|chain| Some(Arc::new(chain)))
+}
+
 fn declared_core_auth(
     line: &Line,
     core: &[(String, RouteMethod, RouteAuth)],
@@ -458,11 +471,9 @@ pub(crate) fn assemble_slot(
         .iter()
         .map(|name| name.as_str().into())
         .collect();
-    let data_chain = if data.is_empty() {
-        None
-    } else {
-        Some(Arc::new(owners.auth.data_chain(owners.epoch, &data_names)?))
-    };
+    let data_chain = slot_data_chain(&data_names, !data.is_empty(), |names| {
+        owners.auth.data_chain(owners.epoch, names)
+    })?;
     let patterns = plan
         .routes()
         .filter_map(|binding| match binding.target() {
