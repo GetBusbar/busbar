@@ -1047,3 +1047,318 @@ impl crate::image::Opened {
         describe_header(self.header(), host, lease)
     }
 }
+
+/// The five kind shims through this module's safe API, over one fixture image whose table has one entry of
+/// each role (core 3.0). It replaces the per-arity slot cases: a session method reaches its session only
+/// through `Session`, a chain only through `Chain`, and the shape grows by prefix (the growth cases).
+#[cfg(all(test, not(loom)))]
+mod call_tests {
+    use super::*;
+    use core::task::Poll;
+    use std::sync::Arc;
+
+    use crate::header::{LinkedPlugin, STAMP_KIND_AT, STAMP_SIZE, StampBytes, plugin};
+    use crate::raw::{ChainBytes, HostFns, KindCode, Out, Str};
+    use crate::shim::{
+        self, ChainFut, Ends, Image, OnSession, Opening, Opens, Plain, Starts, Step,
+    };
+    use crate::slots::{ChainBox, ChainRef, Inst, Slots};
+    use crate::vt::{Args, ChainArgs, Table, kind};
+
+    const PLAIN: usize = 0;
+    const OPENS: usize = 1;
+    const ON: usize = 2;
+    const ENDS: usize = 3;
+    const STARTS: usize = 4;
+    /// A fixture answer record: one u64.
+    const TAG_ECHO: u16 = 0x0100;
+
+    pub struct Fx;
+    static GLOBAL: Slots<ChainBox<u64, ()>> = Slots::new();
+    static HOST: Host = Host::new(
+        0,
+        HostFns {
+            now: None,
+            mono: None,
+            random: None,
+            crypto: None,
+            log: None,
+            log_level: None,
+            grow: None,
+            deployment: None,
+            service: None,
+        },
+    );
+
+    fn put(out: &mut Out<'_>, tag: u16, value: u64) -> bool {
+        let mut bytes = [0u8; 16];
+        bytes[..2].copy_from_slice(&tag.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&8u32.to_ne_bytes());
+        bytes[8..].copy_from_slice(&value.to_le_bytes());
+        out.append(&bytes)
+    }
+
+    /// The first `u32` of a head.
+    fn first(args: &Args<'_>) -> Option<u32> {
+        Some(u32::from_le_bytes(args.head().get(..4)?.try_into().ok()?))
+    }
+
+    impl Image for Fx {
+        type Plugin = u64;
+        type Session = u64;
+        type Reply = u64;
+        type Inbox = ();
+        fn global() -> &'static Slots<ChainBox<u64, ()>> {
+            &GLOBAL
+        }
+        fn describe(_h: &'static Host, _out: &mut Out<'_>) -> Status {
+            Status::OK
+        }
+        fn open(
+            _h: &'static Host,
+            _config: Bytes<'_>,
+            _chained: ChainBytes,
+            _flags: u32,
+            out: &mut Out<'_>,
+        ) -> Opening<u64, ()> {
+            let address = Box::new(Inst::<u64, u64, u64, ()>::new(1000)).into_instance();
+            assert!(put(out, TAG_INSTANCE, address));
+            Opening::Done(Status::OK)
+        }
+        fn poll(
+            mut chain: ChainRef<'_, u64, ()>,
+            _results: Option<ChainBytes>,
+            out: &mut Out<'_>,
+        ) -> Step {
+            match chain.poll() {
+                Poll::Ready(value) => {
+                    assert!(put(out, TAG_ECHO, value));
+                    Step::Ready(Status::OK)
+                }
+                Poll::Pending => Step::Need,
+            }
+        }
+        fn parked(token: Token, out: &mut Out<'_>) -> Status {
+            assert!(put(out, TAG_TOKEN, token));
+            Status::NEED
+        }
+        fn opened(token: Token, out: &mut Out<'_>) -> Status {
+            assert!(put(out, TAG_TOKEN, token));
+            Status::OK
+        }
+    }
+
+    /// Plain: answers plugin + head number + the length of blob 0 + the clock handed in.
+    impl Plain<PLAIN> for Fx {
+        fn call(p: &u64, _h: &'static Host, args: Args<'_>, out: &mut Out<'_>) -> Status {
+            let (Some(n), Some(blob)) = (first(&args), args.blob(0)) else {
+                return Status::FAULT;
+            };
+            let clock = shim::mono_ns();
+            assert_eq!(clock, args.mono_ns());
+            if put(out, TAG_ECHO, *p + u64::from(n) + blob.len() as u64 + clock) {
+                Status::OK
+            } else {
+                Status::FAULT
+            }
+        }
+    }
+    /// Opens: the session's state is the head number.
+    impl Opens<OPENS> for Fx {
+        fn begin(
+            _p: &u64,
+            _h: &'static Host,
+            args: Args<'_>,
+            _out: &mut Out<'_>,
+        ) -> Result<u64, Status> {
+            first(&args).map(u64::from).ok_or(Status::FAULT)
+        }
+    }
+    /// On a session: adds the head number to the session and answers the sum.
+    impl OnSession<ON> for Fx {
+        fn on(
+            _p: &u64,
+            _h: &'static Host,
+            s: &mut u64,
+            args: Args<'_>,
+            out: &mut Out<'_>,
+        ) -> Status {
+            let Some(n) = first(&args) else {
+                return Status::FAULT;
+            };
+            *s += u64::from(n);
+            if put(out, TAG_ECHO, *s) {
+                Status::OK
+            } else {
+                Status::FAULT
+            }
+        }
+    }
+    /// Ends: answers the session's last state.
+    impl Ends<ENDS> for Fx {
+        fn end(_p: &u64, _h: &'static Host, s: u64, _args: Args<'_>, out: &mut Out<'_>) -> Status {
+            if put(out, TAG_ECHO, s) {
+                Status::OK
+            } else {
+                Status::FAULT
+            }
+        }
+    }
+    /// Starts: pends once, then answers the length of blob 0, read inside the chain.
+    impl Starts<STARTS> for Fx {
+        fn start<'i>(
+            _p: &'i u64,
+            _h: &'static Host,
+            args: ChainArgs<'_>,
+        ) -> Option<(ChainFut<'i, u64>, ())> {
+            let blob = args.blob(0)?;
+            let mut polled = false;
+            Some((
+                Box::pin(core::future::poll_fn(move |_| {
+                    if core::mem::replace(&mut polled, true) {
+                        Poll::Ready(blob.with(|bytes| bytes.len() as u64))
+                    } else {
+                        Poll::Pending
+                    }
+                })),
+                (),
+            ))
+        }
+    }
+
+    static TABLE: Table<Fx, 5> = Table::new([
+        shim::plain::<Fx, PLAIN>(),
+        shim::opens::<Fx, OPENS>(),
+        shim::on_session::<Fx, ON>(),
+        shim::ends::<Fx, ENDS>(),
+        shim::starts::<Fx, STARTS>(),
+    ]);
+    static STAMP: StampBytes = {
+        let mut bytes = [0u8; STAMP_SIZE];
+        bytes[STAMP_KIND_AT] = KindCode::Plane as u8;
+        StampBytes(bytes)
+    };
+    static PLUGIN: LinkedPlugin = plugin::<Fx, kind::Plane, 5>(&TABLE, &STAMP, Str::EMPTY);
+
+    fn lease() -> OutLease<'static> {
+        OutLease::new(vec![0; 256], 256).expect("a free ACTIVE slot")
+    }
+    /// The last TAG_ECHO value of an answer.
+    fn echo(lease: &OutLease) -> Option<u64> {
+        lease.with_answer(|answer| {
+            records(answer)
+                .filter(|(tag, _)| *tag == TAG_ECHO)
+                .last()
+                .and_then(|(_, body)| u64_of(body))
+        })
+    }
+    fn instance() -> Arc<Instance<kind::Plane>> {
+        let image = Admitted::linked(&PLUGIN).expect("the fixture header is whole");
+        assert_eq!(image.entries(), 5);
+        let mut out = lease();
+        let OpenAnswer::Done(Status::OK, Some(inst)) =
+            image.open::<kind::Plane>(&HOST, Vec::new(), 0, &mut out)
+        else {
+            panic!("the fixture opens");
+        };
+        Arc::new(inst)
+    }
+
+    #[test]
+    fn a_plain_call_reads_head_blobs_and_the_clock() {
+        let inst = instance();
+        let head = 7u32.to_le_bytes();
+        let blobs = [Bytes::new(b"abc")];
+        let mut out = lease();
+        let call = Call::new(20, &head, &[], &blobs);
+        assert_eq!(inst.call(PLAIN, &call, &mut out), Status::OK);
+        assert_eq!(echo(&out), Some(1000 + 7 + 3 + 20));
+        assert_eq!(shim::mono_ns(), 0, "the clock is the entry's only");
+    }
+
+    /// The growth cases of C.3a: bytes appended to `head`, a text and a blob appended at the end, are
+    /// invisible to an image that does not know them; a call shorter than the image knows is FAULT; an
+    /// entry the image does not have is FAULT.
+    #[test]
+    fn the_shape_grows_by_prefix() {
+        let inst = instance();
+        let mut head = 7u32.to_le_bytes().to_vec();
+        head.extend_from_slice(&[9; 12]);
+        let texts = [Str::new("a text this image does not know")];
+        let blobs = [Bytes::new(b"abc"), Bytes::new(b"a later blob")];
+        let mut out = lease();
+        let call = Call::new(0, &head, &texts, &blobs);
+        assert_eq!(inst.call(PLAIN, &call, &mut out), Status::OK);
+        assert_eq!(echo(&out), Some(1000 + 7 + 3));
+        drop(out);
+        let mut out = lease();
+        assert_eq!(inst.call(PLAIN, &Call::EMPTY, &mut out), Status::FAULT);
+        drop(out);
+        let mut out = lease();
+        assert_eq!(inst.call(5, &call, &mut out), Status::FAULT);
+    }
+
+    #[test]
+    fn a_session_is_reached_only_through_its_handle() {
+        let inst = instance();
+        let three = 3u32.to_le_bytes();
+        let four = 4u32.to_le_bytes();
+        let mut out = lease();
+        let (status, session) = inst.open_session(OPENS, &Call::new(0, &three, &[], &[]), &mut out);
+        assert_eq!(status, Status::OK);
+        let mut session = session.expect("OK with a leading session token");
+        drop(out);
+        // A session method called plainly carries no token: FAULT, and the session is untouched.
+        let mut out = lease();
+        assert_eq!(
+            inst.call(ON, &Call::new(0, &four, &[], &[]), &mut out),
+            Status::FAULT
+        );
+        drop(out);
+        let mut out = lease();
+        assert_eq!(
+            session.call(ON, &Call::new(0, &four, &[], &[]), &mut out),
+            Status::OK
+        );
+        assert_eq!(echo(&out), Some(7));
+        drop(out);
+        let mut out = lease();
+        assert_eq!(session.end(ENDS, &Call::EMPTY, &mut out), Status::OK);
+        assert_eq!(echo(&out), Some(7));
+    }
+
+    #[test]
+    fn an_async_start_keeps_its_blob_and_refuses_one_it_does_not_hold() {
+        let inst = instance();
+        let mut bufs = ChainBufs::new();
+        let at = bufs.push(b"kept!".to_vec());
+        let mut out = lease();
+        let started = inst.start(
+            STARTS,
+            bufs,
+            |bufs, cross| cross(&Call::new(0, &[], &[], &[bufs.get(at)])),
+            &mut out,
+        );
+        let Started::Need(mut chain) = started else {
+            panic!("the first poll pends");
+        };
+        drop(out);
+        let mut out = lease();
+        assert!(matches!(
+            chain.resume(Vec::new(), &mut out),
+            Resumed::Done(Status::OK, None)
+        ));
+        assert_eq!(echo(&out), Some(5));
+        drop(out);
+        // A blob outside the chain's kept buffers never crosses.
+        let stray = b"on the caller's stack".to_vec();
+        let mut out = lease();
+        let started = inst.start(
+            STARTS,
+            ChainBufs::new(),
+            |_, cross| cross(&Call::new(0, &[], &[], &[Bytes::new(&stray)])),
+            &mut out,
+        );
+        assert!(matches!(started, Started::Done(Status::FAULT)));
+    }
+}

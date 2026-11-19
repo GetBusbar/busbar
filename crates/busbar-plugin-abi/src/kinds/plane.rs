@@ -83,14 +83,16 @@ crate::kind! {
             pub flags: u32,
             pub _r: u32,
         }
-        /// Plane 2.0: the D_ROUTE body is the shared route record, `vocab::route1::RouteRec` (re-exported
-        /// here as `RouteRec` with its CLASS_*, WHO_*, SCOPE_*, MONEY_* and STATE_* words): one record per
-        /// route, every field stated, no default. Its `who` is the mask of the AUTH_* classes this route may
-        /// run under; core picks the effective set per operator config (default: the lowest bit, **plus
-        /// AUTH_TICKET when the mask holds both AUTH_PRINCIPAL and AUTH_TICKET**: such a route accepts a core
-        /// ticket in place of a principal and core classifies each request, §12.11).
+        /// Plane 2.0: the D_ROUTE body (`RouteRec`: route, methods, flags, auth; tail = the path pattern)
+        /// and the D_ROUTE_ADMISSION body (`RouteAdmissionRec`) are the shared route vocabulary,
+        /// `vocab::route1`, re-exported here with the ROUTE_*, SCOPE_*, MONEY_* and CALLERS_* words. A route
+        /// is one D_ROUTE and exactly one D_ROUTE_ADMISSION, every field stated, no default: a route without
+        /// its admission item cannot be mounted (DescribeInvalid, naming the route). `auth` is the mask of the
+        /// AUTH_* classes this route may run under; core picks the effective set per operator config
+        /// (default: the lowest bit, **plus AUTH_TICKET when the mask holds both AUTH_PRINCIPAL and
+        /// AUTH_TICKET**: such a route accepts a core ticket in place of a principal, §12.11).
         /// Round 23, D_ROUTE_CRED_HEADER and (plane 2.0) D_ROUTE_CHALLENGE: the D_ROUTE id the item applies
-        /// to. Tail = the header name, or the challenge text.
+        /// to (`_r` = 0). Tail = the header name, or the challenge text.
         pub struct RouteHeaderRec {
             pub route: u32,
             pub _r: u32,
@@ -709,11 +711,17 @@ crate::kind! {
             /// E.9: keep, implemented by plane-mcp (its tools): the kinds a route with SCOPE_SELECTED names,
             /// with `select_resources` and the RESOURCE_* records below. Used by nothing else.
             D_ROUTE_RESOURCES = 0x0199;
-            /// Plane 2.0, optional, at most one per D_ROUTE id (RouteHeaderRec + text, 1..=256 bytes of
-            /// visible ASCII): the fixed parameter text of `WWW-Authenticate` on the engine's uniform 401
-            /// for this route, only where the protocol's specification requires one. The engine writes the
-            /// 401; the plane is not called for an unverified caller.
-            D_ROUTE_CHALLENGE = 0x019A;
+            /// Plane 2.0, required, exactly one per D_ROUTE id: RouteAdmissionRec (four little-endian u32:
+            /// route, scope, money, callers) + the walk-kind text. scope: 1 none | 2 walk | 4 selected (2|4
+            /// allowed; the kinds of "selected" are the route's D_ROUTE_RESOURCES). money: 1 none, 2 unit.
+            /// callers: 1 shared, 2 distinct. The load rules are `vocab::route1::check`.
+            D_ROUTE_ADMISSION = 0x019A;
+            /// Plane 2.0, optional, at most one per D_ROUTE id: RouteHeaderRec (route, 0) + the
+            /// `WWW-Authenticate` text (1..=256 bytes) of the engine's uniform 401 for this route, only where
+            /// the protocol's specification requires a parameter. `{public_url}` in the text is replaced by
+            /// the core once, at mount. The engine writes the 401; the plane is not called for an unverified
+            /// caller.
+            D_ROUTE_CHALLENGE = 0x019B;
             /// Plane 2.0: the plane-only describe items that left the core contract (the generic 0x004A,
             /// 0x004B and 0x004D are retired there). D_PUBLIC_URL_PATH: the config position where core writes
             /// its top-level `public_url` (a JSON string or `null`) before schema validation, `check` and
@@ -814,9 +822,8 @@ crate::kind! {
         /// Round 13: ROUTE_UPGRADE = a WebSocket upgrade route: methods exactly GET, served by the upgrade
         /// sequence of §12.27 (route, auth and `request` on the HTTP head; the plane's RESPOND(101) commits;
         /// the same session continues on the adopted stream). Combines with no other ROUTE_* bit.
-        /// Plane 2.0: the ROUTE_* flag bits are gone. A route's class is one word of the route record
-        /// (`CLASS_DATA`, `CLASS_CATALOG`, `CLASS_ADMIN`, `CLASS_LINE`, `CLASS_RECOVERY`, `CLASS_UPGRADE`),
-        /// and what the paragraphs above say of a ROUTE_* bit holds of the class of the same name.
+        /// Plane 2.0: the ROUTE_* class bits (CATALOG 1, ADMIN 2, LINE 4, RECOVERY 8, UPGRADE 16; none = a
+        /// data route; at most one) are the route vocabulary's and are re-exported here under these names.
         /// The route vocabulary this version of the plane contract uses (in the plane's fingerprint).
             USES_ROUTE: u64 = crate::vocab::route1::FP;
         /// The head, identity and conversation vocabularies it uses.
@@ -1136,9 +1143,9 @@ crate::kind! {
 
         extras {
             pub use crate::vocab::route1::{
-                CLASS_ADMIN, CLASS_CATALOG, CLASS_DATA, CLASS_LINE, CLASS_RECOVERY, CLASS_UPGRADE,
-                MONEY_NONE, MONEY_UNIT, RouteFault, RouteRec, SCOPE_NONE, SCOPE_SELECTED, SCOPE_WALK,
-                STATE_DISTINCT, STATE_SHARED,
+                CALLERS_DISTINCT, CALLERS_SHARED, MONEY_NONE, MONEY_UNIT, ROUTE_ADMIN, ROUTE_CATALOG,
+                ROUTE_LINE, ROUTE_RECOVERY, ROUTE_UPGRADE, RouteAdmissionRec, RouteFault, RouteRec,
+                SCOPE_NONE, SCOPE_SELECTED, SCOPE_WALK,
             };
             /// The host side of the plane kind: a typed face over busbar-ffi's `Instance` (IF §10.4).
             /// `live` points into the plugin image and is valid because `inst` holds the image (I13).

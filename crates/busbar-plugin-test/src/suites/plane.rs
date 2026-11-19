@@ -521,7 +521,7 @@ pub(super) fn run(
                 "plane suite: a rendered refusal answered {status}, not an error status"
             );
         }
-        if routes.iter().any(|r| r.class == p::CLASS_CATALOG) {
+        if routes.iter().any(|r| r.flags & p::ROUTE_CATALOG != 0) {
             let mut models = Reply::new();
             encode_catalog(&mut models, &["suite-model"])
                 .expect("plane suite: a catalog fits a reply");
