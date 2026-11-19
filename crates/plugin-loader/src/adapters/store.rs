@@ -26,7 +26,9 @@ use busbar_plugin_abi::host_side::driver::{Driver, Instance};
 use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::{sync_bufs, Pool, PooledOut};
 use busbar_plugin_abi::host_side::scrub::fail_text;
-use busbar_plugin_abi::kinds::store::store::{self as wire, Proxy};
+use busbar_plugin_abi::kinds::store::store as wire;
+use crate::call::kinds::store::Proxy;
+use crate::call::Mono;
 use busbar_plugin_abi::records::Full;
 use busbar_plugin_abi::types::Status;
 
@@ -213,10 +215,12 @@ impl<N: Needs> State<N> {
         let req = request(inst.max_out, op, &*self.seal).map_err(|_| Failure::Overloaded)?;
         let mut drv = Driver::new(&*self.needs, caller(inst));
         let answer = match op {
-            Op::Read(_) => proxy.read(&mut drv, req).await,
-            Op::Scan(_) => proxy.scan(&mut drv, req).await,
-            Op::Commit(..) => proxy.commit(&mut drv, req).await,
-            Op::Clock(_) => proxy.clock(&mut drv, req).await,
+            // The persistence port carries no clock reading: none is handed in, and a store that needs
+            // the time asks the host once.
+            Op::Read(_) => proxy.read(&mut drv, Mono::NONE, req).await,
+            Op::Scan(_) => proxy.scan(&mut drv, Mono::NONE, req).await,
+            Op::Commit(..) => proxy.commit(&mut drv, Mono::NONE, req).await,
+            Op::Clock(_) => proxy.clock(&mut drv, Mono::NONE, req).await,
         }
         .map_err(|e| call_failure(e, commit))?;
         let answer = answer.answer();

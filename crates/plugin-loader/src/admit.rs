@@ -14,18 +14,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 #[cfg(unix)]
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use busbar_ffi::image::{Admitted as Header, ImageError};
 use busbar_ffi::{LinkedPlugin, Plugin};
-use busbar_plugin_abi::fp::CORE_FP;
+
 use busbar_plugin_abi::host_side::driver::Image;
 #[cfg(unix)]
 use busbar_plugin_abi::host_side::driver::LoadedImage;
 use busbar_plugin_abi::stamp::{Stamp, STAMP_OUT_OF_PROCESS};
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_abi::versions::{abi_of, EngineVersion, ENGINE, MECHANISM};
+use busbar_plugin_abi::versions::{EngineVersion, ENGINE};
 
+use crate::agree::{Agreed, Claim, Claims, Contract, Speaks, Version};
 use crate::refusal::{Refusal, RefusalCode};
 use crate::scan;
 
@@ -200,16 +202,48 @@ pub fn crypto_gate(crypto: &str, out_of_process: bool, facts: &CryptoFacts) -> R
 
 pub use busbar_artifact_verifier::kind_word;
 
-/// The fingerprint this engine was built with for a kind (`<kind>::FP`, §7.5).
-fn kind_fp(kind: KindCode) -> u64 {
-    match kind {
-        KindCode::Store => busbar_plugin_abi::store::FP,
-        KindCode::Secret => busbar_plugin_abi::secret::FP,
-        KindCode::Auth => busbar_plugin_abi::auth::FP,
-        KindCode::Hook => busbar_plugin_abi::hook::FP,
-        KindCode::Export => busbar_plugin_abi::export::FP,
-        KindCode::Plane => busbar_plugin_abi::plane::FP,
-        KindCode::Transport => busbar_plugin_abi::transport::FP,
+/// What this engine speaks of the core and of each kind: the released lines of each contract's lock
+/// file and, in a dev build only, the unreleased line at the label. Built from the contract crates'
+/// own tables; the loader states no version and no fingerprint of its own.
+pub fn speaks() -> &'static Speaks {
+    static SPEAKS: OnceLock<Speaks> = OnceLock::new();
+    SPEAKS.get_or_init(|| {
+        let contract = |name: &'static str, pins: &'static busbar_plugin_abi::pins::Pins| Contract {
+            name,
+            first: pins.first,
+            released: pins.released,
+            dev: pins.dev,
+        };
+        let speaks = Speaks {
+            core: contract("core", &busbar_plugin_abi::pins::CORE),
+            kinds: KindCode::ALL.map(|kind| contract(kind_word(kind), busbar_plugin_abi::pins::of(kind))),
+        };
+        if let Err(fault) = speaks.well_formed() {
+            // A build fault of the engine: no image can be judged against a broken table.
+            panic!("the engine's contract tables are not well formed: {fault}");
+        }
+        speaks
+    })
+}
+
+/// What a format-3 stamp states about the interface.
+fn claims(stamp: &Stamp, kind: KindCode) -> Claims {
+    Claims {
+        core: Claim {
+            version: Version {
+                first: stamp.core_first,
+                second: stamp.core_second,
+            },
+            wire: stamp.core_wire,
+        },
+        kind,
+        of_kind: Claim {
+            version: Version {
+                first: stamp.kind_first,
+                second: stamp.kind_second,
+            },
+            wire: stamp.kind_wire,
+        },
     }
 }
 
@@ -220,12 +254,18 @@ fn engine_text(v: EngineVersion) -> String {
 /// Steps 4 to 6 on a stamp `scan::check` passed; shared by admission and the native packer's
 /// pre-open inspection. The refusal names the structurally validated stamp's name.
 pub(crate) fn compatible(stamp: &Stamp, facts: &CryptoFacts) -> Result<KindCode, Refusal> {
+    agreed(stamp, facts).map(|agreed| agreed.kind)
+}
+
+/// `compatible`, keeping what was agreed: the second numbers the image was built for, which the
+/// instance carries so nothing introduced later is ever sent to it.
+pub(crate) fn agreed(stamp: &Stamp, facts: &CryptoFacts) -> Result<Agreed, Refusal> {
     let name = scan::text(&stamp.name);
     let refuse = |code: RefusalCode,
                   field: &'static str,
                   have: String,
                   want: String|
-     -> Result<KindCode, Refusal> {
+     -> Result<Agreed, Refusal> {
         Err(Refusal::new(code, field, have, want).named(name))
     };
     let Some(kind) = KindCode::from_raw(stamp.kind) else {
@@ -236,49 +276,11 @@ pub(crate) fn compatible(stamp: &Stamp, facts: &CryptoFacts) -> Result<KindCode,
             "1 to 7".into(),
         );
     };
-    let word = kind_word(kind);
-    if stamp.kind_abi != abi_of(kind) {
-        return refuse(
-            RefusalCode::KindAbi,
-            "kind_abi",
-            format!("{word} ABI {}", stamp.kind_abi),
-            format!("{word} ABI {}", abi_of(kind)),
-        );
-    }
-    if stamp.mechanism != MECHANISM {
-        return refuse(
-            RefusalCode::Mechanism,
-            "mechanism",
-            stamp.mechanism.to_string(),
-            MECHANISM.to_string(),
-        );
-    }
-    let fp = kind_fp(kind);
-    for (code, field, have, want) in [
-        (RefusalCode::Layout, "layout", stamp.layout, fp),
-        (
-            RefusalCode::Layout,
-            "mechanism_layout",
-            stamp.mechanism_layout,
-            CORE_FP,
-        ),
-        (RefusalCode::Semantic, "semantic", stamp.semantic, fp),
-        (
-            RefusalCode::Semantic,
-            "mechanism_semantic",
-            stamp.mechanism_semantic,
-            CORE_FP,
-        ),
-    ] {
-        if have != want {
-            return refuse(
-                code,
-                field,
-                format!("{have:#018x}"),
-                format!("{want:#018x}"),
-            );
-        }
-    }
+    // Core first, then the kind: first number equal, second number not above this engine's newest
+    // line, fingerprint equal to this engine's record of that line (`agree`).
+    let agreed = speaks()
+        .agree(&claims(stamp, kind))
+        .map_err(|no| no.refusal().named(name))?;
     let target = busbar_plugin_abi::stamp::target_now();
     if stamp.target != target {
         return refuse(
@@ -288,6 +290,8 @@ pub(crate) fn compatible(stamp: &Stamp, facts: &CryptoFacts) -> Result<KindCode,
             scan::text(&target).to_string(),
         );
     }
+    // The engine range is a statement a plugin author makes about a known bad engine; a stamp that
+    // states none carries the whole range (the default is "any"), so this refuses only a stated range.
     if !(stamp.engine_min <= ENGINE && ENGINE <= stamp.engine_max) {
         return refuse(
             RefusalCode::EngineRange,
@@ -306,7 +310,7 @@ pub(crate) fn compatible(stamp: &Stamp, facts: &CryptoFacts) -> Result<KindCode,
         facts,
     )
     .map_err(|r| r.named(name))?;
-    Ok(kind)
+    Ok(agreed)
 }
 
 /// Why busbar-ffi refused an image, as a refusal.

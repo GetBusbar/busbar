@@ -25,7 +25,9 @@ use busbar_plugin_abi::host_side::driver::Driver;
 use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::{sync_out, Pool};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
-use busbar_plugin_abi::plane::{self as p, tag as t, PlaneReq, Proxy, Target};
+use crate::call::kinds::plane::{OnSession as _, Proxy};
+use crate::call::Mono;
+use busbar_plugin_abi::plane::{self as p, tag as t, PlaneReq, Target};
 use busbar_plugin_abi::records::{
     commit, tag as g, FactRec, FactTextRec, Rec, RecDelRec, RecErr, RecPredRec, RecPutRec, Records,
     Reply, U32Rec, U64Rec, Writer,
@@ -1283,6 +1285,12 @@ pub fn port_error(
     }
 }
 
+/// The clock reading of a session call. The plane port's session methods carry none today, so none is
+/// handed in and a plane that needs the time asks the host once; when the port gains the reading (one per
+/// operation, made by the kernel), it replaces this constant at each call below and nothing else changes.
+const NOW: Mono = Mono::NONE;
+
+
 /// The plane port over one instance's proxy.
 pub struct PlaneAdapter<N: Needs> {
     proxy: Proxy,
@@ -1542,7 +1550,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sync_out(max_out, |out| {
             let answer = self
                 .proxy
-                .select_resources(out, mode, &req, body)
+                .select_resources(out, NOW, mode, &req, body)
                 .map_err(PortError::Call)?;
             self.failure(&answer)?;
             let bytes = answer.records().rest();
@@ -1579,7 +1587,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sync_out(max_out, |out| {
             let (session, answer) = self
                 .proxy
-                .request(out, &req, body)
+                .request(out, NOW, &req, body)
                 .map_err(PortError::Call)?;
             self.finish(Call::Request, &answer, sink, None, None)?;
             session.ok_or_else(no_token)
@@ -1610,7 +1618,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             ))));
         }
         sync_out(max_out, |out| {
-            let answer = s.upstream(out, &view).map_err(PortError::Call)?;
+            let answer = s.upstream(out, NOW, &view).map_err(PortError::Call)?;
             self.finish(Call::Upstream, &answer, sink, selected, None)
         })
     }
@@ -1637,7 +1645,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         }
         let view = target(tgt);
         sync_out(max_out, |out| {
-            let answer = s.channel(out, &view).map_err(PortError::Call)?;
+            let answer = s.channel(out, NOW, &view).map_err(PortError::Call)?;
             self.finish(Call::Channel, &answer, sink, None, None)
         })
     }
@@ -1654,7 +1662,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         let max_out = self.live()?;
         sync_out(max_out, |out| {
             let answer = s
-                .piece(out, from, exchange, flags, bytes)
+                .piece(out, NOW, from, exchange, flags, bytes)
                 .map_err(PortError::Call)?;
             self.finish(Call::Piece(from), &answer, sink, None, Some(exchange))
         })
@@ -1674,7 +1682,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             return Err(PortError::Call(CallError::Fault(FaultReason::BadInstance)));
         }
         let (answer, len) = s
-            .piece_fixed(out, from, exchange, flags, bytes)
+            .piece_fixed(out, NOW, from, exchange, flags, bytes)
             .map_err(PortError::Call)?;
         // Same whole-answer validation and failure translation as pooled piece. No effect escapes
         // until the caller classifies the validated fixed backing and admits its complete answer.
@@ -1715,7 +1723,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
         sync_out(max_out, |out| {
-            let answer = s.rewrite(out, conversation).map_err(PortError::Call)?;
+            let answer = s.rewrite(out, NOW, conversation).map_err(PortError::Call)?;
             self.finish(Call::Rewrite, &answer, sink, None, None)
         })
     }
@@ -1723,7 +1731,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     fn end(&self, s: PlaneSession, sink: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError> {
         let max_out = self.live()?;
         sync_out(max_out, |out| {
-            let answer = s.end(out).map_err(PortError::Call)?;
+            let answer = s.end(out, NOW).map_err(PortError::Call)?;
             self.finish(Call::End, &answer, sink, None, None)
         })
     }
@@ -1740,7 +1748,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sync_out(max_out, |out| {
             let answer = self
                 .proxy
-                .render(out, &req, what, arg)
+                .render(out, NOW, &req, what, arg)
                 .map_err(PortError::Call)?;
             self.finish(Call::Render, &answer, sink, None, None)
         })
@@ -1754,7 +1762,10 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         let max_out = self.live()?;
         let view = target(tgt);
         sync_out(max_out, |out| {
-            let (session, answer) = self.proxy.probe(out, &view).map_err(PortError::Call)?;
+            let (session, answer) = self
+                .proxy
+                .probe(out, NOW, &view)
+                .map_err(PortError::Call)?;
             self.finish(Call::Probe, &answer, sink, None, None)?;
             session.ok_or_else(no_token)
         })
@@ -1770,7 +1781,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sync_out(max_out, |out| {
             let answer = self
                 .proxy
-                .demux(out, key, message)
+                .demux(out, NOW, key, message)
                 .map_err(PortError::Call)?;
             self.finish(Call::Demux, &answer, sink, None, None)
         })
@@ -1789,7 +1800,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             let mut drv = Driver::new(&*self.needs, self.caller(&cx));
             let owned = self
                 .proxy
-                .admin(&mut drv, req, op)
+                .admin(&mut drv, crate::call::at(&cx), req, op)
                 .await
                 .map_err(PortError::Call)?;
             let answer = owned.answer();

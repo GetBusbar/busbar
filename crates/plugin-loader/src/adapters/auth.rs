@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use busbar_contract::secure::SecureVec;
-use busbar_plugin_abi::auth::{self as abi, tag as t, AuthReq, Proxy};
+use busbar_plugin_abi::auth::{self as abi, tag as t, AuthReq};
 use busbar_plugin_abi::fail::{fact, failed, refused, CallError, FaultReason};
 use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
@@ -23,6 +23,8 @@ use busbar_plugin_abi::records::{tag, FactRec, Full, RecErr, Records, Reply, Wri
 use busbar_plugin_abi::types::Pair;
 use busbar_plugin_abi::types::{Bytes, Slice, Status, Str};
 
+use crate::call::kinds::auth::Proxy;
+use crate::call::Mono;
 use crate::instance::ErrorBook;
 use busbar_ports::auth::{
     decode_login_identity, decode_verify_ok, AuthIn, AuthPort, LoginAnswer, LoginIn,
@@ -113,9 +115,9 @@ impl<N: Needs> AuthAdapter<N> {
     }
 
     /// The sync verify, inline on the thread-local sync buffers (no pool, no box).
-    fn verify_sync(&self, req: &AuthReq<'_>) -> Result<VerifyAnswer, PortError> {
+    fn verify_sync(&self, at: Mono, req: &AuthReq<'_>) -> Result<VerifyAnswer, PortError> {
         sync_out(self.inst().max_out, |out| {
-            self.said(self.proxy.verify(out, req))
+            self.said(self.proxy.verify(out, at, req))
         })
     }
 
@@ -125,7 +127,7 @@ impl<N: Needs> AuthAdapter<N> {
         let mut drv = Driver::new(&*self.needs, caller(inst, cx));
         let owned = self
             .proxy
-            .verify_io(&mut drv, req)
+            .verify_io(&mut drv, crate::call::at(&cx), req)
             .await
             .map_err(PortError::Call)?;
         self.said(Ok(owned.answer()))
@@ -153,7 +155,10 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
             } else {
                 0
             };
-            return Verify::Done(self.verify_sync(&view(req, issued.unwrap_or_default(), flags)));
+            return Verify::Done(self.verify_sync(
+                crate::call::at(&cx),
+                &view(req, issued.unwrap_or_default(), flags),
+            ));
         }
         if methods & abi::M_VERIFY_IO == 0 {
             return Verify::Done(Err(PortError::Call(CallError::NotDeclared)));
@@ -202,7 +207,7 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
             let mut drv = Driver::new(&*self.needs, caller(inst, cx));
             let owned = self
                 .proxy
-                .login(&mut drv, req, code)
+                .login(&mut drv, crate::call::at(&cx), req, code)
                 .await
                 .map_err(PortError::Call)?;
             let a = owned.answer();
@@ -231,7 +236,7 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
             let mut drv = Driver::new(&*self.needs, caller(inst, cx));
             let owned = self
                 .proxy
-                .outbound(&mut drv, req)
+                .outbound(&mut drv, crate::call::at(&cx), req)
                 .await
                 .map_err(PortError::Call)?;
             let a = owned.answer();
@@ -256,7 +261,7 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
             let mut drv = Driver::new(&*self.needs, caller(inst, cx));
             let owned = self
                 .proxy
-                .refresh(&mut drv, req)
+                .refresh(&mut drv, crate::call::at(&cx), req)
                 .await
                 .map_err(PortError::Call)?;
             let a = owned.answer();
@@ -286,7 +291,7 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
             let mut drv = Driver::new(&*self.needs, caller(inst, cx));
             let owned = self
                 .proxy
-                .serve(&mut drv, req)
+                .serve(&mut drv, crate::call::at(&cx), req)
                 .await
                 .map_err(PortError::Call)?;
             let a = owned.answer();

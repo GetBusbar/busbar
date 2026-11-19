@@ -20,11 +20,12 @@ use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::{sync_bufs, Pool};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
 use busbar_plugin_abi::kinds::hook::hook::{
-    tag, Proxy, Verdict as VerdictRec, M_ON_IO, VERB_REJECT, VERB_REWRITE,
+    tag, Verdict as VerdictRec, M_ON_IO, VERB_REJECT, VERB_REWRITE,
 };
 use busbar_plugin_abi::records::{tag as gtag, RecErr, Records};
 use busbar_plugin_abi::types::Status;
 
+use crate::call::kinds::hook::Proxy;
 use crate::instance::ErrorBook;
 use busbar_ports::codec::hook::encode_view;
 use busbar_ports::hook::{HookAnswer, HookCall, HookPort, HookView};
@@ -140,7 +141,7 @@ impl<N: Needs> HookPort for HookAdapter<N> {
                 encode_view(args, view).map_err(|_| view_too_big())?;
                 let answer = self
                     .proxy
-                    .on(out, point, args.bytes())
+                    .on(out, crate::call::at(&cx), point, args.bytes())
                     .map_err(PortError::Call)?;
                 self.finish(&answer)
             });
@@ -154,7 +155,7 @@ impl<N: Needs> HookPort for HookAdapter<N> {
             let mut drv = Driver::new(&*self.needs, self.caller(&cx));
             let owned = self
                 .proxy
-                .on_io(&mut drv, req, point)
+                .on_io(&mut drv, crate::call::at(&cx), req, point)
                 .await
                 .map_err(PortError::Call)?;
             self.finish(&owned.answer())

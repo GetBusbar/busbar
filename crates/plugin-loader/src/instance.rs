@@ -794,7 +794,7 @@ impl Registry {
                 .open_reserved_instance::<k::Store, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy =
-                busbar_plugin_abi::store::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+                crate::call::kinds::store::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let adapter = crate::adapters::store::StoreAdapter::new(
                 proxy,
                 Arc::clone(&needs),
@@ -840,7 +840,7 @@ impl Registry {
             let opened = self
                 .open_reserved_instance::<k::Secret, N>(prepared, &needs, &*refs)
                 .await?;
-            let proxy = busbar_plugin_abi::secret::Proxy::bind(opened.instance)
+            let proxy = crate::call::kinds::secret::Proxy::bind(opened.instance)
                 .ok_or_else(not_this_kind)?;
             self.remember(&spec, KindCode::Secret, &needs, &refs, None);
             let port: Arc<dyn SecretPort> = Arc::new(crate::adapters::secret::SecretAdapter::new(
@@ -889,7 +889,7 @@ impl Registry {
                 .open_reserved_instance::<k::Auth, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy =
-                busbar_plugin_abi::auth::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+                crate::call::kinds::auth::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let limits = proxy.instance().limits;
             let methods = proxy.instance().methods;
             let frame = chains::frame(&opened.described.items);
@@ -953,7 +953,7 @@ impl Registry {
                 .open_reserved_instance::<k::Hook, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy =
-                busbar_plugin_abi::hook::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+                crate::call::kinds::hook::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let limits = proxy.instance().limits;
             let points = opened
                 .described
@@ -1003,7 +1003,7 @@ impl Registry {
             let opened = self
                 .open_reserved_instance::<k::Export, N>(prepared, &needs, &*refs)
                 .await?;
-            let proxy = busbar_plugin_abi::export::Proxy::bind(Arc::clone(&opened.instance))
+            let proxy = crate::call::kinds::export::Proxy::bind(Arc::clone(&opened.instance))
                 .ok_or_else(not_this_kind)?;
             let frame = chains::frame(&opened.described.items);
             let describe = crate::adapters::export::decode_describe(
@@ -1056,7 +1056,7 @@ impl Registry {
                 .open_reserved_instance::<k::Plane, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy =
-                busbar_plugin_abi::plane::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+                crate::call::kinds::plane::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let frame = chains::frame(&opened.described.items);
             let describe = crate::adapters::plane::decode_describe(
                 Records::new(&frame),
@@ -1103,7 +1103,7 @@ impl Registry {
             let opened = self
                 .open_reserved_instance::<k::Transport, N>(prepared, &needs, &*refs)
                 .await?;
-            let proxy = busbar_plugin_abi::transport::Proxy::bind(opened.instance)
+            let proxy = crate::call::kinds::transport::Proxy::bind(opened.instance)
                 .ok_or_else(not_this_kind)?;
             let protocols: Box<[Box<str>]> = opened
                 .described

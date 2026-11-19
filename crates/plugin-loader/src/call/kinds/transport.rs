@@ -10,7 +10,6 @@
 
 use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::answer::Answer;
-use busbar_plugin_abi::host_side::driver::Instance;
 use busbar_plugin_abi::host_side::pool::PooledOut;
 use busbar_plugin_abi::transport::ConnInfo;
 use zerocopy::{Immutable, IntoBytes};
@@ -95,9 +94,7 @@ impl<'a> Pieces<'a> {
 super::proxy!(Transport);
 
 /// One live transport session (a connection).
-pub struct SessionHandle {
-    s: Sess<busbar_ffi::kind::Transport>,
-}
+pub type SessionHandle = Sess<busbar_ffi::kind::Transport>;
 
 impl Proxy {
     /// Opens the connection's session. texts: alpn, sni, peer, local, local_fingerprint. blobs:
@@ -123,7 +120,7 @@ impl Proxy {
             [conn.tls_peer_cert, conn.leftover, conn.head],
         );
         let (s, answer) = call::opens(&self.to, BEGIN, Mono(conn.mono_ns), &frame, &[], buf)?;
-        Ok((s.map(|s| SessionHandle { s }), answer))
+        Ok((s, answer))
     }
 
     pub fn offer<'o>(
@@ -143,20 +140,63 @@ impl Proxy {
     }
 }
 
-impl SessionHandle {
-    pub fn instance(&self) -> &std::sync::Arc<Instance> {
-        self.s.instance()
-    }
+/// The calls on a live transport session. A trait so the session type can live wherever the ports name it.
+pub trait OnSession: Sized {
+    fn ingest<'o>(
+        &mut self,
+        buf: &'o mut PooledOut,
+        at: Mono,
+        bytes: &[u8],
+    ) -> Result<Answer<'o>, CallError>;
+    #[allow(clippy::too_many_arguments)]
+    fn emit<'o>(
+        &mut self,
+        buf: &'o mut PooledOut,
+        at: Mono,
+        stream: u64,
+        pieces: u32,
+        arg: u32,
+        credit: u64,
+        parts: Pieces<'_>,
+    ) -> Result<Answer<'o>, CallError>;
+    #[allow(clippy::too_many_arguments)]
+    fn emit_fixed<'o>(
+        &mut self,
+        buf: &'o mut [u8],
+        at: Mono,
+        stream: u64,
+        pieces: u32,
+        arg: u32,
+        credit: u64,
+        parts: Pieces<'_>,
+    ) -> Result<(Answer<'o>, usize), CallError>;
+    fn timer<'o>(&mut self, buf: &'o mut PooledOut, at: Mono) -> Result<Answer<'o>, CallError>;
+    fn datagram<'o>(
+        &mut self,
+        buf: &'o mut PooledOut,
+        at: Mono,
+        path: u32,
+        flags: u32,
+        bytes: &[u8],
+    ) -> Result<Answer<'o>, CallError>;
+    fn event<'o>(
+        &mut self,
+        buf: &'o mut PooledOut,
+        at: Mono,
+        ev: u32,
+        arg: &[u8],
+    ) -> Result<Answer<'o>, CallError>;
+}
 
-    /// `blobs[0]` = `bytes`, lent from the socket's read buffer.
-    pub fn ingest<'o>(
+impl OnSession for SessionHandle {
+    fn ingest<'o>(
         &mut self,
         buf: &'o mut PooledOut,
         at: Mono,
         bytes: &[u8],
     ) -> Result<Answer<'o>, CallError> {
         call::on(
-            &mut self.s,
+            self,
             INGEST,
             at,
             &Frame::new((), [], [bytes]),
@@ -168,7 +208,7 @@ impl SessionHandle {
     /// One output call. `pieces` is the contract's piece set (its bits name which of `parts` are
     /// present, and CONSUMED or CLOSE); `credit` is the bytes of credit given with CONSUMED, else 0.
     #[allow(clippy::too_many_arguments)]
-    pub fn emit<'o>(
+    fn emit<'o>(
         &mut self,
         buf: &'o mut PooledOut,
         at: Mono,
@@ -186,12 +226,12 @@ impl SessionHandle {
             credit,
         };
         let frame = Frame::new(head, [], blobs).known(size_of::<EmitHead>(), 0, n);
-        call::on(&mut self.s, EMIT, at, &frame, &[], buf)
+        call::on(self, EMIT, at, &frame, &[], buf)
     }
 
     /// `emit` on caller-owned fixed storage: one call, no pool, no growth.
     #[allow(clippy::too_many_arguments)]
-    pub fn emit_fixed<'o>(
+    fn emit_fixed<'o>(
         &mut self,
         buf: &'o mut [u8],
         at: Mono,
@@ -209,15 +249,15 @@ impl SessionHandle {
             credit,
         };
         let frame = Frame::new(head, [], blobs).known(size_of::<EmitHead>(), 0, n);
-        call::on_fixed(&mut self.s, EMIT, at, &frame, &[], buf)
+        call::on_fixed(self, EMIT, at, &frame, &[], buf)
     }
 
-    pub fn timer<'o>(&mut self, buf: &'o mut PooledOut, at: Mono) -> Result<Answer<'o>, CallError> {
-        call::on(&mut self.s, TIMER, at, &Frame::new((), [], []), &[], buf)
+    fn timer<'o>(&mut self, buf: &'o mut PooledOut, at: Mono) -> Result<Answer<'o>, CallError> {
+        call::on(self, TIMER, at, &Frame::new((), [], []), &[], buf)
     }
 
     /// `blobs[0]` = `bytes`.
-    pub fn datagram<'o>(
+    fn datagram<'o>(
         &mut self,
         buf: &'o mut PooledOut,
         at: Mono,
@@ -226,7 +266,7 @@ impl SessionHandle {
         bytes: &[u8],
     ) -> Result<Answer<'o>, CallError> {
         call::on(
-            &mut self.s,
+            self,
             DATAGRAM,
             at,
             &Frame::new(DatagramHead { path, flags }, [], [bytes]),
@@ -236,7 +276,7 @@ impl SessionHandle {
     }
 
     /// `blobs[0]` = `arg`.
-    pub fn event<'o>(
+    fn event<'o>(
         &mut self,
         buf: &'o mut PooledOut,
         at: Mono,
@@ -244,7 +284,7 @@ impl SessionHandle {
         arg: &[u8],
     ) -> Result<Answer<'o>, CallError> {
         call::on(
-            &mut self.s,
+            self,
             EVENT,
             at,
             &Frame::new(EventHead { ev }, [], [arg]),

@@ -21,12 +21,14 @@ use busbar_plugin_abi::host_side::pool::{sync_out, PooledOut};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
 use busbar_plugin_abi::records::{tag as generic, Rec, RecErr, Records, Reply, U32Rec, Writer};
 use busbar_plugin_abi::transport::{
-    self as t, tag, ConnInfo, Proxy, CLOSE_ABORT, CLOSE_GRACEFUL, DG_SECURED, EV_KEYING, EV_PATH,
+    self as t, tag, ConnInfo, CLOSE_ABORT, CLOSE_GRACEFUL, DG_SECURED, EV_KEYING, EV_PATH,
     EV_RENDEZVOUS, E_HEAD, FB_CLIENT, FB_SERVER, ICE_CONTROLLING, MSG_BINARY, MSG_FIN, MSG_TEXT,
     ROLE_CLIENT, ROLE_SERVER, SH_END_STREAM,
 };
 use busbar_plugin_abi::types::{Bytes, Status, Str};
 
+use crate::call::kinds::transport::{OnSession as _, Pieces, Proxy};
+use crate::call::Mono;
 use crate::instance::ErrorBook;
 use busbar_ports::codec::transport::{decode_offer, encode_keying, encode_path, Offer};
 use busbar_ports::transport::{
@@ -34,6 +36,12 @@ use busbar_ports::transport::{
 };
 use busbar_ports::PluginCode;
 use busbar_ports::PortError;
+
+/// The clock reading of a session call. The transport port's session methods carry none today (only
+/// `begin` does, in its connection record), so none is handed in; when the port gains the reading it
+/// replaces this constant at each call below and nothing else changes.
+const NOW: Mono = Mono::NONE;
+
 
 /// The HTTP status of the one head an UPGRADE may answer (RFC 9110 §15.2.2).
 const SWITCHING_PROTOCOLS: u32 = 101;
@@ -92,7 +100,10 @@ impl TransportAdapter {
     /// One `offer(role)` call, decoded by A11's `decode_offer`.
     fn offer(&self, role: u32) -> Result<Offer, PortError> {
         sync_out(self.max_out, |out| {
-            let a = self.proxy.offer(out, role).map_err(PortError::Call)?;
+            let a = self
+                .proxy
+                .offer(out, Mono::NONE, role)
+                .map_err(PortError::Call)?;
             if !a.is_ok() {
                 return Err(self.refusal(&a));
             }
@@ -198,7 +209,7 @@ impl TransportPort for TransportAdapter {
         bytes: &[u8],
         sink: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError> {
-        self.call(s, Call::Ingest, sink, |s, out| s.ingest(out, bytes))
+        self.call(s, Call::Ingest, sink, |s, out| s.ingest(out, NOW, bytes))
     }
 
     /// Every piece, E_REFUSE and E_CLOSE included, goes to the framer as handed (§8.7); the answer's shape for
@@ -214,7 +225,12 @@ impl TransportPort for TransportAdapter {
     ) -> Result<(), PortError> {
         let call = Call::Emit { piece, head: bytes };
         self.call(s, call, sink, |s, out| {
-            s.emit(out, stream, piece, arg, bytes)
+            // One piece per port call today: its bytes are the one blob, and no credit is given here.
+            let parts = Pieces {
+                head: Some(bytes),
+                ..Pieces::default()
+            };
+            s.emit(out, NOW, stream, piece, arg, 0, parts)
         })
     }
 
@@ -223,7 +239,7 @@ impl TransportPort for TransportAdapter {
         s: &mut TransportSession,
         sink: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError> {
-        self.call(s, Call::Other, sink, |s, out| s.timer(out))
+        self.call(s, Call::Other, sink, |s, out| s.timer(out, NOW))
     }
 
     fn datagram(
@@ -236,7 +252,7 @@ impl TransportPort for TransportAdapter {
     ) -> Result<(), PortError> {
         let flags = if secured { DG_SECURED } else { 0 };
         self.call(s, Call::Other, sink, |s, out| {
-            s.datagram(out, path, flags, bytes)
+            s.datagram(out, NOW, path, flags, bytes)
         })
     }
 
@@ -252,7 +268,7 @@ impl TransportPort for TransportAdapter {
     ) -> Result<(), PortError> {
         let (code, arg) = event_arg(&ev).map_err(|_| too_big())?;
         self.call(s, Call::Other, sink, |s, out| {
-            s.event(out, code, arg.as_bytes())
+            s.event(out, NOW, code, arg.as_bytes())
         })
     }
 }

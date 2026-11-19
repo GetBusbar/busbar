@@ -266,3 +266,9 @@ pub async fn chain<'a, K: Kind, N: Needs, H: Head + Send + 'a>(
     record::back(inst, method, owned.answer().status, owned.bytes());
     Ok(owned)
 }
+
+/// The operation's one clock reading, as the port call carries it. Every adapter takes its `Mono` from
+/// here, so the reading is made once by the caller of the port and never by an adapter or a plugin.
+pub fn at(cx: &busbar_ports::CallCx) -> Mono {
+    Mono(cx.mono_ns)
+}

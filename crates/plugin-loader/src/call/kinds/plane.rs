@@ -7,7 +7,7 @@
 
 use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::answer::Answer;
-use busbar_plugin_abi::host_side::driver::{Driver, Instance};
+use busbar_plugin_abi::host_side::driver::Driver;
 use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::PooledOut;
 use busbar_plugin_abi::plane::{PlaneReq, Target};
@@ -140,9 +140,7 @@ fn target_frame<'a>(target: &Target<'a>) -> Frame<'a, TargetHead, 5, 2> {
 super::proxy!(Plane);
 
 /// One live plane session (a request or a probe).
-pub struct SessionHandle {
-    s: Sess<busbar_ffi::kind::Plane>,
-}
+pub type SessionHandle = Sess<busbar_ffi::kind::Plane>;
 
 impl Proxy {
     /// Opens the request's session. `blobs[3]` = `body`.
@@ -159,7 +157,7 @@ impl Proxy {
             request_blobs(req, body),
         );
         let (s, answer) = call::opens(&self.to, REQUEST, at, &frame, req.headers.get(), buf)?;
-        Ok((s.map(|s| SessionHandle { s }), answer))
+        Ok((s, answer))
     }
 
     /// `blobs[3]` = `arg`.
@@ -204,7 +202,7 @@ impl Proxy {
     ) -> Result<(Option<SessionHandle>, Answer<'o>), CallError> {
         let frame = target_frame(target);
         let (s, answer) = call::opens(&self.to, PROBE, at, &frame, target.params.get(), buf)?;
-        Ok((s.map(|s| SessionHandle { s }), answer))
+        Ok((s, answer))
     }
 
     /// `blobs[3]` = `body`.
@@ -259,33 +257,70 @@ impl Proxy {
     }
 }
 
-impl SessionHandle {
-    pub fn instance(&self) -> &std::sync::Arc<Instance> {
-        self.s.instance()
-    }
+/// The calls on a live plane session. A trait so the session type can live wherever the ports name it.
+pub trait OnSession: Sized {
+    fn upstream<'o>(
+        &mut self,
+        buf: &'o mut PooledOut,
+        at: Mono,
+        target: &Target<'_>,
+    ) -> Result<Answer<'o>, CallError>;
+    fn channel<'o>(
+        &mut self,
+        buf: &'o mut PooledOut,
+        at: Mono,
+        target: &Target<'_>,
+    ) -> Result<Answer<'o>, CallError>;
+    fn piece<'o>(
+        &mut self,
+        buf: &'o mut PooledOut,
+        at: Mono,
+        from: u32,
+        exchange: u32,
+        flags: u32,
+        bytes: &[u8],
+    ) -> Result<Answer<'o>, CallError>;
+    fn piece_fixed<'o>(
+        &mut self,
+        buf: &'o mut [u8],
+        at: Mono,
+        from: u32,
+        exchange: u32,
+        flags: u32,
+        bytes: &[u8],
+    ) -> Result<(Answer<'o>, usize), CallError>;
+    fn end<'o>(self, buf: &'o mut PooledOut, at: Mono) -> Result<Answer<'o>, CallError>;
+    fn rewrite<'o>(
+        &mut self,
+        buf: &'o mut PooledOut,
+        at: Mono,
+        conversation: &[u8],
+    ) -> Result<Answer<'o>, CallError>;
+}
 
-    pub fn upstream<'o>(
+impl OnSession for SessionHandle {
+    fn upstream<'o>(
         &mut self,
         buf: &'o mut PooledOut,
         at: Mono,
         target: &Target<'_>,
     ) -> Result<Answer<'o>, CallError> {
         let frame = target_frame(target);
-        call::on(&mut self.s, UPSTREAM, at, &frame, target.params.get(), buf)
+        call::on(self, UPSTREAM, at, &frame, target.params.get(), buf)
     }
 
-    pub fn channel<'o>(
+    fn channel<'o>(
         &mut self,
         buf: &'o mut PooledOut,
         at: Mono,
         target: &Target<'_>,
     ) -> Result<Answer<'o>, CallError> {
         let frame = target_frame(target);
-        call::on(&mut self.s, CHANNEL, at, &frame, target.params.get(), buf)
+        call::on(self, CHANNEL, at, &frame, target.params.get(), buf)
     }
 
     /// `blobs[0]` = `bytes`.
-    pub fn piece<'o>(
+    fn piece<'o>(
         &mut self,
         buf: &'o mut PooledOut,
         at: Mono,
@@ -303,11 +338,11 @@ impl SessionHandle {
             [],
             [bytes],
         );
-        call::on(&mut self.s, PIECE, at, &frame, &[], buf)
+        call::on(self, PIECE, at, &frame, &[], buf)
     }
 
     /// `piece` on caller-owned fixed storage: one call, no pool, no growth.
-    pub fn piece_fixed<'o>(
+    fn piece_fixed<'o>(
         &mut self,
         buf: &'o mut [u8],
         at: Mono,
@@ -325,23 +360,23 @@ impl SessionHandle {
             [],
             [bytes],
         );
-        call::on_fixed(&mut self.s, PIECE, at, &frame, &[], buf)
+        call::on_fixed(self, PIECE, at, &frame, &[], buf)
     }
 
     /// Ends the session. The handle is spent whatever the answer.
-    pub fn end<'o>(mut self, buf: &'o mut PooledOut, at: Mono) -> Result<Answer<'o>, CallError> {
-        call::ends(&mut self.s, END, at, &Frame::new((), [], []), buf)
+    fn end<'o>(mut self, buf: &'o mut PooledOut, at: Mono) -> Result<Answer<'o>, CallError> {
+        call::ends(&mut self, END, at, &Frame::new((), [], []), buf)
     }
 
     /// `blobs[0]` = `conversation`.
-    pub fn rewrite<'o>(
+    fn rewrite<'o>(
         &mut self,
         buf: &'o mut PooledOut,
         at: Mono,
         conversation: &[u8],
     ) -> Result<Answer<'o>, CallError> {
         call::on(
-            &mut self.s,
+            self,
             REWRITE,
             at,
             &Frame::new((), [], [conversation]),

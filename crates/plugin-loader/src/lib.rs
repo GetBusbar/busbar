@@ -250,6 +250,10 @@ pub mod verification;
 #[deny(unsafe_code)]
 pub mod adapters;
 #[deny(unsafe_code)]
+pub mod agree;
+#[deny(unsafe_code)]
+pub mod call;
+#[deny(unsafe_code)]
 pub mod admit;
 #[deny(unsafe_code)]
 pub mod answer;
