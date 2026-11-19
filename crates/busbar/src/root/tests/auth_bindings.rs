@@ -37,8 +37,7 @@ fn an_unbound_node_binds_no_authority() {
 }
 
 fn hand_in_the_root_words() {
-    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
 }
 
 /// The operator words process start judges from this root's admitted rows (OPERATOR-FROM-ADMITTED-AUTH

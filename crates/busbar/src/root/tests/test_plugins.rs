@@ -582,8 +582,7 @@ const OPERATOR_TOKEN: &str = "admintok";
 /// Bind the linked first-party operator credential for this test process, through the production
 /// process-start binding, and return the provider key configuration names it by.
 pub fn bind_operator() -> &'static str {
-    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
     busbar_kernel::config::operator_provider()
 }
 
