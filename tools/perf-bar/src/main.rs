@@ -526,8 +526,12 @@ fn stub(args: &[String]) -> Result<(), Fault> {
                         Ok(n) => have += n,
                     }
                 };
-                let wants_stream =
-                    body > 0 && find(&buf[end - body..end], br#""stream":true"#).is_some();
+                // An engine may re-serialise the body it forwards: the flag is matched with or without
+                // the space a pretty writer puts after the colon.
+                let sent = &buf[end - body..end];
+                let wants_stream = body > 0
+                    && (find(sent, br#""stream":true"#).is_some()
+                        || find(sent, br#""stream": true"#).is_some());
                 let reply = if wants_stream {
                     &streamed
                 } else if body > 0 {
