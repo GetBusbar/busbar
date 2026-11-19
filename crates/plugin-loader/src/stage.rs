@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use libloading::Library;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
