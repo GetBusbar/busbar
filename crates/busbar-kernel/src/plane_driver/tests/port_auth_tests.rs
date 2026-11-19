@@ -12,12 +12,12 @@ use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::plane::{
     AUTH_OPERATOR, AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC, AUTH_SIGNED_INGRESS, AUTH_TICKET,
 };
-use busbar_plugin_abi::records::{tag as g, Records};
+use busbar_plugin_abi::records::{Records, tag as g};
 use busbar_ports::auth::Identity;
 
 use super::{
-    admit, bearer, classify, effective_classes, plain_refusal, subject_identity, Credentials,
-    Presented, Principal, Subject, TicketDoor,
+    Credentials, Presented, Principal, Subject, TicketDoor, admit, bearer, classify,
+    effective_classes, plain_refusal, subject_identity,
 };
 use crate::plane_driver::port_session::ToClient;
 use crate::plane_grants::{TicketAdmitted, TicketDenied};
@@ -356,7 +356,9 @@ fn b_identity() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(200);
     let (ns, bytes, held) = b_identity_on_this_thread(requests);
-    eprintln!("B-IDENTITY 1 thread: {ns:.0} ns/request, {bytes:.0} bytes allocated/request, {held} bytes held after");
+    eprintln!(
+        "B-IDENTITY 1 thread: {ns:.0} ns/request, {bytes:.0} bytes allocated/request, {held} bytes held after"
+    );
     assert_eq!(held, 0, "every request's identity is released when it ends");
     let runs: Vec<(f64, f64, i64)> = std::thread::scope(|s| {
         let joins: Vec<_> = (0..8)
@@ -366,7 +368,10 @@ fn b_identity() {
     });
     let ns = runs.iter().map(|r| r.0).sum::<f64>() / 8.0;
     let bytes = runs.iter().map(|r| r.1).sum::<f64>() / 8.0;
-    eprintln!("B-IDENTITY 8 threads: {ns:.0} ns/request, {bytes:.0} bytes allocated/request, held after {:?}", runs.iter().map(|r| r.2).collect::<Vec<_>>());
+    eprintln!(
+        "B-IDENTITY 8 threads: {ns:.0} ns/request, {bytes:.0} bytes allocated/request, held after {:?}",
+        runs.iter().map(|r| r.2).collect::<Vec<_>>()
+    );
     assert!(
         runs.iter().all(|r| r.2 == 0),
         "every request's identity is released when it ends"
@@ -496,19 +501,19 @@ mod carriers {
     use std::num::NonZeroU64;
     use std::sync::{Arc, Mutex};
 
+    use busbar_contract::UnitKey;
     use busbar_contract::abi::mechanism::KindCode;
     use busbar_contract::abi::plane::UnitCount;
     use busbar_contract::caps::{CallId, OriginKind};
     use busbar_contract::config::UpstreamCreds;
     use busbar_contract::services::Caller;
-    use busbar_contract::UnitKey;
     use busbar_plugin_abi::fail::FaultReason;
     use busbar_plugin_abi::host_side::caller::BoxFut;
     use busbar_plugin_abi::plane::{
         AUDIT_APPLIED, AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC, CALLERS_SHARED, MONEY_NONE,
         RENDER_CATALOG, ROUTE_CATALOG, ROUTE_LINE, SCOPE_NONE, SCOPE_WALK,
     };
-    use busbar_plugin_abi::records::{tag as g, Records};
+    use busbar_plugin_abi::records::{Records, tag as g};
     use busbar_ports::plane::{
         PlaneIn, PlaneOut, PlanePort, PlaneSession, RouteInfo, TargetIn, UsageClass,
     };
@@ -516,19 +521,19 @@ mod carriers {
 
     use crate::host_services::KernelServices;
     use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    use crate::plane_driver::AuditSink;
     use crate::plane_driver::cancel::{CancelBill, Checkpoint, MoneySeam};
     use crate::plane_driver::port::{
-        HttpHead, HttpIn, LineCaller, PortDriver, PortSeat, ServeError, ServeIn, Served, Unit,
-        CLIENT_CREDENTIAL_FIELDS,
+        CLIENT_CREDENTIAL_FIELDS, HttpHead, HttpIn, LineCaller, PortDriver, PortSeat, ServeError,
+        ServeIn, Served, Unit,
     };
     use crate::plane_driver::port_auth::{
-        admit, subject_identity, Credentials, NoTickets, Presented, Principal, Subject,
+        Credentials, NoTickets, Presented, Principal, Subject, admit, subject_identity,
     };
     use crate::plane_driver::port_intents::{IntentHost, Looked, Namespace, Resolver};
     use crate::plane_driver::port_money::{AuditRow, PortMoney};
-    use crate::plane_driver::port_serve::{run_session, AuditOnly, Books, Drive, UnitBooks};
-    use crate::plane_driver::port_session::{finish, Calls, Effects, ToClient};
-    use crate::plane_driver::AuditSink;
+    use crate::plane_driver::port_serve::{AuditOnly, Books, Drive, UnitBooks, run_session};
+    use crate::plane_driver::port_session::{Calls, Effects, ToClient, finish};
     use crate::plugin_records::{CommitOp, CommitOutcome, RecordsDenied, Scope};
     use crate::refusal::CoreRefusals;
     use crate::registry::Generation;
@@ -995,8 +1000,12 @@ mod carriers {
         let plane = Recording::new(vec![route(PUBLIC, 0, AUTH_PUBLIC, "/hook")]);
         let driver = driver_of(&plane);
         let budget = ProcessAdmission::with_limits(4, 64, 8);
-        for (case, creds) in [("no credential", anonymous()), ("a key", keyed("key-alice"))] {
-            let served = core().block_on(driver.serve(serve_in(&budget, PUBLIC, "/hook", creds, None)));
+        for (case, creds) in [
+            ("no credential", anonymous()),
+            ("a key", keyed("key-alice")),
+        ] {
+            let served =
+                core().block_on(driver.serve(serve_in(&budget, PUBLIC, "/hook", creds, None)));
             assert!(
                 !matches!(served, Err(ServeError::NoRoute | ServeError::Cancelled)),
                 "{case}: the public route is served"
@@ -1017,13 +1026,8 @@ mod carriers {
         }
         let withdrawn = Recording::new(Vec::new());
         let driver = driver_of(&withdrawn);
-        let served = core().block_on(driver.serve(serve_in(
-            &budget,
-            PUBLIC,
-            "/hook",
-            anonymous(),
-            None,
-        )));
+        let served =
+            core().block_on(driver.serve(serve_in(&budget, PUBLIC, "/hook", anonymous(), None)));
         assert!(
             matches!(served, Err(ServeError::NoRoute)),
             "a withdrawn instance's public route is not served"
@@ -1067,11 +1071,23 @@ mod carriers {
                 "{case}: the plane's rendering is the answer"
             );
             assert!(matches!(ran.client.last(), Some(ToClient::End)), "{case}");
-            assert_eq!((ran.member, ran.attempts), (None, 0), "{case}: nothing walked");
+            assert_eq!(
+                (ran.member, ran.attempts),
+                (None, 0),
+                "{case}: nothing walked"
+            );
             let crossed = plane.take();
-            assert_eq!(crossed.len(), 1, "{case}: one render, no session: {crossed:?}");
+            assert_eq!(
+                crossed.len(),
+                1,
+                "{case}: one render, no session: {crossed:?}"
+            );
             let render = &crossed[0];
-            assert_eq!((render.call, render.what), ("render", RENDER_CATALOG), "{case}");
+            assert_eq!(
+                (render.call, render.what),
+                ("render", RENDER_CATALOG),
+                "{case}"
+            );
             assert!(
                 render.arg.windows(3).any(|w| w == b"m-a")
                     && render.arg.windows(3).any(|w| w == b"m-b"),
@@ -1080,8 +1096,14 @@ mod carriers {
             assert_eq!(render.headers, permitted(), "{case}: permitted bytes kept");
             lent_no_credential(&crossed, case);
         }
-        assert!(seam.0.lock().unwrap().is_empty(), "the catalog charged nothing");
-        assert!(audits.0.lock().unwrap().is_empty(), "the catalog booked nothing");
+        assert!(
+            seam.0.lock().unwrap().is_empty(),
+            "the catalog charged nothing"
+        );
+        assert!(
+            audits.0.lock().unwrap().is_empty(),
+            "the catalog booked nothing"
+        );
         assert_eq!(budget.used(), (0, 0));
     }
 
@@ -1139,7 +1161,10 @@ mod carriers {
             };
             let _ = core().block_on(seat.answer_line(carrier, 9, input, &from));
             let crossed = plane.take();
-            assert!(!crossed.is_empty(), "authenticated={authenticated}: crossed");
+            assert!(
+                !crossed.is_empty(),
+                "authenticated={authenticated}: crossed"
+            );
             for c in &crossed {
                 assert!(
                     c.headers.is_empty(),
@@ -1155,7 +1180,10 @@ mod carriers {
             let request = crossed.iter().find(|c| c.call == "request");
             if authenticated {
                 let request = request.expect("an authenticated line is served");
-                assert_eq!(request.body, line, "the line's bytes are its body, unchanged");
+                assert_eq!(
+                    request.body, line,
+                    "the line's bytes are its body, unchanged"
+                );
                 exactly_the_subject(&request.identity, "key-alice", "line");
             } else {
                 assert!(
@@ -1224,7 +1252,8 @@ mod carriers {
             ("ungoverned", None),
             ("governed", Some(governed(&seam, &audits))),
         ] {
-            let _ = core().block_on(driver.serve(serve_in(&budget, OPEN, "/open", anonymous(), unit)));
+            let _ =
+                core().block_on(driver.serve(serve_in(&budget, OPEN, "/open", anonymous(), unit)));
             let crossed = plane.take();
             lent_no_credential(&crossed, case);
             let request = crossed
@@ -1281,7 +1310,11 @@ mod carriers {
             });
             Ok(())
         }
-        fn probe(&self, _: &TargetIn<'_>, _: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError> {
+        fn probe(
+            &self,
+            _: &TargetIn<'_>,
+            _: &mut dyn FnMut(PlaneOut<'_>),
+        ) -> Result<(), PortError> {
             Err(refused())
         }
         fn render(
@@ -1418,7 +1451,9 @@ mod carriers {
         ]
         .into_iter()
         .map(|(selector, member)| {
-            let key = plan.select(selector).unwrap_or_else(|| panic!("{selector}"));
+            let key = plan
+                .select(selector)
+                .unwrap_or_else(|| panic!("{selector}"));
             let target = plan
                 .target(key, &format!("chat\u{1f}{member}"))
                 .unwrap_or_else(|| panic!("{selector} {member}"));
@@ -1432,10 +1467,13 @@ mod carriers {
     /// route; a pool's own `own` overrides it. With no default every member gets its own
     /// credential, and a pool's own `passthrough` reaches its members only.
     #[test]
-    fn the_all_pools_credential_default_reaches_every_pool_without_its_own_and_every_direct_route() {
+    fn the_all_pools_credential_default_reaches_every_pool_without_its_own_and_every_direct_route()
+    {
         use UpstreamCreds::{Own, Passthrough};
         assert_eq!(
-            modes("pools:\n  upstream_credentials: passthrough\n  inherits:\n    members: [m0]\n  owns:\n    members: [m1]\n    upstream_credentials: own\n"),
+            modes(
+                "pools:\n  upstream_credentials: passthrough\n  inherits:\n    members: [m0]\n  owns:\n    members: [m1]\n    upstream_credentials: own\n"
+            ),
             vec![
                 ("inherits", "m0", Passthrough),
                 ("owns", "m1", Own),
@@ -1445,7 +1483,9 @@ mod carriers {
             "the default reaches every pool without its own and every direct route"
         );
         assert_eq!(
-            modes("pools:\n  inherits:\n    members: [m0]\n  owns:\n    members: [m1]\n    upstream_credentials: passthrough\n"),
+            modes(
+                "pools:\n  inherits:\n    members: [m0]\n  owns:\n    members: [m1]\n    upstream_credentials: passthrough\n"
+            ),
             vec![
                 ("inherits", "m0", Own),
                 ("owns", "m1", Passthrough),

@@ -317,7 +317,9 @@ pub fn decode_describe(
     for (route, name) in headers {
         let r = d.routes.iter_mut().find(|r| r.route == route);
         match r {
-            Some(r) if p::cred_header_admitted(r.auth) => r.cred_header = Some(name.into()),
+            Some(r) if r.auth & (p::AUTH_PRINCIPAL | p::AUTH_OPTIONAL) != 0 => {
+                r.cred_header = Some(name.into())
+            }
             _ => return Err(DescribeInvalid("describe.route_cred_header")),
         }
     }
