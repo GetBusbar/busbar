@@ -227,7 +227,7 @@ impl From<busbar_kernel::config::transaction::TxnError> for AdminError {
 /// at revision N reads `api_revision >= N`, and an engine that reports no `api_revision` predates
 /// revision 1. Prose changes (descriptions, summaries, examples, titles) do not move it. The test
 /// `api_revision_moves_with_the_document_shape` pins it to a digest of the document's structure.
-pub const ADMIN_API_REVISION: u32 = 2;
+pub const ADMIN_API_REVISION: u32 = 3;
 
 /// `GET /api/v1/admin/info`: this node's identity (ADMIN-API-1.6-ONE-MODEL §10.1), the admin API
 /// revision it serves and the compiled-in build proof. Every admin credential reads it, so it names
