@@ -20,6 +20,10 @@
 //! 5. a plugin that does not declare FB_PROVISION answers `serve` as unsupported without a call;
 //! 6. a config that is not JSON is refused by `check` (never an instance, never a fault);
 //! 7. the instance closes (drops) and nothing the harness collected is a refusal the suite did not expect.
+//!
+//! [`super::auth_migrated`] runs the same steps on settings core migrated from older ones: the older bag opened and
+//! settled as the migrate suite's first case checks it, each CORE_CFG(LIFT) literal moved into custody, then 2 to 7
+//! on what core persisted.
 
 use std::time::{Duration, Instant};
 
@@ -32,7 +36,7 @@ use busbar_ports::auth::{AuthIn, AuthPort, ServeIn, Verify, VerifyAnswer};
 use busbar_ports::{CallCx, PortError};
 
 use super::harness::Harness;
-use super::{AuthCase, Expect};
+use super::{AuthCase, Expect, MigrateCase, MigrateExpect};
 use crate::fake_needs::FakeNeeds;
 
 /// The instance name every suite instance opens under.
@@ -119,12 +123,8 @@ fn looked_up(
     }
 }
 
-pub(super) fn run(
-    plugin: &'static Plugin,
-    config: &[u8],
-    needs: FakeNeeds,
-    cases: &[AuthCase<'_>],
-) {
+/// The plugin admitted under `needs`; its stamp must name the auth kind.
+fn admitted(plugin: &'static Plugin, needs: FakeNeeds) -> Harness {
     let harness = match Harness::admit(plugin, needs) {
         Ok(h) => h,
         Err(refusal) => panic!("auth suite: admit refused the image: {refusal:?}"),
@@ -136,7 +136,41 @@ pub(super) fn run(
         harness.identity(),
         harness.kind()
     );
+    harness
+}
 
+pub(super) fn run(
+    plugin: &'static Plugin,
+    config: &[u8],
+    needs: FakeNeeds,
+    cases: &[AuthCase<'_>],
+) {
+    run_on(&admitted(plugin, needs), config, cases);
+}
+
+/// The older `case.bag` opened and settled as the migrate suite's case 1 checks it (with the legacy marker at
+/// `legacy`, if any), each CORE_CFG(LIFT) literal moved into custody as core moves it, then every step of [`run`]
+/// on the settings core persisted: a literal secret in older settings verifies through the reference core wrote.
+pub(super) fn migrated(
+    plugin: &'static Plugin,
+    case: &MigrateCase<'_>,
+    legacy: &[&str],
+    needs: FakeNeeds,
+    expect: MigrateExpect<'_>,
+    cases: &[AuthCase<'_>],
+) {
+    let MigrateExpect::Settled { config, core_cfg } = expect else {
+        panic!("auth suite: an auth case runs on settings that open; a refused migration is the migrate suite's");
+    };
+    let harness = admitted(plugin, needs);
+    if !legacy.is_empty() {
+        harness.mark_legacy("migrate", legacy);
+    }
+    let persisted = super::migrate::persisted(&harness, case, config, core_cfg);
+    run_on(&harness, &persisted, cases);
+}
+
+fn run_on(harness: &Harness, config: &[u8], cases: &[AuthCase<'_>]) {
     // check (DRY_RUN) and open of the operator config.
     if let Err(e) = harness.check(NAME, config) {
         panic!("auth suite: check refused the config: {e:?}");
@@ -163,11 +197,11 @@ pub(super) fn run(
     // Every case through verify: the raw first answer for an ISSUED_WANTED case, else core's final verdict.
     for (n, case) in cases.iter().enumerate() {
         let request_id = u64::try_from(n).unwrap_or(u64::MAX).saturating_add(1);
-        let first = call(&harness, &*port, request_id, &case.req, None);
+        let first = call(harness, &*port, request_id, &case.req, None);
         let verdict = match (&case.expect, first) {
             (Expect::IssuedWanted(_), first) => first,
             (_, Ok(VerifyAnswer::IssuedWanted(id))) => {
-                looked_up(&harness, &*port, request_id, &case.req, &id)
+                looked_up(harness, &*port, request_id, &case.req, &id)
             }
             (_, first) => first,
         };

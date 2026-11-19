@@ -168,6 +168,23 @@ pub fn auth(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds, cases: &[A
     auth::run(plugin, config, needs, cases);
 }
 
+/// [`auth`] on settings core migrated from older ones. `case.bag` (older settings, a literal secret included) is
+/// opened with `case.purpose` and its settled answer checked against `expect` exactly as [`migrate_legacy`]'s first
+/// case checks it (`legacy`: the 1.5.5 D_SECRET_PATH pointers core's marker names, or none); every CORE_CFG(LIFT)
+/// literal is then moved into custody as core moves it, and every step of [`auth`] runs, `cases` included, on the
+/// settings core persisted. A literal secret is so proven end to end: lifted, referenced, resolved and verifying.
+/// `expect` must be `Settled`; a refused migration is [`migrate_case`]'s.
+pub fn auth_migrated(
+    plugin: &'static Plugin,
+    case: MigrateCase<'_>,
+    legacy: &[&str],
+    needs: FakeNeeds,
+    expect: MigrateExpect<'_>,
+    cases: &[AuthCase<'_>],
+) {
+    auth::migrated(plugin, &case, legacy, needs, expect, cases);
+}
+
 pub fn hook(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
     hook::run(plugin, config, needs);
 }
