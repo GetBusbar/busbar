@@ -59,14 +59,17 @@ impl Node {
     }
 
     /// `planes`: add the data listener's `public_url`, so the routes whose challenge names the plane's public URL
-    /// (mcp) are mounted too.
+    /// (mcp) are mounted too, and the MCP plane's `canonical_uri`: the audience a key minted for `/mcp` names.
     fn boot_with_planes(upstream: Option<u16>, operator: bool, planes: bool) -> Self {
         let dir = workdir();
         let (data, admin) = (boot::free_port(), boot::free_port());
         let digest = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes());
         let settings = format!("{{ sha256: \"{digest}\" }}");
         let sections = if planes {
-            format!("public_url: \"http://127.0.0.1:{data}\"\n")
+            format!(
+                "public_url: \"http://127.0.0.1:{data}\"\nmcp:\n  canonical_uri: \"http://127.0.0.1:{data}/mcp\"\n  \
+                 authorization_servers: [\"http://127.0.0.1:{admin}\"]\n"
+            )
         } else {
             String::new()
         };
@@ -219,7 +222,12 @@ fn write_configs(
         |upstream| {
             (
                 format!("mock:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{upstream}\"\n  error_map: {{}}\n"),
-                format!("providers:\n  mock:\n    api_key: {{ env: MOCK_KEY }}\nmodels:\n  {MODEL}:\n    provider: mock\n"),
+                // The upstream is plaintext loopback: only the llm plane's own audited acceptance
+                // admits that dial (TRANSPORT-SECURITY-POLICY §4; no loopback exemption).
+                format!(
+                    "providers:\n  mock:\n    api_key: {{ env: MOCK_KEY }}\nmodels:\n  {MODEL}:\n    provider: mock\n\
+                     llm:\n  insecure_transport: {{ accept: plaintext, reason: \"loopback test upstream\" }}\n"
+                ),
             )
         },
     );
