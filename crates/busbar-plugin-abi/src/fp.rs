@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The wire fingerprints (interface revision C.4, C.7): FNV-1a over a contract's tokens, whitespace-blind
-//! and **comment-blind**. A fingerprint covers names, numbers, field types and order. A wording fix in a
+//! The wire fingerprints (interface revision C.4, C.7): FNV-1a over a contract's tokens, whitespace-blind,
+//! **comment-blind** and blind to a trailing comma before `}` or `]`. A fingerprint covers names, numbers, field types and order. A wording fix in a
 //! doc comment moves no fingerprint, refuses no plugin and moves no pin (the lock file's separate `text`
 //! hash is what makes a change of meaning visible).
 
@@ -124,17 +124,38 @@ const fn skip_doc(bytes: &[u8], i: usize) -> usize {
     }
 }
 
+/// Whether the comma at `i` is a trailing one: only whitespace and doc attributes stand between it and a
+/// closing `}` or `]`. Formatting adds and drops those freely (`{ a: u32, }` is `{ a: u32 }`), so they are
+/// not wire. A comma before `)` stays wire: `(T,)` is a one-element tuple and `(T)` is `T`.
+const fn is_trailing_comma(bytes: &[u8], i: usize) -> bool {
+    let mut at = i + 1;
+    loop {
+        at = skip_space(bytes, at);
+        let after = skip_doc(bytes, at);
+        if after == at {
+            break;
+        }
+        at = after;
+    }
+    at < bytes.len() && (bytes[at] == b'}' || bytes[at] == b']')
+}
+
 const fn fold(mut hash: u64, bytes: &[u8]) -> u64 {
     let mut i = 0;
     while i < bytes.len() {
         let byte = bytes[i];
-        // Only a `#` can open a doc attribute: every other byte costs nothing extra here.
+        // Only a `#` can open a doc attribute and only a `,` can be a trailing comma: every other byte
+        // costs nothing extra here.
         if byte == b'#' {
             let after = skip_doc(bytes, i);
             if after != i {
                 i = after;
                 continue;
             }
+        }
+        if byte == b',' && is_trailing_comma(bytes, i) {
+            i += 1;
+            continue;
         }
         if !is_space(byte) {
             hash = (hash ^ byte as u64).wrapping_mul(PRIME);
