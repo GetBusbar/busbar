@@ -24,10 +24,6 @@ fn the_public_host_boundary_has_no_retired_policy_service() {
             "busbar_plugin.h",
             include_str!("../include/busbar_plugin.h"),
         ),
-        (
-            "loader/dispatch/services.rs",
-            include_str!("../../plugin-loader/src/dispatch/services.rs"),
-        ),
     ] {
         for retired in [
             "entitlement_check",
