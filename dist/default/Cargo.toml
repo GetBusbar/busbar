@@ -568,8 +568,8 @@ members = ["."]
 [workspace.dependencies]
 # Test-only (dev-dependency): its admin_application and migration_table_hook root test sources. house/oss-green
 # 4a91545 re-aims them onto the current root fixtures and hook model (the door-era bea7485 named removed root items).
-busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "da8cb2f931f4257e41655ccff535757d3b2feeff" }
-busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "f2007ce3ec0a865dfc8e4826bc7a3dc383cf7bb8" }
+busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "b67d2c8910a418f5171d7ed347177b60aa255f28" }
+busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "2ca84cce797d58f4b9464f1cea203a4bdf4f8a82" }
 busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "3d4c38d7a0c7f7386eebc51bbee643bc5dc61ded" }
 # Published MIN-3 LLM implementation, linked through its PLUGIN header.
 busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "a2c7d0b4efd9f2aae8c8c7798d612ff9c22795f3" }
