@@ -709,7 +709,13 @@ impl RequestBinding {
             .revocation
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if *self.state.phase.lock().unwrap_or_else(PoisonError::into_inner) == Phase::Cancelled {
+        if *self
+            .state
+            .phase
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            == Phase::Cancelled
+        {
             return;
         }
         *held = Some(governance.watch_revocation(subject, &self.revocation));

@@ -95,7 +95,12 @@ mod abi_tests {
         // mechanism, kind, kind_abi, max_inflight
         u32s(
             &mut b,
-            &[mechanism, KindCode::Secret as u32, abi_of(KindCode::Secret), 1],
+            &[
+                mechanism,
+                KindCode::Secret as u32,
+                abi_of(KindCode::Secret),
+                1,
+            ],
         );
         s(&mut b, "the-plugin");
         s(&mut b, "1.0.0");
@@ -104,11 +109,11 @@ mod abi_tests {
         // extensions blob, secret_refs, settings_schema blob
         u32s(&mut b, &[0, 0, 0, 0, 0, 0, 0]);
         b.extend_from_slice(&0u64.to_le_bytes()); // marks
-        // mark_words, rewrites, sections, needs
+                                                  // mark_words, rewrites, sections, needs
         u32s(&mut b, &[0, 0, 0, 0]);
         s(&mut b, ""); // target_from
         s(&mut b, ""); // trust_from
-        // answers, claims, measurement_classes
+                       // answers, claims, measurement_classes
         u32s(&mut b, &[0, 0, 0]);
         b
     }
