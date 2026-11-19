@@ -168,23 +168,32 @@ macro_rules! kind {
     (@views $(
         $(#[$vd:meta])* pub struct $V:ident < $lt:lifetime > { $( $(#[$vfd:meta])* pub $vf:ident : $vt:ty ),* $(,)? }
     )*) => {
-        $(
-            $(#[$vd])*
-            #[derive(Clone, Copy)]
-            pub struct $V<$lt> { $( $(#[$vfd])* pub $vf: $vt ),* }
-            impl<$lt> $crate::call::Get<$lt> for $V<$lt> {
-                fn get(r: &mut $crate::call::Reader<$lt>) -> ::core::option::Option<Self> {
-                    ::core::option::Option::Some($V {
-                        $( $vf: <$vt as $crate::call::Get<$lt>>::get(r)?, )*
-                    })
+        /// The kind's views, declared where `Str`, `Bytes`, `Slice` and `Pair` are in scope, so a view
+        /// block names its field types as it always did.
+        #[doc(hidden)]
+        pub mod __views {
+            #[allow(unused_imports)]
+            use $crate::types::{Bytes, Pair, Slice, Str};
+            $(
+                $(#[$vd])*
+                #[derive(Clone, Copy)]
+                pub struct $V<$lt> { $( $(#[$vfd])* pub $vf: $vt ),* }
+                impl<$lt> $crate::call::Get<$lt> for $V<$lt> {
+                    fn get(r: &mut $crate::call::Reader<$lt>) -> ::core::option::Option<Self> {
+                        ::core::option::Option::Some($V {
+                            $( $vf: <$vt as $crate::call::Get<$lt>>::get(r)?, )*
+                        })
+                    }
                 }
-            }
-            impl<$lt> $crate::call::Put<$lt> for &$V<$lt> {
-                fn put(self, w: &mut $crate::call::Packer<$lt>) {
-                    $( <$vt as $crate::call::Put<$lt>>::put(self.$vf, w); )*
+                impl<$lt> $crate::call::Put<$lt> for &$V<$lt> {
+                    fn put(self, w: &mut $crate::call::Packer<$lt>) {
+                        $( <$vt as $crate::call::Put<$lt>>::put(self.$vf, w); )*
+                    }
                 }
-            }
-        )*
+            )*
+        }
+        #[allow(unused_imports)]
+        pub use self::__views::*;
         /// The views' wire text: names, field names, field types, in order.
         const FP_VIEWS: &str = stringify!($( struct $V { $( $vf: $vt ),* } )*);
     };

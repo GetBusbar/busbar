@@ -103,7 +103,7 @@ mod empty_arm {
 
     busbar_plugin_abi::kind! {
         /// A secret-shaped kind for this case.
-        pub trait Empties: kind = 2, abi = 2 {
+        pub trait Empties: kind = 2, abi = 3 {
             views {}
             pods {}
             tags {}

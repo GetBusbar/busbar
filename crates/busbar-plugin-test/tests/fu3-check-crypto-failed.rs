@@ -30,7 +30,7 @@ mod fx {
 
     busbar_plugin_abi::kind! {
         /// A secret-shaped kind for this case.
-        pub trait Verifies: kind = 2, abi = 2 {
+        pub trait Verifies: kind = 2, abi = 3 {
             views {}
             pods {}
             tags {}

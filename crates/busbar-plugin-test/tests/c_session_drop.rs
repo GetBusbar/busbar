@@ -29,7 +29,7 @@ use transport::ConnInfo;
 
 busbar_plugin_abi::kind! {
     /// A transport-shaped kind for this case: one session per connection.
-    pub trait Conns: kind = 7, abi = 1, session {
+    pub trait Conns: kind = 7, abi = 2, session {
         views {
             pub struct ConnInfo<'a> {
                 pub role: u32,

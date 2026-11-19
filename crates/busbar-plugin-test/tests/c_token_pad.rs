@@ -136,9 +136,9 @@ fn plane_request_probe_and_transport_begin_answers_parse_with_no_unknown_tag_zer
     let mut buf = Pool::global().acquire(MAX_OUT);
     let s = opened(
         conns.begin(&mut buf, &conn(ACCEPT)),
-        &[(transport::tag::WRITE, b"hello".to_vec())],
+        &[(transport::tag::RENDEZVOUS, b"hello".to_vec())],
     );
-    padded(&buf, Some(transport::tag::WRITE));
+    padded(&buf, Some(transport::tag::RENDEZVOUS));
     drop(s);
     let mut buf = Pool::global().acquire(MAX_OUT);
     let s = opened(conns.begin(&mut buf, &conn(ACCEPT_BARE)), &[]);

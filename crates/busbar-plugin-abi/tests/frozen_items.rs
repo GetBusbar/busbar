@@ -54,13 +54,13 @@ fn the_boundary_types_resolve_under_their_frozen_paths_to_busbar_ffi() {
 #[test]
 fn the_kind_numbers_and_abi_versions_are_frozen() {
     let kinds = [
-        (abi::types::KindCode::Store, 1, "store", 3),
-        (abi::types::KindCode::Secret, 2, "secret", 2),
-        (abi::types::KindCode::Auth, 3, "auth", 3),
-        (abi::types::KindCode::Hook, 4, "hook", 2),
-        (abi::types::KindCode::Export, 5, "export", 3),
-        (abi::types::KindCode::Plane, 6, "plane", 1),
-        (abi::types::KindCode::Transport, 7, "transport", 1),
+        (abi::types::KindCode::Store, 1, "store", 4),
+        (abi::types::KindCode::Secret, 2, "secret", 3),
+        (abi::types::KindCode::Auth, 3, "auth", 4),
+        (abi::types::KindCode::Hook, 4, "hook", 3),
+        (abi::types::KindCode::Export, 5, "export", 4),
+        (abi::types::KindCode::Plane, 6, "plane", 2),
+        (abi::types::KindCode::Transport, 7, "transport", 2),
     ];
     for (kind, raw, word, version) in kinds {
         assert_eq!(kind as u32, raw);

@@ -572,7 +572,7 @@ fn native_migrated_settings_validation_checks_without_open_or_settlement() {
 
 busbar_plugin_abi::kind! {
     /// A secret-shaped kind for this case.
-    pub trait Source: kind = 2, abi = 2 {
+    pub trait Source: kind = 2, abi = 3 {
         views {}
         pods {}
         tags { VALUE = 0x0100; }
