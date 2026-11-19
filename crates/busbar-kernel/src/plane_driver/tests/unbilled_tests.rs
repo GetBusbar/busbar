@@ -607,7 +607,6 @@ async fn session_of(
         classes(),
         Arc::clone(&r.rows) as Arc<dyn AuditSink>,
     );
-    let ctx = unit_ctx();
     let books = UnitBooks::new(&money, &ctx, Some("k"));
     let mut far = Far;
     super::run_session(

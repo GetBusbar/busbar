@@ -705,6 +705,7 @@ async fn answer(
             };
             let billing = billing.clone();
             let classes = seat.driver.usage_classes();
+            let fee_units = seat.driver.fee_units();
             let route_id = route.route;
             let retry_after = Arc::clone(&retry_after);
             Some(Arc::new(
@@ -723,9 +724,7 @@ async fn answer(
                             .admit_existing(
                                 receipt,
                                 classes,
-                                busbar_kernel::plane_driver::FeeRefund::PlaneFeeUnits(
-                                    Arc::from([]),
-                                ),
+                                busbar_kernel::plane_driver::FeeRefund::PlaneFeeUnits(fee_units),
                                 busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
                             )
                             .map_err(|error| match error {

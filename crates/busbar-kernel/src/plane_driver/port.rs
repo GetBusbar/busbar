@@ -313,6 +313,25 @@ impl PortDriver {
         Arc::clone(&self.usage)
     }
 
+    /// The indices of the declared usage classes that are core's fee units
+    /// ([`busbar_contract::plane::PER_REQUEST`], [`busbar_contract::plane::PER_SESSION`]): their
+    /// counts settle the fee charged at admission and are never ledgered as usage on the serving
+    /// member's lane (#21).
+    #[must_use]
+    pub fn fee_units(&self) -> Arc<[u32]> {
+        self.usage
+            .iter()
+            .enumerate()
+            .filter(|(_, class)| {
+                matches!(
+                    class.as_str(),
+                    busbar_contract::plane::PER_REQUEST | busbar_contract::plane::PER_SESSION
+                )
+            })
+            .filter_map(|(at, _)| u32::try_from(at).ok())
+            .collect()
+    }
+
     /// The routes this instance declares, sorted by where core mounts them.
     #[must_use]
     pub fn routes(&self) -> &PortRoutes {
