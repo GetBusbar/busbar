@@ -17,7 +17,8 @@ use busbar_contract::abi::mechanism::lifecycle::{
     slot, CancelIn, CancelOut, OpenIn, OpenOut, ValidateIn, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
-use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, DOOR_SYMBOL, MECHANISM_VERSION};
+use busbar_contract::abi::mechanism::DOOR_MAGIC;
+use busbar_contract::kinds::codes::{KindCode, DOOR_SYMBOL, MECHANISM_VERSION};
 
 extern "C" {
     fn dlopen(path: *const c_char, flags: c_int) -> *mut c_void;

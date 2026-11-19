@@ -5,14 +5,14 @@ use super::*;
 use crate::root::loader::sign::Declares;
 use crate::root::loader::{LinkedPlugin, PluginRegistry};
 use crate::root::test_plugins;
-use busbar_contract::abi::auth::AuthPoints;
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::extensions::EXT_DECLARES;
-use busbar_contract::abi::mechanism::kind;
 use busbar_contract::abi::sdk::auth_door::{verify_tail, with_tail, VerifyPlugin};
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::hook::{Hook, HookOpen};
 use busbar_contract::abi::sdk::life::Refusal;
+use busbar_contract::plugin_settings::sugar_words::kind;
+use busbar_contract::route::AuthPoints;
 
 const AUTH_JSON: &[u8] = br#"{"diagnostics":[{"code":4998,"slug":"fixture-auth-declared","title":"Auth fixture","severity":"actionable","summary":"Auth fixture declaration.","action":"Inspect the auth fixture.","since":"1.6.0"}]}"#;
 const HOOK_JSON: &[u8] = br#"{"diagnostics":[{"code":6998,"slug":"fixture-hook-declared","title":"Hook fixture","severity":"actionable","summary":"Hook fixture declaration.","action":"Inspect the hook fixture.","since":"1.6.0"}]}"#;
@@ -86,7 +86,7 @@ mod hook {
         statement: busbar_contract::abi::sdk::hook::statement_with_tail(Statement {
             extensions: EXTENSIONS,
             ..statement(HOOK_NAME, FIXTURE_VERSION, FIXTURE_MAX_INFLIGHT)
-        }, &busbar_contract::abi::sdk::hook::tail(busbar_contract::abi::hook::CLASS_GATE, 0, 0))
+        }, &busbar_contract::abi::sdk::hook::tail(busbar_contract::hooks::codes::CLASS_GATE, 0, 0))
     );
 }
 

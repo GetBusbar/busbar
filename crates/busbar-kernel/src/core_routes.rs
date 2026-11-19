@@ -6,7 +6,7 @@ use crate::state::AppHandle;
 use axum::http::Method;
 use axum::routing::{on, MethodRouter};
 use axum::Router;
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+use busbar_contract::route::{RouteAuth, RouteMethod};
 use std::sync::Arc;
 
 /// One core route as DECLARED at mount time: the exact axum path pattern, the method, and the
@@ -66,7 +66,7 @@ impl CoreRouteTable {
         mut self,
         mut refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
     ) -> Self {
-        use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
+        use busbar_contract::route::{PATH_EXACT, PATH_PATTERN};
 
         refusals.sort_by_cached_key(|r| {
             std::cmp::Reverse(
@@ -118,7 +118,7 @@ impl CoreRouteTable {
     }
 
     pub(crate) fn signed_ingress(&self, path: &str) -> bool {
-        use busbar_contract::abi::plane::check::raw_affix_matches;
+        use busbar_contract::plane::codes::raw_affix_matches;
         self.door_refusals
             .iter()
             .flat_map(|r| r.signed_ingress.iter())

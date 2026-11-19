@@ -114,7 +114,7 @@ async fn a_saturated_key_is_refused_before_its_ticket_record_is_written() {
     drop(handle);
     let caller = busbar_contract::services::Caller::for_test(
         Arc::from(g.served.planes[0].instance.as_str()),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     let mut held = Vec::new();
     for n in 0..256 {

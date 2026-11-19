@@ -271,8 +271,8 @@ pub fn own_ports(listens: &[&str]) -> Vec<u16> {
 /// `program` carries in its head: spelled once, when the member is declared at a config commit.
 pub(crate) fn lease_tail(supervision_key: u64, program: &Program) -> Vec<u8> {
     use base64::Engine as _;
-    use busbar_contract::abi::transport::fields::{LINE_END, SEPARATOR};
     use busbar_contract::conn::{PROGRAM_IDENTITY_FIELD, PROGRAM_INSTANCE_FIELD};
+    use busbar_contract::transport::fields::{LINE_END, SEPARATOR};
     let identity = base64::engine::general_purpose::STANDARD.encode(program.command.as_bytes());
     let mut tail = Vec::new();
     tail.extend_from_slice(PROGRAM_INSTANCE_FIELD.as_bytes());

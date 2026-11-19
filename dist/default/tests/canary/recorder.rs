@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use busbar_contract::abi::auth::{
-    slot as auth_slot, FieldSpan, FieldsIn, FieldsOut, NamedValue, OpenOutboundIn, TargetIn,
+    FieldSpan, FieldsIn, FieldsOut, NamedValue, OpenOutboundIn, TargetIn,
 };
 use busbar_contract::abi::host::conn::connector::{ConnectorSlots, EstablishIn, IoIn, RequestIn};
 use busbar_contract::abi::host::io::{IoSlots, SpawnIn, WriteIn};
@@ -21,7 +21,8 @@ use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, OpenIn, ReadyIn, RefreshIn, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables};
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::auth_calls::codes::slot as auth_slot;
+use busbar_contract::kinds::codes::KindCode;
 
 /// Which way the bytes went.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

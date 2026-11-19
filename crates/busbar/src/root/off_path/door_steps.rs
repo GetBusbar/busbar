@@ -735,7 +735,7 @@ pub(crate) fn unloaded_doors() -> Vec<crate::root::loader::boot::Candidate> {
         .get()
         .map_or(&[][..], Vec::as_slice)
         .iter()
-        .filter(|c| c.kind == busbar_contract::abi::mechanism::KindCode::Plane)
+        .filter(|c| c.kind == busbar_contract::kinds::codes::KindCode::Plane)
         .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
         .cloned()
         .collect()
@@ -1435,7 +1435,7 @@ impl OutboundAuths {
         let sink: Arc<dyn EnvelopeSink> = crate::root::boot::plugin_logs()
             .sink(
                 name,
-                busbar_contract::abi::mechanism::KindCode::Auth,
+                busbar_contract::kinds::codes::KindCode::Auth,
                 Arc::new(NoSink),
             )
             .map_or_else(
@@ -1524,9 +1524,7 @@ impl OutboundAuths {
                     let styles = stated_facts(*door).ok()?.styles;
                     let per_binding = LinkedRow::of(*door)
                         .ok()
-                        .and_then(|row| {
-                            busbar_contract::abi::mechanism::rendering::read(&row.statement).ok()
-                        })
+                        .and_then(|row| busbar_contract::rendering::read(&row.statement).ok())
                         .is_some_and(|r| r.needs.iter().any(|n| !n.target_from.is_empty()));
                     Some(AuthRowFacts {
                         name: (*name).to_string(),
@@ -1550,7 +1548,7 @@ impl OutboundAuths {
                 .filter_map(|(i, r)| {
                     let stated = r.manifest.stated_rendering().ok().flatten()?;
                     let styles = rendered_facts(&stated).ok()?.styles;
-                    let per_binding = busbar_contract::abi::mechanism::rendering::read(&stated)
+                    let per_binding = busbar_contract::rendering::read(&stated)
                         .is_ok_and(|r| r.needs.iter().any(|n| !n.target_from.is_empty()));
                     Some(AuthRowFacts {
                         name: r.manifest.name.clone(),
@@ -1872,7 +1870,7 @@ pub(crate) fn token_exchange_binding(
         auth,
         handle,
         style_flags: decl.flags,
-        points: busbar_contract::abi::auth::AuthPoints(decl.points),
+        points: busbar_contract::route::AuthPoints(decl.points),
         passthrough: false,
         per_request: None,
     }))
@@ -2025,7 +2023,7 @@ pub(crate) fn upstream_credential(
             auth,
             handle,
             style_flags: decl.flags,
-            points: busbar_contract::abi::auth::AuthPoints(decl.points),
+            points: busbar_contract::route::AuthPoints(decl.points),
             passthrough: false,
             per_request: Some(
                 Arc::clone(&per) as Arc<dyn busbar_contract::auth_calls::PerRequestHandle>
@@ -2179,7 +2177,7 @@ pub(crate) enum Attempt {
 pub(crate) const UPSTREAM_REFRESH_ACTION: &str = "upstream_credential.refresh";
 
 pub(crate) fn definitive(error_kind: u32) -> bool {
-    use busbar_contract::abi::secret::{ERROR_KIND_DENIED, ERROR_KIND_NOT_FOUND};
+    use busbar_contract::secret::codes::{ERROR_KIND_DENIED, ERROR_KIND_NOT_FOUND};
     matches!(error_kind, ERROR_KIND_NOT_FOUND | ERROR_KIND_DENIED)
 }
 
@@ -2709,7 +2707,7 @@ pub(crate) fn member_routes(
     reach: &DoorReach<'_>,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
-    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+    use busbar_contract::rendering::{ReadBlob, ReadNeed};
     use busbar_kernel::plane_driver::{
         resolve_member_needs, ConfiguredAuthBinding, MemberAuth, MemberRoute,
     };
@@ -2837,7 +2835,7 @@ pub(crate) fn member_routes(
             },
             timeout_ms: 0,
 
-            keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+            keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
             keep_response_headers: Vec::new(),
             deny_response_headers: Vec::new(),
         })
@@ -2880,7 +2878,7 @@ pub(crate) fn member_routes(
                 auth,
                 handle,
                 style_flags: decl.flags,
-                points: busbar_contract::abi::auth::AuthPoints(decl.points),
+                points: busbar_contract::route::AuthPoints(decl.points),
                 passthrough: true,
                 per_request: None,
             })
@@ -2953,7 +2951,7 @@ pub(crate) fn member_routes(
         };
 
         let from_credential = reach.auths.style_flags(&r.style).is_some_and(|flags| {
-            flags & busbar_contract::abi::auth::STYLE_ENDPOINT_FROM_CREDENTIAL != 0
+            flags & busbar_contract::auth_calls::codes::STYLE_ENDPOINT_FROM_CREDENTIAL != 0
         });
         let seal = busbar_kernel::seal::lend();
         let credential = credential.expose(&seal);
@@ -3007,7 +3005,7 @@ pub(crate) fn member_routes(
                         auth: crate::root::userinfo::lead_with(auth, r.provider.userinfo.clone()),
                         handle,
                         style_flags: decl.flags,
-                        points: busbar_contract::abi::auth::AuthPoints(decl.points),
+                        points: busbar_contract::route::AuthPoints(decl.points),
                         passthrough: false,
                         per_request: None,
                     },

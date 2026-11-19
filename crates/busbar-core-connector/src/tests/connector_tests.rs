@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::host::service::DEST_PLAINTEXT;
+use busbar_contract::services::codes::DEST_PLAINTEXT;
 
 #[path = "fanout_waker_tests.rs"]
 mod fanout_waker_tests;
@@ -178,7 +178,7 @@ fn a_need_declared_without_a_transport_dials_nothing() {
 fn outbound_need_requires_dialing_capability_while_inbound_registration_remains_available() {
     let door = Arc::new(
         TestDoor::identity("bytes")
-            .with_role(busbar_contract::abi::transport::ROLE_FRAMER)
+            .with_role(busbar_contract::transport::codes::ROLE_FRAMER)
             .without_dialing(),
     );
     let view = Transports::new(vec![Entry {
@@ -197,7 +197,7 @@ fn outbound_need_requires_dialing_capability_while_inbound_registration_remains_
         DeclaredConns::declare(&connector, OWNER, NeedId(1), &spec, None, None),
         Err(ConnError::Refused),
     );
-    spec.direction = busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+    spec.direction = busbar_contract::conn::codes::DIRECTION_INBOUND;
     assert_eq!(
         DeclaredConns::declare(&connector, OWNER, NeedId(2), &spec, None, None),
         Ok(()),
@@ -227,7 +227,7 @@ fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens()
         assert_eq!(c.declared(OWNER, NeedId(1)), Some(Err(ConnError::Refused)));
 
         let mut inbound = unserved.clone();
-        inbound.direction = busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+        inbound.direction = busbar_contract::conn::codes::DIRECTION_INBOUND;
         assert_eq!(
             DeclaredConns::declare(&c, OWNER, NeedId(3), &inbound, None, None),
             Err(ConnError::Refused)
@@ -435,7 +435,7 @@ fn a_text_write_through_the_table_reaches_the_framer_as_text() {
             let _ = tx.send(buf.to_vec());
         });
         let door = Arc::new(
-            TestDoor::identity("bytes").with_role(busbar_contract::abi::transport::ROLE_FRAMER),
+            TestDoor::identity("bytes").with_role(busbar_contract::transport::codes::ROLE_FRAMER),
         );
         let view = Transports::new(vec![
             Entry {
@@ -561,7 +561,7 @@ fn a_handshake_code_reaches_the_tables_head_piece_in_the_handshakes_numbering() 
             ..crate::support::Knobs::default()
         })
     };
-    let handshake = head(busbar_contract::abi::transport::PIECE_CODE_HANDOFF);
+    let handshake = head(busbar_contract::transport::codes::PIECE_CODE_HANDOFF);
     assert_eq!(handshake.status_code, Some(403));
     assert_eq!(handshake.status_namespace.as_deref(), Some("test-opening"));
     let own = head(0);
@@ -609,10 +609,10 @@ fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
         .unwrap();
         let judge = |dest: &str, class: u32, _: crate::Judged| {
             let addr = crate::socket::address_of(dest)
-                .ok_or(busbar_contract::abi::host::service::DEST_UNRESOLVABLE);
+                .ok_or(busbar_contract::services::codes::DEST_UNRESOLVABLE);
             Some(match (class, addr) {
                 (RESTRICTED, Ok(a)) if a.ip().is_loopback() => {
-                    Err(busbar_contract::abi::host::service::DEST_UNRESOLVABLE)
+                    Err(busbar_contract::services::codes::DEST_UNRESOLVABLE)
                 }
                 (_, got) => got,
             })
@@ -689,7 +689,7 @@ fn writes_held_for_a_pending_judgement_are_capped() {
 #[test]
 fn a_pending_empty_write_backpressures_until_judgement_and_preserves_frames() {
     use crate::framer::{Call, Crossed, DoorFacts};
-    use busbar_contract::abi::transport::EMIT_TEXT;
+    use busbar_contract::transport::codes::EMIT_TEXT;
 
     struct RecordingDoor {
         door: TestDoor,
@@ -921,13 +921,13 @@ fn config_targeted_need(target_from: &str) -> ReadNeed {
         auth: String::new(),
         target_from: target_from.to_owned(),
         trust_from: String::new(),
-        details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+        details: busbar_contract::rendering::ReadBlob {
             fmt: 0,
             flags: 0,
             bytes: Vec::new(),
         },
         timeout_ms: 0,
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
     }
@@ -1564,7 +1564,7 @@ fn a_request_with_the_largest_timeout_reads_its_answer() {
     });
 }
 
-use busbar_contract::abi::host::conn::connector::{
+use busbar_contract::conn::codes::{
     EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
 
@@ -1748,7 +1748,7 @@ fn userinfo_connector() -> Connector {
                         ..crate::support::Knobs::default()
                     },
                 )
-                .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
+                .with_role(busbar_contract::transport::codes::ROLE_FRAMER),
             ),
             alpn: Arc::default(),
         },
@@ -1947,7 +1947,7 @@ fn gone(pid: &str) -> bool {
 /// A need whose `target_from` resolved to a PROGRAM is carried in the
 #[test]
 fn a_program_need_spawns_its_program_and_kills_it_on_close() {
-    use busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE;
+    use busbar_contract::conn::codes::EGRESS_OPERATOR_INFRASTRUCTURE;
     worker().block_on(async {
         let c = literal_connector();
         let need = program_need(EGRESS_OPERATOR_INFRASTRUCTURE, "");
@@ -1981,7 +1981,7 @@ fn a_program_need_spawns_its_program_and_kills_it_on_close() {
 /// The program's environment is ONLY what its settings state: nothing of the host's leaks in.
 #[test]
 fn a_program_inherits_no_environment_but_its_own() {
-    use busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE;
+    use busbar_contract::conn::codes::EGRESS_OPERATOR_INFRASTRUCTURE;
     worker().block_on(async {
         let c = literal_connector();
         let need = program_need(EGRESS_OPERATOR_INFRASTRUCTURE, "");
@@ -1997,9 +1997,7 @@ fn a_program_inherits_no_environment_but_its_own() {
 /// RED: a program need is refused outside the operator-infrastructure class, with an auth style,
 #[test]
 fn a_program_need_is_refused_unless_the_operator_declared_it_as_written() {
-    use busbar_contract::abi::host::conn::connector::{
-        EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
-    };
+    use busbar_contract::conn::codes::{EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE};
     worker().block_on(async {
         let c = literal_connector();
         let cat = program("/bin/cat", &[], &[]);
@@ -2770,13 +2768,13 @@ mod transport_pin {
             auth: String::new(),
             target_from: String::new(),
             trust_from: "settings.ca".to_owned(),
-            details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+            details: busbar_contract::rendering::ReadBlob {
                 fmt: 0,
                 flags: 0,
                 bytes: Vec::new(),
             },
             timeout_ms: 0,
-            keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+            keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
             keep_response_headers: Vec::new(),
             deny_response_headers: Vec::new(),
         };
@@ -3607,7 +3605,7 @@ mod transport_pin {
     /// THE REAL WRAP OFFERS THE CONFIGURED NAME AND HOLDS THE CERTIFICATE TO IT (the twin the
     #[test]
     fn the_real_wrap_offers_the_configured_name_and_refuses_a_certificate_for_another() {
-        use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
+        use busbar_contract::conn::codes::CAUSE_SECURITY;
         worker().block_on(async {
             let pki = Pki::new();
             let (c, woken) = naming("pinned.test", &pki.ca_der, loopback_literals());
@@ -3722,7 +3720,7 @@ mod transport_pin {
     /// A TRUST REFUSAL NAMES THE SECURITY STACK'S OWN CAUSE, AND THE TRUSTED TWIN IS REACHED (the
     #[test]
     fn a_trust_refusal_names_its_cause_and_the_trusted_twin_is_reached() {
-        use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
+        use busbar_contract::conn::codes::CAUSE_SECURITY;
         worker().block_on(async {
             let served = Pki::new();
             let unrelated = Pki::new();
@@ -3785,7 +3783,7 @@ fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
                 OWNER,
                 NeedId(need),
                 "bytes",
-                busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+                busbar_contract::conn::codes::EGRESS_PROVIDER,
             )
             .expect("a served scheme declares");
         }
@@ -3980,7 +3978,7 @@ fn a_pinned_carrier_need_uses_the_same_authority_as_its_dial() {
         let door = Arc::new(CarrierWithoutLocate(TestDoor::identity("bytes")));
         assert_eq!(
             door.facts().role,
-            busbar_contract::abi::transport::ROLE_CARRIER
+            busbar_contract::transport::codes::ROLE_CARRIER
         );
         assert!(crate::framer::locate(door.as_ref(), &far).is_err());
         let view = Transports::new(vec![Entry {
@@ -4143,7 +4141,7 @@ fn bound_as(handle: u64) -> busbar_contract::conn::ConnAuth {
         auth: Arc::new(OnlyBound),
         handle,
         style_flags: 0,
-        points: busbar_contract::abi::auth::AuthPoints(0),
+        points: busbar_contract::route::AuthPoints(0),
         passthrough: false,
         lender: None,
         per_request: None,
@@ -4775,7 +4773,7 @@ fn datagram_head_defaults_use_rendezvous_exchange_without_locate() {
         }
     }
     let mut facts = TestDoor::identity("webrtc")
-        .with_role(busbar_contract::abi::transport::ROLE_FRAMER)
+        .with_role(busbar_contract::transport::codes::ROLE_FRAMER)
         .facts()
         .clone();
     facts.datagram = true;
@@ -4930,7 +4928,7 @@ fn failed_through_the_table(
 /// `outbound`, so the egress walk can refuse it as the host's fault instead of cooling the member.
 #[test]
 fn a_failed_opening_emit_is_named_an_outbound_framer_fault_with_the_framers_own_words() {
-    use busbar_contract::abi::host::conn::connector::CAUSE_FRAMER;
+    use busbar_contract::conn::codes::CAUSE_FRAMER;
     let (err, declared, read) = failed_through_the_table(
         crate::support::Knobs {
             fail_emit: Some("stream 1 already carries a request"),
@@ -4953,7 +4951,7 @@ fn a_failed_opening_emit_is_named_an_outbound_framer_fault_with_the_framers_own_
 /// must stay the member's failure (fail-over, breaker charge), never be read as the host's own.
 #[test]
 fn a_framer_rejecting_the_far_ends_bytes_is_never_named_an_outbound_fault() {
-    use busbar_contract::abi::host::conn::connector::CAUSE_FRAMER;
+    use busbar_contract::conn::codes::CAUSE_FRAMER;
     let (err, declared, read) = failed_through_the_table(
         crate::support::Knobs {
             fail_ingest: Some("a malformed reply"),

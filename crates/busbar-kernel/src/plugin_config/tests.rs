@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
 use busbar_contract::json::{json, Value};
+use busbar_contract::plugin_settings::sugar_words::REWRITE_SUGAR;
 use busbar_contract::secret_ref::{SecretRef, Sugars};
 use busbar_contract::secure::SecureVec;
 

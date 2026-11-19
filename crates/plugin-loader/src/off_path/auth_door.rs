@@ -45,8 +45,8 @@ pub(crate) fn instance_carriers(
     previous: &[String],
     facts: &AuthFacts,
 ) -> Result<Vec<String>, String> {
-    use busbar_contract::abi::auth::{EXT_CARRIERS, FACT_DEFAULT_INBOUND_STYLE};
-    use busbar_contract::abi::mechanism::extensions;
+    use busbar_contract::auth_calls::codes::{EXT_CARRIERS, FACT_DEFAULT_INBOUND_STYLE};
+    use busbar_contract::kinds::codes::extensions;
 
     let invalid = cold::invalid_carriers;
     let bytes = match ext {
@@ -110,7 +110,7 @@ pub(crate) fn instance_metadata(
     };
     let presentation = busbar_contract::auth_calls::presentation::login_presentation(bytes)
         .map_err(cold::presentation_refused)?;
-    if presentation.is_some() && facts.caps & busbar_contract::abi::auth::CAP_LOGIN == 0 {
+    if presentation.is_some() && facts.caps & busbar_contract::auth_calls::codes::CAP_LOGIN == 0 {
         return Err("auth login presentation requires the login capability".into());
     }
     Ok(InstanceMetadata {

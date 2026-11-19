@@ -154,12 +154,12 @@ pub(crate) mod proxy {
 
 /// THE `plugins.fetch` DOWNLOAD, run once at boot stage 3c.
 pub(crate) mod fetch {
-    use busbar_contract::abi::host::conn::connector::{
+    use busbar_contract::conn::codes::{
         CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_FRAMER, CAUSE_SECURITY,
         DIRECTION_OUTBOUND, EGRESS_DEFAULT,
     };
-    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
     use busbar_contract::conn::{ConnCause, ConnError, ConnId, NeedRefusal, OpenDesc, PieceKind};
+    use busbar_contract::rendering::{ReadBlob, ReadNeed};
 
     use crate::fetch::Table;
 
@@ -202,7 +202,7 @@ pub(crate) mod fetch {
                 bytes: Vec::new(),
             },
             timeout_ms: 0,
-            keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+            keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
             keep_response_headers: Vec::new(),
             deny_response_headers: Vec::new(),
         }
@@ -513,7 +513,7 @@ pub(crate) mod doors {
     use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
     use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, RefreshIn};
     use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-    use busbar_contract::abi::transport::slot;
+    use busbar_contract::transport::codes::slot;
     use busbar_plugin_loader::dispatch::{
         kinds::transport::{Transport as TransportKind, TransportFacts},
         Bind, ConnTable, Dispatcher, Frame, NoSink, Plugin,
@@ -556,7 +556,7 @@ pub(crate) mod doors {
         let bound = bind();
         let sink = crate::doors::plugin_logs().sink(
             row,
-            busbar_contract::abi::mechanism::KindCode::Transport,
+            busbar_contract::kinds::codes::KindCode::Transport,
             bound.sink.clone(),
         )?;
         Ok(Bind {

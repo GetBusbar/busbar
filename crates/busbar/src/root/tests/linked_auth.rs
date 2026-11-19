@@ -1040,7 +1040,7 @@ fn bearer(token: &str) -> axum::http::HeaderMap {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_role_bound_principal_governed_like_a_virtual_key() {
-    use busbar_contract::abi::plane::ROUTE_POOL;
+    use busbar_contract::plane::codes::ROUTE_POOL;
     use busbar_kernel::auth::{
         resolve_data_plane_identity, AuthMiddleware, ChainHead, IdentityRefusal,
     };

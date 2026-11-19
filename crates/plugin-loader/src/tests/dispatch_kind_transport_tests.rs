@@ -5,15 +5,18 @@ use std::mem::{size_of, zeroed};
 use std::ptr::NonNull;
 
 use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
-use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
+use busbar_contract::abi::mechanism::check::{fault, Rule};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::{
-    slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, ConnIn, ConnOut, DialIn,
-    EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, HeadSlots,
+    AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, ConnIn, ConnOut, DialIn, EmitIn,
+    EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, HeadSlots,
     IngestIn, IoOut, ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, ShutIn, WriteIn,
-    CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, MAX_ADDR, PIECE_END_OF_FRAME, PIECE_FIELDS, SLOTS,
-    YIELD_MORE,
+    CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, SLOTS,
+};
+use busbar_contract::kinds::codes::KindCode;
+use busbar_contract::records::size_limits::Fault;
+use busbar_contract::transport::codes::{
+    slot, MAX_ADDR, PIECE_END_OF_FRAME, PIECE_FIELDS, YIELD_MORE,
 };
 
 use crate::dispatch::kinds::transport::Transport;
@@ -415,7 +418,8 @@ fn the_kind_is_transport_and_times_out_failed() {
 fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
     use busbar_contract::abi::sdk::door::{abi_str, statement};
-    use busbar_contract::abi::transport::{Claim, TransportTail, ROLE_FRAMER};
+    use busbar_contract::abi::transport::{Claim, TransportTail};
+    use busbar_contract::transport::codes::ROLE_FRAMER;
 
     use crate::dispatch::kinds::transport::TransportFacts;
 
@@ -485,9 +489,9 @@ fn dialing_capability_is_retained_and_required_for_outbound_framer_calls() {
     use crate::dispatch::kinds::transport::TransportFacts;
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
     use busbar_contract::abi::sdk::door::{abi_str, statement};
-    use busbar_contract::abi::transport::{
-        Claim, TransportTail, FACT_ACCEPTS, FACT_DIALS, ROLE_CARRIER, ROLE_FRAMER, SIDE_ACCEPT,
-        SIDE_ACCEPT_STREAM, SIDE_DIAL,
+    use busbar_contract::abi::transport::{Claim, TransportTail, FACT_DIALS};
+    use busbar_contract::transport::codes::{
+        FACT_ACCEPTS, ROLE_CARRIER, ROLE_FRAMER, SIDE_ACCEPT, SIDE_ACCEPT_STREAM, SIDE_DIAL,
     };
 
     let claims = [Claim::ZERO];
@@ -544,7 +548,8 @@ fn dialing_capability_is_retained_and_required_for_outbound_framer_calls() {
 fn an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade() {
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
     use busbar_contract::abi::sdk::door::{abi_str, statement};
-    use busbar_contract::abi::transport::{Claim, TransportTail, ROLE_FRAMER, UNIT0_UPGRADE};
+    use busbar_contract::abi::transport::{Claim, TransportTail};
+    use busbar_contract::transport::codes::{ROLE_FRAMER, UNIT0_UPGRADE};
 
     use crate::dispatch::kinds::transport::TransportFacts;
 
@@ -599,9 +604,9 @@ fn an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade() {
 fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
     use busbar_contract::abi::sdk::door::{abi_str, statement};
-    use busbar_contract::abi::transport::{
-        Claim, FaultRow, StatusRow, TransportTail, FAULT_HARD, ROLE_CARRIER, ROLE_FRAMER,
-        STATUS_CALLER_FAULT,
+    use busbar_contract::abi::transport::{Claim, FaultRow, StatusRow, TransportTail};
+    use busbar_contract::transport::codes::{
+        FAULT_HARD, ROLE_CARRIER, ROLE_FRAMER, STATUS_CALLER_FAULT,
     };
 
     let claims: [Claim; 1] = [Claim {
@@ -685,12 +690,14 @@ fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
 
 #[test]
 fn a_dropped_in_transports_offered_points_are_read_off_its_statement() {
-    use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
+    use busbar_contract::abi::auth::POINT_PEER;
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
-    use busbar_contract::abi::mechanism::extensions::encode;
     use busbar_contract::abi::sdk::door::{abi_str, statement};
-    use busbar_contract::abi::transport::{Claim, TransportTail, EXT_OFFERED_POINTS, ROLE_FRAMER};
+    use busbar_contract::abi::transport::{Claim, TransportTail, EXT_OFFERED_POINTS};
+    use busbar_contract::extensions::encode;
+    use busbar_contract::route::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY};
+    use busbar_contract::transport::codes::ROLE_FRAMER;
 
     use crate::dispatch::kinds::transport::TransportFacts;
 
@@ -759,7 +766,8 @@ fn a_dropped_in_transports_offered_points_are_read_off_its_statement() {
 fn a_dial_begin_with_a_foreign_stale_or_forged_binding_ref_is_refused() {
     use crate::dispatch::auth_handle::{generation, mint_auth_ref};
     use busbar_contract::abi::host::service::AuthRef;
-    use busbar_contract::abi::transport::{POINT_HEAD, SIDE_ACCEPT, SIDE_DIAL};
+    use busbar_contract::route::POINT_HEAD;
+    use busbar_contract::transport::codes::{SIDE_ACCEPT, SIDE_DIAL};
     let (framer, other) = (40, 41);
     let admit = |i: &BeginIn, owner: u64| {
         Transport::admit(
@@ -771,7 +779,7 @@ fn a_dial_begin_with_a_foreign_stale_or_forged_binding_ref_is_refused() {
     };
     let mut i: BeginIn = z();
     i.side = SIDE_DIAL;
-    i.scheme = busbar_contract::abi::host::service::SCHEME_SECURE;
+    i.scheme = busbar_contract::services::codes::SCHEME_SECURE;
     assert_eq!(admit(&i, framer), None, "a binding with no auth");
     i.points = POINT_HEAD;
     i.auth = mint_auth_ref(framer, generation(), 9).expect("minted");
@@ -811,8 +819,8 @@ fn a_dial_begin_with_a_foreign_stale_or_forged_binding_ref_is_refused() {
 
 #[test]
 fn a_begin_with_an_undeclared_scheme_is_refused() {
-    use busbar_contract::abi::host::service::{SCHEME_PLAIN, SCHEME_SECURE};
-    use busbar_contract::abi::transport::{SIDE_ACCEPT, SIDE_ACCEPT_STREAM, SIDE_DIAL};
+    use busbar_contract::services::codes::{SCHEME_PLAIN, SCHEME_SECURE};
+    use busbar_contract::transport::codes::{SIDE_ACCEPT, SIDE_ACCEPT_STREAM, SIDE_DIAL};
     let admit = |i: &BeginIn| {
         Transport::admit(
             slot::BEGIN,
@@ -902,7 +910,8 @@ fn red_a_null_upgrade_name_or_claim_fact_refuses_the_bind() {
     use busbar_contract::abi::mechanism::call::AbiStr;
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
     use busbar_contract::abi::sdk::door::{abi_str, statement};
-    use busbar_contract::abi::transport::{Claim, TransportTail, ROLE_FRAMER};
+    use busbar_contract::abi::transport::{Claim, TransportTail};
+    use busbar_contract::transport::codes::ROLE_FRAMER;
 
     let broken = AbiStr {
         ptr: std::ptr::null(),
@@ -963,9 +972,10 @@ fn status_numberings_are_owned_by_the_claim_snapshot_without_interning() {
     use crate::dispatch::kinds::transport::TransportFacts;
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
-    use busbar_contract::abi::mechanism::extensions::encode;
     use busbar_contract::abi::sdk::door::{abi_str, statement};
-    use busbar_contract::abi::transport::{status, Claim, TransportTail, ROLE_FRAMER};
+    use busbar_contract::abi::transport::{status, Claim, TransportTail};
+    use busbar_contract::extensions::encode;
+    use busbar_contract::transport::codes::ROLE_FRAMER;
     let names = [abi_str("first"), abi_str("second")];
     let rows = [
         Claim {

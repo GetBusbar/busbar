@@ -32,7 +32,7 @@ impl CommandAdmissionFixture {
         let core = Arc::new(KernelServices::new());
         let caller = Caller::for_test(
             Arc::from("command-fixture"),
-            busbar_contract::abi::mechanism::KindCode::Plane,
+            busbar_contract::kinds::codes::KindCode::Plane,
         );
         let owner = core.admit_native_invocation(&caller).unwrap();
         assert!(core.units().pre_admitted_for(

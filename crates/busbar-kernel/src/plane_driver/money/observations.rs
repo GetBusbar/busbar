@@ -6,8 +6,8 @@ use super::*;
 use crate::persistence::observations::{
     Binding, BoundScope, BudgetBinding, ObservationStore, PrincipalBinding, RatedSubject, Receipt,
 };
-use busbar_contract::abi::sdk::plane::observation::{Observation, ScopeId};
 use busbar_contract::kept::Text;
+use busbar_contract::observation::{Observation, ScopeId};
 use busbar_kernel_ledger::cost::{ClassPrice, NANOS_PER_CENT};
 
 /// Operator-approved accounting policy for one configured upstream binding.

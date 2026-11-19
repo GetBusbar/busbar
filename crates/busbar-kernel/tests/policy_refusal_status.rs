@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::plane::{class_of, RefusalClass};
 use busbar_contract::caps::ReasonCode;
+use busbar_contract::plane::codes::{class_of, RefusalClass};
 use busbar_kernel::plane_driver::{class_status, refusal_status};
 
 const POLICY: &[RefusalClass] = &[

@@ -893,7 +893,7 @@ fn the_admin_head_hands_the_request_through_as_presented() {
         HeaderValue::from_static("node.example:8443"),
     );
     let head = admin_head("POST", "/api/v1/admin/keys?limit=2", &headers, 7);
-    assert_eq!(head.point, busbar_contract::abi::auth::AuthPoint::Head);
+    assert_eq!(head.point, busbar_contract::route::AuthPoint::Head);
     assert_eq!(
         (
             head.method.as_str(),

@@ -3,9 +3,9 @@
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
-use busbar_contract::abi::host::service as svc;
 use busbar_contract::crypto::ed25519::VerifyingKey;
 use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _, Map, Value};
+use busbar_contract::services::codes::service as svc;
 
 const KEY_INFO_HEAD: [u8; 12] = [
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,

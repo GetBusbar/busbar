@@ -8,10 +8,10 @@ use std::time::Duration;
 
 use super::*;
 
-use busbar_contract::abi::host::conn::connector::{
+use busbar_contract::conn::codes::{
     EGRESS_DEFAULT, EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_PROVIDER,
 };
-use busbar_contract::abi::host::service::{DEST_METADATA, DEST_OBFUSCATED};
+use busbar_contract::services::codes::{DEST_METADATA, DEST_OBFUSCATED};
 
 use crate::guard::Resolved;
 
@@ -467,7 +467,7 @@ fn a_spelling_of_a_public_address_is_the_collector_it_spells() {
 /// not exempt. The `loopback-allowed` class narrows an admitted plaintext dial to loopback.
 #[test]
 fn plaintext_needs_an_acceptance_in_every_class_and_loopback_is_not_exempt() {
-    use busbar_contract::abi::host::conn::connector::{
+    use busbar_contract::conn::codes::{
         EGRESS_DEFAULT, EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_PROVIDER,
     };
     let private: SocketAddr = "\x310.0.0.5:4318".parse().unwrap();

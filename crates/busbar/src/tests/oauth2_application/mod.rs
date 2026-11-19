@@ -278,7 +278,7 @@ async fn build_application(
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
             .expect("the actual auth statement reads")
             .expect("the actual auth library states itself");
-        let name = busbar_contract::abi::mechanism::rendering::read(&statement)
+        let name = busbar_contract::rendering::read(&statement)
             .expect("the actual auth statement is valid")
             .name;
         let mut manifest =

@@ -175,9 +175,9 @@ fn create_and_rotate_claim_inputs_are_disjoint_before_durable_claim() {
 fn exact_request_binding_precedes_secret_replay_and_inflight() {
     let cache = IdempotencyCache::<String>::new();
     let key = key("alice", "create:action");
-    let a = busbar_contract::abi::sdk::digest::sha256(br#"{"name":"a"}"#);
-    let b = busbar_contract::abi::sdk::digest::sha256(br#"{"name":"b"}"#);
-    let invalid = busbar_contract::abi::sdk::digest::sha256(b"{");
+    let a = busbar_contract::digest::sha256(br#"{"name":"a"}"#);
+    let b = busbar_contract::digest::sha256(br#"{"name":"b"}"#);
+    let invalid = busbar_contract::digest::sha256(b"{");
     let reservation = match cache.probe_bound(key.clone(), a, 1000).unwrap() {
         Probe::Reserved(reservation) => reservation,
         _ => panic!("first request reserves"),

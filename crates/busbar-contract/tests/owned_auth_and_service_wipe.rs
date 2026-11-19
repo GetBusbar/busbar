@@ -35,7 +35,7 @@ fn fields_request(field: &str, secret: &str) -> FieldsRequest {
         }
     };
     FieldsRequest {
-        point: busbar_contract::abi::auth::AuthPoint::HeadBody,
+        point: busbar_contract::route::AuthPoint::HeadBody,
         conn: 1,
         unit: 2,
         body: Some(pick("body", "private-body").into_bytes()),

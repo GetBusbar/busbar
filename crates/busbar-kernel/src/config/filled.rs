@@ -202,7 +202,7 @@ fn reference_to(
 ) -> Result<serde_json::Value, String> {
     let reference = if fill.whole {
         sources
-            .with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL)
+            .with_role(busbar_contract::plugin_settings::sugar_words::SUGAR_ROLE_FILL)
             .ok_or("no admitted source declares the template fill role")?
             .reference(&fill.vars[0])
     } else {

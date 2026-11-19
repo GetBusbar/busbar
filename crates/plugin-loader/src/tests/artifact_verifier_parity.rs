@@ -140,7 +140,8 @@ fn actual_native_proof_refuses_every_lost_authority_checkpoint() {
 
 #[test]
 fn legacy_value_readers_keep_their_pre_move_depth_and_duplicate_rules() {
-    use busbar_artifact_metadata::{rendering::ReadBlob, BLOB_JSON};
+    use busbar_artifact_metadata::BLOB_JSON;
+    use busbar_contract::rendering::ReadBlob;
     for depth in [127usize, 128, 129] {
         let text = format!(
             "{{\"x\":{}0{}}}",

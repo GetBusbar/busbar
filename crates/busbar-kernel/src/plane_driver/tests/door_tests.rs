@@ -273,7 +273,7 @@ fn two_folds_under_one_key_are_two_rows_each_reading_its_own_door() {
     let first = fold(registration("door-fold-twice", NAMED)).expect("folds");
     let second = fold(PlaneRegistration {
         dialects: vec!["third"],
-        dialect_flags: vec![busbar_contract::abi::plane::DIALECT_PROVIDER],
+        dialect_flags: vec![busbar_contract::plane::codes::DIALECT_PROVIDER],
         ..registration("door-fold-twice", NAMED)
     })
     .expect("folds");

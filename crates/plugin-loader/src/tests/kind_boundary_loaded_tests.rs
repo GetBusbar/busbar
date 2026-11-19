@@ -156,7 +156,7 @@ fn well_formed_raw_callbacks_refuse_wrong_kinds_before_provider_in_both_loading_
 #[test]
 fn rejected_auth_and_unit_bindings_never_reach_a_live_provider() {
     let (d, side) = served_double();
-    let other = double_for(busbar_contract::abi::mechanism::KindCode::Transport);
+    let other = double_for(busbar_contract::kinds::codes::KindCode::Transport);
     let auth = mint_auth_ref(owner(&d), generation(), 3).unwrap();
     let (mut bytes, mut spans) = ([0u8; 64], [NO_FIELD_SPAN; 4]);
     let mut answer = answer_slot();

@@ -183,7 +183,7 @@ async fn serve_admission_with_inputs(
         .admin_auth[0]
         .token = Some(crate::root::test_plugins::source_reference(
         crate::root::native_secrets::linked_for_tests(),
-        busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
+        busbar_contract::plugin_settings::sugar_words::SUGAR_ROLE_PATH,
         admin_token_file.to_string_lossy(),
     ));
     let rules = Arc::new(crate::root::door_steps::Rules::hearing(

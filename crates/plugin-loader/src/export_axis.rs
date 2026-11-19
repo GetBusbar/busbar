@@ -4,9 +4,9 @@
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::lifecycle::refusal_lines;
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::conn::admissions::AdmissionAuthority;
 use busbar_contract::export_calls::{ExportCalls, PreparedExport, Probed, DEFAULT_INFLIGHT};
+use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::secure::SecureVec;
 
 use crate::dispatch::kinds::export::{Export, ExportFacts};
@@ -81,7 +81,7 @@ impl<'r> ExportRows<'r> {
     fn row(&self, module: &str) -> Option<&'r LoadablePlugin> {
         self.registry
             .resolve(module)
-            .filter(|p| p.manifest.kind == busbar_contract::abi::mechanism::kind::EXPORT)
+            .filter(|p| p.manifest.kind == busbar_contract::kinds::codes::EXPORT)
     }
 
     fn load(
@@ -183,7 +183,7 @@ impl<'r> ExportRows<'r> {
     }
 
     #[must_use]
-    pub fn routes(&self, module: &str) -> Vec<busbar_contract::abi::mechanism::route::Route> {
+    pub fn routes(&self, module: &str) -> Vec<busbar_contract::route::Route> {
         let Some(row) = self.row(module) else {
             return Vec::new();
         };
@@ -321,7 +321,7 @@ impl<'r> ExportRows<'r> {
         self.registry
             .linked()
             .iter()
-            .filter(|p| p.manifest.kind == busbar_contract::abi::mechanism::kind::EXPORT)
+            .filter(|p| p.manifest.kind == busbar_contract::kinds::codes::EXPORT)
             .any(|p| p.manifest.config_names().any(|n| n == module))
     }
 

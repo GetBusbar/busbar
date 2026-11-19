@@ -4,7 +4,7 @@
 //! FINISH is a bounded synchronous drain, including when a destructor discards its output.
 
 use super::*;
-use busbar_contract::abi::transport::YIELD_MORE;
+use busbar_contract::transport::codes::YIELD_MORE;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone, Copy)]

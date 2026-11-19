@@ -9,10 +9,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use busbar_contract::abi::plane::ROUTE_DIRECT;
 use busbar_contract::caps::{Dial, PrincipalId};
 use busbar_contract::conn::{InstanceId, NeedId};
 use busbar_contract::ids::OpClassId;
+use busbar_contract::plane::codes::ROUTE_DIRECT;
 use busbar_contract::stage_probe::{Derive, Scope};
 use busbar_kernel::plane_driver::{DriverSteps as _, Egress, MemberRoute, DEFAULT_ERROR_BODY_MAX};
 use busbar_kernel::teller::UnitCtx;

@@ -122,7 +122,7 @@ async fn app_generation(
         let statement = crate::root::loader::dispatch::rendering_of_library(&path)
             .expect("the actual verifier statement reads")
             .expect("the verifier exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        let module = busbar_contract::rendering::read(&statement)
             .expect("the actual verifier declaration is valid")
             .name;
         crate::test_common::credentials::install_auth_plugin(

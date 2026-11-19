@@ -3,14 +3,14 @@
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use busbar_contract::abi::auth::{AuthPoint, AuthPoints};
-use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::transport::check::check_route_view;
-use busbar_contract::abi::transport::route::{
+use busbar_contract::grammar::Selector;
+use busbar_contract::records::size_limits::Fault;
+use busbar_contract::route::{AuthPoint, AuthPoints};
+use busbar_contract::route::{
     Interner, RouteView, FIELD_VALUE_PREFIX, PATH_CONTAINS, PATH_EXACT, PATH_PATTERN, PATH_PREFIX,
     PATH_SUFFIX,
 };
-use busbar_contract::grammar::Selector;
 
 fn literals() -> MutexGuard<'static, Interner> {
     static LITERALS: OnceLock<Mutex<Interner>> = OnceLock::new();

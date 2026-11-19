@@ -20,8 +20,8 @@ use std::collections::VecDeque;
 
 use futures::FutureExt as _;
 
-use busbar_contract::abi::plane::{VERDICT_COUNT_REFUSED, VERDICT_RETRY};
 use busbar_contract::caps::{Outcome as UnitOutcome, Pass, ReasonCode, Route};
+use busbar_contract::plane::codes::{VERDICT_COUNT_REFUSED, VERDICT_RETRY};
 use busbar_contract::Count;
 use busbar_kernel::canary::Canary;
 use busbar_kernel::plane_driver::{

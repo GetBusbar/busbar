@@ -705,7 +705,7 @@ pub(crate) fn plane_runtime(app: &App, decl: &PlaneDecl) -> Value {
             row.insert("target", Value::from(route.target.as_str()));
             row.insert(
                 "public",
-                Value::from(route.flags & busbar_contract::abi::plane::ROUTE_PUBLIC != 0),
+                Value::from(route.flags & busbar_contract::plane::codes::ROUTE_PUBLIC != 0),
             );
             row.insert("audit_verb", Value::from(route.audit_verb.as_str()));
             Value::from(row)

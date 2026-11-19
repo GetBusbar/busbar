@@ -3,20 +3,19 @@
 
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::host::conn::connector::{
-    service, EstablishIn, Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, KEEP_NAMED,
-};
+use busbar_contract::abi::host::conn::connector::{service, EstablishIn, Need};
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::{Door, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, RefreshIn};
-use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::sdk::door::abi_str;
+use busbar_contract::conn::codes::{DIRECTION_INBOUND, DIRECTION_OUTBOUND, KEEP_NAMED};
 use busbar_contract::conn::{
     ConnCause, ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
     Piece,
 };
+use busbar_contract::rendering::ReadNeed;
 use busbar_contract::transport::ConnFacts;
 
 use super::CONN_SLOTS;
@@ -725,8 +724,8 @@ const OWNED_TRUSTING: [Need; 1] = [Need {
 struct PlaneShaped;
 impl crate::dispatch::kind_seal::Validated for PlaneShaped {}
 impl crate::dispatch::Kind for PlaneShaped {
-    const CODE: busbar_contract::abi::mechanism::KindCode =
-        busbar_contract::abi::mechanism::KindCode::Plane;
+    const CODE: busbar_contract::kinds::codes::KindCode =
+        busbar_contract::kinds::codes::KindCode::Plane;
     type Ops = busbar_contract::abi::mechanism::lifecycle::OpsHead;
     const TIMEOUT: Outcome = Outcome::Failed;
     fn context(st: &Statement) -> Result<Option<Box<crate::dispatch::Context>>, String> {
@@ -734,7 +733,7 @@ impl crate::dispatch::Kind for PlaneShaped {
     }
     fn check(
         answer: &crate::dispatch::Answer,
-    ) -> Result<(), busbar_contract::abi::mechanism::check::Fault> {
+    ) -> Result<(), busbar_contract::records::size_limits::Fault> {
         <TestKind as crate::dispatch::Kind>::check(answer)
     }
 }
@@ -745,10 +744,8 @@ fn refresh_owning<K: crate::dispatch::Kind>(
     owned: &[u8],
 ) -> Outcome {
     use busbar_contract::abi::mechanism::call::BLOB_OCTETS;
-    let extensions = busbar_contract::abi::mechanism::extensions::encode(&[(
-        busbar_contract::abi::plane::EXT_OWNED,
-        owned,
-    )]);
+    let extensions =
+        busbar_contract::extensions::encode(&[(busbar_contract::plane::codes::EXT_OWNED, owned)]);
     let mut head = in_head();
     head.extensions = Blob {
         ptr: extensions.as_ptr(),
@@ -956,7 +953,7 @@ fn a_target_from_path_resolves_only_to_a_non_empty_string_under_settings() {
             auth: String::new(),
             target_from: path.into(),
             trust_from: String::new(),
-            details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+            details: busbar_contract::rendering::ReadBlob {
                 fmt: 0,
                 flags: 0,
                 bytes: Vec::new(),
@@ -998,7 +995,6 @@ fn an_instance_without_a_need_is_handed_no_table_and_its_open_is_undeclared() {
 
 use std::collections::VecDeque;
 
-use busbar_contract::abi::auth::AuthPoints;
 use busbar_contract::abi::host::conn::connector::{
     IoIn, ReplyIn, ReplyPiece, RequestIn, RequestPiece, REPLY_ACK, REPLY_BODY, REPLY_END,
     REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD,
@@ -1010,6 +1006,7 @@ use busbar_contract::conn::ConnAuth;
 use busbar_contract::conn::PieceKind;
 use busbar_contract::ids::StreamId;
 use busbar_contract::redacted::Secret;
+use busbar_contract::route::AuthPoints;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering as AtomicOrdering};
 
 type Opened = (
@@ -1739,7 +1736,7 @@ fn an_egress_refusal_is_a_failed_ack_with_its_text() {
 
 #[test]
 fn a_failed_reply_names_the_stage_and_the_underlying_error() {
-    use busbar_contract::abi::host::conn::connector::CAUSE_CONNECT;
+    use busbar_contract::conn::codes::CAUSE_CONNECT;
     let table = Arc::new(Scripted {
         failing: Some((
             ConnError::Refused,
@@ -3134,7 +3131,7 @@ fn resolving_table(answers: &[Option<u64>]) -> (Arc<Scripted>, Arc<Resolving>, A
             auth: Arc::clone(&auth) as Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
             handle: 1,
             style_flags: 0,
-            points: busbar_contract::abi::auth::AuthPoints::HEAD,
+            points: busbar_contract::route::AuthPoints::HEAD,
             passthrough: false,
             lender: None,
             per_request: Some(
@@ -3274,15 +3271,15 @@ fn whole_request_on(p: &Plugin<TestKind>, seq: u32, stream: u64) {
 struct AuthShaped;
 impl crate::dispatch::kind_seal::Validated for AuthShaped {}
 impl crate::dispatch::Kind for AuthShaped {
-    const CODE: busbar_contract::abi::mechanism::KindCode =
-        busbar_contract::abi::mechanism::KindCode::Auth;
+    const CODE: busbar_contract::kinds::codes::KindCode =
+        busbar_contract::kinds::codes::KindCode::Auth;
     type Ops = busbar_contract::abi::mechanism::lifecycle::OpsHead;
     const TIMEOUT: Outcome = Outcome::Failed;
 }
 
 #[test]
 fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     let table = Arc::new(Recording::default());
     let unpinned: &'static [Need] = Box::leak(Box::new([Need {
         target_from: NONE,
@@ -3517,7 +3514,7 @@ fn the_auth_request_signs_the_authority_the_socket_dials() {
         auth: Arc::new(ByHandle::default()) as Arc<dyn OutboundAuth>,
         handle: 1,
         style_flags: 0,
-        points: busbar_contract::abi::auth::AuthPoints::HEAD,
+        points: busbar_contract::route::AuthPoints::HEAD,
         passthrough: false,
         lender: None,
         per_request: None,
@@ -3577,8 +3574,8 @@ fn the_auth_request_signs_the_lines_the_open_completes_the_head_with() {
     let binding = busbar_contract::conn::ConnAuth {
         auth: Arc::new(ByHandle::default()) as Arc<dyn OutboundAuth>,
         handle: 1,
-        style_flags: busbar_contract::abi::auth::STYLE_NEEDS_HEADERS,
-        points: busbar_contract::abi::auth::AuthPoints::HEAD,
+        style_flags: busbar_contract::auth_calls::codes::STYLE_NEEDS_HEADERS,
+        points: busbar_contract::route::AuthPoints::HEAD,
         passthrough: false,
         lender: None,
         per_request: None,
@@ -3936,8 +3933,8 @@ mod refresh_driver_generation {
         let statement = unsafe { *real.statement() };
         let needs = Box::leak(Box::new(NEEDS));
         let statement = Box::leak(Box::new(Statement {
-            kind: busbar_contract::abi::mechanism::KindCode::Plane as u32,
-            kind_abi: busbar_contract::abi::mechanism::KindCode::Plane.abi_version(),
+            kind: busbar_contract::kinds::codes::KindCode::Plane as u32,
+            kind_abi: busbar_contract::kinds::codes::KindCode::Plane.abi_version(),
             needs: needs.as_ptr(),
             needs_len: needs.len(),
             ..statement
@@ -3949,9 +3946,9 @@ mod refresh_driver_generation {
         }));
         let door = Box::leak(Box::new(unsafe {
             Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
-                kind: busbar_contract::abi::mechanism::KindCode::Plane as u32,
-                kind_abi: busbar_contract::abi::mechanism::KindCode::Plane.abi_version(),
-                layout: busbar_contract::abi::mechanism::KindCode::Plane.layout_fingerprint(),
+                kind: busbar_contract::kinds::codes::KindCode::Plane as u32,
+                kind_abi: busbar_contract::kinds::codes::KindCode::Plane.abi_version(),
+                layout: busbar_contract::kinds::codes::KindCode::Plane.layout_fingerprint(),
                 statement,
                 ops,
                 ..real.parts()
@@ -4117,7 +4114,7 @@ fn framed_opens_keep_the_serving_unit_through_sync_and_pending_auth() {
 
 #[test]
 fn response_headers_obey_the_original_need_on_raw_and_framed_streams() {
-    use busbar_contract::abi::host::conn::connector::KEEP_ALL_EXCEPT_DENIED;
+    use busbar_contract::conn::codes::KEEP_ALL_EXCEPT_DENIED;
     const DENIED: [AbiStr; 1] = [abi_str("private")];
     const EMPTY: [Need; 1] = [Need {
         keep_response_headers: std::ptr::null(),

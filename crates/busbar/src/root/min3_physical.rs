@@ -7,8 +7,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_contract::abi::transport::route::{method_bit, METHOD_HEAD, PATH_EXACT, PATH_PATTERN};
+use busbar_contract::route::{method_bit, METHOD_HEAD, PATH_EXACT, PATH_PATTERN};
+use busbar_contract::route::{RouteAuth, RouteMethod};
 use busbar_kernel::auth::native_data::{DataRouteOwners, NativeDataRoute};
 use busbar_kernel::auth::native_upgrade::NativeUpgradeRoute;
 use busbar_kernel::door::UnitKeyMint;
@@ -471,7 +471,7 @@ pub(crate) fn assemble_admin_slot(
             dialect: 0,
             auth: LineAuth::None,
             upgrade: None,
-            offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+            offered: busbar_contract::route::AuthPoints::EMPTY,
         };
         bindings.push(
             RouteBinding::core(line.clone(), auth)

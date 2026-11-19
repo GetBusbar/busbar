@@ -500,7 +500,7 @@ pub struct InstanceFacts {
     /// Its record kinds, each the schema its records are kept under.
     pub record_kinds: Vec<RecordSchemaId>,
     /// Validated collection declarations; kind and parent indices are instance-local.
-    pub record_collections: Vec<busbar_contract::abi::plane::RecordCollection>,
+    pub record_collections: Vec<busbar_contract::plane::codes::RecordCollection>,
     /// Declared kind indices requiring conditional publication, established before admission.
     /// Ordinary record writes must never share these namespaces with conditional candidates.
     pub conditional_record_kinds: Vec<u32>,
@@ -1386,7 +1386,7 @@ impl KernelServices {
         counterparty: &str,
         authority: TrustDecisionAuthority,
     ) -> Option<TrustDecisionGrant<'_>> {
-        if caller.kind() != busbar_contract::abi::mechanism::KindCode::Plane || ticket.is_none() {
+        if caller.kind() != busbar_contract::kinds::codes::KindCode::Plane || ticket.is_none() {
             return None;
         }
         let facts = self.facts(caller)?;
@@ -3082,7 +3082,7 @@ impl HostServices for KernelServices {
         caller: &Caller,
         ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         unit: Option<u64>,
-        observation: busbar_contract::abi::sdk::plane::observation::Observation,
+        observation: busbar_contract::observation::Observation,
         done: busbar_contract::services::ObservationDone,
     ) -> Result<(), &'static str> {
         self.observation_submit(caller, ticket, unit, observation, done)
@@ -3092,7 +3092,7 @@ impl HostServices for KernelServices {
         caller: &Caller,
         ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         unit: Option<u64>,
-        request: busbar_contract::abi::sdk::plane::observation::ScopeRequest,
+        request: busbar_contract::observation::ScopeRequest,
         done: busbar_contract::services::ObservationDone,
     ) -> Result<(), &'static str> {
         self.observation_scope_request(caller, ticket, unit, request, done)
@@ -3126,9 +3126,9 @@ impl HostServices for KernelServices {
         &self,
         caller: &Caller,
         unit: Option<u64>,
-        query: &busbar_contract::abi::mechanism::inspection::InspectionQuery,
-    ) -> busbar_contract::abi::mechanism::inspection::InspectionResult {
-        use busbar_contract::abi::mechanism::inspection::{
+        query: &busbar_contract::services::codes::InspectionQuery,
+    ) -> busbar_contract::services::codes::InspectionResult {
+        use busbar_contract::services::codes::{
             InspectionError, InspectionObservation, InspectionQuery, SessionObservation,
             WorkObservation,
         };
@@ -3186,7 +3186,7 @@ impl HostServices for KernelServices {
         let refuse_private = flags & svc::DEST_REFUSE_PRIVATE != 0;
         let explain = flags & svc::DEST_EXPLAIN != 0;
 
-        if class == busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE {
+        if class == busbar_contract::conn::codes::EGRESS_OPERATOR_INFRASTRUCTURE {
             if !DEST_JUDGE_CLASS_FLAGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 crate::diagnostics::diag_warn!(
                     crate::diagnostics::PLUGIN_CALL_REFUSED_ABI_RULE,
@@ -3661,7 +3661,7 @@ impl HostServices for KernelServices {
         _later: Later,
     ) -> Ran {
         let refused = || Ran::Now(Stored::refused(crate::host_outbound::REFUSED));
-        if caller.kind() != busbar_contract::abi::mechanism::KindCode::Plane {
+        if caller.kind() != busbar_contract::kinds::codes::KindCode::Plane {
             return refused();
         }
         let Some(unit) = unit else {
@@ -4506,7 +4506,7 @@ impl KernelServices {
 
 const fn absent_span() -> Span {
     Span {
-        offset: busbar_contract::abi::mechanism::check::SPAN_ABSENT,
+        offset: busbar_contract::records::size_limits::SPAN_ABSENT,
         len: 0,
     }
 }
@@ -4593,7 +4593,7 @@ pub fn caller_binding() -> Arc<dyn busbar_contract::services::CallerBinding> {
         fn bind(
             &self,
             namespace: Arc<str>,
-            kind: busbar_contract::abi::mechanism::KindCode,
+            kind: busbar_contract::kinds::codes::KindCode,
         ) -> Caller {
             Caller::issue(&crate::seal::acquire(), namespace, kind)
         }

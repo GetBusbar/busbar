@@ -145,14 +145,14 @@ fn declaration_candidate(
     let mut rendering = busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC.to_vec();
     word(
         &mut rendering,
-        busbar_contract::abi::mechanism::MECHANISM_VERSION,
+        busbar_contract::kinds::codes::MECHANISM_VERSION,
     );
     word(
         &mut rendering,
         match kind {
-            "plane" => busbar_contract::abi::mechanism::KindCode::Plane,
-            "transport" => busbar_contract::abi::mechanism::KindCode::Transport,
-            _ => busbar_contract::abi::mechanism::KindCode::Store,
+            "plane" => busbar_contract::kinds::codes::KindCode::Plane,
+            "transport" => busbar_contract::kinds::codes::KindCode::Transport,
+            _ => busbar_contract::kinds::codes::KindCode::Store,
         } as u32,
     );
     word(&mut rendering, manifest.abi_version);
@@ -189,7 +189,7 @@ fn declaration_candidate(
         bytes(&mut rendering, claim.as_bytes());
     }
     word(&mut rendering, 0); // measurement_classes (BBSTMT04, fba670826c)
-    let facts = busbar_contract::abi::mechanism::rendering::read(&rendering).unwrap();
+    let facts = busbar_contract::rendering::read(&rendering).unwrap();
     assert_eq!(facts.name, "installed-schema-target");
     manifest.statement = Some(hex::encode(rendering));
     manifest.settings_schema = legacy.map(str::to_string);
@@ -375,7 +375,7 @@ async fn plugin_configuration_inactive_signed_archives_report_declarations_witho
     if isolated() {
         return;
     }
-    use busbar_contract::abi::mechanism::door::{
+    use busbar_contract::plugin_settings::sugar_words::{
         SECTION_CONSUMED, SECTION_DECLARING, SECTION_SELECTS,
     };
     let (app, scratch) = application().await;
@@ -620,7 +620,9 @@ async fn plugin_configuration_actual_linked_plane_and_transport_reads_never_call
                 json::json!([busbar_contract::Kind::Transport.root()])
             );
         } else {
-            use busbar_contract::abi::mechanism::door::{SECTION_CONSUMED, SECTION_DECLARING};
+            use busbar_contract::plugin_settings::sugar_words::{
+                SECTION_CONSUMED, SECTION_DECLARING,
+            };
             let roots: Vec<_> = facts
                 .sections
                 .iter()

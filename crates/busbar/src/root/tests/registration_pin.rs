@@ -286,7 +286,7 @@ fn registration(
         busbar_contract::yaml::to_value(
             &crate::root::test_plugins::source_reference(
                 crate::root::native_secrets::linked_for_tests(),
-                busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
+                busbar_contract::plugin_settings::sugar_words::SUGAR_ROLE_PATH,
                 p.display().to_string(),
             )
             .authoring(&busbar_kernel::seal::acquire()),

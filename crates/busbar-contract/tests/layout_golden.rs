@@ -69,12 +69,12 @@ use busbar_contract::abi::auth::{
 };
 use busbar_contract::abi::host::directory as hdir;
 
-use busbar_contract::abi::host::conn::connector as hconn;
 use busbar_contract::abi::host::io as hio;
-use busbar_contract::abi::host::service as hsvc;
 use busbar_contract::abi::plane as pkind;
 use busbar_contract::abi::store::v4 as pstore;
 use busbar_contract::abi::transport as tkind;
+use busbar_contract::conn::codes::connector as hconn;
+use busbar_contract::services::codes::service as hsvc;
 
 use busbar_contract::abi::store::HostBuf as StoreHostBuf;
 use busbar_contract::records::OpId as StoreOpId;

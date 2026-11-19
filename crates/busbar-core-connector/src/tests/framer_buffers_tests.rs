@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::transport::SIDE_DIAL;
+use busbar_contract::transport::codes::SIDE_DIAL;
 
 use super::*;
 use crate::support::TestDoor;

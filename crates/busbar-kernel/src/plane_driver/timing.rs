@@ -156,7 +156,7 @@ impl AttemptTiming {
                 self.mark(at, "cancelled_us");
                 self.span.record(
                     "cancel_reason",
-                    busbar_contract::abi::plane::reason_code(*reason),
+                    busbar_contract::plane::codes::reason_code(*reason),
                 );
                 self.finish_at(at, "cancelled");
             }

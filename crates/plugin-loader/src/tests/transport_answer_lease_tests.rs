@@ -14,7 +14,8 @@ use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ReleaseIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-use busbar_contract::abi::transport::{slot, FramerOut, IngestIn};
+use busbar_contract::abi::transport::{FramerOut, IngestIn};
+use busbar_contract::transport::codes::slot;
 
 use crate::dispatch::kinds::transport::Transport;
 use crate::dispatch::{in_head, load_linked, out_head, Adopter, Bind, Frame, LinkedRow, NoSink};
@@ -34,8 +35,8 @@ extern "C" fn ingest(
     _: *const std::ffi::c_void,
     out: *mut std::ffi::c_void,
 ) -> RawOutcome {
-    let bytes = busbar_contract::abi::mechanism::extensions::encode(&[("test.answer_note", &[1])])
-        .into_boxed_slice();
+    let bytes =
+        busbar_contract::extensions::encode(&[("test.answer_note", &[1])]).into_boxed_slice();
     let lease = NEXT.fetch_add(1, Ordering::SeqCst);
     let blob = Blob {
         ptr: bytes.as_ptr(),

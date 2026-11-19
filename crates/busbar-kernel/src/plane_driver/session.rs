@@ -5,10 +5,10 @@ use std::future::Future;
 use std::pin::pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use busbar_contract::abi::plane::{
+use busbar_contract::caps::{Pass, ReasonCode, Route, VerifiedDestination};
+use busbar_contract::plane::codes::{
     FROM_CALLER, FROM_KERNEL, PIECE_LAST, ROUTE_LOCAL, ROUTE_SCOPE_LOCAL,
 };
-use busbar_contract::caps::{Pass, ReasonCode, Route, VerifiedDestination};
 use foldhash::HashMap;
 use tokio::sync::{mpsc, watch, Notify};
 

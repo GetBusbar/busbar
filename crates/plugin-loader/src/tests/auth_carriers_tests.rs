@@ -5,15 +5,16 @@ use super::*;
 use crate::auth_axis::AuthRows;
 use crate::dispatch::{DispatchConfig, Dispatcher};
 use crate::{LinkedPlugin, PluginRegistry};
-use busbar_contract::abi::auth::{AuthPoints, EXT_CARRIERS};
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement};
-use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::sdk::auth_door::{
     carrier, verify_tail, with_tail, Answer, SyncVerifyPlugin, Verdict, VerifiedIdentity,
     VerifyView,
 };
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
+use busbar_contract::auth_calls::codes::EXT_CARRIERS;
+use busbar_contract::kinds::codes::extensions;
+use busbar_contract::route::AuthPoints;
 
 /// The carrier selection a READY reply's extension `blob` makes, as an open or refresh reads it: the
 /// door's check of the blob, then the selection.

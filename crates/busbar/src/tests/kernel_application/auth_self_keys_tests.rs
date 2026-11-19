@@ -109,7 +109,7 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "corp", true);
@@ -307,7 +307,7 @@ async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
         let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
             .expect("the actual OIDC statement reads")
             .expect("the actual OIDC product exports its statement");
-        let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+        let oidc_module = busbar_contract::rendering::read(&oidc_statement)
             .expect("the actual OIDC statement is valid")
             .name;
         common::credentials::install_auth_plugin(&directory, &oidc_module, "corp", true);
@@ -469,7 +469,7 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "corp", true);
@@ -619,7 +619,7 @@ async fn proof_self_mint_disabled_refuses_self_serve() {
         let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
             .expect("the actual OIDC statement reads")
             .expect("the actual OIDC product exports its statement");
-        let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+        let oidc_module = busbar_contract::rendering::read(&oidc_statement)
             .expect("the actual OIDC statement is valid")
             .name;
         common::credentials::install_auth_plugin(&directory, &oidc_module, "corp", true);
@@ -854,7 +854,7 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
             let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
                 .expect("the actual OIDC statement reads")
                 .expect("the actual OIDC product exports its statement");
-            let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+            let oidc_module = busbar_contract::rendering::read(&oidc_statement)
                 .expect("the actual OIDC statement is valid")
                 .name;
             common::credentials::install_auth_plugin(&directory, &oidc_module, "corp", true);

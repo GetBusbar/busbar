@@ -8,14 +8,14 @@ use std::cell::Cell;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
 
-use busbar_contract::abi::host::conn::connector::{
+use busbar_contract::conn::codes::{
     EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
     EGRESS_PROVIDER,
 };
-use busbar_contract::abi::host::service::{
+use busbar_contract::net::url_host_to_ascii;
+use busbar_contract::services::codes::{
     DEST_INTERNAL, DEST_NO_HOST, DEST_PLAINTEXT, DEST_SCHEME, DEST_UNRESOLVABLE,
 };
-use busbar_contract::net::url_host_to_ascii;
 use busbar_kernel::config::Destinations;
 use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Destination, Refused};
 

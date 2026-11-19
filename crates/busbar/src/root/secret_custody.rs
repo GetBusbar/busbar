@@ -163,7 +163,7 @@ impl BootSecrets {
         match result {
             Ok(Ok(value)) => Ok(busbar_contract::redacted::Secret::new(value.into_vec())),
             _ => Err(busbar_kernel::config::secret::SecretRefused {
-                error_kind: busbar_contract::abi::secret::ERROR_KIND_INTERNAL,
+                error_kind: busbar_contract::secret::codes::ERROR_KIND_INTERNAL,
                 text: "the configured secret source did not resolve".to_owned(),
             }),
         }

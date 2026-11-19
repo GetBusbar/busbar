@@ -13,13 +13,13 @@ use std::time::Duration;
 use busbar_contract::abi::host::io::DIR_WRITE;
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use busbar_contract::abi::transport::{
-    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, DEST_PROGRAM, DEST_RETIRED, EMIT_TEXT,
-    PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN,
-    PIECE_INTERIM, PIECE_TEXT, PIECE_WRITABLE, READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE,
-    YIELD_MORE, YIELD_STREAM_FULL,
-};
+use busbar_contract::abi::transport::{FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots};
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
+use busbar_contract::transport::codes::{
+    DEST_PROGRAM, DEST_RETIRED, EMIT_TEXT, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
+    PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_INTERIM, PIECE_TEXT, PIECE_WRITABLE,
+    READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+};
 use futures::task::AtomicWaker;
 
 use super::carrier::{Carry, Side};
@@ -181,9 +181,9 @@ impl TestDoor {
                 name: name.to_owned(),
                 claims: claims.to_vec(),
                 role: if composes_over.is_empty() && !frames {
-                    busbar_contract::abi::transport::ROLE_CARRIER
+                    busbar_contract::transport::codes::ROLE_CARRIER
                 } else {
-                    busbar_contract::abi::transport::ROLE_FRAMER
+                    busbar_contract::transport::codes::ROLE_FRAMER
                 },
                 composes_over: composes_over.to_vec(),
                 ported: composes_over.is_empty() && !frames,
@@ -363,7 +363,7 @@ impl FramerDoor for TestDoor {
     }
 
     fn side(&self) -> Option<Box<dyn Side>> {
-        if self.facts.role != busbar_contract::abi::transport::ROLE_CARRIER {
+        if self.facts.role != busbar_contract::transport::codes::ROLE_CARRIER {
             return None;
         }
         let side = Arc::new(TestSide {
@@ -529,7 +529,7 @@ impl FramerDoor for TestDoor {
                 if let Some(n) = self
                     .knobs
                     .agreed
-                    .filter(|_| i.side != busbar_contract::abi::transport::SIDE_DIAL)
+                    .filter(|_| i.side != busbar_contract::transport::codes::SIDE_DIAL)
                 {
                     o.yielded.agreed = n;
                 }

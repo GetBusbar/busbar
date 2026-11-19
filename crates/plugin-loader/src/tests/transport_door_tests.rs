@@ -10,7 +10,7 @@ use crate::sign::validate_structure;
 use busbar_contract::abi::mechanism::call::{Blob, Outcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-use busbar_contract::abi::transport::ROLE_CARRIER;
+use busbar_contract::transport::codes::ROLE_CARRIER;
 
 fn fixture() -> Vec<u8> {
     std::fs::read(fixture_path()).expect("read the cdylib")
@@ -75,8 +75,8 @@ fn manifest() -> crate::sign::Manifest {
     let rendering = crate::dispatch::rendering_of_library(&fixture_path())
         .expect("the neutral carrier image renders")
         .expect("the neutral carrier image exports its door");
-    let read = busbar_contract::abi::mechanism::rendering::read(&rendering)
-        .expect("the neutral carrier statement reads");
+    let read =
+        busbar_contract::rendering::read(&rendering).expect("the neutral carrier statement reads");
     let declares = busbar_contract::abi::mechanism::extensions::declares(&read.extensions.bytes)
         .map(crate::sign::Declares::from_declares_json)
         .transpose()
@@ -288,7 +288,7 @@ fn a_dropped_transport_is_bound_to_its_own_plugin_log_file() {
     .expect("the named directory resolves");
     let path = logs.path_for(
         &manifest().name,
-        busbar_contract::abi::mechanism::KindCode::Transport,
+        busbar_contract::kinds::codes::KindCode::Transport,
     );
     assert!(!path.exists(), "the log file must not pre-exist");
     let entries = registry

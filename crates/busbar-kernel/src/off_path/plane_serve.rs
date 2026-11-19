@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, PoisonError};
 
-use busbar_contract::abi::plane::ROUTE_PUBLIC;
+use busbar_contract::plane::codes::ROUTE_PUBLIC;
 
 use crate::plane_driver::serve::{
     param, Collision, RouteIndex, ServeRoute, ServeTable, ServeTables, Snapshot,

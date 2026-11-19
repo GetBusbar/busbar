@@ -41,7 +41,7 @@ async fn hosted_with_secret(
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library)
         .expect("read OIDC Statement")
         .expect("OIDC states itself");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+    let module = busbar_contract::rendering::read(&statement)
         .expect("valid Statement")
         .name;
     let secrets = plugins::scratch(&format!(

@@ -5,10 +5,10 @@
 //! entropy, and an adoption re-mint still refuses the pre-adoption ref under the same owner.
 use super::*;
 use crate::guest::{Claimant, Route};
-use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
-use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_contract::auth_calls::Verifying;
 use busbar_contract::framing_scope::AdoptionSource;
+use busbar_contract::route::{AuthPoints, POINT_HEAD};
+use busbar_contract::route::{METHOD_POST, PATH_EXACT};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]

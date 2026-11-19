@@ -869,8 +869,8 @@ async fn admin_physical_fixture_with_body(
     fields: Vec<(String, Vec<u8>)>,
     input_body: &[u8],
 ) -> AdminPhysicalFixture {
-    use busbar_contract::abi::mechanism::route::RouteAuth;
-    use busbar_contract::abi::transport::route::{METHOD_GET, PATH_EXACT};
+    use busbar_contract::route::RouteAuth;
+    use busbar_contract::route::{METHOD_GET, PATH_EXACT};
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
     use busbar_kernel::inbound::native::{
         AcceptedConnection, PhysicalListener, PhysicalPlan, RouteBinding,
@@ -902,7 +902,7 @@ async fn admin_physical_fixture_with_body(
         dialect: 0,
         auth: LineAuth::None,
         upgrade: None,
-        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        offered: busbar_contract::route::AuthPoints::EMPTY,
     };
     let guests = GuestList::seal(vec![line.clone()]).unwrap();
     let plan = PhysicalPlan::new(

@@ -66,14 +66,15 @@ pub mod auth {
     use std::marker::PhantomData;
 
     use busbar_contract::abi::auth::{
-        AuthPoints, AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut,
-        IdentifyOut, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
+        AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut, IdentifyOut,
+        OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
     };
     use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
     use busbar_contract::abi::sdk::auth_door::{verify_tail, with_tail};
     use busbar_contract::abi::sdk::door::{abi_str, statement, AbiIn, AbiOut};
     use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
     use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
+    use busbar_contract::route::AuthPoints;
 
     pub const SECRET_NAME: &str = "secret-auth-witness";
 

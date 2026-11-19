@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::transport::{ROLE_FRAMER, YIELD_HAS_DEADLINE};
+use busbar_contract::transport::codes::{ROLE_FRAMER, YIELD_HAS_DEADLINE};
 
 use super::{instant_of, now_ns, Call, Crossed, DoorFacts, FramerDoor};
 use crate::datagram::{DatagramFraming, LineStep};

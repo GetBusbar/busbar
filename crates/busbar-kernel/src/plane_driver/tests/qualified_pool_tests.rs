@@ -9,8 +9,9 @@ fn ready<T>(future: impl std::future::Future<Output = T>) -> T {
     futures::executor::block_on(future)
 }
 use crate::registry::Generation;
-use busbar_contract::abi::plane::{CANCEL_OK_PARTIAL, UNITS_REPORTED};
 use busbar_contract::caps::OriginKind;
+use busbar_contract::measurement::UNITS_REPORTED;
+use busbar_contract::plane::codes::CANCEL_OK_PARTIAL;
 use busbar_contract::records::ScopeRef;
 use busbar_kernel_ledger::cost::{PlaneFees, UnitRate};
 

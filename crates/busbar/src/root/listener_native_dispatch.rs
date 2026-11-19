@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use busbar_contract::abi::mechanism::route::RouteAuth;
+use busbar_contract::route::RouteAuth;
 use busbar_core_connector::framed_stream::session::{Feed, RegisterResponse};
 use busbar_kernel::inbound::http_projection::HttpProjection;
 use busbar_kernel::inbound::native::{PhysicalAdminExecution, PhysicalRefusalCarrier, RouteTarget};

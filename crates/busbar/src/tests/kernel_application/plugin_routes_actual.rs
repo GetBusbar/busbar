@@ -59,7 +59,7 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
         .into_iter()
         .map(|mut route| {
             if route.path == "/retained" {
-                route.auth = busbar_contract::abi::mechanism::route::RouteAuth::Admin;
+                route.auth = busbar_contract::route::RouteAuth::Admin;
             }
             busbar_kernel::plugin_routes::RouteDecl {
                 owner: "serve-http-metrics".into(),

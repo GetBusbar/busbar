@@ -608,7 +608,7 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
         );
         assert_eq!(
             connection.established().scheme,
-            busbar_contract::abi::host::service::SCHEME_SECURE
+            busbar_contract::services::codes::SCHEME_SECURE
         );
         let got = read.await.unwrap();
         assert_eq!(
@@ -626,7 +626,7 @@ fn a_dropped_framers_sealed_opening_keeps_its_exact_wire_bytes_through_tls() {
 
 /// THE REQUEST/RESPONSE FRAMER the head tests drive: of the libraries beside this test binary, the
 fn composing_door() -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
-    use busbar_contract::abi::transport::ROLE_FRAMER;
+    use busbar_contract::transport::codes::ROLE_FRAMER;
     use busbar_plugin_loader::dispatch::kinds::transport::Transport;
     let plugin = busbar_plugin_loader::dispatch::load_linked::<Transport>(
         &http_framer_double::row(),
@@ -1092,7 +1092,7 @@ fn counting_listener() -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) 
 /// guard's own reason, and nothing is dialled.
 #[test]
 fn a_pended_guard_refusal_names_busbars_policy_and_dials_nothing() {
-    use busbar_contract::abi::host::service::DEST_INTERNAL;
+    use busbar_contract::services::codes::DEST_INTERNAL;
     let judge = |_: &str, _: u32, done: busbar_core_connector::Judged| {
         std::thread::spawn(move || done(Err(DEST_INTERNAL)));
         None

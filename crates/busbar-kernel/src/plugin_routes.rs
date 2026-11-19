@@ -6,8 +6,8 @@ use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::Response;
 use axum::routing::{on, MethodFilter, MethodRouter};
-use busbar_contract::abi::mechanism::endpoint::*;
-use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
+use busbar_contract::kinds::codes::endpoint::*;
+use busbar_contract::route::{Route, RouteAuth, RouteMethod};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -156,7 +156,7 @@ impl PluginRouteTable {
                 guests.lines().iter().any(|line| {
                     matches!(&line.claimant, crate::guest::Claimant::Need(owner, _) if owner == &registered.source_instance)
                         && line.route.path == *path
-                        && line.route.methods & busbar_contract::abi::transport::route::method_bit(method.as_str()) != 0
+                        && line.route.methods & busbar_contract::route::method_bit(method.as_str()) != 0
                         && registered.auth != RouteAuth::Admin
                 })
             }).cloned().collect();

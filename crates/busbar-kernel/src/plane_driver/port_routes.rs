@@ -218,7 +218,7 @@ fn target_parts(target: &str) -> (&str, &str) {
 /// The recovery route a WORK target's path lies on (the same match WORK_OPEN was admitted under), if any.
 #[must_use]
 pub fn recovery_route<'r>(routes: &'r PortRoutes, target: &str) -> Option<&'r Mounted> {
-    use busbar_contract::abi::transport::route::{path_matches, PATH_PATTERN};
+    use busbar_contract::route::{path_matches, PATH_PATTERN};
     let (path, _) = target_parts(target);
     routes
         .recovery

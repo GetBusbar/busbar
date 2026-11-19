@@ -3,12 +3,12 @@
 
 //! Deterministic auth-kind SDK witness for loader mechanics, without credential policy.
 
-use busbar_contract::abi::auth::AuthPoints;
 use busbar_contract::abi::sdk::auth_door::{
     verify_tail, with_tail, Answer, SyncVerifyPlugin, Verdict, VerifyView,
 };
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
+use busbar_contract::route::AuthPoints;
 
 pub const NAME: &str = "neutral-auth-witness";
 

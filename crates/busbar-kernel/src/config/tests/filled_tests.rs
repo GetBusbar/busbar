@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::mechanism::door::{REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL};
+use busbar_contract::plugin_settings::sugar_words::{
+    REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL,
+};
 use busbar_contract::secret_ref::{SecretRef, Sugars};
 use serde_json::json;
 

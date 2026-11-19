@@ -396,11 +396,11 @@ fn a_door_states_its_actual_registry_facts_and_judges_its_section() {
 }
 
 mod lifecycle_connections {
-    use busbar_contract::abi::mechanism::rendering::ReadNeed;
     use busbar_contract::conn::{
         ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece, Program,
         Ticket,
     };
+    use busbar_contract::rendering::ReadNeed;
     use busbar_contract::transport::ConnFacts;
     use std::collections::HashSet;
     use std::sync::Mutex;
@@ -413,7 +413,7 @@ mod lifecycle_connections {
         fn default() -> Self {
             let row = crate::dispatch::LinkedRow::of(crate::neutral_plane::door)
                 .expect("the actual plane states its needs");
-            let stated = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+            let stated = busbar_contract::rendering::read(&row.statement)
                 .expect("the actual plane statement reads");
             Self(
                 Mutex::default(),

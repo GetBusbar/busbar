@@ -108,7 +108,8 @@ fn listener_policy_is_copied_from_the_statement_into_the_opened_sink() {
 
 #[test]
 fn listener_policy_rejects_undeclared_and_non_public_persistent_paths() {
-    use busbar_contract::abi::mechanism::extensions::{encode, statement_blob};
+    use busbar_contract::abi::mechanism::extensions::statement_blob;
+    use busbar_contract::extensions::encode;
     let context = |public: &[u8], persistent: &[u8]| {
         let bytes = Box::leak(
             encode(&[
@@ -390,7 +391,8 @@ fn an_instance_let_go_has_its_io_handles_reaped() {
 
 extern "C" fn span_records_door() -> &'static busbar_contract::abi::mechanism::door::Door {
     use busbar_contract::abi::mechanism::door::{Door, Statement};
-    use busbar_contract::abi::mechanism::extensions::{encode, statement_blob};
+    use busbar_contract::abi::mechanism::extensions::statement_blob;
+    use busbar_contract::extensions::encode;
     use std::sync::atomic::{AtomicPtr, Ordering};
     static DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
     let mut door = DOOR.load(Ordering::Acquire);

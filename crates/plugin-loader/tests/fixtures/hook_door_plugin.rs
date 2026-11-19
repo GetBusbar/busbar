@@ -6,13 +6,14 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use busbar_contract::abi::hook::{
-    cancel, ConfigureIn, ConfigureOut, DecideIn, DecideOut, Tail, CLASS_GATE, PROMPT_NO, USER_NO,
-    VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT,
+    cancel, ConfigureIn, ConfigureOut, DecideIn, DecideOut, Tail, PROMPT_NO, USER_NO, VERB_ABSTAIN,
+    VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT,
 };
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::{AbiIn, AbiOut};
 use busbar_contract::abi::sdk::life::{settings_object, Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
+use busbar_contract::hooks::codes::CLASS_GATE;
 
 pub const TAIL: &Tail = &busbar_contract::abi::sdk::hook::tail(CLASS_GATE, PROMPT_NO, USER_NO);
 

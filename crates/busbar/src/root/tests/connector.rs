@@ -57,11 +57,11 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
     assert!(Arc::ptr_eq(the(), &built));
 }
 
-use busbar_contract::abi::host::conn::connector::{
+use busbar_contract::conn::codes::{
     EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
     EGRESS_PROVIDER,
 };
-use busbar_contract::abi::host::service::DEST_METADATA;
+use busbar_contract::services::codes::DEST_METADATA;
 
 const IMDS: &str = "169.254.169.254";
 
@@ -230,7 +230,7 @@ async fn metadata_stays_refused_across_reload() {
 
 #[tokio::test]
 async fn provider_configuration_never_grants_global_hostname_authority_across_reload() {
-    use busbar_contract::abi::host::service::DEST_INTERNAL;
+    use busbar_contract::services::codes::DEST_INTERNAL;
     crate::dist_root_install::install();
     crate::root::test_plane_registry::register();
     let private_a = vec!["\x310.0.0.5".parse().unwrap()];
@@ -305,7 +305,7 @@ async fn provider_configuration_never_grants_global_hostname_authority_across_re
 
 #[test]
 fn a_provider_host_grants_no_authority_to_generic_destination_judging() {
-    use busbar_contract::abi::host::service::DEST_INTERNAL;
+    use busbar_contract::services::codes::DEST_INTERNAL;
     let private = vec!["\x310.0.0.5".parse().unwrap()];
     let bare = deployment(&[("local_model", "http://model.internal:8000", &[])], "");
     let judge = guard_for(&bare.destinations()).expect("a guard");
@@ -346,7 +346,7 @@ fn a_provider_host_grants_no_authority_to_generic_destination_judging() {
 #[cfg(linked_every_auth)]
 #[test]
 fn every_linked_auth_plugins_outbound_need_is_refused_without_selected_route_authority() {
-    use busbar_contract::abi::host::service::DEST_INTERNAL;
+    use busbar_contract::services::codes::DEST_INTERNAL;
     let private = vec!["\x310.0.0.5".parse().unwrap()];
     let strict = guard_for(&deployment(&[], "").destinations()).expect("the default guard");
     let listed = deployment(&[], "");
@@ -355,10 +355,10 @@ fn every_linked_auth_plugins_outbound_need_is_refused_without_selected_route_aut
     for &(key, _, door) in crate::LINKED.auths {
         let row = crate::root::loader::dispatch::LinkedRow::of(door)
             .unwrap_or_else(|e| panic!("`{key}`'s door states itself: {e}"));
-        let read = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+        let read = busbar_contract::rendering::read(&row.statement)
             .unwrap_or_else(|e| panic!("`{key}`'s Statement reads: {e:?}"));
         for (n, need) in read.needs.iter().enumerate() {
-            if need.direction != busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND {
+            if need.direction != busbar_contract::conn::codes::DIRECTION_OUTBOUND {
                 continue;
             }
             outbound += 1;
@@ -405,13 +405,11 @@ fn every_linked_auth_plugins_outbound_need_is_refused_without_selected_route_aut
 #[cfg(linked_every_transport)]
 #[test]
 fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
-    use busbar_contract::abi::host::conn::connector::{
-        DIRECTION_OUTBOUND, EGRESS_OPERATOR_INFRASTRUCTURE,
-    };
-    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+    use busbar_contract::conn::codes::{DIRECTION_OUTBOUND, EGRESS_OPERATOR_INFRASTRUCTURE};
     use busbar_contract::conn::{
         ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
     };
+    use busbar_contract::rendering::{ReadBlob, ReadNeed};
     let doors = crate::LINKED_TRANSPORT_DOORS;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -468,7 +466,7 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
                     bytes: Vec::new(),
                 },
                 timeout_ms: 0,
-                keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+                keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
                 keep_response_headers: Vec::new(),
                 deny_response_headers: Vec::new(),
             };

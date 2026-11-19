@@ -339,7 +339,7 @@ async fn the_recoverable_gate_sees_the_walks_at_rest_key_while_the_store_opens()
 
 #[test]
 fn configured_secret_instances_use_bound_image_and_implicit_empty_settings() {
-    use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
+    use busbar_contract::plugin_settings::sugar_words::REWRITE_SUGAR;
     use busbar_kernel::config::grammar::SecretSource;
     use std::collections::BTreeMap;
     let mut sugars = busbar_contract::secret_ref::Sugars::default();

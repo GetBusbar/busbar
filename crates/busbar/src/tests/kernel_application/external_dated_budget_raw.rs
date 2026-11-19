@@ -365,8 +365,10 @@ async fn malformed_versioned_budget_provenance_refuses_instead_of_repricing_as_l
 
 #[tokio::test]
 async fn open_route_cancel_and_session_cleanup_keep_the_admissions_original_entry() {
-    use busbar_contract::abi::plane::{UnitCount, CANCEL_OK_PARTIAL, UNITS_REPORTED};
+    use busbar_contract::abi::plane::UnitCount;
     use busbar_contract::caps::{CallId, OriginKind, ReasonCode};
+    use busbar_contract::measurement::UNITS_REPORTED;
+    use busbar_contract::plane::codes::CANCEL_OK_PARTIAL;
     use busbar_contract::UnitKey;
     use busbar_kernel::config::groups::ExhaustionMode;
     use busbar_kernel::plane_driver::{

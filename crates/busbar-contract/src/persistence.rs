@@ -376,7 +376,7 @@ impl<O> PreparedCandidate<O> {
 }
 
 fn candidate_fingerprint<O>(candidate: &Candidate<O>) -> [u8; 32] {
-    use crate::abi::sdk::digest::Sha256Stream as Sha256;
+    use crate::digest::Sha256Stream as Sha256;
     fn bytes(hash: &mut Sha256, value: &[u8]) {
         hash.update((value.len() as u64).to_le_bytes());
         hash.update(value);

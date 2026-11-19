@@ -4,13 +4,14 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use busbar_artifact_metadata::rendering::{read, Read, ReadNeed};
-use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
-use busbar_contract::abi::mechanism::door::{
-    DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_CONSUMED, SECTION_DECLARING, SECTION_SELECTS,
-};
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::mechanism::door::DoorFn;
+use busbar_contract::conn::codes::DIRECTION_INBOUND;
+use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::plugin::Kind;
+use busbar_contract::plugin_settings::sugar_words::{
+    REWRITE_ALIAS, REWRITE_SUGAR, SECTION_CONSUMED, SECTION_DECLARING, SECTION_SELECTS,
+};
+use busbar_contract::rendering::{read, Read, ReadNeed};
 
 use crate::dispatch::kinds::plane::Plane;
 use crate::dispatch::{
@@ -781,7 +782,7 @@ pub struct PublicSettings {
 }
 
 pub fn public_settings(stated: &[u8], words: &[&str]) -> Result<Option<PublicSettings>, String> {
-    use busbar_contract::abi::mechanism::door::REWRITE_ALIAS;
+    use busbar_contract::plugin_settings::sugar_words::REWRITE_ALIAS;
     let r: Read = read(stated)
         .map_err(|e| format!("a Statement rendering does not read back at byte {}", e.at))?;
     let public = crate::settings_schema::public_settings_of_statement(

@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Weak};
 
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
 
 use crate::dispatch::log_file::{
     refusal, wall_secs, Admit, FileSlot, Lane, Live, LogLevel, Now, Over, PluginLogConfig,

@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::export::CHECK_PHASE_INSTANCES;
 use busbar_contract::abi::mechanism::door::DoorFn;
+use busbar_contract::export_calls::codes::CHECK_PHASE_INSTANCES;
 
 use super::*;
 use crate::both_ways;
@@ -164,7 +164,7 @@ fn check_runs_when_the_first_instance_does_not_open() {
     let findings = rows
         .check(
             row,
-            busbar_contract::abi::export::CHECK_PHASE_LIMITS,
+            busbar_contract::export_calls::codes::CHECK_PHASE_LIMITS,
             &[
                 (
                     "metrics".into(),

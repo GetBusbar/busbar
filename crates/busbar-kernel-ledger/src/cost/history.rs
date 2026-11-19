@@ -156,7 +156,7 @@ impl EntryId {
 
     /// The id of `key`.
     pub fn of(key: &EntryKey) -> Self {
-        let digest = busbar_contract::abi::sdk::digest::sha256(key.as_bytes());
+        let digest = busbar_contract::digest::sha256(key.as_bytes());
         let mut id = [0u8; ENTRY_ID_LEN];
         id.copy_from_slice(&digest[..ENTRY_ID_LEN]);
         EntryId(id)

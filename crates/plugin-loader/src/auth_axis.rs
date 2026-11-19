@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::auth::FACT_READS_CREDENTIALS;
+use busbar_contract::auth_calls::codes::FACT_READS_CREDENTIALS;
 use busbar_contract::auth_calls::AuthCalls;
 use busbar_contract::conn::admissions::AdmissionAuthority;
 
@@ -213,7 +213,7 @@ impl AuthRows {
     }
 
     pub fn inbound_style(&self, module: &str) -> Option<busbar_contract::auth_calls::InboundStyle> {
-        use busbar_contract::abi::auth::{CAP_INBOUND, FACT_OPERATOR};
+        use busbar_contract::auth_calls::codes::{CAP_INBOUND, FACT_OPERATOR};
         let row = self.row(module)?;
         let facts = self.stated(row)?;
         if facts.caps & CAP_INBOUND == 0

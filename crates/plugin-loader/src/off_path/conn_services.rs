@@ -4,8 +4,8 @@
 //! `dispatch::conn_services`' bind-time tables: an instance's needs are declared once, when it is
 //! bound (`Instance::bind`), and the connector slots only read them.
 
-use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::HostCtx;
+use busbar_contract::rendering::ReadNeed;
 
 use crate::dispatch::conn_services::{ConnState, ResponseKeep};
 

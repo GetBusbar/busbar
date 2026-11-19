@@ -6,11 +6,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use busbar_contract::abi::host::service::{
     check_clock_now, check_content_scan, check_dest_judge, check_hook_call, check_random_fill,
     check_ticket_mint, check_ticket_take, check_verify_lookup, check_verify_store, ContentScanIn,
-    HookCallIn, ItemSpan, RandomFillIn, VerifyLookupIn, VerifyStoreIn, DEST_ALLOWED, DEST_INTERNAL,
-    DEST_METADATA, DEST_RESOLVE,
+    HookCallIn, ItemSpan, RandomFillIn, VerifyLookupIn, VerifyStoreIn, DEST_ALLOWED, DEST_RESOLVE,
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::Filled;
+use busbar_contract::services::codes::{DEST_INTERNAL, DEST_METADATA};
 use busbar_contract::services::DiskDest;
 
 use super::*;
@@ -293,7 +293,7 @@ impl HostServices for Provider {
         stored.bytes = b"child".to_vec();
         stored.spans = vec![ItemSpan {
             key: Span {
-                offset: busbar_contract::abi::mechanism::check::SPAN_ABSENT,
+                offset: busbar_contract::records::size_limits::SPAN_ABSENT,
                 len: 0,
             },
             value: Span { offset: 0, len: 5 },
@@ -317,7 +317,7 @@ impl HostServices for Provider {
         stored.spans = vec![ItemSpan {
             key: Span { offset: 0, len: 3 },
             value: Span {
-                offset: busbar_contract::abi::mechanism::check::SPAN_ABSENT,
+                offset: busbar_contract::records::size_limits::SPAN_ABSENT,
                 len: 0,
             },
         }];
@@ -494,10 +494,10 @@ struct Double {
 }
 
 fn double() -> Double {
-    double_for(busbar_contract::abi::mechanism::KindCode::Plane)
+    double_for(busbar_contract::kinds::codes::KindCode::Plane)
 }
 
-fn double_for(kind: busbar_contract::abi::mechanism::KindCode) -> Double {
+fn double_for(kind: busbar_contract::kinds::codes::KindCode) -> Double {
     let route = Arc::new(Route {
         store: Arc::default(),
         provider: Arc::default(),
@@ -642,7 +642,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             assert_eq!(service, op::HOOK_CHILD, "only hook.child is unserved");
             continue;
         };
-        use busbar_contract::abi::mechanism::KindCode;
+        use busbar_contract::kinds::codes::KindCode;
         let kind = match service {
             op::RECORDS_SECRET => KindCode::Auth,
             op::DISK_APPEND | op::SNAPSHOT_READ => KindCode::Export,
@@ -1717,7 +1717,7 @@ fn call_secret(ctx: HostCtx, i: &RecordsSecretIn) -> (RawOutcome, ServiceOut) {
 
 #[test]
 fn records_secret_serves_only_a_declared_kind() {
-    let d = double_for(busbar_contract::abi::mechanism::KindCode::Auth);
+    let d = double_for(busbar_contract::kinds::codes::KindCode::Auth);
     let (mut buf, mut spans) = (
         [0u8; 16],
         [ItemSpan {
@@ -1736,7 +1736,7 @@ fn records_secret_serves_only_a_declared_kind() {
     wake.caller
         .set(Caller::for_test(
             "double".into(),
-            busbar_contract::abi::mechanism::KindCode::Auth,
+            busbar_contract::kinds::codes::KindCode::Auth,
         ))
         .unwrap();
     let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
@@ -1946,7 +1946,7 @@ fn blank_written() -> svc::DiskWritten {
 
 #[test]
 fn disk_append_writes_only_to_a_granted_bound_destination() {
-    let d = double_for(busbar_contract::abi::mechanism::KindCode::Export);
+    let d = double_for(busbar_contract::kinds::codes::KindCode::Export);
     let mut w = blank_written();
 
     let i = disk_in("path", b"line\n", 0, &mut w);
@@ -1964,7 +1964,7 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     wake.caller
         .set(Caller::for_test(
             "double".into(),
-            busbar_contract::abi::mechanism::KindCode::Export,
+            busbar_contract::kinds::codes::KindCode::Export,
         ))
         .unwrap();
     let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
@@ -2130,9 +2130,8 @@ fn an_all_zero_trust_state_in_is_a_short_answer() {
 }
 
 fn snapshot_families() -> Vec<busbar_contract::export_calls::Family> {
-    use busbar_contract::abi::export::{
-        SCRAPE_KIND_COUNTER, SCRAPE_KIND_GAUGE, SCRAPE_KIND_HISTOGRAM,
-    };
+    use busbar_contract::abi::export::SCRAPE_KIND_HISTOGRAM;
+    use busbar_contract::export_calls::codes::{SCRAPE_KIND_COUNTER, SCRAPE_KIND_GAUGE};
     use busbar_contract::export_calls::{Family, Sample};
     let sample = |name: &str, labels: &[(&str, &str)], value: &str| Sample {
         name: name.into(),
@@ -2178,9 +2177,9 @@ fn snapshot_families() -> Vec<busbar_contract::export_calls::Family> {
 
 #[test]
 fn snapshot_read_lays_the_families_out_in_the_callers_buffer() {
-    use busbar_contract::abi::host::service::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
     use busbar_contract::abi::sdk::ServiceError;
-    let d = double_for(busbar_contract::abi::mechanism::KindCode::Export);
+    use busbar_contract::services::codes::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
+    let d = double_for(busbar_contract::kinds::codes::KindCode::Export);
     let none = CompletionHandle {
         ticket: TICKET,
         seq: 0,
@@ -2227,7 +2226,7 @@ fn snapshot_read_lays_the_families_out_in_the_callers_buffer() {
 #[test]
 fn snapshot_read_refuses_an_unknown_scope_or_a_misaligned_buffer() {
     use busbar_contract::abi::host::service::{SnapshotReadIn, SNAPSHOT_SCOPES};
-    let d = double_for(busbar_contract::abi::mechanism::KindCode::Export);
+    let d = double_for(busbar_contract::kinds::codes::KindCode::Export);
     let mut words = [0u64; 512];
     let at = words.as_mut_ptr().cast::<u8>();
     let call = |scope: u32, buf: *mut u8, cap: usize| {
@@ -2371,11 +2370,13 @@ fn red_the_host_service_frame_writes_no_further_than_the_out_the_caller_stated()
     assert_eq!(lent.0[5], 0, "`exited` is written zero by every frame");
 }
 
-use busbar_contract::abi::auth::{FieldSpan, POINT_HEAD};
+use busbar_contract::abi::auth::FieldSpan;
 use busbar_contract::abi::host::service::{
     AuthAnswer, AuthCallIn, AuthRef, HeadView, RefusalAnswer, UnitHandInIn, UnitRef, UnitRefuseIn,
-    LINE_NONE, REFUSE_NO_ROUTE,
+    LINE_NONE,
 };
+use busbar_contract::route::POINT_HEAD;
+use busbar_contract::services::codes::REFUSE_NO_ROUTE;
 
 use crate::dispatch::auth_handle::{
     generation, mint_auth_ref, mint_unit_ref, verify_auth_ref, verify_unit_ref, RefRefused,
@@ -2397,7 +2398,7 @@ fn get_view() -> HeadView {
         },
         fields: std::ptr::null(),
         fields_len: 0,
-        scheme: busbar_contract::abi::host::service::SCHEME_SECURE,
+        scheme: busbar_contract::services::codes::SCHEME_SECURE,
         _scheme_reserved: [0; 7],
     }
 }
@@ -2447,8 +2448,8 @@ fn call_auth(ctx: HostCtx, i: &AuthCallIn) -> (RawOutcome, ServiceOut) {
 #[test]
 fn an_auth_ref_minted_for_another_owner_is_refused() {
     let (a, b) = (
-        double_for(busbar_contract::abi::mechanism::KindCode::Transport),
-        double_for(busbar_contract::abi::mechanism::KindCode::Transport),
+        double_for(busbar_contract::kinds::codes::KindCode::Transport),
+        double_for(busbar_contract::kinds::codes::KindCode::Transport),
     );
     assert_ne!(owner(&a), owner(&b));
     let r = mint_auth_ref(owner(&a), generation(), 5).expect("minted");
@@ -2472,7 +2473,7 @@ fn an_auth_ref_minted_for_another_owner_is_refused() {
 
 #[test]
 fn an_auth_ref_of_an_older_generation_is_refused() {
-    let d = double_for(busbar_contract::abi::mechanism::KindCode::Transport);
+    let d = double_for(busbar_contract::kinds::codes::KindCode::Transport);
     let stale = mint_auth_ref(owner(&d), generation().wrapping_sub(1), 5).expect("minted");
     let mut slot = answer_slot();
     let (ret, o) = call_auth(d.ctx, &auth_call_in(stale, &mut slot));
@@ -2488,7 +2489,7 @@ fn an_auth_ref_of_an_older_generation_is_refused() {
 
 #[test]
 fn an_auth_ref_with_one_mac_bit_flipped_is_refused() {
-    let d = double_for(busbar_contract::abi::mechanism::KindCode::Transport);
+    let d = double_for(busbar_contract::kinds::codes::KindCode::Transport);
     let r = mint_auth_ref(owner(&d), generation(), 5).expect("minted");
     assert_eq!(verify_auth_ref(owner(&d), generation(), &r), Ok(5));
     for bit in 0..64 {
@@ -2524,7 +2525,7 @@ fn an_auth_ref_with_one_mac_bit_flipped_is_refused() {
 
 #[test]
 fn an_auth_handle_in_one_field_short_is_refused() {
-    let d = double_for(busbar_contract::abi::mechanism::KindCode::Transport);
+    let d = double_for(busbar_contract::kinds::codes::KindCode::Transport);
     let r = mint_auth_ref(owner(&d), generation(), 5).expect("minted");
     let mut slot = answer_slot();
     let exact = size_of::<AuthCallIn>() as u32;
@@ -2652,10 +2653,9 @@ fn a_unit_ref_verifies_only_for_its_own_request() {
 
 #[test]
 fn an_auth_call_whose_view_declares_no_scheme_is_refused_by_name() {
-    use busbar_contract::abi::host::service::{
-        SCHEME_PLAIN, SCHEME_UNDECLARED, SCHEME_UNDECLARED_REFUSED,
-    };
-    let d = double_for(busbar_contract::abi::mechanism::KindCode::Transport);
+    use busbar_contract::abi::host::service::SCHEME_UNDECLARED_REFUSED;
+    use busbar_contract::services::codes::{SCHEME_PLAIN, SCHEME_UNDECLARED};
+    let d = double_for(busbar_contract::kinds::codes::KindCode::Transport);
     let r = mint_auth_ref(owner(&d), generation(), 5).expect("minted");
     let mut slot = answer_slot();
     let mut i = auth_call_in(r, &mut slot);
@@ -2797,7 +2797,7 @@ fn beside(d: &Double, name: &str) -> HostCtx {
         .caller
         .set(Caller::for_test(
             Arc::from(name),
-            busbar_contract::abi::mechanism::KindCode::Plane
+            busbar_contract::kinds::codes::KindCode::Plane
         ))
         .is_ok());
     crate::dispatch::handle::mint(wake).expect("the host mints a handle")
@@ -2923,9 +2923,12 @@ fn side_answer(unit: UnitRef) -> AuthCallAnswer {
         strips: vec![
             (
                 "authorization".to_string(),
-                busbar_contract::abi::auth::FIELD_SENSITIVE,
+                busbar_contract::auth_calls::codes::FIELD_SENSITIVE,
             ),
-            ("key".to_string(), busbar_contract::abi::auth::FIELD_QUERY),
+            (
+                "key".to_string(),
+                busbar_contract::auth_calls::codes::FIELD_QUERY,
+            ),
         ],
     }
 }
@@ -2996,7 +2999,7 @@ impl AuthHandleHost for KernelSide {
 }
 
 fn served_double() -> (Double, Arc<KernelSide>) {
-    let d = double_for(busbar_contract::abi::mechanism::KindCode::Transport);
+    let d = double_for(busbar_contract::kinds::codes::KindCode::Transport);
     let side = Arc::new(KernelSide::default());
     let host: Arc<dyn AuthHandleHost> = side.clone();
     assert!(d.route.auth.set(host).is_ok());
@@ -3056,9 +3059,15 @@ fn red_auth_call_delegates_to_the_installed_kernel_side_and_answers_names_only()
             .to_string()
     };
     assert_eq!(name(&spans[0]), "authorization");
-    assert_eq!(spans[0].flags, busbar_contract::abi::auth::FIELD_SENSITIVE);
+    assert_eq!(
+        spans[0].flags,
+        busbar_contract::auth_calls::codes::FIELD_SENSITIVE
+    );
     assert_eq!(name(&spans[1]), "key");
-    assert_eq!(spans[1].flags, busbar_contract::abi::auth::FIELD_QUERY);
+    assert_eq!(
+        spans[1].flags,
+        busbar_contract::auth_calls::codes::FIELD_QUERY
+    );
     for s in &spans[..2] {
         assert_eq!(s.value.offset, check::SPAN_ABSENT, "a value crossed");
         assert_eq!(s.value.len, 0);
@@ -3500,7 +3509,7 @@ fn retiring_operation_tickets_does_not_end_the_live_host_framing() {
 
 #[test]
 fn a_hand_in_on_a_lent_none_line_mints_its_unit_and_continues() {
-    let d = double_for(busbar_contract::abi::mechanism::KindCode::Transport);
+    let d = double_for(busbar_contract::kinds::codes::KindCode::Transport);
     let lent = crate::dispatch::auth_handle::lend_none_line(owner(&d), 0x6e6f_6e65)
         .expect("the host lends the line");
     let hand_in = |auth: AuthRef| {
@@ -3624,10 +3633,10 @@ fn service_ready<T>(
 
 #[test]
 fn pending_snapshot_reuses_owned_families_and_rebases_short_delivery() {
-    use busbar_contract::abi::host::service::SNAPSHOT_SCOPE_HOOKS;
     use busbar_contract::abi::sdk::ServiceError;
+    use busbar_contract::services::codes::SNAPSHOT_SCOPE_HOOKS;
     use std::task::Poll;
-    let d = double_for(busbar_contract::abi::mechanism::KindCode::Export);
+    let d = double_for(busbar_contract::kinds::codes::KindCode::Export);
     d.route
         .provider
         .snapshot_pending
@@ -3815,7 +3824,7 @@ fn retirement_cannot_acquire_fresh_authority_but_does_not_disable_the_replacemen
 
 #[test]
 fn cached_io_callbacks_refuse_nontransport_kinds_before_provider_lookup() {
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     let io = &crate::dispatch::io_slots::IO_SLOTS;
     let slots = [
         io.open, io.listen, io.accept, io.read, io.write, io.ready, io.shut, io.close, io.spawn,
@@ -4113,7 +4122,7 @@ fn outbound_prepare_accepts_sealed_body_once_and_rejects_invalid_action_fields()
 
 #[test]
 fn hook_child_is_served_to_no_kind() {
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     assert!(HOST_SLOTS.hook_child.is_none());
     assert!(host_slots(KindCode::Hook).hook_child.is_none());
     assert!(host_slots(KindCode::Hook).unit_nest.is_none());
@@ -4290,7 +4299,7 @@ fn migrate_admit_answers_only_a_store_inside_open_with_the_boots_verdict() {
 /// The advertised tables: only a store's carries `migrate.admit`.
 #[test]
 fn only_the_store_table_advertises_migrate_admit() {
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     for kind in KindCode::ALL {
         assert_eq!(
             host_slots(kind).migrate_admit.is_some(),

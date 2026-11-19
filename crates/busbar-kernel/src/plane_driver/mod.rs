@@ -67,15 +67,17 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    class_of, reason_code, ArriveIn, ArriveOut, OutField, RefusalClass, RefusalIn, RefusalOut,
-    RefusalStatus, UnitCount, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL, ROUTE_SCOPE_LOCAL,
-    ROUTE_SESSION,
+    ArriveIn, ArriveOut, OutField, RefusalIn, RefusalOut, RefusalStatus, UnitCount,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
     Admission, Admittance, Audit, Authenticated, Consumption, Dial, Encode, Grant, HoldAccrual,
     Meter, OpClassId, Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, RoutePlan,
     SeatVerdict as StepAnswer, Usage, VerifiedDestination,
+};
+use busbar_contract::plane::codes::{
+    class_of, reason_code, RefusalClass, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL,
+    ROUTE_SCOPE_LOCAL, ROUTE_SESSION,
 };
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::Caller;
@@ -241,7 +243,7 @@ pub(crate) fn audit_row_to(
     value: &[u8],
     principal: Option<&PrincipalId>,
 ) -> Result<(), ()> {
-    use busbar_contract::abi::plane::{AUDIT_APPLIED, AUDIT_DEGRADED, AUDIT_REJECTED};
+    use busbar_contract::plane::codes::{AUDIT_APPLIED, AUDIT_DEGRADED, AUDIT_REJECTED};
     let outcome = match outcome {
         AUDIT_APPLIED => busbar_contract::vocab::OUTCOME_APPLIED,
         AUDIT_REJECTED => busbar_contract::vocab::OUTCOME_REJECTED,
@@ -394,7 +396,7 @@ impl PlaneDriver {
         writes: &[busbar_contract::plane_calls::CancelWrite],
         principal: Option<&PrincipalId>,
     ) {
-        use busbar_contract::abi::plane::{RECORD_AUDIT, RECORD_PUT};
+        use busbar_contract::plane::codes::{RECORD_AUDIT, RECORD_PUT};
         for w in writes {
             let written = match w.op {
                 RECORD_AUDIT => self.audit_row(w.kind, &w.key, &w.value, principal),
@@ -474,7 +476,7 @@ impl PlaneDriver {
             caller,
             state: Mutex::new(UnitState {
                 // A health probe is the host's own traffic, not a request to diagnose.
-                trail: if arrival.claim == busbar_contract::abi::plane::CLAIM_PROBE {
+                trail: if arrival.claim == busbar_contract::plane::codes::CLAIM_PROBE {
                     None
                 } else {
                     crate::observability::request::Trail::start()
@@ -847,14 +849,14 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
     pub fn declined_unsupported_action(&self) -> bool {
         let st = self.lock();
         st.declined.is_some()
-            && st.declined_flags & busbar_contract::abi::plane::REFUSED_UNSUPPORTED_ACTION != 0
+            && st.declined_flags & busbar_contract::plane::codes::REFUSED_UNSUPPORTED_ACTION != 0
     }
 
     fn declined_after_admission(&self) -> bool {
         let st = self.lock();
         st.declined.is_some()
             && st.decoded.is_some()
-            && st.declined_flags & busbar_contract::abi::plane::REFUSED_AFTER_ADMISSION != 0
+            && st.declined_flags & busbar_contract::plane::codes::REFUSED_AFTER_ADMISSION != 0
     }
 
     pub fn take_rendered(&self) -> Option<Rendered> {
@@ -1325,7 +1327,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         if !self.driver.authenticated_route
             && decoded
                 .as_ref()
-                .is_some_and(|d| d.route == busbar_contract::abi::plane::ROUTE_AUTHENTICATED)
+                .is_some_and(|d| d.route == busbar_contract::plane::codes::ROUTE_AUTHENTICATED)
         {
             return Err(Refusal::new(ReasonCode::DecodeFailed));
         }

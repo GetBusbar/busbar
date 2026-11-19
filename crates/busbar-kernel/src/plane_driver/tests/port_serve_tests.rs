@@ -415,7 +415,7 @@ fn pending_money_refusal(usage_facts: u64) {
     let core = Arc::new(KernelServices::new());
     let caller = busbar_contract::services::Caller::for_test(
         Arc::from("seat"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     let _lease = core.admit_native_invocation(&caller).unwrap();
     assert!(core.units().pre_admitted_for(

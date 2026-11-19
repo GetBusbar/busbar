@@ -15,7 +15,7 @@ use crate::{
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::slot as life;
-use busbar_contract::abi::transport::slot;
+use busbar_contract::transport::codes::slot;
 use busbar_plugin_loader::dispatch::{
     kinds::transport::Transport as TransportKind, DispatchConfig, Dispatcher, Frame, InFrame,
     OutFrame, Plugin, PluginLogConfig,
@@ -298,7 +298,7 @@ impl FramerDoor for Dispatched {
     }
 
     fn side(&self) -> Option<Box<dyn Side>> {
-        if self.facts.role != busbar_contract::abi::transport::ROLE_CARRIER {
+        if self.facts.role != busbar_contract::transport::codes::ROLE_CARRIER {
             return None;
         }
         self.on
@@ -357,7 +357,7 @@ impl FramerDoor for Dispatched {
 
     /// A framer's framing runs its ticketed ops (`begin`, `ingest`, `emit`) on inline tickets of
     fn framing_side(&self) -> Option<Box<dyn Side>> {
-        if self.facts.role != busbar_contract::abi::transport::ROLE_FRAMER {
+        if self.facts.role != busbar_contract::transport::codes::ROLE_FRAMER {
             return None;
         }
         self.on
@@ -425,7 +425,7 @@ pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
 
 /// The auth points a row that states no record offers (a row off the door axis states none).
 #[must_use]
-pub fn offers_unstated() -> busbar_contract::abi::auth::AuthPoints {
+pub fn offers_unstated() -> busbar_contract::route::AuthPoints {
     busbar_contract::abi::transport::check::check_offered_points(&[]).unwrap_or_default()
 }
 
@@ -466,7 +466,7 @@ mod identity_tests {
         TransportFacts {
             listener_bindings: Vec::new(),
             name: "tcp",
-            role: busbar_contract::abi::transport::ROLE_CARRIER,
+            role: busbar_contract::transport::codes::ROLE_CARRIER,
             claims: vec!["tcp"],
             upgrades: Vec::new(),
             sessions: vec!["tcp"],

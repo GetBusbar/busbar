@@ -6,20 +6,21 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::export::{Ops, CHECK_PHASE_INSTANCES, CHECK_PHASE_LIMITS};
-use busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB;
+use busbar_contract::abi::export::Ops;
 use busbar_contract::abi::mechanism::call::{DIAG_LOG, DIAG_LOG_DROPPED};
 use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
 use busbar_contract::abi::mechanism::lifecycle::OpsHead;
-use busbar_contract::abi::mechanism::rendering::ReadNeed;
-use busbar_contract::abi::mechanism::DOOR_SYMBOL;
+use busbar_contract::conn::codes::EGRESS_OPEN_WEB;
 use busbar_contract::conn::{
     ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece,
     PieceKind,
 };
+use busbar_contract::export_calls::codes::{CHECK_PHASE_INSTANCES, CHECK_PHASE_LIMITS};
 use busbar_contract::export_calls::{Delivered, ExportCalls};
 use busbar_contract::export_stream::ExportStream;
 use busbar_contract::ids::StreamId;
+use busbar_contract::kinds::codes::DOOR_SYMBOL;
+use busbar_contract::rendering::ReadNeed;
 use busbar_contract::transport::ConnFacts;
 
 use super::*;
@@ -1075,7 +1076,7 @@ fn a_declared_target_is_bound_for_first_and_third_party_publishers() {
     assert!(
         opened[0].contains(&format!(
             r#""egress_class":{}"#,
-            busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB
+            busbar_contract::conn::codes::EGRESS_OPEN_WEB
         )),
         "{}",
         opened[0]
@@ -1119,20 +1120,20 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
     let sink = crate::observe::EnvelopeObserver::of(
         crate::observe::testing::observing(),
         "export-sink",
-        busbar_contract::abi::mechanism::kind::EXPORT,
+        busbar_contract::kinds::codes::EXPORT,
         &stated,
     );
 
     let counted = crate::observe::EnvelopeObserver::with_families(
         crate::observe::testing::observing(),
         "export-sink",
-        busbar_contract::abi::mechanism::kind::EXPORT,
-        vec![busbar_contract::abi::mechanism::rendering::ReadFamily {
+        busbar_contract::kinds::codes::EXPORT,
+        vec![busbar_contract::rendering::ReadFamily {
             name: "witness_crossings_total".into(),
             help: String::new(),
             unit: String::new(),
             label_keys: vec!["path".into()],
-            kind: busbar_contract::abi::mechanism::door::FAMILY_COUNTER,
+            kind: busbar_contract::plugin_settings::sugar_words::FAMILY_COUNTER,
         }],
     );
     counted.metric(Metric {
@@ -1198,7 +1199,7 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
     let log_sink = Arc::new(
         logs.sink(
             "export.tail",
-            busbar_contract::abi::mechanism::KindCode::Export,
+            busbar_contract::kinds::codes::KindCode::Export,
             Arc::new(crate::dispatch::NoSink),
         )
         .expect("a log sink"),
@@ -1207,7 +1208,7 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
         crate::observe::testing::observing(),
         log_sink.clone(),
         "export-sink",
-        busbar_contract::abi::mechanism::kind::EXPORT,
+        busbar_contract::kinds::codes::EXPORT,
         Vec::new(),
     );
     behind.diag(Diagnostic {

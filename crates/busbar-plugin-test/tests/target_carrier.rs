@@ -18,7 +18,8 @@ use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
-use busbar_contract::abi::transport::{slot, WriteIn};
+use busbar_contract::abi::transport::WriteIn;
+use busbar_contract::transport::codes::slot;
 use busbar_plugin_test::target::carrier::{
     dial_h1, dial_h2, Dial, Gone, Pieces, Reply, Request, Routes, HEAD_MAX,
 };

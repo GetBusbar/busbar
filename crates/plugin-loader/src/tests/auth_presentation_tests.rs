@@ -32,8 +32,8 @@ impl Life for Choice {
         })
     }
     fn extensions(&self) -> Vec<u8> {
-        use busbar_contract::abi::mechanism::extensions::encode;
         use busbar_contract::auth_calls::presentation::EXT_LOGIN_PRESENTATION;
+        use busbar_contract::extensions::encode;
         if self.variant == "absent" {
             return Vec::new();
         }

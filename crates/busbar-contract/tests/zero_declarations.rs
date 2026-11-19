@@ -6,7 +6,7 @@
 use std::mem::size_of;
 
 use busbar_contract::abi::auth::{
-    check_inbound_points, check_style_decl, AuthPoints, AuthTail, StyleDecl, TAIL_FROZEN,
+    check_inbound_points, check_style_decl, AuthTail, StyleDecl, TAIL_FROZEN,
 };
 use busbar_contract::abi::host::conn::connector::Need;
 use busbar_contract::abi::mechanism::check::{
@@ -16,6 +16,7 @@ use busbar_contract::abi::mechanism::door::{
     tail_read_len, KindTailHead, MarkWord, Rewrite, Section,
 };
 use busbar_contract::abi::{plane, transport};
+use busbar_contract::route::AuthPoints;
 
 /// What a check answered: its refusal, spelled, or `ACCEPTED`.
 fn refused<T, E: std::fmt::Debug>(r: Result<T, E>) -> String {

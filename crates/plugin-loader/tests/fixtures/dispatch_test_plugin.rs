@@ -12,14 +12,14 @@ use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, Diag, Envelope, InHead, MetricEntry, OutHead, Outcome, RawOutcome, BLOB_ABSENT,
     FLAG_RESUME, METRIC_ADD, METRIC_SET,
 };
-use busbar_contract::abi::mechanism::door::{
-    Door, MetricFamily, Statement, FAMILY_COUNTER, FAMILY_GAUGE,
-};
+use busbar_contract::abi::mechanism::door::{Door, MetricFamily, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, OpenIn, OpenOut, OpsHead, TickIn, TickOut, ValidateIn, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket, WakeFn};
-use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
+use busbar_contract::abi::mechanism::DOOR_MAGIC;
+use busbar_contract::kinds::codes::{KindCode, MECHANISM_VERSION};
+use busbar_contract::plugin_settings::sugar_words::{FAMILY_COUNTER, FAMILY_GAUGE};
 
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod unload_witness {
