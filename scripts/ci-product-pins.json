@@ -358,7 +358,7 @@
     {
       "repo": "busbar-store-valkey",
       "url": "https://github.com/GetBusbar/busbar-store-valkey",
-      "commit": "aa22d52729bfdaaa7fc2841c6c367399f80dedda",
+      "commit": "1fe9d287f5dff7a1e05939d26b4cfe5be07b205a",
       "package": "busbar-store-valkey-plugin",
       "kind": "store",
       "alias": "valkey",
