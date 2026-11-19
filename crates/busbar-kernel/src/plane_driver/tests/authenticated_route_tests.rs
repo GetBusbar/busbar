@@ -695,9 +695,9 @@ async fn authenticated_route_lookup_is_bounded_by_the_request_deadline() {
     let resolver = Resolver::new(&host, None)
         .with_principal("alice", &[])
         .with_deadline(Some(at));
-    let mut request = request(62, key("alice", None));
+    let mut request_bounded = request(62, key("alice", None));
     let mut far = Dials::default();
-    let result = serve(&plane, &mut request, &resolver, &mut far).await;
+    let result = serve(&plane, &mut request_bounded, &resolver, &mut far).await;
     assert!(result.is_err(), "{result:?}");
     assert_eq!(*host.within.lock().unwrap(), [at]);
     assert_eq!(*plane.looked.lock().unwrap(), [true]);
@@ -705,8 +705,8 @@ async fn authenticated_route_lookup_is_bounded_by_the_request_deadline() {
     let plane = Interactions::default();
     let host = alices_record();
     let resolver = Resolver::new(&host, None).with_principal("alice", &[]);
-    let mut request = request(63, key("alice", None));
-    let result = serve(&plane, &mut request, &resolver, &mut far).await;
+    let mut request_unbounded = request(63, key("alice", None));
+    let result = serve(&plane, &mut request_unbounded, &resolver, &mut far).await;
     assert!(result.is_err(), "{result:?}");
     assert!(host.within.lock().unwrap().is_empty());
     assert_eq!(*plane.looked.lock().unwrap(), [true]);
