@@ -1627,3 +1627,7 @@ mod input_custody_tests;
 #[cfg(test)]
 #[path = "tests/port_thread_tests.rs"]
 mod thread_tests;
+
+#[cfg(test)]
+#[path = "tests/session_ceiling_tests.rs"]
+mod session_ceiling_tests;
