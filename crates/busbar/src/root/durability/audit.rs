@@ -283,28 +283,72 @@ impl Durability {
     ) -> Result<T, DurabilityLost> {
         let linked_ms = busbar_kernel::store::now_ms();
         let linked: Linked = self.record.link(prepared, linked_ms, pass);
-        let previous = linked
-            .record()
-            .seq
-            .checked_sub(1)
-            .ok_or_else(|| DurabilityLost::observed(token, StepName::Audit))?;
+        self.stage_linked_custody(linked, linked_ms, token, install)
+            .map_err(|(lost, _)| lost)
+    }
+
+    /// THE FLUSHER'S STAGE: [`Durability::stage_prepared`], except that a refused line is handed
+    /// back, unlinked, so the flusher keeps it in order for its next flush. A line is never
+    /// dropped between lines that commit: a later commit could otherwise settle its waiter.
+    pub(crate) fn stage_kept(
+        &mut self,
+        prepared: Prepared,
+        pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
+        token: &Grant<DurableWrite>,
+    ) -> Result<LineAt, (DurabilityLost, Prepared)> {
+        let linked_ms = busbar_kernel::store::now_ms();
+        let linked: Linked = self.record.link(prepared, linked_ms, pass);
+        self.stage_linked_custody(linked, linked_ms, token, |line, _, _| line)
+            .map_err(|(lost, linked)| (lost, linked.unlink()))
+    }
+
+    /// A line built for this node's chain (the boot incarnation copied in), not yet linked.
+    pub(crate) fn prepare_line(&self, mut inputs: AuditInputs) -> Prepared {
+        inputs.what.incarnation = self.incarnation;
+        AuditChain::prepare(inputs, self.record.node())
+    }
+
+    /// Stage a line linked over this chain's tail at `linked_ms`. On a refusal the chain has not
+    /// moved and the line comes back with the reason.
+    fn stage_linked_custody<T>(
+        &mut self,
+        linked: Linked,
+        linked_ms: u64,
+        token: &Grant<DurableWrite>,
+        install: impl FnOnce(
+            LineAt,
+            Arc<StagedRun>,
+            Option<super::notary::original::OriginalLineWitness>,
+        ) -> T,
+    ) -> Result<T, (DurabilityLost, Linked)> {
+        let lost = || DurabilityLost::observed(token, StepName::Audit);
+        let Some(previous) = linked.record().seq.checked_sub(1) else {
+            return Err((lost(), linked));
+        };
         let previous_fp = if previous == 0 && linked.record().prev_hash.is_empty() {
             Fingerprint::ZERO
         } else {
-            Fingerprint::from_hex(&linked.record().prev_hash)
-                .ok_or_else(|| DurabilityLost::observed(token, StepName::Audit))?
+            match Fingerprint::from_hex(&linked.record().prev_hash) {
+                Some(fp) => fp,
+                None => return Err((lost(), linked)),
+            }
         };
         if !self.head.original.check_link(previous, previous_fp) {
-            return Err(DurabilityLost::observed(token, StepName::Audit));
+            return Err((lost(), linked));
         }
-        let entry = audit_entry(linked.record())
-            .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        let Ok(entry) = audit_entry(linked.record()) else {
+            return Err((lost(), linked));
+        };
         // The line's chain seq and fingerprint ride with its run, so an Ephemeral journal's cut
         // writes the audit tail into its base without reading a row (SEALING-FIX §3.9).
-        let run = self
-            .journal
-            .stage_audit_run(&[entry], linked.record().seq, linked.fingerprint().0)
-            .map_err(|_| DurabilityLost::observed(token, StepName::Audit))?;
+        let run = match self.journal.stage_audit_run(
+            &[entry],
+            linked.record().seq,
+            linked.fingerprint().0,
+        ) {
+            Ok(run) => run,
+            Err(_) => return Err((lost(), linked)),
+        };
         let line = LineAt {
             chain_seq: linked.record().seq,
             node_seq: run.records().first().map_or(0, |r| r.node_seq),
@@ -328,12 +372,11 @@ impl Durability {
     /// then [`Durability::stage_prepared`]. Returns the line's hint, never the record.
     pub(crate) fn stage_line(
         &mut self,
-        mut inputs: AuditInputs,
+        inputs: AuditInputs,
         pass: busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
         token: &Grant<DurableWrite>,
     ) -> Result<(LineAt, Arc<StagedRun>), DurabilityLost> {
-        inputs.what.incarnation = self.incarnation;
-        let prepared = AuditChain::prepare(inputs, self.record.node());
+        let prepared = self.prepare_line(inputs);
         self.stage_prepared(prepared, &pass, token)
     }
 

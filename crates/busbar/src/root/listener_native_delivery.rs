@@ -20,7 +20,7 @@ use tokio::time::Instant;
 use super::response::ResponsePieces;
 use super::InputError;
 use crate::root::durability::response_intent::{
-    ResponseConnection, ResponseDisposition, ResponseFinalizer, ResponsePlan,
+    ResponseConnection, ResponseDisposition, ResponseFinalizer, ResponsePlan, ResponseRecord,
 };
 use crate::root::plane_node::Node;
 
@@ -40,6 +40,35 @@ impl ResponseAuthority {
             Self::Refused(owner) => owner.binding(),
         }
     }
+    /// WHAT THIS RESPONSE RECORDS (design 2, A5, A7): a health check or public answer nothing; an
+    /// administrative answer nothing here (its admin unit records it); a refusal with no unit one
+    /// count on its core; a metered answer nothing on its path, its unit's line following after
+    /// delivery, unless `advanced.wait_for_commit` makes it hand a line over and wait for it.
+    fn record(
+        &self,
+        node: &Node,
+        admission: Option<&AdmittedRequest>,
+    ) -> Result<ResponseRecord, InputError> {
+        Ok(match (self, admission) {
+            (Self::Refused(owner), _) => match owner.counted() {
+                Some((step, reason)) => ResponseRecord::Counted {
+                    listener: owner.binding().slot().into(),
+                    step,
+                    reason,
+                },
+                None => ResponseRecord::Nothing,
+            },
+            // The flag is a field of the generation this request was admitted under.
+            (Self::Data(owner), Some(admission)) if owner.binding().app().wait_for_commit() => {
+                ResponseRecord::Committed(Box::new(
+                    node.response_line(admission)
+                        .map_err(|_| InputError::Capacity)?,
+                ))
+            }
+            _ => ResponseRecord::Nothing,
+        })
+    }
+
     fn admission(&self) -> Result<Option<AdmittedRequest>, InputError> {
         match self {
             Self::Data(owner) => owner
@@ -121,12 +150,14 @@ impl RegisteredResponse {
         authority: ResponseAuthority,
         owner: Arc<StreamOwner>,
         deadline: Instant,
+        node: &Node,
     ) -> Result<Self, InputError> {
         let binding = authority.binding();
         if !binding.owns_stream(&owner) {
             return Err(InputError::Delivery(ResponseStop::Integrity));
         }
         let admission = authority.admission()?;
+        let record = authority.record(node, admission.as_ref())?;
         let unit = match &authority {
             ResponseAuthority::Refused(owner) => owner.unit(),
             _ => admission.as_ref().map(AdmittedRequest::unit),
@@ -151,7 +182,7 @@ impl RegisteredResponse {
         // ResponseConnection verifies original journal node/incarnation/generation and the ACK's
         // complete private-cell key. No independent expected-key parameter is exposed to billing.
         let (plan, finalizer) = connection
-            .admit(key, handles, deadline)
+            .admit(key, handles, deadline, record)
             .map_err(InputError::FinalIntent)?;
         // The finalizer's admitted scope must be the very key this request registered.
         if finalizer.key() != key {
@@ -180,7 +211,6 @@ impl RegisteredResponse {
         self,
         response: axum::response::Response,
         feeds: &mpsc::Sender<Feed>,
-        node: &Node,
     ) -> CompletedResponse {
         let Self {
             delivery,
@@ -232,19 +262,14 @@ impl RegisteredResponse {
                 return Err(InputError::Delivery(ResponseStop::Integrity));
             }
             input.reader_eof();
-            let stamp = node
-                .response_intent_stamp(finalizer.journal())
-                .map_err(|_| InputError::Delivery(ResponseStop::Integrity))?;
             let intent = plan
-                .freeze(
-                    ResponseDisposition::End {
-                        status: Some(response.status()),
-                    },
-                    stamp,
-                )
+                .freeze(ResponseDisposition::End {
+                    status: Some(response.status()),
+                })
                 .map_err(InputError::FinalIntent)?;
-            // Confirmation runs while E_END is blocked behind held output. Neither path bypasses
-            // prior body pieces, and both stay owned by this supervisor until they finish.
+            // Release runs beside E_END. It waits for a commit only under
+            // `advanced.wait_for_commit`; neither path bypasses prior body pieces, and both stay
+            // owned by this supervisor until they finish.
             let confirm = async {
                 let result = finalizer
                     .finalize(intent)

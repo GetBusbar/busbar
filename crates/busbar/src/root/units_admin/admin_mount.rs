@@ -36,7 +36,11 @@ impl RetainedAnswer {
                 carrier,
             } => {
                 match record
-                    .and_then(|record| pending.refuse_admin(record).ok())
+                    .and_then(|record| {
+                        pending
+                            .refuse_admin(record.what.unit_key, record.outcome.unit_end)
+                            .ok()
+                    })
                     .and_then(|physical| carrier.retain_refusal(physical).ok())
                 {
                     Some(carrier) => Self::Refused { answer, carrier },
@@ -158,6 +162,9 @@ impl AdminNode {
         let key = UnitKey::new(request.unit);
 
         let arrived_at = request.at();
+        // This unit's one monotonic reading, taken with its arrival: where its record sits in the
+        // node's merged order. `None` only when the node's clock is exhausted (no record, no ack).
+        let mono = crate::root::plane_node::node().checked_mono().ok();
         let mut walk = AdminWalk::new(request);
         walk.admission = admission;
         walk.physical_pending = physical;
@@ -169,7 +176,7 @@ impl AdminNode {
             .unwrap_or_else(|| refused_answer(ended, &walk.request));
 
         let record = self
-            .seal(key, arrived_at, walk.principal.as_ref(), facts, ended)
+            .seal(key, arrived_at, mono, walk.principal.as_ref(), facts, ended)
             .await;
         let Some(record) = record else {
             return (
@@ -224,11 +231,13 @@ impl AdminNode {
         &self,
         key: UnitKey,
         arrived_at: u64,
+        mono: Option<u64>,
         principal: Option<&PrincipalId>,
         facts: busbar_contract::AuditFacts,
         ended: Outcome,
     ) -> Option<AuditRecord> {
         use busbar_kernel_audit::{AuditInputs, Controls, OutcomeFacts, Subject, Usage, What};
+        let mono = mono?;
         let card = crate::root::kernel::ROOT_CARD.pin();
         let arrived_ms = arrived_at.saturating_mul(1_000);
         let subject =
@@ -246,7 +255,7 @@ impl AdminNode {
             },
             wall: arrived_at,
 
-            mono: key.get(),
+            mono,
             origin: self
                 .kernel
                 .origin(busbar_contract::caps::OriginKind::Client),

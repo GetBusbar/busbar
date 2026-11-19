@@ -249,6 +249,15 @@ pub struct AdvancedCfg {
     /// graceful shutdown flushes fully. Default 100.
     #[serde(default = "default_usage_flush_interval_ms")]
     pub usage_flush_interval_ms: u64,
+    /// Release a metered response only after its audit line is committed
+    /// (`advanced.wait_for_commit`). Off by default: the line goes to the request's core outbox
+    /// and is committed with every core's lines by the flusher every `usage_flush_interval_ms`, so
+    /// an ungraceful crash can lose the lines of the last unflushed interval. On: the response's
+    /// last byte waits for the group commit that holds its line. Money is recorded the same way in
+    /// both modes. Administrative changes wait either way. Read from the generation a request was
+    /// admitted under. A configuration without the key behaves as `false`.
+    #[serde(default)]
+    pub wait_for_commit: bool,
     /// REMOVED (was the data-plane worker count; the engine runs [`data_workers`]): accepted from
     /// an old configuration, ignored, never written back; named by [`AdvancedCfg::removed`].
     #[serde(default, skip_serializing)]
@@ -432,6 +441,7 @@ impl Default for AdvancedCfg {
             shutdown: None,
             rate_sweep_interval: None,
             usage_flush_interval_ms: default_usage_flush_interval_ms(),
+            wait_for_commit: false,
             worker_threads: None,
             upstream_http1_only: None,
             upstream_h2_prior_knowledge: None,

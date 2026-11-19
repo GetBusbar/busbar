@@ -332,12 +332,7 @@ async fn running_notary_keeps_actual_signed_run_through_unknown_ack_and_delivery
     drop((first, second));
     drop(retained);
     assert_eq!(account.0.load(Ordering::Acquire), 0);
-    drop((
-        signers.boot,
-        signers.sealer,
-        signers.checkpoint,
-        signers.response_intent,
-    ));
+    drop((signers.boot, signers.sealer, signers.checkpoint));
     tokio::time::timeout(Duration::from_secs(5), async {
         while !signers.threads.live_finished() || !signers.threads.bootstrap_finished() {
             tokio::time::sleep(Duration::from_millis(1)).await;

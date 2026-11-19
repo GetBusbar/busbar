@@ -36,7 +36,9 @@ pub(crate) fn key_gauge_limit() -> usize {
         .unwrap_or(DEFAULT_KEY_GAUGE_LIMIT)
 }
 
-pub(crate) fn usage_flush_interval_ms() -> u64 {
+/// `advanced.usage_flush_interval_ms` as live: the flush cadence of usage counters and of the
+/// cores' audit records, and so the most a crash can lose of either.
+pub fn usage_flush_interval_ms() -> u64 {
     get()
         .map(|l| l.usage_flush_interval_ms)
         .unwrap_or(DEFAULT_USAGE_FLUSH_INTERVAL_MS)

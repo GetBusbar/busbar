@@ -136,3 +136,27 @@ async fn money_flag_matches_the_locked_answer_after_concurrent_transitions() {
     owner.flush().await.unwrap();
     assert!(agreed(&owner), "a drained journal admits");
 }
+
+#[tokio::test]
+async fn a_stalled_flusher_refuses_money_on_the_one_flag_but_never_its_own_staging() {
+    let backend = Arc::new(Backend::default());
+    let store = Arc::new(attach(backend, 4).await);
+    let owner = owner(store, 7).await;
+    owner.set_flusher_stalled(true);
+    assert!(!agreed(&owner), "a stalled flusher refuses money");
+    assert!(
+        owner.refuses_staging().is_none(),
+        "the flusher's own report never stops its recovery"
+    );
+    owner.stage_run(&[entry(1)]).unwrap();
+    owner.flush().await.unwrap();
+    assert!(
+        !agreed(&owner),
+        "a commit by others does not clear the flusher's report"
+    );
+    owner.set_flusher_stalled(false);
+    assert!(
+        agreed(&owner),
+        "the flusher's good commit re-admits at once"
+    );
+}

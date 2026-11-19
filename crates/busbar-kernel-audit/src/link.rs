@@ -186,6 +186,23 @@ impl Linked {
     pub fn into_record(self) -> AuditRecord {
         self.record
     }
+
+    /// A line whose stage was refused, back to its prepared form: the content and its hash as
+    /// built, no position, date or signature. It links again at whatever position is next. Only a
+    /// refused stage pays for this rebuild.
+    #[must_use]
+    pub fn unlink(self) -> Prepared {
+        let mut record = self.record;
+        record.linked_ms = 0;
+        record.seq = 0;
+        record.prev_hash.clear();
+        record.hash.clear();
+        record.signature = None;
+        record.key_id = None;
+        let mut sink = LinkSink::new();
+        crate::recipe::visit_content(&record, &mut sink);
+        Prepared { record, sink }
+    }
 }
 
 impl AuditChain {

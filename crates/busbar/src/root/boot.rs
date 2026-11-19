@@ -2177,10 +2177,9 @@ impl BookPreparation {
             .ok_or("the live Notary has no verified Bootstrap public key")?;
         // Signer threads may serve boot recovery; the live notary baseline is bound only
         // after all recovery appends below and before NodeBook can be published.
-        let audit_verification_keys = Arc::new(bound.verification_keys);
         super::durability::response_intent::verify_history(
             self.durability.as_ref().unwrap(),
-            audit_verification_keys.as_ref(),
+            &bound.verification_keys,
         )
         .map_err(|error| format!("response intent history: {error}"))?;
         let (audit, checkpoint) = {
@@ -2279,7 +2278,6 @@ impl BookPreparation {
         let token = self.token.take().unwrap();
         let verb_store = super::durability::node_verb_store(shared.clone(), token, store);
         let mut book = super::durability::NodeBook {
-            audit_verification_keys,
             response_intents: None,
             durability: self.shared.take().unwrap(),
             runtime_journal: self.journal.take().unwrap(),
@@ -2299,12 +2297,7 @@ impl BookPreparation {
             super::durability::response_intent::ResponseIntentService::new(
                 Arc::clone(&book.runtime_journal),
                 incarnation,
-                book.audit_verification_keys.as_ref().clone(),
-                audit
-                    .take_response_intent_handle()
-                    .ok_or("response intent signer was already transferred")?,
-            )
-            .map_err(|error| error.to_string())?,
+            ),
         );
         self.phase = BookPhase::Ready;
         Ok(book)

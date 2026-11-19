@@ -53,6 +53,7 @@ fn every_patch_mirrors_every_field_of_its_section() {
         shutdown: _,
         rate_sweep_interval,
         usage_flush_interval_ms,
+        wait_for_commit,
         response_headers,
 
         worker_threads,
@@ -71,6 +72,7 @@ fn every_patch_mirrors_every_field_of_its_section() {
         rate_sweep_interval,
         worker_threads,
         usage_flush_interval_ms: Some(usage_flush_interval_ms),
+        wait_for_commit: Some(wait_for_commit),
         // A moved key: kept as written, carried to `telemetry.response_headers` on read.
         response_headers,
     };

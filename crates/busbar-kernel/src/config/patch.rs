@@ -84,6 +84,7 @@ section_patch!(
     /// Per-field patch for [`crate::config::AdvancedCfg`].
     AdvancedPatch => crate::config::AdvancedCfg {
         usage_flush_interval_ms: u64,
+        wait_for_commit: bool,
     } removed {
         rate_sweep_interval,
         worker_threads,

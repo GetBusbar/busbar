@@ -888,6 +888,12 @@ diagnostics! {
         example "a 1.6.0 node restarts over an amendment chain a later release extended",
         detail "unknown amendment class `content`: written by a newer busbar, or the chain is damaged; if every node runs this release, treat it as tampering (upgrade: https://getbusbar.com/download)";
 
+    /// The audit flusher has not committed for longer than the stall limit (design 2, A8).
+    DURABILITY_STALLED = 2060, Audit, Actionable, "durability-stalled", "1.6.0", false,
+        "Records have not been committed for longer than the stall limit; requests that need a record are refused",
+        "The audit flusher commits what every core handed over once every advanced.usage_flush_interval_ms. Its last successful commit is older than the stall limit (two seconds), or the node's journal failed. Until a commit succeeds, a request that would create a record (a metered request, an administrative request) is answered 503 with the code durability_unavailable and readiness reports not ready; a health check keeps answering. Records already handed over are kept and retried at every flush while the process lives. Service resumes by itself when a commit succeeds.",
+        "Check the store's health and the field reason. If the store is unavailable, restore it: the engine resumes on its own. If reason names a failed journal, restart the process.";
+
     TERMINAL_AUDIT_STAGE_FAILED = 2051, Audit, Actionable, "terminal-audit-stage-failed", "1.6.0", false,
         "A request terminal audit original could not be staged",
         "The journal refused the terminal audit original before native confirmation. The request fails instead of reporting success without its audit evidence; an already streaming response terminates with an error. The journal and audit chain positions do not advance for the refused original. The counter busbar_audit_stage_failures_total counts these failures.",

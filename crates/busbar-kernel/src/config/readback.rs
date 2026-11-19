@@ -164,6 +164,7 @@ impl ConfiguredView {
             "advanced",
             json!({
                 "usage_flush_interval_ms": l.usage_flush_interval_ms,
+                "wait_for_commit": l.wait_for_commit,
             })
         );
         put!(

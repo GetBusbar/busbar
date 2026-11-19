@@ -2746,6 +2746,7 @@ fn reload_to_apply_fields(req: &busbar_kernel::config::overlay::RootSettings) ->
             rate_sweep_interval: _,
             worker_threads: _,
             usage_flush_interval_ms: _,
+            wait_for_commit: _,
         } = advanced;
         push(response_headers.is_some(), "advanced.response_headers");
     }

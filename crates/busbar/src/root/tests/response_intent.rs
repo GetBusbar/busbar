@@ -1,97 +1,76 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::{Arc, OnceLock};
+//! The response's release (design 2, A1, A5, A7): no signature and no journal record on the
+//! request; a count for a refusal with no identity; a wait for the group commit only when the
+//! response carries a line under `advanced.wait_for_commit`.
+
+use std::sync::Arc;
 use std::time::Duration;
 
+use busbar_contract::caps::{ReasonCode, StepName};
 use busbar_contract::response_delivery::{ResponseDisposition, ResponseStop};
 use busbar_core_connector::response_delivery::DeliveryLedger;
-use busbar_kernel_audit::response_intent::ResponseIntentStamp;
-use busbar_kernel_audit::{
-    AuditKeySet, AuditSigningKey, AuditVerifyingKey, BootstrapSigner, LiveSigner, Notary,
-};
 
-use super::response_intent::{ReleasePublication, ResponseIntentService};
+use super::core_audit::{CoreAudit, CoreFlusher};
+use super::response_intent::{ReleasePublication, ResponseIntentService, ResponseRecord};
 use super::tests::NativeFixture;
 
-fn stamp() -> ResponseIntentStamp {
-    ResponseIntentStamp {
-        lease_epoch: 2,
-        policy_epoch: 3,
-        wall: 100,
-        mono: 9,
-    }
-}
-
-pub(crate) async fn rig() -> (NativeFixture, Arc<ResponseIntentService>, DeliveryLedger) {
+pub(crate) async fn rig() -> (
+    NativeFixture,
+    Arc<ResponseIntentService>,
+    DeliveryLedger,
+    CoreFlusher,
+) {
     let fixture = NativeFixture::new(71).await;
     let incarnation = fixture.book().await.incarnation;
-    let key = AuditSigningKey::from_seed(&[47; 32]);
-    let mut keys = AuditKeySet::new();
-    keys.insert(AuditVerifyingKey::from_hex(&key.public_key_hex()).unwrap());
-    let (notary, boot) = key.into_grants(LiveSigner::SameAsBootstrap).unwrap();
-    let signers = super::signer::spawn(
-        Notary::new(notary),
-        BootstrapSigner::new(boot),
-        Arc::new(OnceLock::new()),
+    let service = ResponseIntentService::new(fixture.journal.clone(), incarnation);
+    (
+        fixture,
+        service,
+        DeliveryLedger::default(),
+        CoreFlusher::default(),
     )
-    .unwrap();
-    let service = ResponseIntentService::new(
-        fixture.journal.clone(),
-        incarnation,
-        keys,
-        signers.response_intent,
-    )
-    .unwrap();
-    let ledger = DeliveryLedger::default();
-    (fixture, service, ledger)
+}
+
+fn soon() -> tokio::time::Instant {
+    tokio::time::Instant::now() + Duration::from_secs(5)
 }
 
 #[tokio::test]
 async fn rejected_registration_cancels_original_handles_without_publishing_release() {
-    let (_fixture, service, mut ledger) = rig().await;
-    let original = service.connection().unwrap();
-    let foreign = service.connection().unwrap();
+    let (_fixture, service, mut ledger, cores) = rig().await;
+    let original = service.connection(cores.core()).unwrap();
+    let foreign = service.connection(cores.core()).unwrap();
     let key = original.key(1, None).unwrap();
     let handles = ledger.admit(key).unwrap();
     let watch = handles.watch.clone();
     assert!(foreign
-        .admit(
-            key,
-            handles,
-            tokio::time::Instant::now() + Duration::from_secs(1)
-        )
+        .admit(key, handles, soon(), ResponseRecord::Nothing)
         .is_err());
     assert_eq!(watch.key(), key);
     assert_eq!(watch.cancellation(), Some(ResponseStop::Integrity));
-    assert!(
-        watch.snapshot().terminal.is_none(),
-        "rejection cannot invent carrier settlement"
-    );
+    assert!(watch.snapshot().terminal.is_none());
     assert!(!watch.snapshot().first_payload_written);
 }
 
 #[tokio::test]
-async fn actual_publication_plan_and_confirmed_original_are_one_shot() {
-    let (fixture, service, mut ledger) = rig().await;
-    let connection = service.connection().unwrap();
+async fn a_release_signs_nothing_writes_nothing_and_is_one_shot() {
+    let (fixture, service, mut ledger, cores) = rig().await;
+    let connection = service.connection(cores.core()).unwrap();
     let key = connection.key(1, None).unwrap();
     let handles = ledger.admit(key).unwrap();
     let (mut plan, finalizer) = connection
-        .admit(
-            key,
-            handles,
-            tokio::time::Instant::now() + Duration::from_secs(5),
-        )
+        .admit(key, handles, soon(), ResponseRecord::Nothing)
         .unwrap();
     plan.record_head(Some(200)).unwrap();
     plan.record_body().unwrap();
     plan.record_body().unwrap();
+    let next = fixture.journal.next_seq();
     let intent = plan
-        .freeze(ResponseDisposition::End { status: Some(200) }, stamp())
+        .freeze(ResponseDisposition::End { status: Some(200) })
         .unwrap();
     assert_eq!(intent.final_publication_ordinal, 4);
-    assert_eq!(fixture.journal.pending_records(), 0);
     assert_eq!(
         finalizer.finalize(intent).await.unwrap(),
         ReleasePublication::Published
@@ -100,37 +79,21 @@ async fn actual_publication_plan_and_confirmed_original_are_one_shot() {
         finalizer.finalize(intent).await.unwrap(),
         ReleasePublication::AlreadyPublished
     );
-    let records = fixture
-        .journal
-        .read_records(super::tests::BUDGET)
-        .await
-        .unwrap();
-    assert_eq!(
-        records
-            .iter()
-            .filter(|r| busbar_kernel_audit::response_intent::is_response_intent(&r.body))
-            .count(),
-        1
-    );
-    assert!(finalizer.watch().snapshot().terminal.is_none());
-    assert!(!finalizer.watch().snapshot().first_payload_written);
+    assert_eq!(fixture.journal.pending_records(), 0, "nothing staged");
+    assert_eq!(fixture.journal.next_seq(), next, "nothing appended");
 }
 
 #[tokio::test]
 async fn cancelled_scope_and_changed_intent_cannot_release() {
-    let (_, service, mut ledger) = rig().await;
-    let connection = service.connection().unwrap();
+    let (_, service, mut ledger, cores) = rig().await;
+    let connection = service.connection(cores.core()).unwrap();
     let key = connection.key(1, None).unwrap();
     let handles = ledger.admit(key).unwrap();
     let (plan, finalizer) = connection
-        .admit(
-            key,
-            handles,
-            tokio::time::Instant::now() + Duration::from_secs(5),
-        )
+        .admit(key, handles, soon(), ResponseRecord::Nothing)
         .unwrap();
     let intent = plan
-        .freeze(ResponseDisposition::End { status: None }, stamp())
+        .freeze(ResponseDisposition::End { status: None })
         .unwrap();
     let mut wrong = intent;
     wrong.final_publication_ordinal += 1;
@@ -142,9 +105,9 @@ async fn cancelled_scope_and_changed_intent_cannot_release() {
 
 #[tokio::test]
 async fn connection_and_stream_identity_are_not_reused() {
-    let (fixture, service, _) = rig().await;
-    let first = service.connection().unwrap();
-    let second = service.connection().unwrap();
+    let (fixture, service, _, cores) = rig().await;
+    let first = service.connection(cores.core()).unwrap();
+    let second = service.connection(cores.core()).unwrap();
     let a = first.key(1, None).unwrap();
     let b = second.key(1, None).unwrap();
     assert_eq!(
@@ -157,27 +120,8 @@ async fn connection_and_stream_identity_are_not_reused() {
 }
 
 #[tokio::test]
-async fn node_stamp_uses_the_bound_book_and_actual_writer_authority() {
-    let (fixture, service, _) = rig().await;
-    let node = crate::root::plane_node::Node::new();
-    node.bind_book(Arc::new(std::sync::Mutex::new(fixture.book().await)));
-    node.bind_response_intents(fixture.core.clone(), service)
-        .unwrap();
-    let stamp = node.response_intent_stamp(&fixture.journal).unwrap();
-    assert_eq!(
-        stamp.lease_epoch,
-        fixture.core.authority().unwrap().writer_epoch
-    );
-    let later = node.response_intent_stamp(&fixture.journal).unwrap();
-    assert!(later.mono > stamp.mono);
-
-    let foreign = NativeFixture::new(72).await;
-    assert!(node.response_intent_stamp(&foreign.journal).is_err());
-}
-
-#[tokio::test]
 async fn node_refuses_foreign_core_and_mismatched_book_incarnation() {
-    let (fixture, service, _) = rig().await;
+    let (fixture, service, _, _) = rig().await;
     let foreign = NativeFixture::new(72).await;
     let node = crate::root::plane_node::Node::new();
     node.bind_book(Arc::new(std::sync::Mutex::new(fixture.book().await)));
@@ -195,159 +139,103 @@ async fn node_refuses_foreign_core_and_mismatched_book_incarnation() {
 }
 
 #[tokio::test]
-async fn only_fixed_response_purpose_can_sign_from_request_scope() {
-    let (_, service, mut ledger) = rig().await;
-    let connection = service.connection().unwrap();
-    let key = connection.key(1, None).unwrap();
-    let handles = ledger.admit(key).unwrap();
-    let (plan, finalizer) = connection
-        .admit(
-            key,
-            handles,
-            tokio::time::Instant::now() + Duration::from_secs(5),
-        )
-        .unwrap();
-    let intent = plan
-        .freeze(
-            ResponseDisposition::Refuse {
-                status: 403,
+async fn a_refusal_with_no_identity_is_one_count_on_its_core_and_no_record() {
+    let (fixture, service, mut ledger, cores) = rig().await;
+    let core: Arc<CoreAudit> = cores.core();
+    let connection = service.connection(Arc::clone(&core)).unwrap();
+    let next = fixture.journal.next_seq();
+    for stream in 1..=3 {
+        let key = connection.key(stream, None).unwrap();
+        let handles = ledger.admit(key).unwrap();
+        let (plan, finalizer) = connection
+            .admit(
+                key,
+                handles,
+                soon(),
+                ResponseRecord::Counted {
+                    listener: "public".into(),
+                    step: StepName::Authenticate,
+                    reason: ReasonCode::Unauthenticated,
+                },
+            )
+            .unwrap();
+        let intent = plan
+            .freeze(ResponseDisposition::Refuse {
+                status: 401,
                 head_sent: false,
-            },
-            stamp(),
-        )
-        .unwrap();
-    let result = super::signer::ON_REQUEST_PATH
-        .scope(true, finalizer.finalize(intent))
-        .await;
-    assert_eq!(result.unwrap(), ReleasePublication::Published);
+            })
+            .unwrap();
+        assert_eq!(
+            finalizer.finalize(intent).await.unwrap(),
+            ReleasePublication::Published
+        );
+    }
+    let held = core.refusals_held();
+    assert_eq!(held.len(), 1);
+    assert_eq!((held[0].count, held[0].status), (3, 401));
+    assert_eq!(core.records().held(), 0, "a count is not a line");
+    assert_eq!(fixture.journal.next_seq(), next, "nothing appended");
+    assert_eq!(fixture.journal.pending_records(), 0);
 }
 
 #[tokio::test]
-async fn native_lost_ack_retries_one_original_and_restart_verifies_only_history() {
-    use std::sync::atomic::Ordering;
-    let (fixture, service, mut ledger) = rig().await;
-    let connection = service.connection().unwrap();
+async fn under_wait_for_commit_the_release_waits_for_the_commit_that_holds_its_line() {
+    let (_fixture, service, mut ledger, cores) = rig().await;
+    let core = cores.core();
+    let connection = service.connection(Arc::clone(&core)).unwrap();
     let key = connection
         .key(1, Some(busbar_contract::ids::UnitKey::new(19)))
         .unwrap();
     let handles = ledger.admit(key).unwrap();
-    let (plan, finalizer) = connection
+    let line = super::audit::tests::inputs(19);
+    let (mut plan, finalizer) = connection
         .admit(
             key,
             handles,
-            tokio::time::Instant::now() + Duration::from_secs(5),
+            soon(),
+            ResponseRecord::Committed(Box::new(line)),
         )
         .unwrap();
+    plan.record_head(Some(201)).unwrap();
     let intent = plan
-        .freeze(ResponseDisposition::End { status: None }, stamp())
+        .freeze(ResponseDisposition::End { status: Some(201) })
         .unwrap();
-    fixture.faults.clear_observations();
-    fixture.faults.lose_acks.store(true, Ordering::Release);
-    assert!(finalizer.finalize(intent).await.is_err());
-    let next = fixture.journal.next_seq();
-    assert_eq!(fixture.journal.pending_records(), 1);
-    assert!(finalizer.watch().snapshot().terminal.is_none());
-    fixture.faults.lose_acks.store(false, Ordering::Release);
-    assert_eq!(
-        finalizer.finalize(intent).await.unwrap(),
-        ReleasePublication::Published
-    );
-    assert_eq!(fixture.journal.next_seq(), next);
-    {
-        let attempts = fixture.faults.requests.lock().unwrap();
-        assert_eq!(attempts.len(), 2);
-        assert_eq!(attempts[0].candidate().id, attempts[1].candidate().id);
-        assert_eq!(attempts[0].fingerprint(), attempts[1].fingerprint());
+    let release = finalizer.finalize(intent);
+    tokio::pin!(release);
+    tokio::select! {
+        result = &mut release => panic!("released before its line was committed: {result:?}"),
+        () = tokio::time::sleep(Duration::from_millis(50)) => {}
     }
-    let restarted = fixture.reopen().await;
-    let key = AuditSigningKey::from_seed(&[47; 32]);
-    let mut keys = AuditKeySet::new();
-    keys.insert(AuditVerifyingKey::from_hex(&key.public_key_hex()).unwrap());
-    super::response_intent::verify_history(&restarted, &keys).unwrap();
-    assert!(super::response_intent::verify_history(&restarted, &AuditKeySet::new()).is_err());
-    let foreign = AuditSigningKey::from_seed(&[48; 32]);
-    let mut foreign_keys = AuditKeySet::new();
-    foreign_keys.insert(AuditVerifyingKey::from_hex(&foreign.public_key_hex()).unwrap());
-    assert!(super::response_intent::verify_history(&restarted, &foreign_keys).is_err());
-    assert!(finalizer.watch().snapshot().terminal.is_none());
+    let pulled = cores.pull();
+    assert_eq!(pulled.lines.len(), 1, "the line is in the core's outbox");
+    assert_eq!(
+        pulled.lines[0].1.unit.status, 201,
+        "with the answered status"
+    );
+    for (core, through) in &pulled.cores {
+        core.records().settled(*through);
+    }
+    assert_eq!(release.await.unwrap(), ReleasePublication::Published);
 }
 
 #[tokio::test]
-async fn dropped_native_confirmation_waiter_retains_original_but_never_releases() {
-    let (fixture, service, mut ledger) = rig().await;
-    let connection = service.connection().unwrap();
+async fn a_release_waiting_for_a_commit_ends_at_its_deadline_unpublished() {
+    let (_fixture, service, mut ledger, cores) = rig().await;
+    let connection = service.connection(cores.core()).unwrap();
     let key = connection.key(1, None).unwrap();
     let handles = ledger.admit(key).unwrap();
-    let (plan, finalizer) = connection
+    let (mut plan, finalizer) = connection
         .admit(
             key,
             handles,
-            tokio::time::Instant::now() + Duration::from_secs(5),
+            tokio::time::Instant::now() + Duration::from_millis(50),
+            ResponseRecord::Committed(Box::new(super::audit::tests::inputs(3))),
         )
         .unwrap();
+    plan.record_head(Some(200)).unwrap();
     let intent = plan
-        .freeze(ResponseDisposition::End { status: None }, stamp())
+        .freeze(ResponseDisposition::End { status: Some(200) })
         .unwrap();
-    let entered = Arc::new(tokio::sync::Notify::new());
-    let gate = Arc::new(tokio::sync::Notify::new());
-    let (observed, held) = (entered.clone(), gate.clone());
-    *fixture.faults.on_commit.lock().unwrap() = Some(Arc::new(move |_| {
-        let (observed, held) = (observed.clone(), held.clone());
-        Box::pin(async move {
-            observed.notify_one();
-            held.notified().await;
-            Ok(())
-        })
-    }));
-    {
-        let future = finalizer.finalize(intent);
-        tokio::pin!(future);
-        tokio::select! {
-            result = &mut future => panic!("released before native confirmation: {result:?}"),
-            () = entered.notified() => {}
-        }
-        assert_eq!(fixture.journal.pending_records(), 1);
-        assert!(finalizer.watch().snapshot().terminal.is_none());
-    }
-    let sequence = fixture.journal.next_seq();
-    assert_eq!(
-        finalizer.watch().cancellation(),
-        Some(ResponseStop::Cancelled)
-    );
-    *fixture.faults.on_commit.lock().unwrap() = None;
-    fixture.journal.flush().await.unwrap();
     assert!(finalizer.finalize(intent).await.is_err());
-    assert_eq!(fixture.journal.next_seq(), sequence);
-    assert_eq!(fixture.journal.pending_records(), 0);
-    assert!(finalizer.watch().snapshot().terminal.is_none());
-}
-
-#[tokio::test]
-async fn terminal_stage_refusal_does_not_create_a_release_or_journal_record() {
-    let (fixture, service, mut ledger) = rig().await;
-    let connection = service.connection().unwrap();
-    let key = connection.key(1, None).unwrap();
-    let handles = ledger.admit(key).unwrap();
-    let (plan, finalizer) = connection
-        .admit(
-            key,
-            handles,
-            tokio::time::Instant::now() + Duration::from_secs(5),
-        )
-        .unwrap();
-    let intent = plan
-        .freeze(
-            ResponseDisposition::Refuse {
-                status: 503,
-                head_sent: false,
-            },
-            stamp(),
-        )
-        .unwrap();
-    fixture.journal.stop_staging().unwrap();
-    let sequence = fixture.journal.next_seq();
-    assert!(finalizer.finalize(intent).await.is_err());
-    assert_eq!(fixture.journal.next_seq(), sequence);
-    assert_eq!(fixture.journal.pending_records(), 0);
     assert!(finalizer.watch().snapshot().terminal.is_none());
 }

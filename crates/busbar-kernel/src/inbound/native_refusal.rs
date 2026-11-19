@@ -112,14 +112,42 @@ enum RefusalProvenance {
     /// The route's chain denied an upgrade request (credential, policy or replay).
     UpgradeDenied {
         _denied: DataPreparationDenied,
+        reason: crate::auth::native_data::DataRefused,
     },
     /// No route of this listener matched the head: answered as an unauthenticated request is, so
     /// the answer does not tell a caller whether a route exists.
     Unrouted,
+    /// Durability is unavailable (design 2, A8): refused before any preparation.
+    Unavailable,
 }
 impl PhysicalRefusal {
     pub fn binding(&self) -> &Arc<RequestBinding> {
         &self.binding
+    }
+
+    /// Where and why a refusal that names no unit was decided, for the core's per-interval count
+    /// (design 2, A5). `None` for a refusal recorded otherwise: an admin refusal (its admin unit
+    /// records or counts it) and one that already holds a unit (its unit's own line records it).
+    #[must_use]
+    pub fn counted(
+        &self,
+    ) -> Option<(
+        busbar_contract::caps::StepName,
+        busbar_contract::caps::ReasonCode,
+    )> {
+        use busbar_contract::caps::{ReasonCode, StepName};
+        match &self._provenance {
+            RefusalProvenance::Data { _denied } => Some(counted_denial(_denied.decision())),
+            RefusalProvenance::UpgradeDenied { reason, .. } => Some(counted_denial(*reason)),
+            RefusalProvenance::Upgrade { .. } => {
+                Some((StepName::Decode, ReasonCode::MethodNotAllowed))
+            }
+            RefusalProvenance::Unrouted => Some((StepName::Route, ReasonCode::NoDestination)),
+            RefusalProvenance::Unavailable => {
+                Some((StepName::Arrival, ReasonCode::DurabilityUnavailable))
+            }
+            RefusalProvenance::Admin { .. } | RefusalProvenance::Allocated { .. } => None,
+        }
     }
     pub fn unit(&self) -> Option<busbar_contract::UnitKey> {
         match &self._provenance {
@@ -128,8 +156,31 @@ impl PhysicalRefusal {
             | RefusalProvenance::Data { .. }
             | RefusalProvenance::Upgrade { .. }
             | RefusalProvenance::UpgradeDenied { .. }
-            | RefusalProvenance::Unrouted => None,
+            | RefusalProvenance::Unrouted
+            | RefusalProvenance::Unavailable => None,
         }
+    }
+}
+
+/// The (step, reason) a data or upgrade denial is counted under.
+fn counted_denial(
+    decision: crate::auth::native_data::DataRefused,
+) -> (
+    busbar_contract::caps::StepName,
+    busbar_contract::caps::ReasonCode,
+) {
+    use crate::auth::native_data::DataRefused;
+    use busbar_contract::caps::{ReasonCode, StepName};
+    match decision {
+        DataRefused::Credential => (StepName::Authenticate, ReasonCode::Unauthenticated),
+        DataRefused::Policy => (StepName::Approve, ReasonCode::ScopeDenied),
+        DataRefused::Replay => (StepName::Authenticate, ReasonCode::Replayed),
+        DataRefused::Capacity => (StepName::Arrival, ReasonCode::InFlightCap),
+        DataRefused::Unavailable => (StepName::Arrival, ReasonCode::DurabilityUnavailable),
+        DataRefused::Unsupported
+        | DataRefused::Binding
+        | DataRefused::Cancelled
+        | DataRefused::Unit => (StepName::Decode, ReasonCode::DecodeFailed),
     }
 }
 impl Drop for PhysicalRefusal {
@@ -188,17 +239,17 @@ impl CompletingPhysicalRequest {
         })
     }
 
-    /// Root calls only after its actual pre-claim denial seal and original confirmation.
+    /// Root calls only after its admin unit decided the refusal and recorded it: a line handed to
+    /// the core's outbox, or one count of a request with no identity (design 2, A5). `unit` and
+    /// `outcome` are that admin unit's own.
     pub fn refuse_admin(
         mut self,
-        record: &busbar_kernel_audit::AuditRecord,
+        unit: busbar_contract::UnitKey,
+        outcome: busbar_contract::caps::Outcome,
     ) -> Result<PhysicalRefusal, ArrivalRefusal> {
         self.check_admin_route()?;
-        if record.what.unit_key.get() != self.binding.invocation().request_id().get()
-            || !matches!(
-                record.outcome.unit_end,
-                busbar_contract::caps::Outcome::Refused(..)
-            )
+        if unit.get() != self.binding.invocation().request_id().get()
+            || !matches!(outcome, busbar_contract::caps::Outcome::Refused(..))
         {
             return Err(ArrivalRefusal::ForeignInput);
         }
@@ -206,9 +257,18 @@ impl CompletingPhysicalRequest {
         self.cancel_on_drop = false;
         Ok(PhysicalRefusal {
             binding: self.binding.clone(),
-            _provenance: RefusalProvenance::Admin {
-                _outcome: record.outcome.unit_end,
-            },
+            _provenance: RefusalProvenance::Admin { _outcome: outcome },
+        })
+    }
+
+    /// Durability is unavailable (design 2, A8): refuse a request that would create a record
+    /// before any preparation, so it is answered with the catalogue's refusal, never closed.
+    pub fn refuse_unavailable(mut self) -> Result<PhysicalRefusal, ArrivalRefusal> {
+        self.enter_refusal(Some(PreparationState::Unused))?;
+        self.cancel_on_drop = false;
+        Ok(PhysicalRefusal {
+            binding: self.binding.clone(),
+            _provenance: RefusalProvenance::Unavailable,
         })
     }
 
@@ -280,7 +340,11 @@ impl CompletingPhysicalRequest {
         mut self,
         refused: UpgradeRefused,
     ) -> Result<PhysicalRefusal, ArrivalRefusal> {
-        let UpgradeRefused::Denied { preparation, .. } = refused else {
+        let UpgradeRefused::Denied {
+            preparation,
+            reason,
+        } = refused
+        else {
             return Err(ArrivalRefusal::Cancelled);
         };
         if !Arc::ptr_eq(&self.binding, preparation.binding()) {
@@ -292,6 +356,7 @@ impl CompletingPhysicalRequest {
             binding: self.binding.clone(),
             _provenance: RefusalProvenance::UpgradeDenied {
                 _denied: preparation,
+                reason,
             },
         })
     }

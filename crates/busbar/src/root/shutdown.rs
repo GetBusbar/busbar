@@ -1001,6 +1001,28 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     drain.enter(Phase::Journal);
     let runtime = book.as_ref().map(|book| book.runtime_journal.clone());
     if let Some(runtime) = &runtime {
+        // The cores' last lines are staged while staging is still open: a line handed over just
+        // before shutdown is committed by the flush below, not left in its core.
+        let node = crate::root::plane_node::node();
+        match drain
+            .bounded(
+                Phase::Journal,
+                DrainHandle::spawn(async move { node.flush_cores().await }),
+                Cut::Deadline,
+            )
+            .await
+        {
+            Joined::Done(Ok(Ok(()))) => {}
+            Joined::Done(Ok(Err(error))) => {
+                failures.push(format!("audit lines of the cores were not staged: {error}"))
+            }
+            Joined::Done(Err(error)) => {
+                failures.push(format!("final audit flush of the cores failed: {error}"))
+            }
+            Joined::Detached(_) => {
+                failures.push("final audit flush of the cores reached the deadline".into())
+            }
+        }
         if let Err(error) = runtime.stop_staging() {
             failures.push(format!("journal staging did not close: {error:?}"));
         }

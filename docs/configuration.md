@@ -2054,7 +2054,7 @@ apply (the next published configuration generation) is enough.
 
 | Key | Type and unit | Default | Allowed range | What it does | Applies |
 |---|---|---|---|---|---|
-| `advanced.wait_for_commit` | boolean | `false` | `true` / `false` | Whether an answer waits until its audit, ledger and usage records are committed. *Arriving with the audit change.* | to be confirmed |
+| `advanced.wait_for_commit` | boolean | `false` | `true` / `false` | Whether a metered response's last byte waits until its audit line is committed. Administrative changes always wait. | on apply (next generation) |
 | `advanced.usage_flush_interval_ms` | integer, milliseconds | `100` | 1 to 946,080,000,000 (30 years); `0` is raised to 1 with one warning | How often in-memory usage and budget counters are written out. | on apply |
 
 Old keys under `advanced`, accepted from an old configuration (file, `PUT /config/settings` body,
@@ -2077,13 +2077,26 @@ stored overlay or document edit), never written back, one warning line each:
 
 #### `advanced.wait_for_commit`
 
-*Arriving with the audit change.* This entry describes the setting being added on branch
-`house/engine-w2-audit-path`, which is not merged; the engineer who owns it confirms the wording.
+Decides whether a metered response's last byte is released before or after a record of that
+response is committed.
 
-Decides whether the engine answers a request before or after the records of that request are
-committed. With `false` (the default) the engine answers first, then commits the audit, ledger
-and usage records. With `true` every answer waits until its records are committed. Administrative
-changes (configuration edits, key changes) always wait, whatever this is set to.
+- `false` (the default): the response is released as soon as the transport has it. Nothing on the
+  request signs, hashes, takes a lock another core holds, or waits for the store. The request's
+  audit line goes to its own core's outbox, and one background flusher writes every core's lines
+  in a single group commit every `advanced.usage_flush_interval_ms`. A refused request that names
+  nobody (bad credential, no route) writes no line of its own. Each core counts such refusals by
+  (listener, step, reason, status), and each flush writes one line per count that is not zero:
+  "N requests refused for reason R on listener L between T1 and T2".
+- `true`: a metered response puts one line in its core's outbox, asks the flusher to flush at
+  once, and releases its last byte only after the group commit that holds that line. If the
+  response's deadline passes first, the response is not released.
+
+Administrative changes (configuration edits, key changes, every operator action through the admin
+API) are acknowledged only after their record is committed, whatever this is set to.
+
+The value belongs to the configuration generation a request was admitted under. A changed value
+applies on a configuration apply, with no restart, and only requests admitted under the new
+generation see it. A request never sees it change while it runs.
 
 When to change it: set `true` when you must be able to prove that every answer a client received
 has a committed record, for example under an audit obligation. Leave it `false` for the lowest
@@ -2092,9 +2105,18 @@ latency.
 Cost: with `true`, every request is slower by the time the commit takes, and that time is added to
 every answer. With `false` there is no added wait.
 
-**What can be lost with `false`:** if the engine crashes (kill, power loss), the records of the
-last unflushed `advanced.usage_flush_interval_ms` interval (100 ms by default) can be lost, even
-though the clients already received their answers. A normal shutdown flushes everything first.
+**What can be lost with `false`:** if the engine crashes (kill, power loss), audit lines still in a
+core's outbox can be lost even though their clients already received answers. That covers lines
+handed over since the last group commit, at most one flush interval (100 ms by default; for audit
+lines the flusher clamps the interval to 1 to 1,000 ms), and the refusal counts of that interval.
+This setting does not decide how money is recorded. Spend and request counts follow
+`advanced.usage_flush_interval_ms` below in both modes. On a normal shutdown the flusher makes one
+last flush when shutdown begins.
+
+**When the flusher cannot commit** (store down, disk full) for longer than 2 seconds, new
+billable requests are refused with the "durability unavailable" refusal, and `BUSBAR-2060` is
+logged once. Service resumes by itself after the next good commit. See
+[operations.md](operations.md#audit-flusher-stall).
 
 ```yaml
 advanced:

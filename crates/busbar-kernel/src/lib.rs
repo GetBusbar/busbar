@@ -414,6 +414,7 @@ pub mod json;
 pub mod limits;
 pub mod oauth_as;
 pub mod observability;
+pub mod outbox;
 pub mod rt;
 pub mod snapshot;
 

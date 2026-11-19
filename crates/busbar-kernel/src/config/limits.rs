@@ -399,6 +399,8 @@ pub struct LimitsResolved {
     pub reasoning_effort_budgets: ReasoningEffortBudgets,
     pub key_gauge_limit: usize,
     pub usage_flush_interval_ms: u64,
+    /// `advanced.wait_for_commit`: answer only after the request's records are committed.
+    pub wait_for_commit: bool,
     /// `outbound.http1_only`: speak only HTTP/1.1 upstream. BOOT-TIME knob read once at client
     /// build. Carried here so the client-build wiring reads a flat struct.
     pub upstream_http1_only: bool,
@@ -452,6 +454,7 @@ impl LimitsResolved {
                 advanced.usage_flush_interval_ms,
             )
             .0,
+            wait_for_commit: advanced.wait_for_commit,
             upstream_http1_only: outbound.http1_only,
             upstream_h2_prior_knowledge: outbound.h2_prior_knowledge,
             default_probe_interval_secs: health.default_probe_interval_secs,

@@ -14,6 +14,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 
 use super::{InputError, NativeListener, OpenedConnection, ReadyInput};
+use crate::root::durability::core_audit::CoreAudit;
 use crate::root::listener::{ConnBalancer, ConnCountGuard};
 use crate::root::plane_node::Node;
 
@@ -40,6 +41,9 @@ pub(crate) async fn serve_admitted(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     mut balancer: Option<ConnBalancer>,
 ) -> std::io::Result<()> {
+    // This core's audit state: made when its listener loop starts, handed to each connection on
+    // it, released by the flusher's first pull after the loop and its connections let it go.
+    let core = node.core_audit();
     let (stop, stopped) = watch::channel(false);
     let mut connections = JoinSet::new();
     let mut task_failure = None;
@@ -75,6 +79,7 @@ pub(crate) async fn serve_admitted(
             native.clone(),
             security.clone(),
             node.clone(),
+            Arc::clone(&core),
             stopped.clone(),
         ));
     }
@@ -87,6 +92,7 @@ pub(crate) async fn serve_admitted(
                 native.clone(),
                 security.clone(),
                 node.clone(),
+                Arc::clone(&core),
                 stopped.clone(),
             ));
         }
@@ -109,13 +115,14 @@ async fn accepted(
     native: Arc<NativeListener>,
     security: Option<Arc<dyn busbar_contract::transport::wire::ConnectionSecurity>>,
     node: Arc<Node>,
+    core: Arc<CoreAudit>,
     stopped: watch::Receiver<bool>,
 ) -> Result<(), InputError> {
     // The original connector connection permit lives through every terminal join.
     let _hold = admitted.hold;
     let stream = tokio::net::TcpStream::from_std(admitted.stream).map_err(InputError::Io)?;
     let opened = native.accepted(stream, security.as_deref()).await?;
-    supervise(opened, native, node, stopped).await
+    supervise(opened, native, node, core, stopped).await
 }
 
 struct Waiting {
@@ -150,6 +157,7 @@ async fn supervise(
     opened: OpenedConnection,
     native: Arc<NativeListener>,
     node: Arc<Node>,
+    core: Arc<CoreAudit>,
     mut stopped: watch::Receiver<bool>,
 ) -> Result<(), InputError> {
     let OpenedConnection {
@@ -165,7 +173,7 @@ async fn supervise(
     let connection = Arc::new(
         node.response_intents()
             .ok_or(InputError::Invalid)?
-            .connection()
+            .connection(core)
             .map_err(InputError::FinalIntent)?,
     );
     let (registrations, registered) = mpsc::channel(1);
@@ -274,9 +282,9 @@ async fn supervise(
                         if let Some(slot) = ingress.slots.iter_mut().find(|slot| Arc::ptr_eq(&slot.owner, &owner)) {
                             slot.node = prepared.native_node_handle();
                         }
-                        let (feeds, node) = (feeds.clone(), node.clone());
+                        let feeds = feeds.clone();
                         responses.spawn(async move {
-                            ResponseFinished::Delivered(prepared.send(&feeds, &node).await)
+                            ResponseFinished::Delivered(prepared.send(&feeds).await)
                         });
                     },
                     Some(Ok((owner, Err(error)))) => {
