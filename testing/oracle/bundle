@@ -1,6 +1,8 @@
 # The bundled set: the plugins dist/default compiles in (its [dependencies]), one repository per line.
 # ci/qa.yml `oracle` loads each as its newest green dev package (the drop set). Kind, alias, declares and
 # former names come from scripts/ci-product-pins.json. Keep in step with dist/default/Cargo.toml.
+# TCP and stdio are core carriers, not plugins: their old-interface crates are still linked by
+# dist/default until the deletion plan's H1, but they have no package and are not bundled.
 busbar-plane-llm
 busbar-plane-mcp
 busbar-plane-a2a
@@ -20,9 +22,7 @@ busbar-export-file
 busbar-export-webhook
 busbar-export-prometheus
 busbar-export-otlp
-busbar-transport-tcp
 busbar-transport-http
 busbar-transport-grpc
 busbar-transport-ws
-busbar-transport-stdio
 busbar-transport-webrtc
