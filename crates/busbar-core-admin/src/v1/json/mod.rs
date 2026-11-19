@@ -292,11 +292,21 @@ const PLANE_ADMIN_BODY_MAX: usize = 1 << 20;
 async fn port_admin_response(
     seats: &[busbar_kernel::plane_driver::port::PortSeat],
     request_id: u64,
-    parts: axum::http::request::Parts,
+    mut parts: axum::http::request::Parts,
     body: axum::body::Body,
 ) -> Response {
     use busbar_kernel::limits::input_body::{gather, GatherError};
     use busbar_kernel::limits::process_admission::RequestLease;
+
+    // The carriers the admin gate consumed are stripped before the head is copied for the plane,
+    // as the data router strips them: the plane's admin route never sees the operator credential.
+    if let Some(consumed) = parts
+        .extensions
+        .get::<busbar_kernel::auth::ConsumedCredentials>()
+        .cloned()
+    {
+        consumed.strip(&mut parts.headers);
+    }
 
     let Some(request) = parts.extensions.get::<RequestLease>().cloned() else {
         return err_json(&AdminError::Unavailable(
