@@ -17,7 +17,7 @@ use super::native_chain::{NativeChain, NativePreparedAnswer, PreparedNativeIdent
 use super::native_ticket::{
     Presented as TicketPresented, Serving, TicketDesk, TicketJudged, TicketRefused,
 };
-use super::route_record::{CallerState, Money, RouteRecord, Who};
+use super::route_record::{Money, RouteRecord, Who};
 use crate::host_services::{InvocationContext, ServingGeneration};
 use crate::inbound::native::{
     AuthorizedPhysicalData, DataPreparation, DataPreparationDenied, DataPreparationSuccess,
@@ -187,7 +187,6 @@ impl NativeDataRoute {
     pub fn admission(
         seat: &PortSeat,
         mounted: &Mounted,
-        chain: &NativeChain,
         offered: Offered,
     ) -> Result<(RouteRecord, Admission), NotMounted> {
         let record = &mounted.record;
