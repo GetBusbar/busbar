@@ -7,10 +7,12 @@
 //! admission); it is the same whichever plane the route belongs to.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use busbar_kernel::auth::admission_table::Refusal;
+use busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS;
 
-use super::judge;
+use super::{judge, session_ends, session_limit};
 use crate::root::min3_boot::transports::tests::framer;
 use crate::root::min3_boot::transports::ServedTransport;
 
@@ -56,6 +58,45 @@ fn an_admitted_upgrade_is_handed_to_the_listeners_websocket_transport_not_refuse
         "that exact admitted instance"
     );
     assert_eq!(&*handed.instance, "transport-ws");
+}
+
+/// An upgraded session is bounded by the stricter of the plane's session ceiling and the stream
+/// ceiling; a side that states none (0) does not loosen the other, and with neither stated the
+/// deployment's default stands: there is no unbounded session.
+#[test]
+fn an_upgraded_sessions_limit_is_the_stricter_of_the_two_ceilings_and_never_none() {
+    for (plane, stream, limit) in [
+        (0, 300, 300),
+        (600, 300, 300),
+        (120, 300, 120),
+        (120, 0, 120),
+        (300, 300, 300),
+        (0, 0, DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS),
+    ] {
+        assert_eq!(
+            session_limit(plane, stream),
+            Duration::from_secs(limit),
+            "plane {plane}, stream {stream}"
+        );
+    }
+}
+
+/// The limit runs from the request and never reaches past the request's own deadline; a limit
+/// the clock cannot hold does not become no limit.
+#[test]
+fn an_upgraded_session_ends_at_its_limit_or_its_requests_deadline_whichever_is_first() {
+    let now = tokio::time::Instant::now();
+    let limit = Duration::from_secs(300);
+    assert_eq!(session_ends(now, None, limit), now + limit);
+    let sooner = now + Duration::from_secs(60);
+    assert_eq!(session_ends(now, Some(sooner), limit), sooner);
+    let later = now + Duration::from_secs(3600);
+    assert_eq!(session_ends(now, Some(later), limit), now + limit);
+    assert_eq!(
+        session_ends(now, None, Duration::MAX),
+        now + Duration::from_secs(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS)
+    );
+    assert_eq!(session_ends(now, Some(sooner), Duration::MAX), sooner);
 }
 
 /// The adopting session serves the upgraded answer as its stream 1, and the delivery entry of an

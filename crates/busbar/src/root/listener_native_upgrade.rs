@@ -31,9 +31,11 @@
 //! caller is verified as before and then refused 501, clearly, before any 101.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use busbar_kernel::auth::admission_table::Refusal;
 use busbar_kernel::auth::native_upgrade::UpgradeRefused;
+use busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS;
 use busbar_kernel::inbound::native::{CompletingPhysicalRequest, RouteTarget, StreamOwner};
 
 use super::data::{DataAuthority, DataPrepareError, DataResponse};
@@ -87,6 +89,40 @@ pub(super) fn judge(asks: bool, websocket: Option<&ServedTransport>, stream: u64
     }
 }
 
+/// The session ceiling the route's plane states to core, in seconds; `0` = it states none. On this
+/// line no plane states one where the listener can read it (the seat's egress is built with no
+/// stated ceiling, `plane_seats.rs`), so the plane's side of [`session_limit`] is the request's
+/// own deadline alone ([`session_ends`]).
+const PLANE_CEILING_SECS: u64 = 0;
+
+/// HOW LONG AN UPGRADED SESSION MAY RUN: the stricter of the plane's session ceiling and the
+/// stream ceiling (the deployment's `limits.upstream_request_timeout_secs`, which bounds every
+/// whole request, streams included), each in seconds with `0` = not stated. With neither stated
+/// the deployment's default stream ceiling stands: an upgraded session is never unbounded.
+pub(super) fn session_limit(plane_secs: u64, stream_secs: u64) -> Duration {
+    let stricter = [plane_secs, stream_secs]
+        .into_iter()
+        .filter(|secs| *secs != 0)
+        .min()
+        .unwrap_or(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS);
+    Duration::from_secs(stricter)
+}
+
+/// WHEN AN UPGRADED SESSION ENDS AT THE LATEST: `limit` after its request was taken up (`now`),
+/// and never after the request's own deadline. The limit runs from the request, not from the
+/// 101: the dial and the far end's handshake are part of what it bounds.
+pub(super) fn session_ends(
+    now: tokio::time::Instant,
+    request_deadline: Option<tokio::time::Instant>,
+    limit: Duration,
+) -> tokio::time::Instant {
+    // A limit past the clock's range bounds nothing: the default stands in its place.
+    let by_limit = now
+        .checked_add(limit)
+        .unwrap_or_else(|| now + Duration::from_secs(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS));
+    request_deadline.map_or(by_limit, |deadline| deadline.min(by_limit))
+}
+
 /// Serves one upgrade request. The answer and its authority are the data path's own: a refusal
 /// under the refusal's custody, or the executing request with its settlement (the unit's one
 /// terminal, driven when the answer's delivery ends).
@@ -109,6 +145,20 @@ pub(super) async fn prepare(
             .await
             .map_err(DataPrepareError::Input);
     }
+    // The session's limit is stated before anything of the request is prepared: the caller's
+    // side is made with it, so no upgraded session exists without one.
+    let stream_secs = busbar_kernel::config::limits::installed()
+        .map_or(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS, |limits| {
+            limits.upstream_request_timeout_secs
+        });
+    super::handover::bound(
+        &stream,
+        session_ends(
+            tokio::time::Instant::now(),
+            binding.deadline().map(tokio::time::Instant::from_std),
+            session_limit(PLANE_CEILING_SECS, stream_secs),
+        ),
+    );
     let websocket = slot.websocket().cloned();
     super::data::prepare_for(
         request,

@@ -515,7 +515,7 @@ impl Wire {
 #[cfg(test)]
 pub(crate) mod reference {
     use super::super::records::{
-        END_FLUSH, S_MULTIPLEX, Session, WIRE_CONTROL, WireEnd, WirePart, WireSealed,
+        Session, WireEnd, WirePart, WireSealed, END_FLUSH, S_MULTIPLEX, WIRE_CONTROL,
     };
     use super::*;
 
@@ -636,9 +636,9 @@ pub(crate) mod reference {
 
 #[cfg(test)]
 mod tests {
-    use super::super::records::{END_FLUSH, RESET_NOT_PROCESSED, StreamReset, WIRE_CONTROL};
+    use super::super::records::{StreamReset, END_FLUSH, RESET_NOT_PROCESSED, WIRE_CONTROL};
     use super::super::redial;
-    use super::reference::{Conn, Script, begin, end, head};
+    use super::reference::{begin, end, head, Conn, Script};
     use super::*;
 
     const KEY: &[u8] = b"sk-live-0123456789abcdef";
@@ -693,11 +693,10 @@ mod tests {
             .sealed(1, 0, 0, 13)
             .part(1, WIRE_CONTROL, b" HTTP/1.1\r\nhost: g.example\r\n\r\n");
         conn.answer(&script).unwrap();
-        assert!(
-            conn.out
-                .as_slice()
-                .starts_with(b"POST /v1beta/models/x:generate?key=AIzaSyExample HTTP/1.1\r\n")
-        );
+        assert!(conn
+            .out
+            .as_slice()
+            .starts_with(b"POST /v1beta/models/x:generate?key=AIzaSyExample HTTP/1.1\r\n"));
     }
 
     #[test]
