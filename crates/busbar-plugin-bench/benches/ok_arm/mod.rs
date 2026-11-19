@@ -7,7 +7,8 @@
 //! - **The floor** is the interface itself: the same no-op call straight through busbar-ffi on a linked image,
 //!   with its own answer lease (its ACTIVE registration, which `grow` needs) and nothing of the wrapper.
 //! - **The kept protections**, each timed alone: the entry guard (`entry::guard` on an empty handle: the owner and
-//!   entry-depth marks, the store-migration denial, the watchdog word, the arena check), the per-thread answer
+//!   entry-depth marks, the store-migration denial, the watchdog word, the arena check), the hand-over of the
+//!   growable answer block (the guard with a held block, less the guard and the floor's own lease), the per-thread answer
 //!   loan with its wipe of what the call wrote (`sync_out`, the adapters' loan, around nothing), and the
 //!   validation of the answer
 //!   (`Answer::parse`).
@@ -25,7 +26,7 @@ use std::time::Instant;
 use busbar_plugin_abi::host::{Host, HostFns};
 use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::entry::guard;
-use busbar_plugin_abi::host_side::pool::{PooledOut, sync_out};
+use busbar_plugin_abi::host_side::pool::{Pool, PooledOut, sync_out};
 use busbar_plugin_abi::host_side::watch;
 use busbar_plugin_abi::plugin::__rt::host::{Instance, OpenAnswer, OutLease, Session};
 use busbar_plugin_abi::plugin::__rt::image::Admitted;
@@ -204,11 +205,27 @@ pub fn protections() -> Vec<(&'static str, f64, f64)> {
     let (p, pp) = time(|| {
         black_box(Answer::parse(Status::OK, black_box(&[])).is_ok());
     });
+    // The hand-over of the pooled answer block (the lease that can grow): the guard with a held block, less the
+    // guard alone, less the fixed lease the floor already pays.
+    let mut held = Pool::global().acquire(1 << 20);
+    let (gh, ghp) = time(|| {
+        black_box(guard(3, 2, &mut held, |lease: &mut OutLease| lease.len()));
+    });
+    let mut block = [0_u8; 64];
+    let (fx, _) = time(|| {
+        black_box(OutLease::with_fixed(&mut block, |lease| lease.len()));
+    });
+    let hand_over = (gh - g - fx).max(0.0);
     vec![
         (
             "entry guard (owner, entry depth, migration denial, watchdog word, arena check)",
             g,
             gp,
+        ),
+        (
+            "hand-over of the growable answer block",
+            hand_over,
+            hand_over + (ghp - gh),
         ),
         ("per-thread answer loan and its wipe", l, lp),
         ("answer validation", p, pp),
@@ -243,5 +260,10 @@ pub fn verdict(arm: &str, ok: (f64, f64), floor: (f64, f64), kept: &[(&str, f64,
         } else {
             "OVER the mark"
         }
+    );
+    println!(
+        "{arm}: not in the mark, {:.1} ns: the port's own layer (the adapter's dispatch and its two-pass decode of \
+         the answer, before any item reaches the sink) and anything not named above",
+        ok.0 - floor.0 - sum
     );
 }
