@@ -355,7 +355,8 @@ mod records_capture_tests;
 pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
-pub(crate) use crate::test_common::plugins as test_plugins;
+#[path = "tests/test_plugins_root.rs"]
+pub(crate) mod test_plugins;
 
 #[cfg(test)]
 #[path = "tests/store_double.rs"]

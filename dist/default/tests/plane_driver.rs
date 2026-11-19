@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
+// Futures over the serving App's credential custody graph prove Send through more than the
+// default 128 auto-trait steps (see busbar-kernel's lib.rs); the graph is acyclic.
+#![recursion_limit = "256"]
 
 #[path = "../../../crates/busbar-kernel/tests/common/driver.rs"]
 mod common;
@@ -1246,7 +1249,7 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         Arc::new(busbar_kernel::appbuild::AcceptAll);
     let _app = runtime.block_on(async {
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-            crate::root::test_plugins::plaintext_listeners(config),
+            fixture_plugins::plaintext_listeners(config),
             busbar_kernel::config::PluginsCfg {
                 enabled: true,
                 dir: directory.to_string_lossy().into_owned(),

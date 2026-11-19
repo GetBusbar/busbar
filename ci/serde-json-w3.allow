@@ -314,7 +314,6 @@ crates/plugin-loader/src/tests/release_seal_tests.rs                            
 crates/plugin-loader/tests/fixtures/neutral_export_plugin.rs                               # D
 crates/plugin-loader/tests/fixtures/ready_plugins.rs                                       # D
 dist/default/Cargo.toml                                                                    # D
-dist/default/tests/canary/abi.rs                                                           # D
 dist/default/tests/common/chat_spend.rs                                                    # D
 dist/default/tests/common/credentials.rs                                                   # D
 dist/default/tests/common/fresh_namespace.rs                                               # D
