@@ -17,6 +17,12 @@ name = "native_store_fixture"
 path = "tests/fixtures/native_store_fixture.rs"
 crate-type = ["cdylib"]
 
+# The native stream test's own copy of the loader's pack fixture, built here from current source.
+[[example]]
+name = "native_pack_fixture"
+path = "tests/fixtures/native_pack_fixture.rs"
+crate-type = ["cdylib"]
+
 [[test]]
 name = "canary_scan"
 path = "tests/canary_scan.rs"
