@@ -286,13 +286,16 @@ fn url(at: &str, value: &Value, refused: &mut Vec<String>) -> Option<Box<str>> {
     }
     let Some((scheme, rest)) = url.split_once("://") else {
         refused.push(format!(
-            "{at}: `url: {shown}` must be an `http://` or `https://` endpoint"
+            "{at}: `url: {shown}` must be an `http://`, `https://`, `ws://` or `wss://` endpoint"
         ));
         return None;
     };
-    if !(scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")) {
+    if !URL_SCHEMES
+        .iter()
+        .any(|known| scheme.eq_ignore_ascii_case(known))
+    {
         refused.push(format!(
-            "{at}: `url: {shown}` must be an `http://` or `https://` endpoint"
+            "{at}: `url: {shown}` must be an `http://`, `https://`, `ws://` or `wss://` endpoint"
         ));
         return None;
     }
