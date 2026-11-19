@@ -21,10 +21,10 @@
 #define FIXTURE_MAX_OUT ((size_t)1 << 20) /* the max_out the arm's lease grants */
 
 static const bb_stamp STAMP = {
-    .magic = "BUSBAR\0PLUGSTAMP", .format = 2, .size = sizeof(bb_stamp), .kind = BB_KIND_SECRET,
-    .kind_abi = BB_SECRET_ABI, .mechanism = BB_MECHANISM, .flags = 1 /* STAMP_LOCAL_BUILD: build_id zero */,
-    .layout = BB_SECRET_FP, .mechanism_layout = BB_CORE_FP, .semantic = BB_SECRET_FP,
-    .mechanism_semantic = BB_CORE_FP, .engine_min = {1, 6, 0, 0}, .engine_max = {1, 6, 0xFFFF, 0},
+    .magic = "BUSBAR\0PLUGSTAMP", .format = BB_STAMP_FORMAT, .size = sizeof(bb_stamp), .kind = BB_KIND_SECRET,
+    .kind_abi = BB_SECRET_ABI, .core_abi = BB_CORE, .flags = 1 /* STAMP_LOCAL_BUILD: build_id zero */,
+    .layout = BB_SECRET_FP, .core_layout = BB_CORE_FP, .kind_minor = BB_SECRET_MINOR,
+    .core_minor = BB_CORE_MINOR, .engine_min = {0, 0, 0, 0}, .engine_max = {0xFFFF, 0xFFFF, 0xFFFF, 0},
     .name = "busbar-out-rewrite-c-fixture", .version = "1.6.0", .target = BB_FIXTURE_TARGET, .crypto = "external",
 };
 static const char SCHEMA[] = "{\"type\":\"object\",\"additionalProperties\":false}";
@@ -36,7 +36,9 @@ static uint8_t decoy[4096];
 
 static bool is(bb_bytes b, const char *s) { return b.len == strlen(s) && (!b.len || !memcmp(b.ptr, s, b.len)); }
 
-static bb_status describe(const bb_host *h, bb_raw_out *out) {
+static bb_status describe(const void *inst, const bb_host *h, const bb_call *call, bb_raw_out *out) {
+    (void)inst;
+    (void)call;
     bb_mask_rec m = {BB_SECRET_REQUIRED};
     if (!bb_put(h, out, BB_TAG_D_METHODS, &m, sizeof m) || !bb_put(h, out, BB_TAG_D_SCHEMA, SCHEMA, sizeof SCHEMA - 1)
         || !bb_put(h, out, BB_TAG_SECRET_D_REF_SCHEMA, REF_SCHEMA, sizeof REF_SCHEMA - 1))
@@ -44,7 +46,11 @@ static bb_status describe(const bb_host *h, bb_raw_out *out) {
     return BB_OK;
 }
 
-static bb_status open_(const bb_host *h, bb_bytes config, uint32_t flags, bb_raw_out *out) {
+static bb_status open_(const void *inst, const bb_host *h, const bb_call *call, bb_raw_out *out) {
+    (void)inst;
+    bb_bytes config = bb_call_blob(call, 0); /* blob 0 = the bound config */
+    uint32_t flags = 0;                      /* head = flags (u32) */
+    if (!bb_call_u32(call, 0, &flags)) return BB_FAULT;
     if (!config.len || config.ptr[0] != '{') return bb_fail(h, out, BB_REFUSED, BB_R_CONFIG, "config is not an object");
     if (flags & BB_OPEN_DRY_RUN) return BB_OK;
     uint8_t *state = malloc(1);
@@ -94,7 +100,8 @@ static bb_status regrow(const bb_host *h, bb_raw_out *out) {
     return BB_OK;
 }
 
-static bb_status resolve(const void *inst, const bb_host *h, bb_bytes reference, bb_raw_out *out) {
+static bb_status resolve(const void *inst, const bb_host *h, const bb_call *call, bb_raw_out *out) {
+    bb_bytes reference = bb_call_blob(call, 0); /* the secret kind's `resolve`: blob 0 = the reference */
     (void)inst;
     if (!reference.len || reference.ptr[0] != '{') return bb_fail(h, out, BB_REFUSED, BB_R_INVALID, "not an object");
     if (is(reference, "{\"name\":\"ptr\"}")) return rewrite_ptr(h, out);
@@ -103,11 +110,10 @@ static bb_status resolve(const void *inst, const bb_host *h, bb_bytes reference,
     return bb_fail(h, out, BB_REFUSED, BB_R_NOT_FOUND, "no such name");
 }
 
-static bb_status resume(const void *inst, const bb_host *h, bb_token tok, bb_bytes results, bb_raw_out *out) {
+static bb_status resume(const void *inst, const bb_host *h, const bb_call *call, bb_raw_out *out) {
     (void)inst;
     (void)h;
-    (void)tok;
-    (void)results;
+    (void)call; /* call->session = the chain token; blob 0 = the results */
     (void)out;
     return BB_FAULT; /* it never answers NEED */
 }
@@ -121,9 +127,9 @@ static bb_status close_(const void *inst) {
     return BB_OK;
 }
 
-static const bb_secret_vt VT = {resolve};
+static const bb_entry TABLE[BB_SECRET_ENTRIES] = {resolve};
 static const bb_plugin PLUGIN = {
-    &STAMP, &VT, describe, open_, resume, cancel, close_, {(const uint8_t *)"out-rewrite-c", 13},
+    sizeof(bb_plugin), BB_SECRET_ENTRIES, &STAMP, TABLE, describe, open_, resume, cancel, close_, {(const uint8_t *)"out-rewrite-c", 13},
 };
 const bb_plugin *busbar_plugin(void);
 const bb_plugin *busbar_plugin(void) { return &PLUGIN; }

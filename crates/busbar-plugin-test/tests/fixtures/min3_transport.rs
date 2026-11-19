@@ -85,14 +85,19 @@ impl Transport for Dial {
         _h: &Host,
         s: &mut DialSession,
         stream: u64,
-        piece: u32,
+        pieces: u32,
         _arg: u32,
-        bytes: Bytes<'_>,
+        _credit: u64,
+        parts: busbar_plugin_abi::types::Slice<'_, Bytes<'_>>,
         out: &mut Out<'_>,
     ) -> Result<(), Fail> {
-        if piece != tp::E_HEAD || stream != 0 {
+        // Transport 2.0: `pieces` is a set; the head, when present, is the first entry of `parts`.
+        let (true, Some(bytes)) = (
+            pieces & tp::E_HEAD != 0 && stream == 0,
+            parts.get().first().copied(),
+        ) else {
             return Ok(());
-        }
+        };
         if s.opened {
             return Err(Fail::refused_because(
                 refused::R_INVALID,
@@ -111,7 +116,14 @@ impl Transport for Dial {
         out.put_pod(tag::STREAM_OPENED, &StreamFlow { stream: 1 })
             .map_err(full)?;
         let request = format!("GET / HTTP/1.1\r\nhost: {authority}\r\n\r\n");
-        out.put(tag::WRITE, request.as_bytes()).map_err(full)
+        // The request head is control on the stream STREAM_OPENED announced (rules L1, L2).
+        let part = tp::WirePart {
+            stream: 1,
+            class: tp::WIRE_CONTROL,
+            _r: 0,
+        };
+        out.put_pod_tail(tag::WIRE_PART, &part, request.as_bytes())
+            .map_err(full)
     }
 
     fn offer(&self, _h: &Host, role: u32, out: &mut Out<'_>) -> Result<(), Fail> {

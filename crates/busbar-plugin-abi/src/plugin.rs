@@ -30,19 +30,18 @@ use zerocopy::IntoBytes;
 /// holds `unsafe extern "C"` entries and raw table pointers, and only `plugin()` builds one. Re-exported here
 /// under their frozen paths; their `mechanism!` block is busbar-ffi's, folded into `CORE_FP` after this crate's.
 pub use busbar_ffi::header::{
-    EntryFn, OPEN_DRY_RUN, PLUGIN_CANCEL_AT, PLUGIN_CLOSE_AT, PLUGIN_DESCRIBE_AT,
-    PLUGIN_FORMER_NAMES_AT, PLUGIN_KIND_VT_AT, PLUGIN_OPEN_AT, PLUGIN_RESUME_AT, PLUGIN_STAMP_AT,
-    Plugin, SYMBOL,
+    ENTRIES_MAX, EntryFn, OPEN_DRY_RUN, PLUGIN_CANCEL_AT, PLUGIN_CLOSE_AT, PLUGIN_DESCRIBE_AT,
+    PLUGIN_ENTRIES_AT, PLUGIN_FORMER_NAMES_AT, PLUGIN_OPEN_AT, PLUGIN_RESUME_AT, PLUGIN_SIZE_AT,
+    PLUGIN_STAMP_AT, PLUGIN_TABLE_AT, Plugin, SYMBOL,
 };
 
 /// What the macros name, under one hidden path, so a plugin crate needs no busbar-ffi dependency of its own.
 #[doc(hidden)]
 pub mod __rt {
-    pub use busbar_ffi::raw::ViewRef;
     pub use busbar_ffi::shim::{self, ChainFut};
-    pub use busbar_ffi::vt::{self, views};
     pub use busbar_ffi::{
-        Arg, Built, ChainRef, Kind, LinkedPlugin, Out, Slots, StampBytes, kind, plugin,
+        Args, Call, ChainArgs, ChainRef, Kind, LinkedPlugin, Out, Slots, StampBytes, Table, kind,
+        plugin,
     };
     #[cfg(feature = "host")]
     pub use busbar_ffi::{host, image};
@@ -239,7 +238,7 @@ impl Describe<'_> {
     /// Plane registration map (D_UPSTREAM_PATH): RFC 6901 pointer ending in an object-member `*`.
     /// Core strips its upstream fields from each registration before schema/check/open.
     pub fn upstream_path(&mut self, pointer: &'static str) -> &mut Self {
-        self.write(|w| w.put_text(tag::D_UPSTREAM_PATH, pointer))
+        self.write(|w| w.put_text(crate::plane::tag::D_UPSTREAM_PATH, pointer))
     }
     /// A config position that holds a secret reference.
     pub fn secret_path(&mut self, pointer: &'static str) -> &mut Self {
@@ -252,7 +251,7 @@ impl Describe<'_> {
     /// Round 7, export only: a config position that holds a file-sink destination (D_DEST_PATH; `""` = the
     /// whole bag). Core binds it to `{"$dest": n}` (§12.7); embed `DEST_SCHEMA` there in D_SCHEMA.
     pub fn dest_path(&mut self, pointer: &'static str) -> &mut Self {
-        self.write(|w| w.put_text(tag::D_DEST_PATH, pointer))
+        self.write(|w| w.put_text(crate::export::tag::D_DEST_PATH, pointer))
     }
     /// Round 13: a config position whose plain value the operator may write as a secret reference (D_REF_PATH);
     /// core hands the plugin the resolved plain string (§12.7). D_SCHEMA states the plain type there.
@@ -262,12 +261,12 @@ impl Describe<'_> {
     /// Round 14, plane only: the config position where core writes its top-level `public_url` (D_PUBLIC_URL_PATH,
     /// a JSON string or `null`). D_SCHEMA states `{"type": ["string", "null"]}` there.
     pub fn public_url_path(&mut self, pointer: &'static str) -> &mut Self {
-        self.write(|w| w.put_text(tag::D_PUBLIC_URL_PATH, pointer))
+        self.write(|w| w.put_text(crate::plane::tag::D_PUBLIC_URL_PATH, pointer))
     }
     /// Round 22, plane only: the config position where core writes the caller-connection upstream names
     /// (D_CALLER_UPSTREAMS_PATH). D_SCHEMA states `{"type": "array", "items": {"type": "string"}}` there.
     pub fn caller_upstreams_path(&mut self, pointer: &'static str) -> &mut Self {
-        self.write(|w| w.put_text(tag::D_CALLER_UPSTREAMS_PATH, pointer))
+        self.write(|w| w.put_text(crate::plane::tag::D_CALLER_UPSTREAMS_PATH, pointer))
     }
     /// A metric this plugin reports through METRIC records (D_METRIC, §12.17). kind = metric::MX_*.
     pub fn metric(
@@ -300,7 +299,7 @@ impl Describe<'_> {
         let body: Vec<u8> = numbers.iter().flat_map(|n| n.to_le_bytes()).collect();
         self.write(|w| w.put(tag::D_ERRORS, &body))
     }
-    /// A kind describe item (tag 0x0180..=0x01FF, declared in that kind's `tags {}`).
+    /// A kind describe item (tag 0x0180..=0x01FF or 0x4000..=0x4FFF, declared in that kind's `tags {}`).
     pub fn item(&mut self, tag: u16, body: &[u8]) -> &mut Self {
         self.write(|w| w.put(tag, body))
     }
@@ -580,6 +579,7 @@ macro_rules! plugin {
             static STAMP: $crate::plugin::__rt::StampBytes = $crate::stamp::emit(&$crate::stamp::Spec {
                 kind: $($k)*::KIND,
                 kind_abi: $($k)*::ABI,
+                kind_minor: $($k)*::MINOR,
                 layout: $($k)*::FP,
                 out_of_process: $crate::plugin!(@if [$($oop)?] true false),
                 engine_min: $crate::plugin!(@option [$($emin)?]),
@@ -593,9 +593,10 @@ macro_rules! plugin {
                 build_id: ::core::option_env!("BUSBAR_BUILD_ID"),
                 crypto: $crate::plugin!(@if [$($oop)?] { ::core::env!("BUSBAR_PLUGIN_CRYPTO") } { "host" }),
             });
-            static VT: $crate::plugin::__rt::Built<$($k)*::Shim<$T>, $($k)*::Vt> = $($k)*::vt::<$T>();
-            $crate::plugin::__rt::plugin::<$($k)*::Shim<$T>, $($k)*::Marker>(
-                &VT,
+            static TABLE: $crate::plugin::__rt::Table<$($k)*::Shim<$T>, { $($k)*::ENTRIES }> =
+                $($k)*::table::<$T>();
+            $crate::plugin::__rt::plugin::<$($k)*::Shim<$T>, $($k)*::Marker, { $($k)*::ENTRIES }>(
+                &TABLE,
                 &STAMP,
                 $crate::stamp::former_names($crate::plugin!(@option [$($former)?])),
             )

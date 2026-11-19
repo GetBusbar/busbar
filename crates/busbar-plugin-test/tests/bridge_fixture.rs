@@ -21,11 +21,12 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use busbar_ffi::header::{StampBytes, STAMP_KIND_AT, STAMP_SIZE};
 pub use busbar_ffi::host::{Chain, ChainBufs, Instance, OpenAnswer, OutLease, Resumed, Started};
 use busbar_ffi::image::Admitted;
-use busbar_ffi::shim::{ChainFut, Image, InstOf, Opening, Start1, Step};
+use busbar_ffi::shim::{ChainFut, Image, InstOf, Opening, Starts, Step};
 use busbar_ffi::slots::{ChainBox, ChainRef, Slots};
-use busbar_ffi::vt::{kind, secret, Built};
+use busbar_ffi::vt::kind;
 pub use busbar_ffi::Status;
-use busbar_ffi::{plugin, Arg, Bytes, ChainBytes, KindCode, LinkedPlugin, Out, Str, Token};
+use busbar_ffi::{plugin, Bytes, ChainBytes, KindCode, LinkedPlugin, Out, Str, Token};
+use busbar_ffi::{ChainArgs, Table};
 use busbar_plugin_abi::bridge::{self, Inbox};
 use busbar_plugin_abi::fail::{fact, failed, refused, Fail};
 use busbar_plugin_abi::host::{Host, HostFns};
@@ -48,7 +49,7 @@ pub static HOST: Host = Host::new(
         log_level: None,
         grow: None,
         deployment: None,
-        migrate_admit: None,
+        service: None,
     },
 );
 
@@ -206,23 +207,24 @@ impl Image for Fixture {
     }
 }
 
-impl Start1<Bytes<'static>, 0> for Fixture {
+impl Starts<0> for Fixture {
     fn start<'i>(
         p: &'i Plugin,
         _h: &'static Host,
-        reference: ChainBytes,
-    ) -> (ChainFut<'i, Self::Reply>, Self::Inbox) {
-        (Box::pin(run(p, reference)), Inbox::new())
+        args: ChainArgs<'_>,
+    ) -> Option<(ChainFut<'i, Self::Reply>, Self::Inbox)> {
+        let reference: ChainBytes = args.blob(0)?;
+        Some((Box::pin(run(p, reference)), Inbox::new()))
     }
 }
 
-static VT: Built<Fixture, secret::Vt> = secret::Vt::build::<Fixture>();
+static VT: Table<Fixture, 1> = Table::new([busbar_ffi::shim::starts::<Fixture, 0>()]);
 static STAMP: StampBytes = {
     let mut bytes = [0u8; STAMP_SIZE];
     bytes[STAMP_KIND_AT] = KindCode::Secret as u8;
     StampBytes(bytes)
 };
-static PLUGIN: LinkedPlugin = plugin::<Fixture, Secret>(&VT, &STAMP, Str::EMPTY);
+static PLUGIN: LinkedPlugin = plugin::<Fixture, Secret, 1>(&VT, &STAMP, Str::EMPTY);
 
 /// Pending once, then Ready: a step with no NEED of its own.
 #[derive(Default)]
@@ -388,10 +390,10 @@ pub fn start<'i>(
 ) -> Started<'i, Secret> {
     let mut bufs = ChainBufs::new();
     let at = bufs.push(scenario.to_vec());
-    instance.start1(
-        |vt| &vt.resolve,
+    instance.start(
+        busbar_plugin_abi::secret::slot::resolve,
         bufs,
-        move |bufs| Arg::bytes(bufs.get(at)),
+        |bufs, cross| busbar_plugin_abi::secret::pack::resolve(0, bufs.get(at), cross),
         lease,
     )
 }

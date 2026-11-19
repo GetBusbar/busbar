@@ -271,7 +271,7 @@ const CORE_REGISTRATION_KEYS: [&str; 7] = [
 /// (the plane's `visible_bag`, root `min3_boot` `declared_planes` over busbar-kernel `upstreams::declared`).
 /// Settings of an image that declares no registration path are returned unchanged.
 fn visible(harness: &Harness, canonical: &[u8]) -> Vec<u8> {
-    use busbar_plugin_abi::records::tag::D_UPSTREAM_PATH;
+    use busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH;
     let Some(described) = harness.registry().described(harness.identity()) else {
         return canonical.to_vec();
     };

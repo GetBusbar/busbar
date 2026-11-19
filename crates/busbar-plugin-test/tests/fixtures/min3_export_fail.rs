@@ -80,6 +80,7 @@ impl Export for FailSink {
         _stream: u32,
         _delivery: u64,
         _attempt: u32,
+        _lines: u32,
         batch: ChainBytes,
     ) -> Result<Reply, Fail> {
         std::thread::sleep(self.sleep);

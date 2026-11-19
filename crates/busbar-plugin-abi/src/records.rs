@@ -71,26 +71,12 @@ pub mod tag {
     /// one, directly after FAIL, with REFUSED or FAILED. Anywhere else FAULT UnknownTag. Display only: core never
     /// decides on it (§12.3 stays on `code` and facts); core renders it as `BUSBAR-<identity>-NNNN` (§11.2).
     pub const ERROR: u16 = 0x000D;
-    /// HTTP-like head records, shared by plane and transport.
-    pub const H_METHOD: u16 = 0x0020; // TEXT shape
-    pub const H_PATH: u16 = 0x0021; // TEXT shape, path + query as received
-    pub const H_AUTHORITY: u16 = 0x0022; // TEXT shape
-    pub const H_SCHEME: u16 = 0x0023; // TEXT shape
-    pub const H_STATUS: u16 = 0x0024; // Pod U32Rec
-    /// Round 22, core-written only, last in a ROLE_CLIENT `emit(E_HEAD)` head (§8.7): H_BUDGET_NS = the request's
-    /// remaining deadline in ns at the emit (≥ 1; absent = no deadline); H_BODY_LEN = the body's total length when
-    /// core holds it before the head goes (absent = streamed). Anywhere else a plugin sees neither.
-    pub const H_BUDGET_NS: u16 = 0x0025;
-    pub const H_BODY_LEN: u16 = 0x0026; // Pod U64Rec each
-    /// Dialect-neutral conversation, produced by planes and read by hooks (and the REWRITE a hook returns,
-    /// consumed by the plane). UTF-8 JSON, exactly this shape (today's plane-llm `{messages, tools}` contract):
-    /// `{"system": string?, "messages": [{"role": string, "content": string | array}], "tools": [object]?}`.
-    pub const CONVERSATION: u16 = 0x0030;
-    /// Verified identity, produced by auth and read by planes (PlaneReq.identity) and hooks. One ID_SUBJECT
-    /// (text), then ID_GROUP* (text), then ID_CLAIM* (pair shape). Generic, so no kind reads another kind's tags.
-    pub const ID_SUBJECT: u16 = 0x0050;
-    pub const ID_GROUP: u16 = 0x0051;
-    pub const ID_CLAIM: u16 = 0x0052;
+    /// The vocabularies two or three kinds share are versioned modules of `crate::vocab`, outside the core
+    /// fingerprint (core 3.0): heads (`head1`, with the engine-written sealed head records), the
+    /// conversation (`conversation1`) and verified identity (`identity1`). Their tags keep these paths.
+    pub use crate::vocab::conversation1::tag::*;
+    pub use crate::vocab::head1::tag::*;
+    pub use crate::vocab::identity1::tag::*;
     /// Describe items (only in a describe answer).
     pub const D_METHODS: u16 = 0x0040; // Pod MaskRec: method bits the host may call
     pub const D_FACTS: u16 = 0x0041; // Pod MaskRec: kind fact bits
@@ -102,40 +88,23 @@ pub mod tag {
     pub const D_SECRET_PATH: u16 = 0x0045;
     /// Same, for a PEM trust anchor (operator CA). Rewritten to `{"$trust": n}`.
     pub const D_TRUST_PATH: u16 = 0x0046;
-    /// Round 7. Same, for a file-sink destination (`{path, rotate_mb?, keep?}`, DEST grammar §12.7; `""` = the
-    /// whole bag). Rewritten to `{"$dest": n}`; only an export instance may declare it (else DescribeInvalid).
-    pub const D_DEST_PATH: u16 = 0x0048;
+    /// Core 3.0: 0x0048 (the export-only D_DEST_PATH), 0x004A and 0x004B (the plane-only D_PUBLIC_URL_PATH
+    /// and D_CALLER_UPSTREAMS_PATH) and 0x004D (the plane-only D_UPSTREAM_PATH) left the core contract for
+    /// their kind's own describe range (`export::tag`, `plane::tag`). The generic numbers are retired:
+    /// never reused, and a fault from either side for ever.
+    pub const RETIRED: [u16; 4] = [0x0048, 0x004A, 0x004B, 0x004D];
     /// Round 13. Same, for a **reference-capable plain value** (a store path or URL, a collector or webhook URL):
     /// the operator may write the plain value or a secret reference (`{env: X}`, a declared shorthand, a
     /// SourceReference); core resolves a reference through custody to plaintext and writes that JSON string at
     /// the node **before** `check`/`open` (§12.7 `resolve_refs`). The plugin always sees a plain string.
     pub const D_REF_PATH: u16 = 0x0049;
-    /// Round 14. A config position where core writes its own top-level `public_url` (the gateway's externally
-    /// visible base URL, busbar-kernel config/mod.rs:354-358) as a JSON string, or JSON `null` when the operator
-    /// set none, **before** D_SCHEMA validation, `check` and `open` (§12.7 core values). Only a plane may declare it
-    /// (else DescribeInvalid), at most once; the operator may not write that position in the plane's bag (CONFIG,
-    /// core text: "`<kind>.<name><pointer>` is core's `public_url`; set the top-level `public_url`"). A change of
-    /// core's `public_url` reopens (R6) every plane instance whose image declares it. Generic core value, no
-    /// plugin identity (I2).
-    pub const D_PUBLIC_URL_PATH: u16 = 0x004A;
-    /// Round 22. A config position where core writes, as a JSON array of strings (possibly empty), the names of
-    /// the configured upstreams whose outbound binding core resolved to the caller's own connection (§12.18
-    /// "credential mode": the binding's style declared `auth::STYLE_CALLER`), sorted, **before** D_SCHEMA
-    /// validation, `check` and `open`, exactly as D_PUBLIC_URL_PATH (plane only, at most once, the operator may
-    /// not write it, a change reopens every declaring plane instance, R6). Operator vocabulary only: upstream
-    /// names, never a style, a plugin or a mode word (I2, 236).
-    pub const D_CALLER_UPSTREAMS_PATH: u16 = 0x004B;
+
     /// Round 34 (PLUGIN-ERROR-CODES). The plugin's own error numbers, u16 little-endian, strictly ascending,
     /// 1..=256 of them, each 1..=9999. At most one. Any kind. Core renders a number n of this image as
     /// BUSBAR-<identity>-<n as 4 digits> (§11.2 `ErrorBook`). A bad list drops that image's codes; the image is
     /// still admitted (never DescribeInvalid for this item's content).
 pub const D_ERRORS: u16 = 0x004C;
-/// RFC 6901 pointer to this plane's registrations. Final decoded token is `*` (object members),
-/// with no earlier wildcard. Plane only, at most four; duplicates and ancestor overlap refuse describe.
-/// Core consumes url, command, tls, auth, upstream_credentials and allow_private at each member before
-/// schema/check/open. Other path declarations may name plugin-owned siblings, never consumed core fields.
-/// Absence declares no registration upstreams. No ABI layout or version change.
-pub const D_UPSTREAM_PATH: u16 = 0x004D;
+
     /// Describe: one metric this plugin may report (Pod MetricDecl; tail = nested TEXT name, TEXT help,
     /// TEXT label key*). Any kind may declare metrics; core owns the series, retention and exposition (§12.17).
     pub const D_METRIC: u16 = 0x0047;

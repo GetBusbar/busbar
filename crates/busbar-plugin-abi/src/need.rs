@@ -516,7 +516,14 @@ pub mod need {
         )
     }
     pub fn fetch<'a>(req: &'a Fetch<'a>) -> NeedFut<'a, Fetched> {
-        NeedFut::new(Req::Fetch(req), fetched)
+        NeedFut::new(Req::Fetch(req, false), fetched)
+    }
+    /// FETCH, "status only, discard the body" (core 3.0, `vocab::net1::FETCH_STATUS_ONLY`): the engine reads
+    /// and discards the response body whatever its size and answers the status and headers with an empty
+    /// body; `max_body` is not applied. For a sink that needs only "was it accepted": a receiver that
+    /// answers a large body is delivered once, not resent for ever against the answer limit.
+    pub fn fetch_status<'a>(req: &'a Fetch<'a>) -> NeedFut<'a, Fetched> {
+        NeedFut::new(Req::Fetch(req, true), fetched)
     }
     pub fn secret(handle: SecretHandle) -> NeedFut<'static, SecureVec> {
         NeedFut::new(Req::Secret(handle), secret_value)
@@ -627,7 +634,7 @@ pub mod need {
             self
         }
         pub fn fetch(&mut self, req: &'a Fetch<'a>) -> &mut Self {
-            self.items.push(Req::Fetch(req));
+            self.items.push(Req::Fetch(req, false));
             self
         }
         pub fn secret(&mut self, handle: SecretHandle) -> &mut Self {
@@ -687,7 +694,8 @@ pub mod need {
             chain: u64,
             reusable: bool,
         },
-        Fetch(&'a Fetch<'a>),
+        /// The request, and whether it is "status only, discard the body" (`net1::FETCH_STATUS_ONLY`).
+        Fetch(&'a Fetch<'a>, bool),
         Secret(SecretHandle),
         Record(Record<'a>),
         Directory(Dir<'a>),
@@ -718,7 +726,7 @@ pub mod need {
                 Req::Write { .. } => op::WRITE,
                 Req::Read { .. } | Req::ReadInto { .. } => op::READ,
                 Req::Close { .. } => op::CLOSE,
-                Req::Fetch(_) => op::FETCH,
+                Req::Fetch(..) => op::FETCH,
                 Req::Secret(_) => op::SECRET,
                 Req::Record(_) => op::RECORD,
                 Req::Directory(_) => op::DIRECTORY,
@@ -1210,16 +1218,21 @@ pub mod need {
                 let flags = if *reusable { need_flag::REUSABLE } else { 0 };
                 Wire::Need(need(op::CLOSE, flags, *conn, 0, 0, 0), [EMPTY; 4])
             }
-            Req::Fetch(fetch) => {
+            Req::Fetch(fetch, status_only) => {
                 let mode = if fetch.cert.is_some() {
                     need_flag::TLS_MUTUAL
                 } else {
                     need_flag::TLS_NONE
                 };
+                let status = if *status_only {
+                    crate::vocab::net1::FETCH_STATUS_ONLY
+                } else {
+                    0
+                };
                 Wire::Need(
                     need(
                         op::FETCH,
-                        mode | egress_bits(fetch.egress),
+                        mode | egress_bits(fetch.egress) | status,
                         0,
                         fetch.max_body,
                         fetch.cert.map_or(0, |cert| cert.0),
@@ -1641,7 +1654,7 @@ pub mod need {
             Req::Read { .. } => results
                 .next(op::READ)
                 .map(|res| Done::Read(SecureVec::from(res.data0))),
-            Req::Fetch(_) => fetched_answer(results).map(Done::Fetched),
+            Req::Fetch(..) => fetched_answer(results).map(Done::Fetched),
             Req::Secret(_) => results
                 .next(op::SECRET)
                 .map(|res| Done::Secret(SecureVec::from(res.data0))),
@@ -1869,7 +1882,7 @@ pub mod need {
                 cert: None,
                 egress: super::super::egress::OPEN_WEB,
             };
-            let (rec, args) = written(&Req::Fetch(&fetch));
+            let (rec, args) = written(&Req::Fetch(&fetch, false));
             assert_eq!((rec.op, rec.b, rec.flags), (op::FETCH, 4096, 3 << 16));
             let pairs: Vec<_> = pairs(&args[2])
                 .map(|(n, v)| (n.to_vec(), v.to_vec()))

@@ -656,13 +656,29 @@ extern "C" fn host_deployment(_ctx: Ctx<'_>) -> DeploymentId {
     vt::deployment()
 }
 
-extern "C" fn host_migrate_admit(_ctx: Ctx<'_>, recoverable: u64) -> busbar_ffi::Status {
-    contain(busbar_ffi::Status::REFUSED, || {
-        if entry::migration_admitted(recoverable) {
-            busbar_ffi::Status::OK
-        } else {
-            busbar_ffi::Status::REFUSED
+/// The one entry for every kind's own host services (core 3.0). The host states which ids it serves; an
+/// unknown id is FAULT. Store service 1 is the store-open recoverable gate: head = the count (`u64`), no
+/// answer records, OK or REFUSED.
+extern "C" fn host_service(
+    _ctx: Ctx<'_>,
+    id: u64,
+    call: &busbar_ffi::Call<'_>,
+    _out: &mut RawOut,
+) -> busbar_ffi::Status {
+    contain(busbar_ffi::Status::FAULT, || match id {
+        crate::host::SERVICE_STORE_MIGRATE_ADMIT => {
+            let recoverable = call
+                .head()
+                .get(..8)
+                .and_then(|head| head.try_into().ok())
+                .map(u64::from_le_bytes);
+            match recoverable {
+                Some(count) if entry::migration_admitted(count) => busbar_ffi::Status::OK,
+                Some(_) => busbar_ffi::Status::REFUSED,
+                None => busbar_ffi::Status::FAULT,
+            }
         }
+        _ => busbar_ffi::Status::FAULT,
     })
 }
 
@@ -678,7 +694,7 @@ pub static HOST: Host = Host::new(
         log_level: Some(host_log_level),
         grow: Some(host_grow),
         deployment: Some(host_deployment),
-        migrate_admit: Some(host_migrate_admit),
+        service: Some(host_service),
     },
 );
 
@@ -723,7 +739,7 @@ mod tests {
             log_level: None,
             grow: None,
             deployment: None,
-            migrate_admit: None,
+            service: None,
         },
     );
 
@@ -939,7 +955,7 @@ mod tests {
             assert!(fns.now.is_some() && fns.mono.is_some() && fns.log.is_some());
             assert!(fns.log_level.is_some() && fns.grow.is_some() && fns.deployment.is_some());
             assert!(
-                fns.migrate_admit.is_some(),
+                fns.service.is_some(),
                 "the native gate is wired and denies outside a Store open"
             );
             let random = fns.random.expect("random");

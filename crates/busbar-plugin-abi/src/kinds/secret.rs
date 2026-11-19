@@ -5,7 +5,7 @@
 
 crate::kind! {
     /// A secret source. It resolves one reference to bytes. Core owns custody: caching, TTL, zeroizing, audit, cycles.
-    pub trait Secret: kind = 2, abi = 2 {
+    pub trait Secret: kind = 2, abi = 3 {
         views {}
         pods {
             /// Describe: one secret-reference shorthand this source answers to (round 6; replaces the 1.5.5
@@ -34,6 +34,7 @@ crate::kind! {
         consts {
             REQUIRED: u64 = 0b1;
             /// Fact: the backend's lease length in seconds (vault). Core decides the cache TTL.
+            /// E.9: keep, implemented by secret-vault (leases are what Vault returns).
             F_LEASE_S: u32 = 0x100;
             /// SugarRec.role: none; FILL = the source `${NAME}` template placeholders are filled from (env);
             /// PATH = the source a bare file-path position reads from (file). Each role is declared by at most one
@@ -124,12 +125,7 @@ crate::kind! {
                         |req, lease| {
                             let (bufs, at) = proxy::staged(req);
                             self.live
-                                .start1(
-                                    |vt| &vt.resolve,
-                                    bufs,
-                                    |b| crate::plugin::__rt::Arg::bytes(b.get(at)),
-                                    lease,
-                                )
+                                .start(slot::resolve, bufs, |b, cross| pack::resolve(crate::host_side::proxy::now(), b.get(at), cross), lease)
                                 .into()
                         },
                     )

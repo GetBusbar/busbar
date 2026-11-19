@@ -18,12 +18,11 @@
 //!   hook fault, and a `fastest` hook never ranks the no-sample member first.
 
 use busbar_plugin_abi::hook::{
-    self, C_HAS_BUDGET, C_HAS_CONTEXT_MAX, C_HAS_COST, C_HAS_ERROR_RATE, C_HAS_LATENCY,
-    C_HAS_RATE_HEADROOM, FB_WANTS_BODY, FB_WANTS_IDENTITY, FB_WANTS_PROMPT, M_ON, M_ON_IO,
-    POINT_NOTIFY, POINT_REWRITE, POINT_ROUTE, STAGE_CANDIDATE, STAGE_RESPONSE, STAGE_ROUTING,
-    S_ATTEMPT, S_INGRESS_PROTOCOL, S_KEY_ID, S_KEY_NAME, S_POOL, S_REMAINING_CANDIDATES,
-    S_ROUTING_POLICY, S_STAGE, S_STAGE_MODEL, S_USER_SUBJECT, VERB_ABSTAIN, VERB_PREFER,
-    VERB_PRIORITIZE, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
+    self, C_HAS_BUDGET, C_HAS_CONTEXT_MAX, C_HAS_COST, C_HAS_LATENCY, C_HAS_RATE_HEADROOM,
+    FB_WANTS_PROMPT, M_ON, M_ON_IO, POINT_NOTIFY, POINT_REWRITE, POINT_ROUTE, STAGE_CANDIDATE,
+    STAGE_ROUTING, S_ATTEMPT, S_INGRESS_PROTOCOL, S_KEY_ID, S_KEY_NAME, S_POOL,
+    S_REMAINING_CANDIDATES, S_ROUTING_POLICY, S_STAGE, S_STAGE_MODEL, S_USER_SUBJECT, VERB_ABSTAIN,
+    VERB_PREFER, VERB_PRIORITIZE, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
 };
 use busbar_plugin_abi::host_side::caller::CallStack;
 use busbar_plugin_abi::plugin::Plugin;
@@ -70,7 +69,7 @@ pub(super) fn run(plugin: &'static Plugin, config: &[u8], needs: FakeNeeds) {
         "D_POINTS names a point that is not ROUTE, REWRITE or NOTIFY: {points:#b}"
     );
     assert_eq!(
-        port.facts() & !(FB_WANTS_PROMPT | FB_WANTS_BODY | FB_WANTS_IDENTITY),
+        port.facts() & !FB_WANTS_PROMPT,
         0,
         "facts carry a bit that is not an FB_*"
     );
@@ -303,11 +302,8 @@ fn rec(index: u32, flags: u32) -> Candidate {
         } else {
             0
         },
-        error_rate_ppm: if flags & C_HAS_ERROR_RATE != 0 {
-            10_000
-        } else {
-            0
-        },
+        // Hook 3.0: the error-rate presence bit is retired; the field is always absent (zero).
+        error_rate_ppm: 0,
         breaker: 0,
         rate_headroom_ppm: if flags & C_HAS_RATE_HEADROOM != 0 {
             750_000
@@ -347,12 +343,7 @@ fn candidate(index: u32, flags: u32, priced: bool) -> OwnedCandidate {
 }
 
 fn all_flags() -> u32 {
-    C_HAS_LATENCY
-        | C_HAS_BUDGET
-        | C_HAS_RATE_HEADROOM
-        | C_HAS_CONTEXT_MAX
-        | C_HAS_COST
-        | C_HAS_ERROR_RATE
+    C_HAS_LATENCY | C_HAS_BUDGET | C_HAS_RATE_HEADROOM | C_HAS_CONTEXT_MAX | C_HAS_COST
 }
 
 fn base(_point: u32, facts: u64) -> Case {
@@ -370,9 +361,9 @@ fn base(_point: u32, facts: u64) -> Case {
         budgets: Vec::new(),
         conversation: (facts & FB_WANTS_PROMPT != 0)
             .then(|| br#"{"messages":[{"role":"user","content":"hello"}]}"#.to_vec()),
-        body: (facts & FB_WANTS_BODY != 0)
-            .then(|| br#"{"model":"m","messages":[{"role":"user","content":"hello"}]}"#.to_vec()),
-        identity: (facts & FB_WANTS_IDENTITY != 0).then(|| b"{}".to_vec()),
+        // Hook 3.0: the raw body and the identity are not part of the view (their fact bits are retired).
+        body: None,
+        identity: None,
     }
 }
 
@@ -418,11 +409,7 @@ fn views(words: &[String], point: u32, facts: u64) -> Vec<Case> {
     mixed.candidates = vec![
         candidate(0, C_HAS_LATENCY | C_HAS_COST, true),
         candidate(1, C_HAS_BUDGET, false),
-        candidate(
-            2,
-            C_HAS_ERROR_RATE | C_HAS_RATE_HEADROOM | C_HAS_CONTEXT_MAX,
-            true,
-        ),
+        candidate(2, C_HAS_RATE_HEADROOM | C_HAS_CONTEXT_MAX, true),
         candidate(3, 0, false),
     ];
     out.push(mixed);
@@ -450,11 +437,7 @@ fn views(words: &[String], point: u32, facts: u64) -> Vec<Case> {
 
     // Stage taps (POINT_NOTIFY): S_STAGE present exactly there, S_STAGE_MODEL only when the attempt has a model.
     if point == POINT_NOTIFY {
-        for (stage, model) in [
-            (STAGE_CANDIDATE, None),
-            (STAGE_ROUTING, Some("model-a")),
-            (STAGE_RESPONSE, Some("model-b")),
-        ] {
+        for (stage, model) in [(STAGE_CANDIDATE, None), (STAGE_ROUTING, Some("model-a"))] {
             let mut c = base(point, facts);
             c.candidates = vec![candidate(0, all_flags(), true)];
             c.signals.push((S_STAGE, OwnedFact::U(stage)));
@@ -463,8 +446,7 @@ fn views(words: &[String], point: u32, facts: u64) -> Vec<Case> {
             }
             c.signals.push((hook::S_OUTCOME, OwnedFact::U(0)));
             c.signals.push((hook::S_STATUS, OwnedFact::U(200)));
-            c.signals
-                .push((hook::S_RESPONSE_TOKENS_OUT, OwnedFact::U(42)));
+
             out.push(c);
         }
     }

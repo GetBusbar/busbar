@@ -39,7 +39,8 @@ fn a_stamp_with_flag_2_or_4_format_1_or_size_320_is_stamp_malformed() {
 
     let good = emit(&Spec {
         kind: KindCode::Secret,
-        kind_abi: 2,
+        kind_abi: 3,
+        kind_minor: 0,
         layout: busbar_plugin_abi::secret::FP,
         out_of_process: false,
         engine_min: None,

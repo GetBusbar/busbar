@@ -32,10 +32,20 @@ extern "C" fn rng_fails(ctx: Ctx<'_>, _len: usize) -> CryptoRet<'_> {
 extern "C" fn short_answer(ctx: Ctx<'_>, _len: usize) -> CryptoRet<'_> {
     CryptoRet::empty(ctx, 0)
 }
-extern "C" fn admit_ok(_: Ctx<'_>, _recoverable: u64) -> Status {
+extern "C" fn admit_ok(
+    _: Ctx<'_>,
+    _id: u64,
+    _call: &busbar_plugin_abi::types::Call<'_>,
+    _out: &mut busbar_plugin_abi::types::RawOut,
+) -> Status {
     Status::OK
 }
-extern "C" fn admit_refused(_: Ctx<'_>, _recoverable: u64) -> Status {
+extern "C" fn admit_refused(
+    _: Ctx<'_>,
+    _id: u64,
+    _call: &busbar_plugin_abi::types::Call<'_>,
+    _out: &mut busbar_plugin_abi::types::RawOut,
+) -> Status {
     Status::REFUSED
 }
 
@@ -57,7 +67,7 @@ static FULL: Host = Host::new(
         log_level: Some(level),
         grow: None,
         deployment: Some(deployment),
-        migrate_admit: Some(admit_ok),
+        service: Some(admit_ok),
     },
 );
 static EMPTY_ANSWERS: Host = Host::new(
@@ -71,7 +81,7 @@ static EMPTY_ANSWERS: Host = Host::new(
         log_level: None,
         grow: None,
         deployment: Some(zero_deployment),
-        migrate_admit: Some(admit_refused),
+        service: Some(admit_refused),
     },
 );
 static NO_ENTRIES: Host = Host::new(
@@ -85,7 +95,7 @@ static NO_ENTRIES: Host = Host::new(
         log_level: None,
         grow: None,
         deployment: None,
-        migrate_admit: None,
+        service: None,
     },
 );
 
