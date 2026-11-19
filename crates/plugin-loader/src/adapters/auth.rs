@@ -16,7 +16,7 @@ use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_abi::host_side::driver::{Driver, Instance};
 use busbar_plugin_abi::host_side::needs::Needs;
-use busbar_plugin_abi::host_side::pool::{sync_bufs, Pool, PooledOut};
+use busbar_plugin_abi::host_side::pool::{sync_out, Pool, PooledOut};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
 use busbar_plugin_abi::records::{tag, FactRec, Full, RecErr, Records, Reply, Writer};
 #[cfg(test)]
@@ -114,7 +114,7 @@ impl<N: Needs> AuthAdapter<N> {
 
     /// The sync verify, inline on the thread-local sync buffers (no pool, no box).
     fn verify_sync(&self, req: &AuthReq<'_>) -> Result<VerifyAnswer, PortError> {
-        sync_bufs(self.inst().max_out, |_args, out| {
+        sync_out(self.inst().max_out, |out| {
             self.said(self.proxy.verify(out, req))
         })
     }

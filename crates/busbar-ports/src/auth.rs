@@ -10,7 +10,7 @@ use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::auth::{self as abi, tag as t};
 use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::records::{
-    record_size, tag, FactRec, Fixed, Full, PairRec, Rec, RecErr, Records, Reply, U64Rec, Writer,
+    record_size, tag, FactRec, Fixed, Full, PairRec, Rec, RecErr, Records, U64Rec, Writer,
 };
 use busbar_plugin_abi::types::Pair;
 
@@ -34,7 +34,8 @@ pub struct AuthIn<'a> {
     pub now_s: u64,
 }
 
-/// The verified answer, kept as its record bytes: one allocation (the Arc) per uncached verify, none on a
+/// The verified answer, kept as its record bytes: two allocations per uncached verify (the record block, sized
+/// by the answer and wiped on drop, and the Arc that shares it; C-ALLOC counts them), none on a
 /// verdict-cache hit (this is the cache value; round 23: the kernel `VerdictCache`, §12.28, rules 1-6). `identity_records()` is passed unchanged as
 /// `PlaneIn::identity` and into hook views (generic ID_* tags, so no re-encode).
 #[derive(Clone)]
@@ -170,8 +171,12 @@ pub enum VerifyOk {
 /// FACT(F_CACHE_S)?, FACT(F_EXPIRES_AT_S)?, REPLAY? in any order. ISSUED_WANTED stands alone. Generic METRIC
 /// records are skipped (they are decoded once, by `decode_metrics`). Every other shape is RecErr, which the
 /// adapter turns into a FAULT (BadRecords / UnknownTag).
-pub fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr> {
-    let mut w = Reply::new();
+pub fn decode_verify_ok(mut records: Records<'_>) -> Result<VerifyOk, RecErr> {
+    // The kept records are copied frame for frame: `Records` has checked each frame's head and its zero padding,
+    // so a frame is byte for byte what `put_text`/`put_pair` would write again. They go into one block, taken at
+    // ID_SUBJECT (always the first kept record) and sized by what is left of the answer, so an Identity costs this
+    // block and its Arc, nothing else (no scratch, no growth, no second copy); ISSUED_WANTED takes none.
+    let mut w = SecureVec::new();
     let mut id_len: Option<usize> = None;
     let mut subject = false;
     let mut wanted: Option<&str> = None;
@@ -179,9 +184,15 @@ pub fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr> {
     let mut expires_at_s: Option<u64> = None;
     let mut replay: Option<(Arc<SecureVec>, u64)> = None;
     let mut any = false;
-    let full = |_: Full| RecErr::Size;
-    for rec in records {
+    loop {
+        let before = records.rest();
+        let Some(rec) = records.next() else {
+            break;
+        };
         let rec = rec?;
+        let frame = before
+            .get(..before.len() - records.rest().len())
+            .unwrap_or_default();
         if rec.tag == tag::METRIC {
             continue;
         }
@@ -190,21 +201,25 @@ pub fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr> {
         }
         match rec.tag {
             tag::ID_SUBJECT if !any => {
-                w.put_text(tag::ID_SUBJECT, rec.text()?).map_err(full)?;
+                rec.text()?;
+                w = SecureVec::with_capacity(before.len()).map_err(|_| RecErr::Size)?;
+                w.extend_from_slice(frame);
                 subject = true;
             }
             tag::ID_GROUP if subject && id_len.is_none() => {
-                w.put_text(tag::ID_GROUP, rec.text()?).map_err(full)?;
+                rec.text()?;
+                w.extend_from_slice(frame);
             }
             tag::ID_CLAIM if subject && id_len.is_none() => {
-                let (name, value) = rec.pair()?;
-                w.put_pair(tag::ID_CLAIM, name, value).map_err(full)?;
+                rec.pair()?;
+                w.extend_from_slice(frame);
             }
             t::ISSUED_WANTED if !any => wanted = Some(rec.text()?),
             other if !subject => return Err(RecErr::Unknown(other)),
             t::STRIP => {
                 id_len.get_or_insert(w.len());
-                w.put_text(t::STRIP, rec.text()?).map_err(full)?;
+                rec.text()?;
+                w.extend_from_slice(frame);
             }
             tag::FACT => {
                 id_len.get_or_insert(w.len());
@@ -241,7 +256,7 @@ pub fn decode_verify_ok(records: Records<'_>) -> Result<VerifyOk, RecErr> {
     }
     let id_len = u32::try_from(id_len.unwrap_or(w.len())).map_err(|_| RecErr::Size)?;
     Ok(VerifyOk::Identity(Identity {
-        recs: Arc::new(SecureVec::from(w.as_bytes())),
+        recs: Arc::new(w),
         id_len,
         cache_s,
         expires_at_s,
@@ -392,6 +407,7 @@ pub struct IssuedShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use busbar_plugin_abi::records::Reply;
 
     fn replay_identity() -> Identity {
         let mut reply = Reply::new();

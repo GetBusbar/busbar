@@ -8,7 +8,8 @@
 //!   with its own answer lease (its ACTIVE registration, which `grow` needs) and nothing of the wrapper.
 //! - **The kept protections**, each timed alone: the entry guard (`entry::guard` on an empty handle: the owner and
 //!   entry-depth marks, the store-migration denial, the watchdog word, the arena check), the per-thread answer
-//!   loan with its wipe of what the call wrote (`sync_bufs` around nothing), and the validation of the answer
+//!   loan with its wipe of what the call wrote (`sync_out`, the adapters' loan, around nothing), and the
+//!   validation of the answer
 //!   (`Answer::parse`).
 //! - **The margin** is the run-to-run noise, measured: the largest p90-minus-median spread of the arms timed.
 //!
@@ -24,7 +25,7 @@ use std::time::Instant;
 use busbar_plugin_abi::host::{Host, HostFns};
 use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::entry::guard;
-use busbar_plugin_abi::host_side::pool::{PooledOut, sync_bufs};
+use busbar_plugin_abi::host_side::pool::{PooledOut, sync_out};
 use busbar_plugin_abi::host_side::watch;
 use busbar_plugin_abi::plugin::__rt::host::{Instance, OpenAnswer, OutLease, Session};
 use busbar_plugin_abi::plugin::__rt::image::Admitted;
@@ -196,7 +197,7 @@ pub fn protections() -> Vec<(&'static str, f64, f64)> {
         black_box(guard(3, 2, &mut empty, |_lease: &mut OutLease| ()));
     });
     let (l, lp) = time(|| {
-        sync_bufs(1 << 20, |_args, out| {
+        sync_out(1 << 20, |out| {
             black_box(out.capacity());
         });
     });

@@ -3,7 +3,7 @@
 
 //! The transport adapter: `TransportPort` over the transport kind's `Proxy` (IF §11.3, §8.7, §8.8).
 //!
-//! Every method is one sync proxy call on the thread's `sync_bufs`, decoded straight into `TransportOut` items
+//! Every method is one sync proxy call on the thread's `sync_out`, decoded straight into `TransportOut` items
 //! while the answer buffer is live (no copy). An answer is checked whole before the sink sees any item, so a
 //! malformed answer reaches the sink with nothing: the adapter quarantines the instance and returns FAULT
 //! (`BadRecords`, or `UnknownTag` for a tag outside the transport table). The adapter only decodes; the
@@ -17,7 +17,7 @@ use busbar_plugin_abi::fail::fact::{FACT_BACKEND_STATUS, FACT_RETRY_AFTER_S};
 use busbar_plugin_abi::fail::failed::F_LIMIT;
 use busbar_plugin_abi::fail::{CallError, FaultReason};
 use busbar_plugin_abi::host_side::answer::Answer;
-use busbar_plugin_abi::host_side::pool::{sync_bufs, PooledOut};
+use busbar_plugin_abi::host_side::pool::{sync_out, PooledOut};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
 use busbar_plugin_abi::records::{tag as generic, Rec, RecErr, Records, Reply, U32Rec, Writer};
 use busbar_plugin_abi::transport::{
@@ -91,7 +91,7 @@ impl TransportAdapter {
 
     /// One `offer(role)` call, decoded by A11's `decode_offer`.
     fn offer(&self, role: u32) -> Result<Offer, PortError> {
-        sync_bufs(self.max_out, |_args, out| {
+        sync_out(self.max_out, |out| {
             let a = self.proxy.offer(out, role).map_err(PortError::Call)?;
             if !a.is_ok() {
                 return Err(self.refusal(&a));
@@ -111,7 +111,7 @@ impl TransportAdapter {
             &'o mut PooledOut,
         ) -> Result<Answer<'o>, CallError>,
     ) -> Result<(), PortError> {
-        sync_bufs(self.max_out, |_args, out| {
+        sync_out(self.max_out, |out| {
             let a = f(s, out).map_err(PortError::Call)?;
             self.answer(&a, call, sink)
         })
@@ -178,7 +178,7 @@ impl TransportPort for TransportAdapter {
         sink: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<TransportSession, PortError> {
         let info = conn_info(c);
-        sync_bufs(self.max_out, |_args, out| {
+        sync_out(self.max_out, |out| {
             let (handle, a) = self.proxy.begin(out, &info).map_err(PortError::Call)?;
             if !a.is_ok() {
                 return Err(self.refusal(&a));

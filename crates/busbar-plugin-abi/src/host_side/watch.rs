@@ -171,15 +171,22 @@ pub(crate) struct Entry {
 }
 
 impl Entry {
+    /// The enclosing state is read and the entry's word stored in one visit to the thread's claim.
     pub(crate) fn enter(slot: u32, entry: u8) -> Self {
-        let scope = Self {
-            saved: CLAIM
-                .try_with(|claim| (claim.word.get(), claim.depth.get()))
-                .ok(),
+        let table = TABLE.get();
+        let saved = CLAIM
+            .try_with(|claim| {
+                let saved = (claim.word.get(), claim.depth.get());
+                if let Some(table) = table {
+                    store_entry(table, claim, slot, entry);
+                }
+                saved
+            })
+            .ok();
+        Self {
+            saved,
             _thread: core::marker::PhantomData,
-        };
-        enter(slot, entry);
-        scope
+        }
     }
 }
 
@@ -206,31 +213,34 @@ pub fn enter(slot: u32, entry: u8) {
     let Some(table) = TABLE.get() else {
         return;
     };
-    let _ = CLAIM.try_with(|c| {
-        let depth = c.depth.get();
-        if let Some(saved) = c.saved.get(depth) {
-            saved.set(c.word.get());
+    let _ = CLAIM.try_with(|c| store_entry(table, c, slot, entry));
+}
+
+/// `enter`'s body on the thread's claim: save the enclosing word, claim a word on the thread's first entry, and
+/// store this entry's word with a fresh sequence (one Relaxed store).
+fn store_entry(table: &Table, c: &Claim, slot: u32, entry: u8) {
+    let depth = c.depth.get();
+    if let Some(saved) = c.saved.get(depth) {
+        saved.set(c.word.get());
+    }
+    c.depth.set(depth + 1);
+    let mut idx = c.idx.get();
+    if idx == u32::MAX {
+        match claim(table, c) {
+            Some(claimed) => idx = claimed,
+            None => return,
         }
-        c.depth.set(depth + 1);
-        let mut idx = c.idx.get();
-        if idx == u32::MAX {
-            match claim(table, c) {
-                Some(claimed) => idx = claimed,
-                None => return,
-            }
-        }
-        let mut seq = c.seq.get().wrapping_add(1);
-        if seq == 0 {
-            seq = 1;
-        }
-        c.seq.set(seq);
-        let word =
-            u64::from(slot & 0x00FF_FFFF) | (u64::from(entry) << 24) | (u64::from(seq) << 32);
-        c.word.set(word);
-        if let Some(w) = table.words.get(idx as usize) {
-            w.0.store(word, Ordering::Relaxed);
-        }
-    });
+    }
+    let mut seq = c.seq.get().wrapping_add(1);
+    if seq == 0 {
+        seq = 1;
+    }
+    c.seq.set(seq);
+    let word = u64::from(slot & 0x00FF_FFFF) | (u64::from(entry) << 24) | (u64::from(seq) << 32);
+    c.word.set(word);
+    if let Some(w) = table.words.get(idx as usize) {
+        w.0.store(word, Ordering::Relaxed);
+    }
 }
 pub fn leave() {
     let Some(table) = TABLE.get() else {
