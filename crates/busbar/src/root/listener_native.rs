@@ -110,13 +110,13 @@ impl NativeListener {
         limits: NativeLimits,
         admin: Option<axum::Router>,
     ) -> Result<Self, InputError> {
-        use busbar_plugin_abi::transport::{FB_DATAGRAM, FB_SERVER, FB_WIRE_PROVENANCE};
+        use busbar_plugin_abi::transport::{FB_DATAGRAM, FB_SERVER};
         let NativeAdmission { budget, class } = admission;
         if !port
             .listener_slots()
             .iter()
             .any(|name| name.as_ref() == slot.as_ref())
-            || port.facts() & (FB_SERVER | FB_WIRE_PROVENANCE) != (FB_SERVER | FB_WIRE_PROVENANCE)
+            || port.facts() & FB_SERVER != FB_SERVER
             || port.facts() & FB_DATAGRAM != 0
             || limits.max_connections == 0
         {

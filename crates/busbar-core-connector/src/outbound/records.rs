@@ -61,7 +61,7 @@ impl WirePart {
 /// `WIRE_SEALED`, no tail. Always control.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct WireSealed {
+pub struct WireSealed {
     /// The request's own stream.
     pub(crate) stream: u64,
     /// The sealed value, by its order among the head's sealed records, from 0.
@@ -102,7 +102,7 @@ pub(crate) struct WireEnd {
 /// `SESSION`: what `begin` states about the session.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Session {
+pub struct Session {
     /// [`S_MULTIPLEX`].
     pub(crate) flags: u32,
     /// The most inbound body bytes of one stream the far end may send before credit.

@@ -53,7 +53,8 @@ impl TransportPort for Transport {
         _: u64,
         _: u32,
         _: u32,
-        _: &[u8],
+        _: u64,
+        _: busbar_ports::transport::EmitParts<'_>,
         _: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError> {
         unsupported()

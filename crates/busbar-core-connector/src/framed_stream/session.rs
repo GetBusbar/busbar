@@ -1136,6 +1136,7 @@ fn parts_of(piece: u32, bytes: &[u8]) -> EmitParts<'_> {
         wire::E_BODY => parts.body = Some(bytes),
         wire::E_TRAILERS => parts.trailers = Some(bytes),
         wire::E_END => parts.end = Some(&[]),
+        wire::E_REFUSE => parts.refuse = Some(bytes),
         _ => {}
     }
     parts

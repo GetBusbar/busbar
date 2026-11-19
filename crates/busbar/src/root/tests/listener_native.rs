@@ -231,7 +231,7 @@ impl TransportPort for ObservedBegin {
         self.inner.protocols()
     }
     fn facts(&self) -> u64 {
-        busbar_plugin_abi::transport::FB_SERVER | busbar_plugin_abi::transport::FB_WIRE_PROVENANCE
+        busbar_plugin_abi::transport::FB_SERVER
     }
     fn begin(
         &self,
@@ -262,12 +262,13 @@ impl TransportPort for ObservedBegin {
         &self,
         s: &mut busbar_ports::transport::TransportSession,
         stream: u64,
-        piece: u32,
+        pieces: u32,
         arg: u32,
-        bytes: &[u8],
+        credit: u64,
+        parts: busbar_ports::transport::EmitParts<'_>,
         sink: &mut dyn FnMut(busbar_ports::transport::TransportOut<'_>),
     ) -> Result<(), busbar_ports::PortError> {
-        self.inner.emit(s, stream, piece, arg, bytes, sink)
+        self.inner.emit(s, stream, pieces, arg, credit, parts, sink)
     }
     fn timer(
         &self,

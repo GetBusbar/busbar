@@ -30,6 +30,8 @@ pub struct EmitParts<'a> {
     pub body: Option<&'a [u8]>,
     pub trailers: Option<&'a [u8]>,
     pub end: Option<&'a [u8]>,
+    /// E_REFUSE's one entry: core's own text. `None` unless the call is E_REFUSE.
+    pub refuse: Option<&'a [u8]>,
 }
 
 pub enum TransportOut<'o> {

@@ -72,7 +72,8 @@ pub use busbar_ports::transport::EmitParts as Pieces;
 fn packed<'a>(parts: Pieces<'a>) -> ([&'a [u8]; 4], usize) {
     let mut out: [&'a [u8]; 4] = [&[]; 4];
     let mut n = 0;
-    for piece in [parts.head, parts.body, parts.trailers, parts.end]
+    // E_REFUSE is sent alone, so at most four entries are ever present.
+    for piece in [parts.head, parts.body, parts.trailers, parts.end, parts.refuse]
         .into_iter()
         .flatten()
     {
@@ -313,6 +314,7 @@ mod tests {
             body: None,
             trailers: Some(b"t"),
             end: Some(b""),
+            refuse: None,
         };
         let (blobs, n) = packed(parts);
         assert_eq!(n, 3);

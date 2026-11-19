@@ -1391,16 +1391,23 @@ fn one_piece_is_the_ports_set_of_one_with_its_bytes_in_its_own_entry() {
         end.end == Some(&[][..]) && end.head.is_none() && end.body.is_none(),
         "the end's entry is present and empty"
     );
-    for piece in [E_RESET, E_CLOSE, E_CONSUMED, E_REFUSE] {
+    for piece in [E_RESET, E_CLOSE, E_CONSUMED] {
         let parts = parts_of(piece, b"");
         assert!(
             parts.head.is_none()
                 && parts.body.is_none()
                 && parts.trailers.is_none()
-                && parts.end.is_none(),
-            "piece {piece} carries no entry of the four"
+                && parts.end.is_none()
+                && parts.refuse.is_none(),
+            "piece {piece} carries no entry"
         );
     }
+    // E_REFUSE's one entry is core's own text.
+    let refuse = parts_of(E_REFUSE, b"t");
+    assert!(
+        refuse.refuse == Some(&b"t"[..]) && refuse.head.is_none() && refuse.end.is_none(),
+        "the refusal carries its text"
+    );
 }
 
 #[test]

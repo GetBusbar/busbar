@@ -248,8 +248,12 @@ impl TransportPort for TransportAdapter {
         if !(carried(E_HEAD, parts.head)
             && carried(t::E_BODY, parts.body)
             && carried(t::E_TRAILERS, parts.trailers)
-            && carried(t::E_END, parts.end))
+            && carried(t::E_END, parts.end)
+            && carried(t::E_REFUSE, parts.refuse))
             || parts.end.is_some_and(|end| !end.is_empty())
+            // E_REFUSE is sent alone (its one entry is the text), so a call never packs more
+            // than four entries.
+            || (parts.refuse.is_some() && pieces != t::E_REFUSE)
             || (credit != 0 && pieces & t::E_CONSUMED == 0)
         {
             return Err(emit_misuse());
@@ -274,6 +278,7 @@ impl TransportPort for TransportAdapter {
                 body: parts.body,
                 trailers: parts.trailers,
                 end: parts.end,
+                refuse: parts.refuse,
             };
             s.emit(out, NOW, stream, pieces, arg, credit, parts)
         })
