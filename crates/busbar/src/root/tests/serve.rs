@@ -713,7 +713,7 @@ async fn constructed_services_keep_their_governance_record_store() {
     use busbar_kernel::persistence::scoped::{Outcome, ScopedStore};
     let core = crate::root::real_store::core().await;
     let rows =
-        ScopedStore::host_private(core.clone(), "busbar.attach-probe", ["attach-probe".into()])
+        ScopedStore::host_private(core.clone(), "busbar.attach-probe", ["attach-probe"])
             .unwrap();
     assert_eq!(
         rows.put(
@@ -832,7 +832,7 @@ async fn a_budgeted_pipe_moves_custody_through_owned_reads_only() {
     let request = budget.try_enter(AdmissionClass::Data).unwrap();
     let (from, received) = mpsc::channel(1);
     let (to, _) = mpsc::channel(1);
-    let caller = PipeCaller {
+    let caller = super::money_tests::PipeEnd {
         from: tokio::sync::Mutex::new(received),
         to,
     };

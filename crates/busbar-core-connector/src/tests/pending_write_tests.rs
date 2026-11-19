@@ -118,14 +118,14 @@ fn connector(
     let view = Transports::new(vec![
         Entry {
             door: door.clone(),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         Entry {
             door: Arc::new(GatedCarrier {
                 inner: TestDoor::identity("bytes"),
                 gate,
             }),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
     ])
     .unwrap();
@@ -339,7 +339,7 @@ async fn connected_carrier(
     });
     let view = Transports::new(vec![Entry {
         door: door.clone(),
-        alpn: Vec::new(),
+        alpn: Arc::default(),
     }])
     .unwrap();
     let c = Connector::serving(

@@ -12,8 +12,9 @@ use serde::forward_to_deserialize_any;
 use serde_json::Value;
 use zeroize::Zeroize;
 
-use super::settings_json::wipe;
 use super::Cred;
+use crate::plugin_settings::guarded_reader::wipe;
+use crate::secret_fields::SECRET_MARKER;
 
 /// Why settings did not parse: the field path and what was wrong, never the value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,9 +124,6 @@ pub fn settings<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, SettingsError> {
     T::deserialize(Node::new(document(bytes)?, String::new()))
 }
 
-/// The key of the marker a host writes where it took a value at a declared wildcard secret path
-pub const SECRET_MARKER: &str = "$secret";
-
 /// [`settings`] over a document the host lent secrets with: each `{"$secret": <index>}` marker is
 pub fn settings_lent<T: DeserializeOwned>(doc: &[u8], lent: &[&[u8]]) -> Result<T, SettingsError> {
     let mut value = document(doc)?;
@@ -137,7 +135,7 @@ pub fn settings_lent<T: DeserializeOwned>(doc: &[u8], lent: &[&[u8]]) -> Result<
 }
 
 fn document(bytes: &[u8]) -> Result<Value, SettingsError> {
-    super::settings_json::document(bytes, false)
+    crate::plugin_settings::guarded_reader::document(bytes, false)
         .map(|mut value| core::mem::take(&mut value.0))
         .map_err(|e| {
             SettingsError::new(format!(

@@ -13,6 +13,7 @@ pub(crate) mod dispatch;
 pub(crate) mod durable_documents;
 pub(crate) mod export_axis;
 pub(crate) mod export_door;
+pub(crate) mod export_pump;
 pub(crate) mod ffi_thread;
 pub(crate) mod highwater;
 pub(crate) mod host;

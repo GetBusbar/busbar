@@ -5,7 +5,7 @@ use busbar_kernel::governance::unit_checkpoint::{partitions as raw, UnitCheckpoi
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn terminal() -> UnitCheckpoint {
-    let classes = BTreeSet::from(["tokens.custom".to_owned()]);
+    let classes = BTreeSet::from([busbar_contract::kept::Text::fixed("tokens.custom")]);
     UnitCheckpoint {
         id: [7; 16],
         revision: 3,

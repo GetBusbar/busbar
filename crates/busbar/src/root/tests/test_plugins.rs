@@ -75,7 +75,7 @@ impl FreshApplicationStore {
         let owner = ScopedStore::host_private(
             self.opened.clone(),
             "busbar.fixture.principal-creation",
-            [schema.into()],
+            [schema],
         )
         .map_err(|error| format!("fixture creation owner: {error:?}"))?;
         let outcome = owner

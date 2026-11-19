@@ -787,15 +787,15 @@ dependencies = [
 [[package]]
 name = "busbar-hook-webrequest"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-webrequest?rev=bea74851f4c7da848c4ad4cbf5d811d0defb656f#bea74851f4c7da848c4ad4cbf5d811d0defb656f"
+source = "git+https://github.com/GetBusbar/busbar-hook-webrequest?rev=4a91545afab53c8af048b568dd86fc5255f9d4bd#4a91545afab53c8af048b568dd86fc5255f9d4bd"
 dependencies = [
- "busbar-contract",
+ "base64 0.22.1",
+ "busbar-plugin-abi",
  "http",
- "serde",
- "serde_json",
- "tracing",
+ "percent-encoding",
+ "ryu",
+ "sonic-rs",
  "url",
- "zeroize",
 ]
 
 [[package]]
@@ -881,8 +881,8 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
- "busbar-ports",
  "busbar-plugin-abi",
+ "busbar-ports",
  "foldhash 0.2.0",
 ]
 
@@ -1178,7 +1178,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-stdio"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=725ccf6416439a08107485f358a08148de0c949c#725ccf6416439a08107485f358a08148de0c949c"
+source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=c599ed8ea52b09bedd1ff10c63f8b045be5fe2d4#c599ed8ea52b09bedd1ff10c63f8b045be5fe2d4"
 dependencies = [
  "busbar-contract",
  "foldhash 0.2.0",

@@ -152,7 +152,12 @@ impl NativeListener {
         self.open(secured, peer.as_str(), local.as_str())
     }
 
-    fn open(&self, io: SecuredIo, peer: &str, local: &str) -> Result<OpenedConnection, InputError> {
+    fn open(
+        &self,
+        mut io: SecuredIo,
+        peer: &str,
+        local: &str,
+    ) -> Result<OpenedConnection, InputError> {
         let alpn = io.tls_handshake.as_ref().and_then(|info| info.alpn());
         let alpn = alpn
             .map(std::str::from_utf8)
@@ -172,8 +177,15 @@ impl NativeListener {
             .as_ref()
             .and_then(|info| info.server_name())
             .unwrap_or("");
-        let facts = AcceptedConnection::capture_secured(&io, peer, local)
-            .map_err(|_| InputError::Capacity)?;
+        // The wrap's charged certificate moves into the facts; the transport is lent it there.
+        let facts = AcceptedConnection::capture_secured(
+            io.tls_handshake.as_ref(),
+            std::mem::take(&mut io.peer_certificate),
+            &io.storage,
+            peer,
+            local,
+        )
+        .map_err(|_| InputError::Capacity)?;
         let ingress = NativeIngress::new(
             self.physical.connect(facts),
             self.budget.clone(),
@@ -191,7 +203,7 @@ impl NativeListener {
                 sni,
                 peer,
                 local,
-                tls_peer_cert: &io.peer_certificate,
+                tls_peer_cert: ingress.connection.facts().peer_certificate(),
                 leftover: &[],
                 head: &[],
                 local_fingerprint: "",

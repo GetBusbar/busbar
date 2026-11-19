@@ -37,11 +37,11 @@ fn connector(door: Arc<dyn FramerDoor>) -> Connector {
     let view = Transports::new(vec![
         Entry {
             door,
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
         Entry {
             door: Arc::new(TestDoor::identity("carrier")),
-            alpn: Vec::new(),
+            alpn: Arc::default(),
         },
     ])
     .unwrap();

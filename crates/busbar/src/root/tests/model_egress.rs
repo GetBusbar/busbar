@@ -92,12 +92,13 @@ async fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
     let current = make();
     let tables = ConfigTables::default();
     let pool = "model-telemetry-overlapping-generations";
-    previous.queued(pool, 1);
-    current.queued(pool, 1);
+    // Each generation's own pool counts its depth after the change (`ports::Telemetry::queued`).
+    previous.queued(pool, 1, 1);
+    current.queued(pool, 1, 1);
     let both = tables.queued_depth(pool);
-    previous.queued(pool, -1);
+    previous.queued(pool, -1, 0);
     let remaining = tables.queued_depth(pool);
-    current.queued(pool, -1);
+    current.queued(pool, -1, 0);
     let empty = tables.queued_depth(pool);
     drop(previous);
     drop(current);

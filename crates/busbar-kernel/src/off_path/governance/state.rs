@@ -99,6 +99,7 @@ pub(crate) fn mod_token_series(
 
 /// `mod`: a legacy whole-unit count map converted to exact counts (the whole-unit test and
 /// embedder entry points; the served path carries exact counts).
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn mod_whole_counts(units: &BTreeMap<String, u64>) -> BTreeMap<String, Count> {
     units
         .iter()
@@ -271,11 +272,6 @@ pub(crate) fn state_any_unsettled<V: Clone>(
         .cloned()
         .collect();
     copies.iter().any(unsettled)
-}
-
-/// `state`: the budget flush tick's backstop clock reading, once per tick.
-pub(crate) fn state_flush_instant() -> std::time::Instant {
-    std::time::Instant::now()
 }
 
 /// `state`: the budget flush's second walk over the selected shards. `visit` captures one dirty
@@ -488,11 +484,6 @@ pub(crate) fn metering_flush_take_unretained<K, V, T>(
         flight.extend(map.drain().filter_map(&mut make));
         map.extend(kept);
     }
-}
-
-/// `metering_flush`: a first attempt's first-send wall time in milliseconds.
-pub(crate) fn metering_flush_attempt_clock() -> u64 {
-    crate::store::now_ms()
 }
 
 /// `metering_flush`: the fresh pending cells a failed shutdown flush leaves behind.

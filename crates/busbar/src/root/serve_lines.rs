@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use busbar_kernel::channels::frame::{stays_one_message, Framing};
 use busbar_kernel::limits::process_admission::{
     AdmissionClass, OwnedInput, ProcessAdmission, RequestLease,
 };
@@ -38,52 +39,19 @@ pub(crate) struct LineCaller<R> {
     lines: AsyncMutex<tokio::io::BufReader<R>>,
     max_line: usize,
     out: mpsc::Sender<Vec<u8>>,
-    /// The output lines the writer hands back once written.
-    spare: Arc<LinePool>,
     failure: Arc<IoFailure>,
 }
 
-/// Output line buffers the writer hands back once a line is written, so a steady stream of answers
-/// reuses a few buffers instead of allocating one per line. Bounded in count and in each buffer's
-/// capacity, so one huge answer is not kept for the session's life.
-#[derive(Default)]
-struct LinePool(std::sync::Mutex<Vec<Vec<u8>>>);
-
-const POOLED_LINES: usize = 16;
-const POOLED_LINE_BYTES: usize = 64 * 1024;
 /// Complete output lines awaiting the writer; individual body sizing is separate.
 const LINE_OUTPUT_QUEUE_CAPACITY: usize = 16;
 
-impl LinePool {
-    fn take(&self) -> Vec<u8> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop()
-            .unwrap_or_default()
-    }
-
-    fn give(&self, mut line: Vec<u8>) {
-        if line.capacity() > POOLED_LINE_BYTES {
-            return;
-        }
-        line.clear();
-        let mut spare = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if spare.len() < POOLED_LINES {
-            spare.push(line);
-        }
-    }
-
-    /// `bytes` as one newline-terminated output line, in a handed-back buffer.
-    fn line(&self, bytes: &[u8]) -> Vec<u8> {
-        let mut line = self.take();
-        line.extend_from_slice(bytes);
-        terminate(&mut line);
-        line
-    }
+/// `bytes`, already judged [`one_line`], as one newline-terminated output line: allocated here at its final
+/// size, moved to the writer, and freed by the writer once it is written.
+fn output_line(bytes: &[u8]) -> Vec<u8> {
+    let mut line = Vec::with_capacity(bytes.len() + 1);
+    line.extend_from_slice(bytes);
+    terminate(&mut line);
+    line
 }
 
 #[derive(Default)]
@@ -120,13 +88,17 @@ impl<R: AsyncRead + Unpin + Send> CallerEnd for LineCaller<R> {
     fn head(&self, _status: u32, _fields: HeadFields) {}
 
     async fn write(&self, bytes: &[u8]) -> bool {
-        self.out.send(self.spare.line(bytes)).await.is_ok()
+        one_line(bytes) && self.out.send(output_line(bytes)).await.is_ok()
     }
 }
 
 impl<R> LineCaller<R> {
+    /// A refused line (not one line) is not written and does not end the session.
     fn emit(&self, bytes: &[u8]) -> bool {
-        match self.out.try_send(self.spare.line(bytes)) {
+        if !one_line(bytes) {
+            return false;
+        }
+        match self.out.try_send(output_line(bytes)) {
             Ok(()) => true,
             Err(error) => {
                 let kind = match error {
@@ -143,15 +115,27 @@ impl<R> LineCaller<R> {
     }
 }
 
+/// Whether a plane's `bytes` go out as one line of standard output: one trailing `\n` is the line's own end; any
+/// other `\n`, or any `\r` (a universal-newline reader ends a line on a lone `\r`), would make the caller read more
+/// than one line. A refused line is counted and logged.
+fn one_line(bytes: &[u8]) -> bool {
+    let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    if stays_one_message(Framing::Ndjson, body) {
+        return true;
+    }
+    metrics::counter!(busbar_kernel::snapshot::LINE_BREAK_REFUSED_TOTAL).increment(1);
+    tracing::warn!(
+        len = bytes.len(),
+        "an output line holding a line break was refused"
+    );
+    false
+}
+
+/// Ends a line already judged [`one_line`] with its one `\n`.
 fn terminate(line: &mut Vec<u8>) {
     if !line.ends_with(b"\n") {
         line.push(b'\n');
     }
-}
-
-#[cfg(test)]
-fn terminated(bytes: &[u8]) -> Vec<u8> {
-    LinePool::default().line(bytes)
 }
 
 impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
@@ -164,8 +148,9 @@ impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
 impl<R: AsyncRead + Unpin + Send> LineCaller<R> {
     async fn read_input(&self, request: RequestLease) -> Option<OwnedInput> {
         let mut reader = self.lines.lock().await;
-        // A handed-back line buffer when one is spare; a blank line reuses it for the next read.
-        let mut buf = request.adopt_input(self.spare.take()).ok()?;
+        // The line's own buffer: it grows as the line is read and moves to the plane with the line.
+        // A blank line reuses it for the next read.
+        let mut buf = request.adopt_input(Vec::new()).ok()?;
         loop {
             buf.clear();
             match read_line(&mut *reader, &mut buf, self.max_line).await {
@@ -260,8 +245,10 @@ where
                         .await
                     {
                         Ok(mut body) if !body.is_empty() => {
-                            terminate(&mut body);
-                            let _ = caller.out.send(body).await;
+                            if one_line(&body) {
+                                terminate(&mut body);
+                                let _ = caller.out.send(body).await;
+                            }
                         }
                         Ok(_) => {}
                         Err(refused) => {
@@ -326,10 +313,9 @@ where
     let (out, mut lines_out) = mpsc::channel::<Vec<u8>>(LINE_OUTPUT_QUEUE_CAPACITY);
     let failure = Arc::new(IoFailure::default());
     let write_failure = Arc::clone(&failure);
-    let spare = Arc::new(LinePool::default());
-    let handed_back = Arc::clone(&spare);
     let mut written = tokio::spawn(async move {
         let mut writer = writer;
+        // Each line is freed here, once it has been written.
         while let Some(line) = lines_out.recv().await {
             if let Err(error) = async {
                 writer.write_all(&line).await?;
@@ -340,7 +326,6 @@ where
                 write_failure.record("output", error);
                 return;
             }
-            handed_back.give(line);
         }
         if let Err(error) = writer.flush().await {
             write_failure.record("output", error);
@@ -350,7 +335,6 @@ where
         lines: AsyncMutex::new(tokio::io::BufReader::new(reader)),
         max_line,
         out,
-        spare,
         failure: Arc::clone(&failure),
     });
     let (answer, close) = open(Arc::clone(&caller));

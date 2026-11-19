@@ -332,11 +332,11 @@ fn retiring_the_bootstrap_pool_closes_connections_outside_every_pool_lock() {
                         ..crate::support::Knobs::default()
                     },
                 )),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
             Entry {
                 door: carrier.clone(),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
         ])
         .unwrap();
@@ -422,11 +422,11 @@ fn idle_probe_loses_retired_membership(retire: impl FnOnce(&Connector)) {
                         ..crate::support::Knobs::default()
                     },
                 )),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
             Entry {
                 door: carrier.clone(),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             },
         ])
         .unwrap();

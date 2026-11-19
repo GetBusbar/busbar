@@ -816,7 +816,7 @@ impl NativeWorkWriter {
         crate::persistence::scoped::ScopedStore::host_private(
             Arc::clone(&self.store),
             &self.instance,
-            [WORK_SCHEMA.as_str().to_string()],
+            [WORK_SCHEMA.as_str()],
         )
     }
     fn put(&self, key: Vec<u8>, value: RecordBytes, acked: Acked) {
@@ -833,7 +833,7 @@ impl NativeWorkWriter {
                 instance,
                 schema: WORK_SCHEMA,
                 key,
-                value,
+                value: crate::host_records::WriteBytes::Own(value),
                 seq: 0,
                 owed,
                 chain: None,
@@ -1760,9 +1760,9 @@ impl KernelServices {
             facts
                 .record_kinds
                 .iter()
-                .map(|schema| schema.as_str().to_string())
+                .map(|schema| schema.as_str())
                 .chain(std::iter::once(
-                    crate::host_chains::CHAIN_LIFE_SCHEMA.as_str().to_string(),
+                    crate::host_chains::CHAIN_LIFE_SCHEMA.as_str(),
                 )),
         );
         rows.map(|rows| {
@@ -2297,9 +2297,15 @@ impl KernelServices {
         }
         let pending = &self.pending;
         let make = || {
-            let seq = match chain {
-                Some(_) => 0,
-                None => pending.enqueue(caller.namespace(), kind, key, value.as_slice().to_vec()),
+            // A write laid on the overlay shares its bytes with its overlay row: they are not
+            // copied for it. A chained write has no overlay row and keeps its bytes as they came.
+            let (seq, value) = match chain {
+                Some(_) => (0, crate::host_records::WriteBytes::Own(value)),
+                None => {
+                    let shared = Arc::new(value);
+                    let seq = pending.enqueue(caller.namespace(), schema.as_str(), key, &shared);
+                    (seq, crate::host_records::WriteBytes::Shared(shared))
+                }
             };
             let key = key.to_vec();
             Write {

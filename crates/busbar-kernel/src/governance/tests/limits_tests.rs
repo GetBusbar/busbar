@@ -1803,38 +1803,87 @@ async fn captured<R>(f: impl std::future::Future<Output = R>) -> (R, Vec<String>
     (result, text.lines().map(str::to_string).collect())
 }
 
-#[tokio::test]
-async fn metering_overflow_coalescing_warns_once_per_window_naming_the_count() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let pending = PendingMetering::new();
-    let ((), lines) = captured(async {
-        for i in 0..(MAX_PENDING_METERING_PER_SHARD + 3) {
-            let key: MeterKey = (
-                "vk_over".into(),
-                1,
-                format!("m{i}"),
-                "p".into(),
-                0,
-                String::new(),
-                String::new(),
-            );
-            pending.accrue(key, MeterCounts::default());
-        }
-    })
-    .await;
-    let warns: Vec<_> = lines
+/// Accrue `n` new cells for `vk_over` in metering bucket `bucket`, named from `from` on.
+fn accrue_cells(pending: &PendingMetering, bucket: u64, from: usize, n: usize) {
+    for i in from..from + n {
+        let key: MeterKey = (
+            "vk_over".into(),
+            bucket,
+            format!("m{i}"),
+            "p".into(),
+            0,
+            String::new(),
+            String::new(),
+        );
+        pending.accrue(key, MeterCounts::default());
+    }
+}
+
+fn cap_warnings(lines: &[String]) -> Vec<&String> {
+    lines
         .iter()
         .filter(|l| l.contains("metering accumulator at cap"))
-        .collect();
+        .collect()
+}
+
+/// The accrual at cap only counts: it logs nothing and takes no reading (its report is the
+/// flusher's, at a reading the test steps). N coalesces in one tick are one line carrying N on the
+/// next pass; the pass after within the window says nothing, and the count waits for the window.
+#[tokio::test]
+async fn metering_overflow_coalescing_is_counted_and_reported_once_per_window_by_the_flusher() {
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let pending = PendingMetering::new();
+    let minute = u64::try_from(COALESCE_WARN_WINDOW.as_nanos()).unwrap();
+    let ((), accrual) = captured(async {
+        accrue_cells(&pending, 1, 0, MAX_PENDING_METERING_PER_SHARD + 3);
+    })
+    .await;
+    assert!(
+        cap_warnings(&accrual).is_empty(),
+        "the accrual path logs nothing at cap: {accrual:?}"
+    );
+
+    let t0 = 5 * minute;
+    let (first, lines) = captured(async { pending.report_coalesced(t0, false) }).await;
+    assert_eq!(first, Some(3), "one report carries all three coalesces");
+    let warns = cap_warnings(&lines);
     assert_eq!(
         warns.len(),
         1,
         "exactly one line for three coalesces: {lines:?}"
     );
     assert!(
-        warns[0].contains("coalesced=1") || warns[0].contains("1 cell"),
-        "the line names how many cells were coalesced: {}",
+        warns[0].contains("coalesced=3") && warns[0].contains("overflow_bucket=1"),
+        "the line names the count and the bucket: {}",
         warns[0]
+    );
+
+    let (quiet, lines) = captured(async { pending.report_coalesced(t0 + 1, false) }).await;
+    assert_eq!(quiet, None, "nothing new, nothing reported");
+    assert!(cap_warnings(&lines).is_empty(), "{lines:?}");
+
+    accrue_cells(&pending, 2, MAX_PENDING_METERING_PER_SHARD + 3, 2);
+    assert_eq!(
+        pending.report_coalesced(t0 + minute - 1, false),
+        None,
+        "within the window the count waits"
+    );
+    let (later, lines) = captured(async { pending.report_coalesced(t0 + minute, false) }).await;
+    assert_eq!(
+        later,
+        Some(2),
+        "the window over, the waiting count is reported once"
+    );
+    assert!(
+        cap_warnings(&lines)[0].contains("overflow_bucket=2"),
+        "the latest coalesce's bucket: {lines:?}"
+    );
+
+    accrue_cells(&pending, 2, MAX_PENDING_METERING_PER_SHARD + 5, 1);
+    assert_eq!(
+        pending.report_coalesced(t0 + minute + 1, true),
+        Some(1),
+        "the last pass reports what is left, window or not"
     );
     assert!(
         crate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED.severity

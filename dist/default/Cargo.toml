@@ -463,46 +463,31 @@ plane-llm-door = "busbar-plane-llm"
 # repricer and book binding run in every build (ARCHITECT Q1).
 node = "plane_node"
 
-# THE TEST-LINKED PLANES of this crate's cross-plane integration tests (`tests/linked/mod.rs`). Those
-# tests prove the kernel's behaviour against the planes a build links, so they live where a plane may
-# be linked: here, in the composition root, never in the kernel or a cleanliness crate (core names
-# zero plane types, its tests included). Which planes is DATA: `build.rs` turns this list into
-# `$OUT_DIR/test_linked.rs` (each crate a plane served through its memory-ABI door, its registry row
-# folded from its Statement as the root folds it), so the tests' sources name no plane. The list is
-# the install order (the planes' layering order).
+# THE TEST-LINKED PLANES of this crate's cross-plane integration tests (`tests/linked/mod.rs`): the
+# `planes` list of `[package.metadata.busbar.test-linked]` named each plane's memory-ABI `door`. Every
+# plane is a MIN-3 image since b545082061 and its crate exports no `door`, so the list is gone and
+# `$OUT_DIR/test_linked.rs` folds no plane (as `LINKED.plane_doors` is empty in the product). The
+# tests that read a test-linked plane wait for their port to the linked MIN-3 plane images.
 # Source-owned root fixtures from any plugin kind, compiled only in root test builds.
 [package.metadata.busbar.root-test-sources]
-file_export = "busbar-export-file"
 ranking_hook = "busbar-hook-ranking"
 source_file = "busbar-secret-file"
-metrics_fixture = "busbar-export-prometheus"
-
-[package.metadata.busbar.test-common-sources]
-metrics_fixture = "busbar-export-prometheus"
 
 [package.metadata.busbar.test-source-contexts]
 listener_framed = "busbar-transport-http"
 root_http = "busbar-transport-http"
 listener_bindings = "busbar-transport-http"
-transport_inventory = "busbar-transport-http"
-boot_http_locate = "busbar-transport-http"
-datagram_wire = "busbar-transport-webrtc"
-datagram_lifecycle = "busbar-transport-webrtc"
-money_datagram = "busbar-transport-webrtc"
 root_stdio = "busbar-transport-stdio"
-linked_transport_rows = "busbar-transport-tcp"
 boot_carrier_locate = "busbar-transport-tcp"
 listener_session = "busbar-transport-ws"
 listener_carrier = "busbar-transport-tcp"
-boot_session_locate = "busbar-transport-ws"
 admin_application = "busbar-hook-webrequest"
 linked_auth = "busbar-auth-webhook-signature"
 migration_table_hook = "busbar-hook-webrequest"
 
 [package.metadata.busbar.test-linked]
-planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
-# The secret sources those tests read references through: the native secret images the root links,
-# published beside the planes so a test reads the source shorthand those sources declare.
+# The secret sources the cross-plane tests read references through: the native secret images the
+# root links, so a test reads the source shorthand those sources declare.
 secrets = ["busbar-secret-env", "busbar-secret-file"]
 # The operator credential's auth plugin the admin tests (`tests/admin_cross_plane/`) authenticate
 # through: the one the root links for it (`auth-admin-tokens`).
@@ -518,8 +503,6 @@ busbar-store-postgres = { workspace = true }
 busbar-auth-webhook-signature = { workspace = true }
 busbar-export-webhook = { workspace = true }
 busbar-hook-ranking = { workspace = true }
-# The source-owned metrics fixture is available even when its runtime row is disabled.
-busbar-export-prometheus = { workspace = true }
 busbar-plugin-loader = { path = "../../crates/plugin-loader", features = ["test-support"] }
 tokio-tungstenite = { workspace = true }
 h2 = { workspace = true }
@@ -544,13 +527,8 @@ http = { workspace = true }
 # The hook-seat tests (`root/tests/serve_hook_seats.rs`) implement the kernel's `#[async_trait]`
 # hook policy trait, so their test impls need the macro.
 async-trait = { workspace = true }
-# The llm plane's door, a `door:` row of `test-linked` above: linked in every build's tests,
-# whatever plane features the build enables.
+# The planes, linked in every build's tests whatever plane features the build enables.
 busbar-plane-llm = { workspace = true }
-# The served planes' test kits: `testkit::SERVED` (their served-leg witnesses) is `test-support` only.
-# The MCP and A2A planes' doors, `door:` rows of `test-linked` above: linked in every build's tests,
-# whatever plane features the build enables (a single-plane build's tests still install the whole
-# roster).
 busbar-plane-mcp = { workspace = true }
 busbar-plane-a2a = { workspace = true }
 # The bin's own unit tests (src/tests/tests.rs, the ~14 boot/CLI helpers) build App fixtures
@@ -742,7 +720,9 @@ resolver = "2"
 members = ["."]
 
 [workspace.dependencies]
-busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "bea74851f4c7da848c4ad4cbf5d811d0defb656f" }
+# Test-only (dev-dependency): its admin_application and migration_table_hook root test sources. house/oss-green
+# 4a91545 re-aims them onto the current root fixtures and hook model (the door-era bea7485 named removed root items).
+busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "4a91545afab53c8af048b568dd86fc5255f9d4bd" }
 busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "931d17d372f22935fda599e9712f1b0a05fd86dd" }
 busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "bd473e4265e2d006034c4897dc101c0382f6455a" }
 # Published MIN-3 LLM implementation, linked through its PLUGIN header.
@@ -827,7 +807,9 @@ busbar-hook-complexity = { git = "https://github.com/GetBusbar/busbar-hook-compl
 # THE STDIO TRANSPORT: the carrier of a spawned program's pipes (kind: transport), pulled at a pinned
 # rev; the logic crate the root links on the transport-door axis. Its dropped-in cdylib twin
 # (`busbar-transport-stdio-plugin`) and its gates live in that repo's plugin CI.
-busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "725ccf6416439a08107485f358a08148de0c949c" }
+# c599ed8 (house/oss-green): its root test builds the dispatcher over the serving Services (LateServices is
+# gone, 395b97f138); the crate source differs from 725ccf6 only in test plumbing (tests moved out of src/).
+busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "c599ed8ea52b09bedd1ff10c63f8b045be5fe2d4" }
 # THE WEBRTC TRANSPORT: the datagram framer door (ICE, SRTP, SCTP; kind: transport), pulled at a
 # pinned rev; the logic crate the root links behind `transport-webrtc`. Its dropped-in cdylib twin
 # (`busbar-transport-webrtc-plugin`), the published suite's datagram script and its gates live in that

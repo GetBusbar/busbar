@@ -15,7 +15,7 @@ fn a_public_read_of_busy_rest_retains_and_retires_its_waiter_after_unlocking() {
         let c = Connector::serving(
             Transports::new(vec![Entry {
                 door: Arc::new(TestDoor::identity("bytes")),
-                alpn: Vec::new(),
+                alpn: Arc::default(),
             }])
             .unwrap(),
             crate::tests::loopback_literals(),

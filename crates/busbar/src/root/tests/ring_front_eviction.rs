@@ -60,7 +60,9 @@ fn scan(dir: &Path, out: &mut Vec<String>, files: &mut usize) {
 
 #[test]
 fn ring_front_eviction_gate() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/root/durability");
+    // The root crate's own sources, from either manifest that builds this target (crates/busbar or
+    // dist/default): both sit two levels below the repository root.
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/busbar/src/root/durability");
     let mut out = Vec::new();
     let mut files = 0;
     scan(&dir, &mut out, &mut files);

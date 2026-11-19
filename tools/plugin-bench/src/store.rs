@@ -101,8 +101,7 @@ fn open(cfg: &Config, target: &Target) -> Result<Arc<Opened>, String> {
 /// Root the dataset and admit the bench's writer, as the kernel's first start does.
 async fn initialize(backend: &dyn PersistenceBackend) -> Result<(), String> {
     use busbar_contract::persistence::SelfFenced;
-    let init =
-        busbar_contract::abi::sdk::store::v4::conformance::initialization(backend, WRITER, 1);
+    let init = busbar_contract::persistence::conformance::initialization(backend, WRITER, 1);
     let key = CommitKey::self_fenced(
         &SelfFenced::check(&init).map_err(|_| "the initialization is not self-fenced")?,
     );

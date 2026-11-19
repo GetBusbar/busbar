@@ -703,7 +703,7 @@ async fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key
     let legacy = dir.0.join("deployment-keyset");
     std::fs::write(&legacy, seed.as_bytes()).unwrap();
     let records =
-        ScopedStore::host_private(core.clone(), INSTANCE, [KEYSET_SCHEMA.into()]).unwrap();
+        ScopedStore::host_private(core.clone(), INSTANCE, [KEYSET_SCHEMA]).unwrap();
     let corrupt = Request {
         op: records.record_op().await.unwrap(),
         predicates: vec![Predicate {
@@ -985,8 +985,11 @@ fn admitted_min3_store_refusal_goes_through_store_boot_refusal() {
 
 #[test]
 fn main_runs_the_crypto_self_test_before_anything_else() {
+    // Comment lines are not code: `main` explains its first call in a comment line inside its body.
     let source: String = include_str!("../main.rs")
-        .chars()
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .flat_map(str::chars)
         .filter(|c| !c.is_whitespace())
         .collect();
     let head = concat!(

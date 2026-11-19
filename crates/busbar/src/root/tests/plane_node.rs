@@ -1700,7 +1700,7 @@ async fn a_dispatch_record_is_written_on_the_book_under_its_units_facts() {
     let record = |unit: u64| Dispatched {
         leg: 0,
         attempt: 1,
-        pool: String::new(),
+        pool: busbar_contract::kept::Text::EMPTY,
         destination: busbar_contract::DestinationId::new(0),
         lane: None,
         unit: UnitKey::new(unit),

@@ -160,7 +160,8 @@ async fn native_restore_retains_tampered_legacy_preimage_and_continues_its_actua
         prev_hash: String::new(),
         hash: "tampered-original-hash".into(),
     };
-    let rows = crate::host_records_async::migration_audit_rows(PERSISTENCE_OWNER, &record).unwrap();
+    let rows =
+        crate::persistence::history::migration_audit_rows(PERSISTENCE_OWNER, &record).unwrap();
     let prepared = PreparedCandidate::new(Candidate {
         id: store.next_id().unwrap(),
         codec: CANDIDATE_VERSION,

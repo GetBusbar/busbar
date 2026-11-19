@@ -147,7 +147,7 @@ async fn services_over(
     (Arc::new(s), store)
 }
 async fn stored(store: &Arc<CoreStore>, key: &[u8]) -> Option<Vec<u8>> {
-    ScopedStore::authorized(store.clone(), "inst", [TASK.into()])
+    ScopedStore::authorized(store.clone(), "inst", [TASK])
         .unwrap()
         .get(TASK, key)
         .await

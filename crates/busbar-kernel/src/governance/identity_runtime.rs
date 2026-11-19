@@ -73,6 +73,14 @@ impl GovState {
             caches.clone(),
             order.clone(),
         );
+        // A node that serves no request still re-reads a peer's revokes once a window. A set that
+        // cannot be kept fresh is not served: the build is refused, with the refresher's reason.
+        crate::refresh::keep(
+            Arc::downgrade(&denylist) as std::sync::Weak<dyn crate::refresh::Refreshable>,
+            std::time::Instant::now()
+                + std::time::Duration::from_secs(crate::governance::REVOCATION_SYNC_TTL_SECS),
+        )
+        .map_err(|why| RecordStoreError(why.into()))?;
         Self::from_identity_cache(core, signer, caches, order, denylist)
     }
     pub async fn refresh_async(&self) -> RecordStoreResult<()> {
