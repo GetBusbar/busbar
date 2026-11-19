@@ -11,11 +11,13 @@
     "busbar-kernel-wal",
     "busbar-plugin-abi",
     "busbar-plugin-loader",
-    "busbar-ports"
+    "busbar-ports",
+    "busbar-seal"
   ],
   "allowed_additions": [
     "busbar-plugin-abi",
     "busbar-plugin-loader",
-    "busbar-ports"
+    "busbar-ports",
+    "busbar-seal"
   ]
 }

@@ -249,3 +249,185 @@ fn the_real_deny_toml_records_the_postgres_and_webrtc_exceptions() {
     }
     assert_eq!(recorded["cipher"].parents, ["aes"]);
 }
+
+/// The packages that may list `busbar-seal`, the crate whose two free functions mint every capability
+/// seal: the kernel, which mints, and the contract, which re-exports the two seal TYPES only.
+const SEAL_HOLDERS: [&str; 2] = ["busbar-contract", "busbar-kernel"];
+
+/// The packages that may list `busbar-kernel`. The kernel's `seal` module is public, so each of these can
+/// obtain a seal; every other crate cannot name one.
+const KERNEL_DEPENDENTS: [&str; 8] = [
+    "busbar",
+    "busbar-core-admin",
+    "busbar-core-connector",
+    "busbar-core-oauth2",
+    "busbar-default",
+    "busbar-migrate",
+    "busbar-oracle-blackbox",
+    "busbar-plugin-test",
+];
+
+/// Every `Cargo.toml` in the repository (separate workspaces included), skipping build output.
+fn every_manifest(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            if !matches!(name.as_str(), "target" | ".git" | "vendor" | "node_modules") {
+                every_manifest(&path, out);
+            }
+        } else if name == "Cargo.toml" {
+            out.push(path);
+        }
+    }
+}
+
+/// Whether a manifest's `text` names `krate` in any dependency table (normal, dev, build, target-gated),
+/// by key (`krate = ..`, `krate.path = ..`), by table (`[dependencies.krate]`) or by rename
+/// (`package = "krate"`).
+fn names_dependency(text: &str, krate: &str) -> bool {
+    let mut section = String::new();
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        if line.starts_with('[') {
+            section = line.to_string();
+            let inner = line.trim_matches(|c| c == '[' || c == ']');
+            if inner.contains("dependencies") && inner.rsplit('.').next() == Some(krate) {
+                return true;
+            }
+            continue;
+        }
+        if !section.contains("dependencies") {
+            continue;
+        }
+        let key = line.split('=').next().unwrap_or_default().trim();
+        if key == krate
+            || key
+                .strip_prefix(krate)
+                .is_some_and(|rest| rest.starts_with('.'))
+            || line.contains(&format!("package = \"{krate}\""))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// The `[package]` name of a manifest.
+fn package_name(text: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if in_package {
+            if let Some(value) = line.strip_prefix("name") {
+                let value = value.trim_start();
+                if let Some(value) = value.strip_prefix('=') {
+                    return Some(value.trim().trim_matches('"').to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The `wrappers` of `deny.toml`'s `[bans] deny` row for `krate`.
+fn deny_wrappers(deny: &str, krate: &str) -> Option<Vec<String>> {
+    let needle = format!("crate = \"{krate}\"");
+    let row = deny.lines().map(str::trim).find(|line| {
+        !line.starts_with('#') && line.contains(&needle) && line.contains("wrappers")
+    })?;
+    let list = row.split("wrappers = [").nth(1)?.split(']').next()?;
+    let mut wrappers: Vec<String> = list
+        .split(',')
+        .map(|name| name.trim().trim_matches('"').to_string())
+        .filter(|name| !name.is_empty())
+        .collect();
+    wrappers.sort();
+    Some(wrappers)
+}
+
+/// Who can mint a capability is decided by manifests, and these two lists say exactly who: a crate that
+/// does not list `busbar-seal` cannot name its mint (the compiler refuses it), and a crate that lists
+/// neither `busbar-seal` nor `busbar-kernel` cannot obtain a seal at all. `deny.toml` carries both rows
+/// (cargo-deny's `wrappers`); this test holds the rows to the lists and walks every manifest in the
+/// repository, so a new dependent fails here even where cargo-deny does not run.
+#[test]
+fn only_the_named_crates_may_depend_on_the_seal_and_the_kernel() {
+    let root = repo_root();
+    let deny = std::fs::read_to_string(root.join("deny.toml")).expect("deny.toml");
+    let mut manifests = Vec::new();
+    every_manifest(&root, &mut manifests);
+    assert!(
+        manifests.len() > 20,
+        "the manifest walk found {} Cargo.toml files: it is broken, and a broken walk proves nothing",
+        manifests.len()
+    );
+    for (krate, allowed) in [
+        ("busbar-seal", &SEAL_HOLDERS[..]),
+        ("busbar-kernel", &KERNEL_DEPENDENTS[..]),
+    ] {
+        let mut allowed: Vec<String> = allowed.iter().map(|name| name.to_string()).collect();
+        allowed.sort();
+        assert_eq!(
+            deny_wrappers(&deny, krate),
+            Some(allowed.clone()),
+            "deny.toml must carry the row `{{ crate = \"{krate}\", wrappers = {allowed:?} }}`"
+        );
+        let mut found: Vec<String> = manifests
+            .iter()
+            .filter_map(|manifest| {
+                let text = std::fs::read_to_string(manifest).ok()?;
+                names_dependency(&text, krate)
+                    .then(|| package_name(&text).unwrap_or_else(|| manifest.display().to_string()))
+            })
+            .collect();
+        found.sort();
+        found.dedup();
+        assert_eq!(
+            found, allowed,
+            "the manifests that list {krate} are not the ones allowed to"
+        );
+    }
+}
+
+/// The walk's reader, on the forms a manifest can name a dependency in.
+#[test]
+fn a_dependency_is_found_by_key_table_and_rename_and_nowhere_else() {
+    let k = "busbar-seal";
+    assert!(names_dependency(
+        "[dependencies]\nbusbar-seal = { path = \"x\" }\n",
+        k
+    ));
+    assert!(names_dependency(
+        "[dev-dependencies]\nbusbar-seal.path = \"x\"\n",
+        k
+    ));
+    assert!(names_dependency(
+        "[target.'cfg(unix)'.dependencies.busbar-seal]\npath = \"x\"\n",
+        k
+    ));
+    assert!(names_dependency(
+        "[dependencies]\nseal = { package = \"busbar-seal\", path = \"x\" }\n",
+        k
+    ));
+    assert!(!names_dependency("[features]\nbusbar-seal = []\n", k));
+    assert!(!names_dependency(
+        "[dependencies]\nbusbar-seal-extra = \"1\"\n",
+        k
+    ));
+    assert!(!names_dependency("[package]\nname = \"busbar-seal\"\n", k));
+    assert_eq!(
+        deny_wrappers(
+            "deny = [\n    { crate = \"a\", wrappers = [\"y\", \"x\"], reason = \"r\" },\n]\n",
+            "a"
+        ),
+        Some(vec!["x".to_string(), "y".to_string()])
+    );
+}

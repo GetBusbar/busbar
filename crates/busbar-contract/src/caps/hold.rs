@@ -78,12 +78,10 @@
 //!
 //! `drop(hold)`, `std::mem::forget(hold)`, `ManuallyDrop::new(hold)` and `Box::leak` all compile,
 //! and no amount of type design changes that: Rust has no linear types, so "this value must be
-//! consumed by exactly this function" is not expressible. Four partial mechanisms cover it instead,
+//! consumed by exactly this function" is not expressible. Three partial mechanisms cover it instead,
 //! and it is worth being exact about which does what. `#[must_use]` catches the accident above. The
 //! cell catches the double take. The canary catches the omission, after the fact, in arithmetic.
-//! The deliberate escape is caught by a source scan — the construction gate's `hold-escapes` rule
-//! — and the symbols it looks for are written down in the crate's `fixtures/lint_rules.txt` rather
-//! than left to a reviewer to remember; a test in this crate holds the two tables to each other.
+//! No source scan looks for the deliberate escape: a reviewer must.
 
 use crate::caps::capability::{Admittance, DurableWrite, Exit, WriteMoney};
 use crate::caps::step::PrincipalId;
