@@ -82,9 +82,6 @@ pub const MONEY_SCALE: u32 = 6;
 /// `10^MONEY_SCALE`: how many mantissa steps make one whole money unit.
 const MONEY_SCALE_FACTOR: i128 = 1_000_000;
 
-/// The scale the accumulator runs at, before the single projection to [`MONEY_SCALE`].
-pub const EXACT_SCALE: u32 = MONEY_SCALE + 9;
-
 /// The divisor that takes the exact scale-15 accumulator down to [`MONEY_SCALE`]. Applied ONCE.
 const EXACT_PER_MONEY: i128 = 1_000_000_000;
 

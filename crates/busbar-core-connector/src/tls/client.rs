@@ -325,64 +325,6 @@ fn contents(whole: &[u8]) -> Option<&[u8]> {
     whole.get(header..)
 }
 
-/// A hash RFC 5929 `tls-server-end-point` may pick.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DigestAlg {
-    /// SHA-256 (also the stand-in for MD5, SHA-1 and unknown algorithms).
-    Sha256,
-    /// SHA-384.
-    Sha384,
-    /// SHA-512.
-    Sha512,
-}
-
-/// THE CHANNEL-BINDING DIGEST of a DER certificate (RFC 5929 section 4.1, `tls-server-end-point`):
-#[must_use]
-pub fn end_point_digest(cert_der: &[u8]) -> DigestAlg {
-    signature_hash(cert_der).unwrap_or(DigestAlg::Sha256)
-}
-
-/// The SHA-384 or SHA-512 a certificate's `signatureAlgorithm` names (RSASSA-PSS through its
-fn signature_hash(cert_der: &[u8]) -> Option<DigestAlg> {
-    /// ASN.1 OBJECT IDENTIFIER.
-    const TAG_OID: u8 = 0x06;
-    /// `[0] EXPLICIT`, `RSASSA-PSS-params.hashAlgorithm`.
-    const TAG_PSS_HASH: u8 = 0xA0;
-    const SHA384_RSA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0C];
-    const SHA512_RSA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0D];
-    const RSA_PSS: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A];
-    const ECDSA_SHA384: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x03];
-    const ECDSA_SHA512: &[u8] = &[0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x04];
-    const SHA384: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02];
-    const SHA512: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03];
-
-    fn algorithm(identifier: &[u8]) -> Option<(&[u8], &[u8])> {
-        let body = contents(expect_sequence(identifier)?)?;
-        let (tag, oid) = element(body)?;
-        (tag == TAG_OID).then_some((contents(oid)?, &body[oid.len()..]))
-    }
-    fn hash(oid: &[u8]) -> Option<DigestAlg> {
-        match oid {
-            SHA384_RSA | ECDSA_SHA384 | SHA384 => Some(DigestAlg::Sha384),
-            SHA512_RSA | ECDSA_SHA512 | SHA512 => Some(DigestAlg::Sha512),
-            _ => None,
-        }
-    }
-
-    let body = contents(expect_sequence(cert_der)?)?;
-    let (_, tbs) = element(body)?;
-    let (oid, params) = algorithm(&body[tbs.len()..])?;
-    if oid != RSA_PSS {
-        return hash(oid);
-    }
-
-    let (tag, first) = element(contents(expect_sequence(params)?)?)?;
-    if tag != TAG_PSS_HASH {
-        return None;
-    }
-    hash(algorithm(contents(first)?)?.0)
-}
-
 /// The client-side connection-security wrap: runs the rustls client handshake built by
 pub struct TlsDial {
     config: Arc<rustls::ClientConfig>,

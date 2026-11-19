@@ -30,9 +30,6 @@ pub(crate) const NO_PROXY_KEYS: [&str; 2] = ["NO_PROXY", "no_proxy"];
 /// Hard ceiling on the proxy's CONNECT response head; a real response is one status line + a few
 pub const CONNECT_HEAD_CAP: usize = 8 * 1024;
 
-/// Wall-clock bound on the CONNECT handshake — the same 10s the socket connect itself carries.
-pub const CONNECT_HANDSHAKE: std::time::Duration = std::time::Duration::from_secs(10);
-
 /// What the proxy has answered so far to a CONNECT for `addr` (`host:port`): `Ok(None)` = its head is not
 pub fn connect_answer(head: &[u8], addr: &str) -> Result<Option<usize>, String> {
     let Some(at) = head.windows(4).position(|w| w == b"\r\n\r\n") else {

@@ -17,26 +17,6 @@ use busbar_contract::export_stream::ExportStream;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
 
-/// Read the real host snapshot service from a test-support crossing. The existing snapshot grant
-/// still decides whether this caller may read; an ungranted caller receives its normal refusal.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub fn read_test_snapshot(
-    scope: u32,
-) -> impl std::future::Future<Output = busbar_contract::services::Snapshot> + Send + 'static {
-    scrape::read(scope)
-}
-
-/// Dispatch a test-support sink through the real served-sink adapter and snapshot grant. The grant
-/// is lent only for each HTTP crossing and restored by the same guard used for live scrape routes.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub fn serve_test_sink(
-    sink: Arc<dyn busbar_contract::export_calls::ExportCalls>,
-) -> Arc<dyn crate::plugin_routes::PluginHttpDispatch> {
-    Arc::new(scrape::Granted(plugin::served(sink)))
-}
-
 /// Host-owned user configuration capabilities (the admin configuration schema), built off the
 /// request path.
 #[cfg(feature = "openapi-schema")]

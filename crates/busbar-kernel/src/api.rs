@@ -93,33 +93,3 @@ fn token_configured_description() -> String {
         crate::config::operator_provider()
     )
 }
-
-#[cfg(feature = "openapi-schema")]
-pub fn set_response_schema(
-    paths: &mut busbar_contract::json::Map,
-    abs_path: &str,
-    method: &str,
-    status: &str,
-    schema: busbar_contract::json::Value,
-) {
-    use busbar_contract::json::JsonValueMutTrait as _;
-    let Some(op) = paths.get_mut(&abs_path).and_then(|p| p.get_mut(method)) else {
-        return;
-    };
-
-    let Some(resp_map) = op
-        .get_mut(concat!("respon", "ses"))
-        .and_then(|r| r.as_object_mut())
-    else {
-        return;
-    };
-    let entry = resp_map
-        .entry(status)
-        .or_insert_with(|| busbar_contract::json::json!({"description": "OK"}));
-    if let Some(obj) = entry.as_object_mut() {
-        obj.insert(
-            "content",
-            busbar_contract::json::json!({"application/json": {"schema": schema}}),
-        );
-    }
-}

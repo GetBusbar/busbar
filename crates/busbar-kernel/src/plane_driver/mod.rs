@@ -70,8 +70,8 @@ pub use hooks::{
     CallerKey, CandidateFacts, Candidates, Constraint, HookJournal, HookRead, HooksRan, Restrict,
 };
 pub use host::{
-    engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
-    policy_standing, standing_over, EngineHost, EngineHostImpl, LiveHostFactory,
+    engine_host, engine_host_from_handle, live_standing, policy_standing, standing_over,
+    EngineHost, EngineHostImpl,
 };
 pub use money::{
     EndPost, FeeRefund, MeasurementRequestGuard, MeasurementRequestState, ObservationPolicy,
@@ -170,22 +170,6 @@ pub struct Decoded {
 #[must_use]
 pub fn sticky_hash(key: &[u8]) -> u64 {
     crate::store::key_hash_bytes(key)
-}
-
-/// The host's facts for a unit's DEBUG summary: names the operator configured and the governance
-/// decision, never a credential.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct UnitSummary {
-    /// The caller's dialect (ingress protocol) name.
-    pub ingress: Option<String>,
-    /// The pool the unit was routed over, after any budget downgrade.
-    pub pool: Option<String>,
-    /// The governance key id that admitted it (attribution, never the secret).
-    pub key_id: Option<String>,
-    /// The governance decision: `admitted`, `downgraded`, `no_key`, `not_admitted`, `off`.
-    pub governance: &'static str,
-    /// The pool a budget `on_exhaust: downgrade` moved it to.
-    pub downgraded_to: Option<String>,
 }
 
 /// A refusal or failure the plane rendered, for the caller.

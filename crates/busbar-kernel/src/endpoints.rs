@@ -304,4 +304,3 @@ fn a_plane_opened(app: &crate::state::App) -> bool {
 #[cfg(test)]
 #[path = "tests/endpoints_doc_tests.rs"]
 mod endpoints_doc_tests;
-

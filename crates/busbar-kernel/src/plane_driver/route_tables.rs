@@ -77,10 +77,6 @@ pub fn set_pool_queued_depth(pool: &str, depth: u64) {
     with_queued_depth(pool, |d| *d = depth);
 }
 
-pub fn change_pool_queued_depth(pool: &str, delta: i64) {
-    with_queued_depth(pool, |d| *d = d.saturating_add_signed(delta));
-}
-
 /// The live queue depth of `pool` (`0` before its first queued request).
 pub(crate) fn queued_depth_of(pool: &str) -> u64 {
     QUEUED

@@ -1096,43 +1096,6 @@ pub fn build_admin_router_on_with_dispatch_layer(
     )
 }
 
-pub fn build_data_router_on(
-    handle: &std::sync::Arc<state::AppHandle>,
-    plugins: &crate::plugin_routes::PluginRouteTable,
-    doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
-    refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
-    refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
-    request_body_max_bytes: usize,
-    max_inbound_concurrent: usize,
-    server_timing_enabled: bool,
-) -> Router {
-    let (data, core_routes) = base_data_router_scoped(
-        plugins,
-        &std::collections::BTreeMap::new(),
-        None,
-        doors,
-        false,
-    )
-    .into_parts();
-    let data = apply_common_layers(
-        data,
-        core_routes.with_door_refusals(refusals),
-        handle,
-        request_body_max_bytes,
-        server_timing_enabled,
-    );
-    apply_inbound_concurrency_limit(data, max_inbound_concurrent).layer(axum::middleware::from_fn(
-        move |request: axum::extract::Request, next: axum::middleware::Next| {
-            let refuse = refuse_by_path.clone();
-            async move {
-                PHYSICAL_REFUSER
-                    .scope((true, refuse), next.run(request))
-                    .await
-            }
-        },
-    ))
-}
-
 pub struct PreparedListener {
     pub(crate) physical: Option<std::sync::Arc<crate::inbound::native::PhysicalPlan>>,
     pub(crate) data: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,

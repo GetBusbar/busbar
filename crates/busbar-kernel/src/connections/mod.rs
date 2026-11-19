@@ -10,7 +10,7 @@ mod callback;
 pub mod pkce;
 mod store;
 
-pub use callback::{callback_paths, CallbackAnswer, CallbackPath};
+pub use callback::CallbackAnswer;
 pub use store::{settle_outbound, ConnectLogins, StoreConnections, LOGIN_TTL_S};
 
 pub mod grant;

@@ -79,17 +79,6 @@ pub fn tls_failed(target: &str, why: &str, now: &mut Option<std::time::Instant>)
     crate::cold::egress::tls_failed(shown(target), why, now);
 }
 
-/// Whether a TLS error is a verification failure (certificate or pin), not a transport error.
-#[must_use]
-pub fn is_verification(e: &rustls::Error) -> bool {
-    matches!(
-        e,
-        rustls::Error::InvalidCertificate(_)
-            | rustls::Error::NoCertificatesPresented
-            | rustls::Error::General(_)
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
