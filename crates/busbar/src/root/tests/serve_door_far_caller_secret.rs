@@ -80,7 +80,7 @@ fn egress_over(pool_name: &str) -> Egress {
         conns: Arc::new(BadGateway::default()),
         breaker: busbar_kernel::plane_driver::fixed_breaker(Arc::new(Book::default())),
         capacity: Arc::new(Free),
-        clock: busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
+        clock: busbar_contract::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
         pools: foldhash::HashMap::from_iter([(
