@@ -2045,18 +2045,19 @@ impl crate::plane_driver::port_session::Calls for WritingCalls {
 async fn native_data_record_writes_must_be_caller_scoped() {
     use busbar_plugin_abi::plane::{LK_CALLER, LK_CHAIN};
     use busbar_plugin_abi::records::commit::REC_CALLER;
-    let f = fixture_with(true, false, Vec::new());
-    for (stream, write, taken) in [
-        (1, Write::Store(0), false),
-        (2, Write::Store(LK_CHAIN), false),
-        (3, Write::Store(LK_CALLER | LK_CHAIN), false),
-        (4, Write::Delete(0), false),
-        (5, Write::Commit(0), false),
-        (6, Write::Store(LK_CALLER), true),
-        (7, Write::Delete(LK_CALLER), true),
-        (8, Write::Commit(REC_CALLER), true),
+    for (write, taken) in [
+        (Write::Store(0), false),
+        (Write::Store(LK_CHAIN), false),
+        (Write::Store(LK_CALLER | LK_CHAIN), false),
+        (Write::Delete(0), false),
+        (Write::Commit(0), false),
+        (Write::Store(LK_CALLER), true),
+        (Write::Delete(LK_CALLER), true),
+        (Write::Commit(REC_CALLER), true),
     ] {
-        let (request, wire, cx, _owner) = arrival(&f, stream);
+        // One fixture per request: a replayed request would be refused before the plane is asked.
+        let f = fixture_with(true, false, Vec::new());
+        let (request, wire, cx, _owner) = arrival(&f, 1);
         let authorized = f
             .route
             .prepare_test(request, wire, cx)

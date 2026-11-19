@@ -152,6 +152,16 @@ pub trait PortUpstream: Send + Sync {
 /// The member in hand: its candidate, its preparation number, its provider and its target definition.
 type InHand = (Candidate, u32, Box<str>, Option<TargetDefinition>);
 
+/// The lane a member's money is priced, ledgered and metered under. A provider model is its
+/// configured model name, the key the root `rate_card:` prices it by (v1.5.5's lane); any other
+/// member is its plane-qualified name, priced by its plane's own card.
+fn money_lane(member: &Candidate) -> &str {
+    match member.identity {
+        TargetIdentity::Model { .. } => &member.upstream,
+        TargetIdentity::Registration => &member.qualified_member,
+    }
+}
+
 /// One session's walk over a [`FarEnd`] built from the session's wants. What changes as the walk goes is kept in
 /// [`Owned`] cells: the walk's members and its carrier both read it, across the awaits of the session's task.
 struct Shared<'a, F: FarEnd> {
@@ -507,6 +517,19 @@ impl<F: FarEnd + Send> Members for WalkMembers<'_, '_, F> {
                         flags: target.flags,
                         params: target.params,
                     };
+                    // A member whose lane the request's rate card cannot price is never dialled:
+                    // the call is refused before it is served, never served as free (#42).
+                    if s
+                        .pending
+                        .as_ref()
+                        .is_some_and(|pending| pending.lane_unpriced(money_lane(&candidate)))
+                    {
+                        tracing::warn!(
+                            member = %candidate.upstream,
+                            "the rate card in force names no price for this member's lane; it is not dialled"
+                        );
+                        continue;
+                    }
                     // The names in hand are the pick's own: moved in, nothing copied.
                     s.names.set((name, pool));
                     let preparation = s.preparations.get().checked_add(1)?;
@@ -542,9 +565,21 @@ impl<F: FarEnd + Send> Members for WalkMembers<'_, '_, F> {
         }
     }
 
-    fn served(&mut self, _member: &Candidate) {
-        if let Some(far) = self.0.far.get() {
-            far.judged_stating(self.0.token, FAULT_NONE, None);
+    fn served(&mut self, member: &Candidate) {
+        let s = self.0;
+        if let Some(far) = s.far.get() {
+            far.judged_stating(s.token, FAULT_NONE, None);
+        }
+        // The unit's money follows the member that served it: its lane and its provider.
+        if let Some(pending) = &s.pending {
+            s.selected.with(|held| {
+                if let Some((selected, _, provider, _)) = held
+                    .as_ref()
+                    .filter(|(selected, ..)| selected.qualified_member == member.qualified_member)
+                {
+                    pending.served(money_lane(selected), provider);
+                }
+            });
         }
     }
 
