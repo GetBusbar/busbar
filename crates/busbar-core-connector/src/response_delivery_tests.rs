@@ -648,9 +648,9 @@ fn late_body_of_a_stream_the_engine_left_is_owed_as_credit_at_once_and_only_once
     // a half times the connection window. Nobody will read them: all of each is owed at once.
     let mut credited = 40;
     for _ in 0..10 {
-        let outcome = answer(&mut ledger, &[body(1, 32), body(1, 32)]).unwrap();
+        let checked = answer(&mut ledger, &[body(1, 32), body(1, 32)]).unwrap();
         assert!(
-            outcome.left.is_empty(),
+            checked.outcome.left.is_empty(),
             "the ledger took what the driver says is owed: nobody else can give it again"
         );
         assert_eq!(
@@ -689,8 +689,8 @@ fn a_session_with_one_stream_is_owed_no_credit_for_late_body() {
     let mut ledger = windowed(false);
     let _one = ledger.admit(key(1)).unwrap();
     leave(&mut ledger, 1);
-    let outcome = answer(&mut ledger, &[body(1, 64)]).unwrap();
-    assert!(outcome.left.is_empty());
+    let checked = answer(&mut ledger, &[body(1, 64)]).unwrap();
+    assert!(checked.outcome.left.is_empty());
     assert_eq!(
         ledger.take_owed(),
         None,
@@ -719,7 +719,7 @@ fn cut_at(carried: u64) -> (&'static str, &'static str) {
     let three = ledger.admit(key(3)).unwrap();
     ledger.emitting(1, E_BODY, 4);
     ledger.emitting(3, E_BODY, 4);
-    answer(
+    let run = given(
         &mut ledger,
         &[
             part(1, WIRE_CONTROL, b"head"),
@@ -727,10 +727,9 @@ fn cut_at(carried: u64) -> (&'static str, &'static str) {
             part(3, WIRE_CONTROL, b"head"),
             part(3, WIRE_PAYLOAD, b"body"),
         ],
-    )
-    .unwrap();
-    assert_eq!(ledger.unwritten().len(), 16);
-    ledger.took(carried as usize);
+    );
+    assert_eq!(run.len(), 16);
+    took(&mut ledger, carried);
     ledger.discard();
     ledger.retire(
         CarrierProgress {
@@ -779,7 +778,7 @@ fn a_failed_write_s_last_reading_never_makes_an_ended_answer_whole() {
     let one = ledger.admit(key(1)).unwrap();
     serve(&mut ledger, 1);
     // Every byte through the end mark is on the carrier, and the flush after it did not succeed.
-    ledger.took(8);
+    took(&mut ledger, 8);
     ledger.discard();
     ledger.retire(
         CarrierProgress {

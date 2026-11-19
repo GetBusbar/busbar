@@ -245,7 +245,10 @@ async fn audience_bound_plane_answers_every_unverified_caller_the_one_401() {
     assert_eq!(f.route.challenge(), Some(CHALLENGE));
     let absent = crate::auth::core_answer::unverified(false, f.route.challenge());
     let refused = crate::auth::core_answer::unverified(true, f.route.challenge());
-    assert_eq!(absent, refused, "no oracle: which check failed changes no byte");
+    assert_eq!(
+        absent, refused,
+        "no oracle: which check failed changes no byte"
+    );
     assert_eq!(absent.status, 401);
     assert!(absent
         .fields

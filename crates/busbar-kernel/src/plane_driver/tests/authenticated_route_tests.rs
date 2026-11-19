@@ -503,7 +503,11 @@ async fn authenticated_route_missing_record_refuses_without_default_scope() {
     assert!(result.is_err(), "{result:?}");
     assert_eq!(*host.asked.lock().unwrap(), [Some(subject_scope("alice"))]);
     assert_eq!(*plane.looked.lock().unwrap(), [false]);
-    assert_eq!(asked(&request), ["money Local"], "no destination is resolved");
+    assert_eq!(
+        asked(&request),
+        ["money Local"],
+        "no destination is resolved"
+    );
     assert_eq!(far.0, 0);
     assert_eq!(plane.upstreams.load(Ordering::SeqCst), 0);
 }
@@ -521,11 +525,8 @@ async fn authenticated_route_pending_is_bounded_by_request_deadline_and_cleans_o
     let resolver = Resolver::new(&host, None).with_principal("alice", &[]);
     let mut request = request(56, key("alice", None));
     let mut far = Dials::default();
-    let bounded = tokio::time::timeout(
-        DEADLINE,
-        serve(&plane, &mut request, &resolver, &mut far),
-    )
-    .await;
+    let bounded =
+        tokio::time::timeout(DEADLINE, serve(&plane, &mut request, &resolver, &mut far)).await;
     assert!(bounded.is_err(), "the deadline ended the wait");
     assert_eq!(host.asked.lock().unwrap().len(), 1);
     assert_eq!(plane.dropped.load(Ordering::SeqCst), 1, "cancelled once");
@@ -571,10 +572,7 @@ async fn authenticated_route_caller_stop_reload_and_future_drop_cancel_before_ad
     };
     let resolver = Resolver::new(&host, None).with_principal("alice", &[]);
     let result = serve(&plane, &mut request_retired, &resolver, &mut far).await;
-    assert!(
-        matches!(result, Err(SessionError::NotDriven)),
-        "{result:?}"
-    );
+    assert!(matches!(result, Err(SessionError::NotDriven)), "{result:?}");
     assert_eq!(*plane.looked.lock().unwrap(), [true]);
     assert_eq!(plane.dropped.load(Ordering::SeqCst), 1, "cancelled once");
     assert!(asked(&request_retired).is_empty(), "no money is asked");

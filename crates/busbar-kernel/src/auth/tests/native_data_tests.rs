@@ -2135,3 +2135,7 @@ mod ticket;
 /// A client credential is never lent to the plane, on any data path, under any chain.
 #[path = "native_data_client_credential_tests.rs"]
 mod client_credentials_never_forwarded;
+
+/// An audience-bound plane on the native data path: its own token admitted, every other refused.
+#[path = "native_data_audience_bound_tests.rs"]
+mod audience_bound;

@@ -1678,3 +1678,6 @@ fn an_upgrade_whose_money_is_refused_is_answered_before_any_dial_and_any_101() {
 
 #[path = "port_serve_money_hooks.rs"]
 mod money_hooks;
+
+#[path = "authenticated_route_tests.rs"]
+mod authenticated_route;
