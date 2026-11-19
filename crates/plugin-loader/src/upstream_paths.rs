@@ -46,7 +46,10 @@ fn overlaps(a: &[String], b: &[String]) -> bool {
 
 pub(crate) fn validate(kind: KindCode, items: &[(u16, Vec<u8>)]) -> Result<(), Refusal> {
     let mut upstreams: Vec<Vec<String>> = Vec::new();
-    for (_, body) in items.iter().filter(|(t, _)| *t == busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH) {
+    for (_, body) in items
+        .iter()
+        .filter(|(t, _)| *t == busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH)
+    {
         let text = core::str::from_utf8(body).map_err(|_| bad())?;
         let path = tokens(text).ok_or_else(bad)?;
         if kind != KindCode::Plane
@@ -205,7 +208,9 @@ mod tests {
             .iter()
             .any(|(tag, bytes)| *tag == 0x004D && bytes == b"/s~1ervers~0/*"));
         assert_eq!(
-            described.paths(busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH).collect::<Vec<_>>(),
+            described
+                .paths(busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH)
+                .collect::<Vec<_>>(),
             ["/s~1ervers~0/*"]
         );
         assert!(decode(KindCode::Store, &[]).is_ok());

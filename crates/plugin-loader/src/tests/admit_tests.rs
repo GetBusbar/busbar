@@ -64,11 +64,17 @@ static STAMP: busbar_ffi::StampBytes = emit(&spec(false, "host"));
 static STAMP_OOP: busbar_ffi::StampBytes = emit(&spec(true, "host"));
 static TABLE: busbar_ffi::Table<secret::Shim<Fx>, { secret::ENTRIES }> = secret::table::<Fx>();
 /// A compiled-in secret image stamped with the engine's own secret FP and CORE_FP.
-static REGISTERED: busbar_ffi::LinkedPlugin =
-    busbar_ffi::plugin::<secret::Shim<Fx>, secret::Marker, { secret::ENTRIES }>(&TABLE, &STAMP, Str::EMPTY);
+static REGISTERED: busbar_ffi::LinkedPlugin = busbar_ffi::plugin::<
+    secret::Shim<Fx>,
+    secret::Marker,
+    { secret::ENTRIES },
+>(&TABLE, &STAMP, Str::EMPTY);
 /// The same image stamped `out_of_process`.
-static OUT_OF_PROCESS: busbar_ffi::LinkedPlugin =
-    busbar_ffi::plugin::<secret::Shim<Fx>, secret::Marker, { secret::ENTRIES }>(&TABLE, &STAMP_OOP, Str::EMPTY);
+static OUT_OF_PROCESS: busbar_ffi::LinkedPlugin = busbar_ffi::plugin::<
+    secret::Shim<Fx>,
+    secret::Marker,
+    { secret::ENTRIES },
+>(&TABLE, &STAMP_OOP, Str::EMPTY);
 
 const STUB: CryptoFacts = CryptoFacts {
     external_plugins: false,
