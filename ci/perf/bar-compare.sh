@@ -7,13 +7,17 @@
 #
 #   bar-compare.sh <rows.tsv> <baseline label> <candidate label>
 #
-# For every (mode, route, transport, client threads) and every measured quantity the candidate's
-# MEDIAN over its repetitions is compared with the baseline's WORST repetition: the candidate
-# meets the bar when it is no worse than v1.5.5 showed itself to be on the same machine in the
-# same run. No tolerance is added. A row the baseline has and the candidate lacks is NOT MEASURED
-# and fails the verdict: an unmeasured figure never passes.
-# Quantities: median_us p99_us first_median_us cpu_us (keep, new) and per_conn_bytes (idle rows).
-# Exit status: 0 every figure meets the bar; 1 at least one fails or is not measured.
+# For every (mode, route, transport, client threads) and every measured quantity, the candidate's
+# MIDDLE repetition is set beside the baseline's middle and worst repetitions:
+#   PASS      the candidate's middle is no worse than the baseline's middle
+#   PASS*     it is worse than the baseline's middle but no worse than the baseline's own worst
+#             repetition in this run: inside the spread v1.5.5 showed on this machine today.
+#             Shown apart so the owner sees every one; no tolerance is added anywhere.
+#   FAIL      worse than every repetition of the baseline
+#   NOT MEASURED  the baseline has the row and the candidate does not: never a pass
+# Quantities: med_ns p99_ns first_med_ns server_cpu_ns_per_req (keep, new), and
+# per_idle_connection_bytes per_used_connection_bytes (hold).
+# Exit status: 0 no FAIL and nothing unmeasured; 1 otherwise.
 set -eu
 rows=$1
 base=$2
@@ -22,37 +26,40 @@ table=$(mktemp "${TMPDIR:-/tmp}/perf-bar-verdict.XXXXXX")
 status=0
 
 awk -F '\t' -v base="$base" -v cand="$cand" '
-function median(list, n,    i, j, t, a) {
-  for (i = 1; i <= n; i++) a[i] = list[i]
+function middle(who, k,    i, j, t, a, n) {
+  n = count[who, k]
+  for (i = 1; i <= n; i++) a[i] = got[who, k, i]
   for (i = 2; i <= n; i++) { t = a[i]; for (j = i - 1; j >= 1 && a[j] > t; j--) a[j + 1] = a[j]; a[j + 1] = t }
-  return (n % 2) ? a[(n + 1) / 2] : (a[n / 2] + a[n / 2 + 1]) / 2
+  return a[int((n + 1) / 2)]
 }
-function note(label, key, what, value) {
-  if (value == "") return
+function note(label, key, what, value,    k) {
+  if (value == "" || (label != base && label != cand)) return
   k = key "\t" what
-  if (label == base) { seen[k] = 1; if (!(k in worst) || value + 0 > worst[k]) worst[k] = value + 0 }
-  if (label == cand) { n[k]++; got[k, n[k]] = value + 0 }
+  if (label == base) { seen[k] = 1; if (!((base, k) in worst) || value + 0 > worst[base, k]) worst[base, k] = value + 0 }
+  count[label, k]++
+  got[label, k, count[label, k]] = value + 0
 }
 /^#/ || $1 == "label" { next }
 {
   key = $2 "\t" $3 "\t" $4 "\t" $5
   if ($2 == "keep" || $2 == "new") {
-    note($1, key, "median_us", $7); note($1, key, "p99_us", $8)
-    note($1, key, "first_median_us", $9); note($1, key, "cpu_us", $11)
-  } else {
-    note($1, key, "per_conn_bytes", $14)
+    note($1, key, "med_ns", $7); note($1, key, "p99_ns", $8)
+    note($1, key, "first_med_ns", $10); note($1, key, "server_cpu_ns_per_req", $14)
+  } else if ($2 == "hold") {
+    note($1, key, "per_idle_connection_bytes", $20); note($1, key, "per_used_connection_bytes", $21)
   }
 }
 END {
-  printf "mode\troute\ttransport\tthreads\tquantity\t%s_worst\t%s_median\tverdict\n", base, cand
+  printf "mode\troute\ttransport\tthreads\tquantity\t%s_middle\t%s_worst\t%s_middle\tverdict\n", base, base, cand
   failed = 0
   for (k in seen) {
-    if (!(k in n)) { printf "%s\t%s\t\tNOT MEASURED\n", k, worst[k]; failed = 1; continue }
-    for (i = 1; i <= n[k]; i++) list[i] = got[k, i]
-    m = median(list, n[k])
-    verdict = (m <= worst[k]) ? "PASS" : "FAIL"
-    if (verdict == "FAIL") failed = 1
-    printf "%s\t%s\t%s\t%s\n", k, worst[k], m, verdict
+    b = middle(base, k)
+    if (!((cand, k) in count)) { printf "%s\t%s\t%s\t\tNOT MEASURED\n", k, b, worst[base, k]; failed = 1; continue }
+    c = middle(cand, k)
+    if (c <= b) verdict = "PASS"
+    else if (c <= worst[base, k]) verdict = "PASS*"
+    else { verdict = "FAIL"; failed = 1 }
+    printf "%s\t%s\t%s\t%s\t%s\n", k, b, worst[base, k], c, verdict
   }
   exit failed
 }' "$rows" > "$table" || status=$?

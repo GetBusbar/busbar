@@ -2,31 +2,46 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The measurement client of DONE statement 5: one black-box method for every serving binary,
-//! v1.5.5 included, over plain HTTP/1.1 and over TLS, for a whole answer and a streamed one.
+//! v1.5.5 included. It is the load generator and the stub of the v1.5.5 baseline (perf-155
+//! `loadgen.rs`, `stub.rs`) with the same request bytes, the same timed sections, the same
+//! percentile and the same memory reading, extended by the two things the baseline left out:
+//! TLS, and a streamed answer.
 //!
 //! ```text
-//! perf-bar stub <port>
-//! perf-bar wait <addr> <route> [tls]
-//! perf-bar keep <label> <threads> <n> <warm> <addr> <pid> <route> [tls]
-//! perf-bar new  <label> <threads> <n> <warm> <addr> <pid> <route> [tls]
-//! perf-bar idle <label> <conns> <addr> <pid> <route> [tls]
+//! perf-bar stub <port> <threads>
+//! perf-bar wait <port> [tls]
+//! perf-bar keep <label> <threads> <n> <warm> <port> <pid> <route> [tls]
+//! perf-bar new  <label> <threads> <n> <warm> <port> <pid> <route> [tls]
+//! perf-bar hold <label> <connections> <port> <pid> <route> [tls]
+//! perf-bar header
 //! ```
-//! `route` is `healthz`, `chat` (`POST /v1/messages`, whole answer) or `stream` (the same request
-//! with `"stream": true`). `tls` is `tls:<ca.pem>:<server name>`. `n` and `warm` are per thread.
-//! `PERF_KEY` (the caller key) and `PERF_MODEL` are read from the environment; `PERF_CLK_TCK` is
-//! the machine's clock ticks per second (`getconf CLK_TCK`, default 100).
+//! `keep`: each thread opens ONE connection and sends warm+n requests on it. `new`: each thread
+//! sends warm+n requests, each on a NEW connection, and closes it. `hold`: open the connections,
+//! hold them idle, read the server's resident memory before, idle, and after one request on each.
+//! `route`: `healthz` (GET /healthz), `chat` (POST /v1/messages, whole answer) or `stream` (the
+//! same request with `"stream":true`). `tls` is `tls:<ca.pem>:<server name>`. `pid` is the
+//! server's process id: its user plus system CPU time is read from /proc around the timed section
+//! only.
 //!
-//! Every run prints one tab-separated row, header in [`HEADER`]. Times are microseconds.
-//! `cpu_us` is the server process's user plus system time per operation, read from
-//! `/proc/<pid>/stat` around the measured part only. `first_us` is the time to the first byte of
-//! the answer's body (the same as the whole time for an answer that is not streamed in pieces).
+//! A request's time runs from just before connect() (`new`; over TLS that includes the whole
+//! handshake) or just before the write (`keep`) to the last byte of the response. `first` is the
+//! same start to the first byte of the response body. In `new` and `hold` the destination
+//! address rotates over 127.0.0.1 to 127.0.0.200 so closed connections waiting out TIME_WAIT
+//! never exhaust the local port range.
+//!
+//! Every run prints one tab-separated row ([`HEADER`]); times are nanoseconds.
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
+use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
+use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
-const HEADER: &str = "label\tmode\troute\ttransport\tthreads\tops\tmedian_us\tp99_us\tfirst_median_us\tfirst_p99_us\tcpu_us\trss_before_kib\trss_after_kib\tper_conn_bytes";
+const HEADER: &str = "label\tmode\troute\ttransport\tthreads\tn_per_thread\tmed_ns\tp99_ns\tmean_ns\tfirst_med_ns\tfirst_p99_ns\tconnect_med_ns\tconnect_p99_ns\tserver_cpu_ns_per_req\tnot_200\tclosed_by_server\trss_before_kib\trss_idle_kib\trss_after_one_request_kib\tper_idle_connection_bytes\tper_used_connection_bytes";
+
+const HEALTHZ: &[u8] = b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+const CHAT_BODY: &str =
+    r#"{"model":"test-model","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#;
+const STREAM_BODY: &str = r#"{"model":"test-model","max_tokens":16,"messages":[{"role":"user","content":"hi"}],"stream":true}"#;
 
 type Fault = Box<dyn std::error::Error + Send + Sync>;
 
@@ -41,12 +56,12 @@ struct Tls {
 
 #[derive(Clone)]
 struct Target {
-    addr: String,
+    port: u16,
     tls: Option<Tls>,
 }
 
 impl Target {
-    fn parse(addr: &str, tls: Option<&String>) -> Result<Self, Fault> {
+    fn parse(port: &str, tls: Option<&String>) -> Result<Self, Fault> {
         let tls = match tls {
             None => None,
             Some(spec) => {
@@ -74,7 +89,7 @@ impl Target {
             }
         };
         Ok(Self {
-            addr: addr.to_owned(),
+            port: port.parse()?,
             tls,
         })
     }
@@ -87,228 +102,104 @@ impl Target {
         }
     }
 
-    /// One connection, ready for a request: the TCP connect and, over TLS, the whole handshake.
-    fn open(&self) -> Result<Box<dyn Wire>, Fault> {
-        let tcp = TcpStream::connect(&self.addr)?;
+    /// One connection ready for a request, and how long connect() itself took.
+    fn open(&self, last: u8) -> Result<(Box<dyn Wire>, u64), Fault> {
+        let t0 = Instant::now();
+        let tcp = TcpStream::connect(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, last), self.port))?;
+        let connect = t0.elapsed().as_nanos() as u64;
         tcp.set_nodelay(true)?;
-        tcp.set_read_timeout(Some(Duration::from_secs(30)))?;
         match &self.tls {
-            None => Ok(Box::new(tcp)),
+            None => Ok((Box::new(tcp), connect)),
             Some(tls) => {
                 let conn = rustls::ClientConnection::new(tls.config.clone(), tls.name.clone())?;
                 let mut stream = rustls::StreamOwned::new(conn, tcp);
                 while stream.conn.is_handshaking() {
                     stream.conn.complete_io(&mut stream.sock)?;
                 }
-                Ok(Box::new(stream))
+                Ok((Box::new(stream), connect))
             }
         }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Route {
-    Healthz,
-    Chat,
-    Stream,
+fn request_of(route: &str) -> Result<Vec<u8>, Fault> {
+    let post = |body: &str| {
+        format!(
+            "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\ncontent-type: application/json\r\n\
+             anthropic-version: 2023-06-01\r\nx-api-key: k\r\ncontent-length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .into_bytes()
+    };
+    match route {
+        "healthz" => Ok(HEALTHZ.to_vec()),
+        "chat" => Ok(post(CHAT_BODY)),
+        "stream" => Ok(post(STREAM_BODY)),
+        other => Err(format!("unknown route {other}: healthz, chat or stream").into()),
+    }
 }
 
-impl Route {
-    fn parse(word: &str) -> Result<Self, Fault> {
-        match word {
-            "healthz" => Ok(Self::Healthz),
-            "chat" => Ok(Self::Chat),
-            "stream" => Ok(Self::Stream),
-            other => Err(format!("unknown route {other}: healthz, chat or stream").into()),
-        }
-    }
+fn find(h: &[u8], n: &[u8]) -> Option<usize> {
+    h.windows(n.len()).position(|w| w == n)
+}
 
-    fn name(self) -> &'static str {
-        match self {
-            Self::Healthz => "healthz",
-            Self::Chat => "chat",
-            Self::Stream => "stream",
-        }
-    }
-
-    /// The request bytes, built once per run. `close` asks the server to end the connection.
-    fn request(self, host: &str, close: bool) -> Vec<u8> {
-        let connection = if close { "close" } else { "keep-alive" };
-        match self {
-            Self::Healthz => {
-                format!("GET /healthz HTTP/1.1\r\nhost: {host}\r\nconnection: {connection}\r\n\r\n")
-                    .into_bytes()
+/// Read one response. Returns its status and the instant its first body byte arrived (the end of
+/// the read that brought it). A close or reset before a full response is status 1, never a panic.
+/// A chunked response is complete at its terminating chunk, as the baseline judged it.
+fn response(s: &mut dyn Wire, buf: &mut Vec<u8>) -> (u16, Option<Instant>) {
+    buf.clear();
+    let mut chunk = [0u8; 16384];
+    let mut need: Option<usize> = None;
+    let mut chunked = false;
+    let mut body_from: Option<usize> = None;
+    let mut first: Option<Instant> = None;
+    loop {
+        if let Some(n) = need {
+            if buf.len() >= n {
+                break;
             }
-            Self::Chat | Self::Stream => {
-                let key = std::env::var("PERF_KEY").unwrap_or_default();
-                let model = std::env::var("PERF_MODEL").unwrap_or_else(|_| "mock".to_owned());
-                let stream = if self == Self::Stream {
-                    ",\"stream\":true"
+        }
+        if chunked && buf.ends_with(b"0\r\n\r\n") {
+            break;
+        }
+        let n = match s.read(&mut chunk) {
+            Ok(0) | Err(_) => return (1, first),
+            Ok(n) => n,
+        };
+        buf.extend_from_slice(&chunk[..n]);
+        if body_from.is_none() {
+            if let Some(end) = find(buf, b"\r\n\r\n") {
+                body_from = Some(end + 4);
+                let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                if head.contains("transfer-encoding: chunked") {
+                    chunked = true;
                 } else {
-                    ""
-                };
-                let body = format!(
-                    "{{\"model\":\"{model}\",\"max_tokens\":64,\"messages\":[{{\"role\":\"user\",\"content\":\"ping\"}}]{stream}}}"
-                );
-                format!(
-                    "POST /v1/messages HTTP/1.1\r\nhost: {host}\r\nconnection: {connection}\r\n\
-                     content-type: application/json\r\nanthropic-version: 2023-06-01\r\n\
-                     x-api-key: {key}\r\ncontent-length: {}\r\n\r\n{body}",
-                    body.len()
-                )
-                .into_bytes()
-            }
-        }
-    }
-}
-
-/// What one answer cost the caller.
-struct Answer {
-    status: u16,
-    /// From the request's first byte written to the first byte of the body read.
-    first: Duration,
-    /// To the last byte of the body.
-    whole: Duration,
-    /// The server said it would close, or the body ran to the end of the connection.
-    closed: bool,
-}
-
-/// A connection with the bytes read past the last answer kept for the next one.
-struct Http {
-    wire: Box<dyn Wire>,
-    buf: Vec<u8>,
-}
-
-impl Http {
-    fn new(wire: Box<dyn Wire>) -> Self {
-        Self {
-            wire,
-            buf: Vec::with_capacity(16 * 1024),
-        }
-    }
-
-    /// Read more; `Ok(false)` at the end of the connection.
-    fn fill(&mut self) -> Result<bool, Fault> {
-        let mut chunk = [0u8; 16 * 1024];
-        let n = self.wire.read(&mut chunk)?;
-        self.buf.extend_from_slice(&chunk[..n]);
-        Ok(n != 0)
-    }
-
-    fn need(&mut self, len: usize) -> Result<(), Fault> {
-        while self.buf.len() < len {
-            if !self.fill()? {
-                return Err("the connection ended inside an answer".into());
-            }
-        }
-        Ok(())
-    }
-
-    /// The index just past the next `\r\n` at or after `from`.
-    fn line_end(&mut self, from: usize) -> Result<usize, Fault> {
-        let mut scanned = from;
-        loop {
-            if let Some(at) = self.buf[scanned..].windows(2).position(|w| w == b"\r\n") {
-                return Ok(scanned + at + 2);
-            }
-            scanned = self.buf.len().saturating_sub(1).max(from);
-            if !self.fill()? {
-                return Err("the connection ended inside a line".into());
-            }
-        }
-    }
-
-    fn exchange(&mut self, request: &[u8]) -> Result<Answer, Fault> {
-        let start = Instant::now();
-        self.wire.write_all(request)?;
-        self.wire.flush()?;
-        // The head.
-        let head_end = loop {
-            if let Some(at) = self.buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                break at + 4;
-            }
-            if !self.fill()? {
-                return Err("the connection ended before an answer".into());
-            }
-        };
-        let head = String::from_utf8_lossy(&self.buf[..head_end]).to_ascii_lowercase();
-        let status: u16 = head
-            .split(' ')
-            .nth(1)
-            .and_then(|code| code.parse().ok())
-            .ok_or("an answer without a status")?;
-        let field = |name: &str| {
-            head.lines()
-                .find_map(|line| line.strip_prefix(name))
-                .map(|value| value.trim().to_owned())
-        };
-        let mut closed = field("connection:").is_some_and(|value| value == "close");
-        let chunked = field("transfer-encoding:").is_some_and(|value| value.contains("chunked"));
-        let length: Option<usize> = field("content-length:").and_then(|value| value.parse().ok());
-        self.buf.drain(..head_end);
-
-        let mut first = None;
-        if chunked {
-            loop {
-                let line = self.line_end(0)?;
-                let size = usize::from_str_radix(
-                    String::from_utf8_lossy(&self.buf[..line - 2])
-                        .split(';')
-                        .next()
-                        .unwrap_or_default()
-                        .trim(),
-                    16,
-                )?;
-                self.buf.drain(..line);
-                if size == 0 {
-                    // Trailers, then the empty line.
-                    loop {
-                        let end = self.line_end(0)?;
-                        let empty = end == 2;
-                        self.buf.drain(..end);
-                        if empty {
-                            break;
-                        }
-                    }
-                    break;
-                }
-                self.need(1)?;
-                first.get_or_insert_with(|| start.elapsed());
-                self.need(size + 2)?;
-                self.buf.drain(..size + 2);
-            }
-        } else if let Some(length) = length {
-            if length != 0 {
-                self.need(1)?;
-                first.get_or_insert_with(|| start.elapsed());
-            }
-            self.need(length)?;
-            self.buf.drain(..length);
-        } else if status != 204 && status != 304 {
-            // No length and not chunked: the body runs to the end of the connection.
-            closed = true;
-            loop {
-                if !self.buf.is_empty() {
-                    first.get_or_insert_with(|| start.elapsed());
-                }
-                if !self.fill()? {
-                    break;
+                    let cl = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    need = Some(end + 4 + cl);
                 }
             }
-            self.buf.clear();
         }
-        let whole = start.elapsed();
-        Ok(Answer {
-            status,
-            first: first.unwrap_or(whole),
-            whole,
-            closed,
-        })
+        if first.is_none() && body_from.is_some_and(|from| buf.len() > from) {
+            first = Some(Instant::now());
+        }
     }
+    let status = buf
+        .get(9..12)
+        .and_then(|digits| std::str::from_utf8(digits).ok())
+        .and_then(|digits| digits.parse().ok())
+        .unwrap_or(0);
+    (status, first)
 }
 
-/// The server's user plus system time so far, microseconds.
-fn cpu_us(pid: u32) -> u64 {
+fn cpu_ns(pid: u32) -> u64 {
+    if pid == 0 {
+        return 0;
+    }
     let ticks_per_s: u64 = std::env::var("PERF_CLK_TCK")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -317,262 +208,341 @@ fn cpu_us(pid: u32) -> u64 {
         return 0;
     };
     // The command name may hold spaces: the numbered fields start after its closing bracket.
-    let Some(after) = stat.rsplit_once(')') else {
+    let Some(at) = stat.rfind(')') else {
         return 0;
     };
-    let fields: Vec<&str> = after.1.split_whitespace().collect();
-    // utime and stime are fields 14 and 15 of the line, 11 and 12 after the name.
+    let f: Vec<&str> = stat[at + 1..].split_whitespace().collect();
+    // utime and stime: fields 14 and 15 of the line, 11 and 12 after the name.
     let ticks: u64 = [11usize, 12]
         .iter()
-        .filter_map(|&at| fields.get(at).and_then(|value| value.parse::<u64>().ok()))
+        .filter_map(|&i| f.get(i).and_then(|v| v.parse::<u64>().ok()))
         .sum();
-    ticks * 1_000_000 / ticks_per_s
+    ticks * (1_000_000_000 / ticks_per_s)
 }
 
 fn rss_kib(pid: u32) -> u64 {
     std::fs::read_to_string(format!("/proc/{pid}/status"))
         .ok()
-        .and_then(|status| {
-            status.lines().find_map(|line| {
-                line.strip_prefix("VmRSS:")
-                    .and_then(|rest| rest.split_whitespace().next()?.parse().ok())
-            })
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmRSS:"))
+                .and_then(|l| l.split_whitespace().nth(1)?.parse().ok())
         })
         .unwrap_or(0)
 }
 
-fn percentile(sorted: &[u64], per_mille: usize) -> f64 {
+/// The baseline's percentile: the value at rank ceil(n * p).
+fn pct(sorted: &[u64], p: f64) -> u64 {
     if sorted.is_empty() {
-        return 0.0;
+        return 0;
     }
-    let at = (sorted.len() * per_mille / 1000).min(sorted.len() - 1);
-    sorted[at] as f64 / 1000.0
+    let i = ((sorted.len() as f64) * p).ceil() as usize;
+    sorted[i.saturating_sub(1).min(sorted.len() - 1)]
 }
 
-/// `keep`: every operation is one request on a connection kept open. `new`: every operation is
-/// a connection opened, one request with `connection: close`, and the connection read to its end.
+#[derive(Default)]
+struct Out {
+    total: Vec<u64>,
+    first: Vec<u64>,
+    connect: Vec<u64>,
+    bad: u64,
+    closed: bool,
+}
+
 fn drive(mode: &str, args: &[String]) -> Result<(), Fault> {
-    let [label, threads, n, warm, addr, pid, route, rest @ ..] = args else {
-        return Err("keep|new <label> <threads> <n> <warm> <addr> <pid> <route> [tls]".into());
+    let [label, threads, n, warm, port, pid, route, rest @ ..] = args else {
+        return Err("keep|new <label> <threads> <n> <warm> <port> <pid> <route> [tls]".into());
     };
     let (threads, n, warm): (usize, usize, usize) = (threads.parse()?, n.parse()?, warm.parse()?);
     let pid: u32 = pid.parse()?;
-    let route = Route::parse(route)?;
-    let target = Target::parse(addr, rest.first())?;
-    let fresh = mode == "new";
-    let request = Arc::new(route.request(addr, fresh));
+    let target = Target::parse(port, rest.first())?;
+    let request = Arc::new(request_of(route)?);
+    let keep = mode == "keep";
 
-    let run = |count: usize| -> Result<(Vec<u64>, Vec<u64>), Fault> {
-        let workers: Vec<_> = (0..threads)
-            .map(|_| {
-                let (target, request) = (target.clone(), Arc::clone(&request));
-                std::thread::spawn(move || -> Result<(Vec<u64>, Vec<u64>), Fault> {
-                    let mut whole = Vec::with_capacity(count);
-                    let mut first = Vec::with_capacity(count);
-                    let mut kept: Option<Http> = None;
-                    for _ in 0..count {
-                        let start = Instant::now();
-                        let mut http = match kept.take() {
-                            Some(http) if !fresh => http,
-                            _ => Http::new(target.open()?),
-                        };
-                        let answer = http.exchange(&request)?;
-                        if answer.status != 200 {
-                            return Err(format!("status {}", answer.status).into());
-                        }
-                        if fresh {
-                            // The operation is the whole life of the connection.
-                            drop(http);
-                            whole.push(start.elapsed().as_nanos() as u64);
-                        } else {
-                            whole.push(answer.whole.as_nanos() as u64);
-                            if !answer.closed {
-                                kept = Some(http);
-                            }
-                        }
-                        first.push(answer.first.as_nanos() as u64);
+    let warmed = Arc::new(Barrier::new(threads + 1));
+    let go = Arc::new(Barrier::new(threads + 1));
+    let mut handles = Vec::new();
+    for t in 0..threads {
+        let (target, request) = (target.clone(), Arc::clone(&request));
+        let (warmed, go) = (Arc::clone(&warmed), Arc::clone(&go));
+        handles.push(std::thread::spawn(move || -> Result<Out, Fault> {
+            let mut buf = Vec::with_capacity(65536);
+            let mut out = Out::default();
+            if keep {
+                let (mut s, _) = target.open(1)?;
+                for _ in 0..warm {
+                    if s.write_all(&request).is_err() || response(s.as_mut(), &mut buf).0 == 1 {
+                        out.closed = true;
+                        break;
                     }
-                    Ok((whole, first))
-                })
-            })
-            .collect();
-        let (mut whole, mut first) = (Vec::new(), Vec::new());
-        for worker in workers {
-            let (w, f) = worker.join().map_err(|_| "a client thread panicked")??;
-            whole.extend(w);
-            first.extend(f);
-        }
-        whole.sort_unstable();
-        first.sort_unstable();
-        Ok((whole, first))
-    };
+                }
+                warmed.wait();
+                go.wait();
+                for _ in 0..n {
+                    if out.closed {
+                        break;
+                    }
+                    let t0 = Instant::now();
+                    let (status, first) = if s.write_all(&request).is_err() {
+                        (1, None)
+                    } else {
+                        response(s.as_mut(), &mut buf)
+                    };
+                    let end = Instant::now();
+                    if status == 1 {
+                        out.closed = true;
+                        break;
+                    }
+                    out.total.push((end - t0).as_nanos() as u64);
+                    out.first
+                        .push((first.unwrap_or(end) - t0).as_nanos() as u64);
+                    out.bad += u64::from(status != 200);
+                }
+            } else {
+                let mut one = |i: usize, out: Option<&mut Out>| -> Result<(), Fault> {
+                    let last = 1 + ((i + t * 25) % 200) as u8;
+                    let t0 = Instant::now();
+                    let (mut s, connect) = target.open(last)?;
+                    let _ = s.write_all(&request);
+                    let (status, first) = response(s.as_mut(), &mut buf);
+                    let end = Instant::now();
+                    drop(s);
+                    if let Some(out) = out {
+                        out.total.push((end - t0).as_nanos() as u64);
+                        out.first
+                            .push((first.unwrap_or(end) - t0).as_nanos() as u64);
+                        out.connect.push(connect);
+                        out.bad += u64::from(status != 200);
+                    }
+                    Ok(())
+                };
+                for i in 0..warm {
+                    one(i, None)?;
+                }
+                warmed.wait();
+                go.wait();
+                for i in 0..n {
+                    one(warm + i, Some(&mut out))?;
+                }
+            }
+            Ok(out)
+        }));
+    }
+    warmed.wait();
+    let cpu0 = cpu_ns(pid);
+    go.wait();
+    let mut outs = Vec::with_capacity(threads);
+    for handle in handles {
+        outs.push(handle.join().map_err(|_| "a client thread panicked")??);
+    }
+    let cpu1 = cpu_ns(pid);
 
-    run(warm)?;
-    let (rss_before, cpu_before) = (rss_kib(pid), cpu_us(pid));
-    let (whole, first) = run(n)?;
-    let (rss_after, cpu_after) = (rss_kib(pid), cpu_us(pid));
-    let ops = whole.len();
-    println!(
-        "{label}\t{mode}\t{}\t{}\t{threads}\t{ops}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{rss_before}\t{rss_after}\t",
-        route.name(),
-        target.transport(),
-        percentile(&whole, 500),
-        percentile(&whole, 990),
-        percentile(&first, 500),
-        percentile(&first, 990),
-        (cpu_after.saturating_sub(cpu_before)) as f64 / ops.max(1) as f64,
+    let sorted = |pick: fn(&Out) -> &Vec<u64>| {
+        let mut all: Vec<u64> = outs.iter().flat_map(|o| pick(o).iter().copied()).collect();
+        all.sort_unstable();
+        all
+    };
+    let (total, first, connect) = (
+        sorted(|o| &o.total),
+        sorted(|o| &o.first),
+        sorted(|o| &o.connect),
     );
+    let reqs = total.len() as u64;
+    let mean = total.iter().sum::<u64>() / reqs.max(1);
+    let bad: u64 = outs.iter().map(|o| o.bad).sum();
+    let closed = outs.iter().filter(|o| o.closed).count();
+    println!(
+        "{label}\t{mode}\t{route}\t{}\t{threads}\t{n}\t{}\t{}\t{mean}\t{}\t{}\t{}\t{}\t{}\t{bad}\t{closed}\t\t\t\t\t",
+        target.transport(),
+        pct(&total, 0.50),
+        pct(&total, 0.99),
+        pct(&first, 0.50),
+        pct(&first, 0.99),
+        pct(&connect, 0.50),
+        pct(&connect, 0.99),
+        cpu1.saturating_sub(cpu0) / reqs.max(1),
+    );
+    // A run in which the server closed a kept connection or answered other than 200 is not a
+    // measurement of the route: it fails the run, as an unmeasured figure fails the verdict.
+    if bad != 0 || closed != 0 || reqs == 0 {
+        return Err(
+            format!("{label} {mode} {route}: not_200={bad} closed_by_server={closed}").into(),
+        );
+    }
     Ok(())
 }
 
-/// Memory per connection: resident memory with `conns` connections open and idle (over TLS,
-/// after the handshake), and again after one request on each, both against the memory before.
-fn idle(args: &[String]) -> Result<(), Fault> {
-    let [label, conns, addr, pid, route, rest @ ..] = args else {
-        return Err("idle <label> <conns> <addr> <pid> <route> [tls]".into());
+/// Idle-connection memory, as the baseline's `hold`: the server's resident memory before, with
+/// the connections open and idle for 3 s (over TLS: after the handshake), and 3 s after one
+/// request on each.
+fn hold(args: &[String]) -> Result<(), Fault> {
+    let [label, connections, port, pid, route, rest @ ..] = args else {
+        return Err("hold <label> <connections> <port> <pid> <route> [tls]".into());
     };
-    let conns: usize = conns.parse()?;
+    let connections: usize = connections.parse()?;
     let pid: u32 = pid.parse()?;
-    let route = Route::parse(route)?;
-    let target = Target::parse(addr, rest.first())?;
-    let request = route.request(addr, false);
-    let settle = Duration::from_millis(500);
+    let target = Target::parse(port, rest.first())?;
+    let request = request_of(route)?;
 
     let before = rss_kib(pid);
-    let mut held = Vec::with_capacity(conns);
-    for _ in 0..conns {
-        held.push(Http::new(target.open()?));
+    let mut held = Vec::with_capacity(connections);
+    for i in 0..connections {
+        held.push(target.open(1 + (i % 200) as u8)?.0);
     }
-    std::thread::sleep(settle);
-    let open = rss_kib(pid);
-    for http in &mut held {
-        let answer = http.exchange(&request)?;
-        if answer.status != 200 {
-            return Err(format!("status {}", answer.status).into());
+    std::thread::sleep(Duration::from_secs(3));
+    let idle = rss_kib(pid);
+    let mut buf = Vec::new();
+    let mut answered = 0usize;
+    for s in &mut held {
+        if s.write_all(&request).is_ok() && response(s.as_mut(), &mut buf).0 == 200 {
+            answered += 1;
         }
     }
-    std::thread::sleep(settle);
+    std::thread::sleep(Duration::from_secs(3));
     let used = rss_kib(pid);
-    let per = |after: u64| after.saturating_sub(before) * 1024 / conns.max(1) as u64;
-    for (mode, after) in [("idle", open), ("idle-after-one", used)] {
-        println!(
-            "{label}\t{mode}\t{}\t{}\t1\t{conns}\t\t\t\t\t\t{before}\t{after}\t{}",
-            route.name(),
-            target.transport(),
-            per(after),
-        );
-    }
+    let per = |after: u64| after.saturating_sub(before) * 1024 / connections.max(1) as u64;
+    println!(
+        "{label}\thold\t{route}\t{}\t1\t{connections}\t\t\t\t\t\t\t\t\t{}\t0\t{before}\t{idle}\t{used}\t{}\t{}",
+        target.transport(),
+        connections - answered,
+        per(idle),
+        per(used),
+    );
     drop(held);
+    if answered != connections {
+        return Err(format!("{label} hold: {answered} of {connections} answered").into());
+    }
     Ok(())
 }
 
 fn wait(args: &[String]) -> Result<(), Fault> {
-    let [addr, route, rest @ ..] = args else {
-        return Err("wait <addr> <route> [tls]".into());
+    let [port, rest @ ..] = args else {
+        return Err("wait <port> [tls]".into());
     };
-    let route = Route::parse(route)?;
-    let target = Target::parse(addr, rest.first())?;
-    let request = route.request(addr, true);
+    let target = Target::parse(port, rest.first())?;
     let deadline = Instant::now() + Duration::from_secs(60);
+    let mut buf = Vec::new();
     loop {
-        let answered = target
-            .open()
-            .and_then(|wire| Http::new(wire).exchange(&request))
-            .is_ok_and(|answer| answer.status == 200);
-        if answered {
-            return Ok(());
+        if let Ok((mut s, _)) = target.open(1) {
+            if s.write_all(HEALTHZ).is_ok() && response(s.as_mut(), &mut buf).0 == 200 {
+                return Ok(());
+            }
         }
         if Instant::now() >= deadline {
-            return Err(format!("{addr} did not answer {} within 60 s", route.name()).into());
+            return Err(format!("port {port} never answered /healthz").into());
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
-/// THE UPSTREAM STUB: a provider that answers `POST /v1/messages` at once, whole or (when the
-/// request says `"stream":true`) as a server-sent event stream of [`STUB_DELTAS`] text pieces.
-/// One thread per connection; it measures nothing.
+/// THE STUB: the baseline's upstream (each thread accepts a connection and serves it to the end;
+/// a request with a body gets an anthropic-shaped message, any other gets `ok`), extended so that
+/// a body saying `"stream":true` gets the same message as a server-sent event stream of
+/// [`STUB_DELTAS`] text pieces, chunked.
+const MESSAGE: &str = r#"{"id":"msg_1","type":"message","role":"assistant","model":"test-model","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}"#;
 const STUB_DELTAS: usize = 16;
 
-fn stub(args: &[String]) -> Result<(), Fault> {
-    let [port] = args else {
-        return Err("stub <port>".into());
-    };
-    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))?;
-    for conn in listener.incoming() {
-        let Ok(mut conn) = conn else { continue };
-        std::thread::spawn(move || {
-            let _ = conn.set_nodelay(true);
-            let mut buf: Vec<u8> = Vec::with_capacity(8 * 1024);
-            let mut chunk = [0u8; 8 * 1024];
-            loop {
-                let head_end = loop {
-                    if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                        break at + 4;
-                    }
-                    match conn.read(&mut chunk) {
-                        Ok(0) | Err(_) => return,
-                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                    }
-                };
-                let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
-                let length: usize = head
-                    .lines()
-                    .find_map(|line| line.strip_prefix("content-length:"))
-                    .and_then(|value| value.trim().parse().ok())
-                    .unwrap_or(0);
-                while buf.len() < head_end + length {
-                    match conn.read(&mut chunk) {
-                        Ok(0) | Err(_) => return,
-                        Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                    }
-                }
-                let body = String::from_utf8_lossy(&buf[head_end..head_end + length]).into_owned();
-                buf.drain(..head_end + length);
-                let streamed = body.replace(' ', "").contains("\"stream\":true");
-                let sent = if streamed {
-                    stub_stream(&mut conn)
-                } else {
-                    let answer = "{\"id\":\"msg_stub\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"stub\",\"content\":[{\"type\":\"text\",\"text\":\"pong\"}],\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}";
-                    conn.write_all(
-                        format!(
-                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{answer}",
-                            answer.len()
-                        )
-                        .as_bytes(),
-                    )
-                };
-                if sent.is_err() {
-                    return;
-                }
-            }
-        });
-    }
-    Ok(())
-}
-
-fn stub_stream(conn: &mut TcpStream) -> std::io::Result<()> {
-    fn event(conn: &mut TcpStream, name: &str, data: &str) -> std::io::Result<()> {
+fn stream_reply() -> Vec<u8> {
+    let mut out = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ntransfer-encoding: chunked\r\n\r\n".to_vec();
+    let mut event = |name: &str, data: &str| {
         let frame = format!("event: {name}\ndata: {data}\n\n");
-        conn.write_all(format!("{:x}\r\n{frame}\r\n", frame.len()).as_bytes())
-    }
-    conn.write_all(
-        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache\r\ntransfer-encoding: chunked\r\n\r\n",
-    )?;
-    event(conn, "message_start", "{\"type\":\"message_start\",\"message\":{\"id\":\"msg_stub\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"stub\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}")?;
-    event(conn, "content_block_start", "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}")?;
+        out.extend_from_slice(format!("{:x}\r\n{frame}\r\n", frame.len()).as_bytes());
+    };
+    event(
+        "message_start",
+        r#"{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}"#,
+    );
+    event(
+        "content_block_start",
+        r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+    );
     for _ in 0..STUB_DELTAS {
-        event(conn, "content_block_delta", "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"pong \"}}")?;
+        event(
+            "content_block_delta",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok "}}"#,
+        );
     }
     event(
-        conn,
         "content_block_stop",
-        "{\"type\":\"content_block_stop\",\"index\":0}",
-    )?;
-    event(conn, "message_delta", "{\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":16}}")?;
-    event(conn, "message_stop", "{\"type\":\"message_stop\"}")?;
-    conn.write_all(b"0\r\n\r\n")?;
-    conn.flush()
+        r#"{"type":"content_block_stop","index":0}"#,
+    );
+    event(
+        "message_delta",
+        r#"{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":16}}"#,
+    );
+    event("message_stop", r#"{"type":"message_stop"}"#);
+    out.extend_from_slice(b"0\r\n\r\n");
+    out
+}
+
+fn stub(args: &[String]) -> Result<(), Fault> {
+    let [port, threads] = args else {
+        return Err("stub <port> <threads>".into());
+    };
+    let (port, threads): (u16, usize) = (port.parse()?, threads.parse()?);
+    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port))?;
+    let plain =
+        b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 2\r\n\r\nok".to_vec();
+    let message = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{}",
+        MESSAGE.len(),
+        MESSAGE
+    )
+    .into_bytes();
+    let streamed = stream_reply();
+    let mut handles = Vec::new();
+    for _ in 0..threads {
+        let listener = listener.try_clone()?;
+        let (plain, message, streamed) = (plain.clone(), message.clone(), streamed.clone());
+        handles.push(std::thread::spawn(move || loop {
+            let Ok((mut s, _)) = listener.accept() else {
+                continue;
+            };
+            let _ = s.set_nodelay(true);
+            let mut buf = [0u8; 16384];
+            let mut have = 0usize;
+            'conn: loop {
+                let (end, body) = loop {
+                    if let Some(end) = find(&buf[..have], b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                        let cl = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        if have >= end + 4 + cl {
+                            break (end + 4 + cl, cl);
+                        }
+                    }
+                    if have == buf.len() {
+                        break 'conn;
+                    }
+                    match s.read(&mut buf[have..]) {
+                        Ok(0) | Err(_) => break 'conn,
+                        Ok(n) => have += n,
+                    }
+                };
+                let wants_stream =
+                    body > 0 && find(&buf[end - body..end], br#""stream":true"#).is_some();
+                let reply = if wants_stream {
+                    &streamed
+                } else if body > 0 {
+                    &message
+                } else {
+                    &plain
+                };
+                if s.write_all(reply).is_err() {
+                    break 'conn;
+                }
+                buf.copy_within(end..have, 0);
+                have -= end;
+            }
+        }));
+    }
+    for handle in handles {
+        let _ = handle.join();
+    }
+    Ok(())
 }
 
 fn main() {
@@ -581,12 +551,12 @@ fn main() {
         Some("stub") => stub(&args[1..]),
         Some("wait") => wait(&args[1..]),
         Some(mode @ ("keep" | "new")) => drive(mode, &args[1..]),
-        Some("idle") => idle(&args[1..]),
+        Some("hold") => hold(&args[1..]),
         Some("header") => {
             println!("{HEADER}");
             Ok(())
         }
-        _ => Err("perf-bar stub|wait|keep|new|idle|header (see the head of main.rs)".into()),
+        _ => Err("perf-bar stub|wait|keep|new|hold|header (see the head of main.rs)".into()),
     };
     if let Err(fault) = done {
         eprintln!("perf-bar: {fault}");

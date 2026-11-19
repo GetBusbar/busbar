@@ -1,0 +1,17 @@
+# 1.6.0 on the engine line. Today it serves /healthz only (see routes); when the engine serves a
+# model call, add the providers, models and pools blocks of ../v155/config.yaml with
+# providers.yaml beside this file, and add chat and stream to routes.
+listen: "0.0.0.0:18160"
+listen_insecure_transport: { accept: [plaintext], reason: "loopback measurement in a private network namespace" }
+admin_listen: "127.0.0.1:18161"
+admin_listen_insecure_transport: { accept: [plaintext], reason: "loopback measurement in a private network namespace" }
+admin_require_mtls: false
+store: {module: memory}
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    settings: { sha256: "@ADMIN_SHA256@" }
+auth:
+  chain: []
+  admin_auth:
+    - admin-tokens
