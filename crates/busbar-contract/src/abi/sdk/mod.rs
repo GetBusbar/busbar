@@ -483,24 +483,6 @@ pub mod store;
         clippy::allow_attributes_without_reason
     )
 )]
-pub mod secret;
-
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
 pub mod publish;
 pub use publish::{Generations, Keyed};
 
