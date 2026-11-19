@@ -65,6 +65,7 @@ impl RuntimeJournal {
             prepared: None,
             outcome: None,
         });
+        self.mark(&state);
         Ok(ConditionalAppend {
             owner: self.clone(),
             token,
@@ -177,6 +178,7 @@ impl ConditionalAppend {
         slot.prepared = Some(prepared);
         state.records += 1;
         state.bytes += bytes;
+        self.owner.mark(&state);
         Ok(())
     }
 

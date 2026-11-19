@@ -5,6 +5,8 @@ use super::*;
 
 #[path = "journal/conditional_tests.rs"]
 mod conditional_tests;
+#[path = "journal/money_flag_tests.rs"]
+mod money_flag_tests;
 use crate::persistence::{commit::SubmitResult, facade::Limits};
 use busbar_contract::persistence::{
     control, BackendInfo, Call, ClockObservation, Decision, Durability, Page, PersistenceBackend,
