@@ -984,7 +984,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-postgres"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=757ef895a737a130807b5d3af91ceeba2393d973#757ef895a737a130807b5d3af91ceeba2393d973"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=fb25cb9f43d4bc08fd96f1409fe40a02bd56e8f0#fb25cb9f43d4bc08fd96f1409fe40a02bd56e8f0"
 dependencies = [
  "base64 0.22.1",
  "busbar-plugin-abi",
@@ -1002,7 +1002,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-sqlite"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=1e4c78245472c22cfcf000a5176362731631b2f0#1e4c78245472c22cfcf000a5176362731631b2f0"
+source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=eae3d167e70c97c2160928bede2f41d282e00db0#eae3d167e70c97c2160928bede2f41d282e00db0"
 dependencies = [
  "busbar-plugin-abi",
  "rusqlite",
@@ -1923,7 +1923,7 @@ dependencies = [
 [[package]]
 name = "hyper"
 version = "1.12.0"
-source = "git+https://github.com/MattJackson/hyper?rev=96fc11745ef61f4b7a37a51f5484836a7807e8eb#96fc11745ef61f4b7a37a51f5484836a7807e8eb"
+source = "git+https://github.com/MattJackson/hyper?rev=ebd3f6cff06032f9bcf531a5144309d8906e438b#ebd3f6cff06032f9bcf531a5144309d8906e438b"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1944,7 +1944,7 @@ dependencies = [
 [[package]]
 name = "hyper-util"
 version = "0.1.21"
-source = "git+https://github.com/MattJackson/hyper-util?rev=2abd71badaf5aefcfaf6118a87656e849fbfca64#2abd71badaf5aefcfaf6118a87656e849fbfca64"
+source = "git+https://github.com/MattJackson/hyper-util?rev=6008c6a4a06490b18a8c057d3944739d4a51424e#6008c6a4a06490b18a8c057d3944739d4a51424e"
 dependencies = [
  "base64 0.23.1",
  "bytes",

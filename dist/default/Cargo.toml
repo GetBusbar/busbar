@@ -560,8 +560,8 @@ members = ["."]
 # Test-only (dev-dependency): its admin_application and migration_table_hook root test sources. house/oss-green
 # 4a91545 re-aims them onto the current root fixtures and hook model (the door-era bea7485 named removed root items).
 busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "1ed384ad0b6edfff63f91a75584a28b5706b6ae5" }
-busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "1e4c78245472c22cfcf000a5176362731631b2f0" }
-busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "757ef895a737a130807b5d3af91ceeba2393d973" }
+busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "eae3d167e70c97c2160928bede2f41d282e00db0" }
+busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "fb25cb9f43d4bc08fd96f1409fe40a02bd56e8f0" }
 # Published MIN-3 LLM implementation, linked through its PLUGIN header.
 busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "794cbd541192798496e5f7b8b8c878c23a6f89d7" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
@@ -877,8 +877,8 @@ dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc6
 # Native HTTP allocation projection and serializer provenance (adopted transport cohort).
 http = { git = "https://github.com/MattJackson/http", rev = "7e71322105371bae475f8e68d86324e73f4a11c9" }
 h2 = { git = "https://github.com/MattJackson/h2", rev = "45b907798147b992b03334e500fdedc8d7e29a40" }
-hyper = { git = "https://github.com/MattJackson/hyper", rev = "96fc11745ef61f4b7a37a51f5484836a7807e8eb" }
-hyper-util = { git = "https://github.com/MattJackson/hyper-util", rev = "2abd71badaf5aefcfaf6118a87656e849fbfca64" }
+hyper = { git = "https://github.com/MattJackson/hyper", rev = "ebd3f6cff06032f9bcf531a5144309d8906e438b" }
+hyper-util = { git = "https://github.com/MattJackson/hyper-util", rev = "6008c6a4a06490b18a8c057d3944739d4a51424e" }
 tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "893a21f1f98011a2665840231330c473836c9a0a" }
 # YAML: serde-saphyr and granit-parser carry busbar's opt-in serde_yaml-compatibility options
 # (null_scalars_as_text, lowercase_radix_prefixes_only, bom_inside_document_as_content), offered
