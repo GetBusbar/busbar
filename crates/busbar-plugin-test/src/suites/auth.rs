@@ -12,11 +12,18 @@
 //!    is non-empty;
 //! 4. every [`AuthCase`] through the port's `verify`, with `Expect::Subject` (an identity whose subject
 //!    matches), `Expect::NotMine` (the plugin declines the request) or `Expect::Rejected` (a rejection with that
-//!    kind code), a `verify_io` plugin's boxed chain included. A plugin failure (`PortError`) or a verdict the
-//!    case did not expect fails the suite and names the case;
+//!    kind code), a `verify_io` plugin's boxed chain included. `Expect::IssuedWanted` is the raw first answer; for
+//!    every other expectation a first ISSUED_WANTED gets core's second call, with the credential scripted by
+//!    [`FakeNeeds::issued`] under the plugin's D_ISSUED_KIND (empty when none was), and a second ISSUED_WANTED is
+//!    BAD_CREDENTIAL. A plugin failure (`PortError`) or a verdict the case did not expect fails the suite and
+//!    names the case;
 //! 5. a plugin that does not declare FB_PROVISION answers `serve` as unsupported without a call;
 //! 6. a config that is not JSON is refused by `check` (never an instance, never a fault);
 //! 7. the instance closes (drops) and nothing the harness collected is a refusal the suite did not expect.
+//!
+//! [`super::auth_migrated`] runs the same steps on settings core migrated from older ones: the older bag opened and
+//! settled as the migrate suite's first case checks it, each CORE_CFG(LIFT) literal moved into custody, then 2 to 7
+//! on what core persisted.
 
 use std::time::{Duration, Instant};
 
@@ -25,11 +32,11 @@ use busbar_plugin_abi::fail::refused::R_UNSUPPORTED;
 use busbar_plugin_abi::host_side::caller::CallStack;
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
-use busbar_ports::auth::{ServeIn, Verify, VerifyAnswer};
+use busbar_ports::auth::{AuthIn, AuthPort, ServeIn, Verify, VerifyAnswer};
 use busbar_ports::{CallCx, PortError};
 
 use super::harness::Harness;
-use super::{AuthCase, Expect};
+use super::{AuthCase, Expect, MigrateCase, MigrateExpect};
 use crate::fake_needs::FakeNeeds;
 
 /// The instance name every suite instance opens under.
@@ -76,12 +83,48 @@ fn matches(expect: &Expect<'_>, verdict: &Result<VerifyAnswer, PortError>) -> bo
     }
 }
 
-pub(super) fn run(
-    plugin: &'static Plugin,
-    config: &[u8],
-    needs: FakeNeeds,
-    cases: &[AuthCase<'_>],
-) {
+/// One plugin `verify` invocation, driven to its answer.
+fn call(
+    harness: &Harness,
+    port: &dyn AuthPort,
+    request_id: u64,
+    req: &AuthIn<'_>,
+    issued: Option<&[u8]>,
+) -> Result<VerifyAnswer, PortError> {
+    match port.verify(cx(request_id), req, issued) {
+        Verify::Done(done) => done,
+        Verify::Io(chain) => harness.block_on(chain),
+    }
+}
+
+/// What core answers after a first ISSUED_WANTED (busbar-kernel `auth::chain_run::settle`): with no D_ISSUED_KIND,
+/// BAD_CREDENTIAL; else the id looked up under that kind (here [`FakeNeeds::issued`], empty for an id nothing was
+/// issued under) and `verify` called once more with it, where a second ISSUED_WANTED is BAD_CREDENTIAL.
+fn looked_up(
+    harness: &Harness,
+    port: &dyn AuthPort,
+    request_id: u64,
+    req: &AuthIn<'_>,
+    id: &str,
+) -> Result<VerifyAnswer, PortError> {
+    let rejected = || {
+        Ok(VerifyAnswer::Refused {
+            code: abi::BAD_CREDENTIAL,
+            text: "auth admission refused".into(),
+        })
+    };
+    let Some(kind) = port.issued_kind() else {
+        return rejected();
+    };
+    let value = harness.needs().issued_value(kind, id);
+    match call(harness, port, request_id, req, Some(&value)) {
+        Ok(VerifyAnswer::IssuedWanted(_)) => rejected(),
+        second => second,
+    }
+}
+
+/// The plugin admitted under `needs`; its stamp must name the auth kind.
+fn admitted(plugin: &'static Plugin, needs: FakeNeeds) -> Harness {
     let harness = match Harness::admit(plugin, needs) {
         Ok(h) => h,
         Err(refusal) => panic!("auth suite: admit refused the image: {refusal:?}"),
@@ -93,7 +136,41 @@ pub(super) fn run(
         harness.identity(),
         harness.kind()
     );
+    harness
+}
 
+pub(super) fn run(
+    plugin: &'static Plugin,
+    config: &[u8],
+    needs: FakeNeeds,
+    cases: &[AuthCase<'_>],
+) {
+    run_on(&admitted(plugin, needs), config, cases);
+}
+
+/// The older `case.bag` opened and settled as the migrate suite's case 1 checks it (with the legacy marker at
+/// `legacy`, if any), each CORE_CFG(LIFT) literal moved into custody as core moves it, then every step of [`run`]
+/// on the settings core persisted: a literal secret in older settings verifies through the reference core wrote.
+pub(super) fn migrated(
+    plugin: &'static Plugin,
+    case: &MigrateCase<'_>,
+    legacy: &[&str],
+    needs: FakeNeeds,
+    expect: MigrateExpect<'_>,
+    cases: &[AuthCase<'_>],
+) {
+    let MigrateExpect::Settled { config, core_cfg } = expect else {
+        panic!("auth suite: an auth case runs on settings that open; a refused migration is the migrate suite's");
+    };
+    let harness = admitted(plugin, needs);
+    if !legacy.is_empty() {
+        harness.mark_legacy("migrate", legacy);
+    }
+    let persisted = super::migrate::persisted(&harness, case, config, core_cfg);
+    run_on(&harness, &persisted, cases);
+}
+
+fn run_on(harness: &Harness, config: &[u8], cases: &[AuthCase<'_>]) {
     // check (DRY_RUN) and open of the operator config.
     if let Err(e) = harness.check(NAME, config) {
         panic!("auth suite: check refused the config: {e:?}");
@@ -117,12 +194,16 @@ pub(super) fn run(
         assert!(!kind.is_empty(), "auth suite: D_ISSUED_KIND is empty");
     }
 
-    // Every case through verify.
+    // Every case through verify: the raw first answer for an ISSUED_WANTED case, else core's final verdict.
     for (n, case) in cases.iter().enumerate() {
         let request_id = u64::try_from(n).unwrap_or(u64::MAX).saturating_add(1);
-        let verdict = match port.verify(cx(request_id), &case.req, None) {
-            Verify::Done(done) => done,
-            Verify::Io(chain) => harness.block_on(chain),
+        let first = call(harness, &*port, request_id, &case.req, None);
+        let verdict = match (&case.expect, first) {
+            (Expect::IssuedWanted(_), first) => first,
+            (_, Ok(VerifyAnswer::IssuedWanted(id))) => {
+                looked_up(harness, &*port, request_id, &case.req, &id)
+            }
+            (_, first) => first,
         };
         assert!(
             matches(&case.expect, &verdict),
@@ -257,6 +338,250 @@ mod tests {
             REFRESHES.load(Ordering::SeqCst),
             0,
             "the loader never refreshes a raw answer"
+        );
+    }
+
+    /// An auth plugin that answers ISSUED_WANTED and judges the credential core looked up for it.
+    mod issued {
+        use super::*;
+        use busbar_plugin_abi::auth::{IssuedShapeRec, BAD_CREDENTIAL, REQ_ISSUED_LOOKED_UP};
+        use busbar_plugin_abi::records::{tag as rec, Full, Nested};
+
+        pub(super) const KIND: &str = "fixture-key";
+        pub(super) const ID: &str = "AKIAFIXTURE000000001";
+        pub(super) const KEY: &[u8] = b"fixture/secret+KEY0000000000000000000000";
+        pub(super) const SUBJECT: &str = "issued-subject";
+
+        pub(super) static VERIFIES: AtomicUsize = AtomicUsize::new(0);
+
+        fn shape_texts(w: &mut Nested<'_>) -> Result<(), Full> {
+            for text in [
+                "AKIA",
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+            ] {
+                w.put_text(rec::TEXT, text)?;
+            }
+            Ok(())
+        }
+
+        pub struct IssuedAuth;
+        impl Open for IssuedAuth {
+            async fn open(_: &'static Host, _: ChainBytes) -> Result<Self, Fail> {
+                Ok(Self)
+            }
+            fn check(_: &Host, _: &[u8], _: &mut Endpoints<'_>) -> Result<(), Fail> {
+                Ok(())
+            }
+            fn describe(d: &mut Describe<'_>) {
+                d.schema(r#"{"type":"object"}"#);
+                d.methods(abi::M_VERIFY);
+                d.item_text(tag::D_CRED_HEADER, "authorization");
+                d.item_text(tag::D_ISSUED_KIND, KIND);
+                d.item_pod_nested(
+                    tag::D_ISSUED_SHAPE,
+                    &IssuedShapeRec {
+                        id_len: 20,
+                        secret_len: 40,
+                    },
+                    shape_texts,
+                );
+            }
+        }
+        impl busbar_plugin_abi::Auth for IssuedAuth {
+            /// `/known` and `/unknown` ask for an id, then judge what core looked up; `/again` asks a second
+            /// time, which core rejects.
+            fn verify(&self, _: &Host, req: &AuthReq<'_>, out: &mut Out<'_>) -> Result<(), Fail> {
+                VERIFIES.fetch_add(1, Ordering::SeqCst);
+                let looked_up = req.flags & REQ_ISSUED_LOOKED_UP != 0;
+                let wanted = match req.path.get() {
+                    "/known" => ID,
+                    "/unknown" => "AKIAUNKNOWN000000001",
+                    "/again" => ID,
+                    _ => return Err(Fail::refused(abi::NOT_MINE)),
+                };
+                if !looked_up || req.path.get() == "/again" {
+                    return out
+                        .put_text(tag::ISSUED_WANTED, wanted)
+                        .map_err(|_| Fail::refused(R_CONFIG));
+                }
+                if req.issued.get() == KEY {
+                    out.put_text(rec::ID_SUBJECT, SUBJECT)
+                        .map_err(|_| Fail::refused(R_CONFIG))
+                } else {
+                    Err(Fail::refused(BAD_CREDENTIAL))
+                }
+            }
+        }
+        busbar_plugin_abi::plugin!(Auth, IssuedAuth, name: "fixture-issued-auth");
+    }
+
+    /// An auth plugin whose older settings held its bearer key as a literal at `/token`: a converting open takes the
+    /// literal and names it CORE_CFG(LIFT); every later open reads the key through the reference core wrote there.
+    mod lift {
+        use super::*;
+        use busbar_contract::json::{self, JsonValueTrait};
+        use busbar_plugin_abi::need::{need, SecretHandle};
+        use busbar_plugin_abi::records::{core_cfg, settled, tag as rec, Full};
+        use busbar_plugin_abi::secure::SecureVec;
+
+        pub(super) const BAG: &[u8] = br#"{"token":"lifted-bearer-key"}"#;
+        pub(super) const SUBJECT: &str = "lifted-subject";
+
+        /// The settings it opened with, the key, and whether the key came as a literal.
+        pub struct LiftAuth(Vec<u8>, SecureVec, bool);
+
+        impl Open for LiftAuth {
+            async fn open(_: &'static Host, config: ChainBytes) -> Result<Self, Fail> {
+                let config = config.to_vec();
+                let value = json::parse_value(&config).map_err(|_| Fail::refused(R_CONFIG))?;
+                let token = value.get("token").ok_or_else(|| Fail::refused(R_CONFIG))?;
+                if let Some(literal) = token.as_str() {
+                    let key = SecureVec::from(literal.as_bytes());
+                    return Ok(Self(config, key, true));
+                }
+                let handle = token
+                    .get("$secret")
+                    .and_then(|n| n.as_u64())
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| Fail::refused(R_CONFIG))?;
+                let key = need::secret(SecretHandle(handle)).await?;
+                Ok(Self(config, key, false))
+            }
+            fn check(_: &Host, _: &[u8], _: &mut Endpoints<'_>) -> Result<(), Fail> {
+                Ok(())
+            }
+            fn describe(d: &mut Describe<'_>) {
+                d.schema(r#"{"type":"object"}"#).secret_path("/token");
+                d.methods(abi::M_VERIFY);
+                d.item_text(tag::D_CRED_HEADER, "authorization");
+            }
+            fn settled(&self, out: &mut Out<'_>) -> Result<(), Full> {
+                settled::config(out, &self.0)?;
+                if self.2 {
+                    settled::core_cfg(out, core_cfg::LIFT, "", br#""/token""#)?;
+                }
+                Ok(())
+            }
+        }
+        impl busbar_plugin_abi::Auth for LiftAuth {
+            /// `authorization: Bearer <key>` is the subject; another bearer is BAD_CREDENTIAL; none is not mine.
+            fn verify(&self, _: &Host, req: &AuthReq<'_>, out: &mut Out<'_>) -> Result<(), Fail> {
+                let Some(line) = req
+                    .headers
+                    .get()
+                    .iter()
+                    .find(|p| p.name.get() == "authorization")
+                else {
+                    return Err(Fail::refused(abi::NOT_MINE));
+                };
+                let presented = line.value.get().strip_prefix(b"Bearer ".as_slice());
+                if presented == Some(&self.1[..]) {
+                    out.put_text(rec::ID_SUBJECT, SUBJECT)
+                        .map_err(|_| Fail::refused(R_CONFIG))
+                } else {
+                    Err(Fail::refused(abi::BAD_CREDENTIAL))
+                }
+            }
+        }
+        busbar_plugin_abi::plugin!(Auth, LiftAuth, name: "fixture-lift-auth");
+    }
+
+    /// Older settings with a literal key at a secret position: the converting open lifts it, and the auth cases run
+    /// on the settings core persisted, where the key is the reference core wrote, resolved by custody to the literal.
+    #[test]
+    fn a_migrated_literal_secret_verifies_through_the_reference_core_wrote() {
+        use super::super::{auth_migrated, harness::OpenPurpose, MigrateCase, MigrateExpect};
+        use busbar_plugin_abi::records::core_cfg::LIFT;
+        use busbar_plugin_abi::types::{Bytes, Pair, Str};
+        let line = |value: &'static str| Pair {
+            name: Str::new("authorization"),
+            value: Bytes::new(value.as_bytes()),
+        };
+        fn with<'a>(headers: &'a [Pair<'a>]) -> busbar_ports::auth::AuthIn<'a> {
+            busbar_ports::auth::AuthIn {
+                headers,
+                ..request("/")
+            }
+        }
+        let good = [line("Bearer lifted-bearer-key")];
+        let bad = [line("Bearer another-key")];
+        let cases = [
+            AuthCase {
+                req: with(&good),
+                expect: Expect::Subject(lift::SUBJECT),
+            },
+            AuthCase {
+                req: with(&bad),
+                expect: Expect::Rejected(abi::BAD_CREDENTIAL),
+            },
+            AuthCase {
+                req: request("/"),
+                expect: Expect::NotMine,
+            },
+        ];
+        auth_migrated(
+            &lift::PLUGIN,
+            MigrateCase {
+                bag: lift::BAG,
+                purpose: OpenPurpose::ConvertUnstamped,
+                limits: Default::default(),
+            },
+            &[],
+            FakeNeeds::new(),
+            MigrateExpect::Settled {
+                config: Some(lift::BAG),
+                core_cfg: &[(LIFT, "", br#""/token""#)],
+            },
+            &cases,
+        );
+    }
+
+    fn request(path: &str) -> busbar_ports::auth::AuthIn<'_> {
+        busbar_ports::auth::AuthIn {
+            method: "GET",
+            path,
+            query: "",
+            authority: "example",
+            headers: &[],
+            peer: "",
+            tls_peer_cert: &[],
+            body: &[],
+            now_s: 1000,
+        }
+    }
+
+    /// A case that expects a final verdict from a plugin that first answers ISSUED_WANTED gets core's second
+    /// call: the id looked up under D_ISSUED_KIND in `FakeNeeds::issued` (empty when none is scripted), and a
+    /// second ISSUED_WANTED rejected BAD_CREDENTIAL. A case that expects ISSUED_WANTED stays one raw call.
+    #[test]
+    fn the_second_verify_after_issued_wanted_is_driven_with_the_scripted_credential() {
+        use busbar_plugin_abi::auth::BAD_CREDENTIAL;
+        let cases = [
+            AuthCase {
+                req: request("/known"),
+                expect: Expect::Subject(issued::SUBJECT),
+            },
+            AuthCase {
+                req: request("/unknown"),
+                expect: Expect::Rejected(BAD_CREDENTIAL),
+            },
+            AuthCase {
+                req: request("/again"),
+                expect: Expect::Rejected(BAD_CREDENTIAL),
+            },
+            AuthCase {
+                req: request("/known"),
+                expect: Expect::IssuedWanted(issued::ID),
+            },
+        ];
+        let mut needs = FakeNeeds::new();
+        needs.issued(issued::KIND, issued::ID, issued::KEY);
+        run(&issued::PLUGIN, b"{}", needs, &cases);
+        assert_eq!(
+            issued::VERIFIES.load(Ordering::SeqCst),
+            7,
+            "two calls for each final verdict after ISSUED_WANTED, one for the raw ISSUED_WANTED case"
         );
     }
 }
