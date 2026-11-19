@@ -2499,3 +2499,68 @@ fn work_reaches_the_host_with_the_requests_identity() {
     run_as(&script, &host, b"ID-RECORDS").unwrap();
     assert_eq!(*host.work_identity.lock().unwrap(), b"ID-RECORDS");
 }
+
+/// PROOF-054 / PROOF-055 (LEDGER S-C4, S-C5, S-C6): can a native admin route relay a trust decision?
+/// No. A native plane reaches the trust book only through its intents, and the TRUST vocabulary is
+/// read-only (busbar-plugin-abi `kinds/plane.rs` TrustRec: TRUST_SERVES, TRUST_STATE, TRUST_VERIFY;
+/// `trust/plane_book.rs` `approve`: "core admin API only, never ABI, never a plane verb").
+/// [`IntentHost`] has no decide method; `port_admin::answer` serves an admin route through the same
+/// resolver with no trust decision grant (`KernelServices::grant_trust_decision` has no caller
+/// outside tests), so a route with or without trust verbs, with or without custody, decides
+/// nothing. S-C4/S-C5/S-C6 therefore reduce to this one test.
+mod trust_relay {
+    use busbar_contract::abi::host::service::op as service_op;
+    use busbar_plugin_abi::plane::{DISTRUST_UNKNOWN, TRUST_VERIFY};
+
+    use super::*;
+
+    /// An admitted operator's request on a plane's admin route (route 7, served as the principal the
+    /// admin gate admitted) whose answer states TRUST records with every op a relayed decision could
+    /// be smuggled in: `trust.decide`'s own service number, zero and the top of the range. Core asks
+    /// the host nothing for any of them and answers each DISTRUST_UNKNOWN (does not serve); the one
+    /// genuine TRUST_SERVES in the same answer is still asked, so the resolver was live.
+    #[test]
+    fn no_native_plane_route_can_relay_a_trust_decision() {
+        let forged = [service_op::TRUST_DECIDE, 0, u32::MAX];
+        for op in forged {
+            assert!(
+                op != TRUST_SERVES && op != TRUST_STATE && op != TRUST_VERIFY,
+                "op {op} must lie outside the plane's read-only TRUST vocabulary"
+            );
+        }
+        let mut request: Vec<It> = forged.iter().map(|&op| It::TrustOp { op }).collect();
+        request.push(It::TrustServes {
+            item: Some(("tool", Some([4; 32]))),
+        });
+        let script = Script {
+            request,
+            ..Script::default()
+        };
+        let host = Host {
+            distrust: DISTRUST_NOT_APPROVED,
+            ..Host::default()
+        };
+        let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
+        let resolver = Resolver::new(&host, None)
+            .with_route(7)
+            .with_principal("operator-alice", b"ID-OPERATOR");
+        finish(task.resolve(first, &resolver, &Quiet)).unwrap();
+
+        assert_eq!(
+            host.seen(),
+            ["trust_serves github item=Some((\"tool\", true))"],
+            "no relayed decision reaches the host: only the genuine read was asked"
+        );
+        let answers = trust_answers(&only_piece(&script, P_TRUST));
+        assert_eq!(
+            answers,
+            [
+                (service_op::TRUST_DECIDE, DISTRUST_UNKNOWN, vec![]),
+                (0, DISTRUST_UNKNOWN, vec![]),
+                (u32::MAX, DISTRUST_UNKNOWN, vec![]),
+                (8, DISTRUST_NOT_APPROVED, vec![]),
+            ],
+            "every forged op is refused as does-not-serve, in intent order"
+        );
+    }
+}
