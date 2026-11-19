@@ -12,8 +12,9 @@
 //!   through the fixture's admitted registry; the source names no plugin;
 //! - the money book: the `NodeBook` the Store binds (rate-card history, usage recovery, journal,
 //!   response intents), bound to the `Node` the listener posts to;
-//! - the auth: the data chain is the built-in `keys` arm over the Store's keys; the admin chain is
-//!   the native admin authority installed over Store-backed credential owners.
+//! - the auth: the data chain is empty (the built-in `keys` arm needs a signing key and an admin
+//!   minter, which a consumer states in its own extension); the admin chain is the native admin
+//!   authority installed over Store-backed credential owners.
 //!
 //! MONEY: the fixture states no price. A test states its [`RateCard`] (the deployment's
 //! `rate_card:` and `per_request_fee:`) and the fixture writes it verbatim; the resolved card is
@@ -114,7 +115,7 @@ where
     let document = serde_json::json!({
         "providers": {},
         "models": {},
-        "auth": { "chain": ["keys"] },
+        "auth": { "chain": [] },
         "store": {
             "module": module,
             "settings": root::test_plugins::application_store_settings(&directory),
@@ -313,14 +314,10 @@ where
 /// card is exactly the one the test stated, and a public probe leaves the money book empty.
 #[tokio::test]
 async fn native_listener_fixture() {
-    // The prices this test states (the live engine's rate card in `e2e_llm_usage_priced.rs`).
-    const LANE: &str = "native-listener-fixture";
-    const INPUT_UTOK: u64 = 2000;
-    const OUTPUT_UTOK: u64 = 8000;
+    // The prices this test states: the fixture configures no model, so its card prices no lane
+    // (a rate entry is keyed by a configured model) and no request carries a flat fee.
     const PER_REQUEST_FEE: i64 = 0;
-    let lanes = serde_json::json!({
-        LANE: { "input_utok": INPUT_UTOK, "output_utok": OUTPUT_UTOK },
-    });
+    let lanes = serde_json::json!({});
     let stated: std::collections::BTreeMap<String, config::RateEntryCfg> =
         serde_json::from_value(lanes.clone()).expect("the stated rate card is a card");
     with_native_fixture(
@@ -329,9 +326,10 @@ async fn native_listener_fixture() {
             per_request_fee: PER_REQUEST_FEE,
         },
         |fixture| async move {
+            // An absent card and an empty one price the same: nothing.
             assert_eq!(
-                fixture.rate_card.as_ref(),
-                Some(&stated),
+                fixture.rate_card.clone().unwrap_or_default(),
+                stated,
                 "the resolved rate card is exactly the stated one"
             );
             assert_eq!(fixture.per_request_fee, PER_REQUEST_FEE);

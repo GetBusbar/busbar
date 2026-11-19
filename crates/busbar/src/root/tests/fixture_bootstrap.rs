@@ -426,3 +426,61 @@ async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_
     drop(resolver);
     std::fs::remove_dir_all(directory).expect("remove finished actual Store fixture");
 }
+
+/// SECREF-BOOT (P061): the fixture opens the application Store under a document whose
+/// `auth.signing_key` is the documented `{ file: .. }` reference, as boot does. The grammar pin
+/// (BUSBAR-3170) compares the read's grammar with what admission gives; the fixture, like boot,
+/// publishes its images' secret grammar before the Store bootstrap, so a module that is still
+/// admitted is never reported as gone.
+#[cfg(distribution_root)]
+#[tokio::test]
+async fn secret_ref_fixture_opens_with_a_documented_file_signing_key() {
+    crate::dist_root_install::install();
+    crate::root::linked::register_stores();
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
+    let library_path = crate::root::test_plugins::application_store_library();
+    let directory = crate::root::test_plugins::scratch("fixture-file-signing-key");
+    let manifest = crate::root::test_plugins::native_manifest(
+        "store",
+        &library_path,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
+    );
+    let module = manifest.name.clone();
+    let library = std::fs::read(library_path).expect("actual Store image reads");
+    std::fs::write(
+        directory.join("store.tar.gz"),
+        crate::root::test_plugins::signed(
+            &crate::root::test_plugins::key(0x5a),
+            manifest,
+            &library,
+        ),
+    )
+    .expect("stage signed actual Store");
+    let key = directory.join("signing.key");
+    std::fs::write(&key, "5a".repeat(32)).expect("write the signing key file");
+    let plugins = crate::root::test_plugins::trusted_config(&directory);
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        serde_json::json!({
+            "providers": {}, "models": {},
+            "auth": { "chain": ["keys"], "signing_key": { "file": key } },
+            "store": {
+                "module": module,
+                "settings": crate::root::test_plugins::application_store_settings(&directory),
+            },
+            "plugins": crate::root::test_plugins::trusted_config_document(&directory),
+        }),
+        &grammar(&plugins).expect("the fixture's admitted images supply its grammar"),
+    )
+    .expect("the `{file: ..}` signing key deployment parses");
+    let cfg = crate::root::test_plugins::plaintext_listeners(
+        busbar_kernel::config::resolve(&deploy, &Default::default())
+            .expect("the deployment resolves"),
+    );
+    let rules: Arc<dyn RootRules> = Arc::new(crate::root::door_steps::Rules::default());
+    let opened = open(&cfg, &plugins, rules).await.map(drop);
+    assert!(
+        opened.is_ok(),
+        "a still-admitted secret module is not refused as gone: {opened:?}"
+    );
+    std::fs::remove_dir_all(directory).expect("remove the fixture directory");
+}
