@@ -119,6 +119,9 @@ pub struct NativeDataRoute {
     /// The audience the route's plane is bound to (its `canonical_uri`): a bearer that states an
     /// audience must state this one.
     audience: Option<Arc<str>>,
+    /// Core's public URL as the route's plane instance is given it (`PortSeat::public_url`), kept
+    /// at bind: the origin a DPoP proof's `htu` names ([`Self::proof_url`]).
+    public_url: Option<Arc<str>>,
     challenge: Option<Box<str>>,
     record: RouteRecord,
     admission: Admission,
