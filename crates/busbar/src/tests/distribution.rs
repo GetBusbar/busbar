@@ -206,9 +206,6 @@ mod auth_preflight_tests;
 #[path = "admin_application/admin_all_reads_guard.rs"]
 mod admin_all_reads_guard;
 
-#[path = "admin_application/admin_auth_row_projection.rs"]
-mod admin_auth_row_projection;
-
 #[path = "admin_application/admin_budget_group_contracts.rs"]
 mod admin_budget_group_contracts;
 

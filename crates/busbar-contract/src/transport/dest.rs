@@ -213,3 +213,11 @@ impl UpstreamAddress {
         }
     }
 }
+
+/// Serialize an environment as the names it sets and nothing else.
+fn env_names_only<S: serde::Serializer>(
+    env: &&'static [(&'static str, &'static str)],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(env.iter().map(|(name, _)| *name))
+}

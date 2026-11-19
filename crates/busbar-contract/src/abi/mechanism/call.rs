@@ -6,7 +6,6 @@
 use std::os::raw::c_void;
 
 use super::ticket::{HostCtx, Ticket};
-use crate::abi::sdk::generation::Gen;
 
 /// What an op answered, as the byte crossing the boundary. An unknown byte reads as
 /// [`Outcome::Fault`].
@@ -155,7 +154,7 @@ impl AbiStr {
 /// * [`AbiStr::of`] / [`AbiStr::of_bytes`] — memory that lives for the program (a Statement's
 ///   strings, a row's, a `'static` answer);
 /// * [`AbiStr::lent`] / [`AbiStr::lent_bytes`] — memory that lives at least until the plugin's
-///   next refresh generation, proven by the op's generation borrow ([`Gen`]);
+///   next refresh generation;
 /// * [`AbiStr::ABSENT`] — no string (NULL).
 ///
 /// The host and the loader, which lend memory for one call, make one with the `unsafe`
@@ -191,22 +190,6 @@ impl AbiStr {
     /// `bytes` (any bytes: a field value, a header), which live for the program.
     #[must_use]
     pub const fn of_bytes(bytes: &'static [u8]) -> AbiStr {
-        AbiStr {
-            ptr: bytes.as_ptr(),
-            len: bytes.len(),
-        }
-    }
-
-    /// `s`, which lives at least until the plugin's next refresh generation: the borrow checker
-    #[must_use]
-    pub fn lent<'g>(s: &'g str, gen: &Gen<'g>) -> AbiStr {
-        Self::lent_bytes(s.as_bytes(), gen)
-    }
-
-    /// As [`AbiStr::lent`], for any bytes.
-    #[must_use]
-    pub fn lent_bytes<'g>(bytes: &'g [u8], gen: &Gen<'g>) -> AbiStr {
-        let _ = gen;
         AbiStr {
             ptr: bytes.as_ptr(),
             len: bytes.len(),
@@ -256,7 +239,7 @@ impl AbiStr {
     /// # Safety
     ///
     /// The string names `len` readable bytes, alive and unwritten for `'a`: one made by
-    /// [`AbiStr::of`] always does; one made by [`AbiStr::lent`] until the next refresh generation;
+    /// [`AbiStr::of`] always does; one lent by a plugin until its next refresh generation;
     /// one the host lent a call, until the call returns.
     #[must_use]
     pub unsafe fn bytes<'a>(&self) -> &'a [u8] {
@@ -374,18 +357,6 @@ impl Blob {
     #[must_use]
     pub const fn json(bytes: &'static [u8]) -> Blob {
         Self::of(bytes).with_fmt(BLOB_JSON)
-    }
-
-    /// `bytes`, which live at least until the plugin's next refresh generation, as opaque octets:
-    #[must_use]
-    pub fn lent<'g>(bytes: &'g [u8], gen: &Gen<'g>) -> Blob {
-        let s = AbiStr::lent_bytes(bytes, gen);
-        Blob {
-            ptr: s.ptr,
-            len: s.len,
-            fmt: BLOB_OCTETS,
-            flags: 0,
-        }
     }
 
     /// The same bytes, stated as `fmt` ([`BLOB_ABSENT`] | [`BLOB_JSON`] | [`BLOB_JSONL`] |

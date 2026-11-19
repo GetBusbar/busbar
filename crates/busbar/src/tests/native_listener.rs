@@ -35,7 +35,7 @@ impl RealServer {
         &self,
         shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-        let listener = Listening::bind_stream(None, "127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
+        let listener = Listening::bind_stream("127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
         let addr = listener.local_addr();
         let serving = tokio::spawn(serve_listener(
             listener,

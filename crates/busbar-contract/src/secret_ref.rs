@@ -722,3 +722,13 @@ mod sugars_tests;
 #[cfg(test)]
 #[path = "tests/secret_ref_mutation_hardening.rs"]
 mod mutation_hardening;
+
+fn template_text<'de, D: Deserializer<'de>>(deserializer: D) -> Result<SecureString, D::Error> {
+    let mut held = crate::plugin_settings::Tree::deserialize(deserializer)?;
+    match &mut held.0 {
+        serde_json::Value::String(text) => Ok(SecureString::from(std::mem::take(text))),
+        _ => Err(de::Error::custom(
+            "template text must be a string (value not echoed)",
+        )),
+    }
+}

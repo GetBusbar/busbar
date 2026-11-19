@@ -450,3 +450,30 @@ mod tests {
         assert!(Observation::decode(duplicate.as_bytes()).is_err());
     }
 }
+
+fn unique_counts<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<u32, Count>, D::Error> {
+    struct Counts;
+    impl<'de> serde::de::Visitor<'de> for Counts {
+        type Value = BTreeMap<u32, Count>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("at most 64 unique exact usage classes")
+        }
+        fn visit_map<M: serde::de::MapAccess<'de>>(
+            self,
+            mut map: M,
+        ) -> Result<Self::Value, M::Error> {
+            let mut counts = BTreeMap::new();
+            while let Some((class, amount)) = map.next_entry::<u32, Count>()? {
+                if counts.len() == 64 || counts.insert(class, amount).is_some() {
+                    return Err(serde::de::Error::custom(
+                        "duplicate or excessive usage class",
+                    ));
+                }
+            }
+            Ok(counts)
+        }
+    }
+    deserializer.deserialize_map(Counts)
+}

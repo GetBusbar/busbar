@@ -90,9 +90,6 @@ pub fn register_stores() {
         admission: Some(&crate::root::admission::ADMISSION),
         durable: Some(&crate::root::admission::DURABLE),
         hook_facts: Some(&crate::root::off_path::hooks::NATIVE),
-        auth_chain_module: None,
-        dispatch_latched: None,
-        auth_axis: None,
 
         in_process_auth: None,
         native_auth: Some(crate::root::native_operator::answers_auth),

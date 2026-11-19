@@ -284,3 +284,7 @@ mod tests {
         assert!(crate::json::parse_str::<Count>("0.0000001").is_err());
     }
 }
+
+pub(super) fn is_whole(scale: &u32) -> bool {
+    *scale == 0
+}

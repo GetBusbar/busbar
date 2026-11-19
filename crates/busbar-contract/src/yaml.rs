@@ -3142,3 +3142,11 @@ impl MappingExt for Pairs {
         self.retain_mut(|(k, v)| keep(k, v));
     }
 }
+
+/// [`untyped`] for an optional field: `null` (or absent, with `#[serde(default)]`) is `None`.
+pub fn untyped_option<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    let value = untyped(deserializer)?;
+    Ok((!value.is_null()).then_some(value))
+}

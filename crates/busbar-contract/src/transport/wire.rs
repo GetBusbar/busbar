@@ -750,3 +750,10 @@ pub enum Side {
     /// The end that dialled it.
     Dial,
 }
+
+fn serialize_namespace<S: serde::Serializer>(
+    namespace: &str,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(namespace)
+}

@@ -176,3 +176,8 @@ mod outbound_owner_tests {
         );
     }
 }
+
+/// The serde default for `ModelCfg::max_requests` (`-1` = unlimited).
+pub fn neg1() -> i64 {
+    -1
+}

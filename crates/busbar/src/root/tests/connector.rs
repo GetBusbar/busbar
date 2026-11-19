@@ -30,7 +30,6 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
         return;
     }
     let built = process::build_with_secrets(
-        || Ok(Vec::new()),
         judge(),
         &[],
         Arc::new(|_, _| {}),
@@ -42,7 +41,6 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
     assert!(Arc::ptr_eq(installed, &built));
     assert!(Arc::ptr_eq(the(), &built), "the() is the installed one");
     let second = process::build_with_secrets(
-        || Ok(Vec::new()),
         judge(),
         &[],
         Arc::new(|_, _| {}),

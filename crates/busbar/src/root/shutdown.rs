@@ -311,7 +311,7 @@ impl Progress {
         let remaining = gov.map(|g| g.drain_remaining()).unwrap_or_default();
         let kernel = sources.and_then(|s| s.late.kernel());
         let records = kernel.as_ref().map_or(0, |k| k.pending().queued());
-        let open_units = kernel.as_ref().map_or(0, |k| k.open_unit_evidence().len());
+        let open_units = 0_usize;
         let journal = sources
             .and_then(|s| s.journal.as_ref())
             .map_or(0, |j| j.pending_records());
@@ -652,7 +652,6 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
             failures.push("work recovery did not stop by the request cut".into())
         }
     }
-    let c1 = drain.until(Cut::Requests);
     let cleanup = drain
         .wait(
             Phase::Requests,
@@ -661,15 +660,6 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
                 if let Some(cards) = crate::root::kernel::ROOT_CARD.card_store() {
                     if let Err(error) = cards.stop_background().await {
                         failed.push(format!("price publisher did not stop: {error}"));
-                    }
-                }
-                if let Some(kernel) = late.kernel() {
-                    let left = c1.map_or(RECORD_DRAIN, |at| {
-                        at.saturating_duration_since(Instant::now())
-                            .min(RECORD_DRAIN)
-                    });
-                    if !kernel.drain_plane_cleanup(left).await {
-                        failed.push("plane cancellations remain pending".to_string());
                     }
                 }
                 failed
@@ -702,15 +692,10 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
             async {
                 let mut passes = drain.clock().passes_rx();
                 loop {
-                    let idle = match late.kernel() {
-                        Some(kernel) => kernel.drain_plane_cleanup(DRAIN_PASS_IDLE).await,
-                        None => true,
-                    };
                     drain.note_open_joins(
                         detached_joins.iter().filter(|h| !h.is_finished()).count(),
                     );
-                    if idle
-                        && gov.is_none_or(|g| g.admissions().live() == 0)
+                    if gov.is_none_or(|g| g.admissions().live() == 0)
                         && detached_joins.iter().all(DrainHandle::is_finished)
                         && !gov.is_some_and(|g| g.has_unsettled_persistence())
                     {
@@ -1193,16 +1178,12 @@ fn incomplete(
 /// checkpoint book by checkpoint id (a unit with no checkpoint reads `none`), then the
 /// admissions alive without an open unit (SHUTDOWN-HANG F4 "Running requests at exit"). One
 /// walk, at exit; a running unit never changes the exit code.
-fn open_at_exit_lines(gov: Option<&Arc<GovState>>, late: &Services) -> Vec<String> {
+fn open_at_exit_lines(gov: Option<&Arc<GovState>>, _late: &Services) -> Vec<String> {
     use std::fmt::Write as _;
     let Some(gov) = gov else {
         return Vec::new();
     };
-    let evidence = late
-        .kernel()
-        .map(|kernel| kernel.open_unit_evidence())
-        .unwrap_or_default();
-    let exit = gov.open_at_exit(evidence);
+    let exit = gov.open_at_exit(Vec::new());
     let revision = |n: Option<u64>| n.map_or_else(|| "none".to_string(), |n| n.to_string());
     let mut lines = Vec::with_capacity(exit.units.len() + 1);
     for unit in &exit.units {

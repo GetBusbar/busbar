@@ -7,7 +7,7 @@ use busbar_kernel::channels::frame::{stays_one_message, Framing};
 use busbar_kernel::limits::process_admission::{
     AdmissionClass, OwnedInput, ProcessAdmission, RequestLease,
 };
-use busbar_kernel::plane_driver::{CallerEnd, HeadFields, SessionCaller};
+use busbar_kernel::plane_driver::{CallerEnd, HeadFields};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
@@ -120,13 +120,6 @@ fn one_line(bytes: &[u8]) -> bool {
 fn terminate(line: &mut Vec<u8>) {
     if !line.ends_with(b"\n") {
         line.push(b'\n');
-    }
-}
-
-impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
-    /// The line loop admits and owns each read explicitly; a bare read cannot bypass admission.
-    async fn read(&self) -> Option<Vec<u8>> {
-        None
     }
 }
 

@@ -1538,12 +1538,8 @@ async fn run(
             let limits = native_bind_limits(bind.max_conns, native_handshake_timeout);
             if bind.at == "admin_listen" {
                 #[cfg(unix)]
-                let listener = Listening::bind_stream(
-                    root::connector::the().address_via().as_ref(),
-                    &addr,
-                    limits,
-                )
-                .unwrap_or_else(|error| die(format!("cannot bind {addr}: {error}")));
+                let listener = Listening::bind_stream(&addr, limits)
+                    .unwrap_or_else(|error| die(format!("cannot bind {addr}: {error}")));
                 #[cfg(not(unix))]
                 let listener = root::listener::SocketAdmits::new(bind_listener(&addr).await);
                 admin = Some(Box::pin(serve_listener(
@@ -1836,14 +1832,12 @@ fn serve_thread_per_core(
                         die(format!("failed to build per-core data runtime {i}: {e}"))
                     });
                 rt.block_on(async move {
-                    let via = crate::root::connector::the().address_via();
-                    let listener = Listening::bind_stream(via.as_ref(), &bind_at, limits)
-                        .unwrap_or_else(|e| {
-                            die(format!(
-                                "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core \
+                    let listener = Listening::bind_stream(&bind_at, limits).unwrap_or_else(|e| {
+                        die(format!(
+                            "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core \
                              runtime {i}): {e}"
-                            ))
-                        });
+                        ))
+                    });
                     watch.enrol(listener.stopper());
                     tracing::debug!(listen = %listen, "data listener bound through the connector");
                     serve_listener(

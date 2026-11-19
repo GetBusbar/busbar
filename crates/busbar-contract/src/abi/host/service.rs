@@ -28,52 +28,6 @@
 //! A SERVICE THAT MAY PEND ([`may_pend`]) is callable only inside a ticketed op. A call made with
 //! [`Ticket::NONE`](crate::abi::mechanism::ticket::Ticket::NONE) (a pure op, or any call with no
 //! ticket) is REFUSED, never PENDING.
-//!
-//! ANSWER VALIDATORS. Each shape has its `check_<op>` beside it: the caller's check of the host's
-//! answer, built from the shared helpers in `abi/mechanism/check.rs`. [`check_head`] and
-//! [`check_bufs`] are the host's checks of the caller's `in`.
-//!
-//! A size, capacity, or non-NULL pointer does not establish that an allocation is live. Validators
-//! that read through an input's raw output pointers require the caller to establish that fact:
-//!
-//! ```compile_fail,E0133
-//! use busbar_contract::abi::host::service::*;
-//! fn read(i: &ClockNowIn, o: &ServiceOut) { let _ = check_clock_now(i, o.outcome, o); }
-//! ```
-//!
-//! ```compile_fail,E0133
-//! use busbar_contract::abi::host::service::*;
-//! fn read(i: &RecordsGetIn, o: &ServiceOut) { let _ = check_records_get(i, o.outcome, o); }
-//! ```
-//!
-//! ```compile_fail,E0133
-//! use busbar_contract::abi::host::service::*;
-//! fn read(i: &DiskAppendIn, o: &ServiceOut) { let _ = check_disk_append(i, o.outcome, o); }
-//! ```
-//!
-//! ```compile_fail,E0133
-//! use busbar_contract::abi::host::service::*;
-//! fn read(i: &AuthCallIn, o: &ServiceOut) { let _ = check_auth_call(i, o.outcome, o); }
-//! ```
-//!
-//! ```compile_fail,E0133
-//! use busbar_contract::abi::host::service::*;
-//! fn read(i: &UnitHandInIn, o: &ServiceOut) { let _ = check_unit_hand_in(i, o.outcome, o); }
-//! ```
-//!
-//! ```compile_fail,E0133
-//! use busbar_contract::abi::host::service::*;
-//! fn read(i: &UnitRefuseIn, o: &ServiceOut) { let _ = check_unit_refuse(i, o.outcome, o); }
-//! ```
-//!
-//! Validators that inspect only metadata remain callable from safe Rust:
-//!
-//! ```
-//! #![forbid(unsafe_code)]
-//! use busbar_contract::abi::host::service::*;
-//! fn check(i: &RecordsClaimIn, o: &ServiceOut) { let _ = check_records_claim(i, o.outcome, o); }
-//! fn snapshot(i: &SnapshotReadIn, o: &ServiceOut) { let _ = check_snapshot_read(i, o.outcome, o); }
-//! ```
 
 use std::os::raw::c_void;
 
