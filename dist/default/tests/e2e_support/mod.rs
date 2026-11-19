@@ -664,10 +664,12 @@ pub fn realtime(deployment: Deployment, base_url: &str) -> Deployment {
         .section("models:\n  test-model:\n    provider: rt\n")
 }
 
-/// The `streams:` section the realtime tests share; `extra` is appended inside it.
+/// The streaming plane's section the realtime tests share; `extra` is appended inside it. A 1.6
+/// plane section is keyed by the admitted plane instance's name (`streaming`), not by the 1.5
+/// `streams:` key the plane's own bag still reads (the config recognizer, WP1-GAP-plane-sections).
 pub fn streams_section(extra: &str) -> String {
     format!(
-        "streams:\n  session:\n    model: test-model\n  context_window_tokens: 16384\n  media:\n    \
+        "streaming:\n  session:\n    model: test-model\n  context_window_tokens: 16384\n  media:\n    \
          listen: \"127.0.0.1:0\"\n{extra}"
     )
 }
