@@ -1423,6 +1423,34 @@ mod tests {
         assert_eq!(decode_need(&secret).err(), Some(NeedErr::Invalid));
     }
 
+    /// A status-only FETCH reads no body, so a body limit on it is a limit nothing applies. Stating one is
+    /// refused: INVALID, no handler run. A full FETCH states any limit, 0 included.
+    #[test]
+    fn a_status_only_fetch_that_states_a_body_limit_is_invalid() {
+        const STATUS_ONLY: u32 = crate::vocab::net1::FETCH_STATUS_ONLY;
+        const E: &[u8] = &[];
+        let args: [&[u8]; 4] = [b"POST", b"https://hooks.test/in", E, b"line"];
+        let class = 3 << need_flag::EGRESS_SHIFT;
+        let limit = |flags: u32, max_body: u64| {
+            let bytes = body(op::FETCH, flags, 0, max_body, 0, 0, args);
+            match decode_need(&bytes) {
+                Ok(Need::Fetch(n)) => Ok((n.status_only, n.max_body)),
+                Ok(_) => panic!("a FETCH decodes to a FETCH"),
+                Err(e) => Err(e),
+            }
+        };
+        assert_eq!(limit(class | STATUS_ONLY, 0), Ok((true, 0)));
+        for max_body in [1, 4096, u64::MAX] {
+            assert_eq!(
+                limit(class | STATUS_ONLY, max_body).err(),
+                Some(NeedErr::Invalid),
+                "status only with max_body {max_body}"
+            );
+            assert_eq!(limit(class, max_body), Ok((false, max_body)));
+        }
+        assert_eq!(limit(class, 0), Ok((false, 0)));
+    }
+
     #[test]
     fn the_need_row_is_the_kind_table() {
         use KindCode::*;
