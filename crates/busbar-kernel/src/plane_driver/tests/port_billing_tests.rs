@@ -260,3 +260,71 @@ fn a_native_child_does_not_take_a_second_concurrency_hold() {
     let next = r.billing.open(admit(&r, Some("g"))).unwrap();
     r.billing.settle(next.ctx.key, super::end_of(200, true));
 }
+
+/// SUSPECT (red expected today): ci/owed/cut-root/MONEY-OWED.tsv row
+/// `a_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing`. On the old door a
+/// child nested after its parent's budget was spent answered 429 over_budget and was charged
+/// nothing. `PortBilling::child` shares the parent's admission and reads no budget, so a native
+/// child opens however far over budget its key is. The owner rules: the native child re-reads its
+/// chain's budget (this test goes green), or the difference from v1.5.5 is accepted in writing and
+/// this test is rewritten to state the accepted rule. No code changes before the ruling.
+#[test]
+fn a_native_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing() {
+    use crate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    const FEE_CENTS: i64 = 5;
+    let groups = BTreeMap::from([(
+        "g".to_string(),
+        GroupCfg {
+            limits: vec![LimitCfg {
+                selected: None,
+                metric: LimitMetric::Budget,
+                amount: 1,
+                per: Some(LimitWindow::Month),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+            }],
+            ..GroupCfg::default()
+        },
+    )]);
+    let store = ready(crate::real_store::core());
+    let gov = Arc::new(ready(GovState::new_with_core(store, None, None)).unwrap());
+    let cost = Arc::new(CostModel::resolve_parts(None, FEE_CENTS, &groups));
+    let money = Arc::new(PlaneMoney::new(Arc::clone(&gov), Arc::new(Posted)));
+    let billing = PortBilling::new(
+        Arc::clone(&money),
+        gov,
+        Arc::new(UnitKeyMint::default()),
+        Arc::new(crate::plane_driver::CoreAudit),
+    );
+    let r = Rig {
+        billing,
+        money,
+        cost,
+    };
+
+    let parent = r.billing.open(admit(&r, Some("g"))).unwrap();
+    assert!(
+        matches!(
+            r.billing.open(admit(&r, Some("g"))),
+            Err(LimitBlocked::Limit {
+                metric: "budget",
+                ..
+            })
+        ),
+        "precondition: the parent's own fee spent the group's one-cent budget, so a new request \
+         of this key is refused on budget"
+    );
+    assert_eq!(r.money.open_units(), 1, "only the parent is open");
+
+    let child = r
+        .billing
+        .child(parent.ctx.key, &key(Some("g")), "other", Arc::from([]));
+    assert!(
+        child.is_err(),
+        "a child nested after its parent's budget is spent must be refused"
+    );
+    assert_eq!(r.money.open_units(), 1, "the refused child opened no money");
+    r.billing.settle(parent.ctx.key, super::end_of(200, true));
+    assert_eq!(r.money.open_units(), 0);
+}
