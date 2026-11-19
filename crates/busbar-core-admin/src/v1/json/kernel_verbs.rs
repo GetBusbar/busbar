@@ -472,12 +472,17 @@ pub(crate) struct OperationView {
 }
 
 /// Where an idempotent operation stands.
+// The variants are never built (the reply is written by hand), so their names start with an
+// underscore; each says its wire name itself, because a `rename_all` would carry the underscore
+// into the document.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
 pub(crate) enum OperationState {
+    #[serde(rename = "applied")]
     _Applied,
+    #[serde(rename = "rejected")]
     _Rejected,
+    #[serde(rename = "in_flight")]
     _InFlight,
 }
 
