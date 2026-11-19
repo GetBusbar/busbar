@@ -301,7 +301,7 @@ models:
 pools:
   pool-a:
     members:
-      - { model: test-model }
+      - {{ model: test-model }}
 llm:
   insecure_transport: {{ accept: plaintext, reason: "loopback test upstream" }}
 {planes}"#,

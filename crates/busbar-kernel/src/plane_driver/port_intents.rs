@@ -1546,6 +1546,37 @@ impl<K: Calls + ?Sized> Task<'_, K> {
     }
 }
 
+/// Whether a record write is bound to the verified caller by its own flags: a STORE or DELETE in the
+/// caller's scope (`LK_CALLER`, never the instance-wide host chain `LK_CHAIN`), a COMMIT whose every
+/// record is the caller's (`REC_CALLER`). A DATA unit drives no other write: its records are the
+/// caller's by the kernel's rule, not by the plane's choice. `None` for an intent that is no record
+/// write.
+pub(crate) fn caller_scoped_write(intent: &Intent, lent: &Lent) -> Option<bool> {
+    match intent {
+        Intent::Store { flags, .. } | Intent::Delete { flags, .. } => {
+            Some(flags & LK_CALLER != 0 && flags & LK_CHAIN == 0)
+        }
+        Intent::Commit { ops, .. } => {
+            let mut any = false;
+            for rec in Records::new(lent.bytes(*ops)) {
+                let Ok(rec) = rec else { return Some(false) };
+                let flags = match rec.tag {
+                    tag::REC_PRED => rec.pod_tail::<RecPredRec>().map(|(head, _)| head.flags),
+                    tag::REC_PUT => rec.pod_tail::<RecPutRec>().map(|(head, _)| head.flags),
+                    tag::REC_DEL => rec.pod_tail::<RecDelRec>().map(|(head, _)| head.flags),
+                    _ => return Some(false),
+                };
+                match flags {
+                    Ok(flags) if flags & commit::REC_CALLER != 0 => any = true,
+                    _ => return Some(false),
+                }
+            }
+            Some(any)
+        }
+        _ => None,
+    }
+}
+
 /// These operations can discover a deferred route without opening a wire or changing state.
 fn prerequisite(intent: &Intent) -> bool {
     matches!(
