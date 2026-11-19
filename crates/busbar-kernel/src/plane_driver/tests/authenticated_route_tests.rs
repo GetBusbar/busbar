@@ -670,6 +670,96 @@ async fn authenticated_route_anonymous_caller_scoped_lookup_is_refused_and_a_ver
     );
 }
 
+/// The anonymous caller's handle is its caller reference (owner directive ANON-PLANES: auth is
+/// plane-agnostic). The session that presents a handle reads exactly the records made under it:
+/// the store is asked in the handle's scope, never in the shared subject's, and the request goes
+/// on to its one admission (the money refuses, 402).
+#[tokio::test]
+async fn authenticated_route_anonymous_caller_reads_its_own_handles_record() {
+    let anonymous = crate::auth::native_chain::ANONYMOUS;
+    let plane = Interactions {
+        handle: Some(MINE),
+        ..Interactions::default()
+    };
+    let host = Records {
+        rows: vec![(Some(handle_scope(MINE.as_bytes())), KEY, DEST)],
+        ..Records::default()
+    };
+    let resolver = Resolver::new(&host, None).with_principal(anonymous, &[]);
+    let mut request = request(62, key(anonymous, None));
+    let mut far = Dials::default();
+    let result = serve(&plane, &mut request, &resolver, &mut far).await;
+    assert!(
+        matches!(&result, Err(SessionError::AdmissionRefused(refusal)) if refusal.status == 402),
+        "{result:?}"
+    );
+    assert_eq!(
+        *host.asked.lock().unwrap(),
+        [Some(handle_scope(MINE.as_bytes()))]
+    );
+    assert_ne!(
+        handle_scope(MINE.as_bytes()),
+        subject_scope(anonymous),
+        "the handle's scope is never the shared subject's"
+    );
+    assert_eq!(*plane.looked.lock().unwrap(), [true]);
+    assert_eq!(resolver.subject(), Some(handle_scope(MINE.as_bytes())));
+}
+
+/// Two anonymous sessions never reach each other's records: a session presenting another handle
+/// (a guessed or foreign id) is asked in that handle's own scope and misses (the plane's 404), and
+/// no money is asked for it. Nor does a record made in the shared subject's scope answer either.
+#[tokio::test]
+async fn authenticated_route_two_anonymous_handles_never_read_each_others_records() {
+    let anonymous = crate::auth::native_chain::ANONYMOUS;
+    let host = Records {
+        rows: vec![
+            (Some(handle_scope(MINE.as_bytes())), KEY, DEST),
+            (Some(subject_scope(anonymous)), KEY, DEST),
+        ],
+        ..Records::default()
+    };
+    let plane = Interactions {
+        handle: Some(FOREIGN),
+        ..Interactions::default()
+    };
+    let resolver = Resolver::new(&host, None).with_principal(anonymous, &[]);
+    let mut request = request(63, key(anonymous, None));
+    let mut far = Dials::default();
+    let result = serve(&plane, &mut request, &resolver, &mut far).await;
+    assert!(
+        !matches!(&result, Err(SessionError::AdmissionRefused(_))),
+        "{result:?}"
+    );
+    assert_eq!(
+        *host.asked.lock().unwrap(),
+        [Some(handle_scope(FOREIGN.as_bytes()))]
+    );
+    assert_eq!(*plane.looked.lock().unwrap(), [false], "a miss: the plane's 404");
+    assert!(asked(&request).is_empty(), "no money is asked: {:?}", asked(&request));
+    assert_eq!(far.0, 0);
+}
+
+/// A verified caller's handle changes nothing: her records stay in her own subject's scope.
+#[tokio::test]
+async fn authenticated_route_a_verified_callers_handle_leaves_her_scope_her_own() {
+    let plane = Interactions {
+        handle: Some(MINE),
+        ..Interactions::default()
+    };
+    let host = alices_record();
+    let resolver = Resolver::new(&host, None).with_principal("alice", &[]);
+    let mut request = request(64, key("alice", None));
+    let mut far = Dials::default();
+    let result = serve(&plane, &mut request, &resolver, &mut far).await;
+    assert!(
+        matches!(&result, Err(SessionError::AdmissionRefused(refusal)) if refusal.status == 402),
+        "{result:?}"
+    );
+    assert_eq!(*host.asked.lock().unwrap(), [Some(subject_scope("alice"))]);
+    assert_eq!(*plane.looked.lock().unwrap(), [true]);
+}
+
 /// The record call's own ceiling (`Namespace::caller`, the old continuation's 30 s
 /// `LOOKUP_CEILING`) never outlives an earlier request deadline: the earlier of the two wins.
 #[test]

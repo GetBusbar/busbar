@@ -178,8 +178,15 @@ where
     if let Some(rotation) = rotation {
         rotation.await;
     }
+    // The admission budget `tests/native_listener.rs` serves its listener under. The node's
+    // terminal book is funded from it before anything enters, as the boot funds it from its own.
+    let budget = ProcessAdmission::with_limits(4, 32 * 1024 * 1024, 32 * 1024 * 1024);
     let node = Arc::new(root::plane_node::Node::new());
+    node.rebind_terminal_storage(&budget);
     node.bind_book(Arc::clone(&book.durability));
+    // The node receives the original signed pages before any native admission, as at boot.
+    node.bind_native_notary()
+        .expect("bind the native audit notary to the money book");
     node.bind_response_intents(
         &core,
         book.response_intents
@@ -258,8 +265,6 @@ where
     root::serve::install_native_slots(&mut app, slots).expect("install the listener slots");
     let resolver = Arc::clone(&app.secret_resolver);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::new(app)));
-    // The admission budget `tests/native_listener.rs` serves its listener under.
-    let budget = ProcessAdmission::with_limits(4, 32 * 1024 * 1024, 32 * 1024 * 1024);
     let native = Arc::new(
         root::listener_native::NativeListener::new(
             Arc::clone(&handle),
@@ -316,6 +321,8 @@ where
 /// card is exactly the one the test stated, and a public probe leaves the money book empty.
 #[tokio::test]
 async fn native_listener_fixture() {
+    // The listener's own refusals reach the test output.
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     // The prices this test states: the fixture configures no model, so its card prices no lane
     // (a rate entry is keyed by a configured model) and no request carries a flat fee.
     const PER_REQUEST_FEE: i64 = 0;
