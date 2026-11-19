@@ -71,6 +71,11 @@ pub struct AdminRequest {
     pub now_s: u64,
 }
 
+/// The head fields a plane's admin route is handed.
+pub(crate) fn plane_headers(headers: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+    headers
+}
+
 /// A plane's answer: status, head fields, body.
 pub type AdminAnswer = (u16, HeadFields, Vec<u8>);
 
@@ -101,7 +106,7 @@ pub async fn answer(seats: &[PortSeat], request: AdminRequest) -> Option<AdminAn
                 method,
                 path,
                 query,
-                headers,
+                headers: plane_headers(headers),
             },
             body,
             request_id,

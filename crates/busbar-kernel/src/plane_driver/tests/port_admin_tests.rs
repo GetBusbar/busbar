@@ -96,3 +96,46 @@ async fn with_no_plane_installed_no_admin_route_is_answered() {
     };
     assert!(answer(&[], request).await.is_none());
 }
+
+/// ci/owed/cut/SECURITY-OWED.tsv `a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_the_actor`,
+/// the credential half. The admin listener copies the request's head fields into the request it
+/// hands a native plane's admin route. The credential the operator chain judged must not be among
+/// them, in any case and however many times it was sent; neither may a session cookie or a proxy
+/// credential. Everything else, the plane's own fields included, is handed on untouched and in
+/// order. (On the data path the same rule is `auth::native_data::withheld_carriers`.)
+#[test]
+fn a_planes_admin_route_is_handed_no_credential_the_admin_gate_read() {
+    const SECRET: &[u8] = b"Bearer operator-secret-do-not-forward";
+    let field = |name: &str, value: &[u8]| (name.to_owned(), value.to_vec());
+    let handed = plane_headers(vec![
+        field("content-type", b"application/json"),
+        field("authorization", SECRET),
+        field("Authorization", SECRET),
+        field("AUTHORIZATION", SECRET),
+        field("proxy-authorization", SECRET),
+        field(
+            "cookie",
+            b"busbar_admin_session=operator-secret-do-not-forward",
+        ),
+        field("x-admin-token", b"operator-secret-do-not-forward"),
+        field("x-plane-own-field", b"kept"),
+        field("accept", b"*/*"),
+    ]);
+    for (name, value) in &handed {
+        assert!(
+            !value
+                .windows(b"operator-secret-do-not-forward".len())
+                .any(|window| window == b"operator-secret-do-not-forward"),
+            "the plane was handed the operator's credential in `{name}`"
+        );
+    }
+    assert_eq!(
+        handed,
+        vec![
+            field("content-type", b"application/json"),
+            field("x-plane-own-field", b"kept"),
+            field("accept", b"*/*"),
+        ],
+        "every other field is handed on untouched and in order"
+    );
+}
