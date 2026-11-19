@@ -1,0 +1,22 @@
+auth_kit	91	deleted
+auth_outbound	1125	kept: 
+body	19	deleted
+boundary	11	kept: 
+capture	403	kept: 
+chip	647	kept: 
+cold	187	kept: 
+completion_retirement	474	kept: 
+generation	65	kept: 
+lent	1574	kept: 
+mask	111	deleted
+out	1295	kept: 
+plane_life	261	deleted
+publish	758	kept: 
+safe	834	kept: 
+secret	35	deleted
+services	2844	kept: 
+settings	159	kept: 
+trust	65	deleted
+typed_json	130	kept: 
+url	210	kept: 
+registration	920	kept: test fixtures of old doors in the contract, connector, kernel and loader still register through it
