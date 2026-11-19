@@ -4576,3 +4576,52 @@ async fn native_retry_mints_for_the_actual_second_destination() {
     assert!(opened[1].0.contains("b.test"));
     assert_eq!(rig.auth.calls.load(Ordering::SeqCst), 0);
 }
+
+/// HEAD-OUT: an attempt moves its request's fields into the outbound head; it copies none of them.
+/// Ten fields of 4 KiB each, sent with no credential binding: what this thread allocates while the
+/// attempt is sent, over the same attempt with no fields, is the test table's own record of the head
+/// it was handed (one copy of every value) and a few small lists, never a second copy of the values.
+#[cfg(not(target_env = "msvc"))]
+#[tokio::test(flavor = "current_thread")]
+async fn an_attempt_moves_its_fields_into_the_head_and_copies_no_value() {
+    const FIELDS: usize = 10;
+    const VALUE: usize = 4096;
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.egress
+        .routes
+        .get_mut(&DestinationId::new(1))
+        .unwrap()
+        .auth = None;
+    let t = token();
+    let mut sent = Vec::new();
+    // The first send warms what is made once per thread; the next two are measured.
+    for fields in [FIELDS, 0, FIELDS] {
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        let mut req = request();
+        req.fields = (0..fields)
+            .map(|k| (format!("x-field-{k:02}").into_bytes(), vec![b'v'; VALUE]))
+            .collect();
+        crate::ThreadAllocated::reset();
+        assert!(far.send(&t, req).await);
+        sent.push(crate::ThreadAllocated::bytes());
+        let _ = drain(&far, &t).await;
+    }
+    let values = (FIELDS * VALUE) as u64;
+    let extra = sent[2].saturating_sub(sent[1]);
+    println!(
+        "HEAD-OUT attempt bytes (warm-up, no fields, ten 4 KiB fields): {sent:?}; extra {extra}"
+    );
+    assert!(
+        extra >= values,
+        "the table's record holds one copy of every value: {sent:?}"
+    );
+    assert!(
+        extra < values + values / 2,
+        "the far end copied the fields' values ({extra} bytes over {values} for one copy): {sent:?}"
+    );
+}

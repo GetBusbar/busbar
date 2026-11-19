@@ -418,6 +418,26 @@ fn outbound_none_waives_the_member_credential_and_a_scope_rides_as_its_field() {
         .any(|(n, v)| n == SCOPE_REQUEST_FIELD.as_bytes() && v == b"tenant-1"));
 }
 
+/// HEAD-OUT: turning an exchange into the far end's request moves its parts in and allocates
+/// nothing, a waiver and a scope included (it used to push two marker fields into the head: three
+/// allocations).
+#[cfg(not(target_env = "msvc"))]
+#[test]
+fn request_of_allocates_nothing_for_a_waived_scoped_exchange() {
+    let member: busbar_contract::kept::Text = "lane:a".into();
+    let pool: busbar_contract::kept::Text = "pool".into();
+    let rich = UpExchange {
+        outbound: OUTBOUND_NONE,
+        scope: Some("tenant-1".into()),
+        ..exchange()
+    };
+    crate::ThreadAllocated::reset();
+    let request = request_of(&member, &pool, 1, rich);
+    let allocated = crate::ThreadAllocated::bytes();
+    assert!(request.is_some());
+    assert_eq!(allocated, 0, "request_of allocated {allocated} bytes");
+}
+
 #[test]
 fn is_request_of_agrees_with_building_the_request_and_comparing_it() {
     for outbound in [OUTBOUND_NONE, 0] {
