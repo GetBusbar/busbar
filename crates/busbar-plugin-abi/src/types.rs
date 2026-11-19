@@ -11,8 +11,11 @@
 use crate::need::ChainBytes;
 
 pub use busbar_ffi::raw::{RAW_OUT_CAP_AT, RAW_OUT_LEN_AT, RAW_OUT_PTR_AT};
+pub use busbar_ffi::vt::{
+    CALL_BLOBS_AT, CALL_HEAD_AT, CALL_MONO_NS_AT, CALL_SESSION_AT, CALL_TEXTS_AT,
+};
 pub use busbar_ffi::{
-    Bytes, KindCode, Pair, RawOut, Slice, Status, Str, TOKEN_SESSION, Token, View,
+    Bytes, Call, Entry, KindCode, Pair, RawOut, Slice, Status, Str, TOKEN_SESSION, Token, View,
 };
 
 /// The seal of `View`, `SyncArg` and `AsyncArg` (IF §2, §2.4 `sealed::Sealed`). `kind!` implements it for the

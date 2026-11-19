@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The `kind!` macro that declares a kind trait and its module (IF §7.6), over busbar-ffi's seven tables and
-//! shims (UNSAFE-MIN r3.1): the macro writes no `unsafe` and no raw entry; per kind it emits the trait, the
-//! module's items, one image type `Shim<T>` and its safe `busbar_ffi::shim` adapters.
+//! The `kind!` macro that declares a kind trait and its module (IF §7.6; core 3.0, interface revision C.3).
+//! The macro writes no `unsafe` and no raw entry. Per kind it emits the trait, the module's items, one image
+//! type `Shim<T>`, one safe `busbar_ffi::shim` adapter per method (each unpacks the one `Call` into the typed
+//! trait call the plugin author implements), the kind's table as an array of entries, and the host-side
+//! packer of every method (`pack::<method>`), from the one signature.
 
-/// Declares one kind: its trait, its module (views, pods, tags, consts, KIND, ABI, FP, ALL, the table and
-/// the image's adapters) (IF §7.6).
+/// Declares one kind: its trait, its module (views, pods, tags, consts, KIND, ABI, MINOR, FP, ALL, ENTRIES,
+/// METHODS, `slot`, `pack`, the table and the image's adapters) (IF §7.6).
 ///
 /// ```text
-/// **Grammar** (the builder of `kind.rs` implements exactly this, via a tt-muncher):
+/// **Grammar** (unchanged for a plugin author; `retired { .. }` is new and optional):
 ///
 /// kind! {
 ///     $(#[doc = $d:literal])*
@@ -18,69 +20,49 @@
 ///         pods   { $( $(#[doc = $pd:literal])* pub struct $P:ident { $( pub $pf:ident : $pt:ty ),* $(,)? } )* }
 ///         tags   { $( $(#[doc = $td:literal])* $TAG:ident = $tv:literal ; )* }
 ///         consts { $( $(#[doc = $cd:literal])* $C:ident : $ct:ty = $cv:expr ; )* }
+///         $( retired { $( $rt:literal ),* $(,)? } )?
 ///         $(
-///             $(#[doc = $md:literal])*
-///             sync fn $m:ident ( &self, h: &Host $(, $a:ident : $at:ty)* , out: &mut Out<'_> ) -> Result<(), Fail> ($def:block | ;)
-///         |   // session kinds only: opener (shim mints the token, §6.4 step 7)
-///             $(#[doc = $md:literal])*
-///             sync open fn $m:ident ( &self, h: &Host $(, $a:ident : $at:ty)* , out: &mut Out<'_> ) -> Result<Session, Fail> ($def:block | ;)
-///         |   // session kinds only: method on a live session (raw arg: tok: Token)
-///             $(#[doc = $md:literal])*
-///             sync fn $m:ident ( &self, h: &Host, s: &mut Session $(, $a:ident : $at:ty)* , out: &mut Out<'_> ) -> Result<(), Fail> ($def:block | ;)
-///         |   // session kinds only: consumes the session (the shim removes it before the call)
-///             $(#[doc = $md:literal])*
-///             sync end fn $m:ident ( &self, h: &Host, s: Session $(, $a:ident : $at:ty)* , out: &mut Out<'_> ) -> Result<(), Fail> ;
-///         |
-///             $(#[doc = $md:literal])*
-///             async fn $m:ident ( &self, h: &'static Host $(, $a:ident : $at:ty)* ) -> Result<Reply, Fail> ($def:block | ;)
+///             sync fn $m ( &self, h: &Host $(, $a : $at)* , out: &mut Out<'_> ) -> Result<(), Fail> ($def | ;)
+///         |   sync open fn $m ( &self, h: &Host $(, $a : $at)* , out: &mut Out<'_> ) -> Result<Session, Fail> ($def | ;)
+///         |   sync fn $m ( &self, h: &Host, s: &mut Session $(, $a : $at)* , out: &mut Out<'_> ) -> Result<(), Fail> ($def | ;)
+///         |   sync end fn $m ( &self, h: &Host, s: Session, out: &mut Out<'_> ) -> Result<(), Fail> ;
+///         |   async fn $m ( &self, h: &'static Host $(, $a : $at)* ) -> Result<Reply, Fail> ($def | ;)
 ///         )*
+///         $( extras { $($item)* } )?
 ///     }
 /// }
-///
-/// **No `migrate` rule (round 31, owner ruling, §47; supersedes round 5's "one `migrate` rule").** `kind.rs` emits
-/// no `migrate` method on any kind trait, and `plugin!` wires no `migrate` slot (there is none, §7.1). A plugin's
-/// migration is its `Open::open`, and its canonical settings come back through `Open::settled` (§7.2). `abi::settled`
-/// (in `records.rs`, A1) is two plain functions: `config(w, bag: &[u8])` and `core_cfg(w, section, name, value_json:
-/// &[u8])` (round 5's `abi::migrate::{answer, core_cfg, echo}` are deleted). `R_VERSION` is generic refusal code 17
-/// (§4.1). Old-format code a plugin needs lives in its own `migrate` module, reachable only from `open`, `check`
-/// and `settled` (§15.8).
-///
-/// With `session`, the emitted trait gets `type Session: Send + 'static;` and `Session` in the grammar means
-/// `Self::Session`. Without it, the `open fn`/`end fn`/`s:` forms are a compile error. The raw `Vt` entry of a
-/// session method takes `tok: Token` in place of `s`; `open fn` entries take no token and answer TOKEN first.
 /// ```
 ///
-/// **What it emits** (W1-A4, against UNSAFE-MIN r3.1), for `pub trait Auth: kind = 3, ..`:
+/// **Argument shapes.** Sync: `u32`, `u64`, `Bytes<'_>`, `Str<'_>`, `&View<'_>` (a `views` struct), and, as
+/// the last argument only, `Slice<'_, Bytes<'_>>` (every remaining blob). Async: `u32`, `u64`, `ChainBytes`.
+/// Anything else does not match and is a compile error. How each maps onto `Call` is `crate::call`'s one
+/// rule; the layout of every method of the seven kinds is tabled in the interface revision's LAYOUT.
 ///
-/// 1. `pub mod auth` (the module is named by the kind number, which names the busbar-ffi layout too) with:
-///    - `pub trait Auth: Send + Sync + 'static`, one method per entry, re-exported beside the module. A sync
-///      method keeps its signature; an async one returns `impl Future<Output = Result<Reply, Fail>> + Send`
-///      (implementors write `async fn`), and its default body is wrapped as `async move $def`;
-///    - each `views` struct as busbar-ffi's own view (`pub use`; busbar-ffi owns the four views and their
-///      sealed `View`), with a const check that every field the block states exists with its type and that
-///      the fields fill the struct;
-///    - the `pods` as `#[repr(C)]` zerocopy structs with their `records::Pod` impl; `pub mod tag` (each tag
-///      const-checked to 0x0100..=0x01FF); the consts;
-///    - `KIND`, `ABI` (const-checked against `versions::abi_of`), `FP`, `ALL`, `Marker` (busbar-ffi's kind
-///      marker) and `Vt` (busbar-ffi's table for the kind);
+/// **What it emits**, for `pub trait Auth: kind = 3, ..`:
+///
+/// 1. `pub mod auth` with:
+///    - `pub trait Auth: Send + Sync + 'static`, one method per entry, exactly as before the one call shape:
+///      a sync method keeps its signature; an async one returns `impl Future<..> + Send`;
+///    - each `views` struct as a plain borrowed struct with its `call::Get` (read from a call) and
+///      `call::Put` (written into one) impls; the kind owns its views (busbar-ffi knows no kind);
+///    - the `pods`, `pub mod tag` (each tag const-checked into the kind's ranges and against `retired`), the
+///      consts;
+///    - `KIND`, `ABI` (the first number), `MINOR` (the second), `FP` (the wire fingerprint: names, numbers,
+///      field types and order, never comments), `ALL`, `ENTRIES`, `METHODS`, `Marker`;
+///    - `slot::<method>`: the method's position in the table; `pack::<method>(mono_ns, args.., f)`: builds the
+///      method's `Call` on the stack and hands it to `f`;
 ///    - `Shim<T>`, the image of plugin type `T`, with its `busbar_ffi::shim::Image` impl and one adapter per
-///      method (`Call0..3`, `Opener1..2`, `Session0..4`, `End0`, `Start0/1/2/4`, slot = declaration order),
-///      and `pub const fn vt<T>()`, the kind's table built over `Shim<T>`.
-/// 2. A compile error for a method argument that is not one of the FFI shapes (sync: `u32`, `u64`,
-///    `Bytes<'_>`, `Str<'_>`, `&View<'_>`; async: `u32`, `u64`, `ChainBytes`).
+///      method (`Plain`, `Opens`, `OnSession`, `Ends`, `Starts`; slot = declaration order), and
+///      `pub const fn table<T>()`, the kind's table: an array of `ENTRIES` entries over `Shim<T>`.
 ///
-/// Two departures from the IF text, both forced (MIN3-RULINGS-COORD, W1-A4): `macro_rules` cannot change an
-/// identifier's case and the owner bans `paste` (UNSAFE-MIN E8), so a kind block states its `M_<METHOD>: u64 =
-/// 1 << i;` lines in `consts` and `kind!` emits `ALL` (and checks `REQUIRED` against it); and the `Proxy` and
-/// `SessionHandle` of §10.4 are not templated here: busbar-ffi's `Instance`, `Session` and `Chain` are the host
-/// handles (UNSAFE-MIN §4.5, "9 `unsafe impl`s deleted"), so each kind states its typed proxy by hand over them
-/// (W1-A4b, `host_side/proxy.rs` holds the shared halves). A kind block may end with `extras { items }`, hand-written
-/// module items (typed helpers, those proxies, unit tests) that sit in the module and are not in `FP`.
-///
-/// `REQUIRED` is not emitted by `kind!`. Each kind declares it in `consts` (§8). The default `Describe` uses it.
+/// `macro_rules` cannot change an identifier's case and the owner bans `paste`, so a kind block states its
+/// `M_<METHOD>: u64 = 1 << i;` lines in `consts` and `kind!` emits `ALL` (and checks `REQUIRED` against it);
+/// `slot` and `pack` items carry the method's own lower-case name. A kind block may end with
+/// `extras { items }`, hand-written module items (typed helpers, the host proxies, unit tests) that sit in the
+/// module and are not in `FP`.
 #[macro_export]
 macro_rules! kind {
-    // ---- the kind number names the module, the busbar-ffi layout and the KindCode ----
+    // ---- the kind number names the module and the KindCode ----
     (@number 1 $($rest:tt)*) => { $crate::kind! { @module store Store $($rest)* } };
     (@number 2 $($rest:tt)*) => { $crate::kind! { @module secret Secret $($rest)* } };
     (@number 3 $($rest:tt)*) => { $crate::kind! { @module auth Auth $($rest)* } };
@@ -90,45 +72,45 @@ macro_rules! kind {
     (@number 7 $($rest:tt)*) => { $crate::kind! { @module transport Transport $($rest)* } };
 
     (@module $m:ident $K:ident [$(#[$doc:meta])*] $Trait:ident $kind:tt $abi:tt [$($session:ident)?]
-        [$($views:tt)*] [$($pods:tt)*] [$($tags:tt)*] [$($consts:tt)*] [$($methods:tt)*]
+        [$($views:tt)*] [$($pods:tt)*] [$($tags:tt)*] [$($consts:tt)*] [$($retired:tt)*] [$($methods:tt)*]
     ) => {
         pub mod $m {
             $crate::kind! { @views $($views)* }
             $crate::kind! { @pods $($pods)* }
-            /// The kind's tags: 0x0100..=0x017F call records, 0x0180..=0x01FF describe items.
+            /// The kind's tags. Call records: 0x0100..=0x017F and 0x0200..=0x3FFF. Describe items:
+            /// 0x0180..=0x01FF and 0x4000..=0x4FFF. 0x5000 and up is never used (interface revision D.2).
             pub mod tag {
                 $crate::kind! { @tags $($tags)* }
             }
             $crate::kind! { @consts $($consts)* }
 
+            /// Tags this kind once used and never will again: a declared tag on this list does not compile,
+            /// and one seen in the field is a fault for ever (interface revision D.2).
+            pub const RETIRED_TAGS: &[u16] = &[$($retired)*];
+            const _: () = assert!(
+                !$crate::call::shares(tag::LIST, RETIRED_TAGS),
+                "a declared tag is on the kind's retired list"
+            );
+
             /// The kind code a stamp of this kind carries.
             pub const KIND: $crate::types::KindCode = $crate::types::KindCode::$K;
-            /// This kind's ABI version.
+            /// This kind's contract version, first number: it moves when something is changed or removed.
             pub const ABI: u32 = $abi;
+            /// This kind's contract version, second number: it moves when something is added.
+            pub const MINOR: u32 = $crate::versions::minor_of(KIND);
             const _: () = assert!(KIND as u32 == $kind, "the kind number names another kind");
             const _: () = assert!(
                 ABI == $crate::versions::abi_of(KIND),
                 "abi is not versions::<KIND>"
             );
-            /// busbar-ffi's marker for this kind (its sealed `Kind`), which names the table layout.
+            /// busbar-ffi's marker for this kind (its sealed `Kind`): the kind code, nothing else.
             pub type Marker = $crate::plugin::__rt::kind::$K;
-            /// The kind's table: busbar-ffi owns the seven layouts (UNSAFE-MIN r3.1).
-            pub use $crate::plugin::__rt::vt::$m::Vt;
 
-            /// What `FP` hashes before the method signatures (IF §7.5): the header, every doc, the four blocks.
-            const FP_HEAD: &str = stringify!(
-                $(#[$doc])* pub trait $Trait: kind = $kind, abi = $abi $(, $session)?
-                views { $($views)* } pods { $($pods)* } tags { $($tags)* } consts { $($consts)* }
-            );
+            /// What `FP` hashes before the method signatures: the header line. Never a comment.
+            const FP_HEAD: &str = stringify!(pub trait $Trait: kind = $kind, abi = $abi $(, $session)?);
 
             /// The image of plugin type `T`: busbar-ffi's shims call `T` through it.
             pub struct Shim<T>(::core::marker::PhantomData<fn() -> T>);
-
-            /// The kind's table built over `Shim<T>`: every entry is busbar-ffi's shim for this image.
-            pub const fn vt<T: $Trait + $crate::plugin::Glue>(
-            ) -> $crate::plugin::__rt::Built<Shim<T>, Vt> {
-                Vt::build::<Shim<T>>()
-            }
 
             impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Image for Shim<T> {
                 type Plugin = T;
@@ -174,7 +156,7 @@ macro_rules! kind {
                 }
             }
 
-            $crate::kind! { @methods [$Trait [$($session)?] [$(#[$doc])*]] [0] [] [] $($methods)* }
+            $crate::kind! { @methods [$Trait [$($session)?] [$(#[$doc])*]] [0] [] [] [] $($methods)* }
         }
         pub use $m::$Trait;
     };
@@ -182,145 +164,167 @@ macro_rules! kind {
     (@session [] $Trait:ident $T:ident) => { () };
     (@session [session] $Trait:ident $T:ident) => { <$T as $Trait>::Session };
 
-    // ---- views: busbar-ffi's own, checked against the block ----
-    (@views) => {};
-    (@views
-        $(#[$vd:meta])* pub struct $V:ident < $lt:lifetime > { $( pub $vf:ident : $vt:ty ),* $(,)? }
-        $($rest:tt)*
-    ) => {
-        $(#[$vd])*
-        pub use $crate::plugin::__rt::views::$V;
-        const _: () = {
-            use $crate::types::*;
-            fn fields<$lt>(v: &$V<$lt>) {
-                $( let _: &$vt = &v.$vf; )*
+    // ---- views: the kind's own borrowed structs, read from and written into a call field by field ----
+    (@views $(
+        $(#[$vd:meta])* pub struct $V:ident < $lt:lifetime > { $( $(#[$vfd:meta])* pub $vf:ident : $vt:ty ),* $(,)? }
+    )*) => {
+        $(
+            $(#[$vd])*
+            #[derive(Clone, Copy)]
+            pub struct $V<$lt> { $( $(#[$vfd])* pub $vf: $vt ),* }
+            impl<$lt> $crate::call::Get<$lt> for $V<$lt> {
+                fn get(r: &mut $crate::call::Reader<$lt>) -> ::core::option::Option<Self> {
+                    ::core::option::Option::Some($V {
+                        $( $vf: <$vt as $crate::call::Get<$lt>>::get(r)?, )*
+                    })
+                }
             }
-            const fn sizes<$lt>() -> usize {
-                0 $( + ::core::mem::size_of::<$vt>() )*
+            impl<$lt> $crate::call::Put<$lt> for &$V<$lt> {
+                fn put(self, w: &mut $crate::call::Packer<$lt>) {
+                    $( <$vt as $crate::call::Put<$lt>>::put(self.$vf, w); )*
+                }
             }
-            let _: fn(&$V<'static>) = fields;
-            assert!(
-                sizes() == ::core::mem::size_of::<$V<'static>>(),
-                "the view's fields do not fill it"
-            );
-        };
-        $crate::kind! { @views $($rest)* }
+        )*
+        /// The views' wire text: names, field names, field types, in order.
+        const FP_VIEWS: &str = stringify!($( struct $V { $( $vf: $vt ),* } )*);
     };
 
     // ---- pods ----
-    (@pods) => {};
-    (@pods
+    (@pods $(
         $(#[$pd:meta])* pub struct $P:ident { $( $(#[$fd:meta])* pub $pf:ident : $pt:ty ),* $(,)? }
-        $($rest:tt)*
-    ) => {
-        $(#[$pd])*
-        #[repr(C)]
-        #[derive(
-            Clone,
-            Copy,
-            $crate::plugin::__rt::zerocopy::FromBytes,
-            $crate::plugin::__rt::zerocopy::IntoBytes,
-            $crate::plugin::__rt::zerocopy::Immutable,
-            $crate::plugin::__rt::zerocopy::KnownLayout,
-        )]
-        pub struct $P { $( $(#[$fd])* pub $pf: $pt ),* }
-        impl $crate::records::Pod for $P {}
-        $crate::kind! { @pods $($rest)* }
+    )*) => {
+        $(
+            $(#[$pd])*
+            #[repr(C)]
+            #[derive(
+                Clone,
+                Copy,
+                $crate::plugin::__rt::zerocopy::FromBytes,
+                $crate::plugin::__rt::zerocopy::IntoBytes,
+                $crate::plugin::__rt::zerocopy::Immutable,
+                $crate::plugin::__rt::zerocopy::KnownLayout,
+            )]
+            pub struct $P { $( $(#[$fd])* pub $pf: $pt ),* }
+            impl $crate::records::Pod for $P {}
+        )*
+        /// The records' wire text: names, field names, field types, in order.
+        const FP_PODS: &str = stringify!($( struct $P { $( $pf: $pt ),* } )*);
     };
 
     // ---- tags and consts ----
     (@tags $( $(#[$td:meta])* $TAG:ident = $tv:literal ; )*) => {
         $( $(#[$td])* pub const $TAG: u16 = $tv; )*
-        $( const _: () = assert!($TAG >= 0x0100 && $TAG <= 0x01FF, "a kind tag is outside 0x0100..=0x01FF"); )*
+        $( const _: () = assert!(
+            ($TAG >= 0x0100 && $TAG <= 0x01FF) || ($TAG >= 0x0200 && $TAG <= 0x4FFF),
+            "a kind tag is outside 0x0100..=0x4FFF"
+        ); )*
+        /// Every tag the kind declares, in declaration order.
+        pub const LIST: &[u16] = &[$($TAG),*];
+        /// The tags' wire text: names and numbers.
+        pub(super) const FP_TAGS: &str = stringify!($( $TAG = $tv; )*);
     };
     (@consts $( $(#[$cd:meta])* $C:ident : $ct:ty = $cv:expr ; )*) => {
         $( $(#[$cd])* pub const $C: $ct = $cv; )*
+        /// The constants' wire text: names, types and values.
+        const FP_CONSTS: &str = stringify!($( $C: $ct = $cv; )*);
     };
 
     // ---- methods: one at a time, in declaration order (= slot = M_ bit) ----
-    (@methods $ctx:tt [$($slot:tt)*] [$($items:tt)*] [$($sigs:tt)*]) => {
+    (@methods $ctx:tt [$($slot:tt)*] [$($items:tt)*] [$($sigs:tt)*] [$($gen:tt)*]) => {
         $crate::kind! { @trait $ctx [$($items)*] }
         /// Every method bit of the kind (`M_*` = `1 << slot`, in declaration order).
         pub const ALL: u64 = (1u64 << ($($slot)*)) - 1;
+        /// How many entries this kind's table has in this version.
+        pub const ENTRIES: usize = $($slot)*;
+        const _: () = assert!(ENTRIES <= 56, "a kind has at most 56 methods (one mask)");
         const _: () = assert!(REQUIRED & !ALL == 0, "REQUIRED names a bit no method has");
-        /// The kind fingerprint (IF §7.5): the header, docs, the four blocks and every method signature;
-        /// default bodies are not hashed.
-        pub const FP: u64 = $crate::fp::fp_parts(&[FP_HEAD.as_bytes(), stringify!($($sigs)*).as_bytes()]);
+        /// The kind's wire fingerprint (interface revision C.4, C.7): the header line, the views, records,
+        /// tags and constants, and every method signature. Names, numbers, field types and order; never a
+        /// comment, never a default body. This is what a stamp carries for the kind.
+        pub const FP: u64 = $crate::fp::fp_parts(&[
+            FP_HEAD.as_bytes(),
+            FP_VIEWS.as_bytes(),
+            FP_PODS.as_bytes(),
+            tag::FP_TAGS.as_bytes(),
+            FP_CONSTS.as_bytes(),
+            stringify!($($sigs)*).as_bytes(),
+        ]);
+        $crate::kind! { @finish $ctx $($gen)* }
     };
     // ---- `extras { items }`, after the last method: hand-written module items (the typed helpers, the host-side
-    // proxies, unit tests). They sit in the kind's module beside the emitted ones and are not in the FP text
-    // (IF §8: helpers are "outside the `kind!` block, so they are not hashed") ----
-    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+    // proxies, unit tests). They sit in the kind's module beside the emitted ones and are not in the FP text ----
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt $gen:tt
         extras { $($extra:item)* }
     ) => {
         $($extra)*
-        $crate::kind! { @methods $ctx $slot $items $sigs }
+        $crate::kind! { @methods $ctx $slot $items $sigs $gen }
     };
-    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt $gen:tt
         $(#[$md:meta])* sync open fn $name:ident ( & $slf:ident , $h:ident : &Host $($args:tt)* )
             -> Result<Session, Fail> $def:block
         $($rest:tt)*
     ) => {
-        $crate::kind! { @args [open $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [$def] [$($rest)*]] [] $($args)* }
+        $crate::kind! { @args [open $ctx $slot $items $sigs $gen [$(#[$md])*] $name $slf $h [] [$def] [$($rest)*]] [] $($args)* }
     };
-    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt $gen:tt
         $(#[$md:meta])* sync open fn $name:ident ( & $slf:ident , $h:ident : &Host $($args:tt)* )
             -> Result<Session, Fail> ;
         $($rest:tt)*
     ) => {
-        $crate::kind! { @args [open $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [] [$($rest)*]] [] $($args)* }
+        $crate::kind! { @args [open $ctx $slot $items $sigs $gen [$(#[$md])*] $name $slf $h [] [] [$($rest)*]] [] $($args)* }
     };
-    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt $gen:tt
         $(#[$md:meta])* sync end fn $name:ident ( & $slf:ident , $h:ident : &Host , $s:ident : Session $($args:tt)* )
             -> Result<(), Fail> ;
         $($rest:tt)*
     ) => {
-        $crate::kind! { @args [end $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [$s] [] [$($rest)*]] [] $($args)* }
+        $crate::kind! { @args [end $ctx $slot $items $sigs $gen [$(#[$md])*] $name $slf $h [$s] [] [$($rest)*]] [] $($args)* }
     };
-    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt $gen:tt
         $(#[$md:meta])* sync fn $name:ident ( & $slf:ident , $h:ident : &Host , $s:ident : &mut Session $($args:tt)* )
             -> Result<(), Fail> $def:block
         $($rest:tt)*
     ) => {
-        $crate::kind! { @args [on $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [$s] [$def] [$($rest)*]] [] $($args)* }
+        $crate::kind! { @args [on $ctx $slot $items $sigs $gen [$(#[$md])*] $name $slf $h [$s] [$def] [$($rest)*]] [] $($args)* }
     };
-    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt $gen:tt
         $(#[$md:meta])* sync fn $name:ident ( & $slf:ident , $h:ident : &Host , $s:ident : &mut Session $($args:tt)* )
             -> Result<(), Fail> ;
         $($rest:tt)*
     ) => {
-        $crate::kind! { @args [on $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [$s] [] [$($rest)*]] [] $($args)* }
+        $crate::kind! { @args [on $ctx $slot $items $sigs $gen [$(#[$md])*] $name $slf $h [$s] [] [$($rest)*]] [] $($args)* }
     };
-    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt $gen:tt
         $(#[$md:meta])* sync fn $name:ident ( & $slf:ident , $h:ident : &Host $($args:tt)* )
             -> Result<(), Fail> $def:block
         $($rest:tt)*
     ) => {
-        $crate::kind! { @args [call $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [$def] [$($rest)*]] [] $($args)* }
+        $crate::kind! { @args [call $ctx $slot $items $sigs $gen [$(#[$md])*] $name $slf $h [] [$def] [$($rest)*]] [] $($args)* }
     };
-    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt $gen:tt
         $(#[$md:meta])* sync fn $name:ident ( & $slf:ident , $h:ident : &Host $($args:tt)* )
             -> Result<(), Fail> ;
         $($rest:tt)*
     ) => {
-        $crate::kind! { @args [call $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [] [$($rest)*]] [] $($args)* }
+        $crate::kind! { @args [call $ctx $slot $items $sigs $gen [$(#[$md])*] $name $slf $h [] [] [$($rest)*]] [] $($args)* }
     };
-    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt $gen:tt
         $(#[$md:meta])* async fn $name:ident ( & $slf:ident , $h:ident : &'static Host $($args:tt)* )
             -> Result<Reply, Fail> $def:block
         $($rest:tt)*
     ) => {
-        $crate::kind! { @args [start $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [$def] [$($rest)*]] [] $($args)* }
+        $crate::kind! { @args [start $ctx $slot $items $sigs $gen [$(#[$md])*] $name $slf $h [] [$def] [$($rest)*]] [] $($args)* }
     };
-    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt
+    (@methods $ctx:tt $slot:tt $items:tt $sigs:tt $gen:tt
         $(#[$md:meta])* async fn $name:ident ( & $slf:ident , $h:ident : &'static Host $($args:tt)* )
             -> Result<Reply, Fail> ;
         $($rest:tt)*
     ) => {
-        $crate::kind! { @args [start $ctx $slot $items $sigs [$(#[$md])*] $name $slf $h [] [] [$($rest)*]] [] $($args)* }
+        $crate::kind! { @args [start $ctx $slot $items $sigs $gen [$(#[$md])*] $name $slf $h [] [] [$($rest)*]] [] $($args)* }
     };
 
-    // ---- arguments: each FFI shape as (name [raw entry type] [plugin type]); anything else does not match ----
+    // ---- arguments: each shape as (name mode [the author's type] [the read type] [the host's type]);
+    // anything else does not match ----
     (@args $st:tt [$($acc:tt)*] , $o:ident : &mut Out<'_> $(,)?) => {
         $crate::kind! { @gen $st [$($acc)*] [$o] }
     };
@@ -328,50 +332,58 @@ macro_rules! kind {
         $crate::kind! { @gen $st [$($acc)*] [] }
     };
     (@args $st:tt [$($acc:tt)*] , $a:ident : u32 $($rest:tt)*) => {
-        $crate::kind! { @args $st [$($acc)* ($a [u32] [u32])] $($rest)* }
+        $crate::kind! { @args $st [$($acc)* ($a val [u32] [u32] [u32])] $($rest)* }
     };
     (@args $st:tt [$($acc:tt)*] , $a:ident : u64 $($rest:tt)*) => {
-        $crate::kind! { @args $st [$($acc)* ($a [u64] [u64])] $($rest)* }
+        $crate::kind! { @args $st [$($acc)* ($a val [u64] [u64] [u64])] $($rest)* }
     };
     (@args $st:tt [$($acc:tt)*] , $a:ident : Bytes<'_> $($rest:tt)*) => {
-        $crate::kind! { @args $st [$($acc)* ($a [$crate::types::Bytes<'static>] [$crate::types::Bytes<'_>])] $($rest)* }
+        $crate::kind! { @args $st [$($acc)* ($a val [$crate::types::Bytes<'_>] [$crate::types::Bytes<'_>] [$crate::types::Bytes<'_>])] $($rest)* }
     };
     (@args $st:tt [$($acc:tt)*] , $a:ident : Str<'_> $($rest:tt)*) => {
-        $crate::kind! { @args $st [$($acc)* ($a [$crate::types::Str<'static>] [$crate::types::Str<'_>])] $($rest)* }
+        $crate::kind! { @args $st [$($acc)* ($a val [$crate::types::Str<'_>] [$crate::types::Str<'_>] [$crate::types::Str<'_>])] $($rest)* }
+    };
+    (@args $st:tt [$($acc:tt)*] , $a:ident : Slice<'_, Bytes<'_>> $($rest:tt)*) => {
+        $crate::kind! { @args $st [$($acc)* ($a val
+            [$crate::types::Slice<'_, $crate::types::Bytes<'_>>]
+            [$crate::types::Slice<'_, $crate::types::Bytes<'_>>]
+            [$crate::types::Slice<'_, $crate::types::Bytes<'_>>])] $($rest)* }
     };
     (@args $st:tt [$($acc:tt)*] , $a:ident : ChainBytes $($rest:tt)*) => {
-        $crate::kind! { @args $st [$($acc)* ($a [$crate::types::Bytes<'static>] [$crate::need::ChainBytes])] $($rest)* }
+        $crate::kind! { @args $st [$($acc)* ($a val [$crate::need::ChainBytes] [$crate::need::ChainBytes] [$crate::types::Bytes<'_>])] $($rest)* }
     };
     (@args $st:tt [$($acc:tt)*] , $a:ident : & $V:ident <'_> $($rest:tt)*) => {
-        $crate::kind! { @args $st [$($acc)* ($a [$crate::plugin::__rt::ViewRef<$V<'static>>] [&$V<'_>])] $($rest)* }
+        $crate::kind! { @args $st [$($acc)* ($a view [&$V<'_>] [$V<'_>] [&$V<'_>])] $($rest)* }
     };
 
-    // ---- one method: its trait item (accumulated), its FP text (accumulated) and its adapter (emitted) ----
-    (@gen [call $ctx:tt [$($slot:tt)*] [$($items:tt)*] [$($sigs:tt)*] [$(#[$md:meta])*] $name:ident $slf:ident $h:ident [] [$($def:block)?] [$($rest:tt)*]]
-        [$(($a:ident [$($raw:tt)*] [$($ty:tt)*]))*] [$o:ident]
+    // ---- one method: its trait item, its FP text and its generation record (accumulated) and its adapter (emitted) ----
+    (@gen [call $ctx:tt [$($slot:tt)*] [$($items:tt)*] [$($sigs:tt)*] [$($gen:tt)*] [$(#[$md:meta])*] $name:ident $slf:ident $h:ident [] [$($def:block)?] [$($rest:tt)*]]
+        [$(($a:ident $mode:ident [$($ty:tt)*] [$($rty:tt)*] [$($hty:tt)*]))*] [$o:ident]
     ) => {
-        $crate::kind! { @adapter call $ctx [$($slot)*] $name [$(([$($raw)*] [$($ty)*]))*] }
+        $crate::kind! { @adapter call $ctx [$($slot)*] $name [$(($a $mode [$($rty)*]))*] }
         $crate::kind! { @methods $ctx [$($slot)* + 1]
             [$($items)* $crate::kind! { @fn [$($def)?] $(#[$md])*
                 fn $name(&$slf, $h: &$crate::host::Host, $($a: $($ty)*,)* $o: &mut $crate::records::Out<'_>)
                     -> ::core::result::Result<(), $crate::fail::Fail> }]
-            [$($sigs)* $(#[$md])* sync fn $name($($a: $($ty)*),*) -> Result<(), Fail>;]
+            [$($sigs)* sync fn $name($($a: $($ty)*),*) -> Result<(), Fail>;]
+            [$($gen)* (plain $name [$($slot)*] [$(($a [$($hty)*]))*])]
             $($rest)*
         }
     };
-    (@gen [on $ctx:tt [$($slot:tt)*] [$($items:tt)*] [$($sigs:tt)*] [$(#[$md:meta])*] $name:ident $slf:ident $h:ident [$s:ident] [$($def:block)?] [$($rest:tt)*]]
-        [$(($a:ident [$($raw:tt)*] [$($ty:tt)*]))*] [$o:ident]
+    (@gen [on $ctx:tt [$($slot:tt)*] [$($items:tt)*] [$($sigs:tt)*] [$($gen:tt)*] [$(#[$md:meta])*] $name:ident $slf:ident $h:ident [$s:ident] [$($def:block)?] [$($rest:tt)*]]
+        [$(($a:ident $mode:ident [$($ty:tt)*] [$($rty:tt)*] [$($hty:tt)*]))*] [$o:ident]
     ) => {
-        $crate::kind! { @adapter on $ctx [$($slot)*] $name [$(([$($raw)*] [$($ty)*]))*] }
+        $crate::kind! { @adapter on $ctx [$($slot)*] $name [$(($a $mode [$($rty)*]))*] }
         $crate::kind! { @methods $ctx [$($slot)* + 1]
             [$($items)* $crate::kind! { @fn [$($def)?] $(#[$md])*
                 fn $name(&$slf, $h: &$crate::host::Host, $s: &mut Self::Session, $($a: $($ty)*,)* $o: &mut $crate::records::Out<'_>)
                     -> ::core::result::Result<(), $crate::fail::Fail> }]
-            [$($sigs)* $(#[$md])* sync fn $name(s: &mut Session $(, $a: $($ty)*)*) -> Result<(), Fail>;]
+            [$($sigs)* sync fn $name(s: &mut Session $(, $a: $($ty)*)*) -> Result<(), Fail>;]
+            [$($gen)* (on_session $name [$($slot)*] [$(($a [$($hty)*]))*])]
             $($rest)*
         }
     };
-    (@gen [end $ctx:tt [$($slot:tt)*] [$($items:tt)*] [$($sigs:tt)*] [$(#[$md:meta])*] $name:ident $slf:ident $h:ident [$s:ident] [] [$($rest:tt)*]]
+    (@gen [end $ctx:tt [$($slot:tt)*] [$($items:tt)*] [$($sigs:tt)*] [$($gen:tt)*] [$(#[$md:meta])*] $name:ident $slf:ident $h:ident [$s:ident] [] [$($rest:tt)*]]
         [] [$o:ident]
     ) => {
         $crate::kind! { @adapter end $ctx [$($slot)*] $name [] }
@@ -379,33 +391,36 @@ macro_rules! kind {
             [$($items)* $crate::kind! { @fn [] $(#[$md])*
                 fn $name(&$slf, $h: &$crate::host::Host, $s: Self::Session, $o: &mut $crate::records::Out<'_>)
                     -> ::core::result::Result<(), $crate::fail::Fail> }]
-            [$($sigs)* $(#[$md])* sync end fn $name(s: Session) -> Result<(), Fail>;]
+            [$($sigs)* sync end fn $name(s: Session) -> Result<(), Fail>;]
+            [$($gen)* (ends $name [$($slot)*] [])]
             $($rest)*
         }
     };
-    (@gen [open $ctx:tt [$($slot:tt)*] [$($items:tt)*] [$($sigs:tt)*] [$(#[$md:meta])*] $name:ident $slf:ident $h:ident [] [$($def:block)?] [$($rest:tt)*]]
-        [$(($a:ident [$($raw:tt)*] [$($ty:tt)*]))*] [$o:ident]
+    (@gen [open $ctx:tt [$($slot:tt)*] [$($items:tt)*] [$($sigs:tt)*] [$($gen:tt)*] [$(#[$md:meta])*] $name:ident $slf:ident $h:ident [] [$($def:block)?] [$($rest:tt)*]]
+        [$(($a:ident $mode:ident [$($ty:tt)*] [$($rty:tt)*] [$($hty:tt)*]))*] [$o:ident]
     ) => {
-        $crate::kind! { @adapter open $ctx [$($slot)*] $name [$(([$($raw)*] [$($ty)*]))*] }
+        $crate::kind! { @adapter open $ctx [$($slot)*] $name [$(($a $mode [$($rty)*]))*] }
         $crate::kind! { @methods $ctx [$($slot)* + 1]
             [$($items)* $crate::kind! { @fn [$($def)?] $(#[$md])*
                 fn $name(&$slf, $h: &$crate::host::Host, $($a: $($ty)*,)* $o: &mut $crate::records::Out<'_>)
                     -> ::core::result::Result<Self::Session, $crate::fail::Fail> }]
-            [$($sigs)* $(#[$md])* sync open fn $name($($a: $($ty)*),*) -> Result<Session, Fail>;]
+            [$($sigs)* sync open fn $name($($a: $($ty)*),*) -> Result<Session, Fail>;]
+            [$($gen)* (opens $name [$($slot)*] [$(($a [$($hty)*]))*])]
             $($rest)*
         }
     };
-    (@gen [start $ctx:tt [$($slot:tt)*] [$($items:tt)*] [$($sigs:tt)*] [$(#[$md:meta])*] $name:ident $slf:ident $h:ident [] [$($def:block)?] [$($rest:tt)*]]
-        [$(($a:ident [$($raw:tt)*] [$($ty:tt)*]))*] []
+    (@gen [start $ctx:tt [$($slot:tt)*] [$($items:tt)*] [$($sigs:tt)*] [$($gen:tt)*] [$(#[$md:meta])*] $name:ident $slf:ident $h:ident [] [$($def:block)?] [$($rest:tt)*]]
+        [$(($a:ident $mode:ident [$($ty:tt)*] [$($rty:tt)*] [$($hty:tt)*]))*] []
     ) => {
-        $crate::kind! { @adapter start $ctx [$($slot)*] $name [$(([$($raw)*] [$($ty)*]))*] }
+        $crate::kind! { @adapter start $ctx [$($slot)*] $name [$(($a $mode [$($rty)*]))*] }
         $crate::kind! { @methods $ctx [$($slot)* + 1]
             [$($items)* $crate::kind! { @async [$($def)?] $(#[$md])*
                 fn $name(&$slf, $h: &'static $crate::host::Host $(, $a: $($ty)*)*)
                     -> impl ::core::future::Future<
                         Output = ::core::result::Result<$crate::records::Reply, $crate::fail::Fail>,
                     > + Send }]
-            [$($sigs)* $(#[$md])* async fn $name($($a: $($ty)*),*) -> Result<Reply, Fail>;]
+            [$($sigs)* async fn $name($($a: $($ty)*),*) -> Result<Reply, Fail>;]
+            [$($gen)* (starts $name [$($slot)*] [$(($a [$($hty)*]))*])]
             $($rest)*
         }
     };
@@ -427,239 +442,178 @@ macro_rules! kind {
         }
     };
 
-    // ---- adapters: busbar-ffi's per-slot traits, each a call into `T` and `plugin`'s answer writes ----
-    (@adapter call [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident []) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Call0<{ $($slot)* }> for Shim<T> {
+    // ---- how an unpacked argument is handed to the author's method ----
+    (@pass val $a:ident) => { $a };
+    (@pass view $a:ident) => { &$a };
+
+    // ---- adapters: busbar-ffi's five per-slot traits. Each unpacks the call (`call::Reader`, by position)
+    // into the typed trait call; a call off its layout is FAULT ----
+    (@adapter call [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident [$(($a:ident $mode:ident [$($rty:tt)*]))*]) => {
+        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Plain<{ $($slot)* }> for Shim<T> {
             fn call(
                 p: &T,
                 h: &'static $crate::host::Host,
+                args: $crate::plugin::__rt::Args<'_>,
                 out: &mut $crate::plugin::__rt::Out<'_>,
             ) -> $crate::types::Status {
-                $crate::plugin::sync(out, |o| <T as $Trait>::$name(p, h, o))
-            }
-        }
-    };
-    (@adapter call [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident
-        [([$($r1:tt)*] $t1:tt)]
-    ) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Call1<$($r1)*, { $($slot)* }> for Shim<T> {
-            fn call(
-                p: &T,
-                h: &'static $crate::host::Host,
-                a1: $crate::plugin::__rt::Arg<'_, $($r1)*>,
-                out: &mut $crate::plugin::__rt::Out<'_>,
-            ) -> $crate::types::Status {
-                $crate::plugin::sync(out, |o| <T as $Trait>::$name(p, h, a1.get(), o))
-            }
-        }
-    };
-    (@adapter call [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident
-        [([$($r1:tt)*] $t1:tt) ([$($r2:tt)*] $t2:tt)]
-    ) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Call2<$($r1)*, $($r2)*, { $($slot)* }> for Shim<T> {
-            fn call(
-                p: &T,
-                h: &'static $crate::host::Host,
-                a1: $crate::plugin::__rt::Arg<'_, $($r1)*>,
-                a2: $crate::plugin::__rt::Arg<'_, $($r2)*>,
-                out: &mut $crate::plugin::__rt::Out<'_>,
-            ) -> $crate::types::Status {
-                $crate::plugin::sync(out, |o| <T as $Trait>::$name(p, h, a1.get(), a2.get(), o))
-            }
-        }
-    };
-    (@adapter call [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident
-        [([$($r1:tt)*] $t1:tt) ([$($r2:tt)*] $t2:tt) ([$($r3:tt)*] $t3:tt)]
-    ) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Call3<$($r1)*, $($r2)*, $($r3)*, { $($slot)* }> for Shim<T> {
-            fn call(
-                p: &T,
-                h: &'static $crate::host::Host,
-                a1: $crate::plugin::__rt::Arg<'_, $($r1)*>,
-                a2: $crate::plugin::__rt::Arg<'_, $($r2)*>,
-                a3: $crate::plugin::__rt::Arg<'_, $($r3)*>,
-                out: &mut $crate::plugin::__rt::Out<'_>,
-            ) -> $crate::types::Status {
-                $crate::plugin::sync(out, |o| <T as $Trait>::$name(p, h, a1.get(), a2.get(), a3.get(), o))
-            }
-        }
-    };
-    (@adapter open [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident
-        [([$($r1:tt)*] $t1:tt)]
-    ) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Opener1<$($r1)*, { $($slot)* }> for Shim<T> {
-            fn begin(
-                p: &T,
-                h: &'static $crate::host::Host,
-                a1: $crate::plugin::__rt::Arg<'_, $($r1)*>,
-                out: &mut $crate::plugin::__rt::Out<'_>,
-            ) -> ::core::result::Result<<Self as $crate::plugin::__rt::shim::Image>::Session, $crate::types::Status> {
-                $crate::plugin::opener(out, |o| <T as $Trait>::$name(p, h, a1.get(), o))
-            }
-        }
-    };
-    (@adapter open [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident
-        [([$($r1:tt)*] $t1:tt) ([$($r2:tt)*] $t2:tt)]
-    ) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Opener2<$($r1)*, $($r2)*, { $($slot)* }> for Shim<T> {
-            fn begin(
-                p: &T,
-                h: &'static $crate::host::Host,
-                a1: $crate::plugin::__rt::Arg<'_, $($r1)*>,
-                a2: $crate::plugin::__rt::Arg<'_, $($r2)*>,
-                out: &mut $crate::plugin::__rt::Out<'_>,
-            ) -> ::core::result::Result<<Self as $crate::plugin::__rt::shim::Image>::Session, $crate::types::Status> {
-                $crate::plugin::opener(out, |o| <T as $Trait>::$name(p, h, a1.get(), a2.get(), o))
-            }
-        }
-    };
-    (@adapter on [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident []) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Session0<{ $($slot)* }> for Shim<T> {
-            fn on(
-                p: &T,
-                h: &'static $crate::host::Host,
-                s: &mut <Self as $crate::plugin::__rt::shim::Image>::Session,
-                out: &mut $crate::plugin::__rt::Out<'_>,
-            ) -> $crate::types::Status {
-                $crate::plugin::sync(out, |o| <T as $Trait>::$name(p, h, s, o))
-            }
-        }
-    };
-    (@adapter on [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident
-        [([$($r1:tt)*] $t1:tt)]
-    ) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Session1<$($r1)*, { $($slot)* }> for Shim<T> {
-            fn on(
-                p: &T,
-                h: &'static $crate::host::Host,
-                s: &mut <Self as $crate::plugin::__rt::shim::Image>::Session,
-                a1: $crate::plugin::__rt::Arg<'_, $($r1)*>,
-                out: &mut $crate::plugin::__rt::Out<'_>,
-            ) -> $crate::types::Status {
-                $crate::plugin::sync(out, |o| <T as $Trait>::$name(p, h, s, a1.get(), o))
-            }
-        }
-    };
-    (@adapter on [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident
-        [([$($r1:tt)*] $t1:tt) ([$($r2:tt)*] $t2:tt)]
-    ) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Session2<$($r1)*, $($r2)*, { $($slot)* }> for Shim<T> {
-            fn on(
-                p: &T,
-                h: &'static $crate::host::Host,
-                s: &mut <Self as $crate::plugin::__rt::shim::Image>::Session,
-                a1: $crate::plugin::__rt::Arg<'_, $($r1)*>,
-                a2: $crate::plugin::__rt::Arg<'_, $($r2)*>,
-                out: &mut $crate::plugin::__rt::Out<'_>,
-            ) -> $crate::types::Status {
-                $crate::plugin::sync(out, |o| <T as $Trait>::$name(p, h, s, a1.get(), a2.get(), o))
-            }
-        }
-    };
-    (@adapter on [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident
-        [([$($r1:tt)*] $t1:tt) ([$($r2:tt)*] $t2:tt) ([$($r3:tt)*] $t3:tt)]
-    ) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Session3<$($r1)*, $($r2)*, $($r3)*, { $($slot)* }> for Shim<T> {
-            fn on(
-                p: &T,
-                h: &'static $crate::host::Host,
-                s: &mut <Self as $crate::plugin::__rt::shim::Image>::Session,
-                a1: $crate::plugin::__rt::Arg<'_, $($r1)*>,
-                a2: $crate::plugin::__rt::Arg<'_, $($r2)*>,
-                a3: $crate::plugin::__rt::Arg<'_, $($r3)*>,
-                out: &mut $crate::plugin::__rt::Out<'_>,
-            ) -> $crate::types::Status {
-                $crate::plugin::sync(out, |o| <T as $Trait>::$name(p, h, s, a1.get(), a2.get(), a3.get(), o))
-            }
-        }
-    };
-    (@adapter on [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident
-        [([$($r1:tt)*] $t1:tt) ([$($r2:tt)*] $t2:tt) ([$($r3:tt)*] $t3:tt) ([$($r4:tt)*] $t4:tt)]
-    ) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Session4<$($r1)*, $($r2)*, $($r3)*, $($r4)*, { $($slot)* }> for Shim<T> {
-            fn on(
-                p: &T,
-                h: &'static $crate::host::Host,
-                s: &mut <Self as $crate::plugin::__rt::shim::Image>::Session,
-                a1: $crate::plugin::__rt::Arg<'_, $($r1)*>,
-                a2: $crate::plugin::__rt::Arg<'_, $($r2)*>,
-                a3: $crate::plugin::__rt::Arg<'_, $($r3)*>,
-                a4: $crate::plugin::__rt::Arg<'_, $($r4)*>,
-                out: &mut $crate::plugin::__rt::Out<'_>,
-            ) -> $crate::types::Status {
+                #[allow(unused_mut, unused_variables)]
+                let mut r = $crate::call::Reader::new(args);
+                $(
+                    let $a: $($rty)* = match $crate::call::Get::get(&mut r) {
+                        ::core::option::Option::Some(v) => v,
+                        ::core::option::Option::None => return $crate::types::Status::FAULT,
+                    };
+                )*
                 $crate::plugin::sync(out, |o| {
-                    <T as $Trait>::$name(p, h, s, a1.get(), a2.get(), a3.get(), a4.get(), o)
+                    <T as $Trait>::$name(p, h, $($crate::kind!(@pass $mode $a),)* o)
+                })
+            }
+        }
+    };
+    (@adapter open [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident [$(($a:ident $mode:ident [$($rty:tt)*]))*]) => {
+        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Opens<{ $($slot)* }> for Shim<T> {
+            fn begin(
+                p: &T,
+                h: &'static $crate::host::Host,
+                args: $crate::plugin::__rt::Args<'_>,
+                out: &mut $crate::plugin::__rt::Out<'_>,
+            ) -> ::core::result::Result<<Self as $crate::plugin::__rt::shim::Image>::Session, $crate::types::Status> {
+                #[allow(unused_mut, unused_variables)]
+                let mut r = $crate::call::Reader::new(args);
+                $(
+                    let $a: $($rty)* = match $crate::call::Get::get(&mut r) {
+                        ::core::option::Option::Some(v) => v,
+                        ::core::option::Option::None => {
+                            return ::core::result::Result::Err($crate::types::Status::FAULT);
+                        }
+                    };
+                )*
+                $crate::plugin::opener(out, |o| {
+                    <T as $Trait>::$name(p, h, $($crate::kind!(@pass $mode $a),)* o)
+                })
+            }
+        }
+    };
+    (@adapter on [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident [$(($a:ident $mode:ident [$($rty:tt)*]))*]) => {
+        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::OnSession<{ $($slot)* }> for Shim<T> {
+            fn on(
+                p: &T,
+                h: &'static $crate::host::Host,
+                s: &mut <Self as $crate::plugin::__rt::shim::Image>::Session,
+                args: $crate::plugin::__rt::Args<'_>,
+                out: &mut $crate::plugin::__rt::Out<'_>,
+            ) -> $crate::types::Status {
+                #[allow(unused_mut, unused_variables)]
+                let mut r = $crate::call::Reader::new(args);
+                $(
+                    let $a: $($rty)* = match $crate::call::Get::get(&mut r) {
+                        ::core::option::Option::Some(v) => v,
+                        ::core::option::Option::None => return $crate::types::Status::FAULT,
+                    };
+                )*
+                $crate::plugin::sync(out, |o| {
+                    <T as $Trait>::$name(p, h, s, $($crate::kind!(@pass $mode $a),)* o)
                 })
             }
         }
     };
     (@adapter end [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident []) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::End0<{ $($slot)* }> for Shim<T> {
+        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Ends<{ $($slot)* }> for Shim<T> {
             fn end(
                 p: &T,
                 h: &'static $crate::host::Host,
                 s: <Self as $crate::plugin::__rt::shim::Image>::Session,
+                _args: $crate::plugin::__rt::Args<'_>,
                 out: &mut $crate::plugin::__rt::Out<'_>,
             ) -> $crate::types::Status {
                 $crate::plugin::sync(out, |o| <T as $Trait>::$name(p, h, s, o))
             }
         }
     };
-    (@adapter start [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident []) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Start0<{ $($slot)* }> for Shim<T> {
+    (@adapter start [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident [$(($a:ident $mode:ident [$($rty:tt)*]))*]) => {
+        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Starts<{ $($slot)* }> for Shim<T> {
             fn start<'i>(
                 p: &'i T,
                 h: &'static $crate::host::Host,
-            ) -> ($crate::plugin::__rt::ChainFut<'i, $crate::plugin::Outcome<T>>, $crate::bridge::Inbox) {
-                $crate::plugin::chain(<T as $Trait>::$name(p, h))
-            }
-        }
-    };
-    (@adapter start [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident
-        [([$($r1:tt)*] [$($t1:tt)*])]
-    ) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Start1<$($r1)*, { $($slot)* }> for Shim<T> {
-            fn start<'i>(
-                p: &'i T,
-                h: &'static $crate::host::Host,
-                a1: $($t1)*,
-            ) -> ($crate::plugin::__rt::ChainFut<'i, $crate::plugin::Outcome<T>>, $crate::bridge::Inbox) {
-                $crate::plugin::chain(<T as $Trait>::$name(p, h, a1))
-            }
-        }
-    };
-    (@adapter start [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident
-        [([$($r1:tt)*] [$($t1:tt)*]) ([$($r2:tt)*] [$($t2:tt)*])]
-    ) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Start2<$($r1)*, $($r2)*, { $($slot)* }> for Shim<T> {
-            fn start<'i>(
-                p: &'i T,
-                h: &'static $crate::host::Host,
-                a1: $($t1)*,
-                a2: $($t2)*,
-            ) -> ($crate::plugin::__rt::ChainFut<'i, $crate::plugin::Outcome<T>>, $crate::bridge::Inbox) {
-                $crate::plugin::chain(<T as $Trait>::$name(p, h, a1, a2))
-            }
-        }
-    };
-    (@adapter start [$Trait:ident $($x:tt)*] [$($slot:tt)*] $name:ident
-        [([$($r1:tt)*] [$($t1:tt)*]) ([$($r2:tt)*] [$($t2:tt)*]) ([$($r3:tt)*] [$($t3:tt)*]) ([$($r4:tt)*] [$($t4:tt)*])]
-    ) => {
-        impl<T: $Trait + $crate::plugin::Glue> $crate::plugin::__rt::shim::Start4<$($r1)*, $($r2)*, $($r3)*, $($r4)*, { $($slot)* }> for Shim<T> {
-            fn start<'i>(
-                p: &'i T,
-                h: &'static $crate::host::Host,
-                a1: $($t1)*,
-                a2: $($t2)*,
-                a3: $($t3)*,
-                a4: $($t4)*,
-            ) -> ($crate::plugin::__rt::ChainFut<'i, $crate::plugin::Outcome<T>>, $crate::bridge::Inbox) {
-                $crate::plugin::chain(<T as $Trait>::$name(p, h, a1, a2, a3, a4))
+                args: $crate::plugin::__rt::ChainArgs<'_>,
+            ) -> ::core::option::Option<(
+                $crate::plugin::__rt::ChainFut<'i, $crate::plugin::Outcome<T>>,
+                $crate::bridge::Inbox,
+            )> {
+                #[allow(unused_mut, unused_variables)]
+                let mut r = $crate::call::ChainReader::new(args);
+                $( let $a: $($rty)* = $crate::call::ChainGet::get(&mut r)?; )*
+                ::core::option::Option::Some($crate::plugin::chain(<T as $Trait>::$name(p, h $(, $a)*)))
             }
         }
     };
 
-    // ---- the entry: the IF §7.6 grammar ----
+    // ---- one table entry, by the method's role ----
+    (@entry plain $T:ident [$($slot:tt)*]) => { $crate::plugin::__rt::shim::plain::<Shim<$T>, { $($slot)* }>() };
+    (@entry opens $T:ident [$($slot:tt)*]) => { $crate::plugin::__rt::shim::opens::<Shim<$T>, { $($slot)* }>() };
+    (@entry on_session $T:ident [$($slot:tt)*]) => { $crate::plugin::__rt::shim::on_session::<Shim<$T>, { $($slot)* }>() };
+    (@entry ends $T:ident [$($slot:tt)*]) => { $crate::plugin::__rt::shim::ends::<Shim<$T>, { $($slot)* }>() };
+    (@entry starts $T:ident [$($slot:tt)*]) => { $crate::plugin::__rt::shim::starts::<Shim<$T>, { $($slot)* }>() };
+
+    // ---- after the last method: the table, the names, the slots and the host-side packers ----
+    (@finish [$Trait:ident $($x:tt)*]
+        $( ($role:ident $name:ident [$($slot:tt)*] [$(($a:ident [$($hty:tt)*]))*]) )*
+    ) => {
+        /// The method names, by table position.
+        pub const METHODS: [&str; ENTRIES] = [$(stringify!($name)),*];
+
+        /// Each method's position in the kind's table (= its `M_*` bit number).
+        #[allow(non_upper_case_globals)]
+        pub mod slot {
+            $( pub const $name: usize = $($slot)*; )*
+        }
+
+        /// The kind's table built over `Shim<T>`: an array of `ENTRIES` entries, every one busbar-ffi's
+        /// shim for this image, in declaration order.
+        pub const fn table<T: $Trait + $crate::plugin::Glue>(
+        ) -> $crate::plugin::__rt::Table<Shim<T>, ENTRIES> {
+            $crate::plugin::__rt::Table::new([
+                $( $crate::kind!(@entry $role T [$($slot)*]), )*
+            ])
+        }
+
+        /// The host's half of every method: build the method's `Call` on the stack (numbers into `head`,
+        /// texts and blobs by position, nothing copied) and hand it to `f` for the one crossing. `mono_ns`
+        /// is the host's one clock reading for the operation. The session of a session method is not an
+        /// argument: the host's session handle puts its own token in the call.
+        pub mod pack {
+            #[allow(unused_imports)]
+            use super::*;
+            $(
+                #[allow(clippy::too_many_arguments, unused_mut)]
+                pub fn $name<R>(
+                    mono_ns: u64,
+                    $( $a: $($hty)*, )*
+                    f: impl ::core::ops::FnOnce(&$crate::types::Call<'_>) -> R,
+                ) -> R {
+                    let mut w = $crate::call::Packer::new();
+                    $( $crate::call::Put::put($a, &mut w); )*
+                    w.with(mono_ns, f)
+                }
+            )*
+        }
+    };
+
+    // ---- the entry: the IF §7.6 grammar, with or without a retired list ----
+    (
+        $(#[$doc:meta])*
+        pub trait $Trait:ident : kind = $kind:tt , abi = $abi:tt $(, $session:ident)? {
+            views { $($views:tt)* }
+            pods { $($pods:tt)* }
+            tags { $($tags:tt)* }
+            consts { $($consts:tt)* }
+            retired { $($retired:tt)* }
+            $($methods:tt)*
+        }
+    ) => {
+        $crate::kind! { @number $kind [$(#[$doc])*] $Trait $kind $abi [$($session)?]
+            [$($views)*] [$($pods)*] [$($tags)*] [$($consts)*] [$($retired)*] [$($methods)*] }
+    };
     (
         $(#[$doc:meta])*
         pub trait $Trait:ident : kind = $kind:tt , abi = $abi:tt $(, $session:ident)? {
@@ -671,7 +625,7 @@ macro_rules! kind {
         }
     ) => {
         $crate::kind! { @number $kind [$(#[$doc])*] $Trait $kind $abi [$($session)?]
-            [$($views)*] [$($pods)*] [$($tags)*] [$($consts)*] [$($methods)*] }
+            [$($views)*] [$($pods)*] [$($tags)*] [$($consts)*] [] [$($methods)*] }
     };
 }
 
@@ -687,7 +641,7 @@ mod tests {
 
     crate::kind! {
         /// A store-shaped test kind.
-        pub trait TStore: kind = 1, abi = 3 {
+        pub trait TStore: kind = 1, abi = 4 {
             views {}
             pods {
                 /// One row head.
@@ -727,7 +681,7 @@ mod tests {
 
     crate::kind! {
         /// A secret-shaped test kind.
-        pub trait TSecret: kind = 2, abi = 2 {
+        pub trait TSecret: kind = 2, abi = 3 {
             views {}
             pods {}
             tags { VALUE = 0x0100; }
@@ -738,20 +692,20 @@ mod tests {
 
     crate::kind! {
         /// An auth-shaped test kind.
-        pub trait TAuth: kind = 3, abi = 3 {
+        pub trait TAuth: kind = 3, abi = 4 {
             views {
                 pub struct AuthReq<'a> {
                     pub flags: u32,
                     pub _r: u32,
-                    pub method: Str<'a>,
-                    pub path: Str<'a>,
-                    pub query: Str<'a>,
-                    pub authority: Str<'a>,
-                    pub headers: Slice<'a, Pair<'a>>,
-                    pub peer: Str<'a>,
-                    pub tls_peer_cert: Bytes<'a>,
-                    pub body: Bytes<'a>,
-                    pub issued: Bytes<'a>,
+                    pub method: crate::types::Str<'a>,
+                    pub path: crate::types::Str<'a>,
+                    pub query: crate::types::Str<'a>,
+                    pub authority: crate::types::Str<'a>,
+                    pub headers: crate::types::Slice<'a, crate::types::Pair<'a>>,
+                    pub peer: crate::types::Str<'a>,
+                    pub tls_peer_cert: crate::types::Bytes<'a>,
+                    pub body: crate::types::Bytes<'a>,
+                    pub issued: crate::types::Bytes<'a>,
                     pub now_s: u64,
                 }
             }
@@ -785,7 +739,7 @@ mod tests {
 
     crate::kind! {
         /// A hook-shaped test kind.
-        pub trait THook: kind = 4, abi = 2 {
+        pub trait THook: kind = 4, abi = 3 {
             views {}
             pods {}
             tags {}
@@ -803,7 +757,7 @@ mod tests {
 
     crate::kind! {
         /// An export-shaped test kind.
-        pub trait TExport: kind = 5, abi = 3 {
+        pub trait TExport: kind = 5, abi = 4 {
             views {}
             pods {}
             tags {}
@@ -827,33 +781,33 @@ mod tests {
 
     crate::kind! {
         /// A plane-shaped test kind.
-        pub trait TPlane: kind = 6, abi = 1, session {
+        pub trait TPlane: kind = 6, abi = 2, session {
             views {
                 pub struct PlaneReq<'a> {
                     pub route: u32,
                     pub flags: u32,
                     pub auth: u32,
                     pub _r: u32,
-                    pub method: Str<'a>,
-                    pub path: Str<'a>,
-                    pub query: Str<'a>,
-                    pub headers: Slice<'a, Pair<'a>>,
-                    pub identity: Bytes<'a>,
+                    pub method: crate::types::Str<'a>,
+                    pub path: crate::types::Str<'a>,
+                    pub query: crate::types::Str<'a>,
+                    pub headers: crate::types::Slice<'a, crate::types::Pair<'a>>,
+                    pub identity: crate::types::Bytes<'a>,
                     pub request_id: u64,
                     pub carrier: u64,
-                    pub work: Str<'a>,
-                    pub ticket_record: Bytes<'a>,
+                    pub work: crate::types::Str<'a>,
+                    pub ticket_record: crate::types::Bytes<'a>,
                 }
                 pub struct Target<'a> {
                     pub attempt: u32,
                     pub flags: u32,
-                    pub dialect: Str<'a>,
-                    pub model: Str<'a>,
-                    pub base_path: Str<'a>,
-                    pub upstream: Str<'a>,
-                    pub provider: Str<'a>,
-                    pub params: Slice<'a, Pair<'a>>,
-                    pub admission: Bytes<'a>,
+                    pub dialect: crate::types::Str<'a>,
+                    pub model: crate::types::Str<'a>,
+                    pub base_path: crate::types::Str<'a>,
+                    pub upstream: crate::types::Str<'a>,
+                    pub provider: crate::types::Str<'a>,
+                    pub params: crate::types::Slice<'a, crate::types::Pair<'a>>,
+                    pub admission: crate::types::Bytes<'a>,
                 }
             }
             pods {}
@@ -904,19 +858,19 @@ mod tests {
 
     crate::kind! {
         /// A transport-shaped test kind.
-        pub trait TTransport: kind = 7, abi = 1, session {
+        pub trait TTransport: kind = 7, abi = 2, session {
             views {
                 pub struct ConnInfo<'a> {
                     pub role: u32,
                     pub flags: u32,
-                    pub alpn: Str<'a>,
-                    pub sni: Str<'a>,
-                    pub peer: Str<'a>,
-                    pub local: Str<'a>,
-                    pub tls_peer_cert: Bytes<'a>,
-                    pub leftover: Bytes<'a>,
-                    pub head: Bytes<'a>,
-                    pub local_fingerprint: Str<'a>,
+                    pub alpn: crate::types::Str<'a>,
+                    pub sni: crate::types::Str<'a>,
+                    pub peer: crate::types::Str<'a>,
+                    pub local: crate::types::Str<'a>,
+                    pub tls_peer_cert: crate::types::Bytes<'a>,
+                    pub leftover: crate::types::Bytes<'a>,
+                    pub head: crate::types::Bytes<'a>,
+                    pub local_fingerprint: crate::types::Str<'a>,
                     pub mono_ns: u64,
                 }
             }
@@ -1155,7 +1109,7 @@ mod tests {
     fn the_fingerprint_covers_signatures_not_default_bodies() {
         mod a {
             crate::kind! {
-                pub trait B: kind = 2, abi = 2 {
+                pub trait B: kind = 2, abi = 3 {
                     views {} pods {} tags {} consts { REQUIRED: u64 = 0b1; }
                     async fn resolve(&self, h: &'static Host, reference: ChainBytes) -> Result<Reply, Fail> {
                         let _ = (h, reference);
@@ -1166,7 +1120,7 @@ mod tests {
         }
         mod b {
             crate::kind! {
-                pub trait B: kind = 2, abi = 2 {
+                pub trait B: kind = 2, abi = 3 {
                     views {} pods {} tags {} consts { REQUIRED: u64 = 0b1; }
                     async fn resolve(&self, h: &'static Host, reference: ChainBytes) -> Result<Reply, Fail> {
                         let _ = (h, reference);
@@ -1177,9 +1131,9 @@ mod tests {
         }
         mod c {
             crate::kind! {
-                pub trait B: kind = 2, abi = 2 {
+                pub trait B: kind = 2, abi = 3 {
                     views {} pods {} tags {} consts { REQUIRED: u64 = 0b1; }
-                    /// A doc line moves the fingerprint.
+                    /// A doc line does not move the fingerprint.
                     async fn resolve(&self, h: &'static Host, reference: ChainBytes) -> Result<Reply, Fail> {
                         let _ = (h, reference);
                         Err(crate::fail::Fail::unsupported())
@@ -1187,9 +1141,10 @@ mod tests {
                 }
             }
         }
-        // a and b differ only in a default body; b and c only by one doc line.
+        // a and b differ only in a default body; b and c only by one doc line. Neither is wire: a wording
+        // fix must not move a pin or refuse a plugin (interface revision C.1 cause 3, C.7).
         assert_eq!(a::secret::FP, b::secret::FP, "a default body is not hashed");
-        assert_ne!(b::secret::FP, c::secret::FP, "a method doc is hashed");
+        assert_eq!(b::secret::FP, c::secret::FP, "a comment is not hashed");
     }
 
     #[cfg(feature = "host")]
@@ -1198,7 +1153,7 @@ mod tests {
         use crate::host::HostFns;
         use crate::plugin::__rt::host::{OpenAnswer, OutLease};
         use crate::plugin::__rt::image::Admitted;
-        use crate::plugin::__rt::{Arg, kind as marker};
+        use crate::plugin::__rt::kind as marker;
         use crate::records::{FailRec, MaskRec, Records, U32Rec, tag};
         use crate::types::{Bytes, Slice, Status, Str};
 
@@ -1213,7 +1168,7 @@ mod tests {
                 log_level: None,
                 grow: None,
                 deployment: None,
-                migrate_admit: None,
+                service: None,
             },
         );
 
@@ -1304,7 +1259,11 @@ mod tests {
             };
             let mut out = lease();
             assert_eq!(
-                inst.call1(|vt| &vt.verify, Arg::view(&req), &mut out),
+                super::auth::pack::verify(0, &req, |call| inst.call(
+                    super::auth::slot::verify,
+                    call,
+                    &mut out
+                )),
                 Status::OK
             );
             assert_eq!(tags(&out), [super::auth::tag::GRANT]);
@@ -1312,7 +1271,11 @@ mod tests {
             req.flags = 1;
             let mut out = lease();
             assert_eq!(
-                inst.call1(|vt| &vt.verify, Arg::view(&req), &mut out),
+                super::auth::pack::verify(0, &req, |call| inst.call(
+                    super::auth::slot::verify,
+                    call,
+                    &mut out
+                )),
                 Status::REFUSED
             );
             assert_eq!(tags(&out), [tag::FAIL, tag::ERROR]);
@@ -1355,10 +1318,10 @@ mod tests {
             };
             drop(out);
             let mut out = lease();
-            let started = inst.start1(
-                |vt| &vt.resolve,
+            let started = inst.start(
+                super::secret::slot::resolve,
                 Default::default(),
-                |_| Arg::bytes(Bytes::EMPTY),
+                |_, cross| super::secret::pack::resolve(0, Bytes::EMPTY, cross),
                 &mut out,
             );
             assert!(matches!(started, Started::Done(Status::OK)));

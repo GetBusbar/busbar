@@ -430,7 +430,23 @@ pub trait HostExt {
     /// Round 31: the raw `migrate_admit`. Ok(()) on OK. REFUSED → Err(`Fail::refused(R_CONFIG)`), which the store
     /// returns unchanged from `open` before its first data, DDL or marker write; core substitutes its own text.
     fn migrate_admit(&self, recoverable: u64) -> Result<(), Fail>;
+    /// Core 3.0: one of a kind's own host services, by id (`service_id(kind, n)`, allotted by that kind's
+    /// contract). `call` carries the service's numbers, texts and blobs like any method call; the answer is
+    /// records written into `answer` (caller storage, at least `RawOut::MIN` bytes for a fixed answer).
+    /// Returns the status and the bytes written. A host without the entry, or an unknown id, is FAULT.
+    fn service(&self, id: u64, call: &crate::types::Call<'_>, answer: &mut [u8])
+    -> (Status, usize);
 }
+
+/// The id of host service `n` of kind `kind` (interface revision C.5): the kind code in the high half, so
+/// a kind gains a service without touching the host table or another kind's numbers.
+pub const fn service_id(kind: crate::types::KindCode, n: u32) -> u64 {
+    ((kind as u64) << 32) | n as u64
+}
+/// Store service 1: the store-open recoverable gate (was the host table's `migrate_admit`). Head: the
+/// recoverable count, `u64`. Answer: no records; OK admits, REFUSED does not.
+/// E.1: moves to the store contract crate with `HostExt::migrate_admit` when the crates are split.
+pub const SERVICE_STORE_MIGRATE_ADMIT: u64 = service_id(crate::types::KindCode::Store, 1);
 
 impl HostExt for Host {
     fn now_ns(&self) -> u64 {
@@ -443,6 +459,12 @@ impl HostExt for Host {
         self.now_ns() / 1_000_000_000
     }
     fn mono_ns(&self) -> u64 {
+        // Core 3.0: the host hands its one clock reading for the operation in with the call; inside an
+        // entry that is the answer, with no call back. Outside one (or from a host that gave none) ask.
+        let handed = busbar_ffi::shim::mono_ns();
+        if handed != 0 {
+            return handed;
+        }
         match self.fns().mono {
             Some(mono) => self.scoped(|ctx| mono(ctx)),
             None => 0,
@@ -672,15 +694,31 @@ impl HostExt for Host {
         (id.0 != [0; 16]).then_some(id)
     }
     fn migrate_admit(&self, recoverable: u64) -> Result<(), Fail> {
-        let admitted = match self.fns().migrate_admit {
-            Some(admit) => self.scoped(|ctx| admit(ctx, recoverable)) == Status::OK,
-            None => false,
-        };
-        if admitted {
+        let head = recoverable.to_le_bytes();
+        let call = crate::types::Call::new(0, &head, &[], &[]);
+        let mut answer = [0u8; busbar_ffi::RawOut::MIN];
+        if self
+            .service(SERVICE_STORE_MIGRATE_ADMIT, &call, &mut answer)
+            .0
+            == Status::OK
+        {
             Ok(())
         } else {
             Err(Fail::refused(refused::R_CONFIG))
         }
+    }
+    fn service(
+        &self,
+        id: u64,
+        call: &crate::types::Call<'_>,
+        answer: &mut [u8],
+    ) -> (Status, usize) {
+        let Some(service) = self.fns().service else {
+            return (Status::FAULT, 0);
+        };
+        let mut out = busbar_ffi::RawOut::over(answer);
+        let status = self.scoped(|ctx| service(ctx, id, call, &mut out));
+        (status, out.len())
     }
 }
 /// Constant-time compare, pure code (not a crypto primitive), for token and signature checks.
@@ -757,7 +795,7 @@ mod tests {
         log_level: None,
         grow: None,
         deployment: None,
-        migrate_admit: None,
+        service: None,
     };
     static HOST: Host = Host::new(
         0,

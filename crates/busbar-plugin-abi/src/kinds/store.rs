@@ -9,7 +9,7 @@ crate::kind! {
     /// STORE-TRANSACTIONS §2.5 M1 with G1 and G2 (§2.4 N1-N13), which origin/dev f6e2cf05d7 already carries
     /// (contract abi/store/v4.rs:443-458, persistence.rs `Decision` with Fenced/Stale, `commit(candidate, key:
     /// CommitKey)` :625; §16.146). The store converts its own physical format in `open` (§7.2, round 31), with its own driver.
-    pub trait Store: kind = 1, abi = 3 {
+    pub trait Store: kind = 1, abi = 4 {
         views {
         }
         pods {
@@ -244,6 +244,10 @@ crate::kind! {
         /// right after `open` returns INSTANCE and before any other method; the answer is cached for the
         /// instance's life (`PersistenceBackend::info`). Answer: exactly one INFO. An instance whose facts
         /// change (a different dataset after failover) is a new instance: core reopens it.
+        /// E.9: keep, implemented by every store image (the method has no default body, so each of
+        /// store-memory, -sqlite, -postgres, -mysql and -valkey states it). The candidate head (CAND_HEAD,
+        /// `CandHead`) is kept too: it is the first record of every `commit` request, written and read
+        /// through this module's helpers, which is why a word search of the images does not find it.
         sync fn info(&self, h: &Host, out: &mut Out<'_>) -> Result<(), Fail>;
 
         extras {
@@ -278,12 +282,11 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_READ), req, |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start1(|vt| &vt.read, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .start(slot::read, bufs, |b, cross| pack::read(crate::host_side::proxy::now(), b.get(at), cross), lease)
                             .into()
                     })
                 }
@@ -297,12 +300,11 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_SCAN), req, |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start1(|vt| &vt.scan, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .start(slot::scan, bufs, |b, cross| pack::scan(crate::host_side::proxy::now(), b.get(at), cross), lease)
                             .into()
                     })
                 }
@@ -316,12 +318,11 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_COMMIT), req, |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start1(|vt| &vt.commit, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .start(slot::commit, bufs, |b, cross| pack::commit(crate::host_side::proxy::now(), b.get(at), cross), lease)
                             .into()
                     })
                 }
@@ -335,12 +336,11 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_CLOCK), req, |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start1(|vt| &vt.clock, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .start(slot::clock, bufs, |b, cross| pack::clock(crate::host_side::proxy::now(), b.get(at), cross), lease)
                             .into()
                     })
                 }
@@ -350,7 +350,7 @@ crate::kind! {
                     buf: &'o mut crate::host_side::pool::PooledOut,
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_INFO), buf, |lease| {
-                        self.live.call0(|vt| &vt.info, lease)
+                        pack::info(crate::host_side::proxy::now(), |call| self.live.call(slot::info, call, lease))
                     })
                 }
 

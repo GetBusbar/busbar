@@ -36,6 +36,7 @@ macro_rules! mechanism {
 
 #[doc(hidden)]
 pub mod bridge;
+pub mod call;
 pub mod fail;
 pub mod fallback_usage;
 pub mod fp;
@@ -58,6 +59,7 @@ pub mod slots;
 pub mod stamp;
 pub mod types;
 pub mod versions;
+pub mod vocab;
 
 pub use kinds::auth::{Auth, auth};
 pub use kinds::export::{Export, export};

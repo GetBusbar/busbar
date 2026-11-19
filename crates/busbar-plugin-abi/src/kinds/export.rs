@@ -6,7 +6,7 @@
 crate::kind! {
     /// An exporter ships what core hands it. Core owns batching, retries, backoff, drop policy and which streams go where.
     /// Round 33: core also mints every delivery's identity and decides custody; the plugin reports the level it reached.
-    pub trait Export: kind = 5, abi = 3 {
+    pub trait Export: kind = 5, abi = 4 {
         views {
         }
         pods {
@@ -85,6 +85,11 @@ crate::kind! {
             D_SCOPE = 0x0181;
             D_RECORDER = 0x0182;
             D_DELIVERY = 0x0183;
+            /// Export 4.0: the export-only describe item that left the core contract (the generic 0x0048 is
+            /// retired there). A config position (RFC 6901 pointer text, `*` = every array element; `""` =
+            /// the whole bag) that holds a file-sink destination (`{path, rotate_mb?, keep?}`). Core rewrites
+            /// it to `{"$dest": n}` before `check` and `open`.
+            D_DEST_PATH = 0x4000;
         }
         consts {
             REQUIRED: u64 = 0;
@@ -153,7 +158,7 @@ crate::kind! {
         /// not sync). On STREAM_CONTENT, and on every `confirm`, core keeps only a Fail's code and facts and records
         /// its own fixed text, never the plugin's (content never enters engine records). Round 34: an ERROR number
         /// on those answers is accepted and dropped (no `plugin_diag`), never FAULT.
-        async fn deliver(&self, h: &'static Host, stream: u32, delivery: u64, attempt: u32, batch: ChainBytes) -> Result<Reply, Fail> { let _ = (h, stream, delivery, attempt, batch); Err(crate::fail::Fail::unsupported()) }
+        async fn deliver(&self, h: &'static Host, stream: u32, delivery: u64, attempt: u32, lines: u32, batch: ChainBytes) -> Result<Reply, Fail> { let _ = (h, stream, delivery, attempt, lines, batch); Err(crate::fail::Fail::unsupported()) }
         /// Pull exporters: render the snapshot of one declared `scope` (D_SCOPE) that core serves at that scope's
         /// path (core owns the listener, the route and its auth). Answer: CONTENT_TYPE, BODY.
         sync fn render(&self, h: &Host, scope: u32, snapshot: Bytes<'_>, out: &mut Out<'_>) -> Result<(), Fail> { let _ = (h, scope, snapshot, out); Err(crate::fail::Fail::unsupported()) }
@@ -193,20 +198,22 @@ crate::kind! {
                     stream: u32,
                     delivery: u64,
                     attempt: u32,
+                    lines: u32,
                 ) -> impl core::future::Future<
                     Output = Result<crate::host_side::answer::OwnedAnswer, crate::fail::CallError>,
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_DELIVER), req, move |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start4(
-                                |vt| &vt.deliver,
+                            .start(
+                                slot::deliver,
                                 bufs,
-                                |b| (Arg::u32(stream), Arg::u64(delivery), Arg::u32(attempt), Arg::bytes(b.get(at))),
+                                |b, cross| {
+                                    pack::deliver(crate::host_side::proxy::now(), stream, delivery, attempt, lines, b.get(at), cross)
+                                },
                                 lease,
                             )
                             .into()
@@ -219,10 +226,11 @@ crate::kind! {
                     scope: u32,
                     snapshot: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_RENDER), buf, |lease| {
-                        self.live.call2(|vt| &vt.render, Arg::u32(scope), Arg::bytes(Bytes::new(snapshot)), lease)
+                        pack::render(crate::host_side::proxy::now(), scope, Bytes::new(snapshot), |call| {
+                            self.live.call(slot::render, call, lease)
+                        })
                     })
                 }
 
@@ -236,14 +244,13 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_CONFIRM), req, move |req, lease| {
                         let _ = req;
                         self.live
-                            .start1(
-                                |vt| &vt.confirm,
+                            .start(
+                                slot::confirm,
                                 busbar_ffi::host::ChainBufs::new(),
-                                |_| Arg::u64(delivery),
+                                |_, cross| pack::confirm(crate::host_side::proxy::now(), delivery, cross),
                                 lease,
                             )
                             .into()
