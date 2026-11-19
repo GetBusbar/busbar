@@ -3461,8 +3461,6 @@ fn framed_by(
 #[path = "serve_lines.rs"]
 pub(crate) mod lines;
 
-#[path = "serve_framed.rs"]
-mod serve_framed;
 
 #[path = "serve_datagram.rs"]
 pub(crate) mod serve_datagram;
