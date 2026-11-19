@@ -1981,7 +1981,7 @@ act yet).
 | `advanced.wait_for_commit` | boolean | `false` | `true` / `false` | Whether an answer waits until its audit, ledger and usage records are committed. *Arriving with the audit change.* | to be confirmed |
 | `advanced.usage_flush_interval_ms` | integer, milliseconds | `100` | 0 to 946,080,000,000 (30 years); `0` is not refused but should not be used | How often in-memory usage and budget counters are written out. | restart |
 | `advanced.rate_sweep_interval` | integer, count of admissions | `256` | 1 to 4,294,967,295; `0` is refused | How often a budget table drops entries that are no longer needed. | on apply |
-| `advanced.worker_threads` | integer, threads | one per CPU core | 1 to 128; `0` is refused or ignored (see entry); above 128 is lowered to 128 | Number of data-plane worker threads. | restart |
+| `advanced.worker_threads` | integer, threads | one per CPU core | 1 to 65,535; `0` means the default, and above 65,535 is lowered to 65,535, each with one warning (`BUSBAR-9008`) | Number of data-plane worker threads. | restart |
 | `advanced.upstream_http1_only` | boolean | `false` | `true` / `false` | Pin the upstream HTTP client to HTTP/1.1. | restart |
 | `advanced.upstream_h2_prior_knowledge` | boolean | `false` | `true` / `false` | Speak HTTP/2 without negotiation to cleartext upstreams. | restart |
 | `advanced.response_headers.server_timing` | boolean | `false` | `true` / `false` | Add `Server-Timing: busbar;dur=<ms>` to responses. | restart |
@@ -2071,13 +2071,18 @@ advanced:
 
 The number of data-plane worker threads; each runs its own runtime and listener. Left out, the
 engine uses one per available CPU core. `TOKIO_WORKER_THREADS` is read as a fallback when the key
-is absent. The engine never uses more than 128, and silently lowers a larger value to 128.
+is absent. The engine never starts more than 65,535, which is the most the Tokio scheduler can
+run (it keeps its count of searching workers in 16 bits); a larger value is lowered to 65,535.
 
 When to change it: on a container with a CPU limit far below the host's core count, set it to the
 limit; on a shared host, to the cores you want to give the engine. Cost: too few threads cap
 throughput; too many on a limited CPU quota add scheduling overhead.
 
-`0` is not a valid count. At boot it is ignored with a warning (`BUSBAR-9008`) and the default is used; the admin document edit refuses it.
+`0` is not a valid count. One rule applies wherever the value is read (the boot read of
+`config.yaml`, the runtime built after recovery, and the admin document edit): `0` is converted to
+the default, a count above 65,535 to 65,535, and each conversion writes one warning line
+(`BUSBAR-9008`). Nothing is refused: an edit carrying `0` or a larger count is accepted and stored as
+written.
 
 ```yaml
 advanced:

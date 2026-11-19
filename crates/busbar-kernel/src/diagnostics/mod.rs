@@ -1249,8 +1249,8 @@ diagnostics! {
     /// An explicitly-set worker-thread count (env or config) is not a positive integer; default used.
     WORKER_THREADS_INVALID = 9008, Boot, Actionable, "worker-threads-invalid", "1.6.0", false,
         "Configured worker-thread count is invalid (ignored; default used)",
-        "An explicitly-set data-plane worker count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` — is not a positive integer (e.g. `0`, or non-numeric), so busbar IGNORES it and boots on the default worker count (one per core). The operator's intended worker count is NOT in effect. Emitted pre-tracing, to stderr, at boot.",
-        "Set the data-plane worker count to a positive integer (at least 1) or remove it to accept the default. The gateway runs, but on the default worker count, not the value provided.";
+        "An explicitly-set data-plane worker count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` — is out of range or not a positive integer. `0` and non-numeric text are IGNORED and busbar boots on the default worker count (one per core); a count above 65,535, the most the runtime can run, is lowered to 65,535. The operator's intended worker count is NOT in effect. Said once at boot (pre-tracing, to stderr), and in the log when a configuration edit or the recovered document carries such a value; an edit is never refused for it.",
+        "Set the data-plane worker count to an integer from 1 to 65,535 or remove it to accept the default. The gateway runs, but not on the value provided.";
 
     /// A shutdown-signal handler could not be installed; that signal will not trigger graceful drain.
     SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED = 9009, Boot, Actionable, "shutdown-signal-handler-install-failed", "1.6.0", false,

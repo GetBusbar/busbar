@@ -376,13 +376,42 @@ pub fn default_usage_flush_interval_ms() -> u64 {
     DEFAULT_USAGE_FLUSH_INTERVAL_MS
 }
 
-/// The most worker threads the engine will start.
+/// The most worker threads the engine will start: the most the Tokio multi-thread scheduler can
+/// run. It keeps its count of searching workers in the low 16 bits of one atomic word
+/// (`UNPARK_SHIFT = 16` in `runtime/scheduler/multi_thread/idle.rs`), so 65,535 is its limit.
+/// The engine's own earlier ceiling of 128 protected an audit write-through reserve that no longer
+/// exists, so nothing the engine owns bounds the count any lower.
 pub const MAX_WORKER_THREADS: usize = u16::MAX as usize;
 
-/// The one rule for `advanced.worker_threads`; the signature is in place and the rule is not yet.
+/// The one rule for `advanced.worker_threads`, used wherever the value is read (boot, the
+/// post-recovery runtime, the admin document edit). The value is converted, never refused:
+///
+/// * absent: the default (one worker per core), no log line;
+/// * `0`: not a worker count, so the default, with the returned line;
+/// * above [`MAX_WORKER_THREADS`]: the ceiling, with the returned line.
+///
+/// Returns the count to use (`None` is the default) and the one log line when a conversion was
+/// made. The caller logs the line; it is the same text everywhere.
 #[must_use]
 pub fn effective_worker_threads(configured: Option<usize>) -> (Option<usize>, Option<String>) {
-    (configured, None)
+    match configured {
+        Some(0) => (
+            None,
+            Some(
+                "advanced.worker_threads: 0 is not a worker count (it must be >= 1); using the \
+                 default of one per core"
+                    .to_owned(),
+            ),
+        ),
+        Some(n) if n > MAX_WORKER_THREADS => (
+            Some(MAX_WORKER_THREADS),
+            Some(format!(
+                "advanced.worker_threads: {n} is above the most the runtime can run \
+                 ({MAX_WORKER_THREADS}); using {MAX_WORKER_THREADS}"
+            )),
+        ),
+        other => (other, None),
+    }
 }
 
 /// The `advanced.response_headers:` block: opt-in toggles for every busbar-INJECTED

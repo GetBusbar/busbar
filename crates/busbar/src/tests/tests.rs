@@ -39,13 +39,19 @@ fn worker_threads_from_env_parses_valid_rejects_invalid() {
 }
 
 #[test]
-fn validate_worker_threads_config_diagnoses_zero() {
-    assert!(
-        validate_worker_threads_config(Some(0)).is_err(),
-        "worker_threads: 0 must be diagnosed, not silently dropped"
+fn worker_threads_zero_is_diagnosed_with_the_one_rule_line() {
+    let (workers, note) = config::sections::effective_worker_threads(Some(0));
+    assert_eq!(workers, None);
+    let line = worker_threads_warning(&note.expect("worker_threads: 0 must be diagnosed"));
+    assert!(line.contains("BUSBAR-9008"), "{line}");
+    assert_eq!(
+        config::sections::effective_worker_threads(Some(4)),
+        (Some(4), None)
     );
-    assert_eq!(validate_worker_threads_config(Some(4)), Ok(Some(4)));
-    assert_eq!(validate_worker_threads_config(None), Ok(None));
+    assert_eq!(
+        config::sections::effective_worker_threads(None),
+        (None, None)
+    );
 }
 
 #[test]

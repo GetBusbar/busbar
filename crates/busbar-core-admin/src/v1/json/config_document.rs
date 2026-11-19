@@ -306,8 +306,15 @@ pub(super) async fn apply(
             if let Some(rejection) = doc.document_patch.as_ref().and_then(|patch| document_patch_rejection(patch, Some(&loaded))) {
                 return Ok(Outcome::Value(Err(rejection)));
             }
-            if loaded.deploy.advanced.worker_threads == Some(0) {
-                return Err(AdminError::Validation("advanced.worker_threads must be positive".into()));
+            // One rule for the value everywhere it is read: converted, never refused. The edit is
+            // stored as written; the runtime applies the rule at its next boot.
+            if let (_, Some(note)) = busbar_kernel::config::sections::effective_worker_threads(
+                loaded.deploy.advanced.worker_threads,
+            ) {
+                tracing::warn!(
+                    "{}",
+                    busbar_kernel::diagnostics::WORKER_THREADS_INVALID.coded(note)
+                );
             }
             loaded.resource_ownership.validate_named_maps(&doc)
                 .map_err(AdminError::Validation)?;
