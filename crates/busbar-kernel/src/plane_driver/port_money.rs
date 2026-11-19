@@ -203,6 +203,12 @@ impl PortMoney {
         counted
     }
 
+    /// The member that served the unit: its money lane and the provider it was sent to. The
+    /// unit's counts are priced, ledgered and metered under that lane from here on.
+    pub fn served(&self, ctx: &UnitCtx, lane: &str, provider: &str) {
+        self.seam.served(ctx, lane, provider);
+    }
+
     /// A running unit's cumulative usage: the budget decides whether the stream goes on.
     pub fn checkpoint(
         &self,

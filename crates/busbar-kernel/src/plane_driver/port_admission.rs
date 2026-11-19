@@ -187,6 +187,28 @@ impl Pending {
     pub fn admitted(&self) -> Option<&AdmittedUnit> {
         self.admitted.get()
     }
+    /// Whether the admitted request's rate card is present and names no price for `lane`. A
+    /// member on such a lane is never dialled: a call the engine cannot price is refused before
+    /// it is served, never served as free (#42, fail-closed). No admission yet reads as unpriced.
+    pub(crate) fn lane_unpriced(&self, lane: &str) -> bool {
+        self.admitted
+            .get()
+            .is_none_or(|admitted| admitted.request.cost().model_unpriced(lane))
+    }
+    /// The member that served an ordinary unit: its counts are priced, ledgered and metered under
+    /// `lane` with `provider`. A selected unit files each attempt under its own partition.
+    pub(crate) fn served(&self, lane: &str, provider: &str) {
+        if let Some(admitted) = self
+            .admitted
+            .get()
+            .filter(|admitted| admitted.selected.is_none())
+        {
+            admitted
+                .unit
+                .money
+                .served(&admitted.unit.ctx, lane, provider);
+        }
+    }
     pub(crate) fn accept_admission(&self) -> Result<(), SessionError> {
         let admitted = self.admitted.get().ok_or(SessionError::NotDriven)?;
         let mut held = admitted.rollback.lock().unwrap();

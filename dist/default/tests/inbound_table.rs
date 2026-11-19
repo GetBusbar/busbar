@@ -683,7 +683,7 @@ fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
         match row.outcome.as_str() {
             "answers" if row.admin => {
                 if matches!(got.status, 401 | 403 | 405 | 500 | 501)
-                    || (got.status == 404 && got.body == not_found.body)
+                    || (got.status == 404 && same_refusal(&got.body, &not_found.body))
                 {
                     failures.push(format!("{label}: not served, answered {} {}", got.status, String::from_utf8_lossy(&got.body)));
                 } else {
@@ -703,7 +703,7 @@ fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
                         "{label}: the reason `{}` is not in docs/migration-1.6.md",
                         row.reason
                     ));
-                } else if got.status != 404 || got.body != not_found.body {
+                } else if got.status != 404 || !same_refusal(&got.body, &not_found.body) {
                     failures.push(format!(
                         "{label}: refused on purpose but answered {} {} (the router replies {} {})",
                         got.status,
@@ -756,4 +756,16 @@ fn inbound_table_parses() {
             assert_eq!(none.status, good.status, "{}: a public route", row.id);
         }
     }
+}
+
+/// Two admin error bodies are the same refusal when they differ only in `request_id`.
+fn same_refusal(a: &[u8], b: &[u8]) -> bool {
+    fn without_request_id(body: &[u8]) -> String {
+        let text = String::from_utf8_lossy(body).into_owned();
+        match text.split_once("\"request_id\":\"") {
+            Some((head, rest)) => format!("{head}{}", rest.split_once('"').map_or("", |r| r.1)),
+            None => text,
+        }
+    }
+    without_request_id(a) == without_request_id(b)
 }
