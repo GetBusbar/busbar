@@ -154,7 +154,10 @@ pub fn generate() -> String {
         "offsetof(bb_call, mono_ns)",
         busbar_ffi::vt::CALL_MONO_NS_AT as u64,
     );
-    eq("offsetof(bb_call, head)", busbar_ffi::vt::CALL_HEAD_AT as u64);
+    eq(
+        "offsetof(bb_call, head)",
+        busbar_ffi::vt::CALL_HEAD_AT as u64,
+    );
     eq(
         "offsetof(bb_call, texts)",
         busbar_ffi::vt::CALL_TEXTS_AT as u64,

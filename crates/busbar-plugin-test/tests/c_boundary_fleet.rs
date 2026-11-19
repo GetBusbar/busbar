@@ -75,8 +75,8 @@ fn secret_the_suite_passes_over_the_reference() {
 /// answer, and is the adapter's `lease_s`, to the second.
 #[test]
 fn secret_a_stated_lease_reaches_the_engine_as_lease_s() {
-    let h =
-        Harness::admit(&ref_secret::PLUGIN, FakeNeeds::new()).expect("the reference is admitted");
+    let h = Harness::admit(ref_secret::PLUGIN.plugin(), FakeNeeds::new())
+        .expect("the reference is admitted");
     let leased = h
         .open_secret("leased", br#"{"db":"hunter2-zq81","lease_s":"300"}"#)
         .expect("opens");
@@ -90,8 +90,8 @@ fn secret_a_stated_lease_reaches_the_engine_as_lease_s() {
 /// A source that states no lease writes no fact: the engine's own TTL applies, and `lease_s` is `None`, never 0.
 #[test]
 fn secret_no_stated_lease_is_none_not_zero() {
-    let h =
-        Harness::admit(&ref_secret::PLUGIN, FakeNeeds::new()).expect("the reference is admitted");
+    let h = Harness::admit(ref_secret::PLUGIN.plugin(), FakeNeeds::new())
+        .expect("the reference is admitted");
     let plain = h
         .open_secret("plain", br#"{"db":"hunter2-zq81"}"#)
         .expect("opens");
@@ -130,8 +130,8 @@ fn export_the_suite_passes_over_the_reference() {
 /// it counts, and every other number of the head arrives where the layout puts it.
 #[test]
 fn export_deliver_states_the_batchs_line_count_and_every_head_number() {
-    let h =
-        Harness::admit(&ref_export::PLUGIN, FakeNeeds::new()).expect("the reference is admitted");
+    let h = Harness::admit(ref_export::PLUGIN.plugin(), FakeNeeds::new())
+        .expect("the reference is admitted");
     let port = h.open_export("sink", b"{}").expect("opens");
     let many: Vec<String> = (0..200).map(|i| format!("{{\"n\":{i}}}")).collect();
     let many: Vec<&[u8]> = many.iter().map(String::as_bytes).collect();
@@ -158,9 +158,7 @@ fn export_deliver_states_the_batchs_line_count_and_every_head_number() {
             }
             other => panic!("batch {i}: the reference only ACKs, got {other:?}"),
         }
-        let head = ref_export::LAST
-            .lock()
-            .expect("the reference's record")
+        let head = (*ref_export::LAST.lock().expect("the reference's record"))
             .expect("the reference saw the delivery");
         assert_eq!(
             head,
@@ -208,7 +206,8 @@ fn view<'a>(signals: &'a [(u32, FactRef<'a>)], candidates: &'a [CandidateIn<'a>]
 /// three decision points, and each of the three stages reaches it as its own number at POINT_NOTIFY.
 #[test]
 fn hook_the_three_stages_cross_as_themselves_and_no_fact_is_declared() {
-    let h = Harness::admit(&ref_hook::PLUGIN, FakeNeeds::new()).expect("the reference is admitted");
+    let h = Harness::admit(ref_hook::PLUGIN.plugin(), FakeNeeds::new())
+        .expect("the reference is admitted");
     let port = h.open_hook("hook", b"{}").expect("opens");
     assert_eq!(
         port.facts(),
@@ -244,7 +243,8 @@ fn hook_the_three_stages_cross_as_themselves_and_no_fact_is_declared() {
 /// candidates in the order the view listed them, and the adapter returns that order unchanged.
 #[test]
 fn hook_route_hands_over_the_candidates_in_view_order() {
-    let h = Harness::admit(&ref_hook::PLUGIN, FakeNeeds::new()).expect("the reference is admitted");
+    let h = Harness::admit(ref_hook::PLUGIN.plugin(), FakeNeeds::new())
+        .expect("the reference is admitted");
     let port = h.open_hook("hook", b"{}").expect("opens");
     let rec = |index| CandidateRec {
         index,
