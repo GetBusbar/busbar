@@ -27,6 +27,7 @@ pub mod effect;
 pub mod native_admin;
 pub mod native_chain;
 pub mod native_data;
+pub(crate) mod native_dpop;
 pub mod native_keys;
 pub mod native_policy;
 pub mod native_signed;

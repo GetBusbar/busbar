@@ -95,27 +95,82 @@ impl Registrations {
 }
 
 impl AsPlane {
+    /// The door's judgement of a DPoP presentation: [`Self::prove_dpop`] for this server's own
+    /// origin and the request's path.
     pub(crate) async fn verify_dpop(
         &self,
         presented: busbar_kernel::oauth_as::seam::DpopPresentation<'_>,
     ) -> bool {
-        use base64::Engine as _;
-        use oauth_as::store::Storage as _;
+        use busbar_kernel::oauth_as::seam::{DpopAtResource, DpopVerdict};
         let htu = format!("{}{}", self.identity.origin(), presented.path);
-        let Ok(proof) = oauth_as::dpop::verify_proof_with_crypto(
+        self.prove_dpop(DpopAtResource {
+            method: presented.method,
+            htu: &htu,
+            token: presented.token,
+            proof: presented.proof,
+        })
+        .await
+            == DpopVerdict::Proven
+    }
+
+    /// One DPoP presentation at a protected resource of this deployment, judged for the URL the
+    /// resource states (`busbar_kernel::oauth_as::seam::DpopVerdict`), in RFC 9449 s4.3's order:
+    ///
+    /// 1. the proof itself, by the library this server judges its own token endpoint's proofs
+    ///    with: one compact JWS of at most `oauth_as::dpop::MAX_PROOF_BYTES`, `typ` `dpop+jwt`,
+    ///    an asymmetric `alg` this server verifies (ES256, PS256: `dpop_verifiers`), a public
+    ///    `jwk` of that algorithm, the signature under that key, `htm` the method, `htu` the URL
+    ///    (query and fragment ignored, scheme and host without case), `iat` no older than
+    ///    `oauth_as::dpop::MAX_PROOF_AGE` and no further ahead than
+    ///    `oauth_as::dpop::CLOCK_SKEW_LEEWAY`, and a `jti`;
+    /// 2. `ath`: the hash of the access token presented with it;
+    /// 3. the proof key's thumbprint: the token's `cnf.jkt`;
+    /// 4. the token: one this server's store still holds;
+    /// 5. the `jti`: claimed in this server's store, once, under the proof's key, until the
+    ///    proof's `iat` leaves the window. Last, so a presentation refused above spends nothing.
+    ///
+    /// No server nonce is issued or expected (RFC 9449 s8): this server has never issued one.
+    pub(crate) async fn prove_dpop(
+        &self,
+        presented: busbar_kernel::oauth_as::seam::DpopAtResource<'_>,
+    ) -> busbar_kernel::oauth_as::seam::DpopVerdict {
+        use base64::Engine as _;
+        use busbar_kernel::oauth_as::seam::{DpopRefused, DpopVerdict};
+        use oauth_as::dpop::DpopFailure;
+        use oauth_as::store::Storage as _;
+        let proof = match oauth_as::dpop::verify_proof_with_crypto(
             &crate::crypto_provider::FacadeCrypto,
             &self.dpop_verifiers,
             presented.proof,
             presented.method,
-            &htu,
+            presented.htu,
             crate::shared::now_time(),
-        ) else {
-            return false;
+        ) {
+            Ok(proof) => proof,
+            Err(failure) => {
+                return DpopVerdict::Refused(match failure {
+                    DpopFailure::NotAProof => DpopRefused::NotAProof,
+                    DpopFailure::UnsupportedAlgorithm => DpopRefused::Algorithm,
+                    DpopFailure::BadProofKey => DpopRefused::ProofKey,
+                    DpopFailure::BadSignature => DpopRefused::Signature,
+                    DpopFailure::WrongMethod => DpopRefused::Method,
+                    DpopFailure::WrongUri => DpopRefused::Uri,
+                    DpopFailure::StaleProof => DpopRefused::Stale,
+                    DpopFailure::MissingJti => DpopRefused::Jti,
+                    DpopFailure::Replayed => DpopRefused::Replayed,
+                    // `Malformed`, `NotAcceptedHere`, and any failure a later library names:
+                    // a string this server did not read as a proof.
+                    _ => DpopRefused::Malformed,
+                });
+            }
         };
         let ath = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(busbar_contract::crypto::sha256(presented.token.as_bytes()));
         let ath_matches = oauth_as::jwt::CompactJws::parse(presented.proof)
             .is_ok_and(|jws| jws.claim_str("ath") == Some(ath.as_str()));
+        if !ath_matches {
+            return DpopVerdict::Refused(DpopRefused::AccessTokenHash);
+        }
         let bound_to_proof_key =
             oauth_as::jwt::CompactJws::parse(presented.token).is_ok_and(|jws| {
                 jws.payload
@@ -124,25 +179,27 @@ impl AsPlane {
                     .and_then(|jkt| jkt.as_str())
                     == Some(proof.jkt.as_str())
             });
-        if !ath_matches || !bound_to_proof_key {
-            return false;
+        if !bound_to_proof_key {
+            return DpopVerdict::Refused(DpopRefused::KeyBinding);
         }
 
-        if !matches!(
-            self.server.store().get_token(presented.token).await,
-            Ok(Some(_))
-        ) {
-            return false;
+        match self.server.store().get_token(presented.token).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return DpopVerdict::Refused(DpopRefused::NotHeld),
+            Err(_) => return DpopVerdict::Unavailable,
         }
 
         let replay_id = format!("dpop-resource:{}:{}", proof.jkt, proof.jti);
-        matches!(
-            self.server
-                .store()
-                .claim_replay_id(&replay_id, proof.replay_until)
-                .await,
-            Ok(true)
-        )
+        match self
+            .server
+            .store()
+            .claim_replay_id(&replay_id, proof.replay_until)
+            .await
+        {
+            Ok(true) => DpopVerdict::Proven,
+            Ok(false) => DpopVerdict::Refused(DpopRefused::Replayed),
+            Err(_) => DpopVerdict::Unavailable,
+        }
     }
 
     /// The standing of `token` at `resource`, a protected resource of this same deployment
@@ -473,6 +530,23 @@ pub(crate) fn seam_access_standing<'a>(
             // nothing is admitted on that.
             None => busbar_kernel::oauth_as::seam::AccessStanding::Unavailable,
             Some(plane) => plane.access_standing(token, resource).await,
+        }
+    })
+}
+
+pub(crate) fn seam_prove_dpop<'a>(
+    plane: &'a Arc<dyn std::any::Any + Send + Sync>,
+    presented: busbar_kernel::oauth_as::seam::DpopAtResource<'a>,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = busbar_kernel::oauth_as::seam::DpopVerdict> + Send + 'a>,
+> {
+    let plane = Arc::clone(plane).downcast::<AsPlane>().ok();
+    Box::pin(async move {
+        match plane {
+            Some(plane) => plane.prove_dpop(presented).await,
+            // The handle is not this owner's plane: nothing can be said for the proof, and
+            // nothing is admitted on that.
+            None => busbar_kernel::oauth_as::seam::DpopVerdict::Unavailable,
         }
     })
 }
