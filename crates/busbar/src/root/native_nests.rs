@@ -21,6 +21,8 @@ use super::{DispatchSnapshot, NEST_INPUT_FULL, NEST_PARENT_GONE, NEST_REPLY_MAX,
 
 const CONSTRAINTS_UNAVAILABLE: &str = "native child target and spend constraints are not available";
 const PARENT_ADMISSION: &str = "native child has no live parent billing admission";
+const MONEY_UNRECORDABLE: &str =
+    "durability unavailable: the journal cannot record a child's money";
 
 /// Built once before the serving generation is published. The same guest precedence rules
 /// choose native, legacy and core claims; matching a core claim never falls through to a plane.
@@ -104,6 +106,10 @@ impl NativeNests {
         let Some(billing) = &snapshot.served.billing else {
             return NestReply::Unserved(PARENT_ADMISSION);
         };
+        // A child unit opens only while its node's journal can record its money.
+        if let Some(Err(_)) = snapshot.post.node().map(|node| node.money_gate()) {
+            return NestReply::Unserved(MONEY_UNRECORDABLE);
+        }
         let request = frame.request.clone();
         // This is an independent retained input copy. Reserve from the same admitted
         // request before allocating, and let its Bytes backing own the credit thereafter.

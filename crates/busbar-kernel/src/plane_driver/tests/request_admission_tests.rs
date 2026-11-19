@@ -231,6 +231,59 @@ fn named_pool_and_direct_model_have_distinct_admitted_scope() {
     }
 }
 
+/// 1.5.5's `allowed_pools` table on the catalog seat (scope kind "pool", as the root states it for
+/// the seat that walks core's catalog): a restricted key reaches its pool and is refused (Scope,
+/// answered 403) on another; an unrestricted key and the open relay's anonymous key reach every
+/// pool. With no kind stated, a restricted key reaches nothing.
+#[test]
+fn scope_kind_pool_judges_allowed_pools_as_v155_did() {
+    let restricted = || {
+        Arc::new(VirtualKey {
+            id: "restricted".into(),
+            enabled: true,
+            allowed_scopes: Some(vec![busbar_contract::records::ScopeRef::pool("p")]),
+            ..Default::default()
+        })
+    };
+    let unrestricted = || {
+        Arc::new(VirtualKey {
+            id: "unrestricted".into(),
+            enabled: true,
+            ..Default::default()
+        })
+    };
+    let anonymous = || {
+        Arc::new(VirtualKey {
+            id: crate::auth::native_chain::ANONYMOUS.into(),
+            generation_hash: crate::auth::native_chain::ANONYMOUS.into(),
+            name: crate::auth::native_chain::ANONYMOUS.into(),
+            enabled: true,
+            ..Default::default()
+        })
+    };
+    let table: Vec<(&str, Arc<VirtualKey>, &str, bool)> = vec![
+        ("restricted key, its pool", restricted(), "p", true),
+        ("restricted key, another pool", restricted(), "q", false),
+        ("unrestricted key", unrestricted(), "q", true),
+        ("anonymous key", anonymous(), "q", true),
+    ];
+    for (unit, (case, key, selector, admitted)) in (40..).zip(table) {
+        let (ctx, _lease) = context_with_key(unit, key);
+        let walk = RequestWalk::new(&ctx).unwrap();
+        let resolved = allocation(ctx).forward(&catalog_routes(), &walk, Some(selector));
+        assert_eq!(resolved.is_ok(), admitted, "{case}");
+        if !admitted {
+            assert!(matches!(resolved, Err(AdmissionError::Scope)), "{case}");
+        }
+    }
+    let (ctx, _lease) = context_with_key(50, restricted());
+    let walk = RequestWalk::new(&ctx).unwrap();
+    assert!(matches!(
+        allocation(ctx).forward(&catalog_routes_with(None), &walk, Some("p")),
+        Err(AdmissionError::Scope)
+    ));
+}
+
 #[test]
 fn pool_grant_cannot_be_used_for_direct_model_or_another_pool() {
     let routes = catalog_routes();

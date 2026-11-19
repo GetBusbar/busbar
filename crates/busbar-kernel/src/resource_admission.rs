@@ -846,7 +846,8 @@ pub fn select_resources(
     frozen: &FrozenRequest,
     withheld: &[Box<str>],
 ) -> Selection {
-    // The selector runs before auth: the route's credential carriers are not lent to it.
+    // The selector runs after auth (`PendingData::select`); the route's credential carriers are
+    // still not lent to it.
     frozen.with_selection_input(withheld, |input, body| {
         port.resource_facts(
             busbar_plugin_abi::plane::RESOURCE_SELECT,

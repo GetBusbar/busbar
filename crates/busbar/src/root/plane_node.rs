@@ -43,6 +43,8 @@ impl RetainedBook {
     }
 }
 
+#[path = "plane_node/money_gate.rs"]
+mod money_gate;
 #[path = "plane_node/native.rs"]
 mod native;
 #[cfg(test)]
@@ -167,6 +169,10 @@ pub(crate) struct Node {
     book: std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>,
 
     lane: std::sync::OnceLock<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>>,
+    /// The money gate is in a refusal episode (logged once at its start and once at its end).
+    money_refusing: std::sync::atomic::AtomicBool,
+    /// Billable opens refused because the journal could not record money.
+    money_refusals: AtomicU64,
     response_intent: std::sync::OnceLock<ResponseIntentOwner>,
 
     /// The cores' audit state and the flusher that pulls it (design 2, A3).
@@ -204,6 +210,8 @@ impl Node {
             durability_token: kernel.durability_token(),
             book: std::sync::OnceLock::new(),
             lane: std::sync::OnceLock::new(),
+            money_refusing: std::sync::atomic::AtomicBool::new(false),
+            money_refusals: AtomicU64::new(0),
             response_intent: std::sync::OnceLock::new(),
             cores: crate::root::durability::core_audit::CoreFlusher::default(),
             sealing: std::sync::OnceLock::new(),
@@ -474,6 +482,7 @@ impl Node {
         let Some(journal) = self.lane.get() else {
             return;
         };
+        self.close_money_episode(journal);
         match journal.settle_store().await {
             Ok(states) => {
                 for (state, count) in [

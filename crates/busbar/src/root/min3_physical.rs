@@ -389,10 +389,20 @@ pub(crate) fn assemble_slot(
             .generation
             .as_ref()
             .ok_or_else(|| "native DATA route has no actual serving generation".to_string())?;
-        let inventory = owners
-            .inventories
-            .get(&(seat.instance.clone(), target.mounted().route))
-            .ok_or_else(|| "native DATA route has no actual configured inventory".to_string())?;
+        // A route that declares resource kinds selects from its configured inventory; a route
+        // that declares none is admitted through its plane's `request` and has none.
+        let inventory = if target.mounted().resource_kinds.is_empty() {
+            None
+        } else {
+            Some(Arc::clone(
+                owners
+                    .inventories
+                    .get(&(seat.instance.clone(), target.mounted().route))
+                    .ok_or_else(|| {
+                        "native DATA route has no actual configured inventory".to_string()
+                    })?,
+            ))
+        };
         let chain = owners
             .auth
             .data_chain(owners.epoch, target.auth_instances())?;
@@ -402,7 +412,7 @@ pub(crate) fn assemble_slot(
             Arc::clone(binding),
             DataRouteOwners {
                 generation: Arc::clone(generation),
-                inventory: Arc::clone(inventory),
+                inventory,
                 chain: Arc::new(chain),
                 keys: Arc::clone(&owners.keys),
                 routes: Arc::clone(&seat.request_routes),
