@@ -110,6 +110,8 @@ impl CoreAudit {
 /// One pull of every live core.
 #[derive(Default)]
 pub(crate) struct Pulled {
+    /// Lines a flush built but the journal refused, oldest first: staged before `lines`.
+    pub(crate) kept: Vec<busbar_kernel_audit::Prepared>,
     /// Every line, with the core it came from, in the node's monotonic order.
     pub(crate) lines: Vec<(Arc<CoreAudit>, AuditInputs)>,
     /// Every core pulled and the ticket its pull reached.
@@ -218,6 +220,7 @@ impl CoreFlusher {
     pub(crate) fn carry(&self, pulled: Pulled) {
         let mut carry = self.carry.lock().unwrap_or_else(PoisonError::into_inner);
         let newer = std::mem::replace(&mut *carry, pulled);
+        carry.kept.extend(newer.kept);
         carry.lines.extend(newer.lines);
         carry.cores.extend(newer.cores);
         carry.refusals.extend(newer.refusals);

@@ -533,30 +533,40 @@ impl Node {
             return Err(why);
         }
         let refusals = std::mem::take(&mut pulled.refusals);
-        // A stage refused after `refuses_staging` passed is the journal's custody failing: the
-        // refused line is lost (said loudly below); every line after it is kept, in order, and
-        // nothing of this pull is settled, so no waiter is released for a line not committed.
-        let mut lost = 0usize;
+        // A stage the journal refuses after `refuses_staging` passed (its buffer filled during
+        // this pull, say) hands its line back: it and every line after it are kept, in order, for
+        // the next flush, and nothing of this pull is settled. A line is never dropped, so a later
+        // commit can never settle the waiter of a line it does not hold.
+        let mut refused = false;
         let mut unstaged = Vec::new();
         {
             let mut held = book
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let pass = busbar_kernel::teller::verb_audit_pass(&self.kernel);
+            for prepared in std::mem::take(&mut pulled.kept) {
+                if refused {
+                    pulled.kept.push(prepared);
+                    continue;
+                }
+                if let Err((_, back)) = held.stage_kept(prepared, &pass, &self.durability_token) {
+                    refused = true;
+                    pulled.kept.push(back);
+                }
+            }
             for (core, inputs) in std::mem::take(&mut pulled.lines) {
-                if lost != 0 {
+                if refused {
                     unstaged.push((core, inputs));
                     continue;
                 }
-                let pass = busbar_kernel::teller::verb_audit_pass(&self.kernel);
-                if held
-                    .stage_line(inputs, pass, &self.durability_token)
-                    .is_err()
-                {
-                    lost += 1;
+                let prepared = held.prepare_line(inputs);
+                if let Err((_, back)) = held.stage_kept(prepared, &pass, &self.durability_token) {
+                    refused = true;
+                    pulled.kept.push(back);
                 }
             }
             for count in refusals {
-                let staged = lost == 0
+                let staged = !refused
                     && self.checked_mono().is_ok_and(|mono| {
                         let inputs = self.refusal_line(&count, from_ms, to_ms, mono);
                         let pass = busbar_kernel::teller::verb_audit_pass(&self.kernel);
@@ -569,21 +579,12 @@ impl Node {
             }
         }
         let flushed = journal.flush().await;
-        if lost != 0 || !pulled.refusals.is_empty() {
-            if lost != 0 {
-                busbar_kernel::diag_error!(
-                    busbar_kernel::diagnostics::DURABILITY_STALLED,
-                    reason = "stage",
-                    lines = lost,
-                    "the journal refused an audit line; it is lost and nothing of this flush is \
-                     settled"
-                );
-            }
-            let kept = unstaged.len();
+        if refused || !pulled.refusals.is_empty() {
+            let kept = pulled.kept.len() + unstaged.len();
             pulled.lines = unstaged;
             self.cores.carry(pulled);
             return Err(format!(
-                "audit staging refused ({lost} lost, {kept} kept for the next flush)"
+                "audit staging refused ({kept} lines kept for the next flush)"
             ));
         }
         match flushed {
