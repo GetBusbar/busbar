@@ -527,7 +527,7 @@ impl Node {
         let registered = self.checked_arrived()?;
         let card = crate::root::kernel::ROOT_CARD.pin();
         Ok(AuditInputs {
-            subject: Subject::PrincipalId(admission.key().id.as_str().into()),
+            subject: Subject::PrincipalId(Text::from(Arc::<str>::from(admission.key().id.as_str()))),
             what: What {
                 unit_key: admission.unit(),
                 incarnation: 0,
