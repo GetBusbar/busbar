@@ -36,6 +36,12 @@ mod cold;
 // process lifecycle, never per request.
 mod off_path;
 
+// The outbound parts (delivery record, sealing, credit, lending, redial, the proxy tunnel, the
+// WebSocket upstream): each owns no socket and calls no plugin. They are bolted onto the native
+// dial by the plumbing cards; the `dead_code` allowance goes with the last of those cards.
+#[allow(dead_code)]
+mod outbound;
+
 // The Need handlers (IF 13): `HostNeeds` over the guard, the transport-security gate, the pool and
 // the conn table. Core-side only; no plugin text crosses it.
 pub mod need;
