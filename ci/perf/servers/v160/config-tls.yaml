@@ -11,7 +11,9 @@ identity-providers:
     module: admin-tokens
     settings: { sha256: "@ADMIN_SHA256@" }
 auth:
-  chain: []
+  chain: [anonymous]       # 1.6.0's named open relay (v155: chain: [], unauthenticated); no group, no budget
+  role_bindings:
+    anonymous: { "*": {} }   # the empty binding: every pool, no group, no budget (docs/migration-1.6.md, Grants and hooks)
   admin_auth:
     - admin-tokens
 providers:
