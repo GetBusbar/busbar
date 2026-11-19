@@ -51,6 +51,39 @@ fn error(message: impl ToString) -> RecordStoreError {
     RecordStoreError::from(message.to_string())
 }
 
+/// Prove a unit's line, read back from this node's verified journal, by the rule its record
+/// version names. Version 1 (signed singly, every line sealed before SEALING-FIX): its own
+/// signature under the bound key. Version 2 (production since SEALING-FIX: chained, unsigned): its
+/// digest must be the hash the journal's chain carries; the notary's signed head over that chain
+/// covers it, and the native entry retires only once a signed page covers its line.
+fn line_proves(
+    book: &Arc<Mutex<Durability>>,
+    audit: &busbar_kernel_audit::AuditRecord,
+    what: &str,
+) -> RecordStoreResult<()> {
+    match audit.record_version() {
+        Some(busbar_kernel_audit::RecordVersion::SignedLine) => {
+            let keys = super::keyset_of(&book.lock().unwrap_or_else(|p| p.into_inner()).record);
+            let key = audit
+                .key_id
+                .as_deref()
+                .and_then(|id| keys.get(id))
+                .ok_or_else(|| error(format!("{what} audit names an unknown key")))?;
+            busbar_kernel_audit::AuditChain::verify_signature(audit, key).map_err(error)
+        }
+        Some(busbar_kernel_audit::RecordVersion::SignedHead) => {
+            if busbar_kernel_audit::AuditChain::digest_of(audit) == audit.hash {
+                Ok(())
+            } else {
+                Err(error(format!("{what} audit differs from its chained digest")))
+            }
+        }
+        None => Err(error(format!(
+            "{what} audit carries a signature without its key, or a key without its signature"
+        ))),
+    }
+}
+
 /// Whether `subject` is the principal named `principal`: compared in place, no name copied.
 fn is_principal(subject: &Subject, principal: &str) -> bool {
     matches!(subject, Subject::PrincipalId(name) if name.as_str() == principal)
@@ -146,14 +179,7 @@ pub(super) async fn confirm(
         {
             return Err(error("terminal unit's sealed audit identity differs"));
         }
-        let keys = super::keyset_of(&book.lock().unwrap_or_else(|p| p.into_inner()).record);
-        let key = audit
-            .key_id
-            .as_deref()
-            .and_then(|id| keys.get(id))
-            .ok_or_else(|| error("terminal unit audit is unsigned"))?;
-        busbar_kernel_audit::AuditChain::verify_signature(&audit, key).map_err(error)?;
-        return Ok(());
+        return line_proves(book, &audit, "terminal unit");
     }
     Err(error("terminal unit awaits its sealed audit line"))
 }
@@ -186,15 +212,7 @@ pub(super) async fn recover(
                 "recovered unit identity already has different audit facts",
             ));
         }
-        let keys = super::keyset_of(&book.lock().unwrap_or_else(|p| p.into_inner()).record);
-        let key = audit
-            .key_id
-            .as_deref()
-            .and_then(|id| keys.get(id))
-            .ok_or_else(|| error("recovered unit audit is unsigned"))?;
-        busbar_kernel_audit::AuditChain::verify_signature(&audit, key).map_err(error)?;
-
-        return Ok(());
+        return line_proves(book, &audit, "recovered unit");
     }
     if let Some((_node_seq, pending)) = evidence.pending_audit(snapshot.unit, facts.incarnation) {
         selected_matches(snapshot, &facts, &pending)?;
@@ -367,9 +385,6 @@ fn publish(book: &Arc<Mutex<Durability>>, record: busbar_kernel_audit::AuditReco
                 fp: fp.0,
                 wall_ms: record.linked_ms,
             });
-    }
-    if record.key_id.is_some() && book.audit_signed_from.is_none() {
-        book.audit_signed_from = Some(record.seq);
     }
     book.audit_ring.push_unique(record);
 }
