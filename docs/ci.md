@@ -39,7 +39,6 @@ workflow. A successful MR status is not evidence that this revision compiled. Th
 | Job | When | What it runs |
 |---|---|---|
 | `qa` | nightly schedule `qa-nightly`, or a pipeline started by hand | release and debug builds of `busbar`, every conformance suite against them, and the kernel's loom tests in release mode |
-| `oracle` | every `dev` pipeline (`ci/qa.yml`), or by hand with `BUSBAR_ORACLE=1` | the black-box comparison of this build against the published 1.5.5 binary. It reports differences and gates nothing: it is `allow_failure`, and each difference is decided at the upgrade review |
 | `bench` | `bench/*` branches | the benchmark suites |
 
 ## On a release tag

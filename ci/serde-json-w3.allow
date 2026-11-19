@@ -324,7 +324,6 @@ dist/default/tests/config_migrate_1_5_5.rs                                      
 dist/default/tests/fixtures/plane_driver_test_plane.rs                                     # D
 dist/default/tests/mcp_stdio_serve.rs                                                      # D
 dist/default/tests/otlp_span_records.rs                                                    # D
-dist/default/tests/plane_blackbox.rs                                                       # D
 dist/default/tests/plane_driver.rs                                                         # D
 dist/default/tests/product/admin_cross_plane/openapi.rs                                    # D
 dist/default/tests/product/admin_cross_plane/served_surface.rs                             # D
@@ -339,4 +338,3 @@ dist/default/tests/product/rate_apply_commit.rs                                 
 dist/default/tests/product/registry_cross_plane.rs                                         # D
 dist/default/tests/product/residual_envelope_cross_plane.rs                                # D
 dist/default/tests/provider_key_never_surfaces.rs                                          # D
-testing/oracle/Cargo.toml                                                                  # D

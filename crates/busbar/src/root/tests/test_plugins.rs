@@ -531,12 +531,12 @@ pub fn cdylib(snake: &str) -> Option<Vec<u8>> {
     std::fs::read(cdylib_path(snake)?).ok()
 }
 
-#[cfg(all(test, not(oracle_lookup)))]
+#[cfg(test)]
 include!(concat!(env!("OUT_DIR"), "/common_test_sources.rs"));
 
 /// `token_verifier` is the cdylib lookup alone (the token-verifying `kind: auth` cdylib in the test
 /// profile directory): busbar-auth-oidc publishes no root test sources since its MIN-3 port (c882ae1), so
-/// the default distribution and the oracle package look it up the same way.
+/// the root crate and the default distribution look it up the same way.
 #[cfg(test)]
 pub(crate) mod token_verifier {
     pub fn token_verifier_cdylib_path() -> Option<std::path::PathBuf> {
