@@ -45,6 +45,8 @@ subtle = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# The integration tests under `tests/` read `abi::sdk::test_support` and `canary_scan`.
+busbar-contract = { path = ".", features = ["test-support"] }
 busbar-secure = { path = "../busbar-secure", features = ["test-support"] }
 # This crate's own unit tests mint with the test seals (`SlotSeal::acquire_for_tests`).
 busbar-seal = { path = "../busbar-seal", features = ["test-seal"] }
