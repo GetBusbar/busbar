@@ -449,6 +449,19 @@ impl MoneySeam for Witness {
         MoneySeam::laned(&*self.money, ctx, lane);
     }
 
+    fn dialled(&self, ctx: &UnitCtx) {
+        MoneySeam::dialled(&*self.money, ctx);
+    }
+
+    fn unread(&self, ctx: &UnitCtx, reason: ReasonCode) -> bool {
+        self.log.lock().unwrap().push(format!("unread {reason:?}"));
+        MoneySeam::unread(&*self.money, ctx, reason)
+    }
+
+    fn lane(&self, ctx: &UnitCtx) -> Option<String> {
+        MoneySeam::lane(&*self.money, ctx)
+    }
+
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
         self.log.lock().unwrap().push("abandoned".into());
         MoneySeam::abandoned(&*self.money, ctx, ended);

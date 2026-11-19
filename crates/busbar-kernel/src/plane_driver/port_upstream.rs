@@ -618,6 +618,7 @@ pub async fn run_attempts<K: Calls + ?Sized, M: Members + ?Sized, S: UpSend>(
                 continue;
             }
             let exchange = exchange_zero(answer.exchanges)?;
+            effects.dialled();
             let Ok(reply) = send.open(&member, exchange).await else {
                 members.failed(&member, &unsent);
                 continue;
