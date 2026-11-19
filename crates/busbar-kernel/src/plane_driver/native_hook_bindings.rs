@@ -5,7 +5,7 @@
 //! snapshot owns an App, serving generation, loader, or mutable publication slot.
 
 //! The tables are resolved and frozen off the request path (`off_path::plane_native_hooks`); a
-//! request only selects from them (`Binder for Bindings`).
+//! request only selects from them ([`Bindings::select`]).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use crate::cost::CostModel;
 use crate::governance::GovState;
 
 use super::hooks::{CallerKey, HookRead};
-use super::port_hooks::{Binder, Call, RouteCounters, Selected, Selection, Taps};
+use super::port_hooks::{Call, RouteCounters, Selected, Selection, Taps};
 
 pub use crate::off_path::plane_native_hooks::implicit_strategies;
 
@@ -89,22 +89,26 @@ pub struct Inputs {
     pub(crate) groups: BTreeMap<String, crate::config::groups::GroupCfg>,
 }
 
+/// What a request asks of its seat's frozen hook policy: whether a route has hooks, whether they
+/// can enforce, and the selection for one request. Built by S9 from admitted metadata and the
+/// exact S8 hook ports before seats are published; it retains concrete governance readers, never
+/// App or a generation.
 impl Bindings {
     pub fn has_hooks(&self) -> bool {
         self.tables.active()
     }
-}
 
-impl Binder for Bindings {
-    fn active(&self, route: u32) -> bool {
+    /// Includes possible pool/container attachments, not merely the currently known section hooks.
+    pub fn active(&self, route: u32) -> bool {
         self.scope.routes.contains(&route) && self.tables.active()
     }
 
-    fn enforcing(&self, route: u32) -> bool {
+    /// True when a gate, rewrite or routing policy can enforce this route.
+    pub fn enforcing(&self, route: u32) -> bool {
         self.scope.routes.contains(&route) && self.tables.enforcing()
     }
 
-    fn select(&self, input: &Selection<'_>) -> Result<Selected, &'static str> {
+    pub fn select(&self, input: &Selection<'_>) -> Result<Selected, &'static str> {
         if !self.scope.routes.contains(&input.route) {
             return Err("native hook route is outside the frozen seat");
         }
@@ -246,6 +250,64 @@ impl WalkTables {
 
     pub fn enforcing(&self) -> bool {
         self.enforcing
+    }
+}
+
+/// A seat over `routes`, walking `pool`, whose frozen tables are active and enforcing and where
+/// every caller, unscoped and in `pool`'s walk, selects `chosen`'s calls: what a driver test needs
+/// without a RootCfg and opened ports. [`Bindings::select`] still runs as in production over
+/// these tables.
+#[cfg(test)]
+impl Bindings {
+    pub(crate) fn selecting(
+        routes: Vec<u32>,
+        pool: &str,
+        chosen: &Selected,
+        governance: Arc<GovState>,
+    ) -> Self {
+        let frozen = || Chosen {
+            rewrites: Arc::clone(&chosen.rewrites),
+            gates: Arc::clone(&chosen.gates),
+            policy: chosen.policy.clone(),
+            taps: chosen.taps.clone(),
+            counters: chosen.counters.clone(),
+        };
+        Self {
+            scope: SeatScope {
+                section: "test".into(),
+                routes,
+                pool: Some(pool.into()),
+            },
+            billing_pool: String::new(),
+            tables: WalkTables {
+                global: Attached::default(),
+                section: Attached::default(),
+                walks: BTreeMap::new(),
+                active: true,
+                enforcing: true,
+            },
+            selections: Selections {
+                unscoped: Frozen {
+                    none: frozen(),
+                    named: BTreeMap::new(),
+                    other: frozen(),
+                },
+                walks: BTreeMap::from([(
+                    pool.to_string(),
+                    BTreeMap::from([(
+                        String::new(),
+                        Frozen {
+                            none: frozen(),
+                            named: BTreeMap::new(),
+                            other: frozen(),
+                        },
+                    )]),
+                )]),
+            },
+            governance,
+            cost: Arc::clone(&chosen.cost),
+            amendments: Arc::new(NodeAmendments::new()),
+        }
     }
 }
 

@@ -228,7 +228,7 @@ pub struct PortDriver {
     pub(crate) usage: Arc<[String]>,
     /// The same classes as the port declares them, shared with each hooked request's invocation.
     pub(crate) classes: Arc<[busbar_ports::plane::UsageClass]>,
-    pub(crate) hooks: Option<Arc<dyn super::port_hooks::Binder>>,
+    pub(crate) hooks: Option<Arc<super::native_hook_bindings::Bindings>>,
 }
 
 impl PortDriver {
@@ -262,7 +262,7 @@ impl PortDriver {
 
     /// Consume a complete immutable hook binding before this driver is published in a seat.
     #[must_use]
-    pub fn with_hooks(mut self, hooks: Arc<dyn super::port_hooks::Binder>) -> Self {
+    pub fn with_hooks(mut self, hooks: Arc<super::native_hook_bindings::Bindings>) -> Self {
         self.hooks = Some(hooks);
         self
     }
@@ -1204,7 +1204,7 @@ struct Serving {
     models: Vec<String>,
     invocation: Option<crate::host_services::InvocationContext>,
     pending_admission: Option<Arc<super::port_admission::Pending>>,
-    hook_binder: Option<Arc<dyn super::port_hooks::Binder>>,
+    hook_binder: Option<Arc<super::native_hook_bindings::Bindings>>,
     classes: Arc<[busbar_ports::plane::UsageClass]>,
     now_s: u64,
 }

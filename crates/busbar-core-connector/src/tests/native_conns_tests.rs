@@ -393,3 +393,35 @@ fn an_idle_set_with_nothing_kept_made_nothing() {
     let idle = Idle::default();
     assert!(idle.cores.get().is_none());
 }
+
+/// A need whose declaration is refused is not served: a re-declaration refused (here: a target carrying a userinfo)
+/// leaves no earlier native record behind, so an open of that need is refused and nothing is dialled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_declaration_leaves_no_need_to_open() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let connector = connector();
+    connector
+        .carry_natively(vec![carrier(CARRIER_HTTP)], storage())
+        .unwrap();
+    DeclaredConns::declare(&connector, OWNER, NEED, &need(), None, None)
+        .expect("the first declaration is served");
+    let credentialed = format!("http://user:secret@{addr}/v1");
+    assert_eq!(
+        DeclaredConns::declare(&connector, OWNER, NEED, &need(), Some(&credentialed), None),
+        Err(ConnError::Refused),
+        "a target carrying a userinfo is refused at declare"
+    );
+    let target = format!("http://{addr}/v1");
+    assert_eq!(
+        connector.open(OWNER, NEED, &desc(&target)).map(|_| ()),
+        Err(ConnError::Refused),
+        "the refused need is not opened"
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        listener.accept().is_err(),
+        "nothing was dialled for the refused need"
+    );
+}

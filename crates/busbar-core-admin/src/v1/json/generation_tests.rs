@@ -3,6 +3,7 @@
 
 use super::*;
 use axum::http::HeaderMap;
+use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 
 #[cfg(feature = "openapi-schema")]
 #[test]
@@ -217,4 +218,136 @@ fn malformed_header_layout_is_not_replayed() {
     let mut bad_value = valid;
     bad_value[56] = b'\n';
     assert!(decode_answer(&bad_value).is_none());
+}
+
+/// The record `GET /operations/{key}` sends for a stored operation, as the client sees it.
+#[cfg(feature = "openapi-schema")]
+fn operation_reply(looked: Looked) -> busbar_contract::json::Value {
+    let body = operation_body("key-1", "alice", looked)
+        .unwrap_or_else(|_| panic!("the stored operation reads"));
+    busbar_contract::json::parse_value(body.to_string().as_bytes()).unwrap()
+}
+
+/// The served admin API document, as a tree.
+#[cfg(feature = "openapi-schema")]
+fn served_document() -> busbar_contract::json::Value {
+    busbar_contract::json::parse_value(crate::v1::json::openapi_json().as_bytes()).unwrap()
+}
+
+/// The `components.schemas` entry the served document has under `name`.
+#[cfg(feature = "openapi-schema")]
+fn served_schema(name: &str) -> busbar_contract::json::Value {
+    let document = served_document();
+    document
+        .get("components")
+        .and_then(|components| components.get("schemas"))
+        .and_then(|schemas| schemas.get(name))
+        .unwrap_or_else(|| panic!("the served document has a schema {name}"))
+        .clone()
+}
+
+/// The strings of the `enum` of the served schema `name`.
+#[cfg(feature = "openapi-schema")]
+fn documented_enum(name: &str) -> Vec<String> {
+    let schema = served_schema(name);
+    let values = schema
+        .get("enum")
+        .and_then(|values| values.as_array())
+        .unwrap_or_else(|| panic!("{name} documents an enum"));
+    values
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Every state the engine reports for a stored operation, each produced by the reply code from
+/// what the idempotency store holds: in flight (claimed, and bound but unsettled), applied and
+/// rejected.
+#[cfg(feature = "openapi-schema")]
+fn operation_replies() -> [(&'static str, busbar_contract::json::Value); 4] {
+    let settled = |status| {
+        let answer = encode_answer(
+            status,
+            10,
+            7,
+            &[9; 32],
+            &HeaderMap::new(),
+            br#"{"applied":true}"#,
+        )
+        .unwrap();
+        Looked::Done {
+            answer,
+            completed_at: 11,
+        }
+    };
+    [
+        (
+            "in_flight",
+            operation_reply(Looked::Retained {
+                receipt: encode_intent(10, 7, &[9; 32]),
+            }),
+        ),
+        (
+            "in_flight",
+            operation_reply(Looked::InFlight {
+                request_sha256: [9; 32],
+                received_at: 10,
+            }),
+        ),
+        ("applied", operation_reply(settled(200))),
+        ("rejected", operation_reply(settled(409))),
+    ]
+}
+
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn every_operation_reply_state_is_one_the_served_document_lists() {
+    let documented = documented_enum("OperationState");
+    for (state, reply) in operation_replies() {
+        let sent = reply.get("state").and_then(|value| value.as_str());
+        assert_eq!(sent, Some(state), "the reply names its state");
+        assert!(
+            documented.iter().any(|listed| listed == state),
+            "the served document lists {documented:?}, and the engine's own {state} reply says {state}"
+        );
+    }
+}
+
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn every_operation_reply_member_is_one_the_served_document_names() {
+    let view = served_schema("OperationView");
+    let properties = view.get("properties").expect("OperationView has members");
+    for (state, reply) in operation_replies() {
+        let members = reply.as_object().expect("the reply is an object");
+        assert_eq!(
+            members.len(),
+            properties.as_object().unwrap().len(),
+            "the {state} reply and the document name the same number of members"
+        );
+        for (name, _) in members.iter() {
+            assert!(
+                properties.get(name).is_some(),
+                "the {state} reply sends {name}, which the document does not name"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn the_documented_operation_states_are_the_ones_the_reply_sends() {
+    let mut named = documented_enum("OperationState");
+    assert_eq!(named, ["applied", "rejected", "in_flight"]);
+    let mut sent: Vec<_> = operation_replies()
+        .into_iter()
+        .map(|(state, _)| state.to_string())
+        .collect();
+    sent.sort();
+    sent.dedup();
+    named.sort();
+    assert_eq!(
+        sent, named,
+        "the states sent are exactly the states documented"
+    );
 }
