@@ -112,9 +112,27 @@ impl NativeChain {
     /// Assemble one explicit DATA chain from the actual opened reservations. This is
     /// preparation ownership, never a final route/resource authorization decision.
     ///
-    /// `anonymous`: the operator's chain names the built-in member `anonymous`. A chain with no
-    /// instance and no `anonymous` is refused ([`EMPTY_CHAIN_REFUSED`]): nobody could be admitted.
+    /// A chain with no instance is refused ([`EMPTY_CHAIN_REFUSED`]): nobody could be admitted.
     pub fn data(
+        epoch: u64,
+        instances: Vec<Arc<AuthInstance>>,
+        owners: Arc<AuthOwners>,
+    ) -> Result<Self, &'static str> {
+        Self::assemble(epoch, instances, owners, false)
+    }
+
+    /// The DATA chain of an operator who named the built-in member `anonymous` among (or instead
+    /// of) its verifiers: `instances` are the other members, in order, and may be none (the open
+    /// relay).
+    pub fn data_admitting_anonymous(
+        epoch: u64,
+        instances: Vec<Arc<AuthInstance>>,
+        owners: Arc<AuthOwners>,
+    ) -> Result<Self, &'static str> {
+        Self::assemble(epoch, instances, owners, true)
+    }
+
+    fn assemble(
         epoch: u64,
         instances: Vec<Arc<AuthInstance>>,
         owners: Arc<AuthOwners>,

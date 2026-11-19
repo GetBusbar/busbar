@@ -117,8 +117,6 @@ pub enum Planned {
     Data,
     /// Bind a `NativeUpgradeRoute` with the route's chain.
     Upgrade,
-    /// Mount with no completion: the route's record admits nobody in particular.
-    Public,
     /// The admin plan's: not a data listener's route.
     Admin,
     /// Not mounted, for a reason that is the operator's configuration.
@@ -127,7 +125,6 @@ pub enum Planned {
     Unusable(&'static str),
 }
 
-const OTHER_PATH_PUBLIC: &str = "a public route is served by the listener's public class";
 const OTHER_PATH_TICKET: &str = "a ticket route is served by the listener's ticket class";
 const OTHER_PATH_SIGNED: &str = "a signed route is served by the listener's signed-ingress class";
 const OTHER_PATH_UPGRADE: &str = "an upgrade route is served by the native upgrade path";
@@ -191,14 +188,15 @@ impl NativeDataRoute {
     }
 
     /// How the listener plan mounts `mounted` on `seat`: the one decision the plan makes about a
-    /// declared route. `chain`: the chain the route would be judged by (its own instances where
-    /// it declares a credential header, else the data chain), `None` when no configured instance
-    /// reads its credential. Every route is mounted by its admission or left unmounted for a
+    /// declared route. `chain_reads_its_credential`: some configured instance reads the route's
+    /// credential (its own header's readers, else the data chain). `chain_admits_anonymous`: that
+    /// chain names the built-in member `anonymous`. Every route is mounted by its admission or left unmounted for a
     /// reason that is the operator's configuration, logged once and listed by the admin API.
     pub fn planned(
         seat: &PortSeat,
         mounted: &Mounted,
-        chain: Option<&NativeChain>,
+        chain_reads_its_credential: bool,
+        chain_admits_anonymous: bool,
         upgrade_transport: bool,
         signature_verifier: bool,
     ) -> Planned {
@@ -206,8 +204,8 @@ impl NativeDataRoute {
             return Planned::Unusable("the route's declaration names no class or no caller");
         };
         let offered = Offered {
-            verifier_reads_header: chain.is_some(),
-            chain_yields_shared: chain.is_some_and(NativeChain::admits_anonymous),
+            verifier_reads_header: chain_reads_its_credential,
+            chain_yields_shared: chain_admits_anonymous,
             upgrade_transport,
             signature_verifier,
             challenge_unresolved: record.mounted_challenge(seat.public_url()).is_err(),
@@ -222,7 +220,9 @@ impl NativeDataRoute {
                 | Admission::Optional,
             ) => Planned::Data,
             Ok(Admission::Upgrade) => Planned::Upgrade,
-            Ok(Admission::Public) => Planned::Public,
+            // A public route is bound like a data route (its chain is never run: the listener
+            // serves it by its admission) so no second mounting path exists.
+            Ok(Admission::Public) => Planned::Data,
             // A plane's admin routes are mounted on the admin door by the admin plan.
             Ok(Admission::Operator) => Planned::Admin,
             // No native verifier exists for a ticket or a sender's signature: such a route is
@@ -254,8 +254,9 @@ impl NativeDataRoute {
             | Admission::Selected
             | Admission::PrincipalOnly
             | Admission::Catalog
-            | Admission::Optional => {}
-            Admission::Public => return Err(OTHER_PATH_PUBLIC),
+            | Admission::Optional
+            | Admission::Public => {}
+
             Admission::Ticket => return Err(OTHER_PATH_TICKET),
             Admission::SignedIngress => return Err(OTHER_PATH_SIGNED),
             Admission::Upgrade => return Err(OTHER_PATH_UPGRADE),
