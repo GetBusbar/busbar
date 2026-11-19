@@ -154,7 +154,7 @@ impl NativeDataRoute {
     ) -> Result<(RouteRecord, Admission), Option<NotMounted>> {
         let record = Self::record_of(seat, mounted).ok_or(None)?;
         let offered = Offered {
-            chain_yields_shared: chain.anonymous().is_some(),
+            chain_yields_shared: chain.admits_anonymous(),
             ..offered
         };
         let admission = super::admission_table::mounted(&record, offered).map_err(Some)?;
@@ -216,7 +216,7 @@ impl NativeDataRoute {
         };
         // A route that keeps state per caller is never bound under a chain whose callers share
         // one subject: the plan leaves it unmounted, and a plan that did not is refused here.
-        if record.caller_state == CallerState::Distinct && owners.chain.anonymous().is_some() {
+        if record.caller_state == CallerState::Distinct && owners.chain.admits_anonymous() {
             return Err(DataRefused::Unsupported);
         }
         if !seat.driver.caller().same_incarnation(target.caller())
@@ -350,38 +350,40 @@ impl NativeDataRoute {
 }
 
 /// The governed key a verified identity is admitted as, valid at `now` (enabled, not deleted, not
-/// expired): the anonymous key of an explicitly empty data chain, else the key the identity's
-/// provider and groups earn through the role bindings. DATA and the upgrade route both use it.
+/// expired): the key the identity's provider and groups earn through the role bindings. The
+/// principal `anonymous` earns its key the same way, from `role_bindings.anonymous`: it has no
+/// built-in key, so an open relay reaches what its binding grants and is limited by the group its
+/// binding names. No binding, no key: the caller is not verified. DATA and the upgrade route both
+/// use it.
 pub(crate) fn governed_key(
     app: &App,
     prepared: &PreparedNativeIdentity,
     chain: &NativeChain,
     now: u64,
 ) -> Result<Arc<VirtualKey>, DataRefused> {
-    let resolved = match chain.anonymous() {
-        Some(anonymous) if prepared.is_anonymous() => Arc::clone(anonymous),
-        Some(_) => return Err(DataRefused::Binding),
-        None if prepared.is_anonymous() => return Err(DataRefused::Binding),
-        None => {
-            let identity = prepared.identity();
-            let (_, gov) = super::resolve_identity_from_bindings(
-                &app.role_bindings,
-                super::ChainVerdict::Identified {
-                    module: prepared.provider_text(),
-                    principal: super::Principal {
-                        id: identity.subject().to_owned(),
-                        name: None,
-                        roles: identity.groups().map(str::to_owned).collect(),
-                        ttl_secs: identity.cache_s().map(u64::from),
-                    },
-                    resolved: None,
-                    signed_authority: None,
-                },
-            )
-            .map_err(|_| DataRefused::Policy)?;
-            gov.key.ok_or(DataRefused::Policy)?
-        }
-    };
+    // The anonymous principal exists only on a chain that names `anonymous`.
+    if prepared.is_anonymous() && !chain.admits_anonymous() {
+        return Err(DataRefused::Binding);
+    }
+    let identity = prepared.identity();
+    // The provider of the anonymous principal is the member that named it: `anonymous`, so its
+    // binding is `role_bindings.anonymous`.
+    let (_, gov) = super::resolve_identity_from_bindings(
+        &app.role_bindings,
+        super::ChainVerdict::Identified {
+            module: prepared.provider_text(),
+            principal: super::Principal {
+                id: identity.subject().to_owned(),
+                name: None,
+                roles: identity.groups().map(str::to_owned).collect(),
+                ttl_secs: identity.cache_s().map(u64::from),
+            },
+            resolved: None,
+            signed_authority: None,
+        },
+    )
+    .map_err(|_| DataRefused::Policy)?;
+    let resolved = gov.key.ok_or(DataRefused::Policy)?;
     // Deleted or past its stored expiry: the identity earns no key, so the caller is not verified
     // (the one 401). Disabled: a verified caller whose key the operator switched off (403).
     if resolved.deleted_at.is_some() || resolved.expires_at.is_some_and(|until| now >= until) {
@@ -405,7 +407,7 @@ pub(crate) fn refuse_foreign_audience(
     audience: &str,
 ) -> Result<(), DataRefused> {
     // An open chain reads no credential, so there is none to bind.
-    if chain.anonymous().is_some() {
+    if chain.is_open() {
         return Ok(());
     }
     snapshot
@@ -464,8 +466,8 @@ pub(crate) fn refuse_bound_carriers(
     chain: &NativeChain,
     cred_header: Option<&str>,
 ) -> Result<(), DataRefused> {
-    // An explicitly empty chain verifies nothing, so no carrier is judged (1.5.5's open relay).
-    if chain.anonymous().is_some() {
+    // The open relay (`anonymous` alone) reads no credential, so no carrier is judged.
+    if chain.is_open() {
         return Ok(());
     }
     snapshot

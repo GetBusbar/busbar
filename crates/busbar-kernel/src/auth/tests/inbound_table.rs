@@ -1095,3 +1095,35 @@ fn the_record_on_the_wire() {
         );
     }
 }
+
+/// Decision 11: the open relay is a word, not an absence. An empty chain is refused with the
+/// remedy in its text; the text names the member to write and the binding that grants it.
+#[test]
+fn an_empty_chain_is_refused_with_its_remedy() {
+    use crate::auth::native_chain::{ANONYMOUS, ANONYMOUS_UNLIMITED, EMPTY_CHAIN_REFUSED};
+    assert_eq!(ANONYMOUS, "anonymous");
+    assert!(EMPTY_CHAIN_REFUSED.contains("chain: [anonymous]"));
+    assert!(EMPTY_CHAIN_REFUSED.contains("role_bindings.anonymous"));
+    assert!(ANONYMOUS_UNLIMITED.contains("role_bindings.anonymous"));
+    // The anonymous principal is a shared subject: the decision serves it on a shared-state
+    // route and never on one that keeps state per caller.
+    let shared = passing(SHARED);
+    assert_eq!(
+        decide(Target::Route(&reference(Admission::Walk).record), &shared),
+        Decision::Serve(Authority::Walk)
+    );
+    assert_eq!(
+        decide(
+            Target::Route(&reference(Admission::Selected).record),
+            &shared
+        ),
+        refused(Refusal::NoRoute, true)
+    );
+    // With no binding the anonymous principal earns no key: it is not verified.
+    let mut unbound = shared;
+    unbound.policy = Some(Policy::NoKey);
+    assert_eq!(
+        decide(Target::Route(&reference(Admission::Walk).record), &unbound),
+        unverified(true)
+    );
+}

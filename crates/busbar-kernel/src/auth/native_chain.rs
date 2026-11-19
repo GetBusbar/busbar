@@ -59,15 +59,27 @@ pub struct NativeChain {
     policy: ChainPolicy,
     owners: Arc<AuthOwners>,
     data: bool,
-    /// `Some` only for the operator's explicitly empty data chain (`auth.chain: []`, 1.5.5's open
-    /// relay): the one key every request on it is admitted as. Built once with the chain, kept by
-    /// it, released with it.
-    anonymous: Option<Arc<busbar_contract::records::VirtualKey>>,
+    /// The chain names the built-in member `anonymous`: a caller that presents no credential is
+    /// identified as the principal `anonymous`. What that principal may use, and under which
+    /// group it is limited, comes from `role_bindings.anonymous`, exactly as for any identity.
+    anonymous: bool,
 }
 
-/// The principal and key id of a request admitted through an explicitly empty data chain: 1.5.5's
-/// audit attribution for its open relay (`auth/mod.rs` `principal_id`: `anonymous`).
+/// The built-in chain member that admits a caller presenting no credential, and the principal it
+/// identifies that caller as (1.5.5's audit attribution for its open relay). An operator writes
+/// `auth: { chain: [anonymous] }` to run an open relay; nothing is one by omission.
 pub const ANONYMOUS: &str = "anonymous";
+
+/// The load refusal of an explicitly empty chain. An empty list is what a templating slip
+/// produces, and everywhere else an empty list means none: here it would mean everyone.
+pub const EMPTY_CHAIN_REFUSED: &str =
+    "auth.chain is empty: no verifier, so nobody could be admitted. To run an open relay, name it: \
+     `chain: [anonymous]`, and grant it under `role_bindings.anonymous`";
+
+/// The boot line when the chain admits `anonymous` and its binding places it in no group.
+pub const ANONYMOUS_UNLIMITED: &str =
+    "auth.chain admits `anonymous` and `role_bindings.anonymous` names no group: an open relay \
+     with no rate, concurrency or budget limit";
 
 impl NativeChain {
     /// Assemble the existing operator preparation from actual opened owners and frozen policy.
@@ -81,48 +93,37 @@ impl NativeChain {
             policy,
             owners,
             data: false,
-            anonymous: None,
+            anonymous: false,
         }
     }
 
-    /// The operator's explicitly empty data chain (`auth.chain: []`): every request is admitted as
-    /// the anonymous principal, as 1.5.5's open relay admitted it (no credential is read, no
-    /// verifier runs), and then goes through admission like any other: its unit, money and audit
-    /// record under the anonymous key. That key is unrestricted (1.5.5's open relay reached every
-    /// pool) and belongs to no group (1.5.5 charged no group for a keyless request).
-    pub fn open_data(epoch: u64, owners: Arc<AuthOwners>) -> Self {
-        let anonymous = busbar_contract::records::VirtualKey {
-            id: ANONYMOUS.into(),
-            generation_hash: ANONYMOUS.into(),
-            name: ANONYMOUS.into(),
-            enabled: true,
-            ..Default::default()
-        };
-        Self {
-            instances: Vec::new(),
-            policy: ChainPolicy::new(epoch, Vec::new()),
-            owners,
-            data: true,
-            anonymous: Some(Arc::new(anonymous)),
-        }
+    /// Whether the chain names the built-in member `anonymous`: it can yield a subject its callers
+    /// share, so a route that keeps state per caller is not mounted under it.
+    pub fn admits_anonymous(&self) -> bool {
+        self.anonymous
     }
 
-    /// The anonymous key of an explicitly empty data chain ([`Self::open_data`]).
-    pub(crate) fn anonymous(&self) -> Option<&Arc<busbar_contract::records::VirtualKey>> {
-        self.anonymous.as_ref()
+    /// Whether the chain is `anonymous` alone: 1.5.5's open relay. No credential is read and no
+    /// verifier runs; every caller is the principal `anonymous`.
+    pub fn is_open(&self) -> bool {
+        self.anonymous && self.instances.is_empty()
     }
 
     /// Assemble one explicit DATA chain from the actual opened reservations. This is
     /// preparation ownership, never a final route/resource authorization decision.
+    ///
+    /// `anonymous`: the operator's chain names the built-in member `anonymous`. A chain with no
+    /// instance and no `anonymous` is refused ([`EMPTY_CHAIN_REFUSED`]): nobody could be admitted.
     pub fn data(
         epoch: u64,
         instances: Vec<Arc<AuthInstance>>,
         owners: Arc<AuthOwners>,
+        anonymous: bool,
     ) -> Result<Self, &'static str> {
         let mut ids = std::collections::BTreeSet::new();
         let mut names = std::collections::BTreeSet::new();
-        if instances.is_empty() {
-            return Err("native principal data requires an explicit auth chain");
+        if instances.is_empty() && !anonymous {
+            return Err(EMPTY_CHAIN_REFUSED);
         }
         for instance in &instances {
             let opened = &instance.opened;
@@ -142,8 +143,40 @@ impl NativeChain {
             policy: ChainPolicy::new(epoch, Vec::new()),
             owners,
             data: true,
-            anonymous: None,
+            anonymous,
         })
+    }
+
+    /// The principal a caller that presents no credential is identified as, where the chain
+    /// admits `anonymous`.
+    fn anonymous_identity(
+        self: &Arc<Self>,
+        cx: CallCx,
+        request: Arc<ChargedRequestSnapshot>,
+    ) -> NativePreparedAnswer {
+        NativePreparedAnswer::Identity(Arc::new(PreparedNativeIdentity {
+            chain: Arc::clone(self),
+            instance: None,
+            request,
+            identity: busbar_ports::auth::Identity::of_subject(ANONYMOUS),
+            cx,
+            cutoff: None,
+        }))
+    }
+
+    /// Whether the request's head carries a credential this chain would read: `authorization`,
+    /// or a header one of its instances declares. A request that carries one and that no member
+    /// accepts is not anonymous: it is not verified.
+    fn presents_credential(&self, request: &ChargedRequestSnapshot) -> bool {
+        request
+            .with_auth_input(|input| {
+                input.headers.iter().any(|field| {
+                    let name = field.name.get();
+                    name.eq_ignore_ascii_case("authorization") || self.reads_header(name)
+                })
+            })
+            // A head that cannot be read is not the head of a caller presenting nothing.
+            .unwrap_or(true)
     }
 
     pub fn is_data(&self) -> bool {
@@ -200,17 +233,14 @@ impl NativeChain {
         cx: CallCx,
         request: Arc<ChargedRequestSnapshot>,
     ) -> Result<NativePreparedAnswer, busbar_ports::PortError> {
-        if self.anonymous.is_some() {
-            return Ok(NativePreparedAnswer::Identity(Arc::new(
-                PreparedNativeIdentity {
-                    chain: Arc::clone(self),
-                    instance: None,
-                    request,
-                    identity: busbar_ports::auth::Identity::of_subject(ANONYMOUS),
-                    cx,
-                    cutoff: None,
-                },
-            )));
+        // `anonymous` alone: the open relay reads no credential and runs no verifier.
+        if self.is_open() {
+            return Ok(self.anonymous_identity(cx, request));
+        }
+        // Beside verifiers, `anonymous` admits only a caller that presents nothing: a credential
+        // no member accepts stays unverified, never downgraded to the anonymous principal.
+        if self.anonymous && !self.presents_credential(&request) {
+            return Ok(self.anonymous_identity(cx, request));
         }
         for instance in &self.instances {
             let caller = caller(instance, cx);
