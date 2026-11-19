@@ -546,12 +546,81 @@ impl fmt::Debug for HandshakeInfo {
     }
 }
 
+/// The peer's leaf certificate, the exact DER bytes its handshake verified, copied once into
+/// storage charged to the connection's account. Empty, with nothing reserved or allocated, when
+/// the peer presented no certificate. Whoever holds it lends the bytes; nothing re-encodes them.
+#[derive(Default)]
+pub struct PeerCertificate {
+    // Declaration order: the bytes are wiped and freed before their credit retires.
+    bytes: crate::secure::SecureVec,
+    _credit: Option<StorageCredit>,
+}
+
+impl PeerCertificate {
+    /// Reserve the certificate's bytes on `source`, then copy `der` exactly. Empty `der` reserves
+    /// and allocates nothing. A denial leaves nothing reserved.
+    pub fn capture(source: &StorageSource, der: &[u8]) -> Result<Self, StorageDenied> {
+        if der.is_empty() {
+            return Ok(Self::default());
+        }
+        Self::charged(source.try_reserve(der.len())?, der)
+    }
+
+    /// Copy `der` into storage whose credit the caller already reserved: exactly its length.
+    pub fn charged(credit: StorageCredit, der: &[u8]) -> Result<Self, StorageDenied> {
+        if credit.len() != der.len() {
+            return Err(StorageDenied);
+        }
+        if der.is_empty() {
+            return Ok(Self::default());
+        }
+        let mut bytes =
+            crate::secure::SecureVec::with_capacity(der.len()).map_err(|_| StorageDenied)?;
+        if bytes.capacity() > der.len() {
+            return Err(StorageDenied);
+        }
+        bytes.extend(der).map_err(|_| StorageDenied)?;
+        Ok(Self {
+            bytes,
+            _credit: Some(credit),
+        })
+    }
+
+    /// The certificate's DER bytes, or empty.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        self.bytes.as_slice()
+    }
+}
+
+impl std::ops::Deref for PeerCertificate {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl AsRef<[u8]> for PeerCertificate {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl fmt::Debug for PeerCertificate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PeerCertificate")
+            .field("bytes", &self.bytes.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// A secured stream and the peer leaf certificate verified by its handshake.
 pub struct SecuredIo {
     /// The stream returned by the completed security handshake.
     pub io: Box<dyn RawIo>,
-    /// Verified peer leaf certificate bytes, or empty when no peer certificate is supplied.
-    pub peer_certificate: Box<[u8]>,
+    /// Verified peer leaf certificate, charged to [`Self::storage`]; empty when none is supplied.
+    /// The accepting layer takes it by move for the connection's facts.
+    pub peer_certificate: PeerCertificate,
     /// Actual TLS metadata, mandatory for TLS even when ALPN/SNI are absent; None is plaintext.
     pub tls_handshake: Option<HandshakeInfo>,
     /// Logical protocol-byte progress maintained by the returned stream's carrier producer.
@@ -577,7 +646,7 @@ impl SecuredIo {
     pub fn anonymous(io: ConnectionIo) -> Self {
         Self {
             io: io.io,
-            peer_certificate: Box::default(),
+            peer_certificate: PeerCertificate::default(),
             tls_handshake: None,
             progress: io.progress,
             storage: io.storage,

@@ -35,6 +35,8 @@ impl GovState {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell_async(bucket_id, window).await?;
         let observed = self.observation_total_async(bucket_id, window).await?;
+        // The view's one reading, after the last read it views.
+        let now_ms = crate::store::now_ms();
         self.viewed_usage(
             cost,
             bucket_id,
@@ -42,10 +44,12 @@ impl GovState {
             include_request_fee,
             &cell,
             &observed,
+            now_ms,
         )
     }
 
-    /// One bucket's viewed usage from a cell and observation total already read.
+    /// One bucket's viewed usage from a cell and observation total already read, viewed at the
+    /// caller's wall reading `now_ms`.
     fn viewed_usage(
         &self,
         cost: &crate::cost::CostModel,
@@ -54,13 +58,14 @@ impl GovState {
         include_request_fee: bool,
         cell: &BudgetCell,
         observed: &crate::persistence::observations::BudgetTotal,
+        now_ms: u64,
     ) -> RecordStoreResult<DerivedUsage> {
         if observed.spent_nanos != 0 || !observed.units.is_empty() {
             return self
                 .price_observed_cell(cost, include_request_fee, cell, observed)?
                 .map_err(|error| money_refusal(bucket_id, &error));
         }
-        let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, cell);
+        let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, cell, now_ms);
         let priced = match self.money_view.fresh(bucket_id, &inputs) {
             Some(priced) => priced,
             None => {
@@ -99,13 +104,15 @@ impl GovState {
             crate::off_path::governance::runtime::native_runtime_scrape_cells(self, buckets, now)
                 .await?;
         let observed = self.observation_totals_async(&windows).await?;
+        // One reading for the scrape, after its last await: every bucket is viewed at it.
+        let now_ms = crate::store::now_ms();
         crate::off_path::governance::runtime::native_runtime_scrape_views(
             buckets,
             cells,
             observed,
             |id, period, cell, observed| {
                 let models = model_lanes(&cell, &observed)?;
-                let usage = self.viewed_usage(cost, id, period, true, &cell, &observed)?;
+                let usage = self.viewed_usage(cost, id, period, true, &cell, &observed, now_ms)?;
                 Ok(KeyScrape { usage, models })
             },
         )

@@ -171,15 +171,16 @@ impl ConnectionSecurity for Tls {
                 )
                 .map_err(std::io::Error::other)?,
             );
-            let peer_certificate = funded
-                .stream()
-                .get_ref()
-                .1
-                .peer_certificates()
-                .and_then(|chain| chain.first())
-                .map(|leaf| Box::from(leaf.as_ref()))
-                .unwrap_or_default();
-            let known_h2 = funded.stream().get_ref().1.alpn_protocol() == Some(ALPN_H2);
+            // The leaf rustls verified, copied once into storage charged before the copy.
+            let peer_certificate = busbar_contract::transport::wire::PeerCertificate::capture(
+                &storage,
+                session
+                    .peer_certificates()
+                    .and_then(|chain| chain.first())
+                    .map_or(&[][..], |leaf| leaf.as_ref()),
+            )
+            .map_err(std::io::Error::other)?;
+            let known_h2 = session.alpn_protocol() == Some(ALPN_H2);
             let (tls_stream, progress) = write_progress::TrackedTls::new(funded, plan)?;
             let mut io = TokioAsyncReadCompatExt::compat(tls_stream);
             if !known_h2 {

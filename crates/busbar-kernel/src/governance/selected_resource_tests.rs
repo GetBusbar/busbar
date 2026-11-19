@@ -29,7 +29,7 @@ fn rates(capacity: usize) -> (Arc<SelectedRates>, Arc<AtomicU64>) {
         clock: RateClock {
             epoch: [1; 16],
             boot_ms: Some(0),
-            started: Instant::now(),
+            started_ns: 0,
             elapsed: Some(elapsed.clone()),
         },
         unavailable: AtomicBool::new(false),
