@@ -622,7 +622,10 @@ pub(super) fn placement(writer: [u8; 16]) -> Placement {
 /// full) refused and held with no row; never both, never retained, never unconfirmed.
 fn assert_offered_once(writer: [u8; 16], records: &BTreeMap<String, Vec<String>>) {
     let placement = placement(writer);
-    assert!(!placement.retained && !placement.unconfirmed, "{placement:?}");
+    assert!(
+        !placement.retained && !placement.unconfirmed,
+        "{placement:?}"
+    );
     if placement.record_failed {
         assert!(placement.recorded.is_none(), "{placement:?}");
         assert_eq!(records_for(records, writer), 0, "refused: {placement:?}");
