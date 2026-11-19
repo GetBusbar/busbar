@@ -22,10 +22,7 @@
 //! did not reach the directory (store fault, no grant, a malformed `in`). Bytes go into the
 //! caller's [`ServiceBufs`] under the short-buffer rule.
 
-use crate::abi::mechanism::call::{AbiStr, Blob};
-use crate::abi::mechanism::check::{self, fault, Fault, Rule};
-
-use super::service::{ServiceBufs, ServiceHead};
+use crate::abi::mechanism::check::{self};
 
 /// [`DirectoryResult::state`], [`DirectoryCreateIn::state`]: active.
 pub const STATE_ACTIVE: u32 = 1;

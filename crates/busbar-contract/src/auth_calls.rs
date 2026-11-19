@@ -448,23 +448,6 @@ pub struct DeclaredStyle {
     pub flags: u32,
 }
 
-/// THE ONE ORDER the host lists outbound styles in: `declared` (every row's styles, linked rows
-#[must_use]
-pub fn listed_styles(declared: impl IntoIterator<Item = DeclaredStyle>) -> Vec<DeclaredStyle> {
-    let mut out: Vec<DeclaredStyle> = Vec::new();
-    for style in declared {
-        if !out.iter().any(|s| s.name == style.name) {
-            out.push(style);
-        }
-    }
-
-    out.sort_by_key(|s| match crate::abi::auth::style_rank(s.flags) {
-        0 => u32::MAX,
-        rank => rank,
-    });
-    out
-}
-
 /// One attempt's fixed facts at one AUTH POINT, as the kernel hands them to `fields` (THE
 pub struct FieldsRequest {
     /// The point the call is made at: one of the style's `StyleDecl::points`.

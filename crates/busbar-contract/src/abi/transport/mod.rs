@@ -198,7 +198,6 @@ pub use super::auth::{
 };
 
 use super::mechanism::call::{AbiStr, Field, InHead, Op, OutHead, Span};
-use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 

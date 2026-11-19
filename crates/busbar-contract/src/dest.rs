@@ -3,8 +3,8 @@
 
 //! Destinations, the route plan, and what an outbound request looks like.
 
-use crate::bounded::{BoundedVec, ScratchBytes, MAX_LEGS};
-use crate::ids::{LaneId, OpClassId, RecordSchemaId, SchemeKey, StreamId, UnitKey, UpstreamIdx};
+use crate::bounded::{BoundedVec, MAX_LEGS};
+use crate::ids::{LaneId, OpClassId, RecordSchemaId, StreamId, UnitKey, UpstreamIdx};
 use crate::plugin::KernelSeal;
 use core::fmt;
 

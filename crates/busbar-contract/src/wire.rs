@@ -9,7 +9,7 @@ pub use crate::transport::wire::{
     WireFault, WireStatus, WireStatusClass,
 };
 
-use crate::bounded::{BoundedVec, ScratchBytes, SlabBytes, MAX_CURSOR_BYTES, MAX_KEYS};
+use crate::bounded::{SlabBytes, MAX_CURSOR_BYTES};
 use crate::ids::StreamId;
 
 /// Transport bytes with a direction, a stream and meta. It has no meaning.

@@ -12,15 +12,14 @@ pub use scrape::{
 pub mod traces;
 
 use crate::export::projection::{ProjectedRecord, Rendered};
-use busbar_contract::export_calls::codes::ExportField;
-use busbar_contract::export_stream::ExportStream;
 #[cfg(any(test, feature = "test-support"))]
-use std::sync::Arc;
 
 /// Host-owned user configuration capabilities (the admin configuration schema), built off the
 /// request path.
 #[cfg(feature = "openapi-schema")]
 pub use crate::off_path::export::configuration_capabilities;
+use busbar_contract::export_calls::codes::ExportField;
+use busbar_contract::export_stream::ExportStream;
 
 /// Exercise the owning projection resolver without loading an exporter in focused schema tests.
 #[cfg(all(feature = "openapi-schema", any(test, feature = "test-support")))]

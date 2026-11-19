@@ -7,13 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
 
-use crate::abi::shared::{code, DeclStr, WireField};
-use crate::conn::{
-    ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, Ticket,
-};
-use crate::ids::StreamId;
-use crate::transport::wire::CertFacts;
-use crate::transport::ConnFacts;
+use crate::abi::shared::{DeclStr, WireField};
+use crate::conn::{ConnError, ConnId, Conns, InstanceId};
 
 pub mod connector;
 

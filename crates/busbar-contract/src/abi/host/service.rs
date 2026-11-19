@@ -31,7 +31,7 @@
 
 use std::os::raw::c_void;
 
-use crate::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, RawOutcome, Span};
+use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome, Span};
 use crate::abi::mechanism::check::{self, fault, Dim, Fault, Filled, Rule, MAX_BYTES};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx};
 

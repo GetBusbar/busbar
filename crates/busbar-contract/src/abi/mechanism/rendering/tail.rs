@@ -56,7 +56,7 @@
 use core::mem::{size_of, MaybeUninit};
 use core::ptr::{addr_of, copy_nonoverlapping};
 
-use super::{items, In, Out, RenderError, Unreadable};
+use super::{items, Out, RenderError};
 use crate::abi::mechanism::call::{AbiStr, Blob};
 use crate::abi::mechanism::check::{self, Rule, HARD_MAX_BYTES};
 use crate::abi::mechanism::door::KindTailHead;

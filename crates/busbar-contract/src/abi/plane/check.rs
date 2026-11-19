@@ -5,34 +5,21 @@
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
-use super::reason_of;
 use super::units_bill;
 use super::{
-    AdminRoute, ArriveOut, BillableClass, CatalogOut, Claim, ClassParent, DialectAuth, OnPieceOut,
-    OutField, PinMechanism, PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain,
-    RecordRetention, RecordWrite, RefusalOut, RefusalStatus, RouteCost, ServeOut, TrustKey,
-    UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED,
-    CHAIN_PIPE_SEPARATED, CLAIM_CATALOG, CLAIM_ENTRY, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN,
-    CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS, CLAIM_TICKET, DIALECT_PROVIDER, EMIT_DONE,
-    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE,
-    EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
-    INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT,
-    PIECE_OUT_TEXT, RECORD_AUDIT, RECORD_PUT, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK,
-    TAIL_HOOKS_GATED, TAIL_PROBES, TAIL_REFUSED_PIECE, UNITS_ESTIMATED, VERDICT_COUNT_REFUSED,
+    CatalogOut, Claim, OnPieceOut, OutField, PlaneTail, RecordWrite, UnitCount, CANCEL_ABORTED,
+    CANCEL_OK_PARTIAL, CLAIM_CATALOG, CLAIM_ENTRY, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN,
+    CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS, CLAIM_TICKET, EMIT_DONE, EMIT_FINAL_STATUS,
+    EMIT_MESSAGE_END, EMIT_TO_FAR_END, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
+    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_METRIC_LANES,
+    RECORD_AUDIT, RECORD_PUT, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED,
+    TAIL_PROBES, TAIL_REFUSED_PIECE, UNITS_ESTIMATED, VERDICT_COUNT_REFUSED,
 };
-use crate::abi::hook::{
-    signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
-};
-use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_ABSENT, BLOB_OCTETS, MAX_TEXT};
+use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_ABSENT, BLOB_OCTETS};
 use crate::abi::mechanism::check::{
-    bits, code, fault, first, index, listed, range, result, results, span, text, weight, Dim,
-    Filled, MAX_BYTES,
-};
-use crate::abi::mechanism::door::{
-    Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
+    bits, code, fault, first, index, listed, range, results, span, text, Dim, MAX_BYTES,
 };
 use crate::grammar::{PathSeg, Selector};
-use crate::host_records::RETENTION_TERMINAL_ONLY;
 
 /// The most unit counts one answer may carry.
 pub const MAX_UNITS: u64 = 64;

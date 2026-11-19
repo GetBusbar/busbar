@@ -13,7 +13,7 @@ mod outbound;
 mod points;
 mod serve;
 
-pub use check::{check_points, check_target, FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX};
+pub use check::{check_points, check_target};
 
 pub use inbound::{IdentifyOut, IdentityBuf, IdentityOut, LoginField};
 pub use outbound::{TargetIn, TargetOut};
@@ -150,11 +150,6 @@ pub struct Ops {
     pub serve: Option<Op>,
 }
 
-/// [`AuthTail::caps`]: the plugin serves `verify`.
-pub const CAP_INBOUND: u32 = 1;
-/// [`AuthTail::caps`]: the plugin serves `begin_login`/`complete_login`.
-pub const CAP_LOGIN: u32 = 2;
-
 /// [`StyleDecl::flags`]: `fields` needs [`FieldsIn::headers`], the exact envelope, for this style.
 pub const STYLE_NEEDS_HEADERS: u32 = 2;
 /// [`StyleDecl::flags`]: the style sends the credential to the provider entry's token endpoint.
@@ -163,19 +158,11 @@ pub const STYLE_ENDPOINT_TOKEN_URL: u32 = 32;
 pub const STYLE_ENDPOINT_FROM_CREDENTIAL: u32 = 64;
 /// [`StyleDecl::flags`]: the lowest bit of the style's LIST RANK ([`STYLE_RANK_MASK`]).
 pub const STYLE_RANK_SHIFT: u32 = 16;
-/// [`StyleDecl::flags`]: the style's LIST RANK, `1..=255`, or `0` (unranked).
-pub const STYLE_RANK_MASK: u32 = 0x00ff_0000;
 
 /// The [`StyleDecl::flags`] bits stating list rank `rank` ([`STYLE_RANK_MASK`]).
 #[must_use]
 pub const fn ranked(rank: u8) -> u32 {
     (rank as u32) << STYLE_RANK_SHIFT
-}
-
-/// The list rank a [`StyleDecl::flags`] states (`0` = unranked; [`STYLE_RANK_MASK`]).
-#[must_use]
-pub const fn style_rank(flags: u32) -> u32 {
-    (flags & STYLE_RANK_MASK) >> STYLE_RANK_SHIFT
 }
 
 /// One outbound style a plugin serves: an open string the provider's `auth:` resolves against.
@@ -279,24 +266,6 @@ impl AuthTail {
             => credential_kinds_ptr, with_credential_kinds, with_raw_credential_kinds;
     }
 }
-
-/// [`IdentifyOut::verdict`] for `verify`: identified; [`IdentifyOut::identity`] holds who.
-pub const VERDICT_IDENTITY: u32 = 1;
-/// [`IdentifyOut::verdict`] for `verify`: a credential was presented and is invalid. Fail-closed;
-pub const VERDICT_REJECT: u32 = 2;
-
-/// [`IdentifyOut::decision`] for `verify`: the transport goes on with the request (the next
-pub const DECISION_CONTINUE: u32 = 1;
-
-/// [`StripName::place`]: a query key of the request target, matched case-sensitively.
-pub const STRIP_QUERY: u32 = 2;
-
-/// [`IdentifyOut::verdict`] for `complete_login`: identified.
-pub const LOGIN_IDENTITY: u32 = 1;
-/// [`IdentifyOut::verdict`] for `complete_login`: the directory or IdP could not answer (connect,
-pub const LOGIN_OUTAGE: u32 = 3;
-/// [`IdentifyOut::verdict`] for `complete_login`: the IdP answered, and its answer failed the
-pub const LOGIN_SECURITY_CHECK_FAILED: u32 = 4;
 
 /// `fields`' EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in
 pub const EXT_SCOPE: &str = "scope";
@@ -481,17 +450,6 @@ pub fn scope_extensions(scope: Option<&[u8]>) -> Vec<u8> {
         crate::abi::mechanism::extensions::encode(&[(EXT_SCOPE, s)])
     })
 }
-
-/// [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. Every credential
-pub const FIELD_SENSITIVE: u32 = 1;
-
-/// [`FieldSpan::flags`]: this field is a QUERY PARAMETER, not a header. The host's framer appends
-pub const FIELD_QUERY: u32 = 2;
-
-/// [`BeginLoginOut::shape`]: redirect to [`BeginLoginOut::authorize_url`].
-pub const BEGIN_AUTHORIZE: u32 = 1;
-/// [`BeginLoginOut::shape`]: render [`BeginLoginOut::form`].
-pub const BEGIN_FORM: u32 = 2;
 
 pub use super::mechanism::check::SPAN_ABSENT;
 

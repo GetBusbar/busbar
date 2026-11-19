@@ -3,9 +3,6 @@
 
 //! Shared wire bodies, neutral IR outcomes, usage faults and explicit host services.
 
-use crate::bounded::SlabBytes;
-use crate::json::Value;
-
 /// An upstream response body a producer could not decode into its operation's IR.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodecError {

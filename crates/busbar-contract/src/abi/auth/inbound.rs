@@ -3,7 +3,7 @@
 
 //! THE INBOUND FAMILY: `verify` and the `begin_login`/`complete_login` pair, plus the shapes the
 
-use crate::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Span};
+use crate::abi::mechanism::call::{AbiStr, OutHead, Span};
 
 /// The HOST buffer an identity is written into (request-path results live in host memory).
 #[repr(C)]

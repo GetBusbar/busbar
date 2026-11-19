@@ -6,19 +6,9 @@
 use super::inbound::{IdentifyOut, IdentityBuf};
 use super::outbound::TargetOut;
 use super::points::{AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
-use super::{
-    BEGIN_AUTHORIZE, BEGIN_FORM, CAP_INBOUND, DECISION_CONTINUE, FIELD_QUERY, FIELD_SENSITIVE,
-    IDENTITY_HAS_TTL, LOGIN_IDENTITY, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT, STRIP_QUERY,
-    STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL, STYLE_NEEDS_HEADERS, STYLE_RANK_MASK,
-    VERDICT_IDENTITY,
-};
+use super::{IDENTITY_HAS_TTL, SPAN_ABSENT};
 use crate::abi::mechanism::call::{Outcome, Span, BLOB_OCTETS};
-use crate::abi::mechanism::check::{fault, listed, results, text, Dim, Fault, Rule, MAX_BYTES};
-
-/// The hard maximum of `needed_groups`: no identity asserts more groups than this.
-pub const IDENTITY_GROUPS_HARD_MAX: u32 = 65_536;
-/// The hard maximum of `needed_fields`: no style writes more auth fields than this. Also the
-pub const FIELDS_HARD_MAX: u32 = 64;
+use crate::abi::mechanism::check::{fault, results, Dim, Fault, Rule, MAX_BYTES};
 
 /// The fields one op's arms name, as `op.arm`: the shared [`Fault`] carries one of them.
 struct Arms {

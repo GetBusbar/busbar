@@ -3,8 +3,8 @@
 
 //! THE HOST'S I/O TABLE, `io.*` (`BUSBAR-1.6.0.md` THE DESIGN, the connections section), as a `#[repr(C)]` table of host slots.
 
-use crate::abi::mechanism::call::{AbiStr, Field};
-use crate::abi::mechanism::check::{self, fault, Fault, Rule};
+use crate::abi::mechanism::call::AbiStr;
+use crate::abi::mechanism::check::{self};
 
 pub use crate::abi::host::service::{ServiceFn, ServiceHead, ServiceOut};
 

@@ -9,10 +9,8 @@
 
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use busbar_contract::route::METHOD_GET;
 
-use crate::path_claims::{ListenerId, PathClaim};
-use crate::upstreams::{ConfiguredUpstreams, Upstreams};
+use crate::upstreams::Upstreams;
 
 /// What the callback came to.
 #[derive(Clone, Debug, PartialEq, Eq)]

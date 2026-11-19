@@ -3,8 +3,6 @@
 
 //! THE READ-TIME ROLLUP: what an operator view builds from figures the one function already priced.
 
-use super::MoneyError;
-
 /// What a budget of `cap` minor units has left after `spent`: the cap less the spend, never below
 #[must_use]
 pub fn budget_remaining(cap: i64, spent: i64) -> i64 {

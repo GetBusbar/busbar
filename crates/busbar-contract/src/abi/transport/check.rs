@@ -11,8 +11,8 @@ use super::{
     ListenIn, LocateIn, ReadIn, RefuseIn, WriteIn,
 };
 use super::{
-    AcceptOut, ArrivalOut, Claim, ConnFacts, EmitIn, FaultRow, FinishIn, FramePiece, FrameSpan,
-    FramerOut, HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
+    AcceptOut, ArrivalOut, Claim, EmitIn, FaultRow, FinishIn, FramePiece, FrameSpan, FramerOut,
+    HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
     CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_ACCEPTS, FACT_ADOPTS, FACT_DECODES_PAYLOAD,
     FACT_DETACHES, FACT_DIALS, FAULT_CALLER, FAULT_RATE_LIMIT, FRAMING_DATAGRAM, FRAMING_STREAM,
     MAX_ADDR, PIECE_CODE_HANDOFF, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
@@ -27,10 +27,10 @@ use super::{
     HANDSHAKE_ANSWERS, HANDSHAKE_NONE, LANE_CLEAR, LANE_SECURED, MAX_KEYING_BYTES, MAX_ROUTES,
     PATH_REQUEST_BIND, PATH_REQUEST_NONE, PATH_REQUEST_REBIND,
 };
-use crate::abi::mechanism::call::{AbiStr, Outcome};
+use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::check::{
-    bits, bounded, code, fault, first, listed, range, reported, result, results, texts, within,
-    Dim, MAX_BYTES,
+    bits, bounded, code, fault, first, listed, range, reported, result, results, within, Dim,
+    MAX_BYTES,
 };
 use crate::abi::mechanism::decl::{abi_answers, abi_op};
 use crate::abi::mechanism::lifecycle::{slot as life, CancelOut};

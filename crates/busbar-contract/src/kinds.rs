@@ -4,8 +4,7 @@
 //! The shapes the plugin kinds share outside `abi/`: a plane's fact and credential-locator
 
 pub mod codes;
-use crate::bounded::{Facts, MAX_RECORD_BYTES};
-use crate::ids::SchemeAlt;
+use crate::bounded::MAX_RECORD_BYTES;
 use core::fmt;
 
 /// The opaque state one round of a challenge-response exchange hands to the next.

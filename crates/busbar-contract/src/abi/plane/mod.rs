@@ -229,11 +229,8 @@ pub use collections::{CollectionMode, RecordCollection};
 use super::hook::{MessageView, PromptView, RequestView, SignalEntry};
 use super::mechanism::call::{AbiStr, Blob, Field, InHead, Op, OutHead, Span};
 pub use super::mechanism::check::SPAN_ABSENT;
-use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
-use super::mechanism::lifecycle::{
-    slot as life, CancelOut, OpenOut, OpsHead, TickOut, LIFECYCLE_SLOTS,
-};
+use super::mechanism::lifecycle::{slot as CancelOut, OpenOut, OpsHead, LIFECYCLE_SLOTS};
 use crate::caps::ReasonCode;
 
 /// The plane kind's initial released ABI; v1.5.5 had no plane kind ABI.

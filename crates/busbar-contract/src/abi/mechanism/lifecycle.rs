@@ -3,8 +3,7 @@
 
 //! THE LIFECYCLE: the slot set every kind's table leads with ([`OpsHead`]), and the `in`/`out` of
 
-use super::call::{Blob, InHead, Op, OutHead};
-use super::ticket::{HostTables, Ticket};
+use super::call::{Op, OutHead};
 
 /// [`InHead::op`] of each lifecycle slot, in table order. A kind's own ops number on from
 pub mod slot {

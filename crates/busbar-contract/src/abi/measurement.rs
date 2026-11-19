@@ -6,7 +6,7 @@
 //! this interface. A missing class is unobserved, never an implied zero.
 
 use crate::abi::mechanism::call::AbiStr;
-use crate::abi::mechanism::check::{fault, listed, named, Fault, Rule};
+use crate::abi::mechanism::check::{fault, named, Fault, Rule};
 
 pub use busbar_artifact_metadata::measurement::MAX_MEASUREMENT_CLASSES;
 

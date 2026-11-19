@@ -19,8 +19,7 @@
 //! This module declares shapes only; it does not enable backend admission/execution.
 
 use super::HostBuf;
-use crate::abi::mechanism::call::{Blob, DeadlineClass, InHead, Op, OutHead};
-use crate::abi::mechanism::check::OpContract;
+use crate::abi::mechanism::call::{Blob, InHead, Op, OutHead};
 use crate::abi::mechanism::decl::abi_struct;
 use crate::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 use crate::abi::mechanism::ticket::HostTables;
