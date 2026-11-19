@@ -1095,16 +1095,16 @@ jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3ef
 stringprep = { git = "https://github.com/MattJackson/rust-stringprep", rev = "e81fc4b8a718e5a80bbdf87e5d183565dd5e66cf" }
 dunce = { git = "https://github.com/MattJackson/dunce", rev = "bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d" }
 # Native HTTP allocation projection and serializer provenance (adopted transport cohort).
-http = { git = "https://github.com/MattJackson/http", rev = "904f4519b5f27a0424b121a4828640c741efcd95" }
-h2 = { git = "https://github.com/MattJackson/h2", rev = "6bdbf046878247aebe9138f37f32d2665b54bdd9" }
-hyper = { git = "https://github.com/MattJackson/hyper", rev = "c140435f43477ca3ffbdb2078a5994e9dfb11969" }
-hyper-util = { git = "https://github.com/MattJackson/hyper-util", rev = "b4c554c133c7fc83ee55a9ce0271849f7387994d" }
+http = { git = "https://github.com/MattJackson/http", rev = "7e71322105371bae475f8e68d86324e73f4a11c9" }
+h2 = { git = "https://github.com/MattJackson/h2", rev = "45b907798147b992b03334e500fdedc8d7e29a40" }
+hyper = { git = "https://github.com/MattJackson/hyper", rev = "96fc11745ef61f4b7a37a51f5484836a7807e8eb" }
+hyper-util = { git = "https://github.com/MattJackson/hyper-util", rev = "2abd71badaf5aefcfaf6118a87656e849fbfca64" }
 tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "893a21f1f98011a2665840231330c473836c9a0a" }
 # YAML: serde-saphyr and granit-parser carry busbar's opt-in serde_yaml-compatibility options
 # (null_scalars_as_text, lowercase_radix_prefixes_only, bom_inside_document_as_content), offered
-# upstream; forks of the exact published versions plus those commits.
-serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "a94d2da01a448d348b5d14945e29192e511b8452" }
-granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "d31e9292a0be49de7d3a85ee07555bb9d0afce20" }
+# upstream; forks of the exact published versions (2.2.0) plus those commits.
+serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "34461cdf00e17aea91654dc744aa6ae585458411" }
+granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "6597ae7f5622872c6e242af590342de05300d601" }
 # JSON (SERDE-NUMBERS r17 P0-P3): sonic-rs 0.5.11 plus exact numbers through foreign deserializers
 # (serde buffering, YAML) and an authenticated Value hand-off, offered upstream (cloudwego/sonic-rs).
 sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "1241c129cef83686109f820825206f56ff470f67" }

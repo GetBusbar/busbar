@@ -1221,8 +1221,8 @@ dependencies = [
 
 [[package]]
 name = "granit-parser"
-version = "2.1.0"
-source = "git+https://github.com/MattJackson/granit-parser?rev=d31e9292a0be49de7d3a85ee07555bb9d0afce20#d31e9292a0be49de7d3a85ee07555bb9d0afce20"
+version = "2.2.0"
+source = "git+https://github.com/MattJackson/granit-parser?rev=6597ae7f5622872c6e242af590342de05300d601#6597ae7f5622872c6e242af590342de05300d601"
 dependencies = [
  "arraydeque",
  "smallvec",
@@ -1230,8 +1230,8 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.18"
-source = "git+https://github.com/MattJackson/h2?rev=6bdbf046878247aebe9138f37f32d2665b54bdd9#6bdbf046878247aebe9138f37f32d2665b54bdd9"
+version = "0.4.20"
+source = "git+https://github.com/MattJackson/h2?rev=45b907798147b992b03334e500fdedc8d7e29a40#45b907798147b992b03334e500fdedc8d7e29a40"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1291,8 +1291,8 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "http"
-version = "1.4.1"
-source = "git+https://github.com/MattJackson/http?rev=904f4519b5f27a0424b121a4828640c741efcd95#904f4519b5f27a0424b121a4828640c741efcd95"
+version = "1.5.0"
+source = "git+https://github.com/MattJackson/http?rev=7e71322105371bae475f8e68d86324e73f4a11c9#7e71322105371bae475f8e68d86324e73f4a11c9"
 dependencies = [
  "bytes",
  "itoa",
@@ -1344,8 +1344,8 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "1.11.1"
-source = "git+https://github.com/MattJackson/hyper?rev=c140435f43477ca3ffbdb2078a5994e9dfb11969#c140435f43477ca3ffbdb2078a5994e9dfb11969"
+version = "1.12.0"
+source = "git+https://github.com/MattJackson/hyper?rev=96fc11745ef61f4b7a37a51f5484836a7807e8eb#96fc11745ef61f4b7a37a51f5484836a7807e8eb"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1365,15 +1365,16 @@ dependencies = [
 
 [[package]]
 name = "hyper-util"
-version = "0.1.20"
-source = "git+https://github.com/MattJackson/hyper-util?rev=b4c554c133c7fc83ee55a9ce0271849f7387994d#b4c554c133c7fc83ee55a9ce0271849f7387994d"
+version = "0.1.21"
+source = "git+https://github.com/MattJackson/hyper-util?rev=2abd71badaf5aefcfaf6118a87656e849fbfca64#2abd71badaf5aefcfaf6118a87656e849fbfca64"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "futures-channel",
  "futures-util",
  "http",
  "http-body",
+ "httparse",
  "hyper",
  "ipnet",
  "libc",
@@ -2409,8 +2410,8 @@ dependencies = [
 
 [[package]]
 name = "serde-saphyr"
-version = "2.1.1"
-source = "git+https://github.com/MattJackson/serde-saphyr?rev=a94d2da01a448d348b5d14945e29192e511b8452#a94d2da01a448d348b5d14945e29192e511b8452"
+version = "2.2.0"
+source = "git+https://github.com/MattJackson/serde-saphyr?rev=34461cdf00e17aea91654dc744aa6ae585458411#34461cdf00e17aea91654dc744aa6ae585458411"
 dependencies = [
  "annotate-snippets",
  "base64 0.22.1",
@@ -3028,9 +3029,9 @@ checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
 
 [[package]]
 name = "want"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e"
+checksum = "ec4cdd0dd910afe868b7ef477227d8d538b46b3075031afee8a9f2acb0a2ed0b"
 dependencies = [
  "try-lock",
 ]
