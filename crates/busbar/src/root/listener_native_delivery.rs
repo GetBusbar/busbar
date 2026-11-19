@@ -131,6 +131,12 @@ pub(super) struct RegisteredResponse {
     owner: Arc<StreamOwner>,
     deadline: Instant,
     retirement: RetireInput,
+    /// THE ONE DECISION "this answer waits for its record", made once at registration: the answer
+    /// records a line whose commit its release awaits ([`ResponseRecord::Committed`], which only
+    /// `advanced.wait_for_commit` on a metered answer produces). The finalizer waits for that
+    /// commit and the hold withholds the answer's last piece until it returns; both follow this
+    /// one fact, so neither can wait while the other does not.
+    waits_for_record: bool,
 }
 
 struct RegistrationAck {
@@ -182,6 +188,7 @@ impl RegisteredResponse {
         }
         let admission = authority.admission()?;
         let record = authority.record(node, admission.as_ref())?;
+        let waits_for_record = matches!(record, ResponseRecord::Committed(_));
         let unit = match &authority {
             ResponseAuthority::Refused(owner) => owner.unit(),
             _ => admission.as_ref().map(AdmittedRequest::unit),
@@ -226,6 +233,7 @@ impl RegisteredResponse {
             owner,
             deadline,
             retirement,
+            waits_for_record,
         })
     }
 
@@ -244,6 +252,7 @@ impl RegisteredResponse {
             owner,
             deadline,
             retirement,
+            waits_for_record,
         } = self;
         let binding = authority.binding().clone();
         let input = finalizer.input();
@@ -277,12 +286,14 @@ impl RegisteredResponse {
                 .await
                 .map_err(|_| InputError::Delivery(ResponseStop::CarrierRetired))?;
             let mut plan = plan;
-            // THE HOLD IS THE ENGINE'S. When an answer must wait for its record (`advanced.wait_for_commit`),
-            // the piece that completes it is not given to the transport until the record is in: the end; the
-            // trailers with it; the body piece that reaches a length the head stated; a head that is the
-            // whole answer. With the setting off nothing is withheld and the path is exactly the unheld one.
-            // Nothing is parked in the connection's byte pipe, so other answers on it keep flowing.
-            let mut hold = Hold::new(binding.app().wait_for_commit());
+            // THE HOLD IS THE ENGINE'S. When an answer must wait for its record (`advanced.wait_for_commit`
+            // on a metered answer: the decision registration made, `waits_for_record`), the piece that
+            // completes it is not given to the transport until the record is in: the end; the trailers
+            // with it; the body piece that reaches a length the head stated; a head that is the whole
+            // answer. An answer that records no line has nothing to wait for and withholds nothing,
+            // whatever the setting; with the setting off the path is exactly the unheld one. Nothing is
+            // parked in the connection's byte pipe, so other answers on it keep flowing.
+            let mut hold = Hold::new(waits_for_record);
             let mut withheld: Vec<Piece> = Vec::new();
             while let Some(piece) = response.next().await? {
                 let completes = match piece.piece {
