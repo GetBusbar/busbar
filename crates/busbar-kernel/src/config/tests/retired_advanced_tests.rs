@@ -28,6 +28,14 @@ fn v1_6_dev(key: &str, value: &str) -> String {
     )
 }
 
+/// An admin document edit, read as the admin API reads a request body.
+pub(super) fn document_edit(body: &str) -> crate::config::document_patch::DocumentPatch {
+    crate::config::document_patch::DocumentPatch::deserialize_request(
+        &mut busbar_contract::json::Deserializer::from_str(body),
+    )
+    .expect("a document edit")
+}
+
 fn boots(text: &str) -> DeployCfg {
     let parsed = deploy_from_yaml_str(text, &Grammar::empty())
         .unwrap_or_else(|e| panic!("an old configuration must load: {e:?}\n{text}"));
@@ -55,15 +63,15 @@ fn a_configuration_file_carrying_a_removed_advanced_key_boots_and_drops_it() {
 #[test]
 fn a_settings_put_carrying_a_removed_advanced_key_applies_and_drops_it() {
     for (key, value) in REMOVED {
-        let body: serde_json::Value =
-            serde_json::from_str(&format!("{{\"advanced\": {{\"{key}\": {value}}}}}"))
-                .expect("json");
-        let settings: crate::config::overlay::RootSettings = serde_json::from_value(body)
-            .unwrap_or_else(|e| panic!("PUT /config/settings with {key} must be accepted: {e}"));
+        let body = format!("{{\"advanced\": {{\"{key}\": {value}}}}}");
+        let settings: crate::config::overlay::RootSettings =
+            busbar_contract::json::parse_str(&body).unwrap_or_else(|e| {
+                panic!("PUT /config/settings with {key} must be accepted: {e}")
+            });
         let mut deploy = base_deploy();
         settings.apply_to_deploy(&mut deploy);
         resolve(&deploy, &HashMap::new()).expect("the applied configuration resolves");
-        let persisted = serde_json::to_string(&settings.advanced).expect("serializes");
+        let persisted = busbar_contract::json::to_string(&settings.advanced).expect("serializes");
         assert!(
             !persisted.contains(key),
             "{key} is not persisted into the overlay: {persisted}"
@@ -73,7 +81,7 @@ fn a_settings_put_carrying_a_removed_advanced_key_applies_and_drops_it() {
             .clone()
             .expect("advanced patch")
             .merge(crate::config::patch::AdvancedPatch::default());
-        let merged = serde_json::to_string(&merged).expect("serializes");
+        let merged = busbar_contract::json::to_string(&merged).expect("serializes");
         assert!(!merged.contains(key), "{key} survives no merge: {merged}");
     }
 }
@@ -81,11 +89,7 @@ fn a_settings_put_carrying_a_removed_advanced_key_applies_and_drops_it() {
 #[test]
 fn an_admin_document_edit_setting_a_removed_advanced_key_applies_and_drops_it() {
     for (key, value) in REMOVED {
-        let number: serde_json::Value = serde_json::from_str(value).expect("json");
-        let edit = crate::config::document_patch::DocumentPatch::from_value(
-            serde_json::json!({"set": {format!("/advanced/{key}"): number}}),
-        )
-        .expect("patch");
+        let edit = document_edit(&format!("{{\"set\": {{\"/advanced/{key}\": {value}}}}}"));
         for text in ["providers: {}\nmodels: {}\n".to_owned(), v1_5_5(key, value)] {
             let edited = edit
                 .parse_deploy_yaml(&text)

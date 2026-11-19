@@ -152,10 +152,9 @@ fn server_timing_moves_to_telemetry() {
 /// A document edit (the admin configuration document) at an old path applies at the new home.
 #[test]
 fn a_document_edit_at_an_old_path_lands_at_the_new_home() {
-    let edit = crate::config::document_patch::DocumentPatch::from_value(serde_json::json!({
-        "set": {"/advanced/trusted_proxies": ["192.0.2.0/24"], "/advanced/tls/roots": "system"}
-    }))
-    .expect("patch");
+    let edit = super::retired_advanced_tests::document_edit(
+        r#"{"set": {"/advanced/trusted_proxies": ["192.0.2.0/24"], "/advanced/tls/roots": "system"}}"#,
+    );
     let edited = edit
         .parse_deploy_yaml("providers: {}\nmodels: {}\n")
         .expect("the edit applies");
