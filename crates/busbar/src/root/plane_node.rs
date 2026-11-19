@@ -504,13 +504,8 @@ impl Node {
     /// failed for this process, or nothing has been committed for longer than the stall limit.
     #[must_use]
     pub(crate) fn journal_refusal(&self) -> Option<String> {
-        let journal = self.lane.get()?;
-        if let Some(error) = journal.failed() {
-            return Some(format!("native journal custody failed: {error:?}"));
-        }
-        self.cores
-            .stalled(tokio::time::Instant::now())
-            .then(|| "records have not been committed for longer than the stall limit".into())
+        // The flusher's stall is one of the journal's money-refusal causes (`State::refusal`).
+        self.lane.get().and_then(|journal| journal.refuses_money())
     }
 
     /// A new core's audit state, pulled by this node's flusher (design 2, A1). The core's

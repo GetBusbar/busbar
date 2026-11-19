@@ -188,7 +188,7 @@ async fn under_wait_for_commit_the_release_waits_for_the_commit_that_holds_its_l
         .unwrap();
     let handles = ledger.admit(key).unwrap();
     let line = super::audit::tests::inputs(19);
-    let (plan, finalizer) = connection
+    let (mut plan, finalizer) = connection
         .admit(
             key,
             handles,
@@ -196,6 +196,7 @@ async fn under_wait_for_commit_the_release_waits_for_the_commit_that_holds_its_l
             ResponseRecord::Committed(Box::new(line)),
         )
         .unwrap();
+    plan.record_head(Some(201)).unwrap();
     let intent = plan
         .freeze(ResponseDisposition::End { status: Some(201) })
         .unwrap();
@@ -223,7 +224,7 @@ async fn a_release_waiting_for_a_commit_ends_at_its_deadline_unpublished() {
     let connection = service.connection(cores.core()).unwrap();
     let key = connection.key(1, None).unwrap();
     let handles = ledger.admit(key).unwrap();
-    let (plan, finalizer) = connection
+    let (mut plan, finalizer) = connection
         .admit(
             key,
             handles,
@@ -231,6 +232,7 @@ async fn a_release_waiting_for_a_commit_ends_at_its_deadline_unpublished() {
             ResponseRecord::Committed(Box::new(super::audit::tests::inputs(3))),
         )
         .unwrap();
+    plan.record_head(Some(200)).unwrap();
     let intent = plan
         .freeze(ResponseDisposition::End { status: Some(200) })
         .unwrap();
