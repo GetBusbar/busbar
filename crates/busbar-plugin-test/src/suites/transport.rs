@@ -9,7 +9,9 @@
 //! `begin` + (ROLE_CLIENT) `emit(E_HEAD)` on stream 0 + `ingest` cases (stream count, C-TOKEN-PAD through the
 //! adapter's decode, C-MSG-FLAGS shape); EOF; C-TRANSPORT-REFUSE (`emit(E_REFUSE)` before and after a head, a status outside 400..=599 REFUSED R_INVALID, no
 //! head, body, upgrade or open in the answer); C-TRANSPORT-CLOSE (`emit(E_CLOSE)` for every reason answers only
-//! Write or SendTo and at most one Close); C-TRANSPORT-BACKPRESSURE (STREAM_FULL only from `emit`, STREAM_WRITABLE
+//! parts (WIRE_PART, WIRE_SEALED, the WIRE_END of a stream the close ends) or SendTo and at most one Close);
+//! C-TRANSPORT-SESSION (`begin` states SESSION exactly once and no other call states it; STREAM_BUSY only
+//! answers the `emit` that asked to open a stream); C-TRANSPORT-BACKPRESSURE (STREAM_FULL only from `emit`, STREAM_WRITABLE
 //! only from ingest, timer, datagram and event; neither in a refuse or close answer); C-DTLS-FP (a datagram
 //! `begin` is handed a fingerprint); C-SESSION-DROP (every session is dropped, none is leaked).
 
@@ -23,7 +25,7 @@ use busbar_plugin_abi::transport::{
     ROLE_SERVER,
 };
 use busbar_plugin_abi::types::KindCode;
-use busbar_ports::transport::{ConnIn, TransportOut, TransportPort, TransportSession};
+use busbar_ports::transport::{ConnIn, EmitParts, TransportOut, TransportPort, TransportSession};
 use busbar_ports::PortError;
 
 use super::harness::Harness;
@@ -41,12 +43,23 @@ struct Tally {
     opened: Vec<u64>,
     other: usize,
     upgrade: usize,
+    /// SESSION statements, WIRE_END marks and STREAM_BUSY answers.
+    sessions: usize,
+    ends: usize,
+    busy: usize,
 }
 
 impl Tally {
     fn note(&mut self, out: &TransportOut<'_>) {
         match out {
-            TransportOut::Write(_) | TransportOut::SendTo { .. } => {}
+            // The one output model: every byte the session writes is a part (the session's validator
+            // judged its stream and class before the sink saw it).
+            TransportOut::WirePart { .. }
+            | TransportOut::WireSealed { .. }
+            | TransportOut::SendTo { .. } => {}
+            TransportOut::WireEnd { .. } => self.ends += 1,
+            TransportOut::Session { .. } => self.sessions += 1,
+            TransportOut::StreamBusy => self.busy += 1,
             TransportOut::Close { .. } => self.closes += 1,
             TransportOut::StreamHead { stream, .. } => {
                 self.streams.insert(*stream);
@@ -97,6 +110,15 @@ fn begin(port: &dyn TransportPort, c: &ConnIn<'_>) -> (TransportSession, Tally) 
         Ok(s) => s,
         Err(e) => panic!("transport suite: begin(role {}) failed: {e:?}", c.role),
     };
+    assert_eq!(
+        tally.sessions, 1,
+        "C-TRANSPORT-SESSION: begin(role {}) stated SESSION {} times, exactly one is valid",
+        c.role, tally.sessions
+    );
+    assert_eq!(
+        tally.busy, 0,
+        "C-TRANSPORT-SESSION: begin answered STREAM_BUSY"
+    );
     (session, tally)
 }
 
@@ -116,6 +138,10 @@ fn ingest(port: &dyn TransportPort, s: &mut TransportSession, bytes: &[u8]) -> T
         tally.closes <= 1,
         "ingest answered CLOSE {} times, at most one is valid",
         tally.closes
+    );
+    assert!(
+        tally.sessions == 0 && tally.busy == 0,
+        "C-TRANSPORT-SESSION: ingest answered SESSION or STREAM_BUSY"
     );
     tally
 }
@@ -140,9 +166,23 @@ fn default_dial_head() -> Reply {
 /// opened stream, and STREAM_FULL only for that stream; STREAM_WRITABLE is never an `emit` answer.
 fn open_client(port: &dyn TransportPort, s: &mut TransportSession, head: &[u8], n: usize) -> Tally {
     let mut tally = Tally::default();
-    if let Err(e) = port.emit(s, 0, E_HEAD, 0, head, &mut |o| tally.note(&o)) {
+    let parts = EmitParts {
+        head: Some(head),
+        ..EmitParts::default()
+    };
+    if let Err(e) = port.emit(s, 0, E_HEAD, 0, 0, parts, &mut |o| tally.note(&o)) {
         panic!("case {n}: ROLE_CLIENT emit(E_HEAD) on stream 0 failed: {e:?}");
     }
+    assert_eq!(
+        tally.sessions, 0,
+        "case {n}: C-TRANSPORT-SESSION: emit(E_HEAD) stated SESSION"
+    );
+    // STREAM_BUSY is alone in its answer: nothing was opened, nothing was written.
+    assert!(
+        tally.busy <= 1 && (tally.busy == 0 || tally.opened.is_empty()),
+        "case {n}: C-TRANSPORT-SESSION: emit(E_HEAD) answered STREAM_BUSY and opened {:?}",
+        tally.opened
+    );
     assert!(
         tally.opened.len() <= 1,
         "case {n}: emit(E_HEAD) opened {} streams {:?}, at most one is valid",
@@ -171,6 +211,7 @@ fn open_client(port: &dyn TransportPort, s: &mut TransportSession, head: &[u8], 
 }
 
 /// An `emit` that must answer only goodbye or refusal bytes: no stream records, no flow records, no upgrade.
+/// `piece` is E_CLOSE (no entry) or E_REFUSE (one entry: core's text).
 fn emit_terminal(
     port: &dyn TransportPort,
     s: &mut TransportSession,
@@ -180,7 +221,11 @@ fn emit_terminal(
     bytes: &[u8],
 ) -> Result<Tally, PortError> {
     let mut tally = Tally::default();
-    port.emit(s, stream, piece, arg, bytes, &mut |o| tally.note(&o))?;
+    let parts = EmitParts {
+        refuse: (piece == E_REFUSE).then_some(bytes),
+        ..EmitParts::default()
+    };
+    port.emit(s, stream, piece, arg, 0, parts, &mut |o| tally.note(&o))?;
     Ok(tally)
 }
 
@@ -193,6 +238,10 @@ fn assert_terminal(what: &str, t: &Tally) {
     assert!(
         t.heads.is_empty() && t.opened.is_empty() && t.upgrade == 0,
         "{what} answered a stream head, an open or an upgrade"
+    );
+    assert!(
+        t.sessions == 0 && t.busy == 0,
+        "C-TRANSPORT-SESSION: {what} answered SESSION or STREAM_BUSY"
     );
 }
 
@@ -322,7 +371,7 @@ pub(super) fn run(plugin: &'static Plugin, config: &[u8], cases: &[TransportConn
                     assert_terminal("emit(E_CLOSE)", &t);
                     assert!(
                         t.other == 0 && t.streams.is_empty(),
-                        "case {n}: C-TRANSPORT-CLOSE: reason {reason} answered more than Write/SendTo/Close"
+                        "case {n}: C-TRANSPORT-CLOSE: reason {reason} answered more than parts, SendTo and Close"
                     );
                 }
                 Err(e) => panic!("case {n}: emit(E_CLOSE, {reason}) failed: {e:?}"),

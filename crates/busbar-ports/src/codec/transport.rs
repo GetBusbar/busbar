@@ -315,7 +315,12 @@ mod tests {
     /// adapter turns into UnknownTag).
     #[test]
     fn any_other_tag_or_role_is_bad_records() {
-        for other in [tag::WRITE, tag::D_PROTOCOL, generic::TEXT, generic::FACT] {
+        for other in [
+            tag::WIRE_PART,
+            tag::D_PROTOCOL,
+            generic::TEXT,
+            generic::FACT,
+        ] {
             let out = answer(|w| {
                 w.put_text(tag::ALPN, "h2")?;
                 w.put(other, &[0; 16])

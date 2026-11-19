@@ -880,8 +880,9 @@ fn pairs(arg: &[u8], max: usize) -> Result<Records<'_>, NeedErr> {
 /// The decode table of §10.3 (rounds 28, 29) and the wire table of §6.1: a NEED record's body as the value its
 /// handler gets, or INVALID. Beyond the table's rows (W1-H1, fail closed): an argument or field the op does not
 /// use must be empty or 0 (`a`/`b`, `secret`, `trust`, unused args), a TLS_NONE OPEN names no SNI, ALPN, cert or
-/// trust, a REQUIRED mode names no cert, conn ids are never 0, a READ asks for at least one byte, text arguments
-/// are UTF-8, FETCH headers are well-formed PAIRs and a COMMIT's records are well formed, predicates first, 1 to
+/// trust, a REQUIRED mode names no cert, conn ids are never 0, a READ asks for at least one byte, a status-only
+/// FETCH states no body limit, text arguments are UTF-8, FETCH headers are well-formed PAIRs and a COMMIT's
+/// records are well formed, predicates first, 1 to
 /// `commit::MAX_OPS` of them.
 pub fn decode_need(body: &[u8]) -> Result<Need<'_>, NeedErr> {
     let (rec, [a0, a1, a2, a3]) = split(body)?;
@@ -979,6 +980,9 @@ pub fn decode_need(body: &[u8]) -> Result<Need<'_>, NeedErr> {
             ensure(rec.flags & !(need_flag::TLS_MASK | need_flag::EGRESS_MASK | STATUS_ONLY) == 0)?;
             let egress = egress_of(rec.flags)?;
             ensure(rec.a == 0)?;
+            // A status-only FETCH reads no body: a body limit stated on it is one nothing applies, so it is
+            // refused rather than carried unread.
+            ensure(rec.flags & STATUS_ONLY == 0 || rec.b == 0)?;
             let cert = match mode {
                 need_flag::TLS_NONE if rec.secret == 0 => None,
                 need_flag::TLS_MUTUAL if rec.secret != 0 => Some(rec.secret),
@@ -1421,6 +1425,34 @@ mod tests {
         assert_eq!(decode_need(&close).err(), Some(NeedErr::Invalid));
         let secret = body(op::SECRET, STATUS_ONLY, 0, 0, 1, 0, [E; 4]);
         assert_eq!(decode_need(&secret).err(), Some(NeedErr::Invalid));
+    }
+
+    /// A status-only FETCH reads no body, so a body limit on it is a limit nothing applies. Stating one is
+    /// refused: INVALID, no handler run. A full FETCH states any limit, 0 included.
+    #[test]
+    fn a_status_only_fetch_that_states_a_body_limit_is_invalid() {
+        const STATUS_ONLY: u32 = crate::vocab::net1::FETCH_STATUS_ONLY;
+        const E: &[u8] = &[];
+        let args: [&[u8]; 4] = [b"POST", b"https://hooks.test/in", E, b"line"];
+        let class = 3 << need_flag::EGRESS_SHIFT;
+        let limit = |flags: u32, max_body: u64| {
+            let bytes = body(op::FETCH, flags, 0, max_body, 0, 0, args);
+            match decode_need(&bytes) {
+                Ok(Need::Fetch(n)) => Ok((n.status_only, n.max_body)),
+                Ok(_) => panic!("a FETCH decodes to a FETCH"),
+                Err(e) => Err(e),
+            }
+        };
+        assert_eq!(limit(class | STATUS_ONLY, 0), Ok((true, 0)));
+        for max_body in [1, 4096, u64::MAX] {
+            assert_eq!(
+                limit(class | STATUS_ONLY, max_body).err(),
+                Some(NeedErr::Invalid),
+                "status only with max_body {max_body}"
+            );
+            assert_eq!(limit(class, max_body), Ok((false, max_body)));
+        }
+        assert_eq!(limit(class, 0), Ok((false, 0)));
     }
 
     #[test]

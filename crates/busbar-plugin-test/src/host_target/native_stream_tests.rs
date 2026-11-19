@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_plugin_abi::transport::{MSG_BINARY, MSG_FIN, MSG_TEXT};
+use busbar_plugin_abi::transport::{END_FAILED, END_FLUSH, MSG_BINARY, MSG_FIN, MSG_TEXT};
 
 #[cfg(target_os = "linux")]
 #[test]
@@ -185,11 +185,42 @@ fn native_empty_messages_and_zero_byte_streams_have_finite_object_bounds() {
 #[test]
 fn native_callback_budget_counts_empty_records_before_copying() {
     let mut batch = Batch::default();
-    batch.capture(TransportOut::Write(b""), 2, 32);
-    batch.capture(TransportOut::Write(b""), 2, 32);
+    batch.capture(part(b""), 2, 32);
+    batch.capture(part(b""), 2, 32);
     assert_eq!(batch.failure, None);
-    batch.capture(TransportOut::Write(b""), 2, 32);
+    batch.capture(part(b""), 2, 32);
     assert_eq!(batch.failure, Some(Failure::Limit));
+}
+
+/// A control part of stream 1, as the sink is handed it.
+fn part(bytes: &[u8]) -> TransportOut<'_> {
+    TransportOut::WirePart {
+        stream: 1,
+        payload: false,
+        bytes,
+    }
+}
+fn wire_end(stream: u64, how: u32) -> TransportOut<'static> {
+    TransportOut::WireEnd {
+        stream,
+        how,
+        arg: 0,
+    }
+}
+fn session(multiplex: bool) -> TransportOut<'static> {
+    let window = if multiplex { 64 } else { 0 };
+    TransportOut::Session {
+        multiplex,
+        stream_window: window,
+        conn_window: window,
+    }
+}
+fn body(stream: u64, bytes: &[u8]) -> TransportOut<'_> {
+    TransportOut::StreamBody {
+        stream,
+        flags: MSG_BINARY | MSG_FIN,
+        bytes,
+    }
 }
 
 fn limits() -> StreamLimits {
@@ -221,7 +252,26 @@ fn native_close_and_backpressure_enforce_call_origin() {
         (Call::Timer, TransportOut::StreamFull(1)),
         (Call::Emit(1), TransportOut::StreamFull(2)),
         (Call::Emit(1), TransportOut::StreamWritable(1)),
+        (Call::Consumed(1, 4), TransportOut::StreamFull(1)),
+        (Call::Consumed(1, 4), TransportOut::StreamWritable(1)),
         (Call::Close, TransportOut::WakeAt(0)),
+        (Call::Close, TransportOut::StreamEnd(1)),
+        // SESSION is `begin`'s statement and no other call's.
+        (Call::Ingest, session(false)),
+        (Call::Timer, session(false)),
+        (Call::Emit(1), session(true)),
+        (Call::Close, session(false)),
+        // This host gives no sealed value: no part may name one.
+        (
+            Call::Ingest,
+            TransportOut::WireSealed {
+                stream: 1,
+                slot: 0,
+                offset: 0,
+                len: 1,
+            },
+        ),
+        (Call::Emit(1), TransportOut::StreamBusy),
     ] {
         let mut driver = Driver::new(&limits);
         let mut batch = Batch::default();
@@ -230,9 +280,9 @@ fn native_close_and_backpressure_enforce_call_origin() {
     }
     let mut driver = Driver::new(&limits);
     let mut batch = Batch::default();
-    batch.capture(TransportOut::Write(b"bye"), 32, 4096);
+    batch.capture(part(b"bye"), 32, 4096);
     batch.capture(TransportOut::Close { abort: false }, 32, 4096);
-    batch.capture(TransportOut::Write(b"after close"), 32, 4096);
+    batch.capture(part(b"after close"), 32, 4096);
     assert_eq!(
         driver.batch(batch, Call::Close, &limits, end),
         Err(Failure::Shape)
@@ -242,7 +292,7 @@ fn native_close_and_backpressure_enforce_call_origin() {
 #[test]
 fn native_callback_bytes_and_pending_empty_writes_are_bounded() {
     let mut batch = Batch::default();
-    batch.capture(TransportOut::Write(b"123"), 8, 2);
+    batch.capture(part(b"123"), 8, 2);
     assert_eq!(batch.failure, Some(Failure::Limit));
     assert!(batch.records.is_empty());
     let mut limits = limits();
@@ -251,13 +301,154 @@ fn native_callback_bytes_and_pending_empty_writes_are_bounded() {
     let end = Instant::now() + limits.run_timeout;
     let mut batch = Batch::default();
     for _ in 0..3 {
-        batch.capture(TransportOut::Write(b""), 8, 2);
+        batch.capture(part(b""), 8, 2);
     }
     assert_eq!(
         driver.batch(batch, Call::Ingest, &limits, end),
         Err(Failure::Limit)
     );
     assert_eq!(driver.wire.len(), 2);
+}
+
+#[test]
+fn native_session_is_stated_once_and_only_by_begin() {
+    let limits = limits();
+    let end = Instant::now() + limits.run_timeout;
+    let mut driver = Driver::new(&limits);
+    let mut batch = Batch::default();
+    batch.capture(session(false), 32, 4096);
+    batch.capture(part(b"ready"), 32, 4096);
+    assert_eq!(driver.batch(batch, Call::Begin, &limits, end), Ok(()));
+    assert!(driver.stated && !driver.multiplex);
+    let mut twice = Batch::default();
+    twice.capture(session(false), 32, 4096);
+    assert_eq!(
+        driver.batch(twice, Call::Begin, &limits, end),
+        Err(Failure::Shape)
+    );
+}
+
+#[test]
+fn native_multiplex_session_is_owed_credit_for_every_body_byte_and_no_other_is() {
+    let limits = limits();
+    let end = Instant::now() + limits.run_timeout;
+    for multiplex in [false, true] {
+        let mut driver = Driver::new(&limits);
+        let mut begin = Batch::default();
+        begin.capture(session(multiplex), 32, 4096);
+        driver.batch(begin, Call::Begin, &limits, end).unwrap();
+        let mut batch = Batch::default();
+        batch.capture(body(1, b"abc"), 32, 4096);
+        batch.capture(body(3, b"z"), 32, 4096);
+        batch.capture(body(1, b"de"), 32, 4096);
+        // An empty message takes no byte: no credit is owed for it.
+        batch.capture(body(3, b""), 32, 4096);
+        driver.batch(batch, Call::Ingest, &limits, end).unwrap();
+        let owed: Vec<(u64, u64)> = driver.owed.iter().copied().collect();
+        if multiplex {
+            assert_eq!(owed, [(1, 5), (3, 1)]);
+        } else {
+            assert!(owed.is_empty());
+        }
+    }
+}
+
+#[test]
+fn native_credit_is_owed_for_the_tail_of_a_stream_whose_output_ended() {
+    let limits = limits();
+    let end = Instant::now() + limits.run_timeout;
+    let mut driver = Driver::new(&limits);
+    let mut begin = Batch::default();
+    begin.capture(session(true), 32, 4096);
+    driver.batch(begin, Call::Begin, &limits, end).unwrap();
+    let mut batch = Batch::default();
+    batch.capture(body(1, b"kept"), 32, 4096);
+    batch.capture(wire_end(1, END_FAILED), 32, 4096);
+    batch.capture(body(1, b"tail"), 32, 4096);
+    driver.batch(batch, Call::Ingest, &limits, end).unwrap();
+    // Nothing of the stream is echoed after its output ended, and every byte read is still given back.
+    assert_eq!(driver.echoes.next(), None);
+    assert_eq!(driver.owed.iter().copied().collect::<Vec<_>>(), [(1, 8)]);
+}
+
+#[test]
+fn native_wire_end_stops_the_echo_of_its_stream_and_of_no_other() {
+    let mut state = EchoState::new(2, 4, 32);
+    state.body(1, MSG_BINARY | MSG_FIN, b"one").unwrap();
+    state.body(2, MSG_BINARY | MSG_FIN, b"two").unwrap();
+    state.body(1, MSG_BINARY, b"half").unwrap();
+    state.output_ended(1);
+    assert_eq!(state.assembly, 0);
+    assert_eq!(state.next().unwrap().bytes, b"two");
+    assert_eq!(state.next(), None);
+    // What the far end still sends for it is read and dropped, of any shape and size.
+    state.body(1, MSG_BINARY | MSG_FIN, b"late").unwrap();
+    state.body(1, MSG_TEXT | MSG_FIN, &[b'x'; 64]).unwrap();
+    assert_eq!(state.next(), None);
+    assert_eq!((state.assembly, state.queued), (0, 0));
+    // The far end's side ends too: the stream is forgotten and its slot is free.
+    state.end(1);
+    state.body(3, MSG_BINARY | MSG_FIN, b"new").unwrap();
+    assert_eq!(state.next().unwrap().stream, 3);
+}
+
+#[test]
+fn native_wire_end_before_any_message_is_noted_within_the_stream_bound() {
+    let mut state = EchoState::new(1, 4, 32);
+    state.output_ended(0);
+    assert!(state.streams.is_empty());
+    state.output_ended(1);
+    state.body(1, MSG_BINARY | MSG_FIN, b"late").unwrap();
+    assert_eq!(state.next(), None);
+    // Past the bound an unseen stream is not noted, and its next body is over the limit.
+    state.output_ended(2);
+    assert_eq!(
+        state.body(2, MSG_BINARY | MSG_FIN, b"x"),
+        Err(Failure::Limit)
+    );
+}
+
+#[test]
+fn native_end_shutdown_ends_the_connection_and_no_part_follows() {
+    let limits = limits();
+    let end = Instant::now() + limits.run_timeout;
+    let mut driver = Driver::new(&limits);
+    let mut batch = Batch::default();
+    batch.capture(part(b"last"), 32, 4096);
+    batch.capture(wire_end(1, END_SHUTDOWN), 32, 4096);
+    // Records that are not parts may still follow the end mark in the answer.
+    batch.capture(TransportOut::StreamEnd(1), 32, 4096);
+    assert_eq!(driver.batch(batch, Call::Ingest, &limits, end), Ok(()));
+    assert!(driver.shutdown && !driver.closed);
+    assert_eq!(driver.wire.len(), 1);
+    let mut after = Batch::default();
+    after.capture(part(b"more"), 32, 4096);
+    assert_eq!(
+        driver.batch(after, Call::Timer, &limits, end),
+        Err(Failure::Shape)
+    );
+    // END_FLUSH and END_FAILED end the stream's output, not the connection.
+    for how in [END_FLUSH, END_FAILED] {
+        let mut driver = Driver::new(&limits);
+        let mut batch = Batch::default();
+        batch.capture(wire_end(1, how), 32, 4096);
+        batch.capture(part(b"conn"), 32, 4096);
+        assert_eq!(driver.batch(batch, Call::Ingest, &limits, end), Ok(()));
+        assert!(!driver.shutdown);
+    }
+}
+
+#[test]
+fn native_close_answer_takes_parts_the_end_marks_and_one_close() {
+    let limits = limits();
+    let end = Instant::now() + limits.run_timeout;
+    let mut driver = Driver::new(&limits);
+    let mut batch = Batch::default();
+    batch.capture(part(b"bye"), 32, 4096);
+    batch.capture(wire_end(1, END_FAILED), 32, 4096);
+    batch.capture(TransportOut::Close { abort: false }, 32, 4096);
+    assert_eq!(driver.batch(batch, Call::Close, &limits, end), Ok(()));
+    assert!(driver.closed);
 }
 
 // This fixture is deliberately not a WS implementation. Its native session reports the adopted
@@ -272,7 +463,7 @@ mod fixture {
     use busbar_plugin_abi::transport::{
         self as tp, tag as tt, CloseRec, ConnInfo, StreamBody, StreamFlow, WakeAt,
     };
-    use busbar_plugin_abi::types::Bytes;
+    use busbar_plugin_abi::types::{Bytes, Slice};
     use busbar_plugin_abi::Transport;
     use std::sync::atomic::AtomicUsize;
 
@@ -282,6 +473,8 @@ mod fixture {
     pub(super) static EOFS: AtomicUsize = AtomicUsize::new(0);
     pub static DROPS: AtomicUsize = AtomicUsize::new(0);
     pub(super) static TIMERS: AtomicUsize = AtomicUsize::new(0);
+    /// The credit bytes every `emit(E_CONSUMED)` gave, summed.
+    pub(super) static CREDIT: AtomicUsize = AtomicUsize::new(0);
     pub struct Framer {
         mode: u8,
     }
@@ -310,6 +503,19 @@ mod fixture {
         )
         .map_err(full)
     }
+    /// One WIRE_PART: `class` bytes of `stream` (0 = the connection, control only).
+    fn part(out: &mut Out<'_>, stream: u64, class: u32, bytes: &[u8]) -> Result<(), Fail> {
+        out.put_pod_tail(
+            tt::WIRE_PART,
+            &tp::WirePart {
+                stream,
+                class,
+                _r: 0,
+            },
+            bytes,
+        )
+        .map_err(full)
+    }
     fn wake(out: &mut Out<'_>, h: &Host) -> Result<(), Fail> {
         out.put_pod(
             tt::WAKE_AT,
@@ -326,6 +532,7 @@ mod fixture {
                 b"{\"mode\":2}" => 2,
                 b"{\"mode\":3}" => 3,
                 b"{\"mode\":4}" => 4,
+                b"{\"mode\":5}" => 5,
                 _ => 0,
             });
             Ok(Self { mode })
@@ -352,7 +559,20 @@ mod fixture {
                 (r.tag == tag::H_STATUS).then(|| r.pod::<U32Rec>().unwrap().value)
             });
             assert_eq!(status, Some(101));
-            out.put(tt::WRITE, b"ready\n").map_err(full)?;
+            // SESSION first. Mode 5 states a multiplexing session: the host owes it credit.
+            let window = if self.mode == 5 { 64 } else { 0 };
+            out.put_pod(
+                tt::SESSION,
+                &tp::SessionRec {
+                    flags: if self.mode == 5 { tp::S_MULTIPLEX } else { 0 },
+                    stream_window: window,
+                    conn_window: window,
+                    _r: 0,
+                },
+            )
+            .map_err(full)?;
+            // The upgraded exchange is stream 1, open from `begin`: its greeting is control on it.
+            part(out, 1, tp::WIRE_CONTROL, b"ready\n")?;
             if !conn.leftover.get().is_empty() {
                 body(out, conn.leftover.get())?;
             }
@@ -403,22 +623,39 @@ mod fixture {
             _h: &Host,
             s: &mut Session,
             stream: u64,
-            piece: u32,
+            pieces: u32,
             arg: u32,
-            bytes: Bytes<'_>,
+            credit: u64,
+            parts: Slice<'_, Bytes<'_>>,
             out: &mut Out<'_>,
         ) -> Result<(), Fail> {
             assert!(!s.terminal);
-            if piece == E_CLOSE {
-                assert_eq!((stream, arg, bytes.get()), (0, CR_DRAIN, &[][..]));
+            let parts = parts.get();
+            if pieces == E_CLOSE {
+                assert_eq!((stream, arg, credit, parts.len()), (0, CR_DRAIN, 0, 0));
                 CLOSES.fetch_add(1, Ordering::SeqCst);
                 s.terminal = true;
-                out.put(tt::WRITE, b"drain\n").map_err(full)
+                // The goodbye is the connection's own: control on stream 0.
+                part(out, 0, tp::WIRE_CONTROL, b"drain\n")
+            } else if pieces == tp::E_CONSUMED {
+                // Credit goes only to a session that stated S_MULTIPLEX, and carries no entry.
+                assert_eq!(s.mode, 5);
+                assert_eq!((stream, arg, parts.len()), (1, 0, 0));
+                assert_ne!(credit, 0);
+                CREDIT.fetch_add(credit as usize, Ordering::SeqCst);
+                Ok(())
             } else {
-                assert_eq!(piece, E_BODY);
+                assert_eq!(pieces, E_BODY);
                 assert_eq!(stream, 1);
                 assert_eq!(arg, MSG_BINARY | MSG_FIN);
-                out.put(tt::WRITE, bytes.get()).map_err(full)
+                assert_eq!(credit, 0);
+                assert_eq!(parts.len(), 1);
+                // One payload byte for each body byte given; an empty message writes nothing (a part
+                // is never empty).
+                match parts.first().map(|body| body.get()) {
+                    Some(bytes) if !bytes.is_empty() => part(out, 1, tp::WIRE_PAYLOAD, bytes),
+                    _ => Ok(()),
+                }
             }
         }
         fn timer(&self, h: &Host, s: &mut Session, out: &mut Out<'_>) -> Result<(), Fail> {
@@ -429,7 +666,7 @@ mod fixture {
             }
             if s.ticks < 2 {
                 s.ticks += 1;
-                out.put(tt::WRITE, b"tick\n").map_err(full)?;
+                part(out, 0, tp::WIRE_CONTROL, b"tick\n")?;
                 wake(out, h)?;
             }
             Ok(())
@@ -440,7 +677,7 @@ mod fixture {
     }
     busbar_plugin_abi::plugin!(Transport, Framer, name: "fixture-native-stream");
     pub fn reset() {
-        for count in [&BEGINS, &CLOSES, &EOFS, &DROPS, &TIMERS] {
+        for count in [&BEGINS, &CLOSES, &EOFS, &DROPS, &TIMERS, &CREDIT] {
             count.store(0, Ordering::SeqCst);
         }
     }
@@ -484,6 +721,30 @@ fn native_linked_subject_uses_real_session_and_preserves_leftover() {
     assert_eq!(report.subject, "host target; kernel not present");
     assert_eq!(fixture::CLOSES.load(Ordering::SeqCst), 1);
     assert_eq!(fixture::DROPS.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn native_linked_multiplex_session_is_given_credit_for_what_the_host_took_and_no_other_is() {
+    let _lock = fixture::LOCK.lock().unwrap();
+    for (mode, credit) in [(5, 9 + 4), (0, 0)] {
+        fixture::reset();
+        let target = start(mode, false);
+        let mut socket = connect(&target, b"coalesced");
+        let mut echoed = [0u8; 9];
+        socket.read_exact(&mut echoed).unwrap();
+        assert_eq!(&echoed, b"coalesced");
+        socket.write_all(b"more").unwrap();
+        let mut more = [0u8; 4];
+        socket.read_exact(&mut more).unwrap();
+        assert_eq!(&more, b"more");
+        target.finish().unwrap();
+        assert_eq!(
+            fixture::CREDIT.load(Ordering::SeqCst),
+            credit,
+            "mode {mode}"
+        );
+        assert_eq!(fixture::CLOSES.load(Ordering::SeqCst), 1);
+    }
 }
 
 #[test]

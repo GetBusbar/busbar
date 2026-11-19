@@ -14,7 +14,7 @@ use busbar_plugin_abi::host_side::pool::sync_bufs;
 use busbar_plugin_abi::records::{tag as head_tag, Reply, Writer};
 use busbar_plugin_abi::transport as tp;
 use busbar_ports::auth::{AuthIn, Verify};
-use busbar_ports::transport::{ConnIn, TransportOut};
+use busbar_ports::transport::{ConnIn, EmitParts, TransportOut};
 use busbar_ports::CallCx;
 
 use crate::min3_transport;
@@ -113,7 +113,7 @@ fn a_lent_buffer_holds_no_earlier_answer_and_core_reads_only_what_was_written() 
     };
     let mut items = 0usize;
 
-    // One session's answer: STREAM_OPENED and a WRITE carrying the authority.
+    // One session's answer: STREAM_OPENED and a WIRE_PART carrying the authority.
     let mut first = begin();
     let secret = "credential-canary-0123456789abcdef.example";
     port.emit(
@@ -121,11 +121,15 @@ fn a_lent_buffer_holds_no_earlier_answer_and_core_reads_only_what_was_written() 
         0,
         tp::E_HEAD,
         0,
-        head(secret).as_bytes(),
+        0,
+        EmitParts {
+            head: Some(head(secret).as_bytes()),
+            ..EmitParts::default()
+        },
         &mut |_o: TransportOut<'_>| items += 1,
     )
     .expect("the head opens the stream");
-    assert_eq!(items, 2, "the head's answer is STREAM_OPENED and WRITE");
+    assert_eq!(items, 2, "the head's answer is STREAM_OPENED and WIRE_PART");
     next_lend_is_clean("one session's answer");
 
     // Another session, an empty answer: none of the first session's records come back.
@@ -147,7 +151,11 @@ fn a_lent_buffer_holds_no_earlier_answer_and_core_reads_only_what_was_written() 
         0,
         tp::E_HEAD,
         0,
-        head(&large).as_bytes(),
+        0,
+        EmitParts {
+            head: Some(head(&large).as_bytes()),
+            ..EmitParts::default()
+        },
         &mut |_o: TransportOut<'_>| items += 1,
     )
     .expect("the large head opens the stream");

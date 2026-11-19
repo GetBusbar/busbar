@@ -62,8 +62,8 @@ pub struct FetchNeed<'a> {
     /// Core 3.0, `vocab::net1::FETCH_STATUS_ONLY`: the plugin judges the answer by its status alone. The
     /// step answers `a` = the status and data1 = the headers, and data0 (the body) EMPTY: it stops at the
     /// response head and reads no body. Everything before the answer is a full FETCH's, unchanged: the
-    /// same admission, egress class, judge, proxy, trust, certificate and deadline. `max_body` is not
-    /// applied.
+    /// same admission, egress class, judge, proxy, trust, certificate and deadline. `max_body` is 0: a
+    /// status-only FETCH that states a limit is INVALID at decode.
     pub status_only: bool,
 }
 
