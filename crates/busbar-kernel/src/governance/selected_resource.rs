@@ -495,7 +495,7 @@ impl SelectedRates {
 
     /// Reserve over `classes`, the prepared attempt's physical class names. They are shared
     /// text (the checkpoint's own), so the hold names its classes without copying one.
-    pub(crate) fn reserve_shared(
+    fn reserve_shared(
         self: &Arc<Self>,
         terms: impl IntoIterator<Item = RateTerms, IntoIter: ExactSizeIterator>,
         classes: &[busbar_contract::kept::Text],

@@ -169,12 +169,10 @@ impl<'a> Iterator for BilledIter<'a> {
     type Item = &'a Reported;
 
     fn next(&mut self) -> Option<&'a Reported> {
-        for reported in self.kept.by_ref() {
-            if !self.billing_sources_only || source_bills(reported.source) {
-                return Some(reported);
-            }
-        }
-        None
+        let billing_sources_only = self.billing_sources_only;
+        self.kept
+            .by_ref()
+            .find(|reported| !billing_sources_only || source_bills(reported.source))
     }
 }
 

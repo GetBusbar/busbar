@@ -109,7 +109,7 @@ impl ImagesBuilder {
         stamp_name: &[u8; 64],
         former_names: &[&str],
         signer: crate::admit::Signer,
-        mut described: Described,
+        described: Described,
     ) -> Result<(), Refusal> {
         if let Some(refusal) = name_conflict(
             self.entries

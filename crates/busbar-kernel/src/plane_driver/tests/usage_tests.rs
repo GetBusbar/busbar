@@ -157,7 +157,7 @@ fn an_undeclared_class_is_dropped_and_named_for_the_audit() {
     let Bill::Usage(kept) = bill(Ending::End, &usage) else {
         panic!("end bills the kept values");
     };
-    let mapped = declared().map(&kept);
+    let mapped = declared().map(kept);
     assert_eq!(mapped.dropped, vec![Box::<str>::from("images")]);
     assert_eq!(mapped.rounded, vec![Box::<str>::from("tokens")]);
     assert_eq!(

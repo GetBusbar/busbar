@@ -40,6 +40,9 @@ pub(crate) use prepared::PreparedExchange;
 pub use prepared::RequestDeclaration;
 use prepared::{FrozenUsage, PreparationFacts};
 
+/// A plane's usage facts, its declared usage classes and its attempt classes (the plane's own shared lists).
+pub type UsageMetadata = (u64, Arc<[busbar_ports::plane::UsageClass]>, Arc<[Box<str>]>);
+
 /// The plane's calls on one session, as a driver sees them. The port implements it; a test implements it over a
 /// script.
 pub trait Calls {
@@ -47,7 +50,7 @@ pub trait Calls {
 
     /// The plane's usage facts and its declared classes and attempt classes, as the plane's own
     /// shared lists: a session freezes its declaration by sharing them, never by copying.
-    fn usage_metadata(&self) -> (u64, Arc<[busbar_ports::plane::UsageClass]>, Arc<[Box<str>]>) {
+    fn usage_metadata(&self) -> UsageMetadata {
         (0, Arc::default(), Arc::default())
     }
 
@@ -129,7 +132,7 @@ impl Calls for dyn PlanePort {
         PlanePort::channel(self, session, target, sink)
     }
 
-    fn usage_metadata(&self) -> (u64, Arc<[busbar_ports::plane::UsageClass]>, Arc<[Box<str>]>) {
+    fn usage_metadata(&self) -> UsageMetadata {
         let (classes, attempt_classes) = self.usage_shared();
         (self.facts(), classes, attempt_classes)
     }
