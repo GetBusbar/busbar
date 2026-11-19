@@ -106,86 +106,15 @@ async fn a_kernel_that_sighted_the_card() -> Arc<busbar_kernel::host_services::K
     kernel
 }
 
-/// The real admin application over a configured Store, mounted behind [`a_door`] with `trust` as
-/// the serving kernel's trust book.
+/// The admin units mounted behind [`a_door`] with `trust` as the serving kernel's trust book, over a
+/// surface that serves nothing of its own: every answer this file reads is the units' own.
 async fn a_node(trust: Arc<busbar_kernel::host_services::KernelServices>) -> axum::Router {
     crate::dist_root_install::install();
     busbar_core_admin::install();
-    crate::dist_root_install::install();
-    let library_path = crate::root::test_plugins::application_store_library();
-    let module = crate::root::test_plugins::native_image(&library_path).name;
-    let manifest = crate::root::test_plugins::native_manifest(
-        "store",
-        &library_path,
-        crate::root::test_plugins::FIXTURE_PUBLISHER,
-    );
-    let library = std::fs::read(library_path).expect("the actual Store library reads");
-    let directory = crate::root::test_plugins::scratch(&format!(
-        "agent-approve-{}",
-        busbar_kernel::door::op_id().counter(),
-    ));
-    let archive = crate::root::test_plugins::signed(
-        &crate::dist_root_install::release_key(),
-        manifest,
-        &library,
-    );
-    std::fs::write(directory.join("store.tar.gz"), archive).expect("stage the actual Store");
-    let settings = crate::root::test_plugins::application_store_settings(&directory);
-    let signing = directory.join("signing-key");
-    std::fs::write(&signing, hex::encode([9u8; 32])).expect("write the configured signing key");
-    let deploy = busbar_kernel::config::deploy_from_deserializer(
-        serde_json::json!({
-            "providers": {}, "models": {},
-            // The admin door is this file's own; the app's default admin chain is `[keys]`.
-            "auth": {"chain": ["keys"], "signing_key": {"file": signing}},
-            "store": {"module": module, "settings": settings},
-            "advanced": {},
-        }),
-        &crate::root::boot::axis_test_grammar(),
-    )
-    .expect("the admin deployment parses");
-    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
-        .expect("the admin deployment resolves");
-    let rules = Arc::new(crate::root::door_steps::Rules::default())
-        as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (built, rotate, limits) = crate::root::real_store::build_app(
-        crate::root::test_plugins::plaintext_listeners(config),
-        crate::root::test_plugins::trusted_config(&directory),
-        None,
-        Default::default(),
-        Default::default(),
-        (None, None),
-        None,
-        &rules,
-    )
-    .await
-    .expect("the product builds the admin application");
-    if !crate::root::kernel::ROOT_CARD.keeps_store() {
-        limits.stage_boot();
-        crate::root::kernel::ROOT_CARD
-            .keep_in_store(
-                built
-                    .governance
-                    .as_ref()
-                    .expect("the application has its configured governance Store")
-                    .core_store_handle()
-                    .expect("the configured Store exposes its rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            )
-            .expect("bind native price history");
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .await
-            .expect("the configured Store boots its initial rate history");
-    }
-    limits.keep().await.expect("the application limits commit");
-    if let Some(rotate) = rotate {
-        rotate.await;
-    }
-    let app = Arc::new(built);
-    busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
-    let (_data, bare, _handle) =
-        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    busbar_kernel::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let bare = axum::Router::new().fallback(axum::routing::any(|| async {
+        axum::http::StatusCode::NOT_FOUND
+    }));
     let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
     let held = Arc::new(std::sync::Mutex::new(fixture.book().await));
     crate::root::units_admin::mount(
