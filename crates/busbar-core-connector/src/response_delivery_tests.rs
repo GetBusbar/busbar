@@ -102,11 +102,11 @@ fn flush(ledger: &mut DeliveryLedger) -> u64 {
     total
 }
 
-/// A whole answer with a four-byte body on `stream`.
-fn serve(ledger: &mut DeliveryLedger, stream: u64) {
+/// A whole answer with a four-byte body on `stream`: the bytes the connection is to be given.
+fn serve(ledger: &mut DeliveryLedger, stream: u64) -> Vec<u8> {
     ledger.emitting(stream, E_BODY, 4);
     ledger.emitting(stream, E_END, 0);
-    answer(
+    given(
         ledger,
         &[
             part(stream, WIRE_CONTROL, b"head"),
@@ -114,18 +114,16 @@ fn serve(ledger: &mut DeliveryLedger, stream: u64) {
             end(stream, END_FLUSH, 0),
         ],
     )
-    .unwrap();
 }
 
 #[test]
 fn an_answer_is_whole_only_when_the_carrier_took_all_of_it_and_the_flush_succeeded() {
     let mut ledger = ledger();
     let handles = ledger.admit(key(1)).unwrap();
-    serve(&mut ledger, 1);
-    assert_eq!(ledger.unwritten(), b"headbody");
-    assert_eq!(handles.watch.record(), None, "queued is not delivered");
+    assert_eq!(serve(&mut ledger, 1), b"headbody");
+    assert_eq!(handles.watch.record(), None, "placed is not delivered");
     // The connection took it all; the carrier has written half as whole records.
-    ledger.took(8);
+    took(&mut ledger, 8);
     ledger.flushed(progress(8, 8, 4)).unwrap();
     assert_eq!(handles.watch.record(), None, "half is not delivered");
     ledger.flushed(progress(8, 8, 8)).unwrap();
@@ -148,9 +146,10 @@ fn an_answer_is_whole_only_when_the_carrier_took_all_of_it_and_the_flush_succeed
 }
 
 #[test]
-fn a_breach_queues_nothing_of_that_answer_not_even_its_valid_prefix() {
+fn a_breach_places_nothing_of_that_answer_not_even_its_valid_prefix() {
     let mut ledger = ledger();
     let _handles = ledger.admit(key(1)).unwrap();
+    let before = ledger.queued;
     assert_eq!(
         answer(
             &mut ledger,
@@ -162,7 +161,7 @@ fn a_breach_queues_nothing_of_that_answer_not_even_its_valid_prefix() {
         .unwrap_err(),
         Fault::Output(Breach::L2)
     );
-    assert!(ledger.unwritten().is_empty());
+    assert_eq!(ledger.queued, before, "no byte of it is placed");
 }
 
 #[test]
@@ -402,7 +401,7 @@ fn a_carriers_fault_delivers_nothing_more() {
     let mut ledger = ledger();
     let handles = ledger.admit(key(1)).unwrap();
     serve(&mut ledger, 1);
-    ledger.took(8);
+    took(&mut ledger, 8);
     let total = ledger.written;
     assert_eq!(
         ledger.flushed(CarrierProgress {

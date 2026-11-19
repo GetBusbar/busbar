@@ -194,19 +194,16 @@ async fn audience_bound_plane_admits_only_its_own_token_in_every_carrier() {
 async fn audience_bound_plane_refuses_a_plain_key_in_every_carrier() {
     let (f, port) = bound_route();
     let plain = "sk-plain-gateway-key".to_owned();
-    for (stream, fields) in [
+    for (stream, fields) in (1_u64..).zip([
         vec![("authorization", format!("Bearer {plain}"))],
         vec![("x-api-key", plain.clone())],
         vec![
             ("authorization", format!("Bearer {}", minted_for(PLANE_A))),
             ("x-api-key", plain.clone()),
         ],
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    ]) {
         assert_eq!(
-            prepared(&f, stream as u64 + 1, &fields).await,
+            prepared(&f, stream, &fields).await,
             Err(DataRefused::Credential),
             "a credential that states no audience is never enough here: {fields:?}"
         );
