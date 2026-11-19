@@ -147,6 +147,9 @@ impl NativeChain {
             let opened = &instance.opened;
             if opened.who.instance == 0
                 || opened.who.name.as_ref() == crate::config::KEYS_MODULE
+                // The word is the built-in member's: no instance may answer to it, or its
+                // principals would earn the open relay's binding.
+                || opened.who.name.as_ref() == ANONYMOUS
                 || !ids.insert(opened.who.instance)
                 || !names.insert(opened.who.name.as_ref())
                 || opened.methods
@@ -235,6 +238,18 @@ impl NativeChain {
             .flat_map(|instance| instance.opened.port.cred_headers().iter().map(|h| &**h))
     }
 
+    /// Whether every member of the chain states the header its credential arrives in (a
+    /// D_CRED_HEADER). Only then does a head carrying none of the chain's carriers prove that no
+    /// member could verify it: a member that states no header may verify by something a head's
+    /// fields do not show (a client certificate, the peer), and nothing is concluded for it.
+    pub fn reads_only_declared_headers(&self) -> bool {
+        !self.instances.is_empty()
+            && self
+                .instances
+                .iter()
+                .all(|instance| !instance.opened.port.cred_headers().is_empty())
+    }
+
     pub fn reads_header(&self, name: &str) -> bool {
         self.instances.iter().any(|instance| {
             instance
@@ -253,11 +268,6 @@ impl NativeChain {
     ) -> Result<NativePreparedAnswer, busbar_ports::PortError> {
         // `anonymous` alone: the open relay reads no credential and runs no verifier.
         if self.is_open() {
-            return Ok(self.anonymous_identity(cx, request));
-        }
-        // Beside verifiers, `anonymous` admits only a caller that presents nothing: a credential
-        // no member accepts stays unverified, never downgraded to the anonymous principal.
-        if self.anonymous && !self.presents_credential(&request) {
             return Ok(self.anonymous_identity(cx, request));
         }
         for instance in &self.instances {
@@ -310,6 +320,13 @@ impl NativeChain {
                     return Ok(NativePreparedAnswer::Rejected)
                 }
             }
+        }
+        // Beside verifiers, `anonymous` is the last member: it admits only a caller every other
+        // member passed over AND that presents no credential. A caller a member can verify by
+        // something a head's fields do not show (a client certificate) is that member's, never
+        // anonymous; a credential no member accepts stays unverified, never downgraded.
+        if self.anonymous && !self.presents_credential(&request) {
+            return Ok(self.anonymous_identity(cx, request));
         }
         Ok(NativePreparedAnswer::NotMine)
     }

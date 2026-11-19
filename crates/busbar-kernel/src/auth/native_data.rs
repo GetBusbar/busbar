@@ -344,13 +344,16 @@ impl NativeDataRoute {
     }
 
     /// Whether a request on this route must present a credential to be verified: its admission
-    /// runs the chain on every request and the chain admits no caller that presents nothing.
+    /// runs the chain on every request, the chain admits no caller that presents nothing, and
+    /// every member of the chain states the header its credential arrives in (so a head with
+    /// none of them cannot be verified by any member).
     /// The listener answers a head that presents none without taking its body.
     pub fn requires_credential(&self) -> bool {
         matches!(
             self.admission,
             Admission::Walk | Admission::Selected | Admission::PrincipalOnly | Admission::Catalog
         ) && !self.owners.chain.admits_anonymous()
+            && self.owners.chain.reads_only_declared_headers()
     }
 
     /// The route's record, as bound.
@@ -684,9 +687,16 @@ impl PendingData {
         let reason = match refusal {
             Refusal::BodyTooLarge => DataRefused::TooLarge,
             Refusal::Trailers => DataRefused::Trailers,
-            // A head screened as presenting no credential that its chain nevertheless verified
-            // (an open chain bound after the screen read it): not verified, the one 401.
-            Refusal::Unverified { .. } => DataRefused::Credential,
+            // A head screened as presenting no credential that its chain nevertheless verified:
+            // the screen was wrong, the body is gone, and a caller with a good credential must
+            // not be told it is bad. The engine's fault: the request is cancelled, and it says so.
+            Refusal::Unverified { .. } => {
+                tracing::error!(
+                    "a request answered on its head as unverifiable was then verified by its \
+                     chain; cancelled"
+                );
+                DataRefused::Binding
+            }
             // No other row is an input's own: nothing is answered, the request is cancelled.
             _ => DataRefused::Binding,
         };
