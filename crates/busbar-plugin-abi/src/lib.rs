@@ -60,6 +60,7 @@ pub mod stamp;
 pub mod types;
 pub mod versions;
 pub mod vocab;
+pub mod wire;
 
 pub use kinds::auth::{Auth, auth};
 pub use kinds::export::{Export, export};

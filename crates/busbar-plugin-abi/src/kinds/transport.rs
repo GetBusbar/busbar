@@ -99,7 +99,7 @@ crate::kind! {
         /// The rules. A breach of any is FAULT BadRecords: nothing of that answer is written, the session
         /// ends, the plugin is charged and audited, and every answer still open on the connection is recorded
         /// `part` or `none` with reason `transport_fault`. L1 to L7 and L9 are checked by the engine on every
-        /// answer (the one validator, `validate::Wire`); L8 is proven per transport by its conformance suite.
+        /// answer (the one validator, `crate::wire::Wire`); L8 is proven per transport by its conformance suite.
         ///
         /// - **L1** Every byte a session writes to its connection is a WIRE_PART or the engine's bytes for a
         ///   WIRE_SEALED. No other record carries connection bytes.

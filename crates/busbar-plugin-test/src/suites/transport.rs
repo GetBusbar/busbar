@@ -19,8 +19,8 @@ use busbar_plugin_abi::fail::refused::R_INVALID;
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::records::{tag as head_tag, Reply, Writer};
 use busbar_plugin_abi::transport::{
-    CR_CAPACITY_EXHAUSTED, CR_DRAIN, CR_NORMAL, CR_REVOKED, CR_TIMEOUT, E_CLOSE, E_HEAD, E_REFUSE,
-    E_REFUSE_HEAD_SENT, ROLE_CLIENT, ROLE_DATAGRAM, ROLE_SERVER,
+    CR_DRAIN, CR_NORMAL, E_CLOSE, E_HEAD, E_REFUSE, E_REFUSE_HEAD_SENT, ROLE_CLIENT, ROLE_DATAGRAM,
+    ROLE_SERVER,
 };
 use busbar_plugin_abi::types::KindCode;
 use busbar_ports::transport::{ConnIn, TransportOut, TransportPort, TransportSession};
@@ -314,13 +314,8 @@ pub(super) fn run(plugin: &'static Plugin, config: &[u8], cases: &[TransportConn
         drop(session);
 
         // C-TRANSPORT-CLOSE: every reason, one fresh session each.
-        for reason in [
-            CR_NORMAL,
-            CR_DRAIN,
-            CR_REVOKED,
-            CR_TIMEOUT,
-            CR_CAPACITY_EXHAUSTED,
-        ] {
+        // Transport 2.0: the two reasons the engine sends.
+        for reason in [CR_NORMAL, CR_DRAIN] {
             let (mut s, _) = begin(&*port, &c);
             match emit_terminal(&*port, &mut s, 0, E_CLOSE, reason, &[]) {
                 Ok(t) => {

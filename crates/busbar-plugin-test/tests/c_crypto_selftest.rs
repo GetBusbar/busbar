@@ -79,7 +79,7 @@ static SELF_TEST: Host = Host::new(
         log_level: None,
         grow: None,
         deployment: None,
-        migrate_admit: None,
+        service: None,
     },
 );
 

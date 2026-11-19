@@ -246,10 +246,11 @@ pub mod transport {
 /// `long-dest` (2,049 bytes), `bad-op` (op SECRET), `egress-five` (egress class 5) and `bit-200` (TLS_REQUIRED with
 /// the retired 0x200). Any other config answers no record.
 pub mod raw {
-    use busbar_ffi::shim::{ChainFut, Image, Opening, Start1, Step};
+    use busbar_ffi::shim::{ChainFut, Image, Opening, Starts, Step};
     use busbar_ffi::slots::{ChainBox, ChainRef, Slots};
-    use busbar_ffi::vt::{kind, secret, Built};
+    use busbar_ffi::vt::kind;
     use busbar_ffi::{plugin, Bytes, ChainBytes, LinkedPlugin, Out, Status, Str, Token};
+    use busbar_ffi::{ChainArgs, Table};
     use busbar_plugin_abi::bridge::{self, Inbox};
     use busbar_plugin_abi::fail::{refused, Fail};
     use busbar_plugin_abi::host::Host;
@@ -376,26 +377,27 @@ pub mod raw {
         }
     }
 
-    impl Start1<Bytes<'static>, 0> for RawImage {
+    impl Starts<0> for RawImage {
         fn start<'i>(
             _p: &'i RawPlugin,
             _h: &'static Host,
-            _reference: ChainBytes,
-        ) -> (ChainFut<'i, Self::Reply>, Self::Inbox) {
-            (
+            _args: ChainArgs<'_>,
+        ) -> Option<(ChainFut<'i, Self::Reply>, Self::Inbox)> {
+            Some((
                 Box::pin(core::future::ready(Err::<Reply, Fail>(Fail::refused(
                     refused::R_INVALID,
                 )))),
                 Inbox::new(),
-            )
+            ))
         }
     }
 
-    static VT: Built<RawImage, secret::Vt> = secret::Vt::build::<RawImage>();
+    static VT: Table<RawImage, 1> = Table::new([busbar_ffi::shim::starts::<RawImage, 0>()]);
     static STAMP: busbar_ffi::StampBytes =
         busbar_plugin_abi::stamp::emit(&busbar_plugin_abi::stamp::Spec {
             kind: busbar_plugin_abi::secret::KIND,
             kind_abi: busbar_plugin_abi::secret::ABI,
+            kind_minor: busbar_plugin_abi::secret::MINOR,
             layout: busbar_plugin_abi::secret::FP,
             out_of_process: false,
             engine_min: None,
@@ -407,5 +409,5 @@ pub mod raw {
         });
 
     /// This image's header (`PLUGIN.plugin()` is what `Harness::admit` takes).
-    pub static PLUGIN: LinkedPlugin = plugin::<RawImage, kind::Secret>(&VT, &STAMP, Str::EMPTY);
+    pub static PLUGIN: LinkedPlugin = plugin::<RawImage, kind::Secret, 1>(&VT, &STAMP, Str::EMPTY);
 }

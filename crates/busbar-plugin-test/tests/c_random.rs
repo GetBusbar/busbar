@@ -22,7 +22,7 @@ use busbar_plugin_abi::types::Status;
 const PROBE: &str = r#"use busbar_plugin_abi::host::{Host, HostExt, HostFns};
 static HOST: Host = Host::new(0, HostFns {
     now: None, mono: None, random: None, crypto: None, log: None, log_level: None, grow: None,
-    deployment: None, migrate_admit: None,
+    deployment: None, service: None,
 });
 fn main() {
     let _ = HOST.random::<1>();
@@ -102,7 +102,7 @@ static FAILING: Host = Host::new(
         log_level: None,
         grow: None,
         deployment: None,
-        migrate_admit: None,
+        service: None,
     },
 );
 

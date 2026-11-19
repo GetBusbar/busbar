@@ -80,7 +80,7 @@ fn host(
             log_level: None,
             grow: None,
             deployment: None,
-            migrate_admit: None,
+            service: None,
         },
     )))
 }
