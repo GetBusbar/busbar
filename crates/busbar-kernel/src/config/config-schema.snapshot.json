@@ -27,7 +27,7 @@
         },
         "rate_sweep_interval": {
           "optional": true,
-          "type": "u32"
+          "type": "IgnoredAny"
         },
         "response_headers": {
           "optional": true,
@@ -35,7 +35,7 @@
         },
         "shutdown": {
           "optional": true,
-          "type": "AdvancedShutdownCfg"
+          "type": "ShutdownCfg"
         },
         "tls": {
           "optional": true,
@@ -63,7 +63,7 @@
         },
         "worker_threads": {
           "optional": true,
-          "type": "usize"
+          "type": "IgnoredAny"
         }
       },
       "kind": "struct",
@@ -440,6 +440,10 @@
           "optional": true,
           "type": "AuthDeployCfg"
         },
+        "client_address": {
+          "optional": true,
+          "type": "ClientAddressCfg"
+        },
         "config": {
           "optional": true,
           "type": "ConfigMgmtCfg"
@@ -492,6 +496,10 @@
           "optional": true,
           "type": "serde_yaml::Value"
         },
+        "outbound": {
+          "optional": true,
+          "type": "OutboundCfg"
+        },
         "per_request_fee": {
           "optional": true,
           "type": "i64"
@@ -531,6 +539,10 @@
         "security": {
           "optional": true,
           "type": "SecurityCfg"
+        },
+        "shutdown": {
+          "optional": true,
+          "type": "ShutdownCfg"
         },
         "store": {
           "optional": true,

@@ -265,18 +265,26 @@ impl ActiveStack {
         self.entries.get_mut(self.len.checked_sub(1)?)?.as_mut()
     }
 
-    fn get(&self, serial: u64) -> Option<&Active> {
-        self.entries
+    /// Where `serial` sits: the top in every unnested entry, so it is looked at first.
+    fn index_of(&self, serial: u64) -> Option<usize> {
+        let top = self.len.checked_sub(1)?;
+        if self.entries[top]
+            .as_ref()
+            .is_some_and(|entry| entry.serial == serial)
+        {
+            return Some(top);
+        }
+        self.entries[..top]
             .iter()
-            .flatten()
-            .find(|entry| entry.serial == serial)
+            .position(|entry| entry.as_ref().is_some_and(|entry| entry.serial == serial))
+    }
+
+    fn get(&self, serial: u64) -> Option<&Active> {
+        self.entries.get(self.index_of(serial)?)?.as_ref()
     }
 
     fn remove(&mut self, serial: u64) -> Option<ActiveBuffer> {
-        let at = self
-            .entries
-            .iter()
-            .position(|entry| entry.as_ref().is_some_and(|entry| entry.serial == serial))?;
+        let at = self.index_of(serial)?;
         let removed = self.entries[at].take()?;
         for index in at..self.len - 1 {
             self.entries[index] = self.entries[index + 1].take();
@@ -305,6 +313,23 @@ impl OutLease<'static> {
     /// ACTIVE stack is `DEPTH` deep.
     pub fn new(mut buf: Vec<u8>, max_out: usize) -> Option<Self> {
         buf.fill(0);
+        Self::clean(buf, max_out)
+    }
+
+    /// Lease `buf` as it is, for a block whose every byte is already zero: one that was allocated zeroed and
+    /// wiped, after each entry it was lent to, over every byte that entry wrote (busbar-plugin-abi's pooled
+    /// blocks; IF §10.1 and decision 60, O(bytes written)). Zeroing it again here would be the second wipe of
+    /// the same bytes on every crossing. None: the ACTIVE stack is `DEPTH` deep.
+    ///
+    /// Custody, plainly. The host guarantees: every block starts all zero; after each entry it wipes, in one
+    /// block, every byte the entry wrote as far as the length the entry stated (and every byte `grow` exposed)
+    /// before the block is lent again; it reads only `[0, len)` of an answer; a block grown for a large answer is
+    /// wiped and freed, not kept. It relies on the plugin for one thing: writing only within the length it
+    /// states. The SDK's `Out` can do nothing else (it appends, and zeroes what it cuts). A native plugin that
+    /// writes through the raw pointer past its stated length leaves those bytes for the next entry lent the
+    /// block on that thread; such a plugin shares the process's memory anyway, so a wipe of the whole block
+    /// would not stop a hostile one (IF decision 60, confirmed 18 Nov 2026; C-LEND-CUSTODY is the gate).
+    pub fn clean(mut buf: Vec<u8>, max_out: usize) -> Option<Self> {
         let raw = RawOut::over(&mut buf);
         let serial = NEXT_LEASE.get().checked_add(1)?;
         NEXT_LEASE.set(serial);
@@ -926,39 +951,95 @@ impl<K: Kind> Drop for Session<K> {
 // ---- chains ----
 
 /// Every argument and result buffer of one chain, kept until its token retires (the plugin's
-/// `ChainBytes` point into them). Buffers are only appended, never touched again.
+/// `ChainBytes` point into them). Buffers are only appended, never touched again. The first buffer
+/// (an async entry's one request) is held inline, so a chain that never NEEDs allocates no list; it may be
+/// a block the host lends (`lend_block`), whose first `first_len` bytes are the argument and which goes back
+/// to the host, zeroed, when the chain is done.
 #[derive(Default)]
-pub struct ChainBufs(Vec<Vec<u8>>);
+pub struct ChainBufs {
+    first: Option<Vec<u8>>,
+    /// The argument's bytes in `first`; the rest of a lent block is the lender's and all zero.
+    first_len: usize,
+    /// Where a lent `first` goes after it is zeroed; None: it is freed.
+    give_back: Option<fn(Vec<u8>)>,
+    rest: Vec<Vec<u8>>,
+}
 
 impl Drop for ChainBufs {
     /// I11: an argument buffer can hold a credential (the host copies its request in), so each is zeroed before
-    /// it is freed, the way the pooled buffers are.
+    /// it is freed or given back, the way the pooled buffers are.
     fn drop(&mut self) {
         self.zero();
+        if let (Some(block), Some(give_back)) = (self.first.take(), self.give_back) {
+            give_back(block);
+        }
     }
 }
 
 impl ChainBufs {
-    /// Zero every kept buffer in place, lengths unchanged (I11; IF §6.1). `Drop` runs it before the buffers
-    /// are freed; `black_box` keeps the stores from being elided as dead.
+    /// Zero every kept argument and result in place, lengths unchanged (I11; IF §6.1). `Drop` runs it before
+    /// the buffers are freed or given back; `black_box` keeps the stores from being elided as dead.
     fn zero(&mut self) {
-        for buf in &mut self.0 {
+        if let Some(first) = &mut self.first
+            && let Some(argument) = first.get_mut(..self.first_len)
+        {
+            argument.fill(0);
+            core::hint::black_box(&*argument);
+        }
+        for buf in &mut self.rest {
             buf.fill(0);
             core::hint::black_box(&*buf);
         }
     }
 
     pub fn new() -> Self {
-        ChainBufs(Vec::new())
+        ChainBufs {
+            first: None,
+            first_len: 0,
+            give_back: None,
+            rest: Vec::new(),
+        }
     }
     /// Keep `buf` for the chain; returns its index for `get`.
     pub fn push(&mut self, buf: Vec<u8>) -> usize {
-        self.0.push(buf);
-        self.0.len() - 1
+        if self.first.is_none() {
+            self.first_len = buf.len();
+            self.first = Some(buf);
+            return 0;
+        }
+        self.rest.push(buf);
+        self.rest.len()
+    }
+    /// Keep the host's `block` for the chain with its first `len` bytes as the argument (the rest must be all
+    /// zero); when the chain is done those bytes are zeroed and the block handed to `give_back`, not freed.
+    /// Returns its index for `get`. A chain that already holds a first buffer keeps a copy of the argument
+    /// instead, and the block goes back at once.
+    pub fn lend_block(&mut self, mut block: Vec<u8>, len: usize, give_back: fn(Vec<u8>)) -> usize {
+        let len = len.min(block.len());
+        if self.first.is_some() {
+            let at = self.push(block.get(..len).unwrap_or_default().to_vec());
+            if let Some(argument) = block.get_mut(..len) {
+                argument.fill(0);
+                core::hint::black_box(&*argument);
+            }
+            give_back(block);
+            return at;
+        }
+        self.first_len = len;
+        self.first = Some(block);
+        self.give_back = Some(give_back);
+        0
     }
     /// Buffer `index` (empty if there is none).
     pub fn get(&self, index: usize) -> Bytes<'_> {
-        Bytes::new(self.0.get(index).map_or(&[][..], Vec::as_slice))
+        let kept = match index.checked_sub(1) {
+            None => self
+                .first
+                .as_deref()
+                .and_then(|first| first.get(..self.first_len)),
+            Some(at) => self.rest.get(at).map(Vec::as_slice),
+        };
+        Bytes::new(kept.unwrap_or_default())
     }
 }
 
@@ -1807,13 +1888,50 @@ mod tests {
         let empty = bufs.push(Vec::new());
         bufs.zero();
         for (at, len) in [(request, 37), (secret, 37), (empty, 0)] {
-            let kept = &bufs.0[at];
+            let kept = bufs.get(at).get();
             assert_eq!(kept.len(), len, "buffer {at} keeps its length");
             assert!(
                 kept.iter().all(|b| *b == 0),
                 "buffer {at} still holds plaintext after zeroing"
             );
         }
+    }
+
+    std::thread_local! {
+        static GIVEN_BACK: core::cell::RefCell<Vec<Vec<u8>>> = const { core::cell::RefCell::new(Vec::new()) };
+    }
+
+    fn give_back(block: Vec<u8>) {
+        GIVEN_BACK.with_borrow_mut(|back| back.push(block));
+    }
+
+    /// A lent request block: the plugin sees exactly its written bytes, and the block goes back whole, with those
+    /// bytes zeroed, when the chain's buffers drop (I11); a second lent block is copied and goes back at once.
+    #[test]
+    fn a_lent_block_is_seen_to_its_length_and_given_back_zeroed() {
+        let mut block = vec![0_u8; 64];
+        block[..12].copy_from_slice(b"Bearer sk-12");
+        let mut bufs = ChainBufs::new();
+        let at = bufs.lend_block(block, 12, give_back);
+        assert_eq!(bufs.get(at).get(), b"Bearer sk-12");
+        let mut second = vec![0_u8; 32];
+        second[..5].copy_from_slice(b"again");
+        let copied = bufs.lend_block(second, 5, give_back);
+        assert_eq!(bufs.get(copied).get(), b"again");
+        GIVEN_BACK.with_borrow(|back| {
+            assert_eq!(back.len(), 1, "the second block went back at once");
+            assert!(back[0].iter().all(|b| *b == 0), "and zeroed");
+        });
+        drop(bufs);
+        GIVEN_BACK.with_borrow(|back| {
+            assert_eq!(
+                back.len(),
+                2,
+                "the lent block went back when the chain was done"
+            );
+            assert_eq!(back[1].len(), 64, "whole");
+            assert!(back[1].iter().all(|b| *b == 0), "with the request zeroed");
+        });
     }
 }
 

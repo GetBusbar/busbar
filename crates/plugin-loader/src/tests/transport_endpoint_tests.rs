@@ -72,7 +72,7 @@ fn transport_plaintext_refused_at_check() {
         ),
         "{text}"
     );
-    assert!(text.contains("advanced.tls.trust_anchors"), "{text}");
+    assert!(text.contains("outbound.tls.trust_anchors"), "{text}");
     assert!(text.contains("(match: db, verify: pin)"), "{text}");
     assert!(
         text.contains("Add this line to the store.main\n     block of your configuration"),

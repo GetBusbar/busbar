@@ -1241,14 +1241,6 @@ fn validate_limits_with(
                 ).into());
     }
 
-    if limits.rate_sweep_interval == 0 {
-        errors.push(coded::config_setting_out_of_range("advanced.rate_sweep_interval is 0; must be >= 1. A value of 0 disables the sweep of \
-             the budget tables, so entries for silent keys stay resident until restart. The default \
-             is 256 (every 256th admission on a budget shard sweeps it); use a larger value to make \
-             sweeps rarer."
-                ).into());
-    }
-
     if limits.max_inbound_concurrent > MAX_SEMAPHORE_PERMITS {
         errors.push(
             coded::config_setting_out_of_range(format!(
@@ -1283,8 +1275,6 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
         max_auto_provisioned_groups: _,
         upstream_error_body_max_bytes: _,
         key_gauge_limit: _,
-
-        rate_sweep_interval: _,
 
         default_max_tokens: _,
         reasoning_effort_budgets: _,

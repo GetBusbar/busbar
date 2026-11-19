@@ -12,7 +12,7 @@ At `check`, a plugin instance declared an endpoint busbar would dial without TLS
 
 ## How to fix it
 
-Turn on TLS for the connection and make the server's certificate verifiable (a CA under `advanced.tls.trust_anchors`, or a pin under `advanced.tls.destinations`); or, if verified TLS is not possible, add `insecure_transport: { accept: plaintext, reason: "<why this is acceptable>" }` to the instance's block.
+Turn on TLS for the connection and make the server's certificate verifiable (a CA under `outbound.tls.trust_anchors`, or a pin under `outbound.tls.destinations`); or, if verified TLS is not possible, add `insecure_transport: { accept: plaintext, reason: "<why this is acceptable>" }` to the instance's block.
 
 ---
 

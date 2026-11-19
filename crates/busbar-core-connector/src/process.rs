@@ -27,7 +27,7 @@ pub use crate::off_path::process::build_with_secrets;
 
 /// THE PROXY POSTURE, said once at boot (BUSBAR-3149) and audited: the proxy endpoints (never their
 /// credentials), `NO_PROXY`, and whether the guard judges a proxied target by address
-/// (`advanced.proxy_resolution: local`) or delegates the address check of a name that does not
+/// (`outbound.proxy_resolution: local`) or delegates the address check of a name that does not
 /// resolve here to the proxy (`proxy`). Nothing when no proxy is configured.
 pub fn note_proxy_posture(by_address: bool) {
     crate::off_path::lines::note_proxy_posture(by_address);

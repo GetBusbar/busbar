@@ -8,7 +8,7 @@ slug: docs/1.6/errors/BUSBAR-3144
 
 ## What it means
 
-`plaintext: true` on an `advanced.tls.destinations` entry is accepted only on an exact host name or an exact IP. A wildcard or a CIDR would admit cleartext to destinations nobody named.
+`plaintext: true` on an `outbound.tls.destinations` entry is accepted only on an exact host name or an exact IP. A wildcard or a CIDR would admit cleartext to destinations nobody named.
 
 ## How to fix it
 

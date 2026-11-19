@@ -114,8 +114,8 @@ pub(crate) fn configuration(
                 "/limits/pool_idle_timeout_secs",
                 "/limits/request_body_max_bytes",
                 "/limits/upstream_request_timeout_secs",
-                "/advanced/upstream_http1_only",
-                "/advanced/upstream_h2_prior_knowledge",
+                "/outbound/http1_only",
+                "/outbound/h2_prior_knowledge",
             ]
         } else {
             Vec::new()
@@ -184,9 +184,7 @@ mod tests {
         assert_eq!(view.root_keys, [Kind::Transport.root()]);
         assert_eq!(view.claims, ["fixture-wire"]);
         assert_eq!(view.configuration_shape, "provider_catalog_and_deployment");
-        assert!(view
-            .host_policy_paths
-            .contains(&"/advanced/upstream_http1_only"));
+        assert!(view.host_policy_paths.contains(&"/outbound/http1_only"));
         assert!(!view
             .host_policy_paths
             .contains(&"/limits/upstream_http1_only"));

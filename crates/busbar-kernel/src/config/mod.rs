@@ -467,15 +467,15 @@ pub struct RootCfg {
     /// DISABLED — every cloud-metadata endpoint is reachable by every provider. Logs a startup WARN.
     /// Default false.
     pub allow_all_metadata: bool,
-    /// The `advanced` destination-guard keys, as written ([`RootCfg::destinations`] adds the rest).
+    /// The `outbound` destination-guard keys, as written ([`RootCfg::destinations`] adds the rest).
     pub guard: Destinations,
-    /// `advanced.tls`, the outbound TLS trust store, as written (the connector validates and
+    /// `outbound.tls`, the outbound TLS trust store, as written (the connector validates and
     /// builds it at boot).
     pub outbound_tls: tls::OutboundTlsCfg,
-    /// `advanced.proxy_resolution`.
+    /// `outbound.proxy_resolution`.
     pub proxy_resolution: tls::ProxyResolution,
     /// The credential sign-in attempt limiter's resolved policy (`auth.login_limits`, the
-    /// providers' `browser_login` overrides, `advanced.trusted_proxies`/`forwarded_header`).
+    /// providers' `browser_login` overrides, `client_address`).
     pub login_limits: crate::auth::login_limits::LoginLimitsPolicy,
     /// Fully-resolved operational limits ("NEVER CODED CAPS"), projected from the `limits:` /
     /// `observability:` / `governance:` / `metrics:` / `health:` / `routing:` config sections. Every
@@ -998,6 +998,19 @@ pub struct DeployCfg {
     /// Internal tuning knobs (the `advanced:` block).
     #[serde(default)]
     pub advanced: AdvancedCfg,
+    /// The `shutdown:` block: the operator deregistration allowance. Restart to apply.
+    #[serde(default)]
+    pub shutdown: ShutdownCfg,
+    /// The `client_address:` block: who may state a client's address. Restart to apply.
+    #[serde(default)]
+    pub client_address: ClientAddressCfg,
+    /// The `outbound:` block: how the engine dials out. Restart to apply.
+    #[serde(default)]
+    pub outbound: OutboundCfg,
+    /// One line per `advanced` key this document still carries that moved to its own section,
+    /// written when the document is read ([`DeployCfg::carry_moved`]); `config::resolve` says them.
+    #[serde(skip)]
+    pub carried: Vec<String>,
     /// The top-level `export:` NAMED-DEFINITION map (1.5.3): instance name → [`ExportDefCfg`]. THE
     /// single telemetry-egress surface. Absent/empty ⇒ collection inert (no recorder, no request-log
     /// sink, no tracer).
@@ -1049,6 +1062,85 @@ pub struct DeployCfg {
 }
 
 impl DeployCfg {
+    /// Carry every moved `advanced` key this document still holds to its own section, and note
+    /// one line for each in [`DeployCfg::carried`]. A new home the document also writes wins
+    /// (for a list or a block: when it is not empty or the default; for a switch: an old value
+    /// is carried only when it differs from the new home's default). Run when a document is
+    /// read and after a settings patch is spliced in; the old keys are never written back.
+    pub fn carry_moved(&mut self) {
+        let mut note = |old: &str, carried: bool| {
+            self.carried
+                .push(sections::moved_advanced_line(old, carried));
+        };
+        let advanced = &mut self.advanced;
+        if let Some(old) = advanced.shutdown.take() {
+            if let Some(delay) = old.deregister_delay {
+                let free = self.shutdown.deregister_delay.is_none();
+                if free {
+                    self.shutdown.deregister_delay = Some(delay);
+                }
+                note("shutdown.deregister_delay", free);
+            }
+        }
+        if let Some(old) = advanced.trusted_proxies.take() {
+            let free = self.client_address.trusted_proxies.is_empty();
+            if free {
+                self.client_address.trusted_proxies = old;
+            }
+            note("trusted_proxies", free);
+        }
+        if let Some(old) = advanced.forwarded_header.take() {
+            let free = self.client_address.header.is_none();
+            if free {
+                self.client_address.header = Some(old);
+            }
+            note("forwarded_header", free);
+        }
+        if let Some(old) = advanced.tls.take() {
+            let free = self.outbound.tls.is_default();
+            if free {
+                self.outbound.tls = old;
+            }
+            note("tls", free);
+        }
+        if let Some(old) = advanced.proxy_resolution.take() {
+            let free = self.outbound.proxy_resolution == tls::ProxyResolution::Local;
+            if free {
+                self.outbound.proxy_resolution = old;
+            }
+            note("proxy_resolution", free);
+        }
+        if let Some(old) = advanced.block_private_addresses.take() {
+            let free =
+                self.outbound.block_private_addresses == sections::DEFAULT_BLOCK_PRIVATE_ADDRESSES;
+            if free {
+                self.outbound.block_private_addresses = old;
+            }
+            note("block_private_addresses", free);
+        }
+        if let Some(old) = advanced.upstream_http1_only.take() {
+            let free = !self.outbound.http1_only;
+            if free {
+                self.outbound.http1_only = old;
+            }
+            note("upstream_http1_only", free);
+        }
+        if let Some(old) = advanced.upstream_h2_prior_knowledge.take() {
+            let free = !self.outbound.h2_prior_knowledge;
+            if free {
+                self.outbound.h2_prior_knowledge = old;
+            }
+            note("upstream_h2_prior_knowledge", free);
+        }
+        if let Some(old) = advanced.response_headers.take() {
+            let free = self.telemetry.response_headers == ResponseHeadersCfg::default();
+            if free {
+                self.telemetry.response_headers = old;
+            }
+            note("response_headers.server_timing", free);
+        }
+    }
+
     #[must_use]
     pub fn door_sections(
         &self,
@@ -1397,8 +1489,8 @@ impl PluginsCfg {
 pub use busbar_kernel::config::sections::{store_required, SecretModuleCfg, StoreCfg};
 
 pub use busbar_kernel::config::sections::{
-    default_response_headers_server_timing, AdvancedCfg, AuditCfg, ResponseHeadersCfg,
-    DEFAULT_AUDIT_SEAL_EVERY_MS, DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+    default_response_headers_server_timing, AdvancedCfg, AuditCfg, ClientAddressCfg, OutboundCfg,
+    ResponseHeadersCfg, DEFAULT_AUDIT_SEAL_EVERY_MS, DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
 };
 
 pub use busbar_kernel::config::sections::{
@@ -1581,8 +1673,8 @@ pub use busbar_kernel::config::limits::{
     default_max_auto_provisioned_groups, default_max_honored_retry_after_secs,
     default_max_inbound_concurrent, default_max_keys_per_principal, default_pool_idle_timeout_secs,
     default_pool_max_idle_per_host, default_probe_interval_secs, default_probe_timeout_secs,
-    default_rate_sweep_interval, default_reasoning_high, default_reasoning_low,
-    default_reasoning_medium, default_reasoning_minimal, default_request_body_max_bytes,
+    default_reasoning_high, default_reasoning_low, default_reasoning_medium,
+    default_reasoning_minimal, default_request_body_max_bytes,
     default_request_body_read_timeout_secs, default_tls_handshake_timeout_secs,
     default_upstream_error_body_max_bytes, default_upstream_request_timeout_secs,
     default_usage_flush_interval_ms, ExportLimits, HealthDefaultsCfg, LimitsCfg, LimitsResolved,
@@ -1590,10 +1682,10 @@ pub use busbar_kernel::config::limits::{
     DEFAULT_HARD_DOWN_COOLDOWN_SECS, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
     DEFAULT_MAX_INBOUND_CONCURRENT, DEFAULT_PLUGIN_FETCH_MAX_BYTES, DEFAULT_POOL_IDLE_TIMEOUT_SECS,
     DEFAULT_POOL_MAX_IDLE_PER_HOST, DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS,
-    DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_REQUEST_BODY_MAX_BYTES,
-    DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS, DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS,
-    DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES, DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
-    DEFAULT_USAGE_FLUSH_INTERVAL_MS, REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR,
+    DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS,
+    DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS, DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES,
+    DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
+    REQUEST_BODY_MAX_BYTES_CEIL, REQUEST_BODY_MAX_BYTES_FLOOR,
 };
 
 fn default_plugins_dir() -> String {
@@ -1666,11 +1758,17 @@ pub fn resolve_with_provider_planes(
     {
         diag_warn!(crate::diagnostics::CONFIG_SETTING_OUT_OF_RANGE, "{note}");
     }
-    if deploy.advanced.allow_destinations.is_some() {
-        tracing::warn!(
-            "advanced.allow_destinations was removed and is ignored: a private address is reached \
-             only by a registration that sets its own allow_private, or by a provider's own origin"
-        );
+    // A settings patch and a document edit are spliced into `deploy` first, so this is one line
+    // per removed key an old configuration still carries, at boot and on every apply.
+    for line in deploy
+        .advanced
+        .removed()
+        .filter_map(sections::removed_advanced_line)
+    {
+        tracing::warn!("{line}");
+    }
+    for line in &deploy.carried {
+        tracing::warn!("{line}");
     }
     for name in deploy
         .rate_card
@@ -1925,7 +2023,7 @@ pub fn resolve_with_provider_planes(
     let login_limits = crate::auth::login_limits::policy::resolve(
         deploy.auth.as_ref().map(|a| &a.login_limits),
         &deploy.identity_providers,
-        &deploy.advanced,
+        &deploy.client_address,
     )
     .unwrap_or_else(|refusals| {
         errors.extend(refusals);
@@ -2082,16 +2180,17 @@ pub fn resolve_with_provider_planes(
                 allow_metadata_hosts: security.allow_metadata_hosts,
                 allow_all_metadata: security.allow_all_metadata,
                 guard: Destinations {
-                    block_private_addresses: deploy.advanced.block_private_addresses,
+                    block_private_addresses: deploy.outbound.block_private_addresses,
                     ..Destinations::default()
                 },
-                outbound_tls: deploy.advanced.tls.clone(),
-                proxy_resolution: deploy.advanced.proxy_resolution,
+                outbound_tls: deploy.outbound.tls.clone(),
+                proxy_resolution: deploy.outbound.proxy_resolution,
                 login_limits,
 
                 limits: LimitsResolved::from_sections(
                     &deploy.limits,
                     &deploy.advanced,
+                    &deploy.outbound,
                     &export,
                     &deploy.health,
                     &deploy.routing,
@@ -2188,6 +2287,14 @@ mod provider_protocol_tests;
 #[cfg(test)]
 #[path = "tests/advanced_destinations_tests.rs"]
 mod advanced_destinations_tests;
+
+#[cfg(test)]
+#[path = "tests/retired_advanced_tests.rs"]
+mod retired_advanced_tests;
+
+#[cfg(test)]
+#[path = "tests/moved_advanced_tests.rs"]
+mod moved_advanced_tests;
 
 #[cfg(test)]
 #[path = "tests/worker_threads_tests.rs"]
@@ -2346,6 +2453,10 @@ impl std::fmt::Debug for DeployCfg {
             .field("store", &self.store)
             .field("secrets", &self.secrets)
             .field("advanced", &self.advanced)
+            .field("shutdown", &self.shutdown)
+            .field("client_address", &self.client_address)
+            .field("outbound", &self.outbound)
+            .field("carried", &self.carried)
             .field("export", &self.export)
             .field("declared", &self.declared)
             .field("plugins", &self.plugins)
@@ -2378,4 +2489,4 @@ impl std::fmt::Debug for FetchTarget {
 }
 
 mod shutdown;
-pub use shutdown::AdvancedShutdownCfg;
+pub use shutdown::ShutdownCfg;

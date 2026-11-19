@@ -108,118 +108,9 @@ fn line_serve_requested(argv: &root::cli::Argv) -> bool {
     argv.stdio
 }
 
-/// The value rule for `advanced.worker_threads` is one function in the kernel's configuration
-/// ([`config::sections::effective_worker_threads`]); this is the line a boot prints for it.
-fn worker_threads_warning(note: &str) -> String {
-    format!("[warn] {}", diagnostics::WORKER_THREADS_INVALID.coded(note))
-}
-
-#[cfg(test)]
-fn worker_threads_from_env(name: &str) -> Option<usize> {
-    let mut warnings = Vec::new();
-    let n = worker_threads_from_env_noting(name, &mut warnings);
-    warnings.iter().for_each(|w| eprintln!("{w}"));
-    n
-}
-
-fn worker_threads_from_env_noting(name: &str, warnings: &mut Vec<String>) -> Option<usize> {
-    match std::env::var(name) {
-        Ok(v) => match v.trim().parse::<usize>() {
-            Ok(n) if n >= 1 => {
-                let (workers, note) = config::sections::effective_worker_threads(Some(n));
-                if let Some(note) = note {
-                    warnings.push(worker_threads_warning(&format!("{note} (from {name})")));
-                }
-                workers
-            }
-            _ => {
-                warnings.push(format!(
-                    "[warn] {}",
-                    diagnostics::WORKER_THREADS_INVALID.coded(format_args!(
-                        "{name}={v:?} is not a positive integer; ignoring it and using the \
-                         default worker-thread count"
-                    ))
-                ));
-                None
-            }
-        },
-        Err(_) => None,
-    }
-}
-
-#[cfg(test)]
-fn worker_threads_from_config() -> Option<usize> {
-    let mut warnings = Vec::new();
-    let n = worker_threads_from_config_noting(&mut warnings);
-    warnings.iter().for_each(|w| eprintln!("{w}"));
-    n
-}
-
-fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize> {
-    let (workers, note) =
-        config::sections::effective_worker_threads(worker_threads_in_config_file());
-    if let Some(note) = note {
-        warnings.push(worker_threads_warning(&note));
-    }
-    workers
-}
-
-/// `advanced.worker_threads` as config.yaml states it, before the rule is applied.
-fn worker_threads_in_config_file() -> Option<usize> {
-    let config_path = root::cli::resolve_config_path(root::cli::argv().config.as_deref());
-    let raw = std::fs::read_to_string(&config_path).ok()?;
-    let mut unset = Vec::new();
-    let interpolated =
-        config::interpolate_env_with(&raw, config::EnvSubst::Lenient, &mut unset).ok()?;
-
-    use busbar_contract::yaml::ValueExt;
-    let doc: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&interpolated).ok()?;
-    match doc.get("advanced").and_then(|a| a.get("worker_threads")) {
-        None | Some(busbar_contract::yaml::Value::Null) => None,
-        Some(v) => Some(usize::try_from(v.as_u64()?).ok()?),
-    }
-}
-
-fn resolve_worker_threads() -> (usize, Vec<String>) {
-    let mut warnings = Vec::new();
-    let n = worker_threads_from_config_noting(&mut warnings)
-        .or_else(|| worker_threads_from_env_noting("TOKIO_WORKER_THREADS", &mut warnings))
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1)
-        });
-    (n, warnings)
-}
-
-/// Resolve the effective recovered config, then the supported Tokio fallback. `configured` has
-/// been through [`config::sections::effective_worker_threads`] already.
-fn recovered_data_workers(
-    configured: Option<usize>,
-    fallback_env: Option<usize>,
-    available: usize,
-) -> usize {
-    configured.or(fallback_env).unwrap_or(available).max(1)
-}
-
 #[cfg(test)]
 mod recovered_worker_tests {
     use super::*;
-
-    #[test]
-    fn recovered_worker_count_honors_effective_config_and_tokio_fallback() {
-        assert_eq!(recovered_data_workers(Some(7), Some(3), 2), 7);
-        assert_eq!(recovered_data_workers(None, Some(3), 2), 3);
-        assert_eq!(recovered_data_workers(None, None, 2), 2);
-        // The recovered value goes through the one rule first: 0 is the default, a count above
-        // the ceiling is the ceiling.
-        let ruled = |n| config::sections::effective_worker_threads(Some(n)).0;
-        assert_eq!(recovered_data_workers(ruled(0), None, 2), 2);
-        assert_eq!(
-            recovered_data_workers(ruled(usize::MAX), None, 2),
-            config::sections::MAX_WORKER_THREADS
-        );
-    }
 
     #[test]
     fn recovered_data_runtime_keeps_control_alive_and_drains_registered_work() {
@@ -235,8 +126,8 @@ mod recovered_worker_tests {
             let (release_tx, release_rx) = tokio::sync::oneshot::channel();
             let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let finished_work = finished.clone();
-            // The effective Store value replaces the bootstrap budget, on the actual scheduler.
-            let workers = recovered_data_workers(Some(3), None, 1);
+            // The data runtime runs the count it is given, on the actual scheduler.
+            let workers = 3;
             let data = spawn_multithread_data(workers, shutdown_rx, async move {
                 assert_eq!(tokio::runtime::Handle::current().metrics().num_workers(), 3);
                 let tracker = busbar_kernel::detached::worker_detached().unwrap();
@@ -331,8 +222,11 @@ fn register_diagnostics() -> busbar_kernel::diagnostics::Catalogue {
     root::linked::register_diagnostics(&LINKED)
 }
 
-static WORKERS: std::sync::LazyLock<(usize, Vec<String>)> =
-    std::sync::LazyLock::new(resolve_worker_threads);
+/// The data-plane worker count, read once from what the operating system allows this process
+/// ([`config::sections::data_workers`]), so the bootstrap dispatcher, the control runtime and
+/// the data runtime agree on one number.
+static WORKERS: std::sync::LazyLock<usize> =
+    std::sync::LazyLock::new(config::sections::data_workers);
 
 fn main() {
     // First, before anything touches crypto: the backend's power-on self-test gates boot (#172).
@@ -357,7 +251,7 @@ fn main() {
     }
     // Force this boot's node now, so its one OS draw never lands on a request worker.
     let _ = busbar_kernel::door::node();
-    let dispatcher = root::dispatch::boot(WORKERS.0, &bootstrap_services);
+    let dispatcher = root::dispatch::boot(*WORKERS, &bootstrap_services);
     root::doors::install_dispatcher(dispatcher);
 
     register_protocols();
@@ -386,12 +280,11 @@ fn main() {
         }
     };
 
-    let (_, warnings) = &*WORKERS;
-    for w in warnings {
-        eprintln!("{w}");
+    // Retired launch inputs, before migration or any configuration is read: each one set is said
+    // once and converted (read as 1.5.5 read it, or ignored); none refuses the start.
+    for note in root::retired_env::check_launch_env(|n| std::env::var_os(n)) {
+        eprintln!("[warn] {note}");
     }
-    // Refuse retired launch inputs before migration or any configuration is read.
-    root::retired_env::check_launch_env(|n| std::env::var_os(n)).unwrap_or_else(|error| die(error));
     // Migrate-on-boot step 1 (MIGRATE-ON-BOOT r42 §3): config.yaml's one field, before anything else
     // reads it. An unstamped config is planned in memory here and written at step 5.
     {
@@ -402,7 +295,7 @@ fn main() {
             .unwrap_or_else(|error| die(error));
     }
     #[cfg(not(unix))]
-    let worker_threads = WORKERS.0;
+    let worker_threads = *WORKERS;
 
     let control_work = ControlWork::new();
     control_work.register();
@@ -989,30 +882,23 @@ async fn run(
 
     // Data workers are created after Store recovery, on their own runtimes. The
     // control runtime and bootstrap plugin dispatcher already exist and keep their own budgets.
-    let data_workers = {
-        let mut ignored_warnings = Vec::new();
-        let (configured, note) =
-            config::sections::effective_worker_threads(deploy.advanced.worker_threads);
-        // A value config.yaml also carries was reported by the bootstrap read; one only the
-        // recovered document carries (an admin edit) is reported here.
-        if let Some(note) =
-            note.filter(|_| deploy.advanced.worker_threads != worker_threads_in_config_file())
-        {
-            tracing::warn!("{}", diagnostics::WORKER_THREADS_INVALID.coded(note));
-        }
-        let selected = recovered_data_workers(
-            configured,
-            worker_threads_from_env_noting("TOKIO_WORKER_THREADS", &mut ignored_warnings),
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1),
-        );
-        busbar_kernel::topology::set_data_workers(selected);
-        selected
-    };
+    let data_workers = *WORKERS;
+    busbar_kernel::topology::set_data_workers(data_workers);
 
-    let deregister_delay = deploy.advanced.shutdown.deregister_delay;
-    let response_headers_cfg = deploy.advanced.response_headers.clone();
+    let deregister_delay = deploy.shutdown.delay();
+    // The default is no deregistration interval (v1.5.5 had none). A stamped (1.6) document
+    // that states none may have relied on the 5 s that 1.6 development builds assumed: say so
+    // once at boot, with how to set it.
+    if deploy.shutdown.deregister_delay.is_none() && deploy.config_version.is_some() {
+        tracing::warn!(
+            "shutdown.deregister_delay is not set: the engine begins draining as soon as a \
+             shutdown starts (no deregistration interval; 1.6 development builds assumed 5s). \
+             Behind a load balancer, set it to the balancer's health-check period times its \
+             failure threshold (for example 5s period x 2 failures = `shutdown: \
+             {{ deregister_delay: 10s }}`)"
+        );
+    }
+    let response_headers_cfg = deploy.telemetry.response_headers.clone();
     // `audit.seal_every` (SEALING-FIX §3.4): the notary's stamp cadence, validated 1-1000 ms.
     let audit_seal_every = deploy.audit.seal_every;
 
@@ -1336,7 +1222,7 @@ async fn run(
             .unwrap_or_else(|| die("S7 has no admitted Store")),
         &planes,
     );
-    let serving_dispatcher = Arc::new(root::dispatch::build(WORKERS.0, &services));
+    let serving_dispatcher = Arc::new(root::dispatch::build(*WORKERS, &services));
 
     // Explicit same-open ephemeral initialization uses its newly committed principal baseline
     // as a real Store witness. It follows exactly the ordinary receipt consumer before admission.
@@ -1715,6 +1601,17 @@ async fn run(
     // Governed admission keeps its fixed terminal-backlog cap
     // (`governance::drain::MAX_PENDING_CHECKPOINTS`), set when the gate is built.
     let governance = app_handle.load().governance.clone();
+    // The core watch rides the housekeeping tick (the budget flusher's loop); with no governance there is no
+    // such tick and the watch wakes on the same configured interval itself.
+    let process = root::boot::images::process().ok();
+    let core_watch = root::core_watch::CoreWatch::new(move || {
+        process
+            .as_ref()
+            .map_or(0, |process| process.slots().hung_total())
+    });
+    if governance.is_none() {
+        tokio::spawn(Arc::clone(&core_watch).run_alone());
+    }
     let budget_flusher = governance.clone().map(|gov| {
         tokio::spawn(root::measurements::maintenance(
             busbar_kernel::governance::run_budget_flusher(
@@ -1722,6 +1619,7 @@ async fn run(
                 shutdown_tx.subscribe(),
                 Some(app_handle.clone()),
                 Some(Arc::clone(&drain_clock)),
+                Some(core_watch.tick()),
             ),
         ))
     });
@@ -1854,6 +1752,7 @@ async fn run(
                     Arc::clone(&tls_secret_resolver),
                     &shutdown_tx,
                     worker_shutdown_rx.clone(),
+                    &core_watch,
                 ));
                 #[cfg(not(unix))]
                 {
@@ -2111,6 +2010,7 @@ fn serve_thread_per_core(
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
+    watch: &Arc<root::core_watch::CoreWatch>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     if tls_cfg.is_some() {
         let protocols: Vec<_> = alpn.iter().map(|value| value.as_bytes()).collect();
@@ -2142,6 +2042,7 @@ fn serve_thread_per_core(
             .collect();
     let mut handles = Vec::with_capacity(cores.len());
     for (i, core_id) in cores.into_iter().enumerate() {
+        let watch = Arc::clone(&watch);
         let native = Arc::clone(&native);
         let alpn = alpn.clone();
         let tls = tls_cfg.clone();
@@ -2184,6 +2085,7 @@ fn serve_thread_per_core(
                         carrier = %crate::root::connector::carrier_name(via.as_ref()),
                         "data door listening through the connector"
                     );
+                    watch.enrol(listener.stopper());
                     serve_listener(
                         listener,
                         native,

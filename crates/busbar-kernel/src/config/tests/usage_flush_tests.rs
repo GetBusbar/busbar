@@ -8,6 +8,7 @@ fn resolved_with(yaml: &str) -> LimitsResolved {
     LimitsResolved::from_sections(
         &LimitsCfg::default(),
         &advanced,
+        &OutboundCfg::default(),
         ExportLimits::default(),
         &HealthDefaultsCfg::default(),
         &RoutingCfg::default(),

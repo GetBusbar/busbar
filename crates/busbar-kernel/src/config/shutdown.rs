@@ -6,52 +6,54 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::time::Duration;
 
-/// The document-only `advanced.shutdown` section. Changes require a restart.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+/// The top-level `shutdown:` section (1.6 development builds read it as `advanced.shutdown`; an
+/// old configuration's block is carried here when the document is read). Changes require a
+/// restart.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AdvancedShutdownCfg {
-    /// Readiness-to-drain interval for operator shutdown, from zero through 300 seconds.
-    /// Safety shutdown and force bypass this interval. Defaults to five seconds.
+pub struct ShutdownCfg {
+    /// Readiness-to-drain interval for operator shutdown, from zero through 300 seconds. Safety
+    /// shutdown and force bypass this interval. Absent: no interval ([`ShutdownCfg::delay`] is
+    /// zero), as v1.5.5 had none; the operator states their load balancer's probe period times its
+    /// failure threshold.
     #[serde(
-        default = "default_delay",
+        default,
         deserialize_with = "read_delay",
-        serialize_with = "write_delay"
+        serialize_with = "write_delay",
+        skip_serializing_if = "Option::is_none"
     )]
-    pub deregister_delay: Duration,
+    pub deregister_delay: Option<Duration>,
 }
 
-fn default_delay() -> Duration {
-    Duration::from_secs(5)
-}
-
-impl Default for AdvancedShutdownCfg {
-    fn default() -> Self {
-        Self {
-            deregister_delay: default_delay(),
-        }
+impl ShutdownCfg {
+    /// The deregistration allowance in force: the stated one, else none.
+    #[must_use]
+    pub fn delay(&self) -> Duration {
+        self.deregister_delay.unwrap_or(Duration::ZERO)
     }
 }
 
-fn read_delay<'de, D: Deserializer<'de>>(input: D) -> Result<Duration, D::Error> {
+fn read_delay<'de, D: Deserializer<'de>>(input: D) -> Result<Option<Duration>, D::Error> {
     use serde::de::Error as _;
     let written = String::deserialize(input).map_err(|error| {
         D::Error::custom(format!(
-            "advanced.shutdown.deregister_delay requires a duration string: {error}"
+            "shutdown.deregister_delay requires a duration string: {error}"
         ))
     })?;
     let seconds = super::parse::parse_duration_secs(&written).map_err(|error| {
-        D::Error::custom(format!(
-            "advanced.shutdown.deregister_delay {written:?}: {error}"
-        ))
+        D::Error::custom(format!("shutdown.deregister_delay {written:?}: {error}"))
     })?;
     if seconds > 300 {
         return Err(D::Error::custom(format!(
-            "advanced.shutdown.deregister_delay {written:?} is outside 0s..300s"
+            "shutdown.deregister_delay {written:?} is outside 0s..300s"
         )));
     }
-    Ok(Duration::from_secs(seconds))
+    Ok(Some(Duration::from_secs(seconds)))
 }
 
-fn write_delay<S: Serializer>(delay: &Duration, output: S) -> Result<S::Ok, S::Error> {
-    output.serialize_str(&format!("{}s", delay.as_secs()))
+fn write_delay<S: Serializer>(delay: &Option<Duration>, output: S) -> Result<S::Ok, S::Error> {
+    match delay {
+        Some(delay) => output.serialize_str(&format!("{}s", delay.as_secs())),
+        None => output.serialize_none(),
+    }
 }

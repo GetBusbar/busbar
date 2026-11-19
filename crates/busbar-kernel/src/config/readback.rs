@@ -79,13 +79,8 @@ impl ConfiguredView {
                 "labels": deploy.records.labels,
             }),
         );
-        if let Some(Value::Object(advanced)) = view.sections.get_mut("advanced") {
-            advanced.insert("shutdown".into(), json!(deploy.advanced.shutdown));
-            advanced.insert(
-                "worker_threads".into(),
-                json!(deploy.advanced.worker_threads),
-            );
-        }
+        view.sections
+            .insert("shutdown".into(), json!(deploy.shutdown));
         // Provider protocol options are carried opaquely after resolution. Read only the
         // host's typed authored override here; the catalog's typed protocol is shown separately.
         if let Some(Value::Object(providers)) = view.sections.get_mut("providers") {
@@ -168,11 +163,15 @@ impl ConfiguredView {
         put!(
             "advanced",
             json!({
-                "rate_sweep_interval": l.rate_sweep_interval,
                 "usage_flush_interval_ms": l.usage_flush_interval_ms,
                 "wait_for_commit": l.wait_for_commit,
-                "upstream_http1_only": l.upstream_http1_only,
-                "upstream_h2_prior_knowledge": l.upstream_h2_prior_knowledge,
+            })
+        );
+        put!(
+            "outbound",
+            json!({
+                "http1_only": l.upstream_http1_only,
+                "h2_prior_knowledge": l.upstream_h2_prior_knowledge,
                 "block_private_addresses": cfg.guard.block_private_addresses,
             })
         );
@@ -285,8 +284,7 @@ impl ConfiguredView {
                 "config",
                 "providers_file",
                 "admin_require_mtls",
-                "advanced.worker_threads",
-                "advanced.shutdown.deregister_delay",
+                "shutdown.deregister_delay",
             ],
         }
     }

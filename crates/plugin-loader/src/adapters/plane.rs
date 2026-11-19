@@ -23,7 +23,7 @@ use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_abi::host_side::driver::Driver;
 use busbar_plugin_abi::host_side::needs::Needs;
-use busbar_plugin_abi::host_side::pool::{sync_bufs, Pool};
+use busbar_plugin_abi::host_side::pool::{sync_out, Pool};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
 use busbar_plugin_abi::plane::{self as p, tag as t, PlaneReq, Proxy, Target};
 use busbar_plugin_abi::records::{
@@ -1539,7 +1539,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             max_out
         };
         let req = plane_req(req);
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let answer = self
                 .proxy
                 .select_resources(out, mode, &req, body)
@@ -1576,7 +1576,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<PlaneSession, PortError> {
         let max_out = self.live()?;
         let req = plane_req(req);
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let (session, answer) = self
                 .proxy
                 .request(out, &req, body)
@@ -1609,7 +1609,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
                 t::SELECTED_RESOURCE,
             ))));
         }
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let answer = s.upstream(out, &view).map_err(PortError::Call)?;
             self.finish(Call::Upstream, &answer, sink, selected, None)
         })
@@ -1636,7 +1636,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             return Err(PortError::Call(CallError::Fault(FaultReason::BadInstance)));
         }
         let view = target(tgt);
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let answer = s.channel(out, &view).map_err(PortError::Call)?;
             self.finish(Call::Channel, &answer, sink, None, None)
         })
@@ -1652,7 +1652,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let answer = s
                 .piece(out, from, exchange, flags, bytes)
                 .map_err(PortError::Call)?;
@@ -1714,7 +1714,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let answer = s.rewrite(out, conversation).map_err(PortError::Call)?;
             self.finish(Call::Rewrite, &answer, sink, None, None)
         })
@@ -1722,7 +1722,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
 
     fn end(&self, s: PlaneSession, sink: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError> {
         let max_out = self.live()?;
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let answer = s.end(out).map_err(PortError::Call)?;
             self.finish(Call::End, &answer, sink, None, None)
         })
@@ -1737,7 +1737,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
         let req = plane_req(req);
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let answer = self
                 .proxy
                 .render(out, &req, what, arg)
@@ -1753,7 +1753,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<PlaneSession, PortError> {
         let max_out = self.live()?;
         let view = target(tgt);
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let (session, answer) = self.proxy.probe(out, &view).map_err(PortError::Call)?;
             self.finish(Call::Probe, &answer, sink, None, None)?;
             session.ok_or_else(no_token)
@@ -1767,7 +1767,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let answer = self
                 .proxy
                 .demux(out, key, message)

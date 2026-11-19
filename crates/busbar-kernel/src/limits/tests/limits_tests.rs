@@ -53,7 +53,6 @@ fn uninstalled_accessors_return_historical_defaults() {
         DEFAULT_REQUEST_BODY_MAX_BYTES
     );
     assert_eq!(key_gauge_limit(), DEFAULT_KEY_GAUGE_LIMIT);
-    assert_eq!(rate_sweep_interval(), DEFAULT_RATE_SWEEP_INTERVAL);
     assert_eq!(default_probe_interval_secs(), DEFAULT_PROBE_INTERVAL_SECS);
     assert_eq!(default_probe_timeout_secs(), DEFAULT_PROBE_TIMEOUT_SECS);
     assert_eq!(default_policy_timeout_ms(), DEFAULT_POLICY_TIMEOUT_MS);

@@ -8,7 +8,7 @@ pub mod process_admission;
 
 use crate::config::{
     LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_POLICY_TIMEOUT_MS,
-    DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
+    DEFAULT_USAGE_FLUSH_INTERVAL_MS,
 };
 
 #[cfg(test)]
@@ -34,12 +34,6 @@ pub(crate) fn key_gauge_limit() -> usize {
     get()
         .map(|l| l.key_gauge_limit)
         .unwrap_or(DEFAULT_KEY_GAUGE_LIMIT)
-}
-
-pub(crate) fn rate_sweep_interval() -> u32 {
-    get()
-        .map(|l| l.rate_sweep_interval)
-        .unwrap_or(DEFAULT_RATE_SWEEP_INTERVAL)
 }
 
 /// `advanced.usage_flush_interval_ms` as live: the flush cadence of usage counters and of the

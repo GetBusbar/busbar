@@ -262,6 +262,7 @@ async fn flusher_resumes_not_landed_with_current_cost(drain: bool) {
                 shutdown_rx.take().expect("one receiver"),
                 Some(handle.clone()),
                 clock.clone(),
+                None,
             ))
         }
     };

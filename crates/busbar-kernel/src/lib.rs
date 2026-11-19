@@ -219,6 +219,7 @@ pub(crate) mod cold;
 pub mod config;
 pub mod config_validate;
 pub mod core_routes;
+pub mod core_watch;
 pub mod cost;
 pub mod diagnostics;
 // The request-path modules' code that runs off the request path: once per configuration, generation

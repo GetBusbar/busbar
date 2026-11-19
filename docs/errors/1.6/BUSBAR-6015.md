@@ -12,7 +12,7 @@ A plugin requested `UPGRADE_VERIFY_OFF` on a connection upgrade. Busbar refuses 
 
 ## How to fix it
 
-Upgrade the plugin to a version that uses the core-held transport policy on its declared need. Configure verified TLS; for a server with a private CA, configure `advanced.tls.trust_anchors` and `advanced.tls.destinations`. Any deliberate exception uses the instance's explicit `insecure_transport` policy, never `UPGRADE_VERIFY_OFF`.
+Upgrade the plugin to a version that uses the core-held transport policy on its declared need. Configure verified TLS; for a server with a private CA, configure `outbound.tls.trust_anchors` and `outbound.tls.destinations`. Any deliberate exception uses the instance's explicit `insecure_transport` policy, never `UPGRADE_VERIFY_OFF`.
 
 ---
 

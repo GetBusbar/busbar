@@ -835,3 +835,143 @@ fn an_accepted_client_that_resets_mid_handshake_is_a_connect_failure() {
         conn.close();
     });
 }
+
+/// PROBE of the kernel the stop relies on (prints its readings; run with `--no-capture`): a `SO_REUSEPORT` listener
+/// that never accepts keeps its share of new connections; shut down, it leaves the group, and the connections
+/// already queued on it are reset unless `net.ipv4.tcp_migrate_req` is 1 (then the kernel moves them to another
+/// listener of the group).
+#[cfg(target_os = "linux")]
+#[test]
+fn probe_a_shut_reuseport_listener_leaves_the_group_and_resets_its_queue() {
+    use std::io::Read;
+    let listen = |port: u16| {
+        let l = crate::socket::listen(&format!("127.0.0.1:{port}")).unwrap();
+        l.set_nonblocking(true).unwrap();
+        l
+    };
+    let drain = |l: &std::net::TcpListener| std::iter::from_fn(|| l.accept().ok()).count();
+    let hung = listen(0);
+    let port = hung.local_addr().unwrap().port();
+    let live = listen(port);
+    let migrate = std::fs::read_to_string("/proc/sys/net/ipv4/tcp_migrate_req")
+        .map(|v| v.trim() == "1")
+        .unwrap_or(false);
+    let queued: Vec<_> = (0..64)
+        .map(|_| std::net::TcpStream::connect(("127.0.0.1", port)).unwrap())
+        .collect();
+    std::thread::sleep(Duration::from_millis(50));
+    let live_before = drain(&live);
+    let on_hung = queued.len() - live_before;
+    assert!(
+        on_hung > 0,
+        "a listener that never accepts still gets its share"
+    );
+    socket2::SockRef::from(&hung)
+        .shutdown(std::net::Shutdown::Both)
+        .unwrap();
+    let after: Vec<_> = (0..64)
+        .map(|_| std::net::TcpStream::connect(("127.0.0.1", port)).unwrap())
+        .collect();
+    std::thread::sleep(Duration::from_millis(50));
+    let live_after = drain(&live);
+    let reset = queued
+        .iter()
+        .filter(|c| {
+            // A queued client the live listener drained was closed (EOF); one reset by the shut queue is RST.
+            let mut c: &std::net::TcpStream = c;
+            c.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+            matches!(c.read(&mut [0u8; 1]), Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset)
+        })
+        .count();
+    println!(
+        "probe: tcp_migrate_req={migrate} queued on the idle listener={on_hung}/64; after shutdown: new to the \
+         live listener={live_after}/{} (migrated from the shut queue included), queued clients reset={reset}",
+        after.len()
+    );
+    assert!(
+        live_after >= after.len(),
+        "every new connection reaches the listener still in the group"
+    );
+    if !migrate {
+        assert!(
+            reset >= on_hung,
+            "without tcp_migrate_req the shut listener's queue is reset"
+        );
+    }
+}
+
+/// A resumed listener rejoins its `SO_REUSEPORT` group: stopped, every connection goes to the other listener;
+/// resumed (its worker free again), it binds a new socket on its own worker and new connections reach it again.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_resumed_listener_rejoins_its_reuseport_group() {
+    worker().block_on(async {
+        let mut first =
+            Listening::bind_stream(None, "127.0.0.1:0", AcceptLimits::default()).unwrap();
+        let port = first.local_addr().port();
+        let mut second =
+            Listening::bind_stream(None, &format!("127.0.0.1:{port}"), AcceptLimits::default())
+                .unwrap();
+        let stop = first.stopper();
+        stop.stop();
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(first.poll_accept_stream(&mut cx).is_pending());
+        std::thread::spawn(move || stop.resume()).join().unwrap();
+        // The resumed listener's own task binds its new socket at its next poll.
+        assert!(first.poll_accept_stream(&mut cx).is_pending());
+        let clients: Vec<_> = (0..64)
+            .map(|_| std::net::TcpStream::connect(("127.0.0.1", port)).unwrap())
+            .collect();
+        let (mut to_first, mut to_second) = (0, 0);
+        for _ in 0..clients.len() {
+            tokio::select! {
+                _ = first.admit() => to_first += 1,
+                _ = second.admit() => to_second += 1,
+                () = tokio::time::sleep(Duration::from_secs(2)) => break,
+            }
+        }
+        assert_eq!(
+            to_first + to_second,
+            clients.len(),
+            "every connection is admitted"
+        );
+        assert!(
+            to_first > 0,
+            "the resumed listener takes its share again ({to_first} of 64)"
+        );
+    });
+}
+
+/// A stopped stream listener leaves its `SO_REUSEPORT` group: with two listeners on one port and the first stopped
+/// from another thread (as the core watch stops a hung core's door), every new connection reaches the second.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_stopped_listener_leaves_its_reuseport_group() {
+    worker().block_on(async {
+        let mut first =
+            Listening::bind_stream(None, "127.0.0.1:0", AcceptLimits::default()).unwrap();
+        let port = first.local_addr().port();
+        let mut second =
+            Listening::bind_stream(None, &format!("127.0.0.1:{port}"), AcceptLimits::default())
+                .unwrap();
+        let stop = first.stopper();
+        std::thread::spawn(move || stop.stop()).join().unwrap();
+        let clients: Vec<_> = (0..32)
+            .map(|_| std::net::TcpStream::connect(("127.0.0.1", port)).unwrap())
+            .collect();
+        for n in 0..clients.len() {
+            assert!(
+                tokio::time::timeout(Duration::from_secs(2), second.admit())
+                    .await
+                    .is_ok(),
+                "connection {n} of {} did not reach the listener still in the group",
+                clients.len()
+            );
+        }
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(
+            first.poll_accept_stream(&mut cx).is_pending(),
+            "a stopped listener admits nothing"
+        );
+    });
+}
