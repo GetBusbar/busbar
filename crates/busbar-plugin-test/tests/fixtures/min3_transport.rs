@@ -7,14 +7,14 @@
 //! Bytes read before or after the head open nothing. It refuses an E_HEAD that carries no H_AUTHORITY, as a
 //! dialled framer does, so the suite must hand it a real head. No `unsafe`: the glue is `plugin!`'s output only.
 
-use busbar_plugin_abi::fail::{failed, refused, Fail};
+use busbar_plugin_abi::Transport;
+use busbar_plugin_abi::fail::{Fail, failed, refused};
 use busbar_plugin_abi::host::Host;
 use busbar_plugin_abi::need::ChainBytes;
 use busbar_plugin_abi::plugin::{Describe, Endpoints, Open};
-use busbar_plugin_abi::records::{tag as head_tag, Out, Records, Writer};
-use busbar_plugin_abi::transport::{self as tp, tag, ConnInfo, StreamFlow};
+use busbar_plugin_abi::records::{Out, Records, Writer, tag as head_tag};
+use busbar_plugin_abi::transport::{self as tp, ConnInfo, StreamFlow, tag};
 use busbar_plugin_abi::types::Bytes;
-use busbar_plugin_abi::Transport;
 
 /// The dial framer: no settings.
 pub struct Dial;
