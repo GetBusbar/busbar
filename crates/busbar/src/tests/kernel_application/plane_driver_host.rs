@@ -253,14 +253,15 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
     app.amendments
         .record_reads(
             &kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
-            &[kernel::audit::amend::ReadFact {
+            [kernel::audit::amend::ReadFact {
                 reader: kernel::audit::amend::Reader::Hook,
                 name: "port-hook",
                 principal: Some("key-1"),
                 op_class: OP,
-                fields: vec!["content".to_string(), "identity".to_string()],
+                fields: ["content", "identity"],
                 wall: kernel::store::now(),
-            }],
+            }]
+            .into_iter(),
         )
         .await
         .expect("the native journal confirms the hook access amendment");

@@ -60,14 +60,15 @@ async fn access(app: &Arc<busbar_kernel::state::App>, hook: &str) {
     app.amendments
         .record_reads(
             &busbar_kernel::teller::verb_audit_pass(&crate::root::kernel::new_kernel()),
-            &[busbar_kernel::audit::amend::ReadFact {
+            [busbar_kernel::audit::amend::ReadFact {
                 reader: Reader::Hook,
                 name: hook,
                 principal: Some("pseudonym-1"),
                 op_class: "chat",
-                fields: vec!["content".to_string()],
+                fields: ["content"],
                 wall: busbar_kernel::store::now(),
-            }],
+            }]
+            .into_iter(),
         )
         .await
         .expect("content access is durably recorded");
