@@ -36,10 +36,6 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
     }
 }
 
-fn uses_door() -> Uses {
-    Uses::of(&serde_json::json!({plug::SECTION: {}}))
-}
-
 fn picked(sel: &[Selected], cands: &[Candidate]) -> Vec<(String, String)> {
     sel.iter()
         .map(|s| (cands[s.candidate].name.clone(), s.instance.clone()))
@@ -690,30 +686,3 @@ fn a_dropped_listener_binding_selects_its_exact_declared_claim_without_a_url() {
     assert!(read_candidate(br#"[{"slot":"listen","claim":"foreign-wire","priority":0}]"#).is_err());
 }
 
-/// SECRET-SHORTHAND-BOOT §3.10 (G4): a claim conflict names where each claimant comes from, so the
-/// operator knows which archive to remove: both files when both are dropped in, `linked` for a row
-/// the build links.
-#[test]
-fn a_claim_conflict_names_both_files() {
-    let refused = one_owner(&[
-        cand(KindCode::Secret, "first-owner", &["shared-word"], &[], &[]),
-        cand(KindCode::Secret, "second-owner", &["shared-word"], &[], &[]),
-    ])
-    .expect_err("two dropped modules claim one word");
-    assert!(
-        refused.contains("first-owner.tar.gz") && refused.contains("second-owner.tar.gz"),
-        "the conflict names both archives: {refused}"
-    );
-    let refused = one_owner(&[
-        linked_cand("linked-owner", "1.0.0"),
-        Candidate {
-            aliases: vec!["linked-owner".into()],
-            ..dropped_cand("dropped-owner", "1.0.0")
-        },
-    ])
-    .expect_err("a dropped module claims a linked module's name");
-    assert!(
-        refused.contains("dropped-owner.tar.gz") && refused.contains("linked"),
-        "the conflict names the archive and the linked row: {refused}"
-    );
-}

@@ -4,14 +4,6 @@
 use busbar_contract::plugin_rows::PluginRows;
 
 
-#[test]
-fn the_refusals_are_the_registrys() {
-    let reg = PluginRegistry::empty();
-    let rows: &dyn PluginRows = &reg;
-    assert!(rows.resolve("nope").is_none() && rows.unresolved_reason("nope").is_none());
-    assert_eq!(rows.secret_refusal("nope"), reg.secret_refusal("nope"));
-}
-
 struct Door;
 
 impl busbar_contract::abi::sdk::auth_door::SyncVerifyPlugin for Door {

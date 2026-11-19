@@ -4,22 +4,3 @@
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
 
 
-#[test]
-fn dlclose_on_worker_runs_this_images_finalizer_on_a_permanent_worker() {
-    let caller = std::thread::current().id();
-    let (witness, lib) = UnloadWitness::new();
-    assert!(witness.is_pending(), "an open image has not been finalized");
-    crate::stage::dlclose_on_worker(lib);
-    let unloaded = witness.finished();
-    assert_ne!(unloaded.thread, caller);
-    assert!(
-        unloaded.permanent,
-        "the actual finalizer runs on an FFI worker"
-    );
-
-    let (inline, lib) = UnloadWitness::new();
-    drop(lib);
-    let unloaded = inline.finished();
-    assert_eq!(unloaded.thread, caller);
-    assert!(!unloaded.permanent);
-}

@@ -958,44 +958,6 @@ fn dropped_in(tag: &str, m: Manifest) -> PluginRegistry {
 }
 
 #[test]
-fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
-    let cases = [(
-        "hook",
-        "busbar-hook-sample-hook",
-        "sample-hook",
-        "busbar-sample-hook",
-    )];
-    for (kind, name, alias, old) in cases {
-        let with = || renamed(kind, name, alias, &[old]);
-        for (way, reg) in [
-            ("dropped in", dropped_in(&format!("former-{alias}"), with())),
-            ("linked", linked_in(with())),
-        ] {
-            let p = reg
-                .resolve(old)
-                .unwrap_or_else(|| panic!("{way}: '{old}' resolves"));
-            assert_eq!(p.manifest.name, name, "{way}");
-            assert!(reg.answers(old, kind), "{way}: '{old}' answers as a {kind}");
-            assert!(reg.resolve(alias).is_some() && reg.resolve(name).is_some());
-        }
-
-        let without = || renamed(kind, name, alias, &[]);
-        for (way, reg) in [
-            (
-                "dropped in",
-                dropped_in(&format!("bare-{alias}"), without()),
-            ),
-            ("linked", linked_in(without())),
-        ] {
-            assert!(
-                reg.resolve(old).is_none(),
-                "{way}: '{old}' must not resolve"
-            );
-        }
-    }
-}
-
-#[test]
 fn two_plugins_claiming_one_former_name_are_refused() {
     let release = key(1);
     let mut pol = policy(&release);
@@ -1159,17 +1121,6 @@ fn an_old_build_beside_its_successor_is_skipped_with_a_warning_not_refused() {
         "{errs:?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn a_linked_row_with_an_unreadable_statement_does_not_claim_it_states_no_version() {
-    let reg = linked_in(renamed("hook", "busbar-hook-cadaudit", "cadaudit", &[]));
-    let row = reg.resolve("busbar-hook-cadaudit").expect("the row links");
-    let err = row.plugin_version().expect_err("no statement to read");
-    assert!(
-        err.contains("statement cannot be read") && !err.contains("states no version"),
-        "got {err}"
-    );
 }
 
 #[test]

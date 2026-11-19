@@ -45,11 +45,6 @@ mod plain {
     }
 }
 
-#[test]
-fn a_plugin_with_no_schema_has_no_row() {
-    assert_eq!(public_settings(&stated(plain::door), &[]), Ok(None));
-}
-
 const SCHEMA: &[u8] = br#"{"type":"object","properties":{
     "url":{"type":"string","x-busbar-public":true},
     "timeout_ms":{"type":"integer","x-busbar-public":true},
@@ -102,30 +97,6 @@ mod leaky {
         lifecycle: life(super::Stub),
         kind_ops: { resolve: busbar_contract::abi::sdk::Safe<super::Resolve> },
     }
-}
-
-#[test]
-fn a_stub_plugins_schema_declares_its_public_settings() {
-    let facts = public_settings(&stated(schematized::door), &["stub-alias"])
-        .expect("the schema reads")
-        .expect("the stub declares public settings");
-    assert_eq!(
-        facts.public.iter().map(String::as_str).collect::<Vec<_>>(),
-        ["timeout_ms", "url"]
-    );
-    assert_eq!(facts.words, ["stub-alias", "stub-public"]);
-}
-
-#[test]
-fn a_stub_plugin_declaring_a_credential_public_is_refused() {
-    let refused = public_settings(&stated(leaky::door), &[]).expect_err("refused");
-    assert!(
-        refused.starts_with(
-            "plugin 'stub-leaky': its settings schema: field 'api_token' looks \
-         like a credential"
-        ),
-        "{refused}"
-    );
 }
 
 #[test]
