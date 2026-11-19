@@ -38,6 +38,10 @@ use crate::outbound::records::Session;
 /// One connection carried by several exchanges on one core.
 pub(crate) struct Shared {
     conn: Mutex<NativeConnection>,
+    /// Since when the connection has carried no stream; `None` while it carries one. A shared connection
+    /// with no stream is the kept connection of its key: it serves the next open, and is dropped from
+    /// its core's set (and so closed) once it has idled past the deployment's idle timeout.
+    idle_since: Mutex<Option<std::time::Instant>>,
     /// The waker of each stream's reader that found nothing, by stream.
     readers: Mutex<Vec<(u64, Waker)>>,
 }
@@ -48,6 +52,7 @@ impl Shared {
         Arc::new(Self {
             conn: Mutex::new(conn),
             readers: Mutex::new(Vec::new()),
+            idle_since: Mutex::new(None),
         })
     }
 
@@ -58,6 +63,26 @@ impl Shared {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         with(&mut conn)
+    }
+
+    /// Whether the connection has carried no stream for `timeout` or longer at `now`.
+    pub(crate) fn idle_past(&self, now: std::time::Instant, timeout: std::time::Duration) -> bool {
+        self.idle_since
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some_and(|since| now.saturating_duration_since(since) >= timeout)
+    }
+
+    fn mark_idle(&self, idle: bool) {
+        let mut since = self
+            .idle_since
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match (idle, since.is_some()) {
+            (true, false) => *since = Some(std::time::Instant::now()),
+            (false, true) => *since = None,
+            _ => {}
+        }
     }
 
     /// What the connection has said about taking streams.
@@ -123,6 +148,9 @@ impl Shared {
         body_follows: bool,
     ) -> Poll<Result<u64, NativeFailure>> {
         let sent = self.with(|conn| conn.poll_send_head(cx, head, body_follows));
+        if matches!(sent, Poll::Ready(Ok(_))) {
+            self.mark_idle(false);
+        }
         // The head's bytes moved the socket: streams that got pieces meanwhile are woken.
         self.wake_others(0);
         sent
@@ -173,6 +201,9 @@ impl Shared {
             let _ = conn.stream_over(stream, false);
         });
         self.forget_reader(stream);
+        // The last stream left: the connection's idle time starts now.
+        let empty = self.with(|conn| conn.lending().streams() == 0);
+        self.mark_idle(empty);
         let next = self
             .readers
             .lock()
@@ -320,8 +351,13 @@ pub(super) fn lend_stream(
     set: &mut InUse<PoolKey, Arc<Shared>>,
     key: &PoolKey,
     pinned: bool,
+    now: std::time::Instant,
+    idle_timeout: std::time::Duration,
 ) -> Option<Arc<Shared>> {
-    set.retain(key, |conn| !conn.in_use().finished());
+    // Dropped from the set, a connection no exchange rides is closed by its drop (buffers wiped).
+    set.retain(key, |conn| {
+        !conn.in_use().finished() && !conn.idle_past(now, idle_timeout)
+    });
     match set.lend(key, |conn| conn.in_use(), false, pinned) {
         Lent::Stream(conn) | Lent::Join(conn) => Some(conn),
         Lent::Idle | Lent::Dial => None,

@@ -615,10 +615,16 @@ impl Default for Idle {
 
 impl Idle {
     /// A connection in use on `core` to `key` that takes another stream now.
-    pub(crate) fn lend_stream(&self, core: usize, key: &PoolKey) -> Option<Arc<shared::Shared>> {
+    pub(crate) fn lend_stream(
+        &self,
+        core: usize,
+        key: &PoolKey,
+        now: Instant,
+        posture: PoolPosture,
+    ) -> Option<Arc<shared::Shared>> {
         let held = self.core(core)?;
         let mut set = held.in_use.lock().expect("native connections in use");
-        shared::lend_stream(&mut set, key, false)
+        shared::lend_stream(&mut set, key, false, now, posture.idle_timeout)
     }
 
     /// Share `exchange`'s connection on `core` once its session states that it multiplexes.
@@ -997,7 +1003,7 @@ impl super::Connector {
         if let Some(shared) = key
             .as_ref()
             .filter(|_| secure || plain)
-            .and_then(|key| self.native_idle.lend_stream(core, key))
+            .and_then(|key| self.native_idle.lend_stream(core, key, started, posture))
         {
             return Ok(held(State::Shared(shared), None, true));
         }
