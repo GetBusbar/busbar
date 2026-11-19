@@ -401,3 +401,145 @@ async fn the_planes_end_closes_the_response_body_while_the_session_goes_on() {
         "a write after the end has no client to reach, and the client is not gone"
     );
 }
+
+/// E9a: the route-level rules of a ROUTE_UPGRADE route (§12.27). Its auth step and the custody of
+/// core's answer are proved in the kernel (`auth/tests/native_upgrade_tests.rs`).
+mod upgrade {
+    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_POST, PATH_EXACT};
+    use busbar_contract::services::Caller;
+    use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
+    use busbar_kernel::inbound::native::RouteBinding;
+    use busbar_kernel::plane_driver::port_routes::Mounted;
+    use busbar_kernel::plane_driver::port_session::ToClient;
+    use busbar_plugin_abi::fail::refused::{R_INVALID, R_UNSUPPORTED};
+    use busbar_plugin_abi::plane::{AUTH_PRINCIPAL, ROUTE_UPGRADE};
+
+    use super::super::*;
+    use crate::root::min3_boot::transports::tests::framer;
+    use crate::root::min3_boot::transports::ServedTransport;
+
+    fn asks(fields: &[(&str, &str)]) -> bool {
+        asks_websocket(fields.iter().map(|(name, value)| (*name, value.as_bytes())))
+    }
+
+    #[test]
+    fn only_a_request_that_asks_to_switch_to_websocket_is_an_upgrade_request() {
+        assert!(asks(&[("connection", "Upgrade"), ("upgrade", "websocket")]));
+        assert!(asks(&[
+            ("Connection", "keep-alive, Upgrade"),
+            ("Upgrade", "WebSocket")
+        ]));
+        assert!(!asks(&[]), "a plain GET on the route");
+        assert!(!asks(&[("upgrade", "websocket")]), "no connection token");
+        assert!(!asks(&[("connection", "upgrade")]), "no upgrade protocol");
+        assert!(!asks(&[("connection", "upgrade"), ("upgrade", "h2c")]));
+        assert!(!asks(&[
+            ("connection", "upgraded"),
+            ("upgrade", "websocket")
+        ]));
+    }
+
+    #[test]
+    fn with_no_websocket_instance_an_upgrade_request_is_answered_501_r_unsupported() {
+        let UpgradeStep::Refuse(refusal) = upgrade_step(true, None) else {
+            panic!("no instance can carry it")
+        };
+        assert_eq!(
+            (refusal.status, refusal.code, refusal.text.as_ref()),
+            (501, R_UNSUPPORTED, NO_WEBSOCKET)
+        );
+        // Core's fallback when the plane cannot render it: a plain status response with body.
+        let items = port_auth::plain_refusal(&refusal);
+        assert!(matches!(
+            items.first(),
+            Some(ToClient::Head { status: 501, .. })
+        ));
+        assert!(
+            matches!(items.get(1), Some(ToClient::Body(body)) if body == NO_WEBSOCKET.as_bytes())
+        );
+    }
+
+    #[test]
+    fn a_request_that_does_not_ask_for_websocket_is_the_routes_400_even_with_an_instance() {
+        let websocket = ServedTransport {
+            instance: Arc::from("transport-ws"),
+            port: framer(&["websocket"]),
+        };
+        for carrier in [None, Some(&websocket)] {
+            let UpgradeStep::Refuse(refusal) = upgrade_step(false, carrier) else {
+                panic!("not an upgrade request")
+            };
+            assert_eq!(
+                (refusal.status, refusal.code, refusal.text.as_ref()),
+                (400, R_INVALID, NOT_AN_UPGRADE)
+            );
+        }
+    }
+
+    #[test]
+    fn with_an_admitted_websocket_instance_the_request_goes_to_that_exact_instance() {
+        let websocket = ServedTransport {
+            instance: Arc::from("transport-ws"),
+            port: framer(&["websocket"]),
+        };
+        let UpgradeStep::HandOver(carrier) = upgrade_step(true, Some(&websocket)) else {
+            panic!("an instance can carry it")
+        };
+        assert!(Arc::ptr_eq(&carrier.port, &websocket.port));
+    }
+
+    fn binding(route: u32, methods: u32, flags: u32, path: &str) -> RouteBinding {
+        let caller = Caller::issue(
+            &busbar_kernel::seal::acquire(),
+            Arc::from("plane/test"),
+            KindCode::Plane,
+        );
+        let line = Line {
+            route: Route {
+                methods,
+                path_form: PATH_EXACT,
+                path: path.into(),
+                fields: Vec::new(),
+                rung: route,
+            },
+            claimant: Claimant::Plane("plane/test".into()),
+            dialect: 0,
+            auth: LineAuth::Chain(
+                vec!["provider".into()],
+                busbar_contract::abi::auth::AuthPoints::EMPTY,
+            ),
+            upgrade: None,
+            offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        };
+        let mounted = Mounted {
+            route,
+            methods,
+            flags,
+            auth: AUTH_PRINCIPAL,
+            effective: AUTH_PRINCIPAL,
+            pattern: path.into(),
+            cred_header: None,
+            resource_kinds: Default::default(),
+            catalog: false,
+        };
+        RouteBinding::plane(line, caller, mounted, vec!["provider".into()]).unwrap()
+    }
+
+    #[test]
+    fn only_the_upgrade_route_takes_the_upgrade_path_and_the_planes_other_routes_stay_data() {
+        use crate::root::min3_physical::is_upgrade;
+        assert!(is_upgrade(&binding(
+            6,
+            METHOD_GET,
+            ROUTE_UPGRADE,
+            "/v1/realtime"
+        )));
+        assert!(!is_upgrade(&binding(
+            2,
+            METHOD_POST,
+            0,
+            "/v1/realtime/calls"
+        )));
+    }
+}
