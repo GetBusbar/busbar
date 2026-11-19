@@ -59,20 +59,6 @@ impl Payload {
         self.bytes.as_slice()
     }
 
-    /// Wipe a successfully consumed prefix without refunding still-allocated backing capacity.
-    pub(crate) fn consume(&mut self, count: usize) {
-        self.bytes.consume(count);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn allocation(&self) -> &[u8] {
-        self.bytes.allocation()
-    }
-    #[cfg(test)]
-    pub(crate) fn live_range(&self) -> std::ops::Range<usize> {
-        self.bytes.live_range()
-    }
-
     /// Replacement reserves its full extent while the original remains live.
     pub(crate) fn append(&mut self, bytes: &[u8]) -> Result<(), StorageDenied> {
         if bytes.is_empty() {
@@ -147,6 +133,173 @@ impl std::fmt::Debug for Name {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Name")
             .field("len", &self.value.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The most an emptied output buffer keeps: four read chunks. One that grew past it (an answer that
+/// wrote more at once) is let go with its charge when it empties, not held for the connection's life.
+const OUTPUT_KEPT: usize = 4 * 16 * 1024;
+
+/// The smallest output buffer made: a response head and a small body piece fit without a second growth.
+const OUTPUT_MIN: usize = 1024;
+
+/// Where one WRITE's or WIRE_PART's bytes are in the session's output buffer: two offsets counted from the
+/// buffer's last clear, never a pointer into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    start: usize,
+    end: usize,
+}
+
+impl Span {
+    /// The bytes the record carried.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
+
+    /// Whether the record carried no byte.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
+}
+
+/// THE SESSION'S OUTPUT: the socket-bound bytes of the answer being applied, in one wiped buffer that the
+/// session owns. It is allocated when the session first has output, grows only when an answer needs more
+/// room (the larger charge reserved before it grows), wipes each byte as the socket takes it, is cleared
+/// (wiped) when the answer is done or abandoned, and goes with the session: its drop wipes what is left,
+/// then returns the charge. A buffer grown past [`OUTPUT_KEPT`] is let go as soon as it is empty.
+///
+/// SPANS STAY VALID: bytes are only appended at the end, or taken (wiped) from the front in span order,
+/// and growth copies them in order to the new block's front, so no offset moves; only [`Output::clear`]
+/// ends spans, and it runs whenever the actions naming them are cleared.
+pub(crate) struct Output {
+    /// The live bytes; `None` until the first byte and after a release. Declared before the credit: the
+    /// backing retires (wiped) before its charge is let go.
+    bytes: Option<SecureVec>,
+    /// The offset of the first live byte: how many bytes the socket took since the last clear.
+    taken: usize,
+    /// The charge for the buffer's whole capacity.
+    credit: StorageCredit,
+}
+
+impl Output {
+    /// No buffer yet: nothing is allocated or charged until the first byte.
+    pub(crate) fn new(source: &StorageSource) -> Result<Self, StorageDenied> {
+        Ok(Self {
+            bytes: None,
+            taken: 0,
+            credit: source.try_reserve(0)?,
+        })
+    }
+
+    /// Append a record's borrowed bytes after everything held and return where they are. On denial
+    /// nothing is appended and what is held is unchanged.
+    pub(crate) fn append(&mut self, bytes: &[u8]) -> Result<Span, StorageDenied> {
+        let held = self.bytes.as_ref().map_or(0, SecureVec::len);
+        let start = self.taken.checked_add(held).ok_or(StorageDenied)?;
+        let end = start.checked_add(bytes.len()).ok_or(StorageDenied)?;
+        if bytes.is_empty() {
+            return Ok(Span { start, end });
+        }
+        let need = held.checked_add(bytes.len()).ok_or(StorageDenied)?;
+        let capacity = self.bytes.as_ref().map_or(0, SecureVec::capacity);
+        // An answer's appends all come before the socket takes any of it, so the live bytes start at
+        // the block's front and a `need` within the capacity extends in place, never allocating outside
+        // the charge. Were bytes taken and some still held, they are first moved to a charged block.
+        if need > capacity || (self.taken != 0 && held != 0) {
+            self.grow(need)?;
+        }
+        let buffer = self.bytes.as_mut().ok_or(StorageDenied)?;
+        buffer.extend(bytes).map_err(|_| StorageDenied)?;
+        Ok(Span { start, end })
+    }
+
+    /// A block for at least `need` live bytes, charged before it is made; the held bytes are copied to
+    /// its front and the old block is wiped and freed, then its charge let go.
+    fn grow(&mut self, need: usize) -> Result<(), StorageDenied> {
+        let capacity = self.bytes.as_ref().map_or(0, SecureVec::capacity);
+        let target = if need > capacity {
+            need.max(capacity.saturating_mul(2)).max(OUTPUT_MIN)
+        } else {
+            capacity
+        };
+        if self.bytes.as_ref().is_none_or(SecureVec::is_empty) {
+            // Nothing held: the old block and its charge go before the larger one is charged.
+            self.release();
+        }
+        let credit = self.credit.source().try_reserve(target)?;
+        let mut next = SecureVec::with_capacity(target).map_err(|_| StorageDenied)?;
+        if next.capacity() > credit.len() {
+            return Err(StorageDenied);
+        }
+        if let Some(held) = &self.bytes {
+            next.extend(held.as_slice()).map_err(|_| StorageDenied)?;
+        }
+        let old_bytes = std::mem::replace(&mut self.bytes, Some(next));
+        let old_credit = std::mem::replace(&mut self.credit, credit);
+        drop(old_bytes);
+        drop(old_credit);
+        Ok(())
+    }
+
+    /// The block (wiped by its drop) and then its charge go; the empty credit keeps the origin.
+    fn release(&mut self) {
+        drop(self.bytes.take());
+        let all = self.credit.len();
+        if let Ok(freed) = self.credit.split(all) {
+            drop(freed);
+        }
+    }
+
+    /// The bytes of `span` the socket has not taken yet.
+    pub(crate) fn unwritten(&self, span: Span) -> &[u8] {
+        let Some(bytes) = &self.bytes else {
+            return &[];
+        };
+        let from = span.start.max(self.taken) - self.taken;
+        let to = span.end.saturating_sub(self.taken);
+        bytes.as_slice().get(from..to).unwrap_or(&[])
+    }
+
+    /// The socket took the first `count` unwritten bytes: they are wiped now.
+    pub(crate) fn take(&mut self, count: usize) {
+        if let Some(bytes) = &mut self.bytes {
+            let count = count.min(bytes.len());
+            bytes.consume(count);
+            self.taken += count;
+        }
+    }
+
+    /// The answer is done or abandoned: every byte held is wiped and every span ends. A block grown past
+    /// [`OUTPUT_KEPT`] goes now, with its charge; a smaller one stays for the session's next answer.
+    pub(crate) fn clear(&mut self) {
+        if let Some(bytes) = &mut self.bytes {
+            bytes.clear();
+            if bytes.capacity() > OUTPUT_KEPT {
+                self.release();
+            }
+        }
+        self.taken = 0;
+    }
+
+    /// The whole block, written or not (tests only: the wipe proofs read it).
+    #[cfg(test)]
+    pub(crate) fn allocation(&self) -> Option<&[u8]> {
+        self.bytes.as_ref().map(SecureVec::allocation)
+    }
+}
+
+impl std::fmt::Debug for Output {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Output")
+            .field("len", &self.bytes.as_ref().map_or(0, SecureVec::len))
+            .field(
+                "capacity",
+                &self.bytes.as_ref().map_or(0, SecureVec::capacity),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -271,30 +424,9 @@ impl From<&[u8]> for Payload {
 }
 
 #[cfg(test)]
-impl<T: PartialEq> PartialEq<Vec<T>> for Items<T> {
-    fn eq(&self, other: &Vec<T>) -> bool {
-        self.as_slice() == other
-    }
-}
-
-#[cfg(test)]
-impl<T: PartialEq> PartialEq for Items<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.values == other.values
-    }
-}
-
-#[cfg(test)]
 impl PartialEq for Name {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value
-    }
-}
-
-#[cfg(test)]
-impl<T: PartialEq, const N: usize> PartialEq<[T; N]> for Items<T> {
-    fn eq(&self, other: &[T; N]) -> bool {
-        self.as_slice() == other
     }
 }
 

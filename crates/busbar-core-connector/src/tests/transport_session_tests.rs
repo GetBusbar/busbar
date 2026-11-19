@@ -242,19 +242,45 @@ fn answer(
         answers.take(&out);
     }
     answers.finish()?;
-    // The session keeps its array; the test takes a copy of this answer's acts out of it to compare.
-    let mut taken = Actions::new(&answers.source).expect("test answer owner");
-    for act in answers.acts.drain() {
-        taken.push(act).expect("test action capacity");
+    // The session keeps its array and output buffer; the test takes this answer's whole owner (its
+    // spans with the buffer they index) and leaves the session a fresh one.
+    let fresh = Actions::new(&answers.source).expect("test answer owner");
+    Ok(std::mem::replace(&mut answers.acts, fresh))
+}
+
+/// A test's view of an answer: the socket bytes read out of the session's buffer, any other act as is.
+#[derive(Debug, PartialEq)]
+enum Shown<'a> {
+    Write(&'a [u8]),
+    Part(u64, WireClass, &'a [u8]),
+    Act(&'a Act),
+}
+
+fn shown(acts: &Actions) -> Vec<Shown<'_>> {
+    acts.iter()
+        .map(|act| match act {
+            Act::Write(span) => Shown::Write(acts.bytes(*span)),
+            Act::WirePart {
+                stream,
+                class,
+                bytes,
+            } => Shown::Part(*stream, *class, acts.bytes(*bytes)),
+            act => Shown::Act(act),
+        })
+        .collect()
+}
+
+impl PartialEq for Actions {
+    fn eq(&self, other: &Self) -> bool {
+        shown(self) == shown(other)
     }
-    Ok(taken)
 }
 
 // Compare test observations explicitly; production payload owners deliberately have no equality API.
+// Socket bytes are compared through `shown` (a span alone means nothing without its buffer).
 impl PartialEq for Act {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Write(a), Self::Write(b)) => a.as_slice() == b.as_slice(),
             (Self::Close { abort: a }, Self::Close { abort: b }) => a == b,
             (Self::Wake(a), Self::Wake(b))
             | (Self::End(a), Self::End(b))
@@ -410,7 +436,6 @@ fn native_callback_payloads_are_redacted_and_wiped_on_release() {
 
 #[test]
 fn malformed_native_output_wipes_already_copied_payloads() {
-    let before = busbar_contract::secure::wipe_counts().1;
     let mut answers = Answers::new(None, Instant::now());
     assert_eq!(
         answer(
@@ -423,11 +448,17 @@ fn malformed_native_output_wipes_already_copied_payloads() {
         ),
         Err(GRAMMAR),
     );
-    assert_eq!(
-        busbar_contract::secure::wipe_counts().1 - before,
-        1,
+    // The WRITE was copied into the session's output buffer; the refused answer wiped it there.
+    let kept = answers
+        .acts
+        .out
+        .allocation()
+        .expect("the buffer the WRITE was copied into");
+    assert!(
+        kept.iter().all(|byte| *byte == 0),
         "discarded partial output wipes"
     );
+    assert!(answers.acts.is_empty());
 }
 
 #[test]
@@ -493,6 +524,16 @@ async fn pending_native_read_wipes_the_abandoned_loan() {
 
 struct PartialWriteThenPending(bool);
 
+impl AsyncRead for PartialWriteThenPending {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        _: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+}
+
 impl AsyncWrite for PartialWriteThenPending {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
@@ -522,18 +563,25 @@ impl AsyncWrite for PartialWriteThenPending {
 
 #[tokio::test]
 async fn partial_native_write_wipes_only_the_accepted_prefix() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
     use futures::FutureExt;
-    let mut bytes = Payload::from(b"abcdef".as_slice());
+    let source = ProcessAdmission::new(1).connection_storage(AdmissionClass::Data);
+    let mut acts = Actions::new(&source).expect("owner");
+    acts.write(b"abcdef").expect("output");
+    let Act::Write(span) = acts[0] else {
+        panic!("a write");
+    };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let (_, out) = acts.drain();
     assert!(
-        write_bounded(&mut PartialWriteThenPending(false), &mut bytes, deadline)
+        write_bounded(&mut PartialWriteThenPending(false), out, span, deadline)
             .now_or_never()
             .is_none()
     );
-    assert_eq!(bytes.as_slice(), b"def");
-    assert!(bytes.allocation()[..bytes.live_range().start]
-        .iter()
-        .all(|byte| *byte == 0));
+    assert_eq!(out.unwritten(span), b"def");
+    let block = out.allocation().expect("block");
+    assert!(block[..3].iter().all(|byte| *byte == 0));
+    assert_eq!(&block[3..6], b"def");
 }
 
 // ---- the answer grammar charged to C1 (§11.3) ----
@@ -548,8 +596,8 @@ fn stream_full_holds_the_emits_own_stream() {
     )
     .expect("STREAM_FULL for the emit's own stream");
     assert_eq!(
-        *acts,
-        vec![Act::Write(b"x".as_slice().into()), Act::Full(3)]
+        shown(&acts),
+        vec![Shown::Write(b"x"), Shown::Act(&Act::Full(3))]
     );
     assert!(answers.is_held(3));
     assert!(!answers.is_held(5));
@@ -663,10 +711,10 @@ fn an_e_close_answer_is_writes_then_at_most_one_close() {
     )
     .expect("WRITE* CLOSE?");
     assert_eq!(
-        acts,
+        shown(&acts),
         vec![
-            Act::Write(b"bye".as_slice().into()),
-            Act::Close { abort: false }
+            Shown::Write(b"bye"),
+            Shown::Act(&Act::Close { abort: false })
         ]
     );
     let bad: Vec<Vec<TransportOut<'static>>> = vec![
@@ -868,10 +916,10 @@ fn e_close_is_sent_exactly_once_by_core() {
     let now = Instant::now();
     let acts = s.conn.close(CR_DRAIN, now).expect("sent").expect("live");
     assert_eq!(
-        *acts,
+        shown(acts),
         vec![
-            Act::Write(b"bye".as_slice().into()),
-            Act::Close { abort: false }
+            Shown::Write(b"bye"),
+            Shown::Act(&Act::Close { abort: false })
         ]
     );
     assert_eq!(
@@ -970,8 +1018,8 @@ fn core_close_retains_the_handle_until_the_output_owner_is_dropped() {
         "repeat close cannot cancel pending output"
     );
     assert_eq!(
-        *s.conn.actions(),
-        [Act::Write(b"goodbye".as_slice().into())],
+        shown(s.conn.actions()),
+        [Shown::Write(b"goodbye")],
         "the pending output is still there"
     );
     drop(s.conn);
@@ -1016,14 +1064,12 @@ impl AsyncWrite for FlushFailure {
 
 #[tokio::test]
 async fn a_framer_close_flush_failure_is_not_clean_completion() {
-    let s = scripted(Box::new(|_| Vec::new()), None, false);
+    let mut s = scripted(Box::new(|_| Vec::new()), None, false);
     let r = rig();
+    s.conn.actions().write(b"goodbye").expect("first write");
     let outcome = drive(
         s.conn,
-        vec![
-            Act::Write(b"goodbye".as_slice().into()),
-            Act::Close { abort: false },
-        ],
+        vec![Act::Close { abort: false }],
         FlushFailure,
         r.wiring,
     )
@@ -1163,7 +1209,7 @@ fn attributed_output_is_retained_without_becoming_unattributed_write() {
     answers.finish().expect("attributed native answer");
     let acts = &answers.acts;
     assert!(
-        matches!(&acts[0], Act::WirePart { stream: 3, class: WireClass::Payload, bytes } if bytes.as_slice() == b"body")
+        matches!(&acts[0], Act::WirePart { stream: 3, class: WireClass::Payload, bytes } if acts.bytes(*bytes) == b"body")
     );
     assert!(matches!(
         &acts[1],
@@ -1885,35 +1931,25 @@ fn assert_stall_closed<S>(
 
 #[tokio::test]
 async fn a_peer_that_stops_reading_is_closed_at_the_write_timeout() {
-    let s = scripted(Box::new(|_| Vec::new()), None, false);
+    let mut s = scripted(Box::new(|_| Vec::new()), None, false);
     let mut r = rig();
     r.wiring.write_timeout = STALL_BOUND;
+    s.conn.actions().write(&[0x5a; 4096]).expect("first write");
     let started = tokio::time::Instant::now();
-    let outcome = drive(
-        s.conn,
-        vec![Act::Write(vec![0x5a; 4096].as_slice().into())],
-        StoppedReader,
-        r.wiring,
-    )
-    .await;
+    let outcome = drive(s.conn, Vec::new(), StoppedReader, r.wiring).await;
     assert_stall_closed(&outcome, started.elapsed(), STALL_BOUND, &s.dropped);
 }
 
 #[tokio::test]
 async fn a_slow_reader_cannot_extend_the_write_deadline_with_partial_progress() {
-    let s = scripted(Box::new(|_| Vec::new()), None, false);
+    let mut s = scripted(Box::new(|_| Vec::new()), None, false);
     let mut r = rig();
     r.wiring.write_timeout = STALL_BOUND;
+    s.conn.actions().write(&[0x5a; 4096]).expect("first write");
     let started = tokio::time::Instant::now();
     // 4096 bytes at one byte per 20 ms would take over 80 s; every write makes progress, but
     // the deadline is absolute for the whole answer.
-    let outcome = drive(
-        s.conn,
-        vec![Act::Write(vec![0x5a; 4096].as_slice().into())],
-        Trickle::new(),
-        r.wiring,
-    )
-    .await;
+    let outcome = drive(s.conn, Vec::new(), Trickle::new(), r.wiring).await;
     assert_stall_closed(&outcome, started.elapsed(), STALL_BOUND, &s.dropped);
 }
 
@@ -2091,5 +2127,239 @@ async fn the_emit_path_cost_per_answer_record() {
         let expected = (rounds + (rounds / 10).max(10)) as u64
             * (COST_HEAD.len() + body.len() * pieces) as u64;
         assert_eq!(cost.bytes, expected, "every byte reached the socket");
+    }
+}
+
+// ---- CUSTODY OF THE SESSION'S OUTPUT BUFFER ----
+
+/// A response head carrying a credential, as a framer writes it.
+const OUTPUT_SECRET: &[u8] = b"HTTP/1.1 200 OK\r\nset-cookie: session=s3cr3t-0042\r\n\r\n";
+
+/// A session charged to `account`'s Data storage whose first answer writes [`OUTPUT_SECRET`]; with the
+/// address and extent of the output block that holds it.
+fn custody_session(
+    account: &Arc<busbar_kernel::limits::process_admission::ProcessAdmission>,
+) -> (Scripted, *const u8, usize) {
+    use busbar_kernel::limits::process_admission::AdmissionClass;
+    let source = account.connection_storage(AdmissionClass::Data);
+    let mut s = scripted(Box::new(|_| Vec::new()), None, false);
+    s.conn.answers = Answers::with_source(None, Instant::now(), source).expect("owner");
+    s.conn.actions().write(OUTPUT_SECRET).expect("head");
+    let block = s.conn.actions().out.allocation().expect("block");
+    let (pointer, len) = (block.as_ptr(), block.len());
+    (s, pointer, len)
+}
+
+fn custody_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+}
+
+#[test]
+fn a_finished_session_frees_its_output_buffer_zeroed_and_returns_its_account_to_the_start() {
+    use busbar_kernel::limits::process_admission::ProcessAdmission;
+    let account = ProcessAdmission::with_limits(2, 1 << 20, 512);
+    let (mut s, pointer, len) = custody_session(&account);
+    s.conn
+        .actions()
+        .push(Act::Close { abort: false })
+        .expect("close");
+    let r = rig();
+    let written = Arc::new(AtomicU64::new(0));
+    let sink = CountingSink(Arc::clone(&written));
+    let runtime = custody_runtime();
+    let (closed, wiped, _) = crate::support::observe_wipe(pointer, len, || {
+        let outcome = runtime.block_on(drive(s.conn, Vec::new(), sink, r.wiring));
+        matches!(outcome, Outcome::Closed)
+    });
+    assert!(closed, "the framer's CLOSE ended the session");
+    assert_eq!(written.load(Ordering::Relaxed), OUTPUT_SECRET.len() as u64);
+    assert_eq!(
+        wiped,
+        Some(true),
+        "the freed block held no byte of the response head"
+    );
+    assert_eq!(account.used(), (0, 0), "every charge returned");
+}
+
+#[test]
+fn a_session_dropped_mid_write_frees_its_output_buffer_zeroed_and_returns_its_account() {
+    use busbar_kernel::limits::process_admission::ProcessAdmission;
+    let account = ProcessAdmission::with_limits(2, 1 << 20, 512);
+    let (s, pointer, len) = custody_session(&account);
+    let r = rig();
+    let runtime = custody_runtime();
+    let (cut, wiped, _) = crate::support::observe_wipe(pointer, len, || {
+        runtime.block_on(async {
+            // The socket takes three bytes, then nothing: the task is dropped while it writes.
+            let driven = drive(s.conn, Vec::new(), PartialWriteThenPending(false), r.wiring);
+            tokio::time::timeout(Duration::from_millis(50), driven)
+                .await
+                .is_err()
+        })
+    });
+    assert!(cut, "the session was still writing when it was dropped");
+    assert_eq!(
+        wiped,
+        Some(true),
+        "the unwritten head was wiped before the free"
+    );
+    assert_eq!(account.used(), (0, 0), "every charge returned");
+    assert_eq!(s.dropped.load(Ordering::Relaxed), 1);
+}
+
+/// A socket that takes three bytes and then fails.
+struct BreaksAfterThree(bool);
+
+impl AsyncRead for BreaksAfterThree {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        _: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Pending
+    }
+}
+
+impl AsyncWrite for BreaksAfterThree {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if self.0 {
+            Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+        } else {
+            self.0 = true;
+            Poll::Ready(Ok(bytes.len().min(3)))
+        }
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn a_write_that_fails_mid_record_wipes_the_output_before_the_answer_is_let_go() {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let account = ProcessAdmission::with_limits(2, 1 << 20, 512);
+    let source = account.connection_storage(AdmissionClass::Data);
+    let r = rig();
+    let carrier = crate::raw_progress::test_carrier(BreaksAfterThree(false));
+    let progress = carrier.progress();
+    let mut io = DeliveryIo::new(
+        carrier,
+        Delivery::new(r.wiring.delivery, progress),
+        source.clone(),
+    );
+    let mut task = Task {
+        slots: Slots::default(),
+        pending: VecDeque::new(),
+        reading: true,
+        wake_at: None,
+    };
+    let mut acts = Actions::new(&source).expect("owner");
+    acts.write(OUTPUT_SECRET).expect("head");
+    acts.write(b"and the body").expect("body");
+    let flow = task
+        .apply(&mut acts, &mut io, Duration::from_secs(1), &mut None)
+        .await;
+    assert!(matches!(flow, Flow::Lost(ref e) if e.kind() == std::io::ErrorKind::BrokenPipe));
+    // The session still owns the buffer; it is already all zero, not waiting for the session's drop.
+    assert!(acts.is_empty());
+    let block = acts.out.allocation().expect("kept for the session");
+    assert!(block.iter().all(|byte| *byte == 0));
+    drop((acts, io));
+    assert_eq!(account.used(), (0, 0), "every charge returned");
+}
+
+/// Partial socket writes over several records: one byte at a time, and nothing then everything, put
+/// the same bytes on the wire in the same order as a socket that takes each record whole.
+#[tokio::test]
+async fn partial_socket_writes_resume_each_record_where_the_socket_stopped() {
+    /// Takes `step` bytes per write (0 = nothing, then on the next poll everything).
+    struct Partial {
+        wire: Vec<u8>,
+        step: usize,
+        refused: bool,
+    }
+    impl AsyncWrite for Partial {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let take = if self.step == 0 {
+                if !self.refused {
+                    self.refused = true;
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                self.refused = false;
+                bytes.len()
+            } else {
+                bytes.len().min(self.step)
+            };
+            self.wire.extend_from_slice(&bytes[..take]);
+            Poll::Ready(Ok(take))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let source = ProcessAdmission::new(1).connection_storage(AdmissionClass::Data);
+    let records: [&[u8]; 4] = [b"HTTP/1.1 200 OK\r\n\r\n", b"", b"first piece|", b"second"];
+    for step in [1, 0] {
+        let mut acts = Actions::new(&source).expect("owner");
+        for record in records {
+            acts.write(record).expect("record");
+        }
+        acts.push(Act::Pause).expect("a non-byte act between");
+        acts.write(b"|after").expect("record");
+        let mut socket = Partial {
+            wire: Vec::new(),
+            step,
+            refused: false,
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        let (drained, out) = acts.drain();
+        for act in drained {
+            if let Act::Write(span) = act {
+                write_bounded(&mut socket, out, span, deadline)
+                    .await
+                    .expect("written");
+                assert!(out.unwritten(span).is_empty());
+            }
+        }
+        assert_eq!(
+            socket.wire, b"HTTP/1.1 200 OK\r\n\r\nfirst piece|second|after",
+            "step {step}"
+        );
+        let block = acts.out.allocation().expect("block");
+        assert!(
+            block.iter().all(|byte| *byte == 0),
+            "step {step}: every written byte was wiped"
+        );
     }
 }
