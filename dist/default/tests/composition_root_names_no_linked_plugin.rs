@@ -38,6 +38,137 @@ optional-image = "min3-images"
     );
 }
 
+const CARRIER_MANIFEST: &str = r#"
+[dependencies]
+busbar-wire-a = "1"
+busbar-wire-b = "1"
+busbar-door = "1"
+[features]
+wire-c = []
+[package.metadata.busbar.linked]
+wire-a = "busbar-wire-a"
+wire-b = "busbar-wire-b"
+wire-c = "busbar-wire-c"
+door = "busbar-door"
+[package.metadata.busbar.linked-axes]
+wire-a = "min3-images"
+wire-b = "min3-images"
+wire-c = "min3-images"
+door = "transport transport-door"
+[package.metadata.busbar.linked-entry]
+wire-b = "busbar_wire_b::image"
+[package.metadata.busbar.carriers]
+http = "wire-a"
+rtc = "wire-b"
+websocket = "wire-c"
+"#;
+
+fn carrier_row(constant: &str, entry: &str) -> String {
+    format!(
+        "    crate::root::min3_framers::LinkedCarrier {{ carrier: ::busbar_plugin_abi::plane::{constant}, \
+         admit: || ::busbar_plugin_loader::admit::admit_linked(&{entry}::PLUGIN) }},\n"
+    )
+}
+
+#[test]
+fn the_generator_emits_one_carrier_pair_per_assigned_enabled_row() {
+    assert_eq!(
+        generator::carrier_rows(CARRIER_MANIFEST),
+        vec![
+            ("http".to_string(), "CARRIER_HTTP", "wire-a".to_string()),
+            ("rtc".to_string(), "CARRIER_RTC", "wire-b".to_string()),
+            (
+                "websocket".to_string(),
+                "CARRIER_WEBSOCKET",
+                "wire-c".to_string()
+            ),
+        ]
+    );
+    let (off, _) = linked_source(CARRIER_MANIFEST, &|_| false);
+    let table = "static LINKED_CARRIERS: &[crate::root::min3_framers::LinkedCarrier] = &[\n";
+    let at = off
+        .find(table)
+        .unwrap_or_else(|| panic!("no carrier table: {off}"));
+    let rows = &off[at + table.len()..];
+    let rows = &rows[..rows.find("];\n").expect("the table closes")];
+    assert_eq!(
+        rows,
+        carrier_row("CARRIER_HTTP", "busbar_wire_a")
+            + &carrier_row("CARRIER_RTC", "busbar_wire_b::image"),
+        "a disabled row assigns nothing; an entry override names the header's module"
+    );
+    let (on, _) = linked_source(CARRIER_MANIFEST, &|_| true);
+    assert!(
+        on.contains(&carrier_row("CARRIER_WEBSOCKET", "busbar_wire_c")),
+        "{on}"
+    );
+
+    let unstated = CARRIER_MANIFEST
+        .split("[package.metadata.busbar.carriers]")
+        .next()
+        .expect("the manifest head");
+    assert!(generator::carrier_rows(unstated).is_empty());
+    let (none, _) = linked_source(unstated, &|_| true);
+    assert!(none.contains(&format!("{table}];\n")), "{none}");
+}
+
+#[test]
+fn the_generator_refuses_a_bad_carrier_table() {
+    for (why, broken) in [
+        (
+            "an unknown carrier key",
+            CARRIER_MANIFEST.replace("rtc = \"wire-b\"", "stdio = \"wire-b\""),
+        ),
+        (
+            "a carrier stated twice",
+            CARRIER_MANIFEST.replace("rtc = \"wire-b\"", "rtc = \"wire-b\"\nhttp = \"wire-b\""),
+        ),
+        (
+            "a row that is not a MIN-3 image",
+            CARRIER_MANIFEST.replace("rtc = \"wire-b\"", "rtc = \"door\""),
+        ),
+        (
+            "a row that is not linked",
+            CARRIER_MANIFEST.replace("rtc = \"wire-b\"", "rtc = \"nowhere\""),
+        ),
+        (
+            "one row under two carriers",
+            CARRIER_MANIFEST.replace("rtc = \"wire-b\"", "rtc = \"wire-a\""),
+        ),
+        (
+            "a stated table with no row",
+            CARRIER_MANIFEST.replace(
+                "http = \"wire-a\"\nrtc = \"wire-b\"\nwebsocket = \"wire-c\"\n",
+                "",
+            ),
+        ),
+    ] {
+        let refused = std::panic::catch_unwind(|| linked_source(&broken, &|_| true));
+        assert!(refused.is_err(), "{why} must be refused:\n{broken}");
+    }
+}
+
+#[test]
+fn the_manifest_carrier_table_names_only_linked_images() {
+    let manifest = read("Cargo.toml");
+    let rows = generator::carrier_rows(&manifest);
+    let (all, _) = linked_source(&manifest, &|_: &str| true);
+    assert!(
+        all.contains("static LINKED_CARRIERS: &[crate::root::min3_framers::LinkedCarrier] = &["),
+        "{all}"
+    );
+    assert_eq!(
+        all.matches("crate::root::min3_framers::LinkedCarrier { carrier:")
+            .count(),
+        rows.len(),
+        "every assigned row is linked in the build with every feature on"
+    );
+    assert!(
+        !manifest.contains("connector-door"),
+        "the retired axis word selects nothing and is refused"
+    );
+}
+
 fn read(rel: &str) -> String {
     std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
         .unwrap_or_else(|e| panic!("{rel}: {e}"))

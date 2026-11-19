@@ -26,6 +26,9 @@
 //                                            CANONICAL name, when it is not its key: the manifest
 //                                            name its signed tarball states, plugins.yaml
 //                                            `manifest_name`; config may name the row by either)
+//   [package.metadata.busbar.carriers]      <carrier> = "<row key>"              (which linked MIN-3
+//                                            image carries each outbound carrier: `http`, `grpc`,
+//                                            `websocket`, `rtc`; see [`carrier_rows`])
 //
 // and this turns the rows whose feature is ENABLED into `extern crate <crate> as _;` lines, one table
 // per registration axis over each entry module's item for that axis (the `LINKED` value), the cfgs
@@ -47,8 +50,6 @@ const TRANSPORT_AXIS: &str = "transport";
 
 pub const DOOR_AXIS: &str = "transport-door";
 
-pub const CONNECTOR_DOOR_AXIS: &str = "connector-door";
-
 pub const PLANE_DOOR_AXIS: &str = "plane-door";
 
 pub const EXPORT_DOOR_AXIS: &str = "export-doors";
@@ -58,6 +59,61 @@ const CLAIMS_AXIS: &str = "claims";
 const AUTH_AXIS: &str = "auths";
 
 const MIN3_AXIS: &str = "min3-images";
+
+/// The manifest table that assigns the outbound carriers.
+pub const CARRIERS_TABLE: &str = "package.metadata.busbar.carriers";
+
+/// Each key of [`CARRIERS_TABLE`] and the carrier constant it names (`busbar_plugin_abi::plane`). The child-process
+/// carrier is core's own and has no key.
+pub const CARRIER_KEYS: &[(&str, &str)] = &[
+    ("http", "CARRIER_HTTP"),
+    ("grpc", "CARRIER_GRPC"),
+    ("websocket", "CARRIER_WEBSOCKET"),
+    ("rtc", "CARRIER_RTC"),
+];
+
+/// THE CARRIER TABLE: `(key, carrier constant, row key)` for each row of [`CARRIERS_TABLE`], in manifest order. The
+/// build's assignment of the one image that carries each outbound carrier, stated in packaging (as
+/// `operator-auth` states the operator credential's row) so the root's source names no transport. Refused: an
+/// unknown key, a key stated twice, a value that is not a `linked` row on the `min3-images` axis (only an admitted
+/// image has a header to admit), and one row under two keys (one image frames one carrier). No table: no carrier
+/// is assigned.
+pub fn carrier_rows(manifest: &str) -> Vec<(String, &'static str, String)> {
+    let plugins = metadata_map(manifest, "package.metadata.busbar.linked");
+    let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
+    let mut out: Vec<(String, &'static str, String)> = Vec::new();
+    for (key, row) in metadata_map(manifest, CARRIERS_TABLE) {
+        let constant = CARRIER_KEYS
+            .iter()
+            .find(|(word, _)| *word == key)
+            .map(|(_, constant)| *constant)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Cargo.toml: `[{CARRIERS_TABLE}]` names an unknown carrier `{key}` (the carriers are \
+                     `http`, `grpc`, `websocket`, `rtc`)"
+                )
+            });
+        assert!(
+            !out.iter().any(|(k, _, _)| *k == key),
+            "Cargo.toml: `[{CARRIERS_TABLE}]` states the carrier `{key}` twice"
+        );
+        let on_min3 = plugins.iter().any(|(feature, _)| *feature == row)
+            && axes.iter().any(|(feature, list)| {
+                *feature == row && list.split_whitespace().any(|axis| axis == MIN3_AXIS)
+            });
+        assert!(
+            on_min3,
+            "Cargo.toml: carrier `{key}` names `{row}`, which is not a linked row on the `{MIN3_AXIS}` axis"
+        );
+        if let Some((other, _, _)) = out.iter().find(|(_, _, r)| *r == row) {
+            panic!(
+                "Cargo.toml: `{row}` is named for two carriers, `{other}` and `{key}`: one image frames one carrier"
+            );
+        }
+        out.push((key, constant, row));
+    }
+    out
+}
 
 pub fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
     let header = format!("[{table}]");
@@ -254,7 +310,6 @@ pub fn linked_source(
                 axis == "plane"
                     || axis == TRANSPORT_AXIS
                     || axis == DOOR_AXIS
-                    || axis == CONNECTOR_DOOR_AXIS
                     || axis == PLANE_DOOR_AXIS
                     || axis == AUTH_AXIS
                     || axis == EXPORT_DOOR_AXIS
@@ -502,23 +557,43 @@ pub fn linked_source(
     }
     out.push_str("};\n");
 
+    // THE CARRIER TABLE: (carrier, the row's own header) for each assigned row this build links. A row whose
+    // feature is off assigns nothing in this build: its carrier has no supplier.
+    out.push_str(
+        "/// The outbound carriers this build assigns (`[package.metadata.busbar.carriers]`): each carrier and the\n\
+         /// admission of its linked image's header.\n\
+         static LINKED_CARRIERS: &[crate::root::min3_framers::LinkedCarrier] = &[\n",
+    );
+    for (_, constant, row) in carrier_rows(manifest) {
+        let Some((feature, krate)) = on.iter().find(|(feature, _)| *feature == row) else {
+            continue;
+        };
+        let entry = entries
+            .iter()
+            .find(|(key, _)| key == feature)
+            .or_else(|| entries.iter().find(|(key, _)| key == krate))
+            .map(|(_, path)| path.clone())
+            .unwrap_or_else(|| ident(krate));
+        out.push_str(&format!(
+            "    crate::root::min3_framers::LinkedCarrier {{ carrier: ::busbar_plugin_abi::plane::{constant}, \
+             admit: || ::busbar_plugin_loader::admit::admit_linked(&{entry}::PLUGIN) }},\n"
+        ));
+    }
+    out.push_str("];\n");
+
     out.push_str(
         "/// Every linked memory-ABI transport door, by the key its Statement states, read on first use.\n\
          static LINKED_TRANSPORT_DOORS_READ: ::std::sync::LazyLock<::std::vec::Vec<(&'static str, busbar_contract::abi::mechanism::door::DoorFn)>> =\n    \
          ::std::sync::LazyLock::new(|| {\n        \
          let doors: &[busbar_contract::abi::mechanism::door::DoorFn] = &[",
     );
-    for ((_, axes), door) in linked
+    // Every transport row is a door row (asserted above), so every transport door enters the table.
+    for (_, door) in linked
         .iter()
         .zip(&doors)
         .filter(|((_, a), _)| a.iter().any(|x| x == TRANSPORT_AXIS))
     {
-        if axes
-            .iter()
-            .any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS)
-        {
-            out.push_str(&format!("{door}, "));
-        }
+        out.push_str(&format!("{door}, "));
     }
     out.push_str(
         "];\n        \
