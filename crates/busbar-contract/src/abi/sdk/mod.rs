@@ -570,24 +570,6 @@ pub(crate) mod typed_json;
 
 pub mod migrate;
 
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-pub mod plane_life;
-
 /// THE SANCTIONED COLD MODULE of the request-path SDK modules above: refusal text and other code
 /// the request path reaches only off its hot path, every fn `#[cold]` or `#[inline(never)]`.
 mod cold;
