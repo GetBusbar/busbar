@@ -711,8 +711,9 @@ async fn authenticated_route_anonymous_caller_reads_its_own_handles_record() {
 }
 
 /// Two anonymous sessions never reach each other's records: a session presenting another handle
-/// (a guessed or foreign id) is asked in that handle's own scope and misses (the plane's 404), and
-/// no money is asked for it. Nor does a record made in the shared subject's scope answer either.
+/// (a guessed or foreign id) is asked in that handle's own scope and misses (the plane's 404): no
+/// destination is resolved and nothing is dialled. Nor does a record made in the shared subject's
+/// scope answer it.
 #[tokio::test]
 async fn authenticated_route_two_anonymous_handles_never_read_each_others_records() {
     let anonymous = crate::auth::native_chain::ANONYMOUS;
@@ -731,10 +732,7 @@ async fn authenticated_route_two_anonymous_handles_never_read_each_others_record
     let mut request = request(63, key(anonymous, None));
     let mut far = Dials::default();
     let result = serve(&plane, &mut request, &resolver, &mut far).await;
-    assert!(
-        !matches!(&result, Err(SessionError::AdmissionRefused(_))),
-        "{result:?}"
-    );
+    assert!(result.is_err(), "{result:?}");
     assert_eq!(
         *host.asked.lock().unwrap(),
         [Some(handle_scope(FOREIGN.as_bytes()))]
@@ -744,12 +742,13 @@ async fn authenticated_route_two_anonymous_handles_never_read_each_others_record
         [false],
         "a miss: the plane's 404"
     );
-    assert!(
-        asked(&request).is_empty(),
-        "no money is asked: {:?}",
-        asked(&request)
+    assert_eq!(
+        asked(&request),
+        ["money Local"],
+        "no destination is resolved"
     );
     assert_eq!(far.0, 0);
+    assert_eq!(plane.upstreams.load(Ordering::SeqCst), 0);
 }
 
 /// A verified caller's handle changes nothing: her records stay in her own subject's scope.

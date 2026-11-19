@@ -862,7 +862,7 @@ zeroize = "1"
 # binary's contract is. Add a row here for each busbar crate a pulled plugin names directly.
 [patch.'https://github.com/GetBusbar/busbar']
 busbar-crypto-backend = { path = "../../crates/busbar-crypto-backend" }
-# busbar-plane-a2a names busbar-crypto from its 33053b6 pin on.
+# busbar-contract and busbar-plugin-abi, which pulled plugins take from this URL, name busbar-crypto.
 busbar-crypto = { path = "../../crates/busbar-crypto" }
 busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
 busbar-contract = { path = "../../crates/busbar-contract" }

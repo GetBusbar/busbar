@@ -263,54 +263,373 @@ fn pid_liveness() {
     assert!(!pid_alive(4_294_967_294));
 }
 
-mod staged_file_pin {
-    pub(super) fn two_libraries() -> (Vec<u8>, Vec<u8>) {
-        let verified = std::fs::read(crate::both_ways::example_cdylib("json_contract_auth"))
-            .expect("read the verified fixture library");
+/// A file that is not a shared object: the dynamic loader refuses it with its own reason.
+#[cfg(unix)]
+const NOT_A_LIBRARY: &[u8] = b"this is not an ELF image, only text";
 
+/// The outcome of an open, said for a failure message (`Opened` and `Unopened` have no `Debug`).
+#[cfg(unix)]
+fn said(outcome: &Result<(busbar_ffi::image::Opened, Staged), Unopened>) -> String {
+    match outcome {
+        Ok(_) => "opened".into(),
+        Err(Unopened::Stage(why)) => format!("Stage({why})"),
+        Err(Unopened::Image(e)) => format!("Image({e:?})"),
+        Err(Unopened::Panicked) => "Panicked".into(),
+    }
+}
+
+/// An opened image released as the loader releases a refused one: the library on the worker, then its staging.
+#[cfg(unix)]
+fn release((opened, staged): (busbar_ffi::image::Opened, Staged)) {
+    close_on_worker(opened);
+    drop(staged);
+}
+
+/// The dynamic loader's reason for refusing an open, as a refusal carries it.
+#[cfg(unix)]
+fn load_reason(what: &str, outcome: Result<(busbar_ffi::image::Opened, Staged), Unopened>) -> String {
+    match outcome {
+        Err(Unopened::Image(busbar_ffi::image::ImageError::Load(e))) => loader_error(&e),
+        Ok(loaded) => {
+            release(loaded);
+            panic!("{what}: a file that is not a library opened");
+        }
+        Err(other) => panic!("{what}: refused, but not by the dynamic loader: {}", said(&Err(other))),
+    }
+}
+
+/// Run the calling test alone in a fresh child of this test binary (`name` is its full path). The parent answers
+/// `true` once the child passed; the child answers `false` and runs the body. Used where the body changes
+/// process-wide state (the once-only native load guard) or depends on the process's fd numbering.
+#[cfg(unix)]
+fn ran_in_own_process(marker: &str, name: &str) -> bool {
+    if std::env::var_os(marker).is_some() {
+        return false;
+    }
+    let out = std::process::Command::new(std::env::current_exe().expect("the test binary's path"))
+        .args(["--exact", name, "--test-threads=1", "--nocapture"])
+        .env(marker, "1")
+        .output()
+        .expect("re-run the test binary");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("1 passed"),
+        "the own-process child of {name} failed (status {:?}):\n--- stdout\n{stdout}\n--- stderr\n{stderr}",
+        out.status
+    );
+    true
+}
+
+/// The stamp a native image's bytes carry (the 272 bytes starting at the stamp magic).
+#[cfg(unix)]
+fn stamp_in(bytes: &[u8]) -> &[u8] {
+    bytes
+        .windows(crate::scan::STAMP_SIZE)
+        .find(|w| w.starts_with(&busbar_plugin_abi::stamp::STAMP_MAGIC))
+        .expect("a native image carries a stamp")
+}
+
+#[cfg(unix)]
+fn refuse_every_image(bytes: &[u8], display: &str) -> Result<(), String> {
+    Err(format!(
+        "the embedding host refuses native image '{display}' ({} bytes)",
+        bytes.len()
+    ))
+}
+
+/// PROOF-093-A:23. The host's native load guard is asked before anything is staged: a refusing guard's own words
+/// are the refusal, and nothing was staged.
+#[cfg(unix)]
+#[test]
+fn an_embedding_host_guard_runs_before_any_native_staging() {
+    if ran_in_own_process(
+        "BUSBAR_STAGE_GUARD_CHILD",
+        "stage::tests::an_embedding_host_guard_runs_before_any_native_staging",
+    ) {
+        return;
+    }
+    let bytes = crate::test_host::cdylib_bytes("native_pack_fixture");
+    let staged = || STAGED_HERE.with(std::cell::Cell::get);
+
+    // The witness counts: with no guard, an open stages (this text then fails to load).
+    let before = staged();
+    let unguarded = open_image(NOT_A_LIBRARY, "unguarded");
+    assert!(
+        matches!(unguarded, Err(Unopened::Image(_))),
+        "{}",
+        said(&unguarded)
+    );
+    assert_eq!(staged(), before + 1, "an unguarded open stages its bytes");
+
+    install_native_load_guard(refuse_every_image).expect("the first guard installs");
+    let before = staged();
+    let outcome = open_image(&bytes, "guarded");
+    match outcome {
+        Err(Unopened::Stage(why)) => assert_eq!(
+            why,
+            format!(
+                "the embedding host refuses native image 'guarded' ({} bytes)",
+                bytes.len()
+            ),
+            "the refusal is the guard's own words"
+        ),
+        other => {
+            let what = said(&other);
+            if let Ok(loaded) = other {
+                release(loaded);
+            }
+            panic!("a refusing guard must refuse with Stage, got {what}");
+        }
+    }
+    assert_eq!(staged(), before, "nothing is staged once the guard refused");
+}
+
+/// PROOF-093-A:108. An image opened from a memfd, closed, then a second image staged on the same (reused) fd
+/// number answers with its own header and stamp, not the first image's: the verified bytes are the bytes that run.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
+    if ran_in_own_process(
+        "BUSBAR_STAGE_REUSED_FD_CHILD",
+        "stage::tests::a_replaced_image_on_a_reused_fd_runs_its_own_bytes",
+    ) {
+        return;
+    }
+    let a = crate::test_host::cdylib_bytes("native_pack_fixture");
+    let b = crate::test_host::cdylib_bytes("native_schema_bomb");
+    assert_ne!(stamp_in(&a), stamp_in(&b), "the two images must differ in stamp");
+
+    let staged_name = |s: &Staged| match s {
+        Staged::Memfd { fd: Some(fd) } => memfd_name(fd),
+        _ => panic!("Linux stages a verified image into a memfd"),
+    };
+
+    let first = open_image(&a, "image-a");
+    let (opened_a, staged_a) = first.unwrap_or_else(|e| panic!("image A opens: {}", said(&Err(e))));
+    assert_eq!(opened_a.stamp().0.as_slice(), stamp_in(&a), "image A answers with A's stamp");
+    let name_a = staged_name(&staged_a);
+    release((opened_a, staged_a));
+
+    let second = open_image(&b, "image-b");
+    let (opened_b, staged_b) =
+        second.unwrap_or_else(|e| panic!("image B opens: {}", said(&Err(e))));
+    let name_b = staged_name(&staged_b);
+    assert_eq!(
+        name_b, name_a,
+        "precondition: image B is staged on the fd image A was staged on"
+    );
+    let stamp_b = opened_b.stamp().0;
+    assert_ne!(
+        stamp_b.as_slice(),
+        stamp_in(&a),
+        "image B was opened but image A's resident image answered: B's verified bytes never ran"
+    );
+    assert_eq!(stamp_b.as_slice(), stamp_in(&b), "image B answers with B's own stamp");
+    release((opened_b, staged_b));
+}
+
+/// PROOF-093-A:114.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refused_open_carries_the_loaders_reason() {
+    let reason = load_reason("plain text", open_image(NOT_A_LIBRARY, "plain-text"));
+    assert!(
+        reason.contains("ELF") || reason.contains("too short"),
+        "the dynamic loader's own reason must reach the refusal: {reason}"
+    );
+}
+
+/// PROOF-093-A:116.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refused_open_is_more_than_the_bare_label() {
+    let reason = load_reason("plain text", open_image(NOT_A_LIBRARY, "plain-text"));
+    assert_ne!(reason, "dlopen failed", "the loader's text was dropped");
+    assert!(
+        reason.starts_with("dlopen failed: ") && reason.len() > "dlopen failed: ".len() + 8,
+        "libloading's Display is only the label; the dlerror text is its source: {reason}"
+    );
+}
+
+/// PROOF-093-A:115. A crafted library path cannot forge a log line through the loader's reason, and the reason is
+/// bounded.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refused_opens_text_is_one_bounded_line() {
+    // Every character class loader_reason escapes, exactly as it escapes them.
+    let crafted = "a\tb\u{1b}c\u{7f}d\u{85}e\u{2028}f\u{2029}g\u{200e}h\u{200f}\
+                   i\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}j\u{2066}\u{2067}\u{2068}\u{2069}k\nl\rm";
+    assert_eq!(
+        loader_reason(crafted),
+        r"a\u{9}b\u{1b}c\u{7f}d\u{85}e\u{2028}f\u{2029}g\u{200e}h\u{200f}i\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}j\u{2066}\u{2067}\u{2068}\u{2069}k\nl\rm"
+    );
+    // The cut: 512 characters are kept whole; a 513th is replaced by one ellipsis.
+    let exact = "\u{e9}".repeat(512);
+    assert_eq!(loader_reason(&exact), exact);
+    assert_eq!(
+        loader_reason(&"\u{e9}".repeat(513)),
+        format!("{exact}\u{2026}")
+    );
+
+    // End to end: the dynamic loader's text names the crafted path.
+    let root = private_root("dlerror-forge");
+    let forged = root.join("x\n[ERROR] forged line\r\u{202e}.so");
+    std::fs::write(&forged, NOT_A_LIBRARY).unwrap();
+    let reason = load_reason(
+        "a crafted path",
+        open_on_worker(forged.as_os_str(), NOT_A_LIBRARY).map(|o| {
+            let staged = Staged::TempFile {
+                path: PathBuf::new(),
+                pin: None,
+            };
+            (o, staged)
+        }),
+    );
+    assert!(
+        !reason.chars().any(|c| c.is_control()
+            || matches!(c, '\u{2028}' | '\u{2029}' | '\u{200e}' | '\u{200f}'
+                | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')),
+        "a crafted path must not forge a log line: {reason:?}"
+    );
+    assert!(
+        reason.contains(r"x\n[ERROR] forged line\r\u{202e}.so"),
+        "the crafted path is carried escaped: {reason:?}"
+    );
+
+    let long = root
+        .join("d".repeat(200))
+        .join("d".repeat(200))
+        .join("d".repeat(200))
+        .join("x.so");
+    std::fs::create_dir_all(long.parent().unwrap()).unwrap();
+    std::fs::write(&long, NOT_A_LIBRARY).unwrap();
+    let reason = load_reason(
+        "a long path",
+        open_on_worker(long.as_os_str(), NOT_A_LIBRARY).map(|o| {
+            let staged = Staged::TempFile {
+                path: PathBuf::new(),
+                pin: None,
+            };
+            (o, staged)
+        }),
+    );
+    assert_eq!(
+        reason.chars().count(),
+        LOADER_REASON_CHARS + 1,
+        "the reason is cut at {LOADER_REASON_CHARS} characters plus the ellipsis: {reason}"
+    );
+    assert!(
+        reason.starts_with("dlopen failed: ") && reason.ends_with('\u{2026}'),
+        "{reason}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+mod staged_file_pin {
+    use super::*;
+
+    /// The verified native image, and the same image with its first byte flipped.
+    pub(super) fn two_libraries() -> (Vec<u8>, Vec<u8>) {
+        let verified = crate::test_host::cdylib_bytes("native_pack_fixture");
         let mut other = verified.clone();
         other[0] ^= 0xff;
         assert_ne!(verified, other, "the two fixtures must differ");
         (verified, other)
     }
-}
 
-#[cfg(windows)]
-mod on_windows {
-    use super::staged_file_pin::*;
-    use super::*;
-
-    fn judge(
-        what: &str,
+    /// Stage `verified` in the private temp file, run `tamper` on the staged file between staging and the first
+    /// check, then open. Answers what the tamper did, the outcome, and the staged file's name.
+    pub(super) fn tamper_then_open(
         verified: &[u8],
-        tampered: std::io::Result<()>,
-        loaded: Result<(Library, Staged), String>,
+        tamper: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+    ) -> (
+        std::io::Result<()>,
+        Result<(busbar_ffi::image::Opened, Staged), Unopened>,
+        PathBuf,
     ) {
-        match (tampered, loaded) {
-            (Ok(()), loaded) => assert_refused(what, loaded),
-            (Err(_), Ok(l)) => {
-                let Staged::TempFile { path, .. } = &l.1;
-                let now = std::fs::read(path).expect("read the staged file");
-                assert!(
-                    now == verified,
-                    "{what}: the OS refused the tamper, yet the staged file changed"
-                );
-                release(l);
+        let mut tamper = Some(tamper);
+        let mut outcome = None;
+        let mut staged_at = None;
+        let opened = open_staged_file(verified, &mut |path| {
+            staged_at = Some(path.to_path_buf());
+            if let Some(t) = tamper.take() {
+                outcome = Some(t(path));
             }
-            (Err(t), Err(e)) => {
-                panic!(
-                    "{what}: the OS refused the tamper ({t}) yet the verified bytes did not load: {e}"
-                )
-            }
-        }
+        });
+        (
+            outcome.expect("the loader ran its before-verify window"),
+            opened,
+            staged_at.expect("the loader staged a file"),
+        )
     }
 
+    pub(super) fn clean_open_holds_the_verified_bytes(verified: &[u8]) {
+        let mut seen = None;
+        let opened = open_staged_file(verified, &mut |path| {
+            seen = Some(std::fs::read(path).expect("read the staged file"));
+        });
+        let opened = opened.unwrap_or_else(|e| panic!("the verified bytes open: {}", said(&Err(e))));
+        assert!(
+            seen.as_deref() == Some(verified),
+            "the staged file must hold exactly the verified bytes"
+        );
+        assert!(matches!(opened.1, Staged::TempFile { .. }));
+        release(opened);
+    }
+
+    /// Refused by the staged-file check, its file released, and no image of it left mapped.
+    pub(super) fn assert_refused(
+        what: &str,
+        opened: Result<(busbar_ffi::image::Opened, Staged), Unopened>,
+        staged_at: &std::path::Path,
+    ) {
+        match opened {
+            Err(Unopened::Stage(why)) => assert!(
+                why.starts_with("its staged file "),
+                "{what}: refused, but not by the staged-file check: {why}"
+            ),
+            Ok(loaded) => {
+                release(loaded);
+                panic!(
+                    "{what}: the loader mapped a staged file that no longer holds the verified bytes \
+                     (the bytes that loaded are not the bytes that were verified)"
+                );
+            }
+            Err(other) => panic!(
+                "{what}: refused, but not by the staged-file check: {}",
+                said(&Err(other))
+            ),
+        }
+        assert!(
+            staged_at.symlink_metadata().is_err(),
+            "{what}: the refused staged file is released"
+        );
+        #[cfg(target_os = "linux")]
+        assert!(
+            !name_still_loaded(staged_at.to_str().expect("a staged name is UTF-8")),
+            "{what}: no image of the refused file stays mapped"
+        );
+    }
+}
+
+/// The private temp-file staging (the fallback where no sealed memfd can be used).
+#[cfg(unix)]
+mod on_unix {
+    use super::staged_file_pin::*;
+    use super::*;
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    /// PROOF-093-A:117.
     #[test]
     fn the_staged_bytes_are_the_verified_bytes() {
         let (verified, other) = two_libraries();
-        clean_load_holds_the_verified_bytes(&verified);
+        clean_open_holds_the_verified_bytes(&verified);
 
-        let (tampered, loaded) = tamper_then_load(&verified, |path| {
+        let (tampered, opened, at) = tamper_then_open(&verified, |path| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
             let mut f = std::fs::OpenOptions::new()
                 .write(true)
                 .truncate(true)
@@ -318,28 +637,73 @@ mod on_windows {
             f.write_all(&other)?;
             f.flush()
         });
-        judge(
-            "staged file rewritten in place",
-            &verified,
-            tampered,
-            loaded,
-        );
+        tampered.expect("the owning uid can rewrite its own staged file in place");
+        assert_refused("staged file rewritten in place", opened, &at);
+
+        let (tampered, opened, at) = tamper_then_open(&verified, |path| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            let mut f = std::fs::OpenOptions::new().write(true).open(path)?;
+            let last = verified.len() as u64 - 1;
+            std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(last))?;
+            f.write_all(&[verified[verified.len() - 1] ^ 0xff])?;
+            f.flush()?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o400))
+        });
+        tampered.expect("the owning uid can flip a byte of its own staged file");
+        assert_refused("staged file with one byte flipped", opened, &at);
     }
 
+    /// PROOF-093-A:118.
     #[test]
     fn a_staged_file_swapped_between_verify_and_load_is_refused() {
         let (verified, other) = two_libraries();
 
-        let (swapped, loaded) = tamper_then_load(&verified, |path| {
+        let (swapped, opened, at) = tamper_then_open(&verified, |path| {
             let decoy = path.with_extension("decoy");
             std::fs::write(&decoy, &other)?;
-            let r = std::fs::rename(&decoy, path);
-            if r.is_err() {
-                let _ = std::fs::remove_file(&decoy);
-            }
-            r
+            std::fs::rename(&decoy, path)
         });
-        judge("staged file swapped by rename", &verified, swapped, loaded);
+        swapped.expect("the owning uid can rename inside its own staging directory");
+        assert_refused("staged file swapped by rename", opened, &at);
+    }
+}
+
+/// The sealed memfd (Linux).
+#[cfg(target_os = "linux")]
+mod on_linux_memfd {
+    use super::*;
+    use std::io::Write as _;
+    use std::os::fd::AsRawFd as _;
+
+    /// PROOF-093-A:113.
+    #[test]
+    fn the_staged_bytes_are_the_verified_bytes() {
+        let (verified, other) = super::staged_file_pin::two_libraries();
+        let opened = open_image(&verified, "memfd");
+        let loaded = opened.unwrap_or_else(|e| panic!("the verified bytes open: {}", said(&Err(e))));
+        let Staged::Memfd { fd: Some(fd) } = &loaded.1 else {
+            panic!("Linux stages a verified image into a memfd");
+        };
+        let name = memfd_name(fd);
+        assert!(
+            std::fs::read(&name).expect("read the memfd") == verified,
+            "the memfd must hold exactly the verified bytes"
+        );
+        // SAFETY: plain fcntl on an fd the staging owns; no pointers.
+        let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
+        let want = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+        assert_eq!(seals & want, want, "the memfd must be sealed (got {seals:#x})");
+
+        let rewrite = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&name)
+            .and_then(|mut f| f.write_all(&other));
+        assert!(rewrite.is_err(), "a sealed memfd must refuse a rewrite");
+        assert!(
+            std::fs::read(&name).expect("read the memfd again") == verified,
+            "the memfd still holds exactly the verified bytes"
+        );
+        release(loaded);
     }
 }
 
