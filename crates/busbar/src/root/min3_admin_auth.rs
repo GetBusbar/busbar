@@ -74,7 +74,7 @@ pub(crate) fn owners(
         id: opened.who.instance,
         kind: opened.port.issued_kind(),
         verifies: opened.methods
-            & (busbar_plugin_abi::auth::M_VERIFY | busbar_plugin_abi::auth::M_VERIFY_IO)
+            & busbar_plugin_abi::auth::M_VERIFY
             != 0,
     });
     let grants = resolve_grants(&config.issued_kinds, instances, credentials.installed())?;

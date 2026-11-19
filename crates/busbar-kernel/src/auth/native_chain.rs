@@ -219,7 +219,7 @@ impl NativeChain {
                 || !ids.insert(opened.who.instance)
                 || !names.insert(opened.who.name.as_ref())
                 || opened.methods
-                    & (busbar_plugin_abi::auth::M_VERIFY | busbar_plugin_abi::auth::M_VERIFY_IO)
+                    & busbar_plugin_abi::auth::M_VERIFY
                     == 0
             {
                 return Err("native data chain has an unsupported or duplicate reservation");

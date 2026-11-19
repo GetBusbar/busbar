@@ -34,7 +34,7 @@ impl ProvisioningAuth {
         facts: u64,
         methods: u64,
     ) -> Self {
-        use busbar_plugin_abi::auth::{FB_PROVISION, M_VERIFY, M_VERIFY_IO};
+        use busbar_plugin_abi::auth::{FB_PROVISION, M_VERIFY};
         Self {
             name: name.into(),
             plugin: plugin.into(),
@@ -42,7 +42,7 @@ impl ProvisioningAuth {
             inbound,
             facts: ProvisioningFacts {
                 fb_provision: facts & FB_PROVISION != 0,
-                verifies: methods & (M_VERIFY | M_VERIFY_IO) != 0,
+                verifies: methods & M_VERIFY != 0,
             },
         }
     }
@@ -134,7 +134,7 @@ pub(crate) fn mounts(
     request_ids: Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<Vec<Arc<super::provisioning_mount::ProvisionMount>>, String> {
     use super::provisioning_mount::{ClientPolicy, ProvisionMount};
-    use busbar_plugin_abi::auth::{FB_PROVISION, M_SERVE, M_VERIFY, M_VERIFY_IO};
+    use busbar_plugin_abi::auth::{FB_PROVISION, M_SERVE, M_VERIFY};
 
     let mut mounts = Vec::with_capacity(config.provisioning.len());
     for (name, cfg) in &config.provisioning {
@@ -143,7 +143,7 @@ pub(crate) fn mounts(
         })?;
         let opened = &instance.opened;
         if opened.port.facts() & FB_PROVISION == 0
-            || opened.methods & (M_VERIFY | M_VERIFY_IO) == 0
+            || opened.methods & M_VERIFY == 0
             || opened.methods & M_SERVE == 0
         {
             return Err(format!(
@@ -291,8 +291,8 @@ mod tests {
 
     #[test]
     fn described_auth_requires_verify_even_when_it_can_serve() {
-        use busbar_plugin_abi::auth::{FB_PROVISION, M_SERVE, M_VERIFY, M_VERIFY_IO};
-        for verify in [M_VERIFY, M_VERIFY_IO] {
+        use busbar_plugin_abi::auth::{FB_PROVISION, M_SERVE, M_VERIFY};
+        for verify in [M_VERIFY] {
             let directory = ProvisioningAuth::described(
                 "directory",
                 "verified-directory-image",

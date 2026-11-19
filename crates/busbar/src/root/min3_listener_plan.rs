@@ -447,7 +447,7 @@ fn chain_points(owners: &SlotOwners, names: &[String]) -> Result<Vec<ChainAuth>,
                 .get(name)
                 .ok_or_else(|| format!("{name}: data chain has no actual opened native auth"))?;
             if instance.opened.methods
-                & (busbar_plugin_abi::auth::M_VERIFY | busbar_plugin_abi::auth::M_VERIFY_IO)
+                & busbar_plugin_abi::auth::M_VERIFY
                 == 0
             {
                 return Err(format!("{name}: native data auth cannot verify"));

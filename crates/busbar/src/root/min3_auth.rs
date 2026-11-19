@@ -133,7 +133,7 @@ impl AuthSet {
                 format!("auth.admin_auth: '{name}' has no opened native auth instance")
             })?;
             if instance.opened.methods
-                & (busbar_plugin_abi::auth::M_VERIFY | busbar_plugin_abi::auth::M_VERIFY_IO)
+                & busbar_plugin_abi::auth::M_VERIFY
                 == 0
             {
                 return Err(format!("auth.admin_auth: '{name}' cannot verify"));
