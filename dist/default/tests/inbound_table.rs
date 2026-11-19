@@ -266,11 +266,20 @@ fn boot(upstream: &str) -> Booted {
     let planes = PLANE_SECTIONS
         .replace("{data_port}", &data_port.to_string())
         .replace("{admin_port}", &admin_port.to_string());
+    // A resolved provider entry needs `error_map` (the llm plane's provider schema).
+    std::fs::write(
+        dir.join("providers.yaml"),
+        format!("mock:\n  protocol: anthropic\n  base_url: \"{upstream}\"\n  error_map: {{}}\n"),
+    )
+    .unwrap();
     std::fs::write(
         dir.join("config.yaml"),
         format!(
             r#"listen: "127.0.0.1:{data_port}"
 admin_listen: "127.0.0.1:{admin_port}"
+listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test node" }}
+admin_listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test node" }}
+admin_require_mtls: false
 store: {{module: memory}}
 public_url: "http://127.0.0.1:{data_port}"
 limits:
@@ -285,8 +294,6 @@ auth:
   admin_auth: [admin-tokens]
 providers:
   mock:
-    protocol: anthropic
-    base_url: "{upstream}"
     api_key: {{ env: MOCK_KEY }}
 models:
   test-model:

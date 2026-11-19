@@ -97,6 +97,9 @@ impl AuthMiddleware {
                 crate::config::KEYS_MODULE => {
                     keys_in_chain = true;
                 }
+                // The built-in member `anonymous` opens no plugin and reads no credential: the
+                // native data chain admits it (`NativeChain::data_with`) under its binding.
+                crate::auth::native_chain::ANONYMOUS => {}
                 other => {
                     instances::provider_settings(
                         cfg,
