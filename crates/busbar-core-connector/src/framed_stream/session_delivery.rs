@@ -1,21 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The existing session's sole wire owner. No write result above TLS is treated as a receipt.
+//! THE ACCEPTED CONNECTION'S ONE WRITER. Every byte a session writes to its connection goes
+//! through here, and only through here: the transport's answer is handed to the delivery driver
+//! ([`DeliveryLedger::answer`], the same driver the dial uses), which checks it whole and queues its
+//! parts as one run; this writer then gives the queue to the connection, flushes, and tells the
+//! driver what the connection's own carrier reports the operating system accepted. A write's return
+//! value is never treated as a receipt.
 
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use busbar_contract::response_delivery::{CarrierProgressReader, ResponseStop, WireClass};
-use busbar_contract::storage::StorageSource;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use busbar_contract::response_delivery::{CarrierProgressReader, ResponseStop};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 
-use super::{storage, Act, Actions};
-use crate::response_delivery::{DeliveryControl, DeliveryLedger, WireEvent};
+use super::{Act, Actions, Span};
+use crate::outbound::delivery::{Breach, Reason};
+use crate::outbound::records::Out;
+use crate::outbound::wire::{Fault, Outcome};
+use crate::response_delivery::{DeliveryControl, DeliveryLedger};
 
-/// Response ownership and its genuine carrier observation, moved together across an upgrade.
+/// The connection's delivery state and the reader of its genuine carrier, moved together across an
+/// upgrade: the entries, the counters with no reset, and the reader.
 pub struct Delivery {
     pub(super) ledger: DeliveryLedger,
     reader: Arc<dyn CarrierProgressReader>,
@@ -30,23 +38,21 @@ impl std::fmt::Debug for Delivery {
 }
 
 impl Delivery {
-    /// Bind the already-funded ledger to the reader supplied by the actual raw/security factory.
+    /// Bind the connection's ledger to the reader supplied by its actual raw/security factory.
     pub fn new(ledger: DeliveryLedger, reader: Arc<dyn CarrierProgressReader>) -> Self {
         Self { ledger, reader }
     }
 
-    /// Move the exact owner and reader into the next admitted transport; no counter reset.
+    /// Move the ledger and the reader into the next transport's session; no counter is reset. The
+    /// adopting side calls [`DeliveryLedger::adopt`] with the upgraded request's stream.
     pub fn into_parts(self) -> (DeliveryLedger, Arc<dyn CarrierProgressReader>) {
         (self.ledger, self.reader)
     }
 
+    /// The writer is gone: every answer still open has its verdict, from the carrier's last reading.
     pub(super) fn writer_retired(mut self) {
         self.ledger
-            .retire_carrier(self.reader.snapshot(), ResponseStop::CarrierRetired);
-    }
-
-    fn sample(&mut self) -> io::Result<()> {
-        self.ledger.observe(self.reader.snapshot()).map_err(error)
+            .retire(self.reader.snapshot(), Reason::CallerGone);
     }
 }
 
@@ -60,23 +66,22 @@ pub(super) fn error(reason: ResponseStop) -> io::Error {
     io::Error::new(kind, "native response delivery stopped")
 }
 
-/// Option permits explicit writer disposal before freezing failure, or a move-only upgrade.
+fn timed_out() -> io::Error {
+    io::Error::from(io::ErrorKind::TimedOut)
+}
+
+/// The connection and its delivery state. `Option` permits disposing the writer before the verdicts
+/// are frozen, and the move-only hand-over of an upgrade.
 pub(super) struct DeliveryIo<S> {
     io: Option<S>,
     delivery: Option<Delivery>,
-    source: StorageSource,
-    /// The wire events of the answer being validated: one charged array the session owns, made at its
-    /// first answer, refilled per answer, freed with the session. It holds counts, never bytes.
-    events: Option<storage::Items<WireEvent>>,
 }
 
 impl<S> DeliveryIo<S> {
-    pub(super) fn new(io: S, delivery: Delivery, source: StorageSource) -> Self {
+    pub(super) fn new(io: S, delivery: Delivery) -> Self {
         Self {
             io: Some(io),
             delivery: Some(delivery),
-            source,
-            events: None,
         }
     }
 
@@ -84,78 +89,52 @@ impl<S> DeliveryIo<S> {
         &mut self.delivery.as_mut().expect("live delivery owner").ledger
     }
 
-    /// A complete callback is validated before its first write, including records after CLOSE.
-    pub(super) fn prepare(&mut self, acts: &Actions) -> Result<(), ResponseStop> {
-        if self.events.is_none() {
-            self.events =
-                Some(storage::Items::new(&self.source).map_err(|_| ResponseStop::Capacity)?);
-        }
-        let Some(events) = self.events.as_mut() else {
-            return Err(ResponseStop::Capacity);
-        };
-        events.clear();
-        let mut terminal = false;
-        let mut shutdown = false;
+    /// ONE ANSWER of the transport, handed to the driver: every stream a `STREAM_HEAD` of it announces
+    /// is opened in its place, the caller's resets are noted, then the whole answer is checked and its
+    /// parts queued as one run. Nothing is written here.
+    ///
+    /// # Errors
+    /// The [`Fault`]: nothing of the answer was queued and nothing of it will be written.
+    pub(super) fn answered(&mut self, acts: &Actions) -> Result<Outcome, Fault> {
+        let ledger = self.ledger();
+        let mut heads: smallvec::SmallVec<[u64; 4]> = smallvec::SmallVec::new();
         for act in acts.iter() {
-            if terminal {
-                return Err(ResponseStop::Integrity);
-            }
-            if shutdown && matches!(act, Act::Write(_) | Act::WirePart { .. }) {
-                return Err(ResponseStop::Integrity);
-            }
-            let event = match act {
-                // Legacy byte-only output has no response attribution and cannot establish payload.
-                Act::Write(bytes) if !bytes.is_empty() => Some(WireEvent::Part {
-                    stream: 0,
-                    class: WireClass::Control,
-                    len: bytes.len(),
-                }),
-                Act::WirePart {
-                    stream,
-                    class,
-                    bytes,
-                } => Some(WireEvent::Part {
-                    stream: *stream,
-                    class: *class,
-                    len: bytes.len(),
-                }),
-                Act::WireEnd {
-                    stream,
-                    requirement,
-                } => {
-                    shutdown |= *requirement == super::CompletionRequirement::Shutdown;
-                    Some(WireEvent::End {
-                        stream: *stream,
-                        requirement: *requirement,
-                    })
-                }
-                Act::Abort(stream) => Some(WireEvent::Abort { stream: *stream }),
-                Act::Quiescent(stream) => Some(WireEvent::Quiescent { stream: *stream }),
-                Act::Close { .. } | Act::Upgrade { .. } => {
-                    terminal = true;
-                    None
-                }
-                _ => None,
-            };
-            if let Some(event) = event {
-                events.push(event).map_err(|_| ResponseStop::Capacity)?;
+            if let Act::Head { stream, .. } = act {
+                heads.push(*stream);
             }
         }
-        let delivery = self.delivery.as_mut().expect("live delivery owner");
-        delivery.ledger.prepare_batch(events.as_slice())?.commit();
-        Ok(())
+        let mut announced = 0;
+        let mut items: smallvec::SmallVec<[Out; 16]> = smallvec::SmallVec::new();
+        let mut spans: smallvec::SmallVec<[Option<Span>; 16]> = smallvec::SmallVec::new();
+        for act in acts.iter() {
+            match act {
+                Act::Head { stream, .. } => {
+                    ledger.announced(*stream)?;
+                    announced += 1;
+                    continue;
+                }
+                // L2: a stream is open from its STREAM_HEAD on, not from the start of the answer that
+                // carries it.
+                Act::WirePart { stream, .. } | Act::WireEnd { stream, .. }
+                    if *stream != 0 && heads[announced..].contains(stream) =>
+                {
+                    return Err(Fault::Output(Breach::L2));
+                }
+                Act::Reset { stream, .. } => ledger.caller_reset(*stream),
+                _ => {}
+            }
+            if let Some((item, span)) = act.driven() {
+                items.push(item);
+                spans.push(span);
+            }
+        }
+        ledger.answer(&items, |index| {
+            spans[index].map_or(&[][..], |span| acts.bytes(span))
+        })
     }
 
     pub(super) fn poll_control(&mut self, cx: &mut Context<'_>) -> Poll<DeliveryControl> {
         self.ledger().poll_control(cx)
-    }
-
-    pub(super) fn complete_flush(&mut self, prefix: u64) -> io::Result<()> {
-        self.ledger().complete_flush(prefix).map_err(error)
-    }
-
-    pub(super) fn complete_shutdown(&mut self, prefix: u64) -> io::Result<()> {
-        self.ledger().complete_shutdown(prefix).map_err(error)
     }
 
     pub(super) fn into_parts(mut self) -> (S, Delivery) {
@@ -164,18 +143,75 @@ impl<S> DeliveryIo<S> {
             self.delivery.take().expect("live delivery"),
         )
     }
+}
 
-    fn sample<T>(&mut self, result: Poll<io::Result<T>>) -> Poll<io::Result<T>> {
-        match self.delivery.as_mut().expect("live delivery").sample() {
-            Ok(()) => result,
-            Err(error) => Poll::Ready(Err(error)),
-        }
+impl<S: AsyncWrite + Unpin> DeliveryIo<S> {
+    /// Give the connection everything queued, front to back, by `deadline`: each byte the connection
+    /// takes is wiped from the queue at once, and a partial write resumes at the first byte it did not
+    /// take.
+    pub(super) async fn write_out(&mut self, deadline: tokio::time::Instant) -> io::Result<()> {
+        let Self { io, delivery } = self;
+        let io = io.as_mut().expect("live writer");
+        let ledger = &mut delivery.as_mut().expect("live delivery owner").ledger;
+        tokio::time::timeout_at(deadline, async {
+            loop {
+                let unwritten = ledger.unwritten();
+                if unwritten.is_empty() {
+                    return Ok(());
+                }
+                let written = io.write(unwritten).await?;
+                if written == 0 {
+                    return Err(io::ErrorKind::WriteZero.into());
+                }
+                ledger.took(written);
+            }
+        })
+        .await
+        .unwrap_or_else(|_| Err(timed_out()))
+    }
+
+    /// Flush the connection by `deadline`, then tell the driver what its carrier reports: only after
+    /// a flush that succeeded can an answer be `whole`.
+    pub(super) async fn flush(&mut self, deadline: tokio::time::Instant) -> io::Result<()> {
+        let Self { io, delivery } = self;
+        let io = io.as_mut().expect("live writer");
+        tokio::time::timeout_at(deadline, io.flush())
+            .await
+            .unwrap_or_else(|_| Err(timed_out()))?;
+        let delivery = delivery.as_mut().expect("live delivery owner");
+        delivery
+            .ledger
+            .flushed(delivery.reader.snapshot())
+            .map_err(error)
+    }
+
+    /// Shut the connection's write side down by `deadline` (an `END_SHUTDOWN`, a graceful `CLOSE`):
+    /// an answer that ends by closing is `whole` only once this succeeded.
+    pub(super) async fn shut(&mut self, deadline: tokio::time::Instant) -> io::Result<()> {
+        let Self { io, delivery } = self;
+        let io = io.as_mut().expect("live writer");
+        tokio::time::timeout_at(deadline, io.shutdown())
+            .await
+            .unwrap_or_else(|_| Err(timed_out()))?;
+        delivery
+            .as_mut()
+            .expect("live delivery owner")
+            .ledger
+            .shut_down();
+        Ok(())
+    }
+
+    /// Everything queued goes out, flushed: [`Self::write_out`] then [`Self::flush`].
+    pub(super) async fn deliver(&mut self, deadline: tokio::time::Instant) -> io::Result<()> {
+        self.write_out(deadline).await?;
+        self.flush(deadline).await
     }
 }
 
 impl<S> Drop for DeliveryIo<S> {
     fn drop(&mut self) {
-        // The single session owns all polls. Dispose the only writer before its final observation.
+        // The one session owns every poll. Dispose the only writer before the last reading of its
+        // carrier, then freeze what is still open.
         drop(self.io.take());
         if let Some(delivery) = self.delivery.take() {
             delivery.writer_retired();
@@ -189,31 +225,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for DeliveryIo<S> {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let this = self.get_mut();
-        let result = Pin::new(this.io.as_mut().expect("live writer")).poll_read(cx, buf);
-        this.sample(result)
-    }
-}
-
-impl<S: AsyncWrite + Unpin> AsyncWrite for DeliveryIo<S> {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bytes: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        let this = self.get_mut();
-        let result = Pin::new(this.io.as_mut().expect("live writer")).poll_write(cx, bytes);
-        this.sample(result)
-    }
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let this = self.get_mut();
-        let result = Pin::new(this.io.as_mut().expect("live writer")).poll_flush(cx);
-        this.sample(result)
-    }
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let this = self.get_mut();
-        let result = Pin::new(this.io.as_mut().expect("live writer")).poll_shutdown(cx);
-        this.sample(result)
+        Pin::new(self.get_mut().io.as_mut().expect("live writer")).poll_read(cx, buf)
     }
 }
 
