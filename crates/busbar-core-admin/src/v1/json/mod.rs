@@ -284,9 +284,10 @@ async fn port_admin_response(
     // The operator the admin gate admitted (it inserts `AuthPrincipal(Some(_))` on every request it
     // admits): the plane's admin route is served as this principal and its audit rows name it. A
     // request without one was not admitted by the gate and is refused, never served as anonymous.
-    let Some(busbar_kernel::auth::AuthPrincipal(Some(principal))) = parts
-        .extensions
-        .remove::<busbar_kernel::auth::AuthPrincipal>()
+    let Some(busbar_kernel::auth::AuthPrincipal(Some(principal))) =
+        parts
+            .extensions
+            .remove::<busbar_kernel::auth::AuthPrincipal>()
     else {
         return err_json(&AdminError::Unauthorized);
     };
