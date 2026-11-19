@@ -32,7 +32,6 @@ use busbar_plugin_abi::host_side::answer::{Answer, OwnedAnswer};
 use busbar_plugin_abi::host_side::driver::{Driver, Instance};
 use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::PooledOut;
-use busbar_plugin_abi::records::{tag, Records};
 use busbar_plugin_abi::types::{Pair, Status};
 use zerocopy::IntoBytes;
 
@@ -74,18 +73,6 @@ impl<K: Kind> Bound<K> {
 /// `Sync`: every call takes `&mut`, so one entry per token runs at a time; dropping it cancels the token.
 pub use busbar_ports::KindSession as Sess;
 
-/// The answer of a call that opens no session, validated: the envelope (`Answer::parse`), and no context
-/// named back. A session TOKEN leads only a session opener's OK answer (§6.4 step 7); a call that opens
-/// nothing and is answered with one names a session context the host did not hand it (a forged context),
-/// which is FAULT `UnknownTag(TOKEN)` like any TOKEN out of its place.
-fn opens_nothing(status: Status, bytes: &[u8]) -> Result<Answer<'_>, FaultReason> {
-    let answer = Answer::parse(status, bytes)?;
-    match Records::new(bytes).next() {
-        Some(Ok(rec)) if rec.tag == tag::TOKEN => Err(FaultReason::UnknownTag(tag::TOKEN)),
-        _ => Ok(answer),
-    }
-}
-
 fn host_fault() -> CallError {
     // The boundary crate's nesting bound was reached: a host fault, not the plugin's (no sink, no
     // quarantine).
@@ -112,7 +99,7 @@ pub fn plain<'o, K: Kind, H: Head, const T: usize, const B: usize>(
     })
     .ok_or_else(host_fault)?;
     record::back(inst, method, status, buf.bytes());
-    opens_nothing(status, buf.bytes()).map_err(|reason| inst.charge(reason))
+    Answer::parse(status, buf.bytes()).map_err(|reason| inst.charge(reason))
 }
 
 /// Shim 2: a call that opens a session. The session exists if and only if the answer is OK with a
@@ -136,7 +123,7 @@ pub fn opens<'o, K: Kind, H: Head, const T: usize, const B: usize>(
     })
     .ok_or_else(host_fault)?;
     record::back(inst, method, status, buf.bytes());
-    match Answer::parse(status, buf.bytes()) {
+    match Answer::parse_opener(status, buf.bytes()) {
         Ok(answer) => Ok((
             session.map(|session| Sess {
                 inst: Arc::clone(&to.inst),
@@ -171,7 +158,7 @@ pub fn on<'o, K: Kind, H: Head, const T: usize, const B: usize>(
     })
     .ok_or_else(host_fault)?;
     record::back(inst, method, status, buf.bytes());
-    opens_nothing(status, buf.bytes()).map_err(|reason| inst.charge(reason))
+    Answer::parse(status, buf.bytes()).map_err(|reason| inst.charge(reason))
 }
 
 /// Shim 3 on caller-owned fixed storage: exactly one call, no pool, no growth, no replay. The caller has
@@ -204,7 +191,7 @@ pub fn on_fixed<'o, K: Kind, H: Head, const T: usize, const B: usize>(
         .get(..len)
         .ok_or_else(|| inst.charge(FaultReason::BadInstance))?;
     record::back(inst, method, status, bytes);
-    opens_nothing(status, bytes)
+    Answer::parse(status, bytes)
         .map(|answer| (answer, len))
         .map_err(|reason| inst.charge(reason))
 }
@@ -232,7 +219,7 @@ pub fn ends<'o, K: Kind, H: Head, const T: usize, const B: usize>(
     })
     .ok_or_else(host_fault)?;
     record::back(inst, method, status, buf.bytes());
-    opens_nothing(status, buf.bytes()).map_err(|reason| inst.charge(reason))
+    Answer::parse(status, buf.bytes()).map_err(|reason| inst.charge(reason))
 }
 
 /// Shim 5: an async method, to its terminal answer. `req` holds the method's one byte argument

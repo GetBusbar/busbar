@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use busbar_contract::records::VirtualKey;
 use busbar_contract::UnitKey;
 use busbar_kernel::guest::{Claimant, GuestList, Matched};
 use busbar_kernel::host_services::{InvocationContext, KernelServices, Nest, NestReply};
@@ -80,17 +81,11 @@ impl NativeNests {
         let Some(parent) = core.units().get(nest.parent) else {
             return NestReply::Unserved(NEST_PARENT_GONE);
         };
-        let Some(key) = parent.principal.as_ref() else {
-            return NestReply::Unserved(PARENT_ADMISSION);
+        let (key, creds) = match child_admission(&parent, nest) {
+            Ok(admitted) => admitted,
+            Err(why) => return NestReply::Unserved(why),
         };
-        if nest.depth != parent.depth.saturating_add(1)
-            || !nest
-                .principal
-                .as_ref()
-                .is_some_and(|claimed| Arc::ptr_eq(key, claimed))
-        {
-            return NestReply::Unserved(NEST_PARENT_GONE);
-        }
+        let key = &key;
         let Some(frame) = snapshot
             .frames
             .lock()
@@ -194,12 +189,7 @@ impl NativeNests {
                     body,
                     id.get(),
                 ),
-                creds: Credentials {
-                    bearer: None,
-                    principal: Principal::Verified(Subject::Key(Arc::clone(key))),
-                    operator: false,
-                    signed: None,
-                },
+                creds,
                 audience: seat.audience.as_deref().unwrap_or_default(),
                 now_s: busbar_kernel::store::now(),
                 unit: Some(unit),
@@ -226,6 +216,36 @@ impl NativeNests {
         }
         reply.answer()
     }
+}
+
+/// What a child is admitted on, from its live parent's record and the nest's claim: the parent's
+/// key, whose money admission the child spends, and the credentials the child is served with.
+/// A nest that is not exactly one level deeper, or whose claimed principal is not the very key
+/// the parent was admitted under (a forged principal), is refused.
+fn child_admission(
+    parent: &UnitRecord,
+    nest: &Nest,
+) -> Result<(Arc<VirtualKey>, Credentials<'static>), &'static str> {
+    let Some(key) = parent.principal.as_ref() else {
+        return Err(PARENT_ADMISSION);
+    };
+    if nest.depth != parent.depth.saturating_add(1)
+        || !nest
+            .principal
+            .as_ref()
+            .is_some_and(|claimed| Arc::ptr_eq(key, claimed))
+    {
+        return Err(NEST_PARENT_GONE);
+    }
+    Ok((
+        Arc::clone(key),
+        Credentials {
+            bearer: None,
+            principal: Principal::Verified(Subject::Key(Arc::clone(key))),
+            operator: false,
+            signed: None,
+        },
+    ))
 }
 
 struct Child {

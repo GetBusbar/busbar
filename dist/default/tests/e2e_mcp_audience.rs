@@ -23,9 +23,13 @@ use serde_json::json;
 
 const INITIALIZE: &[u8] = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"1"}}}"#;
 
+/// The MCP plane's section in the 1.6 form (the plane's settings `format` 2, as plane-mcp's
+/// `migrate::settle` writes back an older bag): the audience (`canonical_uri`, core's word), the
+/// resource facts, and the one tool server inside the section.
 const MCP_SECTION: &str = "mcp:\n  canonical_uri: \"http://127.0.0.1:{data_port}/mcp\"\n  \
-     authorization_servers: [\"http://127.0.0.1:{admin_port}\"]\ntools:\n  \
-     t1: { url: \"https://t.example/rpc\", pin: { mechanism: unpinned } }\n";
+     format: 2\n  resource:\n    authorization_servers: [\"http://127.0.0.1:{admin_port}\"]\n    \
+     scopes_supported: []\n    allowed_origins: []\n  servers:\n    \
+     t1: { pin: { mechanism: unpinned }, core_upstream: true, url: \"https://t.example/rpc\" }\n";
 
 fn boot(tag: &str, upstream: &Scripted) -> Node {
     llm(tag, upstream, None).section(MCP_SECTION).boot()

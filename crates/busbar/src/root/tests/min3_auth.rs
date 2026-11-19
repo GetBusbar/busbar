@@ -308,7 +308,7 @@ async fn store_app() -> Arc<busbar_kernel::state::App> {
     let operator_token = directory.join("operator-token");
     std::fs::write(&operator_token, "actual-min3-auth-operator")
         .expect("write the operator credential");
-    let operator = busbar_kernel::config::operator_provider();
+    let operator = plugins::bind_operator();
     let mut document = serde_json::json!({
         "public_url": "https://gw.example",
         "providers": {},

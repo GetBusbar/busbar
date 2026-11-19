@@ -585,6 +585,16 @@ mod tests {
         Rc::new(Cell::new(lend::InUse::begun(session)))
     }
 
+    /// A connection whose dial is in flight: no session has begun, so it states nothing yet.
+    fn dialling() -> Conn {
+        Rc::new(Cell::new(lend::InUse::default()))
+    }
+
+    /// The dial's session began (`begin` answered): the connection states `session`.
+    fn session_began(conn: &Conn, session: &Session) {
+        conn.set(lend::InUse::begun(session));
+    }
+
     fn view(conn: &Conn) -> lend::InUse {
         conn.get()
     }
@@ -599,13 +609,14 @@ mod tests {
     fn n_opens_to_one_key_ride_the_first_connection_once_it_multiplexes() {
         let mut set: InUse<&str, Conn> = InUse::new();
         assert!(matches!(set.lend(&"k", view, false, false), Lent::Dial));
-        let first = conn(&h2());
+        let first = dialling();
         set.dial_began(&"k", &first);
         assert!(
             matches!(set.lend(&"k", view, false, false), Lent::Dial),
             "nothing is known of the key yet: a first burst dials"
         );
         set.dial_opened(&"k", &h2());
+        session_began(&first, &h2());
         opened(&first);
         for _ in 0..50 {
             match set.lend(&"k", view, false, false) {

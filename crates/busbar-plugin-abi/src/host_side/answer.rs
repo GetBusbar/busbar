@@ -6,7 +6,8 @@
 //! An `Answer` exists only for a validated terminal answer: `Answer::parse` (and `OwnedAnswer::new`, which
 //! keeps the validated layout beside its buffer) walks the records once and refuses anything the generic
 //! layer can already judge. OK: a framing error is FAULT BadRecords; FAIL, NEED, NEED_RES, ERROR, the retired
-//! 0x000A, a TOKEN anywhere but first, a DIRECTORY-only nested tag at top level, an undefined generic tag and
+//! 0x000A, a TOKEN anywhere but first in a session opener's answer (`parse_opener`; anywhere at all in any
+//! other call's, P079B), a DIRECTORY-only nested tag at top level, an undefined generic tag and
 //! any tag above the kind range are FAULT UnknownTag (kind tags 0x0100..=0x4FFF pass to the kind decoder; 0x5000 and up is never used).
 //! REFUSED/FAILED: exactly FAIL, at most one ERROR directly after it, then (FAILED only) at most two FACTs with
 //! distinct keys in `FAIL_FACT_KEYS`; anything else is FAULT BadRecords. NEED is not an answer
@@ -232,8 +233,8 @@ impl<'o> Answer<'o> {
     // W1-H1: `pub(crate) fn session_token(&self) -> Option<Token>` (IF §10.2: the session token a session
     // opener answered with, bit 63 checked; read only by the §10.4 session-handle constructor) is not written:
     // busbar-ffi's `Instance::open_sessionN` reads the leading session TOKEN itself and hands back the `Session`
-    // (UNSAFE-MIN §2.2), and a crate-private fn with no caller is dead code. `parse` already accepts a leading
-    // TOKEN and keeps it out of `records()`.
+    // (UNSAFE-MIN §2.2), and a crate-private fn with no caller is dead code. `parse_opener` already accepts a
+    // leading TOKEN and keeps it out of `records()`.
     pub fn is_ok(&self) -> bool {
         self.status == Status::OK
     }
@@ -246,10 +247,10 @@ pub struct OwnedAnswer {
     layout: Layout,
 }
 impl OwnedAnswer {
-    /// Validates the terminal answer in `buf` (as `Answer::parse`) and keeps it; on a FAULT the buffer drops
-    /// (zeroed, released).
+    /// Validates the terminal answer in `buf` (as `Answer::parse`: an async chain opens no session, so a TOKEN
+    /// in its final answer is FAULT UnknownTag) and keeps it; on a FAULT the buffer drops (zeroed, released).
     pub fn new(status: Status, buf: PooledOut) -> Result<OwnedAnswer, FaultReason> {
-        let layout = layout(status, buf.bytes())?;
+        let layout = layout(status, buf.bytes(), Caller::Other)?;
         Ok(OwnedAnswer {
             status,
             buf,
