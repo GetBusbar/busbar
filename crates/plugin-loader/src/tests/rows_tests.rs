@@ -8,11 +8,9 @@
 
 use std::path::{Path, PathBuf};
 
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_OCTETS};
-use busbar_contract::abi::mechanism::door::Statement;
+use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::extensions::{encode, EXT_REFERENCE_FIELDS};
-use busbar_contract::abi::mechanism::rendering::render;
-use busbar_contract::abi::sdk::door::{abi_str, statement};
+use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::plugin_rows::PluginRows;
 
@@ -28,29 +26,14 @@ fn rendering(
     secret_refs: &'static [AbiStr],
     reference_fields: Option<&[u8]>,
 ) -> Vec<u8> {
-    let extensions = reference_fields.map(|fields| encode(&[(EXT_REFERENCE_FIELDS, fields)]));
-    let mut st = Statement {
-        kind: KindCode::Secret as u32,
-        ..statement(name, "1.0.0", 1)
-    };
-    if !secret_refs.is_empty() {
-        st.secret_refs = secret_refs.as_ptr();
-        st.secret_refs_len = secret_refs.len();
-    }
-    if let Some(extensions) = &extensions {
-        st.extensions = Blob {
-            fmt: BLOB_OCTETS,
-            flags: 0,
-            len: extensions.len(),
-            ptr: extensions.as_ptr(),
-        };
-    }
-    // SAFETY: the secret_refs list is a `'static` array of its stated count and the extensions buffer
-    // lives until `render` returns.
-    unsafe { render(&st) }.expect("the Statement renders")
+    let extensions = reference_fields
+        .map(|fields| encode(&[(EXT_REFERENCE_FIELDS, fields)]))
+        .unwrap_or_default();
+    super::rendered(KindCode::Secret, name, &[], secret_refs, &extensions)
 }
 
-fn scratch(tag: &str) -> PathBuf {
+/// A private scratch plugins directory for `tag`.
+pub(super) fn scratch(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "busbar-rows-{tag}-{}-{}",
         std::process::id(),
@@ -60,30 +43,31 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// Drop a signed archive `file` of the secret plugin `name` stating `stated` into `dir`.
-fn drop_in(dir: &Path, key: &SigningKey, file: &str, name: &str, stated: Vec<u8>) {
-    let lib = format!("{name}: library bytes this test never opens").into_bytes();
-    let manifest = crate::sign::sign(
-        key,
-        Manifest {
-            name: name.into(),
-            alias: format!("{name}-alias"),
-            kind: "secret".into(),
-            version: "1.0.0".into(),
-            publisher: TEST_PUBLISHER.into(),
-            abi_version: crate::supported_abi("secret").expect("the engine loads secret plugins"),
-            statement: Some(hex::encode(stated)),
-            ..Manifest::default()
-        },
-        &lib,
-    );
-    let archive =
-        crate::tarball::package(&manifest, "lib.so", &lib).expect("the archive packages");
+/// Write `manifest` signed by `key` over `lib`, packaged, as the archive `file` of `dir`.
+pub(super) fn drop_signed(dir: &Path, key: &SigningKey, file: &str, manifest: Manifest, lib: &[u8]) {
+    let manifest = crate::sign::sign(key, manifest, lib);
+    let archive = crate::tarball::package(&manifest, "lib.so", lib).expect("the archive packages");
     std::fs::write(dir.join(file), archive).expect("drop the archive in");
 }
 
+/// Drop a signed archive `file` of the secret plugin `name` stating `stated` into `dir`.
+fn drop_in(dir: &Path, key: &SigningKey, file: &str, name: &str, stated: Vec<u8>) {
+    let lib = format!("{name}: library bytes this test never opens").into_bytes();
+    let manifest = Manifest {
+        name: name.into(),
+        alias: format!("{name}-alias"),
+        kind: "secret".into(),
+        version: "1.0.0".into(),
+        publisher: TEST_PUBLISHER.into(),
+        abi_version: crate::supported_abi("secret").expect("the engine loads secret plugins"),
+        statement: Some(hex::encode(stated)),
+        ..Manifest::default()
+    };
+    drop_signed(dir, key, file, manifest, &lib);
+}
+
 /// Trust [`TEST_PUBLISHER`]'s test key for exactly `names`.
-fn trusting(names: &[&str]) -> TrustPolicy {
+pub(super) fn trusting(names: &[&str]) -> TrustPolicy {
     let mut policy = TrustPolicy::default();
     policy.publishers.insert(
         TEST_PUBLISHER.to_string(),
@@ -98,10 +82,10 @@ fn trusting(names: &[&str]) -> TrustPolicy {
     policy
 }
 
-/// The admitted rows of `dir`, asserting which names were admitted and which skipped.
+/// The rows of `dir`, asserting which names the scan admitted and which it skipped.
 fn admitted(dir: &Path, admitted: &[&str], skipped: &[&str]) -> crate::PluginRegistry {
-    let reg = crate::scan_and_validate(dir, &trusting(admitted))
-        .expect("the plugins directory scans");
+    let reg =
+        crate::scan_and_validate(dir, &trusting(admitted)).expect("the plugins directory scans");
     for name in admitted {
         assert!(
             PluginRows::resolve(&reg, name).is_some(),
@@ -195,7 +179,11 @@ fn reference_slots_are_the_reference_fields_the_statement_names() {
     let reg = admitted(&dir, &["referencing", "unslotted"], &["stranger"]);
     let rows: &dyn PluginRows = &reg;
     let fields = vec!["base_url".to_string(), "upstreams.*.host".to_string()];
-    assert_eq!(rows.reference_slots("referencing"), fields, "exactly, in order");
+    assert_eq!(
+        rows.reference_slots("referencing"),
+        fields,
+        "exactly, in order"
+    );
     assert_eq!(rows.reference_slots("referencing-alias"), fields);
     assert_eq!(
         rows.secret_slots("referencing"),

@@ -359,7 +359,8 @@ mod nest_custody {
                 .as_ref()
                 .and_then(std::sync::Weak::upgrade)
                 .expect("the seat's snapshot is live while it serves");
-            if let Some(on_enter) = self.on_enter.lock().unwrap().take() {
+            let on_enter = self.on_enter.lock().unwrap().take();
+            if let Some(on_enter) = on_enter {
                 on_enter(&snapshot);
             }
             let refused_more = self.budget.try_enter(AdmissionClass::Data).is_err();
@@ -729,7 +730,7 @@ mod nest_custody {
         );
         rig.nothing_ran_or_charged(1, &[parent.id], "no unit record");
 
-        let rig = super::nest_custody::rig().await;
+        let rig = rig().await;
         let parent = rig.parent(Some(&key));
         rig.snapshot.frames.lock().unwrap().remove(&parent.id);
         assert_eq!(
@@ -775,11 +776,11 @@ mod nest_custody {
             id,
             context,
             lease,
-            _unit,
+            _unit: unit,
         } = parent;
         let core = Arc::clone(&rig.core);
         let billing = rig.billing.clone();
-        *rig.plane.on_enter.lock().unwrap() = Some(Box::new(move |snapshot| {
+        *rig.plane.on_enter.lock().unwrap() = Some(Box::new(move |snapshot: &Arc<DispatchSnapshot>| {
             let mut frames = snapshot.frames.lock().unwrap();
             frames.remove(&id);
             if child_frame_too {
@@ -788,7 +789,7 @@ mod nest_custody {
             drop(frames);
             drop(lease);
             billing.settle(UnitKey::new(id), end_of(200, true));
-            drop(_unit);
+            drop(unit);
             core.units().ended(id);
         }));
         drop(context);
