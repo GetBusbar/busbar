@@ -976,3 +976,44 @@ fn a_narrowed_member_grant_loses_the_member_on_the_current_check() {
     assert!(routes.allows_current_pair(&admitted, admitted.key(), "p", &m1));
     assert!(!routes.allows_current_pair(&admitted, &pool_scoped("member", &["m2"]), "p", &m1));
 }
+
+/// v1.6 `a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowhere`
+/// (PROOF-093-F row 319), on the native seat: over the member-granted pool `p` (members m1, m2),
+/// a key's walk reaches exactly the entries its grant names (one: only m1; both: m1 and m2), and a
+/// key that reaches none is refused before any money (Scope, answered 403: the native refusal for
+/// what the door answered NoDestination). A local (unrouted) unit, whatever the key reaches,
+/// routes nowhere: no walk, no member granted, the seat's own empty lane.
+#[test]
+fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowhere() {
+    let routes = section_routes("pool");
+    let reaches: [(&[&str], Result<&[&str], AdmissionError>); 3] = [
+        (&["m1"], Ok(&["m1"])),
+        (&["m1", "m2"], Ok(&["m1", "m2"])),
+        (&[], Err(AdmissionError::Scope)),
+    ];
+    for (unit, (grant, expected)) in (70..).step_by(2).zip(reaches) {
+        let (ctx, _lease) = context_with_key(unit, pool_scoped("reach", grant));
+        let walk = RequestWalk::new(&ctx).unwrap();
+        let walked = allocation(ctx)
+            .forward(&routes, &walk, Some("p"))
+            .map(|receipt| {
+                assert_eq!(
+                    receipt.member_grants().len(),
+                    1,
+                    "{grant:?}: the grant reaches the one walk it names"
+                );
+                receipt.member_grants().get("p").cloned()
+            });
+        assert_eq!(walked, expected.map(|members| Some(lanes(members))), "{grant:?}");
+
+        let (ctx, _lease) = context_with_key(unit + 1, pool_scoped("reach", grant));
+        let local = allocation(ctx).local(&routes).unwrap();
+        assert_eq!(local.domain(), &RequestDomain::Local, "{grant:?}");
+        assert_eq!(local.pool(), format!("seat{PLANE_LANE_SEP}"), "{grant:?}");
+        assert!(
+            local.member_grants().is_empty(),
+            "{grant:?}: a local unit is granted no member"
+        );
+        assert_eq!(local.walk_key(), None, "{grant:?}: a local unit routes nowhere");
+    }
+}

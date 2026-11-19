@@ -57,6 +57,7 @@ mod fixture {
             let dest = config["dest"].as_str().unwrap();
             let egress = class(&config, "class");
             let mutual = class(&config, "tls") == 2;
+            let sni = config["sni"].as_str().unwrap_or("");
             let expected = if egress > 4 {
                 need::NeedErr::Invalid
             } else {
@@ -66,14 +67,14 @@ mod fixture {
                 "open" => {
                     let tls = if mutual {
                         need::Tls::Mutual {
-                            sni: "",
+                            sni,
                             alpn: &[],
                             trust: TrustHandle(0),
                             cert: SecretHandle(1),
                         }
                     } else {
                         need::Tls::Required {
-                            sni: "",
+                            sni,
                             alpn: &[],
                             trust: TrustHandle(0),
                         }
@@ -538,6 +539,12 @@ async fn real_native_driver_admits_exact_check_authority_before_network_and_cust
                "op":"fetch_status","dest":url,"class":2,"tls":2}),
         json!({"check_op":"open","check_dest":host,"check_class":2,"check_tls":1,
                "op":"fetch_status","dest":url,"class":2,"tls":1}),
+        // BUSBAR-6014: a TLS name offered other than the dialled host is denied before the pool,
+        // DNS and the dial (the dial names a host, not an IP literal).
+        json!({"check_op":"open","check_dest":host,"check_class":2,"check_tls":1,
+               "op":"open","dest":host,"class":2,"tls":1,"sni":"other.example"}),
+        json!({"check_op":"open","check_dest":host,"check_class":2,"check_tls":1,
+               "op":"open","dest":host,"class":2,"tls":2,"sni":"private.example.evil.test"}),
     ]
     .into_iter()
     .enumerate()
