@@ -46,13 +46,6 @@ const READ_ELSEWHERE: &[Allowed] = &[
                  serde_json, which hands an integer that fits a u64 as a u64 (not as its number \
                  map); give it a plain wire struct before that body moves to the exact-number reader",
     },
-    Allowed {
-        name: "EntryAuthor",
-        file: "crates/busbar-kernel/src/off_path/governance/persistence/prices.rs",
-        reader: "NOT SAFE: the store's exact-number reader refuses a migrated price-history entry \
-                 (`node`, `node_seq`); its fix, a plain wire struct, is on its own branch \
-                 (house/engine-w2-checkpoint-decode): delete this row when it lands",
-    },
 ];
 
 /// Number types serde reads by type, whatever path names them.
