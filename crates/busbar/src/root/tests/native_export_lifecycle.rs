@@ -150,6 +150,7 @@ impl NativeExport {
             disk,
             &spec.limits,
             reservation.observer(&name).unwrap(),
+            busbar_contract::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         );
         let pumps =
             crate::root::exports::ports::Exports::new(vec![(name.clone(), door.clone())]).unwrap();
