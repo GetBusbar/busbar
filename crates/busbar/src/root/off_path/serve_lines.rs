@@ -57,9 +57,10 @@ pub(crate) async fn session(
     plane: &str,
     carrier: &str,
     audience: Option<&str>,
-    credential: Option<&str>,
+    credential: Option<busbar_contract::secure::SecureString>,
 ) -> Result<busbar_contract::records::PlaneRequestCtx, String> {
     let env = env_credential(plane, carrier);
+    let presented = credential.is_some();
 
     let Some(resource) = audience else {
         let refusal = format!(
@@ -69,7 +70,7 @@ pub(crate) async fn session(
         return Err(refusal);
     };
 
-    if let Some(token) = credential {
+    if let Some(token) = credential.as_deref() {
         use busbar_kernel::auth::audience::Binding;
         match busbar_kernel::auth::audience::inspect_bearer(token, resource) {
             Binding::Deferred | Binding::Bound => {}
@@ -98,11 +99,7 @@ pub(crate) async fn session(
         }
     }
 
-    let admitted = busbar_kernel::auth::admit::admit_session(
-        app,
-        credential.map(str::to_string),
-        resource.to_string(),
-    );
+    let admitted = busbar_kernel::auth::admit::admit_session(app, credential, resource.to_string());
     let admitted = admitted.await;
     match admitted {
         Ok((_principal, gov)) => {
@@ -116,7 +113,7 @@ pub(crate) async fn session(
             Ok(gov)
         }
         Err(busbar_kernel::auth::IdentityRefusal::Denied) => {
-            let refusal = if credential.is_none() {
+            let refusal = if !presented {
                 format!(
                 "this deployment's `auth.chain` is configured, so an unauthenticated {carrier} session \
                  is refused exactly as an unauthenticated POST is. Set {env} to a credential the \

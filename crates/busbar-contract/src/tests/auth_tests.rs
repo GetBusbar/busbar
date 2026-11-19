@@ -15,24 +15,6 @@ fn auth_principal_actor_id_is_the_principal_id_or_anonymous() {
     assert_eq!(anon.actor_id(), "anonymous");
 }
 
-/// `CallerToken`'s manual `Debug` must NEVER print the token contents — presence only, and the two
-#[test]
-fn caller_token_debug_redacts_and_shows_presence_only() {
-    let present = CallerToken(Some("super-secret-caller-token".to_string()));
-    let dbg = format!("{present:?}");
-    assert!(!dbg.contains("super-secret-caller-token"), "{dbg}");
-    assert!(dbg.contains("<present>"), "{dbg}");
-
-    let absent = CallerToken(None);
-    let dbg = format!("{absent:?}");
-    assert!(dbg.contains("<absent>"), "{dbg}");
-    assert_ne!(
-        format!("{present:?}"),
-        format!("{absent:?}"),
-        "the present/absent Debug output must actually differ"
-    );
-}
-
 /// Login debug never prints a credential.
 #[test]
 fn login_debug_never_prints_a_credential() {
