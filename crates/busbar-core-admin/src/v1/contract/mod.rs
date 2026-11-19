@@ -260,7 +260,9 @@ pub struct InfoView {
     pub started_at_ms: Option<u64>,
     /// The durable config generation (ADMIN-API-1.6 6.1): advanced in the Store before every
     /// publication, so it never repeats across restarts. The ETag of every config resource is
-    /// `"<deployment_id>.<config_generation>"`.
+    /// `"<deployment_id>.<config_generation>"`. This is not the per-process `config_version`
+    /// counter that mutation responses carry; compare this one to learn whether the configuration
+    /// changed.
     pub config_generation: u64,
     /// Conditions an operator should know about this process, oldest first; empty normally.
     pub warnings: Vec<InfoWarning>,
@@ -928,10 +930,13 @@ impl<T> Page<T> {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct EffectiveConfigView {
-    /// The monotonic config version at the time of this read (see `InfoView.config_version`), so a
-    /// drift-detection read gets the config AND its version in one call.
+    /// The `config_version` at the time of this read: a per-process counter, `0` for the first
+    /// configuration a process builds and raised by one for each configuration it publishes. It is
+    /// lost on restart and not shared between engines; `GET /info` does not report it. To ask
+    /// whether the configuration changed since an earlier read, compare `config_generation`.
     pub version: u64,
-    /// The durable config generation at the time of this read (see `InfoView.config_generation`).
+    /// The durable config generation at the time of this read (see `InfoView.config_generation`):
+    /// the number inside the config-plane ETag, and the one to compare across reads and restarts.
     pub config_generation: u64,
     pub auth: AuthView,
     pub pools: Vec<PoolView>,

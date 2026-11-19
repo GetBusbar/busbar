@@ -4048,7 +4048,7 @@
             "$ref": "#/components/schemas/AuthView"
           },
           "config_generation": {
-            "description": "The durable config generation at the time of this read (see `InfoView.config_generation`).",
+            "description": "The durable config generation at the time of this read (see `InfoView.config_generation`):\nthe number inside the config-plane ETag, and the one to compare across reads and restarts.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer",
@@ -4097,7 +4097,7 @@
             "type": "array"
           },
           "version": {
-            "description": "The monotonic config version at the time of this read (see `InfoView.config_version`), so a\ndrift-detection read gets the config AND its version in one call.",
+            "description": "The `config_version` at the time of this read: a per-process counter, `0` for the first\nconfiguration a process builds and raised by one for each configuration it publishes. It is\nlost on restart and not shared between engines; `GET /info` does not report it. To ask\nwhether the configuration changed since an earlier read, compare `config_generation`.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer",
@@ -4883,7 +4883,7 @@
         "description": "`GET /api/v1/admin/info`: this node's identity and nothing else (ADMIN-API-1.6-ONE-MODEL §10.1).\nEvery admin credential reads it, so it names no topology, no compiled-in plugin and no\nprocess-local counter: node lease rows are the `core/process` view `nodes`, counts come from\n`/kinds`, and the `/kinds` ETag is the discovery revision.",
         "properties": {
           "config_generation": {
-            "description": "The durable config generation (ADMIN-API-1.6 6.1): advanced in the Store before every\npublication, so it never repeats across restarts. The ETag of every config resource is\n`\"<deployment_id>.<config_generation>\"`.",
+            "description": "The durable config generation (ADMIN-API-1.6 6.1): advanced in the Store before every\npublication, so it never repeats across restarts. The ETag of every config resource is\n`\"<deployment_id>.<config_generation>\"`. This is not the per-process `config_version`\ncounter that mutation responses carry; compare this one to learn whether the configuration\nchanged.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer",

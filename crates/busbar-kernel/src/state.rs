@@ -261,9 +261,8 @@ pub struct App {
     /// remains the anchor across applies, including changes to the effective governance Store.
     pub overlay_path: Option<Arc<crate::config::overlay::OverlayStore>>,
     /// Monotonic config version — `0` at boot, incremented by each API config apply (the swap builds
-    /// the next snapshot with `config_version + 1`). Exposed on `GET /api/v1/admin/info` so drift-detection
-    /// tooling can tell whether the running config changed since a prior read. Process-local (resets on
-    /// restart).
+    /// the next snapshot with `config_version + 1`). Process-local (resets on restart) and not on
+    /// `GET /api/v1/admin/info`; drift detection compares `config_generation`.
     pub config_version: u64,
     /// The DURABLE config generation (ADMIN-API-1.6 6.1): the Store row `busbar.config.generation.v1`,
     /// advanced by compare-and-set to `max(stored, prior) + 1` before every publication, so it never
