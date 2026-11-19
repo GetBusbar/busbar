@@ -1712,6 +1712,17 @@ async fn run(
     // Governed admission keeps its fixed terminal-backlog cap
     // (`governance::drain::MAX_PENDING_CHECKPOINTS`), set when the gate is built.
     let governance = app_handle.load().governance.clone();
+    // The core watch rides the housekeeping tick (the budget flusher's loop); with no governance there is no
+    // such tick and the watch wakes on the same configured interval itself.
+    let process = root::boot::images::process().ok();
+    let core_watch = root::core_watch::CoreWatch::new(move || {
+        process
+            .as_ref()
+            .map_or(0, |process| process.slots().hung_total())
+    });
+    if governance.is_none() {
+        tokio::spawn(Arc::clone(&core_watch).run_alone());
+    }
     let budget_flusher = governance.clone().map(|gov| {
         tokio::spawn(root::measurements::maintenance(
             busbar_kernel::governance::run_budget_flusher(
@@ -1719,6 +1730,7 @@ async fn run(
                 shutdown_tx.subscribe(),
                 Some(app_handle.clone()),
                 Some(Arc::clone(&drain_clock)),
+                Some(core_watch.tick()),
             ),
         ))
     });
@@ -1851,6 +1863,7 @@ async fn run(
                     Arc::clone(&tls_secret_resolver),
                     &shutdown_tx,
                     worker_shutdown_rx.clone(),
+                    &core_watch,
                 ));
                 #[cfg(not(unix))]
                 {
@@ -2108,6 +2121,7 @@ fn serve_thread_per_core(
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
+    watch: &Arc<root::core_watch::CoreWatch>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     if tls_cfg.is_some() {
         let protocols: Vec<_> = alpn.iter().map(|value| value.as_bytes()).collect();
@@ -2139,6 +2153,7 @@ fn serve_thread_per_core(
             .collect();
     let mut handles = Vec::with_capacity(cores.len());
     for (i, core_id) in cores.into_iter().enumerate() {
+        let watch = Arc::clone(&watch);
         let native = Arc::clone(&native);
         let alpn = alpn.clone();
         let tls = tls_cfg.clone();
@@ -2181,6 +2196,7 @@ fn serve_thread_per_core(
                         carrier = %crate::root::connector::carrier_name(via.as_ref()),
                         "data door listening through the connector"
                     );
+                    watch.enrol(listener.stopper());
                     serve_listener(
                         listener,
                         native,
