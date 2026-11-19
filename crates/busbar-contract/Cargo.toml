@@ -29,7 +29,6 @@ serde-saphyr = { workspace = true }
 ciborium = { workspace = true }
 serde_path_to_error = { workspace = true }
 indexmap = { workspace = true }
-async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
 foldhash = { workspace = true }

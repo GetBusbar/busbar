@@ -77,33 +77,6 @@ pub struct HookMetric {
     pub max: Option<f64>,
 }
 
-/// The hook's `status` reply body (liberal: every field optional, unknown fields ignored),
-/// deserialized into the shared `crate::hooks::HookStatus` shape. `metrics` is the raw array of entry
-/// objects (validated downstream by [`parse_status_metrics`]).
-#[derive(Debug, Default, Deserialize)]
-pub struct StatusReply {
-    /// The settings version the hook says it is running.
-    #[serde(default)]
-    pub settings_version: Option<u64>,
-
-    /// The hook's echo of its resolved settings bag.
-    #[serde(default)]
-    pub settings: Option<crate::plugin_settings::Settings>,
-    /// The raw metric entries, validated by [`parse_status_metrics`].
-    #[serde(default)]
-    pub metrics: Option<Vec<serde_json::Value>>,
-}
-
-impl From<StatusReply> for crate::hooks::HookStatus {
-    fn from(r: StatusReply) -> Self {
-        crate::hooks::HookStatus {
-            settings_version: r.settings_version,
-            settings: r.settings,
-            metrics: r.metrics,
-        }
-    }
-}
-
 /// Per-reply cap on hook-reported metric entries (excess dropped — bounded registry).
 pub const MAX_HOOK_METRICS: usize = 64;
 /// Per-entry cap on label pairs (a labeled series stays small — cardinality guard).
