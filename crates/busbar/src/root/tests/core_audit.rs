@@ -113,3 +113,54 @@ fn the_flusher_is_judged_stalled_only_after_it_started_and_by_age() {
     flusher.good(now + STALL_LIMIT);
     assert!(!flusher.stalled(now + STALL_LIMIT + Duration::from_millis(5)));
 }
+
+/// BUSBAR-2060: the journal's buffer fills during one pull, so it refuses the third line. That
+/// refusal is not sticky (the next flush stages again), so a later flush that commits must not
+/// settle the third line's waiter unless the third line is in the journal.
+#[tokio::test]
+async fn a_line_the_journal_refused_mid_pull_is_kept_and_its_waiter_released_only_by_its_commit() {
+    use busbar_kernel::persistence::journal::{BufferBudget, RuntimeJournal};
+    use busbar_kernel_wal::{Entry, RecordClass};
+    let budget = BufferBudget {
+        records: 3,
+        bytes: 1024 * 1024,
+    };
+    let history = BufferBudget {
+        records: 64,
+        bytes: 1024 * 1024,
+    };
+    let faults = crate::root::store_double::NativeFaults::open().await;
+    let store = crate::root::real_store::core_over(faults).await;
+    let journal = RuntimeJournal::open(store, 883, budget).await.unwrap();
+    let book = crate::root::durability::node_book(journal.clone(), history)
+        .await
+        .unwrap()
+        .durability;
+    let node = Arc::new(crate::root::plane_node::Node::new());
+    node.bind_book(book);
+    let core = node.core_audit();
+    let before = journal.read_records(history).await.unwrap().len();
+    // One record already held: room for two of the three lines.
+    journal
+        .stage_run(&[Entry::new(RecordClass::Load, vec![1])])
+        .unwrap();
+    let tickets: Vec<_> = (1..=3)
+        .map(|unit| core.records().append(at_mono(unit, unit)))
+        .collect();
+
+    assert!(
+        node.flush_cores().await.is_err(),
+        "the third stage is refused"
+    );
+    assert!(!core.records().is_committed(tickets[2]));
+    // The buffer drained with that flush: the refusal is gone, and the next flush stages again.
+    assert!(journal.refuses_staging().is_none());
+    node.flush_cores().await.unwrap();
+
+    let audit_lines = journal.read_records(history).await.unwrap().len() - before - 1;
+    assert!(core.records().is_committed(tickets[2]));
+    assert_eq!(
+        audit_lines, 3,
+        "a waiter released as committed has its line in the journal"
+    );
+}
