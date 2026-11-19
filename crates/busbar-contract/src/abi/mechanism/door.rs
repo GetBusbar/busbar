@@ -81,7 +81,7 @@ pub struct DoorParts {
 
 impl Door {
     /// THE ONE CONSTRUCTOR, `unsafe` and `#[doc(hidden)]`: the contract's door macro reaches it
-    /// through [`crate::abi::sdk::door::door`]; a loader's or a test's hand-laid door names it.
+    /// by hand; a loader's or a test's hand-laid door names it.
     ///
     /// # Safety
     ///
@@ -108,7 +108,7 @@ impl Door {
     }
 
     /// The same door stating `migrate` (its optional tail op, [`Door::migrate`]). The door macro's
-    /// plumbing states it through [`crate::abi::sdk::door::door`].
+    /// plumbing stated it.
     ///
     /// # Safety
     ///

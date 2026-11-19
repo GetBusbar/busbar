@@ -1108,7 +1108,7 @@ pub(crate) mod guarded_reader {
 
     /// A settings JSON value whose strings and object keys wipe on drop, including partially parsed
     /// trees and replaced duplicate values. This is for readable configuration, not extracted secret
-    /// responses (those use [`crate::abi::sdk::cred::SelectedJson`]). Numeric scratch in serde_json is not zeroized.
+    /// responses. Numeric scratch in serde_json is not zeroized.
     #[derive(Clone)]
     pub struct SettingsValue(pub(crate) Value);
 

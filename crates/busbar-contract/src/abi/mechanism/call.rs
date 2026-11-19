@@ -160,7 +160,7 @@ impl AbiStr {
 /// The host and the loader, which lend memory for one call, make one with the `unsafe`
 /// [`AbiStr::from_raw_parts`]. A read of the bytes is `unsafe` ([`AbiStr::bytes`]): a value
 /// copied out of a call's `in` names memory the host lent for that call alone. A plugin reads the
-/// strings the host lends it through [`Lent`](crate::abi::sdk::Lent).
+/// strings the host lends it through its lent input.
 ///
 /// ```
 /// use busbar_contract::abi::mechanism::call::AbiStr;
