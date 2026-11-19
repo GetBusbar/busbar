@@ -248,7 +248,7 @@ impl<R: UpChunks> Relay<'_, R> {
     /// end's messages, then its end.
     async fn apply<K: Calls + ?Sized>(
         &mut self,
-        task: &Task<'_, K>,
+        task: &mut Task<'_, K>,
         mut answer: Answer,
     ) -> Result<(), SessionError> {
         let mut asked = Asked {

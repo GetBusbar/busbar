@@ -587,10 +587,11 @@ impl Session {
             (result, totals(task.usage()))
         };
         let last_shown = fx.last_shown();
+        let endings = caller.endings.lock().unwrap().clone();
         Ran {
             result,
             side_items: caller.items(),
-            endings: caller.endings.lock().unwrap().clone(),
+            endings,
             wire,
             usage,
             last_shown,
