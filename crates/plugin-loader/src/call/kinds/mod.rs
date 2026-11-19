@@ -213,7 +213,9 @@ mod layout_tests {
     /// the index the crossing place calls.
     #[test]
     fn a_method_bit_is_one_shifted_by_its_slot() {
-        use busbar_plugin_abi::{auth as a, plane as p, transport as t};
+        use busbar_plugin_abi::auth as a;
+        use busbar_plugin_abi::plane as p;
+        use busbar_plugin_abi::transport as t;
         assert_eq!(1u64 << auth::SERVE, a::M_SERVE);
         assert_eq!(1u64 << auth::VERIFY_IO, a::M_VERIFY_IO);
         assert_eq!(1u64 << plane::CHANNEL, p::M_CHANNEL);
