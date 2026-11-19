@@ -998,7 +998,10 @@ mod dpop_at_every_site {
     }
 
     fn fields(head: &[(&'static str, String); 2]) -> [(&'static str, &str); 2] {
-        [(head[0].0, head[0].1.as_str()), (head[1].0, head[1].1.as_str())]
+        [
+            (head[0].0, head[0].1.as_str()),
+            (head[1].0, head[1].1.as_str()),
+        ]
     }
 
     #[tokio::test]
@@ -1028,7 +1031,11 @@ mod dpop_at_every_site {
             .unwrap();
         assert_eq!(authorization.identity().subject(), "client");
         assert_eq!(port.calls.load(Ordering::SeqCst), 1, "the chain ran once");
-        assert_eq!(f.replay.0.load(Ordering::SeqCst), 1, "the replay key is spent");
+        assert_eq!(
+            f.replay.0.load(Ordering::SeqCst),
+            1,
+            "the replay key is spent"
+        );
         assert!(
             authorization
                 .snapshot()
@@ -1104,6 +1111,10 @@ mod dpop_at_every_site {
             "a proven presentation is the keyed core route's caller"
         );
         assert_eq!(port.calls.load(Ordering::SeqCst), 1, "the chain ran once");
-        assert_eq!(f.replay.0.load(Ordering::SeqCst), 1, "the replay key is spent");
+        assert_eq!(
+            f.replay.0.load(Ordering::SeqCst),
+            1,
+            "the replay key is spent"
+        );
     }
 }
