@@ -3,63 +3,15 @@
 
 //! What the rate lookup costs, measured.
 
-use std::alloc::{GlobalAlloc, Layout};
-use std::cell::Cell;
-
-#[cfg(target_env = "msvc")]
-use std::alloc::System as Base;
-#[cfg(not(target_env = "msvc"))]
-use tikv_jemallocator::Jemalloc as Base;
-
 use busbar_kernel_ledger::cost::{LaneClass, RateCard};
+use busbar_plugin_test::Watch;
 
-thread_local! {
-    /// Allocations and reallocations made by this thread.
-    static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
-}
-
-/// The shipped allocator (jemalloc), counted PER THREAD: the harness's own threads allocate while a
-/// test runs, and a process-wide count would charge their allocations to the lookups under test.
-struct Counting;
-
+/// The one audited test allocator (busbar-ffi `test_watch::Watch`, through busbar-plugin-test),
+/// counted PER THREAD (`armed_here`): the harness's own threads allocate while a test runs, and a
+/// process-wide count would charge their allocations to the lookups under test. While armed it
+/// counts every allocation and every reallocation the measuring thread makes.
 #[global_allocator]
-static COUNTING: Counting = Counting;
-
-fn count() {
-    let _ = ALLOCATIONS.try_with(|n| n.set(n.get().wrapping_add(1)));
-}
-
-// SAFETY: every call is delegated unchanged to the base allocator; the count is a thread-local
-// integer that never allocates.
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        count();
-        // SAFETY: the caller upholds GlobalAlloc's contract for `layout`.
-        unsafe { Base.alloc(layout) }
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        count();
-        // SAFETY: as in `alloc`.
-        unsafe { Base.alloc_zeroed(layout) }
-    }
-
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        count();
-        // SAFETY: `ptr` and `layout` came from this allocator, which forwards to `Base`.
-        unsafe { Base.realloc(ptr, layout, new_size) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: `ptr` and `layout` came from this allocator, which forwards to `Base`.
-        unsafe { Base.dealloc(ptr, layout) }
-    }
-}
-
-/// Allocations and reallocations this thread has made so far.
-fn allocations() -> u64 {
-    ALLOCATIONS.with(Cell::get)
-}
+static WATCH: Watch = Watch::new();
 
 /// A card over one lane pricing four classes.
 fn four_class_card() -> RateCard {
@@ -84,17 +36,19 @@ fn a_rate_lookup_allocates_nothing() {
     assert!(view.class_priced("output"));
     assert!(!card.lane_unpriced("lane"));
 
-    let before = allocations();
     let mut total = 0u64;
-    for _ in 0..1_000 {
-        total += view.nanos_per_unit("input");
+    let spent = WATCH
+        .armed_here(b"", || {
+            for _ in 0..1_000 {
+                total += view.nanos_per_unit("input");
 
-        total += view.nanos_per_unit("a-class-this-lane-does-not-name");
-        assert!(!view.class_priced("a-class-this-lane-does-not-name"));
-        assert!(view.class_priced("output"));
-        assert!(!card.lane_unpriced("lane"));
-    }
-    let spent = allocations() - before;
+                total += view.nanos_per_unit("a-class-this-lane-does-not-name");
+                assert!(!view.class_priced("a-class-this-lane-does-not-name"));
+                assert!(view.class_priced("output"));
+                assert!(!card.lane_unpriced("lane"));
+            }
+        })
+        .allocs;
     assert_eq!(total, 1_000_000, "the loop really did read the rates");
     assert_eq!(
         spent, 0,
@@ -109,14 +63,17 @@ fn resolving_a_lane_allocates_nothing() {
     assert!(card.lane_rates("lane").is_some());
     assert!(card.lane_rates("mystery").is_none());
 
-    let before = allocations();
     let mut hits = 0u32;
-    for _ in 0..1_000 {
-        if card.lane_rates("lane").is_some() {
-            hits += 1;
-        }
-        assert!(card.lane_rates("mystery").is_none());
-    }
+    let spent = WATCH
+        .armed_here(b"", || {
+            for _ in 0..1_000 {
+                if card.lane_rates("lane").is_some() {
+                    hits += 1;
+                }
+                assert!(card.lane_rates("mystery").is_none());
+            }
+        })
+        .allocs;
     assert_eq!(hits, 1_000);
-    assert_eq!(allocations() - before, 0, "the lane step allocates nothing");
+    assert_eq!(spent, 0, "the lane step allocates nothing");
 }

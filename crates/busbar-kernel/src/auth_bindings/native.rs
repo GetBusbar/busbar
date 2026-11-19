@@ -4,7 +4,8 @@
 //! Generation-owned native credentials, selected by the actual pool/member attempt.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+use std::time::{Duration, Instant};
 
 use busbar_contract::config::UpstreamCreds;
 use busbar_contract::conn::OwnedHead;
@@ -16,7 +17,12 @@ use busbar_ports::auth::{AuthPort, OutboundAnswer, UpstreamIn};
 use busbar_ports::{CallCx, PortError};
 
 use super::OwnedUpstreamIn;
-use crate::custody::{CredCache, CredGet, CredKey, CredentialCache};
+use crate::audit_ring::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED};
+use crate::custody::{
+    CredCache, CredGet, CredKey, CredObserver, CredOutcome, CredentialCache, CONFIRM_AFTER,
+};
+use crate::diagnostics::{UPSTREAM_CREDENTIAL_LAPSED, UPSTREAM_CREDENTIAL_REFRESH_FAILED};
+use crate::refresh::{Report, Throttle, HOST_REPORT};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SelectedRouteKey {
@@ -231,7 +237,27 @@ impl NativeBinding {
         {
             return Err(refused());
         }
-        Ok(Self { spec, port, cache })
+        let observer = Arc::new(NativeReport {
+            plane: spec.key.plane.clone(),
+            pool: spec.key.pool.clone(),
+            member: spec.key.member.clone(),
+            upstream: spec.upstream.clone(),
+            auth_instance: spec.auth_instance,
+            style: if spec.style_flags & STYLE_SCOPE != 0 {
+                "scoped"
+            } else {
+                "shared"
+            },
+            report,
+        });
+        let weak: Weak<dyn CredObserver> = Arc::downgrade(&observer) as Weak<dyn CredObserver>;
+        cache.observe(spec.auth_instance, spec.credential_namespace, weak);
+        Ok(Self {
+            spec,
+            port,
+            cache,
+            _report: observer,
+        })
     }
 
     pub fn key(&self) -> &SelectedRouteKey {

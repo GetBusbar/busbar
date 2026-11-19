@@ -1017,3 +1017,67 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
         assert_eq!(local.walk_key(), None, "{grant:?}: a local unit routes nowhere");
     }
 }
+
+/// SECURITY (v1.6 `an_unrelated_same_name_entry_keeps_its_primary_grant_boundary`, PROOF-093-F
+/// row 427): a catalog model and an unrelated entry of the same name never share a grant. On one
+/// seat the alias is refused before the routes are published; on two seats each name is judged in
+/// its own seat's kind, so a key granted the catalog model `m` (kind `pool`) is not granted the
+/// command registration `m` (kind `server`), and the reverse.
+#[test]
+fn an_unrelated_same_name_entry_keeps_its_primary_grant_boundary() {
+    let unrelated = || table(&[definition("m", true)]);
+    assert_eq!(
+        catalog_routes().with_registrations(unrelated()).err(),
+        Some(AdmissionError::Route),
+        "an entry aliasing a catalog model on the same seat is refused"
+    );
+    let catalog = catalog_routes();
+    let commands = RequestRoutes::new("seat", Some(Arc::from("server")), None, None)
+        .unwrap()
+        .with_registrations(unrelated())
+        .unwrap();
+    let granted = |kind: &str| {
+        Arc::new(VirtualKey {
+            id: format!("granted-{kind}-m").into(),
+            enabled: true,
+            allowed_scopes: Some(vec![busbar_contract::records::ScopeRef {
+                kind: kind.into(),
+                value: "m".into(),
+            }]),
+            ..Default::default()
+        })
+    };
+    let model = |unit: u64, key: Arc<VirtualKey>| {
+        let (ctx, _lease) = context_with_key(unit, key);
+        let walk = RequestWalk::new(&ctx).unwrap();
+        allocation(ctx)
+            .forward(&catalog, &walk, Some("m"))
+            .map(|receipt| receipt.domain().clone())
+    };
+    let command = |unit: u64, key: Arc<VirtualKey>| {
+        let (ctx, _lease) = context_with_key(unit, key);
+        allocation(ctx)
+            .registration(&commands, None, "m")
+            .map(|receipt| receipt.domain().clone())
+    };
+    assert_eq!(
+        model(80, granted("pool")),
+        Ok(RequestDomain::DirectModel("m".into())),
+        "the catalog model's own grant reaches it"
+    );
+    assert_eq!(
+        command(81, granted("pool")),
+        Err(AdmissionError::Scope),
+        "the catalog model's grant is no grant of the same-named command"
+    );
+    assert_eq!(
+        command(82, granted("server")),
+        Ok(RequestDomain::Registration("m".into())),
+        "the command's own grant reaches it"
+    );
+    assert_eq!(
+        model(83, granted("server")),
+        Err(AdmissionError::Scope),
+        "the command's grant is no grant of the same-named catalog model"
+    );
+}

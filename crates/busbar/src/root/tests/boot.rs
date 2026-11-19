@@ -110,7 +110,9 @@ fn the_roots_fetch_names_a_userinfo_refusal_and_never_shows_the_password() {
         l.local_addr().unwrap().port()
     };
     let spec = super::super::loader::FetchSpec {
-        url: format!("http://fetcher:pw-H10-s3cr3t@127.0.0.1:{port}/a.tar.gz"),
+        // https: a plaintext URL is refused first by the https-only rule, before the userinfo
+        // check this proves is reached.
+        url: format!("https://fetcher:pw-H10-s3cr3t@127.0.0.1:{port}/a.tar.gz"),
         sha256: None,
         filename: "a.tar.gz".into(),
     };
