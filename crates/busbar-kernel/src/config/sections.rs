@@ -238,8 +238,8 @@ pub struct AdvancedCfg {
     /// Operator deregistration allowance, captured at boot; edit through the config document.
     #[serde(default)]
     pub shutdown: super::shutdown::AdvancedShutdownCfg,
-    /// Amortization interval for the rate-limiter stale-entry sweep: every Nth `check_rate` pays
-    /// the full retain (default 256).
+    /// Amortization interval for the budget-table sweep: every Nth admission on a budget shard
+    /// also drops that shard's entries no longer needed (default 256).
     #[serde(default = "default_rate_sweep_interval")]
     pub rate_sweep_interval: u32,
     /// Write-behind flush cadence (ms) for the in-memory usage/budget counters. On an UNGRACEFUL
