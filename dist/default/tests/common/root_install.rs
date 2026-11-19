@@ -46,10 +46,13 @@ pub fn install() {
         .expect("the loopback IdP deployment");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the loopback IdP deployment resolves");
+        // The deployment's own listeners join its destinations as addresses never dialled; the
+        // fixture serves no listener, so its guard matches the deployment's dialling policy.
+        let deployed = cfg.destinations();
         assert_eq!(
-            cfg.destinations(),
-            destinations,
-            "the fixture guard matches its deployment"
+            (deployed.block_private_addresses, &deployed.blocked),
+            (destinations.block_private_addresses, &destinations.blocked),
+            "the fixture guard matches its deployment's dialling policy"
         );
         static IO: std::sync::OnceLock<crate::root::boot::process::ProcessIo> =
             std::sync::OnceLock::new();
