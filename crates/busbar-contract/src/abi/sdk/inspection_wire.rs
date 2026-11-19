@@ -170,16 +170,6 @@ fn valid_request(request: &InspectionRequest) -> Result<(), InspectionError> {
     valid_query(&request.query)
 }
 
-/// Encode a negotiated epoch. Epoch zero is never a usable capability.
-pub fn encode_capability(epoch: u64) -> Result<Vec<u8>, InspectionError> {
-    if epoch == 0 {
-        return Err(InspectionError::Unticketed);
-    }
-    let mut bytes = vec![VERSION];
-    bytes.extend_from_slice(&epoch.to_le_bytes());
-    Ok(bytes)
-}
-
 /// Decode exactly one supported capability, refusing trailing bytes and unknown versions.
 pub fn decode_capability(bytes: &[u8]) -> Result<InspectionCapability, InspectionError> {
     let mut read = Reader::new(bytes)?;

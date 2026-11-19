@@ -280,46 +280,6 @@ fn reply(
     records(records_buf, wn[3].0, wn[2].0, b)
 }
 
-/// `serve`: a known `AUDIT_*`; body, fields, arena and records obey one short-buffer rule and
-pub fn check_serve(
-    outcome: Outcome,
-    out: &ServeOut,
-    fields_buf: &[OutField],
-    records_buf: &[RecordWrite],
-    caps: &Caps,
-    b: &Bounds,
-) -> Result<(), Fault> {
-    code(
-        u64::from(out.audit),
-        0,
-        u64::from(super::AUDIT_REJECTED),
-        "serve.audit",
-    )?;
-    reply(
-        outcome,
-        [
-            "serve.reply",
-            "serve.fields",
-            "serve.arena",
-            "serve.records",
-            "serve",
-        ],
-        [
-            (out.reply_written, out.reply_needed),
-            (u64::from(out.fields_written), u64::from(out.fields_needed)),
-            (out.arena_written, out.arena_needed),
-            (
-                u64::from(out.records_written),
-                u64::from(out.records_needed),
-            ),
-        ],
-        fields_buf,
-        records_buf,
-        caps,
-        b,
-    )
-}
-
 /// `catalog`: the reply is valid. This operation has no record buffer.
 pub fn check_catalog(
     outcome: Outcome,

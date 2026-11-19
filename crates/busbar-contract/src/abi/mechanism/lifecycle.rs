@@ -63,34 +63,6 @@ pub struct OpsHead {
     pub close: Option<Op>,
 }
 
-/// `open`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct OpenIn {
-    /// The head.
-    pub head: InHead,
-    /// The host tables.
-    pub host: *const HostTables,
-    /// The settings blob.
-    pub settings: Blob,
-    /// The resolved secrets, each a [`super::call::BLOB_SECRET`] blob: one per
-    /// [`super::door::Statement::secret_refs`] key, in that order, for the kinds whose host lends
-    /// them. A store is lent none: its declared references are resolved in place in `settings`.
-    pub secrets: *const Blob,
-    /// How many.
-    pub secrets_len: usize,
-    /// The generation this instance opens at.
-    pub generation: u64,
-    /// THE REASON BUFFER, the host's, lent for the call: an `open` that does not answer READY
-    /// writes why into it — UTF-8, at most [`OpenIn::err_cap`] bytes, cut on a char boundary — and
-    /// states how many bytes in [`OpenOut::err_len`]. A failed open has no instance to hold its
-    /// reason past the call, so the host lends the memory, as it lends every request-path result
-    /// buffer. NULL (with `err_cap` `0`) = no reason is kept.
-    pub err_buf: *mut u8,
-    /// How many bytes `err_buf` holds.
-    pub err_cap: usize,
-}
-
 /// `open`'s `out`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -104,27 +76,6 @@ pub struct OpenOut {
     pub err_len: usize,
 }
 
-/// `ready`'s `in`; its `out` is [`OutHead`] (FAILED or REFUSED name their text in
-/// `OutHead.error`, the per-call class of memory: valid until the next op on the ticket).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ReadyIn {
-    /// The head; its `ticket` is a real ticket, so the op may pend.
-    pub head: InHead,
-    /// The host tables, the same `open` was handed.
-    pub host: *const HostTables,
-}
-
-/// `retire`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct GenIn {
-    /// The head.
-    pub head: InHead,
-    /// The generation.
-    pub generation: u64,
-}
-
 /// `tick`'s `out`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -134,26 +85,6 @@ pub struct TickOut {
     /// When to tick next; `0` = no tick scheduled until the next wake of the instance's driver
     /// ticket (R-PUSH): a wake runs `drive` and then re-polls `tick`, so `0` is not "never".
     pub next_tick_ns: u64,
-}
-
-/// `drive`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct DriveIn {
-    /// The head.
-    pub head: InHead,
-    /// The driver ticket that woke: persistent, owned by the instance, outside `max_inflight`.
-    pub driver: Ticket,
-}
-
-/// `cancel`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CancelIn {
-    /// The head.
-    pub head: InHead,
-    /// The ticket whose op is cancelled.
-    pub ticket: Ticket,
 }
 
 /// `cancel`'s `out`.

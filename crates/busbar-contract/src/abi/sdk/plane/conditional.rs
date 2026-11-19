@@ -438,10 +438,6 @@ pub fn present(bytes: &[u8]) -> bool {
         ],
     )
 }
-/// Encode the host capability as an extension entry.
-pub fn encode_capability(c: Capability) -> Vec<u8> {
-    entry_of(CAPABILITY, &[&authority_bytes(c)])
-}
 /// Read the Statement's guarded kind set; duplicate indices are invalid.
 pub fn required_kinds(bytes: &[u8]) -> Result<Vec<u32>, &'static str> {
     let Some(value) = entry(bytes, REQUIRED_KINDS)? else {

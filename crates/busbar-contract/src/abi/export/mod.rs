@@ -78,28 +78,6 @@ pub const ABI_VERSION: u32 = super::versions::EXPORT.raw();
 /// The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0xe1324b294edbab7e;
 
-/// The export kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-pub const LAYOUT_SHAPES: &[&[u64]] = &[
-    crate::layout_shape!(Ops => head, deliver, scrape, status, check, serve),
-    crate::layout_shape!(DeliverIn => head, op_id, stream, _reserved, batch),
-    crate::layout_shape!(ScrapeLabel => key, value),
-    crate::layout_shape!(ScrapeSample => name, labels, labels_len, value),
-    crate::layout_shape!(ScrapeFamily => name, help, unit, kind, _reserved, samples, samples_len),
-    crate::layout_shape!(ScrapeIn => head, families, families_len, buf, cap),
-    crate::layout_shape!(ScrapeOut => head, written, needed),
-    crate::layout_shape!(StatusOut => head, status),
-    crate::layout_shape!(CheckInstance => name, settings),
-    crate::layout_shape!(CheckIn => head, phase, _reserved, instances, instances_len),
-    crate::layout_shape!(CheckOut => head, findings),
-    crate::layout_shape!(ServeIn => head, method, path, query, headers, headers_len, body),
-    crate::layout_shape!(ServeOut =>
-        head, status_code, _reserved, headers_out, headers_out_len, body
-    ),
-    crate::layout_shape!(Route => path, method, auth, _reserved),
-    crate::layout_shape!(Tail => head, streams, streams_len, routes, routes_len),
-    crate::abi::host::service::HOST_SLOTS_LAYOUT,
-];
-
 /// [`InHead::op`] values the export kind adds after the shared lifecycle, in table order.
 ///
 /// # Examples
@@ -156,23 +134,6 @@ pub struct Ops {
     /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call). In [`ServeIn`], out
     /// [`ServeOut`].
     pub serve: Option<Op>,
-}
-
-/// `deliver`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct DeliverIn {
-    /// The head.
-    pub head: InHead,
-    /// The dedupe/replay id the kernel mints, one per batch (the same discipline as the store's
-    /// additive writes).
-    pub op_id: [u8; 16],
-    /// Which declared [`ExportStream`](crate::export_stream::ExportStream) this batch belongs to.
-    pub stream: u8,
-    /// Alignment padding.
-    pub _reserved: [u8; 7],
-    /// The already-projected batch, JSON LINES (`fields:` already applied kernel-side).
-    pub batch: Blob,
 }
 
 /// One FIELD of one export record — the frozen field vocabulary the `fields:` projection key selects
@@ -467,106 +428,6 @@ pub const SCRAPE_KIND_SUMMARY: u8 = 3;
 /// [`ScrapeFamily::kind`]: untyped.
 pub const SCRAPE_KIND_UNTYPED: u8 = 4;
 
-/// One label on a [`ScrapeSample`]: a key and its value. A
-/// value-only array cannot carry a histogram's `le` or a
-/// summary's `quantile` label, which is exactly what makes the host's exposition losslessly
-/// reproducible.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ScrapeLabel {
-    /// The label key.
-    pub key: AbiStr,
-    /// The label value.
-    pub value: AbiStr,
-}
-
-/// One sample of a [`ScrapeFamily`]'s snapshot: its own series name (a histogram's `_bucket`/
-/// `_sum`/`_count` and a summary's `quantile` legs are each their own named series), its labels
-/// and its value in the recorder's original string spelling. Re-rendering a
-/// parsed float would not reproduce the host's exposition byte for byte.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ScrapeSample {
-    /// This sample's own series name (the family name, or the family name plus its `_bucket`/
-    /// `_sum`/`_count` suffix).
-    pub name: AbiStr,
-    /// This sample's labels.
-    pub labels: *const ScrapeLabel,
-    /// How many.
-    pub labels_len: usize,
-    /// The recorder's own spelling of the value, unchanged.
-    pub value: AbiStr,
-}
-
-/// One metric family of the host recorder's snapshot, handed to `scrape` so the sink can render
-/// its own exposition.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ScrapeFamily {
-    /// The family name.
-    pub name: AbiStr,
-    /// Its help text.
-    pub help: AbiStr,
-    /// Its unit; absent = none.
-    pub unit: AbiStr,
-    /// [`SCRAPE_KIND_COUNTER`] | [`SCRAPE_KIND_GAUGE`] | [`SCRAPE_KIND_HISTOGRAM`] |
-    /// [`SCRAPE_KIND_SUMMARY`] | [`SCRAPE_KIND_UNTYPED`].
-    pub kind: u8,
-    /// Alignment padding.
-    pub _reserved: [u8; 7],
-    /// Samples carry their own labels, rather than
-    /// sharing family labels, so histogram and summary
-    /// series retain their `le` and `quantile` labels.
-    pub samples: *const ScrapeSample,
-    /// How many.
-    pub samples_len: usize,
-}
-
-/// Input to `scrape`. Results use host buffers, never plugin-owned pointers in
-/// `out`. The host zeroes `out` before each call,
-/// so no input data may live there.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ScrapeIn {
-    /// The head.
-    pub head: InHead,
-    /// The host recorder's complete snapshot: every family, without filtering by this instance's Statement, in recorder render order, kind then name.
-    ///
-    ///
-    pub families: *const ScrapeFamily,
-    /// How many.
-    pub families_len: usize,
-    /// The host-owned buffer the plugin renders its exposition text into.
-    pub buf: *mut u8,
-    /// `buf`'s capacity, in bytes.
-    pub cap: usize,
-}
-
-/// `scrape`'s `out`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ScrapeOut {
-    /// The head.
-    pub head: OutHead,
-    /// How many bytes the plugin wrote into [`ScrapeIn::buf`].
-    pub written: usize,
-    /// `0` unless `written == 0` because `buf` was too small: the byte length the plugin needed.
-    /// The host re-invokes ONCE with a buffer at least this large.
-    pub needed: usize,
-}
-
-/// `status`'s `out`. OFF-PATH: `status` is a plugin-owned result, memory class (iv) — live under
-/// `head.lease` until `release(lease)`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct StatusOut {
-    /// The head.
-    pub head: OutHead,
-    /// The sink's status JSON, as a [`super::mechanism::call::BLOB_JSON`] blob, under
-    /// `head.lease` (off-path JSON-as-payload is allowed here per the mechanism's one JSON rule).
-    pub status: Blob,
-}
-
 /// [`CheckIn::phase`]: among the operational limits' checks (a bound this sink's instances
 pub const CHECK_PHASE_LIMITS: u32 = 0;
 /// [`CheckIn::phase`]: after the limits, each instance's own settings — the OLD
@@ -598,19 +459,6 @@ pub struct CheckIn {
     pub instances: *const CheckInstance,
     /// How many.
     pub instances_len: usize,
-}
-
-/// `check`'s `out`. OFF-PATH: `findings` is a plugin-owned result, memory class (iv) — live under
-/// `head.lease` until `release(lease)`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CheckOut {
-    /// The head.
-    pub head: OutHead,
-    /// The sink's check findings, as a [`super::mechanism::call::BLOB_JSON`] blob, under
-    /// `head.lease` (so they keep their place among the configuration's other errors, the
-    /// [`CheckPhase`] ordering). At [`CHECK_PHASE_RECORDER`], the JSON recorder declaration instead.
-    pub findings: Blob,
 }
 
 /// `serve`'s `in`: one HTTP request dispatched to this sink's own routes.
@@ -654,13 +502,6 @@ pub struct ServeOut {
     /// The response body, under `head.lease` until `release(lease)` (memory class iv).
     pub body: Blob,
 }
-
-/// [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`.
-pub const ROUTE_AUTH_NONE: u32 = 0;
-/// [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`.
-pub const ROUTE_AUTH_KEY: u32 = 1;
-/// [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD
-pub const ROUTE_AUTH_ADMIN: u32 = 2;
 
 /// One HTTP route this instance serves via `serve`. The pair `{path, method}`
 /// is the collision key the kernel checks at

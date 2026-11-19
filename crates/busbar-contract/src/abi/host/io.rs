@@ -75,16 +75,6 @@ pub struct IoSlots {
     pub ends: Option<ServiceFn>,
 }
 
-/// `io.open`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct OpenIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The address: `ip:port`, or `unix:` and an absolute path.
-    pub addr: AbiStr,
-}
-
 /// `io.listen`'s `in`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -125,32 +115,4 @@ pub struct WriteIn {
     pub bytes: *const u8,
     /// How many.
     pub len: usize,
-}
-
-/// `io.ready`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ReadyIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The handle.
-    pub handle: u64,
-    /// [`DIR_READ`] | [`DIR_WRITE`].
-    pub dir: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-}
-
-/// `io.shut`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ShutIn {
-    /// The head.
-    pub head: ServiceHead,
-    /// The handle.
-    pub handle: u64,
-    /// [`DIR_READ`] | [`DIR_WRITE`] | [`DIR_BOTH`].
-    pub how: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
 }

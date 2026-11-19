@@ -5,22 +5,12 @@
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
-use super::{CheckOut, Route, ScrapeOut, ServeOut, StatusOut, Tail};
-use super::{ROUTE_AUTH_ADMIN, ROUTE_AUTH_NONE};
+use super::{Route, ServeOut, Tail};
 use crate::abi::mechanism::call::OutHead;
 use crate::abi::mechanism::check::{
     code, fault, leased_blob, listed, result, served, text, HARD_MAX_BYTES,
 };
 use crate::export_stream::ExportStream;
-
-/// The most entries `serve`'s `headers_out` may carry: 64 headers, as (name, value) pairs.
-pub const HARD_MAX_HEADERS_OUT_LEN: u64 = 128;
-
-/// Validates `serve`'s `out`.
-pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
-    let (h, n) = (out.headers_out, out.headers_out_len);
-    served(&out.head, h, n, HARD_MAX_HEADERS_OUT_LEN, &out.body)
-}
 
 /// The most routes one export instance may declare.
 pub const HARD_MAX_ROUTES: u64 = 64;

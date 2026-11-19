@@ -13,19 +13,10 @@ mod outbound;
 mod points;
 mod serve;
 
-pub use check::{
-    check_begin_login, check_complete_login, check_fields, check_identify, check_inbound_points,
-    check_points, check_style_decl, check_target, FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX,
-};
+pub use check::{check_points, check_target, FIELDS_HARD_MAX, IDENTITY_GROUPS_HARD_MAX};
 
-pub use inbound::{
-    BeginLoginIn, BeginLoginOut, CompleteLoginIn, IdentifyOut, IdentityBuf, IdentityOut,
-    LoginField, NamedValue, RequestFacts, StripName, VerifyIn,
-};
-pub use outbound::{
-    FieldSpan, FieldsIn, FieldsOut, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn,
-    OutboundReadyOut, TargetIn, TargetOut,
-};
+pub use inbound::{IdentifyOut, IdentityBuf, IdentityOut, LoginField};
+pub use outbound::{TargetIn, TargetOut};
 pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 pub use serve::{ServeIn, ServeOut};
 
@@ -34,60 +25,6 @@ pub const ABI_VERSION: u32 = super::versions::AUTH.raw();
 
 /// The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0x7f8289d571846432;
-
-/// The auth kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-pub const LAYOUT_SHAPES: &[&[u64]] = &[
-    crate::layout_shape!(Ops =>
-        head, verify, begin_login, complete_login, open_outbound, outbound_ready, fields, target,
-        serve
-    ),
-    crate::layout_shape!(StyleDecl => name, flags, points),
-    crate::layout_shape!(AuthTail =>
-        head, caps, facts, login_kind, inbound_points, styles, styles_len, operator_principal,
-        credential_kinds, credential_kinds_len
-    ),
-    crate::layout_shape!(NamedValue => name, value),
-    crate::layout_shape!(RequestFacts => method, authority, canonical_path, query, timestamp),
-    crate::layout_shape!(IdentityBuf => buf, buf_cap, groups, groups_cap, _reserved),
-    crate::layout_shape!(IdentityOut =>
-        subject, key_id, key_name, user, provider, name, claims, claims_fmt, flags, ttl_secs,
-        groups_len, _reserved, replay_key, replay_ttl_secs, credential
-    ),
-    crate::layout_shape!(StripName => name, place, _reserved),
-    crate::layout_shape!(VerifyIn =>
-        head, credential, lines, lines_len, request, out_buf, point, _reserved, conn, unit, peer,
-        body, strip, strip_cap, _reserved2
-    ),
-    crate::layout_shape!(IdentifyOut =>
-        head, verdict, needed_groups, needed_bytes, identity, decision, strip_len, needed_strip,
-        _reserved
-    ),
-    crate::layout_shape!(BeginLoginIn =>
-        head, redirect_uri, state, nonce, code_challenge, scopes, scopes_len
-    ),
-    crate::layout_shape!(LoginField => name, label, kind, required),
-    crate::layout_shape!(BeginLoginOut => head, shape, _reserved, authorize_url, form, form_len),
-    crate::layout_shape!(CompleteLoginIn =>
-        head, code, state, redirect_uri, code_verifier, submitted, submitted_len, out_buf, nonce
-    ),
-    crate::layout_shape!(OpenOutboundIn => head, style, credential, settings),
-    crate::layout_shape!(OpenOutboundOut => head, handle),
-    crate::layout_shape!(OutboundReadyIn => head, handle),
-    crate::layout_shape!(OutboundReadyOut => head, ready, _reserved),
-    crate::layout_shape!(FieldSpan => name, value, flags, _reserved),
-    crate::layout_shape!(FieldsIn =>
-        head, handle, mode, point, request, caller_credential, field_buf, field_buf_cap, fields,
-        fields_cap, _reserved, headers, headers_len, conn, unit, body
-    ),
-    crate::layout_shape!(FieldsOut => head, fields_len, needed_fields, needed_bytes),
-    crate::layout_shape!(TargetIn => head, style, credential, settings, buf, buf_cap),
-    crate::layout_shape!(TargetOut => head, target),
-    crate::layout_shape!(ServeIn => head, method, path, query, headers, headers_len, body, client),
-    crate::layout_shape!(ServeOut =>
-        head, status_code, _reserved, headers_out, headers_out_len, body
-    ),
-    crate::abi::host::service::HOST_SLOTS_LAYOUT,
-];
 
 /// [`InHead::op`](super::mechanism::call::InHead) of each auth op: kind op `k` is at slot
 /// [`LIFECYCLE_SLOTS`]` + k`, contiguous, in [`Ops`] field order.
@@ -217,13 +154,9 @@ pub struct Ops {
 pub const CAP_INBOUND: u32 = 1;
 /// [`AuthTail::caps`]: the plugin serves `begin_login`/`complete_login`.
 pub const CAP_LOGIN: u32 = 2;
-/// [`AuthTail::caps`]: the plugin serves `open_outbound`/`outbound_ready`/`fields`.
-pub const CAP_OUTBOUND: u32 = 4;
 
 /// [`StyleDecl::flags`]: `fields` needs [`FieldsIn::headers`], the exact envelope, for this style.
 pub const STYLE_NEEDS_HEADERS: u32 = 2;
-/// [`StyleDecl::flags`]: this style serves [`MODE_PASSTHROUGH`] as well as [`MODE_OWN`] — the
-pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
 /// [`StyleDecl::flags`]: the style sends the credential to the provider entry's token endpoint.
 pub const STYLE_ENDPOINT_TOKEN_URL: u32 = 32;
 /// [`StyleDecl::flags`]: the style takes its token endpoint from the credential itself.
@@ -351,16 +284,10 @@ impl AuthTail {
 pub const VERDICT_IDENTITY: u32 = 1;
 /// [`IdentifyOut::verdict`] for `verify`: a credential was presented and is invalid. Fail-closed;
 pub const VERDICT_REJECT: u32 = 2;
-/// [`IdentifyOut::verdict`] for `verify`: not this plugin's credential; try the next.
-pub const VERDICT_PASS: u32 = 3;
 
 /// [`IdentifyOut::decision`] for `verify`: the transport goes on with the request (the next
 pub const DECISION_CONTINUE: u32 = 1;
-/// [`IdentifyOut::decision`] for `verify`: the transport stops the request. The SDK's default
-pub const DECISION_STOP: u32 = 2;
 
-/// [`StripName::place`]: a field line of the request head, matched ASCII case-insensitively.
-pub const STRIP_FIELD: u32 = 1;
 /// [`StripName::place`]: a query key of the request target, matched case-sensitively.
 pub const STRIP_QUERY: u32 = 2;
 

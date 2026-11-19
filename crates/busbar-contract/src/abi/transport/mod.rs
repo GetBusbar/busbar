@@ -209,108 +209,6 @@ pub const ABI_VERSION: u32 = super::versions::TRANSPORT.raw();
 /// The transport kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0x4aa149ac9c634294;
 
-/// The transport kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-pub const LAYOUT_SHAPES: &[&[u64]] = &[
-    crate::layout_shape!(Ops =>
-        head, listen, accept, dial, read, write, flush, shut, arrival, locate, begin, ingest, emit,
-        encode, refuse, finish, detach, adopt, timer
-    ),
-    crate::layout_shape!(Claim =>
-        selector_forms, egress_selector_forms, facts, facts_len, status_namespace, session,
-        session_bound, unit0_trigger, status_at, _reserved
-    ),
-    crate::layout_shape!(StatusRow => claim, lo, hi, class),
-    crate::layout_shape!(FaultRow => claim, lo, hi, fault),
-    crate::layout_shape!(route::FieldPredicate => op, _reserved, name, value),
-    crate::layout_shape!(route::RouteMatch =>
-        methods, path_form, path, fields, fields_len, rung, _reserved
-    ),
-    crate::layout_shape!(LineEntry => line, points, auth, body_limit, route),
-    crate::layout_shape!(SettingDecl => path, kind, _reserved, default),
-    crate::layout_shape!(TransportTail =>
-        head, role, framing, facts, handshake_max_steps, composes_over, composes_over_len,
-        claim_rows, claim_rows_len, upgrades_to, upgrades_to_len, handoff_from, handoff_to,
-        handoff_binding_fact, handshake_frame_kind, status_rows, status_rows_len, settings,
-        settings_len, fault_rows, fault_rows_len, frame_piece_size, _reserved
-    ),
-    crate::layout_shape!(Destination =>
-        kind, _reserved, authority, program, args, args_len, env, env_len
-    ),
-    crate::layout_shape!(ConnFacts =>
-        size, _reserved, offered_name, agreed_protocol, peer_subject, peer_issuer, peer_fingerprint,
-        claim, local_certificate
-    ),
-    crate::layout_shape!(FramePiece =>
-        stream, offset, len, code, status_class, fault, flags, retry_after_secs, declared_len
-    ),
-    crate::layout_shape!(FramerSink =>
-        wire, wire_cap, frame, frame_cap, pieces, pieces_cap, now_monotonic_ns, now_unix_ns, heads,
-        heads_cap
-    ),
-    crate::layout_shape!(FrameSpan => offset, len),
-    crate::layout_shape!(HeadSlots => stream, method, target, authority, reason),
-    crate::layout_shape!(FramerYield =>
-        wire_len, frame_len, pieces_len, flags, next_deadline_ns, heads_len, agreed
-    ),
-    crate::layout_shape!(ListenIn => head, bind, addr_buf, addr_cap),
-    crate::layout_shape!(ListenOut => head, listener, addr_written),
-    crate::layout_shape!(AcceptIn => head, listener, peer_buf, peer_cap),
-    crate::layout_shape!(AcceptOut => head, conn, peer_written),
-    crate::layout_shape!(DialIn => head, dest, supervision_key),
-    crate::layout_shape!(ConnOut => head, conn),
-    crate::layout_shape!(ReadIn => head, conn, buf, cap),
-    crate::layout_shape!(WriteIn => head, conn, bytes, len, flags, _reserved),
-    crate::layout_shape!(IoOut => head, len, flags, _reserved),
-    crate::layout_shape!(ConnIn => head, conn),
-    crate::layout_shape!(ShutIn => head, conn, reason, _reserved),
-    crate::layout_shape!(ArrivalIn => head, conn, peer_buf, peer_cap),
-    crate::layout_shape!(ArrivalOut => head, peer_written, peer_needed, local_port, _reserved),
-    crate::layout_shape!(LocateIn =>
-        head, target, authority_buf, authority_cap, name_buf, name_cap, alpn_buf, alpn_cap, accept,
-        _accept_reserved, defaults_buf, defaults_cap
-    ),
-    crate::layout_shape!(LocateOut =>
-        head, authority_written, authority_needed, name_written, name_needed, secure, has_name,
-        alpn_written, alpn_needed, defaults_written, defaults_needed, states_length, _reserved
-    ),
-    crate::layout_shape!(FramerOut => head, yielded, framing, datagram),
-    crate::layout_shape!(KeyingMaterial => size, profile, bytes, len),
-    crate::layout_shape!(DatagramRoute => offset, len, path, lane),
-    crate::layout_shape!(DatagramLane =>
-        size, lane, path, bound, path_addr, local_addr, verified, _reserved, keying, routes,
-        routes_cap, paths, paths_len
-    ),
-    crate::layout_shape!(RendezvousTerms =>
-        role, _reserved, local_user, local_secret, remote_user, remote_secret, peer_fingerprint,
-        candidates
-    ),
-    crate::layout_shape!(DatagramYield => routes_len, request, request_from, request_to, terms),
-    crate::layout_shape!(BeginIn =>
-        head, side, scheme, _reserved, target, facts, sink, fields, fields_len, lane, lines,
-        lines_len, points, _points_reserved, auth
-    ),
-    crate::layout_shape!(IngestIn => head, framing, bytes, len, end, _reserved, sink, lane),
-    crate::layout_shape!(EmitIn =>
-        head, framing, stream, bytes, len, end_of_frame, flags, sink, deadline_ns, lane, status,
-        _status_reserved, unit, body_len, body_len_known, _body_len_reserved
-    ),
-    crate::layout_shape!(EncodeIn =>
-        head, fields, fields_len, body, body_len, sink, method, target
-    ),
-    crate::layout_shape!(RefuseIn =>
-        head, framing, stream, has_stream, _reserved, bytes, len, sink, status, _reserved2,
-        head_sent, _reserved3
-    ),
-    crate::layout_shape!(FinishIn =>
-        head, framing, reason, _reserved, sink, final_status, _final_reserved, final_message,
-        final_details, final_bytes, final_bytes_len, lane
-    ),
-    crate::layout_shape!(FramingIn => head, framing, sink, lane),
-    crate::layout_shape!(AdoptIn => head, side, _reserved, facts, leftover, leftover_len, sink),
-    crate::layout_shape!(DatagramPath => path, _reserved, addr),
-    crate::abi::host::service::HOST_SLOTS_LAYOUT,
-];
-
 /// The transport kind's generation as the Rust face states it (`Plugin::abi`): [`ABI_VERSION`]
 pub const TRANSPORT_ABI: crate::abi::versions::AbiVersion = crate::abi::versions::TRANSPORT;
 
@@ -409,36 +307,6 @@ pub struct Ops {
 
 /// The largest address `listen` or `accept` may write: the host's `addr_cap`/`peer_cap` is at
 pub const MAX_ADDR: u64 = 256;
-
-/// Every kind op's contract, in slot order. Carrier I/O pends on its side's ticket (read or write)
-/// under the carrier's idle timeout ([`DeadlineClass::Connection`]); `listen` is boot-time and
-/// off-path. A framer is sans-IO: every framer op is request-path and runs under the stream's
-/// deadline. `begin`, `ingest` and `emit` are ticketed and may pend, only on an auth call they make
-/// through the host (the module's "a framer pends only on a ticketed auth call"); every other framer
-/// op never pends.
-///
-/// [`DeadlineClass::Connection`]: crate::abi::mechanism::call::DeadlineClass::Connection
-#[rustfmt::skip]
-pub const CONTRACTS: [OpContract; KIND_SLOTS as usize] = [
-    contract!(LISTEN, false, true, ListenIn, ListenOut, Call),
-    contract!(ACCEPT, true, true, AcceptIn, AcceptOut, Connection),
-    contract!(DIAL, true, true, DialIn, ConnOut, Connection),
-    contract!(READ, true, true, ReadIn, IoOut, Connection),
-    contract!(WRITE, true, true, WriteIn, IoOut, Connection),
-    contract!(FLUSH, true, true, ConnIn, OutHead, Connection),
-    contract!(SHUT, true, true, ShutIn, OutHead, Connection),
-    contract!(ARRIVAL, true, false, ArrivalIn, ArrivalOut, Call),
-    contract!(LOCATE, true, false, LocateIn, LocateOut, Call),
-    contract!(BEGIN, true, true, BeginIn, FramerOut, Stream),
-    contract!(INGEST, true, true, IngestIn, FramerOut, Stream),
-    contract!(EMIT, true, true, EmitIn, FramerOut, Stream),
-    contract!(ENCODE, true, false, EncodeIn, FramerOut, Stream),
-    contract!(REFUSE, true, false, RefuseIn, FramerOut, Stream),
-    contract!(FINISH, true, false, FinishIn, FramerOut, Stream),
-    contract!(DETACH, true, false, FramingIn, FramerOut, Stream),
-    contract!(ADOPT, true, false, AdoptIn, FramerOut, Stream),
-    contract!(TIMER, true, false, FramingIn, FramerOut, Stream),
-];
 
 /// [`crate::abi::mechanism::lifecycle::CancelOut::disposition`]: the cancelled carrier op had not
 pub const CANCEL_NOTHING_MOVED: u32 = 1;
@@ -1101,31 +969,6 @@ pub struct AcceptOut {
     pub peer_written: u64,
 }
 
-/// `dial`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct DialIn {
-    /// The head.
-    pub head: InHead,
-    /// The destination.
-    pub dest: *const Destination,
-    /// THE SUPERVISION KEY of the member this dial runs a program for, opaque: minted fresh for
-    /// each member and kept while the member's program is unchanged across re-declarations, so a
-    /// carrier that supervises what it runs resets its supervision exactly when the member is new.
-    /// `0` = no member identity (an authority dial, or a program no member runs). Appended.
-    pub supervision_key: u64,
-}
-
-/// `dial`'s `out`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ConnOut {
-    /// The head.
-    pub head: OutHead,
-    /// The connection token.
-    pub conn: u64,
-}
-
 /// `read`'s `in`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1180,20 +1023,6 @@ pub struct ConnIn {
     pub head: InHead,
     /// The connection.
     pub conn: u64,
-}
-
-/// `shut`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ShutIn {
-    /// The head.
-    pub head: InHead,
-    /// The connection.
-    pub conn: u64,
-    /// `CLOSE_*`.
-    pub reason: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
 }
 
 /// `arrival`'s `in`.

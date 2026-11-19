@@ -397,11 +397,6 @@ abi_op! {
     }
 }
 
-/// The rewrites: a known class and a named `from`; `to` is absent for an alias, optional for a
-pub fn check_rewrites(rewrites: &[Rewrite]) -> Result<(), Fault> {
-    rewrites.iter().try_for_each(check_rewrite)
-}
-
 abi_op! {
     /// One rewrite, as [`check_rewrites`] states.
     fn check_rewrite(r: &Rewrite) as "rewrite", REWRITE_RULES for r: Rewrite {
@@ -443,27 +438,6 @@ abi_op! {
         // redundant, and refused.
         deny(s.flags & SECTION_DECLARING != 0 && s.flags & SECTION_SELECTS != 0, Contradiction, "section.flags");
     }
-}
-
-/// The needs: a known direction and a transport claim; strings and details never counted with a
-/// NULL pointer.
-///
-/// # Errors
-///
-/// The rule a need breaks.
-///
-/// # Safety
-/// Every response-header list that passes the pointer/count/alignment bounds points at its
-/// stated initialized `AbiStr` entries, and every nonempty name read from those entries points
-/// at its stated live bytes. Rejected shapes are not dereferenced. All storage remains live and
-/// unwritten for this check. Raw pointer/count fields do not establish that ownership in safe Rust.
-///
-/// ```compile_fail,E0133
-/// use busbar_contract::abi::mechanism::check::check_needs;
-/// let _ = check_needs(&[]);
-/// ```
-pub unsafe fn check_needs(needs: &[Need]) -> Result<(), Fault> {
-    needs.iter().try_for_each(check_need)
 }
 
 abi_op! {
@@ -560,76 +534,6 @@ unsafe fn list<'a, T>(ptr: *const T, len: usize, field: &'static str) -> Result<
     }
     // SAFETY: the caller's contract; `ptr` is non-NULL here.
     Ok(unsafe { core::slice::from_raw_parts(ptr, len) })
-}
-
-/// THE STATEMENT'S LISTS, at load: every list never counted with a NULL pointer, never above
-/// [`STATEMENT_LIST_MAX`] and never misaligned (the metric families, each family's label keys,
-/// the diagnostic ids and the secret references included), then
-/// [`check_marks`], [`check_rewrites`], [`check_statement_sections`], [`check_needs`], the settings
-/// paths and the declared answers. The same check runs for a compiled-in row and a dropped-in door.
-///
-/// # Errors
-///
-/// The rule the Statement breaks.
-///
-/// # Safety
-///
-/// `st` is a Statement a door answered: every non-NULL list points at its stated count of live
-/// `'static` entries.
-pub unsafe fn check_statement(st: &Statement) -> Result<(), Fault> {
-    if st.measurement_classes_len > crate::abi::measurement::MAX_MEASUREMENT_CLASSES {
-        return Err(fault(Rule::OverMax, "statement.measurement_classes"));
-    }
-    // SAFETY: the caller guarantees static declarations and their string storage.
-    unsafe {
-        crate::abi::measurement::check_declarations(list(
-            st.measurement_classes,
-            st.measurement_classes_len,
-            "statement.measurement_classes",
-        )?)
-    }?;
-    // SAFETY (each `list`): the caller's contract.
-    let families = unsafe { list(st.families, st.families_len, "statement.families") }?;
-    for f in families {
-        listed(
-            f.label_keys,
-            f.label_keys_len,
-            "statement.family.label_keys",
-        )?;
-        bounded(
-            f.label_keys,
-            f.label_keys_len,
-            "statement.family.label_keys",
-        )?;
-    }
-    unsafe { list(st.diag_ids, st.diag_ids_len, "statement.diag_ids") }?;
-    unsafe { list(st.secret_refs, st.secret_refs_len, "statement.secret_refs") }?;
-    let words = unsafe { list(st.mark_words, st.mark_words_len, "statement.mark_words") }?;
-    check_marks(st.marks, words)?;
-    check_rewrites(unsafe { list(st.rewrites, st.rewrites_len, "statement.rewrites") }?)?;
-    let sections = unsafe { list(st.sections, st.sections_len, "statement.sections") }?;
-    check_statement_sections(sections)?;
-
-    if sections.iter().any(|s| s.flags & SECTION_SELECTS != 0)
-        && st.kind != super::KindCode::Plane as u32
-    {
-        return Err(fault(Rule::Contradiction, "statement.sections"));
-    }
-    let needs = unsafe { list(st.needs, st.needs_len, "statement.needs") }?;
-    // SAFETY: the caller's Statement contract keeps its nested list entries and names live.
-    unsafe { check_needs(needs) }?;
-    text(st.target_from, "statement.target_from")?;
-    text(st.trust_from, "statement.trust_from")?;
-    for a in unsafe { list(st.answers, st.answers_len, "statement.answers") }? {
-        named(*a, "statement.answer")?;
-    }
-    if st.claims_len != 0 && st.kind != super::KindCode::Transport as u32 {
-        return Err(fault(Rule::Contradiction, "statement.claims"));
-    }
-    for c in unsafe { list(st.claims, st.claims_len, "statement.claims") }? {
-        named(*c, "statement.claim")?;
-    }
-    Ok(())
 }
 
 /// One op's contract: where it runs, whether it may pend, its largest `in`/`out`, its deadline

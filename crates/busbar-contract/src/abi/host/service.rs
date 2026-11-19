@@ -31,7 +31,6 @@
 
 use std::os::raw::c_void;
 
-use crate::abi::auth::FieldSpan;
 use crate::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, RawOutcome, Span};
 use crate::abi::mechanism::check::{self, fault, Dim, Fault, Filled, Rule, MAX_BYTES};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx};
@@ -704,19 +703,6 @@ pub struct HostSlots {
     /// [`op::MIGRATE_ADMIT`], in [`MigrateAdmitIn`]. A tail addition (MIGRATE-ON-BOOT r34).
     pub migrate_admit: Option<ServiceFn>,
 }
-
-// Every direct-contract kind receives this common positional table. Fold its complete shape
-// into each kind's admission fingerprint so an earlier table cohort cannot bind.
-pub(crate) const HOST_SLOTS_LAYOUT: &[u64] = crate::layout_shape!(HostSlots =>
-    size, slots, clock_now, records_get, records_list, records_claim, dest_judge, sign,
-    unit_nest, work_open, work_find, work_settle, work_resume, trust_sight, trust_due,
-    verify_lookup, verify_store, content_scan, hook_call, random_fill, need_admit,
-    trust_verify, records_secret, disk_append, snapshot_read, trust_sight_item,
-    trust_serves, trust_decide, trust_state, session_emit, auth_call, unit_hand_in,
-    unit_refuse, ticket_mint, ticket_take, work_status, outbound_authorize, hook_child,
-    directory_get, directory_lookup, directory_scan, directory_count, directory_create,
-    directory_apply, directory_delete, migrate_admit
-);
 
 /// What a service's answer may carry beyond the common rules.
 #[derive(Debug, Clone, Copy)]

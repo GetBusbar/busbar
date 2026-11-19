@@ -449,77 +449,7 @@ pub const MAX_SLOTS: u32 = 65_536;
 
 /// Primitive names, in mandatory table order.
 pub const NAMES: [&str; 5] = ["read", "scan", "commit", "clock", "bootstrap"];
-/// Primitive contracts; all may pend through the existing driver mechanism.
-pub const OPS: [OpContract; 5] = [
-    OpContract {
-        slot: slot::READ,
-        request_path: true,
-        may_pend: true,
-        max_in: core::mem::size_of::<ReadIn>(),
-        max_out: core::mem::size_of::<ReadOut>(),
-        deadline: DeadlineClass::Call,
-    },
-    OpContract {
-        slot: slot::SCAN,
-        request_path: true,
-        may_pend: true,
-        max_in: core::mem::size_of::<ScanIn>(),
-        max_out: core::mem::size_of::<ScanOut>(),
-        deadline: DeadlineClass::Call,
-    },
-    OpContract {
-        slot: slot::COMMIT,
-        request_path: true,
-        may_pend: true,
-        max_in: core::mem::size_of::<CommitIn>(),
-        max_out: core::mem::size_of::<CommitOut>(),
-        deadline: DeadlineClass::Call,
-    },
-    OpContract {
-        slot: slot::CLOCK,
-        request_path: true,
-        may_pend: true,
-        max_in: core::mem::size_of::<ClockIn>(),
-        max_out: core::mem::size_of::<ClockOut>(),
-        deadline: DeadlineClass::Call,
-    },
-    OpContract {
-        slot: slot::BOOTSTRAP,
-        request_path: false,
-        may_pend: true,
-        max_in: core::mem::size_of::<BootstrapIn>(),
-        max_out: core::mem::size_of::<BootstrapOut>(),
-        deadline: DeadlineClass::Call,
-    },
-];
 
-/// Every v4 shape, in fingerprint fold order.
-pub const LAYOUT_SHAPES: &[&[u64]] = &[
-    HostBuf::LAYOUT,
-    Bytes::LAYOUT,
-    Address::LAYOUT,
-    TimeGuard::LAYOUT,
-    AttemptId::LAYOUT,
-    Predicate::LAYOUT,
-    Mutation::LAYOUT,
-    Candidate::LAYOUT,
-    ReadValue::LAYOUT,
-    HostValues::LAYOUT,
-    ReadIn::LAYOUT,
-    ReadOut::LAYOUT,
-    ScanRow::LAYOUT,
-    HostRows::LAYOUT,
-    ScanIn::LAYOUT,
-    ScanOut::LAYOUT,
-    CommitIn::LAYOUT,
-    CommitOut::LAYOUT,
-    ClockIn::LAYOUT,
-    ClockOut::LAYOUT,
-    BootstrapIn::LAYOUT,
-    BootstrapOut::LAYOUT,
-    Ops::LAYOUT,
-    crate::abi::host::service::HOST_SLOTS_LAYOUT,
-];
 /// Fingerprint of the primitive shapes, independent from the legacy business layout.
 pub const LAYOUT_FINGERPRINT: u64 = 0xb74ff4246792db2d;
 

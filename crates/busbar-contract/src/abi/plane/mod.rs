@@ -232,8 +232,7 @@ pub use super::mechanism::check::SPAN_ABSENT;
 use super::mechanism::check::{contract, OpContract};
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{
-    slot as life, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, TickOut,
-    LIFECYCLE_SLOTS,
+    slot as life, CancelOut, OpenOut, OpsHead, TickOut, LIFECYCLE_SLOTS,
 };
 use crate::caps::ReasonCode;
 
@@ -243,112 +242,6 @@ pub const ABI_VERSION: u32 = crate::abi::versions::PLANE.raw();
 
 /// The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0x3943afecefc5949d;
-
-/// The plane kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
-pub const LAYOUT_SHAPES: &[&[u64]] = &[
-    crate::layout_shape!(Ops =>
-        head, arrive, on_piece, refusal, serve, hydrate, start, project, catalog, authenticated_route
-    ),
-    crate::layout_shape!(DialectAuth => dialect, flags, style, params),
-    crate::layout_shape!(OpClass => op, name),
-    crate::layout_shape!(BillableClass => class, family),
-    crate::layout_shape!(ClassParent => child, parent),
-    crate::layout_shape!(RouteCost => class, _reserved, weight),
-    crate::layout_shape!(RecordChain => kind, framing, flags, _reserved),
-    crate::layout_shape!(RecordRetention => kind, rule),
-    crate::layout_shape!(PinMechanism => token, flags, _reserved),
-    crate::layout_shape!(TrustKey => key, role, flags, default, mechanisms, mechanisms_len),
-    crate::layout_shape!(RefusalStatus => dialect, reason, status, _reserved),
-    crate::layout_shape!(PlaneTail =>
-        head, flags, ingress, dispatch_shape, answer_layout, scope, label, subject_noun, admin_noun,
-        audit_kind, signing_domain, signing_kid_prefix, cli_help, dialects, dialects_len,
-        dialect_auth, dialect_auth_len, scope_kinds, scope_kinds_len, op_classes, op_classes_len,
-        billable_classes, billable_classes_len, route_cost, route_cost_len, fee_units,
-        fee_units_len, record_kinds, record_kinds_len, egress_targets, egress_targets_len,
-        record_chains, record_chains_len, trust_keys, trust_keys_len, refusal_statuses,
-        refusal_statuses_len, caller_credential_refusal, admin_routes, admin_routes_len,
-        admin_openapi, stream_ceiling_secs, metric_lanes, metric_lanes_len, record_retentions,
-        record_retentions_len, streaming_content_types, streaming_content_types_len,
-        class_parents, class_parents_len
-    ),
-    crate::layout_shape!(Claim => verb, target, carrier, flags, refusal_dialect, _pad),
-    crate::layout_shape!(AdminRoute => verb, target, flags, _reserved, audit_verb),
-    crate::layout_shape!(PlaneSnapshot =>
-        size, _reserved, generation, claims, claims_len, admin_routes, admin_routes_len, openapi,
-        audience, resource_metadata, resource_facts, listed, listed_len, arrival_spans,
-        arrival_spans_len
-    ),
-    crate::layout_shape!(ProviderFacts => name, protocol, error_map),
-    crate::layout_shape!(PlaneOpenIn => open, public_url, owned, providers, providers_len),
-    crate::layout_shape!(PlaneOpenOut => open, snapshot),
-    crate::layout_shape!(PlaneRefreshOut => head, snapshot),
-    crate::layout_shape!(UnitCount => class, source, amount),
-    crate::layout_shape!(OutField => name, value),
-    crate::layout_shape!(RecordWrite => kind, op, key, value),
-    crate::layout_shape!(ArriveIn =>
-        head, unit, claim, _reserved, target, fields, fields_len, body, units_buf, units_cap,
-        method
-    ),
-    crate::layout_shape!(ArriveOut =>
-        head, op_class, principal_need, dialect, units_written, units_needed, refusal,
-        refusal_status, refusal_flags, correlation, cancels, pool, route, route_flags,
-        _route_reserved, affinity, trust_counterparty, trust_item, trust_digest
-    ),
-    crate::layout_shape!(AuthenticatedRouteIn => head, unit, caller_ref, entry_buf, entry_cap),
-    crate::layout_shape!(AuthenticatedRouteOut => head, entry_written, refusal, refusal_status, route, _reserved),
-    crate::layout_shape!(OnPieceIn =>
-        head, unit, from, flags, stream, bytes, status_code, status_class, reply_buf, reply_cap,
-        units_buf, units_cap, records_buf, records_cap, fields_buf, fields_cap, arena_buf,
-        arena_cap, member, attempt_no, _reserved, pool, caller_ref, claim, dialect, head_fields,
-        head_fields_len, passthrough, reason
-    ),
-    crate::layout_shape!(OnPieceOut =>
-        head, emitted, more, flags, reply_status, fields_written, fields_needed, units_written,
-        units_needed, records_written, records_needed, verdict, arena_written, arena_needed, verb,
-        target, need, fault, tap_fault, _fault_reserved, lane, final_status, _final_reserved,
-        final_message, final_details, metric_pool, metric_lane, wait_member, fault_reason
-    ),
-    crate::layout_shape!(RefusalIn =>
-        head, cause, status, dialect, reason, text, reply_buf, reply_cap, fields_buf, fields_cap,
-        arena_buf, arena_cap, unit, plane_code, retry_after_s, target, records_buf, records_cap,
-        hook, trust, _trust_reserved
-    ),
-    crate::layout_shape!(RefusalOut =>
-        head, reply_written, reply_needed, arena_written, arena_needed, marker, fields_written,
-        fields_needed, status, records_written, records_needed
-    ),
-    crate::layout_shape!(ServeIn =>
-        head, route, _reserved, target, fields, fields_len, body, reply_buf, reply_cap, fields_buf,
-        fields_cap, arena_buf, arena_cap, records_buf, records_cap
-    ),
-    crate::layout_shape!(ServeOut =>
-        head, reply_written, reply_needed, arena_written, arena_needed, status, fields_written,
-        fields_needed, audit, records_written, records_needed
-    ),
-    crate::layout_shape!(CatalogIn =>
-        head, method, target, fields, fields_len, names, names_len, reply_buf, reply_cap,
-        fields_buf, fields_cap, arena_buf, arena_cap
-    ),
-    crate::layout_shape!(CatalogOut =>
-        head, reply_written, reply_needed, arena_written, arena_needed, status, fields_written,
-        fields_needed, _reserved
-    ),
-    crate::layout_shape!(PlaneDriveIn => drive, sessions_buf, sessions_cap),
-    crate::layout_shape!(PlaneCancelIn =>
-        cancel, records_buf, records_cap, arena_buf, arena_cap, unit
-    ),
-    crate::layout_shape!(PlaneCancelOut => cancel, records_written, _reserved, arena_written),
-    crate::layout_shape!(PlaneDriveOut => head, sessions_written, sessions_needed),
-    crate::layout_shape!(ProjectIn =>
-        head, claim, flags, target, fields, fields_len, body, signals_buf, signals_cap,
-        arena_buf, arena_cap, rewrite, messages_buf, messages_cap, unit
-    ),
-    crate::layout_shape!(ProjectOut =>
-        head, view, body, signals_needed, _reserved, arena_written, arena_needed, prompt, end_user,
-        rewritten, messages_needed, _reserved2
-    ),
-    crate::abi::host::service::HOST_SLOTS_LAYOUT,
-];
 
 /// [`crate::abi::mechanism::call::InHead::op`] of each plane op, in table order: kind op `k` is
 pub mod slot {
@@ -407,23 +300,6 @@ pub struct Ops {
     /// Optional authenticated route continuation, required by [`TAIL_AUTHENTICATED_ROUTE`].
     pub authenticated_route: Option<Op>,
 }
-
-/// Every kind op's contract, in slot order. `arrive`, `refusal`, `project` and `catalog` are pure:
-/// they never pend.
-/// `on_piece` pends (a plane waiting on its own upstream) under the stream's deadline. `hydrate`
-/// and `start` are boot-time and off-path.
-#[rustfmt::skip]
-pub const CONTRACTS: [OpContract; KIND_SLOTS as usize] = [
-    contract!(ARRIVE, true, false, ArriveIn, ArriveOut, Call),
-    contract!(ON_PIECE, true, true, OnPieceIn, OnPieceOut, Stream),
-    contract!(REFUSAL, true, false, RefusalIn, RefusalOut, Call),
-    contract!(SERVE, true, true, ServeIn, ServeOut, Call),
-    contract!(HYDRATE, false, true, GenIn, OutHead, Call),
-    contract!(START, false, true, GenIn, OutHead, Call),
-    contract!(PROJECT, true, false, ProjectIn, ProjectOut, Call),
-    contract!(CATALOG, true, false, CatalogIn, CatalogOut, Call),
-    contract!(AUTHENTICATED_ROUTE, true, true, AuthenticatedRouteIn, AuthenticatedRouteOut, Call),
-];
 
 /// [`crate::abi::mechanism::lifecycle::CancelOut::disposition`]: the unit was cut after the far end
 pub const CANCEL_OK_PARTIAL: u32 = 1;
@@ -941,21 +817,6 @@ impl RefusalCode {
 #[must_use]
 pub const fn class_of(reason: ReasonCode) -> RefusalClass {
     reason.class()
-}
-
-/// The class of a refusal as a plane is handed it: [`class_of`] of the kernel reason it spells.
-#[must_use]
-pub fn class_of_refusal(reason: crate::unit::RefusalReason) -> RefusalClass {
-    class_of(ReasonCode::from(reason))
-}
-
-/// The class of a reason by its spelling on the journal and the wire (`ReasonCode::as_str`), for
-#[must_use]
-pub fn class_of_word(word: &str) -> Option<RefusalClass> {
-    RefusalCode::ALL
-        .iter()
-        .find(|c| reason_of(c.code()).is_some_and(|r| r.as_str() == word))
-        .map(|c| c.class())
 }
 
 /// A dialect's default auth style (the 1.5.5 dialect defaults), as data.
@@ -1609,43 +1470,6 @@ pub struct PlaneSnapshot {
     pub arrival_spans_len: usize,
 }
 
-/// ONE PROVIDER'S DIALECT FACTS, as a plane receives them at `open` (THE DESIGN section 4: a
-/// plane receives, at open, the dialect fields of the providers it references and resolves model
-/// to dialect itself; the kernel checks no dialect).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ProviderFacts {
-    /// The provider's name: its key in the root `providers:` map.
-    pub name: AbiStr,
-    /// Its `protocol`, as the configuration resolved it (after the catalog merge).
-    pub protocol: AbiStr,
-    /// Its `error_map`, as one JSON object; [`crate::abi::mechanism::call::BLOB_ABSENT`] when it
-    /// states none.
-    pub error_map: Blob,
-}
-
-/// The plane's `open` `in`: the lifecycle's, plus the deployment's public base URL.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct PlaneOpenIn {
-    /// The lifecycle `in`.
-    pub open: OpenIn,
-    /// The deployment's public base URL; absent = none stated.
-    pub public_url: AbiStr,
-    /// THE PLANE'S OTHER OWNED SECTIONS this document writes (the Statement's sections that are
-    /// neither its declaring section nor consumed), as one JSON object keyed by section name, each
-    /// as written; [`crate::abi::mechanism::call::BLOB_ABSENT`] when it writes none. The plane reads
-    /// its own sections and states its claims from them.
-    pub owned: Blob,
-    /// THE DIALECT FACTS OF THE PROVIDERS ITS SECTION REFERENCES (each `models.<m>.provider`), one
-    /// per provider, in the order first referenced; NULL/0 = none. Read at `open` only: the root
-    /// `providers:` a door plane is served over are the deployment's at boot. A tail addition: a
-    /// host whose `in` ends before it hands none (the `in` is read up to its `size`).
-    pub providers: *const ProviderFacts,
-    /// How many.
-    pub providers_len: usize,
-}
-
 /// The plane's `open` `out`: the lifecycle's, plus the first generation's snapshot.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -2261,21 +2085,6 @@ pub struct CatalogOut {
     pub _reserved: u32,
 }
 
-/// The plane's `drive` `in`: the lifecycle's, plus a HOST buffer for the sessions with output
-/// ready. A plane instance holds ONE driver ticket; when a session has unsolicited output the
-/// plane wakes it, and `drive` names the ready sessions by their stream. The kernel then calls
-/// `on_piece` ([`FROM_KERNEL`], no bytes) once for each.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct PlaneDriveIn {
-    /// The lifecycle `in`.
-    pub drive: DriveIn,
-    /// HOST buffer for the streams of the ready sessions.
-    pub sessions_buf: *mut u64,
-    /// Its capacity.
-    pub sessions_cap: usize,
-}
-
 /// The plane's `drive` `out`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -2286,31 +2095,6 @@ pub struct PlaneDriveOut {
     pub sessions_written: u32,
     /// Short answer: the streams `sessions_buf` needs.
     pub sessions_needed: u32,
-}
-
-/// The plane's `cancel` `in` (SEAM-L(r)): the lifecycle's, embedded FIRST so the dispatcher fills
-/// its head as every kind's, plus HOST buffers for the cancelled unit's record writes, as an
-/// `on_piece` answer's ([`RecordWrite`], their bytes in the arena): `cancel` is a unit's last
-/// terminal crossing, so a unit cut by a deadline, a reload or a shutdown still writes its row.
-/// `cancel` may not pend and is never re-called: what does not fit the host's buffers is FAULT.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct PlaneCancelIn {
-    /// The lifecycle `in`.
-    pub cancel: CancelIn,
-    /// HOST buffer for record writes.
-    pub records_buf: *mut RecordWrite,
-    /// Its capacity.
-    pub records_cap: usize,
-    /// HOST arena for the record writes' bytes.
-    pub arena_buf: *mut u8,
-    /// Its capacity.
-    pub arena_cap: usize,
-    /// THE CANCELLED UNIT, as the kernel minted it (the key its [`ArriveIn::unit`] carried), so a
-    /// plane that keys its units from `arrive` frees it by that key: on the host's own cancel of a
-    /// unit, one whose ticket no piece ever carried included (audit P-M7), and on the cancel of an
-    /// op in flight, the unit that op's own `in` names. `0` for the instance's driver ticket.
-    pub unit: u64,
 }
 
 /// The plane's `cancel` `out`: the lifecycle's, embedded first, and what the plane wrote.

@@ -69,7 +69,6 @@ interim:
   crates/busbar-contract/src/abi/plane/check.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/plane/mod.rs: { tokens: 23, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/door.rs: { tokens: 61, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/generation.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/plane/conditional.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/secret_bytes.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/store/v4/mod.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
@@ -90,11 +89,8 @@ interim:
   crates/busbar-contract/src/tests/allocation_observer_tests.rs: { tokens: 4, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/src/tests/allocation_observer.rs: { tokens: 18, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/src/tests/wipe_support.rs: { tokens: 4, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
-  crates/busbar-contract/tests/auth_answer_validators.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
-  crates/busbar-contract/tests/common_measurements.rs: { tokens: 9, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/plane_class_parents.rs: { tokens: 3, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-contract/tests/plane_streaming_media.rs: { tokens: 4, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
-  crates/busbar-contract/tests/zero_declarations.rs: { tokens: 1, by: "W1-U1 counting swap and Q24, or W3-D-CONTRACT" }
   crates/busbar-core-admin/build.rs: { tokens: 1, by: "W3 (generated admin code)" }
   crates/busbar-core-admin/src/v1/json/handlers.rs: { tokens: 1, by: "W3 (generated admin code)" }
   crates/busbar-core-connector/src/child_job.rs: { tokens: 17, by: "W1-C1C, then PLATFORMS OQ-5" }
