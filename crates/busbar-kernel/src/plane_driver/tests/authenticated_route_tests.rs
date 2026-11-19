@@ -739,8 +739,16 @@ async fn authenticated_route_two_anonymous_handles_never_read_each_others_record
         *host.asked.lock().unwrap(),
         [Some(handle_scope(FOREIGN.as_bytes()))]
     );
-    assert_eq!(*plane.looked.lock().unwrap(), [false], "a miss: the plane's 404");
-    assert!(asked(&request).is_empty(), "no money is asked: {:?}", asked(&request));
+    assert_eq!(
+        *plane.looked.lock().unwrap(),
+        [false],
+        "a miss: the plane's 404"
+    );
+    assert!(
+        asked(&request).is_empty(),
+        "no money is asked: {:?}",
+        asked(&request)
+    );
     assert_eq!(far.0, 0);
 }
 

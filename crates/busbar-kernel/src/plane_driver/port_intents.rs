@@ -739,7 +739,11 @@ impl<'h> Resolver<'h> {
         if !self.anonymous {
             return self.subject;
         }
-        match *self.handle.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        match *self
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
             Handle::Bound(scope) => Some(scope),
             Handle::Unset | Handle::Conflicted => None,
         }
