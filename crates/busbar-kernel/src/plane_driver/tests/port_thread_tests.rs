@@ -222,7 +222,7 @@ fn the_resource_select_crossing_is_not_handed_to_another_thread() {
         Vec::new(),
         b"body".to_vec(),
     );
-    let selection = select_resources(&*plane, &frozen);
+    let selection = select_resources(&*plane, &frozen, &[]);
     assert_eq!(selection.unwrap().unwrap(), Vec::<u8>::new());
     assert_eq!(
         plane.counts(std::thread::current().id()),

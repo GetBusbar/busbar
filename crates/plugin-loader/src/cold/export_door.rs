@@ -45,11 +45,11 @@ pub(crate) fn fold_shed_lines(observing: &crate::observe::Observing, name: &str,
         .into_iter()
         .map(|n| serde_json::json!({"name": n, "type": "counter", "value": lines}))
         .collect();
-    let report = busbar_contract::abi::mechanism::observe::Envelope {
+    let report = busbar_contract::observe::Envelope {
         result: (),
         metrics,
         diagnostics: Vec::new(),
     };
     let name: Arc<str> = Arc::from(name);
-    observing.fold(&name, busbar_contract::abi::mechanism::kind::EXPORT, report);
+    observing.fold(&name, busbar_contract::kinds::codes::EXPORT, report);
 }

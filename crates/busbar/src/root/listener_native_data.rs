@@ -473,6 +473,26 @@ impl ClientSink for Sink {
     }
 }
 
+/// A DATA request its route's chain denied (credential, policy or replay) is answered with the
+/// listener's one unauthenticated refusal under the denial's own custody. Any other failure (an
+/// unavailable verifier, a deadline, a foreign input) grants no answer: the request is cancelled.
+fn denied(
+    request: CompletingPhysicalRequest,
+    failed: busbar_kernel::auth::native_data::DataPreparationFailed,
+    carriers: &[Box<str>],
+) -> Result<DataResponse, DataPrepareError> {
+    let busbar_kernel::auth::native_data::DataPreparationFailed::Denied(denial) = failed else {
+        return Err(DataPrepareError::Input(InputError::Invalid));
+    };
+    let response = super::unauthenticated_response(request.binding(), carriers)?;
+    let refusal = request.refuse_data(denial).map_err(InputError::from)?;
+    Ok(DataResponse {
+        response,
+        authority: DataAuthority::Refused(refusal),
+        settlement: None,
+    })
+}
+
 pub(super) async fn prepare(
     mut request: CompletingPhysicalRequest,
     slot: Arc<NativeSlot>,
@@ -505,8 +525,12 @@ pub(super) async fn prepare(
     let data_route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
     let original = binding.snapshot().map_err(|_| InputError::Capacity)?;
     let frozen = FrozenRequest::from_snapshot(binding.invocation(), route, original);
-    let selection =
-        busbar_kernel::resource_admission::select_resources(&*seat.driver.port(), &frozen);
+    // A direct call on this request's thread; the route's credential carriers are withheld.
+    let selection = busbar_kernel::resource_admission::select_resources(
+        &*seat.driver.port(),
+        &frozen,
+        data_route.withheld(),
+    );
     let selection = selection
         .map_err(|_| InputError::Invalid)?
         .map_err(|_| InputError::Invalid)?;
@@ -518,7 +542,7 @@ pub(super) async fn prepare(
     let preparation = request
         .begin_data_preparation()
         .map_err(|_| InputError::Invalid)?;
-    let authorization = data_route
+    let pending = match data_route
         .prepare(
             preparation,
             selected,
@@ -529,10 +553,14 @@ pub(super) async fn prepare(
             },
         )
         .await
-        .map_err(|_| InputError::Invalid)?
-        .complete()
-        .await
-        .map_err(|_| InputError::Invalid)?;
+    {
+        Ok(pending) => pending,
+        Err(failed) => return denied(request, failed, data_route.withheld()),
+    };
+    let authorization = match pending.complete().await {
+        Ok(authorization) => authorization,
+        Err(failed) => return denied(request, failed, data_route.withheld()),
+    };
     let authorized = request
         .complete(authorization)
         .map_err(|_| InputError::Invalid)?;

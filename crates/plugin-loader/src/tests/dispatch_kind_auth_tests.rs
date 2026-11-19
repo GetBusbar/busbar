@@ -5,14 +5,20 @@ use std::mem::size_of;
 use std::ptr::NonNull;
 
 use busbar_contract::abi::auth::{
-    slot, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut,
-    IdentifyOut, IdentityBuf, IdentityOut, OpenOutboundIn, OpenOutboundOut, RequestFacts,
-    StripName, VerifyIn, BEGIN_AUTHORIZE, BEGIN_FORM, DECISION_CONTINUE, FIELD_SENSITIVE,
-    LOGIN_IDENTITY, MODE_OWN, POINT_HEAD, SPAN_ABSENT, STRIP_FIELD, VERDICT_IDENTITY, VERDICT_PASS,
+    BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut, IdentifyOut,
+    IdentityBuf, IdentityOut, OpenOutboundIn, OpenOutboundOut, RequestFacts, StripName, VerifyIn,
+    STRIP_FIELD, VERDICT_PASS,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, Span};
-use busbar_contract::abi::mechanism::check::{Fault, Rule};
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::mechanism::check::Rule;
+use busbar_contract::auth_calls::codes::{
+    slot, BEGIN_AUTHORIZE, BEGIN_FORM, DECISION_CONTINUE, FIELD_SENSITIVE, LOGIN_IDENTITY,
+    MODE_OWN, VERDICT_IDENTITY,
+};
+use busbar_contract::kinds::codes::KindCode;
+use busbar_contract::records::size_limits::Fault;
+use busbar_contract::records::size_limits::SPAN_ABSENT;
+use busbar_contract::route::POINT_HEAD;
 
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::{in_head, out_head, Answer, Kind, NO_BLOB};
@@ -644,12 +650,12 @@ fn short_is_a_failed_answer_asking_for_more() {
 
 #[test]
 fn a_tail_whose_login_kind_disagrees_with_its_login_capability_refuses() {
-    use busbar_contract::abi::auth::{
-        AuthTail, CAP_INBOUND, CAP_LOGIN, LOGIN_KIND_CREDENTIAL, LOGIN_KIND_NONE,
-        LOGIN_KIND_REDIRECT,
-    };
+    use busbar_contract::abi::auth::{AuthTail, LOGIN_KIND_NONE};
     use busbar_contract::abi::mechanism::door::KindTailHead;
     use busbar_contract::abi::sdk::door::statement;
+    use busbar_contract::auth_calls::codes::{
+        CAP_INBOUND, CAP_LOGIN, LOGIN_KIND_CREDENTIAL, LOGIN_KIND_REDIRECT,
+    };
     let bind = |caps: u32, login_kind: u32| {
         let tail = Box::leak(Box::new(AuthTail {
             head: KindTailHead {
@@ -705,11 +711,12 @@ fn a_tail_whose_login_kind_disagrees_with_its_login_capability_refuses() {
 #[test]
 fn a_tail_with_a_broken_point_set_refuses() {
     use busbar_contract::abi::auth::{
-        AuthPoints, AuthTail, StyleDecl, CAP_INBOUND, CAP_OUTBOUND, LOGIN_KIND_NONE, POINT_FRAME,
-        POINT_HEAD_BODY, POINT_PEER, STYLE_NEEDS_HEADERS,
+        AuthTail, StyleDecl, CAP_OUTBOUND, LOGIN_KIND_NONE, POINT_FRAME, POINT_PEER,
     };
     use busbar_contract::abi::mechanism::door::KindTailHead;
     use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::auth_calls::codes::{CAP_INBOUND, STYLE_NEEDS_HEADERS};
+    use busbar_contract::route::{AuthPoints, POINT_HEAD_BODY};
     let bind = |caps: u32, inbound_points: u32, styles: &'static [StyleDecl]| {
         let tail = Box::leak(Box::new(AuthTail {
             head: KindTailHead {
@@ -784,10 +791,13 @@ fn a_tail_with_a_broken_point_set_refuses() {
 
 #[test]
 fn the_carriers_are_the_statements_carrier_marks() {
-    use busbar_contract::abi::auth::{AuthTail, CAP_INBOUND, LOGIN_KIND_NONE, POINT_HEAD};
-    use busbar_contract::abi::mechanism::door::{KindTailHead, MarkWord, MARK_WORD_HOOK};
+    use busbar_contract::abi::auth::{AuthTail, LOGIN_KIND_NONE};
+    use busbar_contract::abi::mechanism::door::{KindTailHead, MarkWord};
     use busbar_contract::abi::sdk::auth_door::carrier;
     use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::auth_calls::codes::CAP_INBOUND;
+    use busbar_contract::plugin_settings::sugar_words::MARK_WORD_HOOK;
+    use busbar_contract::route::POINT_HEAD;
     const TAIL: AuthTail = AuthTail {
         head: KindTailHead {
             size: size_of::<AuthTail>() as u32,
@@ -837,11 +847,10 @@ fn the_carriers_are_the_statements_carrier_marks() {
 
 #[test]
 fn the_operator_fact_states_its_principal_and_a_frozen_tail_still_loads() {
-    use busbar_contract::abi::auth::{
-        AuthTail, CAP_INBOUND, CAP_OUTBOUND, FACT_OPERATOR, LOGIN_KIND_NONE, TAIL_FROZEN,
-    };
+    use busbar_contract::abi::auth::{AuthTail, CAP_OUTBOUND, LOGIN_KIND_NONE, TAIL_FROZEN};
     use busbar_contract::abi::mechanism::door::KindTailHead;
     use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::auth_calls::codes::{CAP_INBOUND, FACT_OPERATOR};
     let bind = |size: usize, caps: u32, facts: u32, principal: &'static str| {
         let tail = Box::leak(Box::new(AuthTail {
             head: KindTailHead {
@@ -902,11 +911,10 @@ fn the_operator_fact_states_its_principal_and_a_frozen_tail_still_loads() {
 
 #[test]
 fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
-    use busbar_contract::abi::auth::{
-        AuthTail, CAP_INBOUND, CAP_OUTBOUND, FACT_READS_CREDENTIALS, LOGIN_KIND_NONE,
-    };
+    use busbar_contract::abi::auth::{AuthTail, CAP_OUTBOUND, LOGIN_KIND_NONE};
     use busbar_contract::abi::mechanism::door::KindTailHead;
     use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::auth_calls::codes::{CAP_INBOUND, FACT_READS_CREDENTIALS};
     let bind = |size: usize, caps: u32, facts: u32, kinds: &'static [AbiStr]| {
         let tail = Box::leak(Box::new(AuthTail {
             head: KindTailHead {
@@ -967,16 +975,15 @@ fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
 
 #[test]
 fn the_issued_credential_shape_is_read_from_its_marks_and_a_malformed_one_refuses() {
-    use busbar_contract::abi::auth::{
-        AuthTail, CAP_INBOUND, FACT_READS_CREDENTIALS, LOGIN_KIND_NONE,
-    };
+    use busbar_contract::abi::auth::{AuthTail, LOGIN_KIND_NONE};
     use busbar_contract::abi::mechanism::door::{
         KindTailHead, MarkWord, MARK_WORD_ISSUED_ID_ALPHABET, MARK_WORD_ISSUED_ID_LENGTH,
-        MARK_WORD_ISSUED_ID_PREFIX, MARK_WORD_ISSUED_SECRET_ALPHABET,
-        MARK_WORD_ISSUED_SECRET_LENGTH,
+        MARK_WORD_ISSUED_SECRET_ALPHABET, MARK_WORD_ISSUED_SECRET_LENGTH,
     };
     use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::auth_calls::codes::{CAP_INBOUND, FACT_READS_CREDENTIALS};
     use busbar_contract::auth_calls::IssuedShape;
+    use busbar_contract::plugin_settings::sugar_words::MARK_WORD_ISSUED_ID_PREFIX;
     const KINDS: &[AbiStr] = &[abi_str("kind-a")];
     let bind = |facts: u32, marks: Vec<(u32, &'static str)>| {
         let tail = Box::leak(Box::new(AuthTail {
@@ -1116,10 +1123,11 @@ type RefusedMarks = (&'static str, Vec<(u32, &'static str)>, u32);
 
 #[test]
 fn outbound_style_declarations_require_capability_and_unique_nonempty_names() {
-    use busbar_contract::abi::auth::{AuthPoints, AuthTail, CAP_OUTBOUND};
+    use busbar_contract::abi::auth::{AuthTail, CAP_OUTBOUND};
     use busbar_contract::abi::sdk::auth_door::{verify_tail, with_tail};
     use busbar_contract::abi::sdk::auth_outbound::{outbound_tail, style};
     use busbar_contract::abi::sdk::door::statement;
+    use busbar_contract::route::AuthPoints;
 
     let bind = |tail: &'static AuthTail| {
         <Auth as Kind>::context(&with_tail(statement("styles", "1", 1), tail)).map(|_| ())

@@ -4,10 +4,10 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use busbar_contract::abi::mechanism::door::{Door, DoorFn};
-use busbar_contract::abi::mechanism::door::{SUGAR_ROLE_FILL, SUGAR_ROLE_PATH};
 use busbar_contract::abi::sdk::door::RawDoorFn;
 use busbar_contract::auth_calls::{FieldsRequest, Verified, VerifyRequest};
 use busbar_contract::conn::admissions::AdmissionAuthority;
+use busbar_contract::plugin_settings::sugar_words::{SUGAR_ROLE_FILL, SUGAR_ROLE_PATH};
 use busbar_contract::plugin_settings::Settings;
 use busbar_core_connector::{doors::Dispatched, process, registry::Entry, Connector};
 use busbar_kernel::host_services::{DestJudge as _, KernelServices};
@@ -29,7 +29,7 @@ struct Doors {
 fn stated_name(door: DoorFn) -> String {
     let rendering =
         busbar_plugin_loader::dispatch::rendering_of(door).expect("the door renders its Statement");
-    busbar_contract::abi::mechanism::rendering::read(&rendering)
+    busbar_contract::rendering::read(&rendering)
         .expect("its rendering reads")
         .name
 }
@@ -194,10 +194,10 @@ fn host() -> &'static (Arc<Dispatcher>, Arc<Connector>) {
         assert_eq!(
             guard.judge_name(
                 "https://127.0.0.1:443/jwks",
-                busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB,
+                busbar_contract::conn::codes::EGRESS_OPEN_WEB,
                 true,
             ),
-            Err(busbar_contract::abi::host::service::DEST_INTERNAL),
+            Err(busbar_contract::services::codes::DEST_INTERNAL),
             "UPSTREAMS-DECLARED r3: strict OPEN_WEB never borrows configured route reach"
         );
 
@@ -285,7 +285,7 @@ fn source(role: &str, value: impl Into<String>) -> String {
 
 /// The template filling the linked env source declares (`${NAME}` placeholders filled from the environment).
 fn sugars() -> busbar_contract::secret_ref::Sugars {
-    use busbar_contract::abi::mechanism::door::{
+    use busbar_contract::plugin_settings::sugar_words::{
         REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN,
     };
     let mut sugars = busbar_contract::secret_ref::Sugars::default();
@@ -300,7 +300,11 @@ fn sugars() -> busbar_contract::secret_ref::Sugars {
                     "env".to_owned(),
                     "environment variable".to_owned(),
                 ),
-                (REWRITE_SUGAR_ROLE, "env".to_owned(), SUGAR_ROLE_FILL.to_owned()),
+                (
+                    REWRITE_SUGAR_ROLE,
+                    "env".to_owned(),
+                    SUGAR_ROLE_FILL.to_owned(),
+                ),
             ],
         )
         .expect("the env source's template filling declares");

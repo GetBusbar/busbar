@@ -64,7 +64,7 @@ fn resolve(name: &str) -> (Status, Vec<(u16, Vec<u8>)>) {
     use busbar_plugin_abi::plugin::__rt::host::{ChainBufs, OpenAnswer, OutLease, Started};
     use busbar_plugin_abi::plugin::__rt::{kind as marker, Arg};
     use busbar_plugin_abi::records::Records;
-    use busbar_plugin_loader::test_host::{admit_bytes, test_manifest};
+    use busbar_plugin_loader::test_native::{admit_bytes, test_manifest};
 
     let lease = || OutLease::new(vec![0; 4096], 1 << 20).expect("a free ACTIVE slot");
     let bytes = fixture_library();

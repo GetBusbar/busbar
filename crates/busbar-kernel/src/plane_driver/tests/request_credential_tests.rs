@@ -8,7 +8,7 @@ use crate::governance::NewKeySpec;
 use crate::host_services::{
     KernelServices, NativeInvocationAdmission, Nest, NestDone, NestRoute, ServingGeneration,
 };
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::services::Caller;
 
 struct NoChildren;

@@ -396,7 +396,7 @@ fn an_error_member_is_read_with_its_code_and_message() {
 /// A KERNEL REFUSAL WITH NO UNIT, IN THE JSON-RPC WIRE: the bytes v1.5.5 answered when a request was
 #[test]
 fn a_unitless_kernel_refusal_renders_the_v1_5_5_bytes() {
-    use crate::abi::plane::RefusalCode;
+    use crate::plane::codes::RefusalCode;
     assert_eq!(
         unitless_kernel_body(RefusalCode::Unauthenticated.code()),
         Some(&br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"authentication failed"}}"#[..])

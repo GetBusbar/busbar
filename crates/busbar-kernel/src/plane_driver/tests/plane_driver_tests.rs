@@ -4,7 +4,7 @@
 use super::*;
 use crate::host_services::Signing;
 use crate::trust::book::Ruling;
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::InstanceDecl;
 use busbar_contract::services::{HostServices, Ran};

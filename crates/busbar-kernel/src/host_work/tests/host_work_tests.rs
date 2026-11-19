@@ -930,7 +930,7 @@ fn a_sections_work_bounds_fall_back_to_the_hosts_key_by_key() {
 
 #[test]
 fn inspection_reads_actual_work_times_and_current_retention_without_inventing_live_expiry() {
-    use busbar_contract::abi::mechanism::inspection::{
+    use busbar_contract::services::codes::{
         InspectionObservation, InspectionQuery, WorkObservation,
     };
     let r = rig();
@@ -977,13 +977,13 @@ fn inspection_reads_actual_work_times_and_current_retention_without_inventing_li
     );
     assert_eq!(
         r.s.inspect(&caller("inst"), Some(2), &query),
-        Err(busbar_contract::abi::mechanism::inspection::InspectionError::NotFound)
+        Err(busbar_contract::services::codes::InspectionError::NotFound)
     );
 }
 
 #[test]
 fn inspection_work_denials_collapse_and_only_an_actual_find_imports_durable_work() {
-    use busbar_contract::abi::mechanism::inspection::{InspectionError, InspectionQuery};
+    use busbar_contract::services::codes::{InspectionError, InspectionQuery};
     let r = rig();
     let (handle, reference) = open(&r, 1, b"private");
     let query = InspectionQuery::Work {
@@ -1038,7 +1038,7 @@ fn inspection_work_denials_collapse_and_only_an_actual_find_imports_durable_work
 
 #[test]
 fn inspection_carriers_are_instance_owned_point_in_time_observations_without_callbacks() {
-    use busbar_contract::abi::mechanism::inspection::{
+    use busbar_contract::services::codes::{
         InspectionObservation, InspectionQuery, SessionObservation,
     };
     let r = rig();

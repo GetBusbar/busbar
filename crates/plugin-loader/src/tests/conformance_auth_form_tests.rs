@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::auth::{BeginLoginOut, BEGIN_FORM};
+use busbar_contract::abi::auth::BeginLoginOut;
 use busbar_contract::abi::auth::{LoginField, FORM_TEXT};
 use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::auth::{FieldKind, LoginOutcome};
+use busbar_contract::auth_calls::codes::BEGIN_FORM;
 
 fn form_of(fields: &[LoginField]) -> BeginLoginOut {
     BeginLoginOut {

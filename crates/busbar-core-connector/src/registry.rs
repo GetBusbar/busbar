@@ -132,7 +132,7 @@ impl Transports {
         }
         let carrier = entries.iter().position(|e| {
             let f = e.door.facts();
-            f.role == busbar_contract::abi::transport::ROLE_CARRIER && f.ported
+            f.role == busbar_contract::transport::codes::ROLE_CARRIER && f.ported
         });
         Ok(Self {
             entries,

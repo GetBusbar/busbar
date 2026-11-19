@@ -99,8 +99,8 @@ impl LoginMethods {
             if inbound_style.as_ref().is_some_and(|style| {
                 style.points != calls.inbound_points()
                     || calls.facts()
-                        & (busbar_contract::abi::auth::FACT_OPERATOR
-                            | busbar_contract::abi::auth::FACT_READS_CREDENTIALS)
+                        & (busbar_contract::auth_calls::codes::FACT_OPERATOR
+                            | busbar_contract::auth_calls::codes::FACT_READS_CREDENTIALS)
                         != 0
             }) {
                 return Err(refused(

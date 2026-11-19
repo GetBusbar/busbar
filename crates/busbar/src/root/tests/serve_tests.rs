@@ -148,7 +148,7 @@ pub(crate) fn metric_sum(name: &str, labels: &[(&str, &str)]) -> f64 {
 
 #[tokio::test]
 async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_contract::route::{RouteAuth, RouteMethod};
     let _publishing = crate::root::PUBLISHING.lock().await;
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();

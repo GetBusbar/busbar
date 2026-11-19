@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::plane::{AuthenticatedRouteOut, ROUTE_DIRECT};
+use busbar_contract::abi::plane::AuthenticatedRouteOut;
 use busbar_contract::caps::{ReasonCode, StepName};
+use busbar_contract::plane::codes::ROUTE_DIRECT;
 use busbar_contract::plane_calls::AuthenticatedRouteInFlight;
 
 pub(super) struct Flight {

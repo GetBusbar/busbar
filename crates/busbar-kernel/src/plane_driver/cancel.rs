@@ -3,10 +3,11 @@
 
 use busbar_contract::abi::mechanism::call::Outcome as AbiOutcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use busbar_contract::abi::plane::{
-    cancel_bills_reported_units, UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL,
-};
+use busbar_contract::abi::plane::UnitCount;
 use busbar_contract::caps::ReasonCode;
+use busbar_contract::plane::codes::{
+    cancel_bills_reported_units, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL,
+};
 use busbar_contract::plane_calls::PieceInFlight;
 
 use super::PlaneDriver;

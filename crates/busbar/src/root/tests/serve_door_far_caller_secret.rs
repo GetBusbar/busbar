@@ -9,10 +9,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use busbar_contract::abi::plane::ROUTE_DIRECT;
 use busbar_contract::caps::{Dial, PrincipalId};
 use busbar_contract::conn::{InstanceId, NeedId};
 use busbar_contract::ids::OpClassId;
+use busbar_contract::plane::codes::ROUTE_DIRECT;
 use busbar_contract::stage_probe::{Derive, Scope};
 use busbar_kernel::plane_driver::{DriverSteps as _, Egress, MemberRoute, DEFAULT_ERROR_BODY_MAX};
 use busbar_kernel::teller::UnitCtx;
@@ -80,7 +80,7 @@ fn egress_over(pool_name: &str) -> Egress {
         conns: Arc::new(BadGateway::default()),
         breaker: busbar_kernel::plane_driver::fixed_breaker(Arc::new(Book::default())),
         capacity: Arc::new(Free),
-        clock: busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
+        clock: busbar_contract::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
         pools: foldhash::HashMap::from_iter([(

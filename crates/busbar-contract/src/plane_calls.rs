@@ -318,7 +318,7 @@ pub struct InstanceDecl {
     /// The record kinds it keeps.
     pub record_kinds: Vec<&'static str>,
     /// Versioned collection modes and parent relationships, scoped to this instance.
-    pub record_collections: Vec<crate::abi::plane::RecordCollection>,
+    pub record_collections: Vec<crate::plane::codes::RecordCollection>,
     /// Its signing domain and key-id prefix; `None` = it signs nothing.
     pub signing: Option<(&'static str, &'static str)>,
     /// The grant kinds that admit its traffic.

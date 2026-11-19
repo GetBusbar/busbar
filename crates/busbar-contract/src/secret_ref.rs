@@ -122,7 +122,7 @@ impl SecretRef {
     /// A template bound to the one source whose admitted declaration owns the fill role.
     pub fn template(text: impl Into<String>, sources: &Sugars) -> Result<Self, String> {
         let source = sources
-            .with_role(crate::abi::mechanism::door::SUGAR_ROLE_FILL)
+            .with_role(crate::plugin_settings::sugar_words::SUGAR_ROLE_FILL)
             .ok_or("no admitted source declares the template fill role")?;
         source.check_unambiguous()?;
         Ok(Self::Template(TemplateReference {
@@ -195,7 +195,7 @@ impl SecretRef {
             return Ok(());
         };
         let source = sources
-            .with_role(crate::abi::mechanism::door::SUGAR_ROLE_FILL)
+            .with_role(crate::plugin_settings::sugar_words::SUGAR_ROLE_FILL)
             .ok_or("no admitted source declares the template fill role")?;
         if source.ambiguous {
             return Err("template fill source is ambiguous: name the secret instance with module:");
@@ -573,7 +573,7 @@ impl Sugars {
         plugin: &str,
         rewrites: &[(u32, String, String)],
     ) -> Result<(), String> {
-        use crate::abi::mechanism::door::{
+        use crate::plugin_settings::sugar_words::{
             REWRITE_ALIAS, REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE,
             REWRITE_SUGAR_SHOWN, SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
         };

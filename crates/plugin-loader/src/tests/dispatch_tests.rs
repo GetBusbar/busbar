@@ -7,13 +7,15 @@ use std::time::{Duration, Instant};
 
 use crate::dispatch_test_plugin as plug;
 use busbar_contract::abi::mechanism::call::{Blob, DeadlineClass, OutHead, Outcome, BLOB_OCTETS};
-use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
+use busbar_contract::abi::mechanism::check::{fault, Rule};
 use busbar_contract::abi::mechanism::door::{Door, DoorParts, KindTailHead, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot, OpenIn, OpenOut, OpsHead, RefreshIn, TickIn, TickOut, ValidateIn, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
+use busbar_contract::abi::mechanism::DOOR_MAGIC;
+use busbar_contract::kinds::codes::{KindCode, MECHANISM_VERSION};
+use busbar_contract::records::size_limits::Fault;
 
 use crate::dispatch::load::validate_door;
 use crate::dispatch::{
@@ -383,7 +385,7 @@ fn raw_door_rendering_refuses_null_optional_blob_payloads() {
             crate::dispatch::load::rendering_of_raw(door).unwrap(),
             empty
         );
-        busbar_contract::abi::mechanism::rendering::read(&empty).unwrap();
+        busbar_contract::rendering::read(&empty).unwrap();
     }
 }
 
@@ -1695,7 +1697,7 @@ fn red_every_door_refusal() {
         ))
     );
     let marked = Box::leak(Box::new(Statement {
-        marks: busbar_contract::abi::mechanism::door::MARK_ONE_INSTANCE,
+        marks: busbar_contract::plugin_settings::sugar_words::MARK_ONE_INSTANCE,
         ..st
     }));
     assert!(
@@ -1830,8 +1832,8 @@ fn malformed_or_obsolete_manifest_facts_are_refused_before_any_door_or_library_o
     }
 
     {
-        use busbar_contract::abi::host::conn::connector::{KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED};
         use busbar_contract::abi::sdk::door::{abi_str, statement};
+        use busbar_contract::conn::codes::{KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED};
         const NAME: &str = "x-admission-count-control";
         const NAMES: &[busbar_contract::abi::mechanism::call::AbiStr] = &[abi_str(NAME)];
         for mode in [KEEP_NAMED, KEEP_ALL_EXCEPT_DENIED] {
@@ -4440,7 +4442,7 @@ fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
         t.frame_piece_size = piece;
         // df111e05c3 checks the whole kind tail at load (`Kind::context`): a conforming transport
         // is exactly one role, so only the piece differs between the admitted and refused doors.
-        t.role = busbar_contract::abi::transport::ROLE_CARRIER;
+        t.role = busbar_contract::transport::codes::ROLE_CARRIER;
         t.claim_rows = row;
         t.claim_rows_len = 1;
         let tail = (Box::leak(Box::new(t)) as *const TransportTail).cast::<KindTailHead>();
@@ -4470,7 +4472,7 @@ fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
         use busbar_contract::abi::mechanism::door::Section;
         let sections: &'static [Section] = Box::leak(Box::new([Section {
             name: AbiStr::of("door"),
-            flags: busbar_contract::abi::mechanism::door::SECTION_DECLARING,
+            flags: busbar_contract::plugin_settings::sugar_words::SECTION_DECLARING,
             _reserved: 0,
         }]));
         door_over::<Plane>(
@@ -4931,9 +4933,8 @@ fn red_an_inline_tickets_kept_results_go_at_its_next_op_and_with_the_ticket() {
 
 #[test]
 fn a_path_both_secret_and_reference_capable_is_refused_at_load() {
-    use busbar_contract::abi::mechanism::extensions::{
-        encode, statement_blob, EXT_REFERENCE_FIELDS,
-    };
+    use busbar_contract::abi::mechanism::extensions::{statement_blob, EXT_REFERENCE_FIELDS};
+    use busbar_contract::extensions::encode;
     // SAFETY: the real door is `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
     let st = unsafe { *real.statement() };
@@ -4972,9 +4973,8 @@ fn a_path_both_secret_and_reference_capable_is_refused_at_load() {
 
 #[test]
 fn a_garbled_extensions_blob_is_refused_at_load() {
-    use busbar_contract::abi::mechanism::extensions::{
-        encode, statement_blob, EXT_REFERENCE_FIELDS,
-    };
+    use busbar_contract::abi::mechanism::extensions::{statement_blob, EXT_REFERENCE_FIELDS};
+    use busbar_contract::extensions::encode;
     // SAFETY: the real door is `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
     let st = unsafe { *real.statement() };

@@ -271,7 +271,7 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
         req.extensions_mut().insert(original);
     }
     if !is_read {
-        use busbar_kernel::audit::auditlog::{note_generation_source, note_idempotency_key};
+        use busbar_kernel::audit::auditlog::{note_config_generation_of, note_idempotency_key};
         if let Some(key) = req
             .headers()
             .get("idempotency-key")
@@ -280,8 +280,7 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
             note_idempotency_key(key);
         }
         if config {
-            let source = handle.clone();
-            note_generation_source(Arc::new(move || source.load().config_version));
+            note_config_generation_of(handle.clone());
         }
     }
     if !is_read {
@@ -449,7 +448,7 @@ async fn idempotent(
         );
         framed.extend_from_slice(component);
     }
-    let fingerprint = busbar_contract::abi::sdk::digest::sha256(&framed);
+    let fingerprint = busbar_contract::digest::sha256(&framed);
     let now = busbar_kernel::store::now();
     let claim_key = (principal, format!("op:{key}"));
     // Replay is not a new mutation: its original precondition can be stale precisely because

@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+use busbar_contract::route::{RouteAuth, RouteMethod};
 use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteSpec};
 
 const DOOR: &str = "/door-route-test/call";

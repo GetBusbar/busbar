@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+use busbar_contract::route::{method_bit, PATH_EXACT, PATH_PATTERN};
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::plane_driver::port_routes::PortRoutes;
 
@@ -129,7 +129,7 @@ impl NativeNests {
                     dialect: 0,
                     auth: LineAuth::None,
                     upgrade: None,
-                    offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+                    offered: busbar_contract::route::AuthPoints::EMPTY,
                 });
             }
         }

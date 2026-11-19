@@ -4,7 +4,7 @@
 //! Deterministic SDK crossing witness: opaque batches, supplied fields and a modeled connector.
 //! No exporter format, product configuration or external output is implemented here.
 use busbar_contract::abi::export::{self, CheckIn, CheckOut, DeliverIn, Tail};
-use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
+use busbar_contract::abi::host::conn::connector::Need;
 use busbar_contract::abi::mechanism::call::{OutHead, Outcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
@@ -12,6 +12,7 @@ use busbar_contract::abi::sdk::exchange::{exchange, Exchange, Request};
 use busbar_contract::abi::sdk::export::{NoScrape, NoServe, Quiet};
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+use busbar_contract::conn::codes::{DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
 use busbar_contract::export_stream::ExportStream;
 use busbar_contract::plugin::markers::ExportKind;
 use std::sync::RwLock;

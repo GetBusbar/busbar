@@ -12,7 +12,7 @@ fn a_real_plugin_module_is_still_refused_with_plugins_off() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
         .expect("the actual OIDC statement reads")
         .expect("OIDC exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+    let module = busbar_contract::rendering::read(&statement)
         .expect("the actual OIDC statement is valid")
         .name;
     let mut providers = IdentityProviders::default();

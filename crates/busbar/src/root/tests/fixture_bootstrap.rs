@@ -653,7 +653,7 @@ async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_
     let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
         .expect("actual Store rendering reads")
         .expect("actual Store exports its declaration");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+    let module = busbar_contract::rendering::read(&statement)
         .expect("actual Store declaration is valid")
         .name;
     let directory = crate::root::test_plugins::scratch("initial-runtime-candidate-boundary");

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
-use busbar_contract::abi::transport::route::{
-    FIELD_PRESENT, FIELD_VALUE_PREFIX, METHOD_GET, METHOD_POST, PATH_EXACT, PATH_PATTERN,
-    PATH_PREFIX,
+use busbar_contract::abi::auth::POINT_PEER;
+use busbar_contract::abi::transport::route::FIELD_PRESENT;
+use busbar_contract::route::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY};
+use busbar_contract::route::{
+    FIELD_VALUE_PREFIX, METHOD_GET, METHOD_POST, PATH_EXACT, PATH_PATTERN, PATH_PREFIX,
 };
 
 use super::*;
@@ -312,9 +313,9 @@ fn a_none_line_is_neutral_to_the_peer_mix_and_sits_behind_the_peer_verdict() {
 
 #[test]
 fn the_offered_points_record_decides_what_a_line_may_need() {
-    use busbar_contract::abi::mechanism::extensions::encode;
     use busbar_contract::abi::transport::check::check_offered_points;
     use busbar_contract::abi::transport::EXT_OFFERED_POINTS;
+    use busbar_contract::extensions::encode;
     let peer_only =
         check_offered_points(&encode(&[(EXT_OFFERED_POINTS, &POINT_PEER.to_le_bytes())]))
             .expect("a {Peer} record reads");

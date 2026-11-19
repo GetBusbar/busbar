@@ -3,9 +3,8 @@
 
 use super::*;
 use axum::http::HeaderValue;
-use busbar_contract::abi::export::{
-    SCRAPE_KIND_COUNTER, SCRAPE_KIND_HISTOGRAM, SCRAPE_KIND_SUMMARY,
-};
+use busbar_contract::abi::export::SCRAPE_KIND_HISTOGRAM;
+use busbar_contract::export_calls::codes::{SCRAPE_KIND_COUNTER, SCRAPE_KIND_SUMMARY};
 use busbar_contract::export_calls::Sample;
 use busbar_contract::json::{JsonContainerTrait as _, JsonValueTrait as _};
 use http_body_util::BodyExt;

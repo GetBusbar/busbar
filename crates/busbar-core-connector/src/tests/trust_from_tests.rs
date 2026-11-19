@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+use busbar_contract::rendering::{ReadBlob, ReadNeed};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
@@ -97,7 +97,7 @@ fn trusting_need(trust_from: &str) -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
     }
@@ -307,7 +307,7 @@ fn an_absent_settings_trust_anchor_declares_the_need_over_the_public_roots_alone
 /// that shape is deprecated and refused from 1.7.0.
 #[test]
 fn a_framed_operator_infrastructure_need_without_a_declared_target_is_refused() {
-    use busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE;
+    use busbar_contract::conn::codes::EGRESS_OPERATOR_INFRASTRUCTURE;
     let c = secure_connector();
     let unnamed = ReadNeed {
         egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,

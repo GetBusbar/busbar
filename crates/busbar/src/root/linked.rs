@@ -173,7 +173,9 @@ pub struct LinkedDoorExport {
 pub(crate) fn door_words(former: &[&str], rewrites: &[(u32, String, String)]) -> Vec<String> {
     let aliases = rewrites
         .iter()
-        .filter(|(class, _, _)| *class == busbar_contract::abi::mechanism::door::REWRITE_ALIAS)
+        .filter(|(class, _, _)| {
+            *class == busbar_contract::plugin_settings::sugar_words::REWRITE_ALIAS
+        })
         .map(|(_, from, _)| from.clone());
     former
         .iter()
@@ -204,7 +206,7 @@ fn door_statement(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Option<StatementRewrites> {
     let bytes = crate::root::loader::dispatch::rendering_of(door).ok()?;
-    let statement = busbar_contract::abi::mechanism::rendering::read(&bytes).ok()?;
+    let statement = busbar_contract::rendering::read(&bytes).ok()?;
     Some((statement.name, statement.rewrites))
 }
 
@@ -264,7 +266,7 @@ pub(crate) fn linked_exports(
             manifest(d.name, d.alias, d.declares).map(|m| {
                 let rewrites = crate::root::loader::dispatch::rendering_of(d.door)
                     .ok()
-                    .and_then(|bytes| busbar_contract::abi::mechanism::rendering::read(&bytes).ok())
+                    .and_then(|bytes| busbar_contract::rendering::read(&bytes).ok())
                     .map(|statement| statement.rewrites)
                     .unwrap_or_default();
                 crate::root::loader::LinkedPlugin::door(m, d.door)
@@ -454,7 +456,7 @@ pub(crate) fn door_breaker(
     for (row, door, json) in &plane_door_declares(linked) {
         let stated = crate::root::loader::dispatch::LinkedRow::of(*door)
             .map_err(|e| format!("plugin '{row}': {e}"))?;
-        let name = busbar_contract::abi::mechanism::rendering::read(&stated.statement)
+        let name = busbar_contract::rendering::read(&stated.statement)
             .map_err(|e| {
                 format!(
                     "plugin '{row}': its Statement rendering does not read back at byte {}",
@@ -475,7 +477,7 @@ pub(crate) fn door_breaker(
         return Ok(None);
     };
     let planes = registry.loadable().iter();
-    for p in planes.filter(|p| p.manifest.kind == busbar_contract::abi::mechanism::kind::PLANE) {
+    for p in planes.filter(|p| p.manifest.kind == busbar_contract::kinds::codes::PLANE) {
         let Some(stated) = p
             .manifest
             .stated()

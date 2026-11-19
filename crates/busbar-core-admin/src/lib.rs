@@ -73,7 +73,7 @@ fn seam_record_boot(app: &busbar_kernel::state::App) {
 fn seam_mount(
     router: busbar_kernel::core_routes::CoreRouter,
 ) -> busbar_kernel::core_routes::CoreRouter {
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_contract::route::{RouteAuth, RouteMethod};
 
     // `/metrics` and `/metrics/hooks` are the unprefixed Named surfaces; core encodes them itself.
     let router = router

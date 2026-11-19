@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::mechanism::route::RouteAuth;
-use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
+use busbar_contract::route::RouteAuth;
+use busbar_contract::route::{METHOD_POST, PATH_EXACT};
 use busbar_ports::transport::{ConnIn, TransportEvent, TransportOut, TransportSession};
 use busbar_ports::PortError;
 
@@ -98,7 +98,7 @@ fn line(path: &str) -> Line {
         dialect: 0,
         auth: crate::guest::LineAuth::None,
         upgrade: None,
-        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        offered: busbar_contract::route::AuthPoints::EMPTY,
     }
 }
 
@@ -791,7 +791,7 @@ fn native_operator_prepared_routes_use_the_actual_admin_mount_surface() {
     assert!(lines
         .iter()
         .any(|(path, method, auth)| *path == crate::auth::HEALTHZ_PATH
-            && *method == busbar_contract::abi::mechanism::route::RouteMethod::Get
+            && *method == busbar_contract::route::RouteMethod::Get
             && *auth == RouteAuth::None));
     assert!(!lines.iter().any(|(path, _, _)| *path == "/stats"));
 }

@@ -15,8 +15,7 @@ fn owner() -> (
     crate::response_delivery::ResponseHandles,
 ) {
     let source = ProcessAdmission::new(1).connection_storage(AdmissionClass::Data);
-    let mut ledger =
-        DeliveryLedger::new(&source, 32.try_into().unwrap(), 4.try_into().unwrap()).unwrap();
+    let mut ledger = DeliveryLedger::default();
     let key = ResponseKey {
         node: 1,
         incarnation: 1,
@@ -43,6 +42,7 @@ fn task() -> Task {
         pending: VecDeque::new(),
         reading: true,
         wake_at: None,
+        flushed: false,
     }
 }
 

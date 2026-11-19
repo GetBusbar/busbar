@@ -3,11 +3,12 @@
 
 //! A native ROUTE_UPGRADE request (§12.27): the route's auth chain on the head first, then core's
 //! answer before any 101 (400 or 501, rendered by the plane, through the same response registration
-//! as every other answer). A denied request is cancelled, as a denied DATA request is.
+//! as every other answer). A denied request gets the listener's one unauthenticated answer.
 
 use std::sync::Arc;
 
 use axum::response::Response;
+use busbar_kernel::auth::native_upgrade::UpgradeRefused;
 use busbar_kernel::inbound::native::{CompletingPhysicalRequest, PhysicalRefusal, RouteTarget};
 
 use super::InputError;
@@ -45,7 +46,7 @@ pub(super) async fn prepare(
         .map_err(|_| InputError::Invalid)?;
     // Auth before anything that tells the caller about this route: an anonymous caller learns
     // nothing a denied request on any gated route would not tell it (`port_mount::UpgradeStep`).
-    let authorization = route
+    let authorization = match route
         .authorize(
             preparation,
             busbar_ports::CallCx {
@@ -55,7 +56,16 @@ pub(super) async fn prepare(
             },
         )
         .await
-        .map_err(|_| InputError::Invalid)?;
+    {
+        Ok(authorization) => authorization,
+        // A denial gets the listener's one unauthenticated answer; any other failure none.
+        Err(refused @ UpgradeRefused::Denied { .. }) => {
+            let response = super::unauthenticated_response(&binding, route.withheld())?;
+            let physical = request.refuse_upgrade_denied(refused)?;
+            return Ok((response, physical));
+        }
+        Err(UpgradeRefused::Failed(_)) => return Err(InputError::Invalid),
+    };
     let head = Arc::clone(authorization.snapshot());
     let asks = port_mount::asks_websocket(head.headers());
     let refusal = match port_mount::upgrade_step(asks, slot.websocket()) {
@@ -74,6 +84,7 @@ pub(super) async fn prepare(
         &seat,
         target.mounted().route,
         &head,
+        authorization.withheld(),
         request_id,
         refusal,
     );

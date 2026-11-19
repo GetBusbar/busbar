@@ -189,6 +189,26 @@ impl Carriers<Arc<str>> {
     }
 }
 
+/// The carrier a plane claim's transport word means (the words planes claimed on with the old transports' scheme
+/// claims, dial decision v2 section 3.1): `http`, `https` and `sse` ride HTTP; `grpc` gRPC; `ws`, `wss` and
+/// `websocket` WebSocket; `webrtc` and `rtc` WebRTC. Any other word names no carrier.
+pub(crate) fn carrier_of_claim(word: &str) -> Option<u32> {
+    match word.to_ascii_lowercase().as_str() {
+        "http" | "https" | "sse" => Some(CARRIER_HTTP),
+        "grpc" => Some(CARRIER_GRPC),
+        "ws" | "wss" | "websocket" => Some(CARRIER_WEBSOCKET),
+        "webrtc" | "rtc" => Some(CARRIER_RTC),
+        _ => None,
+    }
+}
+
+impl<T> Carriers<T> {
+    /// Whether this table has a supplier for the carrier a claim's transport `word` means.
+    pub(crate) fn serves_claim(&self, word: &str) -> bool {
+        carrier_of_claim(word).is_some_and(|carrier| self.get(carrier).is_ok())
+    }
+}
+
 /// The build's assignment: each generated row admitted (a read of its static header) for its identity.
 pub(crate) fn assigned(rows: &[LinkedCarrier]) -> Result<Carriers<Arc<str>>, String> {
     Carriers::of(rows.iter().map(|row| {
@@ -266,6 +286,25 @@ impl NativeFramers {
         self.served
             .get(*self.carriers.get(carrier)?)
             .ok_or(CarrierRefused::NoSupplier(carrier))
+    }
+
+    /// The connector's view of the assignment: each assigned carrier's instance and port (two reference counts
+    /// each, once at boot). `limits.stream_stall_ms` has no transport section to come from, so the kind's default
+    /// holds (`None`), as for the listeners.
+    pub(crate) fn native_carriers(&self) -> Vec<busbar_core_connector::native_dial::NativeCarrier> {
+        CARRIERS
+            .iter()
+            .filter_map(|(carrier, _)| {
+                self.for_carrier(*carrier).ok().map(|one| {
+                    busbar_core_connector::native_dial::NativeCarrier {
+                        instance: Arc::clone(&one.instance),
+                        port: Arc::clone(&one.port),
+                        carrier: *carrier,
+                        stall_ms: None,
+                    }
+                })
+            })
+            .collect()
     }
 
     /// The boot's one line stating the assignment: each carrier's instance, or `none`.

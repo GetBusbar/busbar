@@ -4,8 +4,8 @@
 //! The cold code of `crate::dispatch::{load, plugin, migrate, log_file}`.
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Op};
-use busbar_contract::abi::mechanism::check::Fault;
-use busbar_contract::abi::mechanism::rendering::{RenderError, Unreadable};
+use busbar_contract::records::size_limits::Fault;
+use busbar_contract::rendering::{RenderError, Unreadable};
 
 use crate::dispatch::load::LoadError;
 
@@ -314,7 +314,7 @@ pub(crate) fn prune_weak_map<K, V, S>(
 
 /// The tag a plugin kind's log lines carry.
 #[cold]
-pub(crate) fn kind_tag(kind: busbar_contract::abi::mechanism::KindCode) -> String {
+pub(crate) fn kind_tag(kind: busbar_contract::kinds::codes::KindCode) -> String {
     format!("{kind:?}").to_ascii_lowercase()
 }
 
@@ -329,7 +329,7 @@ pub(crate) fn writer_refused(instance: &str, e: &std::io::Error) -> String {
 #[cold]
 pub(crate) fn log_file_name(
     instance: &str,
-    kind: busbar_contract::abi::mechanism::KindCode,
+    kind: busbar_contract::kinds::codes::KindCode,
 ) -> String {
     let qualified = match crate::boot::kind_of(kind).root_key() {
         Some(section)

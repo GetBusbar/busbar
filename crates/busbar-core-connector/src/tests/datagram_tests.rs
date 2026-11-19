@@ -12,8 +12,9 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::transport::{
     DatagramLane, DatagramRoute, FramePiece, FrameSpan, FramerOut, FramerSink, RendezvousTerms,
     HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED,
-    PATH_REQUEST_BIND, PATH_REQUEST_REBIND, PIECE_END_OF_FRAME, ROLE_FRAMER,
+    PATH_REQUEST_BIND, PATH_REQUEST_REBIND,
 };
+use busbar_contract::transport::codes::{PIECE_END_OF_FRAME, ROLE_FRAMER};
 
 use super::DatagramFraming;
 use crate::dtls::{Association, IceCredentials, Role, SessionCert, SrtpKeying, Up, Verdict};
@@ -387,7 +388,7 @@ fn write_begin_piece(
     st.piece_flags = flags;
     write_answer(st, sink, lane, out);
     if !st.begin.is_empty() {
-        out.yielded.flags = busbar_contract::abi::transport::YIELD_MORE;
+        out.yielded.flags = busbar_contract::transport::codes::YIELD_MORE;
     }
     true
 }
@@ -1473,8 +1474,8 @@ fn open_unit_at(
 
 #[test]
 fn a_composed_dial_keeps_all_begin_batches_before_and_after_its_description() {
-    use busbar_contract::abi::transport::PIECE_FIELDS;
     use busbar_contract::conn::{Conns as _, InstanceId, PieceKind};
+    use busbar_contract::transport::codes::PIECE_FIELDS;
     use busbar_contract::transport::wire::WireStatusClass;
 
     crate::support::worker().block_on(async {
@@ -1543,8 +1544,8 @@ fn a_composed_dial_keeps_all_begin_batches_before_and_after_its_description() {
 
 #[test]
 fn closing_a_composed_dial_retires_unread_begin_output_before_the_exchange_answers() {
-    use busbar_contract::abi::transport::PIECE_FIELDS;
     use busbar_contract::conn::{Conns as _, InstanceId};
+    use busbar_contract::transport::codes::PIECE_FIELDS;
 
     crate::support::worker().block_on(async {
         let c = book_begin(VecDeque::from([
@@ -1949,7 +1950,7 @@ fn a_pending_final_write_preserves_accepted_parts_until_the_channel_is_named() {
         {
             let mut st = door.st.lock().unwrap();
             st.pieces.push((3, b"label: events\r\n".to_vec()));
-            st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
+            st.piece_flags = busbar_contract::transport::codes::PIECE_FIELDS;
         }
         assert!(!deliver_dialled(&d, &door, at).await);
         assert!(pairing.published().await.failure.is_none());
@@ -1976,7 +1977,7 @@ fn wait_readiness_keeps_a_consumed_channel_failure_as_the_next_reads_answer() {
         {
             let mut st = door.st.lock().unwrap();
             st.pieces.push((3, b"channel failed".to_vec()));
-            st.piece_flags = busbar_contract::abi::transport::PIECE_STREAM_FAILED;
+            st.piece_flags = busbar_contract::transport::codes::PIECE_STREAM_FAILED;
         }
         assert!(deliver_dialled(&d, &door, at).await);
         let mut buf = [0; 32];
@@ -2003,14 +2004,14 @@ fn a_channel_failure_yielded_by_a_write_stays_terminal_for_the_reader() {
         {
             let mut st = door.st.lock().unwrap();
             st.pieces.push((3, b"label: events\r\n".to_vec()));
-            st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
+            st.piece_flags = busbar_contract::transport::codes::PIECE_FIELDS;
         }
         assert!(!deliver_dialled(&d, &door, at).await);
         assert!(pairing.published().await.failure.is_none());
         {
             let mut st = door.st.lock().unwrap();
             st.pieces.push((3, b"channel failed".to_vec()));
-            st.piece_flags = busbar_contract::abi::transport::PIECE_STREAM_FAILED;
+            st.piece_flags = busbar_contract::transport::codes::PIECE_STREAM_FAILED;
         }
         assert_eq!(d.write(b"message", true, false), Ok(7));
         let publication = pairing.published().await;
@@ -2157,7 +2158,7 @@ fn a_woken_writer_can_accept_bytes_as_soon_as_the_association_comes_home() {
         {
             let mut st = door.st.lock().unwrap();
             st.pieces.push((3, b"label: events\r\n".to_vec()));
-            st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
+            st.piece_flags = busbar_contract::transport::codes::PIECE_FIELDS;
         }
         assert!(!deliver_dialled(&d, &door, at).await);
         assert!(pairing.published().await.failure.is_none());
@@ -2236,7 +2237,7 @@ fn a_pending_final_write_never_overwrites_another_writers_accepted_part() {
         {
             let mut st = door.st.lock().unwrap();
             st.pieces.push((3, b"label: events\r\n".to_vec()));
-            st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
+            st.piece_flags = busbar_contract::transport::codes::PIECE_FIELDS;
         }
         assert!(!deliver_dialled(&d, &door, at).await);
         assert!(pairing.published().await.failure.is_none());
@@ -2320,7 +2321,7 @@ fn a_read_cannot_overtake_the_older_channel_message_a_wait_is_publishing() {
         {
             let mut st = door.st.lock().unwrap();
             st.pieces.push((20, b"kind: audio\r\n".to_vec()));
-            st.piece_flags = busbar_contract::abi::transport::PIECE_FIELDS;
+            st.piece_flags = busbar_contract::transport::codes::PIECE_FIELDS;
         }
         d.exchanged(piece(PieceKind::Completion), b"").unwrap();
         let (wake_tx, mut wake_rx) = tokio::sync::mpsc::unbounded_channel();

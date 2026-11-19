@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
 
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{

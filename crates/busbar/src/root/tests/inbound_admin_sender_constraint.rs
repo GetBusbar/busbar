@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::auth::POINT_HEAD;
-use busbar_contract::abi::host::service::{FLOW_CONTINUE, FLOW_STOP};
-use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_POST, PATH_EXACT};
+use busbar_contract::route::POINT_HEAD;
+use busbar_contract::route::{METHOD_GET, METHOD_POST, PATH_EXACT};
+use busbar_contract::services::codes::{FLOW_CONTINUE, FLOW_STOP};
 use busbar_kernel::auth::{admin_door_admits, AdminDoor};
 use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, HandIn, Head};
@@ -50,7 +50,7 @@ async fn actual_admin_doors_refuse_sender_downgrade_and_preserve_service_and_sco
         dialect: 0,
         auth: LineAuth::Chain(
             app.admin_chain.clone(),
-            busbar_contract::abi::auth::AuthPoints::HEAD,
+            busbar_contract::route::AuthPoints::HEAD,
         ),
         upgrade: None,
         offered: crate::root::doors::offers_unstated(),

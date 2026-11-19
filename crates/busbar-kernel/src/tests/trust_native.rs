@@ -165,7 +165,7 @@ pub(crate) fn facts() -> InstanceFacts {
 pub(crate) fn caller() -> Caller {
     Caller::for_test(
         INSTANCE.into(),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     )
 }
 

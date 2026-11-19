@@ -5,10 +5,10 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use busbar_contract::abi::plane::{
-    UnitCount, CANCEL_OK_PARTIAL, UNITS_ESTIMATED, UNITS_FLOOR, UNITS_REPORTED,
-};
+use busbar_contract::abi::plane::UnitCount;
 use busbar_contract::caps::{OriginKind, ReasonCode};
+use busbar_contract::measurement::{UNITS_ESTIMATED, UNITS_FLOOR, UNITS_REPORTED};
+use busbar_contract::plane::codes::CANCEL_OK_PARTIAL;
 use busbar_contract::records::VirtualKey;
 use busbar_contract::{Count, UnitKey};
 

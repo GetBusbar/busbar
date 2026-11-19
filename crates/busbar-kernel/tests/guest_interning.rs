@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::transport::route::{
-    FIELD_VALUE_PREFIX, METHOD_ANY, PATH_EXACT, PATH_PATTERN,
-};
+use busbar_contract::route::{FIELD_VALUE_PREFIX, METHOD_ANY, PATH_EXACT, PATH_PATTERN};
 use busbar_kernel::guest::{interned_counts, Claimant, GuestList, Line, LineAuth, Route};
 
 fn lines() -> Vec<Line> {
@@ -18,7 +16,7 @@ fn lines() -> Vec<Line> {
         claimant: Claimant::Plane(who.into()),
         dialect: 0,
         auth: LineAuth::None,
-        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        offered: busbar_contract::route::AuthPoints::EMPTY,
         upgrade: None,
     };
     vec![

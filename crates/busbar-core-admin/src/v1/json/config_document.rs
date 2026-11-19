@@ -306,8 +306,15 @@ pub(super) async fn apply(
             if let Some(rejection) = doc.document_patch.as_ref().and_then(|patch| document_patch_rejection(patch, Some(&loaded))) {
                 return Ok(Outcome::Value(Err(rejection)));
             }
-            if loaded.deploy.advanced.worker_threads == Some(0) {
-                return Err(AdminError::Validation("advanced.worker_threads must be positive".into()));
+            // One rule for the value everywhere it is read: converted, never refused. The edit is
+            // stored as written; the runtime applies the rule at its next boot.
+            if let (_, Some(note)) = busbar_kernel::config::sections::effective_worker_threads(
+                loaded.deploy.advanced.worker_threads,
+            ) {
+                tracing::warn!(
+                    "{}",
+                    busbar_kernel::diagnostics::WORKER_THREADS_INVALID.coded(note)
+                );
             }
             loaded.resource_ownership.validate_named_maps(&doc)
                 .map_err(AdminError::Validation)?;
@@ -615,6 +622,11 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
         "/advanced/shutdown/deregister_delay",
         "/advanced/upstream_http1_only",
         "/advanced/upstream_h2_prior_knowledge",
+        "/advanced/trusted_proxies",
+        "/advanced/forwarded_header",
+        "/advanced/block_private_addresses",
+        "/advanced/proxy_resolution",
+        "/advanced/tls",
     ];
     paths
         .iter()
@@ -837,6 +849,31 @@ mod tests {
         assert_eq!(
             restart_paths(&paths),
             ["/advanced/worker_threads", "/store/settings", "/listen"]
+        );
+    }
+
+    #[test]
+    fn boot_bound_security_settings_are_pending_restart_when_edited() {
+        let paths = [
+            "/advanced/trusted_proxies",
+            "/advanced/forwarded_header",
+            "/advanced/block_private_addresses",
+            "/advanced/proxy_resolution",
+            "/advanced/tls",
+            "/advanced/tls/roots",
+            "/advanced/usage_flush_interval_ms",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            restart_paths(&paths),
+            [
+                "/advanced/trusted_proxies",
+                "/advanced/forwarded_header",
+                "/advanced/block_private_addresses",
+                "/advanced/proxy_resolution",
+                "/advanced/tls",
+                "/advanced/tls/roots",
+            ]
         );
     }
 

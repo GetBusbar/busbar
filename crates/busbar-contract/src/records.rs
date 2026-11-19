@@ -5,6 +5,7 @@
 
 /// Atomic correction vocabulary for the existing raw usage ledger.
 pub mod correction;
+pub mod size_limits;
 
 /// Stable operation fingerprints and replay comparisons.
 pub mod dedupe;

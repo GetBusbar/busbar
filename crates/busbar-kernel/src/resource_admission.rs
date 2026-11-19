@@ -199,7 +199,7 @@ impl ResourceInventory {
         targets: Targets,
         config_byte_limit: usize,
     ) -> Result<Arc<Self>, ResourceError> {
-        if caller.kind() != busbar_contract::abi::mechanism::KindCode::Plane {
+        if caller.kind() != busbar_contract::kinds::codes::KindCode::Plane {
             return Err(ResourceError::Binding);
         }
         if kinds.is_empty()
@@ -535,14 +535,25 @@ impl FrozenRequest {
 
     /// Lend the exact frozen bytes to the pure selector without authenticated identity,
     /// ticket state or session authority. The borrowed input cannot outlive this call.
+    /// `withheld`: the route's credential carriers (lowercase), never lent to the plane: the
+    /// selector runs before auth and must not see what auth will judge.
     pub fn with_selection_input<R>(
         &self,
+        withheld: &[Box<str>],
         f: impl FnOnce(&busbar_ports::plane::PlaneIn<'_>, &[u8]) -> R,
     ) -> Result<R, ResourceError> {
         use busbar_plugin_abi::types::{Bytes, Pair, Str};
+        let lent = |name: &str| !withheld.iter().any(|w| w.eq_ignore_ascii_case(name));
         if let RequestStorage::Native(original) = &self.storage {
             return original
                 .with_auth_input(|view| {
+                    // On the stack for an ordinary head, as the lent fields of a plane call are.
+                    let headers: smallvec::SmallVec<[Pair<'_>; 32]> = view
+                        .headers
+                        .iter()
+                        .filter(|pair| lent(pair.name.get()))
+                        .copied()
+                        .collect();
                     let input = busbar_ports::plane::PlaneIn {
                         route: self.route,
                         flags: 0,
@@ -550,7 +561,7 @@ impl FrozenRequest {
                         method: view.method,
                         path: view.path,
                         query: view.query,
-                        headers: view.headers,
+                        headers: &headers,
                         identity: &[],
                         request_id: self.invocation.request_id().get(),
                         carrier: 0,
@@ -572,6 +583,7 @@ impl FrozenRequest {
                     value: Bytes::new(value),
                 })
             })
+            .filter(|pair| pair.as_ref().map_or(true, |pair| lent(pair.name.get())))
             .collect::<Result<_, ResourceError>>()?;
         let input = busbar_ports::plane::PlaneIn {
             route: self.route,
@@ -832,8 +844,10 @@ pub type Selection = Result<Result<Vec<u8>, busbar_ports::PortError>, ResourceEr
 pub fn select_resources(
     port: &dyn busbar_ports::plane::PlanePort,
     frozen: &FrozenRequest,
+    withheld: &[Box<str>],
 ) -> Selection {
-    frozen.with_selection_input(|input, body| {
+    // The selector runs before auth: the route's credential carriers are not lent to it.
+    frozen.with_selection_input(withheld, |input, body| {
         port.resource_facts(
             busbar_plugin_abi::plane::RESOURCE_SELECT,
             input,

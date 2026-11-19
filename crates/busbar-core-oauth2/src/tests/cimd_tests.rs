@@ -283,13 +283,13 @@ async fn the_store_wins_and_every_cimd_failure_reads_as_an_unknown_client() {
 use std::sync::Mutex;
 use std::task::{Context, Poll};
 
-use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
-use busbar_contract::abi::mechanism::rendering::ReadNeed;
+use busbar_contract::conn::codes::{DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
 use busbar_contract::conn::{
     ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece, PieceKind,
     PollConns, Ticket,
 };
 use busbar_contract::ids::StreamId;
+use busbar_contract::rendering::ReadNeed;
 use busbar_contract::transport::ConnFacts;
 
 const OWNER: InstanceId = InstanceId(0);

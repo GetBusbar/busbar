@@ -15,12 +15,13 @@ use busbar_contract::abi::mechanism::door::{Door, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpsHead};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, AuthenticatedRouteIn, AuthenticatedRouteOut, CatalogIn, CatalogOut,
+    ArriveIn, ArriveOut, AuthenticatedRouteIn, AuthenticatedRouteOut, CatalogIn, CatalogOut,
     OnPieceIn, OnPieceOut, Ops, OutField, PlaneOpenIn, PlaneOpenOut, PlaneTail, ProjectIn,
-    ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CONTRACTS, FROM_FAR_END,
-    ROUTE_POOL, TAIL_AUTHENTICATED_ROUTE,
+    ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CONTRACTS,
+    TAIL_AUTHENTICATED_ROUTE,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+use busbar_contract::plane::codes::{slot, FROM_FAR_END, ROUTE_POOL};
 use busbar_plugin_loader::dispatch::{
     kinds::plane::Plane, load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame,
     LinkedRow, NoSink, Plugin, NO_BLOB,
@@ -211,7 +212,7 @@ extern "C" fn door() -> &'static Door {
 
 fn opened(dispatcher: &Dispatcher) -> Plugin<Plane> {
     let bind = Bind {
- accept: Default::default(),
+        accept: Default::default(),
         instance: Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),

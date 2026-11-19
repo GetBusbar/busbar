@@ -722,7 +722,7 @@ impl<'a> ChainHead<'a> {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
         VerifyRequest {
-            point: busbar_contract::abi::auth::AuthPoint::Head,
+            point: busbar_contract::route::AuthPoint::Head,
             credential: candidate
                 .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec())),
             lines: self
@@ -2441,17 +2441,17 @@ pub(crate) async fn auth_middleware(
     let mut claimed_at_key = false;
     if let Some(auth) = core_routes.declared_auth(path, req.method()) {
         match auth {
-            busbar_contract::abi::mechanism::route::RouteAuth::None => {
+            busbar_contract::route::RouteAuth::None => {
                 if physical_binding.is_some() {
                     return Err(admin_unauthorized_response());
                 }
                 return Ok(next.run(req).await);
             }
-            busbar_contract::abi::mechanism::route::RouteAuth::Admin => {
+            busbar_contract::route::RouteAuth::Admin => {
                 declared_admin = true;
                 declared_core_admin = true;
             }
-            busbar_contract::abi::mechanism::route::RouteAuth::Key => claimed_at_key = true,
+            busbar_contract::route::RouteAuth::Key => claimed_at_key = true,
         }
     }
 
@@ -2460,14 +2460,14 @@ pub(crate) async fn auth_middleware(
         .flatten()
     {
         match auth {
-            busbar_contract::abi::mechanism::route::RouteAuth::None => {
+            busbar_contract::route::RouteAuth::None => {
                 if physical_binding.is_some() {
                     return Err(admin_unauthorized_response());
                 }
                 return Ok(next.run(req).await);
             }
-            busbar_contract::abi::mechanism::route::RouteAuth::Admin => declared_admin = true,
-            busbar_contract::abi::mechanism::route::RouteAuth::Key => {}
+            busbar_contract::route::RouteAuth::Admin => declared_admin = true,
+            busbar_contract::route::RouteAuth::Key => {}
         }
     }
 
@@ -3208,7 +3208,7 @@ fn admits_ungoverned_under(
 fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequest {
     use busbar_contract::redacted::Secret;
     VerifyRequest {
-        point: busbar_contract::abi::auth::AuthPoint::HeadBody,
+        point: busbar_contract::route::AuthPoint::HeadBody,
         lines: parts
             .headers
             .iter()

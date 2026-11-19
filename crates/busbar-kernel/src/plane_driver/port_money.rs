@@ -15,11 +15,10 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::plane::{
-    UnitCount, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, UNITS_ESTIMATED, UNITS_FLOOR,
-    UNITS_REPORTED,
-};
+use busbar_contract::abi::plane::UnitCount;
 use busbar_contract::caps::{PrincipalId, ReasonCode};
+use busbar_contract::measurement::{UNITS_ESTIMATED, UNITS_FLOOR, UNITS_REPORTED};
+use busbar_contract::plane::codes::{CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL};
 use busbar_contract::vocab::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED};
 use busbar_plugin_abi::plane::{
     AUDIT_APPLIED, AUDIT_DEGRADED, AUDIT_REJECTED, SRC_ESTIMATED, SRC_FLOOR, SRC_REPORTED,

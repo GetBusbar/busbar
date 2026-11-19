@@ -540,8 +540,8 @@ impl AsyncHistory {
                     .transpose()?
                     .unwrap_or_default();
                 let mode = match d.mode {
-                    busbar_contract::abi::plane::CollectionMode::Upsert => history::Mode::Upsert,
-                    busbar_contract::abi::plane::CollectionMode::Append => history::Mode::Append,
+                    busbar_contract::plane::codes::CollectionMode::Upsert => history::Mode::Upsert,
+                    busbar_contract::plane::codes::CollectionMode::Append => history::Mode::Append,
                 };
                 Ok(Declaration {
                     kind,

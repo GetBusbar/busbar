@@ -258,7 +258,7 @@ async fn neutral_runtime_custody_reserves_settles_and_reattaches_original_tariff
             &ctx,
             &[busbar_contract::abi::plane::UnitCount {
                 class: 0,
-                source: busbar_contract::abi::plane::UNITS_REPORTED,
+                source: busbar_contract::measurement::UNITS_REPORTED,
                 amount: 20,
             }]
         ),

@@ -44,7 +44,7 @@ fn entry(root_key: Option<String>, root: bool) -> TrustEntry {
 fn caller(instance: &str) -> Caller {
     Caller::for_test(
         Arc::from(instance),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     )
 }
 

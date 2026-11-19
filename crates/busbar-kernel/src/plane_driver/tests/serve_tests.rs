@@ -11,8 +11,9 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome as AbiOutcome
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, ProjectIn, ProjectOut, RecordWrite, RefusalIn,
-    RefusalOut, ServeIn, ServeOut, AUDIT_APPLIED, RECORD_AUDIT, ROUTE_PUBLIC,
+    RefusalOut, ServeIn, ServeOut,
 };
+use busbar_contract::plane::codes::{AUDIT_APPLIED, RECORD_AUDIT, ROUTE_PUBLIC};
 use busbar_contract::plane_calls::{
     Answered, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
 };
@@ -433,7 +434,7 @@ async fn an_applied_answer_whose_head_cannot_render_is_still_audited() {
 fn a_plane(instance: &str) -> Caller {
     Caller::for_test(
         Arc::from(instance),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     )
 }
 
@@ -443,7 +444,7 @@ async fn a_trust_kernel(
     instance: &str,
     custody: bool,
 ) -> Arc<crate::host_services::KernelServices> {
-    use busbar_contract::abi::host::service as svc;
+    use busbar_contract::services::codes::service as svc;
     let k = crate::host_services::KernelServices::new().with_pool(Arc::new(
         crate::host_services::BlockingPool::new(tokio::runtime::Handle::current(), 8),
     ));
@@ -615,8 +616,8 @@ async fn typed_rows(instance: &str) -> Vec<crate::audit_ring::AuditEntry> {
 /// revokes without one, and writes one typed row whose `request_id` is the admin request's.
 #[tokio::test]
 async fn plane_relayed_decision_is_gated_attributed_and_strict() {
-    use busbar_contract::abi::host::service as svc;
     use busbar_contract::json::JsonValueTrait as _;
+    use busbar_contract::services::codes::service as svc;
     crate::audit::auditlog::ensure_global_audit_stream_registered().await;
     let instance = "g10-relay";
     let k = a_trust_kernel(instance, true).await;

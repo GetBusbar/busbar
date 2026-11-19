@@ -232,8 +232,8 @@ where
     assert!(
         slot.prepared().core_lines().any(|(path, method, auth)| {
             path == busbar_kernel::auth::LIVEZ_PATH
-                && method == busbar_contract::abi::mechanism::route::RouteMethod::Get
-                && auth == busbar_contract::abi::mechanism::route::RouteAuth::None
+                && method == busbar_contract::route::RouteMethod::Get
+                && auth == busbar_contract::route::RouteAuth::None
         }),
         "the prepared listener must retain the canonical declared public liveness route"
     );

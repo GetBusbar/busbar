@@ -3,15 +3,17 @@
 
 //! A plane-kind SDK witness: static metadata and owned generation snapshots, without a protocol.
 
-use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER};
+use busbar_contract::abi::host::conn::connector::Need;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
-use busbar_contract::abi::mechanism::door::{Section, Statement, SECTION_DECLARING};
+use busbar_contract::abi::mechanism::door::{Section, Statement};
 use busbar_contract::abi::plane::*;
 use busbar_contract::abi::sdk::door::{abi_str, statement, AbiIn, AbiOut};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::plane_life::{Opened, PlaneLife, Published};
 use busbar_contract::abi::sdk::publish::{AdminRouteSpec, Generations, SnapshotSpec};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
+use busbar_contract::conn::codes::{DIRECTION_OUTBOUND, EGRESS_PROVIDER};
+use busbar_contract::plugin_settings::sugar_words::SECTION_DECLARING;
 
 pub const NAME: &str = "neutral-plane-witness";
 pub const SECTION: &str = "witness_entries";

@@ -90,10 +90,8 @@ pub(super) async fn ingress_fixture() -> (NativeIngress, busbar_contract::storag
             listener.connect(facts),
             budget,
             AdmissionClass::Operator,
-            &source,
             1024 * 1024,
-        )
-        .unwrap(),
+        ),
         source,
     )
 }
@@ -147,10 +145,17 @@ async fn native_input_eof_keeps_reset_bound_to_the_original_physical_owner() {
 }
 
 #[tokio::test]
-async fn native_root_shape_retains_all_200_response_slots_until_actual_retirement() {
+async fn native_root_input_slots_and_ledger_have_no_fixed_shape() {
+    // Owner's allocation ruling: no fixed capacity and no refusal of their own. Past the old shape
+    // of 200, every head is taken; what bounds them is each request's admission.
     let (mut ingress, source) = ingress_fixture().await;
+    assert_eq!(
+        ingress.slots.capacity(),
+        0,
+        "nothing made before the first head"
+    );
     let mut ready = Vec::new();
-    for stream in 1..=LIVE_RESPONSES as u64 {
+    for stream in 1..=210u64 {
         ready.push(
             ingress
                 .accept(public_head(&source, stream, true), None)
@@ -158,18 +163,14 @@ async fn native_root_shape_retains_all_200_response_slots_until_actual_retiremen
                 .unwrap(),
         );
     }
-    assert!(matches!(
-        ingress.accept(public_head(&source, 201, true), None),
-        Err(InputError::Capacity)
-    ));
     ingress.retire(&ready.remove(0).owner).unwrap();
     assert!(ingress
-        .accept(public_head(&source, 202, true), None)
+        .accept(public_head(&source, 211, true), None)
         .unwrap()
         .is_some());
 
     use busbar_contract::response_delivery::ResponseKey;
-    let mut ledger = delivery_ledger(&source).unwrap();
+    let mut ledger = busbar_core_connector::response_delivery::DeliveryLedger::default();
     let mut handles = Vec::new();
     let key = |stream| ResponseKey {
         node: 1,
@@ -178,13 +179,10 @@ async fn native_root_shape_retains_all_200_response_slots_until_actual_retiremen
         connection_generation: 1,
         stream,
     };
-    for stream in 1..=LIVE_RESPONSES as u64 {
+    for stream in 1..=210u64 {
         handles.push(ledger.admit(key(stream)).unwrap());
     }
-    assert!(ledger.admit(key(201)).is_err());
-    // Dropping external handles alone does not erase owner-side response cells.
-    drop(handles);
-    assert!(ledger.admit(key(202)).is_err());
+    assert!(ledger.admit(key(210)).is_err(), "an id is never reused");
 }
 
 #[tokio::test]
@@ -299,6 +297,10 @@ impl TransportPort for ObservedBegin {
 
 #[tokio::test]
 async fn actual_tcp_accept_passes_real_socket_facts_and_host_clock_to_native_begin() {
+    // The host clock's zero point is this process's first reading of it, taken here, before any
+    // other clock in the process starts: a begin stated on another zero point is then 50 ms off.
+    let _ = busbar_plugin_abi::host_side::host_vt::vt::mono();
+    std::thread::sleep(Duration::from_millis(50));
     busbar_core_admin::install();
     let app = crate::root::min3_auth::tests::physical_app().await;
     let port = Arc::new(ObservedBegin {
@@ -337,12 +339,13 @@ async fn actual_tcp_accept_passes_real_socket_facts_and_host_clock_to_native_beg
         .unwrap();
     let client_address = client.local_addr().unwrap();
     let (stream, _) = listener.accept().await.unwrap();
-    let before = crate::root::loader::dispatch::now_ns();
+    // ConnInfo.mono_ns is on the clock the plugin's Host::mono_ns and its WAKE_AT are on.
+    let before = busbar_plugin_abi::host_side::host_vt::vt::mono();
     assert!(matches!(
         native.accepted(stream, None).await,
         Err(InputError::Transport(_))
     ));
-    let after = crate::root::loader::dispatch::now_ns();
+    let after = busbar_plugin_abi::host_side::host_vt::vt::mono();
     let seen = port.seen.lock().unwrap().take().unwrap();
     assert_eq!(seen.0, client_address.to_string());
     assert_eq!(seen.1, server_address.to_string());

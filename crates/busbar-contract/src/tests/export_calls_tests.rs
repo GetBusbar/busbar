@@ -5,8 +5,8 @@
 
 #[test]
 fn recorder_protocol_requires_an_explicit_supported_version() {
-    use crate::abi::mechanism::extensions::encode;
     use crate::export_calls::{recorder_protocol, RecorderRequirements, EXT_RECORDER_REQUIREMENTS};
+    use crate::extensions::encode;
     assert_eq!(recorder_protocol(&[]), Ok(false));
     assert_eq!(
         recorder_protocol(&encode(&[(EXT_RECORDER_REQUIREMENTS, b"1")])),

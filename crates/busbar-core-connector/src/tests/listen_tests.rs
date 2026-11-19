@@ -448,7 +448,7 @@ fn tls_on_a_listener_is_the_connectors_server_with_the_framers_offer() {
 /// server's chain, a `cert_spki` pin) is about a far end busbar dialled and would be wrong here.
 #[test]
 fn an_accepted_client_under_an_unknown_ca_is_refused_in_the_stacks_words_exactly() {
-    use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
+    use busbar_contract::conn::codes::CAUSE_SECURITY;
     use busbar_contract::crypto::testing::rcgen;
     let (ca, leaf, key) = localhost_cert();
     // The stranger CA must carry its OWN subject name: rcgen names every certificate
@@ -794,7 +794,7 @@ fn the_accept_backoff_sequence_is_5ms_doubling_to_a_250ms_cap() {
 /// `CAUSE_SECURITY` (the test above).
 #[test]
 fn an_accepted_client_that_resets_mid_handshake_is_a_connect_failure() {
-    use busbar_contract::abi::host::conn::connector::CAUSE_CONNECT;
+    use busbar_contract::conn::codes::CAUSE_CONNECT;
     let (_ca, leaf, key) = localhost_cert();
     worker().block_on(async move {
         let server = std::sync::Arc::unwrap_or_clone(

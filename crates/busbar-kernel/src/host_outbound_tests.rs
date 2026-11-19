@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
 
 fn caller() -> Caller {
     Caller::issue(&crate::seal::acquire(), "plane".into(), KindCode::Plane)

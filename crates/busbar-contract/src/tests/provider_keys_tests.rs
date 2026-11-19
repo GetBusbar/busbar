@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::{decode, encode, stated, Key, ProviderKeys, Shape, Table, EXT_PROVIDER_KEYS};
-use crate::abi::mechanism::extensions;
+use crate::kinds::codes::extensions;
 
 fn key(name: &str, shape: Shape, required: bool) -> Key {
     Key {

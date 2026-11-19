@@ -7,17 +7,17 @@ use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use busbar_contract::abi::plane::{
-    reason_code, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, RefusalCode, UnitCount,
-    AUDIT_REJECTED, CANCEL_FAILED, CLAIM_PROBE, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END,
-    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL,
-    PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, RECORD_AUDIT,
-    VERDICT_COUNT_REFUSED, VERDICT_RETRY,
-};
+use busbar_contract::abi::plane::{OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
 use busbar_contract::kept::Text;
 use busbar_contract::kinds::RecordBytes;
+use busbar_contract::plane::codes::{
+    reason_code, FieldList, RefusalCode, AUDIT_REJECTED, CANCEL_FAILED, CLAIM_PROBE, EMIT_DONE,
+    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    PIECE_CUT, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
+    PIECE_REFUSED, RECORD_AUDIT, VERDICT_COUNT_REFUSED, VERDICT_RETRY,
+};
 use busbar_contract::plane_calls::{Answered, Lent, PieceInFlight};
 use tokio::sync::watch;
 
@@ -967,7 +967,7 @@ impl<'u> Pumping<'u> {
         if driver.records.as_ref().is_some_and(|(services, caller)| {
             services.supports_unit_recovery(caller, ctx.key.get())
         }) {
-            bufs.extensions = busbar_contract::abi::mechanism::extensions::encode(&[(
+            bufs.extensions = busbar_contract::extensions::encode(&[(
                 busbar_contract::abi::sdk::recovery::CAPABILITY,
                 &[1],
             )]);
@@ -1765,7 +1765,7 @@ impl<S, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     }
                     Step::Answered(_) if !followup.verb.is_empty() => {
                         exchanges += 1;
-                        if exchanges > busbar_contract::abi::plane::check::MAX_TURNS {
+                        if exchanges > busbar_contract::plane::codes::MAX_TURNS {
                             return End::Failed(ReasonCode::PlanePanic);
                         }
                         match turn_wait(run, turn, self.far.followup(run.token, followup)).await {

@@ -140,7 +140,7 @@ impl std::ops::Deref for TestBook {
     }
 }
 async fn opened(core: Arc<CoreStore>, host: &str) -> TestBook {
-    let digest = busbar_contract::abi::sdk::digest::sha256(host.as_bytes());
+    let digest = busbar_contract::digest::sha256(host.as_bytes());
     let node = u64::from_le_bytes(digest[..8].try_into().unwrap()).max(1);
     let journal = RuntimeJournal::open(
         core.clone(),
@@ -618,7 +618,7 @@ async fn actual_store_rejects_checkpoint_head_whose_evidence_was_changed() {
     framing.extend_from_slice(&1u64.to_be_bytes());
     framing.extend_from_slice(&8u64.to_be_bytes());
     framing.extend_from_slice(&node);
-    let digest = busbar_contract::abi::sdk::digest::sha256(&framing);
+    let digest = busbar_contract::digest::sha256(&framing);
     let mut namespace: [u8; 16] = digest[..16].try_into().unwrap();
     namespace[0] |= 0x80;
     let mut key = family.to_vec();
@@ -898,7 +898,7 @@ async fn measurement_total_at(
 }
 
 fn measurement_binding(
-    kind: busbar_contract::abi::mechanism::KindCode,
+    kind: busbar_contract::kinds::codes::KindCode,
 ) -> busbar_kernel::host_measurement::MeasurementBinding {
     busbar_kernel::host_measurement::MeasurementBinding {
         caller: busbar_contract::services::Caller::issue(
@@ -913,7 +913,7 @@ fn measurement_binding(
 
 #[tokio::test]
 async fn actual_store_measurement_cumulative_cancel_and_restart_keep_original_request() {
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     use busbar_kernel::host_measurement::{MeasurementContext, MeasurementRuntime, Refusal};
     let fixture = ActualStore::new();
     let store = fixture.open().await;
@@ -1031,7 +1031,7 @@ async fn actual_store_measurement_cumulative_cancel_and_restart_keep_original_re
 
 #[tokio::test]
 async fn actual_store_measurement_system_origins_recover_without_admission_or_user_budget() {
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     use busbar_kernel::host_measurement::{MeasurementContext, MeasurementRuntime};
     let fixture = ActualStore::new();
     let store = fixture.open().await;
@@ -1119,7 +1119,7 @@ async fn actual_store_measurement_system_origins_recover_without_admission_or_us
 
 #[tokio::test]
 async fn actual_store_measurement_lost_applied_ack_replays_exact_raw_identity_once() {
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     use busbar_kernel::host_measurement::{MeasurementContext, MeasurementRuntime};
     let fixture = ActualStore::new();
     let store = fixture.open().await;

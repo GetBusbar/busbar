@@ -423,7 +423,7 @@ const UNITLESS_BODY_TOO_LARGE: &[u8] = br#"{"jsonrpc":"2.0","id":null,"error":{"
 /// THE JSON-RPC RENDERING OF A KERNEL REFUSAL THAT NAMES NO UNIT: the exact bytes v1.5.5 answered
 #[must_use]
 pub fn unitless_kernel_body(reason: u32) -> Option<&'static [u8]> {
-    use crate::abi::plane::RefusalCode;
+    use crate::plane::codes::RefusalCode;
     if reason == RefusalCode::Unauthenticated.code() {
         Some(UNITLESS_UNAUTHENTICATED)
     } else if reason == RefusalCode::BodyTooLarge.code() {

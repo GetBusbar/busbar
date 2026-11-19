@@ -226,10 +226,7 @@ async fn an_unknown_plane_write_keeps_its_exact_record_and_never_repeats_the_ups
         Err(Refused::Retained(bytes)) => super::kept_answer(&bytes).expect("readable receipt"),
         other => panic!("the exact unknown receipt must be durable: {other:?}"),
     };
-    assert_eq!(
-        kept.digest,
-        busbar_contract::abi::sdk::digest::sha256(request.body())
-    );
+    assert_eq!(kept.digest, busbar_contract::digest::sha256(request.body()));
     assert_eq!(kept.answer, first);
     assert_eq!(
         kept.receipt,
@@ -354,7 +351,7 @@ async fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_bou
         .unwrap();
     let caller = Caller::for_test(
         Arc::from("inst"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     // A sighting that moves an approved key is a durable trust effect: it may settle later.
     let sight = async |digest| {
@@ -604,7 +601,7 @@ async fn trust_approve_honours_idempotency_key() {
         .unwrap();
     let caller = Caller::for_test(
         Arc::from("inst"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     let _ = kernel.trust_sight(&caller, "cp", "d1", Box::new(|_| {}));
     let store = crate::root::real_store::admin_scoped().await;
@@ -760,7 +757,7 @@ async fn pinned_kernel() -> Arc<busbar_kernel::host_services::KernelServices> {
         .unwrap();
     let caller = Caller::for_test(
         Arc::from("inst"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     let _ = kernel.trust_sight(&caller, "cp", "fp", Box::new(|_| {}));
     kernel
@@ -936,7 +933,7 @@ async fn backend_kernel(
         .unwrap();
     let caller = Caller::for_test(
         Arc::from("inst"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     let _ = kernel.trust_sight(&caller, "cp", "d1", Box::new(|_| {}));
     kernel

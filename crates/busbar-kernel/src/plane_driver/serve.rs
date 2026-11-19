@@ -7,14 +7,15 @@ use axum::body::{Body, Bytes};
 use axum::extract::{FromRequest, Request};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use busbar_contract::abi::plane::{
-    FieldList, OutField, ServeIn, ServeOut, AUDIT_APPLIED, AUDIT_REJECTED, ROUTE_CARRIES_OWN_TOKEN,
-};
+use busbar_contract::abi::plane::{OutField, ServeIn, ServeOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::ReasonCode;
+use busbar_contract::conn::codes::NEVER_KEPT;
+use busbar_contract::plane::codes::{
+    FieldList, AUDIT_APPLIED, AUDIT_REJECTED, ROUTE_CARRIES_OWN_TOKEN,
+};
 use busbar_contract::plane_calls::{Lent, PlaneCalls};
 
 use super::{blob, refusal_status, BufferCaps, HeadFields, NO_FIELD};
@@ -463,7 +464,7 @@ pub async fn write_served_records(
     served: &Served,
     actor: &str,
 ) -> Result<(), Unserved> {
-    use busbar_contract::abi::plane::{RECORD_AUDIT, RECORD_PUT};
+    use busbar_contract::plane::codes::{RECORD_AUDIT, RECORD_PUT};
     // The acks are awaited after every write is issued; a few fit inline.
     let mut acks: smallvec::SmallVec<
         [tokio::sync::oneshot::Receiver<Result<(), &'static str>>; 4],

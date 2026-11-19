@@ -2,11 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
-use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
-use busbar_contract::abi::host::service::REFUSE_STOPPED;
-use busbar_contract::abi::host::service::{UnitRef, FLOW_CONTINUE};
-use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
+use busbar_contract::abi::host::service::UnitRef;
 use busbar_contract::json::JsonValueTrait as _;
+use busbar_contract::route::{AuthPoints, POINT_HEAD};
+use busbar_contract::route::{METHOD_POST, PATH_EXACT};
+use busbar_contract::services::codes::FLOW_CONTINUE;
+use busbar_contract::services::codes::REFUSE_STOPPED;
 use busbar_kernel::governance::NewKeySpec;
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, HandIn, Head, Listener, Refuse, UNIT_FOREIGN};
@@ -543,7 +544,7 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
                 })
                 .unwrap()
                 .0,
-            busbar_contract::abi::host::service::FLOW_STOP,
+            busbar_contract::services::codes::FLOW_STOP,
             "auth permits only its credential strip: {removed}"
         );
     }
@@ -584,7 +585,7 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
             Listener {
                 guests: GuestList::seal(vec![Line {
                     route: Route {
-                        methods: busbar_contract::abi::transport::route::METHOD_GET,
+                        methods: busbar_contract::route::METHOD_GET,
                         path_form: PATH_EXACT,
                         path: "/healthz".into(),
                         fields: Vec::new(),

@@ -10,7 +10,7 @@ slug: docs/1.6/errors/BUSBAR-3135
 
 ## What it means
 
-RETIRED. Nothing emits this code. A plane registration (an MCP server, an A2A agent) may set `allow_private`: core reads it as a boolean at the registration its plane declares and grants private reach to that registration's selected route alone, never to another registration, a provider, a request-supplied URL or a callback. A value that is not a boolean, or `allow_private` on a stdio registration, is refused naming the registration. `advanced.allow_destinations` was removed.
+RETIRED. Nothing emits this code. A plane registration (an MCP server, an A2A agent) may set `allow_private`: core reads it as a boolean at the registration its plane declares and grants private reach to that registration's selected route alone, never to another registration, a provider, a request-supplied URL or a callback. A value that is not a boolean, or `allow_private` on a stdio registration, is refused naming the registration. `advanced.allow_destinations` was removed; a configuration that still carries it loads, the key is ignored and one warning line says so.
 
 ## How to fix it
 

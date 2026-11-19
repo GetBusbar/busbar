@@ -3,7 +3,9 @@
 
 //! The transport kind: how bytes move.
 
+pub mod codes;
 pub mod dest;
+pub mod fields;
 pub mod registry;
 pub mod surface;
 

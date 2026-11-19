@@ -13,9 +13,8 @@ use std::task::Waker;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use busbar_contract::abi::transport::{
-    FramePiece, FramerOut, FramerSink, PIECE_END_OF_FRAME, PIECE_WRITABLE,
-};
+use busbar_contract::abi::transport::{FramePiece, FramerOut, FramerSink};
+use busbar_contract::transport::codes::{PIECE_END_OF_FRAME, PIECE_WRITABLE};
 
 // `base` was written against `super::{carrier, compose, framer, hostio}`; these keep those paths.
 use super::{carrier, compose, framer, hostio};
@@ -53,6 +52,8 @@ thread_local! {
     };
     /// Heap allocations made on this thread (`alloc`; `alloc_zeroed` and `realloc` go through it).
     static ALLOCATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Bytes those allocations asked for, on this thread.
+    static ALLOCATED_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// How many heap allocations `run` makes on the calling thread.
@@ -61,6 +62,17 @@ pub fn allocations_during<T>(run: impl FnOnce() -> T) -> (T, u64) {
     let result = run();
     let after = ALLOCATIONS.with(std::cell::Cell::get);
     (result, after.wrapping_sub(before))
+}
+
+/// How many heap allocations `run` makes on the calling thread, and the bytes they ask for (a
+/// zero-filled allocation goes through the same count, so zero-filled bytes are at most these).
+pub fn heap_during<T>(run: impl FnOnce() -> T) -> (T, u64, u64) {
+    let bytes = ALLOCATED_BYTES.with(std::cell::Cell::get);
+    let (result, calls) = allocations_during(run);
+    let asked = ALLOCATED_BYTES
+        .with(std::cell::Cell::get)
+        .wrapping_sub(bytes);
+    (result, calls, asked)
 }
 
 /// THE RELEASE PROOFS (owner's ruling on allocation, addendum): the bytes the process holds through this
@@ -82,6 +94,13 @@ static OBSERVING_ALLOCATOR: ObservingAllocator = ObservingAllocator;
 unsafe impl std::alloc::GlobalAlloc for ObservingAllocator {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
         let _ = ALLOCATIONS.try_with(|count| count.set(count.get().wrapping_add(1)));
+        let _ = ALLOCATED_BYTES.try_with(|bytes| {
+            bytes.set(
+                bytes
+                    .get()
+                    .wrapping_add(u64::try_from(layout.size()).unwrap_or(u64::MAX)),
+            );
+        });
         // SAFETY: the caller supplied GlobalAlloc's layout.
         let pointer = unsafe { std::alloc::GlobalAlloc::alloc(&std::alloc::System, layout) };
         if !pointer.is_null() {
@@ -258,7 +277,7 @@ impl TestDoor {
     #[must_use]
     pub fn with_role(mut self, role: u32) -> Self {
         self.facts.role = role;
-        self.facts.ported = role == busbar_contract::abi::transport::ROLE_CARRIER;
+        self.facts.ported = role == busbar_contract::transport::codes::ROLE_CARRIER;
         self
     }
 

@@ -66,8 +66,8 @@ impl std::ops::DerefMut for Reply {
 }
 impl Drop for Reply {
     fn drop(&mut self) {
-        if let Some(bytes) = self.0.rewrite.as_mut() {
-            busbar_contract::abi::sdk::wipe::wipe_bytes(bytes);
+        if let Some(bytes) = self.0.rewrite.take() {
+            drop(busbar_contract::secure::SecureVec::from(bytes));
         }
     }
 }

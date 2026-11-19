@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::sync::{PoisonError, RwLock};
 
-use busbar_contract::abi::sdk::digest::sha256;
+use busbar_contract::digest::sha256;
 use busbar_kernel::custody::{CustodyDenied, SecretCustody};
 use busbar_plugin_abi::host_side::caller::Caller;
 use busbar_plugin_abi::host_side::needs::NeedErr;

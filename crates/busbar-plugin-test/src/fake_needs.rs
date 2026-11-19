@@ -426,6 +426,20 @@ impl FakeNeeds {
         self
     }
 
+    /// What core's issued lookup answers for (`kind`, `id`): the value scripted with [`Self::issued`], or empty
+    /// for an id nothing was issued under (the kernel's `IssuedCredentials::lookup` answers an unknown id the same
+    /// way). The auth suite's second `verify` carries it.
+    pub(crate) fn issued_value(&self, kind: &str, id: &str) -> SecureVec {
+        self.lock()
+            .kernel
+            .issued
+            .iter()
+            .find(|(k, i, _)| k == kind && i == id)
+            .map_or_else(SecureVec::new, |(_, _, value)| {
+                SecureVec::from(value.as_slice())
+            })
+    }
+
     /// Every OPEN and FETCH whose host is `dest` answers `Denied` (the guard's verdict).
     pub fn deny(&mut self, dest: &str) -> &mut Self {
         self.state().denied.push(host_of(dest).to_owned());

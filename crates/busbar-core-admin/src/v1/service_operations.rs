@@ -121,6 +121,19 @@ impl AdminService {
         }
         Ok(InfoView {
             version: env!("CARGO_PKG_VERSION"),
+            api_revision: crate::v1::contract::ADMIN_API_REVISION,
+            build: BuildInfo {
+                auth_modules: auth_modules_compiled_in(),
+                hook_plugins: self
+                    .app
+                    .plugin_registry
+                    .linked()
+                    .into_iter()
+                    .filter(|row| row.kind == "hook")
+                    .map(|row| row.name)
+                    .collect(),
+                weighted_floor: true,
+            },
             deployment_id: live.map(|l| l.deployment_id().to_string()),
             node_id: live.map(|l| l.node_id()),
             incarnation: busbar_kernel::snapshot::process_generation()
@@ -166,8 +179,16 @@ impl AdminService {
             .iter()
             .map(|&(idx, weight)| {
                 let snap = self.app.store.snapshot(idx, now);
+                let lane = view.lane_view(idx);
                 PoolMemberStatusView {
-                    model: lane_model(view, idx),
+                    model: lane
+                        .as_ref()
+                        .map(|l| l.model.to_string())
+                        .unwrap_or_default(),
+                    provider: lane
+                        .as_ref()
+                        .map(|l| l.provider.to_string())
+                        .unwrap_or_default(),
                     weight,
 
                     usable: self.app.store.ready_in(name, idx, now),

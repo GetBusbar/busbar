@@ -5,21 +5,28 @@
 
 use busbar_contract::abi::auth::{
     check_begin_login, check_complete_login, check_fields, check_identify, check_style_decl,
-    BeginLoginOut, FieldSpan, FieldsOut, IdentifyOut, IdentityBuf, LoginField, BEGIN_AUTHORIZE,
-    BEGIN_FORM, FIELDS_HARD_MAX, FIELD_QUERY, FIELD_SENSITIVE, IDENTITY_GROUPS_HARD_MAX,
-    LOGIN_IDENTITY, LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED, SPAN_ABSENT,
-    STYLE_CALLER_CREDENTIAL, STYLE_NEEDS_HEADERS, VERDICT_IDENTITY, VERDICT_PASS, VERDICT_REJECT,
+    BeginLoginOut, FieldSpan, FieldsOut, IdentifyOut, IdentityBuf, LoginField,
+    STYLE_CALLER_CREDENTIAL, VERDICT_PASS,
 };
 use busbar_contract::abi::auth::{
-    check_inbound_points, check_points, AuthPoint, AuthPoints, StripName, CAP_INBOUND, CAP_LOGIN,
-    CAP_OUTBOUND, DECISION_CONTINUE, DECISION_STOP, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY,
-    POINT_PEER, STRIP_FIELD, STRIP_QUERY,
+    check_inbound_points, check_points, StripName, CAP_OUTBOUND, DECISION_STOP, POINT_FRAME,
+    POINT_PEER, STRIP_FIELD,
 };
-use busbar_contract::abi::auth::{
-    ranked, style_rank, STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL, STYLE_RANK_MASK,
-};
+use busbar_contract::abi::auth::{ranked, style_rank, STYLE_RANK_MASK};
 use busbar_contract::abi::mechanism::call::{Outcome, Span};
-use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
+use busbar_contract::abi::mechanism::check::{fault, Rule};
+use busbar_contract::auth_calls::codes::{
+    BEGIN_AUTHORIZE, BEGIN_FORM, FIELDS_HARD_MAX, FIELD_QUERY, FIELD_SENSITIVE,
+    IDENTITY_GROUPS_HARD_MAX, LOGIN_IDENTITY, LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED,
+    STYLE_NEEDS_HEADERS, VERDICT_IDENTITY, VERDICT_REJECT,
+};
+use busbar_contract::auth_calls::codes::{CAP_INBOUND, CAP_LOGIN, DECISION_CONTINUE, STRIP_QUERY};
+use busbar_contract::auth_calls::codes::{
+    STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL,
+};
+use busbar_contract::records::size_limits::Fault;
+use busbar_contract::records::size_limits::SPAN_ABSENT;
+use busbar_contract::route::{AuthPoint, AuthPoints, POINT_HEAD, POINT_HEAD_BODY};
 
 const CAP: usize = 64;
 const GROUPS_CAP: u32 = 4;

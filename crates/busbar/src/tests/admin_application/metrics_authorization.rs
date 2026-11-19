@@ -10,8 +10,8 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use busbar_contract::abi::mechanism::endpoint::{EndpointRequest, EndpointResponse};
-use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use busbar_contract::json::{self, JsonValueTrait as _};
+use busbar_contract::route::{Route, RouteAuth, RouteMethod};
 use busbar_kernel::plugin_routes::{build_route_table, PluginHttpDispatch, RouteDecl, RouteKind};
 use tower::ServiceExt as _;
 

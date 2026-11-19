@@ -5,13 +5,13 @@
 //! It exercises service authority without owning any product's wire grammar.
 
 use busbar_contract::abi::export::{CheckIn, CheckOut, ServeIn, ServeOut, StatusOut};
-use busbar_contract::abi::host::service::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
 use busbar_contract::abi::mechanism::call::{InHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::ticket::CompletionHandle;
 use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot, ServiceError};
 use busbar_contract::plugin::markers::ExportKind;
+use busbar_contract::services::codes::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
 use std::task::Poll;
 
 pub const WHOLE: &str = "/test-snapshot";

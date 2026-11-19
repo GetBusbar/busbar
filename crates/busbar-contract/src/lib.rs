@@ -9,6 +9,14 @@
 
 #[allow(missing_docs)]
 pub mod auth;
+pub mod digest;
+pub mod extensions;
+pub mod measurement;
+pub mod observation;
+pub mod observe;
+pub mod rendering;
+pub mod route;
+pub mod versions;
 /// The one crypto API (CRYPTO-SEAM): every hash, MAC, key, signature, random draw and TLS config.
 pub use busbar_crypto as crypto;
 pub mod auth_calls;

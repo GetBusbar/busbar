@@ -4,8 +4,8 @@
 //! THE KIND LAYOUT FINGERPRINTS ARE THEIR FOLDS.
 
 use busbar_contract::abi::mechanism::layout::fingerprint;
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::{auth, export, hook, plane, secret, store, transport};
+use busbar_contract::kinds::codes::KindCode;
 
 /// Every kind's `(code, literal, shapes)`.
 const KINDS: [(KindCode, u64, &[&[u64]]); 7] = [

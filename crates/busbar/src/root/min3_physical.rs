@@ -7,8 +7,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_contract::abi::transport::route::{method_bit, METHOD_HEAD, PATH_EXACT, PATH_PATTERN};
+use busbar_contract::route::{method_bit, METHOD_HEAD, PATH_EXACT, PATH_PATTERN};
+use busbar_contract::route::{RouteAuth, RouteMethod};
 use busbar_kernel::auth::native_data::{DataRouteOwners, NativeDataRoute};
 use busbar_kernel::auth::native_upgrade::NativeUpgradeRoute;
 use busbar_kernel::door::UnitKeyMint;
@@ -357,8 +357,11 @@ pub(crate) fn assemble_slot(
         .map_err(|_| "native physical line does not match its actual route owner".to_string())?;
         bindings.push(binding);
     }
+    // A head no line matches is answered as an unauthenticated request is, never by closing the
+    // connection: a caller that has not authenticated cannot tell a missing route from a gated one.
     let plan = PhysicalPlan::new(slot.into(), transport, guests, bindings)
-        .map_err(|_| "native physical plan does not cover the complete slot".to_string())?;
+        .map_err(|_| "native physical plan does not cover the complete slot".to_string())?
+        .with_unrouted();
     let mut data = Vec::new();
     let mut upgrades = Vec::new();
     for binding in plan.routes() {
@@ -471,7 +474,7 @@ pub(crate) fn assemble_admin_slot(
             dialect: 0,
             auth: LineAuth::None,
             upgrade: None,
-            offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+            offered: busbar_contract::route::AuthPoints::EMPTY,
         };
         bindings.push(
             RouteBinding::core(line.clone(), auth)

@@ -226,7 +226,7 @@ async fn the_mounted_surface_and_the_app_state_cannot_disagree() {
 /// listener's inventory above names none of them.
 #[tokio::test]
 async fn the_admin_listener_declares_exactly_the_operator_approval_pages() {
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_contract::route::{RouteAuth, RouteMethod};
     use busbar_core_oauth2::config::{OPERATOR_CONSENT_PATH, OPERATOR_DEVICE_PATH};
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let _app = application(None, None).await;

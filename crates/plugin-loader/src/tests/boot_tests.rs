@@ -4,10 +4,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::door::{SECTION_CONSUMED, SECTION_DECLARING};
 use busbar_contract::abi::mechanism::rendering::render;
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::sdk::door::{abi_str, statement};
+use busbar_contract::kinds::codes::KindCode;
+use busbar_contract::plugin_settings::sugar_words::{SECTION_CONSUMED, SECTION_DECLARING};
 
 use super::*;
 use crate::dispatch::NoSink;
@@ -133,13 +133,13 @@ fn a_module_of_another_kind_selects_nothing_and_the_first_candidate_answers() {
 fn a_candidate_reads_its_facts_off_its_rendering() {
     const REWRITES: &[busbar_contract::abi::mechanism::door::Rewrite] = &[
         busbar_contract::abi::mechanism::door::Rewrite {
-            class: busbar_contract::abi::mechanism::door::REWRITE_ALIAS,
+            class: busbar_contract::plugin_settings::sugar_words::REWRITE_ALIAS,
             _reserved: 0,
             from: abi_str("old"),
             to: abi_str(""),
         },
         busbar_contract::abi::mechanism::door::Rewrite {
-            class: busbar_contract::abi::mechanism::door::REWRITE_SUGAR,
+            class: busbar_contract::plugin_settings::sugar_words::REWRITE_SUGAR,
             _reserved: 0,
             from: abi_str("sug"),
             to: abi_str(""),
@@ -351,7 +351,7 @@ fn red_an_instance_that_will_not_bind_is_named() {
     stated.version = abi_str("0.0.0-mismatched-fixture");
     // SAFETY: the copy retains the fixture's live lists and replaces only one static string.
     c.stated = unsafe { render(&stated) }.expect("the changed Statement renders");
-    assert!(busbar_contract::abi::mechanism::rendering::read(&c.stated).is_ok());
+    assert!(busbar_contract::rendering::read(&c.stated).is_ok());
     let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
     c.name = "tools".into();
     let err = load_planes(
@@ -383,7 +383,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
         crate::stage::next_seq()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let stated = busbar_contract::abi::mechanism::rendering::read(&rendering).unwrap();
+    let stated = busbar_contract::rendering::read(&rendering).unwrap();
     let manifest = crate::sign::Manifest {
         name: stated.name,
         alias: "tools".into(),
@@ -515,7 +515,8 @@ fn a_plane_config_does_not_use_is_never_opened() {
 
 #[test]
 fn a_dropped_plane_is_selected_by_a_section_that_selects_it() {
-    use busbar_contract::abi::mechanism::door::{Section, SECTION_REQUIRED, SECTION_SELECTS};
+    use busbar_contract::abi::mechanism::door::Section;
+    use busbar_contract::plugin_settings::sugar_words::{SECTION_REQUIRED, SECTION_SELECTS};
     const SECTIONS: &[Section] = &[
         Section {
             name: abi_str("pools"),
@@ -651,13 +652,13 @@ fn need(direction: u32, transport: &str, target_from: &str) -> ReadNeed {
         auth: String::new(),
         target_from: target_from.into(),
         trust_from: String::new(),
-        details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+        details: busbar_contract::rendering::ReadBlob {
             fmt: 0,
             flags: 0,
             bytes: Vec::new(),
         },
         timeout_ms: 0,
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
     }
@@ -677,7 +678,7 @@ fn sel(candidate: usize, instance: &str) -> Selected {
     }
 }
 
-use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+use busbar_contract::conn::codes::DIRECTION_OUTBOUND;
 
 #[test]
 fn inbound_needs_are_collected_with_their_binds_from_instance_settings() {
@@ -861,8 +862,9 @@ fn red_two_listeners_on_one_address_are_refused() {
 
 #[test]
 fn a_candidate_carries_its_statements_needs() {
-    use busbar_contract::abi::host::conn::connector::{Need, KEEP_NAMED};
+    use busbar_contract::abi::host::conn::connector::Need;
     use busbar_contract::abi::mechanism::call::Blob;
+    use busbar_contract::conn::codes::KEEP_NAMED;
     const NEEDS: &[Need] = &[Need {
         direction: DIRECTION_INBOUND,
         egress_class: 0,
@@ -1078,10 +1080,7 @@ fn a_dropped_listener_binding_selects_its_exact_declared_claim_without_a_url() {
     use busbar_contract::abi::transport::listener_bindings::EXT_LISTENER_BINDINGS;
     const CLAIMS: &[busbar_contract::abi::mechanism::call::AbiStr] = &[abi_str("foreign-wire")];
     let read_candidate = |binding: &[u8]| {
-        let extensions = busbar_contract::abi::mechanism::extensions::encode(&[(
-            EXT_LISTENER_BINDINGS,
-            binding,
-        )]);
+        let extensions = busbar_contract::extensions::encode(&[(EXT_LISTENER_BINDINGS, binding)]);
         let st = busbar_contract::abi::mechanism::door::Statement {
             kind: KindCode::Transport as u32,
             claims: CLAIMS.as_ptr(),

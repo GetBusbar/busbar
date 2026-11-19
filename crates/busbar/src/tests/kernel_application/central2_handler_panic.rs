@@ -94,7 +94,7 @@ async fn a_panicking_handler_fails_only_its_own_request() {
         "fine"
     }
     use axum::response::IntoResponse as _;
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_contract::route::{RouteAuth, RouteMethod};
     use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneRouteSpec};
 
     let routes = vec![

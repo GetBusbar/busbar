@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::task::{Context, Poll};
 
-use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::conn::{ConnError, ConnId, Conns, Piece, PollConns, Ticket};
 use busbar_contract::json::{json, JsonValueTrait as _};
+use busbar_contract::rendering::ReadNeed;
 use busbar_contract::services::Caller;
 use busbar_contract::transport::trust::Anchors;
 use busbar_contract::transport::ConnFacts;
@@ -39,10 +39,7 @@ fn refused() -> PortError {
 }
 
 fn caller() -> Caller {
-    Caller::for_test(
-        "mcp".into(),
-        busbar_contract::abi::mechanism::KindCode::Plane,
-    )
+    Caller::for_test("mcp".into(), busbar_contract::kinds::codes::KindCode::Plane)
 }
 
 /// A plane that states nothing and answers nothing (no FB_PROBES).

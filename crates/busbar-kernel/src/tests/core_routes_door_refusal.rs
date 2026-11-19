@@ -17,7 +17,7 @@ fn a_door_route_pattern_matches_as_the_router_does() {
 
 #[tokio::test]
 async fn a_catchall_refusal_and_ticket_match_the_routers_nonempty_tail() {
-    use busbar_contract::abi::mechanism::route::RouteMethod;
+    use busbar_contract::route::RouteMethod;
     use busbar_kernel::plane_routes::{DoorRouteId, PlaneRefusalSpec, PlaneResponse};
     use std::sync::Arc;
     use tower::ServiceExt as _;
@@ -66,7 +66,7 @@ async fn a_catchall_refusal_and_ticket_match_the_routers_nonempty_tail() {
 
 #[test]
 fn only_a_ticket_route_names_a_ticket_prefix() {
-    use busbar_contract::abi::mechanism::route::RouteMethod;
+    use busbar_contract::route::RouteMethod;
     use std::sync::Arc;
     let spec = |path: &str, prefix: Option<&str>| busbar_kernel::plane_routes::PlaneRefusalSpec {
         route: busbar_kernel::plane_routes::DoorRouteId {
@@ -96,7 +96,7 @@ fn only_a_ticket_route_names_a_ticket_prefix() {
 
 #[test]
 fn a_signed_path_is_looked_up_by_path_whatever_the_verb() {
-    use busbar_contract::abi::mechanism::route::RouteMethod;
+    use busbar_contract::route::RouteMethod;
     use busbar_kernel::plane_routes::{DoorRouteId, PlaneRefusalSpec, PlaneResponse};
     use std::sync::Arc;
     let signed: Arc<[String]> = vec![
@@ -129,8 +129,8 @@ fn a_signed_path_is_looked_up_by_path_whatever_the_verb() {
 
 #[tokio::test]
 async fn door_metadata_follows_guest_precedence_instead_of_plane_mount_order() {
-    use busbar_contract::abi::mechanism::route::RouteMethod;
-    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    use busbar_contract::route::RouteMethod;
+    use busbar_contract::route::{method_bit, PATH_EXACT, PATH_PATTERN};
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Matched, Route};
     use busbar_kernel::plane_routes::{DoorRouteId, PlaneRefusalSpec, PlaneResponse};
     use std::sync::Arc;
@@ -185,7 +185,7 @@ async fn door_metadata_follows_guest_precedence_instead_of_plane_mount_order() {
                         dialect: 0,
                         auth: LineAuth::None,
                         upgrade: None,
-                        offered: busbar_contract::abi::auth::AuthPoints::HEAD,
+                        offered: busbar_contract::route::AuthPoints::HEAD,
                     })
                     .collect(),
             )
@@ -238,7 +238,7 @@ async fn door_metadata_follows_guest_precedence_instead_of_plane_mount_order() {
         dialect: 0,
         auth: LineAuth::None,
         upgrade: None,
-        offered: busbar_contract::abi::auth::AuthPoints::HEAD,
+        offered: busbar_contract::route::AuthPoints::HEAD,
     };
     assert!(
         GuestList::seal(vec![

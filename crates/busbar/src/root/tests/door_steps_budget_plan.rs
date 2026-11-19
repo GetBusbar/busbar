@@ -7,8 +7,10 @@
 //! dev-only stage probes (`busbar_contract::stage_probe`) on the actual door steps and governor.
 
 use super::{downgrade_book, downgrading, owned, pools, DOWNGRADE_SECTION};
-use busbar_contract::abi::plane::{UnitCount, ROUTE_POOL, UNITS_REPORTED};
+use busbar_contract::abi::plane::UnitCount;
 use busbar_contract::caps::PrincipalId;
+use busbar_contract::measurement::UNITS_REPORTED;
+use busbar_contract::plane::codes::ROUTE_POOL;
 use busbar_contract::stage_probe::{Derive, Scope};
 use busbar_kernel::plane_driver::{DriverSteps as _, EndPost, MoneySeam as _, PlaneMoney};
 use std::sync::Arc;

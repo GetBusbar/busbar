@@ -39,6 +39,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         plane_rate_cards: Default::default(),
         plane_fees: Default::default(),
         plane_insecure_transport: Default::default(),
+        plane_routes: Default::default(),
         instance_sections: Default::default(),
         store: None,
         secrets: Default::default(),

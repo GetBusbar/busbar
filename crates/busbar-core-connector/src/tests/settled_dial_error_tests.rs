@@ -8,8 +8,8 @@ use crate::carrier::{Carry, Side};
 use crate::framer::{Call, Crossed, DoorFacts};
 use crate::registry::Entry;
 use crate::support::{worker, TestDoor};
-use busbar_contract::abi::host::service::DEST_PLAINTEXT;
 use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::services::codes::DEST_PLAINTEXT;
 use std::sync::atomic::AtomicUsize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

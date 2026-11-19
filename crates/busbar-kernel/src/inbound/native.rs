@@ -7,8 +7,8 @@
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::Instant;
 
-use busbar_contract::abi::mechanism::route::RouteAuth;
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
+use busbar_contract::route::RouteAuth;
 use busbar_contract::secure::SecureVec;
 use busbar_contract::services::Caller;
 use busbar_contract::storage::{StorageCredit, StorageDenied, StorageSource};
@@ -82,7 +82,13 @@ impl NativeTarget {
 pub enum RouteTarget {
     Plane(NativeTarget),
     Core(RouteAuth),
+    /// No sealed line matched the head ([`PhysicalPlan::with_unrouted`]): the request is answered as
+    /// an unauthenticated one, never served.
+    Unrouted,
 }
+
+/// The claimant word of the unrouted binding's line (a line no head matches: it has no path form).
+pub const UNROUTED: &str = "core/unrouted";
 
 /// Opaque token for one sealed route. Equality of paths or wire route numbers is not
 /// equality of this binding; final completion retains this exact Arc.
@@ -126,6 +132,27 @@ impl RouteBinding {
             target: RouteTarget::Core(auth),
         })
     }
+    /// The binding of a head no sealed line matched. Its line matches nothing (no methods, no path
+    /// form); only [`PhysicalPlan::with_unrouted`] hands it out.
+    fn unrouted() -> Self {
+        Self {
+            line: Line {
+                route: crate::guest::Route {
+                    methods: 0,
+                    path_form: 0,
+                    path: String::new(),
+                    fields: Vec::new(),
+                    rung: 0,
+                },
+                claimant: Claimant::Clean(UNROUTED.into()),
+                dialect: 0,
+                auth: crate::guest::LineAuth::None,
+                upgrade: None,
+                offered: Default::default(),
+            },
+            target: RouteTarget::Unrouted,
+        }
+    }
     pub fn line(&self) -> &Line {
         &self.line
     }
@@ -141,8 +168,18 @@ pub struct PhysicalPlan {
     transport: Arc<dyn TransportPort>,
     guests: GuestList,
     routes: Box<[Arc<RouteBinding>]>,
+    /// Where a head no line matches is bound ([`Self::with_unrouted`]); `None` = refused at arrival.
+    unrouted: Option<Arc<RouteBinding>>,
 }
 impl PhysicalPlan {
+    /// Bind a head no sealed line matches (no route, or a route without that method) to one
+    /// unrouted binding, answered as an unauthenticated request is: a caller that has not
+    /// authenticated cannot tell a missing route from a gated one. The binding is kept by the plan.
+    #[must_use]
+    pub fn with_unrouted(mut self) -> Self {
+        self.unrouted = Some(Arc::new(RouteBinding::unrouted()));
+        self
+    }
     /// Candidate assembly uses these same tokens to attach its actual native data plans.
     pub fn routes(&self) -> &[Arc<RouteBinding>] {
         &self.routes
@@ -186,6 +223,7 @@ impl PhysicalPlan {
             transport,
             guests,
             routes: ordered.into_boxed_slice(),
+            unrouted: None,
         })
     }
 
@@ -198,6 +236,12 @@ impl PhysicalPlan {
         }
         let line = match self.guests.matched(&head.method, &head.target, &fields) {
             Matched::Line(line) => line,
+            Matched::MethodMiss(_) | Matched::NoRoute if self.unrouted.is_some() => {
+                return self
+                    .unrouted
+                    .clone()
+                    .ok_or(ArrivalRefusal::Binding(BindError::Routes));
+            }
             Matched::MethodMiss(_) => return Err(ArrivalRefusal::Method),
             Matched::NoRoute => return Err(ArrivalRefusal::NoRoute),
         };

@@ -6,7 +6,7 @@ use crate::export::projection::{
     produced_fields, resolve_projection, FieldValue, ProjectedRecord, Projection, ProjectionUnion,
     PRODUCED_STREAMS,
 };
-use busbar_contract::abi::export::ExportField;
+use busbar_contract::export_calls::codes::ExportField;
 use busbar_contract::export_stream::ExportStream;
 use busbar_contract::json::{self, JsonContainerTrait as _};
 

@@ -13,7 +13,8 @@ use busbar_contract::abi::mechanism::call::{
     AbiStr, DeadlineClass, Outcome, RawOutcome, BLOB_OCTETS,
 };
 use busbar_contract::abi::mechanism::door::{Door, DoorFn};
-use busbar_contract::abi::plane::{slot, FieldList, Ops, ServeIn, ServeOut};
+use busbar_contract::abi::plane::{Ops, ServeIn, ServeOut};
+use busbar_contract::plane::codes::{slot, FieldList};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 

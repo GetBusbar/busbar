@@ -12,13 +12,13 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use busbar_contract::abi::transport::FAULT_NONE;
 use busbar_contract::caps::Route;
 use busbar_contract::conn::{
     ConnError, ConnId, Conns, HeadDefaults, InstanceId, LocatedTarget, NeedId, OpenDesc, Piece,
     PollConns, Ticket,
 };
 use busbar_contract::stage_probe::{Derive, Scope};
+use busbar_contract::transport::codes::FAULT_NONE;
 use busbar_contract::transport::trust::EgressTrust;
 use busbar_contract::transport::{ConnFacts, TransportSettings};
 use busbar_core_connector::registry::Transports;
@@ -214,7 +214,7 @@ fn egress_over(conns: Arc<dyn PollConns>, port: u16) -> Egress {
         conns,
         breaker: busbar_kernel::plane_driver::fixed_breaker(Arc::new(Book::default())),
         capacity: Arc::new(Free),
-        clock: busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
+        clock: busbar_contract::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
         pools: foldhash::HashMap::from_iter([(busbar_contract::kept::Text::fixed(POOL), {

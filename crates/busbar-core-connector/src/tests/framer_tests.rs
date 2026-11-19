@@ -5,14 +5,14 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::transport::{SIDE_ACCEPT, SIDE_DIAL};
+use busbar_contract::transport::codes::{SIDE_ACCEPT, SIDE_DIAL};
 
 use super::*;
 use crate::support::{Knobs, TestDoor};
 
 #[test]
 fn undeclared_dialing_refuses_before_locate_or_begin_crosses() {
-    use busbar_contract::abi::transport::ROLE_FRAMER;
+    use busbar_contract::transport::codes::ROLE_FRAMER;
     let door = Arc::new(
         TestDoor::identity("accept-only")
             .with_role(ROLE_FRAMER)
@@ -80,7 +80,7 @@ impl FramerDoor for FailedQueryEncode {
                     output.yielded.frame_len = u64::MAX;
                 }
                 if matches!(self.mode, EncodeRefusal::More) {
-                    output.yielded.flags = busbar_contract::abi::transport::YIELD_MORE;
+                    output.yielded.flags = busbar_contract::transport::codes::YIELD_MORE;
                 }
                 Crossed {
                     outcome: if matches!(self.mode, EncodeRefusal::Failed) {
@@ -524,7 +524,7 @@ impl FramerDoor for TrailerDoor {
 
 #[test]
 fn final_fields_keep_their_kind_and_custody_across_pending_and_drain() {
-    use busbar_contract::abi::transport::EMIT_TRAILERS;
+    use busbar_contract::transport::codes::EMIT_TRAILERS;
 
     let door = Arc::new(TrailerDoor {
         inner: PendingDoor::new(TestDoor::identity("bytes"), 1),
@@ -646,7 +646,7 @@ fn a_ticketed_begin_whose_auth_pends_resumes_on_the_wake_with_one_auth_call() {
             dials: true,
             name: "framer".into(),
             claims: vec!["t"],
-            role: busbar_contract::abi::transport::ROLE_FRAMER,
+            role: busbar_contract::transport::codes::ROLE_FRAMER,
             composes_over: Vec::new(),
             ported: false,
             status_rows: Vec::new(),
@@ -810,7 +810,7 @@ impl MuxDoor {
                 dials: true,
                 name: "mux".into(),
                 claims: vec!["mux"],
-                role: busbar_contract::abi::transport::ROLE_FRAMER,
+                role: busbar_contract::transport::codes::ROLE_FRAMER,
                 composes_over: Vec::new(),
                 ported: false,
                 status_rows: Vec::new(),
@@ -975,7 +975,7 @@ fn a_dialled_head_emit_states_its_body_length_and_nothing_else_does() {
 #[test]
 fn a_binding_with_auth_points_is_refused_ticket_less() {
     use busbar_contract::abi::host::service::AuthRef;
-    use busbar_contract::abi::transport::POINT_HEAD;
+    use busbar_contract::route::POINT_HEAD;
     let dial = AuthBinding {
         points: POINT_HEAD,
         auth: AuthRef { id: 3, mac: 4 },
@@ -1026,7 +1026,7 @@ fn a_binding_with_auth_points_is_refused_ticket_less() {
         "/s",
         &[],
         &lines,
-        busbar_contract::abi::host::service::SCHEME_PLAIN,
+        busbar_contract::services::codes::SCHEME_PLAIN,
     ) {
         Err(e) => assert_eq!(e.error, TICKET_LESS_AUTH),
         Ok(_) => panic!("a stream with auth lines was framed ticket-less"),
@@ -1664,7 +1664,7 @@ impl FramerDoor for Quiet {
 /// buffers went back when it closed.
 #[test]
 fn a_framing_opened_and_closed_returns_its_working_buffers() {
-    use busbar_contract::abi::transport::ROLE_FRAMER;
+    use busbar_contract::transport::codes::ROLE_FRAMER;
     let door: Arc<dyn FramerDoor> = Arc::new(Quiet {
         facts: DoorFacts {
             dials: false,

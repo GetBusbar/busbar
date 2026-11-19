@@ -549,7 +549,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .unwrap()
         .expect("actual OIDC statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .unwrap()
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "ordinary-oidc", true);
@@ -672,7 +672,7 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .unwrap()
         .expect("actual OIDC statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .unwrap()
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "ordinary-oidc", true);

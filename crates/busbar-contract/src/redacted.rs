@@ -427,7 +427,7 @@ pub fn constant_time_eq<A: AsRef<[u8]> + ?Sized, B: AsRef<[u8]> + ?Sized>(a: &A,
 
 /// Lowercase hex SHA-256 of `data` — THE digest facility credentials are compared under (a module
 pub fn sha256_hex(data: &[u8]) -> String {
-    hex::encode(crate::abi::sdk::digest::sha256(data))
+    hex::encode(crate::digest::sha256(data))
 }
 
 #[cfg(test)]

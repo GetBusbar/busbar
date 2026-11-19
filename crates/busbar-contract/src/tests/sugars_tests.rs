@@ -4,7 +4,7 @@
 //! [`Sugars::declare`]: the shorthand a secret plugin's Statement declares is read off its
 
 use super::*;
-use crate::abi::mechanism::door::{
+use crate::plugin_settings::sugar_words::{
     REWRITE_ALIAS, REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN,
     SUGAR_ROLE_PATH,
 };

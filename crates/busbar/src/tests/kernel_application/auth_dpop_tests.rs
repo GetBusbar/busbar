@@ -45,7 +45,7 @@ async fn no_authorization_server(tag: &str) -> Arc<busbar_kernel::state::App> {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "corp", true);

@@ -18,16 +18,16 @@ pub(crate) static DURABLE: RootDurable = RootDurable;
 
 fn configuration_declaration(
     m: &Manifest,
-    statement: &busbar_contract::abi::mechanism::rendering::Read,
+    statement: &busbar_contract::rendering::Read,
 ) -> busbar_kernel::admission::ConfigurationDeclaration {
     let mut declaration =
         busbar_kernel::admission::ConfigurationDeclaration::from_statement(statement);
-    declaration.valid &= busbar_contract::abi::mechanism::KindCode::from_raw(statement.kind)
+    declaration.valid &= busbar_contract::kinds::codes::KindCode::from_raw(statement.kind)
         .is_some_and(|kind| crate::root::loader::boot::kind_of(kind).to_string() == m.kind)
         && statement.name == m.name
         && statement.version == m.version
         && statement.kind_abi == m.abi_version
-        && statement.mechanism_version == busbar_contract::abi::mechanism::MECHANISM_VERSION;
+        && statement.mechanism_version == busbar_contract::kinds::codes::MECHANISM_VERSION;
     declaration
 }
 

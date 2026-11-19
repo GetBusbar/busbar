@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::host::conn::connector::{
+use busbar_contract::conn::codes::{
     DIRECTION_OUTBOUND, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
-use busbar_contract::abi::mechanism::rendering;
+use busbar_contract::kinds::codes::rendering;
 use busbar_core_connector::guard::{judged_class, PRIVATE_REFUSED_IN};
 
 #[test]

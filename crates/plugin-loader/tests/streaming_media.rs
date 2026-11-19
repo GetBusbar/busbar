@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::abi::mechanism::call::AbiStr;
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
 use busbar_plugin_loader::dispatch::kinds::plane::{Plane, PlaneFacts};
 use busbar_plugin_loader::dispatch::Kind;
 use std::mem::{size_of, zeroed};
@@ -16,8 +16,9 @@ fn z<T>() -> T {
 fn bounded_tail_context(
     change: impl FnOnce(&mut busbar_contract::abi::plane::PlaneTail),
 ) -> Result<(), String> {
-    use busbar_contract::abi::mechanism::door::{Section, Statement, SECTION_DECLARING};
+    use busbar_contract::abi::mechanism::door::{Section, Statement};
     use busbar_contract::abi::plane::{PlaneTail, INGRESS_RESPONSE_STREAM};
+    use busbar_contract::plugin_settings::sugar_words::SECTION_DECLARING;
     let section = [Section {
         name: AbiStr::of("door"),
         flags: SECTION_DECLARING,

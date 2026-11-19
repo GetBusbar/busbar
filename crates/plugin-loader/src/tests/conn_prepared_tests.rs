@@ -292,9 +292,7 @@ fn prepared_request_commit_cannot_relax_previously_confirmed_security() {
 
 #[test]
 fn prepared_observation_preserves_failure_cause_before_close_and_on_replay() {
-    use busbar_contract::abi::host::conn::connector::{
-        CAUSE_CONNECT, CAUSE_FRAMER, CAUSE_SECURITY,
-    };
+    use busbar_contract::conn::codes::{CAUSE_CONNECT, CAUSE_FRAMER, CAUSE_SECURITY};
     for landed in [false, true] {
         for stage in [CAUSE_CONNECT, CAUSE_FRAMER, CAUSE_SECURITY] {
             let table = Arc::new(Scripted {
