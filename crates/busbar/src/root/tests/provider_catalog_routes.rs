@@ -230,6 +230,31 @@ fn a_catalog_url_with_userinfo_does_not_become_a_model_route() {
 }
 
 #[test]
+fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
+    // P094: credentials in a provider URL are not restored from 1.5.5; the provider is refused at
+    // load, its setting named, its secret never repeated, and the operator told where it goes.
+    let (mut cfg, plan) = configured();
+    cfg.providers.get_mut("p").unwrap().base_url =
+        "https://svcuser:hunter2-P4ss@upstream.example/v1".into();
+    let error = match stage(&cfg, &plan, &allocated(&plan)) {
+        Ok(_) => panic!("a provider URL's userinfo became a model route"),
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("`providers.p.base_url`"),
+        "the refusal names the setting: {error}"
+    );
+    assert!(
+        !error.contains("hunter2") && !error.contains("svcuser"),
+        "the refusal repeats the userinfo: {error}"
+    );
+    assert!(
+        error.contains("`providers.p.api_key`"),
+        "the refusal names the provider's auth binding the credential moves to: {error}"
+    );
+}
+
+#[test]
 fn catalog_allocations_cannot_reuse_an_actual_registration_destination_or_need() {
     let (cfg, plan) = configured();
     let entry = json::parse_value(br#"{"url":"https://registered.example"}"#).unwrap();
