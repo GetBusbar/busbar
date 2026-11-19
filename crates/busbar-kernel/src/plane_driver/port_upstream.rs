@@ -33,7 +33,8 @@ use busbar_ports::plane::TargetIn;
 use busbar_ports::{FactVal, PortError};
 
 use super::port_session::{
-    hand_out, AttemptItem, Calls, Effects, SessionError, Task, ToClient, UpExchange, Violation,
+    hand_out, AttemptItem, Calls, Effects, SessionError, Task, ToClient, UpExchange,
+    Violation,
 };
 use super::HeadFields;
 use crate::retry::{Retry, RetryPolicy, RetrySite};
@@ -237,6 +238,49 @@ pub trait UpChunks: Send {
     /// The next piece; `Ok(None)` = the reply ended. `Err` = it was cut (a failed connection, an expired
     /// deadline). Awaited on the session's task.
     fn next(&mut self) -> impl Future<Output = Result<Option<Chunk>, SendFailed>> + Send;
+
+    /// The next message piece of a far end that answered a WebSocket handshake with 101 (the relay's read,
+    /// [`super::port_duplex`]); `Ok(None)` = the far end closed. Cancel-safe: dropped while it waits, it has
+    /// taken nothing. A carrier with no messages (the default) hands each body chunk up as one binary message.
+    fn next_message(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<super::port_duplex::UpMessage>, SendFailed>> + Send {
+        async move {
+            loop {
+                match self.next().await? {
+                    Some(Chunk::Body(bytes)) => {
+                        return Ok(Some(super::port_duplex::UpMessage {
+                            flags: busbar_plugin_abi::plane::MSG_BINARY
+                                | busbar_plugin_abi::plane::MSG_FIN,
+                            bytes,
+                        }))
+                    }
+                    Some(Chunk::Trailers(_)) => {}
+                    None => return Ok(None),
+                }
+            }
+        }
+    }
+
+    /// One whole message for the far end (`flags`: `MSG_TEXT` or `MSG_BINARY`, with `MSG_FIN`), written
+    /// before this returns. `false` = it could not be written: the far end is gone. A carrier with no
+    /// messages (the default) writes none.
+    fn write_message(&mut self, flags: u32, bytes: Vec<u8>) -> impl Future<Output = bool> + Send {
+        let _ = (flags, bytes);
+        std::future::ready(false)
+    }
+
+    /// The engine closes the far end's side of a message session (its close frame goes out). Nothing is read
+    /// or written after it.
+    fn close(&mut self) -> impl Future<Output = ()> + Send {
+        std::future::ready(())
+    }
+
+    /// The messages the `upstream` answer wrote for the far end before it answered (UP_MSG beside the
+    /// handshake head): the relay writes them first, after the 101.
+    fn take_queued(&mut self) -> Vec<(u32, Vec<u8>)> {
+        Vec::new()
+    }
 }
 
 /// A reply whose head has arrived and whose rest (`R`, the carrier's own reader) is read piece by piece, so a
@@ -350,6 +394,8 @@ struct Fed {
     broken: bool,
     /// The client went away; the rest of the reply is let go.
     gone: bool,
+    /// What the answers asked of a message exchange (an upgrade session's; empty for every other).
+    asked: super::port_duplex::Asked,
 }
 
 fn failing(attempt: Option<&AttemptItem>) -> bool {
@@ -364,7 +410,11 @@ async fn step<K: Calls + ?Sized>(
     bytes: &[u8],
     effects: &dyn Effects,
 ) -> Result<bool, SessionError> {
-    let answer = task.piece(FROM_UPSTREAM, 0, flags, bytes, effects)?;
+    let mut answer = task.piece(FROM_UPSTREAM, 0, flags, bytes, effects)?;
+    if task.carries_messages() {
+        // An upgrade session: what the answer asks of its message exchange is kept for the relay.
+        fed.asked.take(&mut answer);
+    }
     fed.client.extend(answer.client);
     if answer.attempt.is_some() {
         fed.attempt = answer.attempt;
@@ -393,7 +443,21 @@ async fn feed<K: Calls + ?Sized, R: UpChunks>(
 ) -> Result<Fed, SessionError> {
     let mut fed = Fed::default();
     let head = head_piece(reply.status, &reply.headers)?;
+    // An upgrade request's session (its client side takes messages): a 101 for the caller in the answer to
+    // the far end's handshake answer commits the session to the relay.
+    let caller = effects.client().and_then(|sink| sink.messages());
     if !step(task, &mut fed, P_HEAD, head.as_bytes(), effects).await? {
+        // A failing verdict (the far end refused the handshake: the walk moves on), or the caller went
+        // away as its 101 was handed over. Nothing was relayed; the far end is closed by its drop.
+        return Ok(fed);
+    }
+    if let (Some(caller), true) = (caller, fed.asked.switched) {
+        // The caller has its 101 (handed out by the step above): the rest of this attempt is the session.
+        let asked = std::mem::take(&mut fed.asked);
+        let relayed =
+            super::port_duplex::relay(task, &mut reply.rest, caller, asked, effects).await?;
+        fed.began = true;
+        fed.gone = relayed.gone;
         return Ok(fed);
     }
     loop {
@@ -466,6 +530,12 @@ pub async fn run_attempts<K: Calls + ?Sized, M: Members + ?Sized, S: UpSend>(
     let data = task.data().map(|data| data.selected().is_some());
     if !attempts_driven(data, task.selected_attempts()) {
         return Err(SessionError::NotDriven);
+    }
+    // An upgrade request's session (its client side takes messages, §12.27): from its first attempt on the
+    // plane's answers may carry messages for the far end and, once it commits, for the caller. The unit and
+    // its money were admitted before this walk began, exactly as for any forwarded request.
+    if effects.client().and_then(|sink| sink.messages()).is_some() {
+        task.message_session();
     }
     let mut attempts = 0_u32;
     let mut local_quota = false;

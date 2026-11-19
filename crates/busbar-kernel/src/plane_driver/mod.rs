@@ -20,6 +20,7 @@ pub mod port_billing;
 pub mod port_carrier;
 pub mod port_channels;
 pub mod port_charge;
+pub mod port_duplex;
 pub mod port_egress;
 pub mod port_fetch;
 pub mod port_hooks;
