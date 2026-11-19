@@ -7,8 +7,8 @@
 //! books ([`UnitBooks`] over [`PortMoney`]) on the real [`PlaneMoney`] and governance book, and it is
 //! retired the way its owner retires it (`PortBilling::settle`). The plane, the member walk and the
 //! far end are scripted. The port's cancel is the drop of the session (`busbar_ports::plane`: a
-//! session dropped without `end` is cancelled); a plane FAULT ends the session `Failed`, the §12.4
-//! cancel table's CANCEL_FAILED.
+//! session dropped without `end` is cancelled); a plane FAULT ends the session `Failed`, which
+//! bills exactly the usage it accepted (§12.4 as changed by P087B).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
@@ -18,7 +18,6 @@ use std::task::{Context, Poll};
 
 use busbar_contract::abi::plane::UnitCount;
 use busbar_contract::caps::{CallId, OriginKind, ReasonCode};
-use busbar_contract::plane::codes::CANCEL_FAILED;
 use busbar_contract::records::VirtualKey;
 use busbar_contract::vocab::OUTCOME_APPLIED;
 use busbar_contract::{Count, UnitKey};
@@ -108,6 +107,15 @@ impl MoneySeam for Recorder {
     }
     fn laned(&self, ctx: &UnitCtx, lane: &str) {
         MoneySeam::laned(&*self.inner, ctx, lane);
+    }
+    fn dialled(&self, ctx: &UnitCtx) {
+        MoneySeam::dialled(&*self.inner, ctx);
+    }
+    fn unread(&self, ctx: &UnitCtx, reason: ReasonCode) -> bool {
+        MoneySeam::unread(&*self.inner, ctx, reason)
+    }
+    fn lane(&self, ctx: &UnitCtx) -> Option<String> {
+        MoneySeam::lane(&*self.inner, ctx)
     }
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
         MoneySeam::abandoned(&*self.inner, ctx, ended);
@@ -698,10 +706,11 @@ async fn retirement_an_unpolled_cancel_keeps_its_disposition_and_record_writes()
 }
 
 /// PROOF-086 row 20 (old: `an_unpolled_worker_cancel_fault_is_not_cancelled_again`). The plane
-/// FAULTs on the far end's answer before its caller got anything: the session ends `Failed`, one
-/// cancel bill with the CANCEL_FAILED disposition and nothing billed (§12.4). The unit is not
-/// cancelled again: its owner's retirement adds no second cancel and no bill, and the request stays
-/// counted (the cancel ledgered the unit, so the owner's "ran nothing" does not release it).
+/// FAULTs on the far end's answer before its caller got anything: the session ends `Failed`, which
+/// bills exactly the usage it accepted (none) and is no cancel (owner decision P087B replaced the
+/// CANCEL_FAILED bill of nothing): its books finish the unit once. The unit is never cancelled:
+/// its owner's retirement adds no cancel and no bill, and the request stays counted (its far end
+/// was dialled, so the owner's "ran nothing" does not release it).
 #[tokio::test]
 async fn retirement_a_cancel_fault_is_not_cancelled_again() {
     let r = rig().await;
@@ -717,12 +726,8 @@ async fn retirement_a_cancel_fault_is_not_cancelled_again() {
     assert!(matches!(ran, Err(SessionError::Port(_))), "{ran:?}");
     drop(walk);
 
-    let once = vec![Seen::Cancelled {
-        cause: ReasonCode::PlanePanic,
-        disposition: CANCEL_FAILED,
-        billed: Vec::new(),
-    }];
-    assert_eq!(r.seam.seen(), once, "one cancel, CANCEL_FAILED, no bill");
+    let once = vec![Seen::Finished];
+    assert_eq!(r.seam.seen(), once, "the failed end, once: no cancel, no bill");
     assert_eq!(r.money.open_units(), 1, "the unit waits for its owner");
 
     r.billing.settle(ctx.key, end_of(502, false));
