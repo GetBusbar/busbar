@@ -750,7 +750,11 @@ fn trust_replay_audit(
     answer: &AdminAnswer,
     audited: &AtomicBool,
 ) {
-    let (action, resource) = if verb == busbar_core_admin::KernelVerb::TrustApprove {
+    // An agent approval is the trust book's approve decision, audited as the kernel audits it.
+    let (action, resource) = if matches!(
+        verb,
+        busbar_core_admin::KernelVerb::TrustApprove | busbar_core_admin::KernelVerb::AgentApprove
+    ) {
         ("trust_approve", "/api/v1/admin/trust/approve")
     } else {
         ("trust_revoke", "/api/v1/admin/trust/revoke")

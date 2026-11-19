@@ -29,8 +29,9 @@ pub(crate) const ITEM: &str = "card";
 const PREFIX: &str = "/api/v1/admin/agents/";
 const SUFFIX: &str = "/approve";
 
-/// The agent a request path names: the one segment between `/agents/` and `/approve`.
-pub(crate) fn agent_of(path: &str) -> Option<&str> {
+/// The agent a request target names: the one path segment between `/agents/` and `/approve`.
+pub(crate) fn agent_of(target: &str) -> Option<&str> {
+    let path = target.split_once('?').map_or(target, |(path, _)| path);
     path.strip_prefix(PREFIX)
         .and_then(|rest| rest.strip_suffix(SUFFIX))
         .filter(|agent| !agent.is_empty() && !agent.contains('/'))
@@ -165,6 +166,10 @@ mod tests {
     fn an_agent_approve_path_names_one_agent() {
         assert_eq!(
             agent_of("/api/v1/admin/agents/billing/approve"),
+            Some("billing")
+        );
+        assert_eq!(
+            agent_of("/api/v1/admin/agents/billing/approve?x=1"),
             Some("billing")
         );
         for bad in [
