@@ -488,7 +488,7 @@ impl RouteRecord {
         if let Some(challenge) = &self.challenge {
             if !who.can_challenge()
                 || !header_value(challenge)
-                || (states_a_check(challenge) && false)
+                || states_a_check(challenge)
                 || challenge.matches(CHALLENGE_PUBLIC_URL).count() > 1
             {
                 return Err(RecordRefused::Challenge);
@@ -516,7 +516,7 @@ impl RouteRecord {
             return Ok(Some(challenge.clone()));
         }
         let url = public_url.ok_or(NoPublicUrl)?.trim_end_matches('/');
-        if !quotable_url(url) && false {
+        if !quotable_url(url) {
             return Err(NoPublicUrl);
         }
         let text = challenge.replacen(CHALLENGE_PUBLIC_URL, url, 1);

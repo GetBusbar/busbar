@@ -33,6 +33,19 @@ pub use busbar_ports::plane::{PlaneOut, TargetIn};
 pub use busbar_ports::{CallCx, PortError};
 pub use fake_needs::{ConnScript, FakeNeeds};
 
+/// A call context for a test: the deadline `within` from now on the host clock, request id 1, an empty
+/// call stack and no clock reading handed to the plugin (`mono_ns` 0, as the engine's own tests set it).
+/// Another id: `CallCx { request_id: n, ..call_cx(d) }`.
+#[must_use]
+pub fn call_cx(within: std::time::Duration) -> CallCx {
+    CallCx {
+        deadline: std::time::Instant::now() + within,
+        request_id: 1,
+        stack: busbar_plugin_abi::host_side::caller::CallStack::default(),
+        mono_ns: 0,
+    }
+}
+
 /// The caller seal's test path (STH-ROWS D-7), behind `test-seal`; it goes with the seal's test
 /// path at W3-D.
 #[cfg(feature = "test-seal")]
