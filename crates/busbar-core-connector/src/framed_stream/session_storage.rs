@@ -264,7 +264,10 @@ impl Output {
         bytes.as_slice().get(from..to).unwrap_or(&[])
     }
 
-    /// The socket took the first `count` unwritten bytes: they are wiped now.
+    /// The socket took the first `count` unwritten bytes: they are wiped now. Only the tests take
+    /// from the front today: the session hands the whole answer to the connection's queue
+    /// (`Actions::handed_over`), which wipes as the connection takes.
+    #[cfg(test)]
     pub(crate) fn take(&mut self, count: usize) {
         if let Some(bytes) = &mut self.bytes {
             let count = count.min(bytes.len());
