@@ -3,7 +3,8 @@
 
 //! The MIN-3 plugin interface (ABI-MIN3-INTERFACE, round 34): the records codec, Host services, Need steps,
 //! the plugin header, `Open`/`Describe`, the stamp, the fingerprint and the seven kind traits; feature `host`
-//! adds core's side (§10), feature `memio` the in-memory IO adapter (§9).
+//! adds core's side (§10). The in-memory IO adapter (§9) is a transport's own: the hyper helper of the
+//! labelled output model (WIRE-022).
 //!
 //! Wave 0 (W0-ABI) landed every frozen signature as a compiling stub; each wave-1 task replaces the stubs in
 //! the files it owns. W1-A1 owns this file, `types.rs`, `records.rs`, `fail.rs`, `fp.rs`, `versions.rs` and the
@@ -45,8 +46,6 @@ pub mod host;
 pub mod host_side;
 pub mod kind;
 pub mod kinds;
-#[cfg(feature = "memio")]
-pub mod memio;
 pub mod need;
 pub mod plugin;
 pub mod records;

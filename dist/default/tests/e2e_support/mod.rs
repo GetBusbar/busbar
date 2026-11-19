@@ -455,7 +455,8 @@ limits:
             .env_remove("BUSBAR_PROVIDERS")
             .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
             .env("MOCK_KEY", "k")
-            .env("RUST_LOG", "warn")
+            // `info`: the readiness wait reads the two `busbar listening` lines, logged at info.
+            .env("RUST_LOG", "info")
             .stdin(Stdio::null())
             .stdout(out.try_clone().expect("the node's log, twice"))
             .stderr(out);
