@@ -414,3 +414,73 @@ async fn nothing_serves_the_admin_listener_before_the_admin_chain_is_installed()
     assert!(crate::root::serve::native_slot(&before, "admin_listen").is_none());
     assert!(assemble_admin_slot(&installed, "admin_listen", transport).is_ok());
 }
+
+/// v1.5.5 ran the configured data chain on every non-exempt data path, `/stats` and unknown paths
+/// included, whatever routes were mounted (`inbound-coverage.tsv` E05, E11, R02). A slot that
+/// mounts no plane route therefore still has the configured chain: a caller it verifies is told
+/// the truth, and everyone else (no credential, or an operator's, which the data chain never
+/// reads) receives the one unverified answer.
+#[test]
+fn a_slot_with_no_plane_route_still_judges_by_the_configured_data_chain() {
+    let names: Vec<Box<str>> = vec!["keys".into(), "provider-42".into()];
+    let mut built = Vec::new();
+    let chain = slot_data_chain(&names, false, |names| {
+        built.push(names.to_vec());
+        Ok::<_, String>(7_u8)
+    })
+    .unwrap();
+    assert_eq!(chain.as_deref(), Some(&7));
+    // The chain is the configured one, whole and in order: never a route's, never the operator's.
+    assert_eq!(built, vec![names.clone()]);
+
+    let mut built = 0;
+    let chain = slot_data_chain(&names, true, |_| {
+        built += 1;
+        Ok::<_, String>(7_u8)
+    })
+    .unwrap();
+    assert_eq!((chain.as_deref(), built), (Some(&7), 1));
+}
+
+/// A configured chain that cannot be built refuses the candidate on every data slot: a listener
+/// never boots judging `/stats` by less than the chain its operator configured.
+#[test]
+fn a_configured_chain_that_cannot_be_built_refuses_a_slot_with_no_plane_route() {
+    let names: Vec<Box<str>> = vec!["provider-42".into()];
+    for serves_data in [false, true] {
+        let refused = slot_data_chain(&names, serves_data, |_| {
+            Err::<u8, _>("data auth: 'provider-42' has no opened native auth instance".to_owned())
+        });
+        assert_eq!(
+            refused.unwrap_err(),
+            "data auth: 'provider-42' has no opened native auth instance"
+        );
+    }
+}
+
+/// No chain configured is never an open listener here (v1.5.5 served such a listener to anyone;
+/// 1.6 names an open relay `chain: [anonymous]`). A slot with plane routes refuses the candidate,
+/// as it did; a slot with none has no chain, so every caller receives the one unverified answer.
+#[test]
+fn no_configured_chain_is_never_an_open_slot() {
+    let mut built = 0;
+    let none = slot_data_chain(&[], false, |_| {
+        built += 1;
+        Ok::<_, String>(7_u8)
+    })
+    .unwrap();
+    assert!(none.is_none());
+    assert_eq!(
+        built, 0,
+        "an empty chain is never built for a slot with no plane route"
+    );
+
+    let refused = slot_data_chain(&[], true, |names| {
+        assert!(names.is_empty());
+        Err::<u8, _>(busbar_kernel::auth::native_chain::EMPTY_CHAIN_REFUSED.to_owned())
+    });
+    assert_eq!(
+        refused.unwrap_err(),
+        busbar_kernel::auth::native_chain::EMPTY_CHAIN_REFUSED
+    );
+}

@@ -13,7 +13,7 @@
 //! |---|---|---|
 //! | walk, selected, principal-only with a unit | `listener_native_data.rs` | `Data` (after money) |
 //! | catalog, principal-only free, public, optional | `listener_native_unbilled.rs` | `Unbilled` |
-//! | upgrade | `listener_native_upgrade.rs`, `listener_native_handover.rs` | `Upgrade` |
+//! | upgrade | `listener_native_upgrade.rs`, `listener_native_handover.rs` | `Data` (after money) |
 //! | operator | the admin router, below | `Admin` |
 //! | no route | `listener_native_unrouted.rs` | (a refusal) |
 //!
