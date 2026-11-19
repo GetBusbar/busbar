@@ -171,6 +171,13 @@ impl FileImages {
         );
     }
 
+    /// Whether `identity` is an admitted image linked into this binary (compiled in, no archive).
+    pub(crate) fn linked(&self, identity: &str) -> bool {
+        self.proofs
+            .get(identity)
+            .is_some_and(|proof| proof.digest.is_none())
+    }
+
     pub(crate) fn transport_images(&self) -> BTreeMap<String, Option<[u8; 32]>> {
         self.proofs
             .iter()
