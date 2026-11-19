@@ -350,10 +350,6 @@ mod refusal_text {
     /// The build assigns no transport image the destination's carrier.
     pub(crate) const NO_CARRIER: &str =
         "no transport image carries this destination's protocol in this build";
-    /// The operator's egress proxy selects the destination, and a natively carried dial does not go through a
-    /// proxy: it is refused, never dialled around the proxy.
-    pub(crate) const NATIVE_PROXY: &str =
-        "the egress proxy selects this destination and its dial cannot go through a proxy yet";
 }
 
 /// A guard verdict in words (never `guard::Refusal`'s Display: its catch-all and the operator's
@@ -4920,6 +4916,20 @@ impl Conns for Connector {
 impl PollConns for Connector {
     fn failure_cause(&self, caller: InstanceId, conn: ConnId) -> Option<ConnCause> {
         DeclaredConns::cause(self, caller, conn)
+    }
+
+    fn attempt_evidence(
+        &self,
+        caller: InstanceId,
+        conn: ConnId,
+        each: &mut dyn FnMut(busbar_contract::conn::AttemptEvidence),
+    ) {
+        let Ok((_, held)) = self.slab.get(caller, conn) else {
+            return;
+        };
+        if let Some(native) = &held.native {
+            Self::native_evidence(native, each);
+        }
     }
 
     /// The framer the need rides, located at `target`: its own head lines, and whether its head

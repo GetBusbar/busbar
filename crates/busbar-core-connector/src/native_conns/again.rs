@@ -180,6 +180,53 @@ impl crate::conns::Connector {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// The evidence of each attempt a native entry made, in order, in the connection contract's own
+    /// terms (`PollConns::attempt_evidence`). While a call has the exchange out nothing is told: the
+    /// reader of the evidence is the exchange's own owner, after its last poll.
+    pub(crate) fn native_evidence(
+        native: &super::NativeHeld,
+        each: &mut dyn FnMut(busbar_contract::conn::AttemptEvidence),
+    ) {
+        use busbar_contract::conn::{AttemptEnd, AttemptEvidence, Sent};
+        let Some(exchange) = native.begin(Waker::noop()) else {
+            return;
+        };
+        let sent = |state: delivery::State| match state {
+            delivery::State::None => Sent::None,
+            delivery::State::Part => Sent::Part,
+            delivery::State::Whole => Sent::Whole,
+        };
+        for recorded in exchange.evidence() {
+            each(match *recorded {
+                Recorded::Redial => AttemptEvidence {
+                    sent: Sent::None,
+                    end: AttemptEnd::Redialled,
+                },
+                Recorded::NothingSent => AttemptEvidence {
+                    sent: Sent::None,
+                    end: AttemptEnd::Failed,
+                },
+                Recorded::AtProxy => AttemptEvidence {
+                    sent: Sent::None,
+                    end: AttemptEnd::AtProxy,
+                },
+                Recorded::RefusedUnprocessed(state) => AttemptEvidence {
+                    sent: sent(state),
+                    end: AttemptEnd::RefusedUnprocessed,
+                },
+                Recorded::Failed(state) => AttemptEvidence {
+                    sent: sent(state),
+                    end: AttemptEnd::Failed,
+                },
+                Recorded::Local => AttemptEvidence {
+                    sent: Sent::None,
+                    end: AttemptEnd::Local,
+                },
+            });
+        }
+        native.end(exchange);
+    }
+
     /// Requests this connector sent again on a fresh connection since it started.
     #[must_use]
     pub fn redials(&self) -> u64 {
