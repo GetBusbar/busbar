@@ -7,17 +7,12 @@
 //! does not run per request; the request path only reads what it built. Each submodule is named for
 //! the request-path module it builds for.
 
-pub(crate) mod compose;
 pub(crate) mod conns;
-pub(crate) mod datagram;
-pub(crate) mod dialled;
-pub(crate) mod dtls;
 pub(crate) mod egress;
 pub(crate) mod framing;
 pub(crate) mod guard;
 pub(crate) mod lines;
 pub(crate) mod process;
-pub(crate) mod program;
 pub(crate) mod proxy;
 pub(crate) mod seal;
 pub(crate) mod tls;

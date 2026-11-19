@@ -10,12 +10,8 @@ use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
-use busbar_contract::conn::{ConnError, InstanceId, NeedId};
+use busbar_contract::conn::{InstanceId, NeedId};
 use foldhash::HashMap;
-
-use crate::conns::framer::FramerDoor;
-use crate::conns::hostio::{Admission, HostIo};
-use crate::conns::program::{Declaration, Member, Members};
 
 /// The test kit (a private test CA, the adoption observer) for this crate's tests and, behind
 /// the `test-support` feature, for plugin repos' dev-dependencies.
@@ -40,47 +36,6 @@ pub(crate) fn hold_member<V>(
 /// Record `member`'s seal at its registration's destination, once, at declaration.
 pub(crate) fn seal_registration<V>(members: &mut BTreeMap<String, V>, member: &str, sealed: V) {
     members.insert(member.to_owned(), sealed);
-}
-
-/// A member-program need's members, declared once: a member whose program is unchanged from
-/// `before` is kept (its environment reloaded), every other is declared afresh over `door`.
-pub(crate) fn declare_members(
-    programs: &[(String, busbar_contract::conn::Program)],
-    before: Option<&Members>,
-    scope: &busbar_contract::config_time::ConfigScope,
-    secrets: Option<crate::conns::spawn_env::SpawnSecretFn>,
-    (door, io): (&Arc<dyn FramerDoor>, &Arc<HostIo>),
-    alpn: &Arc<[Vec<u8>]>,
-) -> Result<Members, ConnError> {
-    programs
-        .iter()
-        .map(|(name, p)| {
-            let kept = before
-                .and_then(|b| b.get(name))
-                .filter(|m| m.program() == p)
-                .cloned();
-
-            if let Some(kept) = &kept {
-                kept.env().reload(scope);
-            }
-            let member = match kept {
-                Some(kept) => kept,
-                None => Arc::new(Declaration::new(Member::new(
-                    p.clone(),
-                    // An environment the host cannot keep fresh fails the declaration (the load
-                    // says why).
-                    crate::conns::spawn_env::HeldEnv::load(&p.env_refs, secrets, scope)
-                        .map_err(|_| ConnError::Fault)?,
-                    crate::conns::compose::Via {
-                        door: Arc::clone(door),
-                        io: Arc::clone(io),
-                    },
-                    Arc::clone(alpn),
-                )?)),
-            };
-            Ok((name.clone(), member))
-        })
-        .collect::<Result<_, ConnError>>()
 }
 
 /// `target` without its userinfo: the authority's text up to and including its last `@` left out,
@@ -158,11 +113,6 @@ pub(crate) fn bind_auth(
         .insert(origin.to_string(), binding);
 }
 
-/// A listener's admission: exactly its bind, admitted once, as it is bound.
-pub(crate) fn bind_admission(bind: &str) -> Admission {
-    Admission::Bind(bind.to_owned())
-}
-
 // An instance's retirement lets go of what it bound and declared, once: off the request path
 // (caller: `DeclaredConns::forget`, which the root calls when an instance is unloaded).
 impl crate::Connector {
@@ -175,13 +125,8 @@ impl crate::Connector {
         for conn in self.slab.forget(owner) {
             let _ = self.close(owner, conn);
         }
-        self.pools.forget(owner);
         flush_native_idle(&self.native_idle, Some(owner));
 
-        let needs = needs_of(&*self.over.lock().expect("needs"), owner);
-        for need in needs {
-            self.set_need(owner, need, None);
-        }
         forget_owned(
             &mut *self.native_needs.lock().expect("native needs"),
             |(o, _)| *o == owner,
@@ -215,17 +160,6 @@ impl crate::Connector {
     }
 }
 
-/// Every need `owner` declared in `over`, as it retires.
-pub(crate) fn needs_of<V>(
-    over: &HashMap<(InstanceId, NeedId), V>,
-    owner: InstanceId,
-) -> Vec<NeedId> {
-    over.keys()
-        .filter(|(o, _)| *o == owner)
-        .map(|(_, n)| *n)
-        .collect()
-}
-
 /// Let go of every entry of `map` whose key `owned` names, as an instance retires.
 pub(crate) fn forget_owned<K: Eq + Hash, V>(map: &mut HashMap<K, V>, owned: impl Fn(&K) -> bool) {
     map.retain(|k, _| !owned(k));
@@ -245,12 +179,6 @@ pub(crate) fn owned_name(name: Option<&str>) -> Option<String> {
 /// `text` lower-cased, the key a dialled connection is pooled and anchored under.
 pub(crate) fn lowered(text: &str) -> String {
     text.to_ascii_lowercase()
-}
-
-/// An owned copy of `items`, kept by a dialled connection's own record (its head words, its
-/// protocol offer, the head defaults), once, as the connection is dialled.
-pub(crate) fn copied<T: Clone>(items: &[T]) -> Vec<T> {
-    items.to_vec()
 }
 
 /// The head an opener lent, copied into the dial's own owned fields once, as the connection is

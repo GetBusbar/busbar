@@ -7,7 +7,8 @@ use busbar_contract::kept::Kept;
 use busbar_contract::secure::SecureVec;
 use foldhash::HashMap;
 
-use crate::compose::Opening;
+/// An opening's head fields and target, as a sealed open hands them over.
+pub type Opening = (Vec<(String, Vec<u8>)>, busbar_contract::conn::Bytes);
 
 /// The refusal of an open whose sealed values would cross a connection the host does not secure:
 pub const SEALED_IN_CLEAR: &str = "a sealed credential is never written in the clear: the open's \

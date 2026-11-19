@@ -804,7 +804,7 @@ impl super::Connector {
                 cause: None,
                 key,
             };
-            let mut held = super::Held::over(None, None, None).bounded(started, desc.timeout_ms);
+            let mut held = super::Held::new().bounded(started, desc.timeout_ms);
             held.native = Some(NativeHeld::new(exchange, core));
             held
         };

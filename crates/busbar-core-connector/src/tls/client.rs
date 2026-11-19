@@ -336,49 +336,6 @@ pub enum DigestAlg {
     Sha512,
 }
 
-impl DigestAlg {
-    /// The digest of `data` under this hash, held inline (no allocation per connection).
-    #[must_use]
-    pub(crate) fn digest(self, data: &[u8]) -> EndPointDigest {
-        let mut bytes = [0u8; 64];
-        let len = match self {
-            Self::Sha256 => {
-                bytes[..32].copy_from_slice(&busbar_contract::crypto::sha256(data));
-                32
-            }
-            Self::Sha384 => {
-                bytes[..48].copy_from_slice(&busbar_contract::crypto::sha384(data));
-                48
-            }
-            Self::Sha512 => {
-                bytes = busbar_contract::crypto::sha512(data);
-                64
-            }
-        };
-        EndPointDigest { bytes, len }
-    }
-}
-
-/// A `tls-server-end-point` digest: the hash's bytes (at most SHA-512's 64), held inline.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct EndPointDigest {
-    bytes: [u8; 64],
-    len: usize,
-}
-
-impl AsRef<[u8]> for EndPointDigest {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes[..self.len]
-    }
-}
-
-impl std::ops::Deref for EndPointDigest {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        &self.bytes[..self.len]
-    }
-}
-
 /// THE CHANNEL-BINDING DIGEST of a DER certificate (RFC 5929 section 4.1, `tls-server-end-point`):
 #[must_use]
 pub fn end_point_digest(cert_der: &[u8]) -> DigestAlg {

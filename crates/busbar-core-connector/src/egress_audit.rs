@@ -116,21 +116,21 @@ mod tests {
     /// clock once between them; an op that already read the clock reads it not again.
     #[test]
     fn refusals_of_one_op_read_the_clock_once() {
-        use crate::compose::clock_reads;
-        let _ = clock_reads::take();
+        use crate::clock::reads;
+        let _ = reads::take();
         let mut now = None;
         dial_refused("once.test", None, "internal", None, &mut now);
         dial_refused("once.test", None, "plaintext", None, &mut now);
         tls_failed("once.test", "pin", &mut now);
         assert_eq!(
-            clock_reads::take().reads,
+            reads::take(),
             1,
             "one reading for the op's three refusals"
         );
-        let mut read = Some(crate::framer::now());
+        let mut read = Some(crate::clock::now());
         dial_refused("twice.test", None, "internal", None, &mut read);
         assert_eq!(
-            clock_reads::take().reads,
+            reads::take(),
             0,
             "the op's earlier reading is used"
         );

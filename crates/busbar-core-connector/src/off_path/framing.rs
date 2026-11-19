@@ -32,20 +32,3 @@ pub(crate) fn session_clock() -> (Instant, u64) {
     )
 }
 
-/// The OS wall clock, nanoseconds since the Unix epoch (`0` before it): read once as a framing
-/// begins.
-pub(crate) fn unix_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
-}
-
-/// One field of an opening block, owned: kept once per stream, as its opening is read.
-pub(crate) fn owned_field(name: &[u8], value: &[u8]) -> (Vec<u8>, Vec<u8>) {
-    (name.to_vec(), value.to_vec())
-}
-
-/// A framing's opening field block, owned: kept once, as the framing begins.
-pub(crate) fn owned_opening(opening: &[(String, Vec<u8>)]) -> Vec<(String, Vec<u8>)> {
-    opening.to_vec()
-}

@@ -467,8 +467,11 @@ pub trait Resolve: Send + Sync {
     fn resolve(&self, host: &str, done: Resolved);
 }
 
+/// The most name lookups the host keeps in flight at once.
+pub const MAX_PENDING_LOOKUPS: usize = 64;
+
 /// The system resolver, one short-lived thread per resolution, so a slow name never holds a
-/// worker. Its threads are CAPPED: at most [`crate::compose::MAX_PENDING_LOOKUPS`] resolutions are
+/// worker. Its threads are CAPPED: at most [`MAX_PENDING_LOOKUPS`] resolutions are
 /// in flight at once, and one more is answered at once as a resolution failure, no thread started.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemResolver;
@@ -478,7 +481,7 @@ impl Resolve for SystemResolver {
         resolve_capped(
             host,
             done,
-            crate::compose::MAX_PENDING_LOOKUPS,
+            MAX_PENDING_LOOKUPS,
             &RESOLVING,
             crate::off_path::guard::system_lookup,
         );

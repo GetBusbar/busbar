@@ -50,7 +50,7 @@ static LAST: Mutex<Option<HashMap<(String, String), Instant>>> = Mutex::new(None
 /// reading, `now` (the op's memo: the clock is read here only if the op has not read it yet).
 #[cold]
 pub(crate) fn due(host: &str, why: &str, now: &mut Option<Instant>) -> bool {
-    let now = crate::compose::clock(now);
+    let now = crate::clock::memo(now);
     let mut last = LAST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
