@@ -2193,6 +2193,10 @@ mod usage_flush_tests;
 mod schema_snapshot_tests;
 
 #[cfg(test)]
+#[path = "tests/upstream_protocol_tests.rs"]
+mod upstream_protocol_tests;
+
+#[cfg(test)]
 #[path = "tests/config_backcompat_corpus.rs"]
 mod config_backcompat_corpus;
 

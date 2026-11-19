@@ -257,13 +257,16 @@ pub struct AdvancedCfg {
     /// Pin the shared upstream client to HTTP/1.1 (`advanced.upstream_http1_only`, migrated from
     /// `BUSBAR_UPSTREAM_HTTP1_ONLY`). BOOT-TIME (client-build) knob; default `false` (ALPN default:
     /// h2 where the backend accepts it, h1 otherwise). The `BUSBAR_UPSTREAM_HTTP1_ONLY` env var was
-    /// deprecated in 1.5.3 and removed in 1.6.0.
+    /// deprecated in 1.5.3 and removed in 1.6.0. Read by the HTTP transport (it declares this key
+    /// in its settings). If `upstream_h2_prior_knowledge` is also true, this one wins: the transport
+    /// offers `http/1.1` on TLS and no h2c on cleartext; the engine passes both through unchanged.
     #[serde(default)]
     pub upstream_http1_only: bool,
     /// Force HTTP/2 prior-knowledge to cleartext upstreams (`advanced.upstream_h2_prior_knowledge`,
     /// migrated from `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`). BOOT-TIME (client-build) knob; default
     /// `false` — prior-knowledge h2c measurably HURT throughput in perf testing. The
     /// `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` env var was deprecated in 1.5.3 and removed in 1.6.0.
+    /// Read by the HTTP transport. Ignored when `upstream_http1_only` is also true (that one wins).
     #[serde(default)]
     pub upstream_h2_prior_knowledge: bool,
     /// The `advanced.response_headers:` block — opt-in toggles for every busbar-INJECTED response

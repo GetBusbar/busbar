@@ -2102,8 +2102,9 @@ advanced:
 Pins the client that talks to providers and other upstreams to HTTP/1.1. By default the client
 negotiates HTTP/2 where the far end offers it. When to change it: an upstream or middlebox that
 handles HTTP/2 badly. Cost: no HTTP/2 multiplexing, so more connections for the same traffic. The
-value is passed to the HTTP transport (it reaches a transport plugin only if its settings name
-this path).
+value is passed to the HTTP transport, which declares this key in its settings and reads it (a
+transport reaches it only if its settings name this path). If `upstream_h2_prior_knowledge` is
+also `true`, this setting wins.
 
 ```yaml
 advanced:
@@ -2115,8 +2116,10 @@ advanced:
 Speaks HTTP/2 directly (no HTTP/1.1 upgrade or negotiation) to cleartext (`http://`) upstreams.
 When to change it: an h2c-only upstream. Cost: a far end that does not speak HTTP/2 fails; the
 source records that this measurably lowered throughput in performance testing, which is why it is
-off. Setting it together with `upstream_http1_only` is not refused; the combination is
-contradictory, so set only one.
+off. Setting it together with `upstream_http1_only` is not refused, and the rule is fixed:
+`upstream_http1_only` wins. Over TLS the HTTP transport then offers `http/1.1` alone, and to a
+cleartext upstream it speaks HTTP/1.1, not h2c. The engine passes both values to the transport
+unchanged; the rule lives in the transport (`door::offer_for`) and is tested there.
 
 ```yaml
 advanced:
