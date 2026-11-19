@@ -14,11 +14,11 @@ use busbar_kernel::diagnostics::{
 use busbar_kernel::state::App;
 
 use crate::v1::contract::{
-    AdminAuthView, AdminError, AuthView, ClassUsage, ConfigValidateView, EffectiveConfigView,
-    GroupView, HookHealthView, HookTransportView, HookView, InfoCrypto, InfoView, InfoWarning,
-    KeyUsageView, ModelUsageView, ModelView, NamedDefView, Page, PluginView, PoolDetailView,
-    PoolMemberStatusView, PoolMemberView, PoolView, ProviderView, UsageBreakdown, UsageView,
-    UsageWindow,
+    AdminAuthView, AdminError, AuthView, BuildInfo, ClassUsage, ConfigValidateView,
+    EffectiveConfigView, GroupView, HookHealthView, HookTransportView, HookView, InfoCrypto,
+    InfoView, InfoWarning, KeyUsageView, ModelUsageView, ModelView, NamedDefView, Page, PluginView,
+    PoolDetailView, PoolMemberStatusView, PoolMemberView, PoolView, ProviderView, UsageBreakdown,
+    UsageView, UsageWindow,
 };
 use busbar_kernel::config::named_map::NamedMapSection;
 use busbar_kernel::config::{HookCfg, HookKind, HookStage, PromptAccess, UserAccess};
