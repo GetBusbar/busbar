@@ -362,6 +362,3 @@ pub fn field_cut(bytes: &[u8], room: usize, in_value: bool) -> usize {
     best
 }
 
-#[cfg(test)]
-#[path = "../tests/transport_sink_tests.rs"]
-mod tests;

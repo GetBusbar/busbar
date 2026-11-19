@@ -971,6 +971,3 @@ impl<K: KindMarker> Connector<'_, K> {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/conn_tests.rs"]
-mod tests;

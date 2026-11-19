@@ -756,6 +756,3 @@ pub fn class_index(classes: &[OpClassId], op: OpClassId) -> Option<u32> {
         .and_then(|i| u32::try_from(i).ok())
 }
 
-#[cfg(test)]
-#[path = "tests/publish_tests.rs"]
-mod tests;

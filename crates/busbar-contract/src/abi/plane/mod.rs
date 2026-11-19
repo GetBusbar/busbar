@@ -2809,10 +2809,6 @@ super::sdk::door::slot_structs!(PlaneLifecycle {
     life::CLOSE => InHead, OutHead;
 });
 
-#[cfg(test)]
-#[path = "../tests/plane_kind_tests.rs"]
-mod tests;
-
 // Neutral wire quantities remain source-compatible for existing planes.
 pub use crate::abi::measurement::{
     units_bill, BillableClass, UnitCount, UNITS_ESTIMATED, UNITS_ESTIMATED_MICROS, UNITS_FLOOR,

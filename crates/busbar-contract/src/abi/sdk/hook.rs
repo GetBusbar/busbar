@@ -1163,6 +1163,3 @@ macro_rules! hook_door {
     };
 }
 
-#[cfg(test)]
-#[path = "tests/hook_tests.rs"]
-mod tests;

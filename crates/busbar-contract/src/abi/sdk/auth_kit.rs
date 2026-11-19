@@ -89,6 +89,3 @@ pub fn login_outage(
     Outcome::Ready
 }
 
-#[cfg(test)]
-#[path = "tests/auth_kit_tests.rs"]
-mod tests;

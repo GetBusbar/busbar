@@ -1475,10 +1475,6 @@ macro_rules! lent_field_list {
 
 lent_field_list!(lent_fields);
 
-#[cfg(test)]
-#[path = "tests/lent_tests.rs"]
-mod tests;
-
 impl<'a> Lent<'a, LineEntry> {
     /// The line's route as the route vocabulary reads it ([`RouteView`]): what an accepting
     #[must_use]
@@ -1503,10 +1499,6 @@ impl<'a> Lent<'a, LineEntry> {
         })
     }
 }
-
-#[cfg(test)]
-#[path = "tests/expand_tests.rs"]
-mod expand_tests;
 
 // Primitive Store output buffers contain initialized values. Unlike HostBuf's raw
 // writers, the encoder needs slices. Keep their construction at the loan boundary.

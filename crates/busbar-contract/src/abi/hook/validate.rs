@@ -227,6 +227,3 @@ pub fn check_notify_in(input: &NotifyIn) -> Result<(), Fault> {
     Ok(())
 }
 
-#[cfg(test)]
-#[path = "../tests/hook_validate_tests.rs"]
-mod tests;

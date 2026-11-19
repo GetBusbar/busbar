@@ -146,6 +146,3 @@ impl Drop for super::plane::conditional::Request {
 
 impl zeroize::ZeroizeOnDrop for super::plane::conditional::Request {}
 
-#[cfg(test)]
-#[path = "tests/wipe_tests.rs"]
-mod tests;

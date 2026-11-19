@@ -727,10 +727,3 @@ pub mod check {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/v4_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "tests/check_tests.rs"]
-mod check_tests;

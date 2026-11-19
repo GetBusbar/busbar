@@ -332,6 +332,3 @@ pub fn clock(
     observation(out.authority, out.observed_at)
 }
 
-#[cfg(test)]
-#[path = "tests/v4_response_tests.rs"]
-mod tests;

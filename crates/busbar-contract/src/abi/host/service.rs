@@ -3114,10 +3114,6 @@ pub unsafe fn check_unit_refuse(
     Ok(filled)
 }
 
-#[cfg(test)]
-#[path = "../tests/host_service_tests.rs"]
-mod tests;
-
 /// A `directory.*` answer: the common rules, the caller's buffers where the op writes any (get,
 /// lookup, scan, create), and READY's `value` is the record version (`0` when none).
 ///

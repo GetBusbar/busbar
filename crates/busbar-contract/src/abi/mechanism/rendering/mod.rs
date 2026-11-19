@@ -314,6 +314,3 @@ pub use busbar_artifact_metadata::rendering::{
     read, Read, ReadBlob, ReadFamily, ReadMeasurementClass, ReadNeed, Unreadable,
 };
 
-#[cfg(test)]
-#[path = "../../tests/rendering_tests.rs"]
-mod tests;

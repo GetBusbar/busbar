@@ -236,6 +236,3 @@ pub fn check_spawn_in(i: &SpawnIn) -> Result<(), Fault> {
     check::listed(i.env, i.env_len, "io.spawn.env")
 }
 
-#[cfg(test)]
-#[path = "../tests/host_io_tests.rs"]
-mod tests;

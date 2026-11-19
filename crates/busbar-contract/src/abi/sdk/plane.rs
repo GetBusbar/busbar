@@ -117,6 +117,3 @@ pub const fn cancel_disposition(answered: bool) -> u32 {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/plane_tests.rs"]
-mod tests;

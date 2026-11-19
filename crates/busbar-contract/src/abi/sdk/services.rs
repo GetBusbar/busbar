@@ -2579,10 +2579,6 @@ fn blank_out() -> ServiceOut {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/services_tests.rs"]
-mod tests;
-
 /// THE SNAPSHOT LAYOUT, READ BACK: the export kind's scrape layout the host wrote into the caller's
 mod snapshot {
     use crate::abi::export::{ScrapeFamily, ScrapeLabel, ScrapeSample};

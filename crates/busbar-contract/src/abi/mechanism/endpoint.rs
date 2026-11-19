@@ -35,6 +35,3 @@ pub struct EndpointResponse {
     pub body: Vec<u8>,
 }
 
-#[cfg(test)]
-#[path = "../tests/endpoint_tests.rs"]
-mod tests;

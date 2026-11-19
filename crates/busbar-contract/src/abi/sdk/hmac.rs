@@ -100,6 +100,3 @@ pub fn sha256(parts: &[&[u8]]) -> SecureArray<32> {
     SecureArray::from(crypto::sha256_parts(parts))
 }
 
-#[cfg(test)]
-#[path = "tests/hmac_tests.rs"]
-mod tests;

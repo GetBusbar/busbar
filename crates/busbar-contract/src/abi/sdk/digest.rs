@@ -69,6 +69,3 @@ pub fn lower_hex(bytes: &[u8]) -> String {
     hex::encode(bytes)
 }
 
-#[cfg(test)]
-#[path = "tests/digest_tests.rs"]
-mod tests;

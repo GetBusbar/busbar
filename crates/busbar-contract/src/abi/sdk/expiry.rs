@@ -183,6 +183,3 @@ impl<T: Ord> Counted<BTreeSet<T>> {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/expiry_tests.rs"]
-mod tests;

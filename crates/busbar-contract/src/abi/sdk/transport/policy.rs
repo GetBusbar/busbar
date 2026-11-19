@@ -21,10 +21,6 @@ pub struct Loans {
     opening: HashMap<Ticket, (u64, Arc<Policy>)>,
 }
 
-#[cfg(test)]
-#[path = "../tests/transport_policy_tests.rs"]
-mod tests;
-
 impl Loans {
     /// The stream waiting for this operation's policy reply.
     #[must_use]

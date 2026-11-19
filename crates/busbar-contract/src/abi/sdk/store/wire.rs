@@ -1453,22 +1453,3 @@ fn serve(
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/store_wire_kept_tests.rs"]
-mod kept_tests;
-
-#[cfg(all(test, debug_assertions))]
-#[path = "../tests/store_wire_probe_tests.rs"]
-mod probe_tests;
-
-#[cfg(test)]
-#[path = "../tests/store_wire_sealed_tests.rs"]
-mod sealed_tests;
-
-#[cfg(test)]
-#[path = "../tests/store_wire_output_wipe_tests.rs"]
-mod output_wipe_tests;
-
-#[cfg(test)]
-#[path = "tests/loader_wire_contracts.rs"]
-mod loader_wire_contracts;

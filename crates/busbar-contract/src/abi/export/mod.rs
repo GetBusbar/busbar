@@ -799,6 +799,3 @@ super::sdk::door::slot_structs!(
     }
 );
 
-#[cfg(test)]
-#[path = "tests/stream_tests.rs"]
-mod tests;

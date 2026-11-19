@@ -1123,6 +1123,3 @@ pub const fn with_inbound(tail: AuthTail, points: AuthPoints) -> AuthTail {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/auth_outbound_tests.rs"]
-mod tests;

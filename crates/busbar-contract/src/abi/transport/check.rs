@@ -990,6 +990,3 @@ abi_answers! {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/transport_check_tests.rs"]
-mod tests;

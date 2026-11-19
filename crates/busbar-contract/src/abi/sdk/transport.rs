@@ -153,6 +153,3 @@ macro_rules! not_served {
     )*};
 }
 
-#[cfg(test)]
-#[path = "tests/transport_tests.rs"]
-mod tests;

@@ -1293,6 +1293,3 @@ impl<'a, T: AbiOut> Out<'a, T> {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/out_tests.rs"]
-mod tests;

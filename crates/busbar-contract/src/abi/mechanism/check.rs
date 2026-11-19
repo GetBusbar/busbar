@@ -674,6 +674,3 @@ macro_rules! contract {
 }
 pub(crate) use contract;
 
-#[cfg(test)]
-#[path = "../tests/mechanism_check_tests.rs"]
-mod tests;

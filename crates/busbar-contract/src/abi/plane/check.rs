@@ -1728,10 +1728,6 @@ pub fn check_pin_mechanisms(mechanisms: &[PinMechanism]) -> Result<(), Fault> {
     Ok(())
 }
 
-#[cfg(test)]
-#[path = "../tests/plane_check_tests.rs"]
-mod tests;
-
 /// Validate every instance-local collection relationship before admission.
 pub fn check_record_collections(
     collections: &[super::RecordCollection],

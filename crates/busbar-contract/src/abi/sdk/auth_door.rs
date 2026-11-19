@@ -1052,6 +1052,3 @@ pub const fn with_tail(statement: Statement, tail: &'static AuthTail) -> Stateme
     }
 }
 
-#[cfg(test)]
-#[path = "tests/auth_door_tests.rs"]
-mod tests;

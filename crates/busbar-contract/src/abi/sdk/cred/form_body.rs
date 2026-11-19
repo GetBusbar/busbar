@@ -203,7 +203,3 @@ impl FormBody {
     }
 }
 
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "../tests/form_body_wipe_tests.rs"]
-mod wipe_tests;

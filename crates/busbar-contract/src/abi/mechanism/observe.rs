@@ -350,6 +350,3 @@ impl Observations {
 
 pub use busbar_artifact_metadata::observe::{DiagnosticDecl, SeriesDecl};
 
-#[cfg(test)]
-#[path = "../tests/observe_tests.rs"]
-mod tests;

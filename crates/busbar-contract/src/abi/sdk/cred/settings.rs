@@ -385,6 +385,3 @@ impl<'de> de::Deserialize<'de> for Cred {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/cred_lent_tests.rs"]
-mod lent_tests;

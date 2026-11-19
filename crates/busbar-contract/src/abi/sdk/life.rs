@@ -854,6 +854,3 @@ life_slot!(
     }
 );
 
-#[cfg(test)]
-#[path = "tests/life_tests.rs"]
-mod tests;

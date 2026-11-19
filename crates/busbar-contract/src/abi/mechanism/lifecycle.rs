@@ -277,6 +277,3 @@ pub fn refusal_lines(section: &str, instance: &str, text: &str) -> Vec<String> {
         .collect()
 }
 
-#[cfg(test)]
-#[path = "../tests/validate_refusal_tests.rs"]
-mod tests;

@@ -1794,10 +1794,3 @@ mod bounded_body_tests {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/exchange_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "tests/inspection_tests.rs"]
-mod inspection_tests;

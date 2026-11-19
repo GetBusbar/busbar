@@ -114,6 +114,3 @@ pub unsafe fn check_tail_entries(streams: &[u8], routes: &[Route]) -> Result<(),
     Ok(())
 }
 
-#[cfg(test)]
-#[path = "../tests/export_validate_tests.rs"]
-mod tests;

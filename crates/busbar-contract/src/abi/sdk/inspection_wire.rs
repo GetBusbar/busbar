@@ -516,6 +516,3 @@ pub fn append_receipt(
     append(blob, EXT_REPLY, &encode_receipt(receipt)?)
 }
 
-#[cfg(test)]
-#[path = "../mechanism/tests/inspection_tests.rs"]
-mod tests;

@@ -455,6 +455,3 @@ fn written(handle: u64, n: u64, cap: usize) -> IoAnswer<(u64, usize)> {
     Ok((handle, count(n, cap)?))
 }
 
-#[cfg(test)]
-#[path = "tests/io_tests.rs"]
-mod tests;

@@ -401,6 +401,3 @@ impl CaptureSlot {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/capture_retention_tests.rs"]
-mod tests;

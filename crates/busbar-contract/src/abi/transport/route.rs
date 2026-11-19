@@ -283,6 +283,3 @@ pub fn field_holds(op: u32, name: &str, value: &[u8], fields: &[(&str, &[u8])]) 
         })
 }
 
-#[cfg(test)]
-#[path = "../tests/transport_route_tests.rs"]
-mod tests;

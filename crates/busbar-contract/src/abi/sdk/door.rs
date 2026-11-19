@@ -1561,6 +1561,3 @@ macro_rules! export_door {
     };
 }
 
-#[cfg(test)]
-#[path = "tests/door_tests.rs"]
-mod tests;

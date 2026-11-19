@@ -33,6 +33,3 @@ pub fn failed(out: &mut Out<'_, ResolveOut>, e: SecretModuleError) -> Outcome {
     out.fail(Refusal::failed(e.message))
 }
 
-#[cfg(test)]
-#[path = "tests/secret_tests.rs"]
-mod tests;

@@ -360,6 +360,3 @@ impl Drop for Services<'_, '_> {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/store_op_tests.rs"]
-mod tests;

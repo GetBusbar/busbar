@@ -179,6 +179,3 @@ pub struct DatagramYield {
     pub terms: RendezvousTerms,
 }
 
-#[cfg(test)]
-#[path = "../tests/transport_datagram_tests.rs"]
-mod tests;

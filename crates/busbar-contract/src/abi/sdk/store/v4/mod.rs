@@ -258,6 +258,3 @@ pub fn scan(request: &owned::Scan, head: InHead, rows: wire::HostRows) -> wire::
     }
 }
 
-#[cfg(test)]
-#[path = "tests/marshal_tests.rs"]
-mod tests;

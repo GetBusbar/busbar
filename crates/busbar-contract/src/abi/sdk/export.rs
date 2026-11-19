@@ -151,6 +151,3 @@ pub fn second_instances(names: &[String], alias: &str, why: &str) -> Vec<String>
         .collect()
 }
 
-#[cfg(test)]
-#[path = "tests/export_tests.rs"]
-mod tests;

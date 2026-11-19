@@ -107,6 +107,3 @@ impl Cred {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/chip_tests.rs"]
-mod tests;

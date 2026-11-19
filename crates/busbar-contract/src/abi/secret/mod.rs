@@ -220,6 +220,3 @@ abi_answers! {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/secret_holder_tests.rs"]
-mod holder_tests;

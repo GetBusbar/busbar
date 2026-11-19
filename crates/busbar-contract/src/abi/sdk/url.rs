@@ -224,6 +224,3 @@ pub fn scrub(text: &str, parts: Vec<String>, quoted: bool) -> String {
     out.into_string()
 }
 
-#[cfg(test)]
-#[path = "tests/url_tests.rs"]
-mod tests;

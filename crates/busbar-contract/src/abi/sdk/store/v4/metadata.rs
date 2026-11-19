@@ -68,6 +68,3 @@ pub fn decode(bytes: &[u8]) -> Result<BackendInfo, InvalidMetadata> {
     Ok(info)
 }
 
-#[cfg(test)]
-#[path = "tests/metadata_tests.rs"]
-mod tests;

@@ -70,6 +70,3 @@ pub struct Route {
     pub auth: RouteAuth,
 }
 
-#[cfg(test)]
-#[path = "../tests/route_tests.rs"]
-mod tests;

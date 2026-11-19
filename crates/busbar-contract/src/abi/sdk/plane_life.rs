@@ -259,10 +259,3 @@ impl RawSlot for NoServe {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/plane_life_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "tests/plane_inspection_leases_tests.rs"]
-mod inspection_leases_tests;

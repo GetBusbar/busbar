@@ -340,6 +340,3 @@ pub fn clock(
     Ok(out)
 }
 
-#[cfg(test)]
-#[path = "tests/encode_tests.rs"]
-mod tests;

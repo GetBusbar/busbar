@@ -744,6 +744,3 @@ super::sdk::door::slot_structs!(
     }
 );
 
-#[cfg(test)]
-#[path = "../tests/auth_retry_after_tests.rs"]
-mod retry_after_tests;

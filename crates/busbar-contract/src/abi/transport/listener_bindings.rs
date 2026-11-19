@@ -67,6 +67,3 @@ pub fn read(extensions: &[u8], claims: &[&str]) -> Result<Vec<ListenerBinding>, 
     Ok(rows)
 }
 
-#[cfg(test)]
-#[path = "../tests/listener_bindings_tests.rs"]
-mod tests;

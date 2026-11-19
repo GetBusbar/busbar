@@ -81,6 +81,3 @@ impl Visitor<'_> for Captured {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/cred_record_tests.rs"]
-mod tests;

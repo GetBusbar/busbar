@@ -266,6 +266,3 @@ pub fn rsa_public_key_sha256(public_key_pem: &[u8]) -> Result<[u8; 32], Refused>
     rsa::key_sha256(public_key_pem)
 }
 
-#[cfg(test)]
-#[path = "../tests/sealed_operations_tests.rs"]
-mod tests;

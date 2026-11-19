@@ -243,6 +243,3 @@ mod erased {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/cred_json_tests.rs"]
-mod tests;

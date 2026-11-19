@@ -222,6 +222,3 @@ impl<T> Table<T> {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/transport_table_tests.rs"]
-mod tests;

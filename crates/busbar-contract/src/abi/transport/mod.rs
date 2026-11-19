@@ -1776,9 +1776,5 @@ super::sdk::door::slot_structs!(
     }
 );
 
-#[cfg(test)]
-#[path = "../tests/transport_kind_tests.rs"]
-mod tests;
-
 /// Bounded status namespace declarations, including opening numbering.
 pub mod status;

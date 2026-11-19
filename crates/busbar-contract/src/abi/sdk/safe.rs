@@ -832,6 +832,3 @@ unsafe fn lent_reason<I: 'static>(index: u32, input: &I) -> Option<Reason> {
     (!buf.is_null() && cap > 0).then_some(Reason { buf, cap, open })
 }
 
-#[cfg(test)]
-#[path = "tests/safe_tests.rs"]
-mod tests;

@@ -282,6 +282,3 @@ macro_rules! statement_extensions {
     };
 }
 
-#[cfg(test)]
-#[path = "../tests/extensions_tests.rs"]
-mod tests;

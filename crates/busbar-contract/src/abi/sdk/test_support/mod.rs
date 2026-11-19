@@ -220,6 +220,3 @@ all_zero!(row:
     crate::abi::host::conn::connector::ConnectorSlots,
 );
 
-#[cfg(test)]
-#[path = "../tests/test_support_tests.rs"]
-mod tests;

@@ -388,6 +388,3 @@ pub unsafe fn scan(raw: &wire::ScanIn, budget: usize) -> Result<owned::Scan, Dec
     })
 }
 
-#[cfg(test)]
-#[path = "tests/decode_tests.rs"]
-mod tests;

@@ -368,6 +368,3 @@ pub fn read_answer(outcome: Outcome, answer: &[u8]) -> Result<MigrationAnswer, S
     }
 }
 
-#[cfg(test)]
-#[path = "tests/migrate_tests.rs"]
-mod tests;

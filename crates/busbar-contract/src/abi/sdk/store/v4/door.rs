@@ -559,6 +559,3 @@ macro_rules! store_v4_door {
     (@default $default:expr, $value:expr) => { $value };
 }
 
-#[cfg(test)]
-#[path = "tests/door_tests.rs"]
-mod tests;

@@ -1482,6 +1482,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/conditional_custody_tests.rs"]
-mod custody_tests;

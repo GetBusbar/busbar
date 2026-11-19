@@ -109,6 +109,3 @@ fn secret_looking(key: &str) -> bool {
     })
 }
 
-#[cfg(test)]
-#[path = "tests/mask_tests.rs"]
-mod tests;

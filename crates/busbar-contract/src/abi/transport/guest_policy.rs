@@ -299,6 +299,3 @@ pub fn decode(bytes: &[u8]) -> Result<Policy, &'static str> {
     })
 }
 
-#[cfg(test)]
-#[path = "../tests/guest_policy_tests.rs"]
-mod tests;

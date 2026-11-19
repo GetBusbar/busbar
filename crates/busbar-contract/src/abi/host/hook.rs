@@ -1140,6 +1140,3 @@ mod projection_json {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/host_hook_tests.rs"]
-mod tests;

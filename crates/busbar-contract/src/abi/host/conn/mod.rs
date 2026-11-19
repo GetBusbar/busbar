@@ -914,14 +914,3 @@ impl HostConns {
     }
 }
 
-#[cfg(test)]
-#[path = "../../tests/conn_lowering_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "../../tests/abi_conn_retention_tests.rs"]
-mod retention_tests;
-
-#[cfg(test)]
-#[path = "../../tests/abi_conn_close_tests.rs"]
-mod close_tests;
