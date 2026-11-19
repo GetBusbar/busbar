@@ -527,7 +527,6 @@ dependencies = [
  "busbar-kernel-breaker",
  "busbar-plugin-abi",
  "foldhash",
- "futures",
 ]
 
 [[package]]

@@ -56,6 +56,7 @@ use busbar_contract::abi::transport::{
 };
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{CallId, Pass, ReasonCode, Route};
+use busbar_contract::clock::{Deadline, HostClock, Reading as HostReading};
 use busbar_contract::conn::{
     ConnCause, ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
@@ -70,7 +71,6 @@ use busbar_kernel_egress::{
     walk::budget_secs,
     Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts,
 };
-use busbar_ports::clock::{Deadline, HostClock, Reading as HostReading};
 
 use super::hooks::{CandidateFacts, Candidates, Constraint};
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};

@@ -811,8 +811,8 @@ pub(crate) async fn compose_planes(
 ) -> Result<Served, String> {
     let scope = busbar_contract::config_time::ConfigScope::config_time();
 
-    let clock: busbar_ports::clock::HostClock =
-        busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep);
+    let clock: busbar_contract::clock::HostClock =
+        busbar_contract::clock::HostClock::system(crate::root::egress_ports::tokio_sleep);
     compose_planes_over(
         &crate::LINKED,
         doors,
@@ -842,7 +842,7 @@ pub(crate) async fn compose_planes_over(
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
     journal: Option<&Arc<dyn busbar_kernel::plane_driver::HookJournal>>,
-    clock: &busbar_ports::clock::HostClock,
+    clock: &busbar_contract::clock::HostClock,
     scope: &busbar_contract::config_time::ConfigScope,
     tables: &ServeTables,
 ) -> Result<Served, String> {
@@ -1264,7 +1264,7 @@ pub(crate) fn seal_live(
     scope_kinds: &[&str],
     section: &busbar_contract::yaml::Value,
     egress: Option<&DoorEgress<'_>>,
-    clock: &busbar_ports::clock::HostClock,
+    clock: &busbar_contract::clock::HostClock,
     generation: u64,
     bench_below_trip_threshold: Option<bool>,
     scope: &busbar_contract::config_time::ConfigScope,

@@ -500,7 +500,7 @@ impl Capacity for Free {
 }
 
 /// The runtime's timer, as the host clock sleeps on it.
-pub(super) fn tokio_sleep(at: std::time::Instant) -> busbar_ports::clock::Sleep {
+pub(super) fn tokio_sleep(at: std::time::Instant) -> busbar_contract::clock::Sleep {
     Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(at)))
 }
 
@@ -692,7 +692,7 @@ fn rig(
         conns: table.clone(),
         breaker: crate::plane_driver::fixed_breaker(book.clone()),
         capacity: Arc::new(Free),
-        clock: busbar_ports::clock::HostClock::system(tokio_sleep),
+        clock: busbar_contract::clock::HostClock::system(tokio_sleep),
         journal: Arc::clone(&journal) as Arc<dyn Journal>,
         telemetry: Arc::new(Quiet),
         pools: [(POOL.into(), pool)].into_iter().collect(),

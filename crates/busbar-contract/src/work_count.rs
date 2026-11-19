@@ -24,7 +24,7 @@ pub enum Work {
     Crossing,
     /// One request submitted to the store plugin and answered.
     StoreRoundTrip,
-    /// One reading taken by the host clock (`busbar_ports::clock::HostClock`).
+    /// One reading taken by the host clock (`crate::clock::HostClock`).
     ClockRead,
 }
 

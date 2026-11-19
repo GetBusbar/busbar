@@ -7,8 +7,8 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use busbar_contract::caps::{Pass, Route};
+use busbar_contract::clock::{Deadline, HostClock, Reading};
 use busbar_contract::kept::Text;
-use busbar_ports::clock::{Deadline, HostClock, Reading};
 use foldhash::HashMap;
 
 use crate::exhaustion::{least_bad, retry_after_secs};
@@ -541,7 +541,7 @@ impl<'p> Parked<'p> {
             if self.waiting.is_empty() {
                 break None;
             }
-            let Ok(woke) = busbar_ports::clock::until(
+            let Ok(woke) = busbar_contract::clock::until(
                 ports.clock,
                 self.until,
                 ports.capacity.acquire_any(&self.waiting),

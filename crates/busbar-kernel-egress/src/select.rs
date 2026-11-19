@@ -3,7 +3,7 @@
 
 //! The pick: who is asked first, and who is allowed.
 
-use busbar_ports::clock::Deadline;
+use busbar_contract::clock::Deadline;
 use std::sync::Mutex;
 
 use foldhash::{HashMap, HashSet};

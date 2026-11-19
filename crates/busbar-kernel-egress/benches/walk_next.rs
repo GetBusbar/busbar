@@ -9,12 +9,12 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use busbar_contract::caps::{KernelSeal, Pass, Route};
+use busbar_contract::clock::HostClock;
 use busbar_kernel_egress::ports::{
     Admit, BoxFut, Breaker, Capacity, Classified, DestinationId, Outcome, Permit, PermitHandle,
     Telemetry, Unavailable, UpstreamStatus,
 };
 use busbar_kernel_egress::{Member, Pool, Step, Walk, WalkPorts};
-use busbar_ports::clock::HostClock;
 
 const ROUNDS: u32 = 1_000_000;
 const SAMPLES: usize = 21;
@@ -90,7 +90,7 @@ impl Telemetry for Quiet {
 }
 
 /// The host clock with a sleep that never waits: the walk under test never parks.
-fn no_sleep(_: Instant) -> busbar_ports::clock::Sleep {
+fn no_sleep(_: Instant) -> busbar_contract::clock::Sleep {
     Box::pin(async {})
 }
 
