@@ -520,7 +520,8 @@ pub mod need {
     }
     /// FETCH, "status only, discard the body" (core 3.0, `vocab::net1::FETCH_STATUS_ONLY`): the engine reads
     /// and discards the response body whatever its size and answers the status and headers with an empty
-    /// body; `max_body` is not applied. For a sink that needs only "was it accepted": a receiver that
+    /// body. State `max_body: 0`: no limit applies, and a status-only FETCH that states one is refused
+    /// INVALID. For a sink that needs only "was it accepted": a receiver that
     /// answers a large body is delivered once, not resent for ever against the answer limit.
     pub fn fetch_status<'a>(req: &'a Fetch<'a>) -> NeedFut<'a, Fetched> {
         NeedFut::new(Req::Fetch(req, true), fetched)

@@ -880,8 +880,9 @@ fn pairs(arg: &[u8], max: usize) -> Result<Records<'_>, NeedErr> {
 /// The decode table of §10.3 (rounds 28, 29) and the wire table of §6.1: a NEED record's body as the value its
 /// handler gets, or INVALID. Beyond the table's rows (W1-H1, fail closed): an argument or field the op does not
 /// use must be empty or 0 (`a`/`b`, `secret`, `trust`, unused args), a TLS_NONE OPEN names no SNI, ALPN, cert or
-/// trust, a REQUIRED mode names no cert, conn ids are never 0, a READ asks for at least one byte, text arguments
-/// are UTF-8, FETCH headers are well-formed PAIRs and a COMMIT's records are well formed, predicates first, 1 to
+/// trust, a REQUIRED mode names no cert, conn ids are never 0, a READ asks for at least one byte, a status-only
+/// FETCH states no body limit, text arguments are UTF-8, FETCH headers are well-formed PAIRs and a COMMIT's
+/// records are well formed, predicates first, 1 to
 /// `commit::MAX_OPS` of them.
 pub fn decode_need(body: &[u8]) -> Result<Need<'_>, NeedErr> {
     let (rec, [a0, a1, a2, a3]) = split(body)?;
@@ -979,6 +980,9 @@ pub fn decode_need(body: &[u8]) -> Result<Need<'_>, NeedErr> {
             ensure(rec.flags & !(need_flag::TLS_MASK | need_flag::EGRESS_MASK | STATUS_ONLY) == 0)?;
             let egress = egress_of(rec.flags)?;
             ensure(rec.a == 0)?;
+            // A status-only FETCH reads no body: a body limit stated on it is one nothing applies, so it is
+            // refused rather than carried unread.
+            ensure(rec.flags & STATUS_ONLY == 0 || rec.b == 0)?;
             let cert = match mode {
                 need_flag::TLS_NONE if rec.secret == 0 => None,
                 need_flag::TLS_MUTUAL if rec.secret != 0 => Some(rec.secret),
