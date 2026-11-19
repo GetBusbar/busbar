@@ -1141,6 +1141,45 @@ mod tests {
         assert!(!none.first_payload_written);
     }
 
+    /// ENGINE-OPEN-2 row 18, note 3. Two answers carried by one run that went into the queue byte
+    /// for byte: each is `part` from its OWN first body byte, not from the end of the run.
+    #[test]
+    fn an_answer_is_part_from_its_own_first_body_byte_not_from_the_end_of_its_run() {
+        let mut ledger = Ledger::new();
+        ledger.open(1, Role::Answer).unwrap();
+        ledger.open(3, Role::Answer).unwrap();
+        ledger.part(control(1), 10).unwrap();
+        ledger.part(payload(1), 100).unwrap();
+        ledger.part(control(3), 10).unwrap();
+        ledger.part(payload(3), 100).unwrap();
+        assert_eq!(
+            ledger.state_of(1),
+            State::None,
+            "an open run is not in the socket queue yet"
+        );
+        ledger.queued(220);
+        ledger.accepted(10);
+        assert_eq!(ledger.state_of(1), State::None, "its head alone");
+        ledger.accepted(11);
+        assert_eq!(
+            ledger.state_of(1),
+            State::Part,
+            "one body byte of it is out"
+        );
+        assert_eq!(ledger.state_of(3), State::None);
+        ledger.accepted(120);
+        assert_eq!(
+            ledger.state_of(3),
+            State::None,
+            "the other answer's body and its own head are no body byte of it"
+        );
+        ledger.accepted(121);
+        assert_eq!(ledger.state_of(3), State::Part);
+        ledger.gone(Reason::CallerGone);
+        assert_eq!(ledger.take(1).map(|d| d.body_bytes), Some(100));
+        assert_eq!(ledger.take(3).map(|d| d.body_bytes), Some(100));
+    }
+
     #[test]
     fn the_words_of_the_record_are_fixed() {
         assert_eq!(

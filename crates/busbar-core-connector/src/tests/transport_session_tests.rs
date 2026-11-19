@@ -53,6 +53,8 @@ pub(crate) enum Out {
     Close(bool),
     Head(u64),
     Opened(u64),
+    /// Inbound body bytes of a stream, handed up to the engine (STREAM_BODY).
+    Body(u64, &'static [u8]),
     Full(u64),
     Writable(u64),
     SendTo(u32),
@@ -69,6 +71,9 @@ pub(crate) struct Script {
     lean: Option<fn(Call<'_>, &mut dyn FnMut(TransportOut<'_>))>,
     seen: Arc<Mutex<Vec<Seen>>>,
     charges: Arc<Mutex<Vec<FaultReason>>>,
+    /// Every credit the engine gave, in order: (stream, bytes) of each `emit(E_CONSUMED)`. Recorded
+    /// before the framer answers the call, so a framer that models its far end's window reads it.
+    credits: Arc<Mutex<Vec<(u64, u64)>>>,
     dropped: Arc<AtomicU64>,
 }
 
@@ -87,6 +92,18 @@ impl Script {
         if let Some(lean) = self.lean {
             lean(call, sink);
             return Ok(());
+        }
+        if let Call::Emit {
+            stream,
+            piece: busbar_plugin_abi::transport::E_CONSUMED,
+            credit,
+            ..
+        } = call
+        {
+            self.credits
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((stream, credit));
         }
         let seen = match call {
             Call::Ingest(bytes) => Seen::Ingest(Vec::from(bytes)),
@@ -144,6 +161,11 @@ impl Script {
                     head: Records::new(&[]),
                 }),
                 Out::Opened(stream) => sink(TransportOut::StreamOpened(*stream)),
+                Out::Body(stream, bytes) => sink(TransportOut::StreamBody {
+                    stream: *stream,
+                    flags: 0,
+                    bytes,
+                }),
                 Out::Full(stream) => sink(TransportOut::StreamFull(*stream)),
                 Out::Writable(stream) => sink(TransportOut::StreamWritable(*stream)),
                 Out::SendTo(path) => sink(TransportOut::SendTo {
@@ -219,7 +241,28 @@ async fn rejected_upgrade_retires_original_tcp_writer_before_failed_receipt() {
     assert_eq!(script.dropped.load(Ordering::Relaxed), 1);
 }
 
+/// The log a scripted framer records the engine's credits in.
+type Credits = Arc<Mutex<Vec<(u64, u64)>>>;
+
 fn scripted(respond: Respond, stall_ms: Option<u32>, quarantined: bool) -> Scripted {
+    scripted_stating(
+        respond,
+        stall_ms,
+        quarantined,
+        records::Session::stated(true, 1 << 20, 4 << 20),
+        Credits::default(),
+    )
+}
+
+/// As `scripted`, with the session `begin` states and the log the engine's credits are recorded in
+/// (the framer's own answers may read it).
+fn scripted_stating(
+    respond: Respond,
+    stall_ms: Option<u32>,
+    quarantined: bool,
+    session: records::Session,
+    credits: Credits,
+) -> Scripted {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let charges = Arc::new(Mutex::new(Vec::new()));
     let dropped = Arc::new(AtomicU64::new(0));
@@ -229,10 +272,11 @@ fn scripted(respond: Respond, stall_ms: Option<u32>, quarantined: bool) -> Scrip
         lean: None,
         seen: Arc::clone(&seen),
         charges: Arc::clone(&charges),
+        credits,
         dropped: Arc::clone(&dropped),
     };
     Scripted {
-        conn: TransportConn::scripted(script, stall_ms, Instant::now()),
+        conn: TransportConn::scripted_stating(script, stall_ms, Instant::now(), session),
         seen,
         charges,
         dropped,
@@ -3314,4 +3358,144 @@ fn idle_held(count: usize) -> (u64, u64) {
     let grown = resident().saturating_sub(before);
     drop(held);
     (core / count as u64, grown)
+}
+
+// ---- credit for a stream the engine has left (one mechanism, both roles) ----
+
+/// One late body piece of the stream the engine left: a quarter of the connection window below.
+static LATE: [u8; 64] = [7; 64];
+
+/// A framer over a far end that keeps to the windows the session stated (64 a stream, 256 the
+/// connection) and reopens them by the engine's credit and by nothing else, as a multiplexing
+/// transport does. Each byte it ingests is one event of the far end: `O` opens streams 1 and 3,
+/// `L` is a late 64-byte body piece on stream 1, `V` is five body bytes on stream 3. A piece the
+/// far end has no window for is never sent: the framer hands nothing up for it.
+fn windowed(credits: Credits) -> Respond {
+    let mut window: u64 = 256;
+    let mut read = 0;
+    Box::new(move |call: &Seen| {
+        {
+            let credits = credits.lock().unwrap_or_else(PoisonError::into_inner);
+            for &(_, count) in &credits[read..] {
+                window += count;
+            }
+            read = credits.len();
+        }
+        match call {
+            Seen::Ingest(bytes) => {
+                let mut outs = Vec::new();
+                for byte in bytes {
+                    match byte {
+                        b'O' => outs.extend([Out::Head(1), Out::Head(3)]),
+                        b'L' if window >= 64 => {
+                            window -= 64;
+                            outs.push(Out::Body(1, &LATE));
+                        }
+                        b'V' if window >= 5 => {
+                            window -= 5;
+                            outs.push(Out::Body(3, b"alive"));
+                        }
+                        _ => {}
+                    }
+                }
+                outs
+            }
+            Seen::Emit {
+                stream,
+                piece: E_RESET,
+                ..
+            } => vec![Out::Failed(*stream)],
+            _ => Vec::new(),
+        }
+    })
+}
+
+/// ENGINE-OPEN-2 row 2. The engine resets one stream of an accepted connection that multiplexes;
+/// the caller's body for it was already on its way and keeps arriving: ten pieces, two and a half
+/// times the connection window. Nobody reads them, so the engine owes the credit for every byte at
+/// once (`Outcome::left`, as the dial side gives it). Without it the far end's connection window
+/// closes after four pieces and the other stream of the connection never receives again.
+#[tokio::test]
+async fn a_reset_stream_s_late_body_does_not_close_the_window_of_an_accepted_connection() {
+    let credits = Credits::default();
+    let s = scripted_stating(
+        windowed(Arc::clone(&credits)),
+        None,
+        false,
+        records::Session::stated(true, 64, 256),
+        Arc::clone(&credits),
+    );
+    let mut r = rig();
+    let (registration, registrations) = mpsc::channel(1);
+    r.wiring.registrations = registrations;
+    let (mut peer, server) = tokio::io::duplex(64);
+    let mut inbound = r.inbound;
+    let feeds = r.feeds;
+    let body = async move {
+        peer.write_all(b"O").await.unwrap();
+        assert_eq!(inbound.recv().await, Some(head(1)));
+        assert_eq!(inbound.recv().await, Some(head(3)));
+        let (admitted, acknowledged) = oneshot::channel();
+        registration
+            .send(RegisterResponse {
+                key: response_key(1),
+                admitted,
+            })
+            .await
+            .unwrap();
+        let handles = acknowledged.await.unwrap().unwrap();
+        // The owner stops its answer: E_RESET, the transport's end mark, the verdict. The engine has
+        // left stream 1.
+        handles.cancel.cancel(ResponseStop::Cancelled);
+        let stopped = handles.watch.terminal().await;
+        assert!(stopped.terminal.is_some());
+        // More than one connection window of late body for the stream that is gone.
+        for piece in 0..10 {
+            peer.write_all(b"L").await.unwrap();
+            let late = tokio::time::timeout(Duration::from_secs(2), inbound.recv())
+                .await
+                .unwrap_or_else(|_| panic!("the window closed behind late piece {piece}"));
+            assert!(
+                matches!(late, Some(Inbound::Body { stream: 1, .. })),
+                "{late:?}"
+            );
+        }
+        // The other stream of the connection still receives.
+        peer.write_all(b"V").await.unwrap();
+        let alive = tokio::time::timeout(Duration::from_secs(2), inbound.recv())
+            .await
+            .expect("the connection's window is open for its other streams");
+        assert_eq!(
+            alive,
+            Some(Inbound::Body {
+                stream: 3,
+                flags: 0,
+                bytes: b"alive".as_slice().into(),
+            })
+        );
+        drop(registration);
+        drop(feeds);
+        drop(peer);
+        inbound
+    };
+    let (_outcome, _inbound) = tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::join!(drive(s.conn, Vec::new(), server, r.wiring), body)
+    })
+    .await
+    .expect("the session ends when its caller goes");
+    let given = credits
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    assert!(
+        given.iter().all(|&(stream, _)| stream == 1),
+        "only the left stream is owed credit here: {given:?}"
+    );
+    // CREDIT IS NEVER GIVEN TWICE: the pieces also went up to core, whose taking them credits
+    // nothing more. Every late byte is credited exactly once.
+    assert_eq!(
+        given.iter().map(|&(_, count)| count).sum::<u64>(),
+        10 * 64,
+        "{given:?}"
+    );
 }

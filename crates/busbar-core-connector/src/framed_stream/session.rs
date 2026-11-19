@@ -823,13 +823,24 @@ impl TransportConn {
         now: Instant,
         multiplex: bool,
     ) -> Self {
-        let mut answers = Answers::new(stall_ms, now);
-        answers.stated = true;
         let session = if multiplex {
             records::Session::stated(true, 1 << 20, 4 << 20)
         } else {
             records::Session::stated(false, 0, 0)
         };
+        Self::scripted_stating(script, stall_ms, now, session)
+    }
+
+    /// As [`Self::scripted_as`], stating exactly `session` (a test of the windows states small ones).
+    #[cfg(test)]
+    pub(crate) fn scripted_stating(
+        script: tests::Script,
+        stall_ms: Option<u32>,
+        now: Instant,
+        session: records::Session,
+    ) -> Self {
+        let mut answers = Answers::new(stall_ms, now);
+        answers.stated = true;
         answers
             .acts
             .push(Act::Session(session))
