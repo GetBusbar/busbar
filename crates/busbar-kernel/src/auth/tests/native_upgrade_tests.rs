@@ -38,8 +38,13 @@ use std::time::Duration;
 
 const PATH: &str = "/v1/realtime";
 
-/// Counts replay claims; the first claim of a key is its first sighting.
-struct Owners(AtomicUsize);
+/// Counts replay claims; a key's first claim is its first sighting, every later one a replay.
+struct Owners(AtomicUsize, std::sync::Mutex<Vec<Vec<u8>>>);
+impl Owners {
+    fn new() -> Self {
+        Self(AtomicUsize::new(0), std::sync::Mutex::default())
+    }
+}
 impl IssuedCredentials for Owners {
     fn lookup<'a>(&'a self, _: u64, _: &'a str, _: &'a str) -> BoxFut<'a, SecureVec> {
         panic!("an identity answer must not perform issued lookup");
@@ -49,10 +54,15 @@ impl ReplayGuard for Owners {
     fn claim_until<'a>(
         &'a self,
         _: &'a AbiCaller<'_>,
-        _: &'a [u8],
+        key: &'a [u8],
         _: u64,
     ) -> BoxFut<'a, Result<bool, RecordsDenied>> {
-        let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+        self.0.fetch_add(1, Ordering::SeqCst);
+        let mut seen = self.1.lock().unwrap();
+        let first = !seen.iter().any(|old| old == key);
+        if first {
+            seen.push(key.to_vec());
+        }
         Box::pin(async move { Ok(first) })
     }
     fn claim<'a>(
@@ -65,11 +75,35 @@ impl ReplayGuard for Owners {
     }
 }
 
-/// An auth instance that identifies `Bearer good`, refuses any other bearer and does not know a
-/// request that carries none.
+/// An auth instance reading one credential header: it identifies `accept` there, refuses any other
+/// value and does not know a request that carries none. The bearer instance reads `authorization`
+/// (no D_CRED_HEADER of its own); the Twilio-style instance declares D_CRED_HEADER
+/// `x-twilio-signature` and asks a replay claim keyed by the signature.
 struct Port {
     calls: AtomicUsize,
+    header: &'static str,
+    accept: &'static [u8],
+    cred_headers: Box<[Box<str>]>,
 }
+impl Port {
+    fn bearer() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            header: "authorization",
+            accept: b"Bearer good",
+            cred_headers: Box::default(),
+        }
+    }
+    fn twilio() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            header: TWILIO,
+            accept: b"good-signature",
+            cred_headers: Box::new([Box::from(TWILIO)]),
+        }
+    }
+}
+const TWILIO: &str = "x-twilio-signature";
 fn unsupported<'a, T: Send + 'a>() -> BoxFut<'a, Result<T, PortError>> {
     Box::pin(async {
         Err(PortError::Call(
@@ -82,7 +116,7 @@ impl AuthPort for Port {
         0
     }
     fn cred_headers(&self) -> &[Box<str>] {
-        &[]
+        &self.cred_headers
     }
     fn issued_kind(&self) -> Option<&str> {
         None
@@ -90,22 +124,27 @@ impl AuthPort for Port {
     fn verify<'a>(&'a self, _: CallCx, req: &AuthIn<'_>, _: Option<&[u8]>) -> Verify<'a> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         assert_eq!(req.path, PATH);
-        let bearer = req
+        let presented = req
             .headers
             .iter()
-            .find(|pair| pair.name.get().eq_ignore_ascii_case("authorization"))
+            .find(|pair| pair.name.get().eq_ignore_ascii_case(self.header))
             .map(|pair| pair.value.get().to_vec());
-        match bearer.as_deref() {
+        match presented.as_deref() {
             None => Verify::Done(Ok(VerifyAnswer::NotMine)),
-            Some(b"Bearer good") => {
+            Some(value) if value == self.accept => {
                 let mut records = Reply::new();
                 records.put_text(tag::ID_SUBJECT, "client").unwrap();
                 records.put_text(tag::ID_GROUP, "reader").unwrap();
+                // The bearer's nonce is fresh per test; the signature is the replay key.
                 records
                     .put_pod_tail(
                         busbar_plugin_abi::auth::tag::REPLAY,
                         &U64Rec { value: 60 },
-                        b"nonce",
+                        if self.cred_headers.is_empty() {
+                            b"nonce".as_slice()
+                        } else {
+                            value
+                        },
                     )
                     .unwrap();
                 let VerifyOk::Identity(identity) =
@@ -156,12 +195,24 @@ struct Fixture {
 }
 
 fn fixture(bound: bool) -> Fixture {
+    fixture_on(bound, None)
+}
+
+/// `cred_header`: the route's D_ROUTE_CRED_HEADER. `Some` = the Twilio route: its effective chain is
+/// the one instance whose image declares that header (§12.11), named `twilio`. `None` = the data
+/// chain: the bearer instance `provider-42`.
+fn fixture_on(bound: bool, cred_header: Option<&'static str>) -> Fixture {
+    let provider = if cred_header.is_some() {
+        "twilio"
+    } else {
+        "provider-42"
+    };
     let caller = Caller::for_test(Arc::from("plane/test"), KindCode::Plane);
     let mut app = (*app()).clone();
     app.config_generation.store(7, Ordering::Release);
     if bound {
         app.role_bindings = BTreeMap::from([(
-            "provider-42".into(),
+            provider.into(),
             BTreeMap::from([(
                 "reader".into(),
                 crate::config::RoleBindingCfg {
@@ -182,7 +233,7 @@ fn fixture(bound: bool) -> Fixture {
         auth: AUTH_PRINCIPAL,
         effective: AUTH_PRINCIPAL,
         pattern: PATH.into(),
-        cred_header: None,
+        cred_header: cred_header.map(Box::from),
         catalog: false,
         resource_kinds: Arc::default(),
     };
@@ -197,7 +248,7 @@ fn fixture(bound: bool) -> Fixture {
         claimant: Claimant::Plane("plane/test".into()),
         dialect: 0,
         auth: LineAuth::Chain(
-            vec!["provider-42".into()],
+            vec![provider.into()],
             busbar_contract::abi::auth::AuthPoints::EMPTY,
         ),
         upgrade: None,
@@ -208,11 +259,10 @@ fn fixture(bound: bool) -> Fixture {
         "listen".into(),
         transport.clone(),
         GuestList::seal(vec![line.clone()]).unwrap(),
-        vec![
-            RouteBinding::plane(line, caller.clone(), mounted, vec!["provider-42".into()]).unwrap(),
-        ],
+        vec![RouteBinding::plane(line, caller.clone(), mounted, vec![provider.into()]).unwrap()],
     )
-    .unwrap();
+    .unwrap()
+    .with_unrouted();
     let binding = plan.routes()[0].clone();
     let prepared = Arc::new(
         PreparedListener::new(
@@ -235,9 +285,11 @@ fn fixture(bound: bool) -> Fixture {
         Arc::new(move |_, slot| (slot == "listen").then(|| prepared.clone())),
     )
     .unwrap();
-    let replay = Arc::new(Owners(AtomicUsize::new(0)));
-    let port = Arc::new(Port {
-        calls: AtomicUsize::new(0),
+    let replay = Arc::new(Owners::new());
+    let port = Arc::new(if cred_header.is_some() {
+        Port::twilio()
+    } else {
+        Port::bearer()
     });
     let chain = Arc::new(
         NativeChain::data(
@@ -246,7 +298,7 @@ fn fixture(bound: bool) -> Fixture {
                 opened: OpenedAuth {
                     who: Namespace {
                         plugin: "verified-image".into(),
-                        name: "provider-42".into(),
+                        name: provider.into(),
                         instance: 42,
                         slot: 4,
                     },
@@ -269,6 +321,7 @@ fn fixture(bound: bool) -> Fixture {
     // Candidate assembly only; every request proof below runs the public physical factory,
     // the concrete verifier, the live generation and the replay claim.
     let route = Arc::new(NativeUpgradeRoute {
+        withheld: withheld_carriers(&chain, cred_header),
         binding,
         caller,
         chain,
@@ -288,17 +341,28 @@ fn arrival(
     stream: u64,
     bearer: Option<&str>,
 ) -> (CompletingPhysicalRequest, CallCx, StreamOwner) {
+    let bearer = bearer.map(|bearer| ("authorization", bearer));
+    arrival_at(f, stream, PATH, bearer.as_slice())
+}
+
+/// One upgrade GET at `target` carrying `fields` beside the upgrade headers.
+fn arrival_at(
+    f: &Fixture,
+    stream: u64,
+    target: &str,
+    fields: &[(&str, &str)],
+) -> (CompletingPhysicalRequest, CallCx, StreamOwner) {
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut head = crate::inbound::Head::default();
     head.method = "GET".into();
-    head.target = PATH.into();
+    head.target = target.into();
     head.fields = vec![
         ("connection".into(), b"Upgrade".to_vec()),
         ("upgrade".into(), b"websocket".to_vec()),
     ];
-    if let Some(bearer) = bearer {
+    for (name, value) in fields {
         head.fields
-            .push(("authorization".into(), bearer.as_bytes().to_vec()));
+            .push(((*name).into(), value.as_bytes().to_vec()));
     }
     let (request, owner) = f
         .connection
@@ -422,4 +486,138 @@ async fn the_hand_over_consumes_the_authorized_request_once_and_carries_its_head
         binding.check_live().is_err(),
         "dropping the hand-over cancels the request"
     );
+}
+
+/// Route credential header (§12.11, §14 C-ROUTE-CRED-HEADER): the route's own effective chain, the
+/// instances reading `x-twilio-signature`, judges the request in the kernel before anything else.
+mod route_credential_header {
+    use super::*;
+
+    /// Authorize one request on `f`'s route; the denial, if any, is answered under its own custody.
+    async fn judged(
+        f: &Fixture,
+        stream: u64,
+        fields: &[(&str, &str)],
+    ) -> Result<UpgradeAuthorization, DataRefused> {
+        let (mut request, cx, _owner) = arrival_at(f, stream, PATH, fields);
+        let binding = request.binding().clone();
+        match f
+            .route
+            .authorize(request.begin_data_preparation().unwrap(), cx)
+            .await
+        {
+            Ok(authorization) => Ok(authorization),
+            Err(refused) => {
+                let reason = refused.reason();
+                // A denial is answered (a status, not a closed connection) and nothing executes.
+                let refusal = request.refuse_upgrade_denied(refused).unwrap();
+                assert!(Arc::ptr_eq(refusal.binding(), &binding));
+                assert!(binding.check_executing().is_err());
+                Err(reason)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_valid_signature_in_the_routes_own_header_is_admitted_by_its_own_chain() {
+        let f = fixture_on(true, Some(TWILIO));
+        let authorization = judged(&f, 1, &[(TWILIO, "good-signature")]).await.unwrap();
+        assert_eq!(authorization.identity().subject(), "client");
+        assert_eq!(f.port.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_request_without_the_header_is_denied_and_answered() {
+        let f = fixture_on(true, Some(TWILIO));
+        assert_eq!(
+            judged(&f, 1, &[]).await.unwrap_err(),
+            DataRefused::Credential
+        );
+        // A bearer key is not this route's credential: the data chain does not run here.
+        assert_eq!(
+            judged(&f, 3, &[("authorization", "Bearer good")])
+                .await
+                .unwrap_err(),
+            DataRefused::Credential
+        );
+        assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_wrong_signature_is_denied() {
+        let f = fixture_on(true, Some(TWILIO));
+        assert_eq!(
+            judged(&f, 1, &[(TWILIO, "forged-signature")])
+                .await
+                .unwrap_err(),
+            DataRefused::Credential
+        );
+        assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_replayed_signature_is_denied() {
+        let f = fixture_on(true, Some(TWILIO));
+        assert!(judged(&f, 1, &[(TWILIO, "good-signature")]).await.is_ok());
+        assert_eq!(
+            judged(&f, 3, &[(TWILIO, "good-signature")])
+                .await
+                .unwrap_err(),
+            DataRefused::Replay
+        );
+    }
+
+    #[tokio::test]
+    async fn the_header_on_a_route_that_does_not_declare_it_is_not_honoured() {
+        // The data-chain route: a valid Twilio signature is no credential there.
+        let f = fixture_on(true, None);
+        assert_eq!(
+            judged(&f, 1, &[(TWILIO, "good-signature")])
+                .await
+                .unwrap_err(),
+            DataRefused::Credential
+        );
+        assert!(!f.route.withheld().iter().any(|name| &**name == TWILIO));
+    }
+
+    #[tokio::test]
+    async fn the_header_never_reaches_the_plane() {
+        let f = fixture_on(true, Some(TWILIO));
+        assert!(f.route.withheld().iter().any(|name| &**name == TWILIO));
+        assert!(f
+            .route
+            .withheld()
+            .iter()
+            .any(|name| &**name == "authorization"));
+        let authorization = judged(&f, 1, &[(TWILIO, "good-signature"), ("x-other", "kept")])
+            .await
+            .unwrap();
+        // The head the plane is lent (its request, a refusal render) withholds the carriers.
+        let mut http = crate::plane_driver::port::HttpIn::new(
+            crate::plane_driver::port::HttpHead::Snapshot(Arc::clone(authorization.snapshot())),
+            bytes::Bytes::new(),
+            1,
+        );
+        http.withhold(Arc::clone(authorization.withheld()));
+        let mut lent = Vec::new();
+        http.each_header(|name, _| lent.push(name.to_owned()));
+        assert!(lent.iter().all(|name| !name.eq_ignore_ascii_case(TWILIO)));
+        assert!(lent.iter().any(|name| name == "x-other"));
+        assert!(lent.iter().any(|name| name == "upgrade"));
+    }
+
+    #[tokio::test]
+    async fn a_head_no_route_matches_is_answered_as_an_unauthenticated_request() {
+        let f = fixture_on(true, Some(TWILIO));
+        let (request, _, _owner) = arrival_at(&f, 1, "/no/such/route", &[]);
+        let binding = request.binding().clone();
+        assert!(matches!(
+            binding.route().target(),
+            crate::inbound::native::RouteTarget::Unrouted
+        ));
+        let refusal = request.refuse_unrouted().unwrap();
+        assert!(refusal.unit().is_none());
+        assert!(binding.check_executing().is_err());
+        assert_eq!(f.port.calls.load(Ordering::SeqCst), 0, "no chain ran");
+    }
 }
