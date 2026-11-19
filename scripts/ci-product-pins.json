@@ -51,7 +51,7 @@
     {
       "repo": "busbar-auth-webhook-signature",
       "url": "https://github.com/GetBusbar/busbar-auth-webhook-signature",
-      "commit": "37f5432e1d87bbaabfd0b3e55a7f643c42cedb97",
+      "commit": "62636940044baee6a8ea5db2cb2fb21d281e1e4b",
       "package": "busbar-auth-webhook-signature-plugin",
       "kind": "auth",
       "alias": "webhook-signature",
