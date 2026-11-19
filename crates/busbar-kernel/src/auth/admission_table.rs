@@ -1024,3 +1024,41 @@ pub fn mounted(record: &RouteRecord, offered: Offered) -> Result<Admission, NotM
     }
     Ok(admission)
 }
+
+impl Refusal {
+    /// The row of the table a governance block is answered by: the one place a limit, a frozen
+    /// or unknown group, a drain and a full settlement backlog get their status and code. The
+    /// words stay the governance book's (they name the group and the window); the status is
+    /// this row's, except where the row lets a dialect choose (a spent budget).
+    pub fn of_blocked(blocked: &crate::governance::LimitBlocked) -> Refusal {
+        use crate::governance::LimitBlocked;
+        let seconds = |retry_after: &Option<u64>| {
+            retry_after.map(|seconds| u32::try_from(seconds).unwrap_or(u32::MAX))
+        };
+        match blocked {
+            LimitBlocked::Limit {
+                metric: "budget",
+                retry_after,
+                ..
+            } => Refusal::BudgetSpent {
+                retry_after_s: seconds(retry_after),
+            },
+            LimitBlocked::Limit {
+                metric: "concurrent",
+                ..
+            } => Refusal::InFlight,
+            LimitBlocked::Limit { retry_after, .. } => match seconds(retry_after) {
+                Some(retry_after_s) => Refusal::Window { retry_after_s },
+                // A window that never rolls states no wait: nothing to retry after.
+                None => Refusal::InFlight,
+            },
+            LimitBlocked::Disabled(_) => Refusal::GroupFrozen,
+            // The operator's fault, and it must not invite retries: 403, never 429 (decision 13f).
+            LimitBlocked::MissingGroup(_) => Refusal::GroupUnknown,
+            LimitBlocked::Draining => Refusal::Draining,
+            // Finished units await settlement and no more may be opened: the money record cannot
+            // take another unit now.
+            LimitBlocked::CustodyFull { .. } => Refusal::MoneyUnavailable,
+        }
+    }
+}

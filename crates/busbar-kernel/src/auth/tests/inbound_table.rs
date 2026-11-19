@@ -1267,3 +1267,46 @@ fn an_audience_bound_plane_takes_only_a_bound_credential() {
         Decision::Serve(Authority::Walk)
     );
 }
+
+/// A governance block is answered by its row. An unknown group is 403 and no longer 429
+/// (decision 13f); a spent budget lets the dialect choose; a window states its wait.
+#[test]
+fn a_governance_block_is_answered_by_its_row() {
+    use crate::governance::LimitBlocked;
+    let limit = |metric: &'static str, retry_after: Option<u64>| LimitBlocked::Limit {
+        group: "g".into(),
+        metric,
+        window: retry_after.map(|_| "minute"),
+        pool: None,
+        downgrade_to: None,
+        retry_after,
+    };
+    #[rustfmt::skip]
+    let rows = [
+        (LimitBlocked::MissingGroup("g".into()), Refusal::GroupUnknown, 403),
+        (LimitBlocked::Disabled("g".into()), Refusal::GroupFrozen, 403),
+        (limit("concurrent", None), Refusal::InFlight, 429),
+        (limit("requests", Some(12)), Refusal::Window { retry_after_s: 12 }, 429),
+        (limit("tokens", Some(3)), Refusal::Window { retry_after_s: 3 }, 429),
+        (limit("budget", Some(60)), Refusal::BudgetSpent { retry_after_s: Some(60) }, 402),
+        (limit("budget", None), Refusal::BudgetSpent { retry_after_s: None }, 402),
+        (LimitBlocked::Draining, Refusal::Draining, 503),
+        (LimitBlocked::CustodyFull { backlog: 2, cap: 1 }, Refusal::MoneyUnavailable, 503),
+    ];
+    for (blocked, refusal, status) in rows {
+        assert_eq!(Refusal::of_blocked(&blocked), refusal, "{blocked:?}");
+        assert_eq!(refusal.row(true).status, status, "{blocked:?}");
+    }
+    assert!(
+        Refusal::BudgetSpent {
+            retry_after_s: None
+        }
+        .row(true)
+        .dialect_status
+    );
+    assert_eq!(
+        Refusal::GroupUnknown.row(true).retry_after_s,
+        None,
+        "no retry is invited"
+    );
+}
