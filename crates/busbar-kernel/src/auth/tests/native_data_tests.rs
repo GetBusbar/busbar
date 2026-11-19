@@ -485,6 +485,7 @@ fn fixture_of(
         ticket: None,
         withheld: withheld_carriers(&chain, None),
         audience: None,
+        public_url: None,
         challenge: None,
         record,
         admission,

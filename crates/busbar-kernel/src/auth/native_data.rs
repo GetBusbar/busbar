@@ -492,10 +492,17 @@ impl NativeDataRoute {
             cost: Arc::clone(&app.cost),
             withheld,
             audience: seat.audience.as_deref().map(Arc::from),
+            public_url: seat.public_url().map(Arc::from),
             challenge,
             record,
             admission,
         }))
+    }
+
+    /// The URL whose origin a DPoP proof on this route must name (RFC 9449 s4.3 (9)): where the
+    /// request was received.
+    pub(crate) fn proof_url(&self) -> Option<&str> {
+        self.audience.as_deref().or(self.public_url.as_deref())
     }
 
     /// The route token this completion was bound to.
@@ -598,7 +605,7 @@ impl NativeDataRoute {
                 snapshot,
                 chain,
                 cred_header,
-                audience,
+                self.proof_url(),
             )
             .await?
             {

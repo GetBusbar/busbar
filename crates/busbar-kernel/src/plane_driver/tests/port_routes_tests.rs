@@ -114,6 +114,50 @@ fn a_mounted_route_carries_the_record_its_plane_stated() {
     );
 }
 
+/// COMPLIANCE X4: a restricted key of a plane's own kind (MCP `mcp_tool`, A2A `agent`) can be
+/// granted only once a kind is declared, and a MIN-3 plane declares its kinds in its route
+/// records, nowhere else. A kind a mounted route states is a declared kind, added for the process;
+/// a plane refused at mount declares nothing, and core's `pool` is never a plane's.
+#[test]
+fn restricted_key_kinds_are_the_kinds_mounted_route_records_state() {
+    use crate::governance::plane_declares_kind;
+    let mut selects = route(1, 0, AUTH_PRINCIPAL, "/mcp");
+    selects.resource_kinds = vec![Box::<str>::from("x4_mounted_tool")].into();
+    assert!(!plane_declares_kind("x4_mounted_tool"));
+    plan(&[selects], None, &none).unwrap();
+    assert!(
+        plane_declares_kind("x4_mounted_tool"),
+        "a kind a mounted route's record states can be granted to a key"
+    );
+
+    // A plane whose routes cannot all be mounted declares none of its kinds.
+    let mut refused_selects = route(1, 0, AUTH_PRINCIPAL, "/a2a");
+    refused_selects.resource_kinds = vec![Box::<str>::from("x4_refused_agent")].into();
+    assert_eq!(
+        plan(
+            &[
+                refused_selects,
+                route(2, ROUTE_LINE, AUTH_PRINCIPAL, "/l1"),
+                route(3, ROUTE_LINE, AUTH_PRINCIPAL, "/l2"),
+            ],
+            None,
+            &none
+        )
+        .unwrap_err(),
+        RouteRefused::TwoLines
+    );
+    assert!(!plane_declares_kind("x4_refused_agent"));
+
+    // A catalog walks core's `pool`: mounting it never makes `pool` a plane's kind.
+    plan(
+        &[route(2, ROUTE_CATALOG, AUTH_PRINCIPAL, "/v1/models")],
+        None,
+        &none,
+    )
+    .unwrap();
+    assert!(!plane_declares_kind("pool"));
+}
+
 #[test]
 fn resource_metadata_cannot_activate_unsupported_or_ambiguous_mounts() {
     let mut r = route(1, 0, AUTH_PRINCIPAL, "/x");
