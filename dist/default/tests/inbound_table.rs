@@ -477,7 +477,7 @@ fn judge(expect: &Expect, got: &Answered) -> Option<String> {
 #[test]
 fn inbound_table_every_route_answers_every_caller_as_the_table_says() {
     let upstream = common::upstream::Responder::start(BTreeMap::new());
-    let booted = boot(&upstream.url());
+    let booted = boot(&upstream.url(), true);
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let good = mint(&rt, &booted, "inbound-table-good", false, None);
     let narrow = mint(&rt, &booted, "inbound-table-narrow", true, None);
@@ -627,7 +627,7 @@ const MIGRATION_DOC: &str = include_str!("../../../docs/migration-1.6.md");
 #[test]
 fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
     let upstream = common::upstream::Responder::start(BTreeMap::new());
-    let booted = boot(&upstream.url());
+    let booted = boot(&upstream.url(), false);
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let good = mint(&rt, &booted, "v155-good", false, None);
     let not_found = send(
