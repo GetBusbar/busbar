@@ -2312,7 +2312,10 @@ async fn a_peer_that_stops_reading_is_closed_at_the_write_timeout() {
     let mut s = scripted(Box::new(|_| Vec::new()), None, false);
     let mut r = rig();
     r.wiring.write_timeout = STALL_BOUND;
-    s.conn.actions().write(&[0x5a; 4096]).expect("first write");
+    s.conn
+        .actions()
+        .part(0, WIRE_CONTROL, &[0x5a; 4096])
+        .expect("first write");
     let started = tokio::time::Instant::now();
     let outcome = drive(s.conn, Vec::new(), StoppedReader, r.wiring).await;
     assert_stall_closed(&outcome, started.elapsed(), STALL_BOUND, &s.dropped);
@@ -2323,7 +2326,10 @@ async fn a_slow_reader_cannot_extend_the_write_deadline_with_partial_progress() 
     let mut s = scripted(Box::new(|_| Vec::new()), None, false);
     let mut r = rig();
     r.wiring.write_timeout = STALL_BOUND;
-    s.conn.actions().write(&[0x5a; 4096]).expect("first write");
+    s.conn
+        .actions()
+        .part(0, WIRE_CONTROL, &[0x5a; 4096])
+        .expect("first write");
     let started = tokio::time::Instant::now();
     // 4096 bytes at one byte per 20 ms would take over 80 s; every write makes progress, but
     // the deadline is absolute for the whole answer.

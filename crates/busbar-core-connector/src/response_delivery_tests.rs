@@ -569,7 +569,13 @@ fn the_queue_wipes_each_byte_as_the_connection_takes_it() {
     assert_eq!(&block[live], b"def");
     // A write failed: nothing unwritten waits for the connection's drop, and nothing more is queued.
     ledger.discard();
+    assert!(ledger.unwritten().is_empty());
     assert!(ledger.queue.allocation().iter().all(|byte| *byte == 0));
+    // And once the connection took a whole run, no block is kept for the next.
+    let mut idle = self::ledger();
+    answer(&mut idle, &[part(0, WIRE_CONTROL, b"abcdef")]).unwrap();
+    flush(&mut idle);
+    assert_eq!(idle.queue.capacity(), 0);
     assert_eq!(
         answer(&mut ledger, &[part(0, WIRE_CONTROL, b"x")]).unwrap_err(),
         Fault::Queue

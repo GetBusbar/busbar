@@ -648,6 +648,9 @@ impl DeliveryLedger {
         let count = count.min(self.queue.len());
         self.queue.consume(count);
         self.written += count as u64;
+        // Nothing is kept between runs: an idle connection holds no block for its output here (the
+        // dial's rule for its own queue).
+        self.queue.shrink_when_empty(0);
     }
 
     /// A write to the connection failed (or ran out of time): what was queued and not taken is wiped
@@ -655,6 +658,7 @@ impl DeliveryLedger {
     /// [`Self::retire`].
     pub(crate) fn discard(&mut self) {
         self.queue.clear();
+        self.queue.shrink_when_empty(0);
         self.lost = true;
     }
 
