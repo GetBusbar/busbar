@@ -64,24 +64,35 @@ static bb_raw_out fresh(size_t cap) {
 int main(void) {
     const bb_host host = {NULL, zero, zero, random_, crypto, log_, log_level, grow, deployment, migrate_admit};
     const bb_plugin *p = busbar_plugin();
-    bb_raw_out o = fresh(16); /* small, so describe grows */
-    bb_status s = p->describe(&host, &o);
+    /* Every entry is called as the host calls it: a call record on this frame, the least buffer a host hands. */
+    bb_call call = {0, 0, {NULL, 0}, {NULL, 0}, {NULL, 0}};
+    bb_raw_out o = fresh(BB_OUT_MIN);
+    bb_status s = p->describe(NULL, &host, &call, &o);
     printf("describe %u ", (unsigned)s);
     hex(o.ptr, o.len);
     printf("\n");
     free(o.ptr);
 
-    o = fresh(4096);
+    o = fresh(BB_OUT_MIN);
     bb_bytes config = {(const uint8_t *)"{}", 2};
-    if (p->open(&host, config, 0, &o) != BB_OK || o.len != sizeof(bb_rec_head) + sizeof(bb_instance_rec)) return 3;
+    uint32_t flags = 0;
+    call.head.ptr = (const uint8_t *)&flags;
+    call.head.len = sizeof flags;
+    call.blobs.ptr = &config;
+    call.blobs.len = 1;
+    if (p->open(NULL, &host, &call, &o) != BB_OK || o.len != sizeof(bb_rec_head) + sizeof(bb_instance_rec)) return 3;
     bb_instance_rec inst;
     memcpy(&inst, o.ptr + sizeof(bb_rec_head), sizeof inst);
     free(o.ptr);
 
-    o = fresh(4096);
-    const bb_secret_vt *vt = p->kind_vt;
+    o = fresh(BB_OUT_MIN);
+    if (p->size != sizeof(bb_plugin) || p->entries != BB_SECRET_ENTRIES) return 5;
+    const bb_secret_vt *vt = (const bb_secret_vt *)p->table;
     bb_bytes reference = {(const uint8_t *)"{\"name\":\"numbered\"}", 19};
-    s = vt->resolve((const void *)(uintptr_t)inst.inst, &host, reference, &o);
+    call.head.ptr = NULL;
+    call.head.len = 0;
+    call.blobs.ptr = &reference;
+    s = vt->resolve((const void *)(uintptr_t)inst.inst, &host, &call, &o);
     bool zeroed = true;
     for (size_t i = o.len; i < o.cap; i++) zeroed = zeroed && !o.ptr[i];
     printf("numbered %u %s ", (unsigned)s, zeroed ? "zeroed" : "residue");
