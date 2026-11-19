@@ -102,6 +102,9 @@ pub(crate) struct Wire {
     streams: Vec<Sent>,
     /// The sealed values of the head being emitted, until `STREAM_OPENED` binds them.
     offered: Option<Slots>,
+    /// The connection was handed over on UPGRADE ([`Self::adopt`]): the session that states the
+    /// next `SESSION` is the adopting one, which serves the one upgraded stream.
+    adopted: bool,
 }
 
 impl std::fmt::Debug for Wire {
@@ -123,6 +126,7 @@ impl Wire {
             in_use: InUse::default(),
             streams: Vec::new(),
             offered: None,
+            adopted: false,
         }
     }
 
@@ -211,8 +215,19 @@ impl Wire {
                     if session.multiplexes() && !stated {
                         return Err(Fault::Order("a multiplexing SESSION states no window"));
                     }
+                    // A session begun with CONN_UPGRADED is one answer on stream 1 (delivery
+                    // evidence E.5): it carries one stream.
+                    if self.adopted && session.multiplexes() {
+                        return Err(Fault::Order("an adopted SESSION carries one stream"));
+                    }
                     self.credit = Some(Credit::new(session));
-                    self.in_use = InUse::begun(&session);
+                    // A stream open before the statement is open in the session it states: the
+                    // upgraded stream of an adopted session, open from `begin`.
+                    let mut in_use = InUse::begun(&session);
+                    for _ in &self.streams {
+                        in_use.opened();
+                    }
+                    self.in_use = in_use;
                 }
                 Out::Opened(stream) => {
                     if self.credit.is_none() {
@@ -469,12 +484,27 @@ impl Wire {
         self.credit.as_ref()
     }
 
-    /// Hand-over on UPGRADE: `stream`'s delivery entry becomes stream 1 of the adopting session.
+    /// Hand-over on UPGRADE: `stream`'s delivery entry becomes stream 1 of the adopting session,
+    /// open from that session's `begin`. The delivery ledger and its counters are not reset.
+    ///
+    /// THE ONE GRAMMAR OF AN ADOPTED SESSION. `SESSION` is stated exactly once per `begin` answer,
+    /// by every session, one begun with CONN_UPGRADED included (the contract's rule for both
+    /// roles; the session's own grammar check refuses a `begin` answer without it). The HTTP
+    /// session that answered UPGRADE is over when the adopting transport's `begin` returns, and
+    /// its statement goes with it: what this driver held against that session's windows is
+    /// dropped (the adopting session never handed those bytes up and can be given no credit for
+    /// them), and the adopting session's own `SESSION` is taken, once. A second one is refused
+    /// as it is for any session, and until the first arrives nothing else of the session is.
     pub(crate) fn adopt(&mut self, stream: u64) {
         self.ledger.adopt(stream);
         if let Some(at) = self.at(stream) {
             self.streams[at].id = 1;
         }
+        for sent in &mut self.streams {
+            sent.credit = StreamCredit::default();
+        }
+        self.credit = None;
+        self.adopted = true;
     }
 }
 
@@ -1045,6 +1075,179 @@ mod tests {
             conn.answer(&Script::default().part(1, WIRE_CONTROL, b"x"))
                 .unwrap_err(),
             Fault::Output(crate::outbound::delivery::Breach::L4)
+        );
+    }
+
+    // ---- hand-over on UPGRADE: the adopting session's SESSION -----------------------------------
+
+    const SWITCHING: &[u8] = b"HTTP/1.1 101 Switching Protocols\r\n\r\n";
+
+    /// An accepted connection's HTTP session at the moment it answers UPGRADE to the 101 of the
+    /// request on `stream`: it stated its SESSION in its `begin` answer, announced the stream, and
+    /// wrote nothing of the 101 (the adopting transport writes it).
+    fn upgrading(stream: u64, multiplex: bool) -> Conn {
+        let mut conn = Conn::new();
+        conn.wire = Wire::new(Role::Answer);
+        conn.answer(&begin(multiplex)).unwrap();
+        conn.wire.announced(stream).unwrap();
+        conn
+    }
+
+    /// The adopting transport's `begin` answer: its SESSION (exactly one per `begin` answer, a
+    /// session begun with CONN_UPGRADED included), then the 101 as a control part on stream 1.
+    fn opening() -> Script {
+        begin(false).part(1, WIRE_CONTROL, SWITCHING)
+    }
+
+    /// The known wrong behaviour: the connection's driver moves whole into the adopting session
+    /// with the HTTP session's SESSION still standing, so the adopting session's own was refused
+    /// as `a second SESSION` and every hand-over faulted right after the 101 was decided.
+    #[test]
+    fn an_adopted_sessions_opening_record_is_accepted_exactly_once() {
+        let mut conn = upgrading(1, false);
+        conn.wire.adopt(1);
+        let outcome = conn
+            .answer(&opening())
+            .expect("the adopting session states its own SESSION");
+        assert!(outcome.wrote);
+        assert_eq!(
+            conn.out.as_slice(),
+            SWITCHING,
+            "the 101 is the adopting transport's, on stream 1"
+        );
+        // Exactly once: the adopting session is a session like any other from here on.
+        assert_eq!(
+            conn.answer(&begin(false)).unwrap_err(),
+            Fault::Order("a second SESSION")
+        );
+    }
+
+    #[test]
+    fn an_adopted_session_that_states_its_session_twice_in_its_opening_answer_writes_nothing() {
+        let mut conn = upgrading(1, false);
+        conn.wire.adopt(1);
+        let twice = begin(false)
+            .item(begin(false).items[0])
+            .part(1, WIRE_CONTROL, SWITCHING);
+        assert_eq!(
+            conn.answer(&twice).unwrap_err(),
+            Fault::Order("a second SESSION")
+        );
+        assert!(conn.out.is_empty(), "no 101 of a session that broke a rule");
+    }
+
+    /// The refusal the hand-over must not weaken: a session that was not adopted states SESSION
+    /// once, and a hand-over arms exactly one more, for the one adopting session.
+    #[test]
+    fn a_real_second_session_is_still_refused() {
+        // No hand-over: the second SESSION of one session.
+        let mut conn = upgrading(1, false);
+        assert_eq!(
+            conn.answer(&opening()).unwrap_err(),
+            Fault::Order("a second SESSION")
+        );
+        assert!(conn.out.is_empty());
+        // The dialled role is not touched by any of this.
+        let mut dialled = Conn::new();
+        dialled.answer(&begin(true)).unwrap();
+        assert_eq!(
+            dialled.answer(&begin(true)).unwrap_err(),
+            Fault::Order("a second SESSION")
+        );
+    }
+
+    /// Until the adopting session has stated its SESSION nothing else of it is taken: the HTTP
+    /// session's statement does not stand in for it.
+    #[test]
+    fn an_adopted_session_states_its_session_before_anything_else() {
+        let mut conn = upgrading(1, false);
+        conn.wire.adopt(1);
+        assert_eq!(
+            conn.answer(&Script::default().item(Out::Body { stream: 1, len: 5 }))
+                .unwrap_err(),
+            Fault::Order("STREAM_BODY before SESSION")
+        );
+    }
+
+    /// An upgraded session is one answer on stream 1 (delivery evidence E.5): it carries one
+    /// stream, so a SESSION that states it carries several is refused, 101 unwritten.
+    #[test]
+    fn an_adopted_session_that_states_it_multiplexes_is_refused() {
+        let mut conn = upgrading(1, false);
+        conn.wire.adopt(1);
+        let several = begin(true).part(1, WIRE_CONTROL, SWITCHING);
+        assert_eq!(
+            conn.answer(&several).unwrap_err(),
+            Fault::Order("an adopted SESSION carries one stream")
+        );
+        assert!(conn.out.is_empty());
+    }
+
+    /// What the HTTP session held against its own windows is not carried into the adopting
+    /// session's: the upgraded stream is open in it from `begin`, holding nothing, and the
+    /// adopting session's accounting starts at its own SESSION.
+    #[test]
+    fn the_adopted_stream_is_open_from_begin_and_owes_nothing_of_the_http_sessions() {
+        let mut conn = upgrading(1, true);
+        // Bytes the HTTP session handed up for the request and nobody took.
+        conn.answer(&Script::default().item(Out::Body {
+            stream: 1,
+            len: 4096,
+        }))
+        .unwrap();
+        assert_eq!(conn.wire.credit().map(Credit::outstanding), Some(4096));
+        conn.wire.adopt(1);
+        assert!(
+            conn.wire.credit().is_none(),
+            "no session is stated between the hand-over and the adopting SESSION"
+        );
+        conn.answer(&opening()).unwrap();
+        assert_eq!(conn.wire.credit().map(Credit::outstanding), Some(0));
+        assert_eq!(
+            conn.wire.in_use().streams(),
+            1,
+            "stream 1 is open from begin"
+        );
+        assert!(
+            !conn.wire.in_use().takes_a_stream(),
+            "and it is the session's one stream"
+        );
+        // The caller's first message is the adopted session's own inbound body, and its reader
+        // taking it leaves nothing standing (no count of the HTTP session's is subtracted).
+        conn.answer(&Script::default().item(Out::Body { stream: 1, len: 5 }))
+            .unwrap();
+        assert!(!conn.wire.reads_socket());
+        assert_eq!(conn.wire.taken(1, 5), None);
+        assert!(conn.wire.reads_socket());
+        // The session ends with the transport's close on stream 1.
+        conn.wire.emitting_end(1);
+        conn.answer(
+            &Script::default()
+                .part(1, WIRE_CONTROL, b"\x88\x00")
+                .end(1, END_FLUSH, 0),
+        )
+        .unwrap();
+        let queued = conn.out.len();
+        conn.socket_takes(queued);
+        assert_eq!(
+            conn.wire.take_verdict(1).map(|delivery| delivery.state),
+            Some(State::Whole)
+        );
+    }
+
+    /// An upgrade on a stream that is not 1 (a later request of a kept connection): the entry and
+    /// the slot are renamed together, so the adopting session's parts name a stream that is open.
+    #[test]
+    fn a_later_requests_stream_is_renamed_to_stream_one_for_the_adopting_session() {
+        let mut conn = upgrading(5, false);
+        conn.wire.adopt(5);
+        conn.answer(&opening()).unwrap();
+        assert_eq!(conn.out.as_slice(), SWITCHING);
+        assert_eq!(
+            conn.answer(&Script::default().part(5, WIRE_CONTROL, b"x"))
+                .unwrap_err(),
+            Fault::Output(crate::outbound::delivery::Breach::L2),
+            "the HTTP session's number names nothing any more"
         );
     }
 }

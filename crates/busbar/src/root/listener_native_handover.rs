@@ -128,7 +128,49 @@ impl MessageKinds {
     }
 }
 
+/// The latest end of an upgrade request's session when nothing stated one for its request: the
+/// deployment's default stream ceiling, from the moment the caller's side is made. An upgraded
+/// session is never left without a limit.
+const UNSTATED_LIMIT: std::time::Duration = std::time::Duration::from_secs(
+    busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
+);
+
+/// The latest end of the sessions of upgrade requests being prepared, by the stream owner of
+/// their request ([`bound`]). An entry lives from the request's preparation to the making of its
+/// caller's side (or to the next statement's sweep after its request ended). It is here for the
+/// reason [`SWITCHING`] is: the path from the upgrade's preparation to the caller's side is the
+/// data path's.
+static BOUNDS: Mutex<Vec<(Weak<StreamOwner>, tokio::time::Instant)>> = Mutex::new(Vec::new());
+
+/// THE LIMIT OF AN UPGRADED SESSION, stated once for the upgrade request `owner` carries, before
+/// its data preparation: the session ends at `until` at the latest, whoever is still talking
+/// (`listener_native_upgrade.rs` says how `until` is found). A second statement for one request
+/// replaces the first only with an earlier time.
+pub(crate) fn bound(owner: &Arc<StreamOwner>, until: tokio::time::Instant) {
+    let mut bounds = BOUNDS.lock().unwrap_or_else(PoisonError::into_inner);
+    // Requests that ended before their caller's side was made leave nothing behind.
+    bounds.retain(|(held, _)| held.strong_count() > 0);
+    let stated = bounds
+        .iter_mut()
+        .find(|(held, _)| held.upgrade().is_some_and(|live| Arc::ptr_eq(&live, owner)));
+    match stated {
+        Some((_, at)) => *at = (*at).min(until),
+        None => bounds.push((Arc::downgrade(owner), until)),
+    }
+}
+
+fn take_bound(owner: &Arc<StreamOwner>) -> Option<tokio::time::Instant> {
+    let mut bounds = BOUNDS.lock().unwrap_or_else(PoisonError::into_inner);
+    let at = bounds
+        .iter()
+        .position(|(held, _)| held.upgrade().is_some_and(|live| Arc::ptr_eq(&live, owner)))?;
+    Some(bounds.swap_remove(at).1)
+}
+
 struct PipeState {
+    /// The session reached its limit: the plane session is told the caller is gone, and nothing
+    /// more is written for it.
+    limited: bool,
     /// The plane committed with RESPOND(101).
     switched: bool,
     /// The plane wrote END for the caller.
@@ -153,7 +195,21 @@ struct PipeState {
 ///
 /// What it refuses (the session is then told the caller is gone, and its far end is let go): a
 /// second 101; a message with no 101 before it; a body or trailers after a 101; anything after END.
+///
+/// THE SESSION'S LIMIT. An upgraded session is bounded ([`bound`]). At its limit the engine cuts
+/// the caller's side, on whichever of its two faces the plane session is at: a session waiting
+/// for the caller is woken and told the caller is gone ([`ClientEvent::Gone`]: "the engine cut
+/// it"); a session writing to the caller has the item refused, which its relay reads the same
+/// way. Either way the plane is told once, the far end is let go, and nothing more is written:
+/// not a message, not the 101 of a session that would commit past its limit, and not the END (a
+/// session cut at its limit did not end in order, so the adopted transport closes it as a
+/// failure, never as a normal close). The answer's delivery then ends cut, and the unit settles
+/// by the data path's own settlement on the usage the session last stated.
 pub(crate) struct UpgradePipe {
+    /// The session's latest end. `None` only for a pipe no connection stands behind.
+    until: Option<tokio::time::Instant>,
+    /// The limit's timer, made the first time the plane session waits for the caller.
+    alarm: Mutex<Option<std::pin::Pin<Box<tokio::time::Sleep>>>>,
     http: Arc<dyn ClientSink>,
     state: Mutex<PipeState>,
     kinds: Arc<MessageKinds>,
@@ -191,11 +247,29 @@ pub(crate) fn handed_on<'a>(
 
 impl UpgradePipe {
     /// The caller's side of an upgrade request's session, over the data path's sink `http`.
+    ///
+    /// Its session ends at the limit stated for the request ([`bound`]). A request with a
+    /// connection behind it and no limit stated is still bounded ([`UNSTATED_LIMIT`]).
     pub(crate) fn new(http: Arc<dyn ClientSink>, hand: Option<HandTo>) -> Arc<Self> {
+        let until = hand.as_ref().map(|hand| {
+            take_bound(&hand.owner).unwrap_or_else(|| tokio::time::Instant::now() + UNSTATED_LIMIT)
+        });
+        Self::bounded(http, hand, until)
+    }
+
+    /// As [`Self::new`], with the session's latest end given.
+    pub(crate) fn bounded(
+        http: Arc<dyn ClientSink>,
+        hand: Option<HandTo>,
+        until: Option<tokio::time::Instant>,
+    ) -> Arc<Self> {
         let (to_plane, from_caller) = mpsc::channel(CALLER_QUEUE);
         Arc::new(Self {
+            until,
+            alarm: Mutex::new(None),
             http,
             state: Mutex::new(PipeState {
+                limited: false,
                 switched: false,
                 ended: false,
                 offer: Vec::new(),
@@ -216,6 +290,18 @@ impl UpgradePipe {
     /// Whether the plane committed with RESPOND(101).
     pub(crate) fn switched(&self) -> bool {
         self.state().switched
+    }
+
+    /// Whether the session was cut at its limit.
+    #[cfg(test)]
+    pub(crate) fn limited(&self) -> bool {
+        self.state().limited
+    }
+
+    /// Whether the session's limit has passed.
+    fn past_limit(&self) -> bool {
+        self.until
+            .is_some_and(|until| tokio::time::Instant::now() >= until)
     }
 
     /// The flags of the switched answer's body frames, for the response's piece producer.
@@ -284,6 +370,14 @@ impl UpgradePipe {
 impl ClientSink for UpgradePipe {
     fn poll_items(&self, cx: &mut Context<'_>, items: &mut Vec<ToClient>) -> Poll<bool> {
         let mut state = self.state();
+        // A committed session past its limit is cut: what was offered and not taken, and
+        // everything after it, is refused (the relay reads that as the caller gone).
+        if state.switched && !state.limited && self.past_limit() {
+            state.limited = true;
+        }
+        if state.limited {
+            return Poll::Ready(false);
+        }
         loop {
             if !state.offer.is_empty() {
                 match self.http.poll_items(cx, &mut state.offer) {
@@ -302,6 +396,11 @@ impl ClientSink for UpgradePipe {
             let offered = match items.remove(0) {
                 ToClient::Head { status, fields } if status == SWITCHING_PROTOCOLS => {
                     if state.switched {
+                        return Poll::Ready(false);
+                    }
+                    if self.past_limit() {
+                        // A session is not committed past its limit: no 101 is written for it.
+                        state.limited = true;
                         return Poll::Ready(false);
                     }
                     state.switched = true;
@@ -359,6 +458,21 @@ impl ClientSink for UpgradePipe {
 
 impl ClientMessages for UpgradePipe {
     fn poll_message(&self, cx: &mut Context<'_>) -> Poll<ClientEvent> {
+        // The limit first: a caller that is still talking at the limit is cut all the same.
+        if let Some(until) = self.until {
+            if self.state().limited {
+                return Poll::Ready(ClientEvent::Gone);
+            }
+            let reached = {
+                let mut alarm = self.alarm.lock().unwrap_or_else(PoisonError::into_inner);
+                let sleep = alarm.get_or_insert_with(|| Box::pin(tokio::time::sleep_until(until)));
+                std::future::Future::poll(sleep.as_mut(), cx).is_ready()
+            };
+            if reached {
+                self.state().limited = true;
+                return Poll::Ready(ClientEvent::Gone);
+            }
+        }
         let mut from_caller = self
             .from_caller
             .lock()
@@ -558,7 +672,13 @@ pub(crate) fn adopt<S>(
     } = *upgrade;
     // The HTTP session is over: the adopting transport's `begin` returned OK.
     drop(http);
-    let (ledger, progress) = delivery.into_parts();
+    let (mut ledger, progress) = delivery.into_parts();
+    // The connection's delivery driver moves whole, counters and all, and is told so: the
+    // upgraded answer is stream 1 of the adopting session, open from its `begin`, and the HTTP
+    // session's SESSION statement ended with that session. Without this the adopting session's
+    // own SESSION (stated in its `begin` answer, as every session's is) is `a second SESSION`
+    // and the session faults on its first answer, after the 101 was decided.
+    ledger.adopt(ADOPTED_STREAM);
     let (registrations, registered) = mpsc::channel(1);
     let (feeds, fed) = mpsc::channel(1);
     let (inbound, inputs) = mpsc::channel(1);

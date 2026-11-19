@@ -8,6 +8,7 @@
 
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
+use std::time::Duration;
 
 use busbar_core_connector::framed_stream::session::{Inbound, Payload};
 use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
@@ -218,6 +219,142 @@ fn the_callers_events_reach_the_plane_session_in_order_and_a_lost_connection_is_
     // the plane session is told the caller is gone, which is what ends it and settles its unit.
     drop(caller);
     assert_eq!(pipe.poll_message(&mut cx), Poll::Ready(ClientEvent::Gone));
+}
+
+// ---- the session's limit ----------------------------------------------------------------------
+
+const LIMIT: Duration = Duration::from_secs(300);
+
+/// A pipe whose session ends `LIMIT` from now, on the test's paused clock.
+fn bounded() -> (Arc<Http>, Arc<UpgradePipe>, tokio::time::Instant) {
+    let http = Arc::new(Http::default());
+    let until = tokio::time::Instant::now() + LIMIT;
+    let pipe = UpgradePipe::bounded(http.clone(), None, Some(until));
+    (http, pipe, until)
+}
+
+async fn next_event(pipe: &UpgradePipe) -> ClientEvent {
+    std::future::poll_fn(|cx| pipe.poll_message(cx)).await
+}
+
+/// An upgraded session is bounded. A session idle at its limit (a caller that is connected and
+/// says nothing) is woken by the limit alone and told the caller is gone, which is the event that
+/// ends the plane session and settles its unit; nothing more is written for it, its END included,
+/// so the answer's delivery ends cut and the adopted transport closes as for a failure.
+#[tokio::test(start_paused = true)]
+async fn an_upgraded_session_is_ended_at_its_limit_with_its_plane_told_the_caller_is_gone() {
+    let (http, pipe, until) = bounded();
+    // The caller's side stays connected throughout: what ends the session is the limit.
+    let caller = pipe.caller();
+    let in_time = msg(MSG_TEXT | MSG_FIN, b"in time");
+    assert_eq!(hand(&pipe, vec![head(101), in_time]), Poll::Ready(true));
+    let said = ClientEvent::Message {
+        flags: MSG_TEXT | MSG_FIN,
+        bytes: b"hi".to_vec(),
+    };
+    caller.try_send(said.clone()).unwrap();
+    assert_eq!(
+        next_event(&pipe).await,
+        said,
+        "inside its limit it is served"
+    );
+    assert!(!pipe.limited());
+    assert_eq!(next_event(&pipe).await, ClientEvent::Gone);
+    let now = tokio::time::Instant::now();
+    assert!(
+        now >= until && now < until + Duration::from_secs(1),
+        "at the limit, not before and not later"
+    );
+    assert!(pipe.limited());
+    assert!(
+        !caller.is_closed(),
+        "the caller did not go: the engine cut it"
+    );
+    assert_eq!(
+        hand(&pipe, vec![msg(MSG_TEXT | MSG_FIN, b"late")]),
+        Poll::Ready(false),
+        "nothing more is written"
+    );
+    assert_eq!(
+        hand(&pipe, vec![ToClient::End]),
+        Poll::Ready(false),
+        "a session cut at its limit did not end in order: no END is written for it"
+    );
+    assert_eq!(
+        http.taken(),
+        vec![head(101), ToClient::Body(b"in time".to_vec())]
+    );
+    let kinds = pipe.kinds();
+    assert_eq!(kinds.next(), Some(MSG_TEXT | MSG_FIN));
+    assert_eq!(kinds.next(), None, "a refused message is not stated");
+}
+
+/// The other face: a session that is writing to the caller when its limit passes (the caller
+/// closed its side, or the plane is not waiting for it) has the item refused, which its relay
+/// reads as the caller gone. A caller that is still talking is cut all the same.
+#[tokio::test(start_paused = true)]
+async fn a_session_writing_past_its_limit_is_refused_and_a_talking_caller_is_cut_all_the_same() {
+    let (http, pipe, _until) = bounded();
+    let caller = pipe.caller();
+    assert_eq!(hand(&pipe, vec![head(101)]), Poll::Ready(true));
+    tokio::time::advance(LIMIT - Duration::from_secs(1)).await;
+    assert_eq!(
+        hand(&pipe, vec![msg(MSG_BINARY | MSG_FIN, &[1])]),
+        Poll::Ready(true),
+        "one second inside the limit"
+    );
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(
+        hand(&pipe, vec![msg(MSG_BINARY | MSG_FIN, &[2])]),
+        Poll::Ready(false)
+    );
+    assert!(pipe.limited());
+    assert_eq!(http.taken(), vec![head(101), ToClient::Body(vec![1])]);
+    // The caller has a message waiting: the limit comes first.
+    caller
+        .try_send(ClientEvent::Message {
+            flags: MSG_TEXT | MSG_FIN,
+            bytes: b"still here".to_vec(),
+        })
+        .unwrap();
+    assert_eq!(next_event(&pipe).await, ClientEvent::Gone);
+}
+
+/// A session is not committed past its limit: the 101 itself is refused, so the caller is never
+/// switched to a session that is already over.
+#[tokio::test(start_paused = true)]
+async fn a_101_past_the_limit_is_not_written() {
+    let (http, pipe, _until) = bounded();
+    tokio::time::advance(LIMIT).await;
+    assert_eq!(hand(&pipe, vec![head(101)]), Poll::Ready(false));
+    assert!(!pipe.switched());
+    assert!(http.taken().is_empty());
+}
+
+/// Before any 101 the limit is not the pipe's to enforce: the answer is HTTP's, bounded by the
+/// request's own deadline on the data path, and a refusal is written whenever it comes.
+#[tokio::test(start_paused = true)]
+async fn an_http_answer_before_any_101_is_not_cut_by_the_sessions_limit() {
+    let (http, pipe, _until) = bounded();
+    tokio::time::advance(LIMIT + LIMIT).await;
+    let answer = vec![head(504), ToClient::End];
+    assert_eq!(hand(&pipe, answer.clone()), Poll::Ready(true));
+    assert_eq!(http.taken(), answer);
+}
+
+/// A pipe with no limit (no connection stands behind it) is never cut by one.
+#[tokio::test(start_paused = true)]
+async fn a_pipe_no_connection_stands_behind_has_no_limit() {
+    let (_http, pipe) = pipe();
+    let caller = pipe.caller();
+    assert_eq!(hand(&pipe, vec![head(101)]), Poll::Ready(true));
+    tokio::time::advance(LIMIT + LIMIT).await;
+    assert_eq!(
+        hand(&pipe, vec![msg(MSG_TEXT | MSG_FIN, b"x")]),
+        Poll::Ready(true)
+    );
+    caller.try_send(ClientEvent::Closed).unwrap();
+    assert_eq!(next_event(&pipe).await, ClientEvent::Closed);
 }
 
 #[test]
