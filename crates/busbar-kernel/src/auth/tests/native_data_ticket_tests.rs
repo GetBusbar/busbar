@@ -98,6 +98,7 @@ fn ticket_fixture(who: Who, desk: Option<Arc<TicketDesk>>, open: bool) -> Fixtur
         cost: Arc::clone(&old.cost),
         withheld: Arc::clone(&old.withheld),
         audience: None,
+        public_url: None,
         challenge: None,
         admission: crate::auth::admission_table::admission_of(&record),
         record,

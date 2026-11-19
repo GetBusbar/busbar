@@ -28,7 +28,7 @@ use std::time::Instant;
 
 use busbar_plugin_abi::auth::BAD_CREDENTIAL;
 use busbar_plugin_abi::host_side::scrub::{Scrub, fail_text};
-use busbar_plugin_abi::plugin::__rt::Arg;
+use busbar_plugin_abi::kinds::transport::{pack, slot};
 use busbar_plugin_abi::types::Bytes;
 use busbar_plugin_loader::adapters::auth::rejected;
 use busbar_ports::transport::TransportOut;
@@ -46,11 +46,9 @@ fn ok_arm() {
     let mut raw = ok_arm::Raw::open();
     let floor = ok_arm::time(|| {
         raw.with(|_inst, session, lease| {
-            black_box(session.call1(
-                |vt| &vt.ingest,
-                Arg::bytes(Bytes::new(black_box(&kib))),
-                lease,
-            ));
+            black_box(pack::ingest(1, Bytes::new(black_box(&kib)), |call| {
+                session.call(slot::ingest, call, lease)
+            }));
         });
     });
     let port = ok_arm::Port::open();

@@ -27,8 +27,8 @@ use busbar_contract::records::ScopeRef;
 use busbar_contract::route::{METHOD_POST, PATH_EXACT};
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::Caller as AbiCaller;
-use busbar_plugin_abi::plane::AUTH_PRINCIPAL;
 use busbar_plugin_abi::host_side::caller::{BoxFut, InstanceLimits};
+use busbar_plugin_abi::plane::AUTH_PRINCIPAL;
 use busbar_plugin_abi::records::{tag, Records, Reply, U64Rec, Writer};
 use busbar_ports::auth::{
     decode_verify_ok, AuthIn, AuthPort, LoginAnswer, LoginIn, OutboundAnswer, ServeIn, ServeOut,
@@ -1086,6 +1086,23 @@ async fn native_data_scans_later_duplicate_bound_carrier_before_verification() {
         assert_eq!(f.calls.calls.load(Ordering::SeqCst), 0);
         assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
     }
+}
+
+/// RFC 9449 s4.3 (9): a DPoP proof names the URL the request was received at. On an
+/// audience-bound plane (MCP's `canonical_uri`, RFC 8707) the audience is the resource's name, and
+/// its origin can differ from core's public URL, where the request actually arrives: the proof's
+/// origin is the public URL. With no public URL configured the plane's own canonical URI is the
+/// only URL the route can state.
+#[tokio::test]
+async fn audience_bound_route_names_the_public_url_in_its_dpop_proof() {
+    let mut f = fixture(true);
+    let route = Arc::get_mut(&mut f.route).unwrap();
+    route.audience = Some(Arc::from("https://mcp.example.com/mcp"));
+    route.public_url = Some(Arc::from("https://gw.example.com"));
+    assert_eq!(f.route.proof_url(), Some("https://gw.example.com"));
+    let route = Arc::get_mut(&mut f.route).unwrap();
+    route.public_url = None;
+    assert_eq!(f.route.proof_url(), Some("https://mcp.example.com/mcp"));
 }
 
 #[tokio::test]
