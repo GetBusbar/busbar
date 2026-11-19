@@ -10,12 +10,10 @@
     "busbar-kernel-ledger",
     "busbar-kernel-wal",
     "busbar-plugin-abi",
-    "busbar-plugin-loader",
     "busbar-ports"
   ],
   "allowed_additions": [
     "busbar-plugin-abi",
-    "busbar-plugin-loader",
     "busbar-ports"
   ]
 }

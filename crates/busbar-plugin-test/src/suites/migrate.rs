@@ -60,9 +60,7 @@ pub(super) fn run(
     match expect {
         MigrateExpect::Refused(code) => refused_case(&harness, &case, code),
         MigrateExpect::Settled { config, core_cfg } => {
-            let canonical = settled_case(&harness, &case, config, core_cfg);
-            let canonical = lifted(&harness, &canonical, core_cfg);
-            let canonical = visible(&harness, &canonical);
+            let canonical = persisted(&harness, &case, config, core_cfg);
             fixed_point_case(&harness, &canonical, case.limits);
             newer_case(&harness, &canonical, case.limits);
         }
@@ -135,6 +133,20 @@ fn refused_case(harness: &Harness, case: &MigrateCase<'_>, code: u32) {
         before,
         "migrate: a refused open wrote records"
     );
+}
+
+/// Case 1, then what core does with its answer before the next open: every CORE_CFG(LIFT) literal moved into
+/// custody ([`lifted`]) and a plane's core-owned registration members taken out ([`visible`]). Returns the
+/// settings core hands every later open. A legacy marker, if any, is set on instance `migrate` by the caller.
+pub(super) fn persisted(
+    harness: &Harness,
+    case: &MigrateCase<'_>,
+    config: Option<&[u8]>,
+    core_cfg: &[(u32, &str, &[u8])],
+) -> Vec<u8> {
+    let canonical = settled_case(harness, case, config, core_cfg);
+    let canonical = lifted(harness, &canonical, core_cfg);
+    visible(harness, &canonical)
 }
 
 /// Case 1. Returns the canonical settings the next cases open: the settled CONFIG, or the bag.

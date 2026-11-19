@@ -81,24 +81,6 @@ mod ffi_thread;
 )]
 #[deny(unsafe_code)]
 pub mod highwater;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-#[deny(unsafe_code)]
-mod host;
 pub mod migration_secrets;
 #[deny(unsafe_code)]
 pub mod open_once;
@@ -152,6 +134,9 @@ pub mod watchdog;
 /// The safe test host (SDK-SAFE-TEST-HOST): tests load and drive plugins with no `unsafe`.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_host;
+/// The test signer and dropped-in admission of MIN-3 images (a fixed test key only its trust trusts).
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_native;
 
 // busbar:request-path
 #[cfg_attr(

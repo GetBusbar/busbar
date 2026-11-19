@@ -774,7 +774,7 @@ impl Harness {
     }
 
     /// A harness over an image the caller admitted itself (a dropped-in image through the loader's `admit`, or
-    /// `busbar_plugin_loader::test_host::admit_bytes`): `ImagesBuilder::admit` and everything [`Harness::admit`] does
+    /// `busbar_plugin_loader::test_native::admit_bytes`): `ImagesBuilder::admit` and everything [`Harness::admit`] does
     /// after admission.
     pub fn admit_admitted(admitted: Admitted, needs: FakeNeeds) -> Result<Harness, Refusal> {
         Self::start(move || Ok(vec![admitted]), needs)

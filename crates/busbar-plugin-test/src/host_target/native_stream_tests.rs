@@ -7,7 +7,7 @@ use busbar_plugin_abi::transport::{MSG_BINARY, MSG_FIN, MSG_TEXT};
 #[cfg(target_os = "linux")]
 #[test]
 fn native_signed_package_checks_structure_even_when_signature_and_digest_are_valid() {
-    use busbar_plugin_loader::{sign, tarball, test_host};
+    use busbar_plugin_loader::{sign, tarball, test_native};
 
     // The same actual native cdylib used by the central self-pack producer proof, built by CI.
     // A missing fixture fails; a synthetic stamp or skipped arm cannot replace its image bytes.
@@ -23,10 +23,10 @@ fn native_signed_package_checks_structure_even_when_signature_and_digest_are_val
         ));
     let bytes = std::fs::read(path)
         .expect("CI must build busbar-plugin-loader's native_pack_fixture example");
-    let mut manifest = test_host::test_manifest(&bytes, &["old-native", "native"]).unwrap();
+    let mut manifest = test_native::test_manifest(&bytes, &["old-native", "native"]).unwrap();
     manifest.alias = "native".into();
-    manifest = test_host::test_sign(manifest, &bytes);
-    let trust = test_host::test_trust("native-pack-fixture");
+    manifest = test_native::test_sign(manifest, &bytes);
+    let trust = test_native::test_trust("native-pack-fixture");
     sign::evaluate(&bytes, &manifest, &trust).unwrap();
     let good = tarball::package(&manifest, "native.so", &bytes).unwrap();
     let unpacked = unpack_package(&good).expect("the native producer's complete package is valid");
@@ -44,7 +44,7 @@ fn native_signed_package_checks_structure_even_when_signature_and_digest_are_val
             "needs" => bad.needs.prompt = sign::NeedLevel::Ro,
             _ => unreachable!(),
         }
-        let signed = test_host::test_sign(bad, &bytes);
+        let signed = test_native::test_sign(bad, &bytes);
         sign::evaluate(&bytes, &signed, &trust)
             .expect("negative control has a real trusted signature over the unchanged image");
         assert_eq!(signed.sha256, sign::sha256_hex(&bytes));
