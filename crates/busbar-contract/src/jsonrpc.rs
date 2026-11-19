@@ -54,6 +54,8 @@
 
 use crate::json::{JsonContainerTrait as _, JsonValueTrait as _, Value};
 
+/// The JSON-RPC 2.0 standard error codes this module can produce.
+pub const PARSE_ERROR: i64 = -32700;
 /// `-32600`: the body is JSON and is not an envelope this reader will honour.
 pub const INVALID_REQUEST: i64 = -32600;
 
@@ -381,6 +383,31 @@ pub fn error_body(id: Value, code: i64, message: &str, data: Option<Value>) -> V
     envelope.insert("id", id);
     envelope.insert("error", Value::from(error));
     Value::from(envelope)
+}
+
+/// WHETHER `origin` MAY DRIVE THIS DEPLOYMENT.
+#[must_use]
+pub fn origin_admitted(origin: &str, allowed: &[String]) -> bool {
+    is_loopback_origin(origin) || allowed.iter().any(|a| a == origin)
+}
+
+fn is_loopback_origin(origin: &str) -> bool {
+    let host = match origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    {
+        Some(rest) => rest.split('/').next().unwrap_or(""),
+
+        None => return false,
+    };
+    let host = host.rsplit_once(':').map_or(host, |(h, port)| {
+        if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() {
+            h
+        } else {
+            host
+        }
+    });
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]")
 }
 
 /// A unit-less kernel refusal of `Unauthenticated`, as v1.5.5 wrote it on the wire.

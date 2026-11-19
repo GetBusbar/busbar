@@ -60,7 +60,7 @@ pub mod store {
         judged(a, || codec::decode_scan(a, namespace))
     }
     pub fn commit(a: &Answer<'_>) -> Result<(), FaultReason> {
-        judged(a, || codec::decode_decision(a))
+        judged(a, || codec::decode_commit_verdict(a))
     }
     pub fn clock(a: &Answer<'_>) -> Result<(), FaultReason> {
         judged(a, || codec::decode_clock(a))

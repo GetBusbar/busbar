@@ -33,7 +33,7 @@ use busbar_plugin_abi::records::Full;
 use busbar_plugin_abi::types::Status;
 
 use crate::instance::OpenError;
-use busbar_ports::codec::store::{self as codec, ScanOutcome};
+use busbar_ports::codec::store::{self as codec, CommitVerdict, ScanOutcome};
 use busbar_ports::PortError;
 
 /// A store call's chain deadline when the operator set no `limits.timeout_ms` (today's store deadline).
@@ -164,7 +164,12 @@ impl<N: Needs> PersistenceBackend for StoreAdapter<N> {
 
     fn commit(&self, candidate: PreparedCandidate, key: CommitKey) -> Call<'_, Decision> {
         Box::pin(self.state.call(Op::Commit(candidate, key), |a, info| {
-            let decision = codec::decode_decision(a).map_err(|_| Failure::Unknown)?;
+            let decision = match codec::decode_commit_verdict(a).map_err(|_| Failure::Unknown)? {
+                CommitVerdict::Decided(decision) => decision,
+                // Rolled back at capacity: nothing committed; surfaced as a refusal, never as success
+                // and never as a stale slot.
+                CommitVerdict::CapacityRefused => return Err(Failure::Refused),
+            };
             if let Decision::TimeGuardFailed { observed_at } = &decision {
                 authority(info, observed_at, true)?;
             }

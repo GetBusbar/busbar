@@ -138,6 +138,18 @@ pub fn ip_is_internal(addr: &IpAddr) -> bool {
     }
 }
 
+/// TRUE for a DNS NAME that is internal by definition rather than by resolution: the cloud-metadata
+pub fn dns_name_is_internal(host: &str) -> bool {
+    let host = host.strip_suffix('.').unwrap_or(host);
+    if METADATA_HOSTS.iter().any(|m| host.eq_ignore_ascii_case(m)) {
+        return true;
+    }
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .rsplit_once('.')
+            .is_some_and(|(_, tld)| tld.eq_ignore_ascii_case("localhost"))
+}
+
 /// IPv6 unique-local range `fc00::/7`.
 pub fn is_unique_local_v6(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xfe00) == 0xfc00

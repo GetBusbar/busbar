@@ -391,6 +391,25 @@ fn committed_codes_one_to_six_map_to_the_decisions() {
 }
 
 #[test]
+fn committed_code_seven_is_a_capacity_refusal_not_a_decision() {
+    let verdict = |code| commit_verdict(Records::new(committed(code).as_bytes()));
+    assert!(matches!(verdict(7), Ok(CommitVerdict::CapacityRefused)));
+    assert!(matches!(
+        verdict(6),
+        Ok(CommitVerdict::Decided(Decision::Stale))
+    ));
+    assert!(matches!(
+        verdict(1),
+        Ok(CommitVerdict::Decided(Decision::Applied(_)))
+    ));
+    assert_eq!(verdict(0).err(), Some(RecErr::Size));
+    assert_eq!(verdict(8).err(), Some(RecErr::Size));
+    // A refusal is never a decision: the decision decoder does not mint one for code 7.
+    let decide = |code| decision(Records::new(committed(code).as_bytes()));
+    assert_eq!(decide(7).err(), Some(RecErr::Size));
+}
+
+#[test]
 fn a_commit_answer_is_exactly_one_committed_record() {
     let mut w = committed(1);
     w.put(wire::tag::RESULT, b"echoed").unwrap();
