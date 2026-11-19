@@ -23,7 +23,12 @@ pub fn install() {
         let destinations = busbar_kernel::config::Destinations {
             block_private_addresses: busbar_kernel::config::AdvancedCfg::default()
                 .block_private_addresses,
-            ..Default::default()
+            blocked: Vec::new(),
+            // The deployment below states no listen addresses: the engine's own are the defaults.
+            listens: vec![
+                busbar_kernel::config::DEFAULT_LISTEN_ADDR.to_owned(),
+                busbar_kernel::config::DEFAULT_ADMIN_LISTEN_ADDR.to_owned(),
+            ],
         };
         let judge = crate::root::connector::guard_for(&destinations)
             .expect("the fixture's default destination policy");
