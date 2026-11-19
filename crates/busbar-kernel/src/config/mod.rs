@@ -1657,6 +1657,12 @@ pub fn resolve_with_provider_planes(
     {
         diag_warn!(crate::diagnostics::CONFIG_SETTING_OUT_OF_RANGE, "{note}");
     }
+    if deploy.advanced.allow_destinations.is_some() {
+        tracing::warn!(
+            "advanced.allow_destinations was removed and is ignored: a private address is reached \
+             only by a registration that sets its own allow_private, or by a provider's own origin"
+        );
+    }
     for name in deploy
         .rate_card
         .iter()

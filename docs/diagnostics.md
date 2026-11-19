@@ -580,9 +580,9 @@ A plugin declares billable classes for a configured lane, but that lane lacks on
 - **Since:** 1.6.0
 - **Slug:** `config-private-reach-retired`
 
-A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`) sets `allow_private`. 1.6.0 has one private-address policy for every outbound connection, `advanced.block_private_addresses` with `advanced.allow_destinations`; a per-registration switch that lifted it for one plugin is retired. The configuration is refused, naming the registration, rather than read with the switch ignored or applied.
+RETIRED. Nothing emits this code. A plane registration (an MCP server, an A2A agent) may set `allow_private`: core reads it as a boolean at the registration its plane declares and grants private reach to that registration's selected route alone, never to another registration, a provider, a request-supplied URL or a callback. A value that is not a boolean, or `allow_private` on a stdio registration, is refused naming the registration. `advanced.allow_destinations` was removed; a configuration that still carries it loads, the key is ignored and one warning line says so.
 
-**What to do:** Run the first-boot migration: it removes the key and lists exactly that registration's host in `advanced.allow_destinations`. Or do the same by hand: delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.
+**What to do:** Nothing emits this code. Set `allow_private: true` only on the registration that must reach a private target; cloud metadata and the gateway's own listeners stay refused whatever is written.
 
 <a id="config-legacy-overlay-not-read"></a>
 ### BUSBAR-3028 — A 1.5.5 overlay selector, variable or file is not read (nothing to import)

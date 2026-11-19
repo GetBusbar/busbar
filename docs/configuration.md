@@ -1962,7 +1962,8 @@ private target carries its own core-owned `allow_private` on its declared regist
 connector restricts this grant to that selected route's origin. Configured providers retain
 private reach only on their own base/token origins; other requests, strict JUDGE/OPEN_WEB checks,
 redirects to other origins and callbacks cannot borrow it. `advanced.allow_destinations` is
-removed and refused as an unknown field. The scheme a
+removed: a configuration that still carries it loads, the key is ignored (it grants nothing and is
+never written back) and one warning line says so. The scheme a
 destination may use is part of the same check: an export sink or hook on the `loopback-allowed`
 class takes `https://`, or plaintext `http://` only to loopback; an `open-web` destination (a
 webhook sink, an identity provider's documents) takes `https://` only.
@@ -1971,7 +1972,8 @@ webhook sink, an identity provider's documents) takes `https://` only.
 
 Every key an operator can write under `advanced:`, in one place. The whole block is optional;
 leaving a key out gives the default shown. `advanced` refuses keys it does not know (a typo is a
-boot error, never ignored). "Applies" says when a change takes effect: **on apply** means a
+boot error, never ignored), except the removed `allow_destinations`, which is ignored with one
+warning so that an old configuration still loads. "Applies" says when a change takes effect: **on apply** means a
 configuration apply (the next published configuration generation) is enough; **restart** means the
 running process keeps the old value until it is restarted (a stored change is saved, but does not
 act yet).

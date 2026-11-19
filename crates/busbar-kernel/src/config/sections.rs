@@ -302,6 +302,11 @@ pub struct AdvancedCfg {
     /// does not resolve here is the proxy's to check). BOOT-TIME.
     #[serde(default, skip_serializing_if = "is_local_resolution")]
     pub proxy_resolution: super::tls::ProxyResolution,
+    /// RETIRED: the global destination allowlist was removed (private reach is a registration's own
+    /// `allow_private`). A configuration written while it existed still loads: the value is
+    /// ignored, never written back, and `config::resolve` logs one line when it is present.
+    #[serde(default, skip_serializing)]
+    pub allow_destinations: Option<serde::de::IgnoredAny>,
 }
 
 fn is_local_resolution(r: &super::tls::ProxyResolution) -> bool {
@@ -365,6 +370,7 @@ impl Default for AdvancedCfg {
             proxy_resolution: super::tls::ProxyResolution::Local,
             trusted_proxies: Vec::new(),
             forwarded_header: None,
+            allow_destinations: None,
         }
     }
 }
