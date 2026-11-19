@@ -432,3 +432,666 @@ async fn a_refused_declaration_leaves_no_need_to_open() {
         "nothing was dialled for the refused need"
     );
 }
+
+// POOL ISOLATION, JUDGED ADDRESS SETS AND THE PROGRAM REFUSAL (P095-3): what a line, a binding and a dial are
+// never lent across, and what is refused before anything is dialled or spawned.
+
+/// How many connections `listener` was handed within `wait` (each let go at once).
+fn accepted(listener: &TcpListener, wait: Duration) -> usize {
+    listener.set_nonblocking(true).unwrap();
+    let until = Instant::now() + wait;
+    let mut count = 0;
+    loop {
+        match listener.accept() {
+            Ok(_) => count += 1,
+            Err(_) if Instant::now() < until => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => return count,
+        }
+    }
+}
+
+/// A judge that answers a loopback literal at once, refuses any other literal as a metadata host, and pends a
+/// name until the test answers it; it keeps every destination it was asked.
+#[derive(Default)]
+struct Pending {
+    asked: std::sync::Mutex<Vec<String>>,
+    pended: std::sync::Mutex<Vec<(String, Judged)>>,
+}
+
+impl Pending {
+    /// Answer the pended judgement of `dest`.
+    fn answer(&self, dest: &str, verdict: Result<SocketAddr, Verdict>) {
+        let done = {
+            let mut pended = self.pended.lock().unwrap();
+            let at = pended
+                .iter()
+                .position(|(asked, _)| asked == dest)
+                .expect("the name's judgement pended");
+            pended.remove(at).1
+        };
+        done(verdict);
+    }
+
+    fn asked(&self) -> Vec<String> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+/// A connector judging through `judge`, carrying `http` on a port no session is begun on.
+fn judged_by(judge: &Arc<Pending>) -> Connector {
+    let judge = Arc::clone(judge);
+    let connector = Connector::serving(
+        Arc::new(
+            move |dest: &str, _: u32, done: Judged| -> Option<Result<SocketAddr, Verdict>> {
+                judge.asked.lock().unwrap().push(dest.to_owned());
+                match dest.parse::<SocketAddr>() {
+                    Ok(addr) if addr.ip().is_loopback() => Some(Ok(addr)),
+                    Ok(_) => Some(Err(busbar_contract::abi::host::service::DEST_METADATA)),
+                    Err(_) => {
+                        judge.pended.lock().unwrap().push((dest.to_owned(), done));
+                        None
+                    }
+                }
+            },
+        ),
+        None,
+        Arc::new(|_, _| {}),
+    );
+    connector
+}
+
+/// A read of `conn` that does not wait: `Pending` while the judgement or the dial has not answered.
+fn read_now(
+    connector: &Connector,
+    conn: busbar_contract::conn::ConnId,
+) -> std::task::Poll<Result<busbar_contract::conn::Piece, ConnError>> {
+    let mut buf = [0_u8; 64];
+    connector.poll_read(
+        OWNER,
+        conn,
+        &mut std::task::Context::from_waker(std::task::Waker::noop()),
+        &mut buf,
+    )
+}
+
+/// Whether the exchange of `conn` would go back to an idle set (it holds a pool key).
+fn keyed_for_the_pool(connector: &Connector, conn: busbar_contract::conn::ConnId) -> bool {
+    let (_, held) = connector.slab.get(OWNER, conn).expect("the entry");
+    let native = held.native.as_ref().expect("a native entry");
+    let exchange = native
+        .begin(std::task::Waker::noop())
+        .expect("no other call has the exchange");
+    let keyed = exchange.key.is_some();
+    native.end(exchange);
+    keyed
+}
+
+/// A program whose spawn would leave `marker` behind.
+fn touching(marker: &std::path::Path) -> busbar_contract::conn::Program {
+    busbar_contract::conn::Program {
+        command: "/usr/bin/touch".to_owned(),
+        cwd: Some("/".to_owned()),
+        args: vec![marker.display().to_string()],
+        env: vec![("PROGRAM_MODE".to_owned(), "serve".to_owned())],
+        env_refs: Vec::new(),
+    }
+}
+
+/// Every program need is refused at declare, whatever the operator wrote down for it (one program, a program per
+/// member, a program carried over from a predecessor instance), with the unserved-scheme refusal kept for it; no
+/// program is ever spawned, and no earlier native record of the same need survives to be opened.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_program_need_is_refused_unless_the_operator_declared_it_as_written() {
+    let marker = std::env::temp_dir().join(format!(
+        "busbar-p095-program-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let program = touching(&marker);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let connector = connector();
+    connector
+        .carry_natively(vec![carrier(CARRIER_HTTP)], storage())
+        .unwrap();
+    let unserved = Some(NeedRefusal::Policy(super::refusal_text::UNSERVED));
+
+    assert_eq!(
+        DeclaredConns::declare_program(&connector, OWNER, NeedId(4), &need(), &program),
+        Err(ConnError::Refused),
+        "a program need is refused at declare"
+    );
+    assert_eq!(connector.refusal(OWNER, NeedId(4)), unserved);
+    let members = vec![
+        ("alpha".to_owned(), program.clone()),
+        ("beta".to_owned(), program.clone()),
+    ];
+    assert_eq!(
+        DeclaredConns::declare_member_programs(&connector, OWNER, NeedId(5), &need(), &members),
+        Err(ConnError::Refused),
+        "a program per member is refused at declare"
+    );
+    assert_eq!(connector.refusal(OWNER, NeedId(5)), unserved);
+    assert_eq!(
+        DeclaredConns::declare_member_programs_from(
+            &connector,
+            InstanceId(6),
+            OWNER,
+            NeedId(6),
+            &need(),
+            &members
+        ),
+        Err(ConnError::Refused),
+        "a predecessor's member programs are refused at declare"
+    );
+    assert_eq!(connector.refusal(OWNER, NeedId(6)), unserved);
+
+    // A need first served natively, then declared again as a program: the refusal leaves no native record.
+    DeclaredConns::declare(&connector, OWNER, NEED, &need(), None, None)
+        .expect("the first declaration is served");
+    assert_eq!(
+        DeclaredConns::declare_program(&connector, OWNER, NEED, &need(), &program),
+        Err(ConnError::Refused)
+    );
+    assert_eq!(connector.refusal(OWNER, NEED), unserved);
+    assert!(
+        connector.native_need(OWNER, NEED).is_none(),
+        "the refused program need keeps no native record"
+    );
+    let target = format!("http://{addr}/v1");
+    for need in [NEED, NeedId(4), NeedId(5), NeedId(6)] {
+        assert!(
+            connector.open(OWNER, need, &desc(&target)).is_err(),
+            "a program need is never opened"
+        );
+    }
+    assert_eq!(
+        accepted(&listener, Duration::from_millis(200)),
+        0,
+        "nothing was dialled for a program need"
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!marker.exists(), "no program was spawned");
+}
+
+/// An auth instance that is never asked for fields here: the bindings are told apart by their handles.
+struct Unasked;
+
+struct Unanswered;
+
+impl std::future::Future for Unanswered {
+    type Output = busbar_contract::auth_calls::Fields;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Ready(busbar_contract::auth_calls::Fields::Failed)
+    }
+}
+
+impl busbar_contract::auth_calls::Fielding for Unanswered {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::Fields> {
+        Some(busbar_contract::auth_calls::Fields::Failed)
+    }
+}
+
+impl busbar_contract::auth_calls::OutboundAuth for Unasked {
+    fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+        Err("never opened in these tests".to_owned())
+    }
+    fn fields_now(
+        &self,
+        _: u64,
+        _: &busbar_contract::auth_calls::FieldsRequest,
+    ) -> Option<busbar_contract::auth_calls::Fields> {
+        None
+    }
+    fn fields(
+        &self,
+        _: u64,
+        _: busbar_contract::auth_calls::FieldsRequest,
+        _: u64,
+    ) -> Box<dyn busbar_contract::auth_calls::Fielding> {
+        Box::new(Unanswered)
+    }
+}
+
+fn binding(handle: u64) -> busbar_contract::conn::ConnAuth {
+    busbar_contract::conn::ConnAuth {
+        auth: Arc::new(Unasked),
+        handle,
+        style_flags: 0,
+        points: busbar_contract::route::AuthPoints(0),
+        passthrough: false,
+        lender: None,
+        per_request: None,
+    }
+}
+
+/// The handle of the binding a request of `member` to `target` is authenticated with, if any.
+fn bound(connector: &Connector, need: NeedId, member: &str, target: &str) -> Option<u64> {
+    DeclaredConns::auth_of(connector, OWNER, need, member, target).map(|auth| auth.handle)
+}
+
+const ORIGIN: &str = "https://api.example:8443";
+
+#[test]
+fn members_sharing_an_origin_each_answer_their_own_binding_and_never_a_neighbours() {
+    let connector = connector();
+    DeclaredConns::bind_auth(&connector, OWNER, NEED, "alpha", ORIGIN, binding(1));
+    DeclaredConns::bind_auth(&connector, OWNER, NEED, "beta", ORIGIN, binding(2));
+    let target = "https://api.example:8443/v1/chat?stream=1";
+    assert_eq!(bound(&connector, NEED, "alpha", target), Some(1));
+    assert_eq!(bound(&connector, NEED, "beta", target), Some(2));
+    assert_eq!(
+        bound(&connector, NEED, "gamma", target),
+        None,
+        "a member bound nowhere borrows no neighbour's binding at the origin"
+    );
+    assert_eq!(
+        bound(&connector, NEED, "alpha", "https://api.example:9443/v1/chat"),
+        None,
+        "a member's binding is its origin's alone"
+    );
+    assert_eq!(
+        bound(&connector, NeedId(4), "alpha", target),
+        None,
+        "nor another need's"
+    );
+    assert_eq!(
+        DeclaredConns::auth_of(&connector, InstanceId(8), NEED, "alpha", target).map(|a| a.handle),
+        None,
+        "nor another instance's"
+    );
+    // A neighbour bound again leaves every other member's binding as it was.
+    DeclaredConns::bind_auth(&connector, OWNER, NEED, "beta", ORIGIN, binding(3));
+    assert_eq!(bound(&connector, NEED, "alpha", target), Some(1));
+    assert_eq!(bound(&connector, NEED, "beta", target), Some(3));
+}
+
+#[test]
+fn a_request_naming_no_member_gets_no_binding_even_from_the_one_member_at_its_origin() {
+    let connector = connector();
+    DeclaredConns::bind_auth(&connector, OWNER, NEED, "alpha", ORIGIN, binding(1));
+    let target = "https://api.example:8443/v1/chat";
+    assert_eq!(bound(&connector, NEED, "alpha", target), Some(1));
+    assert_eq!(
+        bound(&connector, NEED, "", target),
+        None,
+        "a request naming no member is authenticated as nobody, even with one member bound at its origin"
+    );
+}
+
+/// A key with every field fixed but the ones a test varies, before the pools seal it.
+fn unsealed() -> PoolKey {
+    PoolKey {
+        owner: OWNER,
+        need: NEED,
+        door: 1,
+        authority: "127.0.0.1:1".into(),
+        secure: false,
+        name: None,
+        class: (0, 0),
+        reach: false,
+        anchored_as: None,
+        trust: None,
+        sealed: None,
+        hash: 0,
+    }
+}
+
+/// `key` sealed by `pools`, then forced onto `like`'s hash: only `Eq` tells the two apart.
+fn colliding(pools: &crate::pool::Pools, key: PoolKey, like: &PoolKey) -> PoolKey {
+    let mut key = pools.keyed(key);
+    key.hash = like.hash;
+    key
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pooled_line_is_never_lent_to_another_need_or_instance() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let pools = crate::pool::Pools::new(PoolPosture::NONE);
+    let trusted = |config: rustls::ClientConfig| Some(crate::pool::Same::of(Arc::new(config)));
+    let config = || {
+        crate::tls::client::build_client_config(
+            &busbar_contract::transport::trust::EgressTrust::default(),
+        )
+        .expect("a client config")
+    };
+    let sealed = || {
+        Some(crate::pool::Same::of(Arc::new(
+            crate::tls::client::Sealed::default(),
+        )))
+    };
+    let base = PoolKey {
+        trust: trusted(config()),
+        sealed: sealed(),
+        ..unsealed()
+    };
+    let lined = pools.keyed(base.clone());
+    let others = [
+        ("another need", PoolKey { need: NeedId(4), ..base.clone() }),
+        ("another instance", PoolKey { owner: InstanceId(8), ..base.clone() }),
+        ("another trust", PoolKey { trust: trusted(config()), ..base.clone() }),
+        ("another seal", PoolKey { sealed: sealed(), ..base.clone() }),
+    ];
+    let mut far_ends = Vec::new();
+    for (what, other) in others {
+        let other = colliding(&pools, other, &lined);
+        let idle = Idle::default();
+        let now = Instant::now();
+        idle.put(0, lined.clone(), connected(addr).await, now, POSTURE);
+        far_ends.push(listener.accept().unwrap());
+        assert!(
+            idle.take(0, &other, now, POSTURE).is_none(),
+            "a line is never lent to {what}, whose key hashes alike"
+        );
+        idle.put(0, other.clone(), connected(addr).await, now, POSTURE);
+        far_ends.push(listener.accept().unwrap());
+        assert!(idle.take(0, &other, now, POSTURE).is_some());
+        assert!(
+            idle.take(0, &other, now, POSTURE).is_none(),
+            "{what} was lent its own line only"
+        );
+        assert!(
+            idle.take(0, &lined, now, POSTURE).is_some(),
+            "the line is still kept for its own key"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pool_key_collision_never_lends() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let pools = crate::pool::Pools::new(PoolPosture::NONE);
+    let first = pools.keyed(unsealed());
+    let second = colliding(
+        &pools,
+        PoolKey {
+            authority: "127.0.0.1:2".into(),
+            ..unsealed()
+        },
+        &first,
+    );
+    assert_eq!(first.hash, second.hash, "the two keys collide");
+    let idle = Idle::default();
+    let now = Instant::now();
+    let mut far_ends = Vec::new();
+    idle.put(0, first.clone(), connected(addr).await, now, POSTURE);
+    far_ends.push(listener.accept().unwrap());
+    assert!(
+        idle.take(0, &second, now, POSTURE).is_none(),
+        "a colliding key is never lent the other's line"
+    );
+    idle.put(0, second.clone(), connected(addr).await, now, POSTURE);
+    far_ends.push(listener.accept().unwrap());
+    assert!(idle.take(0, &second, now, POSTURE).is_some());
+    assert!(idle.take(0, &second, now, POSTURE).is_none());
+    assert!(idle.take(0, &first, now, POSTURE).is_some());
+    assert!(idle.take(0, &first, now, POSTURE).is_none());
+}
+
+/// A pooling connector carrying `http`, with the need declared.
+fn pooling_with(judge: &Arc<Pending>) -> Connector {
+    let connector = judged_by(judge).pooling(POSTURE);
+    connector
+        .carry_natively(vec![carrier(CARRIER_HTTP)], storage())
+        .unwrap();
+    DeclaredConns::declare(&connector, OWNER, NEED, &need(), None, None).unwrap();
+    connector
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_judged_address_set_pins_the_dial() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let judge = Arc::new(Pending::default());
+    let connector = pooling_with(&judge);
+    let within = [addr.ip()];
+    let literal = format!("http://{addr}/v1");
+    let pinned = OpenDesc {
+        within: &within,
+        ..desc(&literal)
+    };
+    let conn = connector
+        .open(OWNER, NEED, &pinned)
+        .expect("an address in the set is dialled");
+    assert_eq!(
+        accepted(&listener, Duration::from_secs(5)),
+        1,
+        "the dial landed"
+    );
+    assert!(
+        !keyed_for_the_pool(&connector, conn),
+        "a pinned open's line is never pooled"
+    );
+    let unpinned = connector.open(OWNER, NEED, &desc(&literal)).unwrap();
+    assert!(
+        keyed_for_the_pool(&connector, unpinned),
+        "the same open with no set is pooled"
+    );
+    accepted(&listener, Duration::from_secs(5));
+
+    // A name whose judged address is in the set lands too.
+    let named = format!("http://pinned.test:{}/v1", addr.port());
+    let conn = connector
+        .open(
+            OWNER,
+            NEED,
+            &OpenDesc {
+                within: &within,
+                ..desc(&named)
+            },
+        )
+        .expect("the judgement pends");
+    judge.answer(&format!("pinned.test:{}", addr.port()), Ok(addr));
+    let (_, held) = connector.slab.get(OWNER, conn).unwrap();
+    let native = held.native.as_ref().unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        match connector.landed_native(native, std::task::Waker::noop()) {
+            Ok(()) => break,
+            Err(ConnError::Pending) if Instant::now() < until => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            other => panic!("the pinned name's dial lands, not {other:?}"),
+        }
+    }
+    assert_eq!(accepted(&listener, Duration::from_secs(5)), 1);
+    assert!(!keyed_for_the_pool(&connector, conn));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rebound_name_is_refused_before_its_bytes_leave() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let judge = Arc::new(Pending::default());
+    let connector = pooling_with(&judge);
+    // The set the open was judged against; the name later answers an address outside it.
+    let within = [std::net::IpAddr::from([127, 0, 0, 2])];
+    let named = format!("http://rebound.test:{}/v1", addr.port());
+    let conn = connector
+        .open(
+            OWNER,
+            NEED,
+            &OpenDesc {
+                within: &within,
+                body: bytes::Bytes::from_static(b"the request body"),
+                ..desc(&named)
+            },
+        )
+        .expect("the judgement pends");
+    assert!(read_now(&connector, conn).is_pending());
+    assert_eq!(
+        Conns::write(&connector, OWNER, conn, b"more", false, false),
+        Err(ConnError::Pending),
+        "a write while the name is judged is held"
+    );
+    judge.answer(&format!("rebound.test:{}", addr.port()), Ok(addr));
+    assert_eq!(
+        read_now(&connector, conn).map(|read| read.map(|_| ())),
+        std::task::Poll::Ready(Err(ConnError::Refused)),
+        "an address outside the set refuses the open"
+    );
+    assert_eq!(
+        read_now(&connector, conn).map(|read| read.map(|_| ())),
+        std::task::Poll::Ready(Err(ConnError::Refused)),
+        "the refusal stays"
+    );
+    assert_eq!(
+        Conns::write(&connector, OWNER, conn, b"more", false, false),
+        Err(ConnError::Refused)
+    );
+    // A literal outside the set is refused at the open.
+    let literal = format!("http://{addr}/v1");
+    assert_eq!(
+        connector
+            .open(
+                OWNER,
+                NEED,
+                &OpenDesc {
+                    within: &within,
+                    ..desc(&literal)
+                }
+            )
+            .map(|_| ()),
+        Err(ConnError::Refused)
+    );
+    assert_eq!(
+        accepted(&listener, Duration::from_millis(200)),
+        0,
+        "nothing was dialled: no byte left"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_framed_operator_infrastructure_need_without_a_declared_target_is_refused() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let connector = connector();
+    connector
+        .carry_natively(vec![carrier(CARRIER_HTTP)], storage())
+        .unwrap();
+    let infrastructure = ReadNeed {
+        egress_class: busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE,
+        ..need()
+    };
+    // Served first as an ordinary need, then declared again as untargeted operator infrastructure.
+    DeclaredConns::declare(&connector, OWNER, NEED, &need(), None, None).unwrap();
+    assert_eq!(
+        DeclaredConns::declare(&connector, OWNER, NEED, &infrastructure, None, None),
+        Err(ConnError::Refused),
+        "operator infrastructure names its target"
+    );
+    assert_eq!(
+        DeclaredConns::declare(&connector, OWNER, NeedId(4), &infrastructure, None, None),
+        Err(ConnError::Refused)
+    );
+    let code = busbar_kernel::diagnostics::PLUGIN_DECLARES_RETIRED_ABI_VALUE.code;
+    assert_eq!(
+        *connector.flagged.lock().unwrap(),
+        std::collections::HashSet::from([(OWNER, code)]),
+        "the instance is flagged once, however often it declares the shape"
+    );
+    for need in [NEED, NeedId(4)] {
+        assert!(connector.native_need(OWNER, need).is_none());
+        assert!(connector.open(OWNER, need, &desc(&format!("http://{addr}/v1"))).is_err());
+    }
+    assert_eq!(accepted(&listener, Duration::from_millis(200)), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn program_constraint_fields_never_reach_a_network_open() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let connector = connector();
+    connector
+        .carry_natively(vec![carrier(CARRIER_HTTP)], storage())
+        .unwrap();
+    DeclaredConns::declare(&connector, OWNER, NEED, &need(), None, None).unwrap();
+    let target = format!("http://{addr}/v1");
+    let instance = busbar_contract::conn::PROGRAM_EXPECT_INSTANCE_FIELD.to_ascii_uppercase();
+    let generation = format!(" {} ", busbar_contract::conn::PROGRAM_EXPECT_GENERATION_FIELD);
+    for field in [instance.as_str(), generation.as_str()] {
+        let fields = [("accept", b"*/*".as_slice()), (field, b"7".as_slice())];
+        assert_eq!(
+            connector
+                .open(
+                    OWNER,
+                    NEED,
+                    &OpenDesc {
+                        fields: &fields,
+                        ..desc(&target)
+                    }
+                )
+                .map(|_| ()),
+            Err(ConnError::Refused),
+            "a field only a member program reads refuses the open ({field:?})"
+        );
+    }
+    assert_eq!(
+        accepted(&listener, Duration::from_millis(200)),
+        0,
+        "nothing reached a network open"
+    );
+    connector
+        .open(OWNER, NEED, &desc(&target))
+        .expect("the same open without the field dials");
+    assert_eq!(accepted(&listener, Duration::from_secs(5)), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_target_the_guard_refuses_never_reaches_the_proxy() {
+    let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_port = proxy.local_addr().unwrap().port();
+    let judge = Arc::new(Pending::default());
+    let connector = judged_by(&judge).proxying(Some(crate::proxy::test_config(
+        "127.0.0.1",
+        proxy_port,
+        None,
+        "",
+    )));
+    connector
+        .carry_natively(vec![carrier(CARRIER_HTTP)], storage())
+        .unwrap();
+    DeclaredConns::declare(&connector, OWNER, NEED, &need(), None, None).unwrap();
+    let proxy_endpoint = format!("127.0.0.1:{proxy_port}");
+
+    // Refused at once (a metadata host): the proxy is neither judged nor dialled.
+    assert_eq!(
+        connector
+            .open(OWNER, NEED, &desc("http://169.254.169.254/latest/meta-data"))
+            .map(|_| ()),
+        Err(ConnError::Refused)
+    );
+    assert!(
+        !judge.asked().contains(&proxy_endpoint),
+        "a target refused at once never consults the proxy"
+    );
+
+    // Refused once its name is judged (an internal address): both judgements were asked, the proxy is never
+    // asked for a tunnel.
+    let conn = connector
+        .open(OWNER, NEED, &desc("http://internal.test/v1"))
+        .expect("the target's judgement pends");
+    assert!(read_now(&connector, conn).is_pending());
+    judge.answer(
+        "internal.test:80",
+        Err(busbar_contract::abi::host::service::DEST_INTERNAL),
+    );
+    assert_eq!(
+        read_now(&connector, conn).map(|read| read.map(|_| ())),
+        std::task::Poll::Ready(Err(ConnError::Refused)),
+        "the guard's refusal is the open's answer"
+    );
+    assert_eq!(
+        accepted(&proxy, Duration::from_millis(200)),
+        0,
+        "the proxy was never asked for a tunnel"
+    );
+}
