@@ -34,6 +34,10 @@ pub(crate) fn prepare(
     }
     // The read owns one capture: executable admission and grammar consume its exact bytes.
     let metadata = super::scanned_registry(&plugins).map_err(GrammarRefusal)?;
+    // Admission maps these bytes through the native load guard, which serves only an allocation it
+    // holds the verified archive of: record this capture's images (each archive is re-validated by
+    // the guard), or every dropped-in image is refused and stays off the MIN-3 path.
+    super::remember_native_images(&metadata, &plugins);
     let admitted =
         crate::root::min3_boot::admit_images(&plugins, &metadata).map_err(GrammarRefusal)?;
     audit_untrusted(&admitted);

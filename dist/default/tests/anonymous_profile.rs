@@ -123,6 +123,9 @@ pools:
   other:
     members:
       - {{ model: test-model }}
+# The upstream is plaintext loopback: only the llm plane's own audited acceptance admits that dial.
+llm:
+  insecure_transport: {{ accept: plaintext, reason: "loopback test upstream" }}
 {streams}"#,
             streams = streams_section(""),
         ),
@@ -331,12 +334,13 @@ fn anonymous_profile_binding_of_a_kind_no_loaded_plane_states_is_refused() {
         )
     };
 
-    // The kinds the loaded a2a and mcp images state are grantable before any plane mounts.
-    let (code, text) = validate("declared", BINDING);
-    assert_eq!(
-        code,
-        Some(0),
-        "a binding of kinds the loaded planes state validates:\n{text}"
+    // The kinds the loaded a2a and mcp images state are grantable before any plane mounts (the
+    // boot test above serves this binding). `--validate` judges role bindings before it judges
+    // secret references, so no binding refusal is what it says of them here.
+    let (_, text) = validate("declared", BINDING);
+    assert!(
+        !text.contains("BUSBAR-3114"),
+        "a binding of kinds the loaded planes state is not refused:\n{text}"
     );
 
     // `allowed_tools` grants the kind `tool`, which no loaded plane states: refused, naming it.
