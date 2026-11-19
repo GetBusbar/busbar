@@ -483,6 +483,30 @@ impl Drop for OutLease<'_> {
     }
 }
 
+/// A host table with no entries: the writer [`answer`] uses can never grow its block.
+static NO_GROW: Host = Host::new(
+    0,
+    crate::raw::HostFns {
+        now: None,
+        mono: None,
+        random: None,
+        crypto: None,
+        log: None,
+        log_level: None,
+        grow: None,
+        deployment: None,
+        service: None,
+    },
+);
+
+/// The host side of a host service (core 3.0, `HostFns::service`): append `bytes` to the answer block
+/// the plugin handed. False, with nothing written, when the block has no room for all of `bytes`: a
+/// service answer is never grown, because the block is the plugin's own storage and not a buffer of
+/// this host's. No allocation, and `bytes` is copied exactly once, into the block.
+pub fn answer(raw: &mut RawOut, bytes: &[u8]) -> bool {
+    crate::raw::Out::new(raw, &NO_GROW).append(bytes)
+}
+
 /// The host side of `Host::grow`: grow this thread's ACTIVE buffer by `need` (I10, §10.1). False if
 /// there is no ACTIVE buffer, if `raw` is not the top one, if `len + need` overflows or passes max_out.
 /// The old block is zeroed before release (I11), and `ptr`/`cap` are written through `raw`.

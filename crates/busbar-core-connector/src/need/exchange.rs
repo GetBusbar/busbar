@@ -12,6 +12,12 @@
 //!
 //! The status, then the body (data0), then the headers as PAIR records (data1) go to a [`Reply`]
 //! (`NeedOut` in production), so a body never sits in a buffer of its own.
+//!
+//! A FETCH the plugin flagged "status only" (core 3.0) is the same exchange up to the response head:
+//! the same judgement of its one connection, the same proxy, trust, certificate, header cap and
+//! deadline. It then answers the status and the headers and reads NO body: the body cap is not
+//! applied to bytes nobody keeps, and the connection is dropped with the exchange, as every FETCH
+//! connection is, so nothing of the body is waited for.
 
 use busbar_plugin_abi::host_side::needs::{NeedErr, NeedOut};
 use busbar_plugin_abi::records::Records;
@@ -254,6 +260,17 @@ async fn exchange<P: Reply>(
     });
     if held > req.max_headers as usize {
         return Err(NeedErr::Limit);
+    }
+    if req.need.status_only {
+        // The answer is judged by its status alone. Nothing of the body is read: not to cap it, not to
+        // drain it. The body handle and the connection's driver are dropped when this returns, which
+        // closes the one connection this exchange dialled.
+        drop(body);
+        reply.status(parts.status.as_u16());
+        for (name, value) in &parts.headers {
+            reply.header(name.as_str(), value.as_bytes())?;
+        }
+        return Ok(());
     }
     if body.size_hint().lower() > req.max_body {
         return Err(NeedErr::Limit);

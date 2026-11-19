@@ -21,6 +21,11 @@ fn hmac_known_answers() {
 }
 
 #[test]
+fn hmac_over_parts_is_the_mac_of_the_concatenation_at_every_cut() {
+    c::hmac_parts();
+}
+
+#[test]
 fn kdf_known_answers() {
     c::kdf();
 }

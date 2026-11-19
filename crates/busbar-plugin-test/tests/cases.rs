@@ -119,6 +119,8 @@ mod c_export_streams;
 mod c_fail_facts;
 #[path = "c_fail_reset.rs"]
 mod c_fail_reset;
+#[path = "c_fetch_status.rs"]
+mod c_fetch_status;
 #[path = "c_gen_wrap.rs"]
 mod c_gen_wrap;
 #[path = "c_grpc_deadline.rs"]
@@ -392,6 +394,8 @@ mod ref_export;
 mod ref_hook;
 #[path = "fixtures/ref_secret.rs"]
 mod ref_secret;
+#[path = "fixtures/ref_status_fetch.rs"]
+mod ref_status_fetch;
 
 /// Every `tests/*.rs` is wired: a module of this binary or a `[[test]]` target of the manifest
 /// (`autotests = false`, so an unwired file would never run).

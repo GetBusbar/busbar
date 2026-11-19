@@ -282,3 +282,83 @@ fn sync_zero_and_async_steady_state_three() {
 fn a_store_lane_entry_allocates_four() {
     todo!("owner: W1-L3 (C-ALLOC)")
 }
+
+/// The reference auth: its `verify` MACs the id header and the body through the host's HMAC over parts.
+#[path = "fixtures/ref_auth.rs"]
+mod ref_auth;
+
+/// Interface revision E.1: the host's HMAC over parts makes NO heap call and copies no part. An auth
+/// `verify` that MACs a 64 KiB body where the host lent it costs exactly what a `verify` that reads nothing
+/// costs (the arm above): the two allocations of its value (the `Identity`'s records and `Arc`), and
+/// nothing for the MAC.
+#[test]
+fn an_auth_verify_that_macs_its_body_over_parts_adds_no_heap_call() {
+    use busbar_plugin_abi::types::{Bytes, Pair, Str};
+    use busbar_ports::auth::{AuthIn, Verify, VerifyAnswer};
+
+    fn request<'a>(headers: &'a [Pair<'a>], body: &'a [u8]) -> AuthIn<'a> {
+        AuthIn {
+            method: "POST",
+            path: "/hook",
+            query: "",
+            authority: "example",
+            headers,
+            peer: "192.0.2.1:50000",
+            tls_peer_cert: &[],
+            body,
+            now_s: 1_800_000_000,
+        }
+    }
+    fn signed<'a>(signature: &'a [u8]) -> [Pair<'a>; 2] {
+        [
+            Pair {
+                name: Str::new(ref_auth::ID_HEADER),
+                value: Bytes::new(b"what do ya want "),
+            },
+            Pair {
+                name: Str::new(ref_auth::SIGNATURE_HEADER),
+                value: Bytes::new(signature),
+            },
+        ]
+    }
+
+    let _one = ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let deadline = Instant::now() + Duration::from_secs(600);
+    let h = Harness::admit(ref_auth::PLUGIN.plugin(), FakeNeeds::default())
+        .unwrap_or_else(|r| panic!("admit: {r:?}"));
+    let port = h
+        .open_auth(
+            "alloc-ref-auth",
+            br#"{"key":"0123456789abcdefghij","subject":"reference-caller"}"#,
+        )
+        .unwrap_or_else(|e| panic!("open: {e:?}"));
+    let accepted = |req: &AuthIn<'_>| match port.verify(cx(deadline), req, None) {
+        Verify::Done(Ok(VerifyAnswer::Identity(identity))) => {
+            black_box(identity);
+            true
+        }
+        Verify::Done(_) => false,
+        Verify::Io(_) => panic!("a sync verify answers at once"),
+    };
+
+    // Known answers first (HMAC-SHA256 under the 20-byte key, computed with openssl): the MAC that is
+    // counted below is the right MAC, and one wrong byte of the body is refused.
+    let small = signed(b"19cc895f09b77219ab2686e68c0dc433411a0621ab3f8e3f54e214084f931167");
+    assert!(accepted(&request(&small, b"for nothing?")));
+    assert!(!accepted(&request(&small, b"for nothing!")));
+
+    // The counted call: the id header and a 64 KiB body, MACed as two parts.
+    let body = vec![b'Z'; 64 << 10];
+    let big = signed(b"95a13ba5c0d04b41a8ca5a62610cd745d92a5a8e183e0e1aac784f31b65ea021");
+    let req = request(&big, &body);
+    let verify = heap_calls(|| {
+        assert!(accepted(black_box(&req)));
+    });
+    assert_eq!(
+        verify,
+        2 * CALLS,
+        "auth verify with an HMAC over parts of a 64 KiB body: the Identity's records and Arc, nothing else"
+    );
+}

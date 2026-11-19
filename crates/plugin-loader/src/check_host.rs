@@ -86,6 +86,19 @@ mod tests {
         );
     }
 
+    /// Core 3.0: the HMAC over parts is a host service like any other. A config-only CHECK gets no MAC
+    /// (the safe layer reads the refusal as its failure, never as a tag) and the attempt is remembered.
+    #[test]
+    fn a_check_cannot_mac_over_parts_and_the_attempt_is_remembered() {
+        use busbar_plugin_abi::host::{CryptoErr, Hash, HostExt};
+        let (mac, attempted) = run(|host| {
+            host.hmac_parts(Hash::Sha256, &[0x0b; 20], &[b"id", b"body"])
+                .map(|digest| digest.as_slice().to_vec())
+        });
+        assert_eq!(mac, Err(CryptoErr::Rng));
+        assert!(attempted);
+    }
+
     #[test]
     fn a_deployment_read_is_not_an_attempt_but_every_other_service_still_is() {
         let (_, attempted) = run(|host| {

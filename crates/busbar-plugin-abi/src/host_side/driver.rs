@@ -972,7 +972,11 @@ pub fn decode_need(body: &[u8]) -> Result<Need<'_>, NeedErr> {
             })
         }
         op::FETCH => {
-            ensure(rec.flags & !(need_flag::TLS_MASK | need_flag::EGRESS_MASK) == 0)?;
+            // Core 3.0: FETCH alone knows one more bit, "status only, discard the body". It selects what
+            // is done with the answer and nothing about where the request may go: every check below is
+            // the same with and without it.
+            const STATUS_ONLY: u32 = crate::vocab::net1::FETCH_STATUS_ONLY;
+            ensure(rec.flags & !(need_flag::TLS_MASK | need_flag::EGRESS_MASK | STATUS_ONLY) == 0)?;
             let egress = egress_of(rec.flags)?;
             ensure(rec.a == 0)?;
             let cert = match mode {
@@ -991,6 +995,7 @@ pub fn decode_need(body: &[u8]) -> Result<Need<'_>, NeedErr> {
                 trust: rec.trust,
                 cert,
                 egress,
+                status_only: rec.flags & STATUS_ONLY != 0,
             }))
         }
         op::SECRET => {
@@ -1333,6 +1338,89 @@ mod tests {
             Some(NeedErr::Invalid),
             "op 10"
         );
+    }
+
+    /// Core 3.0, `net1::FETCH_STATUS_ONLY` (bit 24): on a FETCH it decodes to `status_only` and changes no
+    /// other field (the stated egress class, the TLS mode, the certificate and the trust are read exactly as
+    /// on a full FETCH); on every other op, and for every other stray bit on a FETCH, the Need is INVALID.
+    #[test]
+    fn a_status_only_fetch_decodes_and_the_bit_is_invalid_everywhere_else() {
+        const STATUS_ONLY: u32 = crate::vocab::net1::FETCH_STATUS_ONLY;
+        assert_eq!(STATUS_ONLY, 1 << 24);
+        const E: &[u8] = &[];
+        let args: [&[u8]; 4] = [b"POST", b"https://hooks.test/in", E, b"line"];
+        let class = 3 << need_flag::EGRESS_SHIFT;
+        let fetch = |flags: u32, secret: u32, trust: u32| {
+            let bytes = body(op::FETCH, flags, 0, 0, secret, trust, args);
+            match decode_need(&bytes) {
+                Ok(Need::Fetch(n)) => Ok((
+                    n.status_only,
+                    n.egress,
+                    n.cert,
+                    n.trust,
+                    n.max_body,
+                    n.method.to_owned(),
+                    n.url.to_owned(),
+                    n.body.to_vec(),
+                )),
+                Ok(_) => panic!("a FETCH decodes to a FETCH"),
+                Err(e) => Err(e),
+            }
+        };
+        let full = fetch(class, 0, 9).expect("a full FETCH");
+        let status = fetch(class | STATUS_ONLY, 0, 9).expect("a status-only FETCH");
+        assert!(!full.0 && status.0);
+        assert_eq!(
+            (
+                status.1, status.2, status.3, &status.5, &status.6, &status.7
+            ),
+            (full.1, full.2, full.3, &full.5, &full.6, &full.7),
+            "the bit changes nothing but status_only"
+        );
+        assert_eq!(status.1, 3, "the stated egress class");
+        let mutual = fetch(class | STATUS_ONLY | need_flag::TLS_MUTUAL, 4, 9).expect("mutual");
+        assert_eq!((mutual.0, mutual.2), (true, Some(4)));
+
+        // The checks a full FETCH passes still refuse a status-only one.
+        for (flags, secret) in [
+            // An egress class out of range.
+            (STATUS_ONLY | (0xF << need_flag::EGRESS_SHIFT), 0),
+            // A certificate without the mutual mode, and the mutual mode without a certificate.
+            (STATUS_ONLY | class, 4),
+            (STATUS_ONLY | class | need_flag::TLS_MUTUAL, 0),
+            // Any other stray bit.
+            (STATUS_ONLY | class | (1 << 25), 0),
+            (STATUS_ONLY | class | (1 << 20), 0),
+            (class | (1 << 25), 0),
+        ] {
+            assert_eq!(
+                fetch(flags, secret, 0).err(),
+                Some(NeedErr::Invalid),
+                "flags {flags:#x}"
+            );
+        }
+        let no_url = body(op::FETCH, STATUS_ONLY, 0, 0, 0, 0, [b"POST", E, E, E]);
+        assert_eq!(decode_need(&no_url).err(), Some(NeedErr::Invalid));
+        let with_a = body(op::FETCH, STATUS_ONLY, 1, 0, 0, 0, args);
+        assert_eq!(decode_need(&with_a).err(), Some(NeedErr::Invalid));
+
+        // The bit is FETCH's alone.
+        let open = body(
+            op::OPEN,
+            STATUS_ONLY,
+            0,
+            0,
+            0,
+            0,
+            [b"db.test:5432", E, E, E],
+        );
+        assert_eq!(decode_need(&open).err(), Some(NeedErr::Invalid));
+        let write = body(op::WRITE, STATUS_ONLY, 1, 0, 0, 0, [b"x", E, E, E]);
+        assert_eq!(decode_need(&write).err(), Some(NeedErr::Invalid));
+        let close = body(op::CLOSE, STATUS_ONLY, 1, 0, 0, 0, [E; 4]);
+        assert_eq!(decode_need(&close).err(), Some(NeedErr::Invalid));
+        let secret = body(op::SECRET, STATUS_ONLY, 0, 0, 1, 0, [E; 4]);
+        assert_eq!(decode_need(&secret).err(), Some(NeedErr::Invalid));
     }
 
     #[test]
