@@ -83,6 +83,20 @@ fn put_back(answer: &Answer, verdict: Result<SocketAddr, Verdict>, also: Vec<Soc
 }
 
 impl crate::conns::Connector {
+    /// WHETHER A SEALED VALUE MAY CROSS A CONNECTION THAT IS NOT SECURED, for this open: only where the
+    /// operator accepted plaintext for that destination. That is the route's own judged acceptance, which
+    /// the opener states (`OpenDesc::plaintext_accepted`), or an exact `outbound.tls.destinations` entry
+    /// for the host. The owner-wide acceptance (`accept_plaintext`) does not count: one broad switch must
+    /// not let every provider key travel in the clear. CALLED in `open_native` to fill
+    /// `NativeHead::sealed_in_clear`.
+    pub(crate) fn sealed_in_clear(
+        &self,
+        desc: &crate::conns::OpenDesc<'_>,
+        authority: &str,
+    ) -> bool {
+        desc.plaintext_accepted || self.plaintext_admitted(authority)
+    }
+
     /// CALLED in `open_native` where the refusal was (after the carrier is found, before the
     /// trust is read): the proxy this open goes through, with the judgement of the proxy's own
     /// host already asked for. `None` = a direct dial, exactly as before.

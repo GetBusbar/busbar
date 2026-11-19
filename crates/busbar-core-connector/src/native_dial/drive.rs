@@ -25,6 +25,14 @@
 //! handed_back: Option<Slots>,         // sealed values a STREAM_BUSY returned
 //! ```
 //!
+//! `NativeDial` gains `tunnel: Option<Tunnel>`; `NativeHead` gains `sealed_in_clear: bool` (the
+//! destination's own plaintext acceptance, `Connector::sealed_in_clear`), passed to
+//! `seal_and_encode` as `destination_accepts`; `Act` gains the transport 2.0 variants `out_of`
+//! reads (`Session`, `Busy`, `NoNewStreams`, `WireSealed`, and `WireEnd { stream, how, arg }`,
+//! `Reset { stream, code, flags }`, `WirePart { class: u32, .. }`), which the session adapter makes
+//! with `crate::outbound::records::decode`; `TransportConn` gains
+//! `consumed(stream, count, now)` = `emit(stream, E_CONSUMED)` with the count in `credit`.
+//!
 //! Fields it loses: `fallback` (the race holds the addresses), `agreed`'s use in `multiplexes()`
 //! (the session states it), `paused` (transport 2.0 has no PAUSE/RESUME), and the two constants
 //! `WRITE_HELD_MAX` / `INBOX_HELD_MAX` as bounds of a multiplexed session (the windows are).
@@ -607,6 +615,16 @@ impl NativeConnection {
     /// statement that it did not act on the stream).
     pub(crate) fn far_end_ended(&self, stream: u64) -> Option<Ended> {
         self.wire.ended_how(stream)
+    }
+
+    /// What the connection has said about taking streams (`crate::outbound::lend::choose` reads it).
+    pub(crate) fn lending(&self) -> crate::outbound::lend::InUse {
+        self.wire.in_use()
+    }
+
+    /// A piece of `stream` is waiting for its reader.
+    pub(crate) fn has_piece(&self, stream: u64) -> bool {
+        self.take_piece_ready(stream)
     }
 
     /// The transport's session has begun on this connection.
