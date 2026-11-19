@@ -153,8 +153,7 @@ async fn rejected_upgrade_retires_original_tcp_writer_before_failed_receipt() {
     use busbar_contract::response_delivery::{DeliveryTerminal, ResponseKey, ResponseStop};
     use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
     let source = ProcessAdmission::new(1).connection_storage(AdmissionClass::Data);
-    let mut ledger =
-        DeliveryLedger::new(&source, 8.try_into().unwrap(), 2.try_into().unwrap()).unwrap();
+    let mut ledger = DeliveryLedger::default();
     let handles = ledger
         .admit(ResponseKey {
             node: 1,
@@ -509,17 +508,6 @@ impl AsyncRead for PendingRead {
         out.put_slice(b"uncommitted-read");
         Poll::Pending
     }
-}
-
-#[tokio::test]
-async fn pending_native_read_wipes_the_abandoned_loan() {
-    use futures::FutureExt;
-    let mut bytes = SecureVec::new();
-    assert!(read_secure(&mut PendingRead, &mut bytes)
-        .now_or_never()
-        .is_none());
-    assert!(bytes.is_empty());
-    assert!(bytes.allocation().iter().all(|byte| *byte == 0));
 }
 
 struct PartialWriteThenPending(bool);
@@ -1222,16 +1210,13 @@ fn attributed_output_is_retained_without_becoming_unattributed_write() {
 }
 
 fn rig() -> Rig {
-    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
-    let source = ProcessAdmission::new(1).connection_storage(AdmissionClass::Data);
     let (_register, registrations) = mpsc::channel(8);
     let (feeds, feed_rx) = mpsc::channel(8);
     let (inbound_tx, inbound) = mpsc::channel(8);
     let (close, close_rx) = oneshot::channel();
     let counters = Arc::new(SessionCounters::default());
     let wiring = Wiring {
-        delivery: DeliveryLedger::new(&source, 128.try_into().unwrap(), 8.try_into().unwrap())
-            .expect("test bounded ledger"),
+        delivery: DeliveryLedger::default(),
         registrations,
         feeds: feed_rx,
         inbound: inbound_tx,
@@ -1239,6 +1224,7 @@ fn rig() -> Rig {
         write_timeout: Duration::from_secs(5),
         drain_grace: Duration::from_secs(5),
         counters: Arc::clone(&counters),
+        read_holders: None,
     };
     Rig {
         feeds,
@@ -2053,6 +2039,7 @@ fn emit_cost(body: &[u8], pieces: usize, rounds: usize) -> EmitCost {
         pending: VecDeque::new(),
         reading: true,
         wake_at: None,
+        flushed: false,
     };
     let timeout = Duration::from_secs(5);
     let mut one = |conn: &mut TransportConn, piece: u32, bytes: &[u8]| {
@@ -2268,6 +2255,7 @@ async fn a_write_that_fails_mid_record_wipes_the_output_before_the_answer_is_let
         pending: VecDeque::new(),
         reading: true,
         wake_at: None,
+        flushed: false,
     };
     let mut acts = Actions::new(&source).expect("owner");
     acts.write(OUTPUT_SECRET).expect("head");
@@ -2368,9 +2356,7 @@ async fn partial_socket_writes_resume_each_record_where_the_socket_stopped() {
 
 /// The delivery ledger root makes for every accepted connection (`root/listener_native.rs`, `open`).
 fn accepted_ledger() -> DeliveryLedger {
-    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
-    let source = ProcessAdmission::new(1).connection_storage(AdmissionClass::Data);
-    DeliveryLedger::new(&source, 4096.try_into().unwrap(), 200.try_into().unwrap()).unwrap()
+    DeliveryLedger::default()
 }
 
 /// A plain request and the response a framer writes for it.
@@ -2404,6 +2390,8 @@ struct AcceptParts {
     inbound: mpsc::Sender<Inbound>,
     close: oneshot::Receiver<u32>,
     kept: Kept,
+    /// The housekeeping tick's list, as a listener would pass it.
+    holders: Arc<ReadHolders>,
 }
 
 /// Root's ends of the channels, kept open while the session runs.
@@ -2442,6 +2430,7 @@ fn accept_parts(lean: fn(Call<'_>, &mut dyn FnMut(TransportOut<'_>))) -> AcceptP
             _close: close_tx,
             peer: unused_peer,
         },
+        holders: Arc::default(),
     }
 }
 
@@ -2459,6 +2448,7 @@ impl AcceptParts {
             write_timeout: Duration::from_secs(5),
             drain_grace: Duration::from_secs(5),
             counters: self.counters,
+            read_holders: Some(self.holders),
         };
         let driven: Driven = Box::pin(super::drive(self.conn, self.io, progress, wiring));
         let mut kept = self.kept;
@@ -2470,8 +2460,9 @@ impl AcceptParts {
 /// THE RED-BEFORE-GREEN PROOF (owner's allocation ruling): an accepted connection that has sent nothing
 /// has made nothing of core's: the ledger root makes at accept and the session's task, run until it
 /// waits for the first byte, ask the heap for no block and no byte (so none is zero-filled). Then input
-/// that arrives in a burst makes the read block, and the connection that goes idle again holds nothing
-/// more than before.
+/// that arrives in a burst makes the read block, which the connection keeps across the housekeeping
+/// tick that saw bytes, and lets go (wiped) at the first tick that saw none (the one keep-or-release
+/// rule). A request after that is served.
 #[test]
 fn an_accepted_connection_waiting_for_its_first_byte_has_made_nothing() {
     use futures::FutureExt;
@@ -2482,6 +2473,7 @@ fn an_accepted_connection_waiting_for_its_first_byte_has_made_nothing() {
     // The first round warms this thread's own runtime state; the second is counted.
     for counted in [false, true] {
         let parts = accept_parts(answer_nothing);
+        let holders = Arc::clone(&parts.holders);
         let (ledger, ledger_calls, ledger_bytes) = crate::support::heap_during(accepted_ledger);
         let (mut driven, mut kept) = parts.task(ledger);
         let (parked, calls, bytes) = crate::support::heap_during(|| driven.as_mut().poll(&mut cx));
@@ -2493,30 +2485,89 @@ fn an_accepted_connection_waiting_for_its_first_byte_has_made_nothing() {
                 "heap calls and bytes of the accepted ledger, then of the session until it waits"
             );
         }
-        // A burst: more than the task's own room (512 bytes), so the read block is made, used and
-        // released.
-        let burst = [b'x'; 600];
-        kept.peer
-            .write_all(&burst)
-            .now_or_never()
-            .expect("room in the pipe")
-            .expect("written");
-        let held = crate::support::held_bytes();
-        let (idle, calls, bytes) = crate::support::heap_during(|| driven.as_mut().poll(&mut cx));
-        assert!(idle.is_pending(), "idle again after the burst");
+        // A burst: more than the task's own room (512 bytes), so the read block is made.
+        let send = |peer: &mut tokio::io::DuplexStream, bytes: &[u8]| {
+            peer.write_all(bytes)
+                .now_or_never()
+                .expect("room in the pipe")
+                .expect("written");
+        };
+        send(&mut kept.peer, &[b'x'; 600]);
+        assert!(driven.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(holders.len(), 1, "the connection holds a read block");
+        let with_block = crate::support::held_bytes();
+        assert_eq!(holders.walk(), 0, "a tick that saw bytes keeps it");
+        assert!(driven.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(holders.walk(), 1, "a tick that saw none asks for it");
+        assert!(driven.as_mut().poll(&mut cx).is_pending());
         if counted {
             assert_eq!(
-                (calls, bytes),
-                (1, READ_CHUNK as u64),
-                "one read block for the burst"
-            );
-            assert_eq!(
-                crate::support::held_bytes(),
-                held,
-                "idle again: the read block is gone"
+                with_block - crate::support::held_bytes(),
+                READ_CHUNK as isize,
+                "the read block is gone"
             );
         }
+        assert!(holders.is_empty());
+        // Still served: a small request needs no block.
+        send(&mut kept.peer, b"GET / HTTP/1.1\r\n\r\n");
+        let (served, calls, _) = crate::support::heap_during(|| driven.as_mut().poll(&mut cx));
+        assert!(served.is_pending());
+        if counted {
+            assert_eq!(calls, 0, "a small request after release makes nothing");
+        }
+        drop((driven, kept));
     }
+}
+
+/// The read block: never zero-filled, never reallocated (1 MiB read through it, same block), and
+/// every byte reads wrote in it (a reader that writes and then waits included) is zero when it is
+/// freed. The task's own room uses the same one-store wipe over the same high-water count.
+#[test]
+fn a_read_block_never_reallocates_and_is_freed_wiped_over_what_reads_wrote() {
+    let waker = futures::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut s = scripted(Box::new(|_| Vec::new()), None, false);
+    if let Some(Backend::Script(script)) = s.conn.backend.as_mut() {
+        script.lean = Some(answer_nothing);
+    }
+    let mut room = ReadRoom::new(s.conn.storage().clone(), None);
+    let mut clock = None;
+    let full = [b'k'; FIRST_READ];
+    let mut input: &[u8] = &full;
+    let read = room.poll_ingest(&mut input, &mut s.conn, &mut clock, &mut cx);
+    assert!(matches!(read, Poll::Ready(Ok(Ingested { eof: false, .. }))));
+    assert_eq!(room.first_used, FIRST_READ);
+    let block = room
+        .block
+        .as_mut()
+        .expect("a full first read makes the block");
+    let (pointer, capacity) = (
+        block.bytes.spare_capacity_mut().as_ptr().cast::<u8>(),
+        block.bytes.capacity(),
+    );
+    let big = vec![b'z'; 1 << 20];
+    let mut input: &[u8] = &big;
+    while !input.is_empty() {
+        let read = room.poll_ingest(&mut input, &mut s.conn, &mut clock, &mut cx);
+        assert!(matches!(read, Poll::Ready(Ok(Ingested { eof: false, .. }))));
+    }
+    let block = room.block.as_mut().expect("kept while reads find bytes");
+    assert_eq!(
+        (
+            block.bytes.spare_capacity_mut().as_ptr().cast::<u8>(),
+            block.bytes.capacity(),
+            block.bytes.len()
+        ),
+        (pointer, capacity, 0),
+        "the same block, never grown, never holding a length"
+    );
+    assert_eq!(block.used, READ_CHUNK);
+    assert!(room
+        .poll_ingest(&mut PendingRead, &mut s.conn, &mut clock, &mut cx)
+        .is_pending());
+    let ((), wiped, _) = crate::support::observe_wipe(pointer, READ_CHUNK, || room.release());
+    assert_eq!(wiped, Some(true), "the freed block holds no byte read");
+    assert_eq!(room.first_used, 0, "the task's own room was wiped with it");
 }
 
 /// THE MEASUREMENT: per accepted connection, core's share (the ledger root makes and the session's
@@ -2563,6 +2614,25 @@ fn the_accept_path_cost() {
          (the test's sockets and channels included)",
         held.0, held.1
     );
+    for size in [64, 2_000] {
+        let (most, ns) = keepalive_cost(size, rounds.min(20_000));
+        println!(
+            "ACCEPT-KEEPALIVE {size}-byte requests, 1 thread: per request after the first, heap calls \
+             at most {most}, median {ns} ns"
+        );
+    }
+    for size in [64, 2_000] {
+        println!(
+            "ACCEPT-IDLE-AFTER {size}-byte request, then two ticks with no bytes: core's heap still held \
+             {} bytes per connection",
+            held_after_request(size)
+        );
+    }
+    let (keep_ns, release_ns) = walk_cost(10_000);
+    println!(
+        "TICK-WALK 10000 connections holding a read block: {keep_ns} ns for a walk that keeps all, \
+         {release_ns} ns for one that asks all back"
+    );
     let (first, rest, per_call, fill) = pool_cost(rounds);
     println!(
         "POOL (plugin interface, frozen): a thread's first crossing {} calls, {} bytes (kept by the \
@@ -2570,6 +2640,124 @@ fn the_accept_path_cost() {
          4 KiB zero-fill alone median {} ns",
         first.0, first.1, rest, per_call, fill
     );
+}
+
+/// A request of `size` bytes whose last byte is `\n`.
+fn request_of(size: usize) -> Vec<u8> {
+    let mut request = vec![b'r'; size];
+    if let Some(last) = request.last_mut() {
+        *last = b'\n';
+    }
+    request
+}
+
+/// A framer that answers each request with the response once its last byte (`\n`) arrives, however
+/// many reads the request took (no CLOSE: kept alive).
+fn answer_kept_alive(call: Call<'_>, sink: &mut dyn FnMut(TransportOut<'_>)) {
+    if matches!(call, Call::Ingest(bytes) if bytes.last() == Some(&b'\n')) {
+        sink(TransportOut::Write(HEALTHZ_RESPONSE));
+    }
+}
+
+/// `rounds` requests of `size` bytes on one kept-alive connection: the most heap calls any request
+/// after the first made in core (read, ingest, answer, write, flush, wipe), and the median time.
+fn keepalive_cost(size: usize, rounds: usize) -> (u64, u64) {
+    use futures::FutureExt;
+    use tokio::io::AsyncReadExt as _;
+    let runtime = custody_runtime();
+    let _entered = runtime.enter();
+    let waker = futures::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+    let parts = accept_parts(answer_kept_alive);
+    let holders = Arc::clone(&parts.holders);
+    let (mut driven, mut kept) = parts.task(accepted_ledger());
+    let request = request_of(size);
+    let mut answer = [0u8; 256];
+    let (mut most, mut times) = (0, Vec::with_capacity(rounds));
+    for round in 0..=rounds {
+        kept.peer
+            .write_all(&request)
+            .now_or_never()
+            .expect("room in the pipe")
+            .expect("written");
+        let at = std::time::Instant::now();
+        let (polled, calls) = crate::support::allocations_during(|| driven.as_mut().poll(&mut cx));
+        let took = nanos(at);
+        assert!(polled.is_pending(), "kept alive");
+        let got = kept
+            .peer
+            .read(&mut answer)
+            .now_or_never()
+            .expect("answered")
+            .expect("read");
+        assert_eq!(&answer[..got], HEALTHZ_RESPONSE);
+        if round > 0 {
+            most = most.max(calls);
+            times.push(took);
+        }
+        // Traffic keeps arriving between ticks: the tick keeps the block.
+        holders.walk();
+    }
+    drop((driven, kept));
+    (most, median(times))
+}
+
+/// One connection that carried one request of `size` bytes and then went quiet for two ticks: the
+/// heap core still holds for it (the task's own box, a spawn's block, not counted).
+fn held_after_request(size: usize) -> isize {
+    use futures::FutureExt;
+    use tokio::io::AsyncReadExt as _;
+    let runtime = custody_runtime();
+    let _entered = runtime.enter();
+    let waker = futures::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut parts = accept_parts(answer_kept_alive);
+    let holders = Arc::clone(&parts.holders);
+    parts
+        .peer
+        .write_all(&request_of(size))
+        .now_or_never()
+        .expect("room in the pipe")
+        .expect("written");
+    let mut answer = [0u8; 256];
+    let start = crate::support::held_bytes();
+    let (mut driven, mut kept) = parts.task(accepted_ledger());
+    let task_box = isize::try_from(std::mem::size_of_val(&*driven)).unwrap_or(isize::MAX);
+    assert!(driven.as_mut().poll(&mut cx).is_pending());
+    let got = kept
+        .peer
+        .read(&mut answer)
+        .now_or_never()
+        .expect("answered")
+        .expect("read");
+    assert_eq!(&answer[..got], HEALTHZ_RESPONSE);
+    holders.walk();
+    holders.walk();
+    assert!(driven.as_mut().poll(&mut cx).is_pending());
+    let held = crate::support::held_bytes() - start - task_box;
+    drop((driven, kept));
+    held
+}
+
+/// The housekeeping tick's walk over `count` connections that hold a read block: one walk that
+/// keeps them all (each saw bytes), then one that asks them all back (none did).
+fn walk_cost(count: usize) -> (u64, u64) {
+    let holders = ReadHolders::default();
+    let keeps: Vec<Arc<ReadKeep>> = (0..count).map(|_| Arc::default()).collect();
+    for keep in &keeps {
+        keep.active.store(true, Ordering::Relaxed);
+        holders.hold(keep);
+    }
+    let at = std::time::Instant::now();
+    assert_eq!(holders.walk(), 0);
+    let keep_ns = nanos(at);
+    let at = std::time::Instant::now();
+    assert_eq!(holders.walk(), count);
+    let release_ns = nanos(at);
+    assert!(keeps
+        .iter()
+        .all(|keep| keep.release.load(Ordering::Relaxed)));
+    (keep_ns, release_ns)
 }
 
 /// The frozen interface's per-crossing buffers (`busbar-plugin-abi` `host_side::pool::sync_bufs`, what

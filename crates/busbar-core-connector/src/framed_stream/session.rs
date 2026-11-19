@@ -30,6 +30,7 @@
 
 use std::collections::VecDeque;
 use std::future::poll_fn;
+use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -40,7 +41,6 @@ use crate::response_delivery::{DeliveryControl, DeliveryLedger, ResponseHandles}
 use busbar_contract::response_delivery::{
     CarrierProgressReader, CompletionRequirement, ResponseKey, ResponseStop, WireClass,
 };
-use busbar_contract::secure::{SecureVec, Tail};
 use busbar_plugin_abi::fail::FaultReason;
 use busbar_plugin_abi::records::RecErr;
 use busbar_plugin_abi::transport as wire;
@@ -150,8 +150,12 @@ impl std::ops::Deref for Actions {
 /// grammar breaches are.
 const GRAMMAR: FaultReason = FaultReason::BadRecords(RecErr::Size);
 
-/// The bytes one socket read takes.
+/// The bytes one socket read takes while a burst of input is arriving.
 const READ_CHUNK: usize = 16 * 1024;
+
+/// The bytes the session task holds in itself for a read when no burst buffer is made: a small request
+/// fits whole, so a connection waiting for its first byte, or between requests, holds no heap block.
+const FIRST_READ: usize = 512;
 
 /// The neutral status core refuses a stream with when the feed behind it ends before the stream does.
 const FEED_GONE_STATUS: u32 = 500;
@@ -1054,6 +1058,9 @@ pub struct Wiring {
     pub drain_grace: Duration,
     /// The counters.
     pub counters: Arc<SessionCounters>,
+    /// The list the housekeeping tick walks to take back idle read blocks (the listener's); `None`
+    /// keeps a read block, once made, until the connection ends.
+    pub read_holders: Option<Arc<ReadHolders>>,
 }
 
 /// How a driven session ended.
@@ -1161,6 +1168,8 @@ struct Task {
     pending: VecDeque<Inbound>,
     reading: bool,
     wake_at: Option<Instant>,
+    /// An answer's bytes were flushed to the socket since the read rooms were last wiped.
+    flushed: bool,
 }
 
 impl Task {
@@ -1206,6 +1215,7 @@ impl Task {
                         return Flow::Lost(error);
                     }
                     wrote = false;
+                    self.flushed = true;
                 }
                 Act::Abort(_) => {}
                 Act::Quiescent(stream) => {
@@ -1281,6 +1291,7 @@ impl Task {
             if let Err(error) = flush_bounded(io, deadline).await {
                 return Flow::Lost(error);
             }
+            self.flushed = true;
         }
         Flow::Go
     }
@@ -1470,18 +1481,10 @@ where
         pending: VecDeque::new(),
         reading: true,
         wake_at: None,
+        flushed: false,
     };
-    // The fixed read scratch is reserved before allocation and retained for the whole driver.
-    // StreamHolds, feed maps and the inbound deque remain separate accounting boundaries.
-    let storage = conn.answers.source.clone();
-    let _scratch_credit = match storage.try_reserve(READ_CHUNK) {
-        Ok(credit) => credit,
-        Err(_) => return Outcome::Ended(Ended::Capacity),
-    };
-    let mut buf = match SecureVec::with_capacity(READ_CHUNK) {
-        Ok(buf) if buf.capacity() <= READ_CHUNK => buf,
-        _ => return Outcome::Ended(Ended::Capacity),
-    };
+    // Nothing is made for reading until bytes arrive: see `ReadRoom`.
+    let mut room = ReadRoom::new(conn.storage().clone(), wiring.read_holders.take());
     let mut eof = false;
     let mut feeds_open = true;
     let mut registrations_open = true;
@@ -1545,6 +1548,11 @@ where
             .await
             .into();
         }
+        // The answer's bytes are out: what the reads wrote is wiped now, before the wait.
+        if std::mem::take(&mut task.flushed) {
+            room.wipe_used();
+        }
+        room.answer_release(!task.idle() || io.ledger().has_responses());
         let deadline = match (task.wake_at, conn.next_stall()) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -1571,7 +1579,7 @@ where
                 }
                 Step::Again
             },
-            event = next_io(&mut io, &mut buf, can_read, sleep_until) => event,
+            event = next_io(&mut io, &mut room, &mut conn, &mut clock, can_read, sleep_until) => event,
             permit = wiring.inbound.reserve(), if !task.pending.is_empty() => match permit {
                 Ok(permit) => {
                     if let Some(item) = task.pending.pop_front() {
@@ -1659,14 +1667,10 @@ where
                 }
                 Ok(())
             }
-            Step::Read(Ok(0)) => {
-                eof = true;
-                conn.ingest(&[], now).map(|_| ())
-            }
-            Step::Read(Ok(n)) => {
-                let answered = conn.ingest(&buf[..n], now).map(|_| ());
-                buf.clear();
-                answered
+            // Ingested in the read itself, the bytes already wiped (EOF ingested as no bytes).
+            Step::Read(Ok(ingested)) => {
+                eof |= ingested.eof;
+                ingested.answered
             }
             Step::Read(Err(error)) => {
                 conn.mark_lost();
@@ -1787,14 +1791,324 @@ enum Step {
     Again,
     Close(u32),
     Tick,
-    Read(std::io::Result<usize>),
+    Read(std::io::Result<Ingested>),
     Feed(Next),
     Control(DeliveryControl),
 }
 
+/// One socket read, already handed to the framer.
+struct Ingested {
+    /// The read found the end of the stream (it was ingested as no bytes).
+    eof: bool,
+    /// The framer's answer to the ingest.
+    answered: Result<(), Ended>,
+}
+
+/// THE ONE KEEP-OR-RELEASE DECISION (owner's ruling: keep while active, release when idle), taken
+/// for each connection that holds a read block, at the housekeeping tick ([`ReadHolders::walk`]):
+/// keep it if bytes arrived since the previous tick, otherwise ask the connection to let it go
+/// (which it does unless a request is still in flight). So a block lives one to two ticks after its
+/// connection goes quiet; nothing is armed per request and the request path does no timer work.
+fn keep_read_block(bytes_since_last_tick: bool) -> bool {
+    bytes_since_last_tick
+}
+
+/// The connections of one listener that hold a read block now, for the housekeeping tick to walk
+/// (only those: a connection without a block is not in it). Each entry is the connection's own
+/// [`ReadKeep`]; the connection adds it when it makes a block and the walk removes it when it asks
+/// for the block back, or when the connection is gone.
+#[derive(Default)]
+pub struct ReadHolders {
+    held: std::sync::Mutex<Vec<Arc<ReadKeep>>>,
+}
+
+/// What the tick and one connection share about its read block.
+#[derive(Default)]
+pub struct ReadKeep {
+    /// Bytes arrived since the previous tick (set by each read, taken by the walk).
+    active: std::sync::atomic::AtomicBool,
+    /// The walk asked for the block back.
+    release: std::sync::atomic::AtomicBool,
+    /// The connection's task, woken to act on `release`.
+    wake: futures::task::AtomicWaker,
+}
+
+impl std::fmt::Debug for ReadHolders {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadHolders")
+            .field("holding", &self.len())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ReadKeep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadKeep").finish_non_exhaustive()
+    }
+}
+
+impl ReadHolders {
+    /// THE HOUSEKEEPING TICK'S WALK: each holder is kept or asked to let its block go
+    /// ([`keep_read_block`]); entries of connections that are gone are dropped. No lock is held
+    /// while a connection is woken. Returns how many were asked.
+    pub fn walk(&self) -> usize {
+        let mut held = std::mem::take(
+            &mut *self
+                .held
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let mut asked = 0;
+        held.retain(|keep| {
+            if Arc::strong_count(keep) == 1 {
+                return false;
+            }
+            if keep_read_block(keep.active.swap(false, Ordering::AcqRel)) {
+                return true;
+            }
+            keep.release.store(true, Ordering::Release);
+            keep.wake.wake();
+            asked += 1;
+            false
+        });
+        let mut now = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Whoever registered during the walk is kept after the walked list, in one array.
+        held.append(&mut *now);
+        *now = held;
+        asked
+    }
+
+    fn hold(&self, keep: &Arc<ReadKeep>) {
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Arc::clone(keep));
+    }
+
+    /// How many connections hold a read block now.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Whether no connection holds a read block.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// WHERE THE SESSION READS (owner's allocation ruling). Nothing is made at accept: a read goes into
+/// [`FIRST_READ`] bytes the task holds in itself, never zero-filled (the reader writes them). When one
+/// read fills them, input is arriving in a burst and a [`READ_CHUNK`] block is made for the reads
+/// that follow (charged to the connection's account first; never zero-filled: the read is lent its
+/// spare capacity, a fixed slice, so the block can never reallocate and free an unwiped copy; a
+/// block the account cannot fund is not made and the reads stay small). The block is kept across
+/// requests and let go by [`keep_read_block`] alone, at the housekeeping tick of the listener's
+/// [`ReadHolders`]; a session given none keeps it until the connection ends.
+///
+/// THE WIPE: each room records how far reads have written into it since its last wipe (a read that
+/// does not return counts the whole room). [`ReadRoom::wipe_used`] zeroes exactly that, in one block
+/// store per room; the session calls it after the answer's bytes are flushed, off the request's
+/// path. Releasing the block, the end of the connection and dropping the task wipe what is left.
+struct ReadRoom {
+    first: [MaybeUninit<u8>; FIRST_READ],
+    first_used: usize,
+    block: Option<ReadBlock>,
+    /// Where the block is registered for the tick, and this connection's entry (made with its
+    /// first block, reused for later ones).
+    holders: Option<Arc<ReadHolders>>,
+    keep: Option<Arc<ReadKeep>>,
+    storage: busbar_contract::storage::StorageSource,
+}
+
+/// The read block and its charge; the block drops (wiped first) before the charge is let go.
+struct ReadBlock {
+    bytes: Vec<u8>,
+    used: usize,
+    _credit: busbar_contract::storage::StorageCredit,
+}
+
+/// One block store over what a read wrote, then the barrier that keeps the store.
+fn wipe_read(bytes: &mut [MaybeUninit<u8>]) {
+    bytes.fill(MaybeUninit::new(0));
+    zeroize::optimization_barrier(&*bytes);
+}
+
+impl ReadRoom {
+    fn new(
+        storage: busbar_contract::storage::StorageSource,
+        holders: Option<Arc<ReadHolders>>,
+    ) -> Self {
+        Self {
+            first: [MaybeUninit::uninit(); FIRST_READ],
+            first_used: 0,
+            block: None,
+            holders,
+            keep: None,
+            storage,
+        }
+    }
+
+    /// The block is in the tick's list (once per block, not per request): marked active now.
+    fn register(&mut self) {
+        let Some(holders) = &self.holders else {
+            return;
+        };
+        let keep = self.keep.get_or_insert_with(Arc::default);
+        keep.release.store(false, Ordering::Release);
+        keep.active.store(true, Ordering::Release);
+        holders.hold(keep);
+    }
+
+    /// Bytes arrived: the tick keeps the block.
+    fn mark_active(&self) {
+        if let Some(keep) = &self.keep {
+            keep.active.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether the tick asked for the block back (the task's waker registered for it first).
+    fn release_asked(&self, cx: &mut std::task::Context<'_>) -> bool {
+        match (&self.block, &self.keep) {
+            (Some(_), Some(keep)) => {
+                keep.wake.register(cx.waker());
+                keep.release.load(Ordering::Acquire)
+            }
+            _ => false,
+        }
+    }
+
+    /// The tick asked for the block back: it goes, wiped first, unless a request is still in
+    /// flight, in which case it is registered again for the next tick.
+    fn answer_release(&mut self, in_flight: bool) {
+        let asked = self
+            .keep
+            .as_ref()
+            .is_some_and(|keep| keep.release.swap(false, Ordering::AcqRel));
+        if !asked || self.block.is_none() {
+            return;
+        }
+        if in_flight {
+            self.register();
+        } else {
+            self.release();
+        }
+    }
+
+    /// A read block, charged before it is made; `None` when the account or the allocator says no.
+    fn make_block(&self) -> Option<ReadBlock> {
+        let credit = self.storage.try_reserve(READ_CHUNK).ok()?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(READ_CHUNK).ok()?;
+        (bytes.capacity() <= credit.len()).then_some(ReadBlock {
+            bytes,
+            used: 0,
+            _credit: credit,
+        })
+    }
+
+    /// Every byte a read wrote since the last wipe is zeroed, one block store per room.
+    fn wipe_used(&mut self) {
+        if let Some(used) = self.first.get_mut(..self.first_used) {
+            wipe_read(used);
+        }
+        self.first_used = 0;
+        if let Some(block) = &mut self.block {
+            if let Some(used) = block.bytes.spare_capacity_mut().get_mut(..block.used) {
+                wipe_read(used);
+            }
+            block.used = 0;
+        }
+    }
+
+    /// The block is let go, wiped first.
+    fn release(&mut self) {
+        self.wipe_used();
+        self.block = None;
+    }
+
+    /// One read, ingested by `conn` at the wake's clock (EOF ingested as no bytes).
+    fn poll_ingest<S: AsyncRead + Unpin>(
+        &mut self,
+        io: &mut S,
+        conn: &mut TransportConn,
+        clock: &mut Option<(Instant, u64)>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<std::io::Result<Ingested>> {
+        let in_block = self.block.is_some();
+        let (lent, used) = match &mut self.block {
+            Some(block) => (
+                &mut block.bytes.spare_capacity_mut()[..READ_CHUNK],
+                &mut block.used,
+            ),
+            None => (&mut self.first[..], &mut self.first_used),
+        };
+        let room = lent.len();
+        let before = *used;
+        // Until the read returns, all of the room counts as written: a reader that unwinds
+        // leaves the whole of it to the wipe.
+        *used = room;
+        let mut read = ReadBuf::uninit(lent);
+        let polled = Pin::new(&mut *io).poll_read(cx, &mut read);
+        let outcome = match polled {
+            Poll::Ready(Ok(())) => {
+                let bytes = read.filled();
+                let (now, _) = wake_clock(clock);
+                Poll::Ready(Ok((bytes.len(), conn.ingest(bytes, now).map(|_| ()))))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+            Poll::Pending => Poll::Pending,
+        };
+        *used = before.max(read.initialized().len());
+        match outcome {
+            Poll::Ready(Ok((0, answered))) => {
+                self.release();
+                Poll::Ready(Ok(Ingested {
+                    eof: true,
+                    answered,
+                }))
+            }
+            Poll::Ready(Ok((read, answered))) => {
+                self.mark_active();
+                if read == room && !in_block {
+                    self.block = self.make_block();
+                    if self.block.is_some() {
+                        self.register();
+                    }
+                }
+                Poll::Ready(Ok(Ingested {
+                    eof: false,
+                    answered,
+                }))
+            }
+            Poll::Ready(Err(error)) => {
+                self.release();
+                Poll::Ready(Err(error))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// The end of the task, however it ends: what reads wrote is wiped before the memory goes.
+impl Drop for ReadRoom {
+    fn drop(&mut self) {
+        self.wipe_used();
+    }
+}
+
 async fn next_io<S: AsyncRead + Unpin>(
     io: &mut DeliveryIo<S>,
-    buf: &mut SecureVec,
+    room: &mut ReadRoom,
+    conn: &mut TransportConn,
+    clock: &mut Option<(Instant, u64)>,
     can_read: bool,
     deadline: Option<tokio::time::Instant>,
 ) -> Step {
@@ -1814,46 +2128,17 @@ async fn next_io<S: AsyncRead + Unpin>(
         {
             return Poll::Ready(Step::Tick);
         }
+        // The housekeeping tick asked for the read block back: the loop answers it.
+        if room.release_asked(cx) {
+            return Poll::Ready(Step::Again);
+        }
         if can_read {
-            poll_read_secure(io, buf, cx).map(Step::Read)
+            room.poll_ingest(io, conn, clock, cx).map(Step::Read)
         } else {
             Poll::Pending
         }
     })
     .await
-}
-
-/// A cancelled or pending read leaves no plaintext in the lent scratch region.
-#[cfg(test)]
-async fn read_secure<S: AsyncRead + Unpin>(
-    io: &mut S,
-    buf: &mut SecureVec,
-) -> std::io::Result<usize> {
-    poll_fn(|cx| poll_read_secure(io, buf, cx)).await
-}
-
-fn poll_read_secure<S: AsyncRead + Unpin>(
-    io: &mut S,
-    buf: &mut SecureVec,
-    cx: &mut std::task::Context<'_>,
-) -> Poll<std::io::Result<usize>> {
-    let mut pending = false;
-    let read = buf.read_into(READ_CHUNK, Tail::Wipe, |bytes| {
-        let mut read = ReadBuf::new(bytes);
-        match Pin::new(&mut *io).poll_read(cx, &mut read) {
-            Poll::Ready(Ok(())) => Ok(read.filled().len()),
-            Poll::Ready(Err(error)) => Err(error),
-            Poll::Pending => {
-                pending = true;
-                Err(std::io::ErrorKind::WouldBlock.into())
-            }
-        }
-    });
-    if pending {
-        Poll::Pending
-    } else {
-        Poll::Ready(read.unwrap_or_else(|_| Err(std::io::ErrorKind::OutOfMemory.into())))
-    }
 }
 
 fn attach(slots: &mut Slots, feed: Feed) {

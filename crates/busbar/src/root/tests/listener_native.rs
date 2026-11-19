@@ -90,10 +90,8 @@ pub(super) async fn ingress_fixture() -> (NativeIngress, busbar_contract::storag
             listener.connect(facts),
             budget,
             AdmissionClass::Operator,
-            &source,
             1024 * 1024,
-        )
-        .unwrap(),
+        ),
         source,
     )
 }
@@ -147,10 +145,17 @@ async fn native_input_eof_keeps_reset_bound_to_the_original_physical_owner() {
 }
 
 #[tokio::test]
-async fn native_root_shape_retains_all_200_response_slots_until_actual_retirement() {
+async fn native_root_input_slots_and_ledger_have_no_fixed_shape() {
+    // Owner's allocation ruling: no fixed capacity and no refusal of their own. Past the old shape
+    // of 200, every head is taken; what bounds them is each request's admission.
     let (mut ingress, source) = ingress_fixture().await;
+    assert_eq!(
+        ingress.slots.capacity(),
+        0,
+        "nothing made before the first head"
+    );
     let mut ready = Vec::new();
-    for stream in 1..=LIVE_RESPONSES as u64 {
+    for stream in 1..=210u64 {
         ready.push(
             ingress
                 .accept(public_head(&source, stream, true), None)
@@ -158,18 +163,14 @@ async fn native_root_shape_retains_all_200_response_slots_until_actual_retiremen
                 .unwrap(),
         );
     }
-    assert!(matches!(
-        ingress.accept(public_head(&source, 201, true), None),
-        Err(InputError::Capacity)
-    ));
     ingress.retire(&ready.remove(0).owner).unwrap();
     assert!(ingress
-        .accept(public_head(&source, 202, true), None)
+        .accept(public_head(&source, 211, true), None)
         .unwrap()
         .is_some());
 
     use busbar_contract::response_delivery::ResponseKey;
-    let mut ledger = delivery_ledger(&source).unwrap();
+    let mut ledger = busbar_core_connector::response_delivery::DeliveryLedger::default();
     let mut handles = Vec::new();
     let key = |stream| ResponseKey {
         node: 1,
@@ -178,13 +179,10 @@ async fn native_root_shape_retains_all_200_response_slots_until_actual_retiremen
         connection_generation: 1,
         stream,
     };
-    for stream in 1..=LIVE_RESPONSES as u64 {
+    for stream in 1..=210u64 {
         handles.push(ledger.admit(key(stream)).unwrap());
     }
-    assert!(ledger.admit(key(201)).is_err());
-    // Dropping external handles alone does not erase owner-side response cells.
-    drop(handles);
-    assert!(ledger.admit(key(202)).is_err());
+    assert!(ledger.admit(key(210)).is_err(), "an id is never reused");
 }
 
 #[tokio::test]
