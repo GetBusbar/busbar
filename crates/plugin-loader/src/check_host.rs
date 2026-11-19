@@ -37,7 +37,14 @@ extern "C" fn grow(_: Ctx<'_>, _: &mut RawOut, _: usize) -> bool {
 extern "C" fn deployment(_: Ctx<'_>) -> DeploymentId {
     busbar_plugin_abi::host_side::host_vt::vt::deployment()
 }
-extern "C" fn migrate(_: Ctx<'_>, _: u64) -> Status {
+/// The config-only CHECK offers no kind service either (the store's recoverable gate was one): every
+/// service id is refused and the attempt remembered.
+extern "C" fn service(
+    _: Ctx<'_>,
+    _id: u64,
+    _call: &busbar_ffi::vt::Call<'_>,
+    _out: &mut RawOut,
+) -> Status {
     attempted();
     Status::REFUSED
 }
@@ -52,7 +59,7 @@ static CHECK_HOST: Host = Host::new(
         log_level: Some(level),
         grow: Some(grow),
         deployment: Some(deployment),
-        migrate_admit: Some(migrate),
+        service: Some(service),
     },
 );
 
