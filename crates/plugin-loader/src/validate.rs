@@ -182,13 +182,21 @@ pub mod transport {
     pub use crate::adapters::transport::Call;
 
     /// An OK answer of a session call.
-    pub fn answer(a: &Answer<'_>, call: Call<'_>) -> Result<(), FaultReason> {
+    /// An OK answer of a session call, judged as the engine judges it: `wire` is the session's one
+    /// validator of the output model (`busbar_plugin_abi::wire::Wire`), told what the engine asked
+    /// (`Wire::asked`) before each `emit`.
+    pub fn answer(
+        a: &Answer<'_>,
+        call: Call<'_>,
+        wire: &mut busbar_plugin_abi::wire::Wire,
+    ) -> Result<(), FaultReason> {
         if !ok_only(a) {
             return Ok(());
         }
         grammar::decode(
             a.records(),
             call,
+            wire,
             &mut |_: busbar_ports::transport::TransportOut<'_>| {},
         )
         .map_err(grammar::Bad::reason)
@@ -243,15 +251,35 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_transport_answer_is_a_valid_answer_of_every_session_call() {
+    fn an_empty_answer_is_valid_for_a_session_call_and_a_breach_for_begin() {
         let reply = Reply::new();
         let a = ok(&reply);
-        for call in [
-            transport::Call::Begin,
-            transport::Call::Ingest,
-            transport::Call::Other,
-        ] {
-            assert_eq!(transport::answer(&a, call), Ok(()));
+        let mut wire = busbar_plugin_abi::wire::Wire::new();
+        for call in [transport::Call::Ingest, transport::Call::Other] {
+            assert_eq!(transport::answer(&a, call, &mut wire), Ok(()));
         }
+        // `begin` must state what the session is.
+        assert_eq!(
+            transport::answer(&a, transport::Call::Begin, &mut wire),
+            Err(FaultReason::BadRecords(RecErr::Size))
+        );
+    }
+
+    #[test]
+    fn a_part_on_a_stream_that_was_never_opened_is_a_breach_for_the_adapter_and_the_suite_alike() {
+        use busbar_plugin_abi::transport::{tag, WirePart, WIRE_PAYLOAD};
+        let mut reply = Reply::new();
+        let part = WirePart {
+            stream: 7,
+            class: WIRE_PAYLOAD,
+            _r: 0,
+        };
+        reply.put_pod_tail(tag::WIRE_PART, &part, b"body").unwrap();
+        let a = ok(&reply);
+        let mut wire = busbar_plugin_abi::wire::Wire::new();
+        assert_eq!(
+            transport::answer(&a, transport::Call::Ingest, &mut wire),
+            Err(FaultReason::BadRecords(RecErr::Size))
+        );
     }
 }

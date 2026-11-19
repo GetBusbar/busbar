@@ -26,7 +26,11 @@ use busbar_plugin_abi::transport::{
     ROLE_CLIENT, ROLE_SERVER, SH_END_STREAM,
 };
 use busbar_plugin_abi::types::{Bytes, Status, Str};
+use busbar_plugin_abi::wire::{Breach, Wire};
 
+/// The byte-carrying pieces of one `emit`, as the port hands them: the same four optional entries, in
+/// the contract's order.
+pub use crate::call::kinds::transport::Pieces as EmitParts;
 use crate::call::kinds::transport::{OnSession as _, Pieces, Proxy};
 use crate::call::Mono;
 use crate::instance::ErrorBook;
@@ -110,7 +114,8 @@ impl TransportAdapter {
         })
     }
 
-    /// One session call: the proxy method `f` answers into the thread's `out`, then the answer is decoded.
+    /// One session call: the proxy method `f` answers into the thread's `out`, then the answer is judged
+    /// by the session's validator and decoded.
     fn call(
         &self,
         s: &mut TransportSession,
@@ -123,7 +128,7 @@ impl TransportAdapter {
     ) -> Result<(), PortError> {
         sync_out(self.max_out, |out| {
             let a = f(s, out).map_err(PortError::Call)?;
-            self.answer(&a, call, sink)
+            self.answer(&a, call, &mut s.wire, sink)
         })
     }
 
@@ -131,12 +136,13 @@ impl TransportAdapter {
         &self,
         a: &Answer<'_>,
         call: Call<'_>,
+        wire: &mut Wire,
         sink: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError> {
         if !a.is_ok() {
             return Err(self.refusal(a));
         }
-        decode(a.records(), call, sink).map_err(|bad| self.fault(bad))
+        decode(a.records(), call, wire, sink).map_err(|bad| self.fault(bad))
     }
 
     /// A REFUSED or FAILED answer as the port's error. Until W1-L2 lands the one shared builder (§11.3, no
@@ -156,6 +162,16 @@ impl TransportAdapter {
     /// The plugin broke the answer grammar: quarantine the instance (the kernel audits `plugin_fault` from
     /// the error) and answer FAULT.
     fn fault(&self, bad: Bad) -> PortError {
+        if let Bad::Wire(breach) = bad {
+            let inst = self.proxy.instance();
+            tracing::error!(
+                plugin = %inst.identity,
+                instance = %inst.name,
+                rule = ?breach.rule,
+                stream = breach.stream,
+                "transport_fault: the session broke a rule of the output model; nothing of that answer is written"
+            );
+        }
         self.proxy.instance().quarantine();
         PortError::Call(CallError::Fault(bad.reason()))
     }
@@ -193,11 +209,11 @@ impl TransportPort for TransportAdapter {
             if !a.is_ok() {
                 return Err(self.refusal(&a));
             }
-            let Some(handle) = handle else {
+            let Some(mut handle) = handle else {
                 return Err(self.fault(Bad::Token));
             };
             // On a bad answer the handle drops here, which cancels the session (§10.4).
-            self.answer(&a, Call::Begin, sink)?;
+            self.answer(&a, Call::Begin, &mut handle.wire, sink)?;
             Ok(handle)
         })
     }
@@ -217,19 +233,45 @@ impl TransportPort for TransportAdapter {
         &self,
         s: &mut TransportSession,
         stream: u64,
-        piece: u32,
+        pieces: u32,
         arg: u32,
-        bytes: &[u8],
+        credit: u64,
+        parts: EmitParts<'_>,
         sink: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError> {
-        let call = Call::Emit { piece, head: bytes };
+        // The pieces and the parts must say the same thing: one entry per byte-carrying piece.
+        let carried = |bit: u32, part: Option<&[u8]>| (pieces & bit != 0) == part.is_some();
+        if !(carried(E_HEAD, parts.head)
+            && carried(t::E_BODY, parts.body)
+            && carried(t::E_TRAILERS, parts.trailers)
+            && carried(t::E_END, parts.end))
+            || parts.end.is_some_and(|end| !end.is_empty())
+            || (credit != 0 && pieces & t::E_CONSUMED == 0)
+        {
+            return Err(emit_misuse());
+        }
+        let head = parts.head.unwrap_or(&[]);
+        // What the engine asks of this stream, told to the session's validator before the call: the
+        // pieces, the body bytes given, and the length of each sealed value the head declares (the
+        // transport is told a sealed value's name and length, never the value).
+        sealed_lengths(head, |lengths| {
+            let body = parts.body.map_or(0, |body| body.len() as u64);
+            s.wire.asked(stream, pieces, body, lengths);
+        })
+        .map_err(|_| emit_misuse())?;
+        let call = Call::Emit {
+            piece: pieces,
+            stream,
+            head,
+        };
         self.call(s, call, sink, |s, out| {
-            // One piece per port call today: its bytes are the one blob, and no credit is given here.
             let parts = Pieces {
-                head: Some(bytes),
-                ..Pieces::default()
+                head: parts.head,
+                body: parts.body,
+                trailers: parts.trailers,
+                end: parts.end,
             };
-            s.emit(out, NOW, stream, piece, arg, 0, parts)
+            s.emit(out, NOW, stream, pieces, arg, credit, parts)
         })
     }
 
@@ -270,6 +312,52 @@ impl TransportPort for TransportAdapter {
             s.event(out, NOW, code, arg.as_bytes())
         })
     }
+}
+
+/// The engine built an `emit` whose pieces and parts disagree, or a head it cannot read: the engine's
+/// own fault, refused before any call (the plugin is not charged).
+fn emit_misuse() -> PortError {
+    PortError::Failed {
+        code: busbar_plugin_abi::fail::failed::F_LIMIT,
+        text: Box::from("the engine built an emit whose pieces and parts disagree"),
+        retry_after_s: None,
+        backend_status: None,
+        error: None,
+    }
+}
+
+/// The length of each sealed value a head declares, in slot order (the position of each H_SEALED_PAIR
+/// or H_SEALED_QUERY record among the head's sealed records). Handed to `f` from this stack: a head
+/// with more sealed values than fit inline spills to the heap, once, for that call.
+fn sealed_lengths(head: &[u8], f: impl FnOnce(&[u32])) -> Result<(), RecErr> {
+    use busbar_plugin_abi::vocab::head1::{tag as h, SealedPairRec};
+    const INLINE: usize = 8;
+    let mut inline = [0u32; INLINE];
+    let mut spill: Vec<u32> = Vec::new();
+    let mut n = 0usize;
+    for rec in Records::new(head) {
+        let rec = rec?;
+        if !matches!(rec.tag, h::H_SEALED_PAIR | h::H_SEALED_QUERY) {
+            continue;
+        }
+        let (sealed, _name) = rec.pod_tail::<SealedPairRec>()?;
+        match inline.get_mut(n) {
+            Some(slot) if spill.is_empty() => *slot = sealed.len,
+            _ => {
+                if spill.is_empty() {
+                    spill.extend_from_slice(&inline);
+                }
+                spill.push(sealed.len);
+            }
+        }
+        n += 1;
+    }
+    if spill.is_empty() {
+        f(&inline[..n]);
+    } else {
+        f(&spill);
+    }
+    Ok(())
 }
 
 /// Core's own encode hit the record cap: a limit, not the plugin's fault.
@@ -414,9 +502,10 @@ pub fn shown(
 pub enum Call<'a> {
     Begin,
     Ingest,
-    /// `head` = the piece's bytes (the head records when `piece` is E_HEAD).
+    /// `piece` = the piece set; `head` = the E_HEAD entry's records (empty without one).
     Emit {
         piece: u32,
+        stream: u64,
         head: &'a [u8],
     },
     /// timer, datagram, event.
@@ -424,12 +513,18 @@ pub enum Call<'a> {
 }
 
 impl Call<'_> {
+    /// An `emit` whose pieces include E_HEAD on stream 0: the engine asks a dialled session to open a
+    /// stream. Only that call may be answered STREAM_BUSY.
+    fn opens_a_stream(self) -> bool {
+        matches!(self, Call::Emit { piece, stream: 0, .. } if piece & E_HEAD != 0)
+    }
+
     /// UPGRADE answers only `emit(E_HEAD)` whose head is H_STATUS(101) (§8.7 UPGRADE, round 13); whether the
     /// stream is a ROUTE_UPGRADE stream is core's to know (§12.27).
     fn upgrades(self) -> bool {
         match self {
-            Call::Emit { piece, head } => {
-                piece == E_HEAD && head_status(head) == Some(SWITCHING_PROTOCOLS)
+            Call::Emit { piece, head, .. } => {
+                piece & E_HEAD != 0 && head_status(head) == Some(SWITCHING_PROTOCOLS)
             }
             Call::Begin | Call::Ingest | Call::Other => false,
         }
@@ -451,6 +546,8 @@ pub enum Bad {
     Rec(RecErr),
     Tag(u16),
     Token,
+    /// A breach of the output model, with the rule and the stream the record named.
+    Wire(Breach),
 }
 
 impl From<RecErr> for Bad {
@@ -465,6 +562,9 @@ impl Bad {
             Bad::Rec(e) => FaultReason::BadRecords(e),
             Bad::Tag(t) => FaultReason::UnknownTag(t),
             Bad::Token => FaultReason::MissingToken,
+            // Every breach of the output model is FAULT BadRecords for the whole answer; the rule and
+            // the stream go to the audit line (`TransportAdapter::fault`).
+            Bad::Wire(_) => FaultReason::BadRecords(RecErr::Size),
         }
     }
 }
@@ -473,33 +573,48 @@ impl Bad {
 const GRAMMAR: Bad = Bad::Rec(RecErr::Size);
 
 /// The whole answer is checked first, then handed to `sink`; a bad answer gives the sink nothing.
+/// `wire` is the session's one validator of the output model (rules L1 to L7 and L9): every record of
+/// the answer passes through it, in order, in the checking pass. A breach leaves `wire` mid-answer,
+/// which is right: a breach ends the session.
 pub fn decode(
     recs: Records<'_>,
     call: Call<'_>,
+    wire: &mut Wire,
     sink: &mut dyn FnMut(TransportOut<'_>),
 ) -> Result<(), Bad> {
-    // An answer with no records has nothing to check and nothing to deliver.
-    if recs.rest().is_empty() {
+    // An answer with no records has nothing to check and nothing to deliver; only `begin` must speak
+    // (its SESSION statement).
+    if recs.rest().is_empty() && !matches!(call, Call::Begin) {
         return Ok(());
     }
-    walk(recs, call, &mut |_: TransportOut<'_>| {})?;
-    walk(recs, call, sink)
+    walk(recs, call, Some(wire), &mut |_: TransportOut<'_>| {})?;
+    walk(recs, call, None, sink)
 }
 
 /// One pass over an OK answer's records (the leading TOKEN of `begin` is already gone, §10.2). A METRIC
-/// record is passed over: `decode_metrics` reads it (§12.17).
+/// record is passed over: `decode_metrics` reads it (§12.17). `wire` is Some in the checking pass.
 fn walk(
     recs: Records<'_>,
     call: Call<'_>,
+    mut wire: Option<&mut Wire>,
     sink: &mut dyn FnMut(TransportOut<'_>),
 ) -> Result<(), Bad> {
     let mut seen = false;
     let mut upgraded = false;
     let mut after_upgrade = false;
+    // `begin` stated its SESSION; a STREAM_BUSY must be the answer's only record.
+    let mut stated = false;
+    let mut alone = false;
     for rec in recs {
         let rec = rec?;
         if rec.tag == generic::METRIC {
             continue;
+        }
+        if alone || (matches!(call, Call::Begin) && !stated && rec.tag != tag::SESSION) {
+            return Err(GRAMMAR);
+        }
+        if let Some(wire) = wire.as_deref_mut() {
+            wire.record(rec.tag, rec.body).map_err(Bad::Wire)?;
         }
         let leftover_ok = core::mem::replace(&mut after_upgrade, false);
         // After UPGRADE the answer holds at most its one LEFTOVER (§12.27 step 3: the framer writes nothing).
@@ -507,53 +622,69 @@ fn walk(
             return Err(GRAMMAR);
         }
         let out = match rec.tag {
-            tag::WRITE => TransportOut::Write(rec.body),
+            // The one output model. The record was judged by the session's validator in the checking
+            // pass (rules L1 to L7 and L9); here it is only read for the engine's writer.
             tag::WIRE_PART => {
                 let (part, bytes) = rec.pod_tail::<t::WirePart>()?;
-                reserved(part._r)?;
-                let class = busbar_ports::codec::transport::wire_class(part.class)?;
-                if bytes.is_empty()
-                    || (part.stream == 0
-                        && class == busbar_contract::response_delivery::WireClass::Payload)
-                {
-                    return Err(GRAMMAR);
-                }
                 TransportOut::WirePart {
                     stream: part.stream,
-                    class,
+                    payload: part.class == t::WIRE_PAYLOAD,
                     bytes,
+                }
+            }
+            tag::WIRE_SEALED => {
+                let sealed = rec.pod::<t::WireSealed>()?;
+                TransportOut::WireSealed {
+                    stream: sealed.stream,
+                    slot: sealed.slot,
+                    offset: sealed.offset,
+                    len: sealed.len,
                 }
             }
             tag::WIRE_END => {
                 let end = rec.pod::<t::WireEnd>()?;
-                reserved(end._r)?;
-                if end.stream == 0 {
-                    return Err(GRAMMAR);
-                }
                 TransportOut::WireEnd {
                     stream: end.stream,
-                    requirement: busbar_ports::codec::transport::completion_requirement(
-                        end.requirement,
-                    )?,
+                    how: end.how,
+                    arg: end.arg,
                 }
             }
-            tag::RESPONSE_ABORT => {
-                let abort = rec.pod::<t::ResponseAbort>()?;
-                reserved(abort._r)?;
-                if abort.stream == 0 {
+            // `begin`'s statement of what the session is: exactly one, first in the answer.
+            tag::SESSION => {
+                if !matches!(call, Call::Begin) || seen {
                     return Err(GRAMMAR);
                 }
-                TransportOut::ResponseAbort {
-                    stream: abort.stream,
-                    code: abort.code,
+                let s = rec.pod::<t::SessionRec>()?;
+                reserved(s._r)?;
+                bits(s.flags, t::S_MULTIPLEX)?;
+                let multiplex = s.flags & t::S_MULTIPLEX != 0;
+                // The two windows are stated exactly when the session carries several streams.
+                if multiplex == (s.stream_window == 0 || s.conn_window == 0)
+                    && (multiplex || s.stream_window != 0 || s.conn_window != 0)
+                {
+                    return Err(GRAMMAR);
+                }
+                stated = true;
+                TransportOut::Session {
+                    multiplex,
+                    stream_window: s.stream_window,
+                    conn_window: s.conn_window,
                 }
             }
-            tag::RESPONSE_QUIESCENT => {
-                let stream = stream(&rec)?;
-                if stream == 0 {
+            // The answer of an `emit` whose pieces include E_HEAD on stream 0 when the session can
+            // carry no more streams now: alone in its answer, nothing was taken.
+            tag::STREAM_BUSY => {
+                empty(&rec)?;
+                if seen || !call.opens_a_stream() {
                     return Err(GRAMMAR);
                 }
-                TransportOut::ResponseQuiescent(stream)
+                alone = true;
+                TransportOut::StreamBusy
+            }
+            // The session will open no further stream; the streams it carries go on.
+            tag::NO_NEW_STREAMS => {
+                empty(&rec)?;
+                TransportOut::NoNewStreams
             }
             tag::CLOSE => {
                 let c = rec.pod::<t::CloseRec>()?;
@@ -618,14 +749,6 @@ fn walk(
                 }
             }
             tag::STREAM_OPENED => TransportOut::StreamOpened(stream(&rec)?),
-            tag::PAUSE => {
-                empty(&rec)?;
-                TransportOut::Pause
-            }
-            tag::RESUME => {
-                empty(&rec)?;
-                TransportOut::Resume
-            }
             tag::STREAM_FULL => TransportOut::StreamFull(stream(&rec)?),
             tag::STREAM_WRITABLE => TransportOut::StreamWritable(stream(&rec)?),
             tag::SEND_TO => {
@@ -674,6 +797,10 @@ fn walk(
         };
         seen = true;
         sink(out);
+    }
+    // `begin` answers with exactly one SESSION, first.
+    if matches!(call, Call::Begin) && !stated {
+        return Err(GRAMMAR);
     }
     Ok(())
 }

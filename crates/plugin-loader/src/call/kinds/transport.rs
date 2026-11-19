@@ -93,8 +93,19 @@ impl<'a> Pieces<'a> {
 
 super::proxy!(Transport);
 
-/// One live transport session (a connection).
-pub type SessionHandle = Sess<busbar_ffi::kind::Transport>;
+/// One live transport session (a connection) and its output state.
+pub struct SessionHandle {
+    pub s: Sess<busbar_ffi::kind::Transport>,
+    /// The session's one validator of the output model: what the engine asked of each stream and
+    /// what the session has written for it (rules L1 to L7 and L9).
+    pub wire: busbar_plugin_abi::wire::Wire,
+}
+
+impl SessionHandle {
+    pub fn instance(&self) -> &std::sync::Arc<busbar_plugin_abi::host_side::driver::Instance> {
+        self.s.instance()
+    }
+}
 
 impl Proxy {
     /// Opens the connection's session. texts: alpn, sni, peer, local, local_fingerprint. blobs:
@@ -120,7 +131,13 @@ impl Proxy {
             [conn.tls_peer_cert, conn.leftover, conn.head],
         );
         let (s, answer) = call::opens(&self.to, BEGIN, Mono(conn.mono_ns), &frame, &[], buf)?;
-        Ok((s, answer))
+        Ok((
+            s.map(|s| SessionHandle {
+                s,
+                wire: busbar_plugin_abi::wire::Wire::new(),
+            }),
+            answer,
+        ))
     }
 
     pub fn offer<'o>(
@@ -195,7 +212,14 @@ impl OnSession for SessionHandle {
         at: Mono,
         bytes: &[u8],
     ) -> Result<Answer<'o>, CallError> {
-        call::on(self, INGEST, at, &Frame::new((), [], [bytes]), &[], buf)
+        call::on(
+            &mut self.s,
+            INGEST,
+            at,
+            &Frame::new((), [], [bytes]),
+            &[],
+            buf,
+        )
     }
 
     /// One output call. `pieces` is the contract's piece set (its bits name which of `parts` are
@@ -219,7 +243,7 @@ impl OnSession for SessionHandle {
             credit,
         };
         let frame = Frame::new(head, [], blobs).known(size_of::<EmitHead>(), 0, n);
-        call::on(self, EMIT, at, &frame, &[], buf)
+        call::on(&mut self.s, EMIT, at, &frame, &[], buf)
     }
 
     /// `emit` on caller-owned fixed storage: one call, no pool, no growth.
@@ -242,11 +266,11 @@ impl OnSession for SessionHandle {
             credit,
         };
         let frame = Frame::new(head, [], blobs).known(size_of::<EmitHead>(), 0, n);
-        call::on_fixed(self, EMIT, at, &frame, &[], buf)
+        call::on_fixed(&mut self.s, EMIT, at, &frame, &[], buf)
     }
 
     fn timer<'o>(&mut self, buf: &'o mut PooledOut, at: Mono) -> Result<Answer<'o>, CallError> {
-        call::on(self, TIMER, at, &Frame::new((), [], []), &[], buf)
+        call::on(&mut self.s, TIMER, at, &Frame::new((), [], []), &[], buf)
     }
 
     /// `blobs[0]` = `bytes`.
@@ -259,7 +283,7 @@ impl OnSession for SessionHandle {
         bytes: &[u8],
     ) -> Result<Answer<'o>, CallError> {
         call::on(
-            self,
+            &mut self.s,
             DATAGRAM,
             at,
             &Frame::new(DatagramHead { path, flags }, [], [bytes]),
@@ -277,7 +301,7 @@ impl OnSession for SessionHandle {
         arg: &[u8],
     ) -> Result<Answer<'o>, CallError> {
         call::on(
-            self,
+            &mut self.s,
             EVENT,
             at,
             &Frame::new(EventHead { ev }, [], [arg]),
