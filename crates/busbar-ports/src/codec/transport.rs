@@ -13,30 +13,6 @@ const OFFER_MAX: usize = 8;
 /// An ALPN protocol id is 1..=255 bytes (RFC 7301 §3.1).
 const ALPN_MAX: usize = 255;
 
-/// Decode the exact semantic wire class; unknown classes must not become control by default.
-pub fn wire_class(value: u32) -> Result<busbar_contract::response_delivery::WireClass, RecErr> {
-    use busbar_contract::response_delivery::WireClass;
-    use busbar_plugin_abi::transport::{WIRE_CONTROL, WIRE_PAYLOAD};
-    match value {
-        WIRE_CONTROL => Ok(WireClass::Control),
-        WIRE_PAYLOAD => Ok(WireClass::Payload),
-        _ => Err(RecErr::Size),
-    }
-}
-
-/// Decode the real carrier operation required by a serialized response fence.
-pub fn completion_requirement(
-    value: u32,
-) -> Result<busbar_contract::response_delivery::CompletionRequirement, RecErr> {
-    use busbar_contract::response_delivery::CompletionRequirement;
-    use busbar_plugin_abi::transport::{COMPLETE_FLUSH, COMPLETE_SHUTDOWN};
-    match value {
-        COMPLETE_FLUSH => Ok(CompletionRequirement::Flush),
-        COMPLETE_SHUTDOWN => Ok(CompletionRequirement::Shutdown),
-        _ => Err(RecErr::Size),
-    }
-}
-
 /// Validate and own the native initial-listener declarations before an instance can be selected.
 /// Other descriptor items are not interpreted here; slots are exact, case-sensitive configuration names.
 pub fn decode_listener_slots<'a>(

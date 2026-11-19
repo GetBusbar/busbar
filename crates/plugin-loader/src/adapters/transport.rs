@@ -28,13 +28,11 @@ use busbar_plugin_abi::transport::{
 use busbar_plugin_abi::types::{Bytes, Status, Str};
 use busbar_plugin_abi::wire::{Breach, Wire};
 
-/// The byte-carrying pieces of one `emit`, as the port hands them: the same four optional entries, in
-/// the contract's order.
-pub use crate::call::kinds::transport::Pieces as EmitParts;
 use crate::call::kinds::transport::{OnSession as _, Pieces, Proxy};
 use crate::call::Mono;
 use crate::instance::ErrorBook;
 use busbar_ports::codec::transport::{decode_offer, encode_keying, encode_path, Offer};
+use busbar_ports::transport::EmitParts;
 use busbar_ports::transport::{
     ConnIn, TransportEvent, TransportOut, TransportPort, TransportSession,
 };

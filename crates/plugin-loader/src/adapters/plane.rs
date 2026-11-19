@@ -1561,6 +1561,15 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         &self.describe.routes
     }
 
+    fn route_admission(&self, route: u32) -> Option<(u32, u32, u32, &str)> {
+        PlaneAdapter::route_admission(self, route)
+            .map(|a| (a.scope, a.money, a.callers, &*a.walk_kind))
+    }
+
+    fn route_challenge(&self, route: u32) -> Option<&str> {
+        PlaneAdapter::route_challenge(self, route)
+    }
+
     fn dialects(&self) -> &[Box<str>] {
         &self.describe.dialects
     }

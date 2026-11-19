@@ -69,18 +69,9 @@ impl<K: Kind> Bound<K> {
     }
 }
 
-/// A live session and the instance it runs on. `Send`, not `Sync`: every method takes `&mut self`, so
-/// one entry per token runs at a time; dropping it cancels the token.
-pub struct Sess<K: Kind> {
-    pub inst: Arc<Instance>,
-    pub session: LiveSession<K>,
-}
-
-impl<K: Kind> Sess<K> {
-    pub fn instance(&self) -> &Arc<Instance> {
-        &self.inst
-    }
-}
+/// A live session and the instance it runs on (defined beside the ports, which name it). `Send`, not
+/// `Sync`: every call takes `&mut`, so one entry per token runs at a time; dropping it cancels the token.
+pub use busbar_ports::KindSession as Sess;
 
 fn host_fault() -> CallError {
     // The boundary crate's nesting bound was reached: a host fault, not the plugin's (no sink, no

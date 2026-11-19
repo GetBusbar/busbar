@@ -14,7 +14,7 @@ use busbar_plugin_abi::host_side::pool::PooledOut;
 use busbar_plugin_abi::transport::ConnInfo;
 use zerocopy::{Immutable, IntoBytes};
 
-use crate::call::{self, Frame, Mono, Sess};
+use crate::call::{self, Frame, Mono};
 
 pub const BEGIN: u8 = 0;
 pub const INGEST: u8 = 1;
@@ -65,30 +65,21 @@ pub struct OfferHead {
     pub role: u32,
 }
 
-/// The byte-carrying pieces of one `emit`, in the contract's fixed order. `None`: the piece is not in
-/// this call. `end` is `Some(&[])` when END is in the set (END's entry is empty).
-#[derive(Clone, Copy, Default)]
-pub struct Pieces<'a> {
-    pub head: Option<&'a [u8]>,
-    pub body: Option<&'a [u8]>,
-    pub trailers: Option<&'a [u8]>,
-    pub end: Option<&'a [u8]>,
-}
+/// The byte-carrying pieces of one `emit`, in the contract's fixed order (defined beside the ports).
+pub use busbar_ports::transport::EmitParts as Pieces;
 
-impl<'a> Pieces<'a> {
-    /// The present pieces packed to the front, and how many there are.
-    fn packed(self) -> ([&'a [u8]; 4], usize) {
-        let mut out: [&'a [u8]; 4] = [&[]; 4];
-        let mut n = 0;
-        for piece in [self.head, self.body, self.trailers, self.end]
-            .into_iter()
-            .flatten()
-        {
-            out[n] = piece;
-            n += 1;
-        }
-        (out, n)
+/// The present pieces packed to the front, and how many there are.
+fn packed<'a>(parts: Pieces<'a>) -> ([&'a [u8]; 4], usize) {
+    let mut out: [&'a [u8]; 4] = [&[]; 4];
+    let mut n = 0;
+    for piece in [parts.head, parts.body, parts.trailers, parts.end]
+        .into_iter()
+        .flatten()
+    {
+        out[n] = piece;
+        n += 1;
     }
+    (out, n)
 }
 
 /// `begin`'s call. texts: alpn, sni, peer, local, local_fingerprint. blobs: tls_peer_cert, leftover,
@@ -120,7 +111,7 @@ pub(crate) fn emit_frame<'a>(
     credit: u64,
     parts: Pieces<'a>,
 ) -> Frame<'a, EmitHead, 0, 4> {
-    let (blobs, n) = parts.packed();
+    let (blobs, n) = packed(parts);
     let head = EmitHead {
         stream,
         pieces,
@@ -132,19 +123,8 @@ pub(crate) fn emit_frame<'a>(
 
 super::proxy!(Transport);
 
-/// One live transport session (a connection) and its output state.
-pub struct SessionHandle {
-    pub s: Sess<busbar_ffi::kind::Transport>,
-    /// The session's one validator of the output model: what the engine asked of each stream and
-    /// what the session has written for it (rules L1 to L7 and L9).
-    pub wire: busbar_plugin_abi::wire::Wire,
-}
-
-impl SessionHandle {
-    pub fn instance(&self) -> &std::sync::Arc<busbar_plugin_abi::host_side::driver::Instance> {
-        self.s.instance()
-    }
-}
+/// One live transport session (a connection) and its output state (defined beside the ports).
+pub use busbar_ports::transport::TransportSession as SessionHandle;
 
 impl Proxy {
     /// Opens the connection's session. texts: alpn, sni, peer, local, local_fingerprint. blobs:
@@ -334,7 +314,7 @@ mod tests {
             trailers: Some(b"t"),
             end: Some(b""),
         };
-        let (blobs, n) = parts.packed();
+        let (blobs, n) = packed(parts);
         assert_eq!(n, 3);
         assert_eq!(blobs[0], b"h");
         assert_eq!(blobs[1], b"t");
@@ -343,7 +323,7 @@ mod tests {
 
     #[test]
     fn a_credit_only_emit_carries_no_blob() {
-        assert_eq!(Pieces::default().packed().1, 0);
+        assert_eq!(packed(Pieces::default()).1, 0);
     }
 
     #[test]

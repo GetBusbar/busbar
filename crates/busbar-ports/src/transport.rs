@@ -4,29 +4,70 @@
 //! The transport port (IF §11.3): the frozen trait the connector drives, implemented over the kind's proxy by
 //! `adapters::transport::TransportAdapter`.
 
-use busbar_contract::response_delivery::{CompletionRequirement, WireClass};
 use busbar_plugin_abi::records::Records;
 
 use crate::PortError;
 
-pub type TransportSession = busbar_plugin_abi::kinds::transport::transport::SessionHandle;
+/// One live transport session (a connection) and its output state.
+pub struct TransportSession {
+    pub s: crate::KindSession<busbar_ffi::kind::Transport>,
+    /// The session's one validator of the output model: what the engine asked of each stream and
+    /// what the session has written for it (rules L1 to L7 and L9).
+    pub wire: busbar_plugin_abi::wire::Wire,
+}
+
+impl TransportSession {
+    pub fn instance(&self) -> &std::sync::Arc<busbar_plugin_abi::host_side::driver::Instance> {
+        self.s.instance()
+    }
+}
+
+/// The byte-carrying pieces of one `emit`, in the contract's fixed order. `None`: the piece is not in
+/// this call. `end` is `Some(&[])` when E_END is in the set (END's entry is empty).
+#[derive(Clone, Copy, Default)]
+pub struct EmitParts<'a> {
+    pub head: Option<&'a [u8]>,
+    pub body: Option<&'a [u8]>,
+    pub trailers: Option<&'a [u8]>,
+    pub end: Option<&'a [u8]>,
+}
 
 pub enum TransportOut<'o> {
-    Write(&'o [u8]),
+    /// Write these bytes; they belong to `stream` (0 = the connection). `payload`: a body byte the
+    /// engine gave for that stream, one for one; else control (heads, framing, trailers, settings).
     WirePart {
         stream: u64,
-        class: WireClass,
+        payload: bool,
         bytes: &'o [u8],
     },
+    /// Write bytes `offset..offset + len` of the engine's sealed value `slot` of `stream` here, in
+    /// order with the parts around it. The transport never held the value.
+    WireSealed {
+        stream: u64,
+        slot: u32,
+        offset: u32,
+        len: u32,
+    },
+    /// Nothing more will name `stream`. `how` = END_FLUSH, END_SHUTDOWN or END_FAILED; `arg` =
+    /// END_NO_BODY or 0 on a successful end, an opaque protocol diagnostic on END_FAILED.
     WireEnd {
         stream: u64,
-        requirement: CompletionRequirement,
+        how: u32,
+        arg: u32,
     },
-    ResponseAbort {
-        stream: u64,
-        code: u32,
+    /// `begin`'s statement of what the session is: whether it carries several streams at once and, if
+    /// so, the bytes of inbound body the engine can be made to hold for one stream and for the
+    /// connection. The engine never compares a protocol name to learn any of this.
+    Session {
+        multiplex: bool,
+        stream_window: u32,
+        conn_window: u32,
     },
-    ResponseQuiescent(u64),
+    /// The answer of an `emit` that asked a dialled session to open a stream when it can carry no
+    /// more now: nothing was taken; the engine uses another connection or waits.
+    StreamBusy,
+    /// The session will open no further stream; the streams it carries go on.
+    NoNewStreams,
     Close {
         abort: bool,
     },
@@ -46,17 +87,18 @@ pub enum TransportOut<'o> {
         bytes: &'o [u8],
     },
     StreamEnd(u64),
+    /// `not_processed`: the far end guarantees it did not act on the stream, so the engine may send
+    /// the request once more on another connection, recorded, never silently.
     StreamReset {
         stream: u64,
         code: u32,
+        not_processed: bool,
     },
     StreamTrailers {
         stream: u64,
         pairs: Records<'o>,
     },
     StreamOpened(u64),
-    Pause,
-    Resume,
     StreamFull(u64),
     StreamWritable(u64),
     SendTo {
@@ -137,13 +179,18 @@ pub trait TransportPort: Send + Sync + 'static {
     /// the stream it opened); StreamWritable only from ingest, timer, datagram and event (§8.7). The adapter only
     /// decodes; the connector's session task, which knows which call it made, checks these rules and treats a
     /// violation as FAULT BadRecords (quarantine + audit `plugin_fault`), so the check is charged to C1.
+    /// The one output call. `pieces` = the contract's piece set (E_HEAD | E_BODY | E_TRAILERS | E_END in
+    /// one call, or E_RESET, E_REFUSE, E_CLOSE, E_CONSUMED); `credit` = the bytes of credit given with
+    /// E_CONSUMED, else 0; `parts` = one entry per byte-carrying piece in the set.
+    #[allow(clippy::too_many_arguments)]
     fn emit(
         &self,
         s: &mut TransportSession,
         stream: u64,
-        piece: u32,
+        pieces: u32,
         arg: u32,
-        bytes: &[u8],
+        credit: u64,
+        parts: EmitParts<'_>,
         sink: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError>;
     fn timer(

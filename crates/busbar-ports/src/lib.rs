@@ -34,6 +34,9 @@ pub struct CallCx {
     pub deadline: std::time::Instant,
     pub request_id: u64,
     pub stack: CallStack,
+    /// The operation's one monotonic clock reading, in nanoseconds, handed to the plugin with the call;
+    /// 0: none was made, and a plugin that needs the time asks the host once.
+    pub mono_ns: u64,
 }
 
 /// `text` is always the scrubbed plugin text (§12.16) and is for operators and audit only. `code` may be a
@@ -98,5 +101,18 @@ pub struct PluginCode {
 impl core::fmt::Display for PluginCode {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "BUSBAR-{}-{:04}", self.plugin, self.number)
+    }
+}
+
+/// A live session of kind `K` and the instance it runs on. `Send`, not `Sync`: every call takes
+/// `&mut`, so one entry per token runs at a time; dropping it cancels the token.
+pub struct KindSession<K: busbar_ffi::Kind> {
+    pub inst: std::sync::Arc<busbar_plugin_abi::host_side::driver::Instance>,
+    pub session: busbar_ffi::host::Session<K>,
+}
+
+impl<K: busbar_ffi::Kind> KindSession<K> {
+    pub fn instance(&self) -> &std::sync::Arc<busbar_plugin_abi::host_side::driver::Instance> {
+        &self.inst
     }
 }
