@@ -13,7 +13,7 @@ use busbar_contract::storage::StorageSource;
 use busbar_core_connector::framed_stream::session::{Payload, Piece};
 use busbar_kernel::inbound::native::PhysicalAdminExecution;
 use busbar_plugin_abi::records::{record_size, tag, PairRec, U32Rec, Writer};
-use busbar_plugin_abi::transport::{E_BODY, E_HEAD, E_TRAILERS};
+use busbar_plugin_abi::transport::{E_BODY, E_HEAD, E_TRAILERS, MSG_FIN};
 use bytes::{Buf, Bytes};
 use http_body::Body as _;
 
@@ -71,6 +71,12 @@ pub(super) struct ResponsePieces {
     head: Option<Payload>,
     body: Body,
     pending: Bytes,
+    /// A committed upgrade's answer (`listener_native_handover.rs`): each data frame of its body is
+    /// one message piece, and these are the frames' message flags, in frame order. `None` = an
+    /// HTTP answer: its body pieces carry no flags.
+    kinds: Option<Arc<super::handover::MessageKinds>>,
+    /// The message flags of the frame in `pending`, until its last part is handed out.
+    owed: Option<u32>,
     source: StorageSource,
     admin: Option<Arc<PhysicalAdminExecution>>,
     status: u16,
@@ -85,10 +91,15 @@ impl ResponsePieces {
         let status = parts.status.as_u16();
         let head = encode_records(&source, Some(status), &parts.headers)?;
         let admin = parts.extensions.remove::<Arc<PhysicalAdminExecution>>();
+        let kinds = parts
+            .extensions
+            .remove::<Arc<super::handover::MessageKinds>>();
         Ok(Self {
             head: Some(head),
             body,
             pending: Bytes::new(),
+            kinds,
+            owed: None,
             source,
             admin,
             status,
@@ -130,14 +141,23 @@ impl ResponsePieces {
             }));
         }
         loop {
-            if !self.pending.is_empty() {
+            // A message frame is handed out even when it is empty (an empty message is a message);
+            // a frame larger than the window goes in parts, and only its last part ends the message.
+            if !self.pending.is_empty() || self.owed.is_some() {
                 let count = self.pending.len().min(PLAINTEXT_WINDOW);
                 let bytes = Payload::copy(&self.source, &self.pending[..count])
                     .map_err(|_| InputError::Capacity)?;
                 self.pending.advance(count);
                 return Ok(Some(Piece {
                     piece: E_BODY,
-                    arg: 0,
+                    arg: match self.owed {
+                        Some(flags) if self.pending.is_empty() => {
+                            self.owed = None;
+                            flags
+                        }
+                        Some(flags) => flags & !MSG_FIN,
+                        None => 0,
+                    },
                     bytes,
                 }));
             }
@@ -157,6 +177,11 @@ impl ResponsePieces {
                         return Err(InputError::Invalid);
                     }
                     self.pending = bytes;
+                    if let Some(kinds) = &self.kinds {
+                        // A body frame of a switched answer that nobody stated as a message is
+                        // never written.
+                        self.owed = Some(kinds.next().ok_or(InputError::Invalid)?);
+                    }
                 }
                 Err(frame) => {
                     let fields = frame.into_trailers().map_err(|_| InputError::Invalid)?;

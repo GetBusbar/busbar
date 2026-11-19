@@ -33,7 +33,6 @@ use tower::ServiceExt;
 
 use super::delivery::{CompletedResponse, RegisteredResponse, ResponseAuthority};
 use super::unbilled::{UnbilledAuthority, UnbilledResponse, UnbilledWork};
-use super::upgrade::Upgraded;
 use super::{answer, data, InputError, NativeListener, ReadyInput};
 use crate::root::durability::response_intent::ResponseConnection;
 use crate::root::plane_node::{NativeNodeHandle, Node};
@@ -307,22 +306,29 @@ pub(super) async fn prepare(
                             unbilled(super::unbilled::prepare_verified(ready.request, route).await?)
                         }
                         (VerifyBy::Chain, Authority::Upgrade) => {
-                            match super::upgrade::prepare(
+                            // An upgrade request is a data request whose answer may be a 101
+                            // (owner decision 18): the same admission, the same unit, the same
+                            // settlement. Its answer and authority are the data path's own.
+                            let prepared = super::upgrade::prepare(
                                 ready.request,
                                 slot,
                                 native.adopter.clone(),
                                 ready.owner.clone(),
                                 Arc::clone(&node),
                             )
-                            .await?
-                            {
-                                Upgraded::Refused(response, refusal) => {
-                                    (response, ResponseAuthority::Refused(refusal), None)
-                                }
-                                Upgraded::Executing(response, owner) => {
-                                    (response, ResponseAuthority::Upgrade(owner), None)
-                                }
-                            }
+                            .await?;
+                            (
+                                prepared.response,
+                                match prepared.authority {
+                                    data::DataAuthority::Executing(owner) => {
+                                        ResponseAuthority::Data(owner)
+                                    }
+                                    data::DataAuthority::Refused(owner) => {
+                                        ResponseAuthority::Refused(owner)
+                                    }
+                                },
+                                prepared.settlement.map(Settlement::Data),
+                            )
                         }
                         // The chain runs only when a credential is presented.
                         (VerifyBy::ChainIfPresented, _) => {

@@ -607,10 +607,25 @@ impl ClientPipe {
 }
 
 pub(super) async fn prepare(
+    request: CompletingPhysicalRequest,
+    slot: Arc<NativeSlot>,
+    node: Arc<Node>,
+    stream_owner: Arc<StreamOwner>,
+) -> Result<DataResponse, DataPrepareError> {
+    prepare_for(request, slot, node, stream_owner, None).await
+}
+
+/// [`prepare`], and for an upgrade request (`upgrade`, `listener_native_upgrade.rs`) the two things
+/// it adds: core's own refusal before any 101, answered once the caller is verified and before the
+/// request's admission completes; and the caller's side of the session, which is HTTP's until the
+/// plane commits with RESPOND(101) and the session's messages after it. The admission, the unit,
+/// its money and its settlement are this one path's for both.
+pub(super) async fn prepare_for(
     mut request: CompletingPhysicalRequest,
     slot: Arc<NativeSlot>,
     node: Arc<Node>,
     stream_owner: Arc<StreamOwner>,
+    upgrade: Option<super::upgrade::UpgradeRequest>,
 ) -> Result<DataResponse, DataPrepareError> {
     let binding = request.binding().clone();
     let routes = binding
@@ -656,6 +671,25 @@ pub(super) async fn prepare(
         Ok(pending) => pending,
         Err(failed) => return denied(request, failed, &data_route, &seat),
     };
+    // An upgrade request: core's own refusal before any 101 (it does not ask to switch, or the
+    // listener cannot carry it) is answered now, to a caller the chain has just verified and
+    // before anything is counted against its key. Otherwise the connection's carrier is known.
+    let carrier = match &upgrade {
+        None => None,
+        Some(asked) => {
+            let head = binding.snapshot().map_err(|_| InputError::Capacity)?;
+            let terms = super::upgrade::judge(
+                crate::root::port_mount::asks_websocket(head.headers()),
+                asked.websocket.as_ref(),
+                binding.stream(),
+            );
+            if let Some(refusal) = terms.refused {
+                return denied(request, pending.refuse_input(refusal), &data_route, &seat);
+            }
+            terms.carrier
+        }
+    };
+    let upgrade_owner = carrier.as_ref().map(|_| stream_owner.clone());
     // Only a verified request is lent to a selecting route's plane (a direct call on this
     // request's thread, its credential carriers withheld). A route that selects nothing is
     // admitted through the plane's own `request`.
@@ -762,6 +796,23 @@ pub(super) async fn prepare(
             }),
             ended: ended.clone(),
         });
+        // An upgrade request's caller side: this same sink until the plane commits with a 101, the
+        // session's messages after it (`listener_native_handover.rs`).
+        let pipe = carrier.zip(upgrade_owner).map(|(carrier, owner)| {
+            super::handover::UpgradePipe::new(
+                sink.clone(),
+                Some(super::handover::HandTo {
+                    carrier,
+                    request: Arc::clone(snapshot),
+                    withheld: Arc::clone(pending.withheld()),
+                    owner,
+                }),
+            )
+        });
+        let client: Arc<dyn ClientSink> = match &pipe {
+            Some(pipe) => pipe.clone(),
+            None => sink.clone(),
+        };
         let authority = pending.clone();
         let response_source = lease.storage().clone();
         let mut work = tokio::spawn(async move {
@@ -785,7 +836,7 @@ pub(super) async fn prepare(
                         now_s,
                         unit: None,
                         upstream: seat.upstream.clone(),
-                        client: Some(sink.clone()),
+                        client: Some(client),
                         carrier: seat.carrier.clone(),
                         intents: seat.intents.clone(),
                         models: Vec::new(),
@@ -843,6 +894,11 @@ pub(super) async fn prepare(
                 *response.status_mut() = status;
                 *response.headers_mut() = headers;
                 response.extensions_mut().insert(credit);
+                // A committed upgrade: each data frame of this answer's body is a message piece,
+                // and what it is of its message is stated beside it.
+                if let Some(pipe) = pipe.as_ref().filter(|pipe| pipe.switched()) {
+                    response.extensions_mut().insert(pipe.kinds());
+                }
                 (response, status.as_u16(), false, Some(work), None)
             }
             Err(_) => {
