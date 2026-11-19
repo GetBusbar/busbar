@@ -37,6 +37,8 @@ const GRANTED: &str = "ping";
 const OTHER: &str = "pong";
 const DESCRIPTION: &str = "Returns the label it was given.";
 /// The binding every test configuration carries: the documented per-tool grant.
+/// The operator's admin token (its SHA-256 is the admin-tokens settings).
+const ADMIN_TOKEN: &str = "role-binding-plane-scope-admin-token";
 const BINDING: &str = "{ allowed_mcp_servers: [probe], allowed_mcp_tools: [probe_ping] }";
 
 fn canonical(value: &Value) -> String {
@@ -242,23 +244,28 @@ fn write_config(dir: &Path, data: u16, admin: u16, upstream: &Upstream, binding:
     std::fs::write(
         &cfg,
         format!(
-            r#"listen: "127.0.0.1:{data}"
+            r#"config_version: 1
+listen: "127.0.0.1:{data}"
+listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test listener" }}
 admin_listen: "127.0.0.1:{admin}"
-store: {{module: memory}}
-providers: {{}}
-models: {{}}
-pools: {{}}
+admin_listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test admin listener" }}
+admin_require_mtls: false
+store: {{ module: memory }}
+public_url: "http://127.0.0.1:{data}"
 identity-providers:
-  admin-tokens: {{ module: admin-tokens, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}
+  admin-tokens:
+    module: admin-tokens
+    settings: {{ sha256: "{admin_sha256}" }}
 auth:
   chain: [keys]
-  admin_auth:
-    - admin-tokens
-  signing_key: {{ file: {key} }}
+  admin_auth: [admin-tokens]
+  signing_key: {{ file: "{key}" }}
   role_bindings:
     keys:
       "*": {binding}
-{section}tools:
+mcp:
+  canonical_uri: "http://127.0.0.1:{data}{DOOR}"
+  authorization_servers: ["http://127.0.0.1:{admin}"]
   {SERVER}:
     url: "{url}"
     verify_ttl: "0s"
@@ -276,9 +283,7 @@ auth:
         description: "{DESCRIPTION}"
 "#,
             key = key_file.display(),
-            section = include_str!("fixtures/tool_plane_section.yaml")
-                .replace("{data_port}", &data.to_string())
-                .replace("{admin_port}", &admin.to_string()),
+            admin_sha256 = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes()),
             url = upstream.url(),
             pin = upstream.pin,
             ca_pem = json::to_string(&upstream.ca_pem).expect("a YAML-compatible PEM string"),
@@ -290,12 +295,11 @@ auth:
     cfg
 }
 
-fn busbar(config: &Path, admin_token: &str) -> Command {
+fn busbar(config: &Path) -> Command {
     let mut command = Command::new(common::boot::exe());
     command
         .env("BUSBAR_CONFIG", config)
         .env_remove("BUSBAR_PROVIDERS")
-        .env("BUSBAR_ADMIN_TOKEN", admin_token)
         .env("RUST_LOG", "warn");
     command
 }
@@ -305,8 +309,6 @@ struct Node {
     dir: PathBuf,
     data: u16,
     admin: u16,
-    admin_token: String,
-    signing_key: [u8; 32],
 }
 
 impl Drop for Node {
@@ -341,18 +343,9 @@ fn client() -> reqwest::Client {
 async fn boot(tag: &str, upstream: &Upstream) -> Node {
     let dir = fixture_dir(tag);
     let (data, admin) = (common::boot::free_port(), common::boot::free_port());
-    let admin_token = format!("role-binding-plane-scope-admin-{}", std::process::id());
     let cfg = write_config(&dir, data, admin, upstream, BINDING);
-    let signing_key: [u8; 32] = hex::decode(
-        std::fs::read_to_string(dir.join("signing.key"))
-            .unwrap()
-            .trim(),
-    )
-    .expect("the signing key is hex")
-    .try_into()
-    .expect("the signing key is 32 bytes");
     let log = std::fs::File::create(dir.join("busbar.log")).unwrap();
-    let child = busbar(&cfg, &admin_token)
+    let child = busbar(&cfg)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone().unwrap()))
         .stderr(Stdio::from(log))
@@ -363,8 +356,6 @@ async fn boot(tag: &str, upstream: &Upstream) -> Node {
         dir,
         data,
         admin,
-        admin_token,
-        signing_key,
     };
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
@@ -394,7 +385,7 @@ async fn boot(tag: &str, upstream: &Upstream) -> Node {
     let view: Value = json::parse_value(
         &client()
             .post(node.admin_url(&format!("/api/v1/admin/tools/{SERVER}/connect")))
-            .bearer_auth(&node.admin_token)
+            .bearer_auth(ADMIN_TOKEN)
             .send()
             .await
             .expect("POST connect")
@@ -416,7 +407,7 @@ async fn boot(tag: &str, upstream: &Upstream) -> Node {
 async fn mint(node: &Node, body: &Value) -> (u16, Value) {
     let resp = client()
         .post(node.admin_url("/api/v1/admin/keys"))
-        .bearer_auth(&node.admin_token)
+        .bearer_auth(ADMIN_TOKEN)
         .json(body)
         .send()
         .await
@@ -435,6 +426,7 @@ async fn mint_tool_key(node: &Node) -> String {
         node,
         &json!({
             "name": "toolkind",
+            "audience": node.canonical_uri(),
             "allowed_mcp_servers": [SERVER],
             "allowed_mcp_tools": [format!("{SERVER}_{GRANTED}")],
         }),
@@ -445,10 +437,10 @@ async fn mint_tool_key(node: &Node) -> String {
         "a key granted one MCP tool is minted: {status} {resp}\n{}",
         node.log()
     );
-    let plain = resp["token"]
+    resp["token"]
         .as_str()
-        .unwrap_or_else(|| panic!("/keys minted no token: {resp}"));
-    common::credentials::bind_key(&node.signing_key, plain, &node.canonical_uri())
+        .unwrap_or_else(|| panic!("/keys minted no token: {resp}"))
+        .to_string()
 }
 
 async fn call(node: &Node, bearer: &str, tool: &str) -> (u16, String) {
@@ -544,7 +536,7 @@ fn role_binding_plane_scope_an_unknown_kind_is_still_refused_by_validation() {
             &upstream,
             binding,
         );
-        let out = busbar(&cfg, "role-binding-plane-scope-validate")
+        let out = busbar(&cfg)
             .arg("--validate")
             .output()
             .expect("run busbar --validate");
