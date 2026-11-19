@@ -647,7 +647,7 @@ fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
         t::EMIT => session || call == Call::Tick,
         t::OBSERVE => flow || call == Call::End,
         t::SIGHT => flow || call == Call::End,
-        t::COMMIT | t::WAKE_AT | t::DETACH | t::SIGNAL | t::FINISH => flow,
+        t::COMMIT | t::WAKE_AT | t::DETACH | t::SIGNAL | t::FINISH | t::HANDLE => flow,
         t::RESPOND | t::BODY | t::MSG | t::END | t::TRAILERS => flow,
         t::FORWARD | t::EXPECT => call == Call::Request || call == Call::Piece(p::FROM_CORE),
         t::UP_CARRIER => upstream,
@@ -965,6 +965,12 @@ fn item<'o>(rec: &Rec<'o>) -> Result<PlaneOut<'o>, RecErr> {
             }
         }
         t::FINISH => empty(PlaneOut::Finish)?,
+        t::HANDLE => {
+            // TEXT, 1..=128 bytes: the bound of the IF's other key texts (CHANNEL, SIGNAL keys).
+            let handle = rec.text()?;
+            check((1..=128).contains(&handle.len()))?;
+            PlaneOut::Handle(handle)
+        }
         t::COMMIT => {
             let (c, tail) = rec.pod_tail::<p::CommitRec>()?;
             let ops = Records::new(tail);

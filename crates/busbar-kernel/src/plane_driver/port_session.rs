@@ -1276,6 +1276,9 @@ impl Answer {
                 flags,
                 key: self.lent.put(key),
             }),
+            PlaneOut::Handle(handle) => self.intents.push(Intent::Handle {
+                handle: self.lent.put(handle.as_bytes()),
+            }),
             PlaneOut::Channel {
                 exchange,
                 carrier,
@@ -1821,15 +1824,19 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                     .exchanges
                     .iter()
                     .any(|exchange| exchange.id != 0 || (!messages && !exchange.msgs.is_empty()))
-                // The reads (LOOKUP, ENTITLE, JUDGE), and record writes (STORE, DELETE, COMMIT) whose
-                // own flags bind every record to the caller (`caller_scoped_write`): any other write is
-                // refused here, whatever the plane asked. A write is resolved only after the unit is
-                // admitted: the pending admission's screen holds it (`port_serve`), and the resolver
-                // scopes it to the DATA identity's subject (`port::serve_inner`'s principal).
+                // The reads (LOOKUP, ENTITLE, JUDGE), the handle that scopes an anonymous caller
+                // (HANDLE), and record writes (STORE, DELETE, COMMIT) whose own flags bind every record
+                // to the caller (`caller_scoped_write`): any other write is refused here, whatever the
+                // plane asked. A write is resolved only after the unit is admitted: the pending
+                // admission's screen holds it (`port_serve`), and the resolver scopes it to the DATA
+                // identity's subject, or the anonymous caller's handle (`port::serve_inner`'s principal).
                 || answer.intents.iter().any(|intent| {
                     !matches!(
                         intent,
-                        Intent::Lookup { .. } | Intent::Entitle { .. } | Intent::Judge { .. }
+                        Intent::Lookup { .. }
+                            | Intent::Entitle { .. }
+                            | Intent::Judge { .. }
+                            | Intent::Handle { .. }
                     ) && super::port_intents::caller_scoped_write(intent, &answer.lent) != Some(true)
                 }))
         {

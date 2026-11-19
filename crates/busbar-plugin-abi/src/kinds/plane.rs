@@ -628,6 +628,18 @@ crate::kind! {
             /// Cumulative current-attempt facts; FROM_UPSTREAM exchange zero or current unsealed session end.
             ATTEMPT_USAGE = 0x0163;
             ATTEMPT_USAGE_END = 0x0164;
+            /// Plane 2.0, additive: the server-issued handle this session acts on (an MCP `Mcp-Session-Id`,
+            /// an A2A task id), as TEXT, 1..=128 bytes (the key-text bound of the IF's SIGNAL and CHANNEL
+            /// keys). Request and FROM_CORE piece answers only. For a caller the chain verified it changes
+            /// nothing: the caller's scope stays its own subject's. For the anonymous caller (one subject
+            /// every caller of an open chain shares) it is the caller reference: every caller-scoped intent
+            /// of the session (LK_CALLER, REC_CALLER, a caller SIGNAL, a CHANNEL's subject) runs in the
+            /// scope core derives from the handle alone, so a record one anonymous caller made is reached
+            /// only by presenting its handle. A handle the plane mints comes from the host's randomness
+            /// (`random`, 16 bytes or more). A session states one handle; a second, different one leaves the
+            /// anonymous caller with no scope for the rest of the session. Without one the anonymous
+            /// caller's caller-scoped intents are refused, the host never asked.
+            HANDLE = 0x0165;
             /// usage-observation custody (§12.4): intents, their core-built answers, nested pieces.
             OBS_SCOPE = 0x013B;
             OBS_SCOPE_ANS = 0x013C;

@@ -172,6 +172,11 @@ pub enum Intent {
         flags: u32,
         key: Span,
     },
+    /// HANDLE: the server-issued handle the session acts on; the anonymous caller's caller reference
+    /// ([`Resolver::with_principal`]), nothing for a verified caller.
+    Handle {
+        handle: Span,
+    },
     /// ENTITLE: does the verified principal hold `grant` (§12.11).
     Entitle {
         check: u32,

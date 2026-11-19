@@ -182,6 +182,9 @@ pub enum PlaneOut<'o> {
         flags: u32,
         key: &'o [u8],
     },
+    /// HANDLE: the server-issued handle this session acts on (1..=128 bytes of text). The anonymous
+    /// caller's caller reference; nothing for a verified caller.
+    Handle(&'o str),
     Finish,
     /// The nested REC_PRED*/REC_PUT*/REC_DEL* records, validated by the adapter; core runs PluginRecords::commit.
     Commit {
