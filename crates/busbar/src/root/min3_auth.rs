@@ -45,6 +45,8 @@ pub(crate) fn opens_instance(provider: &IdentityProviderCfg) -> bool {
 /// One complete candidate's auth handles and per-instance refresh/hold owners.
 pub(crate) struct AuthSet {
     instances: BTreeMap<Arc<str>, Arc<AuthInstance>>,
+    /// The instances' names in the order they were opened (the configuration's order).
+    opened: Vec<Arc<str>>,
     pub(crate) owners: Arc<AuthOwners>,
 }
 
@@ -56,6 +58,7 @@ impl AuthSet {
         refresh_interval: Duration,
     ) -> Result<Self, String> {
         let mut instances = BTreeMap::new();
+        let mut order = Vec::with_capacity(opened.len());
         let mut ids = BTreeSet::new();
         for opened in opened {
             let id = opened.who.instance;
@@ -66,6 +69,7 @@ impl AuthSet {
                 ));
             }
             let held = holds.for_inbound(id).unwrap_or_default().into();
+            order.push(Arc::clone(&name));
             instances.insert(
                 name,
                 Arc::new(AuthInstance {
@@ -77,12 +81,20 @@ impl AuthSet {
         }
         Ok(Self {
             instances,
+            opened: order,
             owners: Arc::new(owners),
         })
     }
 
     pub(crate) fn get(&self, name: &str) -> Option<&Arc<AuthInstance>> {
         self.instances.get(name)
+    }
+
+    /// Every opened instance with its name, in the order they were opened.
+    pub(crate) fn in_opened_order(&self) -> impl Iterator<Item = (&str, &Arc<AuthInstance>)> {
+        self.opened
+            .iter()
+            .filter_map(|name| Some((&**name, self.instances.get(name)?)))
     }
 
     /// Names have already been resolved by the selected route's effective_chain rule.

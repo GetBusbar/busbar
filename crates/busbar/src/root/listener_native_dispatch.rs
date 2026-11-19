@@ -29,6 +29,10 @@ impl From<busbar_kernel::inbound::native::ArrivalRefusal> for data::DataPrepareE
     }
 }
 
+/// An unrouted request has no route, so no chain and no carriers: its refusal is recorded
+/// R_AUTH_REQUIRED (the bytes are those of every unauthenticated answer).
+const NO_CARRIERS: &[Box<str>] = &[];
+
 pub(super) struct Prepared {
     response: axum::response::Response,
     registered: RegisteredResponse,
@@ -136,6 +140,12 @@ pub(super) async fn prepare(
                     }
                 };
                 (response, authority, None)
+            }
+            RouteTarget::Unrouted => {
+                // No route matched: answered exactly as an unauthenticated request on a route is.
+                let response = super::unauthenticated_response(&binding, NO_CARRIERS)?;
+                let refusal = ready.request.refuse_unrouted()?;
+                (response, ResponseAuthority::Refused(refusal), None)
             }
             RouteTarget::Core(_) => return Err(InputError::Invalid.into()),
         };

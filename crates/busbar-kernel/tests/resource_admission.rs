@@ -224,7 +224,7 @@ fn selection_is_bound_to_actual_mounted_route_kinds_and_frozen_body() {
         .unwrap();
     selected
         .request()
-        .with_selection_input(|input, body| {
+        .with_selection_input(&[], |input, body| {
             assert_eq!(input.route, 3);
             assert_eq!(input.request_id, 1);
             assert_eq!(input.auth, 0);

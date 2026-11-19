@@ -140,6 +140,13 @@ impl NativeChain {
         })
     }
 
+    /// Every D_CRED_HEADER its instances declare, in chain order (duplicates possible).
+    pub fn carriers(&self) -> impl Iterator<Item = &str> {
+        self.instances
+            .iter()
+            .flat_map(|instance| instance.opened.port.cred_headers().iter().map(|h| &**h))
+    }
+
     pub fn reads_header(&self, name: &str) -> bool {
         self.instances.iter().any(|instance| {
             instance

@@ -300,6 +300,29 @@ impl From<ArrivalRefusal> for InputError {
     }
 }
 
+/// The listener's one answer to a request that did not authenticate: a denial by its route's chain,
+/// and a head no route matched. The same status and bytes whatever the route, so a caller that has
+/// not authenticated learns nothing about which routes exist (1.5.5 ran its auth layer before
+/// routing, with the same effect). `carriers`: the route's credential carriers; one present makes the
+/// refusal's code R_BAD_CREDENTIAL, none R_AUTH_REQUIRED (§14 C-ROUTE-CRED-HEADER (b)); the code is
+/// core's record of the decision and does not change the bytes.
+pub(super) fn unauthenticated_response(
+    binding: &busbar_kernel::inbound::native::RequestBinding,
+    carriers: &[Box<str>],
+) -> Result<axum::response::Response, InputError> {
+    let presented = binding.head().fields.iter().any(|(name, _)| {
+        carriers
+            .iter()
+            .any(|carrier| carrier.eq_ignore_ascii_case(name))
+    });
+    let refusal = super::port_mount::unauthenticated(presented);
+    tracing::debug!(code = refusal.code, "native request not authenticated");
+    data::refusal_response(
+        busbar_kernel::plane_driver::port_auth::plain_refusal(&refusal),
+        &binding.request().storage(),
+    )
+}
+
 /// Root's finite response shape is funded by the accepted connection's original account.
 pub(crate) fn delivery_ledger(source: &StorageSource) -> Result<DeliveryLedger, InputError> {
     use std::num::NonZeroUsize;

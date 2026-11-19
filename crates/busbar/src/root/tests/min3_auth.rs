@@ -317,6 +317,7 @@ async fn admin_fixture() -> (
     });
     let set = Arc::new(AuthSet {
         instances: BTreeMap::from([("provider-42".into(), instance(42, port.clone()))]),
+        opened: vec!["provider-42".into()],
         owners: Arc::new(AuthOwners {
             issued: owners.clone(),
             replay: owners.clone(),
@@ -692,6 +693,7 @@ async fn native_identity_without_grants_stays_identified_and_cannot_claim() {
     app.role_bindings.clear();
     let set = Arc::new(AuthSet {
         instances: BTreeMap::from([("provider-42".into(), instance(42, port))]),
+        opened: vec!["provider-42".into()],
         owners: Arc::new(AuthOwners {
             issued: owners.clone(),
             replay: owners.clone(),
@@ -726,6 +728,7 @@ async fn missing_native_admin_coverage_refuses_candidate_construction() {
     let mut app = (*prior).clone();
     let empty = Arc::new(AuthSet {
         instances: BTreeMap::new(),
+        opened: Vec::new(),
         owners: Arc::new(AuthOwners {
             issued: owners.clone(),
             replay: owners,
@@ -770,6 +773,7 @@ async fn an_operator_credential_with_settings_and_no_opened_instance_refuses_the
     let empty = || {
         Arc::new(AuthSet {
             instances: BTreeMap::new(),
+            opened: Vec::new(),
             owners: Arc::new(AuthOwners {
                 issued: owners.clone(),
                 replay: owners.clone(),

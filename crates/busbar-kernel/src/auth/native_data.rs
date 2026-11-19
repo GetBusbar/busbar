@@ -56,6 +56,8 @@ pub struct NativeDataRoute {
     caller: Caller,
     owners: DataRouteOwners,
     cost: Arc<crate::cost::CostModel>,
+    /// The carriers every request on this route withholds from the plane ([`withheld_carriers`]).
+    withheld: Arc<[Box<str>]>,
 }
 
 impl NativeDataRoute {
@@ -102,12 +104,19 @@ impl NativeDataRoute {
         {
             return Err(DataRefused::Binding);
         }
+        let withheld = withheld_carriers(&owners.chain, mounted.cred_header.as_deref());
         Ok(Arc::new(Self {
             caller: target.caller().clone(),
             binding,
             owners,
             cost: Arc::clone(&app.cost),
+            withheld,
         }))
+    }
+
+    /// The carriers every request on this route withholds from the plane.
+    pub fn withheld(&self) -> &Arc<[Box<str>]> {
+        &self.withheld
     }
 
     /// Consumes the original physical preparation latch before verification.
@@ -144,7 +153,7 @@ impl NativeDataRoute {
             }
             let cred_header = match self.binding.target() {
                 RouteTarget::Plane(route) => route.mounted().cred_header.as_deref(),
-                RouteTarget::Core(_) => None,
+                RouteTarget::Core(_) | RouteTarget::Unrouted => None,
             };
             refuse_bound_carriers(&snapshot, &self.owners.chain, cred_header)?;
             let prepared = self
@@ -177,6 +186,26 @@ impl NativeDataRoute {
             )),
         }
     }
+}
+
+/// The credential carriers a native route is judged on, lowercase and once each: `authorization` (the
+/// bearer the scan below reads), every D_CRED_HEADER its chain's instances declare, and the route's own
+/// D_ROUTE_CRED_HEADER. Built once when the route is bound and kept by the route's completion (released
+/// with its slot); every request on the route withholds exactly these from the plane.
+pub(crate) fn withheld_carriers(chain: &NativeChain, cred_header: Option<&str>) -> Arc<[Box<str>]> {
+    let mut carriers: Vec<Box<str>> = Vec::new();
+    for name in std::iter::once("authorization")
+        .chain(chain.carriers())
+        .chain(cred_header)
+    {
+        if !carriers
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(name))
+        {
+            carriers.push(name.to_ascii_lowercase().into_boxed_str());
+        }
+    }
+    carriers.into()
 }
 
 /// The restrictive scan of every credential carrier a native route reads (`authorization`, the
@@ -839,6 +868,10 @@ impl NativeDataPending {
 
     pub fn binding(&self) -> &Arc<RequestBinding> {
         &self.binding
+    }
+    /// The carriers the route's chain judged: withheld from the plane.
+    pub fn withheld(&self) -> &Arc<[Box<str>]> {
+        self.route.withheld()
     }
     pub fn selected(&self) -> &SelectedResources {
         &self.selected

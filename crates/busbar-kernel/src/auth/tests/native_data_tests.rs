@@ -417,6 +417,7 @@ fn fixture(allowed: bool) -> Fixture {
     // Assemble only candidate configuration here. Every request proof below uses the public
     // physical factory, real charged selection, concrete verifier, publication and replay.
     let route = Arc::new(NativeDataRoute {
+        withheld: withheld_carriers(&chain, None),
         binding,
         caller,
         cost: app.cost.clone(),

@@ -120,14 +120,6 @@ impl NativeListenerPlan {
                             .into(),
                     );
                 }
-                if served
-                    .ports
-                    .iter()
-                    .flat_map(|seat| served_routes(seat))
-                    .any(|route| route.cred_header.is_some())
-                {
-                    return Err("native route credential-header chain selection is not retained by this candidate".into());
-                }
                 if let Some(native) = &served.native {
                     if !Arc::ptr_eq(&native.auth, &owners.auth)
                         || !Arc::ptr_eq(&native.inventories, &owners.inventories)
@@ -140,10 +132,12 @@ impl NativeListenerPlan {
                     return Err("native served ports have no retained boot owners".into());
                 }
                 let chain = configured_chain(app, owners)?;
+                let route_chains = route_chains(served, owners, &chain)?;
                 let mounts = super::serve::door_mounts_planned(
                     served.clone(),
                     || super::kernel::ROOT_CARD.pin(),
                     &chain,
+                    &route_chains,
                     &core,
                     &[],
                     &[],
@@ -222,8 +216,61 @@ fn configured_chain(app: &App, owners: &SlotOwners) -> Result<Vec<ChainAuth>, St
         .as_ref()
         .and_then(|value| value.downcast_ref::<super::door_steps::DoorConfig>())
         .ok_or("native listener has no actual root configuration projection")?;
-    config
-        .data_chain
+    chain_points(owners, &config.data_chain)
+}
+
+/// §12.11 "Route credential header" (round 23): a served route that declares D_ROUTE_CRED_HEADER
+/// `h` runs, on that route only, every opened auth instance whose image declares D_CRED_HEADER `h`,
+/// in the order they were opened; none is a refusal naming the route. Those instances never join
+/// the data chain, and the data chain never runs on such a route. (`routes.<id>.auth_instances`,
+/// the rule's first arm, is not parsed by this candidate: no route names one.)
+fn route_chains(
+    served: &Served,
+    owners: &SlotOwners,
+    data_chain: &[ChainAuth],
+) -> Result<super::port_mount::RouteChains, String> {
+    use busbar_kernel::auth::route_chain::{effective_chain, ConfiguredAuth};
+    let configured: Vec<ConfiguredAuth<'_>> = owners
+        .auth
+        .in_opened_order()
+        .map(|(name, instance)| ConfiguredAuth {
+            name,
+            cred_headers: instance.opened.port.cred_headers(),
+        })
+        .collect();
+    let data: Vec<&str> = data_chain.iter().map(|(name, _)| name.as_str()).collect();
+    let mut chains = super::port_mount::RouteChains::new();
+    for seat in &served.ports {
+        for route in served_routes(seat) {
+            let Some(header) = route.cred_header.as_deref() else {
+                continue;
+            };
+            let id = route.route.to_string();
+            let names: Vec<String> = effective_chain(
+                busbar_kernel::auth::route_chain::RouteAuth {
+                    plane: &seat.instance,
+                    id: &id,
+                    cred_header: Some(header),
+                    auth_instances: None,
+                },
+                &configured,
+                &data,
+            )?
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+            chains
+                .entry(seat.instance.clone())
+                .or_default()
+                .insert(route.route, chain_points(owners, &names)?);
+        }
+    }
+    Ok(chains)
+}
+
+/// The chain entries of `names`, each an opened native auth instance that can verify.
+fn chain_points(owners: &SlotOwners, names: &[String]) -> Result<Vec<ChainAuth>, String> {
+    names
         .iter()
         .map(|name| {
             let instance = owners
