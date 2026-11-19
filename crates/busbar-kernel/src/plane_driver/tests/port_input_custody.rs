@@ -142,7 +142,8 @@ impl PlanePort for BlockingPlane {
     }
 }
 
-struct NoIntents;
+/// A host with no store (the thread hand-off tests share it).
+pub(super) struct NoIntents;
 
 impl IntentHost for NoIntents {
     fn lookup(

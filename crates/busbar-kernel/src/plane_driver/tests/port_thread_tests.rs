@@ -7,6 +7,7 @@
 //! on whichever thread calls; a hand-off adds nothing to it.
 
 use std::num::NonZeroU64;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 
@@ -20,8 +21,11 @@ use busbar_ports::plane::{
 };
 use busbar_ports::{CallCx, PortError};
 
-use super::{HttpHead, HttpIn, PortDriver};
+use super::input_custody_tests::NoIntents;
+use super::{HttpHead, HttpIn, PortDriver, ServeError, ServeIn};
 use crate::host_services::KernelServices;
+use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
+use crate::plane_driver::port_auth::{Credentials, Principal};
 use crate::refusal::{ClientRefusal, CoreRefusals};
 use crate::resource_admission::{select_resources, FrozenRequest};
 use crate::state::InvocationId;
@@ -34,13 +38,21 @@ fn refused() -> PortError {
     }
 }
 
-/// A plane that records the thread of every crossing it answers.
+/// A plane that records the thread of every crossing it answers; its `request` panics while `panics` is set (the
+/// flag is cleared by the panic, so the next request is served).
 struct Recording {
     routes: [RouteInfo; 1],
     threads: Mutex<Vec<ThreadId>>,
+    panics: AtomicBool,
 }
 
 impl Recording {
+    fn panicking() -> Arc<Self> {
+        let plane = Self::new();
+        plane.panics.store(true, Ordering::Relaxed);
+        plane
+    }
+
     fn new() -> Arc<Self> {
         Arc::new(Self {
             routes: [RouteInfo {
@@ -53,6 +65,7 @@ impl Recording {
                 resource_kinds: Default::default(),
             }],
             threads: Mutex::new(Vec::new()),
+            panics: AtomicBool::new(false),
         })
     }
 
@@ -112,6 +125,9 @@ impl PlanePort for Recording {
         _: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<PlaneSession, PortError> {
         self.crossed();
+        if self.panics.swap(false, Ordering::Relaxed) {
+            panic!("a crossing that panics");
+        }
         Err(refused())
     }
     fn upstream(
@@ -238,5 +254,78 @@ fn the_refusal_render_crossing_is_not_handed_to_another_thread() {
         plane.counts(std::thread::current().id()),
         (1, 0),
         "one crossing, no thread hand-off"
+    );
+}
+
+fn driver(plane: &Arc<Recording>) -> PortDriver {
+    PortDriver::new(
+        plane.clone(),
+        Arc::new(KernelServices::new()),
+        Caller::for_test(Arc::from("thread-count"), KindCode::Plane),
+        Arc::new(CoreRefusals::new()),
+        &|_| None,
+    )
+    .unwrap()
+}
+
+/// One public request on route 1, admitted against `budget`.
+fn serve_in(budget: &Arc<ProcessAdmission>) -> ServeIn<'static> {
+    ServeIn {
+        invocation: None,
+        request: budget.try_enter(AdmissionClass::Data).unwrap(),
+        admission: None,
+        route: 1,
+        http: http(),
+        creds: Credentials {
+            bearer: None,
+            principal: Principal::Anonymous,
+            operator: false,
+            signed: None,
+        },
+        audience: "",
+        now_s: 0,
+        unit: None,
+        upstream: None,
+        client: None,
+        carrier: None,
+        intents: Arc::new(NoIntents),
+        models: Vec::new(),
+    }
+}
+
+/// The request's own core: one current-thread runtime, as the data listener runs per core.
+fn core() -> tokio::runtime::Runtime {
+    crate::rt::current_thread().enable_all().build().unwrap()
+}
+
+/// A whole served request makes every one of its plane crossings on the thread that awaits it.
+#[test]
+fn every_crossing_of_a_served_request_is_on_the_caller_thread() {
+    let plane = Recording::new();
+    let driver = driver(&plane);
+    let budget = ProcessAdmission::with_limits(2, 64, 8);
+    let served = core().block_on(driver.serve(serve_in(&budget)));
+    assert!(!matches!(served, Err(ServeError::Cancelled)));
+    let (crossings, handed) = plane.counts(std::thread::current().id());
+    assert!(crossings >= 1, "the request crossed into the plane");
+    assert_eq!(handed, 0, "{crossings} crossings, no thread hand-off");
+}
+
+/// Containment as before: a crossing that panics ends its one request as `Cancelled` and releases its input; the
+/// same core serves the next request.
+#[test]
+fn a_panicking_crossing_ends_only_its_own_request() {
+    let plane = Recording::panicking();
+    let driver = driver(&plane);
+    // One request at a time: the next is admitted only if the panicked one released its count.
+    let budget = ProcessAdmission::with_limits(1, 64, 8);
+    let core = core();
+    let first = core.block_on(driver.serve(serve_in(&budget)));
+    assert!(matches!(first, Err(ServeError::Cancelled)));
+    let next = core.block_on(driver.serve(serve_in(&budget)));
+    assert!(!matches!(next, Err(ServeError::Cancelled)));
+    assert!(
+        plane.counts(std::thread::current().id()).0 >= 2,
+        "the next request crossed into the same plane"
     );
 }
