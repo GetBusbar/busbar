@@ -685,5 +685,7 @@ pub fn realtime(deployment: Deployment, base_url: &str) -> Deployment {
 /// No `media:`: the browser media listener is core route config in 1.6 (`routes.<id>.media`); in
 /// the plane section it is the 1.5 shape the plane converts on open, which a 1.6 document refuses.
 pub fn streams_section(extra: &str) -> String {
-    format!("streaming:\n  session:\n    model: test-model\n  context_window_tokens: 16384\n{extra}")
+    format!(
+        "streaming:\n  session:\n    model: test-model\n  context_window_tokens: 16384\n{extra}"
+    )
 }
