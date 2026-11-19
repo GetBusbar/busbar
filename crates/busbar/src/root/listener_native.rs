@@ -22,19 +22,28 @@ use busbar_plugin_abi::records::{tag, Records};
 use busbar_ports::transport::{ConnIn, TransportPort};
 use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
+#[path = "listener_native_answer.rs"]
+mod answer;
 #[path = "listener_native_data.rs"]
 mod data;
 #[path = "listener_native_delivery.rs"]
 mod delivery;
 #[path = "listener_native_dispatch.rs"]
 mod dispatch;
+#[path = "listener_native_handover.rs"]
+mod handover;
 #[path = "listener_native_response.rs"]
 mod response;
 #[path = "listener_native_serve.rs"]
 mod serving;
+#[path = "listener_native_unbilled.rs"]
+mod unbilled;
+#[path = "listener_native_unrouted.rs"]
+mod unrouted;
 #[path = "listener_native_upgrade.rs"]
 mod upgrade;
 pub(crate) use delivery::RegisteredDelivery;
+pub(crate) use handover::{Adopted, HandOver, UpgradeAdopter};
 pub(crate) use serving::{serve_admitted, NativeCarrierRetired};
 
 pub(crate) type SelectNativeSlot = Arc<
@@ -63,6 +72,9 @@ pub(crate) struct NativeListener {
     limits: NativeLimits,
     select: SelectNativeSlot,
     admin: Option<axum::Router>,
+    /// The carrier side of an upgrade's hand-over (`listener_native_handover.rs`). `None`: no
+    /// websocket transport is linked, and an admitted upgrade request is answered 501.
+    adopter: Option<Arc<dyn UpgradeAdopter>>,
 }
 
 pub(crate) struct OpenedConnection {
@@ -121,7 +133,15 @@ impl NativeListener {
             limits,
             select,
             admin,
+            adopter: None,
         })
+    }
+
+    /// Link the carrier side of an upgrade's hand-over. Called once, at assembly, by the listener
+    /// plan when the candidate's websocket transport is admitted on this slot.
+    pub(crate) fn with_adopter(mut self, adopter: Arc<dyn UpgradeAdopter>) -> Self {
+        self.adopter = Some(adopter);
+        self
     }
 
     /// Observe the actual unbuffered socket before security wrapping and preserve its trusted
@@ -266,6 +286,9 @@ pub(crate) enum InputError {
     Invalid,
     Capacity,
     TooLarge,
+    /// The request carried trailers: refused 400 (the snapshot has no trailer authority field,
+    /// and a trailer is never reinterpreted as a head field).
+    Trailers,
     Arrival(ArrivalRefusal),
     Io(std::io::Error),
     Transport(busbar_core_connector::framed_stream::session::Ended),
@@ -280,6 +303,7 @@ impl std::fmt::Display for InputError {
             Self::Invalid => f.write_str("invalid native listener input"),
             Self::Capacity => f.write_str("native listener capacity exhausted"),
             Self::TooLarge => f.write_str("native request exceeds its body limit"),
+            Self::Trailers => f.write_str("native request carried trailers"),
             Self::Arrival(reason) => write!(f, "native physical arrival refused: {reason:?}"),
             Self::Io(error) => write!(f, "native carrier failed: {error}"),
             Self::Transport(reason) => write!(f, "native transport ended: {reason:?}"),
@@ -291,33 +315,33 @@ impl std::fmt::Display for InputError {
 }
 impl std::error::Error for InputError {}
 
+impl InputError {
+    /// The row of the refusal table an input failure is answered by, where it is the request's
+    /// own doing: a full gateway (row 1), a body over the cap (row 6), request trailers (row 8).
+    /// `None`: the connection's failure, or the engine's; there is no client to answer. The
+    /// supervisor answers a row on the request's own stream and keeps the connection (an
+    /// HTTP/2 connection's other streams are untouched); it stops the connection only on `None`.
+    pub(crate) fn refusal(&self) -> Option<busbar_kernel::auth::admission_table::Refusal> {
+        use busbar_kernel::auth::admission_table::Refusal;
+        match self {
+            Self::Capacity => Some(Refusal::GatewayFull),
+            Self::TooLarge => Some(Refusal::BodyTooLarge),
+            Self::Trailers => Some(Refusal::Trailers),
+            Self::Invalid
+            | Self::Arrival(_)
+            | Self::Io(_)
+            | Self::Transport(_)
+            | Self::Body(_)
+            | Self::FinalIntent(_)
+            | Self::Delivery(_) => None,
+        }
+    }
+}
+
 impl From<ArrivalRefusal> for InputError {
     fn from(error: ArrivalRefusal) -> Self {
         Self::Arrival(error)
     }
-}
-
-/// The listener's one answer to a request that did not authenticate: a denial by its route's chain,
-/// and a head no route matched. The same status and bytes whatever the route, so a caller that has
-/// not authenticated learns nothing about which routes exist (1.5.5 ran its auth layer before
-/// routing, with the same effect). `carriers`: the route's credential carriers; one present makes the
-/// refusal's code R_BAD_CREDENTIAL, none R_AUTH_REQUIRED (§14 C-ROUTE-CRED-HEADER (b)); the code is
-/// core's record of the decision and does not change the bytes.
-pub(super) fn unauthenticated_response(
-    binding: &busbar_kernel::inbound::native::RequestBinding,
-    carriers: &[Box<str>],
-) -> Result<axum::response::Response, InputError> {
-    let presented = binding.head().fields.iter().any(|(name, _)| {
-        carriers
-            .iter()
-            .any(|carrier| carrier.eq_ignore_ascii_case(name))
-    });
-    let refusal = super::port_mount::unauthenticated(presented);
-    tracing::debug!(code = refusal.code, "native request not authenticated");
-    data::refusal_response(
-        busbar_kernel::plane_driver::port_auth::plain_refusal(&refusal),
-        &binding.request().storage(),
-    )
 }
 
 struct InputSlot {
@@ -487,7 +511,7 @@ impl NativeIngress {
             }
             // The immutable request snapshot currently has no trailer authority field. Do not
             // silently discard or reinterpret trailer credentials as original head fields.
-            Inbound::Trailers { .. } => Err(InputError::Invalid),
+            Inbound::Trailers { .. } => Err(InputError::Trailers),
         }
     }
 

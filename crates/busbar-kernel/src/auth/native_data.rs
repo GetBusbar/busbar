@@ -95,6 +95,7 @@ pub struct NativeDataRoute {
     /// The audience the route's plane is bound to (its `canonical_uri`): a bearer that states an
     /// audience must state this one.
     audience: Option<Arc<str>>,
+    challenge: Option<Box<str>>,
     record: RouteRecord,
     admission: Admission,
 }
@@ -245,6 +246,10 @@ impl NativeDataRoute {
             cost: Arc::clone(&app.cost),
             withheld,
             audience: seat.audience.as_deref().map(Arc::from),
+            // A challenge that names a public URL the operator did not configure is a route the
+            // plan leaves unmounted (`NotMounted::NoPublicUrlForItsChallenge`); bound anyway, it
+            // answers with core's generic challenge.
+            challenge: record.mounted_challenge(seat.public_url()).unwrap_or(None),
             record,
             admission,
         }))
@@ -253,6 +258,12 @@ impl NativeDataRoute {
     /// The route's record, as bound.
     pub fn record(&self) -> &RouteRecord {
         &self.record
+    }
+
+    /// The `WWW-Authenticate` text of this route's 401: its record's challenge with the plane
+    /// instance's public URL written in at bind, or `None` for core's generic one.
+    pub fn challenge(&self) -> Option<&str> {
+        self.challenge.as_deref()
     }
 
     /// The route's admission, as bound.
