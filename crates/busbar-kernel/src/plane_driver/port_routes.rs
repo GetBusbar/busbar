@@ -282,10 +282,14 @@ pub fn recovery_route<'r>(routes: &'r PortRoutes, target: &str) -> Option<&'r Mo
 }
 
 fn admin_cx() -> CallCx {
+    // The node's monotonic clock, read once for this call: the deadline is set from it and the
+    // plane is handed it.
+    let mono_ns = crate::store::monotonic_ns();
     CallCx {
-        deadline: Instant::now() + ADMIN_GRACE,
+        deadline: busbar_contract::mono_instant::instant_at(mono_ns) + ADMIN_GRACE,
         request_id: 0,
         stack: Default::default(),
+        mono_ns,
     }
 }
 

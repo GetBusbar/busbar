@@ -483,10 +483,14 @@ const ADMIN_ADMISSION_MAX_INFLIGHT: usize = 16;
 const ADMIN_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub fn admin_call_context(id: crate::state::InvocationId) -> busbar_ports::CallCx {
+    // The operation's one reading of the node's monotonic clock: the deadline is set from it and
+    // the plane is handed it.
+    let mono_ns = crate::store::monotonic_ns();
     busbar_ports::CallCx {
-        deadline: std::time::Instant::now() + ADMIN_ADMISSION_WAIT,
+        deadline: busbar_contract::mono_instant::instant_at(mono_ns) + ADMIN_ADMISSION_WAIT,
         request_id: id.request_id().get(),
         stack: Default::default(),
+        mono_ns,
     }
 }
 
@@ -1295,10 +1299,16 @@ async fn run_admin_chain(
         let operator = app.admin_modules.operator.is(name);
         if let Some(native) = app.native_admin.as_ref() {
             let cx = invocation.map_or_else(
-                || busbar_ports::CallCx {
-                    deadline: std::time::Instant::now() + ADMIN_ADMISSION_WAIT,
-                    request_id: app.next_request_id(),
-                    stack: Default::default(),
+                || {
+                    // One reading of the node's monotonic clock for this call.
+                    let mono_ns = crate::store::monotonic_ns();
+                    busbar_ports::CallCx {
+                        deadline: busbar_contract::mono_instant::instant_at(mono_ns)
+                            + ADMIN_ADMISSION_WAIT,
+                        request_id: app.next_request_id(),
+                        stack: Default::default(),
+                        mono_ns,
+                    }
                 },
                 |invocation| invocation.cx,
             );
