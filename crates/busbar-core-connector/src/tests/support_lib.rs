@@ -147,4 +147,3 @@ pub fn observe_wipe<T>(
     let state = WIPE_WATCH.with(std::cell::Cell::get);
     (result, state.first_result, state.second_result)
 }
-

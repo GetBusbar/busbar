@@ -31,4 +31,3 @@ pub(crate) fn session_clock() -> (Instant, u64) {
         busbar_plugin_abi::host_side::host_vt::vt::mono(),
     )
 }
-

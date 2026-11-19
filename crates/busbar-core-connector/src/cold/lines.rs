@@ -17,4 +17,3 @@ pub(crate) fn display_text(value: &dyn Display) -> String {
 pub(crate) fn prefixed(prefix: &str, value: &dyn Display) -> String {
     format!("{prefix}{value}")
 }
-

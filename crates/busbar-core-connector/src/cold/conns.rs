@@ -86,4 +86,3 @@ pub(crate) fn native_proxy_refused(authority: &str) {
         &mut None,
     );
 }
-

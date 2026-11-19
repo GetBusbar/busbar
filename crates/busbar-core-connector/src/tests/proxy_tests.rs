@@ -6,9 +6,7 @@
 use std::ffi::OsString;
 use std::sync::Arc;
 
-
 use super::*;
-
 
 /// The selected proxy's `host:port` for a target, or `None` for the direct arm.
 fn selected(config: &Arc<ProxyChoice>, https: bool, host: &str) -> Option<String> {

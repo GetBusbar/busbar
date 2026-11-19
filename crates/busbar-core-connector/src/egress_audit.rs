@@ -122,17 +122,9 @@ mod tests {
         dial_refused("once.test", None, "internal", None, &mut now);
         dial_refused("once.test", None, "plaintext", None, &mut now);
         tls_failed("once.test", "pin", &mut now);
-        assert_eq!(
-            reads::take(),
-            1,
-            "one reading for the op's three refusals"
-        );
+        assert_eq!(reads::take(), 1, "one reading for the op's three refusals");
         let mut read = Some(crate::clock::now());
         dial_refused("twice.test", None, "internal", None, &mut read);
-        assert_eq!(
-            reads::take(),
-            0,
-            "the op's earlier reading is used"
-        );
+        assert_eq!(reads::take(), 0, "the op's earlier reading is used");
     }
 }

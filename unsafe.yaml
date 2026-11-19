@@ -129,29 +129,8 @@ interim:
   crates/busbar-core-admin/build.rs: { tokens: 1, by: "W3 (generated admin code)" }
   crates/busbar-core-admin/src/v1/json/handlers.rs: { tokens: 1, by: "W3 (generated admin code)" }
   crates/busbar-core-connector/src/child_job.rs: { tokens: 17, by: "W1-C1C, then PLATFORMS OQ-5" }
-  crates/busbar-core-connector/src/conns.rs: { tokens: 4, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/datagram.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/framed_stream.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/test_support_adoption.rs: { tokens: 3, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/compose_absorb_fail_tests.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/compose_sensitive_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/compose_tests.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/compose_tls_accept_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/connector_tests.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/datagram_finish_tests.rs: { tokens: 3, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/datagram_tests.rs: { tokens: 7, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/datagram_turn_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/dialled_read_wake_tests.rs: { tokens: 5, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/dialled_tests.rs: { tokens: 4, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/framed_stream_tests.rs: { tokens: 5, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/framer_more_tests.rs: { tokens: 7, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/framer_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/framer_wire_tests.rs: { tokens: 6, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/listen_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/name_dial_tests.rs: { tokens: 1, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/pool_prepared_seal_tests.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/support_lib.rs: { tokens: 9, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-core-connector/src/tests/support.rs: { tokens: 17, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/conns.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
+  crates/busbar-core-connector/src/tests/support_lib.rs: { tokens: 6, by: "W1-U1 (counting swap, Q24)" }
   crates/busbar-kernel/src/plane_driver/serve.rs: { tokens: 1, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs: { tokens: 2, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/plane_driver/tests/probe_unit_tests.rs: { tokens: 3, by: "W3-D-BINARY" }
