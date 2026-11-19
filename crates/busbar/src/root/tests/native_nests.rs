@@ -532,7 +532,7 @@ mod nest_custody {
         }
     }
 
-    async fn rig() -> Rig {
+    async fn seat_rig() -> Rig {
         // Two requests at most, one of them Data: a second Data request is refused while one
         // admitted request is held by anything.
         let budget = ProcessAdmission::with_limits(2, 32, 8);
@@ -721,7 +721,7 @@ mod nest_custody {
     async fn an_admitted_session_exposes_its_parent_frame_until_cleanup() {
         let key = payer();
 
-        let rig = rig().await;
+        let rig = seat_rig().await;
         let parent = rig.parent(Some(&key));
         rig.core.units().ended(parent.id);
         assert_eq!(
@@ -730,7 +730,7 @@ mod nest_custody {
         );
         rig.nothing_ran_or_charged(1, &[parent.id], "no unit record");
 
-        let rig = rig().await;
+        let rig = seat_rig().await;
         let parent = rig.parent(Some(&key));
         rig.snapshot.frames.lock().unwrap().remove(&parent.id);
         assert_eq!(
@@ -739,7 +739,7 @@ mod nest_custody {
         );
         rig.nothing_ran_or_charged(1, &[], "no retained frame");
 
-        let rig = super::nest_custody::rig().await;
+        let rig = seat_rig().await;
         let parent = rig.parent(Some(&key));
         let served = rig.run(&parent, Some(Arc::clone(&key))).await;
         assert_ne!(served, NestReply::Unserved(NEST_PARENT_GONE));
@@ -759,7 +759,7 @@ mod nest_custody {
     /// PARENT_ADMISSION before anything runs, and nothing is charged.
     #[tokio::test]
     async fn nested_anonymous_admission_matches_the_arrival_rule() {
-        let rig = rig().await;
+        let rig = seat_rig().await;
         let parent = rig.parent(None);
         assert_eq!(
             rig.run(&parent, None).await,
@@ -799,7 +799,7 @@ mod nest_custody {
     /// crossing, and that the child's end released everything.
     async fn run_after_parent_retirement(child_frame_too: bool) -> Entered {
         let key = payer();
-        let rig = rig().await;
+        let rig = seat_rig().await;
         let parent = rig.parent(Some(&key));
         let context = parent.context.clone();
         let id = parent.id;
@@ -863,7 +863,7 @@ mod nest_custody {
     #[tokio::test]
     async fn cancelling_a_nested_collector_drops_its_live_producer() {
         let key = payer();
-        let rig = rig().await;
+        let rig = seat_rig().await;
         let parent = rig.parent(Some(&key));
         let child = rig
             .billing
