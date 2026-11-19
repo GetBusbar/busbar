@@ -8,7 +8,7 @@
 //! where any other `unsafe` can be parked. A non-plugin need for `unsafe` (allocators, ACLs, `AsyncFd`, OS
 //! calls, anything else) uses a safe crate or goes to the owner; it never comes here. Its `unsafe` total
 //! is pinned in the repository's `unsafe.yaml` and only falls:
-//! - the files are pinned: `src/{lib,raw,header,vt,shim,slots,host,image}.rs`;
+//! - the files are pinned: `src/{lib,raw,header,vt,shim,slots,host,image,test_watch}.rs`;
 //!   any other file fails the check;
 //! - every file's own token count is pinned, so `unsafe` cannot move between files to make room;
 //! - the dependencies are pinned: `zerocopy`, and `libloading` and `object` behind feature `host`
@@ -25,6 +25,8 @@
 //! - `slots`: the token table, the instance and the chain box.
 //! - `host` and `image` (feature `host`): the loader's side: instances, sessions, chains, the out lease,
 //!   the crypto arena, and dlopen with its bounds check.
+//! - `test_watch` (feature `test-support`): the allocation watch plugin tests install as their global
+//!   allocator; test code only.
 //!
 //! Every `unsafe` block carries a `// SAFETY:` comment; `unsafe_op_in_unsafe_fn`,
 //! `clippy::undocumented_unsafe_blocks` and `clippy::multiple_unsafe_ops_per_block` are denied here and
@@ -53,6 +55,10 @@ pub mod image;
 pub mod raw;
 pub mod shim;
 pub mod slots;
+/// The allocation watch a plugin's tests install as their `#[global_allocator]` (feature `test-support`,
+/// test code only; reached through busbar-plugin-test).
+#[cfg(feature = "test-support")]
+pub mod test_watch;
 pub mod vt;
 
 pub use header::{LinkedPlugin, Plugin, StampBytes, plugin};
