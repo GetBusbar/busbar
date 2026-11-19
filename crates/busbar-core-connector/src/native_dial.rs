@@ -322,6 +322,9 @@ enum Inbound {
         taken: usize,
         /// The piece ends its message (a message stream's `MSG_FIN`; always, on a byte stream).
         last: bool,
+        /// The kind of the message the piece belongs to, as the transport stated it (`MSG_TEXT`: `true`;
+        /// `MSG_BINARY`: `false`). `None` on a byte stream, and on a piece no kind was stated for.
+        text: Option<bool>,
     },
     /// The trailers' field block.
     Trailers(SecureVec),
@@ -341,6 +344,137 @@ struct Stream {
     over: bool,
     /// The head was handed up (a later field block is the trailers).
     answered: bool,
+    /// A message stream only: the kind of the message whose pieces are arriving and whose last has not
+    /// arrived yet (what a fragment that states no kind of its own belongs to). `None` between messages.
+    arriving: Option<bool>,
+    /// The kind of the message the body piece last handed up belongs to ([`Inbound::Body`]'s `text`).
+    last_text: Option<bool>,
+    /// The code of the STREAM_RESET that was handed up as the stream's failure; `None` until then, and
+    /// for a stream that ended in order.
+    close_code: Option<u32>,
+}
+
+impl Stream {
+    fn new(id: u64) -> Self {
+        Self {
+            id,
+            inbox: VecDeque::new(),
+            full: false,
+            over: false,
+            answered: false,
+            arriving: None,
+            last_text: None,
+            close_code: None,
+        }
+    }
+
+    /// One STREAM_BODY for this stream's reader. `messages` = the stream carries messages (a WebSocket
+    /// upstream): the piece ends its message only with `MSG_FIN`, and is of the kind its flags state. The
+    /// transport states the kind on every fragment; a fragment that states none belongs to the message
+    /// that is arriving, and outside a message it has no kind (it is never taken for text).
+    fn push_body(&mut self, messages: bool, flags: u32, bytes: &[u8]) {
+        let last = !messages || flags & wire::MSG_FIN != 0;
+        let text = if messages {
+            let text = match flags & (wire::MSG_TEXT | wire::MSG_BINARY) {
+                wire::MSG_TEXT => Some(true),
+                wire::MSG_BINARY => Some(false),
+                _ => self.arriving,
+            };
+            self.arriving = if last { None } else { text };
+            text
+        } else {
+            None
+        };
+        self.inbox.push_back(Inbound::Body {
+            bytes: SecureVec::from(bytes),
+            taken: 0,
+            last,
+            text,
+        });
+    }
+}
+
+/// The next waiting piece of `one`, copied into `buf` (and released from the inbox once whole).
+fn take_from(one: &mut Stream, buf: &mut [u8]) -> Option<Result<Piece, NativeFailure>> {
+    let id = StreamId(one.id);
+    let first = one.inbox.front_mut()?;
+    let piece = match first {
+        Inbound::Head {
+            status,
+            declared_len,
+            block,
+        } => {
+            if block.len() > buf.len() {
+                return Some(Err(NativeFailure::at(
+                    stage::FRAMER,
+                    "the far end's head does not fit the reader's buffer",
+                )));
+            }
+            buf[..block.len()].copy_from_slice(block.as_slice());
+            let code = *status;
+            Piece {
+                kind: PieceKind::Fields,
+                stream: id,
+                len: block.len(),
+                end: true,
+                status: code.map(class_of),
+                status_code: code,
+                status_namespace: code.map(|_| HTTP_NAMESPACE.to_owned()),
+                retry_after_secs: retry_after(block.as_slice()),
+                fault: code.and_then(fault_of),
+                reason: None,
+                declared_len: *declared_len,
+            }
+        }
+        Inbound::Body {
+            bytes,
+            taken,
+            last,
+            text,
+        } => {
+            // What the reader is handed now is of this message: every part of a piece read in parts
+            // says so, not only its last.
+            one.last_text = *text;
+            let rest = &bytes.as_slice()[*taken..];
+            let n = rest.len().min(buf.len());
+            buf[..n].copy_from_slice(&rest[..n]);
+            *taken += n;
+            let whole = *taken == bytes.len();
+            let piece = plain_piece(PieceKind::Body, id, n, whole && *last);
+            if !whole {
+                return Some(Ok(piece));
+            }
+            piece
+        }
+        Inbound::Trailers(block) => {
+            if block.len() > buf.len() {
+                return Some(Err(NativeFailure::at(
+                    stage::FRAMER,
+                    "the far end's trailers do not fit the reader's buffer",
+                )));
+            }
+            buf[..block.len()].copy_from_slice(block.as_slice());
+            plain_piece(PieceKind::Fields, id, block.len(), true)
+        }
+        Inbound::End => {
+            one.over = true;
+            plain_piece(PieceKind::Completion, id, 0, true)
+        }
+        Inbound::Reset(code) => {
+            let code = *code;
+            let text = format!("the far end reset the stream (code {code})");
+            one.over = true;
+            // Kept for the reader: on a message wire it is the code the far end closed with.
+            one.close_code = Some(code);
+            one.inbox.clear();
+            return Some(Err(NativeFailure::at(stage::FRAMER, text)));
+        }
+    };
+    one.inbox.pop_front();
+    if one.inbox.is_empty() {
+        one.inbox = VecDeque::new();
+    }
+    Some(Ok(piece))
 }
 
 /// Where the connection is.
@@ -632,13 +766,7 @@ impl NativeConnection {
             Err(failure) => return Poll::Ready(Err(self.fail(failure))),
         };
         drop(records);
-        self.streams.push(Stream {
-            id: stream,
-            inbox: VecDeque::new(),
-            full: false,
-            over: false,
-            answered: false,
-        });
+        self.streams.push(Stream::new(stream));
         if !body_follows {
             self.wire.emitting_end(stream);
             if let Err(failure) = self.emit(stream, wire::E_END, 0, &[]) {
@@ -1266,11 +1394,7 @@ impl NativeConnection {
                     let Some(one) = stream_of(streams, *stream) else {
                         continue;
                     };
-                    one.inbox.push_back(Inbound::Body {
-                        bytes: SecureVec::from(bytes.as_slice()),
-                        taken: 0,
-                        last: !messages || flags & wire::MSG_FIN != 0,
-                    });
+                    one.push_body(messages, *flags, bytes.as_slice());
                 }
                 Act::Trailers { stream, pairs } => {
                     let Some(one) = stream_of(streams, *stream) else {
@@ -1309,74 +1433,22 @@ impl NativeConnection {
     /// The next waiting piece of `stream`, copied into `buf` (and released from the inbox once whole).
     fn take_piece(&mut self, stream: u64, buf: &mut [u8]) -> Option<Result<Piece, NativeFailure>> {
         let one = self.streams.iter_mut().find(|one| one.id == stream)?;
-        let first = one.inbox.front_mut()?;
-        let id = StreamId(stream);
-        let piece = match first {
-            Inbound::Head {
-                status,
-                declared_len,
-                block,
-            } => {
-                if block.len() > buf.len() {
-                    return Some(Err(NativeFailure::at(
-                        stage::FRAMER,
-                        "the far end's head does not fit the reader's buffer",
-                    )));
-                }
-                buf[..block.len()].copy_from_slice(block.as_slice());
-                let code = *status;
-                Piece {
-                    kind: PieceKind::Fields,
-                    stream: id,
-                    len: block.len(),
-                    end: true,
-                    status: code.map(class_of),
-                    status_code: code,
-                    status_namespace: code.map(|_| HTTP_NAMESPACE.to_owned()),
-                    retry_after_secs: retry_after(block.as_slice()),
-                    fault: code.and_then(fault_of),
-                    reason: None,
-                    declared_len: *declared_len,
-                }
-            }
-            Inbound::Body { bytes, taken, last } => {
-                let rest = &bytes.as_slice()[*taken..];
-                let n = rest.len().min(buf.len());
-                buf[..n].copy_from_slice(&rest[..n]);
-                *taken += n;
-                let whole = *taken == bytes.len();
-                let piece = plain_piece(PieceKind::Body, id, n, whole && *last);
-                if !whole {
-                    return Some(Ok(piece));
-                }
-                piece
-            }
-            Inbound::Trailers(block) => {
-                if block.len() > buf.len() {
-                    return Some(Err(NativeFailure::at(
-                        stage::FRAMER,
-                        "the far end's trailers do not fit the reader's buffer",
-                    )));
-                }
-                buf[..block.len()].copy_from_slice(block.as_slice());
-                plain_piece(PieceKind::Fields, id, block.len(), true)
-            }
-            Inbound::End => {
-                one.over = true;
-                plain_piece(PieceKind::Completion, id, 0, true)
-            }
-            Inbound::Reset(code) => {
-                let text = format!("the far end reset the stream (code {code})");
-                one.over = true;
-                one.inbox.clear();
-                return Some(Err(NativeFailure::at(stage::FRAMER, text)));
-            }
-        };
-        one.inbox.pop_front();
-        if one.inbox.is_empty() {
-            one.inbox = VecDeque::new();
-        }
-        Some(Ok(piece))
+        take_from(one, buf)
+    }
+
+    /// `stream`'s [`Stream::last_text`]: the kind of the message its body piece last handed up belongs to.
+    /// `None` on a byte stream, before any body piece, and for a stream the connection no longer has.
+    pub(crate) fn message_text(&self, stream: u64) -> Option<bool> {
+        let one = self.streams.iter().find(|one| one.id == stream)?;
+        one.last_text
+    }
+
+    /// `stream`'s [`Stream::close_code`]: the code of the STREAM_RESET its reader was handed as the
+    /// stream's failure. Asked right after that read: the stream is still the connection's then (it is
+    /// forgotten by `reset`, which the exchange calls as it lets the connection go).
+    pub(crate) fn close_code(&self, stream: u64) -> Option<u32> {
+        let one = self.streams.iter().find(|one| one.id == stream)?;
+        one.close_code
     }
 
     fn inbox_pieces(&self) -> usize {

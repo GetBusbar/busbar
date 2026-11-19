@@ -1829,6 +1829,16 @@ impl PollConns for Connector {
         DeclaredConns::cause(self, caller, conn)
     }
 
+    fn message_text(&self, caller: InstanceId, conn: ConnId) -> Option<bool> {
+        let (_, held) = self.slab.get(caller, conn).ok()?;
+        Self::native_message_text(held.native.as_ref()?)
+    }
+
+    fn close_code(&self, caller: InstanceId, conn: ConnId) -> Option<u32> {
+        let (_, held) = self.slab.get(caller, conn).ok()?;
+        Self::native_close_code(held.native.as_ref()?)
+    }
+
     fn attempt_evidence(
         &self,
         caller: InstanceId,

@@ -260,7 +260,13 @@ async fn a_failed_dial_answers_its_reader_a_fault_with_the_connect_stage() {
         .expect("the failed dial keeps its cause");
     assert_eq!(cause.stage, super::native_dial::stage::CONNECT);
     assert!(!cause.outbound, "a refused connect is no local fault");
+    // An entry that carries no messages states no kind and no close code, failed or not.
+    assert_eq!(connector.message_text(OWNER, conn), None);
+    assert_eq!(connector.close_code(OWNER, conn), None);
     connector.close(OWNER, conn).unwrap();
+    // Nor does an entry that is gone.
+    assert_eq!(connector.message_text(OWNER, conn), None);
+    assert_eq!(connector.close_code(OWNER, conn), None);
 }
 
 /// A plain connection to `addr`, connected (open, nothing queued) and so reusable, with no session begun.

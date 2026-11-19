@@ -160,3 +160,117 @@ fn core_reads_an_answer_status_by_the_table_the_old_transport_stated() {
     assert_eq!(fault_of(500), Some(WireFault::Transient));
     assert_eq!(fault_of(599), Some(WireFault::Transient));
 }
+
+/// One stream's reader: every waiting piece taken into a buffer of `room` bytes, each with the kind the
+/// stream states for it once it is taken.
+fn taken(one: &mut Stream, room: usize) -> Vec<(Vec<u8>, bool, Option<bool>)> {
+    let mut buf = vec![0_u8; room];
+    let mut pieces = Vec::new();
+    while let Some(piece) = take_from(one, &mut buf) {
+        let piece = piece.expect("a piece");
+        assert_eq!(piece.kind, PieceKind::Body);
+        pieces.push((buf[..piece.len].to_vec(), piece.end, one.last_text));
+    }
+    pieces
+}
+
+#[test]
+fn a_text_message_of_a_websocket_upstream_is_read_as_text_and_a_binary_one_as_binary() {
+    let mut one = Stream::new(1);
+    one.push_body(true, wire::MSG_TEXT | wire::MSG_FIN, b"hello");
+    one.push_body(true, wire::MSG_BINARY | wire::MSG_FIN, &[0, 255]);
+    assert_eq!(
+        one.last_text, None,
+        "nothing is stated before a piece is read"
+    );
+    assert_eq!(
+        taken(&mut one, 64),
+        [
+            (b"hello".to_vec(), true, Some(true)),
+            (vec![0, 255], true, Some(false)),
+        ]
+    );
+}
+
+#[test]
+fn a_fragmented_text_message_keeps_its_kind_on_every_piece() {
+    let mut one = Stream::new(1);
+    // As the transport hands a long message up: the kind on every fragment, the end on the last.
+    one.push_body(true, wire::MSG_TEXT, b"ab");
+    one.push_body(true, wire::MSG_TEXT, b"cd");
+    one.push_body(true, wire::MSG_TEXT | wire::MSG_FIN, b"e");
+    // A fragment that states no kind belongs to the message that is open: it is never read as another kind.
+    one.push_body(true, wire::MSG_TEXT, b"f");
+    one.push_body(true, wire::MSG_FIN, b"g");
+    // The next message is its own.
+    one.push_body(true, wire::MSG_BINARY | wire::MSG_FIN, b"h");
+    assert_eq!(
+        taken(&mut one, 64),
+        [
+            (b"ab".to_vec(), false, Some(true)),
+            (b"cd".to_vec(), false, Some(true)),
+            (b"e".to_vec(), true, Some(true)),
+            (b"f".to_vec(), false, Some(true)),
+            (b"g".to_vec(), true, Some(true)),
+            (b"h".to_vec(), true, Some(false)),
+        ]
+    );
+}
+
+#[test]
+fn a_piece_read_in_parts_keeps_its_kind_and_ends_its_message_only_with_its_last_part() {
+    let mut one = Stream::new(1);
+    one.push_body(true, wire::MSG_TEXT | wire::MSG_FIN, b"abcde");
+    assert_eq!(
+        taken(&mut one, 2),
+        [
+            (b"ab".to_vec(), false, Some(true)),
+            (b"cd".to_vec(), false, Some(true)),
+            (b"e".to_vec(), true, Some(true)),
+        ]
+    );
+}
+
+#[test]
+fn a_piece_that_states_no_kind_outside_a_message_is_not_read_as_text() {
+    let mut one = Stream::new(1);
+    one.push_body(true, wire::MSG_FIN, b"x");
+    assert_eq!(taken(&mut one, 8), [(b"x".to_vec(), true, None)]);
+}
+
+#[test]
+fn a_byte_stream_states_no_kind_whatever_its_flags_say() {
+    let mut one = Stream::new(1);
+    one.push_body(false, 0, b"body");
+    one.push_body(false, wire::MSG_TEXT, b"more");
+    assert_eq!(
+        taken(&mut one, 64),
+        [
+            (b"body".to_vec(), true, None),
+            (b"more".to_vec(), true, None)
+        ]
+    );
+}
+
+#[test]
+fn the_code_a_stream_was_reset_with_is_kept_for_its_reader() {
+    for code in [1001_u32, 4000, 1006] {
+        let mut one = Stream::new(1);
+        one.push_body(true, wire::MSG_TEXT | wire::MSG_FIN, b"last");
+        one.inbox.push_back(Inbound::Reset(code));
+        let mut buf = [0_u8; 16];
+        assert!(take_from(&mut one, &mut buf).expect("the message").is_ok());
+        assert_eq!(one.close_code, None, "no code before the reset is read");
+        assert!(take_from(&mut one, &mut buf).expect("the reset").is_err());
+        assert_eq!(one.close_code, Some(code));
+        assert!(one.over);
+    }
+    // An orderly end states no code.
+    let mut one = Stream::new(1);
+    one.inbox.push_back(Inbound::End);
+    let piece = take_from(&mut one, &mut [0_u8; 4])
+        .expect("the end")
+        .expect("a piece");
+    assert_eq!(piece.kind, PieceKind::Completion);
+    assert_eq!(one.close_code, None);
+}

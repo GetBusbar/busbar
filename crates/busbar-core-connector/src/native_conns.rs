@@ -152,6 +152,12 @@ pub(crate) struct Exchange {
     pub(crate) charge: bool,
     /// A WebSocket upstream's states; `None` for an HTTP exchange.
     pub(crate) ws: Option<crate::outbound::ws::Upstream>,
+    /// A WebSocket upstream only: the kind of the message the body piece last read belongs to
+    /// (`NativeConnection::message_text` at that read).
+    pub(crate) last_text: Option<bool>,
+    /// A WebSocket upstream only: the code the far end reset the stream with, taken from the connection at
+    /// the read that failed, before the connection is let go (`NativeConnection::close_code`).
+    pub(crate) closed_with: Option<u32>,
 }
 
 /// The exchange's slot in its entry: out while a call has it.
@@ -170,12 +176,17 @@ pub(crate) struct NativeHeld {
     pub(crate) core: usize,
     /// The upstream is a WebSocket: a write after the open is a message.
     messages: bool,
+    /// What the reads of a WebSocket upstream stated: the kind of the piece last read and the code the far
+    /// end closed with. Beside the slot, not in it, so the reader asks without waiting for a write that has
+    /// the exchange out.
+    said: messages::Said,
 }
 
 impl NativeHeld {
     pub(crate) fn new(exchange: Exchange, core: usize) -> Self {
         Self {
             messages: exchange.ws.is_some(),
+            said: messages::Said::default(),
             slot: Mutex::new(Slot {
                 exchange: Some(exchange),
                 out: false,
@@ -183,6 +194,11 @@ impl NativeHeld {
             }),
             core,
         }
+    }
+
+    /// What the reads of a WebSocket upstream stated (nothing, for any other entry).
+    pub(crate) fn said(&self) -> &messages::Said {
+        &self.said
     }
 
     /// The upstream is a WebSocket: a write after the open is a message.
@@ -500,8 +516,22 @@ impl Exchange {
                 self.let_go_of_head(false);
                 Poll::Pending
             }
-            Poll::Ready(Err(failure)) => self.attempt_ended(&failure),
+            Poll::Ready(Err(failure)) => {
+                // A WebSocket upstream that closed with a code: the code is read off the stream now, while
+                // the connection still has it (the failure lets the connection go).
+                if self.ws.is_some() {
+                    if let Some(code) = conn.close_code(stream) {
+                        self.closed_with = Some(code);
+                    }
+                }
+                self.attempt_ended(&failure)
+            }
             Poll::Ready(Ok(piece)) => {
+                // A WebSocket upstream's body piece is of a message: its kind is the stream's statement
+                // at this read.
+                if self.ws.is_some() && piece.kind == PieceKind::Body {
+                    self.last_text = conn.message_text(stream);
+                }
                 // A WebSocket upstream: the answer's head opens (or refuses) the session, its end closes it.
                 self.message_read(&piece);
                 if piece.kind == PieceKind::Completion {
@@ -530,7 +560,7 @@ impl Exchange {
             Poll::Ready(Err(error)) => Err(error),
             Poll::Ready(Ok(_)) if bytes.is_empty() => Ok(0),
             // A WebSocket upstream carries messages after its open (a binary piece that ends its message;
-            // the connection table'"'"'s typed write is `Connector::write_native_message`).
+            // the connection table's typed write is `Connector::write_native_message`).
             Poll::Ready(Ok(_)) if self.ws.is_some() => {
                 self.write_message(cx, bytes, (false, true), storage)
             }
@@ -1009,6 +1039,8 @@ impl super::Connector {
                 evidence: smallvec::SmallVec::new(),
                 charge: false,
                 ws: websocket.then(crate::outbound::ws::Upstream::new),
+                last_text: None,
+                closed_with: None,
             };
             let mut held = super::Held::new().bounded(started, desc.timeout_ms);
             held.native = Some(NativeHeld::new(exchange, core));
@@ -1095,6 +1127,17 @@ impl super::Connector {
             return Err(ConnError::Pending);
         };
         let read = exchange.read(&mut Context::from_waker(waker), buf, storage);
+        // A WebSocket upstream: what this read stated is kept in the entry for the reader's next question
+        // (the kind of the piece it was handed; the code the far end closed with).
+        if native.carries_messages() {
+            match &read {
+                Poll::Ready(Ok(piece)) if piece.kind == PieceKind::Body => {
+                    native.said().read_piece(exchange.last_text);
+                }
+                Poll::Ready(Err(_)) => native.said().closed(exchange.closed_with),
+                Poll::Ready(Ok(_)) | Poll::Pending => {}
+            }
+        }
         // A request the evidence allows to be sent again (a kept connection that turned out closed with
         // nothing sent, a stream the far end refused unprocessed, a busy connection) is judged and dialled
         // afresh here; the caller's read pends and its ticket is woken to drive the new dial.
@@ -1193,6 +1236,24 @@ impl super::Connector {
         native.end(exchange);
         again?;
         landed
+    }
+
+    /// The kind of the message the body piece last read from a native entry belongs to
+    /// (`PollConns::message_text`); `None` for an entry whose upstream is not a WebSocket.
+    pub(crate) fn native_message_text(native: &NativeHeld) -> Option<bool> {
+        if !native.carries_messages() {
+            return None;
+        }
+        native.said().text()
+    }
+
+    /// The code a native entry's WebSocket upstream closed with (`PollConns::close_code`); `None` for an
+    /// entry whose upstream is not a WebSocket.
+    pub(crate) fn native_close_code(native: &NativeHeld) -> Option<u32> {
+        if !native.carries_messages() {
+            return None;
+        }
+        native.said().close_code()
     }
 
     /// Why a native entry failed, where it did.
