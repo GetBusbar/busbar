@@ -22,13 +22,23 @@ fn client(id: &str) -> Client {
     }
 }
 
+/// The racers of one `take_*` race in the storage contract.
+const RACERS: usize = 8;
+
+/// The test thread hands the harness's racers over one at a time. On a loaded runner it can be
+/// preempted between two hand-overs; this pause makes that happen on every run, so the contract's
+/// verdict cannot depend on when the OS runs the test thread.
+const PREEMPTED: std::time::Duration = std::time::Duration::from_millis(50);
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_store_backed_server_holds_the_storage_contract() {
     let violations = oauth_as::storage_conformance::StorageConformance::new(|| async {
         SharedStorage::new(shared(crate::testkit::memory_store().await))
     })
+    .racers(RACERS)
     .with_spawn(|task| {
         tokio::spawn(task);
+        std::thread::sleep(PREEMPTED);
     })
     .run()
     .await;
