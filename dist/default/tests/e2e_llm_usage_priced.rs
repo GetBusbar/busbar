@@ -68,7 +68,7 @@ fn exact(value: &Value) -> Option<u128> {
 fn priced_llm_calls_after_an_admin_key_mint_are_metered_under_the_model_lane_at_the_exact_price() {
     let upstream = Scripted::start(200, &chat_answer(PROMPT_TOKENS, COMPLETION_TOKENS));
     let node = Deployment::new("usage-priced")
-        .provider("mock", "openai", &upstream.url(""))
+        .keyless_provider("mock", "openai", &upstream.url(""))
         .section(&format!("models:\n  {MODEL}:\n    provider: mock\n"))
         .section(
             "llm:\n  insecure_transport: { accept: plaintext, reason: \"loopback scripted upstream\" }\n",
@@ -177,8 +177,8 @@ fn priced_llm_failover_is_billed_at_the_serving_members_exact_price() {
     let failing = Scripted::start(503, &json!({ "error": { "message": "overloaded" } }));
     let serving = Scripted::start(200, &chat_answer(PROMPT_TOKENS, COMPLETION_TOKENS));
     let node = Deployment::new("usage-failover")
-        .provider("down", "openai", &failing.url(""))
-        .provider("up", "openai", &serving.url(""))
+        .keyless_provider("down", "openai", &failing.url(""))
+        .keyless_provider("up", "openai", &serving.url(""))
         .section(&format!(
             "models:\n  {FAILING}:\n    provider: down\n  {SERVING}:\n    provider: up\n"
         ))

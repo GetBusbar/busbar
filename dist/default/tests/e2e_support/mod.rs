@@ -290,6 +290,8 @@ pub struct Deployment {
     pub data: u16,
     pub admin: u16,
     providers: Vec<(String, String, String)>,
+    /// Providers that take no credential (`api_key: none`), by name.
+    keyless: Vec<String>,
     identities: String,
     sections: String,
     env: Vec<(String, String)>,
@@ -313,6 +315,7 @@ impl Deployment {
             data: common::boot::free_port(),
             admin: common::boot::free_port(),
             providers: Vec::new(),
+            keyless: Vec::new(),
             identities: String::new(),
             sections: String::new(),
             env: Vec::new(),
@@ -330,6 +333,14 @@ impl Deployment {
         self.providers
             .push((name.to_owned(), protocol.to_owned(), base_url.to_owned()));
         self
+    }
+
+    /// A provider of this protocol at this base URL that takes no credential (`api_key: none`):
+    /// a loopback plaintext upstream, as the live engine of the kit runs one. A credential is never
+    /// presented over plaintext, so a keyed provider there is not dialled.
+    pub fn keyless_provider(mut self, name: &str, protocol: &str, base_url: &str) -> Deployment {
+        self.keyless.push(name.to_owned());
+        self.provider(name, protocol, base_url)
     }
 
     /// One more `identity-providers` entry: its name and its definition as flow YAML.
@@ -398,7 +409,11 @@ impl Deployment {
             catalog.push_str(&format!(
                 "{name}:\n  protocol: {protocol}\n  base_url: \"{base_url}\"\n  error_map: {{}}\n"
             ));
-            keyed.push_str(&format!("  {name}:\n    api_key: {{ env: MOCK_KEY }}\n"));
+            if self.keyless.contains(name) {
+                keyed.push_str(&format!("  {name}:\n    api_key: none\n"));
+            } else {
+                keyed.push_str(&format!("  {name}:\n    api_key: {{ env: MOCK_KEY }}\n"));
+            }
         }
         if catalog.is_empty() {
             catalog.push_str("{}\n");
