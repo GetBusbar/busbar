@@ -60,7 +60,7 @@ interim:
   crates/busbar-contract/src/abi/sdk/auth_outbound.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/capture.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/conn.rs: { tokens: 14, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/cred/form_body.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/cred/form_body.rs: { tokens: 0, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/cred/protected_json.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/cred/settings.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/door.rs: { tokens: 61, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
@@ -72,21 +72,16 @@ interim:
   crates/busbar-contract/src/abi/sdk/life.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/migrate.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/out.rs: { tokens: 34, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/plane_life.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/plane/conditional.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/publish.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/registration.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/safe.rs: { tokens: 27, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/secret_bytes.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/services.rs: { tokens: 24, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/store/tests/loader_wire_contracts.rs: { tokens: 6, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/store/v4/bootstrap_door.rs: { tokens: 15, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/store/v4/decode.rs: { tokens: 26, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/store/v4/door.rs: { tokens: 11, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/store/v4/mod.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/store/v4/tests/decode_tests.rs: { tokens: 21, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/store/v4/tests/door_tests.rs: { tokens: 6, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/store/v4/tests/marshal_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/test_support/chip.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/test_support/cpu.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/test_support/loans.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
@@ -95,63 +90,10 @@ interim:
   crates/busbar-contract/src/abi/sdk/test_support/restated_transport.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/test_support/sink.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/test_support/watch.rs: { tokens: 14, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/auth_door_tests.rs: { tokens: 25, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/auth_kit_tests.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/auth_outbound_tests.rs: { tokens: 26, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/capture_retention_tests.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/conditional_custody_tests.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/conn_tests.rs: { tokens: 26, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/cred_json_tests.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/cred_record_tests.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/cred_tests.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/door_tests.rs: { tokens: 87, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/exchange_tests.rs: { tokens: 12, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/expand_tests.rs: { tokens: 35, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/export_tests.rs: { tokens: 17, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/form_body_wipe_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/hook_deadline_tests.rs: { tokens: 16, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/hook_tests.rs: { tokens: 33, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/inspection_tests.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/io_tests.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/lent_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/life_tests.rs: { tokens: 8, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/migrate_tests.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/out_tests.rs: { tokens: 7, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/plane_inspection_leases_tests.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/plane_life_tests.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/plane_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/publish_tests.rs: { tokens: 11, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/safe_tests.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/secret_tests.rs: { tokens: 6, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/services_tests.rs: { tokens: 54, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/store_conditional_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/store_wire_kept_tests.rs: { tokens: 19, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/store_wire_output_wipe_tests.rs: { tokens: 11, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/store_wire_sealed_tests.rs: { tokens: 23, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/test_support_tests.rs: { tokens: 52, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/transport_sink_tests.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/transport_tests.rs: { tokens: 12, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/url_tests.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/tests/wipe_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/wipe.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/secret/mod.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/shared.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/store/v4.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/abi_conn_close_tests.rs: { tokens: 8, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/abi_conn_retention_tests.rs: { tokens: 6, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/conn_lowering_tests.rs: { tokens: 18, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/export_validate_tests.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/hook_validate_tests.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/host_hook_tests.rs: { tokens: 7, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/host_service_tests.rs: { tokens: 94, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/lib_tests.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/mechanism_check_tests.rs: { tokens: 16, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/plane_check_tests.rs: { tokens: 34, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/rendering_tests.rs: { tokens: 8, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/secret_holder_tests.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/secret_validate_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/transport_check_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/tests/transport_datagram_tests.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/transport/check.rs: { tokens: 15, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/transport/mod.rs: { tokens: 24, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/lib.rs: { tokens: 1, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
@@ -220,10 +162,10 @@ interim:
   crates/plugin-loader/src/durable_documents.rs: { tokens: 25, by: "PLATFORMS P6 (OQ-5, OQ-6)" }
   crates/plugin-loader/src/ffi_thread.rs: { tokens: 5, by: "W1-L1 / W1-L2" }
   crates/plugin-loader/src/migration_secrets.rs: { tokens: 21, by: "PLATFORMS P6 (OQ-5, OQ-6)" }
-  crates/plugin-loader/src/stage.rs: { tokens: 9, by: "W1-L1 / W1-L2" }
+  crates/plugin-loader/src/stage.rs: { tokens: 8, by: "W1-L1 / W1-L2" }
   crates/plugin-loader/src/tests/boot_tests.rs: { tokens: 5, by: "W2 / W3 (old dispatch and doors)" }
   crates/plugin-loader/src/tests/sign_tests.rs: { tokens: 1, by: "W2 / W3 (old dispatch and doors)" }
-  crates/plugin-loader/src/tests/stage_tests.rs: { tokens: 6, by: "W2 / W3 (old dispatch and doors)" }
+  crates/plugin-loader/src/tests/stage_tests.rs: { tokens: 0, by: "W2 / W3 (old dispatch and doors)" }
   dist/default/tests/cli_validate.rs: { tokens: 1, by: "W1-U1" }
   dist/default/tests/export_otlp_delivers_spans.rs: { tokens: 1, by: "W3-D-BINARY" }
   dist/default/tests/linked_export_sinks_boot_as_their_own_kind.rs: { tokens: 1, by: "W3-D-BINARY" }
