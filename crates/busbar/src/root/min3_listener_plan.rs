@@ -87,9 +87,9 @@ impl NativeListenerPlan {
         owners: &SlotOwners,
     ) -> Result<NativeSlots, String> {
         // §12.27: every upgrade route is mounted (auth on the head, then 400/501 before any 101).
-        // Handing one over needs the adopter the websocket transport brings (E9b); until it is
-        // linked, a candidate whose upgrade route could reach an admitted websocket instance is
-        // refused rather than served as if it upgraded.
+        // Handing one over is the connection supervisor's adopt step (`listener_native_handover.rs`,
+        // owner decision 18): a candidate with upgrade routes and an admitted websocket instance is
+        // served, and with no such instance every authorized upgrade request is answered 501.
         upgrades_honoured(
             served
                 .ports
@@ -185,15 +185,10 @@ impl NativeListenerPlan {
 
 /// Upgrade routes are served only where every answer they can give is honest: with no admitted
 /// websocket instance each authorized upgrade request is answered 501; with one, it would have to
-/// be handed over, and no hand-over adopter is linked yet.
-fn upgrades_honoured(upgrades: bool, websocket: Option<&ServedTransport>) -> Result<(), String> {
-    match (upgrades, websocket) {
-        (true, Some(websocket)) => Err(format!(
-            "native plane upgrade hand-over to websocket transport `{}` is not linked",
-            websocket.instance
-        )),
-        _ => Ok(()),
-    }
+/// be handed over, which the listener does (the hand-over is linked: owner decision 18). Kept as
+/// the one place a candidate's upgrade routes are judged against its transports.
+fn upgrades_honoured(_upgrades: bool, _websocket: Option<&ServedTransport>) -> Result<(), String> {
+    Ok(())
 }
 
 /// The routes a seat serves on the data listener: its data routes and its upgrade routes.

@@ -111,9 +111,8 @@ fn a_plane_with_upgrade_routes_is_assembled_while_no_instance_could_be_handed_on
         port: crate::root::min3_boot::transports::tests::framer(&["websocket"]),
     };
     assert_eq!(upgrades_honoured(false, Some(&websocket)), Ok(()));
-    // With one, the request would have to be handed over, and no adopter is linked (E9b).
-    let refused = upgrades_honoured(true, Some(&websocket)).unwrap_err();
-    assert!(refused.contains("`transport-ws`") && refused.contains("not linked"));
+    // With one, the request is handed over to it (owner decision 18: the hand-over is linked).
+    assert_eq!(upgrades_honoured(true, Some(&websocket)), Ok(()));
 }
 
 #[test]

@@ -46,6 +46,12 @@ pub enum DataRefused {
     Trailers,
     /// The key does not hold what the request selected (refusal row 10): 403.
     Scope,
+    /// An upgrade route's request does not ask to switch to websocket (§12.27 step 1): 400, to a
+    /// verified caller.
+    NotAnUpgrade,
+    /// The listener has no transport that can carry the upgrade (§12.27 step 1): 501, to a verified
+    /// caller.
+    NoUpgradeTransport,
     Replay,
     Unit,
     Unavailable,
@@ -64,6 +70,8 @@ impl DataRefused {
             Self::TooLarge => Some(Refusal::BodyTooLarge),
             Self::Trailers => Some(Refusal::Trailers),
             Self::Replay => Some(Refusal::Replayed),
+            Self::NotAnUpgrade => Some(Refusal::NotAnUpgrade),
+            Self::NoUpgradeTransport => Some(Refusal::NoUpgradeTransport),
             // A verifier that could not answer is not a denial: 503, never 401 (row 2a).
             Self::Unavailable => Some(Refusal::VerifierUnavailable),
             Self::Unsupported | Self::Binding | Self::Cancelled | Self::Capacity | Self::Unit => {
@@ -76,7 +84,12 @@ impl DataRefused {
     pub fn after_verification(self) -> bool {
         matches!(
             self,
-            Self::Disabled | Self::Scope | Self::TooLarge | Self::Trailers
+            Self::Disabled
+                | Self::Scope
+                | Self::TooLarge
+                | Self::Trailers
+                | Self::NotAnUpgrade
+                | Self::NoUpgradeTransport
         )
     }
 }
@@ -124,7 +137,6 @@ pub enum Planned {
 
 const OTHER_PATH_TICKET: &str = "a ticket route is served by the listener's ticket class";
 const OTHER_PATH_SIGNED: &str = "a signed route is served by the listener's signed-ingress class";
-const OTHER_PATH_UPGRADE: &str = "an upgrade route is served by the native upgrade path";
 const OTHER_PATH_OPERATOR: &str = "an admin route is served by the admin door";
 
 impl NativeDataRoute {
@@ -233,11 +245,13 @@ impl NativeDataRoute {
             | Admission::PrincipalOnly
             | Admission::Catalog
             | Admission::Optional
-            | Admission::Public => {}
+            | Admission::Public
+            // An upgrade request is admitted as any request is (owner decision 18): the same chain,
+            // key, replay claim, unit and money on its head; its answer may be a 101.
+            | Admission::Upgrade => {}
 
             Admission::Ticket => return Err(OTHER_PATH_TICKET),
             Admission::SignedIngress => return Err(OTHER_PATH_SIGNED),
-            Admission::Upgrade => return Err(OTHER_PATH_UPGRADE),
             Admission::Operator => return Err(OTHER_PATH_OPERATOR),
             Admission::Internal => return Err("an internal route is not on a listener"),
         }
@@ -321,6 +335,7 @@ impl NativeDataRoute {
                 .routes()
                 .data
                 .iter()
+                .chain(seat.driver.routes().upgrade.iter())
                 .any(|route| route == mounted)
             // A route selects exactly when it declares resource kinds, from its own inventory.
             || mounted.resource_kinds.is_empty() != owners.inventory.is_none()
@@ -778,6 +793,9 @@ impl PendingData {
         let reason = match refusal {
             Refusal::BodyTooLarge => DataRefused::TooLarge,
             Refusal::Trailers => DataRefused::Trailers,
+            // An upgrade request core refuses before any 101 (`listener_native_upgrade.rs`).
+            Refusal::NotAnUpgrade => DataRefused::NotAnUpgrade,
+            Refusal::NoUpgradeTransport => DataRefused::NoUpgradeTransport,
             // A head screened as presenting no credential that its chain nevertheless verified:
             // the screen was wrong, the body is gone, and a caller with a good credential must
             // not be told it is bad. The engine's fault: the request is cancelled, and it says so.

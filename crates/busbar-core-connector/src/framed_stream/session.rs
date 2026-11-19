@@ -1293,6 +1293,12 @@ pub struct Upgrade<S> {
     pub protocol: Name,
     /// The bytes read past the head.
     pub leftover: Payload,
+    /// The upgraded answer's feed: the stream the 101 was emitted on and the receiver of its
+    /// remaining pieces. The adopting session serves it as stream 1 (§12.27; delivery evidence
+    /// E.5): core re-attaches it there, so the answer's body (its messages) and its end keep
+    /// flowing from the same producer. `None` = the session fed no stream, or more than one, when
+    /// it upgraded (HTTP/1.1 feeds exactly the answering one).
+    pub feed: Option<(u64, mpsc::Receiver<Piece>)>,
 }
 
 impl<S> Outcome<S> {
@@ -1322,6 +1328,19 @@ struct Slot {
 struct Slots {
     by_stream: HashMap<u64, Slot>,
     opening: VecDeque<(mpsc::Receiver<Piece>, Option<oneshot::Sender<u64>>)>,
+}
+
+impl Slots {
+    /// The one stream core is feeding, taken out with its feed: what an upgrade hands on.
+    fn take_only(&mut self) -> Option<(u64, mpsc::Receiver<Piece>)> {
+        if self.by_stream.len() != 1 {
+            return None;
+        }
+        let stream = *self.by_stream.keys().next()?;
+        self.by_stream
+            .remove(&stream)
+            .map(|slot| (stream, slot.pieces))
+    }
 }
 
 /// The next piece of a stream that is not held (`None` = that feed ended), or of the first opening.
@@ -1361,7 +1380,9 @@ enum Flow {
     Lost(std::io::Error),
     /// A call the answer made necessary (a credit) ended the session.
     Ended(Ended),
-    Upgrade(Name, Payload),
+    /// The framer handed the connection on: the protocol, the bytes read past the head, and the
+    /// one feed core was giving when it did ([`Upgrade::feed`]).
+    Upgrade(Name, Payload, Option<(u64, mpsc::Receiver<Piece>)>),
 }
 
 /// The loop's state beside the session.
@@ -1461,7 +1482,9 @@ impl Task {
                     let (now, mono) = wake_clock(clock);
                     self.wake_at = Some(now + Duration::from_nanos(ns.saturating_sub(mono)));
                 }
-                Act::Upgrade { protocol, leftover } => return Flow::Upgrade(protocol, leftover),
+                Act::Upgrade { protocol, leftover } => {
+                    return Flow::Upgrade(protocol, leftover, self.slots.take_only())
+                }
                 Act::Head {
                     stream,
                     end_stream,
@@ -1581,7 +1604,7 @@ fn finished<S>(flow: Flow, mut conn: TransportConn, mut io: DeliveryIo<S>) -> Ou
             Outcome::Lost(error)
         }
         Flow::Ended(ended) => over(&mut io, ended),
-        Flow::Upgrade(protocol, leftover) => {
+        Flow::Upgrade(protocol, leftover, feed) => {
             let (io, delivery) = io.into_parts();
             Outcome::Upgraded(Box::new(Upgrade {
                 delivery,
@@ -1589,6 +1612,7 @@ fn finished<S>(flow: Flow, mut conn: TransportConn, mut io: DeliveryIo<S>) -> Ou
                 io,
                 protocol,
                 leftover,
+                feed,
             }))
         }
     }

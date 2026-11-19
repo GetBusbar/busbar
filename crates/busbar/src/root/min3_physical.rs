@@ -397,7 +397,9 @@ pub(crate) fn assemble_slot(
             .find(|seat| seat.driver.caller().same_incarnation(target.caller()))
             .ok_or_else(|| "native physical route lost its plane incarnation".to_string())?;
         if is_upgrade(binding) {
-            // §12.27: the route's own chain on the head; no resources, no unit before a 101.
+            // §12.27: the upgrade completion is kept for a build that binds no data admission for
+            // the route. The route is ALSO bound as a data route below (owner decision 18): an
+            // upgrade request is admitted, given its unit and its money, by the data admission.
             let chain = owners
                 .auth
                 .data_chain(owners.epoch, target.auth_instances())?;
@@ -407,7 +409,6 @@ pub(crate) fn assemble_slot(
                         .to_string()
                 })?;
             upgrades.push((Arc::clone(binding), upgrade));
-            continue;
         }
         let generation = dispatch
             .generation
