@@ -192,8 +192,12 @@ impl Wire {
                     if self.credit.is_some() {
                         return Err(Fault::Order("a second SESSION"));
                     }
-                    if session.stream_window == 0 || session.conn_window < session.stream_window {
-                        return Err(Fault::Order("SESSION states no usable window"));
+                    // A multiplexing session states both windows; a session with one stream
+                    // states none (the engine stops reading the socket instead).
+                    let stated =
+                        session.stream_window != 0 && session.conn_window >= session.stream_window;
+                    if session.multiplexes() && !stated {
+                        return Err(Fault::Order("a multiplexing SESSION states no window"));
                     }
                     self.credit = Some(Credit::new(session));
                     self.in_use = InUse::begun(&session);
@@ -491,8 +495,8 @@ pub(crate) mod reference {
     pub(crate) fn begin(multiplex: bool) -> Script {
         Script::default().item(Out::Session(Session {
             flags: if multiplex { S_MULTIPLEX } else { 0 },
-            stream_window: 1 << 20,
-            conn_window: if multiplex { 4 << 20 } else { 1 << 20 },
+            stream_window: if multiplex { 1 << 20 } else { 0 },
+            conn_window: if multiplex { 4 << 20 } else { 0 },
             _r: 0,
         }))
     }

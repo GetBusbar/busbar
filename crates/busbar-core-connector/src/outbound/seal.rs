@@ -285,13 +285,21 @@ impl Slots {
         if self.stream != Some(sealed.stream) || self.slots.is_empty() {
             return Err(SealBreach::WrongStream);
         }
-        let slot = self
-            .slots
-            .get_mut(sealed.slot as usize)
-            .ok_or(SealBreach::UnknownSlot)?;
+        let index = sealed.slot as usize;
+        if index >= self.slots.len() {
+            return Err(SealBreach::UnknownSlot);
+        }
         if sealed.len == 0 {
             return Err(SealBreach::Empty);
         }
+        // Slots ascending: a slot is begun only when every slot before it is covered whole.
+        if self.slots[..index]
+            .iter()
+            .any(|lower| (lower.covered as usize) < lower.value.len())
+        {
+            return Err(SealBreach::OutOfOrder);
+        }
+        let slot = &mut self.slots[index];
         if sealed.offset != slot.covered {
             return Err(SealBreach::OutOfOrder);
         }
@@ -641,5 +649,40 @@ mod tests {
         let mut fields = head();
         let slots = Slots::take_from(&mut fields).unwrap();
         assert_eq!(format!("{slots:?}"), "Slots(1 sealed)");
+    }
+
+    #[test]
+    fn slots_are_covered_in_ascending_order() {
+        let mut fields = vec![
+            ("authorization".to_owned(), b"Bearer t".to_vec()),
+            ("busbar-sealed-fields".to_owned(), b"authorization".to_vec()),
+            ("busbar-sealed-query".to_owned(), b"key=abc".to_vec()),
+        ];
+        let mut slots = Slots::take_from(&mut fields).unwrap();
+        slots.bind(1);
+        assert_eq!(
+            slots.cover(sealed(1, 1, 0, 3)).err(),
+            Some(SealBreach::OutOfOrder),
+            "the query slot before the header slot is whole"
+        );
+        slots.cover(sealed(1, 0, 0, 8)).unwrap();
+        slots.cover(sealed(1, 1, 0, 3)).unwrap();
+        assert!(slots.covered());
+    }
+
+    #[test]
+    fn an_empty_sealed_value_is_a_slot_with_nothing_to_cover() {
+        let mut fields = vec![("busbar-sealed-query".to_owned(), b"key=".to_vec())];
+        let mut slots = Slots::take_from(&mut fields).unwrap();
+        slots.bind(1);
+        assert_eq!(slots.len(), 1);
+        assert!(
+            slots.covered(),
+            "the transport appends `key=` and marks nothing"
+        );
+        assert_eq!(
+            slots.cover(sealed(1, 0, 0, 1)).err(),
+            Some(SealBreach::PastEnd)
+        );
     }
 }

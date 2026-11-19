@@ -143,15 +143,21 @@ impl Credit {
     }
 
     /// Whether the engine reads the socket now. A multiplexed session is always read: the windows
-    /// bound what can arrive. A session with one stream is read while its reader is not a whole
-    /// stream window behind.
+    /// it stated bound what can arrive. A session with one stream states no window: the engine
+    /// reads the socket only when its one reader holds nothing, so what it holds is what one read
+    /// of the socket became, and no figure of the engine's own is needed.
     pub(crate) fn reads_socket(&self) -> bool {
-        self.multiplexes() || self.outstanding < u64::from(self.session.stream_window)
+        self.multiplexes() || self.outstanding == 0
     }
 
     /// How many body bytes the engine may emit on a stream now. `stream_unsent` = the stream's
     /// bytes queued and not yet taken by the socket; `conn_unsent` = the same over the connection.
+    /// A session with one stream states no window: its body goes while the socket queue is empty
+    /// (`u64::MAX`: the caller's own piece size is the bound) and waits while it is not.
     pub(crate) fn write_room(&self, stream_unsent: u64, conn_unsent: u64) -> u64 {
+        if !self.multiplexes() {
+            return if conn_unsent == 0 { u64::MAX } else { 0 };
+        }
         let by_stream = u64::from(self.session.stream_window).saturating_sub(stream_unsent);
         let by_conn = u64::from(self.session.conn_window).saturating_sub(conn_unsent);
         by_stream.min(by_conn)
@@ -192,8 +198,8 @@ mod tests {
     fn h1() -> Credit {
         Credit::new(Session {
             flags: 0,
-            stream_window: MIB,
-            conn_window: MIB,
+            stream_window: 0,
+            conn_window: 0,
             _r: 0,
         })
     }
@@ -328,5 +334,13 @@ mod tests {
         credit.taken(&mut stream, 1_000);
         assert_eq!(stream.held(), 0);
         assert_eq!(credit.over(&mut stream), Some(10));
+    }
+
+    #[test]
+    fn a_session_with_one_stream_sends_its_body_while_the_socket_queue_is_empty() {
+        let credit = h1();
+        assert_eq!(credit.write_room(0, 0), u64::MAX);
+        assert_eq!(credit.write_room(0, 1), 0);
+        assert_eq!((credit.stream_bound(), credit.connection_bound()), (0, 0));
     }
 }
