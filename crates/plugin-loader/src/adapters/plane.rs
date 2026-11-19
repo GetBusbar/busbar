@@ -2597,8 +2597,6 @@ mod fallback_tests;
 mod route_item_tests {
     use super::*;
 
-    const POST: u32 = busbar_contract::route::METHOD_POST;
-
     fn chat_route(r: &mut Reply) {
         let rec = p::RouteRec {
             route: 1,
