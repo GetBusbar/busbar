@@ -65,7 +65,17 @@ pub struct AdminRequest {
     pub method: String,
     pub path: String,
     pub query: String,
-    pub headers: Vec<(String, Vec<u8>)>,
+    /// The request's head fields as they arrived, credential carriers included: [`answer`] strips
+    /// them before anything is handed to the plane.
+    pub headers: axum::http::HeaderMap,
+    /// The carriers the admin gate consumed judging this request (its `ConsumedCredentials`
+    /// extension): every one is stripped from the head the plane is handed, as the data router
+    /// strips them, and the gate's hold on the caller credential is released before the plane
+    /// is entered. `None`: the gate judged nothing (the floor still applies).
+    pub consumed: Option<crate::auth::ConsumedCredentials>,
+    /// Who the admin gate admitted (its `AuthPrincipal` extension): the subject the plane's
+    /// admin route is served as, and so the principal every audit row it states is written under.
+    pub principal: crate::auth::AuthPrincipal,
     pub body: bytes::Bytes,
     pub request_id: u64,
     pub now_s: u64,
@@ -112,10 +122,16 @@ pub async fn answer(seats: &[PortSeat], request: AdminRequest) -> Option<AdminAn
         path,
         query,
         headers,
+        consumed: _,
+        principal: _,
         body,
         request_id,
         now_s,
     } = request;
+    let headers = headers
+        .iter()
+        .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
+        .collect();
     let input = ServeIn {
         request,
         admission: None,
