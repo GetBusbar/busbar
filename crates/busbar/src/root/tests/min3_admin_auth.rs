@@ -352,3 +352,42 @@ fn a_role_named_as_the_operator_principal_is_refused_by_validation() {
         "expected the reserved-role-name refusal; got: {errs:?}"
     );
 }
+
+/// SECURITY-OWED `an_unregistered_auth_module_is_refused_with_the_1_5_5_bytes` (ci/owed/cut-root):
+/// an identity provider naming an auth module nothing answers, with the plugin subsystem off, is
+/// refused before anything opens, in the words v1.5.5 printed (golden cell BOOT-133). The deleted
+/// test reached the refusal with the old linked auth axis installed; here only the native
+/// operator is bound, so the built-ins the refusal lists are the native ones. If they differ from
+/// v1.5.5's this test is red and the difference is the owner's to accept or fix.
+#[test]
+fn an_unregistered_auth_module_is_refused_with_the_1_5_5_words_on_the_native_binding() {
+    const GOLDEN: &str = include_str!(concat!(
+        env!("BUSBAR_CORE_DIR"),
+        "/../../testing/shadow-oracle/golden/1.5.5/cells/boot.refusal__BOOT-133__boot.json"
+    ));
+    let cell: serde_json::Value = serde_json::from_str(GOLDEN).expect("the golden cell parses");
+    let golden = cell["effects"]["stderr"]
+        .as_str()
+        .expect("the cell records stderr")
+        .lines()
+        .find_map(|line| line.strip_prefix("[error] "))
+        .expect("an [error] line")
+        .to_string();
+
+    let _native = OperatorReload::new();
+    let mut providers = busbar_kernel::config::IdentityProviders::new();
+    let definition: busbar_kernel::config::IdentityProviderCfg =
+        busbar_contract::yaml::from_str("module: oidc").expect("a provider definition");
+    providers.insert("oracle-oidc".to_string(), definition);
+    let refused = busbar_kernel::preflight::plugins_preflight(
+        None,
+        None,
+        &providers,
+        &std::collections::HashMap::new(),
+        &busbar_kernel::config::PluginsCfg::default(),
+        &busbar_kernel::config::ExportCfg::default(),
+    )
+    .err()
+    .expect("an unregistered auth module is refused");
+    assert_eq!(refused, golden);
+}
