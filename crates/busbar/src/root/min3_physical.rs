@@ -383,6 +383,7 @@ pub(crate) fn assemble_slot(
         routes,
         refusals,
         refuse_by_path,
+        unchained,
     } = mounts;
     let plugins = app.plugin_routes.for_listener(&guests);
     let prepared = PreparedListener::new(
@@ -433,8 +434,13 @@ pub(crate) fn assemble_slot(
                     .ok_or_else(|| {
                         format!("{instance}: physical line has no actual native route")
                     })?;
-                let LineAuth::Chain(names, _) = &line.auth else {
-                    return Err("native principal route has no resolved native auth chain".into());
+                // A line with no chain on the guest list (a route the data chain does not gate)
+                // is bound under the chain its data mounts resolved for it.
+                let names = match &line.auth {
+                    LineAuth::Chain(names, _) => names,
+                    LineAuth::None => unchained
+                        .get(&(instance.clone(), line.route.rung))
+                        .ok_or("native plane route has no resolved native auth chain")?,
                 };
                 RouteBinding::plane(
                     line.clone(),
