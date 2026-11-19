@@ -236,8 +236,12 @@ fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
 #[test]
 fn a_rendering_stamped_with_another_mechanism_is_refused_and_core_is_admitted() {
     use busbar_plugin_abi::versions::CORE;
+    let st = busbar_contract::abi::mechanism::door::Statement {
+        kind: KindCode::Secret as u32,
+        ..statement("the-plugin", "1.0.0", 1)
+    };
     // SAFETY: a Statement with no lists.
-    let stated = unsafe { render(&statement("the-plugin", "1.0.0", 1)) }.unwrap();
+    let stated = unsafe { render(&st) }.unwrap();
     assert_eq!(stated[8..12], CORE.to_le_bytes(), "the renderer stamps CORE");
     let stamped = |mechanism: u32| {
         let mut bytes = stated.clone();

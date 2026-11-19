@@ -504,12 +504,18 @@ pub(super) fn refuse_prepared(
     // names no layer at all.
     let reason = failed.reason();
     let busbar_kernel::auth::native_data::DataPreparationFailed::Denied(denial) = failed else {
-        tracing::warn!(?reason, "a data preparation ended with no answer (not a denial)");
+        tracing::warn!(
+            ?reason,
+            "a data preparation ended with no answer (not a denial)"
+        );
         return Err(InputError::Invalid);
     };
     let binding = request.binding().clone();
     let Some(refusal) = reason.refusal(super::answer::presented(&binding, route.withheld())) else {
-        tracing::warn!(?reason, "a data preparation denial has no refusal row: no answer");
+        tracing::warn!(
+            ?reason,
+            "a data preparation denial has no refusal row: no answer"
+        );
         return Err(InputError::Invalid);
     };
     let response = if reason.after_verification() {

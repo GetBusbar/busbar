@@ -395,10 +395,18 @@ fn plane_block(settings: &str) -> Settled {
 /// price, a route binding or an audience.
 #[test]
 fn a_settled_plane_block_keeps_cores_own_words_in_its_section() {
-    let applied = apply(PLANE_WITH_CORE_WORDS, &[plane_block(r#"{"format":2}"#)], false).unwrap();
+    let applied = apply(
+        PLANE_WITH_CORE_WORDS,
+        &[plane_block(r#"{"format":2}"#)],
+        false,
+    )
+    .unwrap();
     let doc = tree(&applied);
     let written: Value = yaml::from_str(PLANE_WITH_CORE_WORDS).unwrap();
-    assert!(doc.at("plane").get("old").is_none(), "the plane's bag is replaced");
+    assert!(
+        doc.at("plane").get("old").is_none(),
+        "the plane's bag is replaced"
+    );
     assert_eq!(doc.at("plane").get("format"), Some(&json("2")));
     for key in [
         "insecure_transport",

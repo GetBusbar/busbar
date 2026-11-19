@@ -9,7 +9,7 @@ use std::sync::Arc;
 use busbar_core_connector::framed_stream::session::{self, Inbound, Wiring};
 use busbar_core_connector::listen::{Admits, Admitted};
 use busbar_kernel::inbound::native::StreamOwner;
-use busbar_plugin_abi::transport::{CR_DRAIN, CR_NORMAL, CR_TIMEOUT};
+use busbar_plugin_abi::transport::{CR_DRAIN, CR_NORMAL, CR_REVOKED, CR_TIMEOUT};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 
