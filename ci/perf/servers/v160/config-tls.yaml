@@ -13,7 +13,7 @@ identity-providers:
 auth:
   chain: [anonymous]       # 1.6.0's named open relay (v155: chain: [], unauthenticated); no group, no budget
   role_bindings:
-    anonymous: { "*": {} }   # the empty binding: every pool, no group, no budget (docs/migration-1.6.md, Grants and hooks)
+    anonymous: { "*": { allowed_pools: [default] } }   # names a scope (an empty binding is refused, BUSBAR-3114): the one pool the chat route uses
   admin_auth:
     - admin-tokens
 providers:
