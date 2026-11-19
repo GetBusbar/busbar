@@ -28,7 +28,7 @@ use crate::work_count::{self, Work};
 
 pub use crate::services::Reading; // { wall_ns: u64, mono_ns: u64 }, unchanged
 
-mod os {
+pub(crate) mod os {
     //! The engine's one reader of the operating-system clock (GROUP-time 3.2 `host_side::clock`,
     //! held here while the plugin boundary is frozen).
 
@@ -220,17 +220,9 @@ impl HostClock {
     /// `os::origin()`; reads nothing).
     #[must_use]
     pub fn instant(&self, at: Deadline) -> Instant {
-        let origin = os::origin();
-        origin
-            .checked_add(Duration::from_nanos(at.mono_ns()))
-            .or_else(|| origin.checked_add(FAR_FUTURE))
-            .unwrap_or(origin)
+        crate::mono_instant::instant_at(at.mono_ns())
     }
 }
-
-/// Where `instant` puts `NEVER` (and any deadline past what an `Instant` can hold): about 136 years
-/// after the origin.
-const FAR_FUTURE: Duration = Duration::from_secs(1 << 32);
 
 /// How a blocking wait ended.
 #[derive(Debug)]
