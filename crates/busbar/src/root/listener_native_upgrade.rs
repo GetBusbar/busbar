@@ -149,3 +149,36 @@ pub(super) async fn prepare(
         }
     })
 }
+
+/// What core does with a verified upgrade request before any 101 (§12.27 steps 1 and 2).
+pub(super) struct UpgradeTerms {
+    /// Core's refusal: answered only to a verified caller, rendered by the route's plane.
+    pub(super) refused: Option<Refusal>,
+    /// The websocket transport the connection is handed to; `None` exactly when refused.
+    pub(super) carrier: Option<crate::root::min3_boot::transports::ServedTransport>,
+}
+
+/// Judges a verified upgrade request: `asks` = its head asks to switch to websocket, `websocket`
+/// = the listener's admitted websocket transport, `stream` = the stream it arrived on.
+pub(super) fn judge(
+    asks: bool,
+    websocket: Option<&crate::root::min3_boot::transports::ServedTransport>,
+    stream: u64,
+) -> UpgradeTerms {
+    let _ = stream;
+    match port_mount::upgrade_step(asks, websocket) {
+        UpgradeStep::Refuse(_) if !asks => UpgradeTerms {
+            refused: Some(Refusal::NotAnUpgrade),
+            carrier: None,
+        },
+        // No hand-over is linked: every admitted upgrade is refused 501.
+        UpgradeStep::Refuse(_) | UpgradeStep::HandOver(_) => UpgradeTerms {
+            refused: Some(Refusal::NoUpgradeTransport),
+            carrier: None,
+        },
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/listener_native_upgrade.rs"]
+mod tests;
