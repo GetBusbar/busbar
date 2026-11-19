@@ -854,7 +854,10 @@ fn a_challenge_is_resolved_once_at_mount() {
             "Bearer resource_metadata=\"https://gw.example/.well-known/reference\"".into()
         ))
     );
-    assert_eq!(route.record.mounted_challenge(None), Err(()));
+    assert_eq!(
+        route.record.mounted_challenge(None),
+        Err(crate::auth::route_record::NoPublicUrl)
+    );
     let plain = reference(Admission::Walk);
     assert_eq!(plain.record.mounted_challenge(None), Ok(None));
 }

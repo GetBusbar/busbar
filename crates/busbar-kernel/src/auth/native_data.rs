@@ -10,7 +10,6 @@ use std::time::Instant;
 
 use busbar_contract::records::VirtualKey;
 use busbar_contract::services::Caller;
-use busbar_plugin_abi::plane::AUTH_PRINCIPAL;
 use busbar_ports::CallCx;
 
 use super::admission_table::{admission_of, Admission, NotMounted, Offered, Policy, Verified};

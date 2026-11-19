@@ -173,7 +173,7 @@ mod tests {
             instance: instance.into(),
             counterparty: counterparty.into(),
             item: item.map(str::to_owned),
-            state: busbar_kernel::trust::book::KeyState::default(),
+            state: busbar_kernel::trust::book::KeyState::New,
             approved: None,
             seen: Some(FP.into()),
         }

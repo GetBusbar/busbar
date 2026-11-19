@@ -204,6 +204,11 @@ pub enum CallerState {
     Distinct,
 }
 
+/// A route's challenge names the plane's public URL and the operator configured none (or one
+/// that is not a header value): the route is not mounted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoPublicUrl;
+
 /// `{public_url}` in a challenge text: replaced once, at mount, with the plane instance's own
 /// public URL (its `D_PUBLIC_URL_PATH` setting), never per request.
 pub const CHALLENGE_PUBLIC_URL: &str = "{public_url}";
@@ -423,19 +428,22 @@ impl RouteRecord {
     /// The challenge core sends on this route's 401, with the plane instance's public URL written
     /// in. `Err` when the text asks for a public URL the operator did not configure: that route
     /// is not mounted (the operator's configuration does not meet its need).
-    pub fn mounted_challenge(&self, public_url: Option<&str>) -> Result<Option<Box<str>>, ()> {
+    pub fn mounted_challenge(
+        &self,
+        public_url: Option<&str>,
+    ) -> Result<Option<Box<str>>, NoPublicUrl> {
         let Some(challenge) = &self.challenge else {
             return Ok(None);
         };
         if !challenge.contains(CHALLENGE_PUBLIC_URL) {
             return Ok(Some(challenge.clone()));
         }
-        let url = public_url.ok_or(())?.trim_end_matches('/');
+        let url = public_url.ok_or(NoPublicUrl)?.trim_end_matches('/');
         let text = challenge.replacen(CHALLENGE_PUBLIC_URL, url, 1);
         if header_value(&text) {
             Ok(Some(text.into_boxed_str()))
         } else {
-            Err(())
+            Err(NoPublicUrl)
         }
     }
 
