@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 const ADMIN_TOKEN: &str = "min3-images-operator-token";
 const MODEL: &str = "min3-test-model";
-const PLANE_SECTIONS: &str = include_str!("fixtures/law7_plane_sections.yaml");
+const PLANE_SECTIONS: &str = include_str!("fixtures/front_door_plane_section.yaml");
 
 /// The data chain the boot test writes. `Keys`: the engine's own key verifier, its signing key generated for this run
 /// by the binary under test (`--generate-signing-key`), every data request carrying a key the operator minted. `Empty`:
@@ -59,8 +59,8 @@ impl Node {
         Self::boot_with_planes(upstream, operator, false)
     }
 
-    /// `planes`: add the four plane sections of `fixtures/law7_plane_sections.yaml` (mcp, tools, agents, streams) and
-    /// the data listener's `public_url`, so every linked plane mounts its routes.
+    /// `planes`: add the mcp plane section of `fixtures/front_door_plane_section.yaml` and the data listener's
+    /// `public_url`, so the routes whose challenge names the plane's public URL are mounted too.
     fn boot_with_planes(upstream: Option<u16>, operator: bool, planes: bool) -> Self {
         let dir = workdir();
         let (data, admin) = (boot::free_port(), boot::free_port());
@@ -91,6 +91,7 @@ impl Node {
                 .current_dir(&dir)
                 .env("BUSBAR_CONFIG", dir.join("config.yaml"))
                 .env("MOCK_KEY", "mock-upstream-key")
+                .env("RUST_LOG", "debug")
                 .stdout(log.try_clone().expect("the boot log"))
                 .stderr(log)
                 .spawn()
@@ -396,8 +397,9 @@ fn assert_instance(node: &Node, kind: &str, identity: &str) {
 
 #[test]
 fn the_data_listener_is_served_by_the_linked_http_image_over_http1_and_http2() {
-    // `Node::boot` waited for HTTP/1.1 `/healthz`; no operator, no provider: only the transport is under test.
-    let node = Node::boot(None, false);
+    // `Node::boot` waited for HTTP/1.1 `/healthz`; no provider: only the transport is under test. The operator
+    // credential is there because the key chain needs one to mint a key (BUSBAR-3115).
+    let node = Node::boot(None, true);
     assert!(
         node.log().contains("busbar listening"),
         "the data listener came up; log:\n{}",
@@ -411,26 +413,63 @@ fn the_data_listener_is_served_by_the_linked_http_image_over_http1_and_http2() {
     );
 }
 
-/// A default configuration (no `identity-providers`, no `auth.admin_auth`) boots with no operator credential: the
-/// default admin chain's operator position is unset, the boot log says so, and the admin plane fails closed, as 1.5.5
-/// did with no admin token: every admin request is 401, whatever token it presents.
-#[test]
-fn with_no_operator_credential_the_default_boots_and_the_admin_plane_refuses_every_request() {
-    let node = Node::boot(None, false);
-    assert!(
-        node.log().contains("has no admin credential configured"),
-        "the boot log tells the operator the admin plane is closed; log:\n{}",
-        node.log()
+/// Boot the configuration written in `dir` and expect it refused: neither listener ever accepts, the process exits
+/// unsuccessfully, and no listener came up. The boot log.
+fn boot_is_refused(dir: &Path, data: u16, admin: u16) -> String {
+    let log = std::fs::File::create(dir.join("out.log")).expect("the boot log");
+    let mut process = boot::Reap(
+        Command::new(boot::exe())
+            .current_dir(dir)
+            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+            .stdout(log.try_clone().expect("the boot log"))
+            .stderr(log)
+            .spawn()
+            .expect("boot the default binary"),
     );
-    for headers in ["", "Authorization: Bearer any-token-at-all\r\n"] {
-        let (status, body) = exchange(node.admin, "GET", "/api/v1/admin/info", headers, b"");
-        assert_eq!(
-            status,
-            401,
-            "no admin credential configured: refused ({headers:?}): {body}; log:\n{}",
-            node.log()
+    let read_log = || std::fs::read_to_string(dir.join("out.log")).unwrap_or_default();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        for (port, which) in [(admin, "admin"), (data, "data")] {
+            assert!(
+                TcpStream::connect(("127.0.0.1", port)).is_err(),
+                "the {which} listener accepted a connection on a boot that must be refused; log:\n{}",
+                read_log()
+            );
+        }
+        if let Some(status) = process.try_wait().expect("try_wait") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the boot neither served nor stopped; log:\n{}",
+            read_log()
         );
-    }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let log = read_log();
+    let _ = std::fs::remove_dir_all(dir);
+    assert!(!status.success(), "the boot is refused; log:\n{log}");
+    assert!(
+        !log.contains("busbar listening"),
+        "no listener came up; log:\n{log}"
+    );
+    log
+}
+
+/// A configuration with no operator credential (no `identity-providers`, no `auth.admin_auth`) and the key chain is
+/// refused at boot: nobody could mint a key, so the data plane would refuse every request (BUSBAR-3115), and the admin
+/// plane never serves. (Before 2723c6e305 refused the empty chain this default booted with `chain: []` and answered
+/// every admin request 401; neither listener now accepts at all.)
+#[test]
+fn with_no_operator_credential_the_key_chain_is_refused_and_no_listener_accepts() {
+    let dir = workdir();
+    let (data, admin) = (boot::free_port(), boot::free_port());
+    write_configs(&dir, data, admin, None, None, Chain::Keys, "");
+    let log = boot_is_refused(&dir, data, admin);
+    assert!(
+        log.contains("BUSBAR-3115"),
+        "the refusal says no admin credential can mint a key; log:\n{log}"
+    );
 }
 
 #[test]
@@ -448,7 +487,12 @@ fn the_admin_listener_is_served_by_the_linked_http_image_and_lists_it_as_a_trans
         "Authorization: Bearer not-the-operator-token\r\n",
         b"",
     );
-    assert_eq!(wrong, 401, "another token is refused on the admin listener");
+    assert_eq!(
+        wrong,
+        401,
+        "another token is refused on the admin listener; log:\n{}",
+        node.log()
+    );
     assert_instance(&node, "transport", "busbar-transport-http");
 }
 
@@ -509,43 +553,7 @@ fn an_operator_credential_that_cannot_open_stops_the_boot_before_any_listener_ac
         Chain::Keys,
         "",
     );
-    let log = std::fs::File::create(dir.join("out.log")).expect("the boot log");
-    let mut process = boot::Reap(
-        Command::new(boot::exe())
-            .current_dir(&dir)
-            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .stdout(log.try_clone().expect("the boot log"))
-            .stderr(log)
-            .spawn()
-            .expect("boot the default binary"),
-    );
-    let read_log = || std::fs::read_to_string(dir.join("out.log")).unwrap_or_default();
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let status = loop {
-        for (port, which) in [(admin, "admin"), (data, "data")] {
-            assert!(
-                TcpStream::connect(("127.0.0.1", port)).is_err(),
-                "the {which} listener accepted while the operator's instance is unopened; log:\n{}",
-                read_log()
-            );
-        }
-        if let Some(status) = process.try_wait().expect("try_wait") {
-            break status;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the boot neither served nor stopped; log:\n{}",
-            read_log()
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    let log = read_log();
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(!status.success(), "the boot is refused; log:\n{log}");
-    assert!(
-        !log.contains("busbar listening"),
-        "no listener came up; log:\n{log}"
-    );
+    let log = boot_is_refused(&dir, data, admin);
     assert!(
         log.contains("serving auth"),
         "the boot stops at the operator instance's open, before listener assembly; log:\n{log}"
@@ -558,47 +566,14 @@ fn an_operator_credential_that_cannot_open_stops_the_boot_before_any_listener_ac
 fn an_empty_data_chain_is_refused_at_boot_before_any_listener_accepts() {
     let dir = workdir();
     let (data, admin) = (boot::free_port(), boot::free_port());
-    write_configs(&dir, data, admin, None, None, Chain::Empty, "");
-    let log = std::fs::File::create(dir.join("out.log")).expect("the boot log");
-    let mut process = boot::Reap(
-        Command::new(boot::exe())
-            .current_dir(&dir)
-            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
-            .stdout(log.try_clone().expect("the boot log"))
-            .stderr(log)
-            .spawn()
-            .expect("boot the default binary"),
-    );
-    let read_log = || std::fs::read_to_string(dir.join("out.log")).unwrap_or_default();
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let status = loop {
-        for (port, which) in [(admin, "admin"), (data, "data")] {
-            assert!(
-                TcpStream::connect(("127.0.0.1", port)).is_err(),
-                "the {which} listener accepted with an empty data chain; log:\n{}",
-                read_log()
-            );
-        }
-        if let Some(status) = process.try_wait().expect("try_wait") {
-            break status;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the boot neither served nor stopped; log:\n{}",
-            read_log()
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    let log = read_log();
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(!status.success(), "the boot is refused; log:\n{log}");
+    // With the operator credential, so the refusal is the empty chain's and no other.
+    let digest = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes());
+    let settings = format!("{{ sha256: \"{digest}\" }}");
+    write_configs(&dir, data, admin, Some(&settings), None, Chain::Empty, "");
+    let log = boot_is_refused(&dir, data, admin);
     assert!(
-        log.contains("BUSBAR-9007"),
-        "the refusal names the empty chain; log:\n{log}"
-    );
-    assert!(
-        !log.contains("busbar listening"),
-        "no listener came up; log:\n{log}"
+        log.contains("auth.chain is empty: no verifier"),
+        "the refusal names the empty chain (BUSBAR-9007); log:\n{log}"
     );
 }
 
