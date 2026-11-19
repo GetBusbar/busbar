@@ -958,13 +958,7 @@ mod declare_open_refusals {
                 .expect("the need");
         }
         let far = format!("http://{addr}/token");
-        let token = |fields| OpenDesc {
-            fields,
-            method: b"POST",
-            head_target: b"/token",
-            body: Bytes::from_static(b"grant_type=authorization_code"),
-            ..desc(&far)
-        };
+        let far = far.as_str();
         for host in ["host", "Host", "HOST", " host"] {
             let fields: &[(&str, &[u8])] = &[
                 (
@@ -974,7 +968,7 @@ mod declare_open_refusals {
                 (host, b"idp.example.com".as_slice()),
             ];
             assert_eq!(
-                open(&connector, OWNER, NEED, &token(fields)),
+                open(&connector, OWNER, NEED, &token(far, fields)),
                 Err(ConnError::Refused),
                 "the auth instance's own {host:?} field"
             );
