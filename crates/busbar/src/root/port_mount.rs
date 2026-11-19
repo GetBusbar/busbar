@@ -91,11 +91,12 @@ pub(crate) fn auth_of(effective: u32) -> RouteAuth {
     }
 }
 
-/// The effective chain of each route that declares D_ROUTE_CRED_HEADER (§12.11), by plane instance
-/// and route id: resolved once per candidate, kept by the listener plan's assembly only.
+/// The routes whose effective chain is not the data chain (§12.11), by plane instance and route id:
+/// `Some(chain)`, or `None` for a route that is not served (not mounted at all). Resolved once per
+/// candidate, kept by the listener plan's assembly only.
 pub(crate) type RouteChains = std::collections::BTreeMap<
     String,
-    std::collections::BTreeMap<u32, Vec<super::serve::ChainAuth>>,
+    std::collections::BTreeMap<u32, Option<Vec<super::serve::ChainAuth>>>,
 >;
 
 /// The same native route table admitted by the driver seals physical listener claims. The
@@ -120,6 +121,12 @@ pub(crate) fn guest_lines(
                 .iter()
                 .chain(&routes.upgrade)
                 .filter_map(move |route| {
+                    // A route that is not served is not mounted (§12.11 as ruled).
+                    let chain = match own.and_then(|own| own.get(&route.route)) {
+                        Some(None) => return None,
+                        Some(Some(own)) => own.as_slice(),
+                        None => chain,
+                    };
                     let methods = methods_of(route.methods)
                         .into_iter()
                         .fold(0, |mask, method| mask | method_bit(method.as_str()));
@@ -138,10 +145,7 @@ pub(crate) fn guest_lines(
                         claimant: Claimant::Plane(seat.instance.clone()),
                         dialect: 0,
                         auth: if auth_of(route.effective) == RouteAuth::Key {
-                            super::serve::chain_auth(
-                                own.and_then(|own| own.get(&route.route))
-                                    .map_or(chain, Vec::as_slice),
-                            )
+                            super::serve::chain_auth(chain)
                         } else {
                             LineAuth::None
                         },

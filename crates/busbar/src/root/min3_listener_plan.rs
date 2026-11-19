@@ -132,7 +132,7 @@ impl NativeListenerPlan {
                     return Err("native served ports have no retained boot owners".into());
                 }
                 let chain = configured_chain(app, owners)?;
-                let route_chains = route_chains(served, owners, &chain)?;
+                let route_chains = route_chains(app, served, owners)?;
                 let mounts = super::serve::door_mounts_planned(
                     served.clone(),
                     || super::kernel::ROOT_CARD.pin(),
@@ -147,6 +147,14 @@ impl NativeListenerPlan {
                 // are unsupported by the actual HTTP mount. Assembly will check full masks.
                 for seat in &served.ports {
                     for route in served_routes(seat) {
+                        // A route that is not served is not mounted, by the ruling above.
+                        let not_served = route_chains
+                            .get(&seat.instance)
+                            .and_then(|routes| routes.get(&route.route))
+                            .is_some_and(Option::is_none);
+                        if not_served {
+                            continue;
+                        }
                         if !guests.lines().iter().any(|line| {
                             matches!(&line.claimant, busbar_kernel::guest::Claimant::Plane(instance) if instance == &seat.instance)
                                 && line.route.rung == route.route
@@ -219,50 +227,159 @@ fn configured_chain(app: &App, owners: &SlotOwners) -> Result<Vec<ChainAuth>, St
     chain_points(owners, &config.data_chain)
 }
 
-/// §12.11 "Route credential header" (round 23): a served route that declares D_ROUTE_CRED_HEADER
-/// `h` runs, on that route only, every opened auth instance whose image declares D_CRED_HEADER `h`,
-/// in the order they were opened; none is a refusal naming the route. Those instances never join
-/// the data chain, and the data chain never runs on such a route. (`routes.<id>.auth_instances`,
-/// the rule's first arm, is not parsed by this candidate: no route names one.)
+/// One opened auth instance as the route rule reads it: its configured name and the D_CRED_HEADER
+/// names its image declares.
+pub(crate) struct Reader<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) cred_headers: &'a [Box<str>],
+}
+
+impl Reader<'_> {
+    fn reads(&self, header: &str) -> bool {
+        self.cred_headers
+            .iter()
+            .any(|declared| declared.eq_ignore_ascii_case(header))
+    }
+}
+
+/// The routes whose effective chain is not the data chain: by plane instance and route id, the
+/// chain's instance names (`Some`), or `None` for a route that is not served.
+pub(crate) type RouteNames = BTreeMap<String, BTreeMap<u32, Option<Vec<String>>>>;
+
+/// §12.11 "Route credential header", as the engine owner ruled it (a configuration must boot: a
+/// route no opened instance can judge is not mounted, fail closed; the boot refuses only an explicit
+/// operator mistake). For each served plane route, first match wins:
+/// 1. the operator's `<plane>.routes.<id>.auth_instances`: each name must be an opened auth instance
+///    and, on a route that declares D_ROUTE_CRED_HEADER `h`, one whose image declares D_CRED_HEADER
+///    `h`; anything else refuses the candidate naming the route;
+/// 2. the route declares `h`: every opened instance whose image declares `h`, in opening order;
+///    when none does, the route is **not served** (`None`): it is not mounted, and a request to it is
+///    answered exactly as a request to no route is;
+/// 3. otherwise the data chain (no entry).
+///
+/// An explicit entry for a route id the plane instance does not declare refuses the candidate.
+/// Instances chosen by arm 2 never join the data chain.
+pub(crate) fn plan_route_names<'a>(
+    routes: impl IntoIterator<
+        Item = (
+            &'a str,
+            &'a busbar_kernel::plane_driver::port_routes::Mounted,
+        ),
+    >,
+    readers: &[Reader<'_>],
+    explicit: &busbar_kernel::config::min3::RouteAuthInstances,
+) -> Result<RouteNames, String> {
+    let mut out = RouteNames::new();
+    let mut declared = std::collections::BTreeSet::new();
+    for (instance, route) in routes {
+        declared.insert((instance, route.route));
+        let header = route.cred_header.as_deref();
+        let names = match explicit.get(&(Box::from(instance), route.route)) {
+            Some(names) => {
+                let mut chain = Vec::with_capacity(names.len());
+                for name in names {
+                    let reader = readers
+                        .iter()
+                        .find(|reader| reader.name == &**name)
+                        .ok_or_else(|| {
+                            format!(
+                                "{instance}.routes.{}.auth_instances names '{name}', which is not a configured auth instance",
+                                route.route
+                            )
+                        })?;
+                    if let Some(header) = header.filter(|header| !reader.reads(header)) {
+                        return Err(format!(
+                            "{instance}.routes.{}.auth_instances names '{name}', which does not read the route's credential header '{header}'",
+                            route.route
+                        ));
+                    }
+                    chain.push(name.to_string());
+                }
+                Some(chain)
+            }
+            None => {
+                let Some(header) = header else {
+                    continue;
+                };
+                let chain: Vec<String> = readers
+                    .iter()
+                    .filter(|reader| reader.reads(header))
+                    .map(|reader| reader.name.to_owned())
+                    .collect();
+                (!chain.is_empty()).then_some(chain)
+            }
+        };
+        out.entry(instance.to_owned())
+            .or_default()
+            .insert(route.route, names);
+    }
+    if let Some((instance, route)) = explicit
+        .keys()
+        .find(|(instance, route)| !declared.contains(&(&**instance, *route)))
+    {
+        return Err(format!(
+            "{instance}.routes.{route}: plane instance '{instance}' serves no route {route}"
+        ));
+    }
+    Ok(out)
+}
+
+/// The one line logged, at boot and on every apply, for a route that is not served.
+pub(crate) fn unserved_line(instance: &str, route: u32, header: &str) -> String {
+    format!(
+        "route '{instance}/{route}' is not served: no configured auth instance reads '{header}'"
+    )
+}
+
+/// The effective chains of `served`'s routes against this candidate's opened auth instances, and the
+/// routes not served, each logged once here (boot and apply both assemble through this).
 fn route_chains(
+    app: &App,
     served: &Served,
     owners: &SlotOwners,
-    data_chain: &[ChainAuth],
 ) -> Result<super::port_mount::RouteChains, String> {
-    use busbar_kernel::auth::route_chain::{effective_chain, ConfiguredAuth};
-    let configured: Vec<ConfiguredAuth<'_>> = owners
+    let config = app
+        .config_projection
+        .as_ref()
+        .and_then(|value| value.downcast_ref::<super::door_steps::DoorConfig>())
+        .ok_or("native listener has no actual root configuration projection")?;
+    let readers: Vec<Reader<'_>> = owners
         .auth
         .in_opened_order()
-        .map(|(name, instance)| ConfiguredAuth {
+        .map(|(name, instance)| Reader {
             name,
             cred_headers: instance.opened.port.cred_headers(),
         })
         .collect();
-    let data: Vec<&str> = data_chain.iter().map(|(name, _)| name.as_str()).collect();
+    let names = plan_route_names(
+        served
+            .ports
+            .iter()
+            .flat_map(|seat| served_routes(seat).map(move |route| (seat.instance.as_str(), route))),
+        &readers,
+        &config.route_auth_instances,
+    )?;
     let mut chains = super::port_mount::RouteChains::new();
     for seat in &served.ports {
+        let Some(routes) = names.get(&seat.instance) else {
+            continue;
+        };
         for route in served_routes(seat) {
-            let Some(header) = route.cred_header.as_deref() else {
+            let Some(names) = routes.get(&route.route) else {
                 continue;
             };
-            let id = route.route.to_string();
-            let names: Vec<String> = effective_chain(
-                busbar_kernel::auth::route_chain::RouteAuth {
-                    plane: &seat.instance,
-                    id: &id,
-                    cred_header: Some(header),
-                    auth_instances: None,
-                },
-                &configured,
-                &data,
-            )?
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
+            let chain = match names {
+                Some(names) => Some(chain_points(owners, names)?),
+                None => {
+                    let header = route.cred_header.as_deref().unwrap_or_default();
+                    tracing::warn!("{}", unserved_line(&seat.instance, route.route, header));
+                    None
+                }
+            };
             chains
                 .entry(seat.instance.clone())
                 .or_default()
-                .insert(route.route, chain_points(owners, &names)?);
+                .insert(route.route, chain);
         }
     }
     Ok(chains)

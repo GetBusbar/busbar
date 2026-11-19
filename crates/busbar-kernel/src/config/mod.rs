@@ -801,6 +801,11 @@ pub type PlaneFeesMap = std::collections::BTreeMap<String, busbar_kernel_ledger:
 /// the pre-pass and judged by [`min3::parse_min3`] with every other kind's.
 pub type PlaneInsecureTransport = std::collections::BTreeMap<String, busbar_contract::yaml::Value>;
 
+/// Each plane section's `routes` as written, by instance name: core's per-route operator keys
+/// (IF §12.11 `routes.<id>.auth_instances`), lifted off the section by the pre-pass so the plane never
+/// sees them, and judged by [`min3::parse_min3`].
+pub type PlaneRoutes = std::collections::BTreeMap<String, busbar_contract::yaml::Value>;
+
 /// A plane section's reserved `fees:` (#44: `{ per_request | per_session }`), in minor units; an
 /// absent key is a fee of 0. Never rounded, never divided — each is one flat fee per unit.
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -970,6 +975,10 @@ pub struct DeployCfg {
     /// [`RootCfg::min3`] keyed (instance name, instance name).
     #[serde(skip)]
     pub plane_insecure_transport: PlaneInsecureTransport,
+    /// Every plane section's `routes` (IF §12.11): core's key, lifted off that section like its
+    /// `insecure_transport`. [`min3::parse_min3`] judges it into [`RootCfg::min3`].
+    #[serde(skip)]
+    pub plane_routes: PlaneRoutes,
     /// THE RECOGNIZER MAP: each admitted plane instance's section by instance name
     /// ([`recognizer`], WP1-GAP-plane-sections r3), with its core-owned `rate_card`, `fees` and
     /// `insecure_transport` lifted off into [`DeployCfg::plane_rate_cards`],
@@ -2332,6 +2341,7 @@ impl std::fmt::Debug for DeployCfg {
             .field("plane_rate_cards", &self.plane_rate_cards)
             .field("plane_fees", &self.plane_fees)
             .field("plane_insecure_transport", &self.plane_insecure_transport)
+            .field("plane_routes", &self.plane_routes)
             .field("instance_sections", &self.instance_sections)
             .field("store", &self.store)
             .field("secrets", &self.secrets)

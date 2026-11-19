@@ -152,3 +152,127 @@ fn an_explicit_root_bind_cannot_disappear_from_native_plan() {
     )
     .is_err());
 }
+
+/// §12.11 "Route credential header" as the engine owner ruled it: an unread credential header leaves
+/// its route unmounted (never a boot refusal); the operator's explicit `routes.<id>.auth_instances` is
+/// the only refusal, and only for a name that is not an opened instance or does not read the header.
+mod route_credential_header {
+    use super::*;
+    use busbar_kernel::config::min3::RouteAuthInstances;
+    use busbar_kernel::plane_driver::port_routes::Mounted;
+
+    const TWILIO: &str = "x-twilio-signature";
+
+    fn route(id: u32, cred_header: Option<&str>) -> Mounted {
+        Mounted {
+            route: id,
+            methods: 1,
+            flags: 0,
+            auth: busbar_plugin_abi::plane::AUTH_PRINCIPAL,
+            effective: busbar_plugin_abi::plane::AUTH_PRINCIPAL,
+            pattern: format!("/r{id}").into(),
+            cred_header: cred_header.map(Box::from),
+            resource_kinds: Default::default(),
+            catalog: false,
+        }
+    }
+
+    fn explicit(names: &[&str]) -> RouteAuthInstances {
+        RouteAuthInstances::from([(
+            (Box::from("streaming"), 5),
+            names.iter().map(|name| Box::from(*name)).collect(),
+        )])
+    }
+
+    #[test]
+    fn a_header_no_opened_instance_reads_leaves_the_route_unmounted() {
+        let twilio = route(5, Some(TWILIO));
+        let plain = route(1, None);
+        let bearer: [Box<str>; 1] = [Box::from("authorization")];
+        let readers = [Reader {
+            name: "keys",
+            cred_headers: &bearer,
+        }];
+        let names = plan_route_names(
+            [("streaming", &twilio), ("streaming", &plain)],
+            &readers,
+            &RouteAuthInstances::new(),
+        )
+        .expect("the default configuration is never refused");
+        assert_eq!(names["streaming"][&5], None, "not served");
+        assert!(
+            !names["streaming"].contains_key(&1),
+            "a route without a header keeps the data chain"
+        );
+        assert_eq!(
+            unserved_line("streaming", 5, TWILIO),
+            "route 'streaming/5' is not served: no configured auth instance reads 'x-twilio-signature'"
+        );
+    }
+
+    #[test]
+    fn a_configured_instance_that_reads_the_header_mounts_the_route() {
+        let twilio = route(5, Some(TWILIO));
+        let headers: [Box<str>; 1] = [Box::from(TWILIO)];
+        let readers = [
+            Reader {
+                name: "keys",
+                cred_headers: &[],
+            },
+            Reader {
+                name: "twilio",
+                cred_headers: &headers,
+            },
+        ];
+        let names = plan_route_names(
+            [("streaming", &twilio)],
+            &readers,
+            &RouteAuthInstances::new(),
+        )
+        .unwrap();
+        assert_eq!(names["streaming"][&5], Some(vec!["twilio".to_owned()]));
+        // Named explicitly, it mounts the same way.
+        let names =
+            plan_route_names([("streaming", &twilio)], &readers, &explicit(&["twilio"])).unwrap();
+        assert_eq!(names["streaming"][&5], Some(vec!["twilio".to_owned()]));
+    }
+
+    #[test]
+    fn an_explicit_wrong_name_refuses_naming_the_route() {
+        let twilio = route(5, Some(TWILIO));
+        let headers: [Box<str>; 1] = [Box::from(TWILIO)];
+        let readers = [
+            Reader {
+                name: "keys",
+                cred_headers: &[],
+            },
+            Reader {
+                name: "twilio",
+                cred_headers: &headers,
+            },
+        ];
+        let missing =
+            plan_route_names([("streaming", &twilio)], &readers, &explicit(&["nope"])).unwrap_err();
+        assert!(
+            missing.contains("streaming.routes.5.auth_instances")
+                && missing.contains("'nope'")
+                && missing.contains("not a configured auth instance"),
+            "{missing}"
+        );
+        let deaf =
+            plan_route_names([("streaming", &twilio)], &readers, &explicit(&["keys"])).unwrap_err();
+        assert!(
+            deaf.contains("streaming.routes.5.auth_instances")
+                && deaf.contains("'keys'")
+                && deaf.contains(TWILIO),
+            "{deaf}"
+        );
+        let stray = plan_route_names(
+            [("streaming", &twilio)],
+            &readers,
+            &RouteAuthInstances::from([((Box::from("streaming"), 9), vec![Box::from("twilio")])]),
+        )
+        .unwrap_err();
+        assert!(stray.contains("streaming.routes.9"), "{stray}");
+    }
+}
