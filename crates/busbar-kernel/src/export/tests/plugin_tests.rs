@@ -1402,3 +1402,135 @@ async fn projection_panic_after_an_accepted_sink_keeps_integrity_and_incomplete_
     );
     assert!(second.observations.lock().unwrap().is_empty());
 }
+
+/// The one module of [`FirstPartyOnly`] the axis says is first party; every other is a third party's.
+const FIRST_PARTY_METRICS: &str = "first-party-metrics";
+const THIRD_PARTY_METRICS: &str = "third-party-metrics";
+
+/// An export axis whose every module carries the metrics stream and declares the host recorder,
+/// and which judges only [`FIRST_PARTY_METRICS`] first party (linked, or dropped in signed by the
+/// release key).
+struct FirstPartyOnly;
+
+impl ExportAxis for FirstPartyOnly {
+    fn probe(
+        &self,
+        _: &str,
+        _: &str,
+        _: &busbar_contract::plugin_settings::ResolvedSettings,
+    ) -> Option<busbar_contract::export_calls::Probed> {
+        let metrics = ExportStream::ALL
+            .iter()
+            .position(|stream| *stream == ExportStream::Metrics)
+            .expect("metrics is in the stream vocabulary");
+        Some((
+            Some(vec![u8::try_from(metrics).expect("a stream byte")]),
+            Vec::new(),
+            Some(busbar_contract::export_calls::RecorderRequirements {
+                retention_seconds: 60,
+                key_gauge_limit: crate::config::DEFAULT_KEY_GAUGE_LIMIT,
+            }),
+        ))
+    }
+    fn check(
+        &self,
+        _: &str,
+        _: u32,
+        _: &[(String, &busbar_contract::plugin_settings::ResolvedSettings)],
+    ) -> Option<Vec<String>> {
+        Some(Vec::new())
+    }
+    fn linked(&self, _: &str, _: Option<&(dyn std::any::Any + Send + Sync)>) -> bool {
+        true
+    }
+    fn first_party(&self, module: &str, _: Option<&(dyn std::any::Any + Send + Sync)>) -> bool {
+        module == FIRST_PARTY_METRICS
+    }
+}
+
+static FIRST_PARTY_ONLY: FirstPartyOnly = FirstPartyOnly;
+
+/// PROOF-093-E:48 (cut-root/TESTS.tsv:131, SECURITY, #65): the host recorder backs busbar's own
+/// `/metrics`, so an export instance whose image is not first party has its recorder declaration
+/// not honoured (`off_path::export::honoured`) and is never the scrape sink: configuration
+/// admission (`config::resolve_export`) keeps it as an ordinary `metrics` subscriber with no
+/// recorder. A first-party instance declaring the same is the scrape sink and its recorder is
+/// granted; beside a third party's declaration it is still the one sink (the third party's never
+/// counts as one). The export axis is process-wide (`preflight::publish_root_rows`), so the walk
+/// runs in a fresh process of this test binary.
+#[test]
+fn a_third_party_metrics_sink_never_serves_metrics() {
+    const TEST: &str = "export::plugin::tests::a_third_party_metrics_sink_never_serves_metrics";
+    const CHILD: &str = "BUSBAR_THIRD_PARTY_METRICS_CHILD";
+    if std::env::var(CHILD).as_deref() != Ok(TEST) {
+        let output = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+            .args(["--exact", TEST, "--test-threads=1", "--nocapture"])
+            .env(CHILD, TEST)
+            .output()
+            .expect("run this test in its own process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("test result: ok. 1 passed; 0 failed"),
+            "{TEST} in its own process: {}\n{stdout}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::preflight::publish_root_rows(crate::preflight::RootInstall {
+        export_axis: Some(&FIRST_PARTY_ONLY),
+        ..Default::default()
+    });
+    let instance = |module: &str| -> ExportDefCfg {
+        serde_json::from_value(serde_json::json!({ "module": module, "streams": ["metrics"] }))
+            .expect("a metrics definition")
+    };
+    let admit = |defs: &[(&str, &str)]| {
+        let defs: crate::config::ExportDefs = defs
+            .iter()
+            .map(|(name, module)| ((*name).to_owned(), instance(module)))
+            .collect();
+        let mut errors = Vec::new();
+        let cfg = crate::config::resolve_export(&defs, &mut errors);
+        assert!(errors.is_empty(), "admitted without a refusal: {errors:?}");
+        let scraping: Vec<(String, bool)> = cfg
+            .plugins
+            .iter()
+            .map(|p| (p.name.clone(), p.scrape))
+            .collect();
+        (scraping, cfg.recorder)
+    };
+
+    let (scraping, recorder) = admit(&[("theirs", THIRD_PARTY_METRICS)]);
+    assert_eq!(
+        scraping,
+        vec![("theirs".to_owned(), false)],
+        "a third party's metrics instance is an ordinary subscriber, never the scrape sink"
+    );
+    assert_eq!(recorder, None, "its recorder declaration is not honoured");
+
+    let (scraping, recorder) = admit(&[("ours", FIRST_PARTY_METRICS)]);
+    assert_eq!(scraping, vec![("ours".to_owned(), true)]);
+    assert_eq!(
+        recorder,
+        Some(busbar_contract::export_calls::RecorderRequirements {
+            retention_seconds: 60,
+            key_gauge_limit: crate::config::DEFAULT_KEY_GAUGE_LIMIT,
+        }),
+        "a first-party instance's recorder declaration is honoured"
+    );
+
+    for defs in [
+        [("theirs", THIRD_PARTY_METRICS), ("ours", FIRST_PARTY_METRICS)],
+        [("ours", FIRST_PARTY_METRICS), ("theirs", THIRD_PARTY_METRICS)],
+    ] {
+        let (mut scraping, recorder) = admit(&defs);
+        scraping.sort();
+        assert_eq!(
+            scraping,
+            vec![("ours".to_owned(), true), ("theirs".to_owned(), false)],
+            "only the first-party instance is the scrape sink, in either order"
+        );
+        assert!(recorder.is_some());
+    }
+}

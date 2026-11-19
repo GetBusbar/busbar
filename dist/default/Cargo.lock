@@ -787,9 +787,8 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=2e7d01ff245cee5540f93903a482fa159b84f426#2e7d01ff245cee5540f93903a482fa159b84f426"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=ace4888fae27989bd10fe754ca3435b95b885cf5#ace4888fae27989bd10fe754ca3435b95b885cf5"
 dependencies = [
- "busbar-crypto",
  "busbar-plugin-abi",
  "pbjson",
  "pbjson-build",
