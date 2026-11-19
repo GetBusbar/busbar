@@ -41,7 +41,8 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 # W1-A2: the safe host API's unit tests lend their test vtable's output from busbar-ffi's crypto `Arena`, as host_vt does.
-busbar-ffi = { path = "../busbar-ffi", features = ["host"] }
+# tests/memio_release.rs counts what a dropped MemIo conn leaves allocated with the allocation watch.
+busbar-ffi = { path = "../busbar-ffi", features = ["host", "test-support"] }
 
 [lints]
 workspace = true

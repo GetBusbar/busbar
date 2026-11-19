@@ -703,8 +703,8 @@ impl NetworkOwner {
 }
 
 /// The complete network inputs of one stage, read before any native instance opens: `guard` frozen,
-/// the system resolver, `advanced.tls` validated into its trust store, the process proxy choice and
-/// `advanced.proxy_resolution`.
+/// the system resolver, `outbound.tls` validated into its trust store, the process proxy choice and
+/// `outbound.proxy_resolution`.
 fn network_inputs(cfg: &RootCfg, guard: &Guard) -> Result<NetworkInputs, String> {
     Ok(NetworkInputs {
         runtime: tokio::runtime::Handle::try_current()

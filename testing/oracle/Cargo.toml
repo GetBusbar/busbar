@@ -250,7 +250,6 @@ http = { git = "https://github.com/MattJackson/http", rev = "904f4519b5f27a0424b
 h2 = { git = "https://github.com/MattJackson/h2", rev = "6bdbf046878247aebe9138f37f32d2665b54bdd9" }
 hyper = { git = "https://github.com/MattJackson/hyper", rev = "c140435f43477ca3ffbdb2078a5994e9dfb11969" }
 hyper-util = { git = "https://github.com/MattJackson/hyper-util", rev = "b4c554c133c7fc83ee55a9ce0271849f7387994d" }
-tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "893a21f1f98011a2665840231330c473836c9a0a" }
 serde-saphyr = { git = "https://github.com/MattJackson/serde-saphyr", rev = "a94d2da01a448d348b5d14945e29192e511b8452" }
 granit-parser = { git = "https://github.com/MattJackson/granit-parser", rev = "d31e9292a0be49de7d3a85ee07555bb9d0afce20" }
 sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "1241c129cef83686109f820825206f56ff470f67" }

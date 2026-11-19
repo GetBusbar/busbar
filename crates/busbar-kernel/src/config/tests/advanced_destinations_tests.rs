@@ -7,17 +7,16 @@ use super::tests::base_deploy;
 use super::*;
 
 #[test]
-fn the_destination_keys_parse_under_advanced() {
-    let a: AdvancedCfg = busbar_contract::yaml::from_str("block_private_addresses: false\n")
-        .expect("the destination keys are advanced keys");
+fn the_destination_keys_parse_under_outbound() {
+    let a: OutboundCfg = busbar_contract::yaml::from_str("block_private_addresses: false\n")
+        .expect("the destination keys are outbound keys");
     assert!(!a.block_private_addresses);
 }
 
 #[test]
 fn private_addresses_are_blocked_by_default() {
-    assert!(AdvancedCfg::default().block_private_addresses);
-    let omitted: AdvancedCfg =
-        busbar_contract::yaml::from_str("rate_sweep_interval: 256\n").expect("parses");
+    assert!(OutboundCfg::default().block_private_addresses);
+    let omitted: OutboundCfg = busbar_contract::yaml::from_str("{}\n").expect("parses");
     assert!(omitted.block_private_addresses);
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolve");
     let d = cfg.destinations();
@@ -60,7 +59,11 @@ fn a_configuration_still_carrying_allow_destinations_loads_and_grants_nothing() 
     ] {
         let advanced: AdvancedCfg = busbar_contract::yaml::from_str(yaml)
             .unwrap_or_else(|e| panic!("{yaml}: an old configuration must load: {e}"));
-        assert!(advanced.block_private_addresses, "{yaml}");
+        assert!(advanced.block_private_addresses.is_none(), "{yaml}");
+        assert_eq!(
+            advanced.removed().collect::<Vec<_>>(),
+            ["allow_destinations"]
+        );
         let written = busbar_contract::yaml::to_string(&advanced).expect("serializes");
         assert!(!written.contains("allow_destinations"), "{written}");
     }

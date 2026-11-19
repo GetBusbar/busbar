@@ -340,6 +340,14 @@ struct OrdinaryRig {
 
 /// One actual native ordinary admission owned by its funded slot, over durable unit custody.
 async fn ordinary_rig(unit: u64) -> OrdinaryRig {
+    ordinary_rig_owned(unit, None).await
+}
+
+/// [`ordinary_rig`] whose GovState is built with `fee_owner` as its fee-debt observer owner.
+async fn ordinary_rig_owned(
+    unit: u64,
+    fee_owner: Option<std::sync::Weak<dyn crate::governance::fee_debt::FeeDebtAssociate>>,
+) -> OrdinaryRig {
     use crate::config::groups::ExhaustionMode;
     use crate::plane_driver::{EndPost, PlaneMoney};
     struct Posted;
@@ -361,11 +369,13 @@ async fn ordinary_rig(unit: u64) -> OrdinaryRig {
         .unwrap()
         .registration(&routes, None, "command")
         .unwrap();
-    let gov = Arc::new(
-        GovState::new_with_core(crate::real_store::core().await, None, None)
-            .await
-            .unwrap(),
-    );
+    let gov = GovState::new_with_core(crate::real_store::core().await, None, None)
+        .await
+        .unwrap();
+    let gov = Arc::new(match fee_owner {
+        Some(owner) => gov.with_fee_debt_owner(owner),
+        None => gov,
+    });
     gov.attach_recovery_sink(Arc::new(KeptRecovery::default()))
         .await
         .unwrap();
@@ -547,28 +557,36 @@ async fn a_stale_flush_cannot_confirm_a_changed_ordinary_entry() {
 /// one finite capture, so the honest result is CancelledBeforeSend, never Applied.
 #[tokio::test]
 async fn a_refunded_native_fee_settles_through_the_original_flusher() {
-    let rig = ordinary_rig(57).await;
-    rig.slot
-        .request_terminal(&rig.admitted, ended(502))
-        .unwrap();
-    assert!(rig.money.drive_ordinary_terminal(&rig.slot).unwrap());
-    rig.gov.flush_unit_checkpoints().await.unwrap();
-    assert!(!rig.slot.fee_join_complete());
-    // The trusted observer owner (the Node book in production) offers captures to the slot.
-    struct SlotOwner(Arc<crate::plane_driver::port_billing::NativeOrdinaryTerminalSlot>);
+    // The trusted observer owner (the Node book in production) offers captures to the slot. It is
+    // given to the GovState when the GovState is built; the slot it holds is the rig's, which
+    // the rig builds over that GovState, so the double learns it after the rig is built.
+    struct SlotOwner(
+        std::sync::Mutex<
+            Option<Arc<crate::plane_driver::port_billing::NativeOrdinaryTerminalSlot>>,
+        >,
+    );
     impl crate::governance::fee_debt::FeeDebtAssociate for SlotOwner {
         fn associate(
             &self,
             capture: &Arc<crate::governance::fee_debt::FeeCapture>,
             _: crate::governance::fee_debt::FeeCursor,
         ) -> crate::governance::fee_debt::FeeAssociation {
-            self.0.offer_fee_capture(capture);
+            if let Some(slot) = self.0.lock().unwrap().as_ref() {
+                slot.offer_fee_capture(capture);
+            }
             crate::governance::fee_debt::FeeAssociation::Complete
         }
     }
-    let owner: Arc<dyn crate::governance::fee_debt::FeeDebtAssociate> =
-        Arc::new(SlotOwner(rig.slot.clone()));
-    rig.gov.bind_fee_debt_owner(Arc::downgrade(&owner)).unwrap();
+    let slot_owner = Arc::new(SlotOwner(std::sync::Mutex::new(None)));
+    let owner: Arc<dyn crate::governance::fee_debt::FeeDebtAssociate> = slot_owner.clone();
+    let rig = ordinary_rig_owned(57, Some(Arc::downgrade(&owner))).await;
+    *slot_owner.0.lock().unwrap() = Some(rig.slot.clone());
+    rig.slot
+        .request_terminal(&rig.admitted, ended(502))
+        .unwrap();
+    assert!(rig.money.drive_ordinary_terminal(&rig.slot).unwrap());
+    rig.gov.flush_unit_checkpoints().await.unwrap();
+    assert!(!rig.slot.fee_join_complete());
     rig.gov.flush_budgets_final().await;
     match rig.slot.fee_status() {
         Some(crate::governance::fee_debt::FeeDebtStatus::Complete(receipt)) => {

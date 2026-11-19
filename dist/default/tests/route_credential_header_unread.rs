@@ -172,8 +172,7 @@ fn the_default_configuration_boots_with_the_unread_route_unmounted_and_says_so()
 fn every_route_whose_header_nothing_reads_is_unmounted_with_its_own_line() {
     let node = boot_default();
     let log = node.log();
-    let bedrock =
-        "route 'llm/7' is not served: no configured auth instance reads 'authorization'";
+    let bedrock = "route 'llm/7' is not served: no configured auth instance reads 'authorization'";
     assert_eq!(log.matches(bedrock).count(), 1, "log:\n{log}");
     let data = send(
         node.data,
@@ -202,4 +201,17 @@ fn with_an_operator_but_no_twilio_instance_the_twilio_route_is_unmounted() {
     let nowhere = status_and_body(&get(node.data, "/no/such/route", ""));
     assert!(twilio.0.contains(" 401 "), "{twilio:?}");
     assert_eq!(twilio, nowhere);
+    // SECURITY: the operator's admin token, presented on the data route whose header admin-tokens
+    // reads (plane-llm's Bedrock route, `authorization`), is answered exactly as no route is.
+    let bedrock = status_and_body(&send(
+        node.data,
+        "POST",
+        "/model/anthropic.claude-v2/invoke",
+        "Authorization: Bearer route-cred-operator-token\r\n",
+    ));
+    let nowhere = status_and_body(&send(node.data, "POST", "/no/such/route", ""));
+    assert_eq!(
+        bedrock, nowhere,
+        "an admin token never reaches a data route; log:\n{log}"
+    );
 }

@@ -712,7 +712,7 @@ fn absent_config_gives_the_owner_signed_defaults() {
     let p = policy::resolve(
         None,
         &Default::default(),
-        &crate::config::AdvancedCfg::default(),
+        &crate::config::ClientAddressCfg::default(),
     )
     .unwrap();
     assert_eq!(p, LoginLimitsPolicy::default());
@@ -745,7 +745,7 @@ fn invalid_limits_are_refused_with_3133() {
         let errors = policy::resolve(
             Some(&yaml(cfg)),
             &Default::default(),
-            &crate::config::AdvancedCfg::default(),
+            &crate::config::ClientAddressCfg::default(),
         )
         .unwrap_err();
         assert!(
@@ -755,9 +755,9 @@ fn invalid_limits_are_refused_with_3133() {
             "{cfg}: {errors:?}"
         );
     }
-    let advanced: crate::config::AdvancedCfg =
+    let client_address: crate::config::ClientAddressCfg =
         busbar_contract::yaml::from_str("trusted_proxies: [\"\x310.0.0.1/8\"]").unwrap();
-    assert!(policy::resolve(None, &Default::default(), &advanced).is_err());
+    assert!(policy::resolve(None, &Default::default(), &client_address).is_err());
     assert!(
         busbar_contract::yaml::from_str::<crate::config::LoginLimitsCfg>(
             "per_account: { enabled: false }"
@@ -773,7 +773,12 @@ fn a_provider_override_wins_for_its_method() {
         "corp-ad: { module: ldap, browser_login: { max_failures: 2, failure_window: 30m } }",
     )
     .unwrap();
-    let p = policy::resolve(None, &providers, &crate::config::AdvancedCfg::default()).unwrap();
+    let p = policy::resolve(
+        None,
+        &providers,
+        &crate::config::ClientAddressCfg::default(),
+    )
+    .unwrap();
     assert_eq!(
         p.account_for("corp-ad"),
         policy::Limit {

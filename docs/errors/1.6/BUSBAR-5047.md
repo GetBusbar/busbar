@@ -8,11 +8,11 @@ slug: docs/1.6/errors/BUSBAR-5047
 
 ## What it means
 
-The far end's certificate did not verify: unknown issuer, wrong host name, expired, or a key that is not the pinned one. The line and the `egress.tls_verification_failed` audit record carry the dialled host, the `advanced.tls.destinations` entries that matched, the fingerprints of the operator anchors in force, and the reason; never the certificate body. busbar never skips verification.
+The far end's certificate did not verify: unknown issuer, wrong host name, expired, or a key that is not the pinned one. The line and the `egress.tls_verification_failed` audit record carry the dialled host, the `outbound.tls.destinations` entries that matched, the fingerprints of the operator anchors in force, and the reason; never the certificate body. busbar never skips verification.
 
 ## How to fix it
 
-List the CA that issued the server's certificate under `advanced.tls.destinations` for that host (or `trust_anchors` for a corporate root), fix the server's certificate, or update the pin.
+List the CA that issued the server's certificate under `outbound.tls.destinations` for that host (or `trust_anchors` for a corporate root), fix the server's certificate, or update the pin.
 
 ---
 

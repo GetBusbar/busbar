@@ -199,7 +199,7 @@ fn completing_a_later_replay_drops_the_earlier_public_waker_outside_guards() {
                 request.push(byte[0]);
                 assert!(request.len() <= 8192, "CONNECT request stayed bounded");
             }
-            // `advanced.proxy_resolution: local` (the default): the CONNECT names the address the
+            // `outbound.proxy_resolution: local` (the default): the CONNECT names the address the
             // judgement answered for `far.test:80`.
             assert!(request.starts_with(b"CONNECT 127.0.0.1:80 HTTP/1.1\r\n"));
             socket

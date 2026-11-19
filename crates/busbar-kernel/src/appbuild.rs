@@ -1190,6 +1190,15 @@ pub trait RootRules: Send + Sync {
     fn unloaded_plane_refusal(&self, _keys: &[&str]) -> Option<String> {
         None
     }
+
+    /// The native fee-debt observer owner (the composition root's Node book), given to the
+    /// GovState while it is built ([`governance::GovState::with_fee_debt_owner`]). A build with
+    /// no root (a tool, a fixture) has none: its captures are offered to no owner.
+    fn fee_debt_owner(
+        &self,
+    ) -> Option<std::sync::Weak<dyn governance::fee_debt::FeeDebtAssociate>> {
+        None
+    }
 }
 
 /// The rules of a build with no composition root's rules to judge by (a tool, a test fixture): it
@@ -2160,6 +2169,10 @@ async fn build_app_native(
         // §3.8): core holds no operator token digest.
         match governance::GovState::new_with_core(core, None, signer).await {
             Ok(gs) => {
+                let gs = match rules.fee_debt_owner() {
+                    Some(owner) => gs.with_fee_debt_owner(owner),
+                    None => gs,
+                };
                 gs.install_transition_self_holds(transition_holds);
                 let gs = Arc::new(gs);
 

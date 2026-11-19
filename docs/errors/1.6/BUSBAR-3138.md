@@ -1,5 +1,5 @@
 ---
-title: "BUSBAR-3138: An advanced.tls trust anchor was accepted"
+title: "BUSBAR-3138: An outbound.tls trust anchor was accepted"
 description: "What Busbar error BUSBAR-3138 means, why it happens, and how to fix it."
 slug: docs/1.6/errors/BUSBAR-3138
 ---

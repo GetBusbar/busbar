@@ -275,4 +275,49 @@ mod route_credential_header {
         .unwrap_err();
         assert!(stray.contains("streaming.routes.9"), "{stray}");
     }
+
+    /// SECURITY: an instance opened only for the admin chain (`auth.admin_auth`) is never a data or
+    /// plane route's chain, even when it reads the route's credential header: an operator's admin
+    /// token must never be verified on a data route. With nothing else reading the header, the route
+    /// is unmounted. In the data chain, or named by the route's `auth_instances`, it is chosen.
+    #[test]
+    fn an_instance_opened_only_for_the_admin_chain_never_judges_a_plane_route() {
+        let bedrock = route(7, Some("authorization"));
+        let bearer: [Box<str>; 1] = [Box::from("authorization")];
+        let admin = vec!["admin-tokens".to_owned()];
+        let opened = || [("admin-tokens", &bearer[..])];
+        let llm = |names: &[&str]| {
+            RouteAuthInstances::from([(
+                (Box::from("llm"), 7),
+                names.iter().map(|name| Box::from(*name)).collect(),
+            )])
+        };
+
+        let readers = route_readers(opened(), &[], &admin, &RouteAuthInstances::new());
+        let names =
+            plan_route_names([("llm", &bedrock)], &readers, &RouteAuthInstances::new()).unwrap();
+        assert_eq!(
+            names["llm"][&7], None,
+            "an admin-only instance does not judge llm/7: it is unmounted"
+        );
+
+        let data = vec!["admin-tokens".to_owned()];
+        let readers = route_readers(opened(), &data, &admin, &RouteAuthInstances::new());
+        let names =
+            plan_route_names([("llm", &bedrock)], &readers, &RouteAuthInstances::new()).unwrap();
+        assert_eq!(
+            names["llm"][&7],
+            Some(vec!["admin-tokens".to_owned()]),
+            "also in the data chain, it is a data instance"
+        );
+
+        let named = llm(&["admin-tokens"]);
+        let readers = route_readers(opened(), &[], &admin, &named);
+        let names = plan_route_names([("llm", &bedrock)], &readers, &named).unwrap();
+        assert_eq!(
+            names["llm"][&7],
+            Some(vec!["admin-tokens".to_owned()]),
+            "named by the route's auth_instances, it is the operator's explicit choice"
+        );
+    }
 }
