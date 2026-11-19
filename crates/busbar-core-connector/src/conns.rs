@@ -1052,15 +1052,6 @@ impl Connector {
         self
     }
 
-    /// The need `owner` declared as `need`, whole, as [`DeclaredConns::declare`] received it.
-    #[must_use]
-    pub fn declared_spec(&self, owner: InstanceId, need: NeedId) -> Option<ReadNeed> {
-        let declared = self.declared.lock().expect("declared needs");
-        declared
-            .get(&(owner, need))
-            .map(|(spec, _, _)| spec.clone())
-    }
-
     /// Record that `owner` declared `need` — the only needs it may open. A need declared without a
     pub fn declare(&self, owner: InstanceId, need: NeedId) {
         self.slab.declare(owner, need);
@@ -1111,25 +1102,6 @@ impl Connector {
         egress_class: u32,
     ) -> Result<(), ConnError> {
         self.record(owner, need, transport, egress_class, None, None)
-    }
-
-    /// Record that `owner` declared `need` over `transport` in `egress_class`, its target named by
-    pub fn declare_need_to(
-        &self,
-        owner: InstanceId,
-        need: NeedId,
-        transport: &str,
-        egress_class: u32,
-        declared_target: &str,
-    ) -> Result<(), ConnError> {
-        self.record(
-            owner,
-            need,
-            transport,
-            egress_class,
-            Some(declared_target),
-            None,
-        )
     }
 
     /// THE SCHEME MATCH: the need is recorded over the entry serving `transport`, resolved here

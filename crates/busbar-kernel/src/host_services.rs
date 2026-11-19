@@ -1591,11 +1591,6 @@ impl KernelServices {
         &self.work
     }
 
-    #[must_use]
-    pub fn default_work_bounds(&self) -> WorkBounds {
-        self.work_bounds
-    }
-
     /// Set `instance`'s work bounds, keyed by the caller's own shared label. Runs as an instance
     /// is admitted (boot, reload).
     pub fn bound_work(&self, instance: &Arc<str>, bounds: WorkBounds) {
@@ -1631,12 +1626,6 @@ impl KernelServices {
     #[must_use]
     pub fn with_credentials(mut self, credentials: Arc<dyn CredentialRead>) -> Self {
         self.credentials = Some(credentials);
-        self
-    }
-
-    #[must_use]
-    pub fn with_disk_lane(mut self, lane: Arc<crate::host_disk::DiskLane>) -> Self {
-        self.disk = lane;
         self
     }
 

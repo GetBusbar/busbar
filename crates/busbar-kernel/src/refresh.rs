@@ -100,22 +100,6 @@ impl Refresher {
             .filter(|k| k.item.strong_count() > 0)
             .count()
     }
-
-    /// Refresh every live item NOW on the calling thread, whatever its due time (a test's lever).
-    pub fn refresh_all_now(&self) {
-        let live: Vec<Arc<dyn Refreshable>> = self
-            .inner
-            .book
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .kept
-            .iter()
-            .filter_map(|k| k.item.upgrade())
-            .collect();
-        for item in live {
-            item.refresh(Instant::now());
-        }
-    }
 }
 
 fn work(inner: &Inner) {

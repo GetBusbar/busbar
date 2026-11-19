@@ -251,13 +251,6 @@ impl Operator {
         module.map_or(name == op, is_op)
     }
 
-    /// This operator credential, its row stating `carriers` (its Statement's carrier marks, in
-    #[must_use]
-    pub fn with_carriers(mut self, carriers: Vec<String>) -> Self {
-        self.carriers = carriers;
-        self
-    }
-
     /// The carriers the operator credential's row states, in its Statement's order: the admin
     #[must_use]
     pub fn carriers(&self) -> &[String] {

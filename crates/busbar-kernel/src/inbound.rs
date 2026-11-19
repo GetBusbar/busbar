@@ -638,27 +638,6 @@ impl RequestAdmission {
             .is_ok()
     }
 
-    /// The teller could not install the unit; return its terminal ownership to ingress.
-    pub fn execution_unavailable(&self) {
-        if self
-            .inner
-            .pending
-            .state
-            .compare_exchange(
-                1,
-                0,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .is_ok()
-        {
-            self.refuse(
-                busbar_contract::caps::StepName::Arrival,
-                busbar_contract::caps::ReasonCode::InFlightCap,
-            );
-        }
-    }
-
     pub(crate) fn principal(&self, principal: &str) {
         self.inner.pending.set_principal(principal);
     }
@@ -1697,16 +1676,6 @@ impl Inbound {
             }
             Some(_) => Err(UNIT_FOREIGN),
         }
-    }
-
-    pub fn framing_ready(&self, owner: u64, framing: u64) {
-        let opening = self
-            .framing_listeners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get_mut(owner, framing)
-            .and_then(|binding| binding.opening.take());
-        drop(opening);
     }
 
     pub fn framing_detached(&self, owner: u64, framing: u64) -> Result<(), &'static str> {
