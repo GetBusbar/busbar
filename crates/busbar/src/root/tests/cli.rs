@@ -165,7 +165,7 @@ fn secret_ref_validate_resolves_documented_env_and_file_references_as_boot_does(
             "models": {},
             "listen_insecure_transport": plain,
             "admin_listen_insecure_transport": plain,
-            "auth": { "chain": ["keys"], "signing_key": signing_key },
+            "auth": { "chain": [], "signing_key": signing_key },
             "store": { "module": module, "settings": plugins::application_store_settings(&directory) },
             "plugins": plugins::trusted_config_document(&directory),
         });

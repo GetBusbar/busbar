@@ -25,18 +25,26 @@ const MAX_DESTINATION: usize = 2_048;
 #[derive(Clone)]
 pub struct PlaneJudge {
     judge: Option<Arc<dyn DestJudge>>,
+    /// BUSBAR-7108 latch, shared by clones: the deployment's one judge warns once.
+    warned: Arc<AtomicBool>,
 }
 
 impl PlaneJudge {
     #[must_use]
     pub fn new(judge: Arc<dyn DestJudge>) -> Self {
-        Self { judge: Some(judge) }
+        Self {
+            judge: Some(judge),
+            warned: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     /// No `DestJudge` installed: every destination answers `DEST_INTERNAL` (fail closed).
     #[must_use]
     pub fn unavailable() -> Self {
-        Self { judge: None }
+        Self {
+            judge: None,
+            warned: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     /// The `JudgeAns` verdict (`DEST_*`) for `dest` in egress `class` under `flags` (`JUDGE_RESOLVE`,
