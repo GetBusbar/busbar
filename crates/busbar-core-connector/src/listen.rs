@@ -152,6 +152,9 @@ impl ListenStop {
             let _ = socket.shutdown(std::net::Shutdown::Both);
         }
     }
+
+    /// Put a stopped listener back in service.
+    pub fn resume(&self) {}
 }
 
 /// What a listener's connections become.

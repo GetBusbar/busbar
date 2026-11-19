@@ -1,67 +1,40 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Which data cores the core watch stops (the root's `core_watch` reads the beats and stops the listeners).
-//!
-//! A core whose beat stood still for [`STILL`] checks while a hung plugin entry, reported in the last
-//! [`ATTRIBUTE`] checks, was open is the one holding that entry. A beating core is never stopped, and a still core
-//! with no hung entry is left alone (it is slow, not held). A core is stopped once.
+//! Which data cores the core watch nudges, stops and resumes, one housekeeping tick at a time.
 
-/// Checks a core's beat must stand still to be the one holding a hung entry.
-const STILL: u32 = 3;
-/// Checks a reported hang stays open for a still core to be found: an entry is reported once, at its ceiling,
-/// which can come before its core has stood still for [`STILL`] checks.
-const ATTRIBUTE: u32 = 50;
-
-/// One core as the watch last read it.
-#[derive(Clone, Copy, Default)]
-struct Read {
-    beat: u64,
-    still: u32,
-    stopped: bool,
+/// What the watch does at one tick: the cores to nudge (run one beat task on their own runtime), to stop (their
+/// listener leaves the group) and to resume (a new listener joins it).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Step {
+    pub nudge: Vec<usize>,
+    pub stop: Vec<usize>,
+    pub resume: Vec<usize>,
 }
 
-/// The watch's reading of the cores, one check at a time.
+/// The watch's reading of the cores, one tick at a time.
 #[derive(Default)]
 pub struct Verdicts {
-    cores: Vec<Read>,
-    hung_seen: u64,
-    open: u32,
+    _cores: Vec<u64>,
 }
 
 impl Verdicts {
-    /// One check: each core's beat now, and the watchdog's count of hung entries. The cores to stop.
-    pub fn check(&mut self, beats: &[u64], hung_total: u64) -> Vec<usize> {
-        let known = self.cores.len();
-        for (read, &beat) in self.cores.iter_mut().zip(beats) {
-            if read.beat == beat {
-                read.still = read.still.saturating_add(1);
-            } else {
-                read.beat = beat;
-                read.still = 0;
-            }
-        }
-        self.cores
-            .extend(beats.iter().skip(known).map(|&beat| Read {
-                beat,
-                ..Read::default()
-            }));
-        if hung_total > self.hung_seen {
-            self.hung_seen = hung_total;
-            self.open = ATTRIBUTE;
-        }
-        if self.open == 0 {
-            return Vec::new();
-        }
-        self.open -= 1;
-        let mut stop = Vec::new();
-        for (core, read) in self.cores.iter_mut().enumerate() {
-            if read.still >= STILL && !read.stopped {
-                read.stopped = true;
-                stop.push(core);
-            }
-        }
-        stop
+    /// One tick: each core's beat now, and the watchdog's count of hung entries.
+    pub fn check(&mut self, _beats: &[u64], _hung_total: u64) -> Step {
+        Step::default()
+    }
+}
+
+/// The housekeeping tick's hook: run once per tick on the control runtime, never awaited.
+pub type Tick = Box<dyn FnMut() + Send>;
+
+/// The housekeeping tick for `tick` alone, when the engine runs no budget flusher (no governance): the same
+/// configured interval (`advanced.usage_flush_interval_ms`), read on every wait as the flusher reads it.
+pub async fn tick_alone(mut tick: Tick) {
+    loop {
+        let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
+        tokio::time::sleep(interval).await;
+        tick();
     }
 }
 

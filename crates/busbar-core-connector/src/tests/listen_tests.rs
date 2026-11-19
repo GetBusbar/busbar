@@ -900,6 +900,48 @@ fn probe_a_shut_reuseport_listener_leaves_the_group_and_resets_its_queue() {
     }
 }
 
+/// A resumed listener rejoins its `SO_REUSEPORT` group: stopped, every connection goes to the other listener;
+/// resumed (its worker free again), it binds a new socket on its own worker and new connections reach it again.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_resumed_listener_rejoins_its_reuseport_group() {
+    worker().block_on(async {
+        let mut first =
+            Listening::bind_stream(None, "127.0.0.1:0", AcceptLimits::default()).unwrap();
+        let port = first.local_addr().port();
+        let mut second =
+            Listening::bind_stream(None, &format!("127.0.0.1:{port}"), AcceptLimits::default())
+                .unwrap();
+        let stop = first.stopper();
+        stop.stop();
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        assert!(first.poll_accept_stream(&mut cx).is_pending());
+        std::thread::spawn(move || stop.resume()).join().unwrap();
+        // The resumed listener's own task binds its new socket at its next poll.
+        assert!(first.poll_accept_stream(&mut cx).is_pending());
+        let clients: Vec<_> = (0..64)
+            .map(|_| std::net::TcpStream::connect(("127.0.0.1", port)).unwrap())
+            .collect();
+        let (mut to_first, mut to_second) = (0, 0);
+        for _ in 0..clients.len() {
+            tokio::select! {
+                _ = first.admit() => to_first += 1,
+                _ = second.admit() => to_second += 1,
+                () = tokio::time::sleep(Duration::from_secs(2)) => break,
+            }
+        }
+        assert_eq!(
+            to_first + to_second,
+            clients.len(),
+            "every connection is admitted"
+        );
+        assert!(
+            to_first > 0,
+            "the resumed listener takes its share again ({to_first} of 64)"
+        );
+    });
+}
+
 /// A stopped stream listener leaves its `SO_REUSEPORT` group: with two listeners on one port and the first stopped
 /// from another thread (as the core watch stops a hung core's door), every new connection reaches the second.
 #[cfg(target_os = "linux")]

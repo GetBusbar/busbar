@@ -1987,7 +1987,7 @@ pub fn spawn_budget_flusher(
     shutdown: tokio::sync::broadcast::Receiver<()>,
     app: Option<Arc<crate::state::AppHandle>>,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(run_budget_flusher(gov, shutdown, app, None))
+    tokio::spawn(run_budget_flusher(gov, shutdown, app, None, None))
 }
 
 /// The drain-mode pass's idle wait between passes (SHUTDOWN-HANG F4 [M]).
@@ -2007,6 +2007,7 @@ pub async fn run_budget_flusher(
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
     app: Option<Arc<crate::state::AppHandle>>,
     clock: Option<Arc<drain::DrainClock>>,
+    mut tick: Option<crate::core_watch::Tick>,
 ) {
     purge_usage_windows(&gov).await;
     // The purge cadence rides the runtime's timer: its first tick completes at once (the boot
@@ -2020,6 +2021,10 @@ pub async fn run_budget_flusher(
         let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
         tokio::select! {
             _ = tokio::time::sleep(interval) => {
+                // The housekeeping tick's other riders (the core watch): synchronous, never awaited.
+                if let Some(tick) = tick.as_mut() {
+                    tick();
+                }
                 if futures::FutureExt::now_or_never(purge_due.tick()).is_some() {
                     purge_usage_windows(&gov).await;
                 }

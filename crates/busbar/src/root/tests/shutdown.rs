@@ -581,6 +581,7 @@ pub(super) fn money_driver(
             shutdown_tx.subscribe(),
             None,
             Some(Arc::clone(clock)),
+            None,
         ),
     ))
 }
