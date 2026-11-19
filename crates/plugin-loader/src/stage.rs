@@ -206,7 +206,7 @@ pub fn keep_door(
     // (forgotten below), so the function pointer stays valid for the process.
     let door = unsafe {
         lib.get::<busbar_contract::abi::sdk::door::RawDoorFn>(
-            busbar_contract::abi::mechanism::DOOR_SYMBOL,
+            busbar_contract::kinds::codes::DOOR_SYMBOL,
         )
         .map(|s| *s)
     };

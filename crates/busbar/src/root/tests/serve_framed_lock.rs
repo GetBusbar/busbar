@@ -57,7 +57,7 @@ fn a_close_beside_a_hung_framer_emit_never_waits_and_the_write_makes_it() {
             dials: true,
             name: "lp".into(),
             claims: vec!["lp"],
-            role: busbar_contract::abi::transport::ROLE_FRAMER,
+            role: busbar_contract::transport::codes::ROLE_FRAMER,
             composes_over: Vec::new(),
             ported: false,
             status_rows: Vec::new(),
@@ -74,7 +74,7 @@ fn a_close_beside_a_hung_framer_emit_never_waits_and_the_write_makes_it() {
         "lp",
         "/",
         &[],
-        busbar_contract::abi::host::service::SCHEME_PLAIN,
+        busbar_contract::services::codes::SCHEME_PLAIN,
     )
     .expect("the stream opens");
     let stream = shared(stream);
@@ -135,7 +135,7 @@ fn a_close_beside_a_hung_framer_emit_never_waits_and_the_write_makes_it() {
 
 #[tokio::test]
 async fn an_idle_framed_stream_drives_its_timer_and_wakes_the_unit() {
-    use busbar_contract::abi::transport::YIELD_HAS_DEADLINE;
+    use busbar_contract::transport::codes::YIELD_HAS_DEADLINE;
     struct Timed(DoorFacts);
     impl FramerDoor for Timed {
         fn facts(&self) -> &DoorFacts {
@@ -166,7 +166,7 @@ async fn an_idle_framed_stream_drives_its_timer_and_wakes_the_unit() {
         dials: true,
         name: "lp".into(),
         claims: vec!["lp"],
-        role: busbar_contract::abi::transport::ROLE_FRAMER,
+        role: busbar_contract::transport::codes::ROLE_FRAMER,
         composes_over: Vec::new(),
         ported: false,
         status_rows: Vec::new(),
@@ -181,7 +181,7 @@ async fn an_idle_framed_stream_drives_its_timer_and_wakes_the_unit() {
             "lp",
             "/",
             &[],
-            busbar_contract::abi::host::service::SCHEME_PLAIN,
+            busbar_contract::services::codes::SCHEME_PLAIN,
         )
         .unwrap(),
     );

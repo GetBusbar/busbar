@@ -64,7 +64,7 @@ fn every_piece_lends_the_units_claim_dialect_and_caller_reference() {
 #[test]
 fn every_piece_preserves_host_recovery_capability_bytes() {
     let mut b = bufs(0);
-    b.extensions = busbar_contract::abi::mechanism::extensions::encode(&[(
+    b.extensions = busbar_contract::extensions::encode(&[(
         busbar_contract::abi::sdk::recovery::CAPABILITY,
         &[1],
     )]);

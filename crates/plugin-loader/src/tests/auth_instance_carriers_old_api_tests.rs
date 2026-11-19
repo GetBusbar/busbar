@@ -3,16 +3,17 @@
 
 use super::*;
 use crate::dispatch::{load_linked, Bind, ConnTable, DispatchConfig, LinkedRow};
-use busbar_contract::abi::auth::{AuthPoints, Ops};
+use busbar_contract::abi::auth::Ops;
 use busbar_contract::abi::mechanism::call::RawOutcome;
 use busbar_contract::abi::mechanism::door::{Door, MarkWord, Statement};
-use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 use busbar_contract::abi::sdk::auth_door::{
     carrier, verify_tail, with_tail, Answer, SyncVerifyPlugin, Verdict, VerifyView,
 };
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
+use busbar_contract::kinds::codes::extensions;
+use busbar_contract::route::AuthPoints;
 use std::ffi::c_void;
 
 const TEST_CARRIERS_KEY: &str = "auth.carriers";

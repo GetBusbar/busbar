@@ -67,7 +67,7 @@ pub use services::Services;
 /// Plain re-exports with no policy (STH-ROWS D-7, D-9): the boot selector, a reference-field read
 /// and a rendered Statement's parse.
 pub use busbar_contract::abi::mechanism::extensions::reference_fields;
-pub use busbar_contract::abi::mechanism::rendering::{
+pub use busbar_contract::rendering::{
     read as read_rendering, Read as RenderedStatement, Unreadable,
 };
 pub use busbar_plugin_loader::boot::{select, Candidate, Selected, Uses};

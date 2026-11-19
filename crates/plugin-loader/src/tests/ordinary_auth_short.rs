@@ -4,8 +4,8 @@
 use crate::auth_axis::AuthRows;
 use crate::dispatch::{DispatchConfig, Dispatcher};
 use crate::{LinkedPlugin, PluginRegistry};
-use busbar_contract::abi::auth::{AuthPoints, Ops, DECISION_CONTINUE};
-use busbar_contract::abi::auth::{IdentifyOut, VerifyIn, VERDICT_IDENTITY};
+use busbar_contract::abi::auth::Ops;
+use busbar_contract::abi::auth::{IdentifyOut, VerifyIn};
 use busbar_contract::abi::mechanism::call::RawOutcome;
 use busbar_contract::abi::mechanism::call::{Outcome, Span};
 use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
@@ -15,7 +15,10 @@ use busbar_contract::abi::sdk::auth_door::{
 };
 use busbar_contract::abi::sdk::door::blank_out;
 use busbar_contract::abi::sdk::door::statement;
+use busbar_contract::auth_calls::codes::DECISION_CONTINUE;
+use busbar_contract::auth_calls::codes::VERDICT_IDENTITY;
 use busbar_contract::auth_calls::{Verified, VerifyRequest};
+use busbar_contract::route::AuthPoints;
 use std::ffi::c_void;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -23,8 +26,9 @@ use std::sync::Arc;
 use std::sync::{mpsc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
-static SUBJECT: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| "s".repeat(busbar_contract::abi::auth::IDENTITY_BUF_BYTES + 1));
+static SUBJECT: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    "s".repeat(busbar_contract::auth_calls::codes::IDENTITY_BUF_BYTES + 1)
+});
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static VERIFIES: AtomicUsize = AtomicUsize::new(0);
@@ -236,7 +240,7 @@ fn opened(
 }
 fn request() -> VerifyRequest {
     let mut request = VerifyRequest::default();
-    request.point = busbar_contract::abi::auth::AuthPoint::Head;
+    request.point = busbar_contract::route::AuthPoint::Head;
     request
 }
 fn verify(auth: &dyn busbar_contract::auth_calls::AuthCalls, judgment: usize) {
@@ -429,9 +433,10 @@ fn a_polling_caller_cannot_take_a_recalled_answer_before_its_short_lease_retires
 fn an_actual_held_short_lease_is_released_exactly_once_when_its_token_drops() {
     use crate::dispatch::kinds::auth::Auth;
     use crate::dispatch::{load_linked, Bind, ConnTable, Frame, LinkedRow, NoSink};
-    use busbar_contract::abi::auth::{slot, POINT_HEAD};
     use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
     use busbar_contract::abi::sdk::door::blank_in;
+    use busbar_contract::auth_calls::codes::slot;
+    use busbar_contract::route::POINT_HEAD;
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
     VERIFIES.store(0, Ordering::SeqCst);
     RELEASES.store(0, Ordering::SeqCst);

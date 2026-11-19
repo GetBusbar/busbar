@@ -21,8 +21,8 @@ impl ReadyAdmission for crate::host_services::KernelServices {
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
+use busbar_contract::records::size_limits::SPAN_ABSENT;
 use busbar_contract::records::VirtualKey;
 use busbar_contract::services::{Caller, HostServices, Later, NestAsk, Ran, Stored};
 

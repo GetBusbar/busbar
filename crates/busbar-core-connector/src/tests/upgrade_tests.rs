@@ -6,8 +6,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
 use busbar_contract::crypto::testing::rcgen;
+use busbar_contract::rendering::{ReadBlob, ReadNeed};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
@@ -139,7 +139,7 @@ fn declare_class_timeout(
             bytes: Vec::new(),
         },
         timeout_ms,
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
     };
@@ -628,7 +628,7 @@ fn a_refused_verify_off_is_flagged_once_per_instance() {
 /// `CAUSE_SECURITY`.
 #[test]
 fn an_upgrade_handshake_the_far_end_resets_or_closes_is_a_connect_failure() {
-    use busbar_contract::abi::host::conn::connector::CAUSE_CONNECT;
+    use busbar_contract::conn::codes::CAUSE_CONNECT;
     worker().block_on(async move {
         for reset in [true, false] {
             let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

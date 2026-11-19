@@ -29,7 +29,7 @@ fn test_builds_watch_with_the_shipped_budgets() {
 
 #[test]
 fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
-    use busbar_contract::abi::host::service as svc;
+    use busbar_contract::services::codes::service as svc;
     use busbar_contract::services::{Ran, Stored};
 
     let judged = |d: &Dispatcher, dest: &str| -> Stored {

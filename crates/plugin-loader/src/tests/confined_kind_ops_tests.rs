@@ -14,7 +14,8 @@
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
-use busbar_contract::abi::transport::{slot as transport_slot, LocateIn, LocateOut};
+use busbar_contract::abi::transport::{LocateIn, LocateOut};
+use busbar_contract::transport::codes::slot as transport_slot;
 
 use crate::dispatch::kinds::export::Export;
 use crate::dispatch::kinds::transport::Transport;
@@ -125,7 +126,7 @@ fn an_export_check_never_enters_plugin_code_on_the_calling_thread() {
             .load(std::sync::atomic::Ordering::SeqCst);
         let checked = crate::export_door::check(
             &plugin,
-            busbar_contract::abi::export::CHECK_PHASE_LIMITS,
+            busbar_contract::export_calls::codes::CHECK_PHASE_LIMITS,
             &[],
         );
         assert!(checked.is_ok(), "{checked:?}");

@@ -4,7 +4,7 @@
 //! ROUTE_ADMIN on the admin listener: which of a plane's admin routes a request names, and the answer the client
 //! items make. The plane itself is an ffi handle, so the session runs in the image suite (W2-SW-PLANE e2e).
 
-use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_POST};
+use busbar_contract::route::{METHOD_GET, METHOD_POST};
 use busbar_plugin_abi::plane::{AUTH_OPERATOR, ROUTE_ADMIN};
 
 use super::*;

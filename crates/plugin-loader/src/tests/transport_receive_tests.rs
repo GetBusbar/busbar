@@ -5,8 +5,9 @@ use super::*;
 use crate::dispatch::framing_context::{self, FramingContext};
 use busbar_contract::abi::mechanism::call::OutHead;
 use busbar_contract::abi::mechanism::lifecycle::ReleaseIn;
-use busbar_contract::abi::transport::{slot, FramerOut, IngestIn};
+use busbar_contract::abi::transport::{FramerOut, IngestIn};
 use busbar_contract::framing_scope::FramingScope;
+use busbar_contract::transport::codes::slot;
 
 mod pressure_boundary {
     use super::*;
@@ -36,7 +37,7 @@ mod pressure_boundary {
             Outcome::Ready
         };
         let bytes = if n == 9 {
-            busbar_contract::abi::mechanism::extensions::encode(&[("framer.retained_input", &[1])])
+            busbar_contract::extensions::encode(&[("framer.retained_input", &[1])])
         } else {
             busbar_contract::abi::sdk::transport::receive::encode(n as u64)
         }

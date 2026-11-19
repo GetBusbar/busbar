@@ -25,9 +25,7 @@ struct Line {
 impl Line {
     fn recompute(&self) -> String {
         let preimage = format!("{}|{}|{}", self.prev, self.seq, self.payload);
-        hex::encode(busbar_contract::abi::sdk::digest::sha256(
-            preimage.as_bytes(),
-        ))
+        hex::encode(busbar_contract::digest::sha256(preimage.as_bytes()))
     }
 }
 

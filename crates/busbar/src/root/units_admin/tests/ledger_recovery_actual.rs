@@ -145,7 +145,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
         crate::root::native_secrets::linked_for_tests()
             .sugars()
             .reference_for_role(
-                busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
+                busbar_contract::plugin_settings::sugar_words::SUGAR_ROLE_PATH,
                 token_file.to_string_lossy(),
             )
             .expect("the admitted source declares the path role")

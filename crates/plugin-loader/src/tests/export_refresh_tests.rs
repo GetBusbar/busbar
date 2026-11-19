@@ -5,10 +5,11 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::dispatch::{in_head, out_head, ConnTable, Frame, NO_BLOB};
-use busbar_contract::abi::export::{slot as export_slot, DeliverIn, StatusOut};
+use busbar_contract::abi::export::{DeliverIn, StatusOut};
 use busbar_contract::abi::mechanism::call::{OutHead, Outcome, BLOB_JSON, BLOB_JSONL};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelIn, CancelOut, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
+use busbar_contract::export_calls::codes::slot as export_slot;
 
 fn loaded(dropped: bool, d: &Dispatcher, far: Arc<Far>) -> Plugin<Export> {
     let mut binding = bind("export-refresh", Arc::new(Tape::default()), d);

@@ -35,14 +35,17 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use busbar_contract::abi::host::service::SCHEME_PLAIN;
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::sdk::test_support::loans::{Buf, Loans};
 use busbar_contract::abi::sdk::test_support::mutant::Mutant;
 use busbar_contract::abi::transport::{
-    slot, BeginIn, ConnFacts, EmitIn, FinishIn, FramePiece, FramerOut, FramerSink, FramerYield,
-    FramingIn, IngestIn, CLOSE_CAPACITY_EXHAUSTED, CLOSE_DRAIN, CLOSE_NORMAL, CLOSE_PEER_CLOSED,
+    BeginIn, ConnFacts, EmitIn, FinishIn, FramePiece, FramerOut, FramerSink, FramerYield,
+    FramingIn, IngestIn,
+};
+use busbar_contract::services::codes::SCHEME_PLAIN;
+use busbar_contract::transport::codes::{
+    slot, CLOSE_CAPACITY_EXHAUSTED, CLOSE_DRAIN, CLOSE_NORMAL, CLOSE_PEER_CLOSED,
     CLOSE_TRANSPORT_FAILED, EMIT_TEXT, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS,
     PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, SIDE_ACCEPT, YIELD_ENDED, YIELD_HAS_DEADLINE,
     YIELD_MORE, YIELD_STREAM_FULL,

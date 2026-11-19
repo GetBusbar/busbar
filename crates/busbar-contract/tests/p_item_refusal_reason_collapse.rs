@@ -3,10 +3,9 @@
 
 //! Exercises distinct refusal reasons across plugin operation boundaries.
 
-use busbar_contract::abi::plane::{
-    class_of, class_of_refusal, class_of_word, wire_code, RefusalClass, RefusalCode,
-};
+use busbar_contract::abi::plane::{class_of_refusal, class_of_word, wire_code};
 use busbar_contract::caps::ReasonCode;
+use busbar_contract::plane::codes::{class_of, RefusalClass, RefusalCode};
 use busbar_contract::unit::RefusalReason;
 
 /// Every reason has exactly one class, read the same way from each of its three spellings.

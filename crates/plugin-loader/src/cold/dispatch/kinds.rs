@@ -9,18 +9,19 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
-use busbar_contract::abi::mechanism::check::Fault;
-use busbar_contract::abi::mechanism::door::{
-    MetricFamily, Statement, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED,
-};
-use busbar_contract::abi::mechanism::rendering::Unreadable;
-use busbar_contract::abi::mechanism::route::Route;
+use busbar_contract::abi::mechanism::door::{MetricFamily, Statement};
 use busbar_contract::abi::plane::{self, PlaneSnapshot, PlaneTail};
 use busbar_contract::abi::transport::{SettingDecl, StatusRow};
 use busbar_contract::plane::{PinMechanismDecl, TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::{
     DialectFacts, DoorFacing, FacingProbe, InstanceDecl, PlaneRegistration, SectionJudge,
 };
+use busbar_contract::plugin_settings::sugar_words::{
+    SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED,
+};
+use busbar_contract::records::size_limits::Fault;
+use busbar_contract::rendering::Unreadable;
+use busbar_contract::route::Route;
 
 use crate::dispatch::kinds::plane::{
     dialect_flags, kept, kept_blob, kept_mechanisms, listed, owned_blob, owned_str, NeedKeep,
@@ -421,7 +422,7 @@ pub(crate) fn plane_snapshot(
     listed: &[AbiStr],
     spans: &[AbiStr],
 ) -> Option<OwnedSnapshot> {
-    use busbar_contract::abi::plane::check::check_claim_target;
+    use busbar_contract::plane::codes::check_claim_target;
     let span_of = |i: usize| -> Option<String> {
         let name = spans.get(i).map_or(Some(String::new()), |n| {
             owned_str(*n).map(Option::unwrap_or_default)
@@ -697,8 +698,8 @@ pub(crate) fn plane_served(st: &Statement, tail: &PlaneTail) -> ServedFacts {
             .into_iter()
             .map(|c| kept(c.family))
             .collect(),
-        probes: tail.flags & busbar_contract::abi::plane::TAIL_PROBES != 0,
-        fallback: tail.flags & busbar_contract::abi::plane::TAIL_FALLBACK != 0,
+        probes: tail.flags & busbar_contract::plane::codes::TAIL_PROBES != 0,
+        fallback: tail.flags & busbar_contract::plane::codes::TAIL_FALLBACK != 0,
         caller_credential_refusal: kept(tail.caller_credential_refusal),
         tail_flags: tail.flags,
         stream_ceiling_secs: tail.stream_ceiling_secs,

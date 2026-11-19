@@ -3,10 +3,11 @@
 
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
+use busbar_contract::abi::host::conn::connector::Need;
 use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::door::{Door, DoorFn, Statement};
 use busbar_contract::abi::sdk::door::abi_str;
+use busbar_contract::conn::codes::{DIRECTION_OUTBOUND, KEEP_NAMED};
 
 use crate::dispatch::NO_BLOB;
 
@@ -142,7 +143,7 @@ impl busbar_contract::conn::DeclaredConns for Inert {
         &self,
         _: busbar_contract::conn::InstanceId,
         _: busbar_contract::conn::NeedId,
-        _: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        _: &busbar_contract::rendering::ReadNeed,
         _: Option<&str>,
         _: Option<&str>,
     ) -> Result<(), busbar_contract::conn::ConnError> {

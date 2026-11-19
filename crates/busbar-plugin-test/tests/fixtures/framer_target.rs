@@ -11,7 +11,7 @@
 
 mod framer_door;
 
-use busbar_contract::abi::transport::slot;
+use busbar_contract::transport::codes::slot;
 use busbar_plugin_test::target::stream::Framer;
 use busbar_plugin_test::target::Target;
 use busbar_plugin_test::{Host, Mutant};

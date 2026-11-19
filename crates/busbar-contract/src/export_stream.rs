@@ -6,7 +6,7 @@
 //! Moved out of `abi::export` (WBS W0-D1A) so the stream vocabulary has one home; the export kind
 //! and every consumer name it from here.
 
-use crate::abi::export::ExportField;
+use crate::export_calls::codes::ExportField;
 use serde::{Deserialize, Serialize};
 
 /// One observability stream an export sink can carry OUT of the engine — the FROZEN word-space of

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::auth::{STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL};
+use busbar_contract::auth_calls::codes::{
+    STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL,
+};
 use busbar_contract::auth_calls::DeclaredStyle;
 use busbar_kernel::config::ProviderAuth;
 use busbar_kernel::preflight::{declared_styles, install_declared_styles, style_flags};

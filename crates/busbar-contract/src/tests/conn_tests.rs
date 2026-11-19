@@ -381,7 +381,7 @@ fn an_owned_path_is_its_own_namespace() {
 /// A program's `env` entry written as a secret REFERENCE is held as the reference
 #[test]
 fn a_programs_environment_is_held_as_its_declared_reference() {
-    use crate::abi::mechanism::door::{REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL};
+    use crate::plugin_settings::sugar_words::{REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL};
     use crate::secret_ref::{SecretRef, Sugars};
     let mut sources = Sugars::default();
     sources

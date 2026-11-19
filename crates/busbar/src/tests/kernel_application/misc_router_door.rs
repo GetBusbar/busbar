@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::root::test_plugins as plugins;
 
 use axum::Router;
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+use busbar_contract::route::{RouteAuth, RouteMethod};
 use kernel::plane_routes::{PlaneReqCtx, PlaneRouteSpec};
 
 const DOOR: &str = "/door-route-test/call";

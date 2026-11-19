@@ -5,10 +5,11 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::auth::{AuthPoints, FACT_DEFAULT_INBOUND_STYLE, FACT_READS_CREDENTIALS};
-use busbar_contract::abi::mechanism::door::REWRITE_ALIAS;
-use busbar_contract::abi::mechanism::rendering::read;
+use busbar_contract::auth_calls::codes::{FACT_DEFAULT_INBOUND_STYLE, FACT_READS_CREDENTIALS};
 use busbar_contract::auth_calls::InboundStyle;
+use busbar_contract::plugin_settings::sugar_words::REWRITE_ALIAS;
+use busbar_contract::rendering::read;
+use busbar_contract::route::AuthPoints;
 
 use crate::auth_axis::{AuthRows, NO_DOOR};
 use crate::dispatch::LinkedRow;

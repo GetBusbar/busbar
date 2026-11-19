@@ -6,7 +6,7 @@ use busbar_contract::caps::{
     Dial, Grant, KernelSeal, Pass, PrincipalId, ReasonCode, Refusal, SeatVerdict, Step, Verify,
 };
 
-use busbar_contract::abi::plane::PRINCIPAL_REQUIRED;
+use busbar_contract::plane::codes::PRINCIPAL_REQUIRED;
 
 use super::{CallerEnd, DriverSteps, FarEnd, PlaneUnits};
 use crate::slice::GroupLeaseSlip;

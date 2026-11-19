@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+use busbar_contract::route::{RouteAuth, RouteMethod};
 use busbar_kernel::core_routes::CoreRouter;
 
 use super::operator::{consent_screen, consent_submit, device_decide, device_page};

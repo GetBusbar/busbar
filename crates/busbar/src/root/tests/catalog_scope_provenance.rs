@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::plane::ROUTE_SCOPE_LOCAL;
+use busbar_contract::plane::codes::ROUTE_SCOPE_LOCAL;
 use busbar_contract::records::{ScopeRef, VirtualKey};
 
 #[test]

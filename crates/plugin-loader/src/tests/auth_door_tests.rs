@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::abi::auth::{AuthPoint, AuthPoints, AuthTail, METRIC_CACHE_FLUSHED};
+use busbar_contract::abi::auth::{AuthTail, METRIC_CACHE_FLUSHED};
 use busbar_contract::abi::mechanism::call::AbiStr;
-use busbar_contract::abi::mechanism::door::{MarkWord, MetricFamily, Statement, FAMILY_COUNTER};
+use busbar_contract::abi::mechanism::door::{MarkWord, MetricFamily, Statement};
 use busbar_contract::abi::sdk::auth_door::{
     carrier, verify_tail, with_tail, Answer, Strip, Verdict, VerifyView,
 };
@@ -15,6 +15,8 @@ use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::auth_calls::{
     AuthCalls, Decision, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest,
 };
+use busbar_contract::plugin_settings::sugar_words::FAMILY_COUNTER;
+use busbar_contract::route::{AuthPoint, AuthPoints};
 use busbar_contract::Secret;
 
 use crate::auth_axis::AuthRows;
@@ -675,7 +677,8 @@ fn an_instance_debug_never_shows_its_settings_or_secrets() {
 
 mod aliased {
     use super::*;
-    use busbar_contract::abi::mechanism::door::{Rewrite, REWRITE_ALIAS};
+    use busbar_contract::abi::mechanism::door::Rewrite;
+    use busbar_contract::plugin_settings::sugar_words::REWRITE_ALIAS;
 
     const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
     const SECRET_REFS: &[AbiStr] = &[abi_str("token")];
@@ -918,7 +921,7 @@ impl busbar_contract::conn::DeclaredConns for DeclarationObserver {
         &self,
         owner: busbar_contract::conn::InstanceId,
         need: busbar_contract::conn::NeedId,
-        spec: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        spec: &busbar_contract::rendering::ReadNeed,
         target: Option<&str>,
         trust: Option<&str>,
     ) -> Result<(), busbar_contract::conn::ConnError> {
@@ -1193,10 +1196,7 @@ fn an_auth_instance_logs_to_its_own_plugin_log_file() {
         a.verify_now(&request(Some("log"), None)),
         Some(answered(Verified::Pass))
     );
-    let path = log_config().path_for(
-        "auth.logged",
-        busbar_contract::abi::mechanism::KindCode::Auth,
-    );
+    let path = log_config().path_for("auth.logged", busbar_contract::kinds::codes::KindCode::Auth);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut text = String::new();
     while std::time::Instant::now() < deadline {
@@ -1219,7 +1219,7 @@ mod ticketed {
     use std::task::Poll;
     use std::time::Duration;
 
-    use busbar_contract::abi::auth::{AuthPoint, AuthPoints, AuthTail};
+    use busbar_contract::abi::auth::AuthTail;
     use busbar_contract::abi::host::service::{ItemSpan, SECRET_LIVE, SECRET_NOT_LIVE};
     use busbar_contract::abi::mechanism::call::{AbiStr, Span};
     use busbar_contract::abi::sdk::auth_door::{
@@ -1228,6 +1228,7 @@ mod ticketed {
     };
     use busbar_contract::abi::sdk::door::{abi_str, statement};
     use busbar_contract::auth_calls::{AuthCalls, Verified, VerifiedIdentity, VerifyRequest};
+    use busbar_contract::route::{AuthPoint, AuthPoints};
     use busbar_contract::services::{
         Caller, DiskDest, HookAsk, Later, NestAsk, Ran, Reading, RecordsList, Stored, TrustKeyRef,
     };
@@ -1618,7 +1619,8 @@ fn an_auth_module_whose_open_fails_is_named_in_1_5_5s_words() {
 
 #[test]
 fn a_begin_login_form_misaligned_for_its_fields_is_malformed() {
-    use busbar_contract::abi::auth::{BeginLoginOut, LoginField, BEGIN_FORM};
+    use busbar_contract::abi::auth::{BeginLoginOut, LoginField};
+    use busbar_contract::auth_calls::codes::BEGIN_FORM;
     let size = std::mem::size_of::<LoginField>();
     let align = std::mem::align_of::<LoginField>();
     assert!(
@@ -1742,9 +1744,9 @@ fn an_auth_instance_holds_its_secrets_in_zeroising_buffers() {
 
 mod reasons {
     use busbar_contract::abi::auth::{
-        AuthPoints, AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut,
-        IdentifyOut, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
-        DECISION_STOP, VERDICT_REJECT,
+        AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut, IdentifyOut,
+        OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
+        DECISION_STOP,
     };
     use busbar_contract::abi::mechanism::call::Outcome;
     use busbar_contract::abi::sdk::auth_door::{
@@ -1753,6 +1755,8 @@ mod reasons {
     use busbar_contract::abi::sdk::door::statement;
     use busbar_contract::abi::sdk::life::Held;
     use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+    use busbar_contract::auth_calls::codes::VERDICT_REJECT;
+    use busbar_contract::route::AuthPoints;
 
     pub(super) const REJECTED: &str = "the signature timestamp is 400 s old (window 300 s)";
 
@@ -1888,7 +1892,7 @@ fn red_a_rejects_and_an_outages_reason_reach_the_instances_log() {
         "the outage preserves its delay as well as its operator reason",
     );
 
-    let path = log_config().path_for("auth.says", busbar_contract::abi::mechanism::KindCode::Auth);
+    let path = log_config().path_for("auth.says", busbar_contract::kinds::codes::KindCode::Auth);
     let mut text = String::new();
     while std::time::Instant::now() < deadline {
         text = std::fs::read_to_string(&path).unwrap_or_default();

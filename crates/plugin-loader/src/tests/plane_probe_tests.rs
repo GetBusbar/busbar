@@ -335,12 +335,11 @@ fn an_open_probe_in_refresh_is_not_closed_by_a_concurrent_same_input() {
 
 fn copied_declaration(blob: &[u8], token: &str, flags: u32) -> PlaneFacts {
     use crate::dispatch::Kind;
-    use busbar_contract::abi::mechanism::door::{
-        KindTailHead, Section, Statement, SECTION_DECLARING,
-    };
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement};
     use busbar_contract::abi::plane::{
         PinMechanism, TrustKey, INGRESS_REQUEST_RESPONSE, TRUST_PIN,
     };
+    use busbar_contract::plugin_settings::sugar_words::SECTION_DECLARING;
     let text = |s: &str| AbiStr {
         ptr: s.as_ptr(),
         len: s.len(),

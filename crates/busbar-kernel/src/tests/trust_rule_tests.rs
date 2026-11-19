@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::host::service as svc;
+use busbar_contract::services::codes::service as svc;
 use busbar_contract::services::{Caller, HostServices, Later, Ran, Stored, TrustKeyRef};
 
 use super::{BlockingPool, InstanceFacts, KernelServices, TrustDecisionAuthority};
@@ -16,7 +16,7 @@ const UNVERIFIED: &str = "unverified";
 fn caller() -> Caller {
     Caller::for_test(
         Arc::from("inst"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     )
 }
 

@@ -124,7 +124,7 @@ fn stage(directory: &Path, file: &str, variable: &str, kind: &str) -> (String, S
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
         .expect("the actual product statement reads")
         .expect("the actual product exports its statement");
-    let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
+    let facts = busbar_contract::rendering::read(&statement)
         .expect("the actual product statement is valid");
     let mut manifest = plugins::manifest(kind, &facts.name, "third-party");
     manifest.version = facts.version;

@@ -9,11 +9,11 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::secret::{
-    ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_INVALID, ERROR_KIND_NOT_FOUND,
-    ERROR_KIND_UNAVAILABLE,
-};
+use busbar_contract::abi::secret::ERROR_KIND_UNAVAILABLE;
 use busbar_contract::redacted::Secret;
+use busbar_contract::secret::codes::{
+    ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_INVALID, ERROR_KIND_NOT_FOUND,
+};
 use busbar_contract::secret::{SecretRefused, SecretResolve};
 use busbar_contract::secret_ref::SecretRef;
 use busbar_kernel::refresh::{Refreshable, Report};
@@ -370,7 +370,7 @@ fn a_refresh_failure_emits_8026_once_per_streak_window_and_audits_degraded() {
     let seen = b.report.all();
     let digest = busbar_kernel::refresh::fingerprint([b"ta4-SECRET-VALUE".as_slice()])
         .expect("the process is keyed");
-    let plain: [u8; 32] = busbar_contract::abi::sdk::digest::sha256(b"ta4-SECRET-VALUE");
+    let plain: [u8; 32] = busbar_contract::digest::sha256(b"ta4-SECRET-VALUE");
     for leaked in [
         "ta4-SECRET-VALUE".to_string(),
         hex::encode(digest),

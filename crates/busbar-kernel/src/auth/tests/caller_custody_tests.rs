@@ -8,7 +8,7 @@
 //! so the extensions axum and the outer layers add cancel out.
 
 use super::*;
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+use busbar_contract::route::{RouteAuth, RouteMethod};
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt as _;
 

@@ -11,7 +11,7 @@ pub struct ConfigurationDeclaration {
 }
 
 impl ConfigurationDeclaration {
-    pub fn from_statement(statement: &busbar_contract::abi::mechanism::rendering::Read) -> Self {
+    pub fn from_statement(statement: &busbar_contract::rendering::Read) -> Self {
         use busbar_contract::abi::mechanism::{
             call::AbiStr,
             check,

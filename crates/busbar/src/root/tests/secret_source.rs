@@ -65,7 +65,7 @@ pub(super) fn assert_clean(
 
 pub(super) fn statement_name(door: busbar_contract::abi::mechanism::door::DoorFn) -> String {
     let row = crate::root::loader::dispatch::LinkedRow::of(door).expect("the door states itself");
-    busbar_contract::abi::mechanism::rendering::read(&row.statement)
+    busbar_contract::rendering::read(&row.statement)
         .expect("its Statement reads")
         .name
 }

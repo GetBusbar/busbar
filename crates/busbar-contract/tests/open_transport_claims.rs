@@ -3,10 +3,10 @@
 
 //! Open-claim counterparts of the retired closed transport-axis enumeration tests.
 
-use busbar_contract::abi::mechanism::extensions::encode;
 use busbar_contract::abi::transport::listener_bindings::{
     read, resolve, ListenerBinding, EXT_LISTENER_BINDINGS,
 };
+use busbar_contract::extensions::encode;
 
 #[test]
 fn transport_identity_is_the_declared_key_without_a_central_name_table() {

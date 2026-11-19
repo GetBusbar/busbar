@@ -11,10 +11,10 @@ use tracing::metadata::Kind;
 use tracing::subscriber::Interest;
 use tracing::{Metadata, Span};
 
-use busbar_contract::abi::plane::check::{
+use busbar_contract::plane::codes::{
     entry_fact, entry_path_matches, raw_affix_matches, EntryPredicate,
 };
-use busbar_contract::abi::plane::{CLAIM_ENTRY, CLAIM_RAW_AFFIX};
+use busbar_contract::plane::codes::{CLAIM_ENTRY, CLAIM_RAW_AFFIX};
 
 use super::HOTPATH_LEVEL;
 

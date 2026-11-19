@@ -8,9 +8,10 @@ use std::os::raw::c_void;
 use busbar_contract::abi::mechanism::call::{Op, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::door::{Door, DoorFn};
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket, WakeFn};
-use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, DOOR_SYMBOL, MECHANISM_VERSION};
+use busbar_contract::abi::mechanism::DOOR_MAGIC;
 use busbar_contract::abi::sdk::door::RawDoorFn;
 use busbar_contract::abi::{auth, export, hook, plane, secret, store, transport};
+use busbar_contract::kinds::codes::{KindCode, DOOR_SYMBOL, MECHANISM_VERSION};
 
 // The versions v1.5.5 shipped (tag v1.5.5). These never change: 1.6.0 is each one plus one.
 /// `plugin-abi/src/lib.rs:71` `TRANSPORT_VERSION`.

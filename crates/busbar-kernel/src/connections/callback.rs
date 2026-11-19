@@ -9,7 +9,7 @@
 
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use busbar_contract::abi::transport::route::METHOD_GET;
+use busbar_contract::route::METHOD_GET;
 
 use crate::path_claims::{ListenerId, PathClaim};
 use crate::upstreams::{ConfiguredUpstreams, Upstreams};

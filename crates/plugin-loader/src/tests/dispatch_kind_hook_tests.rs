@@ -8,7 +8,8 @@ use busbar_contract::abi::hook::{
     StatusOut, TransformOut, VERB_ABSTAIN, VERB_PREFER, VERB_REJECT, VERB_REWRITE,
 };
 use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome, RawOutcome};
-use busbar_contract::abi::mechanism::check::{Fault, Rule};
+use busbar_contract::abi::mechanism::check::Rule;
+use busbar_contract::records::size_limits::Fault;
 
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{in_head, out_head, Answer, InFrame, Kind, OutFrame};
@@ -408,8 +409,9 @@ fn zeroed_pending_and_refused_pass_every_op() {
 
 #[test]
 fn the_hook_tail_follows_the_growth_rule() {
-    use busbar_contract::abi::hook::{Tail, CLASS_TAP, PROMPT_NO, USER_NO};
+    use busbar_contract::abi::hook::{Tail, PROMPT_NO, USER_NO};
     use busbar_contract::abi::sdk::door::statement;
+    use busbar_contract::hooks::codes::CLASS_TAP;
     let bind = |size: usize| {
         let mut tail = Tail::EMPTY.with_access(CLASS_TAP, PROMPT_NO, USER_NO);
         tail.head.size = size as u32;
@@ -435,9 +437,10 @@ fn the_hook_tail_follows_the_growth_rule() {
 
 #[test]
 fn a_hook_tail_admits_valid_routes_and_refuses_malformed_routes_or_requested_signals() {
-    use busbar_contract::abi::hook::{Route, Tail, CLASS_GATE, PROMPT_NO, USER_NO};
+    use busbar_contract::abi::hook::{Route, Tail, PROMPT_NO, USER_NO};
     use busbar_contract::abi::mechanism::call::AbiStr;
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::hooks::codes::CLASS_GATE;
     let routes: &'static [Route] = Box::leak(Box::new([Route {
         path: AbiStr::ZERO,
         method: AbiStr::ZERO,
@@ -482,10 +485,11 @@ fn a_hook_tail_admits_valid_routes_and_refuses_malformed_routes_or_requested_sig
 
 #[test]
 fn hook_route_lists_require_alignment_before_copying() {
-    use busbar_contract::abi::hook::{Route, Tail, CLASS_GATE, PROMPT_NO, USER_NO};
+    use busbar_contract::abi::hook::{Route, Tail, PROMPT_NO, USER_NO};
     use busbar_contract::abi::mechanism::call::AbiStr;
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_contract::hooks::codes::CLASS_GATE;
+    use busbar_contract::route::{RouteAuth, RouteMethod};
 
     let text = |value: &'static str| AbiStr {
         ptr: value.as_ptr(),
@@ -531,7 +535,7 @@ fn hook_route_lists_require_alignment_before_copying() {
     let error = bind(&tail).expect_err("the existing NULL/count check is retained");
     assert!(error.contains("route list is null"), "{error}");
     tail.routes = routes.as_ptr();
-    tail.routes_len = busbar_contract::abi::export::validate::HARD_MAX_ROUTES as usize + 1;
+    tail.routes_len = busbar_contract::export_calls::codes::HARD_MAX_ROUTES as usize + 1;
     let error = bind(&tail).expect_err("the existing route count bound is retained");
     assert!(error.contains("exceeds the route bound"), "{error}");
 }

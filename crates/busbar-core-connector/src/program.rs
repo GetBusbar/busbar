@@ -336,7 +336,7 @@ fn waker_key(waker: &Waker) -> (usize, usize) {
 /// instance and identity lines). Rendered from what the lease and the member hold, never held as
 /// a buffer of its own. Answers the bytes copied and whether the head ended with them.
 fn copy_head(generation: u64, tail: &[u8], at: usize, buf: &mut [u8]) -> (usize, bool) {
-    use busbar_contract::abi::transport::fields::{LINE_END, SEPARATOR};
+    use busbar_contract::transport::fields::{LINE_END, SEPARATOR};
     let mut digits = [0_u8; 20];
     let spelled = {
         let mut rest = &mut digits[..];

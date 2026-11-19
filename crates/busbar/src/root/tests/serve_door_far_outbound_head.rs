@@ -12,13 +12,13 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use busbar_contract::abi::transport::FAULT_NONE;
 use busbar_contract::caps::Route;
 use busbar_contract::conn::{
     ConnError, ConnId, Conns, HeadDefaults, InstanceId, LocatedTarget, NeedId, OpenDesc, Piece,
     PollConns, Ticket,
 };
 use busbar_contract::stage_probe::{Derive, Scope};
+use busbar_contract::transport::codes::FAULT_NONE;
 use busbar_contract::transport::trust::EgressTrust;
 use busbar_contract::transport::{ConnFacts, TransportSettings};
 use busbar_core_connector::registry::Transports;

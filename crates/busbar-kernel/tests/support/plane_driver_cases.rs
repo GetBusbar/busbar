@@ -7,10 +7,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::plane::{
-    reason_code, RefusalStatus, UnitCount, CANCEL_FAILED, CANCEL_OK_PARTIAL, REFUSAL_ANY_DIALECT,
-};
+use busbar_contract::abi::plane::{RefusalStatus, UnitCount};
 use busbar_contract::caps::{Outcome, Pass, ReasonCode, Route, StepName};
+use busbar_contract::plane::codes::{
+    reason_code, CANCEL_FAILED, CANCEL_OK_PARTIAL, REFUSAL_ANY_DIALECT,
+};
 use busbar_kernel::canary::Canary;
 use busbar_kernel::plane_driver::{
     Arrival, BufferCaps, CallerEnd, CancelBill, Checkpoint, FarEnd, FarPiece, MoneySeam,

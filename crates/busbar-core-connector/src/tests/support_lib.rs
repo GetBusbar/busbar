@@ -13,9 +13,8 @@ use std::task::Waker;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use busbar_contract::abi::transport::{
-    FramePiece, FramerOut, FramerSink, PIECE_END_OF_FRAME, PIECE_WRITABLE,
-};
+use busbar_contract::abi::transport::{FramePiece, FramerOut, FramerSink};
+use busbar_contract::transport::codes::{PIECE_END_OF_FRAME, PIECE_WRITABLE};
 
 // `base` was written against `super::{carrier, compose, framer, hostio}`; these keep those paths.
 use super::{carrier, compose, framer, hostio};
@@ -258,7 +257,7 @@ impl TestDoor {
     #[must_use]
     pub fn with_role(mut self, role: u32) -> Self {
         self.facts.role = role;
-        self.facts.ported = role == busbar_contract::abi::transport::ROLE_CARRIER;
+        self.facts.ported = role == busbar_contract::transport::codes::ROLE_CARRIER;
         self
     }
 

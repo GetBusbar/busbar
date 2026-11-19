@@ -5,11 +5,12 @@ use std::time::Duration;
 
 use super::*;
 use crate::persistence::{facade::CoreStore, scoped::ScopedStore};
-use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::plane::{
-    RecordChain, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
-};
+use busbar_contract::abi::plane::RecordChain;
+use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::kinds::RecordBytes;
+use busbar_contract::plane::codes::{
+    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
+};
 
 fn scope_for_key(
     store: &Arc<CoreStore>,

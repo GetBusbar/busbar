@@ -3,7 +3,7 @@
 
 use super::*;
 use crate as busbar_contract;
-use crate::abi::host::conn::connector::DIRECTION_OUTBOUND;
+use crate::conn::codes::DIRECTION_OUTBOUND;
 use serde_json::json;
 
 fn need(direction: u32, transport: &str, target_from: &str) -> ReadNeed {
@@ -14,13 +14,13 @@ fn need(direction: u32, transport: &str, target_from: &str) -> ReadNeed {
         auth: String::new(),
         target_from: target_from.into(),
         trust_from: String::new(),
-        details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+        details: busbar_contract::rendering::ReadBlob {
             fmt: 0,
             flags: 0,
             bytes: Vec::new(),
         },
         timeout_ms: 0,
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
     }

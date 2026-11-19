@@ -6,7 +6,7 @@
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::services::Caller;
 use busbar_plugin_abi::fail::FaultReason;
 use busbar_plugin_abi::host_side::caller::BoxFut;

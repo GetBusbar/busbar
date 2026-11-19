@@ -42,7 +42,7 @@ pub(crate) fn shown(target: &str) -> &str {
 /// The verdict name a `dest.judge` verdict number reads as.
 #[must_use]
 pub fn verdict_name(v: u64) -> &'static str {
-    use busbar_contract::abi::host::service::{
+    use busbar_contract::services::codes::{
         DEST_INTERNAL, DEST_METADATA, DEST_NO_ADDRESSES, DEST_NO_HOST, DEST_OBFUSCATED,
         DEST_PLAINTEXT, DEST_SCHEME, DEST_UNRESOLVABLE,
     };

@@ -105,7 +105,7 @@ fn a_third_party_plugins_cuts_warn_once_per_field_naming_it_and_count_every_time
         "labels": {"k": "v".repeat(100)},
     })];
     let diagnostics = [serde_json::to_value(
-        busbar_contract::abi::mechanism::observe::PluginDiagnostic::warn(
+        busbar_contract::observe::PluginDiagnostic::warn(
             format!("BUSBAR-{}", d.code),
             "m".repeat(400),
         )

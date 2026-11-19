@@ -69,7 +69,7 @@ mod identifies {
     use super::*;
 
     const TAIL: &busbar_contract::abi::auth::AuthTail =
-        &verify_tail(0, busbar_contract::abi::auth::AuthPoints::HEAD);
+        &verify_tail(0, busbar_contract::route::AuthPoints::HEAD);
 
     busbar_contract::auth_verify_door!(
         Identifies,

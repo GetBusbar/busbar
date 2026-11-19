@@ -16,12 +16,12 @@
 //! `dispatch::kinds::transport::stated_tail`, beside the kind's other unsafe code, so the unsafe
 //! register (unsafe.yaml) keeps its per-file counts.
 
-use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::transport;
 use busbar_contract::abi::transport::check::{
     check_fault_cover, check_fault_rows, check_offered_points, check_status_rows,
 };
+use busbar_contract::records::size_limits::Fault;
 
 use crate::dispatch::kinds::transport::{
     owned, stated_tail, StatedTail, Transport, TransportFacts,
@@ -60,10 +60,10 @@ pub(crate) fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     let claims = cold::transport_names(names, "claim")?;
 
     let lines = cold::transport_claims_where(&claims, rows, |row| {
-        row.unit0_trigger == busbar_contract::abi::transport::UNIT0_FIRST_LINE
+        row.unit0_trigger == busbar_contract::transport::codes::UNIT0_FIRST_LINE
     });
     let upgrades = cold::transport_claims_where(&claims, rows, |row| {
-        row.unit0_trigger == busbar_contract::abi::transport::UNIT0_UPGRADE
+        row.unit0_trigger == busbar_contract::transport::codes::UNIT0_UPGRADE
     });
     let sessions = cold::transport_claims_where(&claims, rows, |row| row.session == 1);
 
@@ -93,8 +93,8 @@ pub(crate) fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         listener_bindings,
         adopts_session,
         name,
-        datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
-        accepts: tail.facts & busbar_contract::abi::transport::FACT_ACCEPTS != 0,
+        datagram: tail.framing == busbar_contract::transport::codes::FRAMING_DATAGRAM,
+        accepts: tail.facts & busbar_contract::transport::codes::FACT_ACCEPTS != 0,
         dials: tail.facts & transport::FACT_DIALS != 0,
         detaches: tail.facts & transport::FACT_DETACHES != 0,
         adopts: tail.facts & transport::FACT_ADOPTS != 0,

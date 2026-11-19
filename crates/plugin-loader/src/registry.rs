@@ -27,7 +27,7 @@ use crate::sign::{
     evaluate_with_verification, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY,
 };
 use crate::tarball;
-use busbar_contract::abi::mechanism::kind;
+use busbar_contract::plugin_settings::sugar_words::kind;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -65,11 +65,11 @@ pub struct LoadablePlugin {
     /// Validated Statement schema, or the legacy manifest fallback. Never changes signed bytes.
     pub(crate) settings_schema: Option<String>,
     /// Parsed at admission/link time; admin discovery never calls the door to read declarations.
-    configuration_statement: Option<Box<busbar_artifact_metadata::rendering::Read>>,
+    configuration_statement: Option<Box<busbar_contract::rendering::Read>>,
 }
 
 impl LoadablePlugin {
-    pub fn configuration_statement(&self) -> Option<&busbar_artifact_metadata::rendering::Read> {
+    pub fn configuration_statement(&self) -> Option<&busbar_contract::rendering::Read> {
         self.configuration_statement.as_deref()
     }
 
@@ -107,7 +107,7 @@ impl LoadablePlugin {
                 .map_err(|e| format!("plugin '{name}': its statement cannot be read: {e}"))?,
             None => return Err(unversioned(name)),
         };
-        let rendering = busbar_artifact_metadata::rendering::read(&statement).map_err(|e| {
+        let rendering = busbar_contract::rendering::read(&statement).map_err(|e| {
             format!(
                 "plugin '{name}': its statement cannot be read: expected {} at statement byte {}",
                 e.what, e.at
@@ -142,7 +142,7 @@ impl LoadablePlugin {
     }
 
     pub fn declarations(&self) -> Result<crate::sign::Declares, String> {
-        use busbar_artifact_metadata::{extensions, rendering};
+        use busbar_contract::{extensions, rendering};
 
         let Some(door) = self.door() else {
             return Ok(self.manifest.declares.clone());
@@ -520,7 +520,7 @@ impl PluginRegistry {
             let mut configuration_statement = None;
             let settings_schema = match crate::dispatch::LinkedRow::of_raw(door) {
                 Ok(rendered) => {
-                    let stated = busbar_artifact_metadata::rendering::read(&rendered.statement)
+                    let stated = busbar_contract::rendering::read(&rendered.statement)
                         .map_err(|e| format!("linked Statement byte {} is not {}", e.at, e.what))?;
                     let schema = crate::settings_schema::statement_schema(&stated.settings_schema)?
                         .or_else(|| manifest.settings_schema.clone());
@@ -729,7 +729,7 @@ impl PluginRegistry {
             let sink = logs
                 .sink(
                     name,
-                    busbar_contract::abi::mechanism::KindCode::Transport,
+                    busbar_contract::kinds::codes::KindCode::Transport,
                     bind.sink.clone(),
                 )
                 .map_err(|e| format!("transport plugin '{name}': {e}"))?;

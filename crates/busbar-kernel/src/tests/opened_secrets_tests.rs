@@ -97,7 +97,7 @@ struct DiskSource;
 impl SecretCalls for DiskSource {
     fn resolve(&self, _settings: &[u8]) -> Result<Secret<Vec<u8>>, SecretRefused> {
         Err(SecretRefused {
-            error_kind: busbar_contract::abi::secret::ERROR_KIND_DENIED,
+            error_kind: busbar_contract::secret::codes::ERROR_KIND_DENIED,
             text: busbar_contract::config_time::RESOLVE_OFF_CONFIG_TIME.to_string(),
         })
     }
@@ -131,6 +131,6 @@ fn a_dropped_in_source_is_handed_the_callers_config_time_proof() {
 
     assert_eq!(
         refused.error_kind,
-        busbar_contract::abi::secret::ERROR_KIND_DENIED
+        busbar_contract::secret::codes::ERROR_KIND_DENIED
     );
 }

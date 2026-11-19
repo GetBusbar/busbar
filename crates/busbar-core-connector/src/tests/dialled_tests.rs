@@ -233,7 +233,7 @@ fn a_close_beside_a_hung_datagram_emit_never_waits_and_the_holder_finishes_it() 
                 dials: true,
                 name: "hanging".into(),
                 claims: vec!["hanging"],
-                role: busbar_contract::abi::transport::ROLE_FRAMER,
+                role: busbar_contract::transport::codes::ROLE_FRAMER,
                 composes_over: Vec::new(),
                 ported: false,
                 status_rows: Vec::new(),
@@ -365,14 +365,15 @@ impl crate::framer::FramerDoor for LineOutputs {
     }
 
     fn cross(&self, call: crate::framer::Call<'_>) -> crate::framer::Crossed {
-        use busbar_contract::abi::transport::{
-            FramePiece, EMIT_TEXT, PIECE_END_OF_FRAME, PIECE_FIELDS, YIELD_MORE,
+        use busbar_contract::abi::transport::FramePiece;
+        use busbar_contract::transport::codes::{
+            EMIT_TEXT, PIECE_END_OF_FRAME, PIECE_FIELDS, YIELD_MORE,
         };
         match call {
             crate::framer::Call::Begin(_, out) => {
                 out.framing = 1;
                 if self.timer_mode {
-                    out.yielded.flags = busbar_contract::abi::transport::YIELD_HAS_DEADLINE;
+                    out.yielded.flags = busbar_contract::transport::codes::YIELD_HAS_DEADLINE;
                     out.yielded.next_deadline_ns = 0;
                 }
             }
@@ -510,7 +511,7 @@ fn line_outputs_settings(
             dials: true,
             name: "line-output".into(),
             claims: vec!["line-output"],
-            role: busbar_contract::abi::transport::ROLE_FRAMER,
+            role: busbar_contract::transport::codes::ROLE_FRAMER,
             composes_over: Vec::new(),
             ported: false,
             status_rows: Vec::new(),
@@ -1299,7 +1300,7 @@ fn connector_holds_datagram_writes_until_the_signalling_exchange_finishes() {
                 dials: true,
                 name: "signalling-write-guard".into(),
                 claims: vec!["signalling-write-guard"],
-                role: busbar_contract::abi::transport::ROLE_FRAMER,
+                role: busbar_contract::transport::codes::ROLE_FRAMER,
                 composes_over: Vec::new(),
                 ported: false,
                 status_rows: Vec::new(),

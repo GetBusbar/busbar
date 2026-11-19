@@ -6,9 +6,10 @@
 #![recursion_limit = "256"]
 use busbar_contract::abi::host::service::MAX_RANDOM_FILL;
 use busbar_contract::abi::mechanism::{call::Outcome, KindCode};
-use busbar_contract::abi::plane::{RecordChain, CHAIN_LENGTH_PREFIXED};
+use busbar_contract::abi::plane::RecordChain;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
+use busbar_contract::plane::codes::CHAIN_LENGTH_PREFIXED;
 use busbar_contract::services::{chain_key, Caller, HostServices, Later, Ran, RecordsList, Stored};
 use busbar_kernel::host_services::{BlockingPool, InstanceFacts, KernelServices as Host};
 use busbar_kernel::persistence;
@@ -179,7 +180,7 @@ fn sight_item(h: &Host, caller: &Caller, counterparty: &str, item: &str, evidenc
 
 fn rows(s: &Stored) -> Vec<(String, String)> {
     let at = |sp: busbar_contract::abi::mechanism::call::Span| {
-        if sp.offset == busbar_contract::abi::mechanism::check::SPAN_ABSENT {
+        if sp.offset == busbar_contract::records::size_limits::SPAN_ABSENT {
             return String::new();
         }
         let (from, len) = (sp.offset as usize, sp.len as usize);

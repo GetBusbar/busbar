@@ -10,7 +10,7 @@ use std::sync::PoisonError;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::export::{slot as export_slot, DeliverIn, Ops};
+use busbar_contract::abi::export::{DeliverIn, Ops};
 use busbar_contract::abi::mechanism::call::{
     Diag, MetricEntry, OutHead, Outcome, RawOutcome, BLOB_JSON, BLOB_JSONL, DIAG_LOG,
     DIAG_LOG_DROPPED,
@@ -19,6 +19,7 @@ use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
 use busbar_contract::abi::mechanism::lifecycle::OpsHead;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelIn, CancelOut, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
+use busbar_contract::export_calls::codes::slot as export_slot;
 use busbar_contract::export_calls::{Delivered, ExportCalls};
 use busbar_contract::export_stream::ExportStream;
 use busbar_plugin_loader::dispatch::kinds::export::Export;
@@ -763,7 +764,7 @@ fn two_export_instances_progress_independently_while_one_destination_is_blocked(
 
 #[test]
 fn accepted_event_json_reaches_the_actual_disk_lane_unchanged() {
-    use busbar_contract::abi::export::ExportField as F;
+    use busbar_contract::export_calls::codes::ExportField as F;
     use busbar_contract::services::{DiskDest, DiskRotate, HostServices as _, Ran};
 
     const ACTION: &str = "fixture.mutate";

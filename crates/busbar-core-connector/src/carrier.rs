@@ -13,8 +13,10 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, ConnIn, ConnOut, Destination, DialIn, IoOut, ListenIn, ListenOut, ReadIn,
-    ShutIn, WriteIn, CLOSE_NORMAL, DEST_AUTHORITY, DEST_PROGRAM, DEST_RETIRED, READ_END_OF_FRAME,
-    WRITE_END_OF_FRAME,
+    ShutIn, WriteIn,
+};
+use busbar_contract::transport::codes::{
+    CLOSE_NORMAL, DEST_AUTHORITY, DEST_PROGRAM, DEST_RETIRED, READ_END_OF_FRAME, WRITE_END_OF_FRAME,
 };
 
 use crate::framer::{Crossed, FramerDoor};

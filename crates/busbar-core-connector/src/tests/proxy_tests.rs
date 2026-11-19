@@ -485,7 +485,8 @@ fn proxying(config: Option<Arc<ProxyChoice>>) -> Connector {
     let view = Transports::new(vec![
         Entry {
             door: Arc::new(
-                TestDoor::identity("bytes").with_role(busbar_contract::abi::transport::ROLE_FRAMER),
+                TestDoor::identity("bytes")
+                    .with_role(busbar_contract::transport::codes::ROLE_FRAMER),
             ),
             alpn: Arc::default(),
         },
@@ -498,7 +499,7 @@ fn proxying(config: Option<Arc<ProxyChoice>>) -> Connector {
     let judge = |dest: &str, _: u32, _: crate::Judged| {
         Some(
             crate::socket::address_of(dest)
-                .ok_or(busbar_contract::abi::host::service::DEST_UNRESOLVABLE),
+                .ok_or(busbar_contract::services::codes::DEST_UNRESOLVABLE),
         )
     };
     Connector::serving(view, Arc::new(judge), None, Arc::new(|_, _: Ticket| {})).proxying(config)
@@ -634,7 +635,7 @@ fn a_proxy_refusing_the_tunnel_refuses_the_exchange() {
 /// THE CLAIM (security.md, "target judged before the proxy is asked"): a target the guard refuses
 #[test]
 fn a_target_the_guard_refuses_never_reaches_the_proxy() {
-    use busbar_contract::abi::host::service::{DEST_INTERNAL, DEST_METADATA};
+    use busbar_contract::services::codes::{DEST_INTERNAL, DEST_METADATA};
     worker().block_on(async {
         for (target, verdict) in [
             ("169.254.169.254:80", DEST_METADATA),
@@ -646,7 +647,7 @@ fn a_target_the_guard_refuses_never_reaches_the_proxy() {
                 Entry {
                     door: Arc::new(
                         TestDoor::identity("bytes")
-                            .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
+                            .with_role(busbar_contract::transport::codes::ROLE_FRAMER),
                     ),
                     alpn: Arc::default(),
                 },
@@ -762,7 +763,7 @@ fn configured_plain_connect_proxy_carries_an_open_web_tls_target() {
     use crate::guard::{Guard, Resolve, Resolved};
     use crate::process::GuardJudge;
     use crate::support::Knobs;
-    use busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB;
+    use busbar_contract::conn::codes::EGRESS_OPEN_WEB;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     struct NoDns;
@@ -817,7 +818,7 @@ fn configured_plain_connect_proxy_carries_an_open_web_tls_target() {
                             ..Knobs::default()
                         },
                     )
-                    .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
+                    .with_role(busbar_contract::transport::codes::ROLE_FRAMER),
                 ),
                 alpn: Arc::default(),
             },

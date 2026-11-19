@@ -34,7 +34,7 @@ impl Fixture {
         )));
         let caller = busbar_contract::services::Caller::for_test(
             Arc::from("native-test"),
-            busbar_contract::abi::mechanism::KindCode::Plane,
+            busbar_contract::kinds::codes::KindCode::Plane,
         );
         let admission = core.admit_native_invocation(&caller).unwrap();
         core.units()

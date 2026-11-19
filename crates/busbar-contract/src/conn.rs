@@ -3,12 +3,13 @@
 
 //! THE CONNECTION TABLE (the design's connections: "every plugin that needs an external connection
 
+pub mod codes;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use crate::abi::mechanism::rendering::ReadNeed;
 use crate::ids::StreamId;
+use crate::rendering::ReadNeed;
 use crate::secure::SecureString;
 use crate::transport::wire::{WireFault, WireStatusClass};
 use crate::transport::ConnFacts;
@@ -102,7 +103,7 @@ pub enum PieceKind {
     /// Payload bytes.
     Body,
     /// A head: the far end's fields, as the field block
-    /// ([`crate::abi::transport::fields`]) renders them, hop-by-hop fields dropped. The far end's
+    /// ([`crate::transport::codes::fields`]) renders them, hop-by-hop fields dropped. The far end's
     /// HEAD is ONE fields frame, the answer's FIRST, carrying the status; it comes even when empty
     /// (a `len` of `0`), so it always precedes the first [`PieceKind::Body`]. A fields frame after
     /// the body is the far end's trailers.
@@ -906,7 +907,7 @@ pub struct ConnAuth {
     /// `abi::auth::STYLE_NEEDS_HEADERS`.
     pub style_flags: u32,
     /// The style's `StyleDecl::points`.
-    pub points: crate::abi::auth::AuthPoints,
+    pub points: crate::route::AuthPoints,
     /// The member relays its caller's own verified credential: a request made inside a unit is
     /// lent that unit's ([`ConnAuth::lender`]); one made inside no unit has no caller, and opens
     /// nothing.

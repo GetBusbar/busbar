@@ -12,9 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, PlaneOpenIn, PlaneOpenOut, UnitCount,
-};
+use busbar_contract::abi::plane::{ArriveIn, ArriveOut, PlaneOpenIn, PlaneOpenOut, UnitCount};
+use busbar_contract::plane::codes::slot;
 use busbar_contract::services::HostServices;
 use busbar_kernel::host_services::KernelServices;
 
@@ -54,7 +53,7 @@ fn ways() -> Vec<Way> {
 
 fn opened(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
     let bind = Bind {
- accept: Default::default(),
+        accept: Default::default(),
         instance: Arc::from("the-instance"),
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),

@@ -6,6 +6,7 @@
 //! have no serialization or readable-value interface.
 
 mod owned;
+pub mod sugar_words;
 
 use crate::secure::{SecureString, SecureVec};
 use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
@@ -1384,7 +1385,7 @@ mod tests {
             .declare(
                 "source-owner",
                 &[(
-                    crate::abi::mechanism::door::REWRITE_SUGAR,
+                    crate::plugin_settings::sugar_words::REWRITE_SUGAR,
                     "cabinet".into(),
                     "entry".into(),
                 )],
@@ -1575,7 +1576,9 @@ mod template_admission_tests {
     }
     #[test]
     fn forged_template_source_refuses_before_resolution_or_dependency_selection() {
-        use crate::abi::mechanism::door::{REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL};
+        use crate::plugin_settings::sugar_words::{
+            REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL,
+        };
         let mut sources = crate::secret_ref::Sugars::default();
         sources
             .declare(

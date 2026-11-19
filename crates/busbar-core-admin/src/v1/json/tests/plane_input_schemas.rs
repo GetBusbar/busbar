@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::mechanism::door::{SECTION_CONSUMED, SECTION_DECLARING};
+use busbar_contract::plugin_settings::sugar_words::{SECTION_CONSUMED, SECTION_DECLARING};
 use busbar_kernel::admission::ConfigurationDeclaration;
 use serde_json::json;
 

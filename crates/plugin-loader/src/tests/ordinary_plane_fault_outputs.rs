@@ -8,7 +8,8 @@ use crate::dispatch::{
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
-use busbar_contract::abi::plane::{slot, ArriveIn, ArriveOut, Ops, ProjectIn, ProjectOut};
+use busbar_contract::abi::plane::{ArriveIn, ArriveOut, Ops, ProjectIn, ProjectOut};
+use busbar_contract::plane::codes::slot;
 use std::sync::{Arc, OnceLock};
 static DESCRIPTOR: OnceLock<usize> = OnceLock::new();
 const UNJUDGED: &[u8] = b"unjudged";

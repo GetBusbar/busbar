@@ -33,7 +33,7 @@ impl SafeSlot for Declare {
     ) -> Outcome {
         assert_eq!(
             input.phase,
-            busbar_contract::abi::export::CHECK_PHASE_RECORDER
+            busbar_contract::export_calls::codes::CHECK_PHASE_RECORDER
         );
         let h = instance.get().unwrap();
         match h.life().0.as_slice() {

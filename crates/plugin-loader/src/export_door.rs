@@ -11,15 +11,16 @@ use std::time::Duration;
 use futures::stream::{FuturesUnordered, StreamExt as _};
 
 use busbar_contract::abi::export::{
-    slot, CheckIn, CheckInstance, CheckOut, DeliverIn, ScrapeFamily, ScrapeIn, ScrapeLabel,
-    ScrapeOut, ScrapeSample, ServeIn, ServeOut, StatusOut, SCRAPE_FLAG_HOOK_FAMILIES,
+    CheckIn, CheckInstance, CheckOut, DeliverIn, ScrapeFamily, ScrapeIn, ScrapeLabel, ScrapeOut,
+    ScrapeSample, ServeIn, ServeOut, StatusOut,
 };
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, Outcome, BLOB_JSON, BLOB_JSONL, BLOB_OCTETS,
 };
 use busbar_contract::abi::mechanism::lifecycle::slot as lc;
-use busbar_contract::abi::mechanism::route::Route;
+use busbar_contract::export_calls::codes::{slot, SCRAPE_FLAG_HOOK_FAMILIES};
 use busbar_contract::export_calls::{Delivered, ExportCalls, Family, ServeRequest, Served};
+use busbar_contract::route::Route;
 use busbar_contract::secure::SecureVec;
 
 use crate::dispatch::call::Ticketed;
@@ -154,7 +155,7 @@ fn check_bytes(
     if called.outcome != Outcome::Ready {
         return Err(why(called.outcome, called.error));
     }
-    if phase == busbar_contract::abi::export::CHECK_PHASE_RECORDER
+    if phase == busbar_contract::export_calls::codes::CHECK_PHASE_RECORDER
         && (f.out.findings.fmt != BLOB_JSON || f.out.findings.len > 1024)
     {
         return Err("recorder declaration must be JSON of at most 1024 bytes".into());
@@ -170,7 +171,7 @@ fn recorder_requirements(
     }
     let bytes = check_bytes(
         plugin,
-        busbar_contract::abi::export::CHECK_PHASE_RECORDER,
+        busbar_contract::export_calls::codes::CHECK_PHASE_RECORDER,
         &[],
     )?;
     let requirements: busbar_contract::export_calls::RecorderRequirements =

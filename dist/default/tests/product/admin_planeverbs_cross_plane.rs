@@ -7,8 +7,8 @@ fn register_planes() {
 
 #[test]
 fn the_admin_route_table_method_path_scope_is_byte_identical() {
-    use busbar_contract::abi::mechanism::route::RouteMethod;
     use busbar_contract::authz::Scope;
+    use busbar_contract::route::RouteMethod;
     use busbar_kernel::admin::gate::required_scope;
     use busbar_kernel::admin_verbs::AdminScope;
 

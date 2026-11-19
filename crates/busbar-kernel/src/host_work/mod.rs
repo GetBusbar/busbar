@@ -4,10 +4,10 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use busbar_contract::abi::host::service::{MAX_WORK_RECORD, WORK_LIVE, WORK_SETTLED};
 use busbar_contract::crypto::Sha256;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
+use busbar_contract::services::codes::{MAX_WORK_RECORD, WORK_LIVE, WORK_SETTLED};
 
 mod status;
 

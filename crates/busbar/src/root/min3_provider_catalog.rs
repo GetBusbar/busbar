@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use busbar_contract::abi::host::conn::connector::KEEP_ALL_EXCEPT_DENIED;
+use busbar_contract::conn::codes::KEEP_ALL_EXCEPT_DENIED;
 use busbar_contract::conn::NeedId;
 use busbar_contract::dest::DestinationId;
 use busbar_contract::json;

@@ -13,13 +13,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::host::conn::connector::{
+use busbar_contract::conn::codes::{
     DIRECTION_OUTBOUND, EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
-use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
 use busbar_contract::conn::{
     ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind, NO_TICKET,
 };
+use busbar_contract::rendering::{ReadBlob, ReadNeed};
 use busbar_contract::transport::{EgressTrust, TransportSettings};
 use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::{
@@ -112,7 +112,7 @@ fn loopback(target: &str, _: u32, _: Judged) -> Option<Result<SocketAddr, Verdic
             .parse::<SocketAddr>()
             .ok()
             .filter(|address| address.ip().is_loopback())
-            .ok_or(busbar_contract::abi::host::service::DEST_UNRESOLVABLE),
+            .ok_or(busbar_contract::services::codes::DEST_UNRESOLVABLE),
     )
 }
 
@@ -130,7 +130,7 @@ fn need(transport: &str, class: u32) -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
     }

@@ -120,7 +120,7 @@ pub trait KindMarker: sealed::KindSeal + Copy + Send + Sync + core::fmt::Debug +
     /// Which kind this marker stands for.
     const KIND: Kind;
     /// The same closed kind on the memory ABI.
-    const CODE: crate::abi::mechanism::KindCode;
+    const CODE: crate::kinds::codes::KindCode;
 }
 
 /// The compile-time markers, one per kind.
@@ -135,7 +135,7 @@ pub mod markers {
             impl KindSeal for $name {}
             impl KindMarker for $name {
                 const KIND: Kind = Kind::$kind;
-                const CODE: crate::abi::mechanism::KindCode = crate::abi::mechanism::KindCode::$kind;
+                const CODE: crate::kinds::codes::KindCode = crate::kinds::codes::KindCode::$kind;
             }
         };
     }

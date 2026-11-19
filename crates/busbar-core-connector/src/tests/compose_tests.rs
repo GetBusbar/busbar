@@ -511,9 +511,7 @@ fn a_message_handed_up_with_the_frames_end_is_still_answered() {
 /// WHY A CONNECTION FAILED, named by stage and the underlying error's own words: a closed port
 #[test]
 fn a_failed_connection_names_its_stage_and_the_underlying_error() {
-    use busbar_contract::abi::host::conn::connector::{
-        CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_SECURITY,
-    };
+    use busbar_contract::conn::codes::{CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_SECURITY};
     let (_, leaf, key) = localhost_cert();
     worker().block_on(async move {
         let closed = std::net::TcpListener::bind("127.0.0.1:0")
@@ -602,7 +600,7 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
 /// another host, and the cause is rustls's own `NotValidForName` text, with nothing added.
 #[test]
 fn a_dialled_refusal_of_an_unexplained_kind_is_the_stacks_words_exactly() {
-    use busbar_contract::abi::host::conn::connector::CAUSE_SECURITY;
+    use busbar_contract::conn::codes::CAUSE_SECURITY;
     let (ca, leaf, key) = localhost_cert();
     worker().block_on(async move {
         let server = std::sync::Arc::unwrap_or_clone(
@@ -1076,7 +1074,7 @@ fn a_located_opening_carries_the_framers_lines_and_the_bodys_length_last() {
     ));
     let silent = Arc::new(
         TestDoor::new("silent", &["silent"], &[], Knobs::default())
-            .with_role(busbar_contract::abi::transport::ROLE_FRAMER),
+            .with_role(busbar_contract::transport::codes::ROLE_FRAMER),
     );
     let located = |door: &Arc<TestDoor>, opening: Option<Asked<'_>>| {
         let mut d = dial("127.0.0.1:9");
@@ -1461,7 +1459,7 @@ async fn framer_failed(knobs: Knobs, body: &'static [u8]) -> (Failure, Option<Co
 /// (not the host's wrapping of them) and `outbound`.
 #[test]
 fn a_failed_opening_emit_names_an_outbound_framer_cause_in_the_framers_own_words() {
-    use busbar_contract::abi::host::conn::connector::CAUSE_FRAMER;
+    use busbar_contract::conn::codes::CAUSE_FRAMER;
     worker().block_on(async {
         let (failed, cause) = framer_failed(
             Knobs {
@@ -1487,7 +1485,7 @@ fn a_failed_opening_emit_names_an_outbound_framer_cause_in_the_framers_own_words
 /// `CAUSE_FRAMER` with its own words but never `outbound`; only the outbound emit raises it.
 #[test]
 fn a_framer_rejecting_the_far_ends_bytes_never_names_an_outbound_cause() {
-    use busbar_contract::abi::host::conn::connector::CAUSE_FRAMER;
+    use busbar_contract::conn::codes::CAUSE_FRAMER;
     worker().block_on(async {
         let (failed, cause) = framer_failed(
             Knobs {
@@ -1514,7 +1512,7 @@ fn a_framer_rejecting_the_far_ends_bytes_never_names_an_outbound_cause() {
 /// sent), never `CAUSE_SECURITY`, which a refusal keeps (C3 above, the unknown issuer).
 #[test]
 fn a_handshake_the_far_end_resets_or_closes_is_a_connect_failure() {
-    use busbar_contract::abi::host::conn::connector::CAUSE_CONNECT;
+    use busbar_contract::conn::codes::CAUSE_CONNECT;
     worker().block_on(async move {
         for reset in [true, false] {
             let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
