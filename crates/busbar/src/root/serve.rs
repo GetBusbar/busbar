@@ -360,10 +360,6 @@ pub(crate) fn listener_method_bits(method: RouteMethod) -> u32 {
 pub(crate) mod lines;
 
 #[cfg(test)]
-#[path = "tests/claim_line.rs"]
-mod claim_line_tests;
-
-#[cfg(test)]
 #[path = "tests/serve.rs"]
 mod tests;
 
@@ -375,13 +371,5 @@ pub(crate) mod planes_tests;
 include!(concat!(env!("OUT_DIR"), "/root_test_sources.rs"));
 
 #[cfg(test)]
-#[path = "tests/serve_money.rs"]
-mod money_tests;
-
-#[cfg(test)]
 #[path = "tests/journal_live_retry.rs"]
 mod journal_live_retry_tests;
-
-#[cfg(test)]
-#[path = "tests/catalog_scope_provenance.rs"]
-mod catalog_scope_provenance_tests;

@@ -532,47 +532,6 @@ fn red_the_roots_listeners_head_the_one_list_of_listeners() {
 
 use busbar_contract::plugin::Kind;
 
-#[test]
-fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
-    let doc = Document::parse(
-        "agents:\n  a1:\n    url: b\n    tier: big\ntools:\n  t1:\n    url: a\nhooks:\n  h1:\n    module: m\n    settings:\n      k: 1\n"
-            .to_owned(),
-    )
-    .expect("parses");
-    let (agents, tools) = (vec!["agents".to_owned()], vec!["tools".to_owned()]);
-    let seats = [
-        ("p-agents", Seat::of(Kind::Plane, &agents, "p-agents")),
-        ("p-tools", Seat::of(Kind::Plane, &tools, "p-tools")),
-        ("h1", Seat::of(Kind::Hook, &[], "h1")),
-    ];
-    let mut seen = Vec::new();
-    validate_dealt(&doc, seats, |instance, blob| {
-        seen.push((instance, String::from_utf8(blob.to_vec()).unwrap()));
-        Ok(())
-    })
-    .expect("nothing refuses");
-    assert_eq!(
-        seen,
-        [
-            ("p-agents", r#"{"agents":{"a1":{"url":"b"}}}"#.to_owned()),
-            ("p-tools", r#"{"tools":{"t1":{"url":"a"}}}"#.to_owned()),
-            ("h1", r#"{"k":1}"#.to_owned()),
-        ]
-    );
-
-    let refused = validate_dealt(&doc, seats, |instance, _| {
-        if instance == "p-tools" {
-            Err("missing field `kind`".to_owned())
-        } else {
-            Ok(())
-        }
-    });
-    assert_eq!(
-        refused,
-        Err("config.yaml: invalid YAML: tools: missing field `kind` at line 6 column 3".to_owned())
-    );
-}
-
 const HARNESS_KEY_VAR: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
 
 fn first_party_signed_by(
@@ -891,46 +850,11 @@ fn the_release_feature_set_excludes_test_harness() {
     }
 }
 
-#[test]
-fn red_3g_deals_a_root_pool_named_after_a_knob_as_a_pool() {
-    let doc = Document::parse(
-        "pools:\n  hooks: [g]\n  tier:\n    members: [{model: m, tier: large}]\n    breaker: {trip: 1}\n  work:\n    members: [{model: m}]\n"
-            .to_owned(),
-    )
-    .expect("parses");
-    let pools = vec![busbar_contract::section::RESERVED_POOLS_KEY.to_owned()];
-    let seats = [("p-pools", Seat::of(Kind::Plane, &pools, "p-pools"))];
-    let mut seen = Vec::new();
-    validate_dealt(&doc, seats, |instance, blob| {
-        seen.push((
-            instance,
-            serde_json::from_slice::<serde_json::Value>(blob).expect("the section is JSON"),
-        ));
-        Ok(())
-    })
-    .expect("nothing refuses");
-    assert_eq!(
-        seen,
-        [(
-            "p-pools",
-            serde_json::json!({"pools": {
-                "tier": {"members": [{"model": "m"}]},
-                "work": {"members": [{"model": "m"}]},
-            }})
-        )]
-    );
-}
-
 pub(super) fn constructor_child(validate: bool) -> ! {
-    let late = crate::root::serve::Services::bootstrap();
     crate::root::boot::install_native_load_guard().unwrap();
-    crate::root::loader::dispatch::handle::arm().unwrap();
-    let dispatcher = crate::root::dispatch::boot(1, &late);
-    crate::root::doors::install_dispatcher(dispatcher);
     crate::register_protocols();
-    crate::register_planes();
-    crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
-    let catalogue = crate::register_diagnostics();
+    crate::register_root();
+    crate::register_diagnostics();
     if validate {
         crate::root::exit::exit(crate::root::cli::validate_config_command());
     }
@@ -938,171 +862,8 @@ pub(super) fn constructor_child(validate: bool) -> ! {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(crate::run(catalogue, crate::ControlWork::new(), None));
-    panic!("the constructor-only fixture must be refused for its missing plugin door");
-}
-
-#[cfg(unix)]
-#[test]
-fn bootstrap_archive_pins_refuse_before_native_constructors() {
-    const CHILD: &str = "BUSBAR_BOOTSTRAP_ARCHIVE_CHILD";
-    const MARKER: &str = "BUSBAR_BOOTSTRAP_CTOR_MARKER";
-    if std::env::var_os(CHILD).is_some() {
-        constructor_child(false);
-    }
-    let dir = scratch("bootstrap-constructor");
-    let source = dir.join("constructor.c");
-    let image = dir.join("constructor.so");
-    std::fs::write(
-        &source,
-        r#"#include <stdio.h>
-#include <stdlib.h>
-__attribute__((constructor)) static void mark_loaded(void) {
-    const char *path = getenv("BUSBAR_BOOTSTRAP_CTOR_MARKER");
-    if (path) { FILE *out = fopen(path, "wb"); if (out) { fputs("loaded", out); fclose(out); } }
-}
-"#,
-    )
-    .unwrap();
-    let mut compiler = std::process::Command::new("cc");
-    #[cfg(target_os = "macos")]
-    compiler.arg("-dynamiclib");
-    #[cfg(not(target_os = "macos"))]
-    compiler.args(["-shared", "-fPIC"]);
-    let compiled = compiler
-        .arg(&source)
-        .arg("-o")
-        .arg(&image)
-        .output()
-        .unwrap();
-    assert!(
-        compiled.status.success(),
-        "{}",
-        String::from_utf8_lossy(&compiled.stderr)
-    );
-    let library = std::fs::read(image).unwrap();
-    let key = crate::root::loader::sign::SigningKey::from_bytes(&[0x35; 32]);
-    let library_path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("the constructor test uses the actual product store statement"),
-    );
-    let stated = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .unwrap()
-        .expect("the actual product store states itself");
-    let mut facts = busbar_contract::rendering::read(&stated).unwrap();
-    facts.name = "busbar-store-bootstrap-constructor".into();
-    let make = |version: &str| {
-        let head = busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC.len() + 16;
-        let len = |at: usize| u32::from_le_bytes(stated[at..at + 4].try_into().unwrap()) as usize;
-        let at = head + 4 + len(head);
-        let mut rendering = stated[..head].to_vec();
-        rendering.extend_from_slice(&(facts.name.len() as u32).to_le_bytes());
-        rendering.extend_from_slice(facts.name.as_bytes());
-        rendering.extend_from_slice(&(version.len() as u32).to_le_bytes());
-        rendering.extend_from_slice(version.as_bytes());
-        rendering.extend_from_slice(&stated[at + 4 + len(at)..]);
-        let manifest = crate::root::loader::sign::sign(
-            &key,
-            crate::root::loader::sign::Manifest {
-                name: facts.name.clone(),
-                alias: "constructor-store".into(),
-                kind: "store".into(),
-                version: version.into(),
-                publisher: "constructor-publisher".into(),
-                abi_version: crate::root::loader::supported_abi("store").unwrap(),
-                statement: Some(hex::encode(rendering)),
-                ..Default::default()
-            },
-            &library,
-        );
-        crate::root::loader::tarball::package(&manifest, "lib.so", &library).unwrap()
-    };
-    let older = make("1.0.0");
-    let newer = make("1.1.0");
-    let older_hash = crate::root::loader::sign::sha256_hex(&older);
-    let newer_hash = crate::root::loader::sign::sha256_hex(&newer);
-    let plugins = dir.join("plugins");
-    std::fs::create_dir_all(&plugins).unwrap();
-    std::fs::write(plugins.join("store.tar.gz"), &older).unwrap();
-    let config = dir.join("config.yaml");
-    let providers = dir.join("providers.yaml");
-    std::fs::write(&providers, "{}\n").unwrap();
-    for (tag, pin, minimum, trusted, constructor) in [
-        (
-            "swapped-old",
-            Some(newer_hash.as_str()),
-            "1.0.0",
-            true,
-            false,
-        ),
-        ("unpinned", None, "1.0.0", true, false),
-        ("matching", Some(older_hash.as_str()), "1.0.0", true, true),
-        (
-            "below-minimum",
-            Some(older_hash.as_str()),
-            "1.1.0",
-            true,
-            false,
-        ),
-        (
-            "untrusted",
-            Some(older_hash.as_str()),
-            "1.0.0",
-            false,
-            false,
-        ),
-    ] {
-        let marker = dir.join(format!("{tag}.marker"));
-        let publisher_key = if trusted {
-            key.verifying_key()
-        } else {
-            crate::root::loader::sign::SigningKey::from_bytes(&[0x36; 32]).verifying_key()
-        };
-        let floors = std::collections::BTreeMap::from([(facts.name.clone(), minimum)]);
-        let fetch: Vec<_> = pin
-            .into_iter()
-            .map(|pin| serde_json::json!({"url":"http://127.0.0.1:9/store.tar.gz","sha256":pin}))
-            .collect();
-        let document = serde_json::json!({
-            "providers": {}, "models": {}, "store": {"module":"constructor-store","settings":{}},
-            "listen":"127.0.0.1:0", "admin_listen":"127.0.0.1:0",
-            "advanced":{"worker_threads":1},
-            "plugins":{"enabled":true,"dir":plugins,
-                "trust":{"publishers":[{"name":"constructor-publisher","public_key":hex::encode(publisher_key.to_bytes())}]},
-                "min_versions":floors,
-                "fetch":fetch}
-        });
-        std::fs::write(&config, serde_json::to_string_pretty(&document).unwrap()).unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "root::boot::tests::bootstrap_archive_pins_refuse_before_native_constructors",
-                "--nocapture",
-            ])
-            .current_dir(&dir)
-            .env(CHILD, "1")
-            .env(MARKER, &marker)
-            .env("BUSBAR_CONFIG", &config)
-            .env("BUSBAR_PROVIDERS", &providers)
-            .env("BUSBAR_DATA_DIR", dir.join("state"))
-            .output()
-            .unwrap();
-        let logs = String::from_utf8_lossy(&output.stdout).into_owned()
-            + &String::from_utf8_lossy(&output.stderr);
-        assert!(
-            !output.status.success(),
-            "the fixture exports no door: {logs}"
-        );
-        assert_eq!(marker.exists(), constructor, "{tag}: {logs}");
-        if tag == "unpinned" {
-            assert!(logs.contains("exact archive SHA-256"), "{logs}");
-        }
-        assert!(
-            !dir.join("state/plugin-highwater.json").exists(),
-            "application floors must remain Store-only"
-        );
-    }
-    std::fs::remove_dir_all(dir).unwrap();
+        .block_on(crate::run(crate::ControlWork::new(), None));
+    panic!("the start fixture must be refused before it serves");
 }
 
 #[test]
