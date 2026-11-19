@@ -12,7 +12,7 @@ use busbar_ports::{CallCx, FactRef, FactVal};
 
 use super::super::port_auth::Subject;
 use super::super::RoutedScope;
-use super::{Call, CandidateView, Projection, Selected};
+use super::{Call, Candidates, Projection, Selected};
 
 /// One stage event's facts (a tap's): at most five today, held without a list of their own.
 pub(super) type StageFacts = smallvec::SmallVec<[(u32, FactVal); 6]>;
@@ -29,8 +29,8 @@ pub(super) struct Input<'a> {
     pub request_id: u64,
     /// The admitted identity; `None` only in the worker of a call not granted it.
     pub identity: Option<&'a Arc<SecureVec>>,
-    pub candidates: &'a Arc<Vec<CandidateView>>,
-    pub quantities: &'a Arc<Vec<(Box<str>, f64)>>,
+    pub candidates: &'a Candidates,
+    pub quantities: &'a Arc<[(Box<str>, f64)]>,
     /// A stage tap's facts; `None` on a request-stage call.
     pub stage: Option<&'a Arc<StageFacts>>,
     pub context: &'a crate::host_services::InvocationContext,
@@ -145,7 +145,7 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
     } else {
         None
     };
-    let candidates = Arc::clone(input.candidates);
+    let candidates = input.candidates.clone();
     let quantities = Arc::clone(input.quantities);
     let stage = input.stage.cloned();
     let context = input.context.clone();

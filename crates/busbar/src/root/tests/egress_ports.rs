@@ -6,8 +6,8 @@ use busbar_contract::json::{self, JsonValueTrait};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use busbar_contract::clock::{Deadline, HostClock};
 use busbar_kernel_egress::ports::{Capacity, DestinationId, Telemetry};
-use busbar_ports::clock::{Deadline, HostClock};
 
 use super::{tokio_sleep, MemberPermits, WalkTelemetry};
 
@@ -301,7 +301,7 @@ async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
         Arc::new(Shut),
         &routes,
         Arc::new(Unwritten),
-        busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
+        busbar_contract::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         600,
     )
     .expect("the pools seal");

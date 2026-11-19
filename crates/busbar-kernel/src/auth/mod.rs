@@ -50,8 +50,6 @@ const ADMIN_PATH_PREFIX: &str = "/api/";
 
 pub use busbar_contract::config::UpstreamCreds;
 
-pub use busbar_contract::auth::CallerToken;
-
 pub use busbar_contract::auth::{AuthVerdict, Principal};
 
 mod signed_request;
@@ -2405,12 +2403,6 @@ pub(crate) async fn auth_middleware(
         // The operator adapter alone converts the admitted neutral head back to HTTP.
         *req.headers_mut() = crate::inbound::served_header_map(&context.head);
         strike_named(&mut req, &mut context.consumed, inbound.inner.strips.iter());
-        let token = inbound.client_token().map(str::to_owned).or_else(|| {
-            app.oauth_as
-                .as_ref()
-                .and_then(|_| dpop::dpop_credential(inbound.original_headers()))
-        });
-        req.extensions_mut().insert(CallerToken(token));
         req.extensions_mut().insert(context.principal);
         req.extensions_mut().insert(context.gov);
         req.extensions_mut().insert(context.consumed);
@@ -2486,17 +2478,24 @@ pub(crate) async fn auth_middleware(
     // The request's one wall reading: every limiter, ticket and credential check below uses it.
     let now = busbar_kernel::store::now();
 
-    let client_token: Option<String> = match inbound.as_ref() {
-        Some(inbound) => inbound.client_token().map(str::to_owned),
-        None => app.auth.extract_client_token(req.headers()),
+    // The caller's credential, held once: a unit's is lent from the unit's own custody (wiped
+    // there); a plain request's is moved, once, into the wiping type and lent from it. Every read
+    // below borrows; nothing copies it.
+    let carried = inbound
+        .as_ref()
+        .and_then(crate::inbound::RequestAdmission::client_token);
+    let mut held = match inbound.as_ref() {
+        Some(_) => None,
+        None => app
+            .auth
+            .extract_client_token(req.headers())
+            .map(busbar_contract::redacted::Secret::new),
     };
 
     let mut dpop_proven = false;
 
     let mut read = None;
-    let client_token = if is_admin {
-        client_token
-    } else {
+    if !is_admin {
         match dpop::judge(
             &app,
             req.method(),
@@ -2506,11 +2505,14 @@ pub(crate) async fn auth_middleware(
         )
         .await
         {
-            dpop::SenderConstraint::Unconstrained => client_token,
+            dpop::SenderConstraint::Unconstrained => {}
             dpop::SenderConstraint::Proven(token) => {
                 dpop_proven = true;
-                // Kept past the request (the caller-token extension): its one owned copy.
-                Some(token.to_owned())
+                // A unit's proven token is lent from the unit below. A plain request's is lent
+                // from `req`, which is rewritten below: its one copy, into the wiping type.
+                held = inbound
+                    .is_none()
+                    .then(|| busbar_contract::redacted::Secret::new(token.to_owned()));
             }
             dpop::SenderConstraint::Refused(reason) => {
                 if let Some(inbound) = inbound.as_ref() {
@@ -2528,6 +2530,13 @@ pub(crate) async fn auth_middleware(
                 ));
             }
         }
+    }
+    let client_token: Option<&str> = match inbound.as_ref() {
+        Some(inbound) if dpop_proven => dpop::dpop_token(inbound.original_headers()),
+        Some(_) => carried,
+        None => held
+            .as_ref()
+            .map(|token| token.expose(&crate::seal::lend()).as_str()),
     };
 
     let mut consumed = gate_consumed(&app, is_admin, dpop_proven);
@@ -2535,11 +2544,8 @@ pub(crate) async fn auth_middleware(
         inbound
             .as_ref()
             .map(|admission| admission.inner.credential.as_ref()),
-        client_token.as_deref(),
+        client_token,
     );
-
-    req.extensions_mut()
-        .insert(CallerToken(client_token.clone()));
 
     if is_admin {
         // THE ADMIN DOOR'S FAILURE BUDGET: a source that has presented too many refused admin
@@ -3013,7 +3019,7 @@ pub(crate) async fn auth_middleware(
                 .as_ref()
                 .and_then(crate::inbound::RequestAdmission::carried_ticket),
         },
-        client_token.as_deref(),
+        client_token,
         app.governance.as_ref(),
         now,
         app.root_rules.as_ref(),
@@ -3039,7 +3045,7 @@ pub(crate) async fn auth_middleware(
     } else if let Some(verdict) = ticketed {
         verdict
     } else {
-        if let (Some(adm), Some(tok)) = (admission.as_ref(), client_token.as_deref()) {
+        if let (Some(adm), Some(tok)) = (admission.as_ref(), client_token) {
             let read = read.get_or_insert_with(|| audience::Bearer::read(tok));
             match read.binding(&adm.audience) {
                 audience::Binding::Deferred | audience::Binding::Bound => {}
@@ -3066,7 +3072,7 @@ pub(crate) async fn auth_middleware(
         } else {
             AuthMiddleware::judge_chain_on_request_path_naming(
                 &app.auth,
-                client_token.as_deref(),
+                client_token,
                 &ChainHead::of(&req),
                 app.governance.clone(),
                 admission.as_ref().map(|a| a.audience.as_str()),
@@ -3294,6 +3300,10 @@ mod ticket_single_path;
 #[cfg(test)]
 #[path = "tests/verified_caller_policy.rs"]
 mod verified_caller_policy;
+
+#[cfg(test)]
+#[path = "tests/caller_custody_tests.rs"]
+mod caller_custody_tests;
 
 // Script only the plugin boundary; the regression runs the ordinary inbound host.
 #[cfg(test)]

@@ -97,8 +97,6 @@ futures = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
 # Member `test-support` features are enabled here, never in a release build.
-# The host clock's manual mode, for the egress route harness (GROUP-time step 3).
-busbar-ports = { path = "../busbar-ports", features = ["test-support"] }
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger", features = ["test-support"] }
 busbar-kernel-egress = { path = "../busbar-kernel-egress", features = ["test-support"] }

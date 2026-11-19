@@ -631,7 +631,7 @@ async fn command_signal_cost() {
             each.push(start.elapsed());
             reached += u64::from(n);
         }
-        each.sort_unstable();
+        each.sort();
         eprintln!(
             "command_signal_cost: {sessions} sessions, {CALLS} calls: median {:?}, p99 {:?}, accepted {reached}, dropped {}",
             each[CALLS / 2],

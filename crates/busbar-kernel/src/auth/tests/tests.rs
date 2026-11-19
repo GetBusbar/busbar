@@ -530,28 +530,6 @@ fn an_all_pass_admin_continuation_retains_the_401_refusal() {
 }
 
 #[test]
-fn test_caller_token_debug_redacts_value() {
-    let secret = "sk-caller-secret-CCCC";
-    let present = CallerToken(Some(secret.to_string()));
-    let dbg = format!("{present:?}");
-    assert!(
-        !dbg.contains(secret) && !dbg.contains("sk-caller"),
-        "CallerToken Debug leaked the token value: {dbg}"
-    );
-    assert!(
-        dbg.contains("present"),
-        "CallerToken Debug should report presence: {dbg}"
-    );
-
-    let absent = CallerToken(None);
-    let dbg_absent = format!("{absent:?}");
-    assert!(
-        dbg_absent.contains("absent"),
-        "CallerToken Debug should report absence: {dbg_absent}"
-    );
-}
-
-#[test]
 fn test_admin_scope_cap_ceilings_external_module() {
     use busbar_contract::authz::{Grants, Scope};
     let operator = Operator::new("operator-provider");

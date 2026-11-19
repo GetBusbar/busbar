@@ -4679,7 +4679,7 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         std::sync::Arc::clone(&table) as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
         &routes,
         post as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
-        busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
+        busbar_contract::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         1,
     )
     .expect("the egress composes");
@@ -4792,7 +4792,8 @@ async fn the_configured_error_body_cap_reaches_both_egress_constructors() {
             Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::new(
                 crate::root::plane_node::Node::new(),
             )));
-        let clock = busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep);
+        let clock =
+            busbar_contract::clock::HostClock::system(crate::root::egress_ports::tokio_sleep);
         let ordinary = super::compose_egress(
             &facts,
             &pools,

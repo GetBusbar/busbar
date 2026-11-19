@@ -56,6 +56,7 @@ use busbar_contract::abi::transport::{
 };
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{CallId, Pass, ReasonCode, Route};
+use busbar_contract::clock::{Deadline, HostClock, Reading as HostReading};
 use busbar_contract::conn::{
     ConnCause, ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
@@ -70,7 +71,6 @@ use busbar_kernel_egress::{
     walk::budget_secs,
     Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts,
 };
-use busbar_ports::clock::{Deadline, HostClock, Reading as HostReading};
 
 use super::hooks::{CandidateFacts, Candidates, Constraint};
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
@@ -1068,6 +1068,12 @@ impl Drop for UrlBuf<'_> {
 /// action for a refused Need, TRANSPORT-SECURITY-POLICY §4).
 pub(crate) const INSECURE_TRANSPORT_REFUSED: &str = "egress.insecure_transport_refused";
 
+/// A transport default's name as the outbound head carries it: the name's own bytes, moved, when
+/// they are UTF-8 (a framer's lines always are); otherwise read with replacement, as before.
+fn head_name(name: Vec<u8>) -> String {
+    String::from_utf8(name).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
 fn split(url: &str) -> (&str, &str) {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     match rest.find('/') {
@@ -1708,25 +1714,31 @@ impl EgressFarEnd<'_> {
 
         busbar_kernel_egress::upstream::strip_re_derived(&mut request.fields);
 
+        // The exchange's own facts ride as the request's members. A plane may still write the old
+        // interface's marker fields in its head (a scope, a waiver, a dial pin, which has no other
+        // form): each is taken out of the head here, its value moved out, not copied, and the rest
+        // kept in order. A scope field in the head is read before the exchange's own scope.
         let mut scope = None;
-
-        let mut waived = false;
-
+        let mut waived = request.no_member_auth;
         let mut pin = None;
-        request.fields.retain(|(name, value)| {
+        let mut kept = 0;
+        for at in 0..request.fields.len() {
+            let (name, value) = &mut request.fields[at];
             if busbar_contract::abi::auth::is_scope_field(name) {
-                scope.get_or_insert_with(|| value.clone());
-                false
+                if scope.is_none() {
+                    scope = Some(std::mem::take(value));
+                }
             } else if busbar_contract::abi::auth::is_no_member_auth_field(name) {
                 waived = true;
-                false
             } else if busbar_contract::abi::host::conn::connector::is_within_field(name) {
-                pin = Some(value.clone());
-                false
-            } else {
-                !busbar_contract::conn::is_sealed_query_field(name)
+                pin = Some(std::mem::take(value));
+            } else if !busbar_contract::conn::is_sealed_query_field(name) {
+                request.fields.swap(kept, at);
+                kept += 1;
             }
-        });
+        }
+        request.fields.truncate(kept);
+        let scope = scope.or_else(|| request.scope.take());
         let extensions = busbar_contract::abi::auth::scope_extensions(scope.as_deref());
 
         let live = {
@@ -1869,6 +1881,8 @@ impl EgressFarEnd<'_> {
             self.settle_attempt(&record);
             return false;
         }
+        // The credential's fields: a presented credential's one field is kept in place; a
+        // configured binding's answer list is taken over as it is.
         let (prepared, mut auth) = match presented {
             Some(crate::host_outbound::Presentation::Body(body)) => {
                 if request.text || !request.body.is_empty() {
@@ -1876,10 +1890,15 @@ impl EgressFarEnd<'_> {
                     self.settle_attempt(&record);
                     return false;
                 }
-                (Some(crate::host_outbound::Body(body)), Vec::new())
+                (
+                    Some(crate::host_outbound::Body(body)),
+                    smallvec::SmallVec::<[AuthField; 1]>::new(),
+                )
             }
-            Some(crate::host_outbound::Presentation::Field(field)) => (None, vec![field]),
-            None => (None, Vec::new()),
+            Some(crate::host_outbound::Presentation::Field(field)) => {
+                (None, smallvec::smallvec![field])
+            }
+            None => (None, smallvec::SmallVec::new()),
         };
         let protected = prepared.is_some();
         let opening: &[u8] = prepared.as_ref().map_or_else(
@@ -1918,7 +1937,7 @@ impl EgressFarEnd<'_> {
                 .auth_fields(binding, handle, &request, url, extensions, &defaults, now)
                 .await
             {
-                Some(fields) => auth = fields,
+                Some(fields) => auth = smallvec::SmallVec::from_vec(fields),
                 None => {
                     {
                         let mut w = self.lock();
@@ -1993,10 +2012,11 @@ impl EgressFarEnd<'_> {
             )
         }));
 
+        // The request's fields and the transport's defaults are not read again: each kept field
+        // moves into the head, its name and value as they are, with no copy.
         head.extend(
-            request
-                .fields
-                .iter()
+            std::mem::take(&mut request.fields)
+                .into_iter()
                 .filter(|(n, _)| {
                     !auth
                         .iter()
@@ -2011,13 +2031,13 @@ impl EgressFarEnd<'_> {
                             .is_ok_and(crate::auth::upstream_binding::framer_owned)
                 })
                 .filter(|(n, _)| !busbar_contract::conn::is_sealed_fields_field(n))
-                .filter(|(n, _)| !busbar_contract::conn::is_sealed_query_field(n))
-                .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
+                // Every name passed the header-token check above, so it is ASCII: never skipped.
+                .filter_map(|(n, v)| String::from_utf8(n).ok().map(|n| (n, v))),
         );
 
         head.extend(
             defaults
-                .iter()
+                .into_iter()
                 .filter(|(n, _)| {
                     !n.eq_ignore_ascii_case(CONTENT_LENGTH)
                         && (!native_selected
@@ -2030,19 +2050,31 @@ impl EgressFarEnd<'_> {
                             .iter()
                             .any(|name| name.as_bytes().eq_ignore_ascii_case(n))
                 })
-                .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
+                .map(|(n, v)| (head_name(n), v)),
         );
 
-        let mut sealed: Vec<String> = auth
+        // The sealed-fields line, written straight into its value: the credential's own names
+        // (lower-cased), then the native credential's, comma-joined.
+        let mut sealed = Vec::new();
+        let mut named = false;
+        let auth_names = auth
             .iter()
             .filter(|f| !f.query)
-            .map(|f| String::from_utf8_lossy(&f.name).to_ascii_lowercase())
-            .collect();
-        sealed.extend(native_names);
-        if !sealed.is_empty() {
+            .map(|f| String::from_utf8_lossy(&f.name));
+        let native_sealed = native_names
+            .iter()
+            .map(|n| std::borrow::Cow::Borrowed(n.as_str()));
+        for name in auth_names.chain(native_sealed) {
+            if named {
+                sealed.push(b',');
+            }
+            named = true;
+            sealed.extend(name.bytes().map(|b| b.to_ascii_lowercase()));
+        }
+        if named {
             head.push(
                 busbar_contract::conn::SEALED_FIELDS_FIELD.to_owned(),
-                sealed.join(",").into_bytes(),
+                sealed,
             );
         }
         let require_secure =

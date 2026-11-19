@@ -340,7 +340,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         conns: Arc::new(BadGateway::default()),
         breaker: busbar_kernel::plane_driver::fixed_breaker(book.clone()),
         capacity: Arc::new(Free),
-        clock: busbar_ports::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
+        clock: busbar_contract::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         journal: Arc::new(Quiet),
         telemetry: Arc::new(Quiet),
         pools: foldhash::HashMap::from_iter([(
@@ -399,6 +399,8 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         fields: Vec::new(),
         body: b"{}".to_vec(),
         need: 0,
+        scope: None,
+        no_member_auth: false,
     };
     assert!(far.send(&t, request).await);
     let first = far.next(&t).await.expect("the 502 is relayed");

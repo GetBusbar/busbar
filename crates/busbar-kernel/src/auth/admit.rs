@@ -3,9 +3,11 @@
 
 use std::sync::Arc;
 
+/// A line session's admission. The session's credential is moved in, in its wiping holder, and is
+/// wiped when the admission task ends: the chain borrows it, nothing copies it.
 pub async fn admit_session(
     app: Arc<crate::state::App>,
-    token: Option<String>,
+    token: Option<busbar_contract::secure::SecureString>,
     audience: String,
 ) -> Result<(super::AuthPrincipal, crate::governance::PlaneRequestCtx), super::IdentityRefusal> {
     tokio::spawn(async move {

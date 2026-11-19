@@ -200,7 +200,7 @@ pub fn compose(
     conns: Arc<dyn busbar_contract::conn::PollConns>,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
-    clock: busbar_ports::clock::HostClock,
+    clock: busbar_contract::clock::HostClock,
     stream_ceiling_secs: u64,
 ) -> Result<(busbar_kernel::plane_driver::Egress, ModelShown), String> {
     let plan = &serving.pools;
