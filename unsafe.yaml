@@ -215,7 +215,6 @@ interim:
   crates/busbar/src/main.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/mod.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/serve.rs: { tokens: 2, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/root/tests/boot.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/linked_auth.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/linked_protocols.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/node_door_rig.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
