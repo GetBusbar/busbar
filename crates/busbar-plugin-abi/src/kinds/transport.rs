@@ -377,6 +377,8 @@ crate::kind! {
             FB_SERVER: u64 = 1;
             FB_CLIENT: u64 = 2;
             FB_DATAGRAM: u64 = 4;
+        /// The head vocabulary this version of the transport contract uses (in the transport fingerprint).
+            USES_HEAD: u64 = crate::vocab::head1::FP;
         /// Fact bit 8 was FB_WIRE_PROVENANCE: retired. Labelling every byte is what transport 2.0 is, not a
         /// role an image may or may not have; an image built for anything earlier is refused by its version.
         /// There is no bit for sealing either: a transport that declares FB_CLIENT accepts the sealed head
