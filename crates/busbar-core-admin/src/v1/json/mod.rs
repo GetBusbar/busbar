@@ -314,11 +314,17 @@ async fn port_admin_response(
         method: parts.method.as_str().to_owned(),
         path: parts.uri.path().to_owned(),
         query: parts.uri.query().unwrap_or_default().to_owned(),
-        headers: parts
-            .headers
-            .iter()
-            .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
-            .collect(),
+        headers: parts.headers.clone(),
+        consumed: parts
+            .extensions
+            .get::<busbar_kernel::auth::ConsumedCredentials>()
+            .cloned(),
+        // No `AuthPrincipal` extension: the gate admitted no one, stated as the unresolved subject.
+        principal: parts
+            .extensions
+            .get::<busbar_kernel::auth::AuthPrincipal>()
+            .cloned()
+            .unwrap_or(busbar_kernel::auth::AuthPrincipal(None)),
         body,
         request_id,
         now_s: busbar_kernel::store::now(),
