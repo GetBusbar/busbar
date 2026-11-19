@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use busbar_contract::route::{method_bit, METHOD_HEAD, PATH_EXACT, PATH_PATTERN};
 use busbar_contract::route::{RouteAuth, RouteMethod};
+use busbar_kernel::auth::native_chain::NativeChain;
 use busbar_kernel::auth::native_data::{DataRouteOwners, NativeDataRoute};
 use busbar_kernel::auth::native_upgrade::NativeUpgradeRoute;
 use busbar_kernel::door::UnitKeyMint;
@@ -157,6 +158,10 @@ pub(crate) struct NativeSlot {
     /// The candidate's admitted instance declaring D_PROTOCOL `websocket`, the only carrier an
     /// upgrade route can be handed to. `None`: every authorized upgrade request is answered 501.
     websocket: Option<ServedTransport>,
+    /// The candidate's data chain: what judges a request no route matched, and a core keyed route.
+    data_chain: Option<Arc<NativeChain>>,
+    /// Every mounted plane route's `(methods, pattern)`: what a wrong method on a known path is.
+    patterns: Vec<(u32, Box<str>)>,
 }
 impl std::fmt::Debug for NativeSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -167,6 +172,25 @@ impl std::fmt::Debug for NativeSlot {
     }
 }
 impl NativeSlot {
+    /// The data chain of this slot's candidate; `None` on a slot with no data routes.
+    pub(crate) fn data_chain(&self) -> Option<Arc<NativeChain>> {
+        self.data_chain.clone()
+    }
+
+    /// The methods mask of every mounted route whose pattern matches `path` (0 = no such path).
+    pub(crate) fn methods_at(&self, path: &str) -> u32 {
+        self.patterns
+            .iter()
+            .filter(|(_, pattern)| {
+                busbar_contract::route::path_matches(
+                    busbar_contract::route::PATH_PATTERN,
+                    pattern,
+                    path,
+                )
+            })
+            .fold(0, |mask, (methods, _)| mask | methods)
+    }
+
     pub(crate) fn slot(&self) -> &str {
         &self.slot
     }
@@ -423,6 +447,30 @@ pub(crate) fn assemble_slot(
         })?;
         data.push((Arc::clone(binding), native));
     }
+    let config = app
+        .config_projection
+        .as_ref()
+        .and_then(|value| value.downcast_ref::<super::door_steps::DoorConfig>())
+        .ok_or("native listener has no actual root configuration projection")?;
+    let data_names: Vec<Box<str>> = config
+        .data_chain
+        .iter()
+        .map(|name| name.as_str().into())
+        .collect();
+    let data_chain = if data.is_empty() {
+        None
+    } else {
+        Some(Arc::new(owners.auth.data_chain(owners.epoch, &data_names)?))
+    };
+    let patterns = plan
+        .routes()
+        .filter_map(|binding| match binding.target() {
+            RouteTarget::Plane(target) => {
+                Some((target.mounted().methods, target.mounted().pattern.clone()))
+            }
+            _ => None,
+        })
+        .collect();
     let prepared = prepared
         .with_physical(plan)
         .map_err(|_| "native physical plan was already attached".to_string())?;
@@ -432,6 +480,8 @@ pub(crate) fn assemble_slot(
         data,
         upgrades,
         websocket,
+        data_chain,
+        patterns,
     }))
 }
 
@@ -505,6 +555,8 @@ pub(crate) fn assemble_admin_slot(
         data: Vec::new(),
         upgrades: Vec::new(),
         websocket: None,
+        data_chain: None,
+        patterns: Vec::new(),
     }))
 }
 
