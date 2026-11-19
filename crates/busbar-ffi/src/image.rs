@@ -4,13 +4,13 @@
 //! The loader's door to an image (feature `host`; IF §11.1 steps 8-9, UNSAFE-MIN §2.2, §2.5).
 //!
 //! `Opened::open` dlopens the staged image, calls `busbar_plugin` and bounds-checks the header, the stamp,
-//! the kind table and `former_names` against the image's own segments (H4: `object` over the bytes the
+//! the entry table and `former_names` against the image's own segments (H4: `object` over the bytes the
 //! loader already holds; base = `busbar_plugin`'s address minus its symbol value). Every view before
 //! admission borrows `&Opened`, and nothing `'static` exists until `Opened::admit` leaks the library
 //! (exit a); `Opened::close` drops it, on the loader's ffi worker (exit b).
 //!
 //! `unsafe` here: `Library::new`, `Library::get`, the header view (opened and admitted), the stamp view
-//! and the `vt::<K>` cast.
+//! and the entry table view.
 
 #![allow(unsafe_code)]
 
@@ -20,7 +20,7 @@ use object::{Object, ObjectSegment};
 
 use crate::header::{EntryFn, LinkedPlugin, Plugin, STAMP_SIZE, SYMBOL, StampBytes, stamp_kind};
 use crate::raw::{Bytes, KindCode, Shared};
-use crate::vt::{Kind, auth, export, hook, kind, plane, secret, store, transport};
+use crate::vt::{Entry, Kind};
 
 /// Why an image was not opened or admitted (the loader maps each to its `Refusal`).
 #[derive(Debug)]
@@ -37,19 +37,14 @@ pub enum ImageError {
     Kind,
     /// A null header or table entry (step 9, `DoorStampMismatch`), named.
     Null(&'static str),
+    /// The header states a size smaller than this host reads, or more table entries than a kind may have.
+    Header(&'static str),
 }
 
-/// The size of kind `code`'s table.
-fn vt_size(code: KindCode) -> usize {
-    match code {
-        KindCode::Store => size_of::<store::Vt>(),
-        KindCode::Secret => size_of::<secret::Vt>(),
-        KindCode::Auth => size_of::<auth::Vt>(),
-        KindCode::Hook => size_of::<hook::Vt>(),
-        KindCode::Export => size_of::<export::Vt>(),
-        KindCode::Plane => size_of::<plane::Vt>(),
-        KindCode::Transport => size_of::<transport::Vt>(),
-    }
+/// The size in bytes of a table of `entries` entries. None: more than a kind may have.
+fn table_size(entries: u32) -> Option<usize> {
+    let entries = usize::try_from(entries).ok()?;
+    (entries <= crate::header::ENTRIES_MAX).then(|| entries * size_of::<Option<Entry>>())
 }
 
 /// The image's mapped segments, at run time.
@@ -145,11 +140,15 @@ impl Opened {
             STAMP_SIZE,
             align_of::<StampBytes>(),
         )?;
-        let code = KindCode::from_raw(stamp_kind(stamp_of(header))).ok_or(ImageError::Kind)?;
+        if (header.size() as usize) < size_of::<Plugin>() {
+            return Err(ImageError::Header("size"));
+        }
+        KindCode::from_raw(stamp_kind(stamp_of(header))).ok_or(ImageError::Kind)?;
+        let table = table_size(header.entry_count()).ok_or(ImageError::Header("entries"))?;
         segments.check(
-            "kind_vt",
-            header.kind_vt_ptr().addr(),
-            vt_size(code),
+            "table",
+            header.table_ptr().addr(),
+            table,
             align_of::<usize>(),
         )?;
         let (names, len) = header.former_names_raw().bytes().span();
@@ -274,16 +273,36 @@ impl Admitted {
         KindCode::from_raw(stamp_kind(self.stamp()))
     }
 
-    /// The kind table, if the stamp names `K`.
-    pub(crate) fn vt<K: Kind>(&self) -> Option<&'static K::Vt> {
-        if stamp_kind(self.stamp()) != K::CODE as u32 {
-            return None;
-        }
-        let p = self.header().kind_vt_ptr().cast::<K::Vt>();
-        // SAFETY: the stamp names `K`, so the table is `K::Vt`, one of busbar-ffi's own layouts (`Kind` is
-        // sealed): a `LinkedPlugin`'s by `plugin()`'s kind check, a dropped-in image's by its build, and
-        // `open` checked it lies, aligned and at `K::Vt`'s size, inside the never-unloaded image.
-        Some(unsafe { &*p })
+    /// Whether the stamp names kind `K`.
+    pub(crate) fn is<K: Kind>(&self) -> bool {
+        stamp_kind(self.stamp()) == K::CODE as u32
+    }
+
+    /// The number of entries in the image's kind table.
+    pub fn entries(&self) -> usize {
+        self.table().len()
+    }
+
+    /// The kind table: `entries` entries, each nullable.
+    pub(crate) fn table(&self) -> &'static [Option<Entry>] {
+        let header = self.header();
+        let p = header.table_ptr();
+        let Some(len) = usize::try_from(header.entry_count())
+            .ok()
+            .filter(|len| *len <= crate::header::ENTRIES_MAX && !p.is_null())
+        else {
+            return &[];
+        };
+        // SAFETY: the table is an array of `entries` nullable `Entry` pointers, the one table layout of
+        // every kind: a `LinkedPlugin`'s by `plugin()` (a `&'static Table<M, N>` with `entries == N`), a
+        // dropped-in image's by its build, and `open` checked it lies, aligned and at that size, inside
+        // the never-unloaded image. It is immutable.
+        unsafe { core::slice::from_raw_parts(p, len) }
+    }
+
+    /// Entry `slot` of the kind table. None: the image has fewer entries, or that entry is null.
+    pub(crate) fn entry(&self, slot: usize) -> Option<Entry> {
+        self.table().get(slot).copied().flatten()
     }
 
     /// The first null header or table entry, named.
@@ -291,14 +310,14 @@ impl Admitted {
         if let Some(field) = self.header().null_field() {
             return Some(field);
         }
-        match self.kind()? {
-            KindCode::Store => self.vt::<kind::Store>()?.null_field(),
-            KindCode::Secret => self.vt::<kind::Secret>()?.null_field(),
-            KindCode::Auth => self.vt::<kind::Auth>()?.null_field(),
-            KindCode::Hook => self.vt::<kind::Hook>()?.null_field(),
-            KindCode::Export => self.vt::<kind::Export>()?.null_field(),
-            KindCode::Plane => self.vt::<kind::Plane>()?.null_field(),
-            KindCode::Transport => self.vt::<kind::Transport>()?.null_field(),
+        if (self.header().size() as usize) < size_of::<Plugin>() {
+            return Some("size");
         }
+        // The entries have no names here (this crate knows no kind): the kind's contract names the
+        // position (`<kind>::METHODS[slot]`) when the loader reports it.
+        self.table()
+            .iter()
+            .any(Option::is_none)
+            .then_some("table entry")
     }
 }

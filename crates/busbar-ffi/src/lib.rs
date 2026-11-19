@@ -17,11 +17,14 @@
 //!   plugin crates, which never enable `host`.
 //!
 //! **Layout.**
-//! - `raw`: the C-layout values both sides share (views, `RawOut`/`Out`, `Status`, the host table, the
-//!   branded crypto results, chain-scoped bytes).
-//! - `header`: the plugin header, `LinkedPlugin`, `plugin()` and the one exported macro, `export!`.
-//! - `vt`: the 7 kind tables, their fn-pointer aliases, the views they name and the sealed `Kind`.
-//! - `shim`: the plugin-side entries and the safe adapter traits `kind!` implements.
+//! - `raw`: the C-layout values both sides share (borrowed bytes, `RawOut`/`Out`, `Status`, the host
+//!   table, the branded crypto results, chain-scoped bytes).
+//! - `header`: the plugin header (its `size` and `entries` first), `LinkedPlugin`, `plugin()` and the one
+//!   exported macro, `export!`.
+//! - `vt`: the one call record `Call`, the one entry type `Entry`, the one table type and the sealed
+//!   list of kind codes. **This crate knows no kind**: no method, no view, no per-kind table (core 3.0).
+//! - `shim`: the five plugin-side kind entries (plain, opens, on a session, ends, starts), the header
+//!   entries, and the safe adapter traits `kind!` implements.
 //! - `slots`: the token table, the instance and the chain box.
 //! - `host` and `image` (feature `host`): the loader's side: instances, sessions, chains, the out lease,
 //!   the crypto arena, and dlopen with its bounds check.
@@ -63,14 +66,14 @@ pub mod vt;
 
 pub use header::{LinkedPlugin, Plugin, StampBytes, plugin};
 pub use raw::{
-    Arg, Bytes, ChainBytes, CryptoReq, CryptoRet, Ctx, DeploymentId, EntryScope, Host, HostFns,
+    Bytes, ChainBytes, CryptoReq, CryptoRet, Ctx, DeploymentId, EntryScope, Host, HostFns,
     KindCode, Out, Pair, RawLent, RawOut, Slice, Status, Str, TOKEN_SESSION, Token, View,
 };
 pub use slots::{ChainBox, ChainRef, Inst, OwnedSlot, Slots, pack, unpack};
-pub use vt::{Built, Kind, VtEntry, kind};
+pub use vt::{Args, Call, CancelFn, ChainArgs, CloseFn, Entry, Kind, Slot, Table, kind};
 
-/// busbar-ffi's `mechanism!` blocks in their fixed order (raw types, header, the 7 layouts and their
-/// aliases). `fp::CORE_FP` in busbar-plugin-abi folds plugin-abi's blocks first, then these, so a layout
+/// busbar-ffi's `mechanism!` blocks in their fixed order (raw types, header, the call record and the
+/// entry aliases). `fp::CORE_FP` in busbar-plugin-abi folds plugin-abi's blocks first, then these, so a layout
 /// change here moves CORE_FP (UNSAFE-MIN §4.5; W1-A1F re-pins `ci/abi.pin`).
 pub const MECHANISM: [&str; 3] = [
     raw::MECHANISM_BLOCK,

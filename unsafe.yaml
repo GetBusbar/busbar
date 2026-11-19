@@ -10,19 +10,19 @@ ffi:
   path: crates/busbar-ffi
   # Every `unsafe` token in the crate (tests and doc code included) plus every allow/expect(unsafe_code).
   # Measured by W1-U0; it never rises (against the merge base and origin/dev) and only falls.
-  total: 108
+  total: 81
   # The only files the crate may hold, each with its own pinned count: no file is added, and unsafe
   # cannot move between files without the owner's approval of this file.
   files:
     src/lib.rs: { tokens: 0, reason: "the root: deny(unsafe_code) and the three unsafe lints; no unsafe" }
-    src/raw.rs: { tokens: 10, reason: "the three non-empty view reads, the Out write view, the RawLent read, the view-argument read, the ChainBytes read and Send + Sync for Shared (the one impl pair the views and the Plugin header derive Send/Sync from); its allow" }
+    src/raw.rs: { tokens: 11, reason: "the three non-empty view reads, the Out append (the answer block is the caller's and not pre-filled, so the spare part is written through the pointer) and the Out written-part view, the RawLent read, the pair-list blob retyping (as_pairs, def), the ChainBytes read and Send + Sync for Shared; its allow. Core 3.0: the view-argument read is gone; append's block and as_pairs are new (net +1 in this file, -27 in the crate)" }
     src/header.rs: { tokens: 2, reason: "export!'s #[unsafe(no_mangle)]; its allow" }
-    src/vt.rs: { tokens: 10, reason: "the nine instance-taking entry fn-pointer aliases (EntryFn0-5, ResumeFn, CancelFn, CloseFn); its allow" }
-    src/shim.rs: { tokens: 41, reason: "enter (def and block); instance shims' definitions and enter blocks; close's drop; its allow. Slot primitives are private safe calls under I6." }
+    src/vt.rs: { tokens: 5, reason: "the three instance-taking entry fn-pointer aliases (Entry, CancelFn, CloseFn), the one pair-list blob read (Args::pairs); its allow" }
+    src/shim.rs: { tokens: 21, reason: "enter (def and block); the five kind shims (plain, opens, on_session, ends, starts: def and enter block each); describe and open (defs: they are Entry-typed); resume and cancel (def and enter block); close (def and drop); its allow" }
     src/slots.rs: { tokens: 11, reason: "the raw slot write, exclusive value borrow and take, Sync for Slots, tie (the chain-future lifetime erasure), drop_inst (def, the in-place drops of chains and of the owned rest, and the free), the C-CLOSE-PARKED test's one block; its allow" }
-    src/host.rs: { tokens: 11, reason: "one call block per entry arity (invoke0-5), the resume, cancel and close calls, Arena::lend's append; its allow" }
+    src/host.rs: { tokens: 8, reason: "the one invoke call block, the describe, open, resume, cancel and close calls, Arena::lend's append; its allow" }
     src/test_watch.rs: { tokens: 16, reason: "test code only (feature test-support): the allocation watch's GlobalAlloc impl and its four fns, their forwarding calls, the canary and freed-block reads, realloc's layout, alloc, copy and free; its allow. These tokens moved INTO busbar-ffi from busbar-contract (abi/sdk/test_support/watch.rs, interim 14): unsafe outside ffi falls by 14 when the cut deletes that copy; the two extra are realloc's copy and free split in two blocks and this file's allow" }
-    src/image.rs: { tokens: 7, reason: "Library::new, Library::get, the opened and admitted header views, the stamp view, the vt::<K> cast; its allow" }
+    src/image.rs: { tokens: 7, reason: "Library::new, Library::get, the opened and admitted header views, the stamp view, the entry-table view; its allow" }
   # Exactly these dependencies, each with its role: always, host (optional, feature `host`), or the cfg.
   dependencies:
     zerocopy: always

@@ -56,9 +56,9 @@ mod close_parked_host {
     use crate::header::{LinkedPlugin, STAMP_KIND_AT, STAMP_SIZE, StampBytes, plugin};
     use crate::host::{ChainBufs, OpenAnswer, OutLease, Started};
     use crate::image::Admitted;
-    use crate::raw::{Arg, Bytes, ChainBytes, Host, HostFns, KindCode, Out, Status, Str, Token};
-    use crate::shim::{ChainFut, Image, Opening, Start1, Step};
-    use crate::vt::{Built, kind, secret};
+    use crate::raw::{Bytes, ChainBytes, Host, HostFns, KindCode, Out, Status, Str, Token};
+    use crate::shim::{ChainFut, Image, Opening, Starts, Step};
+    use crate::vt::{Call, ChainArgs, Table, kind};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     static SAW_ALIVE: AtomicBool = AtomicBool::new(false);
@@ -77,7 +77,7 @@ mod close_parked_host {
             log_level: None,
             grow: None,
             deployment: None,
-            migrate_admit: None,
+            service: None,
         },
     );
 
@@ -160,30 +160,30 @@ mod close_parked_host {
         }
     }
 
-    impl Start1<Bytes<'static>, 0> for Fixture {
+    impl Starts<0> for Fixture {
         fn start<'i>(
             plugin: &'i BorrowedPlugin,
             _host: &'static Host,
-            _reference: ChainBytes,
-        ) -> (ChainFut<'i, ()>, ()) {
+            _args: ChainArgs<'_>,
+        ) -> Option<(ChainFut<'i, ()>, ())> {
             let parked = Parked(plugin);
-            (
+            Some((
                 Box::pin(async move {
                     let _keep = &parked;
                     core::future::pending::<()>().await;
                 }),
                 (),
-            )
+            ))
         }
     }
 
-    static VT: Built<Fixture, secret::Vt> = secret::Vt::build::<Fixture>();
+    static VT: Table<Fixture, 1> = Table::new([crate::shim::starts::<Fixture, 0>()]);
     static STAMP: StampBytes = {
         let mut bytes = [0u8; STAMP_SIZE];
         bytes[STAMP_KIND_AT] = KindCode::Secret as u8;
         StampBytes(bytes)
     };
-    static PLUGIN: LinkedPlugin = plugin::<Fixture, kind::Secret>(&VT, &STAMP, Str::EMPTY);
+    static PLUGIN: LinkedPlugin = plugin::<Fixture, kind::Secret, 1>(&VT, &STAMP, Str::EMPTY);
 
     #[test]
     fn a_parked_chain_drops_before_its_plugin_through_host() {
@@ -199,10 +199,10 @@ mod close_parked_host {
         };
         {
             let mut lease = OutLease::new(vec![0; 64], 64).expect("start lease");
-            let Started::Need(chain) = instance.start1(
-                |vt| &vt.resolve,
+            let Started::Need(chain) = instance.start(
+                0,
                 ChainBufs::new(),
-                |_| Arg::bytes(Bytes::EMPTY),
+                |_, cross| cross(&Call::new(0, &[], &[], &[Bytes::EMPTY])),
                 &mut lease,
             ) else {
                 panic!("the real start shim parks the pending future");
@@ -906,8 +906,7 @@ pub(crate) mod counting {
 #[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
-    use crate::raw::seal::ToChain;
-    use crate::raw::{Arg, Bytes};
+    use crate::raw::{Bytes, ChainBytes};
     use std::sync::atomic::AtomicBool;
 
     #[test]
@@ -1176,7 +1175,7 @@ mod tests {
         );
         assert_ne!(ids[3], ids[0], "and the ChainId still differs");
 
-        let stash = <Bytes<'static> as ToChain>::chain(Arg::bytes(Bytes::new(&STASHED)), &ids[0]);
+        let stash = ChainBytes::of(Bytes::new(&STASHED), &ids[0]);
         {
             let _current = CurrentGuard::enter(ids[3]);
             let read = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| stash.to_vec()));

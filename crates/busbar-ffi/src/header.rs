@@ -2,30 +2,30 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The plugin header, `LinkedPlugin`, `plugin()` and the one exported macro, `export!` (IF §7.1, §7.7;
-//! UNSAFE-MIN §2.2 A1, §4.2).
+//! core 3.0, interface revision C.3).
 //!
 //! `unsafe` here: `export!`'s `#[unsafe(no_mangle)]`, the only `unsafe` token in
 //! any busbar-ffi macro body (E4).
 
 #![allow(unsafe_code)]
 
-use core::ffi::c_void;
-
 use crate::raw::{Shared, Str};
 use crate::shim::{self, Image};
-use crate::vt::{Built, CancelFn, CloseFn, DescribeFn, Kind, OpenFn, ResumeFn};
+use crate::vt::{CancelFn, CloseFn, Entry, Kind, Table};
 
 /// The stamp's size (IF §7.4).
 pub const STAMP_SIZE: usize = 272;
 /// The byte offset of `Stamp::kind` (IF §7.4), little-endian.
 pub const STAMP_KIND_AT: usize = 24;
+/// The most entries a kind table may hold: one method mask (interface revision D.2).
+pub const ENTRIES_MAX: usize = 56;
 
-/// The five optional entries of a plugin's table, in table order.
+/// The five header entries, in header order: describe, open, resume, cancel, close.
 #[cfg(feature = "host")]
 pub(crate) type Entries = (
-    Option<DescribeFn>,
-    Option<OpenFn>,
-    Option<ResumeFn>,
+    Option<Entry>,
+    Option<Entry>,
+    Option<Entry>,
     Option<CancelFn>,
     Option<CloseFn>,
 );
@@ -37,15 +37,19 @@ mechanism! {
 pub struct StampBytes(pub [u8; 272]);
 
 /// The only thing `busbar_plugin` returns. Identical for every kind. All pointers point into the image.
-/// Fields are private: a Rust image builds it only through `plugin()`, which ties every entry and the
-/// table to one image type.
+/// It begins with its own size in bytes (read by prefix: header fields are only ever appended) and the
+/// number of entries its table holds (a method added later is one more entry; the host calls only the
+/// entries an image has). Fields are private: a Rust image builds it only through `plugin()`, which ties
+/// every entry and the table to one image type.
 #[repr(C)]
 pub struct Plugin {
+    size: u32,
+    entries: u32,
     stamp: Shared<StampBytes>,
-    kind_vt: Shared<c_void>,
-    describe: Option<DescribeFn>,
-    open: Option<OpenFn>,
-    resume: Option<ResumeFn>,
+    table: Shared<Option<Entry>>,
+    describe: Option<Entry>,
+    open: Option<Entry>,
+    resume: Option<Entry>,
     cancel: Option<CancelFn>,
     close: Option<CloseFn>,
     former_names: Str<'static>,
@@ -61,9 +65,13 @@ pub const SYMBOL: &[u8] = b"busbar_plugin\0";
 pub type EntryFn = extern "C" fn() -> *const Plugin;
 
 /// Byte offsets of `Plugin`'s private fields, for busbar-plugin-abi's C-HEADER static asserts (IF §7.8).
+pub const PLUGIN_SIZE_AT: usize = core::mem::offset_of!(Plugin, size);
+/// Byte offset of `Plugin::entries`.
+pub const PLUGIN_ENTRIES_AT: usize = core::mem::offset_of!(Plugin, entries);
+/// Byte offset of `Plugin::stamp`.
 pub const PLUGIN_STAMP_AT: usize = core::mem::offset_of!(Plugin, stamp);
-/// Byte offset of `Plugin::kind_vt`.
-pub const PLUGIN_KIND_VT_AT: usize = core::mem::offset_of!(Plugin, kind_vt);
+/// Byte offset of `Plugin::table`.
+pub const PLUGIN_TABLE_AT: usize = core::mem::offset_of!(Plugin, table);
 /// Byte offset of `Plugin::describe`.
 pub const PLUGIN_DESCRIBE_AT: usize = core::mem::offset_of!(Plugin, describe);
 /// Byte offset of `Plugin::open`.
@@ -79,7 +87,7 @@ pub const PLUGIN_FORMER_NAMES_AT: usize = core::mem::offset_of!(Plugin, former_n
 
 // `Plugin` is `Sync` structurally: its two raw pointers are `Shared`, pointing at immutable statics of the
 // image (`STAMP`, the kind table) that live as long as the image, which is never unloaded once admitted
-// (I13); it has no interior mutability and no `&mut` API.
+// (I13); fn pointers are `Sync`; it has no interior mutability and no `&mut` API.
 
 /// A compiled-in or exported plugin header built by `plugin()`. `Admitted::linked` takes only this, never
 /// a bare `&'static Plugin` (A1).
@@ -122,10 +130,10 @@ pub(crate) const fn stamp_kind(stamp: &StampBytes) -> u32 {
     ])
 }
 
-/// Build image `M`'s header for kind `K`: the header entries are `M`'s shims, the table is `M`'s, and the
-/// stamp must name `K` (a mismatch is a compile error in the `static`).
-pub const fn plugin<M: Image, K: Kind>(
-    vt: &'static Built<M, K::Vt>,
+/// Build image `M`'s header for kind `K`: the header entries are `M`'s shims, the table is `M`'s `N`
+/// entries, and the stamp must name `K` (a mismatch is a compile error in the `static`).
+pub const fn plugin<M: Image, K: Kind, const N: usize>(
+    table: &'static Table<M, N>,
     stamp: &'static StampBytes,
     former_names: Str<'static>,
 ) -> LinkedPlugin {
@@ -133,12 +141,18 @@ pub const fn plugin<M: Image, K: Kind>(
         stamp_kind(stamp) == K::CODE as u32,
         "the stamp names another kind"
     );
+    assert!(N <= ENTRIES_MAX, "a kind table holds at most 56 entries");
+    let describe: Entry = shim::describe::<M>;
+    let open: Entry = shim::open::<M>;
+    let resume: Entry = shim::resume::<M>;
     LinkedPlugin(Plugin {
+        size: size_of::<Plugin>() as u32,
+        entries: N as u32,
         stamp: Shared::new(core::ptr::from_ref(stamp)),
-        kind_vt: Shared::new(vt.as_ptr()),
-        describe: Some(shim::describe::<M>),
-        open: Some(shim::open::<M>),
-        resume: Some(shim::resume::<M>),
+        table: Shared::new(table.as_ptr()),
+        describe: Some(describe),
+        open: Some(open),
+        resume: Some(resume),
         cancel: Some(shim::cancel::<M>),
         close: Some(shim::close::<M>),
         former_names,
@@ -150,7 +164,7 @@ impl Plugin {
     pub fn null_field(&self) -> Option<&'static str> {
         [
             ("stamp", self.stamp.get().is_null()),
-            ("kind_vt", self.kind_vt.get().is_null()),
+            ("table", self.table.get().is_null()),
             ("describe", self.describe.is_none()),
             ("open", self.open.is_none()),
             ("resume", self.resume.is_none()),
@@ -160,13 +174,21 @@ impl Plugin {
         .into_iter()
         .find_map(|(name, null)| null.then_some(name))
     }
+    /// The header's size in bytes, as the image stated it (the host reads no field past it).
+    pub const fn size(&self) -> u32 {
+        self.size
+    }
+    /// The number of table entries the image stated.
+    pub const fn entry_count(&self) -> u32 {
+        self.entries
+    }
     #[cfg(feature = "host")]
     pub(crate) fn stamp_ptr(&self) -> *const StampBytes {
         self.stamp.get()
     }
     #[cfg(feature = "host")]
-    pub(crate) fn kind_vt_ptr(&self) -> *const c_void {
-        self.kind_vt.get()
+    pub(crate) fn table_ptr(&self) -> *const Option<Entry> {
+        self.table.get()
     }
     #[cfg(feature = "host")]
     pub(crate) fn entries(&self) -> Entries {
@@ -208,15 +230,15 @@ macro_rules! export {
     };
 }
 
-/// busbar-ffi instantiates `export!` once itself (UNSAFE-MIN §4.2), over a secret-kind fixture image.
+/// busbar-ffi instantiates `export!` once itself (UNSAFE-MIN §4.2), over a one-entry fixture image.
 #[cfg(all(test, not(loom)))]
 mod fixture {
     use super::*;
     use crate::raw::KindCode;
     use crate::raw::{Bytes, ChainBytes, Host, Out, Status, Token};
-    use crate::shim::{ChainFut, Opening, Start1, Step};
+    use crate::shim::{ChainFut, Opening, Starts, Step};
     use crate::slots::{ChainBox, ChainRef, Slots};
-    use crate::vt::{kind, secret};
+    use crate::vt::{ChainArgs, kind};
 
     pub struct Fixture;
     static GLOBAL: Slots<ChainBox<(), ()>> = Slots::new();
@@ -259,28 +281,30 @@ mod fixture {
         }
     }
 
-    impl Start1<Bytes<'static>, 0> for Fixture {
+    impl Starts<0> for Fixture {
         fn start<'i>(
             _p: &'i (),
             _h: &'static Host,
-            reference: ChainBytes,
-        ) -> (ChainFut<'i, ()>, ()) {
-            (
+            args: ChainArgs<'_>,
+        ) -> Option<(ChainFut<'i, ()>, ())> {
+            let reference = args.blob(0)?;
+            Some((
                 Box::pin(async move {
                     let _ = reference.len();
                 }),
                 (),
-            )
+            ))
         }
     }
 
-    static VT: Built<Fixture, secret::Vt> = secret::Vt::build::<Fixture>();
+    static TABLE: Table<Fixture, 1> = Table::new([shim::starts::<Fixture, 0>()]);
     static STAMP: StampBytes = {
         let mut bytes = [0u8; STAMP_SIZE];
         bytes[STAMP_KIND_AT] = KindCode::Secret as u8;
         StampBytes(bytes)
     };
-    pub static PLUGIN: LinkedPlugin = plugin::<Fixture, kind::Secret>(&VT, &STAMP, Str::EMPTY);
+    pub static PLUGIN: LinkedPlugin =
+        plugin::<Fixture, kind::Secret, 1>(&TABLE, &STAMP, Str::EMPTY);
 
     crate::export!(PLUGIN);
 
@@ -289,5 +313,7 @@ mod fixture {
         assert_eq!(PLUGIN.header().null_field(), None);
         assert!(KindCode::from_raw(stamp_kind(&STAMP)).is_some());
         assert_eq!(stamp_kind(&STAMP), KindCode::Secret as u32);
+        assert_eq!(PLUGIN.header().entry_count(), 1);
+        assert_eq!(PLUGIN.header().size() as usize, size_of::<Plugin>());
     }
 }

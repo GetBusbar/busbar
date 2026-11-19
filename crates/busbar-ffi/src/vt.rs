@@ -1,37 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The seven kind tables, the fn-pointer aliases their entries have, the four views they name, and the
-//! sealed `Kind` (UNSAFE-MIN §2.2 A2, §2.4; IF §7.6, §8).
+//! The one call record, the one entry type and the one table type (core contract 3.0, interface revision C.3).
 //!
-//! busbar-ffi owns every layout and implements `Kind` for its seven markers itself, so no caller can
-//! pick a table type: `Admitted::vt::<K>` checks `stamp.kind == K::CODE` and the layout is this crate's.
-//! A table is built only by its `Vt::build::<M>()`, which fills every entry with a shim instantiated
-//! with that one image `M`.
+//! Every method of every kind crosses the boundary in the same shape: `Entry(inst, host, &Call, &mut RawOut)`.
+//! A kind's table is an array of `Entry`; the header says how many it holds. This crate knows no kind: it
+//! does not know what a method's `head`, `texts` or `blobs` mean, only how to lend them. A kind states the
+//! layout of each of its methods (busbar-plugin-abi's `kind!`), and a field added later goes at the end of
+//! `head`, `texts` or `blobs`, where an older image never looks.
 //!
-//! `unsafe` here: the aliases of the entries that take an instance pointer (`EntryFn0..=EntryFn5`,
-//! `ResumeFn`, `CancelFn`, `CloseFn`). `DescribeFn` and `OpenFn` take no raw pointer and are safe.
+//! `unsafe` here: the three entry fn-pointer aliases (`Entry`, `CancelFn`, `CloseFn`) and the one read of a
+//! pair-list blob (`Args::pairs`).
 //!
 //! # Entry safety contract
 //!
-//! These function-pointer types cannot express the relationship between an opaque instance address,
-//! its image's table and a live host handle. Before calling an entry, the host must establish:
+//! The function-pointer types cannot express the relationship between an opaque instance address, its
+//! image's table and a live host handle. Before calling an entry, the host must establish:
 //!
 //! - The function belongs to the same admitted image as `inst`; a non-null `inst` is the still-live,
-//!   correctly aligned allocation returned by that image's `Inst::into_instance`. The image stays
-//!   mapped throughout the call. Null is allowed only where the alias below explicitly permits it.
-//! - Arguments and output satisfy their raw-view contracts for the entire call. For an async start
-//!   or resume, argument/result storage remains immutable and allocated until the chain retires;
+//!   correctly aligned allocation returned by that image's `Inst::into_instance`. The image stays mapped
+//!   throughout the call. Null is allowed only for the header entries `describe`, `open` and `resume`
+//!   (an open chain), and for `cancel` and `close`.
+//! - `call` and `out` satisfy their raw-view contracts for the entire call, and `call` follows the layout
+//!   the kind states for the method in that table position: every text is UTF-8, and every blob the layout
+//!   names a pair list is the borrowed array of `Pair` itself (`Bytes::of_pairs`).
+//! - For an async start or a resume, every blob stays immutable and allocated until the chain retires;
 //!   `ChainBufs` owns that storage, and `Chain::drop` cancels before its buffers are freed.
-//! - A session/chain token has one active caller (I6), including cancellation and consuming entries.
-//!   The host's `Session` and `Chain` require exclusive borrows; closing the instance cannot overlap
-//!   any call. Different sessions may run concurrently because the plugin is `Send + Sync`.
+//! - A session or chain token (`Call::session`) has one active caller (I6), including cancellation and
+//!   the consuming end. The host's `Session` and `Chain` require exclusive borrows and are the only code
+//!   that puts a live token in a call; closing the instance cannot overlap any call.
 //!
-//! `host::invoke0..=invoke5`, `Chain::resume`, `cancel_raw` and `Instance::drop` are the call sites;
-//! `shim` implements the corresponding callee contracts. Synchronous entries borrow the instance;
-//! only `CloseFn` releases its allocation. Session end/cancel removes its slot, and chain completion
-//! or cancel drops its future before host buffers can be freed. Rust references cannot carry these
-//! ownership relationships across the fixed C ABI, so the aliases retain explicit caller obligations.
+//! `host::invoke`, `cancel_raw` and `Instance::drop` are the call sites; `shim` implements the callee side.
 
 #![allow(unsafe_code)]
 
@@ -39,54 +38,24 @@ use core::ffi::c_void;
 use core::marker::PhantomData;
 
 use crate::raw::{
-    Arg, Bytes, Family, Host, KindCode, Pair, RawOut, Slice, Status, Str, Token, View, ViewRef,
-    seal,
-};
-use crate::shim::{
-    self, Call0, Call1, Call2, Call3, End0, Opener1, Opener2, Session0, Session1, Session2,
-    Session3, Session4, Start0, Start1, Start2, Start4,
+    Bytes, ChainBytes, ChainId, Host, KindCode, Pair, RawOut, Slice, Status, Str, Token,
 };
 
 mechanism! {
-/// A kind entry with no argument: `(inst, h, out)`. Higher-ranked over the call's `'a`.
-// SAFETY: uphold this module's entry safety contract; `inst` must be non-null.
-pub type EntryFn0 = for<'a> unsafe extern "C" fn(*const c_void, &'static Host, &'a mut RawOut) -> Status;
-/// A kind entry with one raw argument (a session method's first is its token).
-// SAFETY: uphold this module's entry safety contract, including token exclusivity when applicable;
-// `inst` must be non-null.
-pub type EntryFn1<A1> =
-    for<'a> unsafe extern "C" fn(*const c_void, &'static Host, Arg<'a, A1>, &'a mut RawOut) -> Status;
-// SAFETY: uphold this module's entry safety contract for both arguments and any session token;
-// `inst` must be non-null.
-pub type EntryFn2<A1, A2> = for<'a> unsafe extern "C" fn(
-    *const c_void, &'static Host, Arg<'a, A1>, Arg<'a, A2>, &'a mut RawOut,
-) -> Status;
-// SAFETY: uphold this module's entry safety contract for all arguments and any session token;
-// `inst` must be non-null.
-pub type EntryFn3<A1, A2, A3> = for<'a> unsafe extern "C" fn(
-    *const c_void, &'static Host, Arg<'a, A1>, Arg<'a, A2>, Arg<'a, A3>, &'a mut RawOut,
-) -> Status;
-// SAFETY: uphold this module's entry safety contract for all arguments and any session token;
-// `inst` must be non-null.
-pub type EntryFn4<A1, A2, A3, A4> = for<'a> unsafe extern "C" fn(
-    *const c_void, &'static Host, Arg<'a, A1>, Arg<'a, A2>, Arg<'a, A3>, Arg<'a, A4>, &'a mut RawOut,
-) -> Status;
-// SAFETY: uphold this module's entry safety contract for all arguments and the session token;
-// `inst` must be non-null.
-pub type EntryFn5<A1, A2, A3, A4, A5> = for<'a> unsafe extern "C" fn(
-    *const c_void, &'static Host, Arg<'a, A1>, Arg<'a, A2>, Arg<'a, A3>, Arg<'a, A4>, Arg<'a, A5>,
-    &'a mut RawOut,
-) -> Status;
-/// Cold. Writes describe items only.
-pub type DescribeFn = for<'a> extern "C" fn(&'static Host, &'a mut RawOut) -> Status;
-/// Cold. `config` = the bound JSON; flags: DRY_RUN. OK + INSTANCE, or NEED (an open chain), or a FAIL.
-pub type OpenFn = for<'a> extern "C" fn(&'static Host, Arg<'a, Bytes<'static>>, u32, &'a mut RawOut) -> Status;
-/// Continue a chain; `inst` null for open chains.
-// SAFETY: uphold this module's entry safety contract. Own the chain token exclusively for the poll;
-// retain all previous buffers and `results` until retirement. Null selects this image's open slab.
-pub type ResumeFn = for<'a> unsafe extern "C" fn(
-    *const c_void, &'static Host, Arg<'a, u64>, Arg<'a, Bytes<'static>>, &'a mut RawOut,
-) -> Status;
+/// The one call record. Passed by address, so a field appended later is never read by an older image.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Call<'a> {
+    session: u64,
+    mono_ns: u64,
+    head: Bytes<'a>,
+    texts: Slice<'a, Str<'a>>,
+    blobs: Slice<'a, Bytes<'a>>,
+}
+
+/// The only entry type. Every table is an array of these; `describe`, `open` and `resume` are of it too.
+// SAFETY: uphold this module's entry safety contract.
+pub type Entry = for<'a> unsafe extern "C" fn(*const c_void, &'static Host, &'a Call<'a>, &'a mut RawOut) -> Status;
 /// Drop a chain (bit 63 clear) or a session (bit 63 set); `inst` null = the open slab. Idempotent.
 // SAFETY: uphold this module's entry safety contract. Exclude concurrent calls for this token, even
 // when cancelling repeatedly; idempotence permits sequential stale calls, not concurrent live removal.
@@ -99,41 +68,182 @@ pub type CancelFn = unsafe extern "C" fn(*const c_void, Token) -> Status;
 pub type CloseFn = unsafe extern "C" fn(*const c_void) -> Status;
 }
 
-/// One table entry. Nullable in C (a null is refused at admit; past admit a call on it is FAULT). Not
-/// `Copy` or `Clone`, and built only by a `Vt::build`, so an entry cannot be lifted out of its table.
-#[repr(transparent)]
-pub struct VtEntry<F>(Option<F>);
+/// Byte offset of `Call::session` (a private field), for the C header's static asserts.
+pub const CALL_SESSION_AT: usize = core::mem::offset_of!(Call<'static>, session);
+/// Byte offset of `Call::mono_ns`.
+pub const CALL_MONO_NS_AT: usize = core::mem::offset_of!(Call<'static>, mono_ns);
+/// Byte offset of `Call::head`.
+pub const CALL_HEAD_AT: usize = core::mem::offset_of!(Call<'static>, head);
+/// Byte offset of `Call::texts`.
+pub const CALL_TEXTS_AT: usize = core::mem::offset_of!(Call<'static>, texts);
+/// Byte offset of `Call::blobs`.
+pub const CALL_BLOBS_AT: usize = core::mem::offset_of!(Call<'static>, blobs);
+const _: () = assert!(
+    size_of::<Call<'static>>() == 64,
+    "the call record is 64 bytes"
+);
 
-impl<F: Copy> VtEntry<F> {
-    pub(crate) const fn new(f: F) -> Self {
-        VtEntry(Some(f))
-    }
-    /// The fn pointer, for the host's call blocks.
-    #[cfg(feature = "host")]
-    pub(crate) fn get(&self) -> Option<F> {
-        self.0
-    }
-    pub fn is_null(&self) -> bool {
-        self.0.is_none()
-    }
-}
-
-/// A table built for image `M`: every entry is `M`'s shim. Only `Vt::build` makes one.
-pub struct Built<M, V> {
-    vt: V,
-    _m: PhantomData<fn() -> M>,
-}
-
-impl<M, V> Built<M, V> {
-    const fn new(vt: V) -> Self {
-        Built {
-            vt,
-            _m: PhantomData,
+impl<'a> Call<'a> {
+    /// A call with no fields: `describe`, and any method that takes none.
+    pub const EMPTY: Call<'static> = Call {
+        session: 0,
+        mono_ns: 0,
+        head: Bytes::EMPTY,
+        texts: Slice::EMPTY,
+        blobs: Slice::EMPTY,
+    };
+    /// A plain call (session 0). `mono_ns` is the host's one clock reading for the operation (0: none).
+    /// The session of a call is never chosen by the caller: the host's `Session` and `Chain` set it.
+    pub const fn new(
+        mono_ns: u64,
+        head: &'a [u8],
+        texts: &'a [Str<'a>],
+        blobs: &'a [Bytes<'a>],
+    ) -> Self {
+        Call {
+            session: 0,
+            mono_ns,
+            head: Bytes::new(head),
+            texts: Slice::new(texts),
+            blobs: Slice::new(blobs),
         }
     }
-    /// The table's address, for the header's `kind_vt`.
-    pub(crate) const fn as_ptr(&self) -> *const c_void {
-        core::ptr::from_ref(&self.vt).cast()
+    /// The same call on session or chain `token` (the host handles only).
+    #[cfg(feature = "host")]
+    pub(crate) const fn on(&self, token: Token) -> Call<'a> {
+        Call {
+            session: token,
+            mono_ns: self.mono_ns,
+            head: self.head,
+            texts: self.texts,
+            blobs: self.blobs,
+        }
+    }
+    /// The same call at another clock reading.
+    pub const fn at(&self, mono_ns: u64) -> Call<'a> {
+        Call {
+            session: self.session,
+            mono_ns,
+            head: self.head,
+            texts: self.texts,
+            blobs: self.blobs,
+        }
+    }
+    /// The session or chain token; 0 for a plain call.
+    pub const fn session(&self) -> u64 {
+        self.session
+    }
+    /// The host's one clock reading for this operation (monotonic nanoseconds; 0 = not given).
+    pub const fn mono_ns(&self) -> u64 {
+        self.mono_ns
+    }
+    /// The method's numbers: one plain record, read by prefix.
+    pub fn head(&self) -> &'a [u8] {
+        self.head.get()
+    }
+    /// The borrowed UTF-8 fields, by position.
+    pub fn texts(&self) -> &'a [Str<'a>] {
+        self.texts.get()
+    }
+    /// The borrowed byte fields, by position.
+    pub fn blobs(&self) -> &'a [Bytes<'a>] {
+        self.blobs.get()
+    }
+}
+
+/// What a kind's sync adapter reads a call through. Minted only by this crate's shims, inside an entry:
+/// that the call follows the method's layout is the entry caller's obligation (the module contract), which
+/// is what makes `pairs` a safe read.
+#[derive(Clone, Copy)]
+pub struct Args<'a> {
+    call: &'a Call<'a>,
+}
+
+impl<'a> Args<'a> {
+    pub(crate) const fn new(call: &'a Call<'a>) -> Self {
+        Args { call }
+    }
+    pub const fn mono_ns(&self) -> u64 {
+        self.call.mono_ns
+    }
+    pub fn head(&self) -> &'a [u8] {
+        self.call.head()
+    }
+    /// Text `at`, or None when the caller sent fewer.
+    pub fn text(&self, at: usize) -> Option<Str<'a>> {
+        self.call.texts().get(at).copied()
+    }
+    /// Blob `at`, or None when the caller sent fewer.
+    pub fn blob(&self, at: usize) -> Option<Bytes<'a>> {
+        self.call.blobs().get(at).copied()
+    }
+    /// The blobs from `at` on (a method's trailing list of byte fields); empty when there are none.
+    pub fn blobs_from(&self, at: usize) -> Slice<'a, Bytes<'a>> {
+        Slice::new(self.call.blobs().get(at..).unwrap_or(&[]))
+    }
+    /// Blob `at` as the pair list its layout says it is. None: missing, or not a whole, aligned array.
+    pub fn pairs(&self, at: usize) -> Option<Slice<'a, Pair<'a>>> {
+        let blob = self.blob(at)?;
+        // SAFETY: an `Args` exists only inside an entry, whose caller guarantees the call follows the
+        // method's layout (the module contract): a blob the layout names a pair list was built by
+        // `Bytes::of_pairs` from a `&'a [Pair<'a>]`. `as_pairs` checks length and alignment itself.
+        unsafe { blob.as_pairs() }
+    }
+}
+
+/// What a kind's async adapter reads a call through: numbers now, bytes as chain-scoped handles. Texts
+/// are not offered: nothing borrowed from the call may outlive it.
+pub struct ChainArgs<'a> {
+    call: &'a Call<'a>,
+    id: &'a ChainId,
+}
+
+impl<'a> ChainArgs<'a> {
+    pub(crate) const fn new(call: &'a Call<'a>, id: &'a ChainId) -> Self {
+        ChainArgs { call, id }
+    }
+    pub const fn mono_ns(&self) -> u64 {
+        self.call.mono_ns
+    }
+    pub fn head(&self) -> &'a [u8] {
+        self.call.head()
+    }
+    /// Blob `at` as the chain keeps it, or None when the caller sent fewer.
+    pub fn blob(&self, at: usize) -> Option<ChainBytes> {
+        let blob = *self.call.blobs().get(at)?;
+        Some(ChainBytes::of(blob, self.id))
+    }
+}
+
+/// One table position, built only by `shim`'s five constructors for image `M`. Nullable in C (a null is
+/// refused at admit). Not `Copy` or `Clone`: an entry cannot be lifted out of its table.
+#[repr(transparent)]
+pub struct Slot<M>(Option<Entry>, PhantomData<fn() -> M>);
+
+impl<M> Slot<M> {
+    pub(crate) const fn new(entry: Entry) -> Self {
+        Slot(Some(entry), PhantomData)
+    }
+}
+
+/// A kind table built for image `M`: `N` entries, every one `M`'s shim, in the kind's declaration order.
+#[repr(transparent)]
+pub struct Table<M, const N: usize>([Slot<M>; N]);
+
+impl<M, const N: usize> Table<M, N> {
+    pub const fn new(slots: [Slot<M>; N]) -> Self {
+        Table(slots)
+    }
+    /// The first entry's address, for the header's `table`.
+    pub(crate) const fn as_ptr(&self) -> *const Option<Entry> {
+        self.0.as_ptr().cast()
+    }
+    /// How many entries the table holds (the header's `entries`).
+    pub const fn len(&self) -> usize {
+        N
+    }
+    pub const fn is_empty(&self) -> bool {
+        N == 0
     }
 }
 
@@ -141,510 +251,54 @@ mod sealed {
     pub trait Kind {}
 }
 
-/// One of the seven kinds. Sealed: busbar-ffi implements it for `kind::*` only, so `K::Vt` is always one of
-/// its own seven layouts.
+/// One of the kind codes. Sealed: this crate implements it for `kind::*` only. It carries the code a
+/// stamp must name and nothing else: the table of every kind has the one layout.
 pub trait Kind: sealed::Kind + 'static {
     const CODE: KindCode;
-    type Vt: Sync + 'static;
 }
 
-/// The kind markers.
+/// The kind markers: the list of kind codes, and the only place this crate names a kind.
 pub mod kind {
-    pub struct Store;
-    pub struct Secret;
-    pub struct Auth;
-    pub struct Hook;
-    pub struct Export;
-    pub struct Plane;
-    pub struct Transport;
-}
+    use super::{Kind, KindCode, sealed};
 
-/// The four views the tables name (IF §8.3, §8.6, §8.7; the C header's view structs). Plain C data:
-/// `Copy`, only pointer, length and `View` fields, no implicit padding.
-pub mod views {
-    use crate::raw::{Bytes, Pair, Slice, Str};
-
-    /// One inbound request (auth `verify`).
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub struct AuthReq<'a> {
-        pub flags: u32,
-        pub _r: u32,
-        pub method: Str<'a>,
-        pub path: Str<'a>,
-        pub query: Str<'a>,
-        pub authority: Str<'a>,
-        pub headers: Slice<'a, Pair<'a>>,
-        pub peer: Str<'a>,
-        pub tls_peer_cert: Bytes<'a>,
-        pub body: Bytes<'a>,
-        pub issued: Bytes<'a>,
-        pub now_s: u64,
+    macro_rules! markers {
+        ($($K:ident)*) => {$(
+            pub struct $K;
+            impl sealed::Kind for $K {}
+            impl Kind for $K {
+                const CODE: KindCode = KindCode::$K;
+            }
+        )*};
     }
-
-    /// One plane request (`request`, `render`).
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub struct PlaneReq<'a> {
-        pub route: u32,
-        pub flags: u32,
-        pub auth: u32,
-        pub _r: u32,
-        pub method: Str<'a>,
-        pub path: Str<'a>,
-        pub query: Str<'a>,
-        pub headers: Slice<'a, Pair<'a>>,
-        pub identity: Bytes<'a>,
-        pub request_id: u64,
-        pub carrier: u64,
-        pub work: Str<'a>,
-        pub ticket_record: Bytes<'a>,
-    }
-
-    /// One upstream attempt or probe target (`upstream`, `probe`).
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub struct Target<'a> {
-        pub attempt: u32,
-        pub flags: u32,
-        pub dialect: Str<'a>,
-        pub model: Str<'a>,
-        pub base_path: Str<'a>,
-        pub upstream: Str<'a>,
-        pub provider: Str<'a>,
-        pub params: Slice<'a, Pair<'a>>,
-        pub admission: Bytes<'a>,
-    }
-
-    /// One connection (transport `begin`).
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub struct ConnInfo<'a> {
-        pub role: u32,
-        pub flags: u32,
-        pub alpn: Str<'a>,
-        pub sni: Str<'a>,
-        pub peer: Str<'a>,
-        pub local: Str<'a>,
-        pub tls_peer_cert: Bytes<'a>,
-        pub leftover: Bytes<'a>,
-        pub head: Bytes<'a>,
-        pub local_fingerprint: Str<'a>,
-        pub mono_ns: u64,
-    }
+    markers!(Store Secret Auth Hook Export Plane Transport);
 }
 
-use views::{AuthReq, ConnInfo, PlaneReq, Target};
-
-const STR: usize = size_of::<Str<'static>>();
-const BYTES: usize = size_of::<Bytes<'static>>();
-const PAIRS: usize = size_of::<Slice<'static, Pair<'static>>>();
-const _: () = assert!(size_of::<AuthReq<'static>>() == 8 + 5 * STR + PAIRS + 3 * BYTES + 8);
-const _: () = assert!(size_of::<PlaneReq<'static>>() == 16 + 4 * STR + PAIRS + 2 * BYTES + 16);
-const _: () = assert!(size_of::<Target<'static>>() == 8 + 5 * STR + PAIRS + BYTES);
-const _: () = assert!(size_of::<ConnInfo<'static>>() == 8 + 5 * STR + 3 * BYTES + 8);
-
-impl seal::Sealed for AuthReq<'_> {}
-impl seal::Sealed for PlaneReq<'_> {}
-impl seal::Sealed for Target<'_> {}
-impl seal::Sealed for ConnInfo<'_> {}
-impl View for AuthReq<'_> {}
-impl View for PlaneReq<'_> {}
-impl View for Target<'_> {}
-impl View for ConnInfo<'_> {}
-impl Family for AuthReq<'static> {
-    type Of<'a> = AuthReq<'a>;
-}
-impl Family for PlaneReq<'static> {
-    type Of<'a> = PlaneReq<'a>;
-}
-impl Family for Target<'static> {
-    type Of<'a> = Target<'a>;
-}
-impl Family for ConnInfo<'static> {
-    type Of<'a> = ConnInfo<'a>;
-}
-
-/// The raw argument types the tables use.
-type B = Bytes<'static>;
-type St = Str<'static>;
-pub type AuthRef = ViewRef<AuthReq<'static>>;
-pub type PlaneRef = ViewRef<PlaneReq<'static>>;
-pub type TargetRef = ViewRef<Target<'static>>;
-pub type ConnRef = ViewRef<ConnInfo<'static>>;
-
-/// What an entry is, in its type, so the host can only call it the way its kind declares it: a plain
-/// call, a session opener, a method on a live session, the consuming end, or an async start. Each is
-/// `#[repr(transparent)]` over the fn pointer: the C layout is unchanged.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct Plain<F>(pub(crate) F);
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct Opens<F>(pub(crate) F);
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct OnSession<F>(pub(crate) F);
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct Ends<F>(pub(crate) F);
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct Starts<F>(pub(crate) F);
-
-/// The store table (IF §8, the C header's `bb_store_vt`), in declaration order.
-pub mod store {
+#[cfg(test)]
+mod tests {
     use super::*;
 
-    #[repr(C)]
-    pub struct Vt {
-        pub read: VtEntry<Starts<EntryFn1<B>>>,
-        pub scan: VtEntry<Starts<EntryFn1<B>>>,
-        pub commit: VtEntry<Starts<EntryFn1<B>>>,
-        pub clock: VtEntry<Starts<EntryFn1<B>>>,
-        pub info: VtEntry<Plain<EntryFn0>>,
-    }
-
-    impl Vt {
-        /// The table of image `M`: every entry is a shim instantiated with `M`.
-        pub const fn build<M>() -> Built<M, Vt>
-        where
-            M: Start1<B, 0> + Start1<B, 1> + Start1<B, 2> + Start1<B, 3> + Call0<4>,
-        {
-            Built::new(Vt {
-                read: VtEntry::new(Starts(shim::start1::<M, B, 0>)),
-                scan: VtEntry::new(Starts(shim::start1::<M, B, 1>)),
-                commit: VtEntry::new(Starts(shim::start1::<M, B, 2>)),
-                clock: VtEntry::new(Starts(shim::start1::<M, B, 3>)),
-                info: VtEntry::new(Plain(shim::sync0::<M, 4>)),
-            })
-        }
-        /// The first null entry, named (admit refuses it, step 9).
-        pub fn null_field(&self) -> Option<&'static str> {
-            [
-                ("read", self.read.is_null()),
-                ("scan", self.scan.is_null()),
-                ("commit", self.commit.is_null()),
-                ("clock", self.clock.is_null()),
-                ("info", self.info.is_null()),
-            ]
-            .into_iter()
-            .find_map(|(name, null)| null.then_some(name))
-        }
-    }
-
-    impl sealed::Kind for kind::Store {}
-    impl Kind for kind::Store {
-        const CODE: KindCode = KindCode::Store;
-        type Vt = Vt;
-    }
-}
-
-/// The secret table (IF §8, the C header's `bb_secret_vt`), in declaration order.
-pub mod secret {
-    use super::*;
-
-    #[repr(C)]
-    pub struct Vt {
-        pub resolve: VtEntry<Starts<EntryFn1<B>>>,
-    }
-
-    impl Vt {
-        /// The table of image `M`: every entry is a shim instantiated with `M`.
-        pub const fn build<M>() -> Built<M, Vt>
-        where
-            M: Start1<B, 0>,
-        {
-            Built::new(Vt {
-                resolve: VtEntry::new(Starts(shim::start1::<M, B, 0>)),
-            })
-        }
-        /// The first null entry, named (admit refuses it, step 9).
-        pub fn null_field(&self) -> Option<&'static str> {
-            [("resolve", self.resolve.is_null())]
-                .into_iter()
-                .find_map(|(name, null)| null.then_some(name))
-        }
-    }
-
-    impl sealed::Kind for kind::Secret {}
-    impl Kind for kind::Secret {
-        const CODE: KindCode = KindCode::Secret;
-        type Vt = Vt;
-    }
-}
-
-/// The auth table (IF §8, the C header's `bb_auth_vt`), in declaration order.
-pub mod auth {
-    use super::*;
-
-    #[repr(C)]
-    pub struct Vt {
-        pub verify: VtEntry<Plain<EntryFn1<AuthRef>>>,
-        pub verify_io: VtEntry<Starts<EntryFn1<B>>>,
-        pub login: VtEntry<Starts<EntryFn2<u32, B>>>,
-        pub outbound: VtEntry<Starts<EntryFn1<B>>>,
-        pub refresh: VtEntry<Starts<EntryFn0>>,
-        pub serve: VtEntry<Starts<EntryFn1<B>>>,
-    }
-
-    impl Vt {
-        /// The table of image `M`: every entry is a shim instantiated with `M`.
-        pub const fn build<M>() -> Built<M, Vt>
-        where
-            M: Call1<AuthRef, 0>
-                + Start1<B, 1>
-                + Start2<u32, B, 2>
-                + Start1<B, 3>
-                + Start0<4>
-                + Start1<B, 5>,
-        {
-            Built::new(Vt {
-                verify: VtEntry::new(Plain(shim::sync1::<M, AuthRef, 0>)),
-                verify_io: VtEntry::new(Starts(shim::start1::<M, B, 1>)),
-                login: VtEntry::new(Starts(shim::start2::<M, u32, B, 2>)),
-                outbound: VtEntry::new(Starts(shim::start1::<M, B, 3>)),
-                refresh: VtEntry::new(Starts(shim::start0::<M, 4>)),
-                serve: VtEntry::new(Starts(shim::start1::<M, B, 5>)),
-            })
-        }
-        /// The first null entry, named (admit refuses it, step 9).
-        pub fn null_field(&self) -> Option<&'static str> {
-            [
-                ("verify", self.verify.is_null()),
-                ("verify_io", self.verify_io.is_null()),
-                ("login", self.login.is_null()),
-                ("outbound", self.outbound.is_null()),
-                ("refresh", self.refresh.is_null()),
-                ("serve", self.serve.is_null()),
-            ]
-            .into_iter()
-            .find_map(|(name, null)| null.then_some(name))
-        }
-    }
-
-    impl sealed::Kind for kind::Auth {}
-    impl Kind for kind::Auth {
-        const CODE: KindCode = KindCode::Auth;
-        type Vt = Vt;
-    }
-}
-
-/// The hook table (IF §8, the C header's `bb_hook_vt`), in declaration order.
-pub mod hook {
-    use super::*;
-
-    #[repr(C)]
-    pub struct Vt {
-        pub on: VtEntry<Plain<EntryFn2<u32, B>>>,
-        pub on_io: VtEntry<Starts<EntryFn2<u32, B>>>,
-    }
-
-    impl Vt {
-        /// The table of image `M`: every entry is a shim instantiated with `M`.
-        pub const fn build<M>() -> Built<M, Vt>
-        where
-            M: Call2<u32, B, 0> + Start2<u32, B, 1>,
-        {
-            Built::new(Vt {
-                on: VtEntry::new(Plain(shim::sync2::<M, u32, B, 0>)),
-                on_io: VtEntry::new(Starts(shim::start2::<M, u32, B, 1>)),
-            })
-        }
-        /// The first null entry, named (admit refuses it, step 9).
-        pub fn null_field(&self) -> Option<&'static str> {
-            [("on", self.on.is_null()), ("on_io", self.on_io.is_null())]
-                .into_iter()
-                .find_map(|(name, null)| null.then_some(name))
-        }
-    }
-
-    impl sealed::Kind for kind::Hook {}
-    impl Kind for kind::Hook {
-        const CODE: KindCode = KindCode::Hook;
-        type Vt = Vt;
-    }
-}
-
-/// The export table (IF §8, the C header's `bb_export_vt`), in declaration order.
-pub mod export {
-    use super::*;
-
-    #[repr(C)]
-    pub struct Vt {
-        pub deliver: VtEntry<Starts<EntryFn4<u32, u64, u32, B>>>,
-        pub render: VtEntry<Plain<EntryFn2<u32, B>>>,
-        pub confirm: VtEntry<Starts<EntryFn1<u64>>>,
-    }
-
-    impl Vt {
-        /// The table of image `M`: every entry is a shim instantiated with `M`.
-        pub const fn build<M>() -> Built<M, Vt>
-        where
-            M: Start4<u32, u64, u32, B, 0> + Call2<u32, B, 1> + Start1<u64, 2>,
-        {
-            Built::new(Vt {
-                deliver: VtEntry::new(Starts(shim::start4::<M, u32, u64, u32, B, 0>)),
-                render: VtEntry::new(Plain(shim::sync2::<M, u32, B, 1>)),
-                confirm: VtEntry::new(Starts(shim::start1::<M, u64, 2>)),
-            })
-        }
-        /// The first null entry, named (admit refuses it, step 9).
-        pub fn null_field(&self) -> Option<&'static str> {
-            [
-                ("deliver", self.deliver.is_null()),
-                ("render", self.render.is_null()),
-                ("confirm", self.confirm.is_null()),
-            ]
-            .into_iter()
-            .find_map(|(name, null)| null.then_some(name))
-        }
-    }
-
-    impl sealed::Kind for kind::Export {}
-    impl Kind for kind::Export {
-        const CODE: KindCode = KindCode::Export;
-        type Vt = Vt;
-    }
-}
-
-/// The plane table (IF §8, the C header's `bb_plane_vt`), in declaration order.
-pub mod plane {
-    use super::*;
-
-    type PieceFn = OnSession<EntryFn5<u64, u32, u32, u32, B>>;
-
-    #[repr(C)]
-    pub struct Vt {
-        pub request: VtEntry<Opens<EntryFn2<PlaneRef, B>>>,
-        pub upstream: VtEntry<OnSession<EntryFn2<u64, TargetRef>>>,
-        pub piece: VtEntry<PieceFn>,
-        pub end: VtEntry<Ends<EntryFn1<u64>>>,
-        pub rewrite: VtEntry<OnSession<EntryFn2<u64, B>>>,
-        pub render: VtEntry<Plain<EntryFn3<PlaneRef, u32, B>>>,
-        pub admin: VtEntry<Starts<EntryFn2<u32, B>>>,
-        pub probe: VtEntry<Opens<EntryFn1<TargetRef>>>,
-        pub demux: VtEntry<Plain<EntryFn2<St, B>>>,
-        pub select_resources: VtEntry<Plain<EntryFn3<u32, PlaneRef, B>>>,
-        /// Slot 10, appended (M_CHANNEL): pure preparation of one admitted selected command channel.
-        pub channel: VtEntry<OnSession<EntryFn2<u64, TargetRef>>>,
-    }
-
-    impl Vt {
-        /// The table of image `M`: every entry is a shim instantiated with `M`.
-        pub const fn build<M>() -> Built<M, Vt>
-        where
-            M: Opener2<PlaneRef, B, 0>
-                + Session1<TargetRef, 1>
-                + Session4<u32, u32, u32, B, 2>
-                + End0<3>
-                + Session1<B, 4>
-                + Call3<PlaneRef, u32, B, 5>
-                + Start2<u32, B, 6>
-                + Opener1<TargetRef, 7>
-                + Call2<St, B, 8>
-                + Call3<u32, PlaneRef, B, 9>
-                + Session1<TargetRef, 10>,
-        {
-            Built::new(Vt {
-                request: VtEntry::new(Opens(shim::opener2::<M, PlaneRef, B, 0>)),
-                upstream: VtEntry::new(OnSession(shim::session1::<M, TargetRef, 1>)),
-                piece: VtEntry::new(OnSession(shim::session4::<M, u32, u32, u32, B, 2>)),
-                end: VtEntry::new(Ends(shim::end0::<M, 3>)),
-                rewrite: VtEntry::new(OnSession(shim::session1::<M, B, 4>)),
-                render: VtEntry::new(Plain(shim::sync3::<M, PlaneRef, u32, B, 5>)),
-                admin: VtEntry::new(Starts(shim::start2::<M, u32, B, 6>)),
-                probe: VtEntry::new(Opens(shim::opener1::<M, TargetRef, 7>)),
-                demux: VtEntry::new(Plain(shim::sync2::<M, St, B, 8>)),
-                select_resources: VtEntry::new(Plain(shim::sync3::<M, u32, PlaneRef, B, 9>)),
-                channel: VtEntry::new(OnSession(shim::session1::<M, TargetRef, 10>)),
-            })
-        }
-        /// The first null entry, named (admit refuses it, step 9).
-        pub fn null_field(&self) -> Option<&'static str> {
-            [
-                ("request", self.request.is_null()),
-                ("upstream", self.upstream.is_null()),
-                ("piece", self.piece.is_null()),
-                ("end", self.end.is_null()),
-                ("rewrite", self.rewrite.is_null()),
-                ("render", self.render.is_null()),
-                ("admin", self.admin.is_null()),
-                ("probe", self.probe.is_null()),
-                ("demux", self.demux.is_null()),
-                ("select_resources", self.select_resources.is_null()),
-                ("channel", self.channel.is_null()),
-            ]
-            .into_iter()
-            .find_map(|(name, null)| null.then_some(name))
-        }
-    }
-
-    impl sealed::Kind for kind::Plane {}
-    impl Kind for kind::Plane {
-        const CODE: KindCode = KindCode::Plane;
-        type Vt = Vt;
-    }
-}
-
-/// The transport table (IF §8, the C header's `bb_transport_vt`), in declaration order.
-pub mod transport {
-    use super::*;
-
-    type EmitFn = OnSession<EntryFn5<u64, u64, u32, u32, B>>;
-
-    #[repr(C)]
-    pub struct Vt {
-        pub begin: VtEntry<Opens<EntryFn1<ConnRef>>>,
-        pub ingest: VtEntry<OnSession<EntryFn2<u64, B>>>,
-        pub emit: VtEntry<EmitFn>,
-        pub timer: VtEntry<OnSession<EntryFn1<u64>>>,
-        pub datagram: VtEntry<OnSession<EntryFn4<u64, u32, u32, B>>>,
-        pub event: VtEntry<OnSession<EntryFn3<u64, u32, B>>>,
-        pub offer: VtEntry<Plain<EntryFn1<u32>>>,
-    }
-
-    impl Vt {
-        /// The table of image `M`: every entry is a shim instantiated with `M`.
-        pub const fn build<M>() -> Built<M, Vt>
-        where
-            M: Opener1<ConnRef, 0>
-                + Session1<B, 1>
-                + Session4<u64, u32, u32, B, 2>
-                + Session0<3>
-                + Session3<u32, u32, B, 4>
-                + Session2<u32, B, 5>
-                + Call1<u32, 6>,
-        {
-            Built::new(Vt {
-                begin: VtEntry::new(Opens(shim::opener1::<M, ConnRef, 0>)),
-                ingest: VtEntry::new(OnSession(shim::session1::<M, B, 1>)),
-                emit: VtEntry::new(OnSession(shim::session4::<M, u64, u32, u32, B, 2>)),
-                timer: VtEntry::new(OnSession(shim::session0::<M, 3>)),
-                datagram: VtEntry::new(OnSession(shim::session3::<M, u32, u32, B, 4>)),
-                event: VtEntry::new(OnSession(shim::session2::<M, u32, B, 5>)),
-                offer: VtEntry::new(Plain(shim::sync1::<M, u32, 6>)),
-            })
-        }
-        /// The first null entry, named (admit refuses it, step 9).
-        pub fn null_field(&self) -> Option<&'static str> {
-            [
-                ("begin", self.begin.is_null()),
-                ("ingest", self.ingest.is_null()),
-                ("emit", self.emit.is_null()),
-                ("timer", self.timer.is_null()),
-                ("datagram", self.datagram.is_null()),
-                ("event", self.event.is_null()),
-                ("offer", self.offer.is_null()),
-            ]
-            .into_iter()
-            .find_map(|(name, null)| null.then_some(name))
-        }
-    }
-
-    impl sealed::Kind for kind::Transport {}
-    impl Kind for kind::Transport {
-        const CODE: KindCode = KindCode::Transport;
-        type Vt = Vt;
+    #[test]
+    fn a_call_lends_what_it_was_built_from() {
+        let head = 7u32.to_le_bytes();
+        let texts = [Str::new("a"), Str::new("b")];
+        let pairs = [Pair {
+            name: Str::new("accept"),
+            value: Bytes::new(b"*/*"),
+        }];
+        let blobs = [Bytes::new(b"body"), Bytes::of_pairs(&pairs)];
+        let call = Call::new(9, &head, &texts, &blobs);
+        assert_eq!((call.session(), call.mono_ns()), (0, 9));
+        let args = Args::new(&call);
+        assert_eq!(args.head(), &head);
+        assert_eq!(args.text(1).map(Str::get), Some("b"));
+        assert!(args.text(2).is_none());
+        assert_eq!(args.blob(0).map(Bytes::get), Some(&b"body"[..]));
+        let read = args.pairs(1).map(Slice::get).unwrap_or(&[]);
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].name.get(), "accept");
+        assert_eq!(read[0].value.get(), b"*/*");
+        assert_eq!(args.blobs_from(1).len(), 1);
+        assert!(args.blobs_from(5).is_empty());
+        assert!(Call::EMPTY.head().is_empty());
     }
 }
