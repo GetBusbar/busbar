@@ -1030,3 +1030,68 @@ fn a_record_read_from_what_an_image_declares() {
         None
     );
 }
+
+/// The record on the wire: what a plane writes is what core reads, and a word outside the
+/// vocabulary is no record.
+#[test]
+fn the_record_on_the_wire() {
+    use crate::auth::route_record::wire::{
+        decode_admission, encode_admission, AdmissionItem, CALLERS_DISTINCT, CALLERS_SHARED,
+        MONEY_NONE, MONEY_UNIT, SCOPE_NONE, SCOPE_SELECTED, SCOPE_WALK,
+    };
+    use busbar_plugin_abi::plane::{AUTH_PRINCIPAL, AUTH_PUBLIC, ROUTE_CATALOG};
+    let none: [Box<str>; 0] = [];
+    let tools: [Box<str>; 1] = ["mcp_tool".into()];
+    let item = AdmissionItem {
+        route: 2,
+        scope: SCOPE_WALK | SCOPE_SELECTED,
+        money: MONEY_UNIT,
+        callers: CALLERS_DISTINCT,
+        walk_kind: "mcp_server",
+    };
+    let body = encode_admission(&item);
+    assert_eq!(body.len(), 16 + "mcp_server".len());
+    assert_eq!(decode_admission(&body), Some(item));
+    assert_eq!(decode_admission(&body[..15]), None);
+    let record = RouteRecord::from_wire(0, AUTH_PRINCIPAL, None, &tools, &item, Some("Bearer"))
+        .expect("a stated record");
+    assert_eq!(admission_of(&record), Admission::Selected);
+    assert_eq!(record.scope.walk.as_deref(), Some("mcp_server"));
+    assert_eq!(record.caller_state, CallerState::Distinct);
+    assert_eq!(record.money, Money::Unit);
+    assert_eq!(record.challenge.as_deref(), Some("Bearer"));
+    let stated = |scope, money, callers, walk_kind| AdmissionItem {
+        route: 1,
+        scope,
+        money,
+        callers,
+        walk_kind,
+    };
+    let catalog = stated(SCOPE_WALK, MONEY_NONE, CALLERS_SHARED, "pool");
+    let record = RouteRecord::from_wire(ROUTE_CATALOG, AUTH_PRINCIPAL, None, &none, &catalog, None)
+        .expect("a stated record");
+    assert_eq!(admission_of(&record), Admission::Catalog);
+    let public = stated(SCOPE_NONE, MONEY_NONE, CALLERS_SHARED, "");
+    let record = RouteRecord::from_wire(0, AUTH_PUBLIC, None, &none, &public, None)
+        .expect("a stated record");
+    assert_eq!(admission_of(&record), Admission::Public);
+    assert!(record.scope_stated);
+    #[rustfmt::skip]
+    let broken = [
+        stated(0, MONEY_UNIT, CALLERS_SHARED, ""),
+        stated(SCOPE_NONE | SCOPE_WALK, MONEY_UNIT, CALLERS_SHARED, "pool"),
+        stated(SCOPE_WALK, MONEY_UNIT, CALLERS_SHARED, ""),
+        stated(SCOPE_NONE, MONEY_UNIT, CALLERS_SHARED, "pool"),
+        stated(SCOPE_SELECTED, MONEY_UNIT, CALLERS_SHARED, ""),
+        stated(SCOPE_NONE, 0, CALLERS_SHARED, ""),
+        stated(SCOPE_NONE, MONEY_UNIT, 0, ""),
+        stated(8, MONEY_UNIT, CALLERS_SHARED, ""),
+    ];
+    for item in broken {
+        assert_eq!(
+            RouteRecord::from_wire(0, AUTH_PRINCIPAL, None, &none, &item, None),
+            None,
+            "{item:?}"
+        );
+    }
+}

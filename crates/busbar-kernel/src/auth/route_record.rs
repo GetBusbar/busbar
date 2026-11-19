@@ -522,3 +522,121 @@ pub fn contested_kind<'a>(claims: &[KindClaim<'a>]) -> Option<(&'a str, &'a str,
     }
     None
 }
+
+/// The route record on the wire: two describe items of the plane kind beside `D_ROUTE`,
+/// `D_ROUTE_CRED_HEADER` and `D_ROUTE_RESOURCES`. A plane image that declares neither for a route
+/// predates the record and is read by [`RouteRecord::from_declared`]; an image that declares the
+/// admission item for one route must declare it for every route (the loader's rule), and from
+/// then on nothing about that image is inferred.
+pub mod wire {
+    /// `D_ROUTE_ADMISSION`: 16 bytes (four little-endian words: route, scope, money, callers),
+    /// then the walk kind as text (empty when the scope has no walk).
+    pub const D_ROUTE_ADMISSION: u16 = 0x019A;
+    /// `D_ROUTE_CHALLENGE`: 8 bytes (route, zero), then the challenge text.
+    pub const D_ROUTE_CHALLENGE: u16 = 0x019B;
+
+    /// The scope word: exactly `SCOPE_NONE`, or one or both of the others. `SCOPE_SELECTED`: the
+    /// kinds are the route's `D_ROUTE_RESOURCES`.
+    pub const SCOPE_NONE: u32 = 1;
+    pub const SCOPE_WALK: u32 = 2;
+    pub const SCOPE_SELECTED: u32 = 4;
+    pub const MONEY_NONE: u32 = 1;
+    pub const MONEY_UNIT: u32 = 2;
+    pub const CALLERS_SHARED: u32 = 1;
+    pub const CALLERS_DISTINCT: u32 = 2;
+
+    /// The fixed part of a `D_ROUTE_ADMISSION` body.
+    pub const ADMISSION_FIXED: usize = 16;
+
+    /// A decoded `D_ROUTE_ADMISSION` body.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct AdmissionItem<'a> {
+        pub route: u32,
+        pub scope: u32,
+        pub money: u32,
+        pub callers: u32,
+        pub walk_kind: &'a str,
+    }
+
+    fn word(body: &[u8], index: usize) -> Option<u32> {
+        let bytes = body.get(index * 4..index * 4 + 4)?;
+        Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    /// `None`: the body is short or its tail is not text.
+    pub fn decode_admission(body: &[u8]) -> Option<AdmissionItem<'_>> {
+        Some(AdmissionItem {
+            route: word(body, 0)?,
+            scope: word(body, 1)?,
+            money: word(body, 2)?,
+            callers: word(body, 3)?,
+            walk_kind: std::str::from_utf8(body.get(ADMISSION_FIXED..)?).ok()?,
+        })
+    }
+
+    /// The body of a `D_ROUTE_ADMISSION` item.
+    pub fn encode_admission(item: &AdmissionItem<'_>) -> Vec<u8> {
+        let mut body = Vec::with_capacity(ADMISSION_FIXED + item.walk_kind.len());
+        for word in [item.route, item.scope, item.money, item.callers] {
+            body.extend_from_slice(&word.to_le_bytes());
+        }
+        body.extend_from_slice(item.walk_kind.as_bytes());
+        body
+    }
+}
+
+impl RouteRecord {
+    /// The record of a route whose image declares its admission item. Every field is read from
+    /// what the image stated; a word outside its vocabulary, a walk kind without the walk bit or
+    /// the bit without a kind, and selected without kinds are `None` (the loader refuses the
+    /// image, naming the route). The result still passes through [`RouteRecord::validate`].
+    pub fn from_wire(
+        flags: u32,
+        auth: u32,
+        cred_header: Option<&str>,
+        resource_kinds: &[Box<str>],
+        admission: &wire::AdmissionItem<'_>,
+        challenge: Option<&str>,
+    ) -> Option<Self> {
+        let class = RouteClass::from_flags(flags)?;
+        let who = Who::from_mask(auth)?;
+        let walks = admission.scope & wire::SCOPE_WALK != 0;
+        let selects = admission.scope & wire::SCOPE_SELECTED != 0;
+        let none = admission.scope == wire::SCOPE_NONE;
+        if admission.scope == 0
+            || admission.scope & !(wire::SCOPE_NONE | wire::SCOPE_WALK | wire::SCOPE_SELECTED) != 0
+            || (admission.scope & wire::SCOPE_NONE != 0 && !none)
+            || walks == admission.walk_kind.is_empty()
+            || selects == resource_kinds.is_empty()
+        {
+            return None;
+        }
+        let money = match admission.money {
+            wire::MONEY_NONE => Money::None,
+            wire::MONEY_UNIT => Money::Unit,
+            _ => return None,
+        };
+        let caller_state = match admission.callers {
+            wire::CALLERS_SHARED => CallerState::Shared,
+            wire::CALLERS_DISTINCT => CallerState::Distinct,
+            _ => return None,
+        };
+        Some(Self {
+            class,
+            who,
+            cred_header: cred_header.map(|header| header.to_ascii_lowercase().into_boxed_str()),
+            challenge: challenge.map(Box::from),
+            scope: Scope {
+                walk: walks.then(|| Box::from(admission.walk_kind)),
+                selected: if selects {
+                    resource_kinds.iter().cloned().collect()
+                } else {
+                    Arc::from(Vec::new())
+                },
+            },
+            scope_stated: true,
+            money,
+            caller_state,
+        })
+    }
+}
