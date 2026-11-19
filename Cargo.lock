@@ -596,6 +596,7 @@ dependencies = [
  "backon",
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
  "busbar-kernel-egress",

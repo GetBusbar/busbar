@@ -83,7 +83,10 @@ busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] 
 # The architecture checks (tests/architecture.rs, tests/arch/) parse sources with syn; they never build core.
 proc-macro2 = { workspace = true }
 syn = { workspace = true }
-# Integration tests use ordinary production ABI test support, never kernel fixture exports.
+# Self-edge: the integration tests reach the kernel's own `test-support` items (teller::seats,
+# GovState's test recorders, KernelServices::with_demotions), where `cfg(test)` is false. Without
+# it they compile only when another member's dev-dependency turns the feature on in a workspace run.
+busbar-kernel = { path = ".", features = ["test-support"] }
 # Dev-only: the test seal is absent from release builds.
 # Dev-only: the single-path count probes (SINGLE-PATH §8) count only in test builds.
 # Dev-only: the JSON facade's `SchemaCheck` and `Body` (busbar-contract tests/json_facade.rs); the
