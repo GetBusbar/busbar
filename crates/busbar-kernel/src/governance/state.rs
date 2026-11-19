@@ -1789,12 +1789,16 @@ impl GovState {
         cell.mutate(|cell| cell.fee_obligations = obligations);
     }
 
-    /// Bind the trusted native observer owner (the Node book) once, weakly, at assembly.
-    pub fn bind_fee_debt_owner(
-        &self,
+    /// This GovState with its trusted native fee-debt observer owner (the Node book), held
+    /// weakly. Given by value while the state is built, before it is shared, so every capture
+    /// it ever offers has the owner; there is no later bind.
+    #[must_use]
+    pub fn with_fee_debt_owner(
+        mut self,
         owner: std::sync::Weak<dyn super::fee_debt::FeeDebtAssociate>,
-    ) -> Result<(), &'static str> {
-        self.fee_debt.bind(owner)
+    ) -> Self {
+        self.fee_debt.association = Some(owner);
+        self
     }
 
     pub fn refund_fee_unit(

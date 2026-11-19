@@ -12,7 +12,7 @@
 
 use std::alloc::Layout;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 use busbar_contract::storage::{StorageCredit, StorageSource};
 
@@ -34,7 +34,10 @@ fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 pub(crate) struct FeeDebtProducer {
     identity: Arc<()>,
     incarnations: AtomicU64,
-    association: OnceLock<Weak<dyn FeeDebtAssociate>>,
+    /// The trusted observer owner, given when the GovState is built
+    /// ([`super::GovState::with_fee_debt_owner`]) and never replaced. Held weakly: no strong
+    /// Node reference.
+    pub(super) association: Option<Weak<dyn FeeDebtAssociate>>,
 }
 
 impl FeeDebtProducer {
@@ -46,15 +49,8 @@ impl FeeDebtProducer {
             .checked_add(1)
     }
 
-    /// Bind the trusted observer owner once. It is held weakly: no strong Node reference.
-    pub(crate) fn bind(&self, owner: Weak<dyn FeeDebtAssociate>) -> Result<(), &'static str> {
-        self.association
-            .set(owner)
-            .map_err(|_| "fee debt association already bound")
-    }
-
     fn owner(&self) -> Option<Arc<dyn FeeDebtAssociate>> {
-        self.association.get()?.upgrade()
+        self.association.as_ref()?.upgrade()
     }
 
     /// Offer one capture to every retained observer, slice by slice. Called by the flusher after
@@ -108,7 +104,7 @@ pub enum FeeAssociation {
     Complete,
 }
 
-/// The trusted original observer owner (the Node terminal book), bound once at assembly. One
+/// The trusted original observer owner (the Node terminal book), given when the GovState is built. One
 /// call examines at most [`ASSOCIATION_CANDIDATES`] entries, never performs Store I/O, and is
 /// never entered while a budget, money or checkpoint lock is held.
 pub trait FeeDebtAssociate: Send + Sync {
