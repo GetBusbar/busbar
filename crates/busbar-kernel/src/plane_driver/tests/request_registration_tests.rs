@@ -703,7 +703,12 @@ fn selected_rig_kind(
     )
     .unwrap();
     let mounted = crate::plane_driver::port_routes::Mounted {
-        record: None,
+        record: crate::auth::route_record::RouteRecord::stated(
+            crate::auth::route_record::RouteClass::Data,
+            crate::auth::route_record::Who::PRINCIPAL,
+            crate::auth::route_record::Scope::selected(&["pool"]),
+            crate::auth::route_record::Money::Unit,
+        ),
         route: 3,
         methods: 4,
         flags: 0,

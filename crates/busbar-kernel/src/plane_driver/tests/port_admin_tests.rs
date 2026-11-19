@@ -11,7 +11,12 @@ use super::*;
 
 fn admin(route: u32, methods: u32, pattern: &str) -> Mounted {
     Mounted {
-        record: None,
+        record: crate::auth::route_record::RouteRecord::stated(
+            crate::auth::route_record::RouteClass::Admin,
+            crate::auth::route_record::Who::OPERATOR,
+            crate::auth::route_record::Scope::none(),
+            crate::auth::route_record::Money::None,
+        ),
         route,
         methods,
         flags: ROUTE_ADMIN,

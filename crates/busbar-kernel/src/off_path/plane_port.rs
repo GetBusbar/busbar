@@ -28,7 +28,7 @@ impl PortDriver {
         refusals: Arc<dyn RefusalMap>,
         classes: &(dyn Fn(u32) -> Option<u32> + Sync),
     ) -> Result<Self, RouteRefused> {
-        let routes = plan(port.routes(), port.admin_openapi(), classes)?;
+        let routes = plan(&*port, classes)?;
         let usage: Arc<[String]> = port
             .usage_classes()
             .iter()

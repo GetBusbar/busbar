@@ -120,8 +120,6 @@ pub enum Planned {
     Admin,
     /// Not mounted, for a reason that is the operator's configuration.
     NotMounted(NotMounted),
-    /// The image's declaration is unusable (the loader refuses such an image).
-    Unusable(&'static str),
 }
 
 const OTHER_PATH_TICKET: &str = "a ticket route is served by the listener's ticket class";
@@ -145,45 +143,23 @@ impl NativeDataRoute {
         self.owners.inventory.is_some()
     }
 
-    /// The record of `mounted` on `seat`: the record its image declared, read once here.
-    ///
-    /// An image built before the route record states its four fields is read by what it does
-    /// declare ([`RouteRecord::from_declared`]): the walk kind is the seat's own stated scope
-    /// kind, and a plane bound to an audience (its `canonical_uri`) keeps a session per caller.
-    pub fn record_of(seat: &PortSeat, mounted: &Mounted) -> Option<RouteRecord> {
-        // A record the image stated wins, whole: nothing about that route is inferred. The
-        // loader decoded it with `RouteRecord::from_wire` and validated it before the route
-        // was mounted.
-        if let Some(stated) = &mounted.record {
-            return Some(stated.clone());
-        }
-        RouteRecord::from_declared(
-            mounted.flags,
-            mounted.auth,
-            mounted.cred_header.as_deref(),
-            &mounted.resource_kinds,
-            seat.request_routes.scope_kind(),
-            seat.audience.is_some(),
-        )
-    }
-
     /// The admission of `mounted` on `seat` under this configuration, or why the route is not
     /// mounted. Every reason is the operator's configuration (design C6); a route's class is never
-    /// one. `Err(None)`: the image's declaration names no class or no caller (the loader refuses
-    /// that image; reaching here with one is the engine's fault and the route is not served).
+    /// one. The record is the one its plane stated (`Mounted::record`): nothing is inferred.
     pub fn admission(
         seat: &PortSeat,
         mounted: &Mounted,
         chain: &NativeChain,
         offered: Offered,
-    ) -> Result<(RouteRecord, Admission), Option<NotMounted>> {
-        let record = Self::record_of(seat, mounted).ok_or(None)?;
+    ) -> Result<(RouteRecord, Admission), NotMounted> {
+        let record = &mounted.record;
         let offered = Offered {
             chain_yields_shared: chain.admits_anonymous(),
+            challenge_unresolved: record.mounted_challenge(seat.public_url()).is_err(),
             ..offered
         };
-        let admission = super::admission_table::mounted(&record, offered).map_err(Some)?;
-        Ok((record, admission))
+        let admission = super::admission_table::mounted(record, offered)?;
+        Ok((record.clone(), admission))
     }
 
     /// How the listener plan mounts `mounted` on `seat`: the one decision the plan makes about a
@@ -199,9 +175,7 @@ impl NativeDataRoute {
         upgrade_transport: bool,
         signature_verifier: bool,
     ) -> Planned {
-        let Some(record) = Self::record_of(seat, mounted) else {
-            return Planned::Unusable("the route's declaration names no class or no caller");
-        };
+        let record = &mounted.record;
         let offered = Offered {
             verifier_reads_header: chain_reads_its_credential,
             chain_yields_shared: chain_admits_anonymous,
@@ -209,7 +183,7 @@ impl NativeDataRoute {
             signature_verifier,
             challenge_unresolved: record.mounted_challenge(seat.public_url()).is_err(),
         };
-        match super::admission_table::mounted(&record, offered) {
+        match super::admission_table::mounted(record, offered) {
             Err(why) => Planned::NotMounted(why),
             Ok(
                 Admission::Walk
@@ -248,10 +222,8 @@ impl NativeDataRoute {
     /// generation"), and the native path does not hand it either. Such a route stays unmounted
     /// and says so; serving it unhooked would skip a policy the operator configured.
     pub fn admits(_app: &App, seat: &PortSeat, mounted: &Mounted) -> Result<(), &'static str> {
-        let Some(record) = Self::record_of(seat, mounted) else {
-            return Err("the route's declaration names no class or no caller");
-        };
-        match admission_of(&record) {
+        let record = &mounted.record;
+        match admission_of(record) {
             Admission::Walk
             | Admission::Selected
             | Admission::PrincipalOnly
@@ -268,15 +240,18 @@ impl NativeDataRoute {
         if mounted.effective != mounted.auth {
             return Err("the operator's auth choice for this route is not the route's own");
         }
-        // A route that declares resource kinds is admitted only through its plane's selection;
-        // a route that declares none is admitted through the plane's `request` (no selection).
-        if !record.scope.selected.is_empty()
-            && seat.driver.port().facts() & busbar_plugin_abi::plane::FB_RESOURCE_ADMISSION == 0
-        {
-            return Err("the route declares resource kinds its plane does not select");
-        }
+        // A route whose record selects kinds is admitted only through its plane's selection; one
+        // that selects none is admitted through the plane's `request`. That the plane implements
+        // `select_resources` for a selecting route is the loader's rule (the record could not be
+        // declared otherwise); plane 2.0 retired the fact bit that restated it.
         if seat.driver.has_hooks(mounted.route) {
             return Err("the native data path does not run route hooks");
+        }
+        // The route's 401 must carry the challenge its protocol requires. A challenge that names
+        // the public URL where the operator configured none cannot be written: the route is not
+        // mounted (design C6), it is never served with core's generic challenge in its place.
+        if record.mounted_challenge(seat.public_url()).is_err() {
+            return Err(NotMounted::NoPublicUrlForItsChallenge.reason());
         }
         Ok(())
     }
@@ -294,7 +269,11 @@ impl NativeDataRoute {
         if Self::admits(app, seat, mounted).is_err() || !owners.chain.is_data() {
             return Err(DataRefused::Unsupported);
         }
-        let Some(record) = Self::record_of(seat, mounted) else {
+        let record = mounted.record.clone();
+        // The challenge of this route's 401, with the plane instance's public URL written in:
+        // once, here, where the route is mounted on its listener. `admits` above already refused
+        // a challenge that cannot be resolved.
+        let Ok(challenge) = record.mounted_challenge(seat.public_url()) else {
             return Err(DataRefused::Unsupported);
         };
         // A route that keeps state per caller is never bound under a chain whose callers share
@@ -329,10 +308,7 @@ impl NativeDataRoute {
             cost: Arc::clone(&app.cost),
             withheld,
             audience: seat.audience.as_deref().map(Arc::from),
-            // A challenge that names a public URL the operator did not configure is a route the
-            // plan leaves unmounted (`NotMounted::NoPublicUrlForItsChallenge`); bound anyway, it
-            // answers with core's generic challenge.
-            challenge: record.mounted_challenge(seat.public_url()).unwrap_or(None),
+            challenge,
             record,
             admission,
         }))

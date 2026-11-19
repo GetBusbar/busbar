@@ -165,7 +165,16 @@ mod route_credential_header {
 
     fn route(id: u32, cred_header: Option<&str>) -> Mounted {
         Mounted {
-            record: None,
+            record: {
+                let mut record = busbar_kernel::auth::route_record::RouteRecord::stated(
+                    busbar_kernel::auth::route_record::RouteClass::Data,
+                    busbar_kernel::auth::route_record::Who::PRINCIPAL,
+                    busbar_kernel::auth::route_record::Scope::walk("pool"),
+                    busbar_kernel::auth::route_record::Money::Unit,
+                );
+                record.cred_header = cred_header.map(Box::from);
+                record
+            },
             route: id,
             methods: 1,
             flags: 0,

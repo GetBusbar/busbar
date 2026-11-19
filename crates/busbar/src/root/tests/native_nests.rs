@@ -13,7 +13,12 @@ fn routes(entries: &[(u32, &str, u32)]) -> PortRoutes {
         data: entries
             .iter()
             .map(|(route, pattern, methods)| Mounted {
-                record: None,
+                record: busbar_kernel::auth::route_record::RouteRecord::stated(
+                    busbar_kernel::auth::route_record::RouteClass::Data,
+                    busbar_kernel::auth::route_record::Who::PRINCIPAL,
+                    busbar_kernel::auth::route_record::Scope::walk("pool"),
+                    busbar_kernel::auth::route_record::Money::Unit,
+                ),
                 route: *route,
                 methods: *methods,
                 flags: 0,

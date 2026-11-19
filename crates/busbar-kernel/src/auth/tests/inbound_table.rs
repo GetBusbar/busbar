@@ -989,9 +989,15 @@ fn what_is_not_mounted_and_why() {
     );
 }
 
-/// The record of an image that predates it: what today's five planes mean, written once.
+/// The record has one source: what a plane states. Each of the nine route shapes the five planes
+/// declare, as its stated admission item, is the record of its admission and passes the load
+/// rules; nothing about a route is read from anything else it declares.
 #[test]
-fn a_record_read_from_what_an_image_declares() {
+fn a_record_is_what_its_plane_states() {
+    use crate::auth::route_record::wire::{
+        AdmissionItem, CALLERS_DISTINCT, CALLERS_SHARED, MONEY_NONE, MONEY_UNIT, SCOPE_NONE,
+        SCOPE_SELECTED, SCOPE_WALK,
+    };
     use busbar_plugin_abi::plane::{
         AUTH_OPERATOR, AUTH_PRINCIPAL, AUTH_PUBLIC, AUTH_SIGNED_INGRESS, AUTH_TICKET, ROUTE_ADMIN,
         ROUTE_CATALOG, ROUTE_UPGRADE,
@@ -1000,21 +1006,29 @@ fn a_record_read_from_what_an_image_declares() {
     let none: [Box<str>; 0] = [];
     let tools: [Box<str>; 1] = ["mcp_tool".into()];
     let key_or_ticket = AUTH_PRINCIPAL | AUTH_TICKET;
+    let both = SCOPE_WALK | SCOPE_SELECTED;
     #[rustfmt::skip]
     let rows = [
-        (0, AUTH_PRINCIPAL, &none[..], Some("pool"), false, Ad::Walk, Money::Unit),
-        (0, AUTH_PRINCIPAL, &tools[..], Some("mcp_server"), true, Ad::Selected, Money::Unit),
-        (0, AUTH_PRINCIPAL, &none[..], None, false, Ad::PrincipalOnly, Money::Unit),
-        (ROUTE_CATALOG, AUTH_PRINCIPAL, &none[..], Some("pool"), false, Ad::Catalog, Money::None),
-        (0, AUTH_PUBLIC, &none[..], Some("pool"), true, Ad::Public, Money::None),
-        (0, key_or_ticket, &none[..], None, false, Ad::Ticket, Money::Unit),
-        (0, AUTH_SIGNED_INGRESS, &none[..], Some("pool"), false, Ad::SignedIngress, Money::None),
-        (ROUTE_UPGRADE, AUTH_PRINCIPAL, &none[..], Some("pool"), false, Ad::Upgrade, Money::Unit),
-        (ROUTE_ADMIN, AUTH_OPERATOR, &none[..], Some("pool"), false, Ad::Operator, Money::None),
+        (0, AUTH_PRINCIPAL, &none[..], SCOPE_WALK, MONEY_UNIT, CALLERS_SHARED, "pool", Ad::Walk, Money::Unit),
+        (0, AUTH_PRINCIPAL, &tools[..], both, MONEY_UNIT, CALLERS_DISTINCT, "mcp_server", Ad::Selected, Money::Unit),
+        (0, AUTH_PRINCIPAL, &none[..], SCOPE_NONE, MONEY_UNIT, CALLERS_SHARED, "", Ad::PrincipalOnly, Money::Unit),
+        (ROUTE_CATALOG, AUTH_PRINCIPAL, &none[..], SCOPE_WALK, MONEY_NONE, CALLERS_SHARED, "pool", Ad::Catalog, Money::None),
+        (0, AUTH_PUBLIC, &none[..], SCOPE_NONE, MONEY_NONE, CALLERS_SHARED, "", Ad::Public, Money::None),
+        (0, key_or_ticket, &none[..], SCOPE_NONE, MONEY_UNIT, CALLERS_SHARED, "", Ad::Ticket, Money::Unit),
+        (0, AUTH_SIGNED_INGRESS, &none[..], SCOPE_NONE, MONEY_NONE, CALLERS_SHARED, "", Ad::SignedIngress, Money::None),
+        (ROUTE_UPGRADE, AUTH_PRINCIPAL, &none[..], SCOPE_WALK, MONEY_UNIT, CALLERS_SHARED, "pool", Ad::Upgrade, Money::Unit),
+        (ROUTE_ADMIN, AUTH_OPERATOR, &none[..], SCOPE_NONE, MONEY_NONE, CALLERS_SHARED, "", Ad::Operator, Money::None),
     ];
-    for (flags, auth, kinds, walk, distinct, admission, money) in rows {
-        let record = RouteRecord::from_declared(flags, auth, None, kinds, walk, distinct)
-            .expect("a declared route has a class and callers");
+    for (flags, auth, kinds, scope, pays, callers, walk_kind, admission, money) in rows {
+        let item = AdmissionItem {
+            route: 1,
+            scope,
+            money: pays,
+            callers,
+            walk_kind,
+        };
+        let record = RouteRecord::from_wire(flags, auth, None, kinds, &item, None)
+            .expect("a stated route has a class, callers and every word in its vocabulary");
         assert_eq!(admission_of(&record), admission, "{flags} {auth}");
         assert_eq!(record.money, money, "{flags} {auth}");
         let methods = if flags == 0 { METHOD_POST } else { METHOD_GET };
@@ -1024,12 +1038,20 @@ fn a_record_read_from_what_an_image_declares() {
             "{flags} {auth}"
         );
     }
+    // Two class bits, or no caller: no record, whatever the admission says.
+    let stated = AdmissionItem {
+        route: 1,
+        scope: SCOPE_NONE,
+        money: MONEY_UNIT,
+        callers: CALLERS_SHARED,
+        walk_kind: "",
+    };
     assert_eq!(
-        RouteRecord::from_declared(3, AUTH_PRINCIPAL, None, &none, None, false),
+        RouteRecord::from_wire(3, AUTH_PRINCIPAL, None, &none, &stated, None),
         None
     );
     assert_eq!(
-        RouteRecord::from_declared(0, 0, None, &none, None, false),
+        RouteRecord::from_wire(0, 0, None, &none, &stated, None),
         None
     );
 }
@@ -1246,17 +1268,24 @@ fn an_audience_bound_plane_takes_only_a_bound_credential() {
         let goes_on = matches!(binding, Binding::Bound | Binding::Deferred);
         assert_eq!(goes_on, binding == Binding::Bound, "{token}");
     }
-    // A route of such a plane keeps a session per caller, so it is not served to a shared one.
+    // A route of such a plane keeps a session per caller and says so in its record (callers
+    // distinct), so it is not served to a shared one.
     let none: [Box<str>; 0] = [];
-    let record = RouteRecord::from_declared(
+    let record = RouteRecord::from_wire(
         0,
         busbar_plugin_abi::plane::AUTH_PRINCIPAL,
         None,
         &none,
-        Some("mcp_server"),
-        true,
+        &crate::auth::route_record::wire::AdmissionItem {
+            route: 1,
+            scope: crate::auth::route_record::wire::SCOPE_WALK,
+            money: crate::auth::route_record::wire::MONEY_UNIT,
+            callers: crate::auth::route_record::wire::CALLERS_DISTINCT,
+            walk_kind: "mcp_server",
+        },
+        None,
     )
-    .expect("a declared route");
+    .expect("a stated route");
     assert_eq!(record.caller_state, CallerState::Distinct);
     assert_eq!(
         decide(Target::Route(&record), &passing(SHARED)),

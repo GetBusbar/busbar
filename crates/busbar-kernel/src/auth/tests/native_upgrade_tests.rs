@@ -227,7 +227,12 @@ fn fixture_on(bound: bool, cred_header: Option<&'static str>) -> Fixture {
     }
     let app = Arc::new(app);
     let mounted = Mounted {
-        record: None,
+        record: crate::auth::route_record::RouteRecord::stated(
+            crate::auth::route_record::RouteClass::Upgrade,
+            crate::auth::route_record::Who::PRINCIPAL,
+            crate::auth::route_record::Scope::none(),
+            crate::auth::route_record::Money::Unit,
+        ),
         route: 6,
         methods: METHOD_GET,
         flags: ROUTE_UPGRADE,

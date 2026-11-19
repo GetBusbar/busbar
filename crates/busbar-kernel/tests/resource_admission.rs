@@ -96,7 +96,12 @@ fn select(
     scopes: &[ScopeRef],
 ) -> Result<busbar_kernel::resource_admission::SelectedResources, ResourceError> {
     let mounted = busbar_kernel::plane_driver::port_routes::Mounted {
-        record: None,
+        record: busbar_kernel::auth::route_record::RouteRecord::stated(
+            busbar_kernel::auth::route_record::RouteClass::Data,
+            busbar_kernel::auth::route_record::Who::PRINCIPAL,
+            busbar_kernel::auth::route_record::Scope::selected(&["pool"]),
+            busbar_kernel::auth::route_record::Money::Unit,
+        ),
         route: 3,
         methods: 4,
         flags: 0,
@@ -201,7 +206,12 @@ fn selection_is_bound_to_actual_mounted_route_kinds_and_frozen_body() {
     )
     .unwrap();
     let mut mounted = Mounted {
-        record: None,
+        record: busbar_kernel::auth::route_record::RouteRecord::stated(
+            busbar_kernel::auth::route_record::RouteClass::Data,
+            busbar_kernel::auth::route_record::Who::PRINCIPAL,
+            busbar_kernel::auth::route_record::Scope::selected(&["agent"]),
+            busbar_kernel::auth::route_record::Money::Unit,
+        ),
         route: 3,
         methods: 4,
         flags: 0,

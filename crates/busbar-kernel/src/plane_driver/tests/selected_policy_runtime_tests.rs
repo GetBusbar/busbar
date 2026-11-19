@@ -107,6 +107,10 @@ struct Descriptor {
     attempt_classes: Vec<Box<str>>,
 }
 impl PlanePort for Descriptor {
+    fn route_admission(&self, _: u32) -> Option<(u32, u32, u32, &str)> {
+        use busbar_plugin_abi::plane::{CALLERS_SHARED, MONEY_UNIT, SCOPE_WALK};
+        Some((SCOPE_WALK, MONEY_UNIT, CALLERS_SHARED, "pool"))
+    }
     fn routes(&self) -> &[RouteInfo] {
         &self.routes
     }

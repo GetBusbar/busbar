@@ -9,6 +9,12 @@
 //!
 //! This is the decoded form the engine consumes. It is held by the route's `Mounted` and read from
 //! there on each request: nothing here is per request and nothing is a table.
+//!
+//! The record has one source. A plane states it in its describe (`D_ROUTE_ADMISSION`,
+//! `D_ROUTE_CHALLENGE`); the loader decodes the two items and refuses an image whose route states
+//! none (`vocab::route1::check`); the mount table builds the record from the port
+//! (`plane_driver::port_routes::plan`, [`RouteRecord::from_wire`]) and refuses the plane if it
+//! breaks a rule here. Nothing reads a route's admission from anything else it declares.
 
 use std::sync::Arc;
 
@@ -270,6 +276,9 @@ pub enum RecordRefused {
     Challenge,
     /// Per-caller state on a route that identifies no caller.
     DistinctWithoutCaller,
+    /// The stated admission holds a word outside its vocabulary, or its scope and the kinds it
+    /// names disagree ([`RouteRecord::from_wire`]).
+    Admission,
     /// A kind is named twice, is empty, or is not a plain lowercase name.
     Kind(Box<str>),
 }
@@ -309,6 +318,9 @@ impl std::fmt::Display for RecordRefused {
             Self::DistinctWithoutCaller => {
                 f.write_str("caller state: distinct needs a route that identifies its caller")
             }
+            Self::Admission => f.write_str(
+                "admission: a word outside its vocabulary, or the scope and its kinds disagree",
+            ),
             Self::Kind(kind) => write!(f, "scope: kind {kind:?} is repeated or not a plain name"),
         }
     }
@@ -447,62 +459,21 @@ impl RouteRecord {
         }
     }
 
-    /// The record a plane image built before the route record states, read from what it does
-    /// declare: its flags, its auth mask and resource kinds, and whether its seat walks core's
-    /// catalog. It is the 1.6 pre-record meaning, written down once: a principal data route with
-    /// resource kinds selects them; one on a seat with a catalog walks `pool`; a principal route
-    /// moves money; nothing keeps per-caller state unless the plane says so (`distinct`).
-    /// Removed with the last image that predates the record.
-    pub fn from_declared(
-        flags: u32,
-        auth: u32,
-        cred_header: Option<&str>,
-        resource_kinds: &[Box<str>],
-        walk_kind: Option<&str>,
-        distinct: bool,
-    ) -> Option<Self> {
-        let class = RouteClass::from_flags(flags)?;
-        let who = Who::from_mask(auth)?;
-        let principal = who.yields_principal();
-        let scope = match class {
-            RouteClass::Admin => Scope::none(),
-            RouteClass::Catalog => Scope::walk(walk_kind.unwrap_or(KIND_POOL)),
-            RouteClass::Data | RouteClass::Upgrade | RouteClass::Line | RouteClass::Recovery
-                if principal =>
-            {
-                Scope {
-                    walk: walk_kind.map(Box::from),
-                    selected: resource_kinds.iter().cloned().collect(),
-                }
-            }
-            RouteClass::Data | RouteClass::Upgrade | RouteClass::Line | RouteClass::Recovery => {
-                Scope::none()
-            }
-        };
-        let money = match class {
-            RouteClass::Catalog | RouteClass::Admin => Money::None,
-            RouteClass::Data | RouteClass::Upgrade | RouteClass::Line | RouteClass::Recovery => {
-                if principal {
-                    Money::Unit
-                } else {
-                    Money::None
-                }
-            }
-        };
-        Some(Self {
+    /// A record whose four fields are stated outright, with shared callers, the chain's own
+    /// credential header and no challenge: what an engine-side route (core's own, the reference
+    /// plane's) and a test's mount table write. Nothing is inferred: the caller states the class,
+    /// the callers, the scope (or [`Scope::none`]) and the money.
+    pub fn stated(class: RouteClass, who: Who, scope: Scope, money: Money) -> Self {
+        Self {
             class,
             who,
-            cred_header: cred_header.map(|header| header.to_ascii_lowercase().into_boxed_str()),
+            cred_header: None,
             challenge: None,
             scope,
             scope_stated: true,
             money,
-            caller_state: if distinct && principal {
-                CallerState::Distinct
-            } else {
-                CallerState::Shared
-            },
-        })
+            caller_state: CallerState::Shared,
+        }
     }
 }
 
@@ -531,27 +502,20 @@ pub fn contested_kind<'a>(claims: &[KindClaim<'a>]) -> Option<(&'a str, &'a str,
     None
 }
 
-/// The route record on the wire: two describe items of the plane kind beside `D_ROUTE`,
-/// `D_ROUTE_CRED_HEADER` and `D_ROUTE_RESOURCES`. A plane image that declares neither for a route
-/// predates the record and is read by [`RouteRecord::from_declared`]; an image that declares the
-/// admission item for one route must declare it for every route (the loader's rule), and from
-/// then on nothing about that image is inferred.
+/// The route record on the wire: the plane kind's two describe items `D_ROUTE_ADMISSION` (required,
+/// exactly one per route) and `D_ROUTE_CHALLENGE` (optional), beside `D_ROUTE`,
+/// `D_ROUTE_CRED_HEADER` and `D_ROUTE_RESOURCES`. The tags, the body layout and the words are the
+/// contract's (`busbar_plugin_abi::vocab::route1`, re-exported by the plane kind); the loader decodes
+/// the items and refuses an image whose route states no admission, so nothing about a route is
+/// inferred here.
 pub mod wire {
-    /// `D_ROUTE_ADMISSION`: 16 bytes (four little-endian words: route, scope, money, callers),
-    /// then the walk kind as text (empty when the scope has no walk).
-    pub const D_ROUTE_ADMISSION: u16 = 0x019A;
-    /// `D_ROUTE_CHALLENGE`: 8 bytes (route, zero), then the challenge text.
-    pub const D_ROUTE_CHALLENGE: u16 = 0x019B;
-
-    /// The scope word: exactly `SCOPE_NONE`, or one or both of the others. `SCOPE_SELECTED`: the
-    /// kinds are the route's `D_ROUTE_RESOURCES`.
-    pub const SCOPE_NONE: u32 = 1;
-    pub const SCOPE_WALK: u32 = 2;
-    pub const SCOPE_SELECTED: u32 = 4;
-    pub const MONEY_NONE: u32 = 1;
-    pub const MONEY_UNIT: u32 = 2;
-    pub const CALLERS_SHARED: u32 = 1;
-    pub const CALLERS_DISTINCT: u32 = 2;
+    /// The scope word (exactly `SCOPE_NONE`, or one or both of the others; the kinds of
+    /// `SCOPE_SELECTED` are the route's `D_ROUTE_RESOURCES`), the money word and the callers word:
+    /// the contract's, not a second definition.
+    pub use busbar_plugin_abi::vocab::route1::{
+        CALLERS_DISTINCT, CALLERS_SHARED, MONEY_NONE, MONEY_UNIT, SCOPE_NONE, SCOPE_SELECTED,
+        SCOPE_WALK,
+    };
 
     /// The fixed part of a `D_ROUTE_ADMISSION` body.
     pub const ADMISSION_FIXED: usize = 16;

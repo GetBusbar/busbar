@@ -41,6 +41,10 @@ struct CustodyPlane {
 }
 
 impl PlanePort for CustodyPlane {
+    fn route_admission(&self, _: u32) -> Option<(u32, u32, u32, &str)> {
+        use busbar_plugin_abi::plane::{CALLERS_SHARED, MONEY_NONE, SCOPE_NONE};
+        Some((SCOPE_NONE, MONEY_NONE, CALLERS_SHARED, ""))
+    }
     fn routes(&self) -> &[RouteInfo] {
         &self.routes
     }

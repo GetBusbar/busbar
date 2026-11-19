@@ -25,6 +25,10 @@ fn refused() -> PortError {
     PortError::Call(busbar_plugin_abi::fail::CallError::NotDeclared)
 }
 impl PlanePort for InventoryPlane {
+    fn route_admission(&self, _: u32) -> Option<(u32, u32, u32, &str)> {
+        use busbar_plugin_abi::plane::{CALLERS_SHARED, MONEY_UNIT, SCOPE_SELECTED};
+        Some((SCOPE_SELECTED, MONEY_UNIT, CALLERS_SHARED, ""))
+    }
     fn routes(&self) -> &[RouteInfo] {
         &self.routes
     }
@@ -38,7 +42,7 @@ impl PlanePort for InventoryPlane {
         Default::default()
     }
     fn facts(&self) -> u64 {
-        busbar_plugin_abi::plane::FB_RESOURCE_ADMISSION
+        0
     }
     fn tick_s(&self) -> Option<u64> {
         None

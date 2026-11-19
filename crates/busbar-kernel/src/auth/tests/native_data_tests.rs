@@ -331,8 +331,24 @@ fn fixture_of(
         )]),
     ));
     let app = Arc::new(app);
+    // The fixture's route as its plane states it: a principal data route that opens a unit, and
+    // selects `pool` when the fixture has an inventory. The mounted route and the bound route
+    // below carry this one record.
+    let record = {
+        use crate::auth::route_record::{Money, RouteClass, RouteRecord, Scope, Who};
+        RouteRecord::stated(
+            RouteClass::Data,
+            Who::PRINCIPAL,
+            if selects {
+                Scope::selected(&["pool"])
+            } else {
+                Scope::none()
+            },
+            Money::Unit,
+        )
+    };
     let mounted = Mounted {
-        record: None,
+        record: record.clone(),
         route: 3,
         methods: METHOD_POST,
         flags: 0,
@@ -463,21 +479,6 @@ fn fixture_of(
     });
     // Assemble only candidate configuration here. Every request proof below uses the public
     // physical factory, real charged selection, concrete verifier, publication and replay.
-    // The fixture's route is a principal data route that walks `pool` (or selects, when the
-    // fixture has an inventory) and opens a unit: the record `from_declared` reads for it.
-    let record = crate::auth::route_record::RouteRecord::from_declared(
-        0,
-        busbar_plugin_abi::plane::AUTH_PRINCIPAL,
-        None,
-        if selects {
-            &[Box::<str>::from("pool")]
-        } else {
-            &[]
-        },
-        None,
-        false,
-    )
-    .expect("a principal data route");
     let admission = crate::auth::admission_table::admission_of(&record);
     let route = Arc::new(NativeDataRoute {
         withheld: withheld_carriers(&chain, None),

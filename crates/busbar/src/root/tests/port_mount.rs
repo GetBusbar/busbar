@@ -278,7 +278,12 @@ mod signed_ingress {
 
     fn route(effective: u32) -> Mounted {
         Mounted {
-            record: None,
+            record: busbar_kernel::auth::route_record::RouteRecord::stated(
+                busbar_kernel::auth::route_record::RouteClass::Data,
+                busbar_kernel::auth::route_record::Who::from_mask(effective).expect("a caller set"),
+                busbar_kernel::auth::route_record::Scope::none(),
+                busbar_kernel::auth::route_record::Money::None,
+            ),
             route: 4,
             methods: 0,
             flags: 0,
@@ -514,7 +519,13 @@ mod upgrade {
             offered: busbar_contract::route::AuthPoints::EMPTY,
         };
         let mounted = Mounted {
-            record: None,
+            record: busbar_kernel::auth::route_record::RouteRecord::stated(
+                busbar_kernel::auth::route_record::RouteClass::from_flags(flags)
+                    .expect("one class"),
+                busbar_kernel::auth::route_record::Who::PRINCIPAL,
+                busbar_kernel::auth::route_record::Scope::none(),
+                busbar_kernel::auth::route_record::Money::Unit,
+            ),
             route,
             methods,
             flags,
