@@ -29,7 +29,7 @@ use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use busbar_contract::abi::host::conn::connector::{
     DIRECTION_OUTBOUND, EGRESS_DEFAULT, KEEP_ALL_EXCEPT_DENIED,
@@ -315,7 +315,11 @@ impl SpawnSecrets for SpawnCustody {
         Box::pin(async move {
             let value = self
                 .0
-                .resolve_ref(Instant::now() + SPAWN_SECRET_DEADLINE, secret)
+                .resolve_ref(
+                    busbar_kernel::store::monotonic_ns(),
+                    SPAWN_SECRET_DEADLINE,
+                    secret,
+                )
                 .await
                 .ok()?;
             String::from_utf8(value[..].to_vec()).ok()

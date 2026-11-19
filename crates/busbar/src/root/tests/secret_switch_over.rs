@@ -76,7 +76,13 @@ fn deadline() -> Instant {
 }
 
 async fn resolved(secrets: &BootSecrets, reference: &SecretRef) -> Result<String, CustodyDenied> {
-    let value = secrets.resolve_ref(deadline(), reference).await?;
+    let value = secrets
+        .resolve_ref(
+            busbar_kernel::store::monotonic_ns(),
+            Duration::from_secs(30),
+            reference,
+        )
+        .await?;
     Ok(String::from_utf8(value.as_slice().to_vec()).expect("utf-8"))
 }
 

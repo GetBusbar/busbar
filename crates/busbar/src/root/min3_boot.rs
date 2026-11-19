@@ -9,7 +9,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::boot::restricted::{BootstrapDirectory, BootstrapRecords};
 use super::boot::walk::{deployment_bytes, BootSteps, DeploymentRead};
@@ -391,7 +391,11 @@ impl RouteSecrets for CustodySecrets {
     fn resolve<'a>(&'a self, reference: &'a SecretRef) -> BoxFut<'a, Option<SecureVec>> {
         Box::pin(async move {
             self.0
-                .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, reference)
+                .resolve_ref(
+                    busbar_kernel::store::monotonic_ns(),
+                    CORE_SECRET_DEADLINE,
+                    reference,
+                )
                 .await
                 .ok()
         })
@@ -898,7 +902,11 @@ impl BootSteps for BootstrapSteps<'_> {
                     let secrets = Arc::clone(&secrets);
                     async move {
                         secrets
-                            .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, &reference)
+                            .resolve_ref(
+                                busbar_kernel::store::monotonic_ns(),
+                                CORE_SECRET_DEADLINE,
+                                &reference,
+                            )
                             .await
                             .map_err(|denied| format!("{what} could not be resolved ({denied:?})"))
                     }
@@ -1262,12 +1270,13 @@ fn deployment_read(startup: Arc<Mutex<Option<Startup>>>) -> Box<DeploymentRead> 
 /// Core's own secrets, through the secret kind (§12.2: by reference, an empty call stack, no source named in an
 /// error). A reference naming no open secret instance refuses the boot.
 async fn core_secrets_of(cfg: &RootCfg, secrets: &BootSecrets) -> Result<CoreSecrets, String> {
-    let deadline = Instant::now() + CORE_SECRET_DEADLINE;
+    // One reading for the whole read of core's secrets: every reference shares its deadline.
+    let mono_ns = busbar_kernel::store::monotonic_ns();
     let resolve = |what: &'static str, reference: &busbar_contract::secret_ref::SecretRef| {
         let reference = reference.clone();
         async move {
             secrets
-                .resolve_ref(deadline, &reference)
+                .resolve_ref(mono_ns, CORE_SECRET_DEADLINE, &reference)
                 .await
                 .map_err(|denied| format!("{what} could not be resolved ({denied:?})"))
         }

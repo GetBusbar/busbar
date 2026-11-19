@@ -152,10 +152,12 @@ impl BootSecrets {
         busbar_kernel::config::secret::SecretRefused,
     > {
         let (send, receive) = std::sync::mpsc::sync_channel(1);
-        let deadline = Instant::now() + super::min3_boot::CORE_SECRET_DEADLINE;
+        let mono_ns = busbar_kernel::store::monotonic_ns();
         let prefix = Arc::clone(self);
         let task = runtime.spawn(async move {
-            let result = prefix.resolve_ref(deadline, &reference).await;
+            let result = prefix
+                .resolve_ref(mono_ns, super::min3_boot::CORE_SECRET_DEADLINE, &reference)
+                .await;
             let _ = send.send(result);
         });
         let result = receive.recv_timeout(super::min3_boot::CORE_SECRET_DEADLINE);
@@ -232,16 +234,20 @@ impl BootSecrets {
     }
 
     /// A kernel-internal secret (admin token, signing key, mTLS material): by reference, with an
-    /// empty call stack. Errors carry no source name and no text (§12.2 step 4).
+    /// empty call stack. Errors carry no source name and no text (§12.2 step 4). `mono_ns` is the
+    /// calling operation's one reading of the node's monotonic clock (`store::monotonic_ns`): the
+    /// deadline is `timeout` after it, and the source is handed it.
     pub(crate) async fn resolve_ref(
         &self,
-        deadline: Instant,
+        mono_ns: u64,
+        timeout: std::time::Duration,
         reference: &SecretRef,
     ) -> Result<SecureVec, CustodyDenied> {
         let cx = CallCx {
-            deadline,
+            deadline: busbar_contract::mono_instant::instant_at(mono_ns) + timeout,
             request_id: 0,
             stack: Default::default(),
+            mono_ns,
         };
         self.custody
             .resolve_ref(cx, reference)
@@ -314,7 +320,8 @@ impl RefSource for BootRefs {
             let value = self
                 .0
                 .resolve_ref(
-                    Instant::now() + super::min3_boot::CORE_SECRET_DEADLINE,
+                    busbar_kernel::store::monotonic_ns(),
+                    super::min3_boot::CORE_SECRET_DEADLINE,
                     reference,
                 )
                 .await

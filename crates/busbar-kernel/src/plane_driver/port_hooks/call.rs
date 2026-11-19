@@ -178,9 +178,12 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
                 context: &context,
             };
             handle.block_on(async {
-                tokio::time::timeout_at(deadline.into(), invoke(&call, point, &input, deadline, mono_ns))
-                    .await
-                    .map_err(|_| Failed::Port)?
+                tokio::time::timeout_at(
+                    deadline.into(),
+                    invoke(&call, point, &input, deadline, mono_ns),
+                )
+                .await
+                .map_err(|_| Failed::Port)?
             })
         };
         // What the worker shared is let go before its answer is handed back, so a caller
