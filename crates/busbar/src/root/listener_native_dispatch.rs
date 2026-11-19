@@ -3,7 +3,9 @@
 
 //! Dispatch only the route selected by the original physical request, by its admission.
 //!
-//! One `match` over the route's [`Admission`] with no catch-all arm: an admission with no code
+//! One `match` over the sequence the admission table gives the route (`admission_table::plan`:
+//! how the caller is verified, what a served answer is built from), with no catch-all arm over
+//! both: a sequence with no code
 //! here does not compile, so "no native path admits this class" is not a state the listener can
 //! be in. Each arm lives in its own file of the family, side by side:
 //!
@@ -22,7 +24,8 @@ use std::sync::Arc;
 use axum::body::Body;
 use busbar_contract::route::RouteAuth;
 use busbar_core_connector::framed_stream::session::{Feed, RegisterResponse};
-use busbar_kernel::auth::admission_table::Admission;
+use busbar_kernel::auth::admission_table::{plan, Admission, Authority, VerifyBy};
+use busbar_kernel::auth::route_record::Money;
 use busbar_kernel::inbound::http_projection::HttpProjection;
 use busbar_kernel::inbound::native::{PhysicalAdminExecution, PhysicalRefusalCarrier, RouteTarget};
 use tokio::sync::mpsc;
@@ -259,54 +262,47 @@ pub(super) async fn prepare(
                 (RouteTarget::Plane(_), Some(admission)) => {
                     let slot =
                         (native.select)(binding.app(), &native.slot).ok_or(InputError::Invalid)?;
-                    match admission {
-                        // Money moves (or the walk judges scope): the data path.
-                        Admission::Walk | Admission::Selected | Admission::PrincipalOnly => {
-                            let route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
-                            if route.billed() {
-                                // Lend the same HEAD-created physical owner to Node before Task
-                                // admission. Node retains it independently through registration and
-                                // audit failures.
-                                let prepared =
-                                    data::prepare(ready.request, slot, node, ready.owner.clone())
-                                        .await?;
-                                (
-                                    prepared.response,
-                                    match prepared.authority {
-                                        data::DataAuthority::Executing(owner) => {
-                                            ResponseAuthority::Data(owner)
-                                        }
-                                        data::DataAuthority::Refused(owner) => {
-                                            ResponseAuthority::Refused(owner)
-                                        }
-                                    },
-                                    prepared.settlement.map(Settlement::Data),
-                                )
-                            } else {
-                                unbilled(
-                                    super::unbilled::prepare_verified(ready.request, route).await?,
-                                )
-                            }
+                    // The sequence is the table's (`admission_table::plan`): how the caller is
+                    // verified and what a served answer is built from are read from it, so the
+                    // listener holds no order of its own and cannot drift from the truth table.
+                    let money = match slot.data_for(&binding) {
+                        Ok(route) if route.billed() => Money::Unit,
+                        _ => Money::None,
+                    };
+                    let Some(sequence) = plan(admission, money) else {
+                        // An internal route is on no listener.
+                        return Err(InputError::Invalid.into());
+                    };
+                    match (sequence.verify, sequence.serves) {
+                        // Money moves: the data path. The unit is opened before the plane is
+                        // called; scope, limits and money are admitted there or at its FORWARD.
+                        (VerifyBy::Chain, Authority::Billed | Authority::Walk) => {
+                            // Lend the same HEAD-created physical owner to Node before Task
+                            // admission. Node retains it independently through registration and
+                            // audit failures.
+                            let prepared =
+                                data::prepare(ready.request, slot, node, ready.owner.clone())
+                                    .await?;
+                            (
+                                prepared.response,
+                                match prepared.authority {
+                                    data::DataAuthority::Executing(owner) => {
+                                        ResponseAuthority::Data(owner)
+                                    }
+                                    data::DataAuthority::Refused(owner) => {
+                                        ResponseAuthority::Refused(owner)
+                                    }
+                                },
+                                prepared.settlement.map(Settlement::Data),
+                            )
                         }
-                        Admission::Catalog => {
+                        // Verified and not billed: a catalog, a principal's route that moves no
+                        // money.
+                        (VerifyBy::Chain, Authority::Unbilled | Authority::Catalog) => {
                             let route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
                             unbilled(super::unbilled::prepare_verified(ready.request, route).await?)
                         }
-                        Admission::Optional => {
-                            let route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
-                            // The chain runs only when a credential is presented.
-                            if answer::presented(&binding, route.withheld()) {
-                                unbilled(
-                                    super::unbilled::prepare_verified(ready.request, route).await?,
-                                )
-                            } else {
-                                unbilled(super::unbilled::prepare_unverified(ready.request).await?)
-                            }
-                        }
-                        Admission::Public => {
-                            unbilled(super::unbilled::prepare_unverified(ready.request).await?)
-                        }
-                        Admission::Upgrade => {
+                        (VerifyBy::Chain, Authority::Upgrade) => {
                             match super::upgrade::prepare(
                                 ready.request,
                                 slot,
@@ -324,17 +320,32 @@ pub(super) async fn prepare(
                                 }
                             }
                         }
-                        // A ticket and a sender's signature are verified by core's ticket book and
-                        // the route's signature verifier. Neither has a native verifier yet, so the
-                        // plan mounts no such route (`NotMounted::NoSignatureVerifier`, and a
-                        // ticket-only route has no chain to bind); one that arrives here is answered
-                        // is the engine's fault and is never served.
-                        Admission::Ticket | Admission::SignedIngress => {
+                        // The chain runs only when a credential is presented.
+                        (VerifyBy::ChainIfPresented, _) => {
+                            let route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
+                            if answer::presented(&binding, route.withheld()) {
+                                unbilled(
+                                    super::unbilled::prepare_verified(ready.request, route).await?,
+                                )
+                            } else {
+                                unbilled(super::unbilled::prepare_unverified(ready.request).await?)
+                            }
+                        }
+                        // Nobody is verified and no credential is read.
+                        (VerifyBy::Nobody, _) => {
+                            unbilled(super::unbilled::prepare_unverified(ready.request).await?)
+                        }
+                        // A ticket and a sender's signature have no native verifier yet, so the
+                        // plan mounts no such route; one that arrives here is the engine's
+                        // fault and is never served.
+                        (VerifyBy::TicketOrChain | VerifyBy::Signature, _) => {
                             return Err(InputError::Invalid.into())
                         }
-                        // A plane's admin routes are mounted on the admin door, and an internal
-                        // route on no listener: neither is a data listener's route.
-                        Admission::Operator | Admission::Internal => {
+                        // A plane's admin routes are mounted on the admin door.
+                        (VerifyBy::AdminChain, _) => return Err(InputError::Invalid.into()),
+                        // The chain verified a caller for an authority the chain does not
+                        // grant: the table and this match disagree, and nothing is served.
+                        (VerifyBy::Chain, Authority::Public | Authority::Operator) => {
                             return Err(InputError::Invalid.into())
                         }
                     }
