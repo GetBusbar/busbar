@@ -137,24 +137,47 @@ impl Admits for Listening {
 /// including while its worker is held (a plugin entry that never returns). A host listener's socket is shut down
 /// (a second descriptor of it, held here), so it leaves its `SO_REUSEPORT` group and the kernel sends new
 /// connections to the group's other listeners; the ones already queued on it are reset unless
-/// `net.ipv4.tcp_migrate_req` is 1. Its accept loop admits nothing more. A carrier's listener is not the host's
-/// socket: its loop stops admitting, and the carrier keeps what it has queued.
+/// `net.ipv4.tcp_migrate_req` is 1. Its accept loop admits nothing more. [`ListenStop::resume`] puts it back:
+/// its own task binds a new socket on its own worker, which joins the group (the shut one is closed). A carrier's
+/// listener is not the host's socket: its loop stops and resumes admitting, and the carrier keeps what it queued.
 pub struct ListenStop {
-    stopped: Arc<AtomicBool>,
-    socket: Option<socket2::Socket>,
+    state: Arc<StopState>,
+}
+
+/// What a listener and its stop share.
+#[derive(Default)]
+struct StopState {
+    stopped: AtomicBool,
+    /// A resume asked for, taken by the listener's own task.
+    resume: AtomicBool,
+    /// The listener's task while stopped, woken by a resume.
+    waker: futures::task::AtomicWaker,
+    /// A second descriptor of the host socket in service (`None` for a carrier's listener).
+    socket: std::sync::Mutex<Option<socket2::Socket>>,
+}
+
+impl StopState {
+    fn socket(&self) -> std::sync::MutexGuard<'_, Option<socket2::Socket>> {
+        self.socket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 impl ListenStop {
     /// Stop the listener (idempotent).
     pub fn stop(&self) {
-        self.stopped.store(true, Ordering::Release);
-        if let Some(socket) = &self.socket {
+        self.state.stopped.store(true, Ordering::Release);
+        if let Some(socket) = self.state.socket().as_ref() {
             let _ = socket.shutdown(std::net::Shutdown::Both);
         }
     }
 
-    /// Put a stopped listener back in service.
-    pub fn resume(&self) {}
+    /// Put a stopped listener back in service: its task, woken here, rejoins at its next poll.
+    pub fn resume(&self) {
+        self.state.resume.store(true, Ordering::Release);
+        self.state.waker.wake();
+    }
 }
 
 /// What a listener's connections become.
@@ -190,8 +213,8 @@ pub struct Listening {
     live: Arc<AtomicUsize>,
     backoff: AcceptBackoff,
     sleep: Option<Pin<Box<tokio::time::Sleep>>>,
-    /// Set by this listener's [`ListenStop`]: it admits nothing more.
-    stopped: Arc<AtomicBool>,
+    /// Shared with this listener's [`ListenStop`].
+    stop: Arc<StopState>,
 }
 
 impl std::fmt::Debug for Listening {
@@ -245,7 +268,7 @@ impl Listening {
             live: Arc::new(AtomicUsize::new(0)),
             backoff: AcceptBackoff::default(),
             sleep: None,
-            stopped: Arc::new(AtomicBool::new(false)),
+            stop: Arc::default(),
         })
     }
 
@@ -287,7 +310,7 @@ impl Listening {
             live: Arc::new(AtomicUsize::new(0)),
             backoff: AcceptBackoff::default(),
             sleep: None,
-            stopped: Arc::new(AtomicBool::new(false)),
+            stop: Arc::default(),
         })
     }
 
@@ -306,14 +329,24 @@ impl Listening {
     /// This listener's stop, to be held off its worker.
     #[must_use]
     pub fn stopper(&self) -> ListenStop {
-        let socket = match &self.source {
-            Source::Host(l) => l.socket().try_clone().ok(),
-            Source::Carrier { .. } => None,
-        };
-        ListenStop {
-            stopped: Arc::clone(&self.stopped),
-            socket,
+        if let Source::Host(l) = &self.source {
+            *self.stop.socket() = l.socket().try_clone().ok();
         }
+        ListenStop {
+            state: Arc::clone(&self.stop),
+        }
+    }
+
+    /// A stopped listener back in service, on its own worker: a host listener binds a new socket at the same
+    /// address, which joins the `SO_REUSEPORT` group (the shut socket is closed with the old handle).
+    fn rejoin(&mut self) -> std::io::Result<()> {
+        if let Source::Host(l) = &mut self.source {
+            let fresh = HostListener::bind(&self.local.to_string())?;
+            *self.stop.socket() = Some(fresh.socket().try_clone()?);
+            *l = fresh;
+        }
+        self.stop.stopped.store(false, Ordering::Release);
+        Ok(())
     }
 
     /// The next admitted connection: `Pending` with `cx`'s waker on the carrier's accept (or on
@@ -356,9 +389,13 @@ impl Listening {
     /// The next connection under the cap: one past it is accepted and closed at once, no byte
     fn poll_conn(&mut self, cx: &mut Context<'_>) -> Poll<(Got, SocketAddr, Slot)> {
         loop {
-            if self.stopped.load(Ordering::Acquire) {
-                // Stopped: nothing more is admitted (no waker is kept; the listener is out of service).
-                return Poll::Pending;
+            if self.stop.stopped.load(Ordering::Acquire) {
+                // Stopped: nothing is admitted until a resume, which wakes this task to rejoin. A rejoin that
+                // cannot bind leaves it stopped; the next resume tries again.
+                self.stop.waker.register(cx.waker());
+                if !self.stop.resume.swap(false, Ordering::AcqRel) || self.rejoin().is_err() {
+                    return Poll::Pending;
+                }
             }
             if let Some(sleep) = self.sleep.as_mut() {
                 std::task::ready!(sleep.as_mut().poll(cx));
