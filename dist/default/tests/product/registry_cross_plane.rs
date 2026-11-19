@@ -243,34 +243,9 @@ fn every_plane_key_answers_from_its_declaration() {
     }
 }
 
-fn fallback_protocols() -> Vec<&'static str> {
-    register_planes();
-    let candidates = crate::root::boot::DOOR_CANDIDATES
-        .get()
-        .expect("the actual composition root discovers its planes");
-    candidates
-        .iter()
-        .find_map(|candidate| {
-            let registration = busbar_plugin_loader::dispatch::kinds::plane::stated_registration(
-                candidate,
-                Arc::new(|| Err("declaration inspection does not bind a plane".into())),
-            )
-            .expect("the actual plane states its protocol declaration");
-            registration.fallback.then_some(registration.dialects)
-        })
-        .expect("the actual fallback door declares its protocols")
-}
-
 #[test]
 fn the_fallback_decl_reads_the_protocol_registry() {
     register_planes();
-    assert_eq!(
-        busbar_kernel::plane_driver::dispatch::wire_format_names(
-            busbar_kernel::plane_driver::dispatch::fallback_key()
-        ),
-        fallback_protocols(),
-        "the fallback plane's dialects are its actual registered protocols"
-    );
     assert!(
         busbar_kernel::plane_driver::dispatch::wire_formats(
             busbar_kernel::plane_driver::dispatch::fallback_key()

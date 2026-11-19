@@ -293,12 +293,7 @@ async fn app() -> (
     let settings = crate::root::test_plugins::application_store_settings(&directory);
     assert!(settings.is_object());
     let oidc_path = common::plugins::token_verifier_cdylib_path().expect("actual OIDC artifact");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .unwrap()
-        .unwrap();
-    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
-        .unwrap()
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "custody-auth", false);
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32])).unwrap();

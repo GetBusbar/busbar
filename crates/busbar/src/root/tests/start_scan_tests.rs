@@ -340,7 +340,6 @@ fn plane_replaced_in_place_is_reported_restart_to_apply() {
     );
     let registered = crate::root::boot::Registered {
         planes: vec![(MODULE.to_owned(), Some(FILE.to_owned()))],
-        linked_styles: Vec::new(),
         start: Some(&start),
     };
     let section = |items: Vec<busbar_kernel::config::grammar::Item>| {
@@ -423,7 +422,6 @@ fn a_plane_with_a_manifest_alias_parses_under_the_alias_at_start_and_at_reload()
     );
     let registered = crate::root::boot::Registered {
         planes: vec![(MODULE.to_owned(), Some(FILE.to_owned()))],
-        linked_styles: Vec::new(),
         start: Some(&start),
     };
     let read = |registry: &crate::root::loader::PluginRegistry, admitted: bool| {

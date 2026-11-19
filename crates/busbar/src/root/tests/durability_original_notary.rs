@@ -225,6 +225,7 @@ fn original_scan_rejects_changed_horizon_and_nonprogress() {
     assert_eq!(retry.cursor, Some(OriginalPageCursor::start(130)));
 }
 
+#[tokio::test]
 async fn running_notary_keeps_actual_signed_run_through_unknown_ack_and_delivery_slices() {
     use crate::root::durability::{notary, signer};
     use crate::root::plane_node::retained_fixture::Retained;
@@ -255,13 +256,13 @@ async fn running_notary_keeps_actual_signed_run_through_unknown_ack_and_delivery
     let bytes = feed.original.bytes().unwrap();
     let source = StorageSource::new(account.clone());
     // The real table. One scan slice examines 64 candidates: the first original, then 63
-    // reserved entries the scans count and skip. The second original is the 65th candidate,
+    // unstaged entries the scans count and skip. The second original is the 65th candidate,
     // so only a second delivery slice reaches it. The table's own backing is charged to a
     // separate account, so `account` counts the two retention credits and nothing else.
     let retained = Retained::new(StorageSource::new(Arc::new(Account::default())));
     retained.original(1, entries[0].clone(), source.try_reserve(bytes).unwrap());
-    for reserved in 2..=64 {
-        retained.reserve(reserved);
+    for unstaged in 2..=64 {
+        retained.unstaged(unstaged);
     }
     retained.original(65, entries[1].clone(), source.try_reserve(bytes).unwrap());
     feed.register_original_receiver(Arc::downgrade(&retained.book))

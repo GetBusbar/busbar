@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use busbar_contract::json::{self, JsonValueTrait};
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait};
 
 const GOLDEN: &str = include_str!(
     "../../../testing/shadow-oracle/golden/1.5.5/cells/neutrality__models-empty__surface.json"

@@ -6,7 +6,8 @@ use busbar_kernel::config::settings_public::PublicSettings as _;
 
 #[test]
 fn a_plugins_public_settings_are_found_under_its_words_alone() {
-    let t = Table::of(vec![Row {
+    let t = Table::default();
+    let _ = t.native.set(vec![Row {
         words: vec!["stub-alias".into(), "stub-public".into()],
         public: ["url".to_string()].into_iter().collect(),
     }]);
@@ -115,7 +116,7 @@ fn a_native_planes_x_busbar_public_setting_is_public() {
         .admit(busbar_plugin_loader::admit::admit_linked(&native_plane::PLUGIN).expect("admitted"))
         .expect("described");
     let images = builder.finish();
-    let t = Table::of(Vec::new());
+    let t = Table::default();
     let _ = t.native.set(native_rows(&images).expect("the native rows"));
     for word in ["native-public-plane", "public-plane"] {
         assert_eq!(

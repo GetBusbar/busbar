@@ -81,7 +81,7 @@ impl Environment {
                 .ok_or("native hooks need the admitted governance owner")?,
             cost: Arc::clone(&app.cost),
             amendments: Arc::clone(&app.amendments),
-            call_budget: crate::root::dispatch::dispatcher().budgets().call,
+            call_budget: crate::root::min3_boot::DEFAULT_CALL_BUDGET,
         })
     }
 

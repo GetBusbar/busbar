@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::export_stream::ExportStream;
 use busbar_plugin_loader::{
-    dispatch::{
-        kinds::export::{Export, ExportFacts},
-        kinds::transport::{Transport, TransportFacts},
-        load_dropped, load_linked, rendering_of_library, Bind, DispatchConfig, Dispatcher,
-        LinkedRow, NoSink, Plugin,
-    },
     list_plugin_files, plugin_library_filename, scan_and_validate,
     sign::{sha256_hex, sign, Manifest, SigningKey, TrustPolicy},
     supported_abi, tarball, PluginRegistry,
@@ -45,200 +38,6 @@ pub fn application_store_library() -> PathBuf {
 
 pub fn application_store_settings(directory: &Path) -> busbar_contract::json::Value {
     busbar_contract::json::json!({ "db_path": directory.join("application.sqlite") })
-}
-
-/// Creation provenance owned only by the provisioner of a new fixture database.
-/// May cross construction stages, but must be initialized before any serving starts.
-pub(crate) struct FreshApplicationStore {
-    opened: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
-    rules: std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
-    evidence_sha256: String,
-    store_sha256: String,
-}
-
-impl FreshApplicationStore {
-    pub(crate) fn rules(&self) -> std::sync::Arc<dyn busbar_kernel::appbuild::RootRules> {
-        self.rules.clone()
-    }
-
-    pub fn opened(&self) -> std::sync::Arc<busbar_kernel::persistence::facade::CoreStore> {
-        self.opened.clone()
-    }
-
-    /// Commit only the public witness of this provisioner's genuine exclusive Store creation.
-    /// This does not initialize an authentication format or grant any runtime quota.
-    pub(crate) async fn commit_creation_witness(
-        &self,
-    ) -> Result<busbar_kernel::host_record_bootstrap::StoreWitness, String> {
-        use busbar_kernel::persistence::scoped::{Outcome, ScopedStore};
-        let schema = "test.fixture.principal-creation";
-        let owner = ScopedStore::host_private(
-            self.opened.clone(),
-            "busbar.fixture.principal-creation",
-            [schema],
-        )
-        .map_err(|error| format!("fixture creation owner: {error:?}"))?;
-        let outcome = owner
-            .put(
-                schema,
-                b"namespace",
-                busbar_contract::Secret::new(self.evidence_sha256.as_bytes().to_vec()),
-            )
-            .await
-            .map_err(|error| format!("fixture creation witness: {error:?}"))?;
-        if outcome != Outcome::Applied {
-            return Err(format!(
-                "fixture creation witness not confirmed: {outcome:?}"
-            ));
-        }
-        Ok(busbar_kernel::host_record_bootstrap::StoreWitness {
-            schema: schema.into(),
-            key_hex: hex::encode(b"namespace"),
-            value_hex: hex::encode(self.evidence_sha256.as_bytes()),
-        })
-    }
-
-    pub(crate) async fn initialize_principal_format(
-        self,
-        cfg: &busbar_kernel::config::RootCfg,
-        plugins: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<crate::root::min3_boot::fixture::Admitted, String> {
-        use busbar_kernel::governance::principal_transition as transition;
-        let seal = busbar_kernel::seal::acquire();
-        let store_sha256 =
-            transition::store_fingerprint(&cfg.store.as_ref().map(|store| store.authoring(&seal)))?;
-        if store_sha256 != self.store_sha256 {
-            return Err(
-                "new fixture Store configuration changed before baseline initialization".into(),
-            );
-        }
-        let registry = busbar_kernel::plugins_preflight(
-            cfg.store.as_ref(),
-            cfg.auth.as_ref(),
-            &cfg.identity_providers,
-            &cfg.hooks,
-            plugins,
-            &cfg.export,
-        )?;
-        let requirements = transition::requirements(cfg, registry.as_ref())?;
-        assert!(
-            requirements.iter().any(|r| !r.format.is_empty()),
-            "this explicit fixture initializer is for admitted marked-auth deployments"
-        );
-        let witness = self.commit_creation_witness().await?;
-        let receipt = transition::FreshNamespace {
-            version: 2,
-            witness_binding: Some(transition::WitnessBinding {
-                instance: "busbar.fixture.principal-creation".into(),
-                private: true,
-                source_scope: transition::WitnessScope::Unscoped,
-            }),
-            store_config_sha256: store_sha256.clone(),
-            requirements: requirements.clone(),
-            witness: Some(witness),
-            ephemeral_instance: false,
-            exclusive_instance: false,
-            creation_evidence_sha256: self.evidence_sha256,
-            newly_created_namespace: true,
-            sender_quiesced: true,
-            backend_quiesced: true,
-            actor: "isolated application fixture provisioner".into(),
-            reason: "exclusive new database file; construction only, serving not activated".into(),
-        };
-        transition::initialize_fresh(&receipt, self.opened.clone(), &store_sha256, &requirements)
-            .await?;
-        Ok(crate::root::min3_boot::fixture::Admitted {
-            core: self.opened,
-            rules: self.rules,
-        })
-    }
-}
-
-/// Exclusively create the actual database before its first Store open.
-/// A retained App or an already existing database cannot supply this provenance.
-pub(crate) async fn provision_fresh_application_store(
-    cfg: &busbar_kernel::config::RootCfg,
-    plugins: &busbar_kernel::config::PluginsCfg,
-    directory: &Path,
-) -> Result<FreshApplicationStore, String> {
-    provision_fresh_application_store_with_backend(cfg, plugins, directory, |backend| backend).await
-}
-
-pub(crate) async fn provision_fresh_application_store_with_backend(
-    cfg: &busbar_kernel::config::RootCfg,
-    plugins: &busbar_kernel::config::PluginsCfg,
-    directory: &Path,
-    decorate: impl FnOnce(
-        std::sync::Arc<dyn busbar_contract::persistence::PersistenceBackend>,
-    ) -> std::sync::Arc<dyn busbar_contract::persistence::PersistenceBackend>,
-) -> Result<FreshApplicationStore, String> {
-    let store = cfg
-        .store
-        .as_ref()
-        .expect("the fixture explicitly selects its Store");
-    assert_eq!(
-        busbar_contract::json::to_value(&store.settings.authoring(&busbar_kernel::seal::acquire()))
-            .expect("the authorized fixture Store settings serialize"),
-        application_store_settings(directory),
-        "the fixture owns the exact configured application database path"
-    );
-    let database = directory.join("application.sqlite");
-    for suffix in ["application.sqlite-wal", "application.sqlite-shm"] {
-        assert!(
-            !directory.join(suffix).exists(),
-            "no retained database sidecar belongs to this new fixture"
-        );
-    }
-    // Exclusive filesystem creation is the provisioner's evidence, not an empty Store scan.
-    drop(
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&database)
-            .expect("the fixture exclusively creates its database file before opening the Store"),
-    );
-    let evidence = serde_json::to_vec(&serde_json::json!({
-        "database": database, "creation": "exclusive create_new before Store open",
-        "fixture": directory, "sender_quiesced": true, "backend_quiesced": true,
-    }))
-    .expect("fixture creation evidence serializes");
-    std::fs::write(
-        directory.join("principal-creation-evidence.json"),
-        &evidence,
-    )
-    .expect("retain the actual fixture creation evidence");
-    let evidence_sha256 = sha256_hex(&evidence);
-    let crate::root::min3_boot::fixture::Fixture { backend, rules, .. } =
-        crate::root::min3_boot::fixture::open(
-            cfg,
-            plugins,
-            std::sync::Arc::new(crate::root::door_steps::Rules::default()),
-        )
-        .await?;
-    let opened = core_over(decorate(backend)).await;
-    let seal = busbar_kernel::seal::acquire();
-    let store_sha256 = busbar_kernel::governance::principal_transition::store_fingerprint(
-        &cfg.store.as_ref().map(|store| store.authoring(&seal)),
-    )?;
-    Ok(FreshApplicationStore {
-        opened,
-        rules,
-        evidence_sha256,
-        store_sha256,
-    })
-}
-
-/// Provision and initialize a genuinely new SQLite fixture before normal app startup.
-/// Call only for the first open in a new scratch directory; retained fixtures reopen normally.
-pub(crate) async fn bootstrap_fresh_application_store(
-    cfg: &busbar_kernel::config::RootCfg,
-    plugins: &busbar_kernel::config::PluginsCfg,
-    directory: &Path,
-) -> Result<crate::root::min3_boot::fixture::Admitted, String> {
-    provision_fresh_application_store(cfg, plugins, directory)
-        .await?
-        .initialize_principal_format(cfg, plugins)
-        .await
 }
 
 /// The explicit configuration document for the same fixture plugin policy used at boot.
@@ -325,12 +124,10 @@ pub(crate) fn trusted_config_with_key(
             plugins: archives
                 .iter()
                 .map(|path| {
-                    crate::root::loader::tarball::unpack(
-                        &std::fs::read(path).expect("fixture archive reads"),
-                    )
-                    .expect("fixture archive unpacks")
-                    .manifest
-                    .name
+                    tarball::unpack(&std::fs::read(path).expect("fixture archive reads"))
+                        .expect("fixture archive unpacks")
+                        .manifest
+                        .name
                 })
                 .collect(),
             keys: vec![busbar_kernel::config::PluginPublisherKey {
@@ -339,24 +136,6 @@ pub(crate) fn trusted_config_with_key(
             }],
         });
     config
-}
-
-/// The identity of the store this build links: a MIN-3 image on `LINKED.images` (WP3: the door `stores` axis is
-/// retired). The build links one store, the default ephemeral one.
-pub fn linked_store_module() -> &'static str {
-    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    NAME.get_or_init(|| {
-        crate::LINKED
-            .images
-            .iter()
-            .find_map(|row| {
-                let admitted = (row.admit)().ok()?;
-                (admitted.kind() == busbar_plugin_abi::types::KindCode::Store)
-                    .then(|| admitted.identity().to_owned())
-            })
-            .expect("the build links a store image")
-    })
-    .as_str()
 }
 
 /// A native MIN-3 image's stamped identity and its header's ordered `former_names`.
@@ -422,27 +201,6 @@ pub fn manifest(kind: &str, name: &str, publisher: &str) -> Manifest {
 
 pub fn pack(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u8> {
     seal(manifest(kind, name, publisher), lib)
-}
-
-pub(crate) fn pack_stated(kind: &str, name: &str, lib: &[u8], publisher: &str) -> Vec<u8> {
-    let mut m = manifest(kind, name, publisher);
-    state(&mut m, lib);
-    seal(m, lib)
-}
-
-pub fn state(m: &mut Manifest, lib: &[u8]) {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "busbar-stated-{}-{n}-{}{}",
-        std::process::id(),
-        m.name,
-        std::env::consts::DLL_SUFFIX
-    ));
-    std::fs::write(&path, lib).expect("stage the library");
-    let rendering = rendering_of_library(&path).expect("the library states itself");
-    let _ = std::fs::remove_file(&path);
-    m.statement = rendering.map(hex::encode);
 }
 
 pub fn seal(mut m: Manifest, lib: &[u8]) -> Vec<u8> {
@@ -527,10 +285,6 @@ pub const BUILD_LOADER_EXAMPLES: &str = "cargo build -p busbar-plugin-loader --e
 
 pub const BUILD_BUSBAR_EXAMPLES: &str = "cargo build -p busbar --examples";
 
-pub fn cdylib(snake: &str) -> Option<Vec<u8>> {
-    std::fs::read(cdylib_path(snake)?).ok()
-}
-
 #[cfg(all(test, not(oracle_lookup)))]
 include!(concat!(env!("OUT_DIR"), "/common_test_sources.rs"));
 
@@ -541,28 +295,6 @@ include!(concat!(env!("OUT_DIR"), "/common_test_sources.rs"));
 pub(crate) mod token_verifier {
     pub fn token_verifier_cdylib_path() -> Option<std::path::PathBuf> {
         super::cdylib_path("busbar_auth_oidc_plugin")
-    }
-
-    /// One framed (HTTP/2) admission request on `stream` for `path`, with the connection preface when
-    /// `preface`: carried over unchanged from busbar-auth-oidc 7877ca7's retired common source, which
-    /// the transport root sources still mounted here read.
-    pub fn framed_admission_request(stream: u32, path: &str, preface: bool) -> Vec<u8> {
-        assert!(path.len() < 127);
-        let mut bytes = Vec::new();
-        if preface {
-            bytes.extend_from_slice(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-            bytes.extend_from_slice(&[0, 0, 0, 4, 0, 0, 0, 0, 0]);
-        }
-        let mut fields = vec![0x83, 0x86, 0x04, path.len() as u8];
-        fields.extend_from_slice(path.as_bytes());
-        fields.extend_from_slice(&[0x01, 9]);
-        fields.extend_from_slice(b"localhost");
-        let len = fields.len() as u32;
-        bytes.extend_from_slice(&len.to_be_bytes()[1..]);
-        bytes.extend_from_slice(&[1, 4]);
-        bytes.extend_from_slice(&stream.to_be_bytes());
-        bytes.extend_from_slice(&fields);
-        bytes
     }
 }
 #[cfg(test)]
@@ -586,64 +318,6 @@ fn libraries() -> Vec<PathBuf> {
     found.into_iter().map(|(_, p)| p).collect()
 }
 
-fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
-    static ONE: std::sync::OnceLock<Dispatcher> = std::sync::OnceLock::new();
-    let d = ONE.get_or_init(|| {
-        Dispatcher::new(
-            DispatchConfig::default(),
-            busbar_kernel::host_services::caller_binding(),
-        )
-    });
-
-    let stated = rendering_of_library(path).ok()??;
-    let bind = Bind {
-        accept: Default::default(),
-        instance: std::sync::Arc::from("the-instance"),
-        max_inflight_cap: 64,
-        sink: std::sync::Arc::new(NoSink),
-        dispatcher: d.adopter(),
-
-        conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
-    };
-    let plugin = load_dropped::<Transport>(path, &stated, bind).ok()?;
-    let key = *plugin.context::<TransportFacts>()?.claims.first()?;
-    Some((plugin, key))
-}
-
-pub fn linked_transport(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
-    bind: Bind,
-) -> Plugin<Transport> {
-    let row = LinkedRow::of(door).expect("the linked door states itself");
-    load_linked::<Transport>(&row, bind).expect("the linked door loads")
-}
-
-pub fn transport_cdylib() -> Option<(Vec<u8>, &'static str)> {
-    transport_cdylib_under(&[])
-}
-
-pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> {
-    let neutral = plugin_library_filename("neutral_frame_door");
-    libraries().into_iter().find_map(|p| {
-        if p.file_name().is_some_and(|n| n == neutral.as_str()) {
-            return None;
-        }
-        let (plugin, key) = transport_door(&p)?;
-        let facts = plugin.context::<TransportFacts>()?;
-
-        if !facts.composes_over.is_empty()
-            || facts.role != busbar_contract::transport::codes::ROLE_CARRIER
-            || !facts.ported
-        {
-            return None;
-        }
-        if !keys.is_empty() && !keys.contains(&key) {
-            return None;
-        }
-        Some((std::fs::read(&p).ok()?, key))
-    })
-}
-
 /// The loader's `native_schema_bomb` example: a MIN-3 store whose describe answers a recursion-bomb D_SCHEMA.
 pub fn native_schema_bomb_path() -> Option<PathBuf> {
     let file = plugin_library_filename("native_schema_bomb");
@@ -652,64 +326,10 @@ pub fn native_schema_bomb_path() -> Option<PathBuf> {
         .find(|p| p.file_name().is_some_and(|n| n == file.as_str()))
 }
 
-pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {
-    let file = plugin_library_filename("neutral_frame_door");
-    libraries()
-        .into_iter()
-        .find(|p| p.file_name().is_some_and(|n| n == file.as_str()))
-        .and_then(|p| std::fs::read(p).ok())
-}
-
-pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
-    static ONE: std::sync::OnceLock<Dispatcher> = std::sync::OnceLock::new();
-    let d = ONE.get_or_init(|| {
-        Dispatcher::new(
-            DispatchConfig::default(),
-            busbar_kernel::host_services::caller_binding(),
-        )
-    });
-    libraries().into_iter().find_map(|p| {
-        let stated = rendering_of_library(&p).ok()??;
-        let bind = Bind {
-            accept: Default::default(),
-            instance: std::sync::Arc::from("probe"),
-            max_inflight_cap: 64,
-            sink: std::sync::Arc::new(NoSink),
-            dispatcher: d.adopter(),
-
-            conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
-        };
-        let plugin = load_dropped::<Export>(&p, &stated, bind).ok()?;
-        let metrics = [ExportStream::Metrics as u8];
-        (plugin.context::<ExportFacts>()?.streams == metrics)
-            .then(|| std::fs::read(&p).ok())
-            .flatten()
-    })
-}
-
-pub fn neutral_frame_door() -> Option<(Plugin<Transport>, &'static str)> {
-    let file = plugin_library_filename("neutral_frame_door");
-    libraries()
-        .into_iter()
-        .filter(|p| p.file_name().is_some_and(|n| n == file.as_str()))
-        .find_map(|p| transport_door(&p))
-}
-
-#[path = "../../../../plugin-loader/tests/fixtures/neutral_export_routes_plugin.rs"]
-pub(crate) mod neutral_export_routes;
-
 /// The operator admin token an admin test presents, as `Authorization: Bearer`. 1.6 has no open
 /// admin posture (`admin_auth: []` is refused at boot, ADMIN-API-1.6-ONE-MODEL §8.1.1), so an
 /// admin test configures the operator credential and sends this token.
 const OPERATOR_TOKEN: &str = "admintok";
-
-/// Bind the linked first-party operator credential for this test process, through the production
-/// process-start binding, and return the provider key configuration names it by.
-pub fn bind_operator() -> &'static str {
-    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
-    busbar_kernel::config::operator_provider()
-}
 
 /// The operator's 1.6 settings digest, `identity-providers.<operator>.settings.sha256`: the
 /// SHA-256 of [`OPERATOR_TOKEN`] as 64 lower-case hex characters.

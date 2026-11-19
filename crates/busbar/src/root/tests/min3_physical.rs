@@ -385,11 +385,28 @@ async fn operator_slot_is_built_from_actual_admin_handlers_and_preserves_head_he
     assert!(execution.check_executing().is_ok());
 }
 
+/// THE ADMIN PLANE'S BOOT ORDER (the security property of the root's boot): the operator slot, the
+/// only way `admin_listen` is served, is refused on the very App whose admin chain is not yet
+/// installed, and assembles once `min3_admin_auth::install` has set it. `main` binds a listener only
+/// from an assembled slot, so nothing serves the admin surface before the chain is installed.
 #[tokio::test]
-async fn operator_slot_refuses_missing_actual_admin_authority() {
+async fn nothing_serves_the_admin_listener_before_the_admin_chain_is_installed() {
     busbar_core_admin::install();
-    let app = crate::root::inbound_tests::app(false).await.0;
-    assert!(app.native_admin.is_none());
+    let installed = crate::root::min3_auth::tests::physical_app().await;
+    assert!(
+        installed.native_admin.is_some(),
+        "the fixture App has its admin chain installed"
+    );
+    let mut before = (*installed).clone();
+    before.native_admin = None;
     let transport = crate::root::min3_boot::transports::tests::framer(&["http"]);
-    assert!(assemble_admin_slot(&app, "admin_listen", transport).is_err());
+    let Err(refused) = assemble_admin_slot(&before, "admin_listen", transport.clone()) else {
+        panic!("an operator slot was assembled before the admin chain was installed");
+    };
+    assert_eq!(
+        refused,
+        "operator slot has no actual native admin authority"
+    );
+    assert!(crate::root::serve::native_slot(&before, "admin_listen").is_none());
+    assert!(assemble_admin_slot(&installed, "admin_listen", transport).is_ok());
 }

@@ -135,12 +135,10 @@ interim:
   crates/busbar-kernel/src/plane_driver/tests/probe_unit_tests.rs: { tokens: 3, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/plane_driver/tests/retirement_tests.rs: { tokens: 1, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/plane_driver/tests/route_tests.rs: { tokens: 2, by: "W3-D-BINARY" }
+  crates/busbar-kernel/src/seal.rs: { tokens: 2, by: "W3-D-CONTRACT (boot OnceLock seals)" }
   crates/busbar/build.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/main.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/root/mod.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/serve.rs: { tokens: 2, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/root/tests/linked_auth.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/root/tests/linked_protocols.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/node_door_rig.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/secret_source.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/test_plugins.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }

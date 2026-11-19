@@ -15,23 +15,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::root::serve::lines::{serve_port_lines, PORT_LINE_CARRIER};
 use crate::root::serve::Served;
 
-pub(crate) fn line_carrier(
-    transports: &[crate::root::linked::LinkedTransport],
-) -> Result<Option<&'static str>, String> {
-    let mut lines = transports.iter().flat_map(|t| (t.lines)());
-    let one = lines.next();
-    match (one, lines.next()) {
-        (Some(one), Some(other)) => {
-            let refusal = format!(
-                "the linked transport claims `{one}` and `{other}` both open a session on their first \
-                 line, and the process's own stdin/stdout carries one"
-            );
-            Err(refusal)
-        }
-        (one, _) => Ok(one),
-    }
-}
-
 /// The environment variable a line session's credential is read from. Every character outside
 /// `[A-Z0-9_]` of the upper-cased words maps to `_`, so an identity-named instance still spells a
 /// name a shell can export (WP1-GAP r3 §1.3, B-N11).

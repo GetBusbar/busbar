@@ -37,8 +37,7 @@ fn an_unbound_node_binds_no_authority() {
 }
 
 fn hand_in_the_root_words() {
-    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
 }
 
 /// The operator words process start judges from this root's admitted rows (OPERATOR-FROM-ADMITTED-AUTH
@@ -59,36 +58,6 @@ fn the_operator_provider_is_the_row_the_manifest_names() {
         words.principal_id, "admin",
         "the principal the operator row states"
     );
-    let stating: Vec<&str> = crate::LINKED
-        .auths
-        .iter()
-        .filter(|&&(_, _, door)| {
-            crate::root::loader::dispatch::kinds::auth::operator_principal(door).is_some()
-        })
-        .map(|&(key, _, _)| key)
-        .collect();
-    if crate::LINKED.auths.iter().any(|r| r.0 == words.provider) {
-        assert_eq!(
-            stating,
-            [words.provider],
-            "the named row is the one that states it"
-        );
-        let (_, _, door) = crate::LINKED
-            .auths
-            .iter()
-            .find(|r| r.0 == words.provider)
-            .copied()
-            .expect("linked");
-        assert_eq!(
-            crate::root::loader::dispatch::kinds::auth::operator_principal(door).as_deref(),
-            Some(words.principal_id)
-        );
-    } else {
-        assert!(
-            stating.is_empty(),
-            "no unnamed row states the operator: {stating:?}"
-        );
-    }
 }
 
 fn operator_1_5_5() -> serde_json::Value {

@@ -1269,28 +1269,18 @@ async fn money_fallback(gov: Arc<GovState>, clock: Arc<DrainClock>) -> Vec<Strin
         .armed_at()
         .map_or_else(Instant::now, |at| clock.limit(at, Cut::Seal));
     let budget_owner = gov.clone();
-    match tokio::spawn(super::measurements::maintenance(async move {
-        budget_owner.flush_budgets_final().await
-    }))
-    .await
-    {
+    match tokio::spawn(async move { budget_owner.flush_budgets_final().await }).await {
         Ok(flushed) => tracing::info!(flushed, "budget shutdown flush completed"),
         Err(error) => failures.push(format!("budget final driver failed: {error}")),
     }
     let metering_owner = gov.clone();
-    match tokio::spawn(super::measurements::maintenance(async move {
-        metering_owner.flush_metering_final().await
-    }))
-    .await
-    {
+    match tokio::spawn(async move { metering_owner.flush_metering_final().await }).await {
         Ok(flushed) => tracing::info!(flushed, "metering shutdown flush completed"),
         Err(error) => failures.push(format!("metering final driver failed: {error}")),
     }
     let paced = PacedHalt::new(clock, c3);
-    match tokio::spawn(super::measurements::maintenance(async move {
-        gov.flush_unit_checkpoints_until(&|| paced.halt()).await
-    }))
-    .await
+    match tokio::spawn(async move { gov.flush_unit_checkpoints_until(&|| paced.halt()).await })
+        .await
     {
         Ok(Ok(())) => {}
         Ok(Err(error)) => failures.push(format!("unit checkpoints remain unresolved: {error}")),

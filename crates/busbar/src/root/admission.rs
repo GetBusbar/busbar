@@ -31,31 +31,6 @@ fn configuration_declaration(
     declaration
 }
 
-pub(super) fn linked_configuration_from_statement(bytes: &[u8]) -> Result<Stated, String> {
-    use busbar_contract::abi::mechanism::{door::REWRITE_ALIAS, rendering, KindCode};
-    let statement =
-        rendering::read(bytes).map_err(|e| format!("invalid linked Statement: {e:?}"))?;
-    let kind = KindCode::from_raw(statement.kind).ok_or("unknown linked Statement kind")?;
-    let schema = super::loader::settings_schema::statement_schema(&statement.settings_schema)?;
-    Ok(Stated {
-        name: statement.name.clone(),
-        alias: statement
-            .rewrites
-            .iter()
-            .find(|(class, _, _)| *class == REWRITE_ALIAS)
-            .map_or_else(|| statement.name.clone(), |(_, from, _)| from.clone()),
-        kind: super::loader::boot::kind_of(kind).to_string(),
-        version: statement.version.clone(),
-        signature_present: false,
-        publisher: super::loader::sign::FIRST_PARTY_PUBLISHER.to_string(),
-        abi_version: statement.kind_abi,
-        settings_schema: schema,
-        configuration: Some(
-            busbar_kernel::admission::ConfigurationDeclaration::from_statement(&statement),
-        ),
-    })
-}
-
 fn stated(m: &Manifest) -> Result<Stated, String> {
     Ok(Stated {
         name: m.name.clone(),
@@ -115,8 +90,9 @@ fn unpack_checked(
 pub struct RootAdmission;
 
 impl PluginAdmission for RootAdmission {
+    /// No linked row states a door Statement: every linked plugin is a MIN-3 image.
     fn linked_configuration(&self) -> Vec<Stated> {
-        super::settings_public::linked_configuration()
+        Vec::new()
     }
 
     fn loaded_configuration(
@@ -132,31 +108,14 @@ impl PluginAdmission for RootAdmission {
     fn bootstrap_probe_selected(
         &self,
         tarball: &[u8],
-        config_path: &std::path::Path,
-        provider_urls: &[String],
+        _config_path: &std::path::Path,
+        _provider_urls: &[String],
     ) -> Result<bool, Refusal> {
-        let unpacked = unpack_checked(tarball, " bootstrap candidate")?;
-        if !matches!(unpacked.manifest.kind.as_str(), "transport" | "plane") {
-            return Ok(false);
-        }
-        let Some(stated) = unpacked
-            .manifest
-            .stated_rendering()
-            .map_err(Refusal::Validation)?
-        else {
-            return Ok(false);
-        };
-        let candidate = super::loader::boot::Candidate::from_manifest(
-            stated,
-            &unpacked.manifest,
-            super::loader::boot::Origin::Dropped {
-                file: "bootstrap candidate".into(),
-                bytes: std::sync::Arc::new(unpacked.lib_bytes),
-            },
-        )
-        .map_err(Refusal::Validation)?;
-        Ok(unpacked.manifest.kind == "plane"
-            || candidate.serves(&super::boot::transport_uses_for(config_path, provider_urls)))
+        // The bootstrap selection read a dropped-in transport or plane door's Statement. Every
+        // plugin is a MIN-3 image now: no dropped-in door is selected for the bootstrap, and the
+        // archive still has to unpack and verify.
+        unpack_checked(tarball, " bootstrap candidate")?;
+        Ok(false)
     }
 
     fn is_tarball(&self, file: &str) -> bool {
@@ -248,20 +207,12 @@ impl PluginAdmission for RootAdmission {
                 )));
             }
         }
-        let linked: Vec<_> = busbar_kernel::preflight::linked_rows()
-            .iter()
-            .map(crate::root::boot::linked_row)
-            .collect();
-        let linked_serves = crate::root::loader::PluginRegistry::empty()
-            .link(linked)
-            .and_then(|rows| rows.linked_copy(manifest, file))
-            .map_err(Refusal::Conflict)?
-            .is_some();
+        // No linked row of the old interface serves a dropped-in manifest in its place.
         Ok(Admitted {
             stated: stated(manifest).map_err(Refusal::Validation)?,
             judged,
             verification,
-            linked_serves,
+            linked_serves: false,
         })
     }
 
@@ -676,14 +627,6 @@ fn document_replace(
         Native::Missing => Host::Missing,
         Native::Changed => Host::Changed,
     })
-}
-
-pub(crate) fn auth_chain_module(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
-    crate::root::loader::dispatch::kinds::auth::declares_chain_module(door)
-}
-
-pub(crate) fn dispatch_latched() -> bool {
-    crate::root::loader::dispatch::handle::latched()
 }
 
 #[cfg(test)]

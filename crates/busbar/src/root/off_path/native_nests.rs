@@ -14,7 +14,7 @@ use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::plane_driver::port_routes::PortRoutes;
 
 use crate::root::serve::native_nests::NativeNests;
-use crate::root::serve::{DataRoutes, DispatchSnapshot, DoorNests};
+use crate::root::serve::{DataRoutes, DispatchSnapshot, GenerationNests};
 
 impl DataRoutes {
     pub(crate) fn new(snapshot: DispatchSnapshot) -> Result<Arc<Self>, String> {
@@ -22,45 +22,25 @@ impl DataRoutes {
         let native = Arc::new(NativeNests::new(&snapshot)?);
         let kernel = snapshot
             .served
-            .planes
+            .ports
             .first()
-            .map(|plane| Arc::clone(&plane.kernel))
-            .or_else(|| {
-                snapshot
-                    .served
-                    .ports
-                    .first()
-                    .map(|seat| Arc::clone(seat.driver.core()))
-            });
+            .map(|seat| Arc::clone(seat.driver.core()));
         let generation = match kernel {
             Some(kernel) => {
                 if snapshot
                     .served
-                    .planes
+                    .ports
                     .iter()
-                    .any(|other| !Arc::ptr_eq(&kernel, &other.kernel))
-                    || snapshot
-                        .served
-                        .ports
-                        .iter()
-                        .any(|seat| !Arc::ptr_eq(&kernel, seat.driver.core()))
+                    .any(|seat| !Arc::ptr_eq(&kernel, seat.driver.core()))
                 {
                     return Err("listener planes do not share the same core services".into());
-                }
-                if snapshot
-                    .served
-                    .planes
-                    .iter()
-                    .any(|plane| plane.driver.invocation_caller().is_none())
-                {
-                    return Err("listener plane has no admitted invocation owner".into());
                 }
                 let runtime =
                     tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
                 Some(Arc::new(
                     busbar_kernel::host_services::ServingGeneration::try_new(
                         kernel,
-                        Arc::new(DoorNests {
+                        Arc::new(GenerationNests {
                             routes: Arc::clone(&snapshot),
                             native,
                             runtime,

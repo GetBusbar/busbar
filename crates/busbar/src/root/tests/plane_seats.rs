@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use std::task::{Context, Poll};
 
 use busbar_contract::conn::{ConnError, ConnId, Conns, Piece, PollConns, Ticket};
-use busbar_contract::json::{json, JsonValueTrait as _};
+use busbar_contract::json::json;
 use busbar_contract::rendering::ReadNeed;
 use busbar_contract::services::Caller;
 use busbar_contract::transport::trust::Anchors;

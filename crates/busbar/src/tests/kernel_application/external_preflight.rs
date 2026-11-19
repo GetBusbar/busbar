@@ -9,12 +9,7 @@ fn a_real_plugin_module_is_still_refused_with_plugins_off() {
     crate::dist_root_install::install();
     let path = common::plugins::token_verifier_cdylib_path()
         .expect("the actual freshly built OIDC product is required");
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
-        .expect("the actual OIDC statement reads")
-        .expect("OIDC exports its statement");
-    let module = busbar_contract::rendering::read(&statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let module = crate::root::test_plugins::native_image(&path).name;
     let mut providers = IdentityProviders::default();
     providers.insert(
         "corp".to_string(),

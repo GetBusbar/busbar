@@ -301,7 +301,15 @@ fn the_boot_types_only_the_declared_registration_table() {
 /// the process's.
 #[tokio::test]
 async fn the_recoverable_gate_sees_the_walks_at_rest_key_while_the_store_opens() {
-    use crate::root::migrate::admit_for_host;
+    // The gate's answer over the verdict the walk published (what the deleted
+    // migrate::admit_for_host answered; the store open passes the same verdict to admit_answer).
+    let admit_for_host = |n: u64| {
+        crate::root::migrate::admit_answer(
+            n,
+            busbar_kernel::appbuild::bootstrap_at_rest(),
+            &std::env::current_dir().expect("the test's directory"),
+        )
+    };
     let configured = SecretRef::None;
     let hex = "ab".repeat(32);
     let verdict = publish_at_rest(Some(&configured), |_, _| {

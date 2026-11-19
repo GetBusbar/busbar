@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim};
 
@@ -81,37 +80,6 @@ pub(crate) fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
         })
         .chain(core_claims())
         .collect()
-}
-
-/// A transport DOOR dropped into `plugins.dir`: a memory-ABI entry admitted through the one
-/// dispatcher's door validation and served over the host's sockets (`crate::root::doors`).
-#[derive(Clone)]
-pub(crate) struct DroppedDoor {
-    /// Its registry key: its own claim.
-    #[cfg(test)]
-    pub key: &'static str,
-    /// The claims it opens at an UPGRADE (their row's `unit0_trigger`), read off its Statement at
-    /// load by the same reader a linked door's are: its upgrade lines, beside the linked rows'
-    /// (`crate::root::serve::upgrade_carriers`; compiled-in = dropped-in).
-    pub upgrades: Vec<&'static str>,
-    /// The opened door the wire serves: the entry the connector serves for it, after the linked
-    /// rows (`crate::root::connector::boot`).
-    pub door: Arc<dyn busbar_core_connector::framer::FramerDoor>,
-}
-
-/// The transports a plugins directory contributes.
-#[derive(Clone)]
-pub(crate) struct Dropped {
-    /// A snapshot of the memory-ABI transport doors. An owned inventory may be replaced after
-    /// Store recovery without invalidating a reader or permanently retaining obsolete doors.
-    pub doors: std::borrow::Cow<'static, [DroppedDoor]>,
-}
-
-impl Dropped {
-    #[cfg(test)]
-    pub(crate) const NONE: Self = Self {
-        doors: std::borrow::Cow::Borrowed(&[]),
-    };
 }
 
 /// The composition facts the connector's boot does not already refuse: planes declaring one key

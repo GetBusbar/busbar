@@ -115,17 +115,6 @@ fn the_gate_names_the_absolute_config_directory() {
     );
 }
 
-/// `run` installs the gate's answer for the loader before anything opens, on every boot (a
-/// stamped config can still meet a 1.5.5 store restored beside it).
-#[test]
-fn run_installs_the_gate_for_the_loader() {
-    let _ = run(Path::new("/nonexistent/busbar/config.yaml"), false, false);
-    assert!(
-        !busbar_plugin_loader::dispatch::migrate::install_admit(migrate_admit),
-        "the seam's answer is installed already"
-    );
-}
-
 /// (f2, r17) a stamped boot reads config.yaml's one field and nothing else: with a writable
 /// regular file at the default overlay path and at `$BUSBAR_CONFIG_OVERLAY`, step 1 opens exactly
 /// one path (config.yaml) and reads no environment variable but the re-exec marker.

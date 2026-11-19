@@ -1913,8 +1913,7 @@ async fn real_admin_dispatch() -> RouterDispatch {
     crate::dist_root_install::install();
     // The linked operator credential is bound and opened by the app build from its settings: the
     // SHA-256 digest of the fixture admin token (governance holds no operator digest, MR-D).
-    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
     let operator = busbar_kernel::config::operator_provider();
     let digest = busbar_contract::redacted::sha256_hex(b"admin-token");
     let library_path = crate::root::test_plugins::application_store_library();

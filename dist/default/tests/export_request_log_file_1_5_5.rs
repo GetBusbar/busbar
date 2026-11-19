@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use busbar_contract::json::{self, JsonValueMutTrait, JsonValueTrait};
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueMutTrait, JsonValueTrait};
 
 const GOLDEN: &str = include_str!(
     "../../../testing/shadow-oracle/golden/1.5.5/cells/export__request-log-file__jsonl.json"

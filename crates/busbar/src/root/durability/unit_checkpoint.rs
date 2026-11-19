@@ -4,7 +4,7 @@ use super::Durability;
 use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 use busbar_kernel::{
     governance::{
-        unit_checkpoint::{UnitCheckpoint, UnitCheckpointSink, UnitRemoval},
+        unit_checkpoint::{UnitCheckpoint, UnitCheckpointSink},
         unit_checkpoint_store::{
             StoreUnitCheckpoints, UnitCheckpointAudit, UnitCheckpointEvidence,
         },
@@ -28,30 +28,6 @@ struct AuditAdapter {
     signer: CheckpointSigner,
 }
 
-/// Persistence of measurement custody is housekeeping, not another billable Store operation.
-/// Scope each actual future so direct recovery calls and the periodic flusher agree.
-struct CheckpointCustody(StoreUnitCheckpoints);
-#[async_trait::async_trait]
-impl UnitCheckpointSink for CheckpointCustody {
-    async fn persist(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
-        crate::root::measurements::maintenance(self.0.persist(snapshot)).await
-    }
-    async fn remove(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
-        crate::root::measurements::maintenance(self.0.remove(snapshot)).await
-    }
-    async fn replay(&self) -> RecordStoreResult<Vec<UnitCheckpoint>> {
-        crate::root::measurements::maintenance(self.0.replay()).await
-    }
-    async fn recover_audit(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
-        crate::root::measurements::maintenance(self.0.recover_audit(snapshot)).await
-    }
-    async fn persist_batch(&self, snapshots: &[UnitCheckpoint]) -> Vec<RecordStoreResult<()>> {
-        crate::root::measurements::maintenance(self.0.persist_batch(snapshots)).await
-    }
-    async fn remove_batch(&self, items: &[UnitRemoval<'_>]) -> Vec<RecordStoreResult<()>> {
-        crate::root::measurements::maintenance(self.0.remove_batch(items)).await
-    }
-}
 #[async_trait::async_trait]
 impl UnitCheckpointAudit for AuditAdapter {
     fn keys(&self) -> AuditKeySet {
@@ -119,9 +95,7 @@ pub(crate) fn unit_checkpoint_sink(
         evidence: evidence.clone(),
         signer: checkpoint.map_or(CheckpointSigner::Unbound, CheckpointSigner::Thread),
     });
-    Ok(Arc::new(CheckpointCustody(StoreUnitCheckpoints::new(
-        evidence, audit,
-    ))))
+    Ok(Arc::new(StoreUnitCheckpoints::new(evidence, audit)))
 }
 #[cfg(test)]
 #[path = "unit_checkpoint_tests.rs"]

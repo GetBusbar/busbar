@@ -86,9 +86,6 @@ impl NativeListenerPlan {
         served: &Served,
         owners: &SlotOwners,
     ) -> Result<NativeSlots, String> {
-        if !served.planes.is_empty() {
-            return Err("native listener plan cannot carry legacy served plane claims".into());
-        }
         // §12.27: every upgrade route is mounted (auth on the head, then 400/501 before any 101).
         // Handing one over needs the adopter the websocket transport brings (E9b); until it is
         // linked, a candidate whose upgrade route could reach an admitted websocket instance is
@@ -152,15 +149,8 @@ impl NativeListenerPlan {
                     })
                     .cloned()
                     .collect();
-                let mounts = super::serve::door_mounts_planned(
-                    served.clone(),
-                    || super::kernel::ROOT_CARD.pin(),
-                    &chain,
-                    &route_chains,
-                    &served_core,
-                    &[],
-                    &[],
-                )?;
+                let mounts =
+                    super::serve::data_mounts(served.clone(), &chain, &route_chains, &served_core)?;
                 let guests = mounts.data.guests.clone();
                 // The projection must not omit a declared route merely because its verbs
                 // are unsupported by the actual HTTP mount. Assembly will check full masks.

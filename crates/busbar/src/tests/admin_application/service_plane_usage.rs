@@ -69,22 +69,8 @@ fn planes() -> &'static PlaneKeys {
     static KEYS: std::sync::OnceLock<PlaneKeys> = std::sync::OnceLock::new();
     KEYS.get_or_init(|| {
         crate::dist_root_install::install();
-        use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
+        // The installed plane declarations alone: no linked plane door folds a row in any more.
         let mut rows = busbar_kernel::plane_driver::registry::plane_decls().to_vec();
-        for (index, door) in crate::LINKED.plane_doors.iter().enumerate() {
-            let row = busbar_kernel::plane_driver::door::fold(
-                registration(linked_probe(
-                    *door,
-                    &format!("admin-plane-usage-{index}"),
-                    busbar_kernel::host_services::caller_binding(),
-                ))
-                .expect("the actual linked plane declares its metadata through its ABI"),
-            )
-            .expect("the actual linked plane metadata folds");
-            if !rows.iter().any(|installed| installed.key == row.key) {
-                rows.push(row);
-            }
-        }
         rows.sort_by_key(|row| row.key);
         let pools = rows
             .iter()

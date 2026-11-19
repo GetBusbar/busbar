@@ -11,29 +11,14 @@ use busbar_kernel::plane_driver::{CallerEnd, HeadFields, SessionCaller};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
+pub(crate) use crate::root::off_path::serve_lines::env_credential;
 #[cfg(test)]
 use crate::root::off_path::serve_lines::one_line_plane;
 pub(crate) use crate::root::off_path::serve_lines::serve_lines;
 pub(crate) use crate::root::off_path::serve_lines::session;
-pub(crate) use crate::root::off_path::serve_lines::{env_credential, line_carrier};
 
 /// The label a MIN-3 line session is bound and logged under: the process's own stdin/stdout (IF §12.23).
 pub(crate) const PORT_LINE_CARRIER: &str = "stdio";
-
-fn installed() -> &'static Result<Option<&'static str>, String> {
-    static CARRIER: std::sync::OnceLock<Result<Option<&'static str>, String>> =
-        std::sync::OnceLock::new();
-    CARRIER.get_or_init(|| line_carrier(crate::LINKED.transports))
-}
-
-#[must_use]
-pub(crate) fn carrier() -> Option<&'static str> {
-    installed().as_ref().ok().copied().flatten()
-}
-
-pub(crate) fn refuse(plane: &str, carrier: &str, sentence: &str) {
-    eprintln!("busbar: {plane} {carrier} serve refused to start: {sentence}");
-}
 
 pub(crate) struct LineCaller<R> {
     lines: AsyncMutex<tokio::io::BufReader<R>>,
@@ -204,7 +189,7 @@ where
     {
         Ok(gov) => gov,
         Err(sentence) => {
-            refuse(instance, PORT_LINE_CARRIER, &sentence);
+            eprintln!("busbar: {instance} {PORT_LINE_CARRIER} serve refused to start: {sentence}");
             return 1;
         }
     };

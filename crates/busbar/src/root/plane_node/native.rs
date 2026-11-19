@@ -71,7 +71,7 @@ impl NativeNodeHandle {
         if entry.call != self.call {
             return Err(InputError::Invalid);
         }
-        let RetainedState::Native(native) = &mut entry.state else {
+        let Some(native) = entry.state.native_mut() else {
             return Err(InputError::Invalid);
         };
         action(native)
@@ -202,13 +202,10 @@ impl Node {
             },
         )
         .map_err(|_| failure(InputError::Capacity))?;
-        let RetainedState::Native(native) = &mut book
+        let native = book
             .get_mut(class, key)
-            .expect("just installed original entry")
-            .state
-        else {
-            unreachable!()
-        };
+            .and_then(|entry| entry.state.native_mut())
+            .expect("just installed native entry");
         let held = |error| (error, Some(handle.clone()));
         let owner = native
             .owner
@@ -235,9 +232,6 @@ impl Node {
             busbar_contract::caps::OpClassId::new("data"),
             owner.context().origin,
         );
-        if let Some(slot) = owner.slot() {
-            self.ticket_custody.bind_source(owner.context(), slot);
-        }
         Ok((handle, unit, ordinary))
     }
 }
@@ -283,7 +277,6 @@ fn original_fields(state: &mut RetainedState) -> Option<OriginalFields<'_>> {
             receipt,
             credit,
         }),
-        _ => None,
     }
 }
 
@@ -497,10 +490,7 @@ fn native_mut(
     if entry.call != call {
         return None;
     }
-    match &mut entry.state {
-        RetainedState::Native(native) => Some(native),
-        _ => None,
-    }
+    entry.state.native_mut()
 }
 
 impl Node {
@@ -794,11 +784,6 @@ pub(crate) mod retained_fixture {
             assert!(inserted.is_ok(), "the fixture table refused key {key}");
         }
 
-        /// A reserved entry: a candidate the scans count and skip.
-        pub(crate) fn reserve(&self, key: u64) {
-            self.insert(key, RetainedState::Reserved);
-        }
-
         /// An original as `install_native` and staging leave it: staged, funded, no receipt.
         pub(crate) fn original(&self, key: u64, staged: NativeStagedAudit, credit: StorageCredit) {
             self.insert(
@@ -807,6 +792,19 @@ pub(crate) mod retained_fixture {
                     staged: Some(staged),
                     receipt: None,
                     credit: Some(credit),
+                },
+            );
+        }
+
+        /// An entry not yet staged, as a live unit is before its audit stages: a candidate the
+        /// scans count and skip.
+        pub(crate) fn unstaged(&self, key: u64) {
+            self.insert(
+                key,
+                RetainedState::Original {
+                    staged: None,
+                    receipt: None,
+                    credit: None,
                 },
             );
         }

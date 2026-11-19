@@ -6,8 +6,6 @@ use busbar_contract::json::{self, JsonValueTrait as _};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::root::test_plugins as plugins;
-
 #[tokio::test]
 async fn test_admin_v1_config_settings_boot_scoped_limits_flagged_reload_to_apply() {
     const CHILD: &str = "BUSBAR_ADMIN_SETTINGS_BOUNDARY_CHILD";

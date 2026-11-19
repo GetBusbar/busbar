@@ -5,18 +5,10 @@ use super::*;
 use busbar_contract::grammar::{Claim, Selector};
 use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason};
 
-use crate::root::linked::LinkedTransport;
+use std::sync::Arc;
 
 fn linked_claims() -> Vec<PlaneClaim> {
     plane_claims(crate::LINKED.claims)
-}
-
-/// Every scheme the linked transport rows serve, each row's own claim first.
-fn linked_schemes() -> Vec<&'static str> {
-    crate::LINKED_TRANSPORT_DOORS
-        .iter()
-        .flat_map(|(_, door)| crate::root::doors::claims_of(*door))
-        .collect()
 }
 
 fn linked_keys() -> Vec<&'static str> {
@@ -27,37 +19,6 @@ fn linked_keys() -> Vec<&'static str> {
         .collect()
 }
 
-fn upgrade_wire_linked() -> bool {
-    crate::LINKED
-        .transports
-        .iter()
-        .any(|t| !(t.upgrades)().is_empty())
-}
-
-#[cfg(linked_axis_transport_door)]
-#[test]
-fn every_linked_plane_is_one_key_and_every_claim_is_served() {
-    let schemes = linked_schemes();
-    check(crate::LINKED.claims, &|s| schemes.contains(&s))
-        .expect("no two planes share a key and every claim names a served transport");
-
-    let keys = linked_keys();
-    for claim in &linked_claims() {
-        assert!(
-            keys.contains(&claim.plane) || core_claims().any(|core| core.plane == claim.plane),
-            "claim names plane `{}`, which no linked plane row declares",
-            claim.plane
-        );
-        assert!(
-            schemes.contains(&claim.claim.transport),
-            "plane `{}` claims on transport `{}`, which no linked row serves",
-            claim.plane,
-            claim.claim.transport
-        );
-    }
-}
-
-#[cfg(linked_every_plane_door)]
 #[test]
 fn every_linked_planes_claims_are_its_declared_claims() {
     let claims = linked_claims();
@@ -95,7 +56,6 @@ fn every_linked_planes_claims_are_its_declared_claims() {
     );
 }
 
-#[cfg(linked_every_plane_door)]
 #[test]
 fn every_cross_plane_overlap_is_one_family_or_the_other_and_the_seal_resolves_them_all() {
     use busbar_kernel::grammar::family;
@@ -123,7 +83,6 @@ fn every_cross_plane_overlap_is_one_family_or_the_other_and_the_seal_resolves_th
     );
 }
 
-#[cfg(linked_every_plane_door)]
 #[test]
 fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     use busbar_contract::grammar::PathSeg;
@@ -156,7 +115,6 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     }
 }
 
-#[cfg(linked_every_plane_door)]
 #[test]
 fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     let claims = linked_claims();
@@ -185,7 +143,6 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     }
 }
 
-#[cfg(linked_every_plane_door)]
 #[test]
 fn the_sealed_order_is_most_specific_first_and_stable() {
     use busbar_kernel::registry::precedence;
@@ -353,20 +310,6 @@ fn a_planes_own_claims_may_overlap() {
     assert!(check_claims(&doubled).is_ok());
 }
 
-#[cfg(linked_axis_transport_door)]
-#[test]
-fn no_shipped_transport_names_a_layer() {
-    // The layers are read off each linked door's Statement (the row stopped carrying them, 040c52e0cc).
-    for (key, door) in crate::LINKED_TRANSPORT_DOORS.iter() {
-        assert!(
-            busbar_core_connector::doors::row_facts(*door)
-                .composes_over
-                .is_empty(),
-            "`{key}` names a layer"
-        );
-    }
-}
-
 #[test]
 fn every_claimed_plane_key_is_a_linked_plane() {
     let keys = linked_keys();
@@ -398,8 +341,7 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
             idempotency: None,
         },
     }];
-    let schemes = linked_schemes();
-    let refusal = check_claim_transports(&telephony, &|s| schemes.contains(&s))
+    let refusal = check_claim_transports(&telephony, &|s| s == "http")
         .expect_err("`twilio-media` has no crate");
     assert!(matches!(
         refusal,
@@ -434,148 +376,6 @@ fn an_unprovided_transport_protocol_is_refused_as_a_missing_transport_plugin() {
         "links its page: {text}"
     );
     assert!(!text.contains("crate"), "names no crate: {text}");
-}
-
-#[cfg(linked_every_plane_door)]
-#[test]
-fn the_check_answers_now_that_every_claim_names_a_served_transport() {
-    let schemes = linked_schemes();
-    check(crate::LINKED.claims, &|s| schemes.contains(&s))
-        .expect("every claim names a live transport");
-    let claims = linked_claims();
-    let sealed = seal_claims(&claims);
-    assert!(sealed.refused.is_empty());
-    assert_eq!(sealed.order.len(), claims.len());
-}
-
-#[test]
-fn every_planes_claims_name_a_served_transport() {
-    let schemes = linked_schemes();
-    for claim in linked_claims().iter() {
-        assert!(
-            schemes.contains(&claim.claim.transport),
-            "claim of plane `{}` names transport `{}`, which is not served",
-            claim.plane,
-            claim.claim.transport
-        );
-    }
-}
-
-fn dropped_doors() -> &'static [DroppedDoor] {
-    use crate::root::test_plugins::{missing, neutral_frame_door, BUILD_LOADER_EXAMPLES};
-    static DOORS: std::sync::OnceLock<Vec<DroppedDoor>> = std::sync::OnceLock::new();
-    DOORS.get_or_init(|| {
-        let (plugin, key) = neutral_frame_door()
-            .unwrap_or_else(|| missing("neutral_frame_door", BUILD_LOADER_EXAMPLES));
-
-        let facts = plugin
-            .context::<crate::root::loader::dispatch::kinds::transport::TransportFacts>()
-            .expect("the transport facts")
-            .clone();
-        let door = crate::root::doors::served(
-            plugin,
-            &busbar_contract::transport::TransportSettings::default(),
-        )
-        .expect("the door serves");
-        vec![DroppedDoor {
-            key,
-            upgrades: facts.upgrades,
-            door,
-        }]
-    })
-}
-
-#[test]
-fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_do() {
-    let fixture = &dropped_doors()[0];
-    let door = |claim: &'static str, upgrades| DroppedDoor {
-        key: claim,
-        upgrades,
-        door: fixture.door.clone(),
-    };
-    let dropped = [
-        door("framed", Vec::new()),
-        door("upgraded", vec!["upgraded"]),
-    ];
-    let linked = [
-        LinkedTransport {
-            upgrades: Vec::new,
-            lines: Vec::new,
-        },
-        LinkedTransport {
-            upgrades: || vec!["upgraded"],
-            lines: Vec::new,
-        },
-    ];
-    let carriers = crate::root::serve::upgrade_carriers(&[], &dropped);
-    assert_eq!(
-        carriers,
-        ["upgraded"],
-        "the dropped-in upgrade claim is a line"
-    );
-    assert_eq!(
-        carriers,
-        crate::root::serve::upgrade_carriers(&linked, &[]),
-        "the same upgrade lines as the linked rows'"
-    );
-}
-
-#[test]
-fn two_linked_door_rows_are_bound_under_two_distinct_labels() {
-    let (a, b) = (
-        crate::root::doors::row_bind("first-row").expect("the row binds"),
-        crate::root::doors::row_bind("second-row").expect("the row binds"),
-    );
-    assert_eq!(
-        &*a.instance, "first-row",
-        "a linked door is labelled by its row name"
-    );
-    assert_eq!(
-        &*b.instance, "second-row",
-        "a linked door is labelled by its row name"
-    );
-    assert_ne!(
-        a.instance, b.instance,
-        "two linked rows are bound under two labels"
-    );
-}
-
-#[cfg(linked_axis_transport_door)]
-#[test]
-fn a_dropped_in_wire_is_served_beside_the_linked_rows_and_answers_the_check() {
-    let wire = &dropped_doors()[0];
-    let entries = crate::root::connector::declared(Vec::new(), std::slice::from_ref(wire))
-        .expect("the dropped-in door is declared");
-    let view = busbar_core_connector::registry::Transports::new(entries)
-        .expect("one dropped-in door claims its schemes once");
-    assert!(
-        view.serving(wire.key).is_some(),
-        "the dropped-in key is served"
-    );
-
-    let mut schemes = linked_schemes();
-    // A dropped door no longer lists its claims (040c52e0cc); its registry key is its own claim.
-    schemes.push(wire.key);
-    check(crate::LINKED.claims, &|s| schemes.contains(&s))
-        .expect("the composition answers with the dropped-in wire beside the linked rows");
-}
-
-#[test]
-fn a_second_door_on_a_served_key_is_refused_at_the_connector() {
-    let wire = &dropped_doors()[0];
-    let entries = crate::root::connector::declared(Vec::new(), &[wire.clone(), wire.clone()])
-        .expect("both doors are declared");
-    let refused = busbar_core_connector::registry::Transports::new(entries)
-        .err()
-        .expect("a second door on one key is refused");
-    assert!(
-        matches!(
-            &refused,
-            busbar_core_connector::registry::ViewRefusal::ClaimedTwice { scheme, .. }
-                if scheme == wire.key
-        ),
-        "{refused}"
-    );
 }
 
 struct Plane(&'static str);
@@ -623,51 +423,4 @@ fn two_planes_declaring_one_key_are_refused_at_boot() {
 fn a_transport_and_a_plane_may_share_a_key() {
     let rows = [plane_row(|| Arc::new(Plane("shared")))];
     check(&rows, &|scheme| scheme == "shared").expect("a plane may share a transport's key");
-}
-
-#[test]
-fn the_upgrade_lines_are_read_off_the_door_statements() {
-    let lines = crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]);
-    if upgrade_wire_linked() {
-        assert_eq!(
-            lines,
-            ["ws", "wss"],
-            "the session wire's claims open at the upgrade, its secured scheme beside its own"
-        );
-    } else {
-        assert!(
-            lines.is_empty(),
-            "no session wire, no upgrade line: {lines:?}"
-        );
-    }
-}
-
-#[test]
-fn a_linked_transport_row_logs_to_its_own_plugin_log_file() {
-    use crate::root::loader::dispatch::Diagnostic;
-    let row = format!("transport-log-row-{}", std::process::id());
-    let bound = crate::root::doors::row_bind(&row).expect("the row binds");
-    bound.sink.diag(Diagnostic {
-        id: busbar_contract::abi::mechanism::call::DIAG_LOG,
-        name: b"",
-        severity: 0,
-        text: b"the linked transport logged a frame",
-    });
-    let path = crate::root::boot::plugin_logs()
-        .path_for(&row, busbar_contract::kinds::codes::KindCode::Transport);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut text = String::new();
-    while std::time::Instant::now() < deadline {
-        text = std::fs::read_to_string(&path).unwrap_or_default();
-        if text.contains("the linked transport logged a frame") {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let _ = std::fs::remove_file(&path);
-    assert!(
-        text.contains("the linked transport logged a frame"),
-        "the row's plugin log file {} holds no record of its own: {text:?}",
-        path.display()
-    );
 }
