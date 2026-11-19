@@ -390,17 +390,48 @@ impl Pending {
     }
 }
 
+impl Pending {
+    /// The ordinary (not selected) unit's books, when the request was admitted.
+    fn ordinary_books(&self) -> Option<UnitBooks<'_>> {
+        self.admitted
+            .get()
+            .filter(|admitted| admitted.selected.is_none())
+            .and_then(|_| self.books())
+    }
+}
+
 impl Books for Pending {
     fn ended(&self, ending: super::usage::Ending, usage: &super::usage::SessionUsage) {
+        self.closed(ending, usage, None);
+    }
+    fn closed(
+        &self,
+        ending: super::usage::Ending,
+        usage: &super::usage::SessionUsage,
+        taken: Option<super::Checkpoint>,
+    ) {
         if let Some(money) = self.admitted.get().and_then(|unit| unit.selected.as_ref()) {
             if let Err(error) = money.work_ended(ending) {
                 tracing::warn!(?error, "selected work ending remains in original custody");
             }
         } else if let Some(books) = self.books() {
-            books.ended(ending, usage);
+            books.closed(ending, usage, taken);
         }
         if let Some(admitted) = self.admitted.get() {
             admitted.request.context().retire();
+        }
+    }
+    fn running(&self, usage: &super::usage::SessionUsage) -> Option<super::Checkpoint> {
+        self.ordinary_books()?.running(usage)
+    }
+    fn refused(&self, why: super::usage::UsageInvalid) {
+        if let Some(books) = self.ordinary_books() {
+            books.refused(why);
+        }
+    }
+    fn dialled(&self) {
+        if let Some(books) = self.ordinary_books() {
+            books.dialled();
         }
     }
     fn audit(&self, row: &super::port_money::AuditRow) {
