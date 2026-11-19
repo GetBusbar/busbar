@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE OUTBOUND TLS TRUST STORE (`advanced.tls`): one place that decides which certificate
+//! THE OUTBOUND TLS TRUST STORE (`outbound.tls`): one place that decides which certificate
 //! authorities, key pins and client identity an outbound TLS connection uses.
 //!
 //! * It is built once at boot from the operator's `OutboundTlsCfg`. Every operator anchor must parse, hold only
@@ -46,8 +46,8 @@ pub struct Anchor {
     pub not_after: i64,
     /// `global` or `destinations[<i>] (<match>)`.
     pub scope: String,
-    /// The key it was read from: `advanced.tls.trust_anchors[<i>]` or
-    /// `advanced.tls.destinations[<i>].trust_anchors[<j>]`.
+    /// The key it was read from: `outbound.tls.trust_anchors[<i>]` or
+    /// `outbound.tls.destinations[<i>].trust_anchors[<j>]`.
     pub key: String,
     /// The file it was read from, and that file's SHA-256 when read, for the drift check.
     pub(crate) file: Option<(PathBuf, [u8; 32])>,
@@ -86,7 +86,7 @@ pub(crate) enum Dialled<'a> {
     Ip(IpAddr),
 }
 
-/// One `advanced.tls.destinations` entry, validated.
+/// One `outbound.tls.destinations` entry, validated.
 #[derive(Debug)]
 pub(crate) struct Entry {
     pub(crate) shown: String,
@@ -119,13 +119,13 @@ impl std::fmt::Display for TrustRefusal<'_> {
             Self::InvalidNeed => f.write_str("invalid native TLS identity request"),
             Self::NoAnchors(host) => write!(
                 f,
-                "{}: no trust anchor applies to `{host}`: advanced.tls.roots is `none` and neither \
-                 advanced.tls.trust_anchors nor a matching advanced.tls.destinations entry lists one",
+                "{}: no trust anchor applies to `{host}`: outbound.tls.roots is `none` and neither \
+                 outbound.tls.trust_anchors nor a matching outbound.tls.destinations entry lists one",
                 diag::CONFIG_TLS_TRUST_EMPTY.banner()
             ),
             Self::Withdrawn(host) => write!(
                 f,
-                "{}: every trust anchor of the advanced.tls.destinations entries matching `{host}` \
+                "{}: every trust anchor of the outbound.tls.destinations entries matching `{host}` \
                  has expired and was withdrawn; rotate the CA and restart",
                 diag::EGRESS_TLS_ANCHOR_EXPIRED_WITHDRAWN.banner()
             ),

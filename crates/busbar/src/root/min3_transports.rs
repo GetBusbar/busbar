@@ -106,13 +106,18 @@ fn settings(limits: &LimitsResolved, schema: Option<&str>) -> Result<Vec<u8>, St
             _ => return Err("its D_SCHEMA is not a JSON object".to_owned()),
         },
     };
+    let (http1_only, h2_prior_knowledge) = crate::root::retired_env::upstream_flags(
+        (
+            limits.upstream_http1_only,
+            limits.upstream_h2_prior_knowledge,
+        ),
+        |n| std::env::var_os(n),
+    );
     let mut bag = Map::new();
     for path in DEALT.iter().filter(|path| declared.get(**path).is_some()) {
         let value = match *path {
-            "advanced.upstream_h2_prior_knowledge" => {
-                Value::from(limits.upstream_h2_prior_knowledge)
-            }
-            "advanced.upstream_http1_only" => Value::from(limits.upstream_http1_only),
+            "advanced.upstream_h2_prior_knowledge" => Value::from(h2_prior_knowledge),
+            "advanced.upstream_http1_only" => Value::from(http1_only),
             "limits.request_body_max_bytes" => {
                 Value::from(u64::try_from(limits.request_body_max_bytes).unwrap_or(u64::MAX))
             }

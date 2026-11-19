@@ -143,6 +143,10 @@ pub(crate) fn base_deploy() -> DeployCfg {
         store: None,
         secrets: Default::default(),
         advanced: AdvancedCfg::default(),
+        shutdown: Default::default(),
+        client_address: Default::default(),
+        outbound: Default::default(),
+        carried: Vec::new(),
         plugins: Default::default(),
         security: None,
         limits: LimitsCfg::default(),
@@ -1556,6 +1560,7 @@ models:
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &deploy.advanced,
+        &deploy.outbound,
         &crate::config::resolve_export(&deploy.export, &mut Vec::new()),
         &deploy.health,
         &deploy.routing,
@@ -1601,7 +1606,6 @@ models:
     );
 
     assert_eq!(l.key_gauge_limit, DEFAULT_KEY_GAUGE_LIMIT);
-    assert_eq!(l.rate_sweep_interval, DEFAULT_RATE_SWEEP_INTERVAL);
     assert_eq!(l.usage_flush_interval_ms, DEFAULT_USAGE_FLUSH_INTERVAL_MS);
     assert_eq!(l.default_probe_interval_secs, DEFAULT_PROBE_INTERVAL_SECS);
     assert_eq!(l.default_probe_timeout_secs, DEFAULT_PROBE_TIMEOUT_SECS);
@@ -1614,6 +1618,7 @@ fn test_limits_resolved_default_matches_from_sections_defaults() {
     let b = LimitsResolved::from_sections(
         &LimitsCfg::default(),
         &AdvancedCfg::default(),
+        &OutboundCfg::default(),
         &ExportCfg::default(),
         &HealthDefaultsCfg::default(),
         &RoutingCfg::default(),
@@ -1623,7 +1628,6 @@ fn test_limits_resolved_default_matches_from_sections_defaults() {
         a.upstream_request_timeout_secs,
         b.upstream_request_timeout_secs
     );
-    assert_eq!(a.rate_sweep_interval, b.rate_sweep_interval);
     assert_eq!(a.usage_flush_interval_ms, b.usage_flush_interval_ms);
     assert_eq!(a.default_policy_timeout_ms, b.default_policy_timeout_ms);
     assert_eq!(a.key_gauge_limit, b.key_gauge_limit);
@@ -1650,6 +1654,7 @@ limits:
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &AdvancedCfg::default(),
+        &OutboundCfg::default(),
         &ExportCfg::default(),
         &HealthDefaultsCfg::default(),
         &RoutingCfg::default(),
@@ -2125,7 +2130,10 @@ advanced:
     assert_eq!(deploy.per_request_fee, 2);
     assert_eq!(deploy.groups.len(), 2);
     assert_eq!(deploy.groups["eng-batch"].parent.as_deref(), Some("eng"));
-    assert_eq!(deploy.advanced.rate_sweep_interval, 64);
+    assert!(
+        deploy.advanced.rate_sweep_interval.is_some(),
+        "the removed key is accepted"
+    );
     assert_eq!(deploy.advanced.usage_flush_interval_ms, 5);
 
     let bare: DeployCfg =
@@ -2134,10 +2142,7 @@ advanced:
     assert!(bare.rate_card.is_none());
     assert_eq!(bare.per_request_fee, 0, "per_request_fee defaults to 0");
     assert!(bare.groups.is_empty());
-    assert_eq!(
-        bare.advanced.rate_sweep_interval,
-        DEFAULT_RATE_SWEEP_INTERVAL
-    );
+    assert!(bare.advanced.rate_sweep_interval.is_none());
     assert_eq!(
         bare.advanced.usage_flush_interval_ms,
         DEFAULT_USAGE_FLUSH_INTERVAL_MS
@@ -2522,12 +2527,18 @@ advanced:
         busbar_contract::yaml::from_str(yaml).expect("current management and transport keys parse");
     assert!(d.config.locked);
     assert_eq!(d.providers_file.as_deref(), Some("catalog.yaml"));
-    assert_eq!(d.advanced.worker_threads, Some(3));
-    assert!(d.advanced.upstream_http1_only);
-    assert!(d.advanced.upstream_h2_prior_knowledge);
+    assert!(
+        d.advanced.worker_threads.is_some(),
+        "the removed key is accepted"
+    );
+    assert!(d.outbound.http1_only, "the old key is carried to outbound");
+    assert!(
+        d.outbound.h2_prior_knowledge,
+        "the old key is carried to outbound"
+    );
     let mut deploy = base_deploy();
-    deploy.advanced.upstream_http1_only = true;
-    deploy.advanced.upstream_h2_prior_knowledge = true;
+    deploy.outbound.http1_only = true;
+    deploy.outbound.h2_prior_knowledge = true;
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert!(
         cfg.limits.upstream_http1_only,
@@ -2557,7 +2568,7 @@ advanced:
         busbar_contract::yaml::from_str(yaml3).expect("absent config parses");
     assert!(!d3.config.locked);
     assert!(d3.providers_file.is_none());
-    assert_eq!(d3.advanced.worker_threads, None);
+    assert!(d3.advanced.worker_threads.is_none());
 }
 
 #[test]
@@ -2783,7 +2794,8 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
          `admin_listen_insecure_transport`, \
          `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, \
          `hooks`, `groups`, `rate_card`, `per_request_fee`, `store`, \
-         `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`, \
+         `secrets`, `advanced`, `shutdown`, `client_address`, `outbound`, `export`, `plugins`, \
+         `security`, `limits`, `health`, `routing`, \
          `telemetry`, `records`, `audit`. `bogus_key` is not a core section and no admitted \
          plane answers to it; plane sections are: (none) at line 3 column 1"
     );
@@ -3285,15 +3297,22 @@ fn plugin_trust_has_one_explicit_unverified_optin_and_scoped_keys() {
 
 #[test]
 fn shutdown_deregister_delay_is_a_bounded_document_duration() {
-    let default: AdvancedCfg = busbar_contract::yaml::from_str("{}").unwrap();
-    let view = busbar_contract::json::to_value(&default).unwrap();
-    assert_eq!(view["shutdown"]["deregister_delay"], "5s");
+    let default: ShutdownCfg = busbar_contract::yaml::from_str("{}").unwrap();
+    assert_eq!(
+        default.delay(),
+        std::time::Duration::ZERO,
+        "no stated interval"
+    );
+    assert_eq!(
+        busbar_contract::json::to_string(&default).unwrap(),
+        "{}",
+        "an unstated interval is not written"
+    );
     for (written, expected) in [("0s", "0s"), ("5s", "5s"), ("300s", "300s"), ("5m", "300s")] {
-        let value: AdvancedCfg =
-            busbar_contract::yaml::from_str(&format!("shutdown:\n  deregister_delay: {written}\n"))
-                .unwrap();
+        let value: ShutdownCfg =
+            busbar_contract::yaml::from_str(&format!("deregister_delay: {written}\n")).unwrap();
         let view = busbar_contract::json::to_value(&value).unwrap();
-        assert_eq!(view["shutdown"]["deregister_delay"], expected);
+        assert_eq!(view["deregister_delay"], expected);
     }
     for written in [
         "301s",

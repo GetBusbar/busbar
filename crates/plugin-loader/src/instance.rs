@@ -1808,8 +1808,8 @@ fn plaintext_refusal(name: &str, module: &str, dest: &str) -> String {
          busbar 1.6.0 connects only over verified TLS, and nothing is exempt: not loopback, not unix sockets.\n\
          Fix it one of two ways:\n\
          \x20 1. Turn on TLS for this connection (the plugin's docs name its TLS setting) and make the server's\n\
-         \x20    certificate verifiable: put its CA under advanced.tls.trust_anchors, or pin its key under\n\
-         \x20    advanced.tls.destinations (match: {host}, verify: pin).\n\
+         \x20    certificate verifiable: put its CA under outbound.tls.trust_anchors, or pin its key under\n\
+         \x20    outbound.tls.destinations (match: {host}, verify: pin).\n\
          \x20 2. If verified TLS is not possible here, accept the risk explicitly. Add this line to the {name}\n\
          \x20    block of your configuration, and replace the reason:\n\
          \x20      insecure_transport: {{ accept: plaintext, reason: \"<why this is acceptable>\" }}\n\

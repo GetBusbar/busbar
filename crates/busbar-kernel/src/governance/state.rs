@@ -1476,19 +1476,8 @@ impl GovState {
         while pending_shards != 0 {
             let sh = pending_shards.trailing_zeros() as usize;
             pending_shards &= pending_shards - 1;
-            let shard = self.budget.shard_at(sh);
-
-            let sweep_needed = shard
-                .sweep_ticker()
-                .fetch_add(1, Ordering::Relaxed)
-                .wrapping_add(1)
-                .is_multiple_of(crate::limits::rate_sweep_interval());
-            let mut map = shard.write();
-            if sweep_needed {
-                // Amortized housekeeping, once per `rate_sweep_interval` admissions on the shard.
-                crate::off_path::governance::state::state_sweep_budget_shard(&mut map, cost, now);
-            }
-            guards[g] = Some(map);
+            // No housekeeping here: the usage writer's tick sweeps (`sweep_budgets`).
+            guards[g] = Some(self.budget.shard_at(sh).write());
             guard_shards[g] = sh;
             g += 1;
         }
@@ -1914,6 +1903,16 @@ impl GovState {
 
     pub async fn flush_budgets(&self) -> usize {
         self.flush_budgets_inner(false).await
+    }
+
+    /// The budget tables' housekeeping, run on the usage writer's tick right after its flush:
+    /// every shard, one lock at a time, releases each cell that holds nothing unwritten and whose
+    /// window has passed (`state_sweep_budget_shard`). A quiet shard is swept like a busy one, and
+    /// no admission pays for it.
+    pub fn sweep_budgets(&self, cost: &crate::cost::CostModel, now: u64) {
+        for mut map in self.budget.sweep_each() {
+            crate::off_path::governance::state::state_sweep_budget_shard(&mut map, cost, now);
+        }
     }
 
     pub async fn flush_budgets_final(&self) -> usize {

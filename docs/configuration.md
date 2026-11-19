@@ -51,9 +51,13 @@ Both files support `${VAR}` environment interpolation before YAML is parsed. A m
   - [`secrets`](#secrets)
   - [`security`](#security)
   - [`advanced`](#advanced)
+  - [`client_address`](#client_address)
+  - [`shutdown`](#shutdown)
+  - [`telemetry.response_headers`](#telemetryresponse_headers)
+  - [`outbound`](#outbound)
   - [Advanced settings reference](#advanced-settings-reference)
   - [Login attempt limits](#login-attempt-limits)
-  - [`advanced.tls`](#advancedtls)
+  - [`outbound.tls`](#advancedtls)
   - [`providers_file`](#providers_file)
 - [Migrating a 1.4.x config](#migrating-a-14x-config)
 - [Reserved names](#reserved-names)
@@ -81,19 +85,21 @@ Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <pat
 `--providers=<path>`) points it at the provider catalog, taking precedence over `providers_file:`.
 See [Operations → Process configuration](operations.md#process-configuration).
 
-**Operational environment overrides are retired in 1.6.0.** Serving reads `providers_file:`
-(or `--providers`) and the corresponding `advanced` keys instead of `BUSBAR_PROVIDERS`,
-`BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`.
-Boot and `--validate` refuse a set retired launch variable with `BUSBAR-3029`, naming its
-replacement without echoing the value. Write the intended values into configuration using
-[the environment-input mappings](migration-1.6.md#environment-inputs), then remove the variables
-from the launcher before validating or starting Busbar. An empty `BUSBAR_PROVIDERS` selects
-nothing and counts as unset; the other retired variables refuse even when empty.
+**Operational environment overrides are retired in 1.6.0, and an old launcher still starts.**
+Boot and `--validate` say one `BUSBAR-3029` line for each retired launch variable that is set,
+never echoing its value, and go on: `BUSBAR_PROVIDERS` is read as the catalog path, as 1.5.5 read
+it, unless `--providers` names one; `BUSBAR_UPSTREAM_HTTP1_ONLY` and
+`BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` are applied over their configuration keys, as 1.5.5 applied
+them (`0` or empty is off, anything else on); `BUSBAR_WORKER_THREADS` and `TOKIO_WORKER_THREADS`
+are ignored, because the worker count is no longer a setting (one data worker per CPU core the
+process may use). Move the values into configuration using
+[the environment-input mappings](migration-1.6.md#environment-inputs) and remove the variables
+from the launcher when convenient. An empty `BUSBAR_PROVIDERS` selects nothing and counts as unset.
 
 `BUSBAR_CONFIG_OVERLAY` is a separate one-time selector for the old overlay, whose contents are
 folded into `config.yaml` on upgrade; runtime configuration is persisted through the Store.
-`BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references, `RUST_LOG`, and the
-`TOKIO_WORKER_THREADS` fallback remain supported.
+`BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references and `RUST_LOG` remain
+supported.
 
 ### `config`
 
@@ -769,7 +775,7 @@ your own retention horizon; Busbar does not choose one for you.
 
 **Backend caveats:** transport security for a store's network connection follows the
 [plaintext rule](#advancedtls): the connection goes through the host connector, which verifies TLS
-against `advanced.tls` and refuses opportunistic or plaintext modes unless the instance carries an
+against `outbound.tls` and refuses opportunistic or plaintext modes unless the instance carries an
 explicit `insecure_transport` acceptance. Retention, TTLs and TLS options beyond that are the store
 plugin's own documentation.
 
@@ -1367,7 +1373,7 @@ a fully live deletion returns `204`. Route mounting has its separate restart req
 absent at boot remains unavailable until restart. Export definitions are not part of the single-value
 `PUT /config/settings` overlay.
 
-**Response headers moved.** `Server-Timing: busbar;dur=<ms>` (formerly `observability.emit_server_timing`) is now an `advanced.response_headers` toggle, default `false`. The 1.5.5 `x-busbar-route-policy` / `x-busbar-route-target` headers and their `route_policy` toggle are removed (see [migration-1.6.md](migration-1.6.md)). See [`advanced`](#advanced) below and [observability.md#response-headers](observability.md#response-headers) for the full catalogue. the first-boot migration moves an old `observability.emit_server_timing` key for you; the old key is otherwise an `unknown field` boot error.
+**Response headers moved.** `Server-Timing: busbar;dur=<ms>` (formerly `observability.emit_server_timing`) is now a `telemetry.response_headers` toggle, default `false` (1.6 development builds read it under `advanced.response_headers`; that key is carried there with one warning line). The 1.5.5 `x-busbar-route-policy` / `x-busbar-route-target` headers and their `route_policy` toggle are removed (see [migration-1.6.md](migration-1.6.md)). See [`telemetry.response_headers`](#telemetryresponse_headers) below and [observability.md#response-headers](observability.md#response-headers) for the full catalogue. the first-boot migration moves an old `observability.emit_server_timing` key for you; the old key is otherwise an `unknown field` boot error.
 
 ---
 
@@ -1847,7 +1853,7 @@ allows. The limits are fixed engine constants and are not configurable:
   sAMAccountName and a UPN with a different prefix) are two budgets; `CORP\alice` and `EMEA\alice`
   share one (only stricter).
 - **Per source.** An IPv4 address, or an IPv6 /64 with /48 (100) and /32 (500) aggregates. See
-  `advanced.trusted_proxies`. Unknown sources skip this limiter only.
+  `client_address.trusted_proxies`. Unknown sources skip this limiter only.
 - **Answer.** 429 "Too many sign-in attempts" with `Retry-After` = the method's window in whole
   minutes (60..=900), identical whichever limiter tripped and whether the account exists. A wrong
   password stays 401. A method whose provider answered five outages in a minute is held 30 s (503).
@@ -1857,32 +1863,43 @@ allows. The limits are fixed engine constants and are not configurable:
 
 ### `advanced`
 
-Internal tuning knobs, normally omitted; each field defaults to its historical value.
+The durability tuning, normally omitted:
 
 ```yaml
 advanced:
-  rate_sweep_interval: 256          # budget-table sweep: every Nth admission drops entries no longer needed
   usage_flush_interval_ms: 100      # write-behind flush cadence for in-memory usage/budget counters
-  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each; omit ⇒ one per core
-  upstream_http1_only: false        # pin the upstream client to HTTP/1.1
-  upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams
-  response_headers:                 # every busbar-injected response header, opt-in, default OFF
-    server_timing: false            # `Server-Timing: busbar;dur=<ms>` (formerly observability.emit_server_timing)
-  trusted_proxies: []               # ingresses/load balancers whose forwarded client address is believed (IPs, CIDRs)
-  forwarded_header: x-forwarded-for # header read from a trusted proxy: x-forwarded-for or forwarded
-  block_private_addresses: true     # refuse outbound dials to private/loopback addresses (destination guard)
-  proxy_resolution: local           # local (engine resolves and judges) or proxy (proxy resolves)
+  wait_for_commit: false            # arriving with the audit change: answer before or after the records commit
 ```
 
-Every key is tabled and explained in the [advanced settings reference](#advanced-settings-reference) below.
+Nothing else is chosen here. The other keys 1.5.5 and 1.6 development builds wrote under
+`advanced` either stopped being settings (the engine does the one right thing) or moved to the
+section they belong to. An old configuration that still carries one loads and applies: a removed
+key is ignored, a moved key's value is carried to its new home (unless the new home is also
+written; it wins), the old key is never written back, and one warning line per key says so at boot
+and on every apply. The [advanced settings reference](#advanced-settings-reference) below lists them.
+
+### `client_address`
+
+Who may state a client's address for it.
+
+```yaml
+client_address:
+  trusted_proxies: [10.0.0.0/8, 192.0.2.10]   # ingresses/load balancers whose forwarded client address is believed
+  header: x-forwarded-for                     # x-forwarded-for (default) or forwarded
+```
 
 `trusted_proxies` decides **who sent a request** for the login attempt limiter and the admin door.
-`X-Forwarded-For` is read only when the socket peer is inside `trusted_proxies`, right to left past
-trusted hops; an unreadable hop makes the client unknown, never the proxy. A private or loopback
-peer that sends `X-Forwarded-For` while `trusted_proxies` is empty is unknown too, and warns
-BUSBAR-4036: **set `trusted_proxies` when an ingress fronts busbar**, or every user shares the
-ingress's budget. IPv4-mapped IPv6 peers are their IPv4 address. It is a **boot-time** knob.
-<!-- docs-truth: depends on !2676 (unmerged), which deletes `advanced.forwarded_header` (fixed `x-forwarded-for`) -->
+The forwarding header is read only when the socket peer is inside `trusted_proxies`, right to left
+past trusted hops; an unreadable hop makes the client unknown, never the proxy. A private or
+loopback peer that sends `X-Forwarded-For` while `trusted_proxies` is empty is unknown too, and
+warns BUSBAR-4036: **set `trusted_proxies` when an ingress fronts busbar**, or every user shares the
+ingress's budget. IPv4-mapped IPv6 peers are their IPv4 address. Cost of a wrong list: listing an
+address you do not control lets its sender claim any client address and so avoid the per-source
+limit; leaving the ingress out makes all users share one budget. A bad entry, or a header other than
+the two, is refused at boot. Both keys are **boot-time** (restart to apply; an edit is reported as
+pending restart). Before 1.6.0 they were `advanced.trusted_proxies` and `advanced.forwarded_header`.
+
+### `shutdown`
 
 The shutdown drain budget (20 s, starting when listener draining begins) and the cap on finished governed requests
 awaiting settlement (20,000) are fixed engine constants, not configuration. A quarter of the drain
@@ -1894,41 +1911,100 @@ spend is not durable (listed on stderr as evidence). At the pending cap, a new g
 refused with `503 durability_unavailable` and `Retry-After: 1` until the backlog falls
 (`busbar_unit_checkpoints_terminal`); running requests never count.
 
-`advanced.shutdown.deregister_delay` is the readiness propagation allowance before that drain:
+`shutdown.deregister_delay` is the readiness propagation allowance before that drain: when the
+engine is told to stop, it first reports itself not ready (`/readyz`) for this long, so a load
+balancer stops sending traffic, and only then starts draining.
 
 ```yaml
-advanced:
-  shutdown:
-    deregister_delay: 5s
+shutdown:
+  deregister_delay: 10s
 ```
 
-It defaults to `5s` and accepts duration strings from `0s` through `300s` inclusive (`5m` is also
-300 seconds). Invalid values are refused, never clamped. `0s` begins listener draining immediately.
+**Default: none.** Left out, draining starts at once, as in v1.5.5, which had no such interval. The
+engine cannot know your load balancer, so the number is yours to state: the balancer's health-check
+period times the number of failed checks before it removes a target. Worked example: an AWS target
+group checking every 5 seconds with an unhealthy threshold of 2 needs `5s x 2 = 10s`; a Kubernetes
+Service whose endpoints drop on the first failed readiness probe with `periodSeconds: 5` needs `5s`.
+Accepts duration strings from `0s` through `300s` inclusive (`5m` is also 300 seconds). Invalid
+values are refused, never clamped. Safety shutdowns skip the interval.
+
 The value is captured at boot. Edit it through the configuration document; a stored change is
-reported under `/advanced/shutdown/deregister_delay` as pending restart and leaves the running
-process's allowance unchanged. `PUT /config/settings` does not expose this field.
+reported under `/shutdown/deregister_delay` as pending restart and leaves the running process's
+allowance unchanged. `PUT /config/settings` does not expose this field. 1.6 development builds read
+it as `advanced.shutdown.deregister_delay` and assumed `5s` when it was left out; an old key is
+carried here with one warning line, and a 1.6 (stamped) configuration that states no interval gets
+one warning line at boot saying the default is now none and how to set it.
 
 An operator signal or released admin restart first marks `/readyz` unready while listeners and
 credential refresh continue through the allowance, then begins the full fixed 20-second drain.
 Persistence safety shutdown bypasses the allowance; a second signal also expires the drain.
 Repeated operator requests cannot extend either interval. Reserve at least
-`deregister_delay + 20s + 6s + operator margin` in the process supervisor: with the default, at
-least 31 seconds before margin. The six seconds covers the existing bounded exit handover.
+`deregister_delay + 20s + 6s + operator margin` in the process supervisor. The six seconds covers
+the existing bounded exit handover.
 
-`worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
-once at process/client construction), so unlike `rate_sweep_interval` and `usage_flush_interval_ms`
-they are not live-mutable via `PUT /config/settings`. A change takes effect on the next restart.
-(The usage writer reads `usage_flush_interval_ms` before each wait, so an applied change is used
-from the next wait on.) The
-`BUSBAR_*` env vars that used to back these knobs are retired in 1.6.0 and never read at serve time;
-see the [development migration limitation](#environment-variables) before upgrading a launcher
-that sets them. `TOKIO_WORKER_THREADS` remains a fallback for `worker_threads`.
+### `telemetry.response_headers`
 
-`response_headers` is likewise **restart-to-apply**: `server_timing` is baked into router middleware
-composition at boot, so a live `PUT` stores the new value
-durably (`reload_to_apply` flags `advanced.response_headers`) but only takes effect on the next
-restart. Full catalogue, rationale for defaulting off, and exactly when each header fires:
+Opt-in busbar-injected response headers, all off by default.
+
+```yaml
+telemetry:
+  response_headers:
+    server_timing: true   # `Server-Timing: busbar;dur=<ms>`
+```
+
+`server_timing` adds `Server-Timing: busbar;dur=<ms>` to every response: the engine's own added
+latency in milliseconds (request time minus the upstream round trip). When to change it: to measure
+the engine's overhead. Cost: it tells any client, authenticated or not, that the response came
+through Busbar, so it is off by default. It is **restart-to-apply**: the header is baked into router
+middleware composition at boot, so a stored change (`reload_to_apply` flags it) acts on the next
+restart. Before 1.6.0 it was `advanced.response_headers.server_timing` (and before 1.5.3
+`observability.emit_server_timing`); the old `advanced` key, in a document or a
+`PUT /config/settings` body, is carried here with one warning line. Full catalogue:
 [observability.md#response-headers](observability.md#response-headers).
+
+### `outbound`
+
+How the engine dials out. Every key is **boot-time** (restart to apply; an edit is reported as
+pending restart).
+
+```yaml
+outbound:
+  block_private_addresses: true     # the destination guard refuses private/loopback dials (global switch)
+  proxy_resolution: local           # local (engine resolves and judges) or proxy (proxy resolves)
+  http1_only: false                 # speak only HTTP/1.1 upstream
+  h2_prior_knowledge: false         # speak HTTP/2 without negotiation, cleartext included
+  tls: { roots: bundled }           # the outbound TLS trust store, below
+```
+
+Before 1.6.0 these were `advanced.block_private_addresses`, `advanced.proxy_resolution`,
+`advanced.upstream_http1_only`, `advanced.upstream_h2_prior_knowledge` and `advanced.tls`; an old
+key is carried here with one warning line. The HTTP transport still receives the two protocol
+switches under the settings paths its own schema names (`advanced.upstream_http1_only`,
+`advanced.upstream_h2_prior_knowledge`): only the operator's key moved.
+
+**`http1_only`** pins the client that talks to providers and other upstreams to HTTP/1.1. By
+default TLS dials negotiate HTTP/2 or HTTP/1.1 by ALPN and cleartext dials speak HTTP/1.1. When to
+change it: an upstream or middlebox that handles HTTP/2 badly. Cost: no HTTP/2 multiplexing.
+**`h2_prior_knowledge`** speaks HTTP/2 directly, with no negotiation, including to cleartext
+(`http://`) upstreams: the one way to reach an h2c-only upstream. Cost: a far end that does not
+speak HTTP/2 fails. Both can be `true`; `http1_only` wins (the rule lives in the HTTP transport,
+`door::offer_for`). `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` in a 1.5.5
+launcher are applied over these keys, as 1.5.5 applied them, with one `BUSBAR-3029` line each.
+
+**`block_private_addresses`** (default `true`): the destination guard refuses outbound connections
+to a destination that is, or resolves to, a private, loopback, link-local or similar address (see
+below). It is a **global** switch: with `false`, a request that can name a destination can make the
+engine connect to services inside your network. It stays until per-registration private reach
+(each registration's own `allow_private`) replaces it; prefer that where your plane supports it.
+Self-hosted providers on private addresses keep reach to their own configured origins either way.
+Cloud-metadata addresses stay refused whatever this says.
+
+**`proxy_resolution`**: when outbound connections go through `HTTPS_PROXY` / `HTTP_PROXY` /
+`ALL_PROXY`, `local` (default) has the engine resolve the name, judge every address, and tell the
+proxy the judged address; `proxy` sends the name and, when the name does not resolve on the engine
+host, leaves the address check to the proxy. When to change it: split-horizon DNS where names
+resolve only at the proxy. **Risk with `proxy`:** the destination guard cannot judge an address it
+never sees.
 
 **The destination guard.** One check applies to every outbound connection busbar makes (provider
 upstreams, token endpoints, health probes, export sinks, plugin fetches, plane and plugin dials). It
@@ -1972,39 +2048,32 @@ webhook sink, an identity provider's documents) takes `https://` only.
 
 Every key an operator can write under `advanced:`, in one place. The whole block is optional;
 leaving a key out gives the default shown. `advanced` refuses keys it does not know (a typo is a
-boot error, never ignored), except the removed `allow_destinations`, which is ignored with one
-warning so that an old configuration still loads. "Applies" says when a change takes effect: **on apply** means a
-configuration apply (the next published configuration generation) is enough; **restart** means the
-running process keeps the old value until it is restarted (a stored change is saved, but does not
-act yet).
+boot error, never ignored), except the old keys listed after the table, which an old configuration
+may still carry. "Applies" says when a change takes effect: **on apply** means a configuration
+apply (the next published configuration generation) is enough.
 
 | Key | Type and unit | Default | Allowed range | What it does | Applies |
 |---|---|---|---|---|---|
 | `advanced.wait_for_commit` | boolean | `false` | `true` / `false` | Whether an answer waits until its audit, ledger and usage records are committed. *Arriving with the audit change.* | to be confirmed |
 | `advanced.usage_flush_interval_ms` | integer, milliseconds | `100` | 1 to 946,080,000,000 (30 years); `0` is raised to 1 with one warning | How often in-memory usage and budget counters are written out. | on apply |
-| `advanced.rate_sweep_interval` | integer, count of admissions | `256` | 1 to 4,294,967,295; `0` is refused | How often a budget table drops entries that are no longer needed. | on apply |
-| `advanced.worker_threads` | integer, threads | one per CPU core | 1 to 65,535; `0` means the default, and above 65,535 is lowered to 65,535, each with one warning (`BUSBAR-9008`) | Number of data-plane worker threads. | restart |
-| `advanced.upstream_http1_only` | boolean | `false` | `true` / `false` | Pin the upstream HTTP client to HTTP/1.1. | restart |
-| `advanced.upstream_h2_prior_knowledge` | boolean | `false` | `true` / `false` | Speak HTTP/2 without negotiation to cleartext upstreams. | restart |
-| `advanced.response_headers.server_timing` | boolean | `false` | `true` / `false` | Add `Server-Timing: busbar;dur=<ms>` to responses. | restart |
-| `advanced.shutdown.deregister_delay` | duration string | `5s` | `0s` to `300s` inclusive | Time the engine reports itself not ready before it starts draining. | restart |
-| `advanced.block_private_addresses` | boolean | `true` | `true` / `false` | Refuse outbound connections to private, loopback and similar addresses. | restart |
-| `advanced.trusted_proxies` | list of IP addresses or CIDR ranges | empty list | each entry an IP or CIDR with no stray host bits | Load balancers whose forwarded client address is believed. | restart |
-| `advanced.forwarded_header` | text | `x-forwarded-for` | `x-forwarded-for` or `forwarded` | Which forwarding header to read from a trusted proxy. | restart |
-| `advanced.proxy_resolution` | text | `local` | `local` or `proxy` | Who resolves a destination's name when an outbound proxy is used. | restart |
-| `advanced.tls.roots` | text | `bundled` | `bundled`, `system` or `none` | Base set of certificate authorities for outbound TLS. | restart |
-| `advanced.tls.trust_anchors` | list of certificate sources | empty list | `{ file: }`, `{ env: }` or inline PEM | Extra certificate authorities trusted for every destination. | restart |
-| `advanced.tls.destinations` | list of entries | empty list | see [`advanced.tls`](#advancedtls) | Per-destination authorities, key pins and client certificate. | restart |
 
-"Restart" for the keys above is what the code does today: `advanced.rate_sweep_interval` is read
-again on every admission, `advanced.usage_flush_interval_ms` before each wait of the background
-writer, and the configuration apply republishes both; every other key is read once at boot. Every
-one of those restart keys is reported by the pending-restart list in the admin API
-(`reload_to_apply`) when an edit changes it: `worker_threads`, `response_headers`,
-`shutdown.deregister_delay`, `upstream_http1_only`, `upstream_h2_prior_knowledge`,
-`trusted_proxies`, `forwarded_header`, `block_private_addresses`, `proxy_resolution` and `tls`.
-`trusted_proxies` and `block_private_addresses` are security settings: an edit to them is stored
-but does not act until the engine restarts, and the list now says so.
+Old keys under `advanced`, accepted from an old configuration (file, `PUT /config/settings` body,
+stored overlay or document edit), never written back, one warning line each:
+
+| Old key | 1.6.0 |
+|---|---|
+| `advanced.rate_sweep_interval` | Removed: the usage writer's tick sweeps the budget tables. |
+| `advanced.worker_threads` | Removed: one data worker per CPU core the process may use. |
+| `advanced.allow_destinations` | Removed: a registration's own `allow_private`. |
+| `advanced.shutdown.deregister_delay` | Moved to [`shutdown.deregister_delay`](#shutdown) (default now none). |
+| `advanced.trusted_proxies` | Moved to [`client_address.trusted_proxies`](#client_address). |
+| `advanced.forwarded_header` | Moved to [`client_address.header`](#client_address). |
+| `advanced.response_headers.server_timing` | Moved to [`telemetry.response_headers.server_timing`](#telemetryresponse_headers). |
+| `advanced.block_private_addresses` | Moved to [`outbound.block_private_addresses`](#outbound). |
+| `advanced.proxy_resolution` | Moved to [`outbound.proxy_resolution`](#outbound). |
+| `advanced.upstream_http1_only` | Moved to [`outbound.http1_only`](#outbound). |
+| `advanced.upstream_h2_prior_knowledge` | Moved to [`outbound.h2_prior_knowledge`](#outbound). |
+| `advanced.tls` | Moved to [`outbound.tls`](#advancedtls). |
 
 #### `advanced.wait_for_commit`
 
@@ -2058,178 +2127,46 @@ advanced:
   usage_flush_interval_ms: 50
 ```
 
-#### `advanced.rate_sweep_interval`
+#### Removed: `advanced.rate_sweep_interval`
 
-Budget counters are kept in memory in tables. Every Nth admission that touches a table also
-removes entries that are no longer needed (idle for more than 31 days with nothing owed).
-`rate_sweep_interval` is N. It is a count of admissions, not a time.
+No longer a setting. Budget counters are kept in memory in tables; on every tick of the usage
+writer (`advanced.usage_flush_interval_ms`), right after it writes, the engine releases every entry
+that holds nothing unwritten and whose window has passed (at most 31 days, the longest window a
+budget has). No admission pays for it, and a table no request touches is swept like any other.
 
-When to change it: rarely. Raise it if the sweep shows up in latency measurements on a table with
-very many keys; lower it to reclaim memory sooner. Cost: a low value spends a pass over the table
-more often; a high value lets unused entries stay in memory longer. A table that receives no
-admissions is not swept at all. `0` is refused at boot (`BUSBAR-3117`, configuration setting out of range).
-Applies on a configuration apply.
+A configuration that still carries the key (in `config.yaml`, a `PUT /config/settings` body, a
+stored settings overlay or an admin document edit) loads and applies as before: the value is
+ignored, never written back, and one warning line says so at boot and on every apply:
+`advanced.rate_sweep_interval is no longer a setting and is ignored: ...`. Delete the line when
+convenient.
 
-```yaml
-advanced:
-  rate_sweep_interval: 1024
-```
+#### Removed: `advanced.worker_threads`
 
-#### `advanced.worker_threads`
+No longer a setting. The engine runs one data worker per CPU core the process may use: the
+operating system's answer (`std::thread::available_parallelism`), which counts the process's CPU
+affinity and, on Linux, the container's CPU limit (cgroup v1 or v2 quota). Never more than 65,535,
+the most the Tokio scheduler can run. To run fewer workers, give the container a lower CPU limit
+or the process a narrower CPU affinity; that is also what keeps a small sidecar small.
 
-The number of data-plane worker threads; each runs its own runtime and listener. Left out, the
-engine uses one per available CPU core. `TOKIO_WORKER_THREADS` is read as a fallback when the key
-is absent. The engine never starts more than 65,535, which is the most the Tokio scheduler can
-run (it keeps its count of searching workers in 16 bits); a larger value is lowered to 65,535.
+A configuration that still carries the key (in `config.yaml`, a `PUT /config/settings` body or an
+admin document edit) loads and applies: the value is ignored, never written back, and one warning
+line says so at boot and on every apply. `BUSBAR_WORKER_THREADS` and `TOKIO_WORKER_THREADS` set in
+a launcher are ignored with one `BUSBAR-3029` line each.
 
-When to change it: on a container with a CPU limit far below the host's core count, set it to the
-limit; on a shared host, to the cores you want to give the engine. Cost: too few threads cap
-throughput; too many on a limited CPU quota add scheduling overhead.
+<a id="advancedtls"></a>
 
-`0` is not a valid count. One rule applies wherever the value is read (the boot read of
-`config.yaml`, the runtime built after recovery, and the admin document edit): `0` is converted to
-the default, a count above 65,535 to 65,535, and each conversion writes one warning line
-(`BUSBAR-9008`). Nothing is refused: an edit carrying `0` or a larger count is accepted and stored as
-written.
+### `outbound.tls`
 
-```yaml
-advanced:
-  worker_threads: 4
-```
-
-#### `advanced.upstream_http1_only`
-
-Pins the client that talks to providers and other upstreams to HTTP/1.1. By default the client
-negotiates HTTP/2 where the far end offers it. When to change it: an upstream or middlebox that
-handles HTTP/2 badly. Cost: no HTTP/2 multiplexing, so more connections for the same traffic. The
-value is passed to the HTTP transport, which declares this key in its settings and reads it (a
-transport reaches it only if its settings name this path). If `upstream_h2_prior_knowledge` is
-also `true`, this setting wins.
+The **outbound TLS trust store** (`advanced.tls` before 1.6.0; the old key is carried here with
+one warning line): one place that decides which certificate authorities, key pins and client
+identity every outbound TLS connection busbar makes uses (providers, token endpoints, export sinks,
+plugin needs, plane members, stores that upgrade to TLS). Plugins no longer carry their own CA
+settings. There is no setting that disables certificate or host-name verification, and none is
+reserved for one. When to change it: a private certificate authority or a pinned partner. Cost:
+`roots: none` refuses every TLS dial no anchor covers.
 
 ```yaml
-advanced:
-  upstream_http1_only: true
-```
-
-#### `advanced.upstream_h2_prior_knowledge`
-
-Speaks HTTP/2 directly (no HTTP/1.1 upgrade or negotiation) to cleartext (`http://`) upstreams.
-When to change it: an h2c-only upstream. Cost: a far end that does not speak HTTP/2 fails; the
-source records that this measurably lowered throughput in performance testing, which is why it is
-off. Setting it together with `upstream_http1_only` is not refused, and the rule is fixed:
-`upstream_http1_only` wins. Over TLS the HTTP transport then offers `http/1.1` alone, and to a
-cleartext upstream it speaks HTTP/1.1, not h2c. The engine passes both values to the transport
-unchanged; the rule lives in the transport (`door::offer_for`) and is tested there.
-
-```yaml
-advanced:
-  upstream_h2_prior_knowledge: true
-```
-
-#### `advanced.response_headers.server_timing`
-
-Adds `Server-Timing: busbar;dur=<ms>` to every response: the engine's own added latency in
-milliseconds (request time minus the upstream round trip). When to change it: to measure the
-engine's overhead. Cost: it tells any client, authenticated or not, that the response came through
-Busbar, so it is off by default. Details in [observability.md](observability.md#response-headers).
-
-```yaml
-advanced:
-  response_headers:
-    server_timing: true
-```
-
-#### `advanced.shutdown.deregister_delay`
-
-When the engine is told to stop, it first reports itself not ready (`/readyz`) for this long, so a
-load balancer can stop sending traffic, and only then starts draining. Accepts duration strings
-such as `5s` or `2m`, from `0s` to `300s`; anything else (a number without a unit, `301s`) is
-refused at boot, never clamped. `0s` starts draining at once. Safety shutdowns skip the delay.
-
-When to change it: set it to at least your load balancer's health-check interval times its
-failure threshold. Cost: every planned stop takes this long longer; leave room for it in the
-supervisor's stop timeout (see above).
-
-```yaml
-advanced:
-  shutdown:
-    deregister_delay: 10s
-```
-
-#### `advanced.block_private_addresses`
-
-When `true` (the default) the destination guard refuses outbound connections to a destination that
-is, or resolves to, a private, loopback, link-local or similar address (see above), for the
-connection classes the guard lists. Cloud-metadata addresses stay refused whatever this says.
-When to change it: a deployment whose providers and tools all live on private addresses and that
-accepts the exposure. **Risk:** with `false`, a request that can name a destination can make the
-engine connect to services inside your network. Prefer a per-registration `allow_private` where
-your plane supports it.
-
-```yaml
-advanced:
-  block_private_addresses: true
-```
-
-#### `advanced.trusted_proxies` and `advanced.forwarded_header`
-
-`trusted_proxies` lists the load balancers or ingresses (an IP address or a CIDR each) whose
-forwarded client address is believed; the login attempt limiter and the admin door use the result.
-`forwarded_header` chooses the one header read from them, `x-forwarded-for` (default) or
-`forwarded`. Without `trusted_proxies`, the socket peer is the client, and a private peer that
-sends a forwarding header is treated as unknown and warned about. When to change them: whenever an
-ingress sits in front of the engine. Cost of a wrong list: listing an address you do not control
-lets its sender claim any client address and so avoid the per-source limit; leaving the ingress
-out makes all users share one budget. A bad entry, or a header other than the two, is refused at
-boot. Detail: [`advanced`](#advanced) above.
-
-```yaml
-advanced:
-  trusted_proxies: [10.0.0.0/8, 192.0.2.10]
-  forwarded_header: x-forwarded-for
-```
-
-#### `advanced.proxy_resolution`
-
-When outbound connections go through `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`: `local` (default)
-has the engine resolve the name, judge every address, and tell the proxy the judged address;
-`proxy` sends the name and, when the name does not resolve on the engine host, leaves the address
-check to the proxy. When to change it: split-horizon DNS where names resolve only at the proxy.
-**Risk with `proxy`:** the destination guard cannot judge an address it never sees.
-
-```yaml
-advanced:
-  proxy_resolution: local
-```
-
-#### `advanced.tls.roots`, `advanced.tls.trust_anchors`, `advanced.tls.destinations`
-
-The outbound TLS trust store. `roots` picks the base authorities (`bundled`: the Mozilla set
-Busbar ships; `system`: the operating system's bundle; `none`: only the ones you list).
-`trust_anchors` adds authorities for every destination; `destinations` adds authorities, key pins
-(`pin_spki_sha256`) and a client certificate for matching hosts. There is no way to turn
-verification off. When to change it: a private certificate authority or a pinned partner. Cost:
-`none` refuses every TLS dial no anchor covers. Full rules, validation and rotation in
-[`advanced.tls`](#advancedtls) below.
-
-```yaml
-advanced:
-  tls:
-    roots: system
-    trust_anchors:
-      - { file: /etc/busbar/ca/corp-root.pem }
-```
-
-### `advanced.tls`
-
-The **outbound TLS trust store**: one place that decides which certificate authorities, key pins
-and client identity every outbound TLS connection busbar makes uses (providers, token endpoints,
-export sinks, plugin needs, plane members, stores that upgrade to TLS). Plugins no longer carry
-their own CA settings. There is no setting that disables certificate or host-name verification,
-and none is reserved for one.
-
-```yaml
-advanced:
+outbound:
   tls:
     roots: bundled                  # bundled (default, 1.5.5's Mozilla set) | system | none
     trust_anchors:                  # CAs trusted for every destination, on top of roots

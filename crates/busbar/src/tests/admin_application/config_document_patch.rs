@@ -563,7 +563,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
 
     // Exact additive wire form, using the boot schema's path and value.
     let request = json::json!({"document_patch": {
-        "set": {"/limits/request_body_max_bytes": 5000123, "/advanced/worker_threads": 3}, "remove": [],
+        "set": {"/limits/request_body_max_bytes": 5000123, "/listen": "127.0.0.1:19093"}, "remove": [],
     }, "providers_patch": {"set": {"/spare/base_url": "https://patched.example.com"}}});
     let response = put(&client, &endpoint, initial_version, &request).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -587,7 +587,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         );
         assert_eq!(
             body["reload_to_apply"],
-            json::json!(["/advanced/worker_threads", "held-section"])
+            json::json!(["/listen", "held-section"])
         );
         assert_eq!(boot_snapshot.plane_refresh.snapshot().phase, "unobserved");
         let installed = handle.load();
@@ -597,10 +597,6 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         assert_eq!(installed.plane_refresh.snapshot().planes.len(), 3);
     }
 
-    assert_eq!(
-        body["configuration"]["values"]["sections"]["advanced"]["worker_threads"],
-        3
-    );
     assert_eq!(body["configuration"]["state"], "restart_pending");
     assert_eq!(
         body["configuration"]["values"]["sections"]["provider_catalog"]["names"],
@@ -654,7 +650,7 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
     .await
     .expect("the committed document composes through the normal loader");
     assert_eq!(loaded.deploy.limits.request_body_max_bytes, PATCH_CAP);
-    assert_eq!(loaded.deploy.advanced.worker_threads, Some(3));
+    assert_eq!(loaded.deploy.listen, "127.0.0.1:19093");
     assert_eq!(loaded.defs["spare"].base_url, "https://patched.example.com");
     assert_eq!(
         std::fs::read_to_string(&providers_path).unwrap(),

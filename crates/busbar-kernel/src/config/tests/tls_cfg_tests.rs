@@ -3,13 +3,14 @@
 
 use super::*;
 
-fn advanced(yaml: &str) -> Result<crate::config::AdvancedCfg, String> {
+/// The `outbound:` block (the trust store's home; 1.6 development builds read it under `advanced`).
+fn advanced(yaml: &str) -> Result<crate::config::OutboundCfg, String> {
     busbar_contract::yaml::from_str(yaml).map_err(|e| e.to_string())
 }
 
 #[test]
 fn an_omitted_tls_block_is_the_bundled_roots_alone() {
-    let a = advanced("rate_sweep_interval: 256\n").expect("parses");
+    let a = advanced("{}\n").expect("parses");
     assert!(a.tls.is_default());
     assert_eq!(a.tls.roots, TlsRoots::Bundled);
 }
@@ -66,7 +67,7 @@ fn an_unknown_roots_value_is_refused() {
 #[test]
 fn the_resolved_config_carries_the_store_as_written() {
     let mut deploy = crate::config::tests::base_deploy();
-    deploy.advanced = advanced(
+    deploy.outbound = advanced(
         "tls:\n  roots: none\n  destinations:\n    - { match: db.internal, pin_spki_sha256: sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=, verify: pin }\n",
     )
     .expect("parses");
