@@ -705,6 +705,69 @@ fn native_physical_admin_carrier_clone_shares_one_pending_right() {
     assert_eq!(binding.check_live(), Err(ArrivalRefusal::Cancelled));
 }
 
+/// The admin middleware takes the pending owner before it judges the credential. A refusing
+/// return must not drop it (that cancels the request and leaves the answer with no output
+/// authority, so the listener writes nothing): owner and carrier come back together, once, and
+/// become the answer's authority only through a recorded refusal of the request's own unit.
+#[test]
+fn native_physical_admin_owner_refused_by_the_middleware_returns_unspent_with_its_carrier() {
+    let f = fixture_for(AdmissionClass::Operator, RouteAuth::Admin);
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let carrier = complete_input(request).into_admin().unwrap();
+    let binding = carrier.binding().clone();
+    let returned = AdminDenialReturn::default();
+    let held = HeldAdminPending::take_from(Some(carrier), returned.clone()).unwrap();
+    assert!(held.is_some());
+    assert!(
+        returned.take().is_none(),
+        "nothing returns while the middleware holds the owner"
+    );
+    drop(held);
+    assert!(
+        binding.check_live().is_ok(),
+        "a refusing return does not cancel the request"
+    );
+    let (pending, carrier) = returned
+        .take()
+        .expect("the unspent owner returns with its carrier");
+    assert!(returned.take().is_none(), "the owner returns once");
+    let unit = busbar_contract::UnitKey::new(binding.invocation().request_id().get());
+    let refused = busbar_contract::caps::Outcome::Refused(
+        busbar_contract::caps::StepName::Authenticate,
+        busbar_contract::caps::ReasonCode::Unauthenticated,
+    );
+    let refusal = pending.refuse_admin(unit, refused).unwrap();
+    let authority = carrier.retain_refusal(refusal).unwrap();
+    assert!(Arc::ptr_eq(authority.take().unwrap().binding(), &binding));
+    assert!(authority.take().is_err(), "a refusal is one output");
+}
+
+/// An owner the middleware spent (the credential was admitted and the owner became the physical
+/// execution) leaves nothing to return; one it never held leaves nothing either.
+#[test]
+fn native_physical_admin_owner_spent_by_the_middleware_returns_nothing() {
+    let f = fixture_for(AdmissionClass::Operator, RouteAuth::Admin);
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let carrier = complete_input(request).into_admin().unwrap();
+    let binding = carrier.binding().clone();
+    let returned = AdminDenialReturn::default();
+    let mut held = HeldAdminPending::take_from(Some(carrier), returned.clone()).unwrap();
+    let spent = held.take().expect("the middleware holds the owner");
+    drop(held);
+    assert!(returned.take().is_none());
+    assert!(binding.check_live().is_ok());
+    drop(spent);
+    assert_eq!(binding.check_live(), Err(ArrivalRefusal::Cancelled));
+
+    let none = AdminDenialReturn::default();
+    let absent = HeldAdminPending::take_from(None, none.clone()).unwrap();
+    assert!(absent.is_none());
+    drop(absent);
+    assert!(none.take().is_none());
+}
+
 fn complete_input(request: PhysicalRequest) -> CompletingPhysicalRequest {
     let credit = request.binding().request().try_reserve(0).unwrap();
     request
