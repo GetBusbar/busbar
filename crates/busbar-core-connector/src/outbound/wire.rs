@@ -102,6 +102,9 @@ pub(crate) struct Wire {
     streams: Vec<Sent>,
     /// The sealed values of the head being emitted, until `STREAM_OPENED` binds them.
     offered: Option<Slots>,
+    /// The connection was handed over on UPGRADE ([`Self::adopt`]): the session that states the
+    /// next `SESSION` is the adopting one, which serves the one upgraded stream.
+    adopted: bool,
 }
 
 impl std::fmt::Debug for Wire {
@@ -123,6 +126,7 @@ impl Wire {
             in_use: InUse::default(),
             streams: Vec::new(),
             offered: None,
+            adopted: false,
         }
     }
 
@@ -211,8 +215,19 @@ impl Wire {
                     if session.multiplexes() && !stated {
                         return Err(Fault::Order("a multiplexing SESSION states no window"));
                     }
+                    // A session begun with CONN_UPGRADED is one answer on stream 1 (delivery
+                    // evidence E.5): it carries one stream.
+                    if self.adopted && session.multiplexes() {
+                        return Err(Fault::Order("an adopted SESSION carries one stream"));
+                    }
                     self.credit = Some(Credit::new(session));
-                    self.in_use = InUse::begun(&session);
+                    // A stream open before the statement is open in the session it states: the
+                    // upgraded stream of an adopted session, open from `begin`.
+                    let mut in_use = InUse::begun(&session);
+                    for _ in &self.streams {
+                        in_use.opened();
+                    }
+                    self.in_use = in_use;
                 }
                 Out::Opened(stream) => {
                     if self.credit.is_none() {
@@ -469,12 +484,27 @@ impl Wire {
         self.credit.as_ref()
     }
 
-    /// Hand-over on UPGRADE: `stream`'s delivery entry becomes stream 1 of the adopting session.
+    /// Hand-over on UPGRADE: `stream`'s delivery entry becomes stream 1 of the adopting session,
+    /// open from that session's `begin`. The delivery ledger and its counters are not reset.
+    ///
+    /// THE ONE GRAMMAR OF AN ADOPTED SESSION. `SESSION` is stated exactly once per `begin` answer,
+    /// by every session, one begun with CONN_UPGRADED included (the contract's rule for both
+    /// roles; the session's own grammar check refuses a `begin` answer without it). The HTTP
+    /// session that answered UPGRADE is over when the adopting transport's `begin` returns, and
+    /// its statement goes with it: what this driver held against that session's windows is
+    /// dropped (the adopting session never handed those bytes up and can be given no credit for
+    /// them), and the adopting session's own `SESSION` is taken, once. A second one is refused
+    /// as it is for any session, and until the first arrives nothing else of the session is.
     pub(crate) fn adopt(&mut self, stream: u64) {
         self.ledger.adopt(stream);
         if let Some(at) = self.at(stream) {
             self.streams[at].id = 1;
         }
+        for sent in &mut self.streams {
+            sent.credit = StreamCredit::default();
+        }
+        self.credit = None;
+        self.adopted = true;
     }
 }
 
