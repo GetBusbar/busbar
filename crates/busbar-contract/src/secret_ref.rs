@@ -52,15 +52,6 @@ pub struct TemplateReference {
     text: SecureString,
     source: FillSource,
 }
-fn template_text<'de, D: Deserializer<'de>>(deserializer: D) -> Result<SecureString, D::Error> {
-    let mut held = crate::plugin_settings::Tree::deserialize(deserializer)?;
-    match &mut held.0 {
-        serde_json::Value::String(text) => Ok(SecureString::from(std::mem::take(text))),
-        _ => Err(de::Error::custom(
-            "template text must be a string (value not echoed)",
-        )),
-    }
-}
 impl fmt::Debug for TemplateReference {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TemplateReference")

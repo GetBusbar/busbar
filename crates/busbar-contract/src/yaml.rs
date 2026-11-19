@@ -569,14 +569,6 @@ pub fn untyped<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Valu
     Node.deserialize(deserializer)
 }
 
-/// [`untyped`] for an optional field: `null` (or absent, with `#[serde(default)]`) is `None`.
-pub fn untyped_option<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<Value>, D::Error> {
-    let value = untyped(deserializer)?;
-    Ok((!value.is_null()).then_some(value))
-}
-
 /// A [`Value`] read through [`untyped`], for containers (`IndexMap<String, Untyped>`) whose
 /// members serde would otherwise read with ciborium's own `Deserialize`.
 #[derive(Debug, Clone)]
@@ -874,14 +866,6 @@ pub fn from_slice<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
 /// Read a YAML document whose top level must be a mapping, keeping its key order.
 pub fn mapping_from_str(text: &str) -> Result<Mapping, Error> {
     match from_str::<Value>(text)? {
-        Value::Map(mapping) => Ok(Mapping(mapping)),
-        _ => Err(Error::unplaced("invalid type: expected a mapping")),
-    }
-}
-
-/// [`mapping_from_str`] over UTF-8 bytes.
-pub fn mapping_from_slice(bytes: &[u8]) -> Result<Mapping, Error> {
-    match from_slice::<Value>(bytes)? {
         Value::Map(mapping) => Ok(Mapping(mapping)),
         _ => Err(Error::unplaced("invalid type: expected a mapping")),
     }

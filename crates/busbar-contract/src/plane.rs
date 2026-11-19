@@ -281,15 +281,6 @@ pub const PER_REQUEST: &str = "per_request";
 /// The fee unit a plane counts once per opened session (`fees.per_session`).
 pub const PER_SESSION: &str = "per_session";
 
-/// THE CONDITION OF A REFUSED ADMIN ANSWER: the reply head field a door's `serve` names, beside a
-pub const ADMIN_CONDITION_FIELD: &str = "busbar-admin-condition";
-
-/// [`ADMIN_CONDITION_FIELD`]: the request body did not parse as the verb's expected shape.
-pub const ADMIN_CONDITION_MALFORMED_BODY: &str = "malformed-body";
-
-/// [`ADMIN_CONDITION_FIELD`]: the request contradicts the operator's configured state.
-pub const ADMIN_CONDITION_INVALID_CONFIG: &str = "invalid-config";
-
 /// THE DUP-CLAIM GUARD over a set of declarations' [`PlaneDeclaration::owned_config_sections`],
 pub fn check_owned_config_claims(
     decls: &[&PlaneDeclaration],

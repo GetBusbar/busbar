@@ -175,36 +175,6 @@ impl fmt::Display for PrincipalId {
     }
 }
 
-/// The value found under a correlation's declared fact key.
-///
-/// Two shapes, because two shapes is what arrives. A protocol whose request identifier is a whole
-/// number carries it as one; a protocol whose identifier is a string carries the string, allocated
-/// in the unit's arena so it lives as long as the unit that correlates on it.
-///
-/// The string arm exists because the alternative is a digest, and a digest of a string into sixty
-/// four bits is a collision waiting for two identifiers of one principal on one session — which is
-/// the pair a correlation is precisely meant to tell apart. Correlation decides which hold a
-/// provider frame accrues into, so a collision there moves money between two units.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum CorrelationValue<'u> {
-    /// A whole number identifier, used as itself.
-    Num(u64),
-    /// A string identifier, borrowed from the unit's arena.
-    Str(&'u str),
-}
-
-/// How a plane ties a response frame back to the request that asked for it.
-///
-/// A correlation reference is a fact key plus the value found under it. The plane declares the key;
-/// the kernel never invents one and never parses for one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
-pub struct CorrelationRef<'u> {
-    /// The declared fact key the correlation is carried under.
-    pub fact_key: &'static str,
-    /// The value found under that key.
-    pub value: CorrelationValue<'u>,
-}
-
 /// Which side of a meter class's bytes a quantity comes from.
 ///
 /// The plugin-kinds table calls this the class family, and it says the rate card may price a class
@@ -222,40 +192,6 @@ pub enum ClassDirection {
     CacheWrite,
     /// Sized by the kernel's own rule, outside the ingress partition.
     Kernel,
-}
-
-/// A plane's declaration of one meter class.
-///
-/// The divisor converts bytes to the class's own quantity and has a pinned default here so that
-/// class caps work with no rate card at all; a card may override it but may not re-family the
-/// class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct MeterClassDecl {
-    /// The class key.
-    pub key: MeterClassId,
-    /// The family name this class rolls up into.
-    pub family: &'static str,
-    /// Which side of the bytes the class is sized from.
-    pub direction: ClassDirection,
-    /// Bytes per unit of the class's own quantity.
-    pub default_divisor: u32,
-}
-
-/// The closed shape of a cappable dimension over an open key.
-///
-/// The open-vocabulary section is explicit that this is a closed *shape*, not a closed list of
-/// quantities: any declared meter class is cappable by key, so token, byte and message caps are
-/// instances rather than variants.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum CapDimension {
-    /// Money, in nano-units.
-    NanoUnits,
-    /// The admission counter.
-    Requests,
-    /// The instantaneous gauge.
-    Concurrent,
-    /// Any declared meter class, by key.
-    Class(MeterClassId),
 }
 
 /// How wide a bucket's cap reaches.

@@ -32,8 +32,6 @@ pub enum Decision {
     ConditionConflict,
 }
 
-/// Retain records by age: every row older than the declared cutoff is eligible for removal.
-pub const RETENTION_AGE: u32 = 0;
 /// Retain active records: only terminal rows older than the cutoff are eligible for removal.
 pub const RETENTION_TERMINAL_ONLY: u32 = 1;
 

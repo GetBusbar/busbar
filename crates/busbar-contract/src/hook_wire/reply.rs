@@ -5,14 +5,6 @@
 
 use serde::Deserialize;
 
-/// The describe reply envelope, parsed liberally.
-#[derive(Debug, Default, Deserialize)]
-pub struct DescribeReply {
-    /// The hook's settings schema, as it described it.
-    #[serde(default)]
-    pub schema: Option<serde_json::Value>,
-}
-
 /// One hook-reported metric entry — a Prometheus/OpenMetrics-shaped observation (parsed liberally;
 /// a malformed ENTRY is dropped whole, never the reply). This is the FROZEN metrics shape: a hook
 /// reports its operational data (a prompt compressor's tokens-saved, a router's decision latency)
@@ -110,15 +102,6 @@ impl From<StatusReply> for crate::hooks::HookStatus {
             metrics: r.metrics,
         }
     }
-}
-
-/// The `status` reply envelope (`{"status": {...}}`); `None`/absent = the hook doesn't speak it
-/// (per the unknown-op contract rule, `{}` = unsupported → busbar fails open).
-#[derive(Debug, Default, Deserialize)]
-pub struct StatusEnvelope {
-    /// The `status` member; absent = the hook does not speak it.
-    #[serde(default)]
-    pub status: Option<StatusReply>,
 }
 
 /// Per-reply cap on hook-reported metric entries (excess dropped — bounded registry).
@@ -422,26 +405,6 @@ pub fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
     let tools = match value.get("tools") {
         None | Some(serde_json::Value::Null) => Vec::new(),
         Some(t) => t.as_array()?.clone(),
-    };
-    Some(RewriteReply { messages, tools })
-}
-
-/// [`parse_rewrite`] for an owned value: the same fail-closed shape, with `messages` and `tools`
-/// moved out of the value instead of copied.
-pub fn take_rewrite(value: serde_json::Value) -> Option<RewriteReply> {
-    let serde_json::Value::Object(mut fields) = value else {
-        return None;
-    };
-    let serde_json::Value::Array(messages) = fields.remove("messages")? else {
-        return None;
-    };
-    if messages.is_empty() {
-        return None;
-    }
-    let tools = match fields.remove("tools") {
-        None | Some(serde_json::Value::Null) => Vec::new(),
-        Some(serde_json::Value::Array(tools)) => tools,
-        Some(_) => return None,
     };
     Some(RewriteReply { messages, tools })
 }

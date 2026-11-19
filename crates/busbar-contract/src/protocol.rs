@@ -16,12 +16,8 @@ pub const ERR_TYPE_PERMISSION: &str = "permission_error";
 pub const ERR_TYPE_NOT_FOUND: &str = "not_found_error";
 /// Error `type` for a rate-limit / throttle response.
 pub const ERR_TYPE_RATE_LIMIT: &str = "rate_limit_error";
-/// Error `type` for a transient upstream failure.
-pub const ERR_TYPE_SERVER_ERROR: &str = "server_error";
 /// Error `type` for a billing-quota exhaustion (HTTP 429).
 pub const ERR_TYPE_INSUFFICIENT_QUOTA: &str = "insufficient_quota";
-/// Internal kind for an overloaded upstream; a dialect whose wire has no overloaded type maps it to
-pub const ERR_TYPE_OVERLOADED: &str = "overloaded_error";
 /// Error `type` for a generic upstream/API failure; also the agnostic forward-layer kind
 pub const ERR_TYPE_API_ERROR: &str = "api_error";
 /// Error `type` for an oversized request (HTTP 413); shared by the forward KIND bank and the
@@ -31,10 +27,6 @@ pub const ERR_TYPE_REQUEST_TOO_LARGE: &str = "request_too_large";
 pub const KIND_API_ERROR: &str = ERR_TYPE_API_ERROR;
 /// Bare `overloaded` — DELIBERATELY distinct from [`ERR_TYPE_OVERLOADED`] ("overloaded_error", one
 pub const KIND_OVERLOADED: &str = "overloaded";
-/// Bare `timeout` — distinct from one dialect's `timeout_error` wire spelling.
-pub const KIND_TIMEOUT: &str = "timeout";
-/// Transient upstream-failure forward kind (aliases the `server_error` type).
-pub const KIND_SERVER_ERROR: &str = ERR_TYPE_SERVER_ERROR;
 /// Caller-authentication failure forward kind (aliases the `authentication_error` type).
 pub const KIND_AUTHENTICATION: &str = ERR_TYPE_AUTHENTICATION;
 /// Caller-permission failure forward kind (aliases the `permission_error` type).
@@ -43,8 +35,6 @@ pub const KIND_PERMISSION: &str = ERR_TYPE_PERMISSION;
 pub const KIND_RATE_LIMIT: &str = ERR_TYPE_RATE_LIMIT;
 /// Malformed/invalid-request forward kind (aliases the `invalid_request_error` type).
 pub const KIND_INVALID_REQUEST: &str = ERR_TYPE_INVALID_REQUEST;
-/// Unknown-model / not-found forward kind (aliases the `not_found_error` type).
-pub const KIND_NOT_FOUND: &str = ERR_TYPE_NOT_FOUND;
 /// Quota-exhausted forward kind (aliases the `insufficient_quota` type).
 pub const KIND_INSUFFICIENT_QUOTA: &str = ERR_TYPE_INSUFFICIENT_QUOTA;
 /// Oversized-request forward kind (aliases the `request_too_large` type).
@@ -53,26 +43,8 @@ pub const KIND_REQUEST_TOO_LARGE: &str = ERR_TYPE_REQUEST_TOO_LARGE;
 /// The failure-DISPOSITION metric-label value for a context-length result — the label a dialect's
 pub const DISPOSITION_CONTEXT_LENGTH: &str = crate::upstream::Disposition::ContextLength.label();
 
-/// Provider error-code token emitted when a request exceeds the model's context-window limit.
-pub const PROVIDER_CODE_CONTEXT_LENGTH: &str = "context_length_exceeded";
-
 /// The `application/json` media type — the default `Content-Type`/`Accept` for the JSON REST
 pub const APPLICATION_JSON: &str = "application/json";
-
-/// Streaming MIME type for event-stream responses — the `Content-Type` value that
-pub const TEXT_EVENT_STREAM: &str = "text/event-stream";
-
-/// Unknown/foreign egress protocol default `User-Agent`: a generic-but-present UA still beats
-pub const EGRESS_UA_DEFAULT: &str = "okhttp/4.12.0";
-
-/// Busbar-internal `provider_signal` label for an IR-parse failure (the LANE label the breaker/metrics
-pub const SIGNAL_IR_PARSE: &str = "ir_parse";
-
-/// An IR-level error, currently an alias for [`CanonicalSignal`](crate::upstream::CanonicalSignal)
-pub type IrError = crate::upstream::CanonicalSignal;
-
-/// Client-visible detail string for a mid-stream abort (the upstream connection dropped or a
-pub const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
 
 /// The length of the terminator that ends the complete line whose bytes stop at `end`: CRLF, or a
 /// lone CR or LF. A line holds no CR or LF of its own, so an LF after a CR is always one CRLF.

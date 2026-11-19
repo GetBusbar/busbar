@@ -9,11 +9,6 @@ use serde::Serialize;
 /// The REPLY side: what the host reads back of a hook's 1.5.5 JSON.
 pub mod reply;
 
-/// PER-REQUEST message kinds — the explicit `op` discriminator every per-request payload carries
-pub const OP_DECIDE: &str = "decide";
-pub const OP_TRANSFORM: &str = "transform";
-pub const OP_NOTIFY: &str = "notify";
-
 /// The stable request schema sent to a hook: the request projection, every candidate, and context.
 /// The request-side wire structs deliberately do NOT derive `Debug`: behind the opt-ins they
 /// borrow prompt text and end-user identity, and a derived Debug would bypass the redacting

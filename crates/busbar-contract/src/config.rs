@@ -69,11 +69,6 @@ pub struct ModelCfg {
     pub prompt_caching: Option<bool>,
 }
 
-/// The serde default for `ModelCfg::max_requests` (`-1` = unlimited).
-pub fn neg1() -> i64 {
-    -1
-}
-
 /// `upstream_credentials:` — the OTHER reserved member every model-serving section carries next to
 /// [`ModelCfg`], and it arrived here for the same reason and by the same route. It lived in
 /// `busbar-api`, which meant the one pure plane that reused it (the jev decisions

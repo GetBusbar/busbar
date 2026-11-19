@@ -118,8 +118,6 @@ pub use busbar_artifact_metadata::extensions::{
 /// The full span records' key in an export door's `Statement::extensions`.
 pub const EXT_SPAN_RECORDS: &str = "span_records";
 
-pub use crate::export_calls::{EXT_PERSISTENT_ROUTES, EXT_PUBLIC_ROUTES};
-
 /// Whether a Statement's extensions state the door takes full span records
 pub fn span_records(extensions: &[u8]) -> Result<bool, String> {
     get(extensions, EXT_SPAN_RECORDS).map_or(Ok(false), |value| {

@@ -44,47 +44,8 @@ pub fn usage_observation_policies(
 /// The reserved `upstream_credentials:` word: how a member is credentialed (`own` or
 pub const UPSTREAM_CREDENTIALS_KEY: &str = "upstream_credentials";
 
-/// A registration's RFC 8693 `token_exchange:` block: busbar's
-pub const TOKEN_EXCHANGE_KEY: &str = "token_exchange";
-
-/// Inside [`TOKEN_EXCHANGE_KEY`]: the authorization server's token endpoint.
-pub const TOKEN_URL_KEY: &str = "token_url";
-
-/// Inside [`TOKEN_EXCHANGE_KEY`]: busbar's own subject token, a secret reference.
-pub const SUBJECT_TOKEN_KEY: &str = "subject_token";
-
-/// Inside [`TOKEN_EXCHANGE_KEY`]: RFC 8693 section 2.1 `subject_token_type`; absent =
-pub const SUBJECT_TOKEN_TYPE_KEY: &str = "subject_token_type";
-
-/// The `subject_token_type` a [`TOKEN_EXCHANGE_KEY`] block that states none exchanges: an access
-pub const DEFAULT_SUBJECT_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
-
-/// A registration's LEASED OUTBOUND CREDENTIAL block: busbar's own credential for the member,
-pub const UPSTREAM_CREDENTIAL_KEY: &str = "upstream_credential";
-
-/// Inside [`UPSTREAM_CREDENTIAL_KEY`]: the credential, a secret reference.
-pub const CREDENTIAL_SECRET_KEY: &str = "secret";
-
-/// Inside [`UPSTREAM_CREDENTIAL_KEY`]: where the credential is presented: [`PLACEMENT_BEARER`]
-pub const CREDENTIAL_PLACEMENT_KEY: &str = "placement";
-
-/// The [`CREDENTIAL_PLACEMENT_KEY`] word that presents `authorization: Bearer <credential>`.
-pub const PLACEMENT_BEARER: &str = "bearer";
-
-/// The [`CREDENTIAL_PLACEMENT_KEY`] object's key naming the header the credential is carried in.
-pub const PLACEMENT_HEADER_KEY: &str = "header";
-
-/// Inside [`UPSTREAM_CREDENTIAL_KEY`]: the lease, in milliseconds (greater than zero).
-pub const CREDENTIAL_LEASE_TTL_KEY: &str = "lease_ttl_ms";
-
-/// A registration's `aud:`: the RFC 8707 resource indicator its outbound token is audience-bound to.
-pub const AUDIENCE_KEY: &str = "aud";
-
 /// THE RESERVED `pools` SUB-KEY of a plane's section (#47, POOLS-VERBS): its named pools, each a list
 pub const RESERVED_POOLS_KEY: &str = "pools";
-
-/// The operations a pool may perform twice, inside its [`RESERVED_POOLS_KEY`] entry: an operation
-pub const POOL_REPEATABLE_KEY: &str = "repeatable";
 
 /// A pool whose members are each admitted on their OWN grant by the plane (a pool of named
 pub const POOL_MEMBER_GRANTED_KEY: &str = "member_granted";
@@ -100,18 +61,6 @@ pub const WORK_RETAIN_S_KEY: &str = "retain_s";
 
 /// THE RESERVED PER-ENTRY `timeout:` of any plane's section: an entry's wall-clock bound on ONE attempt to reach it,
 pub const ENTRY_TIMEOUT_KEY: &str = "timeout";
-
-/// THE CORE'S DEFAULT [`ENTRY_TIMEOUT_KEY`] OF A TOOL CALL, in milliseconds: the attempt bound of a
-pub const DEFAULT_ENTRY_TIMEOUT_MS: u64 = 30_000;
-
-/// THE DECLARING SECTION OF THE PLANE THAT RELAYS TOOL CALLS (`tools:`, one registration per tool
-pub const TOOL_CALL_SECTION_KEY: &str = "tools";
-
-/// The core's default attempt bound, in milliseconds, of an entry that writes no
-#[must_use]
-pub fn default_entry_timeout_ms(declared: &str) -> Option<u64> {
-    (declared == TOOL_CALL_SECTION_KEY).then_some(DEFAULT_ENTRY_TIMEOUT_MS)
-}
 
 /// [`ENTRY_TIMEOUT_KEY`] as written, in milliseconds: THE ONE READING of the value, the kernel's
 pub fn entry_timeout_ms(written: &str) -> Result<u64, String> {

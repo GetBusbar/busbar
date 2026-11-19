@@ -576,11 +576,6 @@ impl<W: Write> Writer<W> {
     }
 }
 
-/// Per-row immutable index storage, including its native-identity lookup ordinal.
-/// Catalogue storage is additional; payload bytes never live in this index.
-pub fn index_entry_bytes() -> usize {
-    std::mem::size_of::<RowIndex>() + std::mem::size_of::<usize>()
-}
 struct RowIndex {
     table: u32,
     offset: u64,

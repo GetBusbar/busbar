@@ -506,15 +506,6 @@ const _: () = {
     }
 };
 
-/// [`OnPieceOut::tap_fault`]: no usage-tap fault.
-pub const TAP_FAULT_NONE: u8 = 0;
-/// [`OnPieceOut::tap_fault`]: the cell's own reader refused the body (`reason="decode"`).
-pub const TAP_FAULT_DECODE: u8 = 1;
-/// [`OnPieceOut::tap_fault`]: the body is not JSON (`reason="bad_json"`).
-pub const TAP_FAULT_BAD_JSON: u8 = 2;
-/// [`OnPieceOut::tap_fault`]: the caller's dialect is not one the tap reads
-pub const TAP_FAULT_UNKNOWN_PROTOCOL: u8 = 3;
-
 /// [`OnPieceIn::flags`]: the piece completes its frame.
 pub const PIECE_END_OF_FRAME: u32 = 1;
 /// [`OnPieceIn::flags`]: no piece follows from this side.

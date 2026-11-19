@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use busbar_contract::caps::{OriginKind, ReasonCode};
 
 /// A capped axis: an amount of money, a count of requests, a live gauge, or any declared meter
-pub use busbar_contract::{BucketRef as BucketId, BucketScope, CapDimension};
+pub use busbar_contract::{BucketRef as BucketId, BucketScope};
 
 /// A bucket that applies to everything.
 #[must_use]

@@ -6,12 +6,6 @@
 pub mod codes;
 use zeroize::Zeroize;
 
-/// JSON list of declared route paths requesting the admitted recorder consumer's
-pub const EXT_PUBLIC_ROUTES: &str = "listener.public_routes";
-
-/// JSON list of public route paths retained by the boot instance after config removal.
-pub const EXT_PERSISTENT_ROUTES: &str = "listener.persistent_routes";
-
 /// The settings key that states an export instance's in-flight bound: how many deliveries the host
 pub const INFLIGHT_KEY: &str = "max_inflight_deliveries";
 
