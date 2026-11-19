@@ -1461,6 +1461,8 @@ mod wire_check {
         }
         assert_eq!(charged_given as u64, checked.bytes());
         assert_eq!(given.concat(), [HEAD, BODY].concat());
+        // The writer is done with the pieces (they borrow the driver's slots).
+        drop(given);
         assert_eq!(
             account.0.load(Ordering::SeqCst),
             charged,
