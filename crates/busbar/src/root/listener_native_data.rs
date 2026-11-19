@@ -22,7 +22,6 @@ use busbar_kernel::plane_driver::port_auth::{Credentials, Principal};
 use busbar_kernel::plane_driver::port_billing::{end_of, NativeOrdinaryTerminalSlot, PortBilling};
 use busbar_kernel::plane_driver::port_session::{ClientSink, ToClient};
 use busbar_kernel::plane_driver::{FeeRefund, HeadFields, NativeAdmissionError};
-use busbar_kernel::resource_admission::FrozenRequest;
 use bytes::Bytes;
 use http_body::Frame;
 use tokio::sync::{mpsc, oneshot};
@@ -523,29 +522,15 @@ pub(super) async fn prepare(
         .ok_or(InputError::Invalid)?;
     let billing = routes.served.billing.clone().ok_or(InputError::Invalid)?;
     let data_route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
-    let original = binding.snapshot().map_err(|_| InputError::Capacity)?;
-    let frozen = FrozenRequest::from_snapshot(binding.invocation(), route, original);
-    // A direct call on this request's thread; the route's credential carriers are withheld.
-    let selection = busbar_kernel::resource_admission::select_resources(
-        &*seat.driver.port(),
-        &frozen,
-        data_route.withheld(),
-    );
-    let selection = selection
-        .map_err(|_| InputError::Invalid)?
-        .map_err(|_| InputError::Invalid)?;
-    let selected = data_route
-        .inventory()
-        .select_wire(frozen, target.mounted(), &selection)
-        .map_err(|_| InputError::Invalid)?;
     let deadline = binding.deadline().ok_or(InputError::Invalid)?;
     let preparation = request
         .begin_data_preparation()
         .map_err(|_| InputError::Invalid)?;
+    // Auth first: the route's chain verifies the credential before anything of the request is
+    // lent to the plane.
     let pending = match data_route
         .prepare(
             preparation,
-            selected,
             busbar_ports::CallCx {
                 deadline,
                 request_id: binding.invocation().request_id().get(),
@@ -556,6 +541,20 @@ pub(super) async fn prepare(
     {
         Ok(pending) => pending,
         Err(failed) => return denied(request, failed, data_route.withheld()),
+    };
+    // Only a verified request is lent to a selecting route's plane (a direct call on this
+    // request's thread, its credential carriers withheld). A route that selects nothing is
+    // admitted through the plane's own `request`.
+    let pending = if data_route.selects() {
+        let port = seat.driver.port();
+        match pending.select(|frozen, withheld| {
+            busbar_kernel::resource_admission::select_resources(&*port, frozen, withheld)
+        }) {
+            Ok(pending) => pending,
+            Err(failed) => return denied(request, failed, data_route.withheld()),
+        }
+    } else {
+        pending
     };
     let authorization = match pending.complete().await {
         Ok(authorization) => authorization,

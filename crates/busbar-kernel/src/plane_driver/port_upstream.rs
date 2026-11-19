@@ -440,6 +440,19 @@ fn exchange_zero(exchanges: Vec<UpExchange>) -> Result<UpExchange, SessionError>
         .ok_or(SessionError::Violation(Violation::MissingExchange))
 }
 
+/// Whether a session's attempt walk may run. `data` is `None` for a session with no native DATA
+/// unit, else whether that unit carries a resource selection. The borrowed sender cannot own a
+/// selected-attempt partition or its transport reservation, so a DATA unit with a selection runs
+/// only in the selected-attempt cohort. A DATA unit with no selection (its route selects nothing)
+/// runs only the ordinary walk: its money is the ordinary unit its pending admission committed,
+/// and the selected cohort has no selection to prepare from.
+pub(crate) fn attempts_driven(data: Option<bool>, selected_attempts: bool) -> bool {
+    match data {
+        None => true,
+        Some(selected) => selected == selected_attempts,
+    }
+}
+
 /// The attempt walk of one forwarded session (§8.6, §12.3).
 pub async fn run_attempts<K: Calls + ?Sized, M: Members + ?Sized, S: UpSend>(
     task: &mut Task<'_, K>,
@@ -450,9 +463,8 @@ pub async fn run_attempts<K: Calls + ?Sized, M: Members + ?Sized, S: UpSend>(
     send: &mut S,
     effects: &dyn Effects,
 ) -> Result<Attempted, SessionError> {
-    // The borrowed legacy sender cannot own a selected-attempt partition or its transport
-    // reservation. Only the separate owned preparation/money handoff may enable that cohort.
-    if task.data().is_some() && !task.selected_attempts() {
+    let data = task.data().map(|data| data.selected().is_some());
+    if !attempts_driven(data, task.selected_attempts()) {
         return Err(SessionError::NotDriven);
     }
     let mut attempts = 0_u32;

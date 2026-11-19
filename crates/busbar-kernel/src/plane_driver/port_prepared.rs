@@ -263,17 +263,17 @@ impl PreparedExchange {
         data: Arc<crate::auth::native_data::NativeDataPending>,
     ) -> Result<Self, SessionError> {
         let execution = data.execution().ok_or(SessionError::NotDriven)?;
+        let resources = data.selected().ok_or(SessionError::NotDriven)?;
         if !data.is_live()
             || execution.binding().check_executing().is_err()
             || !execution.money().accepts_walk(selected.walk())
             || selected.target() != &self.target
             || selected.preparation() != self.attempt
-            || self.route() != data.selected().request().route()
+            || self.route() != resources.request().route()
         {
             return Err(SessionError::NotDriven);
         }
-        let bound = data
-            .selected()
+        let bound = resources
             .forward_for_target(&self.target, &self.dialect, &self.model)
             .map_err(|_| SessionError::NotDriven)?;
         let PreparedOperands::Plain(exchange) = self.exchange else {
@@ -322,8 +322,9 @@ impl<K: Calls + ?Sized> Task<'_, K> {
             if !data.is_live() || execution.binding().check_executing().is_err() {
                 return Err(SessionError::NotDriven);
             }
+            let resources = data.selected().ok_or(SessionError::NotDriven)?;
             target.with_target(attempt, dialect, model, |input| {
-                data.selected()
+                resources
                     .forward_for_target(target, input.dialect, input.model)
                     .map_err(|_| SessionError::NotDriven)?
                     .write_admission(&mut admission)

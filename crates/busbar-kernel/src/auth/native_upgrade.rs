@@ -194,30 +194,12 @@ impl NativeUpgradeRoute {
                 {
                     return Err(DataRefused::Binding);
                 }
-                let identity = prepared.identity();
-                let (_, gov) = super::resolve_identity_from_bindings(
-                    &app.role_bindings,
-                    super::ChainVerdict::Identified {
-                        module: prepared.provider_text(),
-                        principal: super::Principal {
-                            id: identity.subject().to_owned(),
-                            name: None,
-                            roles: identity.groups().map(str::to_owned).collect(),
-                            ttl_secs: identity.cache_s().map(u64::from),
-                        },
-                        resolved: None,
-                        signed_authority: None,
-                    },
-                )
-                .map_err(|_| DataRefused::Policy)?;
-                let resolved = gov.key.ok_or(DataRefused::Policy)?;
-                if !resolved.enabled
-                    || resolved.deleted_at.is_some()
-                    || resolved.expires_at.is_some_and(|until| now >= until)
-                {
-                    return Err(DataRefused::Policy);
-                }
-                key = Some(resolved);
+                key = Some(super::native_data::governed_key(
+                    app,
+                    &prepared,
+                    &self.chain,
+                    now,
+                )?);
                 Ok(())
             })
             .map_err(|_| DataRefused::Policy)?;

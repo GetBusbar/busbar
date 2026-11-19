@@ -15,6 +15,28 @@ use super::request_admission::{
 use crate::host_services::InvocationContext;
 use crate::refusal::ClientRefusal;
 
+/// The refusal of a key that does not hold a grant of the pool or model the plane named: v1.5.5's
+/// 403 and its vendor-neutral text (ingress `pool_authorized`), which names neither the key nor
+/// the pool. Decided before any money, so nothing is charged.
+pub(crate) fn scope_refusal() -> ClientRefusal {
+    ClientRefusal {
+        status: 403,
+        code: busbar_plugin_abi::fail::refused::R_DENIED,
+        text: "Your API key does not have permission to access this resource.".into(),
+    }
+}
+
+/// A walk the key may not take is answered (403, before money); any other failure to resolve the
+/// walk is not the caller's to see.
+pub(crate) fn forward_refused(error: super::request_admission::AdmissionError) -> SessionError {
+    match error {
+        super::request_admission::AdmissionError::Scope => {
+            SessionError::AdmissionRefused(scope_refusal())
+        }
+        _ => SessionError::NotDriven,
+    }
+}
+
 pub struct AdmittedUnit {
     pub request: AdmittedRequest,
     pub unit: Unit,
@@ -223,7 +245,7 @@ impl Pending {
                 let walk = members.request_walk().ok_or(SessionError::NotDriven)?;
                 let receipt = allocation
                     .forward(&self.routes, walk, wants.model.as_deref())
-                    .map_err(|_| SessionError::NotDriven)?;
+                    .map_err(forward_refused)?;
                 if !members.select_request(&receipt, wants) {
                     return Err(SessionError::NotDriven);
                 }

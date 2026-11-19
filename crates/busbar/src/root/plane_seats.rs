@@ -966,11 +966,14 @@ pub(crate) fn compose(
             .get(instance)
             .map_or(&BTreeMap::new(), |pools| pools.as_ref()),
     )?);
-    // No kind is inferred from instance/image vocabulary.
+    // No kind is inferred from instance/image vocabulary. The seat that walks core's own model
+    // catalog walks the operator's `pools:`, and a key's `allowed_pools` is judged against them as
+    // 1.5.5 judged it (`key.scope_allowed("pool", pool)`): a restricted key reaches its pools only.
+    let scope_kind = catalog.map(|_| Arc::<str>::from("pool"));
     let request_routes = Arc::new(
         RequestRoutes::new(
             instance,
-            None,
+            scope_kind,
             catalog.map(|catalog| Arc::clone(&catalog.plan)),
             Some(Arc::clone(&registration)),
         )

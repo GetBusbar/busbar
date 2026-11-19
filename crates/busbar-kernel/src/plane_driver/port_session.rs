@@ -1359,7 +1359,10 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
         let data = effects.data().cloned();
         if let Some(data) = &data {
             if !data.is_live()
-                || data.selected().request().route() != req.route
+                || data.route() != req.route
+                || data
+                    .selected()
+                    .is_some_and(|selected| selected.request().route() != req.route)
                 || req.request_id != data.binding().invocation().request_id().get()
                 || req.auth != busbar_plugin_abi::plane::AUTH_PRINCIPAL
                 || req.identity != data.identity().identity_records()
@@ -1375,7 +1378,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                 || !effects
                     .invocation()
                     .is_some_and(|context| context.same_unit(data.context()))
-                || !calls.resource_scoped(req.route)
+                || calls.resource_scoped(req.route) != data.selected().is_some()
             {
                 return Err(SessionError::NotDriven);
             }
