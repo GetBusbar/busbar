@@ -972,7 +972,11 @@ pub fn decode_need(body: &[u8]) -> Result<Need<'_>, NeedErr> {
             })
         }
         op::FETCH => {
-            ensure(rec.flags & !(need_flag::TLS_MASK | need_flag::EGRESS_MASK) == 0)?;
+            // Core 3.0: FETCH alone knows one more bit, "status only, discard the body". It selects what
+            // is done with the answer and nothing about where the request may go: every check below is
+            // the same with and without it.
+            const STATUS_ONLY: u32 = crate::vocab::net1::FETCH_STATUS_ONLY;
+            ensure(rec.flags & !(need_flag::TLS_MASK | need_flag::EGRESS_MASK | STATUS_ONLY) == 0)?;
             let egress = egress_of(rec.flags)?;
             ensure(rec.a == 0)?;
             let cert = match mode {
@@ -991,6 +995,7 @@ pub fn decode_need(body: &[u8]) -> Result<Need<'_>, NeedErr> {
                 trust: rec.trust,
                 cert,
                 egress,
+                status_only: rec.flags & STATUS_ONLY != 0,
             }))
         }
         op::SECRET => {
@@ -1366,7 +1371,9 @@ mod tests {
         let status = fetch(class | STATUS_ONLY, 0, 9).expect("a status-only FETCH");
         assert!(!full.0 && status.0);
         assert_eq!(
-            (status.1, status.2, status.3, &status.5, &status.6, &status.7),
+            (
+                status.1, status.2, status.3, &status.5, &status.6, &status.7
+            ),
             (full.1, full.2, full.3, &full.5, &full.6, &full.7),
             "the bit changes nothing but status_only"
         );
@@ -1398,7 +1405,15 @@ mod tests {
         assert_eq!(decode_need(&with_a).err(), Some(NeedErr::Invalid));
 
         // The bit is FETCH's alone.
-        let open = body(op::OPEN, STATUS_ONLY, 0, 0, 0, 0, [b"db.test:5432", E, E, E]);
+        let open = body(
+            op::OPEN,
+            STATUS_ONLY,
+            0,
+            0,
+            0,
+            0,
+            [b"db.test:5432", E, E, E],
+        );
         assert_eq!(decode_need(&open).err(), Some(NeedErr::Invalid));
         let write = body(op::WRITE, STATUS_ONLY, 1, 0, 0, 0, [b"x", E, E, E]);
         assert_eq!(decode_need(&write).err(), Some(NeedErr::Invalid));

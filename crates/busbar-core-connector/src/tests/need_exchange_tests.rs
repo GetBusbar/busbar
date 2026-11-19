@@ -150,6 +150,7 @@ fn req<'a>(method: &'a str, url: &'a str, body: &'a [u8]) -> FetchReq<'a> {
             trust: 0,
             cert: None,
             egress: 0,
+            status_only: false,
         },
         class: 0,
         waive: false,
@@ -441,7 +442,9 @@ async fn a_status_only_fetch_answers_the_status_of_a_receiver_whose_body_is_over
             .any(|(n, v)| n == "x-reply" && v == b"yes"));
         let sent = seen.lock().unwrap().clone();
         assert_eq!(sent.len(), 2, "one request each, no retry");
-        assert!(sent[1].to_ascii_lowercase().starts_with("post /hook http/1.1\r\n"));
+        assert!(sent[1]
+            .to_ascii_lowercase()
+            .starts_with("post /hook http/1.1\r\n"));
         assert!(sent[1].ends_with("line"), "the request body went out whole");
     }
 }
@@ -493,7 +496,10 @@ async fn a_status_only_fetch_is_judged_capped_and_timed_like_any_fetch() {
     assert_eq!(out, Err(NeedErr::Denied));
     assert_eq!(judge.asked.lock().unwrap().len(), 1, "judged before a byte");
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(seen.lock().unwrap().is_empty(), "a refused dial sends nothing");
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "a refused dial sends nothing"
+    );
 
     let judge = Fixed::new(addr);
     for url in [
@@ -506,7 +512,12 @@ async fn a_status_only_fetch_is_judged_capped_and_timed_like_any_fetch() {
     }
     assert!(judge.asked.lock().unwrap().is_empty());
 
-    let (addr, seen) = serve(response("302 Found", &["location: http://127.0.0.1:1/x"], b"")).await;
+    let (addr, seen) = serve(response(
+        "302 Found",
+        &["location: http://127.0.0.1:1/x"],
+        b"",
+    ))
+    .await;
     let judge = Fixed::new(addr);
     let url = format!("http://127.0.0.1:{}/", addr.port());
     let mut got = Got::default();

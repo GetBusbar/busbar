@@ -209,6 +209,8 @@ struct State {
     record_steps: VecDeque<RecordStep>,
     record_calls: Vec<RecordCall>,
     seen: Vec<Seen>,
+    /// The URL of every FETCH that reached its script flagged status-only, in order.
+    status_only: Vec<String>,
     #[cfg(test)]
     open_limits: Vec<(String, busbar_plugin_abi::host_side::caller::InstanceLimits)>,
     released: u64,
@@ -480,6 +482,14 @@ impl FakeNeeds {
         self.lock().seen.clone()
     }
 
+    /// The URL of every FETCH the plugin made as a status-only FETCH (core 3.0, `need::fetch_status`) and
+    /// that reached its scripted answer, in order. Such a FETCH is recorded in [`FakeNeeds::seen`] and
+    /// judged by [`FakeNeeds::deny`] exactly like a full one; what differs is its answer: the scripted
+    /// status and headers, and NO body, whatever body the script holds (as the engine answers it).
+    pub fn status_only_fetches(&self) -> Vec<String> {
+        self.lock().status_only.clone()
+    }
+
     /// The generic ENDPOINT match (TRANSPORT-SECURITY-POLICY §2): every OPEN/FETCH whose (host, TLS) is not
     /// among `declared` (host, TLS) pairs, i.e. a Need the plugin's `check` did not declare.
     pub fn undeclared(&self, declared: &[(&str, bool)]) -> Vec<Seen> {
@@ -560,6 +570,9 @@ impl State {
             .iter()
             .position(|f| f.method == n.method && f.url == n.url)
             .ok_or(NeedErr::Unavailable)?;
+        if n.status_only {
+            self.status_only.push(n.url.to_owned());
+        }
         Ok(self.fetches.remove(at).reply)
     }
 
@@ -744,7 +757,10 @@ impl Needs for FakeNeeds {
                 body,
             } => {
                 res.set(u64::from(status), 0);
-                res.put0(&body)?;
+                // A status-only FETCH has no body: the engine reads none, so the test host hands none.
+                if !n.status_only {
+                    res.put0(&body)?;
+                }
                 for (name, value) in &headers {
                     res.pair1(name, value)?;
                 }

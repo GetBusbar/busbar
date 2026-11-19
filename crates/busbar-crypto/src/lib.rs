@@ -344,6 +344,32 @@ pub fn hmac_sha256_verify(key: &[u8], msg: &[u8], tag: &[u8]) -> Result<(), Erro
     b::hmac_sha256_verify(key, msg, tag).map_err(map)
 }
 
+/// HMAC-SHA256 under `key` of the concatenation of `parts`, in order, fed to the backend's incremental
+/// HMAC one part at a time: no part is copied and nothing is allocated, so a message lent in pieces
+/// (a signed webhook's id, timestamp and body) is MACed where it lies.
+///
+/// The key goes through [`HmacSha256Key::new`], so the backend's key rule is the one-shot
+/// [`hmac_sha256`]'s (a backend may refuse short keys), and the backend cleanses the keyed context
+/// when it is dropped. No parts, or parts that are all empty, are the empty message.
+pub fn hmac_sha256_parts(key: &[u8], parts: &[&[u8]]) -> Result<[u8; 32], Error> {
+    Ok(b::HmacSha256Key::new(key).map_err(map)?.sign_parts(parts))
+}
+
+/// Verify `tag` as HMAC-SHA256 under `key` of the concatenation of `parts`, in constant time:
+/// `Err(Mismatch)` if not (a tag of another length is a mismatch too). The computed MAC is wiped
+/// before this returns.
+pub fn hmac_sha256_parts_verify(key: &[u8], parts: &[&[u8]], tag: &[u8]) -> Result<(), Error> {
+    use zeroize::Zeroize as _;
+    let mut mac = hmac_sha256_parts(key, parts)?;
+    let same = b::ct_eq(&mac, tag);
+    mac.zeroize();
+    if same {
+        Ok(())
+    } else {
+        Err(Error::Mismatch)
+    }
+}
+
 /// An HMAC-SHA256 key for many MACs (the key check happens once, in [`HmacSha256Key::new`]).
 #[derive(Clone, Debug)]
 pub struct HmacSha256Key(b::HmacSha256Key);

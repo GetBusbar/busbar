@@ -104,6 +104,20 @@ fn append(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CryptoErr> {
     Ok(())
 }
 
+/// The answer block of `core_service::HMAC_PARTS` as the MAC of `len` bytes: a `crypto_status`, then, only
+/// when it is OK, exactly the tag. A block shorter than a status, and an OK status followed by a tag of
+/// any other length, are a host bug, never a short value (Err(Rng)); a non-OK status is its error whatever
+/// follows it.
+fn hmac_parts_answer(block: &[u8], len: usize) -> Result<Digest, CryptoErr> {
+    let Some((status, tag)) = block.split_first_chunk::<4>() else {
+        return Err(CryptoErr::Rng);
+    };
+    match u32::from_le_bytes(*status) {
+        crypto_status::OK => Digest::copied(tag, len),
+        status => Err(crypto_err(status)),
+    }
+}
+
 mechanism! {
 
 /// Algorithm numbers. Each is exactly one `busbar-crypto` function (§5.2 table). Whether the linked backend
@@ -175,6 +189,28 @@ pub mod crypto_status {
     /// random, AEAD_SEAL, SIGN_*) or, round 23, Error::SelfTest from any call (§5.2; round 20 had put it in
     /// UNAVAILABLE, which the safe layer turned into REFUSED R_UNSUPPORTED). Safe layer: Err(Rng) → FAILED.
     pub const RNG: u32 = 5;
+}
+/// Core host services (core 3.0): the ids `Host::service` serves for every kind. A core id has no kind
+/// code in its high 32 bits (a kind's own service has its kind code there, `service_id`), so the two
+/// spaces never meet. Each service's call follows the one call shape: numbers in `head` (little-endian,
+/// natural alignment), then `texts` and `blobs` by position. An id the host does not serve is FAULT.
+pub mod core_service {
+    /// HMAC over parts (interface revision E.1). The message is the concatenation of the parts in order;
+    /// the host MACs each part where the plugin lent it, copies none and allocates nothing.
+    ///
+    /// head: `alg: u32`, an `alg::HMAC_*`. texts: none.
+    /// blobs: `[0]` = the MAC key (RAW), `[1..]` = the parts, 0 to `HMAC_PARTS_MAX` of them.
+    /// Answer block: `crypto_status: u32` (little-endian), then, only when it is OK, the tag (the alg's
+    /// length). INVALID: an alg that is no HMAC, or more than `HMAC_PARTS_MAX` parts. UNAVAILABLE: the
+    /// backend refuses the alg or the key, or does not MAC parts with that hash. LIMIT: the block has no
+    /// room for the tag. RNG: the crypto module failed, or the call was made outside an entry.
+    /// Entry status FAULT, nothing written: a head shorter than `alg`, no key blob, or a block with no
+    /// room for the status.
+    pub const HMAC_PARTS: u64 = 1;
+    /// The most parts one HMAC_PARTS call carries. Eight covers every signed-message shape a shipped
+    /// plugin builds (Standard Webhooks: 5; the SigV4 string to sign: 7); a message of more pieces is
+    /// joined by its plugin.
+    pub const HMAC_PARTS_MAX: usize = 8;
 }
 pub mod level {
     pub const ERROR: u32 = 1;
@@ -358,6 +394,12 @@ pub trait HostExt {
     fn random_into(&self, buf: &mut [u8]) -> Result<(), CryptoErr>;
     fn digest(&self, h: Hash, data: &[u8]) -> Result<Digest, CryptoErr>;
     fn hmac(&self, h: Hash, key: &[u8], data: &[u8]) -> Result<Digest, CryptoErr>;
+    /// `hmac` of `parts[0] || parts[1] || ...` under `key` (core 3.0, `core_service::HMAC_PARTS`): the host
+    /// MACs every part where it lies, so a signed body is never copied into one buffer and nothing is
+    /// allocated on either side. `hmac_parts(Md5)` and more than `core_service::HMAC_PARTS_MAX` parts are
+    /// Err(Invalid) before any call. A hash the host does not MAC parts with is Err(Unavailable): join the
+    /// message and use `hmac`. A host without the service is Err(Rng), like a null `crypto`.
+    fn hmac_parts(&self, h: Hash, key: &[u8], parts: &[&[u8]]) -> Result<Digest, CryptoErr>;
     fn pbkdf2_sha256(
         &self,
         password: &[u8],
@@ -517,6 +559,35 @@ impl HostExt for Host {
         call(self, &req(alg, key_form::RAW, key, data), |out| {
             Digest::copied(out, len)
         })
+    }
+    fn hmac_parts(&self, h: Hash, key: &[u8], parts: &[&[u8]]) -> Result<Digest, CryptoErr> {
+        let (_, len, Some(alg)) = h.algs() else {
+            return Err(CryptoErr::Invalid);
+        };
+        if parts.len() > core_service::HMAC_PARTS_MAX {
+            return Err(CryptoErr::Invalid);
+        }
+        // The key, then each part, as borrowed views on this frame: the array holds addresses and
+        // lengths only, no byte of the message.
+        let mut lent = [Bytes::EMPTY; 1 + core_service::HMAC_PARTS_MAX];
+        let message = core::iter::once(key).chain(parts.iter().copied());
+        for (slot, bytes) in lent.iter_mut().zip(message) {
+            *slot = Bytes::new(bytes);
+        }
+        let Some(blobs) = lent.get(..=parts.len()) else {
+            return Err(CryptoErr::Invalid);
+        };
+        let head = alg.to_le_bytes();
+        let call = crate::types::Call::new(0, &head, &[], blobs);
+        let mut answer = [0u8; busbar_ffi::RawOut::MIN];
+        let (status, written) = self.service(core_service::HMAC_PARTS, &call, &mut answer);
+        let mac = if status == Status::OK {
+            hmac_parts_answer(answer.get(..written).unwrap_or(&[]), len)
+        } else {
+            Err(CryptoErr::Rng)
+        };
+        answer.zeroize();
+        mac
     }
     fn pbkdf2_sha256(
         &self,

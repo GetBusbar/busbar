@@ -61,8 +61,6 @@ mod c_blind;
 mod c_boot_order;
 #[path = "c_boundary_fleet.rs"]
 mod c_boundary_fleet;
-#[path = "c_fetch_status.rs"]
-mod c_fetch_status;
 #[path = "c_cancel.rs"]
 mod c_cancel;
 #[path = "c_cancel_bill.rs"]
@@ -121,6 +119,8 @@ mod c_export_streams;
 mod c_fail_facts;
 #[path = "c_fail_reset.rs"]
 mod c_fail_reset;
+#[path = "c_fetch_status.rs"]
+mod c_fetch_status;
 #[path = "c_gen_wrap.rs"]
 mod c_gen_wrap;
 #[path = "c_grpc_deadline.rs"]

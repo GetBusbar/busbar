@@ -77,6 +77,15 @@ typedef struct bb_host {
 } bb_host;
 enum { BB_LOG_ERROR = 1, BB_LOG_WARN = 2, BB_LOG_INFO = 3, BB_LOG_DEBUG = 4, BB_LOG_TRACE = 5 };
 
+/* Core host services (core 3.0): ids with no kind code in the high 32 bits, served through bb_host.service.
+ * BB_SERVICE_HMAC_PARTS: HMAC over parts (E.1). call.head = alg (uint32, a BB_ALG HMAC number: 16 SHA-256);
+ * call.blobs[0] = the key, call.blobs[1..] = the message parts in order (0 to BB_HMAC_PARTS_MAX of them); the
+ * message is their concatenation and the host copies none. out (at least BB_RAW_OUT_MIN bytes) receives a
+ * uint32 crypto status (little-endian; 0 OK, 2 INVALID, 3 UNAVAILABLE, 4 LIMIT, 5 RNG) and, only when it is 0,
+ * the tag. BB_FAULT: the call could not be read; nothing was written. */
+#define BB_SERVICE_HMAC_PARTS 1ull
+#define BB_HMAC_PARTS_MAX 8u
+
 /* #408: native plane resource facts. These records grant no execution authority. */
 /* Plane 2.0: fact bit 3 (FB_RESOURCE_ADMISSION) is retired. */
 #define BB_PLANE_FB_CHANNEL_OPEN (1ull << 4)

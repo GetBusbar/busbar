@@ -69,7 +69,10 @@ fn a_status_only_fetch_answers_the_status_and_headers_and_no_body() {
     let seen = h.seen();
     assert_eq!(seen.len(), 2);
     assert_eq!(seen[0], seen[1]);
-    assert_eq!((seen[1].op, seen[1].dest.as_str(), seen[1].tls), ("fetch", URL, true));
+    assert_eq!(
+        (seen[1].op, seen[1].dest.as_str(), seen[1].tls),
+        ("fetch", URL, true)
+    );
 }
 
 /// A receiver whose answer is far over any cap is one delivery to a status-only FETCH (lean finding 1: with

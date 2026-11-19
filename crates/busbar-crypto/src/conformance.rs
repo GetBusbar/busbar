@@ -201,7 +201,11 @@ pub fn hmac_parts() {
         // Every cut in two, and every cut in three with an empty part between the pieces.
         for i in 0..=msg.len() {
             let (head, tail) = msg.split_at(i);
-            assert_eq!(hmac_sha256_parts(key, &[head, tail]).unwrap(), want, "cut at {i}");
+            assert_eq!(
+                hmac_sha256_parts(key, &[head, tail]).unwrap(),
+                want,
+                "cut at {i}"
+            );
             for j in 0..=tail.len() {
                 let (mid, end) = tail.split_at(j);
                 assert_eq!(

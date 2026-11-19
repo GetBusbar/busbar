@@ -188,6 +188,11 @@ pub fn generate() -> String {
     eq("sizeof(bb_host)", size_of::<abi::host::Host>() as u64);
     eq("BB_SECRET_ENTRIES", abi::secret::ENTRIES as u64);
     eq("BB_RAW_OUT_MIN", busbar_ffi::RawOut::MIN as u64);
+    eq("BB_SERVICE_HMAC_PARTS", abi::host::core_service::HMAC_PARTS);
+    eq(
+        "BB_HMAC_PARTS_MAX",
+        abi::host::core_service::HMAC_PARTS_MAX as u64,
+    );
     eq("BB_STAMP_FORMAT", abi::stamp::STAMP_FORMAT.into());
 
     // Constants.
