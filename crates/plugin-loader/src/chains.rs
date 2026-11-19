@@ -908,6 +908,19 @@ impl Registry {
         {
             drv = drv.with_row(NeedRow::EMPTY);
         }
+        // The open crossing is shown to the crossing recorder like any other: the bound configuration
+        // is bytes the engine lets this image read.
+        crate::call::record::toward_open(
+            &crate::call::record::Who {
+                kind: K::CODE,
+                plugin: &p.identity,
+                name: s.name,
+                instance: p.id,
+                slot: lease.slot(),
+            },
+            flags,
+            p.bound.as_slice(),
+        );
         let req = Pool::global()
             .acquire_with(max_out, p.bound.as_slice())
             .map_err(|_| {

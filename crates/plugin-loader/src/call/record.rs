@@ -122,6 +122,34 @@ fn toward_cold(
     hook.toward(&Who::of(inst), method, &Seen::of(session, call, list));
 }
 
+/// The `open` crossing: the bound configuration an image is opened with, shown before it crosses. It
+/// is made through the image's header, not a kind's table, so the method is the header entry
+/// (`ENTRY_OPEN`) and no row of the method table is held against it.
+#[inline(always)]
+pub(crate) fn toward_open(who: &Who<'_>, flags: u32, config: &[u8]) {
+    if let Some(hook) = HOOK.get() {
+        open_cold(*hook, who, flags, config);
+    }
+}
+
+#[cold]
+fn open_cold(hook: &dyn Recorder, who: &Who<'_>, flags: u32, config: &[u8]) {
+    let head = flags.to_le_bytes();
+    let blobs = [Bytes::new(config)];
+    hook.toward(
+        who,
+        busbar_plugin_abi::host_side::watch::ENTRY_OPEN,
+        &Seen {
+            session: 0,
+            mono_ns: 0,
+            head: &head,
+            texts: &[],
+            blobs: &blobs,
+            list: &[],
+        },
+    );
+}
+
 /// A chain start, whose call record is built past the bolt: the same parts, by content. `blob` is the
 /// method's one byte argument, None for a method that takes no bytes.
 #[inline(always)]
@@ -356,11 +384,14 @@ impl Recorder for Crossings {
     fn toward(&self, who: &Who<'_>, method: u8, seen: &Seen<'_>) {
         self.crossings.fetch_add(1, Ordering::Relaxed);
         self.by_kind[who.kind as usize - 1].fetch_add(1, Ordering::Relaxed);
-        if let Err(drift) = layout::check(who.kind, method, seen) {
-            self.drifts
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(drift);
+        // Header entries (open, resume) are not rows of a kind's method table.
+        if method < busbar_plugin_abi::host_side::watch::ENTRY_DESCRIBE {
+            if let Err(drift) = layout::check(who.kind, method, seen) {
+                self.drifts
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(drift);
+            }
         }
         self.remember(who);
         self.scan(who, method, Place::Head, seen.head);
