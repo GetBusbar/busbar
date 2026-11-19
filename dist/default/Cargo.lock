@@ -1776,7 +1776,7 @@ dependencies = [
 [[package]]
 name = "h2"
 version = "0.4.20"
-source = "git+https://github.com/MattJackson/h2?rev=45b907798147b992b03334e500fdedc8d7e29a40#45b907798147b992b03334e500fdedc8d7e29a40"
+source = "git+https://github.com/MattJackson/h2?rev=e5609a5e5dff1cccf43ff0e11c7cd758884dbe83#e5609a5e5dff1cccf43ff0e11c7cd758884dbe83"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1869,8 +1869,8 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "1.5.0"
-source = "git+https://github.com/MattJackson/http?rev=7e71322105371bae475f8e68d86324e73f4a11c9#7e71322105371bae475f8e68d86324e73f4a11c9"
+version = "1.4.1"
+source = "git+https://github.com/MattJackson/http?rev=904f4519b5f27a0424b121a4828640c741efcd95#904f4519b5f27a0424b121a4828640c741efcd95"
 dependencies = [
  "bytes",
  "itoa",
