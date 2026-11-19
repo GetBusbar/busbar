@@ -176,7 +176,8 @@ pub fn decode_verify_ok(mut records: Records<'_>) -> Result<VerifyOk, RecErr> {
     // so a frame is byte for byte what `put_text`/`put_pair` would write again. They go into one block, taken at
     // ID_SUBJECT (always the first kept record) and sized by what is left of the answer, so an Identity costs this
     // block and its Arc, nothing else (no scratch, no growth, no second copy); ISSUED_WANTED takes none.
-    let mut w = SecureVec::new();
+    let mut w: Option<SecureVec> = None;
+    let kept = |w: &Option<SecureVec>| w.as_ref().map_or(0, |w| w.len());
     let mut id_len: Option<usize> = None;
     let mut subject = false;
     let mut wanted: Option<&str> = None;
@@ -202,27 +203,28 @@ pub fn decode_verify_ok(mut records: Records<'_>) -> Result<VerifyOk, RecErr> {
         match rec.tag {
             tag::ID_SUBJECT if !any => {
                 rec.text()?;
-                w = SecureVec::with_capacity(before.len()).map_err(|_| RecErr::Size)?;
-                w.extend_from_slice(frame);
+                let mut block = SecureVec::with_capacity(before.len()).map_err(|_| RecErr::Size)?;
+                block.extend_from_slice(frame);
+                w = Some(block);
                 subject = true;
             }
             tag::ID_GROUP if subject && id_len.is_none() => {
                 rec.text()?;
-                w.extend_from_slice(frame);
+                w.iter_mut().for_each(|w| w.extend_from_slice(frame));
             }
             tag::ID_CLAIM if subject && id_len.is_none() => {
                 rec.pair()?;
-                w.extend_from_slice(frame);
+                w.iter_mut().for_each(|w| w.extend_from_slice(frame));
             }
             t::ISSUED_WANTED if !any => wanted = Some(rec.text()?),
             other if !subject => return Err(RecErr::Unknown(other)),
             t::STRIP => {
-                id_len.get_or_insert(w.len());
+                id_len.get_or_insert(kept(&w));
                 rec.text()?;
-                w.extend_from_slice(frame);
+                w.iter_mut().for_each(|w| w.extend_from_slice(frame));
             }
             tag::FACT => {
-                id_len.get_or_insert(w.len());
+                id_len.get_or_insert(kept(&w));
                 let f = rec.pod::<FactRec>()?;
                 if f._r != 0 {
                     return Err(RecErr::Reserved);
@@ -236,7 +238,7 @@ pub fn decode_verify_ok(mut records: Records<'_>) -> Result<VerifyOk, RecErr> {
                 }
             }
             t::REPLAY if replay.is_none() => {
-                id_len.get_or_insert(w.len());
+                id_len.get_or_insert(kept(&w));
                 let (head, key) = rec.pod_tail::<U64Rec>()?;
                 if key.is_empty() || key.len() > REPLAY_KEY_MAX {
                     return Err(RecErr::Size);
@@ -251,9 +253,9 @@ pub fn decode_verify_ok(mut records: Records<'_>) -> Result<VerifyOk, RecErr> {
     if let Some(id) = wanted {
         return Ok(VerifyOk::IssuedWanted(Box::from(id)));
     }
-    if !subject {
+    let Some(w) = w else {
         return Err(RecErr::Truncated);
-    }
+    };
     let id_len = u32::try_from(id_len.unwrap_or(w.len())).map_err(|_| RecErr::Size)?;
     Ok(VerifyOk::Identity(Identity {
         recs: Arc::new(w),
@@ -475,7 +477,8 @@ mod tests {
             .unwrap();
         let before = busbar_contract::secure::wipe_counts().1;
         assert!(decode_verify_ok(Records::new(reply.as_bytes())).is_err());
-        assert_eq!(busbar_contract::secure::wipe_counts().1, before + 1);
+        // The replay key and the identity block it was decoded beside: both wiped as they drop.
+        assert_eq!(busbar_contract::secure::wipe_counts().1, before + 2);
     }
 
     #[test]
