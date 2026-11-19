@@ -33,6 +33,7 @@ use busbar_plugin_abi::records::{
     Reply, U32Rec, U64Rec, Writer,
 };
 use busbar_plugin_abi::types::{Bytes, Slice, Status, Str};
+use busbar_plugin_abi::vocab::route1;
 
 use crate::instance::ErrorBook;
 use busbar_ports::codec::fallback_usage::Declaration;
@@ -59,13 +60,8 @@ const AUTH_BITS: u32 = p::AUTH_PRINCIPAL
 const MSG_BITS: u32 = p::MSG_TEXT | p::MSG_BINARY | p::MSG_FIN;
 const DX_BITS: u32 = p::DX_RESIGHT | p::DX_OUTSTANDING | p::DX_BROADCAST | p::DX_FINAL;
 
-/// `D_ROUTE_ADMISSION` (plane 2.0): 16 bytes (four little-endian words: route, scope, money, callers),
-/// then the walk kind as text (empty when the scope has no walk).
-pub const D_ROUTE_ADMISSION: u16 = 0x019A;
-/// `D_ROUTE_CHALLENGE` (plane 2.0): 8 bytes (route, zero), then the challenge text.
-pub const D_ROUTE_CHALLENGE: u16 = 0x019B;
-
-/// One route's stated admission, as the image wrote it.
+/// One route's stated admission (the contract's `D_ROUTE_ADMISSION`: a `RouteAdmissionRec` and the walk
+/// kind as its text tail, empty when the scope has no walk), as the image wrote it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RouteAdmission {
     pub route: u32,
@@ -73,29 +69,6 @@ pub struct RouteAdmission {
     pub money: u32,
     pub callers: u32,
     pub walk_kind: Box<str>,
-}
-
-fn le_word(body: &[u8], index: usize) -> Option<u32> {
-    let bytes = body.get(index * 4..index * 4 + 4)?;
-    Some(u32::from_le_bytes(bytes.try_into().ok()?))
-}
-
-/// The shape of a D_ROUTE_ADMISSION body: four words and a text tail.
-fn route_admission(body: &[u8]) -> Option<RouteAdmission> {
-    Some(RouteAdmission {
-        route: le_word(body, 0)?,
-        scope: le_word(body, 1)?,
-        money: le_word(body, 2)?,
-        callers: le_word(body, 3)?,
-        walk_kind: core::str::from_utf8(body.get(16..)?).ok()?.into(),
-    })
-}
-
-/// The shape of a D_ROUTE_CHALLENGE body: the route, a zero word, and a non-empty text.
-fn route_challenge(body: &[u8]) -> Option<(u32, Box<str>)> {
-    let route = le_word(body, 0)?;
-    let text = core::str::from_utf8(body.get(8..)?).ok()?;
-    (le_word(body, 1)? == 0 && !text.is_empty()).then(|| (route, text.into()))
 }
 
 /// The plane-only items of one image's describe answer (§8.6), decoded once at `Registry::add`.
@@ -110,9 +83,9 @@ pub struct PlaneDescribe {
     pub tick_s: Option<u64>,
     /// D_ADMIN_OPENAPI: the OpenAPI fragment of the ROUTE_ADMIN routes, for K8's admin document merge (round 8).
     pub admin_openapi: Option<Box<str>>,
-    /// D_ROUTE_ADMISSION, one per route that states its admission: what the kernel builds the route's
-    /// record from (`RouteRecord::from_wire`). The loader checks the item's shape only; its meaning is
-    /// the kernel's to judge.
+    /// D_ROUTE_ADMISSION, exactly one per route (plane 2.0: a route without it is not declared and
+    /// the describe is refused). Each passed the contract's load rules (`vocab::route1::check`) against
+    /// this image's methods; the kernel builds the route's record from it (`RouteRecord::from_wire`).
     pub route_admissions: Vec<RouteAdmission>,
     /// D_ROUTE_CHALLENGE, at most one per route: the `WWW-Authenticate` text of the route's refusal.
     pub route_challenges: Vec<(u32, Box<str>)>,
@@ -253,21 +226,34 @@ pub fn decode_describe(
                     return Err(bad);
                 }
             }
-            D_ROUTE_ADMISSION => {
+            t::D_ROUTE_ADMISSION => {
                 let bad = DescribeInvalid("describe.route_admission");
-                let item = route_admission(rec.body).ok_or(bad)?;
-                if d.route_admissions.iter().any(|x| x.route == item.route) {
+                let (a, tail) = rec.pod_tail::<p::RouteAdmissionRec>().map_err(|_| bad)?;
+                let walk_kind = core::str::from_utf8(tail).map_err(|_| bad)?;
+                if d.route_admissions.iter().any(|x| x.route == a.route) {
                     return Err(bad);
                 }
-                d.route_admissions.push(item);
+                d.route_admissions.push(RouteAdmission {
+                    route: a.route,
+                    scope: a.scope,
+                    money: a.money,
+                    callers: a.callers,
+                    walk_kind: walk_kind.into(),
+                });
             }
-            D_ROUTE_CHALLENGE => {
+            t::D_ROUTE_CHALLENGE => {
                 let bad = DescribeInvalid("describe.route_challenge");
-                let item = route_challenge(rec.body).ok_or(bad)?;
-                if d.route_challenges.iter().any(|(route, _)| *route == item.0) {
+                let (h, tail) = rec.pod_tail::<p::RouteHeaderRec>().map_err(|_| bad)?;
+                let text = core::str::from_utf8(tail).map_err(|_| bad)?;
+                if h._r != 0
+                    || !(1..=route1::CHALLENGE_MAX).contains(&text.len())
+                    || d.route_challenges
+                        .iter()
+                        .any(|(route, _)| *route == h.route)
+                {
                     return Err(bad);
                 }
-                d.route_challenges.push(item);
+                d.route_challenges.push((h.route, text.into()));
             }
             t::D_PROVIDER_SCHEMA | t::D_DIALECT_AUTH => {}
             tag if tag < 0x0100 => {}
@@ -283,9 +269,9 @@ pub fn decode_describe(
             _ => return Err(DescribeInvalid("describe.route_cred_header")),
         }
     }
-    if (!resource_routes.is_empty() && facts & p::FB_RESOURCE_ADMISSION == 0)
-        || (facts & p::FB_RESOURCE_ADMISSION != 0 && methods & p::M_SELECT_RESOURCES == 0)
-    {
+    // Plane 2.0 retired the fact bit that restated "some route selects": a route that names resource
+    // kinds needs the image's `select_resources`, and its admission must say SCOPE_SELECTED (below).
+    if !resource_routes.is_empty() && methods & p::M_SELECT_RESOURCES == 0 {
         return Err(DescribeInvalid("describe.route_resources"));
     }
     if facts & p::FB_CHANNEL_OPEN != 0
@@ -330,7 +316,59 @@ pub fn decode_describe(
         return Err(DescribeInvalid("describe.attempt_upstream"));
     }
     decode_provider_schema(describe).map_err(|_| DescribeInvalid("describe.provider_schema"))?;
+    route_admission_rules(&d, methods)?;
     Ok(d)
+}
+
+/// Plane 2.0: a route is one D_ROUTE and exactly one D_ROUTE_ADMISSION, every field stated, no default.
+/// The load rules are the contract's one function (`vocab::route1::check`), judged here against the
+/// image's own methods, so a route without its admission cannot be mounted because it was never
+/// declared. The refusal's field is `describe.route_admission`; the route and the rule it broke are
+/// logged once, here.
+fn route_admission_rules(d: &PlaneDescribe, methods: u64) -> Result<(), DescribeInvalid> {
+    for r in &d.routes {
+        let stated = d.route_admissions.iter().find(|a| a.route == r.route);
+        let route = p::RouteRec {
+            route: r.route,
+            methods: r.methods,
+            flags: r.flags,
+            auth: r.auth,
+        };
+        let admission = stated.map(|a| p::RouteAdmissionRec {
+            route: a.route,
+            scope: a.scope,
+            money: a.money,
+            callers: a.callers,
+        });
+        let has = route1::Has {
+            render: methods & p::M_RENDER != 0,
+            select_resources: methods & p::M_SELECT_RESOURCES != 0,
+            upstream: methods & p::M_UPSTREAM != 0,
+            selected_kinds: r.resource_kinds.len(),
+            walk_kind: stated.is_some_and(|a| !a.walk_kind.is_empty()),
+            method_get: GET,
+        };
+        if let Err(fault) = route1::check(&route, admission.as_ref(), has) {
+            tracing::error!(
+                route = r.route,
+                pattern = %r.pattern,
+                ?fault,
+                "a plane route's admission breaks a load rule: the image is refused"
+            );
+            return Err(DescribeInvalid("describe.route_admission"));
+        }
+        // The kinds of SCOPE_SELECTED are the route's D_ROUTE_RESOURCES: each states the other.
+        let selects = stated.is_some_and(|a| a.scope & p::SCOPE_SELECTED != 0);
+        if selects == r.resource_kinds.is_empty() {
+            tracing::error!(
+                route = r.route,
+                pattern = %r.pattern,
+                "a plane route names resource kinds without SCOPE_SELECTED: the image is refused"
+            );
+            return Err(DescribeInvalid("describe.route_resources"));
+        }
+    }
+    Ok(())
 }
 
 /// The RouteRec.flags and auth rules of §8.6 (rounds 8, 10 and 13).
@@ -1618,7 +1656,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<Vec<u8>, PortError> {
         use busbar_plugin_abi::resource_admission as resources;
         let kinds = self.resource_kinds(req.route);
-        if self.facts() & p::FB_RESOURCE_ADMISSION == 0
+        if self.proxy.instance().methods & p::M_SELECT_RESOURCES == 0
             || kinds.is_empty()
             || req.auth != 0
             || !req.identity.is_empty()
@@ -2017,6 +2055,21 @@ mod tests {
         };
         r.put_pod_tail(t::D_ROUTE, &rec, pattern.as_bytes())
             .unwrap();
+        // Plane 2.0: every route states its admission. A catalog route walks core's pools and moves
+        // no money; every other route of these tests states scope none, money none, shared callers.
+        let (scope, walk) = if flags == p::ROUTE_CATALOG {
+            (p::SCOPE_WALK, "pool")
+        } else {
+            (p::SCOPE_NONE, "")
+        };
+        let admission = p::RouteAdmissionRec {
+            route,
+            scope,
+            money: p::MONEY_NONE,
+            callers: p::CALLERS_SHARED,
+        };
+        r.put_pod_tail(t::D_ROUTE_ADMISSION, &admission, walk.as_bytes())
+            .unwrap();
     }
 
     fn cred(r: &mut Reply, route: u32, name: &str) {
@@ -2182,7 +2235,8 @@ mod tests {
             1,
             GET,
             p::ROUTE_CATALOG,
-            p::AUTH_PUBLIC,
+            // A catalog is listed for a verified key (plane 2.0: a public caller has no scope to walk).
+            p::AUTH_PRINCIPAL,
             "/v1/models",
         );
         let no_render = p::ALL & !p::M_RENDER;
@@ -2601,7 +2655,8 @@ mod tests {
 #[path = "plane_fallback_tests.rs"]
 mod fallback_tests;
 
-/// The two per-route describe items of plane 2.0: accepted, kept as written, refused when malformed.
+/// The two per-route describe items of plane 2.0: the admission is required and judged by the
+/// contract's load rules, the challenge is optional; both are kept as written, refused when malformed.
 #[cfg(test)]
 mod route_item_tests {
     use super::*;
@@ -2634,18 +2689,18 @@ mod route_item_tests {
     }
 
     fn describe(r: &Reply) -> Result<PlaneDescribe, DescribeInvalid> {
-        decode_describe(Records::new(r.as_bytes()), 0, 0)
+        decode_describe(Records::new(r.as_bytes()), p::ALL, 0)
     }
 
     #[test]
     fn a_routes_admission_and_challenge_are_kept_as_the_image_wrote_them() {
         let mut r = Reply::new();
         // The items may come before the route they name.
-        r.put(D_ROUTE_ADMISSION, &admission(1, 2, 2, 1, "pool"))
+        r.put(t::D_ROUTE_ADMISSION, &admission(1, 2, 2, 1, "pool"))
             .unwrap();
         chat_route(&mut r);
         r.put(
-            D_ROUTE_CHALLENGE,
+            t::D_ROUTE_CHALLENGE,
             &challenge(1, 0, "Bearer realm=\"{public_url}\""),
         )
         .unwrap();
@@ -2666,12 +2721,63 @@ mod route_item_tests {
         );
     }
 
+    /// The contract's rule: a route without its admission item is not declared, so it cannot be mounted.
     #[test]
-    fn a_route_without_the_items_still_decodes() {
+    fn a_route_without_its_admission_refuses_the_image() {
+        let bad = Err(DescribeInvalid("describe.route_admission"));
         let mut r = Reply::new();
         chat_route(&mut r);
+        assert_eq!(describe(&r), bad);
+        // The challenge stays optional.
+        r.put(t::D_ROUTE_ADMISSION, &admission(1, 2, 2, 1, "pool"))
+            .unwrap();
         let d = describe(&r).unwrap();
-        assert!(d.route_admissions.is_empty() && d.route_challenges.is_empty());
+        assert_eq!(d.route_admissions.len(), 1);
+        assert!(d.route_challenges.is_empty());
+    }
+
+    /// The load rules are the contract's (`vocab::route1::check`), against this image's methods.
+    #[test]
+    fn an_admission_that_breaks_a_load_rule_refuses_the_image() {
+        let bad = Err(DescribeInvalid("describe.route_admission"));
+        for body in [
+            // A field not stated (zero), and a word outside the vocabulary.
+            admission(1, 0, 2, 1, ""),
+            admission(1, 2, 3, 1, "pool"),
+            admission(1, 2, 2, 9, "pool"),
+            // "None" said together with a walk; a walk without its kind; a kind without the walk.
+            admission(1, 1 | 2, 2, 1, "pool"),
+            admission(1, 2, 2, 1, ""),
+            admission(1, 1, 2, 1, "pool"),
+            // Selected kinds the route does not name.
+            admission(1, 4, 2, 1, ""),
+        ] {
+            let mut r = Reply::new();
+            chat_route(&mut r);
+            r.put(t::D_ROUTE_ADMISSION, &body).unwrap();
+            assert_eq!(describe(&r), bad, "{body:?}");
+        }
+        // A walk needs the image's `upstream`.
+        let mut r = Reply::new();
+        chat_route(&mut r);
+        r.put(t::D_ROUTE_ADMISSION, &admission(1, 2, 2, 1, "pool"))
+            .unwrap();
+        assert_eq!(
+            decode_describe(Records::new(r.as_bytes()), p::ALL & !p::M_UPSTREAM, 0),
+            bad
+        );
+        // Money on a route a public caller may reach is refused: there is nobody to charge.
+        let mut open = Reply::new();
+        let rec = p::RouteRec {
+            route: 1,
+            methods: POST,
+            flags: 0,
+            auth: p::AUTH_PUBLIC,
+        };
+        open.put_pod_tail(t::D_ROUTE, &rec, b"/open").unwrap();
+        open.put(t::D_ROUTE_ADMISSION, &admission(1, 1, 2, 1, ""))
+            .unwrap();
+        assert_eq!(describe(&open), bad);
     }
 
     #[test]
@@ -2679,23 +2785,23 @@ mod route_item_tests {
         let bad = Err(DescribeInvalid("describe.route_admission"));
         let mut short = Reply::new();
         chat_route(&mut short);
-        short.put(D_ROUTE_ADMISSION, &[0u8; 15]).unwrap();
+        short.put(t::D_ROUTE_ADMISSION, &[0u8; 15]).unwrap();
         assert_eq!(describe(&short), bad);
 
         let mut twice = Reply::new();
         chat_route(&mut twice);
         twice
-            .put(D_ROUTE_ADMISSION, &admission(1, 1, 1, 1, ""))
+            .put(t::D_ROUTE_ADMISSION, &admission(1, 1, 1, 1, ""))
             .unwrap();
         twice
-            .put(D_ROUTE_ADMISSION, &admission(1, 1, 1, 1, ""))
+            .put(t::D_ROUTE_ADMISSION, &admission(1, 1, 1, 1, ""))
             .unwrap();
         assert_eq!(describe(&twice), bad);
 
         let mut unrouted = Reply::new();
         chat_route(&mut unrouted);
         unrouted
-            .put(D_ROUTE_ADMISSION, &admission(9, 1, 1, 1, ""))
+            .put(t::D_ROUTE_ADMISSION, &admission(9, 1, 1, 1, ""))
             .unwrap();
         assert_eq!(describe(&unrouted), bad);
 
@@ -2703,7 +2809,7 @@ mod route_item_tests {
         chat_route(&mut not_text);
         let mut body = admission(1, 2, 1, 1, "");
         body.extend_from_slice(&[0xFF, 0xFE]);
-        not_text.put(D_ROUTE_ADMISSION, &body).unwrap();
+        not_text.put(t::D_ROUTE_ADMISSION, &body).unwrap();
         assert_eq!(describe(&not_text), bad);
     }
 
@@ -2718,16 +2824,16 @@ mod route_item_tests {
         ] {
             let mut r = Reply::new();
             chat_route(&mut r);
-            r.put(D_ROUTE_CHALLENGE, &body).unwrap();
+            r.put(t::D_ROUTE_CHALLENGE, &body).unwrap();
             assert_eq!(describe(&r), bad);
         }
         let mut twice = Reply::new();
         chat_route(&mut twice);
         twice
-            .put(D_ROUTE_CHALLENGE, &challenge(1, 0, "Bearer"))
+            .put(t::D_ROUTE_CHALLENGE, &challenge(1, 0, "Bearer"))
             .unwrap();
         twice
-            .put(D_ROUTE_CHALLENGE, &challenge(1, 0, "Basic"))
+            .put(t::D_ROUTE_CHALLENGE, &challenge(1, 0, "Basic"))
             .unwrap();
         assert_eq!(describe(&twice), bad);
     }

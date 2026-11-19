@@ -337,7 +337,8 @@ pub trait PlanePort: Send + Sync + 'static {
     fn routes(&self) -> &[RouteInfo];
     /// The admission `route` states (plane 2.0's D_ROUTE_ADMISSION), if it states one: the scope, money
     /// and callers words and the walk kind, as the image wrote them. The kernel builds the route's record
-    /// from these.
+    /// from these. `None` is "not stated", never a default: the mount table refuses such a route
+    /// (`RouteRefused::NoAdmission`), as the loader refuses an image whose route states none.
     fn route_admission(&self, route: u32) -> Option<(u32, u32, u32, &str)> {
         let _ = route;
         None

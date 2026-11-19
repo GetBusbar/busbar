@@ -29,6 +29,16 @@ fn describe(routes: &[(u32, u32, u32)]) -> Result<PlaneDescribe, DescribeInvalid
             auth,
         };
         r.put_pod_tail(t::D_ROUTE, &rec, b"/r").unwrap();
+        // Plane 2.0: a route is declared with its admission (scope none, money none, shared callers
+        // here: these rows test the route's own flags and methods).
+        let admission = p::RouteAdmissionRec {
+            route: rec.route,
+            scope: p::SCOPE_NONE,
+            money: p::MONEY_NONE,
+            callers: p::CALLERS_SHARED,
+        };
+        r.put_pod_tail(t::D_ROUTE_ADMISSION, &admission, b"")
+            .unwrap();
     }
     decode_describe(Records::new(r.as_bytes()), p::ALL, 0)
 }
