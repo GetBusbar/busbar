@@ -658,8 +658,9 @@ mod audience_bound_dpop {
             text.lines()
                 .filter(|line| {
                     line.contains("diag=BUSBAR-4032")
-                        && line.contains("surface=native")
-                        && line.contains("reason=unverifiable")
+                        // `&str` fields are written quoted.
+                        && line.contains("surface=\"native\"")
+                        && line.contains("reason=\"unverifiable\"")
                 })
                 .count()
         }

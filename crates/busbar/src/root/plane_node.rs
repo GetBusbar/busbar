@@ -421,6 +421,7 @@ impl Node {
             Err(error) => tracing::warn!(?error, "store slot settle pass failed"),
         }
     }
+
     /// A new core's audit state, pulled by this node's flusher (design 2, A1). The core's
     /// listener loop owns it and hands it to each connection.
     pub(crate) fn core_audit(&self) -> Arc<crate::root::durability::core_audit::CoreAudit> {
