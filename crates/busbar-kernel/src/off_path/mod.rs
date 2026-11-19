@@ -27,7 +27,6 @@ pub(crate) mod plane_port_hooks;
 pub(crate) mod plane_provider_catalog;
 pub(crate) mod plane_registry;
 pub(crate) mod plane_route_tables;
-pub(crate) mod plane_serve;
 pub(crate) mod router;
 pub(crate) mod telemetry;
 pub(crate) mod timing;

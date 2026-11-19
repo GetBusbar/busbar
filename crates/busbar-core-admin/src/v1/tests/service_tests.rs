@@ -1737,7 +1737,6 @@ static CLASS_PARENT_PLANE: busbar_kernel::plane_driver::registry::PlaneDecl =
         admission: |_| None,
         build: |_, _| None,
         routes: None,
-        admin_routes: None,
         openapi: None,
         hydrate: None,
         start: None,

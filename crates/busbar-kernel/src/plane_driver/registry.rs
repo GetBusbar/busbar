@@ -278,10 +278,6 @@ pub(crate) use crate::off_path::plane_registry::{
 /// [`PlaneDecl::routes`]: the plane's neutral data routes, from its runtime slot.
 pub(crate) type RoutesHook = fn(&dyn std::any::Any) -> Vec<crate::plane_routes::PlaneRouteSpec>;
 
-/// [`PlaneDecl::admin_routes`]: the plane's neutral admin verbs, from its runtime slot.
-pub(crate) type AdminRoutesHook =
-    fn(&PlaneDecl, &dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>;
-
 /// [`PlaneDecl::named_def_list`]: the plane's registrations, projected for the admin list.
 pub(crate) type NamedDefListHook =
     fn(&PlaneDecl, &dyn crate::plane_driver::slots::PlaneSlots) -> Vec<crate::api::NamedDefView>;
@@ -415,30 +411,10 @@ plane_behaviour! {
     /// protocol catch-all, mounted in `base_data_router` directly rather than through this seam).
     routes: Option<RoutesHook>,
 
-    /// CONTRIBUTE THE PLANE'S ADMIN VERBS to the Admin API v1 router — the operator surface a plane
-    /// adds ON TOP of the generic named-definition CRUD (MCP's `connect`/`changes`/`health`, A2A's
-    /// `connect`/`approve`). `None` for a plane with no admin verbs. Unconditional (not slot-gated):
-    /// the verbs are part of the surface whether or not the plane is configured this generation, so
-    /// this takes only the router. Merged in declaration order so the route order is stable and
-    /// operator-visible.
-    ///
-    /// As with [`Self::routes`], the signature grants a plane's admin contribution ONLY the router —
-    /// never a `Store`, a `GovCtx`, or an `audit::Chain`.
-    /// Described NEUTRALLY (ADMIN-3), mirroring [`Self::routes`]: from the plane's own runtime slot
-    /// (type-erased `&dyn Any`) the plane returns a flat list of
-    /// [`crate::admin_verbs::AdminRouteSpec`] — each a `(method, path, scope, kind, handler)`
-    /// where the handler is a neutral async fn over an
-    /// [`crate::admin_verbs::AdminReqCtx`], never an `axum` extractor or `Arc<AppHandle>`. The
-    /// CORE adapter (`busbar_core_admin::v1::json::mount_plane_admin_routes`) registers each spec at
-    /// its VERBATIM `(method, path)`, so the auth middleware's `required_scope(method, path)` is
-    /// byte-identical — the security invariant this seam preserves.
-    admin_routes: Option<AdminRoutesHook>,
-
     /// CONTRIBUTE THE PLANE'S OpenAPI PATH FRAGMENT — a JSON object whose keys are the ABSOLUTE admin
     /// paths this plane's verbs answer on and whose values are the OpenAPI path items. Merged into the
     /// admin document in declaration order. `None` for a plane that contributes no admin path. A plane
-    /// that contributes admin verbs ([`Self::admin_routes`] is `Some`) MUST return a non-empty object
-    /// here, so the document can never silently omit a mounted verb.
+    /// that answers admin paths MUST return a non-empty object here.
     // Read only by the OpenAPI generator (feature `openapi-schema`) and the non-vacuity floor test; a
     // default `--no-default-features` build has neither, so the field is genuinely unread there.
     openapi: Option<OpenapiHook>,

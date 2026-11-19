@@ -131,15 +131,10 @@ interim:
   crates/busbar-core-connector/src/child_job.rs: { tokens: 17, by: "W1-C1C, then PLATFORMS OQ-5" }
   crates/busbar-core-connector/src/conns.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
   crates/busbar-core-connector/src/tests/support_lib.rs: { tokens: 6, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-kernel/src/plane_driver/serve.rs: { tokens: 1, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs: { tokens: 2, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/plane_driver/tests/probe_unit_tests.rs: { tokens: 3, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/plane_driver/tests/retirement_tests.rs: { tokens: 1, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/plane_driver/tests/route_tests.rs: { tokens: 2, by: "W3-D-BINARY" }
-  crates/busbar-kernel/src/plane_driver/tests/serve_tests.rs: { tokens: 7, by: "W3-D-BINARY" }
-  crates/busbar-kernel/tests/support/plane_driver_actual.rs: { tokens: 34, by: "W3-D-BINARY" }
-  crates/busbar-kernel/tests/support/plane_driver_session_input_cases.rs: { tokens: 1, by: "W3-D-BINARY" }
-  crates/busbar-kernel/tests/support/plane_driver_unbilled_cases.rs: { tokens: 7, by: "W3-D-BINARY" }
   crates/busbar/build.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/main.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/mod.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }

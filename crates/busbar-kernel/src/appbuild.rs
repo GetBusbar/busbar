@@ -2383,9 +2383,6 @@ async fn build_app_native(
 
     let limits = Some(limits_resolved.clone());
 
-    let serve_tables = prior.map_or_else(crate::plane_driver::serve::ServeTables::default, |p| {
-        p.serve_tables.clone()
-    });
     let root_rules = std::sync::Arc::clone(rules);
     let plane_sections = Some(cfg.plane_sections.clone());
 
@@ -2521,7 +2518,6 @@ async fn build_app_native(
     let mut app = App::assemble(
         crate::state::AppParts {
             limits,
-            serve_tables,
             port_seats: prior.map(|app| app.port_seats.clone()).unwrap_or_default(),
             exports: prior
                 .map(|app| Arc::clone(&app.exports))

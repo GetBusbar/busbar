@@ -73,7 +73,6 @@ impl AdminTransport for JsonV1 {
             )
             .merge(named_map::routes());
 
-        let router = mount_plane_admin_routes(router);
         let router = router
             .route(PATH_GROUPS, get(list_groups).post(register_group))
             .route(
@@ -253,17 +252,6 @@ pub(crate) use busbar_kernel::config::transaction::{config_transaction, Outcome}
 
 pub(crate) mod named_map;
 
-fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<AppHandle>> {
-    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
-        if let Some(admin_routes) = decl.admin_routes {
-            for spec in admin_routes(decl, &() as &dyn std::any::Any) {
-                router = mount_one_admin_spec(router, decl, spec);
-            }
-        }
-    }
-    router
-}
-
 async fn plane_serve_or_not_found(
     State(handle): State<Arc<AppHandle>>,
     req: axum::extract::Request,
@@ -277,12 +265,7 @@ async fn plane_serve_or_not_found(
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return port_admin_response(&app.port_seats, request_id, parts, body).await;
     }
-    let req = axum::extract::Request::from_parts(parts, body);
-    let tables = handle.load().serve_tables.clone();
-    tables
-        .answer(req)
-        .await
-        .unwrap_or_else(|| err_json(&AdminError::not_found("resource")))
+    err_json(&AdminError::not_found("resource"))
 }
 
 /// The most body bytes a plane admin request may carry.
@@ -369,101 +352,6 @@ fn untagged(mut resp: Response) -> Response {
 #[cfg(not(test))]
 fn untagged(resp: Response) -> Response {
     resp
-}
-
-fn mount_one_admin_spec(
-    router: Router<Arc<AppHandle>>,
-    decl: &'static busbar_kernel::plane_driver::registry::PlaneDecl,
-    spec: busbar_kernel::admin_verbs::AdminRouteSpec,
-) -> Router<Arc<AppHandle>> {
-    let plane = decl.key;
-    use busbar_kernel::admin_verbs::{AdminReqCtx, AdminRouteSpec};
-    let AdminRouteSpec {
-        method,
-        path,
-        scope: _,
-        kind,
-        handler,
-    } = spec;
-    let method_filter = busbar_kernel::plugin_routes::method_filter_of(method);
-    let shim =
-        move |State(handle): State<Arc<AppHandle>>,
-              Path(name): Path<String>,
-              principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
-              consumed: Option<axum::Extension<busbar_kernel::auth::ConsumedCredentials>>,
-              // Inserted only by the admin gate, from its own admission verdict (r3 condition B-C1).
-              trust_authority: Option<
-            axum::Extension<busbar_kernel::host_services::TrustDecisionAuthority>,
-        >,
-              axum::extract::RawQuery(query): axum::extract::RawQuery,
-              headers: busbar_kernel::inbound::http_projection::AdminHeaders,
-              body: axum::body::Bytes| {
-            let handler = handler.clone();
-            async move {
-                if let Some(resp) = unconfigured_plane(&handle, Some(decl)) {
-                    return resp;
-                }
-                let principal = principal.map(|axum::Extension(p)| p);
-
-                let host = busbar_kernel::plane_driver::engine_host_from_handle(&handle);
-                let ctx = AdminReqCtx {
-                    host,
-                    name: name.clone(),
-                    body,
-                    headers,
-                    principal: principal.clone(),
-
-                    consumed: consumed.map(|axum::Extension(c)| c),
-                    query,
-                    serve: handle.load().serve_tables.clone(),
-                    trust_authority: trust_authority.map(|axum::Extension(granted)| granted),
-                };
-                finish_admin_reply(plane, &name, kind, principal, handler(ctx).await)
-            }
-        };
-
-    let wrong_method = move |State(handle): State<Arc<AppHandle>>| async move {
-        unconfigured_plane(&handle, Some(decl))
-            .unwrap_or_else(|| err_json(&AdminError::MethodNotAllowed))
-    };
-    router.route(
-        &path,
-        axum::routing::on(method_filter, shim).fallback(wrong_method),
-    )
-}
-
-fn finish_admin_reply(
-    plane: &'static str,
-    name: &str,
-    kind: busbar_kernel::admin_verbs::AdminVerbKind,
-    principal: Option<busbar_kernel::auth::AuthPrincipal>,
-    reply: busbar_kernel::admin_verbs::AdminReply,
-) -> Response {
-    use busbar_kernel::admin_verbs::{AdminReply, AdminVerbKind};
-    let record_audit = |outcome: &'static str| {
-        if let AdminVerbKind::Audited { verb } = kind {
-            let anon = busbar_kernel::auth::AuthPrincipal(None);
-            let p = principal.as_ref().unwrap_or(&anon);
-            crate::planeverbs::audit(plane, verb, name, outcome, p);
-        }
-    };
-    match reply {
-        AdminReply::Refused(e) => crate::planeverbs::refusal_response(plane, name, e),
-        AdminReply::Applied(body) => {
-            record_audit(audit::OUTCOME_APPLIED);
-
-            (
-                StatusCode::OK,
-                [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
-                body,
-            )
-                .into_response()
-        }
-        AdminReply::Rejected(e) => {
-            record_audit(audit::OUTCOME_REJECTED);
-            crate::planeverbs::refusal_response(plane, name, e)
-        }
-    }
 }
 
 mod envelope;

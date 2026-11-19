@@ -216,7 +216,6 @@ fn mixed_bound(
     );
     let app = Arc::new(crate::state::App::from_test_parts(crate::state::AppParts {
         fallback_runtime_key: "",
-        serve_tables: Default::default(),
         port_seats: Default::default(),
         exports: Default::default(),
         root_rules: Arc::new(crate::appbuild::AcceptAll),

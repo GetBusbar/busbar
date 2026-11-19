@@ -101,8 +101,6 @@ pub struct AdminReqCtx {
 
     pub query: Option<String>,
 
-    pub serve: crate::plane_driver::serve::ServeTables,
-
     /// The trust decision authority the admin gate built from its admission verdict and the caller's
     /// verb grant; `None` = the plane may not decide trust (TRUST-ADMIN-PRODUCER-DESIGN r3 §4.2a).
     pub trust_authority: Option<crate::host_services::TrustDecisionAuthority>,

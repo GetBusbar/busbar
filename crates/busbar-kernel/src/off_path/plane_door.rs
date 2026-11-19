@@ -831,53 +831,6 @@ pub(crate) fn default_section(decl: &PlaneDecl) -> Box<dyn PlaneCfg> {
     ))
 }
 
-pub(crate) fn admin_routes(
-    decl: &PlaneDecl,
-    _slot: &dyn std::any::Any,
-) -> Vec<crate::admin_verbs::AdminRouteSpec> {
-    use crate::admin_verbs::{AdminRouteSpec, AdminScope, AdminVerbKind};
-    use busbar_contract::route::RouteMethod;
-    let Some(d) = row(decl) else {
-        return Vec::new();
-    };
-    d.reg
-        .admin_routes
-        .iter()
-        .filter(|r| r.flags & busbar_contract::plane::codes::ROUTE_PUBLIC == 0)
-        .filter_map(|r| {
-            let method = [
-                RouteMethod::Get,
-                RouteMethod::Post,
-                RouteMethod::Put,
-                RouteMethod::Patch,
-                RouteMethod::Delete,
-            ]
-            .into_iter()
-            .find(|m| m.as_str().eq_ignore_ascii_case(r.verb))?;
-            let scope = if method == RouteMethod::Get {
-                AdminScope::ReadOnly
-            } else {
-                AdminScope::Full
-            };
-            let kind = if r.audit_verb.is_empty() {
-                AdminVerbKind::Read
-            } else {
-                AdminVerbKind::Audited { verb: r.audit_verb }
-            };
-            let (verb, target) = (method.as_str(), r.target);
-            Some(AdminRouteSpec {
-                method,
-                path: target.to_string(),
-                scope,
-                kind,
-                handler: std::sync::Arc::new(move |ctx: crate::admin_verbs::AdminReqCtx| {
-                    Box::pin(admin_reply(verb, target, ctx)) as crate::admin_verbs::AdminReplyFuture
-                }),
-            })
-        })
-        .collect()
-}
-
 pub(crate) fn openapi(decl: &PlaneDecl) -> serde_json::Value {
     match admin_openapi(decl).and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok()) {
         Some(serde_json::Value::Object(blob)) => serde_json::Value::Object(
@@ -905,86 +858,6 @@ pub(crate) fn filled(target: &str, name: &str) -> String {
     path
 }
 
-pub(crate) async fn admin_reply(
-    verb: &'static str,
-    target: &'static str,
-    ctx: crate::admin_verbs::AdminReqCtx,
-) -> crate::admin_verbs::AdminReply {
-    use crate::admin_verbs::{AdminReply, PlaneVerbError};
-    let path = filled(target, &ctx.name);
-
-    let req = crate::plane_driver::serve::AdminServe {
-        method: verb,
-        path: &path,
-        query: ctx.query.as_deref(),
-        headers: &ctx.headers,
-        consumed: ctx.consumed.as_ref(),
-        principal: ctx.principal.as_ref(),
-        trust_authority: ctx.trust_authority.as_ref(),
-    };
-    let served = match ctx.serve.served_at(req, ctx.body).await {
-        None => return AdminReply::Refused(PlaneVerbError::NotFound),
-        Some(Err(unserved)) => {
-            let refusal = format!("the plane did not serve `{verb} {path}`: {unserved:?}");
-            return AdminReply::Rejected(PlaneVerbError::Internal(refusal));
-        }
-        Some(Ok(served)) => served,
-    };
-    let text = match String::from_utf8(served.body) {
-        Ok(text) => text,
-        Err(bytes) => String::from_utf8_lossy(bytes.as_bytes()).into_owned(),
-    };
-    if (200..=299).contains(&served.status) {
-        return AdminReply::Applied(text);
-    }
-    let refused = admin_plane_error(served.status, text, &served.fields);
-    if matches!(&refused, PlaneVerbError::Internal(_)) {
-        return AdminReply::Rejected(refused);
-    }
-    if served.audit == busbar_contract::plane::codes::AUDIT_NONE {
-        AdminReply::Refused(refused)
-    } else {
-        AdminReply::Rejected(refused)
-    }
-}
-
-pub(crate) fn admin_plane_error(
-    status: u32,
-    text: String,
-    fields: &crate::plane_driver::HeadFields,
-) -> crate::admin_verbs::PlaneVerbError {
-    use crate::admin_verbs::PlaneVerbError;
-    match status {
-        404 => PlaneVerbError::NotFound,
-        503 => PlaneVerbError::Unavailable,
-        400 => match condition_of(fields) {
-            Some(cond) => PlaneVerbError::ValidationOf(text, cond),
-            None => PlaneVerbError::Validation(text),
-        },
-        status => {
-            let refusal = format!("the plane answered with status {status}");
-            PlaneVerbError::Internal(refusal)
-        }
-    }
-}
-
-pub(crate) fn condition_of(
-    fields: &crate::plane_driver::HeadFields,
-) -> Option<crate::admin_verbs::PlaneAdminCond> {
-    use crate::admin_verbs::PlaneAdminCond;
-    use busbar_contract::plane::{
-        ADMIN_CONDITION_FIELD, ADMIN_CONDITION_INVALID_CONFIG, ADMIN_CONDITION_MALFORMED_BODY,
-    };
-    let (_, value) = fields
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(ADMIN_CONDITION_FIELD.as_bytes()))?;
-    match value.as_slice() {
-        v if v == ADMIN_CONDITION_MALFORMED_BODY.as_bytes() => Some(PlaneAdminCond::MalformedBody),
-        v if v == ADMIN_CONDITION_INVALID_CONFIG.as_bytes() => Some(PlaneAdminCond::InvalidConfig),
-        _ => None,
-    }
-}
-
 pub(crate) fn door_hooks(named: bool, owns: bool, admin: bool) -> PlaneHooks {
     PlaneHooks {
         wire_format_names: wire_formats,
@@ -993,7 +866,6 @@ pub(crate) fn door_hooks(named: bool, owns: bool, admin: bool) -> PlaneHooks {
         admission,
         build,
         routes: None,
-        admin_routes: admin.then_some(admin_routes as _),
         openapi: admin.then_some(openapi as _),
         hydrate: None,
         start: None,

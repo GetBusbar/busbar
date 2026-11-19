@@ -691,27 +691,11 @@ fn walk_links(schema: &Value, config: &Value, out: &mut Vec<Value>) {
     }
 }
 
-/// `runtime.plane` (§5.3): what core holds about a plane instance, read off the registry, the
-/// serve tables and the refresh report.
+/// `runtime.plane` (§5.3): what core holds about a plane instance, read off the registry and the
+/// refresh report. `routes` stays in the shape and is empty: the table of door-era admin routes it
+/// listed is gone, and no native seat ever published into it.
 pub(crate) fn plane_runtime(app: &App, decl: &PlaneDecl) -> Value {
-    let routes: Vec<Value> = app
-        .serve_tables
-        .published()
-        .into_iter()
-        .filter(|(instance, _)| instance == decl.key)
-        .flat_map(|(_, routes)| routes)
-        .map(|route| {
-            let mut row = Map::new();
-            row.insert("verb", Value::from(route.verb.as_str()));
-            row.insert("target", Value::from(route.target.as_str()));
-            row.insert(
-                "public",
-                Value::from(route.flags & busbar_contract::plane::codes::ROUTE_PUBLIC != 0),
-            );
-            row.insert("audit_verb", Value::from(route.audit_verb.as_str()));
-            Value::from(row)
-        })
-        .collect();
+    let routes: Vec<Value> = Vec::new();
     let refresh = app
         .plane_refresh
         .snapshot()
