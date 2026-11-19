@@ -769,6 +769,10 @@ fn reached(
 mod tests;
 
 #[cfg(test)]
+#[path = "corpus_tests.rs"]
+mod corpus_tests;
+
+#[cfg(test)]
 #[path = "migrate_size_tests.rs"]
 mod migrate_size_tests;
 
