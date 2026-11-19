@@ -272,6 +272,8 @@ struct Answer {
     reset_at: Option<Instant>,
     /// The queue position before the answer's first body byte, once the transport made one.
     first_body_at: Option<u64>,
+    /// The owner was told a body byte of the answer is out.
+    body_told: bool,
 }
 
 /// THE ACCEPTED CONNECTION'S OUTPUT, DRIVEN: the delivery driver in the answering role, the
@@ -289,6 +291,10 @@ pub struct DeliveryLedger {
     queue: SecureVec,
     /// Bytes of the queue the connection has ever taken.
     written: u64,
+    /// Bytes ever queued for the connection.
+    queued: u64,
+    /// A write failed: what was queued and not taken was wiped, and nothing more is queued.
+    lost: bool,
     answers: Vec<Answer>,
     /// Credit owed to the transport for streams that are over: (stream, bytes).
     owed: Vec<(u64, u64)>,
@@ -319,6 +325,8 @@ impl Default for DeliveryLedger {
             below: Dialling::direct(false),
             queue: SecureVec::new(),
             written: 0,
+            queued: 0,
+            lost: false,
             answers: Vec::new(),
             owed: Vec::new(),
             wake: None,
@@ -358,6 +366,7 @@ impl DeliveryLedger {
             cut: None,
             reset_at: None,
             first_body_at: None,
+            body_told: false,
         });
         Ok(())
     }
@@ -578,7 +587,7 @@ impl DeliveryLedger {
         items: &[Out],
         tail: impl Fn(usize) -> &'a [u8],
     ) -> Result<Outcome, Fault> {
-        if self.retired {
+        if self.retired || self.lost {
             return Err(Fault::Queue);
         }
         // Where each part of this run will stand in the queue. An answer carries no sealed value (a
@@ -592,6 +601,7 @@ impl DeliveryLedger {
             &mut self.queue,
             self.written,
         )?;
+        self.queued = self.written + self.queue.len() as u64;
         let mut place = run_start;
         for item in items {
             match *item {
@@ -620,6 +630,7 @@ impl DeliveryLedger {
                 cut: None,
                 reset_at: None,
                 first_body_at: None,
+                body_told: false,
             });
         }
         // An end mark whose bytes were all out already is final now.
@@ -639,6 +650,14 @@ impl DeliveryLedger {
         self.written += count as u64;
     }
 
+    /// A write to the connection failed (or ran out of time): what was queued and not taken is wiped
+    /// now, not when the connection is dropped. Nothing more is queued; the verdicts come with
+    /// [`Self::retire`].
+    pub(crate) fn discard(&mut self) {
+        self.queue.clear();
+        self.lost = true;
+    }
+
     /// The flush after the last write succeeded, and `progress` is what the connection's own carrier
     /// then reports: the driver learns how far the operating system accepted the queue, as whole
     /// encrypted records under TLS. Answers whose bytes are all out get their verdicts.
@@ -650,13 +669,22 @@ impl DeliveryLedger {
         if let Some(fault) = progress.fault {
             return Err(ResponseStop::Carrier(fault));
         }
-        let queued = self.written + self.queue.len() as u64;
-        if progress.accepted_plaintext > queued
+        if progress.accepted_plaintext > self.queued
             || progress.complete_records_plaintext > progress.accepted_plaintext
         {
             return Err(ResponseStop::Integrity);
         }
         self.carried = self.carried.max(progress.complete_records_plaintext);
+        // A body byte of an answer is out: its owner may read that fact before the verdict.
+        for answer in &mut self.answers {
+            if answer.body_told || !answer.first_body_at.is_some_and(|at| self.carried > at) {
+                continue;
+            }
+            answer.body_told = true;
+            if let Some(cell) = &answer.cell {
+                lock(&cell.state).snapshot.first_payload_written = true;
+            }
+        }
         self.wire.accepted(progress.complete_records_plaintext);
         self.settle();
         Ok(())
@@ -707,8 +735,7 @@ impl DeliveryLedger {
     /// only tells an answer whose first body byte did leave (`part`) from one of which none did.
     pub(crate) fn retire(&mut self, last: CarrierProgress, reason: Reason) {
         // A write that failed may have put bytes on the carrier that the writer never reported back.
-        let queued = self.written + self.queue.len() as u64;
-        let sound = last.accepted_plaintext <= queued
+        let sound = last.accepted_plaintext <= self.queued
             && last.complete_records_plaintext <= last.accepted_plaintext;
         if sound {
             self.carried = self.carried.max(last.complete_records_plaintext);
@@ -788,6 +815,8 @@ fn freeze(cell: &Cell, verdict: Verdict, cut: Option<Sent>, body_out: bool) {
         verdict
     };
     let mut snapshot = verdict.snapshot();
+    // What the owner was already told stays told.
+    snapshot.first_payload_written |= state.snapshot.first_payload_written;
     // The owner's own stop keeps the word the owner gave it (its settlement matches on it).
     if let (Some(DeliveryTerminal::Failed(_)), Some(asked)) = (snapshot.terminal, state.cancel) {
         snapshot.terminal = Some(DeliveryTerminal::Failed(asked));

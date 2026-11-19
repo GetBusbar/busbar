@@ -18,7 +18,7 @@ use busbar_contract::conn::{
 };
 use busbar_plugin_abi::plane::{CARRIER_HTTP, CARRIER_WEBSOCKET};
 use busbar_ports::transport::{
-    ConnIn, TransportEvent, TransportOut, TransportPort, TransportSession,
+    ConnIn, EmitParts, TransportEvent, TransportOut, TransportPort, TransportSession,
 };
 use busbar_ports::PortError;
 
@@ -78,7 +78,8 @@ impl TransportPort for Unbegun {
         _: u64,
         _: u32,
         _: u32,
-        _: &[u8],
+        _: u64,
+        _: EmitParts<'_>,
         _: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError> {
         Err(unbegun())

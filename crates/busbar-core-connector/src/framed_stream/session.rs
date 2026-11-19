@@ -113,6 +113,12 @@ impl Actions {
         self.items.last_mut()
     }
 
+    /// The socket bytes were handed to the connection's queue: this copy of them is wiped now, and
+    /// the actions stay to be taken in order.
+    fn handed_over(&mut self) {
+        self.out.clear();
+    }
+
     /// The actions, taken out in order. Their socket bytes were queued for the connection by the
     /// delivery driver already; the caller clears the buffer when it is done, however it stops.
     fn drain(&mut self) -> std::vec::Drain<'_, Act> {
@@ -1410,6 +1416,8 @@ impl Task {
             Ok(outcome) => outcome,
             Err(fault) => return Flow::Rejected(fault),
         };
+        // One copy of the answer's bytes from here on: the connection's queue.
+        acts.handed_over();
         let deadline = tokio::time::Instant::from_std(wake_clock(clock).0) + write_timeout;
         if outcome.wrote {
             if let Err(error) = io.deliver(deadline).await {

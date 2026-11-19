@@ -153,7 +153,7 @@ impl<S: AsyncWrite + Unpin> DeliveryIo<S> {
         let Self { io, delivery } = self;
         let io = io.as_mut().expect("live writer");
         let ledger = &mut delivery.as_mut().expect("live delivery owner").ledger;
-        tokio::time::timeout_at(deadline, async {
+        let written = tokio::time::timeout_at(deadline, async {
             loop {
                 let unwritten = ledger.unwritten();
                 if unwritten.is_empty() {
@@ -167,7 +167,12 @@ impl<S: AsyncWrite + Unpin> DeliveryIo<S> {
             }
         })
         .await
-        .unwrap_or_else(|_| Err(timed_out()))
+        .unwrap_or_else(|_| Err(timed_out()));
+        if written.is_err() {
+            // No unwritten byte waits for the connection's drop.
+            ledger.discard();
+        }
+        written
     }
 
     /// Flush the connection by `deadline`, then tell the driver what its carrier reports: only after
