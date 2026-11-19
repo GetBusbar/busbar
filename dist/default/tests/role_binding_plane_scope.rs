@@ -265,15 +265,19 @@ auth:
       "*": {binding}
 mcp:
   canonical_uri: "http://127.0.0.1:{data}{DOOR}"
-  authorization_servers: ["http://127.0.0.1:{admin}"]
-  {SERVER}:
+  format: 2
+  resource:
+    authorization_servers: ["http://127.0.0.1:{admin}"]
+  servers:
+   {SERVER}:
     url: "{url}"
+    tls:
+      trust: {ca_pem}
+      pin_spki: ["{pin}"]
+    core_upstream: true
     verify_ttl: "0s"
     pin:
       mechanism: cert_spki
-      key: "{pin}"
-    tls:
-      ca_cert_pem: {ca_pem}
     tools_allow:
       {GRANTED}:
         schema_hash: "{granted}"

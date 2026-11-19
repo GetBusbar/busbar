@@ -544,7 +544,7 @@ async fn real_native_driver_admits_exact_check_authority_before_network_and_cust
         json!({"check_op":"open","check_dest":host,"check_class":2,"check_tls":1,
                "op":"open","dest":host,"class":2,"tls":1,"sni":"other.example"}),
         json!({"check_op":"open","check_dest":host,"check_class":2,"check_tls":1,
-               "op":"open","dest":host,"class":2,"tls":2,"sni":"private.example.evil.test"}),
+               "op":"open","dest":host,"class":2,"tls":1,"sni":"private.example.evil.test"}),
     ]
     .into_iter()
     .enumerate()

@@ -842,7 +842,10 @@ async fn security_upgrade_inherits_the_declared_or_per_open_timeout() {
         .expect("the caller's bound ends the handshake, not the test's");
         let took = began.elapsed();
         assert_eq!(up.err(), Some(NeedErr::Timeout), "{bound:?}");
-        assert!(took >= bound, "ended at {took:?}, before its bound {bound:?}");
+        assert!(
+            took >= bound,
+            "ended at {took:?}, before its bound {bound:?}"
+        );
         assert!(
             took < bound + Duration::from_secs(2),
             "ended at {took:?}, long past its bound {bound:?}"
