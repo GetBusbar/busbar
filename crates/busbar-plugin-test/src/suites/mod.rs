@@ -131,8 +131,12 @@ impl<'a> From<TransportCase<'a>> for TransportConnCase<'a> {
     }
 }
 
+/// What a case's `verify` must end in. `IssuedWanted` is the first call's raw answer. Every other variant is the
+/// final verdict as core reaches it: when the first call answers ISSUED_WANTED, the suite looks the id up under the
+/// plugin's D_ISSUED_KIND in what [`FakeNeeds::issued`] scripted (empty when nothing was) and calls `verify` once
+/// more with it, and a second ISSUED_WANTED is `Rejected(BAD_CREDENTIAL)` (busbar-kernel `auth::chain_run`).
 pub enum Expect<'a> {
-    /// Raw one-call ISSUED_WANTED; host lookup is tested in kernel.
+    /// Raw one-call ISSUED_WANTED: the suite makes no lookup and no second call.
     IssuedWanted(&'a str),
     /// Raw one-call KEYS_STALE; host refresh is tested in kernel.
     KeysStale,

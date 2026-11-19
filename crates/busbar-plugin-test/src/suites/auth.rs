@@ -12,8 +12,11 @@
 //!    is non-empty;
 //! 4. every [`AuthCase`] through the port's `verify`, with `Expect::Subject` (an identity whose subject
 //!    matches), `Expect::NotMine` (the plugin declines the request) or `Expect::Rejected` (a rejection with that
-//!    kind code), a `verify_io` plugin's boxed chain included. A plugin failure (`PortError`) or a verdict the
-//!    case did not expect fails the suite and names the case;
+//!    kind code), a `verify_io` plugin's boxed chain included. `Expect::IssuedWanted` is the raw first answer; for
+//!    every other expectation a first ISSUED_WANTED gets core's second call, with the credential scripted by
+//!    [`FakeNeeds::issued`] under the plugin's D_ISSUED_KIND (empty when none was), and a second ISSUED_WANTED is
+//!    BAD_CREDENTIAL. A plugin failure (`PortError`) or a verdict the case did not expect fails the suite and
+//!    names the case;
 //! 5. a plugin that does not declare FB_PROVISION answers `serve` as unsupported without a call;
 //! 6. a config that is not JSON is refused by `check` (never an instance, never a fault);
 //! 7. the instance closes (drops) and nothing the harness collected is a refusal the suite did not expect.
@@ -25,7 +28,7 @@ use busbar_plugin_abi::fail::refused::R_UNSUPPORTED;
 use busbar_plugin_abi::host_side::caller::CallStack;
 use busbar_plugin_abi::plugin::Plugin;
 use busbar_plugin_abi::types::KindCode;
-use busbar_ports::auth::{ServeIn, Verify, VerifyAnswer};
+use busbar_ports::auth::{AuthIn, AuthPort, ServeIn, Verify, VerifyAnswer};
 use busbar_ports::{CallCx, PortError};
 
 use super::harness::Harness;
@@ -76,6 +79,46 @@ fn matches(expect: &Expect<'_>, verdict: &Result<VerifyAnswer, PortError>) -> bo
     }
 }
 
+/// One plugin `verify` invocation, driven to its answer.
+fn call(
+    harness: &Harness,
+    port: &dyn AuthPort,
+    request_id: u64,
+    req: &AuthIn<'_>,
+    issued: Option<&[u8]>,
+) -> Result<VerifyAnswer, PortError> {
+    match port.verify(cx(request_id), req, issued) {
+        Verify::Done(done) => done,
+        Verify::Io(chain) => harness.block_on(chain),
+    }
+}
+
+/// What core answers after a first ISSUED_WANTED (busbar-kernel `auth::chain_run::settle`): with no D_ISSUED_KIND,
+/// BAD_CREDENTIAL; else the id looked up under that kind (here [`FakeNeeds::issued`], empty for an id nothing was
+/// issued under) and `verify` called once more with it, where a second ISSUED_WANTED is BAD_CREDENTIAL.
+fn looked_up(
+    harness: &Harness,
+    port: &dyn AuthPort,
+    request_id: u64,
+    req: &AuthIn<'_>,
+    id: &str,
+) -> Result<VerifyAnswer, PortError> {
+    let rejected = || {
+        Ok(VerifyAnswer::Refused {
+            code: abi::BAD_CREDENTIAL,
+            text: "auth admission refused".into(),
+        })
+    };
+    let Some(kind) = port.issued_kind() else {
+        return rejected();
+    };
+    let value = harness.needs().issued_value(kind, id);
+    match call(harness, port, request_id, req, Some(&value)) {
+        Ok(VerifyAnswer::IssuedWanted(_)) => rejected(),
+        second => second,
+    }
+}
+
 pub(super) fn run(
     plugin: &'static Plugin,
     config: &[u8],
@@ -117,12 +160,16 @@ pub(super) fn run(
         assert!(!kind.is_empty(), "auth suite: D_ISSUED_KIND is empty");
     }
 
-    // Every case through verify.
+    // Every case through verify: the raw first answer for an ISSUED_WANTED case, else core's final verdict.
     for (n, case) in cases.iter().enumerate() {
         let request_id = u64::try_from(n).unwrap_or(u64::MAX).saturating_add(1);
-        let verdict = match port.verify(cx(request_id), &case.req, None) {
-            Verify::Done(done) => done,
-            Verify::Io(chain) => harness.block_on(chain),
+        let first = call(&harness, &*port, request_id, &case.req, None);
+        let verdict = match (&case.expect, first) {
+            (Expect::IssuedWanted(_), first) => first,
+            (_, Ok(VerifyAnswer::IssuedWanted(id))) => {
+                looked_up(&harness, &*port, request_id, &case.req, &id)
+            }
+            (_, first) => first,
         };
         assert!(
             matches(&case.expect, &verdict),
