@@ -58,13 +58,14 @@ fn key(seed: u8) -> SigningKey {
 fn supported_abi_is_one_version_per_kind() {
     use busbar_plugin_abi::versions;
     let shipped: &[(&str, u32, u32)] = &[
-        ("store", versions::STORE, 3),
-        ("secret", versions::SECRET, 2),
-        ("auth", versions::AUTH, 3),
-        ("hook", versions::HOOK, 2),
-        ("export", versions::EXPORT, 3),
-        ("plane", versions::PLANE, 1),
-        ("transport", versions::TRANSPORT, 1),
+        // Each kind's first number moved once with the one call shape (versions.rs; ci/abi.pin).
+        ("store", versions::STORE, 4),
+        ("secret", versions::SECRET, 3),
+        ("auth", versions::AUTH, 4),
+        ("hook", versions::HOOK, 3),
+        ("export", versions::EXPORT, 4),
+        ("plane", versions::PLANE, 2),
+        ("transport", versions::TRANSPORT, 2),
     ];
     for &(kind, version, number) in shipped {
         assert_eq!(supported_abi(kind), Some(version), "{kind}");
