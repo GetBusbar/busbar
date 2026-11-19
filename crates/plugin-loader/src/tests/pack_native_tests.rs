@@ -121,6 +121,7 @@ fn incompatible_native_stamps_never_reach_staging_or_an_initializer() {
     let good = emit(&Spec {
         kind: busbar_plugin_abi::types::KindCode::Secret,
         kind_abi: busbar_plugin_abi::versions::SECRET,
+        kind_minor: busbar_plugin_abi::versions::SECRET_MINOR,
         layout: busbar_plugin_abi::secret::FP,
         out_of_process: false,
         engine_min: None,

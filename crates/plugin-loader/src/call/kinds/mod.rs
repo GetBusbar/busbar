@@ -536,6 +536,7 @@ mod against_the_contract {
             body: Some(body),
             trailers: None,
             end: Some(&[]),
+            refuse: None,
         };
         let lent = [
             Bytes::new(head),

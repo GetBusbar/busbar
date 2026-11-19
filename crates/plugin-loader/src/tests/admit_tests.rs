@@ -14,7 +14,7 @@ use busbar_plugin_abi::types::Str;
 
 busbar_plugin_abi::kind! {
     /// A secret-shaped kind for the admit tests.
-    pub trait Source: kind = 2, abi = 2 {
+    pub trait Source: kind = 2, abi = 3 {
         views {}
         pods {}
         tags { VALUE = 0x0100; }
@@ -47,7 +47,8 @@ const NAME: &str = "busbar-admit-fixture";
 const fn spec(out_of_process: bool, crypto: &'static str) -> Spec<'static> {
     Spec {
         kind: KindCode::Secret,
-        kind_abi: 2,
+        kind_abi: busbar_plugin_abi::versions::SECRET,
+        kind_minor: busbar_plugin_abi::versions::SECRET_MINOR,
         layout: busbar_plugin_abi::secret::FP,
         out_of_process,
         engine_min: None,
@@ -61,13 +62,13 @@ const fn spec(out_of_process: bool, crypto: &'static str) -> Spec<'static> {
 
 static STAMP: busbar_ffi::StampBytes = emit(&spec(false, "host"));
 static STAMP_OOP: busbar_ffi::StampBytes = emit(&spec(true, "host"));
-static VT: busbar_ffi::Built<secret::Shim<Fx>, secret::Vt> = secret::vt::<Fx>();
+static TABLE: busbar_ffi::Table<secret::Shim<Fx>, { secret::ENTRIES }> = secret::table::<Fx>();
 /// A compiled-in secret image stamped with the engine's own secret FP and CORE_FP.
 static REGISTERED: busbar_ffi::LinkedPlugin =
-    busbar_ffi::plugin::<secret::Shim<Fx>, secret::Marker>(&VT, &STAMP, Str::EMPTY);
+    busbar_ffi::plugin::<secret::Shim<Fx>, secret::Marker, { secret::ENTRIES }>(&TABLE, &STAMP, Str::EMPTY);
 /// The same image stamped `out_of_process`.
 static OUT_OF_PROCESS: busbar_ffi::LinkedPlugin =
-    busbar_ffi::plugin::<secret::Shim<Fx>, secret::Marker>(&VT, &STAMP_OOP, Str::EMPTY);
+    busbar_ffi::plugin::<secret::Shim<Fx>, secret::Marker, { secret::ENTRIES }>(&TABLE, &STAMP_OOP, Str::EMPTY);
 
 const STUB: CryptoFacts = CryptoFacts {
     external_plugins: false,

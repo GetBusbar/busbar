@@ -70,7 +70,8 @@ fn min3_plane_lib() -> Vec<u8> {
     use busbar_plugin_abi::types::KindCode;
     let stamp = emit(&Spec {
         kind: KindCode::Plane,
-        kind_abi: 1,
+        kind_abi: busbar_plugin_abi::versions::PLANE,
+        kind_minor: busbar_plugin_abi::versions::PLANE_MINOR,
         layout: busbar_plugin_abi::plane::FP,
         out_of_process: false,
         engine_min: None,

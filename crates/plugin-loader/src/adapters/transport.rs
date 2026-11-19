@@ -1484,6 +1484,7 @@ mod tests {
                 &out,
                 Call::Emit {
                     piece: E_BODY,
+                    stream: 1,
                     head: b""
                 }
             )
