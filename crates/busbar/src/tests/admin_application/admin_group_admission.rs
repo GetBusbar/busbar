@@ -882,7 +882,10 @@ async fn key_cap_and_delegation_refusals_are_reachable_declared_and_audited() {
         .iter()
         .filter(|e| e["outcome"] == "applied")
         .count();
-    assert_eq!(applied, 3, "only the three issued keys are recorded applied");
+    assert_eq!(
+        applied, 3,
+        "only the three issued keys are recorded applied"
+    );
 
     let r = client
         .patch(format!("{keys_url}/{roamer}"))

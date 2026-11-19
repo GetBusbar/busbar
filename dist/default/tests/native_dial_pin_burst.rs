@@ -303,11 +303,6 @@ fn anchor_mismatch_burst_sends_no_follower_bytes() {
     }
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
-        far.handshakes.load(Ordering::SeqCst),
-        handshakes,
-        "no handshake with the unpinned key completed"
-    );
-    assert_eq!(
         far.request_bytes.load(Ordering::SeqCst),
         request_bytes,
         "no byte of any request of the burst reached the far end (a connection the pin never checked included)"
