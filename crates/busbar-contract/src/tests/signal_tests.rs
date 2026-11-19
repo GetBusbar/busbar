@@ -143,6 +143,84 @@ fn a_repeated_signal_serializes_as_one_array_in_push_order() {
     assert_eq!(v["requested_model"], crate::json::json!(true));
 }
 
+/// A hook's `signals:` as a config document states it, read the way config load reads it.
+#[derive(Debug, Deserialize)]
+struct Stated {
+    #[serde(default, deserialize_with = "configured")]
+    signals: Vec<Signal>,
+}
+
+/// RED before the two retired signals were dropped at load: `candidate_error_rate` and
+/// `response_tokens_out` were accepted in a hook's `signals:` and did nothing (hook 3.0 sends
+/// neither to any hook).
+///
+/// An old config that still names them loads: each is dropped, a warning names the setting
+/// and the signal, and the signals that still mean something are kept in their order.
+#[test]
+fn the_two_retired_signals_load_with_a_warning_and_are_gone() {
+    let mut warned = Vec::new();
+    let kept = keep_live(
+        vec![
+            Signal::CandidateBreakerState,
+            Signal::CandidateErrorRate,
+            Signal::ResponseTokensOut,
+            Signal::CandidateLatencyP95Ms,
+        ],
+        |signal| warned.push(signal),
+    );
+    assert_eq!(
+        kept,
+        [Signal::CandidateBreakerState, Signal::CandidateLatencyP95Ms]
+    );
+    assert_eq!(
+        warned,
+        [Signal::CandidateErrorRate, Signal::ResponseTokensOut],
+        "one warning for each retired signal that was stated"
+    );
+    for signal in warned {
+        let line = retired_warning(signal);
+        assert!(line.contains("signals"), "it names the setting: {line}");
+        assert!(line.contains(signal.name()), "and the signal: {line}");
+        assert!(line.contains("dropped"), "and says what was done: {line}");
+    }
+
+    // The same through a config document: it loads, and the two are not in what was loaded.
+    let stated: Stated = serde_json::from_str(
+        r#"{"signals": ["candidate_error_rate", "candidate_breaker_state", "response_tokens_out"]}"#,
+    )
+    .expect("an old config that names a retired signal still loads");
+    assert_eq!(stated.signals, [Signal::CandidateBreakerState]);
+    let only_retired: Stated =
+        serde_json::from_str(r#"{"signals": ["response_tokens_out"]}"#).unwrap();
+    assert!(only_retired.signals.is_empty());
+}
+
+/// The two are the only retired entries, and retiring one moves no other signal's bit: the
+/// catalog stays append-only.
+#[test]
+fn only_the_two_signals_hook_3_0_stopped_sending_are_retired() {
+    let retired: Vec<Signal> = Signal::ALL
+        .iter()
+        .copied()
+        .filter(|signal| signal.retired())
+        .collect();
+    assert_eq!(
+        retired,
+        [Signal::CandidateErrorRate, Signal::ResponseTokensOut]
+    );
+    assert_eq!(Signal::CandidateErrorRate.bit(), 6);
+    assert_eq!(Signal::ResponseTokensOut.bit(), 9);
+}
+
+/// A name that is no signal at all is still refused at load: dropping the retired two does not
+/// make `signals:` accept a misspelling.
+#[test]
+fn a_signal_that_never_existed_is_still_refused_at_load() {
+    assert!(serde_json::from_str::<Stated>(r#"{"signals": ["candidate_eror_rate"]}"#).is_err());
+    let none: Stated = serde_json::from_str("{}").unwrap();
+    assert!(none.signals.is_empty());
+}
+
 /// LEGACY the retired engine crate's `src/engine/tests/signal_catalog_tests.rs::default_path_allocates_no_signals_container`.
 #[test]
 fn a_bag_of_up_to_four_signals_never_spills_onto_the_heap() {

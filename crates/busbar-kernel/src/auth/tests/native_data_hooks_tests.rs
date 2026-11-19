@@ -53,6 +53,47 @@ fn a_hook_bound_route_that_opens_a_unit_and_a_catalog_are_served() {
     }
 }
 
+/// RED before a verified request with no unit was given an invocation: a hook-bound route whose
+/// record says money none stayed unmounted ("its hooks have no admitted request to run under").
+///
+/// Such a route is served WITH its hooks wherever every request on it is verified by the
+/// route's chain: its hooks run under the verified request, in the order and with the facts a
+/// billed route's do, and a refusing hook answers at its own status.
+#[test]
+fn a_hook_bound_route_that_opens_no_unit_is_served_where_every_request_is_verified() {
+    for (what, record) in [
+        (
+            "verified, not billed",
+            stated(RouteClass::Data, Who::PRINCIPAL, Scope::none(), Money::None),
+        ),
+        (
+            "a walk that opens no unit",
+            stated(
+                RouteClass::Data,
+                Who::PRINCIPAL,
+                Scope::walk("pool"),
+                Money::None,
+            ),
+        ),
+    ] {
+        assert_eq!(NativeDataRoute::hooks_run(&record), Ok(()), "{what}");
+    }
+}
+
+/// A route that admits a caller who presents nothing (public, or optional with no credential)
+/// has requests with no verified caller to run a hook under. With a hook bound it stays
+/// unmounted, and the reason says which part of the record keeps it so.
+#[test]
+fn a_hook_bound_route_that_admits_an_unverified_caller_says_why_it_is_not_served() {
+    for who in [Who::PUBLIC, Who::OPTIONAL] {
+        let why =
+            NativeDataRoute::hooks_run(&stated(RouteClass::Data, who, Scope::none(), Money::None))
+                .expect_err("an unverified request runs no hook");
+        assert!(why.contains("a route with a hook bound"), "{why}");
+        assert!(why.contains("presents no credential"), "{why}");
+    }
+}
+
 /// The other half, which must hold before and after: a hook-bound route whose request would
 /// run no hook stays unmounted. Serving it would skip a policy the operator configured.
 #[test]
@@ -77,17 +118,13 @@ fn a_hook_bound_route_whose_hooks_would_not_run_stays_unmounted() {
             ),
         ),
         (
-            "a walk that opens no unit",
+            "a selection that opens no unit: a selected request runs no hook, billed or not",
             stated(
                 RouteClass::Data,
                 Who::PRINCIPAL,
-                Scope::walk("pool"),
+                Scope::selected(&["mcp_tool"]),
                 Money::None,
             ),
-        ),
-        (
-            "verified, not billed",
-            stated(RouteClass::Data, Who::PRINCIPAL, Scope::none(), Money::None),
         ),
         (
             "public",
