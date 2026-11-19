@@ -1113,19 +1113,6 @@ pub async fn mint_self_offloaded(
     }
 }
 
-pub fn synthesize_principal_key(
-    principal: &crate::auth::Principal,
-    bindings: Option<&std::collections::BTreeMap<String, crate::config::RoleBindingCfg>>,
-) -> Option<Arc<VirtualKey>> {
-    synthesize_key(principal, bindings).map(|mut key| {
-        key.generation_hash = crate::off_path::governance::state::mod_principal_marker(
-            PRINCIPAL_MARKER_PREFIX,
-            &principal.id,
-        );
-        Arc::new(key)
-    })
-}
-
 pub const PRINCIPAL_MARKER_PREFIX: &str = "principal:";
 
 pub fn synthesize_bound_key(
@@ -1295,7 +1282,7 @@ fn synthesize_key(
     Some(VirtualKey {
         id: principal.id.clone(),
 
-        // Each caller writes its own marker: the principal marker or the bound marker.
+        // The caller writes the bound marker.
         generation_hash: String::new(),
         name: principal
             .name

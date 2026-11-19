@@ -11,8 +11,18 @@ static ISSUED_SHAPE: std::sync::LazyLock<busbar_contract::auth_calls::IssuedShap
             .to_string(),
     });
 
+/// The bound key a principal with `table`'s roles gets from the module `idp`.
+fn synthesize_table_key(
+    p: &crate::auth::Principal,
+    table: &std::collections::BTreeMap<String, crate::config::RoleBindingCfg>,
+) -> Option<Arc<VirtualKey>> {
+    let mut bindings = crate::config::RoleBindings::new();
+    bindings.insert("idp".to_string(), table.clone());
+    synthesize_bound_key("idp", p, &bindings)
+}
+
 #[tokio::test]
-async fn synthesize_principal_key_union_semantics() {
+async fn synthesize_bound_key_union_semantics() {
     use crate::config::RoleBindingCfg;
     let mut table = std::collections::BTreeMap::new();
     table.insert(
@@ -44,7 +54,7 @@ async fn synthesize_principal_key_union_semantics() {
 
     let mut p = crate::auth::Principal::from_id("test:u");
     p.roles = vec!["a".to_string(), "b".to_string()];
-    let k = synthesize_principal_key(&p, Some(&table)).expect("bound roles synthesize");
+    let k = synthesize_table_key(&p, &table).expect("bound roles synthesize");
     assert_eq!(k.id, "test:u", "keyed by the principal id");
     let mut pools: Vec<String> = k
         .allowed_scopes
@@ -68,7 +78,7 @@ async fn synthesize_principal_key_union_semantics() {
     assert!(k.enabled);
 
     p.roles = vec!["a".to_string(), "all-pools".to_string()];
-    let k = synthesize_principal_key(&p, Some(&table)).expect("granting");
+    let k = synthesize_table_key(&p, &table).expect("granting");
     assert!(
         k.allowed_scopes.is_none(),
         "omitted allowed_pools grants every pool (None encoding)"
@@ -76,14 +86,14 @@ async fn synthesize_principal_key_union_semantics() {
 
     p.roles = vec!["admin-only".to_string(), "unbound".to_string()];
     assert!(
-        synthesize_principal_key(&p, Some(&table)).is_none(),
+        synthesize_table_key(&p, &table).is_none(),
         "an all-[] pool grant = no synthetic key (fail closed)"
     );
     p.roles = vec![];
-    assert!(synthesize_principal_key(&p, Some(&table)).is_none());
+    assert!(synthesize_table_key(&p, &table).is_none());
 
     p.roles = vec!["a".to_string()];
-    assert!(synthesize_principal_key(&p, None).is_none());
+    assert!(synthesize_bound_key("idp", &p, &crate::config::RoleBindings::new()).is_none());
 }
 
 #[tokio::test]
@@ -95,19 +105,19 @@ async fn group_prefixed_principal_id_cannot_alias_a_budget_group_bucket() {
 
     let mut ok = crate::auth::Principal::from_id("sso:alice");
     ok.roles = vec!["eng".to_string()];
-    let k = synthesize_principal_key(&ok, Some(&table)).expect("benign id synthesizes");
+    let k = synthesize_table_key(&ok, &table).expect("benign id synthesizes");
     assert_eq!(k.id, "sso:alice", "the key id IS the ledger bucket id");
 
     let mut evil = crate::auth::Principal::from_id("group:acme");
     evil.roles = vec!["eng".to_string()];
     assert!(
-        synthesize_principal_key(&evil, Some(&table)).is_none(),
+        synthesize_table_key(&evil, &table).is_none(),
         "a group:-prefixed principal id must be refused, never keyed into the ledger"
     );
 
     let mut bare = crate::auth::Principal::from_id("group:");
     bare.roles = vec!["eng".to_string()];
-    assert!(synthesize_principal_key(&bare, Some(&table)).is_none());
+    assert!(synthesize_table_key(&bare, &table).is_none());
 }
 
 #[tokio::test]
@@ -119,13 +129,13 @@ async fn vk_prefixed_principal_id_cannot_alias_a_virtual_key_bucket() {
     let mut evil = crate::auth::Principal::from_id("vk_deadbeefdeadbeef");
     evil.roles = vec!["eng".to_string()];
     assert!(
-        synthesize_principal_key(&evil, Some(&table)).is_none(),
+        synthesize_table_key(&evil, &table).is_none(),
         "a vk_-prefixed principal id must be refused, never keyed into a virtual key's bucket"
     );
 
     let mut bare = crate::auth::Principal::from_id("vk_");
     bare.roles = vec!["eng".to_string()];
-    assert!(synthesize_principal_key(&bare, Some(&table)).is_none());
+    assert!(synthesize_table_key(&bare, &table).is_none());
 }
 use super::native_ledger_fixture::*;
 use super::*;

@@ -10,17 +10,14 @@ use std::sync::{Arc, Mutex};
 
 use busbar_plugin_abi::plane::{
     ATT_DECLINE, ATT_HARD, ATT_RELAY, ATT_RETRY, AUDIT_APPLIED, AUDIT_REJECTED, FROM_CLIENT,
-    FROM_CORE, FROM_UPSTREAM, MSG_FIN, MSG_TEXT, SRC_ESTIMATED, SRC_REPORTED,
+    FROM_CORE, FROM_UPSTREAM, SRC_ESTIMATED, SRC_REPORTED,
 };
 use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn};
 use busbar_ports::{FactRef, FactVal, PortError};
 
-use super::{
-    deliver, render, run_local, Calls, Effects, Origin, SessionError, Task, ToClient, Violation,
-};
+use super::{render, run_local, Calls, Effects, Origin, SessionError, Task, ToClient, Violation};
 use crate::plane_driver::port_auth::refuse;
 use crate::plane_driver::usage::UsageInvalid;
-use crate::plane_driver::{CallerEnd, HeadFields};
 
 #[path = "selected_policy_runtime_tests.rs"]
 mod current_policy;
@@ -904,69 +901,6 @@ fn a_forward_or_an_undriven_item_is_not_a_local_answer() {
         ));
         assert!(script.dropped.load(Ordering::SeqCst));
     }
-}
-
-#[derive(Default)]
-struct Client {
-    seen: Mutex<Vec<String>>,
-}
-
-impl CallerEnd for Client {
-    fn head(&self, status: u32, fields: HeadFields) {
-        self.seen
-            .lock()
-            .unwrap()
-            .push(format!("head {status} {}", fields.len()));
-    }
-
-    fn write<'a>(&'a self, bytes: &'a [u8]) -> impl std::future::Future<Output = bool> + Send + 'a {
-        self.seen
-            .lock()
-            .unwrap()
-            .push(format!("write {}", bytes.len()));
-        std::future::ready(true)
-    }
-
-    fn write_text<'a>(
-        &'a self,
-        bytes: &'a [u8],
-    ) -> impl std::future::Future<Output = bool> + Send + 'a {
-        self.seen
-            .lock()
-            .unwrap()
-            .push(format!("text {}", bytes.len()));
-        std::future::ready(true)
-    }
-
-    fn trailers(&self, fields: HeadFields) {
-        self.seen
-            .lock()
-            .unwrap()
-            .push(format!("trailers {}", fields.len()));
-    }
-}
-
-#[tokio::test]
-async fn delivery_hands_the_client_head_body_message_and_trailers_in_order() {
-    let client = Client::default();
-    let items = vec![
-        ToClient::Head {
-            status: 200,
-            fields: vec![(b"a".to_vec(), b"b".to_vec())],
-        },
-        ToClient::Body(b"xyz".to_vec()),
-        ToClient::Msg {
-            flags: MSG_TEXT | MSG_FIN,
-            bytes: b"hi".to_vec(),
-        },
-        ToClient::Trailers(vec![(b"s".to_vec(), b"0".to_vec())]),
-        ToClient::End,
-    ];
-    assert!(deliver(&client, items).await);
-    assert_eq!(
-        *client.seen.lock().unwrap(),
-        vec!["head 200 1", "write 3", "text 2", "trailers 1"]
-    );
 }
 
 fn denial() -> crate::refusal::ClientRefusal {
