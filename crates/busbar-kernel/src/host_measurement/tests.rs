@@ -178,7 +178,11 @@ fn stored_request_origin_evidence_decodes_on_restart() {
     );
     assert_eq!(read.reported_revision, 1);
     let written = busbar_contract::json::to_vec(&read).unwrap();
-    assert_eq!(written, request.as_bytes(), "written byte for byte as before");
+    assert_eq!(
+        written,
+        request.as_bytes(),
+        "written byte for byte as before"
+    );
     let again: MeasurementEvidence = busbar_contract::json::parse(&written).unwrap();
     assert_eq!(again, read);
 
@@ -196,4 +200,18 @@ fn stored_request_origin_evidence_decodes_on_restart() {
         busbar_contract::json::to_vec(&read).unwrap(),
         system.as_bytes()
     );
+
+    for refused in [
+        r#"{"kind":"System","unit":1}"#,
+        r#"{"kind":"System","principal":null}"#,
+        r#"{"kind":"Request","principal":"p","group":"g","targets":[]}"#,
+        r#"{"kind":"Request","principal":"p","group":"g","targets":[],"unit":1,"extra":0}"#,
+        r#"{"kind":"Other"}"#,
+        r#"{"unit":1}"#,
+    ] {
+        assert!(
+            busbar_contract::json::parse::<Origin>(refused.as_bytes()).is_err(),
+            "{refused}"
+        );
+    }
 }
