@@ -226,7 +226,7 @@ pub mod check;
 pub mod collections;
 pub use collections::{CollectionMode, RecordCollection};
 
-use super::hook::{MessageView, PromptView, RequestView, SignalEntry};
+use super::hook::{PromptView, RequestView};
 use super::mechanism::call::{AbiStr, Blob, Field, InHead, Op, OutHead, Span};
 pub use super::mechanism::check::SPAN_ABSENT;
 use super::mechanism::door::KindTailHead;
@@ -1526,37 +1526,6 @@ impl RecordWrite {
     };
 }
 
-/// `arrive`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ArriveIn {
-    /// The head.
-    pub head: InHead,
-    /// The unit, as the kernel minted it: every [`OnPieceIn`] of this unit carries the same key.
-    /// The caller's head (`target`, `fields`) crosses here ONCE; a plane keeps what it needs of it
-    /// keyed by `unit`, and no piece re-sends it.
-    pub unit: u64,
-    /// Index into the snapshot's claims the arrival matched.
-    pub claim: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// The request target.
-    pub target: AbiStr,
-    /// The head fields.
-    pub fields: *const Field,
-    /// How many.
-    pub fields_len: usize,
-    /// The body so far, zero-copy.
-    pub body: Blob,
-    /// HOST buffer for the expected units.
-    pub units_buf: *mut UnitCount,
-    /// Its capacity.
-    pub units_cap: usize,
-    /// The request method, as the caller sent it. The plane decides which methods its paths
-    /// accept; one it does not is a refused arrive, with the plane's own status and bytes.
-    pub method: AbiStr,
-}
-
 /// `arrive`'s `out`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1635,116 +1604,6 @@ pub struct ArriveOut {
     /// With `trust_item`: the DIGEST the item is offered at now, as the plane observed it,
     /// opaque to the kernel. Absent = the item's last sighting (`trust.sight_item`) stands.
     pub trust_digest: AbiStr,
-}
-
-/// Authenticated route input. The original request remains keyed by `unit`; it is never replayed.
-/// The host supplies the verified caller's opaque reference, never credentials or a principal.
-/// Only clock and declared record reads are available in this operation, including its resumes.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct AuthenticatedRouteIn {
-    /// The live request ticket and bounded deadline.
-    pub head: InHead,
-    /// The immutable unit from `arrive`.
-    pub unit: u64,
-    /// Nonempty host-derived reference for the authenticated caller.
-    pub caller_ref: AbiStr,
-    /// Host-owned storage for the selected entry's UTF-8 bytes.
-    pub entry_buf: *mut u8,
-    /// At most `MAX_ROUTE_ENTRY_BYTES`; no short-buffer continuation is supported.
-    pub entry_cap: usize,
-}
-
-/// Route facts only. They pass through the ordinary destination, authorization and budget steps.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct AuthenticatedRouteOut {
-    /// The answer head.
-    pub head: OutHead,
-    /// Nonzero on READY, zero on all other outcomes.
-    pub entry_written: u32,
-    /// Opaque plugin refusal code on REFUSED, zero otherwise.
-    pub refusal: u32,
-    /// 400–499 on REFUSED, zero otherwise.
-    pub refusal_status: u32,
-    /// `ROUTE_DIRECT` or `ROUTE_POOL` on READY; zero otherwise.
-    pub route: u8,
-    /// Must be zero.
-    pub _reserved: [u8; 3],
-}
-
-/// `on_piece`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct OnPieceIn {
-    /// The head.
-    pub head: InHead,
-    /// The unit, as the kernel minted it: the key its [`ArriveIn::unit`] carried.
-    pub unit: u64,
-    /// `FROM_CALLER` | `FROM_FAR_END` | `FROM_KERNEL`.
-    pub from: u32,
-    /// `PIECE_*` bits.
-    pub flags: u32,
-    /// A duplex session's stream, as `drive` names it; `0` for a request unit.
-    pub stream: u64,
-    /// The piece's bytes, zero-copy.
-    pub bytes: Blob,
-    /// With [`PIECE_HAS_STATUS`]: the exact status number.
-    pub status_code: u32,
-    /// With [`PIECE_HAS_STATUS`]: the status class.
-    pub status_class: u32,
-    /// HOST buffer for the bytes the plane emits.
-    pub reply_buf: *mut u8,
-    /// Its capacity.
-    pub reply_cap: usize,
-    /// HOST buffer for the cumulative units.
-    pub units_buf: *mut UnitCount,
-    /// Its capacity.
-    pub units_cap: usize,
-    /// HOST buffer for record writes.
-    pub records_buf: *mut RecordWrite,
-    /// Its capacity.
-    pub records_cap: usize,
-    /// HOST buffer for the reply's head fields.
-    pub fields_buf: *mut OutField,
-    /// Its capacity.
-    pub fields_cap: usize,
-    /// HOST arena for the bytes of fields and record writes.
-    pub arena_buf: *mut u8,
-    /// Its capacity.
-    pub arena_cap: usize,
-    /// On an ATTEMPT piece: the operator's name for the member the kernel picked. On every piece
-    /// with `attempt_no` `0` of a `ROUTE_SCOPE_LOCAL` unit: the entry its scope resolved to (it
-    /// is walked to no member). Absent otherwise.
-    pub member: AbiStr,
-    /// On an ATTEMPT piece: the attempt's number, from `1`; `0` on every other piece.
-    pub attempt_no: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// On an ATTEMPT piece: the operator's name for the pool the kernel picked `member` from (a
-    /// member may shape its request differently in each pool it serves); absent otherwise.
-    pub pool: AbiStr,
-    /// On every piece of a unit: the caller's opaque, stable, non-reversible per-principal
-    /// reference (lower-case hex), never the principal itself; absent only when the host
-    /// lends no caller-reference key at all (the kernel's driver config `caller_refs: None`).
-    pub caller_ref: AbiStr,
-    /// On every piece of a unit: the snapshot claim the unit arrived on (`ArriveIn::claim`).
-    pub claim: u32,
-    /// On every piece of a unit: the dialect `arrive` answered (`ArriveOut::dialect`).
-    pub dialect: u32,
-    /// With `FROM_FAR_END` on the answer's first piece: the far end's response head fields the
-    /// plane's need keeps (`Need::keep_response_headers`), in the far end's order, names lower-case;
-    /// no other response field ever crosses. NULL with `0` otherwise.
-    pub head_fields: *const Field,
-    /// How many.
-    pub head_fields_len: usize,
-    /// From the unit's first attempt on, on every piece: `1` when the attempt's member relays the
-    /// caller's own credential to the far end (the operator configured its upstream credentials as
-    /// passthrough), `0` otherwise and before any attempt.
-    pub passthrough: u32,
-    /// With [`PIECE_REFUSED`]: the code of the reason the unit was refused for (`reason_code`);
-    /// `0` on every other piece. Laid in what was the struct's tail padding.
-    pub reason: u32,
 }
 
 /// `on_piece`'s `out`.
@@ -1859,66 +1718,6 @@ pub struct OnPieceOut {
     pub fault_reason: Span,
 }
 
-/// `refusal`'s `in`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct RefusalIn {
-    /// The head.
-    pub head: InHead,
-    /// `REFUSAL_KERNEL` | `REFUSAL_GATE` | `REFUSAL_ARRIVE`.
-    pub cause: u32,
-    /// The status number the kernel chose.
-    pub status: u32,
-    /// Index into [`PlaneTail::dialects`].
-    pub dialect: u32,
-    /// The refusal reason's code (`reason_code`): with the status and the dialect, what the
-    /// plane renders. Two reasons may share a status and still read differently to a client.
-    pub reason: u32,
-    /// The refusal text: the kernel's own message for the refusal (for a limit, it names the
-    /// bucket that blocked); never secret material. With `REFUSAL_ARRIVE`: the refused arrival's
-    /// `head.error`, byte for byte. With `REFUSAL_GATE`: the vetoing hook's own message, as the
-    /// kernel's hook engine sanitised it.
-    pub text: AbiStr,
-    /// HOST buffer for the rendered body.
-    pub reply_buf: *mut u8,
-    /// Its capacity.
-    pub reply_cap: usize,
-    /// HOST buffer for the reply's head fields.
-    pub fields_buf: *mut OutField,
-    /// Its capacity.
-    pub fields_cap: usize,
-    /// HOST arena for the bytes of fields and record writes.
-    pub arena_buf: *mut u8,
-    /// Its capacity.
-    pub arena_cap: usize,
-    /// The unit the refusal ends, as the kernel minted it; `0` when no unit had arrived.
-    pub unit: u64,
-    /// The plane's own code from a REFUSED `arrive` ([`ArriveOut::refusal`]); `0` otherwise.
-    pub plane_code: u32,
-    /// The seconds the caller is told to wait before retrying; `0` = no such advice.
-    pub retry_after_s: u32,
-    /// The request target, as the caller sent it. A refusal can precede `arrive` (the kernel
-    /// authenticates first): the plane then chooses its envelope from the target by its own rule;
-    /// the kernel never picks a dialect.
-    pub target: AbiStr,
-    /// HOST buffer for record writes: the refusal's record writes, as an `on_piece` answer's
-    /// ([`RecordWrite`], their bytes in the arena), so a plane writes its declared audit row
-    /// ([`RECORD_AUDIT`]) for a unit the kernel refused. A tail addition.
-    pub records_buf: *mut RecordWrite,
-    /// Its capacity.
-    pub records_cap: usize,
-    /// With `REFUSAL_GATE`: the name of the hook that vetoed the unit, opaque bytes; absent on
-    /// every other refusal. A tail addition.
-    pub hook: AbiStr,
-    /// With [`RefusalCode::Untrusted`]: why the kernel's Approve did not trust the unit's stated
-    /// facts (`abi::host::service::DISTRUST_*`, the one trust vocabulary, `trust.serves`'s too),
-    /// so the plane renders the words its dialect has for each (an unknown item as not found, a
-    /// known one ungranted as refused); `0` on every other refusal. A tail addition.
-    pub trust: u32,
-    /// Alignment padding.
-    pub _trust_reserved: u32,
-}
-
 /// `refusal`'s `out`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -2015,40 +1814,6 @@ pub struct ServeOut {
     pub records_needed: u32,
 }
 
-/// `catalog`'s `in`: a [`CLAIM_CATALOG`] route's request head and the names the kernel lists for
-/// its caller, in the kernel's order. The plane renders the listing in the dialect the request
-/// names (its own detection) into the host buffers. Pure: it never pends, and no unit exists.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CatalogIn {
-    /// The head.
-    pub head: InHead,
-    /// The request method.
-    pub method: AbiStr,
-    /// The request target (path and query).
-    pub target: AbiStr,
-    /// The request's head fields.
-    pub fields: *const Field,
-    /// How many.
-    pub fields_len: usize,
-    /// The names, each non-empty UTF-8.
-    pub names: *const AbiStr,
-    /// How many.
-    pub names_len: usize,
-    /// HOST buffer for the reply body.
-    pub reply_buf: *mut u8,
-    /// Its capacity.
-    pub reply_cap: usize,
-    /// HOST buffer for the reply's head fields.
-    pub fields_buf: *mut OutField,
-    /// Its capacity.
-    pub fields_cap: usize,
-    /// HOST arena for the bytes of the fields.
-    pub arena_buf: *mut u8,
-    /// Its capacity.
-    pub arena_cap: usize,
-}
-
 /// `catalog`'s `out`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -2113,48 +1878,6 @@ const _: () = assert!(one_bit_each(&[
     PROJECT_REWRITE_NOT_APPLICABLE,
     PROJECT_FAULT_UNPARSEABLE,
 ]));
-
-/// `project`'s `in`: the arrival `arrive` classified, and HOST buffers for the view.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct ProjectIn {
-    /// The head.
-    pub head: InHead,
-    /// Index into the snapshot's claims the arrival matched.
-    pub claim: u32,
-    /// Statements about the hooks core bound to this unit (`PROJECT_IN_OBSERVE_ONLY`); every
-    /// other bit is zero. 0 states nothing.
-    pub flags: u32,
-    /// The request target.
-    pub target: AbiStr,
-    /// The head fields.
-    pub fields: *const Field,
-    /// How many.
-    pub fields_len: usize,
-    /// The body, zero-copy.
-    pub body: Blob,
-    /// HOST buffer for the view's signals.
-    pub signals_buf: *mut SignalEntry,
-    /// Its capacity.
-    pub signals_cap: usize,
-    /// HOST arena for the view's strings and the projected body.
-    pub arena_buf: *mut u8,
-    /// Its capacity.
-    pub arena_cap: usize,
-    /// A request-stage hook's rewrite (the hook's own rewrite bytes, which the kernel never
-    /// parses): the plane applies it to `body` in its own dialect, answers the rewritten body in
-    /// [`ProjectOut::rewritten`] and projects THAT body. [`Blob::ABSENT`] on the unit's first
-    /// `project`.
-    pub rewrite: Blob,
-    /// HOST buffer for the prompt view's turns ([`PromptView::messages`]).
-    pub messages_buf: *mut MessageView,
-    /// Its capacity.
-    pub messages_cap: usize,
-    /// The unit, as the kernel minted it ([`ArriveIn::unit`]): a plane that applies a rewrite
-    /// keeps the rewritten body as its unit's request, so every attempt it writes from then on is
-    /// written from it.
-    pub unit: u64,
-}
 
 /// `project`'s `out`: the hook kind's own [`RequestView`], its plane-derived fields written by the
 /// plane (its strings in the arena, its signals in `signals_buf`), and the projected body where
