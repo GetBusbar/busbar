@@ -21,7 +21,12 @@ use super::serve::{ChainAuth, Served};
 pub(crate) struct NativeListenerPlan {
     needs: ListenerNeeds,
     suppliers: BTreeMap<String, ServedTransport>,
+    /// The admitted instance declaring D_PROTOCOL `websocket` (§12.27's upgrade target), if any.
+    websocket: Option<ServedTransport>,
 }
+
+/// The protocol a ROUTE_UPGRADE route is handed to (§12.27).
+const UPGRADE_PROTOCOL: &str = "websocket";
 
 impl std::fmt::Debug for NativeListenerPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -57,7 +62,11 @@ impl NativeListenerPlan {
                 entry.insert(framers.for_slot(&bind.at)?);
             }
         }
-        Ok(Self { needs, suppliers })
+        Ok(Self {
+            needs,
+            suppliers,
+            websocket: framers.for_protocol(UPGRADE_PROTOCOL),
+        })
     }
 
     pub(crate) fn binds(&self) -> &[InboundBind] {
@@ -78,13 +87,17 @@ impl NativeListenerPlan {
         if !served.planes.is_empty() {
             return Err("native listener plan cannot carry legacy served plane claims".into());
         }
-        if served
-            .ports
-            .iter()
-            .any(|seat| !seat.driver.routes().upgrade.is_empty())
-        {
-            return Err("native plane upgrades have no complete physical producer".into());
-        }
+        // §12.27: every upgrade route is mounted (auth on the head, then 400/501 before any 101).
+        // Handing one over needs the adopter the websocket transport brings (E9b); until it is
+        // linked, a candidate whose upgrade route could reach an admitted websocket instance is
+        // refused rather than served as if it upgraded.
+        upgrades_honoured(
+            served
+                .ports
+                .iter()
+                .any(|seat| !seat.driver.routes().upgrade.is_empty()),
+            self.websocket.as_ref(),
+        )?;
         let mut slots = BTreeMap::new();
         for (name, supplier) in &self.suppliers {
             let slot = if name == "admin_listen" {
@@ -110,7 +123,7 @@ impl NativeListenerPlan {
                 if served
                     .ports
                     .iter()
-                    .flat_map(|seat| &seat.driver.routes().data)
+                    .flat_map(|seat| served_routes(seat))
                     .any(|route| route.cred_header.is_some())
                 {
                     return Err("native route credential-header chain selection is not retained by this candidate".into());
@@ -139,7 +152,7 @@ impl NativeListenerPlan {
                 // The projection must not omit a declared route merely because its verbs
                 // are unsupported by the actual HTTP mount. Assembly will check full masks.
                 for seat in &served.ports {
-                    for route in &seat.driver.routes().data {
+                    for route in served_routes(seat) {
                         if !guests.lines().iter().any(|line| {
                             matches!(&line.claimant, busbar_kernel::guest::Claimant::Plane(instance) if instance == &seat.instance)
                                 && line.route.rung == route.route
@@ -149,20 +162,49 @@ impl NativeListenerPlan {
                         }
                     }
                 }
-                assemble_slot(app, name, supplier.port.clone(), guests, mounts, owners)?
+                assemble_slot(
+                    app,
+                    name,
+                    supplier.port.clone(),
+                    guests,
+                    mounts,
+                    owners,
+                    self.websocket.clone(),
+                )?
             };
             slots.insert(name.clone(), slot);
         }
         if served
             .ports
             .iter()
-            .any(|seat| !seat.driver.routes().data.is_empty())
+            .any(|seat| served_routes(seat).next().is_some())
             && !self.suppliers.contains_key("listen")
         {
             return Err("native served data routes have no configured data listener".into());
         }
         Ok(slots)
     }
+}
+
+/// Upgrade routes are served only where every answer they can give is honest: with no admitted
+/// websocket instance each authorized upgrade request is answered 501; with one, it would have to
+/// be handed over, and no hand-over adopter is linked yet.
+fn upgrades_honoured(upgrades: bool, websocket: Option<&ServedTransport>) -> Result<(), String> {
+    match (upgrades, websocket) {
+        (true, Some(websocket)) => Err(format!(
+            "native plane upgrade hand-over to websocket transport `{}` is not linked",
+            websocket.instance
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// The routes a seat serves on the data listener: its data routes and its upgrade routes.
+fn served_routes(
+    seat: &busbar_kernel::plane_driver::port::PortSeat,
+) -> impl Iterator<Item = &busbar_kernel::plane_driver::port_routes::Mounted> {
+    let routes = seat.driver.routes();
+    routes.data.iter().chain(&routes.upgrade)
 }
 
 /// The same actual root handlers and provisioning mounts used by PreparedListener.

@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::auth::native_data::PreparedDataDenial;
+use crate::auth::native_upgrade::UpgradeAuthorization;
 use crate::plane_driver::port::NativeTaskRetirement;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -104,6 +105,10 @@ enum RefusalProvenance {
         _owner: PhysicalExecutionOwner,
         _witness: NativeTaskRetirement,
     },
+    /// Core's answer before any 101 on an authorized upgrade request (§12.27 steps 1-2).
+    Upgrade {
+        _authorization: UpgradeAuthorization,
+    },
 }
 impl PhysicalRefusal {
     pub fn binding(&self) -> &Arc<RequestBinding> {
@@ -112,7 +117,9 @@ impl PhysicalRefusal {
     pub fn unit(&self) -> Option<busbar_contract::UnitKey> {
         match &self._provenance {
             RefusalProvenance::Allocated { _witness, .. } => Some(_witness.unit()),
-            RefusalProvenance::Admin { .. } | RefusalProvenance::Data { .. } => None,
+            RefusalProvenance::Admin { .. }
+            | RefusalProvenance::Data { .. }
+            | RefusalProvenance::Upgrade { .. } => None,
         }
     }
 }
@@ -196,6 +203,77 @@ impl CompletingPhysicalRequest {
         })
     }
 
+    /// Core's answer before any 101 on this exact upgrade request (a 400 for a request that does not
+    /// ask to switch to websocket, a 501 when no admitted instance can carry it). Only an
+    /// authorization of this same request can produce it: no upgrade refusal is written before the
+    /// route's auth chain, key policy and replay claim passed.
+    pub fn refuse_upgrade(
+        mut self,
+        authorization: UpgradeAuthorization,
+    ) -> Result<PhysicalRefusal, ArrivalRefusal> {
+        self.check_upgrade(&authorization)?;
+        self.enter_refusal(Some(PreparationState::Authorized))?;
+        self.cancel_on_drop = false;
+        Ok(PhysicalRefusal {
+            binding: self.binding.clone(),
+            _provenance: RefusalProvenance::Upgrade {
+                _authorization: authorization,
+            },
+        })
+    }
+
+    /// The hand-over of this exact authorized upgrade request (§12.27 steps 2-5): consumed once,
+    /// Completing becomes Executing. The owner is what the upgrade carrier is handed; dropping it
+    /// cancels the request.
+    pub fn complete_upgrade(
+        mut self,
+        authorization: UpgradeAuthorization,
+    ) -> Result<PhysicalUpgrade, ArrivalRefusal> {
+        self.check_upgrade(&authorization)?;
+        {
+            let mut phase = self
+                .binding
+                .state
+                .phase
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *phase != Phase::Completing {
+                return Err(ArrivalRefusal::Cancelled);
+            }
+            if *self
+                .binding
+                .state
+                .preparation
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                != PreparationState::Authorized
+            {
+                return Err(ArrivalRefusal::Cancelled);
+            }
+            if self.binding.deadline.is_some_and(|at| Instant::now() >= at) {
+                return Err(ArrivalRefusal::Deadline);
+            }
+            *phase = Phase::Executing {
+                deadline: self.binding.deadline,
+            };
+        }
+        self.cancel_on_drop = false;
+        Ok(PhysicalUpgrade {
+            binding: self.binding.clone(),
+            authorization,
+        })
+    }
+
+    fn check_upgrade(&self, authorization: &UpgradeAuthorization) -> Result<(), ArrivalRefusal> {
+        if !Arc::ptr_eq(&self.binding, authorization.binding())
+            || !Arc::ptr_eq(&self.binding, authorization.preparation().binding())
+            || !Arc::ptr_eq(self.binding.route(), authorization.route().binding())
+        {
+            return Err(ArrivalRefusal::ForeignInput);
+        }
+        Ok(())
+    }
+
     fn enter_refusal(&self, expected: Option<PreparationState>) -> Result<(), ArrivalRefusal> {
         let mut phase = self
             .binding
@@ -222,6 +300,29 @@ impl CompletingPhysicalRequest {
         }
         *phase = Phase::Refusing;
         Ok(())
+    }
+}
+
+/// An authorized upgrade request handed to its carrier: the executing physical owner and the
+/// authorization it was admitted under. Dropping it cancels the request.
+pub struct PhysicalUpgrade {
+    binding: Arc<RequestBinding>,
+    authorization: UpgradeAuthorization,
+}
+impl PhysicalUpgrade {
+    pub fn binding(&self) -> &Arc<RequestBinding> {
+        &self.binding
+    }
+    pub fn authorization(&self) -> &UpgradeAuthorization {
+        &self.authorization
+    }
+    pub fn check_executing(&self) -> Result<(), ArrivalRefusal> {
+        self.binding.check_executing()
+    }
+}
+impl Drop for PhysicalUpgrade {
+    fn drop(&mut self) {
+        self.binding.state.cancel();
     }
 }
 

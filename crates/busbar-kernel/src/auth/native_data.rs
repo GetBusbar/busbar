@@ -121,58 +121,45 @@ impl NativeDataRoute {
         let binding = preparation.binding().clone();
         let selected = Arc::new(selected);
         let result = async {
-        // One reading for this step's two deadlines: the binding's own and the call's. No lock
-        // and no await sits between the reading and the second check.
-        let live_at = binding.check_live_now().map_err(|_| DataRefused::Cancelled)?;
-        if !Arc::ptr_eq(binding.route(), &self.binding)
-            || cx.request_id != binding.invocation().request_id().get()
-            || binding.deadline().is_some_and(|at| cx.deadline > at)
-            || live_at >= cx.deadline
-            || selected.invocation() != binding.invocation()
-            || !Arc::ptr_eq(selected.inventory(), &self.owners.inventory)
-        {
-            return Err(DataRefused::Binding);
-        }
-        let snapshot = binding.snapshot().map_err(|_| DataRefused::Capacity)?;
-        if !selected.request().matches_snapshot(&snapshot)
-            || selected.request().route() != self.binding.line().route.rung
-            || !snapshot.request().same_request(binding.request())
-        {
-            return Err(DataRefused::Binding);
-        }
-        // Restrictive scans cover every relevant occurrence, not a decoy first bearer.
-        snapshot.with_auth_input(|request| {
-            for field in request.headers {
-                let name = field.name.get();
-                let Ok(value) = std::str::from_utf8(field.value.get()) else { continue };
-                let token = if name.eq_ignore_ascii_case("authorization") {
-                    let Some((scheme, token)) = value.split_once(' ') else { continue };
-                    if scheme.eq_ignore_ascii_case("DPoP") {
-                        return Err(DataRefused::Credential);
-                    }
-                    if !scheme.eq_ignore_ascii_case("Bearer") { continue }
-                    token.trim()
-                } else if self.owners.chain.reads_header(name)
-                    || matches!(self.binding.target(), RouteTarget::Plane(route)
-                        if route.mounted().cred_header.as_deref().is_some_and(|header| header.eq_ignore_ascii_case(name)))
-                {
-                    value
-                } else { continue };
-                if super::dpop::is_dpop_bound(token)
-                    || token.starts_with(crate::governance::signing::TOKEN_PREFIX)
-                {
-                    return Err(DataRefused::Credential);
-                }
+            // One reading for this step's two deadlines: the binding's own and the call's. No lock
+            // and no await sits between the reading and the second check.
+            let live_at = binding
+                .check_live_now()
+                .map_err(|_| DataRefused::Cancelled)?;
+            if !Arc::ptr_eq(binding.route(), &self.binding)
+                || cx.request_id != binding.invocation().request_id().get()
+                || binding.deadline().is_some_and(|at| cx.deadline > at)
+                || live_at >= cx.deadline
+                || selected.invocation() != binding.invocation()
+                || !Arc::ptr_eq(selected.inventory(), &self.owners.inventory)
+            {
+                return Err(DataRefused::Binding);
             }
-            Ok(())
-        }).map_err(|_| DataRefused::Capacity)??;
-        let prepared = self.owners.chain.prepare_snapshot(cx, snapshot).await.map_err(|_| DataRefused::Unavailable)?;
-        binding.check_live().map_err(|_| DataRefused::Cancelled)?;
-        let NativePreparedAnswer::Identity(prepared) = prepared else {
-            return Err(DataRefused::Credential);
-        };
+            let snapshot = binding.snapshot().map_err(|_| DataRefused::Capacity)?;
+            if !selected.request().matches_snapshot(&snapshot)
+                || selected.request().route() != self.binding.line().route.rung
+                || !snapshot.request().same_request(binding.request())
+            {
+                return Err(DataRefused::Binding);
+            }
+            let cred_header = match self.binding.target() {
+                RouteTarget::Plane(route) => route.mounted().cred_header.as_deref(),
+                RouteTarget::Core(_) => None,
+            };
+            refuse_bound_carriers(&snapshot, &self.owners.chain, cred_header)?;
+            let prepared = self
+                .owners
+                .chain
+                .prepare_snapshot(cx, snapshot)
+                .await
+                .map_err(|_| DataRefused::Unavailable)?;
+            binding.check_live().map_err(|_| DataRefused::Cancelled)?;
+            let NativePreparedAnswer::Identity(prepared) = prepared else {
+                return Err(DataRefused::Credential);
+            };
             Ok(prepared)
-        }.await;
+        }
+        .await;
         match result {
             Ok(prepared) => Ok(PendingData {
                 preparation,
@@ -190,6 +177,51 @@ impl NativeDataRoute {
             )),
         }
     }
+}
+
+/// The restrictive scan of every credential carrier a native route reads (`authorization`, the
+/// chain's own headers and the route's `D_ROUTE_CRED_HEADER`), before any verifier runs: a
+/// DPoP-bound or core-signed token is refused on these routes. Every occurrence is scanned, not a
+/// decoy first bearer. DATA and the upgrade route run this same scan.
+pub(crate) fn refuse_bound_carriers(
+    snapshot: &crate::inbound::request_snapshot::ChargedRequestSnapshot,
+    chain: &NativeChain,
+    cred_header: Option<&str>,
+) -> Result<(), DataRefused> {
+    snapshot
+        .with_auth_input(|request| {
+            for field in request.headers {
+                let name = field.name.get();
+                let Ok(value) = std::str::from_utf8(field.value.get()) else {
+                    continue;
+                };
+                let token = if name.eq_ignore_ascii_case("authorization") {
+                    let Some((scheme, token)) = value.split_once(' ') else {
+                        continue;
+                    };
+                    if scheme.eq_ignore_ascii_case("DPoP") {
+                        return Err(DataRefused::Credential);
+                    }
+                    if !scheme.eq_ignore_ascii_case("Bearer") {
+                        continue;
+                    }
+                    token.trim()
+                } else if chain.reads_header(name)
+                    || cred_header.is_some_and(|header| header.eq_ignore_ascii_case(name))
+                {
+                    value
+                } else {
+                    continue;
+                };
+                if super::dpop::is_dpop_bound(token)
+                    || token.starts_with(crate::governance::signing::TOKEN_PREFIX)
+                {
+                    return Err(DataRefused::Credential);
+                }
+            }
+            Ok(())
+        })
+        .map_err(|_| DataRefused::Capacity)?
 }
 
 pub struct PendingData {

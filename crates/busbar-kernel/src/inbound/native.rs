@@ -32,6 +32,7 @@ mod refusal;
 use refusal::PreparationState;
 pub use refusal::{
     DataPreparation, DataPreparationDenied, DataPreparationSuccess, PhysicalRefusal,
+    PhysicalUpgrade,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

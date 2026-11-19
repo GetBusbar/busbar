@@ -240,7 +240,10 @@ impl http_body::Body for RefusalBody {
     }
 }
 
-fn refusal_response(items: Vec<ToClient>, source: &StorageSource) -> Result<Response, InputError> {
+pub(super) fn refusal_response(
+    items: Vec<ToClient>,
+    source: &StorageSource,
+) -> Result<Response, InputError> {
     let mut extent = items
         .capacity()
         .checked_mul(std::mem::size_of::<ToClient>())
