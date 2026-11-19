@@ -21,19 +21,28 @@ use busbar_plugin_abi::host_side::pool::{sync_out, PooledOut};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
 use busbar_plugin_abi::records::{tag as generic, Rec, RecErr, Records, Reply, U32Rec, Writer};
 use busbar_plugin_abi::transport::{
-    self as t, tag, ConnInfo, Proxy, CLOSE_ABORT, CLOSE_GRACEFUL, DG_SECURED, EV_KEYING, EV_PATH,
+    self as t, tag, ConnInfo, CLOSE_ABORT, CLOSE_GRACEFUL, DG_SECURED, EV_KEYING, EV_PATH,
     EV_RENDEZVOUS, E_HEAD, FB_CLIENT, FB_SERVER, ICE_CONTROLLING, MSG_BINARY, MSG_FIN, MSG_TEXT,
     ROLE_CLIENT, ROLE_SERVER, SH_END_STREAM,
 };
 use busbar_plugin_abi::types::{Bytes, Status, Str};
+use busbar_plugin_abi::wire::{Breach, Wire};
 
+use crate::call::kinds::transport::{OnSession as _, Pieces, Proxy};
+use crate::call::Mono;
 use crate::instance::ErrorBook;
 use busbar_ports::codec::transport::{decode_offer, encode_keying, encode_path, Offer};
+use busbar_ports::transport::EmitParts;
 use busbar_ports::transport::{
     ConnIn, TransportEvent, TransportOut, TransportPort, TransportSession,
 };
 use busbar_ports::PluginCode;
 use busbar_ports::PortError;
+
+/// The clock reading of a session call. The transport port's session methods carry none today (only
+/// `begin` does, in its connection record), so none is handed in; when the port gains the reading it
+/// replaces this constant at each call below and nothing else changes.
+const NOW: Mono = Mono::NONE;
 
 /// The HTTP status of the one head an UPGRADE may answer (RFC 9110 §15.2.2).
 const SWITCHING_PROTOCOLS: u32 = 101;
@@ -92,7 +101,10 @@ impl TransportAdapter {
     /// One `offer(role)` call, decoded by A11's `decode_offer`.
     fn offer(&self, role: u32) -> Result<Offer, PortError> {
         sync_out(self.max_out, |out| {
-            let a = self.proxy.offer(out, role).map_err(PortError::Call)?;
+            let a = self
+                .proxy
+                .offer(out, Mono::NONE, role)
+                .map_err(PortError::Call)?;
             if !a.is_ok() {
                 return Err(self.refusal(&a));
             }
@@ -100,7 +112,8 @@ impl TransportAdapter {
         })
     }
 
-    /// One session call: the proxy method `f` answers into the thread's `out`, then the answer is decoded.
+    /// One session call: the proxy method `f` answers into the thread's `out`, then the answer is judged
+    /// by the session's validator and decoded.
     fn call(
         &self,
         s: &mut TransportSession,
@@ -113,7 +126,7 @@ impl TransportAdapter {
     ) -> Result<(), PortError> {
         sync_out(self.max_out, |out| {
             let a = f(s, out).map_err(PortError::Call)?;
-            self.answer(&a, call, sink)
+            self.answer(&a, call, &mut s.wire, sink)
         })
     }
 
@@ -121,12 +134,13 @@ impl TransportAdapter {
         &self,
         a: &Answer<'_>,
         call: Call<'_>,
+        wire: &mut Wire,
         sink: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError> {
         if !a.is_ok() {
             return Err(self.refusal(a));
         }
-        decode(a.records(), call, sink).map_err(|bad| self.fault(bad))
+        decode(a.records(), call, wire, sink).map_err(|bad| self.fault(bad))
     }
 
     /// A REFUSED or FAILED answer as the port's error. Until W1-L2 lands the one shared builder (§11.3, no
@@ -146,6 +160,16 @@ impl TransportAdapter {
     /// The plugin broke the answer grammar: quarantine the instance (the kernel audits `plugin_fault` from
     /// the error) and answer FAULT.
     fn fault(&self, bad: Bad) -> PortError {
+        if let Bad::Wire(breach) = bad {
+            let inst = self.proxy.instance();
+            tracing::error!(
+                plugin = %inst.identity,
+                instance = %inst.name,
+                rule = ?breach.rule,
+                stream = breach.stream,
+                "transport_fault: the session broke a rule of the output model; nothing of that answer is written"
+            );
+        }
         self.proxy.instance().quarantine();
         PortError::Call(CallError::Fault(bad.reason()))
     }
@@ -183,11 +207,17 @@ impl TransportPort for TransportAdapter {
             if !a.is_ok() {
                 return Err(self.refusal(&a));
             }
-            let Some(handle) = handle else {
+            let Some(mut handle) = handle else {
                 return Err(self.fault(Bad::Token));
             };
             // On a bad answer the handle drops here, which cancels the session (§10.4).
-            self.answer(&a, Call::Begin, sink)?;
+            // A session begun on an upgraded connection serves the upgraded exchange as stream 1: it
+            // is open from `begin`, before any record (the adopting transport writes the 101 as a
+            // part on it in this very answer).
+            if info.flags & t::CONN_UPGRADED != 0 {
+                handle.wire.adopt(1);
+            }
+            self.answer(&a, Call::Begin, &mut handle.wire, sink)?;
             Ok(handle)
         })
     }
@@ -198,7 +228,7 @@ impl TransportPort for TransportAdapter {
         bytes: &[u8],
         sink: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError> {
-        self.call(s, Call::Ingest, sink, |s, out| s.ingest(out, bytes))
+        self.call(s, Call::Ingest, sink, |s, out| s.ingest(out, NOW, bytes))
     }
 
     /// Every piece, E_REFUSE and E_CLOSE included, goes to the framer as handed (§8.7); the answer's shape for
@@ -207,14 +237,45 @@ impl TransportPort for TransportAdapter {
         &self,
         s: &mut TransportSession,
         stream: u64,
-        piece: u32,
+        pieces: u32,
         arg: u32,
-        bytes: &[u8],
+        credit: u64,
+        parts: EmitParts<'_>,
         sink: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError> {
-        let call = Call::Emit { piece, head: bytes };
+        // The pieces and the parts must say the same thing: one entry per byte-carrying piece.
+        let carried = |bit: u32, part: Option<&[u8]>| (pieces & bit != 0) == part.is_some();
+        if !(carried(E_HEAD, parts.head)
+            && carried(t::E_BODY, parts.body)
+            && carried(t::E_TRAILERS, parts.trailers)
+            && carried(t::E_END, parts.end))
+            || parts.end.is_some_and(|end| !end.is_empty())
+            || (credit != 0 && pieces & t::E_CONSUMED == 0)
+        {
+            return Err(emit_misuse());
+        }
+        let head = parts.head.unwrap_or(&[]);
+        // What the engine asks of this stream, told to the session's validator before the call: the
+        // pieces, the body bytes given, and the length of each sealed value the head declares (the
+        // transport is told a sealed value's name and length, never the value).
+        sealed_lengths(head, |lengths| {
+            let body = parts.body.map_or(0, |body| body.len() as u64);
+            s.wire.asked(stream, pieces, body, lengths);
+        })
+        .map_err(|_| emit_misuse())?;
+        let call = Call::Emit {
+            piece: pieces,
+            stream,
+            head,
+        };
         self.call(s, call, sink, |s, out| {
-            s.emit(out, stream, piece, arg, bytes)
+            let parts = Pieces {
+                head: parts.head,
+                body: parts.body,
+                trailers: parts.trailers,
+                end: parts.end,
+            };
+            s.emit(out, NOW, stream, pieces, arg, credit, parts)
         })
     }
 
@@ -223,7 +284,7 @@ impl TransportPort for TransportAdapter {
         s: &mut TransportSession,
         sink: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError> {
-        self.call(s, Call::Other, sink, |s, out| s.timer(out))
+        self.call(s, Call::Other, sink, |s, out| s.timer(out, NOW))
     }
 
     fn datagram(
@@ -236,7 +297,7 @@ impl TransportPort for TransportAdapter {
     ) -> Result<(), PortError> {
         let flags = if secured { DG_SECURED } else { 0 };
         self.call(s, Call::Other, sink, |s, out| {
-            s.datagram(out, path, flags, bytes)
+            s.datagram(out, NOW, path, flags, bytes)
         })
     }
 
@@ -252,9 +313,55 @@ impl TransportPort for TransportAdapter {
     ) -> Result<(), PortError> {
         let (code, arg) = event_arg(&ev).map_err(|_| too_big())?;
         self.call(s, Call::Other, sink, |s, out| {
-            s.event(out, code, arg.as_bytes())
+            s.event(out, NOW, code, arg.as_bytes())
         })
     }
+}
+
+/// The engine built an `emit` whose pieces and parts disagree, or a head it cannot read: the engine's
+/// own fault, refused before any call (the plugin is not charged).
+fn emit_misuse() -> PortError {
+    PortError::Failed {
+        code: busbar_plugin_abi::fail::failed::F_LIMIT,
+        text: Box::from("the engine built an emit whose pieces and parts disagree"),
+        retry_after_s: None,
+        backend_status: None,
+        error: None,
+    }
+}
+
+/// The length of each sealed value a head declares, in slot order (the position of each H_SEALED_PAIR
+/// or H_SEALED_QUERY record among the head's sealed records). Handed to `f` from this stack: a head
+/// with more sealed values than fit inline spills to the heap, once, for that call.
+fn sealed_lengths(head: &[u8], f: impl FnOnce(&[u32])) -> Result<(), RecErr> {
+    use busbar_plugin_abi::vocab::head1::{tag as h, SealedPairRec};
+    const INLINE: usize = 8;
+    let mut inline = [0u32; INLINE];
+    let mut spill: Vec<u32> = Vec::new();
+    let mut n = 0usize;
+    for rec in Records::new(head) {
+        let rec = rec?;
+        if !matches!(rec.tag, h::H_SEALED_PAIR | h::H_SEALED_QUERY) {
+            continue;
+        }
+        let (sealed, _name) = rec.pod_tail::<SealedPairRec>()?;
+        match inline.get_mut(n) {
+            Some(slot) if spill.is_empty() => *slot = sealed.len,
+            _ => {
+                if spill.is_empty() {
+                    spill.extend_from_slice(&inline);
+                }
+                spill.push(sealed.len);
+            }
+        }
+        n += 1;
+    }
+    if spill.is_empty() {
+        f(&inline[..n]);
+    } else {
+        f(&spill);
+    }
+    Ok(())
 }
 
 /// Core's own encode hit the record cap: a limit, not the plugin's fault.
@@ -396,12 +503,13 @@ pub fn shown(
 
 /// What the adapter called, as far as the answer grammar depends on it.
 #[derive(Clone, Copy)]
-enum Call<'a> {
+pub enum Call<'a> {
     Begin,
     Ingest,
-    /// `head` = the piece's bytes (the head records when `piece` is E_HEAD).
+    /// `piece` = the piece set; `head` = the E_HEAD entry's records (empty without one).
     Emit {
         piece: u32,
+        stream: u64,
         head: &'a [u8],
     },
     /// timer, datagram, event.
@@ -409,12 +517,18 @@ enum Call<'a> {
 }
 
 impl Call<'_> {
+    /// An `emit` whose pieces include E_HEAD on stream 0: the engine asks a dialled session to open a
+    /// stream. Only that call may be answered STREAM_BUSY.
+    fn opens_a_stream(self) -> bool {
+        matches!(self, Call::Emit { piece, stream: 0, .. } if piece & E_HEAD != 0)
+    }
+
     /// UPGRADE answers only `emit(E_HEAD)` whose head is H_STATUS(101) (§8.7 UPGRADE, round 13); whether the
     /// stream is a ROUTE_UPGRADE stream is core's to know (§12.27).
     fn upgrades(self) -> bool {
         match self {
-            Call::Emit { piece, head } => {
-                piece == E_HEAD && head_status(head) == Some(SWITCHING_PROTOCOLS)
+            Call::Emit { piece, head, .. } => {
+                piece & E_HEAD != 0 && head_status(head) == Some(SWITCHING_PROTOCOLS)
             }
             Call::Begin | Call::Ingest | Call::Other => false,
         }
@@ -432,10 +546,12 @@ fn head_status(head: &[u8]) -> Option<u32> {
 
 /// Why an answer is not one: FAULT BadRecords, UnknownTag, or MissingToken.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Bad {
+pub enum Bad {
     Rec(RecErr),
     Tag(u16),
     Token,
+    /// A breach of the output model, with the rule and the stream the record named.
+    Wire(Breach),
 }
 
 impl From<RecErr> for Bad {
@@ -445,11 +561,14 @@ impl From<RecErr> for Bad {
 }
 
 impl Bad {
-    fn reason(self) -> FaultReason {
+    pub fn reason(self) -> FaultReason {
         match self {
             Bad::Rec(e) => FaultReason::BadRecords(e),
             Bad::Tag(t) => FaultReason::UnknownTag(t),
             Bad::Token => FaultReason::MissingToken,
+            // Every breach of the output model is FAULT BadRecords for the whole answer; the rule and
+            // the stream go to the audit line (`TransportAdapter::fault`).
+            Bad::Wire(_) => FaultReason::BadRecords(RecErr::Size),
         }
     }
 }
@@ -458,33 +577,48 @@ impl Bad {
 const GRAMMAR: Bad = Bad::Rec(RecErr::Size);
 
 /// The whole answer is checked first, then handed to `sink`; a bad answer gives the sink nothing.
-fn decode(
+/// `wire` is the session's one validator of the output model (rules L1 to L7 and L9): every record of
+/// the answer passes through it, in order, in the checking pass. A breach leaves `wire` mid-answer,
+/// which is right: a breach ends the session.
+pub fn decode(
     recs: Records<'_>,
     call: Call<'_>,
+    wire: &mut Wire,
     sink: &mut dyn FnMut(TransportOut<'_>),
 ) -> Result<(), Bad> {
-    // An answer with no records has nothing to check and nothing to deliver.
-    if recs.rest().is_empty() {
+    // An answer with no records has nothing to check and nothing to deliver; only `begin` must speak
+    // (its SESSION statement).
+    if recs.rest().is_empty() && !matches!(call, Call::Begin) {
         return Ok(());
     }
-    walk(recs, call, &mut |_: TransportOut<'_>| {})?;
-    walk(recs, call, sink)
+    walk(recs, call, Some(wire), &mut |_: TransportOut<'_>| {})?;
+    walk(recs, call, None, sink)
 }
 
 /// One pass over an OK answer's records (the leading TOKEN of `begin` is already gone, §10.2). A METRIC
-/// record is passed over: `decode_metrics` reads it (§12.17).
+/// record is passed over: `decode_metrics` reads it (§12.17). `wire` is Some in the checking pass.
 fn walk(
     recs: Records<'_>,
     call: Call<'_>,
+    mut wire: Option<&mut Wire>,
     sink: &mut dyn FnMut(TransportOut<'_>),
 ) -> Result<(), Bad> {
     let mut seen = false;
     let mut upgraded = false;
     let mut after_upgrade = false;
+    // `begin` stated its SESSION; a STREAM_BUSY must be the answer's only record.
+    let mut stated = false;
+    let mut alone = false;
     for rec in recs {
         let rec = rec?;
         if rec.tag == generic::METRIC {
             continue;
+        }
+        if alone || (matches!(call, Call::Begin) && !stated && rec.tag != tag::SESSION) {
+            return Err(GRAMMAR);
+        }
+        if let Some(wire) = wire.as_deref_mut() {
+            wire.record(rec.tag, rec.body).map_err(Bad::Wire)?;
         }
         let leftover_ok = core::mem::replace(&mut after_upgrade, false);
         // After UPGRADE the answer holds at most its one LEFTOVER (§12.27 step 3: the framer writes nothing).
@@ -492,53 +626,72 @@ fn walk(
             return Err(GRAMMAR);
         }
         let out = match rec.tag {
-            tag::WRITE => TransportOut::Write(rec.body),
+            // The one output model. The record was judged by the session's validator in the checking
+            // pass (rules L1 to L7 and L9); here it is only read for the engine's writer.
             tag::WIRE_PART => {
                 let (part, bytes) = rec.pod_tail::<t::WirePart>()?;
-                reserved(part._r)?;
-                let class = busbar_ports::codec::transport::wire_class(part.class)?;
-                if bytes.is_empty()
-                    || (part.stream == 0
-                        && class == busbar_contract::response_delivery::WireClass::Payload)
-                {
-                    return Err(GRAMMAR);
-                }
                 TransportOut::WirePart {
                     stream: part.stream,
-                    class,
+                    payload: part.class == t::WIRE_PAYLOAD,
                     bytes,
+                }
+            }
+            tag::WIRE_SEALED => {
+                let sealed = rec.pod::<t::WireSealed>()?;
+                TransportOut::WireSealed {
+                    stream: sealed.stream,
+                    slot: sealed.slot,
+                    offset: sealed.offset,
+                    len: sealed.len,
                 }
             }
             tag::WIRE_END => {
                 let end = rec.pod::<t::WireEnd>()?;
-                reserved(end._r)?;
-                if end.stream == 0 {
-                    return Err(GRAMMAR);
-                }
                 TransportOut::WireEnd {
                     stream: end.stream,
-                    requirement: busbar_ports::codec::transport::completion_requirement(
-                        end.requirement,
-                    )?,
+                    how: end.how,
+                    arg: end.arg,
                 }
             }
-            tag::RESPONSE_ABORT => {
-                let abort = rec.pod::<t::ResponseAbort>()?;
-                reserved(abort._r)?;
-                if abort.stream == 0 {
+            // `begin`'s statement of what the session is: exactly one, first in the answer.
+            tag::SESSION => {
+                if !matches!(call, Call::Begin) || seen {
                     return Err(GRAMMAR);
                 }
-                TransportOut::ResponseAbort {
-                    stream: abort.stream,
-                    code: abort.code,
+                let s = rec.pod::<t::SessionRec>()?;
+                reserved(s._r)?;
+                bits(s.flags, t::S_MULTIPLEX)?;
+                let multiplex = s.flags & t::S_MULTIPLEX != 0;
+                // The two windows are stated exactly when the session carries several streams.
+                let windows = (s.stream_window != 0, s.conn_window != 0);
+                if windows != (multiplex, multiplex) {
+                    return Err(GRAMMAR);
+                }
+                stated = true;
+                TransportOut::Session {
+                    multiplex,
+                    stream_window: s.stream_window,
+                    conn_window: s.conn_window,
                 }
             }
-            tag::RESPONSE_QUIESCENT => {
-                let stream = stream(&rec)?;
-                if stream == 0 {
+            // The answer of an `emit` whose pieces include E_HEAD on stream 0 when the session can
+            // carry no more streams now: alone in its answer, nothing was taken.
+            tag::STREAM_BUSY => {
+                empty(&rec)?;
+                if seen || !call.opens_a_stream() {
                     return Err(GRAMMAR);
                 }
-                TransportOut::ResponseQuiescent(stream)
+                alone = true;
+                // Nothing was opened: what the dial's set said is no longer pending.
+                if let Some(wire) = wire.as_deref_mut() {
+                    wire.busy();
+                }
+                TransportOut::StreamBusy
+            }
+            // The session will open no further stream; the streams it carries go on.
+            tag::NO_NEW_STREAMS => {
+                empty(&rec)?;
+                TransportOut::NoNewStreams
             }
             tag::CLOSE => {
                 let c = rec.pod::<t::CloseRec>()?;
@@ -589,10 +742,13 @@ fn walk(
             tag::STREAM_END => TransportOut::StreamEnd(stream(&rec)?),
             tag::STREAM_RESET => {
                 let r = rec.pod::<t::StreamReset>()?;
-                reserved(r._r)?;
+                // The far end guarantees it did not act on the stream: the engine may send the
+                // request once more on another connection, recorded, never silently.
+                bits(r.flags, t::RESET_NOT_PROCESSED)?;
                 TransportOut::StreamReset {
                     stream: r.stream,
                     code: r.code,
+                    not_processed: r.flags & t::RESET_NOT_PROCESSED != 0,
                 }
             }
             tag::STREAM_TRAILERS => {
@@ -603,14 +759,6 @@ fn walk(
                 }
             }
             tag::STREAM_OPENED => TransportOut::StreamOpened(stream(&rec)?),
-            tag::PAUSE => {
-                empty(&rec)?;
-                TransportOut::Pause
-            }
-            tag::RESUME => {
-                empty(&rec)?;
-                TransportOut::Resume
-            }
             tag::STREAM_FULL => TransportOut::StreamFull(stream(&rec)?),
             tag::STREAM_WRITABLE => TransportOut::StreamWritable(stream(&rec)?),
             tag::SEND_TO => {
@@ -659,6 +807,10 @@ fn walk(
         };
         seen = true;
         sink(out);
+    }
+    // `begin` answers with exactly one SESSION, first.
+    if matches!(call, Call::Begin) && !stated {
+        return Err(GRAMMAR);
     }
     Ok(())
 }
@@ -783,18 +935,29 @@ mod tests {
     /// One line per sink item, so a whole answer compares as one list.
     fn label(o: &TransportOut<'_>) -> String {
         match o {
-            TransportOut::Write(b) => format!("write {}", String::from_utf8_lossy(b)),
             TransportOut::WirePart {
                 stream,
-                class,
+                payload,
                 bytes,
-            } => format!("wire {stream} {class:?} {}", String::from_utf8_lossy(bytes)),
-            TransportOut::WireEnd {
+            } => format!(
+                "wire {stream} {} {}",
+                if *payload { "payload" } else { "control" },
+                String::from_utf8_lossy(bytes)
+            ),
+            TransportOut::WireSealed {
                 stream,
-                requirement,
-            } => format!("wire-end {stream} {requirement:?}"),
-            TransportOut::ResponseAbort { stream, code } => format!("abort {stream} {code}"),
-            TransportOut::ResponseQuiescent(stream) => format!("quiescent {stream}"),
+                slot,
+                offset,
+                len,
+            } => format!("sealed {stream} slot={slot} {offset}+{len}"),
+            TransportOut::WireEnd { stream, how, arg } => format!("wire-end {stream} {how} {arg}"),
+            TransportOut::Session {
+                multiplex,
+                stream_window,
+                conn_window,
+            } => format!("session multiplex={multiplex} {stream_window} {conn_window}"),
+            TransportOut::StreamBusy => "busy".into(),
+            TransportOut::NoNewStreams => "no-new-streams".into(),
             TransportOut::Close { abort } => format!("close abort={abort}"),
             TransportOut::WakeAt(ns) => format!("wake {ns}"),
             TransportOut::Upgrade { protocol } => format!("upgrade {protocol}"),
@@ -813,13 +976,15 @@ mod tests {
                 String::from_utf8_lossy(bytes)
             ),
             TransportOut::StreamEnd(s) => format!("end {s}"),
-            TransportOut::StreamReset { stream, code } => format!("reset {stream} {code}"),
+            TransportOut::StreamReset {
+                stream,
+                code,
+                not_processed,
+            } => format!("reset {stream} {code} not_processed={not_processed}"),
             TransportOut::StreamTrailers { stream, pairs } => {
                 format!("trailers {stream} pairs={}", pairs.count())
             }
             TransportOut::StreamOpened(s) => format!("opened {s}"),
-            TransportOut::Pause => "pause".into(),
-            TransportOut::Resume => "resume".into(),
             TransportOut::StreamFull(s) => format!("full {s}"),
             TransportOut::StreamWritable(s) => format!("writable {s}"),
             TransportOut::SendTo {
@@ -853,72 +1018,361 @@ mod tests {
         }
     }
 
+    /// One answer of a fresh session.
     fn run(out: &Reply, call: Call<'_>) -> Result<Vec<String>, Bad> {
+        run_on(&mut Wire::new(), out, call)
+    }
+
+    /// One answer of the session whose output state is `wire`.
+    fn run_on(wire: &mut Wire, out: &Reply, call: Call<'_>) -> Result<Vec<String>, Bad> {
         let mut seen = Vec::new();
         decode(
             Records::new(out.as_bytes()),
             call,
+            wire,
             &mut |o: TransportOut<'_>| seen.push(label(&o)),
         )?;
         Ok(seen)
     }
 
-    fn provenance_record(stream: u64, value: u32, reserved: u32, tail: &[u8]) -> Vec<u8> {
-        let mut bytes = Vec::from(stream.to_le_bytes());
-        bytes.extend_from_slice(&value.to_le_bytes());
-        bytes.extend_from_slice(&reserved.to_le_bytes());
-        bytes.extend_from_slice(tail);
-        bytes
+    fn part(w: &mut Reply, stream: u64, class: u32, bytes: &[u8]) -> Result<(), Full> {
+        let rec = t::WirePart {
+            stream,
+            class,
+            _r: 0,
+        };
+        w.put_pod_tail(tag::WIRE_PART, &rec, bytes)
     }
 
-    #[test]
-    fn attributed_output_reaches_sink_in_protocol_order() {
+    fn sealed(w: &mut Reply, stream: u64, slot: u32, offset: u32, len: u32) -> Result<(), Full> {
+        let rec = t::WireSealed {
+            stream,
+            slot,
+            offset,
+            len,
+            _r: 0,
+        };
+        w.put_pod(tag::WIRE_SEALED, &rec)
+    }
+
+    fn end(w: &mut Reply, stream: u64, how: u32, arg: u32) -> Result<(), Full> {
+        w.put_pod(tag::WIRE_END, &t::WireEnd { stream, how, arg })
+    }
+
+    /// An accepted connection's request on `stream`: the STREAM_HEAD that opens it.
+    fn opened_by_head(wire: &mut Wire, stream: u64) {
+        let head = head_with_status(200);
         let out = answer(|w| {
-            w.put(0x0119, &provenance_record(0, 1, 0, b"control"))?;
-            w.put(0x0119, &provenance_record(7, 2, 0, b"payload"))?;
-            w.put(0x011a, &provenance_record(7, 2, 0, b""))?;
-            w.put(0x011b, &provenance_record(9, 8, 0, b""))?;
-            w.put(0x011c, &7u64.to_le_bytes())
+            let sh = StreamHead {
+                stream,
+                flags: SH_END_STREAM,
+                _r: 0,
+            };
+            w.put_pod_tail(tag::STREAM_HEAD, &sh, head.as_bytes())
         });
+        run_on(wire, &out, Call::Ingest).expect("the request head");
+    }
+
+    /// One whole answer on an accepted connection: the engine gives a head, seven body bytes and the
+    /// end; the session writes control, payload and one flushed end.
+    #[test]
+    fn a_whole_answer_reaches_the_sink_in_wire_order() {
+        let mut wire = Wire::new();
+        opened_by_head(&mut wire, 7);
+        wire.asked(7, E_HEAD | E_BODY | t::E_END, 7, &[]);
+        let out = answer(|w| {
+            part(w, 0, t::WIRE_CONTROL, b"settings")?;
+            part(w, 7, t::WIRE_CONTROL, b"head")?;
+            part(w, 7, t::WIRE_PAYLOAD, b"payload")?;
+            end(w, 7, t::END_FLUSH, 0)
+        });
+        let emit = Call::Emit {
+            piece: E_HEAD | E_BODY | t::E_END,
+            stream: 7,
+            head: &[],
+        };
         assert_eq!(
-            run(&out, Call::Ingest).expect("valid protocol attribution"),
+            run_on(&mut wire, &out, emit).expect("a whole answer"),
             [
-                "wire 0 Control control",
-                "wire 7 Payload payload",
-                "wire-end 7 Shutdown",
-                "abort 9 8",
-                "quiescent 7"
+                "wire 0 control settings",
+                "wire 7 control head",
+                "wire 7 payload payload",
+                "wire-end 7 1 0"
+            ]
+        );
+        assert_eq!(wire.open_streams(), 0);
+    }
+
+    /// A dialled request with one sealed header: the head spills its sealed mark between two control
+    /// parts, and the engine is told where slot 0's bytes go. The transport never held the value.
+    #[test]
+    fn a_sealed_value_is_marked_in_order_with_the_parts_around_it() {
+        let mut wire = Wire::new();
+        // E_HEAD on stream 0 asks the session to open a stream; the head declared one 40-byte value.
+        wire.asked(0, E_HEAD, 0, &[40]);
+        let out = answer(|w| {
+            w.put_pod(tag::STREAM_OPENED, &StreamFlow { stream: 3 })?;
+            part(w, 3, t::WIRE_CONTROL, b"POST / HTTP/1.1\r\nx-api-key: ")?;
+            sealed(w, 3, 0, 0, 40)?;
+            part(w, 3, t::WIRE_CONTROL, b"\r\n\r\n")
+        });
+        let dial = Call::Emit {
+            piece: E_HEAD,
+            stream: 0,
+            head: &[],
+        };
+        assert_eq!(
+            run_on(&mut wire, &out, dial).expect("a sealed head"),
+            [
+                "opened 3",
+                "wire 3 control POST / HTTP/1.1\r\nx-api-key: ",
+                "sealed 3 slot=0 0+40",
+                "wire 3 control \r\n\r\n"
             ]
         );
     }
 
+    /// Each rule of the output model the engine checks: the whole answer is refused, a valid prefix
+    /// never reaches the sink, and the breach names its rule.
     #[test]
-    fn malformed_provenance_rejects_the_whole_answer_before_any_callback() {
-        for (tag, bad) in [
-            (0x0119, provenance_record(0, 2, 0, b"body")),
-            (0x0119, provenance_record(1, 3, 0, b"body")),
-            (0x0119, provenance_record(1, 2, 0, b"")),
-            (0x0119, provenance_record(1, 2, 1, b"body")),
-            (0x011a, provenance_record(0, 1, 0, b"")),
-            (0x011a, provenance_record(1, 3, 0, b"")),
-            (0x011a, provenance_record(1, 1, 1, b"")),
-            (0x011a, provenance_record(1, 1, 0, b"tail")),
-            (0x011b, provenance_record(0, 1, 0, b"")),
-            (0x011b, provenance_record(1, 1, 1, b"")),
-            (0x011c, Vec::from(0u64.to_le_bytes())),
-        ] {
+    fn a_breach_of_the_output_model_gives_the_sink_nothing_and_names_its_rule() {
+        use busbar_plugin_abi::wire::Rule;
+        type Build = fn(&mut Reply) -> Result<(), Full>;
+        let cases: [(Rule, Build); 7] = [
+            // L2: a part on a stream that is not open.
+            (Rule::L2, |w| part(w, 9, t::WIRE_CONTROL, b"x")),
+            // L3: payload on the connection's own stream.
+            (Rule::L3, |w| part(w, 0, t::WIRE_PAYLOAD, b"x")),
+            // L4: a second end for the stream.
+            (Rule::L4, |w| {
+                part(w, 7, t::WIRE_PAYLOAD, b"payload")?;
+                end(w, 7, t::END_FLUSH, 0)?;
+                end(w, 7, t::END_FLUSH, 0)
+            }),
+            // L6: fewer payload bytes than the body the engine gave.
+            (Rule::L6, |w| {
+                part(w, 7, t::WIRE_PAYLOAD, b"pay")?;
+                end(w, 7, t::END_FLUSH, 0)
+            }),
+            // L7: a part after the connection's shutdown end.
+            (Rule::L7, |w| {
+                part(w, 7, t::WIRE_PAYLOAD, b"payload")?;
+                end(w, 7, t::END_SHUTDOWN, 0)?;
+                part(w, 0, t::WIRE_CONTROL, b"late")
+            }),
+            // L9: a sealed mark for a slot the engine never declared.
+            (Rule::L9, |w| sealed(w, 7, 0, 0, 4)),
+            // A malformed record: an empty part.
+            (Rule::Record, |w| part(w, 7, t::WIRE_CONTROL, b"")),
+        ];
+        for (rule, build) in cases {
+            let mut wire = Wire::new();
+            opened_by_head(&mut wire, 7);
+            wire.asked(7, E_HEAD | E_BODY | t::E_END, 7, &[]);
             let out = answer(|w| {
-                w.put(tag::WRITE, b"must not escape")?;
-                w.put(tag, &bad)
+                part(w, 0, t::WIRE_CONTROL, b"must not escape")?;
+                build(w)
             });
             let mut calls = 0;
-            let error = decode(Records::new(out.as_bytes()), Call::Ingest, &mut |_| {
-                calls += 1
-            })
-            .expect_err("invalid attribution");
-            assert!(matches!(error, Bad::Rec(_)), "record grammar: {error:?}");
-            assert_eq!(calls, 0, "no valid prefix may escape");
+            let error = decode(
+                Records::new(out.as_bytes()),
+                Call::Other,
+                &mut wire,
+                &mut |_| calls += 1,
+            )
+            .expect_err("a breach");
+            assert!(
+                matches!(error, Bad::Wire(breach) if breach.rule == rule),
+                "{rule:?}: {error:?}"
+            );
+            assert_eq!(error.reason(), FaultReason::BadRecords(RecErr::Size));
+            assert_eq!(calls, 0, "{rule:?}: no valid prefix may escape");
         }
+    }
+
+    /// L5: a transport cannot declare an end the engine did not ask for.
+    #[test]
+    fn an_end_the_engine_did_not_ask_for_is_a_breach() {
+        use busbar_plugin_abi::wire::Rule;
+        let mut wire = Wire::new();
+        opened_by_head(&mut wire, 7);
+        wire.asked(7, E_HEAD | E_BODY, 7, &[]);
+        let out = answer(|w| {
+            part(w, 7, t::WIRE_PAYLOAD, b"payload")?;
+            end(w, 7, t::END_FLUSH, 0)
+        });
+        let error = run_on(&mut wire, &out, Call::Other).expect_err("an early end");
+        assert!(
+            matches!(error, Bad::Wire(breach) if breach.rule == Rule::L5 && breach.stream == 7)
+        );
+        // END_FAILED is the transport's to state at any time.
+        let mut wire = Wire::new();
+        opened_by_head(&mut wire, 7);
+        let failed = answer(|w| end(w, 7, t::END_FAILED, 11));
+        assert_eq!(
+            run_on(&mut wire, &failed, Call::Other).expect("a failed end"),
+            ["wire-end 7 3 11"]
+        );
+    }
+
+    /// `begin` states what the session is, exactly once and first; the windows are stated exactly when
+    /// the session carries several streams.
+    #[test]
+    fn begin_states_the_session_once_and_first() {
+        let session = |flags: u32, stream_window: u32, conn_window: u32| {
+            answer(|w| {
+                w.put_pod(
+                    tag::SESSION,
+                    &t::SessionRec {
+                        flags,
+                        stream_window,
+                        conn_window,
+                        _r: 0,
+                    },
+                )
+            })
+        };
+        assert_eq!(
+            run(&session(0, 0, 0), Call::Begin).expect("one stream at a time"),
+            ["session multiplex=false 0 0"]
+        );
+        assert_eq!(
+            run(&session(t::S_MULTIPLEX, 65_535, 1 << 20), Call::Begin).expect("multiplexing"),
+            ["session multiplex=true 65535 1048576"]
+        );
+        // No statement, a window without S_MULTIPLEX, S_MULTIPLEX without its windows, an unknown flag.
+        assert_eq!(run(&answer(|_| Ok(())), Call::Begin), Err(GRAMMAR));
+        assert_eq!(run(&session(0, 1, 0), Call::Begin), Err(GRAMMAR));
+        assert_eq!(
+            run(&session(t::S_MULTIPLEX, 0, 1), Call::Begin),
+            Err(GRAMMAR)
+        );
+        assert_eq!(run(&session(2, 0, 0), Call::Begin), Err(GRAMMAR));
+        // Not first, twice, or outside `begin`.
+        let late = answer(|w| {
+            w.put_pod(tag::WAKE_AT, &WakeAt { mono_ns: 1 })?;
+            w.put_pod(
+                tag::SESSION,
+                &t::SessionRec {
+                    flags: 0,
+                    stream_window: 0,
+                    conn_window: 0,
+                    _r: 0,
+                },
+            )
+        });
+        assert_eq!(run(&late, Call::Begin), Err(GRAMMAR));
+        let twice = answer(|w| {
+            let rec = t::SessionRec {
+                flags: 0,
+                stream_window: 0,
+                conn_window: 0,
+                _r: 0,
+            };
+            w.put_pod(tag::SESSION, &rec)?;
+            w.put_pod(tag::SESSION, &rec)
+        });
+        assert_eq!(run(&twice, Call::Begin), Err(GRAMMAR));
+        assert_eq!(run(&session(0, 0, 0), Call::Ingest), Err(GRAMMAR));
+    }
+
+    /// A dialled request sent as one set (head, body and end on stream 0) is answered whole in the
+    /// answer that opens its stream: what the set said waits for STREAM_OPENED (fit 1, from `wire`).
+    #[test]
+    fn a_dialled_request_sent_as_one_set_ends_whole_in_the_answer_that_opened_it() {
+        let mut wire = Wire::new();
+        let pieces = E_HEAD | E_BODY | t::E_END;
+        wire.asked(0, pieces, 2, &[]);
+        let out = answer(|w| {
+            w.put_pod(tag::STREAM_OPENED, &StreamFlow { stream: 7 })?;
+            part(w, 7, t::WIRE_CONTROL, b"POST / HTTP/1.1\r\n\r\n")?;
+            part(w, 7, t::WIRE_PAYLOAD, b"{}")?;
+            end(w, 7, t::END_FLUSH, 0)
+        });
+        let dial = Call::Emit {
+            piece: pieces,
+            stream: 0,
+            head: &[],
+        };
+        assert_eq!(
+            run_on(&mut wire, &out, dial).expect("one set, one answer"),
+            [
+                "opened 7",
+                "wire 7 control POST / HTTP/1.1\r\n\r\n",
+                "wire 7 payload {}",
+                "wire-end 7 1 0"
+            ]
+        );
+        assert_eq!(wire.open_streams(), 0);
+    }
+
+    /// An upgraded connection's stream 1 is open from `begin`: the adopting transport writes its 101
+    /// on it in the `begin` answer, after stating the session (fit 2, from `wire`).
+    #[test]
+    fn an_upgraded_sessions_stream_is_open_from_begin() {
+        let out = answer(|w| {
+            w.put_pod(
+                tag::SESSION,
+                &t::SessionRec {
+                    flags: 0,
+                    stream_window: 0,
+                    conn_window: 0,
+                    _r: 0,
+                },
+            )?;
+            part(
+                w,
+                1,
+                t::WIRE_CONTROL,
+                b"HTTP/1.1 101 Switching Protocols\r\n\r\n",
+            )
+        });
+        let mut adopted = Wire::new();
+        adopted.adopt(1);
+        assert_eq!(
+            run_on(&mut adopted, &out, Call::Begin).expect("the adopted stream"),
+            [
+                "session multiplex=false 0 0",
+                "wire 1 control HTTP/1.1 101 Switching Protocols\r\n\r\n"
+            ]
+        );
+        // Without the adoption the same answer names a stream that is not open.
+        let error = run(&out, Call::Begin).expect_err("not adopted");
+        assert!(matches!(error, Bad::Wire(breach) if breach.stream == 1));
+    }
+
+    /// STREAM_BUSY answers only an `emit` that asks a dialled session to open a stream, alone;
+    /// NO_NEW_STREAMS may come with anything.
+    #[test]
+    fn busy_answers_alone_and_only_a_stream_opening_emit() {
+        let busy = answer(|w| w.put(tag::STREAM_BUSY, b""));
+        let dial = Call::Emit {
+            piece: E_HEAD,
+            stream: 0,
+            head: &[],
+        };
+        assert_eq!(run(&busy, dial).expect("busy"), ["busy"]);
+        let on_a_stream = Call::Emit {
+            piece: E_HEAD,
+            stream: 5,
+            head: &[],
+        };
+        for call in [Call::Ingest, Call::Other, on_a_stream] {
+            assert_eq!(run(&busy, call), Err(GRAMMAR));
+        }
+        let not_alone = answer(|w| {
+            w.put(tag::STREAM_BUSY, b"")?;
+            w.put(tag::NO_NEW_STREAMS, b"")
+        });
+        assert_eq!(run(&not_alone, dial), Err(GRAMMAR));
+        let draining = answer(|w| {
+            w.put(tag::NO_NEW_STREAMS, b"")?;
+            w.put_pod(tag::WAKE_AT, &WakeAt { mono_ns: 5 })
+        });
+        assert_eq!(
+            run(&draining, Call::Ingest).expect("draining"),
+            ["no-new-streams", "wake 5"]
+        );
     }
 
     fn head_with_status(status: u32) -> Reply {
@@ -941,7 +1395,7 @@ mod tests {
         let head = head_with_status(200);
         let trailers = answer(|w| w.put_pair(generic::PAIR, "grpc-status", b"0"));
         let out = answer(|w| {
-            w.put(tag::WRITE, b"preface")?;
+            part(w, 0, t::WIRE_CONTROL, b"preface")?;
             w.put_pod(tag::WAKE_AT, &WakeAt { mono_ns: 99 })?;
             w.put_metric(1, 0, 1.0, &[])?;
             let sh = StreamHead {
@@ -967,12 +1421,10 @@ mod tests {
                 &StreamReset {
                     stream: 5,
                     code: 8,
-                    _r: 0,
+                    flags: t::RESET_NOT_PROCESSED,
                 },
             )?;
             w.put_pod(tag::STREAM_OPENED, &StreamFlow { stream: 7 })?;
-            w.put(tag::PAUSE, b"")?;
-            w.put(tag::RESUME, b"")?;
             w.put_pod(tag::STREAM_FULL, &StreamFlow { stream: 7 })?;
             w.put_pod(tag::STREAM_WRITABLE, &StreamFlow { stream: 9 })?;
             w.put_pod(
@@ -984,16 +1436,14 @@ mod tests {
             )
         });
         let want = [
-            "write preface",
+            "wire 0 control preface",
             "wake 99",
             "head 3 end=true recs=2",
             "body 3 flags=0 bytes",
             "trailers 3 pairs=1",
             "end 3",
-            "reset 5 8",
+            "reset 5 8 not_processed=true",
             "opened 7",
-            "pause",
-            "resume",
             "full 7",
             "writable 9",
             "close abort=true",
@@ -1058,6 +1508,7 @@ mod tests {
         });
         let on_101 = Call::Emit {
             piece: E_HEAD,
+            stream: 1,
             head: switching.as_bytes(),
         };
         assert_eq!(
@@ -1069,10 +1520,12 @@ mod tests {
             Call::Begin,
             Call::Emit {
                 piece: E_HEAD,
+                stream: 1,
                 head: ok.as_bytes(),
             },
             Call::Emit {
                 piece: E_BODY,
+                stream: 1,
                 head: switching.as_bytes(),
             },
         ];
@@ -1080,7 +1533,7 @@ mod tests {
             assert_eq!(run(&upgrade, call), Err(GRAMMAR));
         }
         let written = answer(|w| {
-            w.put(tag::WRITE, b"HTTP/1.1 101")?;
+            part(w, 0, t::WIRE_CONTROL, b"HTTP/1.1 101")?;
             w.put_text(tag::UPGRADE, "websocket")
         });
         let trailing = answer(|w| {
@@ -1094,18 +1547,19 @@ mod tests {
         }
     }
 
-    /// The whole answer is checked before the sink sees an item: a good WRITE before a bad CLOSE gives the
+    /// The whole answer is checked before the sink sees an item: a good part before a bad CLOSE gives the
     /// sink nothing, so core never writes a half-answer.
     #[test]
     fn a_bad_answer_gives_the_sink_nothing() {
         let out = answer(|w| {
-            w.put(tag::WRITE, b"preface")?;
+            part(w, 0, t::WIRE_CONTROL, b"preface")?;
             w.put_pod(tag::CLOSE, &CloseRec { how: 9, _r: 0 })
         });
         let mut items = 0;
         let got = decode(
             Records::new(out.as_bytes()),
             Call::Ingest,
+            &mut Wire::new(),
             &mut |_: TransportOut<'_>| items += 1,
         );
         assert_eq!((got, items), (Err(GRAMMAR), 0));
@@ -1214,6 +1668,21 @@ mod tests {
             )
         });
         assert_eq!(run(&close, Call::Ingest), Err(Bad::Rec(RecErr::Reserved)));
+        // A retired record is a fault for ever: the plain write of transport 1 has no meaning in 2.0.
+        let write = answer(|w| w.put(0x0100, b"bytes with no label"));
+        assert_eq!(run(&write, Call::Ingest), Err(Bad::Tag(0x0100)));
+        // And a reset knows one flag only.
+        let reset = answer(|w| {
+            w.put_pod(
+                tag::STREAM_RESET,
+                &StreamReset {
+                    stream: 5,
+                    code: 8,
+                    flags: 2,
+                },
+            )
+        });
+        assert_eq!(run(&reset, Call::Ingest), Err(GRAMMAR));
     }
 
     /// C-SCRUB-CUT (transport adapter arm): the port error's text is scrubbed first and cut after, so a secret

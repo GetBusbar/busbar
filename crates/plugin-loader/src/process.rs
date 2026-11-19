@@ -37,6 +37,8 @@ impl ProcessResources {
     pub fn new() -> Result<Self, String> {
         let slots = Arc::new(SlotTable::new());
         crate::instance::install_sinks(&slots)?;
+        #[cfg(feature = "crossing-witness")]
+        crate::abi_crossings::arm_from_env()?;
         let watchdog = crate::watchdog::Watchdog::start(Arc::clone(&slots))?;
         Ok(Self {
             slots,

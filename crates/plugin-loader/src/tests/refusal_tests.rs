@@ -25,7 +25,7 @@ fn every_code_is_busbar_6013() {
         RefusalCode::StampAmbiguous,
         RefusalCode::StampMalformed {
             byte: 16,
-            rule: "format is not 2",
+            rule: "format is not 3",
         },
         RefusalCode::KindUnknown,
         RefusalCode::KindAbi,
@@ -59,11 +59,12 @@ fn every_code_is_busbar_6013() {
 
 #[test]
 fn a_kind_abi_refusal_prints_the_r10_line_with_its_download_link() {
+    // The words the loader's agreement check writes: both versions are named.
     let r = Refusal::new(
         RefusalCode::KindAbi,
         "kind_abi",
-        "secret ABI 1",
-        "secret ABI 2",
+        "built for secret 3.2",
+        "this engine speaks secret 3.1: upgrade the engine or use the plugin's build for secret 3.1",
     )
     .named("busbar-secret-env");
     let link = format!(
@@ -76,9 +77,8 @@ fn a_kind_abi_refusal_prints_the_r10_line_with_its_download_link() {
     assert_eq!(
         r.to_string(),
         format!(
-            "BUSBAR-6013 plugin refused: 'busbar-secret-env' is built for secret ABI 1; this busbar {} requires \
-             secret ABI 2 exactly. Rebuild it against the busbar {}.{} SDK, or download a build for this busbar: {link}",
-            engine(),
+            "BUSBAR-6013 plugin refused: 'busbar-secret-env' is built for secret 3.2; this engine speaks secret \
+             3.1: upgrade the engine or use the plugin's build for secret 3.1. Rebuild it against the busbar {}.{} SDK, or download a build for this busbar: {link}",
             ENGINE.major,
             ENGINE.minor
         )

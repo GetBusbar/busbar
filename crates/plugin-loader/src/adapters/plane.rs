@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 pub mod protected_reply;
 
+use crate::call::kinds::plane::{OnSession as _, Proxy};
+use crate::call::Mono;
 use busbar_plugin_abi::fail::fact::{FACT_BACKEND_STATUS, FACT_RETRY_AFTER_S};
 use busbar_plugin_abi::fail::refused::R_INVALID;
 use busbar_plugin_abi::fail::{failed, CallError, FaultReason};
@@ -25,7 +27,7 @@ use busbar_plugin_abi::host_side::driver::Driver;
 use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::{sync_out, Pool};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
-use busbar_plugin_abi::plane::{self as p, tag as t, PlaneReq, Proxy, Target};
+use busbar_plugin_abi::plane::{self as p, tag as t, PlaneReq, Target};
 use busbar_plugin_abi::records::{
     commit, tag as g, FactRec, FactTextRec, Rec, RecDelRec, RecErr, RecPredRec, RecPutRec, Records,
     Reply, U32Rec, U64Rec, Writer,
@@ -57,6 +59,45 @@ const AUTH_BITS: u32 = p::AUTH_PRINCIPAL
 const MSG_BITS: u32 = p::MSG_TEXT | p::MSG_BINARY | p::MSG_FIN;
 const DX_BITS: u32 = p::DX_RESIGHT | p::DX_OUTSTANDING | p::DX_BROADCAST | p::DX_FINAL;
 
+/// `D_ROUTE_ADMISSION` (plane 2.0): 16 bytes (four little-endian words: route, scope, money, callers),
+/// then the walk kind as text (empty when the scope has no walk).
+pub const D_ROUTE_ADMISSION: u16 = 0x019A;
+/// `D_ROUTE_CHALLENGE` (plane 2.0): 8 bytes (route, zero), then the challenge text.
+pub const D_ROUTE_CHALLENGE: u16 = 0x019B;
+
+/// One route's stated admission, as the image wrote it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RouteAdmission {
+    pub route: u32,
+    pub scope: u32,
+    pub money: u32,
+    pub callers: u32,
+    pub walk_kind: Box<str>,
+}
+
+fn le_word(body: &[u8], index: usize) -> Option<u32> {
+    let bytes = body.get(index * 4..index * 4 + 4)?;
+    Some(u32::from_le_bytes(bytes.try_into().ok()?))
+}
+
+/// The shape of a D_ROUTE_ADMISSION body: four words and a text tail.
+fn route_admission(body: &[u8]) -> Option<RouteAdmission> {
+    Some(RouteAdmission {
+        route: le_word(body, 0)?,
+        scope: le_word(body, 1)?,
+        money: le_word(body, 2)?,
+        callers: le_word(body, 3)?,
+        walk_kind: core::str::from_utf8(body.get(16..)?).ok()?.into(),
+    })
+}
+
+/// The shape of a D_ROUTE_CHALLENGE body: the route, a zero word, and a non-empty text.
+fn route_challenge(body: &[u8]) -> Option<(u32, Box<str>)> {
+    let route = le_word(body, 0)?;
+    let text = core::str::from_utf8(body.get(8..)?).ok()?;
+    (le_word(body, 1)? == 0 && !text.is_empty()).then(|| (route, text.into()))
+}
+
 /// The plane-only items of one image's describe answer (§8.6), decoded once at `Registry::add`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlaneDescribe {
@@ -69,6 +110,12 @@ pub struct PlaneDescribe {
     pub tick_s: Option<u64>,
     /// D_ADMIN_OPENAPI: the OpenAPI fragment of the ROUTE_ADMIN routes, for K8's admin document merge (round 8).
     pub admin_openapi: Option<Box<str>>,
+    /// D_ROUTE_ADMISSION, one per route that states its admission: what the kernel builds the route's
+    /// record from (`RouteRecord::from_wire`). The loader checks the item's shape only; its meaning is
+    /// the kernel's to judge.
+    pub route_admissions: Vec<RouteAdmission>,
+    /// D_ROUTE_CHALLENGE, at most one per route: the `WWW-Authenticate` text of the route's refusal.
+    pub route_challenges: Vec<(u32, Box<str>)>,
 }
 
 /// A describe the §8.6 rules refuse. The registry turns it into `Refusal { code: DescribeInvalid, field }`.
@@ -206,6 +253,22 @@ pub fn decode_describe(
                     return Err(bad);
                 }
             }
+            D_ROUTE_ADMISSION => {
+                let bad = DescribeInvalid("describe.route_admission");
+                let item = route_admission(rec.body).ok_or(bad)?;
+                if d.route_admissions.iter().any(|x| x.route == item.route) {
+                    return Err(bad);
+                }
+                d.route_admissions.push(item);
+            }
+            D_ROUTE_CHALLENGE => {
+                let bad = DescribeInvalid("describe.route_challenge");
+                let item = route_challenge(rec.body).ok_or(bad)?;
+                if d.route_challenges.iter().any(|(route, _)| *route == item.0) {
+                    return Err(bad);
+                }
+                d.route_challenges.push(item);
+            }
             t::D_PROVIDER_SCHEMA | t::D_DIALECT_AUTH => {}
             tag if tag < 0x0100 => {}
             _ => return Err(DescribeInvalid("describe")),
@@ -240,6 +303,13 @@ pub fn decode_describe(
             return Err(DescribeInvalid("describe.route_resources"));
         }
         route.resource_kinds = kinds.into();
+    }
+    let declared = |route: u32| d.routes.iter().any(|r| r.route == route);
+    if !d.route_admissions.iter().all(|a| declared(a.route)) {
+        return Err(DescribeInvalid("describe.route_admission"));
+    }
+    if !d.route_challenges.iter().all(|(route, _)| declared(*route)) {
+        return Err(DescribeInvalid("describe.route_challenge"));
     }
     let any = |bit: u32| d.routes.iter().any(|r| r.flags & bit != 0);
     if any(p::ROUTE_ADMIN) != d.admin_openapi.is_some() {
@@ -1283,6 +1353,11 @@ pub fn port_error(
     }
 }
 
+/// The clock reading of a session call. The plane port's session methods carry none today, so none is
+/// handed in and a plane that needs the time asks the host once; when the port gains the reading (one per
+/// operation, made by the kernel), it replaces this constant at each call below and nothing else changes.
+const NOW: Mono = Mono::NONE;
+
 /// The plane port over one instance's proxy.
 pub struct PlaneAdapter<N: Needs> {
     proxy: Proxy,
@@ -1309,6 +1384,23 @@ impl<N: Needs> PlaneAdapter<N> {
             errors,
             latch: AtomicBool::new(false),
         }
+    }
+
+    /// The admission `route` states (D_ROUTE_ADMISSION), if it states one.
+    pub fn route_admission(&self, route: u32) -> Option<&RouteAdmission> {
+        self.describe
+            .route_admissions
+            .iter()
+            .find(|admission| admission.route == route)
+    }
+
+    /// The challenge text `route` states (D_ROUTE_CHALLENGE), if it states one.
+    pub fn route_challenge(&self, route: u32) -> Option<&str> {
+        self.describe
+            .route_challenges
+            .iter()
+            .find(|(declared, _)| *declared == route)
+            .map(|(_, text)| &**text)
     }
 
     pub fn proxy(&self) -> &Proxy {
@@ -1469,6 +1561,15 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         &self.describe.routes
     }
 
+    fn route_admission(&self, route: u32) -> Option<(u32, u32, u32, &str)> {
+        PlaneAdapter::route_admission(self, route)
+            .map(|a| (a.scope, a.money, a.callers, &*a.walk_kind))
+    }
+
+    fn route_challenge(&self, route: u32) -> Option<&str> {
+        PlaneAdapter::route_challenge(self, route)
+    }
+
     fn dialects(&self) -> &[Box<str>] {
         &self.describe.dialects
     }
@@ -1542,7 +1643,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sync_out(max_out, |out| {
             let answer = self
                 .proxy
-                .select_resources(out, mode, &req, body)
+                .select_resources(out, NOW, mode, &req, body)
                 .map_err(PortError::Call)?;
             self.failure(&answer)?;
             let bytes = answer.records().rest();
@@ -1579,7 +1680,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sync_out(max_out, |out| {
             let (session, answer) = self
                 .proxy
-                .request(out, &req, body)
+                .request(out, NOW, &req, body)
                 .map_err(PortError::Call)?;
             self.finish(Call::Request, &answer, sink, None, None)?;
             session.ok_or_else(no_token)
@@ -1610,7 +1711,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             ))));
         }
         sync_out(max_out, |out| {
-            let answer = s.upstream(out, &view).map_err(PortError::Call)?;
+            let answer = s.upstream(out, NOW, &view).map_err(PortError::Call)?;
             self.finish(Call::Upstream, &answer, sink, selected, None)
         })
     }
@@ -1637,7 +1738,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         }
         let view = target(tgt);
         sync_out(max_out, |out| {
-            let answer = s.channel(out, &view).map_err(PortError::Call)?;
+            let answer = s.channel(out, NOW, &view).map_err(PortError::Call)?;
             self.finish(Call::Channel, &answer, sink, None, None)
         })
     }
@@ -1654,7 +1755,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         let max_out = self.live()?;
         sync_out(max_out, |out| {
             let answer = s
-                .piece(out, from, exchange, flags, bytes)
+                .piece(out, NOW, from, exchange, flags, bytes)
                 .map_err(PortError::Call)?;
             self.finish(Call::Piece(from), &answer, sink, None, Some(exchange))
         })
@@ -1674,7 +1775,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             return Err(PortError::Call(CallError::Fault(FaultReason::BadInstance)));
         }
         let (answer, len) = s
-            .piece_fixed(out, from, exchange, flags, bytes)
+            .piece_fixed(out, NOW, from, exchange, flags, bytes)
             .map_err(PortError::Call)?;
         // Same whole-answer validation and failure translation as pooled piece. No effect escapes
         // until the caller classifies the validated fixed backing and admits its complete answer.
@@ -1715,7 +1816,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
         sync_out(max_out, |out| {
-            let answer = s.rewrite(out, conversation).map_err(PortError::Call)?;
+            let answer = s.rewrite(out, NOW, conversation).map_err(PortError::Call)?;
             self.finish(Call::Rewrite, &answer, sink, None, None)
         })
     }
@@ -1723,7 +1824,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     fn end(&self, s: PlaneSession, sink: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError> {
         let max_out = self.live()?;
         sync_out(max_out, |out| {
-            let answer = s.end(out).map_err(PortError::Call)?;
+            let answer = s.end(out, NOW).map_err(PortError::Call)?;
             self.finish(Call::End, &answer, sink, None, None)
         })
     }
@@ -1740,7 +1841,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sync_out(max_out, |out| {
             let answer = self
                 .proxy
-                .render(out, &req, what, arg)
+                .render(out, NOW, &req, what, arg)
                 .map_err(PortError::Call)?;
             self.finish(Call::Render, &answer, sink, None, None)
         })
@@ -1754,7 +1855,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         let max_out = self.live()?;
         let view = target(tgt);
         sync_out(max_out, |out| {
-            let (session, answer) = self.proxy.probe(out, &view).map_err(PortError::Call)?;
+            let (session, answer) = self.proxy.probe(out, NOW, &view).map_err(PortError::Call)?;
             self.finish(Call::Probe, &answer, sink, None, None)?;
             session.ok_or_else(no_token)
         })
@@ -1770,7 +1871,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sync_out(max_out, |out| {
             let answer = self
                 .proxy
-                .demux(out, key, message)
+                .demux(out, NOW, key, message)
                 .map_err(PortError::Call)?;
             self.finish(Call::Demux, &answer, sink, None, None)
         })
@@ -1789,7 +1890,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             let mut drv = Driver::new(&*self.needs, self.caller(&cx));
             let owned = self
                 .proxy
-                .admin(&mut drv, req, op)
+                .admin(&mut drv, crate::call::at(&cx), req, op)
                 .await
                 .map_err(PortError::Call)?;
             let answer = owned.answer();
@@ -2499,3 +2600,135 @@ mod tests {
 #[cfg(test)]
 #[path = "plane_fallback_tests.rs"]
 mod fallback_tests;
+
+/// The two per-route describe items of plane 2.0: accepted, kept as written, refused when malformed.
+#[cfg(test)]
+mod route_item_tests {
+    use super::*;
+
+    fn chat_route(r: &mut Reply) {
+        let rec = p::RouteRec {
+            route: 1,
+            methods: POST,
+            flags: 0,
+            auth: p::AUTH_PRINCIPAL,
+        };
+        r.put_pod_tail(t::D_ROUTE, &rec, b"/v1/chat").unwrap();
+    }
+
+    fn admission(route: u32, scope: u32, money: u32, callers: u32, walk: &str) -> Vec<u8> {
+        let mut body = Vec::new();
+        for word in [route, scope, money, callers] {
+            body.extend_from_slice(&word.to_le_bytes());
+        }
+        body.extend_from_slice(walk.as_bytes());
+        body
+    }
+
+    fn challenge(route: u32, zero: u32, text: &str) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&route.to_le_bytes());
+        body.extend_from_slice(&zero.to_le_bytes());
+        body.extend_from_slice(text.as_bytes());
+        body
+    }
+
+    fn describe(r: &Reply) -> Result<PlaneDescribe, DescribeInvalid> {
+        decode_describe(Records::new(r.as_bytes()), 0, 0)
+    }
+
+    #[test]
+    fn a_routes_admission_and_challenge_are_kept_as_the_image_wrote_them() {
+        let mut r = Reply::new();
+        // The items may come before the route they name.
+        r.put(D_ROUTE_ADMISSION, &admission(1, 2, 2, 1, "pool"))
+            .unwrap();
+        chat_route(&mut r);
+        r.put(
+            D_ROUTE_CHALLENGE,
+            &challenge(1, 0, "Bearer realm=\"{public_url}\""),
+        )
+        .unwrap();
+        let d = describe(&r).unwrap();
+        assert_eq!(
+            d.route_admissions,
+            [RouteAdmission {
+                route: 1,
+                scope: 2,
+                money: 2,
+                callers: 1,
+                walk_kind: "pool".into(),
+            }]
+        );
+        assert_eq!(
+            d.route_challenges,
+            [(1, Box::from("Bearer realm=\"{public_url}\""))]
+        );
+    }
+
+    #[test]
+    fn a_route_without_the_items_still_decodes() {
+        let mut r = Reply::new();
+        chat_route(&mut r);
+        let d = describe(&r).unwrap();
+        assert!(d.route_admissions.is_empty() && d.route_challenges.is_empty());
+    }
+
+    #[test]
+    fn a_short_repeated_or_unrouted_admission_is_refused() {
+        let bad = Err(DescribeInvalid("describe.route_admission"));
+        let mut short = Reply::new();
+        chat_route(&mut short);
+        short.put(D_ROUTE_ADMISSION, &[0u8; 15]).unwrap();
+        assert_eq!(describe(&short), bad);
+
+        let mut twice = Reply::new();
+        chat_route(&mut twice);
+        twice
+            .put(D_ROUTE_ADMISSION, &admission(1, 1, 1, 1, ""))
+            .unwrap();
+        twice
+            .put(D_ROUTE_ADMISSION, &admission(1, 1, 1, 1, ""))
+            .unwrap();
+        assert_eq!(describe(&twice), bad);
+
+        let mut unrouted = Reply::new();
+        chat_route(&mut unrouted);
+        unrouted
+            .put(D_ROUTE_ADMISSION, &admission(9, 1, 1, 1, ""))
+            .unwrap();
+        assert_eq!(describe(&unrouted), bad);
+
+        let mut not_text = Reply::new();
+        chat_route(&mut not_text);
+        let mut body = admission(1, 2, 1, 1, "");
+        body.extend_from_slice(&[0xFF, 0xFE]);
+        not_text.put(D_ROUTE_ADMISSION, &body).unwrap();
+        assert_eq!(describe(&not_text), bad);
+    }
+
+    #[test]
+    fn a_challenge_with_a_nonzero_word_no_text_or_no_route_is_refused() {
+        let bad = Err(DescribeInvalid("describe.route_challenge"));
+        for body in [
+            challenge(1, 1, "Bearer"),
+            challenge(1, 0, ""),
+            challenge(9, 0, "Bearer"),
+            vec![1, 0, 0, 0],
+        ] {
+            let mut r = Reply::new();
+            chat_route(&mut r);
+            r.put(D_ROUTE_CHALLENGE, &body).unwrap();
+            assert_eq!(describe(&r), bad);
+        }
+        let mut twice = Reply::new();
+        chat_route(&mut twice);
+        twice
+            .put(D_ROUTE_CHALLENGE, &challenge(1, 0, "Bearer"))
+            .unwrap();
+        twice
+            .put(D_ROUTE_CHALLENGE, &challenge(1, 0, "Basic"))
+            .unwrap();
+        assert_eq!(describe(&twice), bad);
+    }
+}

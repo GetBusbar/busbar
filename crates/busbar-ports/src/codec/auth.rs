@@ -7,7 +7,7 @@ use busbar_plugin_abi::auth::{self as abi, tag as t, IssuedShapeRec};
 use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::records::{tag, Full, RecErr, Records, U32Rec, Writer};
 
-use crate::auth::{AuthIn, IssuedShape, LoginIn, ServeIn, ServeOut, UpstreamIn};
+use crate::auth::{IssuedShape, LoginIn, ServeIn, ServeOut, UpstreamIn};
 
 /// The longest id prefix a shape may carry, the id length ceiling and the secret length range (IF §8.3).
 const PREFIX_MAX: usize = 16;
@@ -93,29 +93,6 @@ pub fn decode_issued_shape(
         (Some(k), Some(s)) => Ok(Some((k.into(), s))),
         _ => Err(RecErr::Size),
     }
-}
-
-/// verify_io: Q_METHOD, Q_PATH, Q_QUERY, Q_AUTHORITY, PAIR* (headers), Q_PEER, Q_TLS_CERT, Q_BODY, Q_ISSUED?
-/// (only after a lookup), then FACT(F_NOW_S): `AuthReq`'s fields in order.
-pub fn encode_verify_io(
-    w: &mut impl Writer,
-    r: &AuthIn<'_>,
-    issued: Option<&[u8]>,
-) -> Result<(), Full> {
-    w.put_text(t::Q_METHOD, r.method)?;
-    w.put_text(t::Q_PATH, r.path)?;
-    w.put_text(t::Q_QUERY, r.query)?;
-    w.put_text(t::Q_AUTHORITY, r.authority)?;
-    for h in r.headers {
-        w.put_pair(tag::PAIR, h.name.get(), h.value.get())?;
-    }
-    w.put_text(t::Q_PEER, r.peer)?;
-    w.put(t::Q_TLS_CERT, r.tls_peer_cert)?;
-    w.put(t::Q_BODY, r.body)?;
-    if let Some(id) = issued {
-        w.put(t::Q_ISSUED, id)?;
-    }
-    w.put_fact(abi::F_NOW_S, r.now_s)
 }
 
 /// login. BEGIN: L_RETURN_TO, L_REDIRECT_URI, L_STATE_KEY, L_CODE_CHALLENGE, L_NONCE, L_CONNECT?, L_SCOPE?.
@@ -253,7 +230,6 @@ mod tests {
     use super::*;
     use busbar_plugin_abi::auth::{self as abi, tag as t, IssuedShapeRec};
     use busbar_plugin_abi::records::{tag, Reply, U32Rec};
-    use busbar_plugin_abi::types::{Bytes, Pair, Str};
 
     fn recs(r: &Reply) -> Vec<(u16, Vec<u8>)> {
         Records::new(r.as_bytes())
@@ -274,75 +250,6 @@ mod tests {
         b.extend_from_slice(&0u32.to_le_bytes());
         b.extend_from_slice(&value.to_le_bytes());
         b
-    }
-
-    fn auth_in<'a>(headers: &'a [Pair<'a>]) -> AuthIn<'a> {
-        AuthIn {
-            method: "POST",
-            path: "/v1/x",
-            query: "a=1",
-            authority: "gw.example",
-            headers,
-            peer: "10.0.0.1:443",
-            tls_peer_cert: b"cert",
-            body: b"{}",
-            now_s: 1_700_000_000,
-        }
-    }
-
-    #[test]
-    fn verify_io_writes_the_request_fields_in_order() {
-        let mut w = Reply::new();
-        encode_verify_io(&mut w, &auth_in(&[]), None).unwrap();
-        assert_eq!(
-            recs(&w),
-            vec![
-                (t::Q_METHOD, b"POST".to_vec()),
-                (t::Q_PATH, b"/v1/x".to_vec()),
-                (t::Q_QUERY, b"a=1".to_vec()),
-                (t::Q_AUTHORITY, b"gw.example".to_vec()),
-                (t::Q_PEER, b"10.0.0.1:443".to_vec()),
-                (t::Q_TLS_CERT, b"cert".to_vec()),
-                (t::Q_BODY, b"{}".to_vec()),
-                (abi_tag_fact(), fact(abi::F_NOW_S, 1_700_000_000)),
-            ]
-        );
-    }
-
-    fn abi_tag_fact() -> u16 {
-        tag::FACT
-    }
-
-    #[test]
-    fn verify_io_adds_q_issued_before_the_clock_only_after_a_lookup() {
-        let mut w = Reply::new();
-        encode_verify_io(&mut w, &auth_in(&[]), Some(b"AKIAEXAMPLE")).unwrap();
-        let got = recs(&w);
-        assert_eq!(got[7], (t::Q_ISSUED, b"AKIAEXAMPLE".to_vec()));
-        assert_eq!(got[8].0, tag::FACT);
-        assert_eq!(got.len(), 9);
-    }
-
-    #[test]
-    #[ignore = "UNSAFE-MIN: Str::get/Bytes::get on a non-empty view are held until W1-U0"]
-    fn verify_io_writes_each_header_as_a_pair_between_authority_and_peer() {
-        let headers = [Pair {
-            name: Str::new("authorization"),
-            value: Bytes::new(b"Bearer x"),
-        }];
-        let mut w = Reply::new();
-        encode_verify_io(&mut w, &auth_in(&headers), None).unwrap();
-        assert_eq!(
-            tags(&w)[..6],
-            [
-                t::Q_METHOD,
-                t::Q_PATH,
-                t::Q_QUERY,
-                t::Q_AUTHORITY,
-                tag::PAIR,
-                t::Q_PEER
-            ]
-        );
     }
 
     #[test]

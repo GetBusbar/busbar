@@ -17,10 +17,11 @@ use busbar_plugin_abi::host_side::driver::Driver;
 use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::Pool;
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
-use busbar_plugin_abi::kinds::secret::secret::{tag, Proxy, F_LEASE_S};
+use busbar_plugin_abi::kinds::secret::secret::{tag, F_LEASE_S};
 use busbar_plugin_abi::records::{FactRec, RecErr, Records};
 use busbar_plugin_abi::types::Status;
 
+use crate::call::kinds::secret::Proxy;
 use busbar_ports::codec::secret::encode_reference;
 use busbar_ports::secret::{SecretAnswer, SecretPort};
 use busbar_ports::PluginCode;
@@ -87,7 +88,7 @@ impl<N: Needs> SecretPort for SecretAdapter<N> {
             let mut drv = Driver::new(&*self.needs, caller);
             let owned = self
                 .proxy
-                .resolve(&mut drv, req)
+                .resolve(&mut drv, crate::call::at(&cx), req)
                 .await
                 .map_err(PortError::Call)?;
             let answer = owned.answer();

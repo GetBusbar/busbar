@@ -793,8 +793,8 @@ impl Registry {
             let opened = self
                 .open_reserved_instance::<k::Store, N>(prepared, &needs, &*refs)
                 .await?;
-            let proxy =
-                busbar_plugin_abi::store::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+            let proxy = crate::call::kinds::store::Proxy::bind(opened.instance)
+                .ok_or_else(not_this_kind)?;
             let adapter = crate::adapters::store::StoreAdapter::new(
                 proxy,
                 Arc::clone(&needs),
@@ -840,7 +840,7 @@ impl Registry {
             let opened = self
                 .open_reserved_instance::<k::Secret, N>(prepared, &needs, &*refs)
                 .await?;
-            let proxy = busbar_plugin_abi::secret::Proxy::bind(opened.instance)
+            let proxy = crate::call::kinds::secret::Proxy::bind(opened.instance)
                 .ok_or_else(not_this_kind)?;
             self.remember(&spec, KindCode::Secret, &needs, &refs, None);
             let port: Arc<dyn SecretPort> = Arc::new(crate::adapters::secret::SecretAdapter::new(
@@ -889,7 +889,7 @@ impl Registry {
                 .open_reserved_instance::<k::Auth, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy =
-                busbar_plugin_abi::auth::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+                crate::call::kinds::auth::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let limits = proxy.instance().limits;
             let methods = proxy.instance().methods;
             let frame = chains::frame(&opened.described.items);
@@ -953,7 +953,7 @@ impl Registry {
                 .open_reserved_instance::<k::Hook, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy =
-                busbar_plugin_abi::hook::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+                crate::call::kinds::hook::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let limits = proxy.instance().limits;
             let points = opened
                 .described
@@ -1003,7 +1003,7 @@ impl Registry {
             let opened = self
                 .open_reserved_instance::<k::Export, N>(prepared, &needs, &*refs)
                 .await?;
-            let proxy = busbar_plugin_abi::export::Proxy::bind(Arc::clone(&opened.instance))
+            let proxy = crate::call::kinds::export::Proxy::bind(Arc::clone(&opened.instance))
                 .ok_or_else(not_this_kind)?;
             let frame = chains::frame(&opened.described.items);
             let describe = crate::adapters::export::decode_describe(
@@ -1055,8 +1055,8 @@ impl Registry {
             let opened = self
                 .open_reserved_instance::<k::Plane, N>(prepared, &needs, &*refs)
                 .await?;
-            let proxy =
-                busbar_plugin_abi::plane::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+            let proxy = crate::call::kinds::plane::Proxy::bind(opened.instance)
+                .ok_or_else(not_this_kind)?;
             let frame = chains::frame(&opened.described.items);
             let describe = crate::adapters::plane::decode_describe(
                 Records::new(&frame),
@@ -1103,7 +1103,7 @@ impl Registry {
             let opened = self
                 .open_reserved_instance::<k::Transport, N>(prepared, &needs, &*refs)
                 .await?;
-            let proxy = busbar_plugin_abi::transport::Proxy::bind(opened.instance)
+            let proxy = crate::call::kinds::transport::Proxy::bind(opened.instance)
                 .ok_or_else(not_this_kind)?;
             let protocols: Box<[Box<str>]> = opened
                 .described
@@ -1994,7 +1994,14 @@ impl SlotTable {
     /// `Refusal { code: DescribeInvalid, field: "describe.ceiling" }`; migrate → `OpenError::Call(Quarantined)`
     /// (MIGRATION_REFUSED, nothing written); open → if INSTANCE was answered the Instance is built in that poll as
     /// always (so its Drop closes it) and dropped at once, and `open_<kind>` returns `OpenError::Call(Quarantined)`.
-    pub fn hung(&self, slot: u32, epoch: u32, entry: u8, busy_ms: u64) {
+    pub fn hung(
+        &self,
+        slot: u32,
+        epoch: u32,
+        entry: u8,
+        busy_ms: u64,
+        holder: &crate::watchdog::Holder<'_>,
+    ) {
         let _cold = self.cold.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(e) = self.entry(slot) else { return };
         let Some(cell) = e.cell.load_full() else {
@@ -2009,8 +2016,12 @@ impl SlotTable {
                 kind = ?rec.kind,
                 instance = &*rec.name,
                 entry,
+                method = crate::watchdog::entry_name(rec.kind, entry),
                 busy_ms,
-                "plugin_hung: a plugin entry passed its watchdog ceiling; the instance is quarantined"
+                thread = holder.name.unwrap_or("unnamed"),
+                thread_id = holder.id,
+                watch_word = holder.word,
+                "plugin_hung: a plugin entry passed its watchdog ceiling on the named thread; the instance is quarantined"
             );
         }
     }
@@ -2254,7 +2265,7 @@ mod l2_tests {
         assert!(lease.is_live());
         let (slot, (us, epoch)) = (lease.slot(), table.watch_view(lease.slot(), 3));
         assert_eq!(us, 7);
-        table.hung(slot, epoch, 3, 9);
+        table.hung(slot, epoch, 3, 9, &crate::watchdog::Holder::UNKNOWN);
         assert!(!lease.is_live());
         let inert = lease.take();
         drop(lease);

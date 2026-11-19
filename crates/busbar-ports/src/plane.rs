@@ -10,7 +10,7 @@ use busbar_plugin_abi::types::Pair;
 
 use crate::{CallCx, FactRef, PortError};
 
-pub type PlaneSession = busbar_plugin_abi::kinds::plane::plane::SessionHandle;
+pub type PlaneSession = crate::KindSession<busbar_ffi::kind::Plane>;
 
 /// Borrowed output, decoded from the call's OutBuf; valid until the sink returns.
 pub enum PlaneOut<'o> {
@@ -335,6 +335,18 @@ pub struct WorkAnswer<'a> {
 
 pub trait PlanePort: Send + Sync + 'static {
     fn routes(&self) -> &[RouteInfo];
+    /// The admission `route` states (plane 2.0's D_ROUTE_ADMISSION), if it states one: the scope, money
+    /// and callers words and the walk kind, as the image wrote them. The kernel builds the route's record
+    /// from these.
+    fn route_admission(&self, route: u32) -> Option<(u32, u32, u32, &str)> {
+        let _ = route;
+        None
+    }
+    /// The `WWW-Authenticate` text `route` states for its refusal (D_ROUTE_CHALLENGE), if any.
+    fn route_challenge(&self, route: u32) -> Option<&str> {
+        let _ = route;
+        None
+    }
     /// Declared kinds for this route; empty means no native resource-admission producer.
     fn resource_kinds(&self, route: u32) -> &[Box<str>] {
         self.routes()

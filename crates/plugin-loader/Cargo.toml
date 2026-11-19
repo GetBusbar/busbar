@@ -11,6 +11,15 @@ license = "Apache-2.0"
 # Dev-only conformance retirement barrier and the standalone test harness (path loaders,
 # probes, door helpers); never enabled by shipped defaults.
 test-support = ["busbar-artifact-verifier/test-support"]
+# The crossing witness: a build of the engine that arms the crossing recorder from two environment
+# variables and writes its verdict to a file, so the `abi_crossings` security test can judge the real
+# default binary from outside the process. Never enabled by shipped defaults: a release binary holds
+# no recorder and no code that reads those variables.
+crossing-witness = []
+# An engine built for release: at load it accepts released contract lines only, so a plugin stamped with
+# the unreleased version at the label (a dev build) is refused. The release distribution enables it;
+# every other build is a dev engine.
+release-engine = []
 # Tooling only: `jsonschema` must never reach the engine's graph. Build the CLI with `--features pack`.
 pack = ["dep:jsonschema"]
 
@@ -51,6 +60,10 @@ busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
 # The plugin boundary (UNSAFE-MIN r3.1): admit opens, bounds-checks and admits images through its `image` module
 # (the `host` dependent role in unsafe.yaml).
 busbar-ffi = { path = "../busbar-ffi", features = ["host"] }
+# The call builder lends a method's numbers as the bytes of a plain record (`call::frame`): zerocopy
+# proves at compile time that the record has no padding and no pointer. Already in the lock (the
+# contract crate's).
+zerocopy = { version = "0.8", features = ["derive"] }
 libloading = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
 futures = { workspace = true }

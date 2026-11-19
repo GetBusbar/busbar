@@ -17,6 +17,8 @@
 use core::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use crate::call::kinds::export::Proxy;
+use crate::call::Mono;
 use busbar_contract::export_stream::ExportStream;
 use busbar_plugin_abi::fail::{fact, failed::F_LIMIT, CallError, FaultReason};
 use busbar_plugin_abi::host_side::answer::Answer;
@@ -26,7 +28,7 @@ use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::{sync_bufs, Pool};
 use busbar_plugin_abi::host_side::scrub::fail_text;
 use busbar_plugin_abi::kinds::export::export::{
-    tag, CustodyRec, Proxy, RecorderRec, ScopeRec, CUSTODY_ACCEPTED, FB_SPAN_RECORDS, M_CONFIRM,
+    tag, CustodyRec, RecorderRec, ScopeRec, CUSTODY_ACCEPTED, FB_SPAN_RECORDS, M_CONFIRM,
     STREAM_COMPLETIONS, STREAM_CONTENT, STREAM_COSTS, STREAM_COUNT, STREAM_DECISIONS,
     STREAM_EVENTS, STREAM_IDENTITY, STREAM_LOGS, STREAM_METRICS, STREAM_PROMPTS, STREAM_TRACES,
 };
@@ -321,7 +323,15 @@ impl<N: Needs> ExportPort for ExportAdapter<N> {
             let mut drv = Driver::new(&*self.needs, caller);
             let owned = self
                 .proxy
-                .deliver(&mut drv, req, stream, delivery, attempt)
+                .deliver(
+                    &mut drv,
+                    crate::call::at(&cx),
+                    req,
+                    stream,
+                    delivery,
+                    attempt,
+                    u32::try_from(lines.len()).unwrap_or(u32::MAX),
+                )
                 .await
                 .map_err(PortError::Call)?;
             let a = owned.answer();
@@ -361,7 +371,7 @@ impl<N: Needs> ExportPort for ExportAdapter<N> {
             let mut drv = Driver::new(&*self.needs, caller);
             let owned = self
                 .proxy
-                .confirm(&mut drv, req, delivery)
+                .confirm(&mut drv, crate::call::at(&cx), req, delivery)
                 .await
                 .map_err(PortError::Call)?;
             let answer = owned.answer();
@@ -387,31 +397,35 @@ impl<N: Needs> ExportPort for ExportAdapter<N> {
             encode_snapshot(args, snapshot).map_err(|_| too_big())?;
             let a = self
                 .proxy
-                .render(out, scope, args.bytes())
+                .render(out, Mono::NONE, scope, args.bytes())
                 .map_err(PortError::Call)?;
             if !a.is_ok() {
                 return Err(self.failed(&a, false));
             }
-            let mut content_type = None;
-            let mut body = None;
-            for next in a.records() {
-                let rec = next.map_err(bad_records)?;
-                match rec.tag {
-                    tag::CONTENT_TYPE if content_type.is_none() => {
-                        content_type = Some(rec.text().map_err(bad_records)?);
-                    }
-                    tag::BODY if body.is_none() => body = Some(rec.body),
-                    generic::METRIC => {}
-                    other => return Err(bad_records(RecErr::Unknown(other))),
-                }
-            }
-            match (content_type, body) {
-                (Some(content_type), Some(body)) => {
-                    sink(content_type, body);
-                    Ok(())
-                }
-                _ => Err(bad_records(RecErr::Truncated)),
-            }
+            let (content_type, body) = rendered(a.records()).map_err(bad_records)?;
+            sink(content_type, body);
+            Ok(())
         })
+    }
+}
+
+/// The OK answer of `render`: exactly one CONTENT_TYPE and exactly one BODY, in either order; METRIC
+/// records are passed over; anything else is a contract break. The one grammar of a render answer: the
+/// adapter and the conformance suite both judge with it (`validate::export`).
+pub fn rendered<'o>(recs: Records<'o>) -> Result<(&'o str, &'o [u8]), RecErr> {
+    let mut content_type = None;
+    let mut body = None;
+    for next in recs {
+        let rec = next?;
+        match rec.tag {
+            tag::CONTENT_TYPE if content_type.is_none() => content_type = Some(rec.text()?),
+            tag::BODY if body.is_none() => body = Some(rec.body),
+            generic::METRIC => {}
+            other => return Err(RecErr::Unknown(other)),
+        }
+    }
+    match (content_type, body) {
+        (Some(content_type), Some(body)) => Ok((content_type, body)),
+        _ => Err(RecErr::Truncated),
     }
 }

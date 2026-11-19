@@ -116,7 +116,7 @@ where
 /// index to build the raw argument from. busbar-ffi keeps the block until the token retires, then zeroes those
 /// bytes (I11) and gives the block back to the pool (`pool::give_back`): no copy and no allocation (IF §0 I5: an
 /// async chain's request buffer is the pooled one). `req` is empty after.
-pub(crate) fn staged(req: &mut PooledOut) -> (busbar_ffi::host::ChainBufs, usize) {
+pub fn staged(req: &mut PooledOut) -> (busbar_ffi::host::ChainBufs, usize) {
     let mut bufs = busbar_ffi::host::ChainBufs::new();
     let at = match req.take_block() {
         Some((block, len)) => bufs.lend_block(block, len, crate::host_side::pool::give_back),

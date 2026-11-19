@@ -3,14 +3,14 @@
 
 //! The auth adapter: `AuthPort` over the auth kind's `Proxy` (IF §11.3, §8.3).
 //!
-//! Each verify invocation makes exactly one plugin call. Sync verification returns inline;
-//! verify_io snapshots its request before awaiting the plugin. The kernel owns lookup, refresh and replay.
+//! Each verify invocation makes exactly one plugin call and returns inline. The kernel owns lookup,
+//! refresh and replay.
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use busbar_contract::secure::SecureVec;
-use busbar_plugin_abi::auth::{self as abi, tag as t, AuthReq, Proxy};
+use busbar_plugin_abi::auth::{self as abi, tag as t, AuthReq};
 use busbar_plugin_abi::fail::{fact, failed, refused, CallError, FaultReason};
 use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
@@ -18,11 +18,15 @@ use busbar_plugin_abi::host_side::driver::{Driver, Instance};
 use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::{sync_out, Pool, PooledOut};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
-use busbar_plugin_abi::records::{tag, FactRec, Full, RecErr, Records, Reply, Writer};
+#[cfg(test)]
+use busbar_plugin_abi::records::Reply;
+use busbar_plugin_abi::records::{tag, FactRec, Full, RecErr, Records, Writer};
 #[cfg(test)]
 use busbar_plugin_abi::types::Pair;
 use busbar_plugin_abi::types::{Bytes, Slice, Status, Str};
 
+use crate::call::kinds::auth::Proxy;
+use crate::call::Mono;
 use crate::instance::ErrorBook;
 use busbar_ports::auth::{
     decode_login_identity, decode_verify_ok, AuthIn, AuthPort, LoginAnswer, LoginIn,
@@ -88,7 +92,7 @@ impl<N: Needs> AuthAdapter<N> {
         )
     }
 
-    /// One verify / verify_io answer, as what it asks of the adapter next.
+    /// One verify answer, as what it asks of the adapter next.
     fn said(&self, a: Result<Answer<'_>, CallError>) -> Result<VerifyAnswer, PortError> {
         let a = a.map_err(PortError::Call)?;
         if a.status == Status::OK {
@@ -113,22 +117,10 @@ impl<N: Needs> AuthAdapter<N> {
     }
 
     /// The sync verify, inline on the thread-local sync buffers (no pool, no box).
-    fn verify_sync(&self, req: &AuthReq<'_>) -> Result<VerifyAnswer, PortError> {
+    fn verify_sync(&self, at: Mono, req: &AuthReq<'_>) -> Result<VerifyAnswer, PortError> {
         sync_out(self.inst().max_out, |out| {
-            self.said(self.proxy.verify(out, req))
+            self.said(self.proxy.verify(out, at, req))
         })
-    }
-
-    /// One verify_io chain over an encoded request.
-    async fn verify_chain(&self, cx: CallCx, req: PooledOut) -> Result<VerifyAnswer, PortError> {
-        let inst = self.inst();
-        let mut drv = Driver::new(&*self.needs, caller(inst, cx));
-        let owned = self
-            .proxy
-            .verify_io(&mut drv, req)
-            .await
-            .map_err(PortError::Call)?;
-        self.said(Ok(owned.answer()))
     }
 }
 
@@ -153,22 +145,13 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
             } else {
                 0
             };
-            return Verify::Done(self.verify_sync(&view(req, issued.unwrap_or_default(), flags)));
+            return Verify::Done(self.verify_sync(
+                crate::call::at(&cx),
+                &view(req, issued.unwrap_or_default(), flags),
+            ));
         }
-        if methods & abi::M_VERIFY_IO == 0 {
-            return Verify::Done(Err(PortError::Call(CallError::NotDeclared)));
-        }
-        let snap = snapshot(req);
-        let first = snap.and_then(|snap| {
-            chain_req(
-                self.inst().max_out,
-                &Again {
-                    snap: &snap,
-                    issued,
-                },
-            )
-        });
-        Verify::Io(Box::pin(async move { self.verify_chain(cx, first?).await }))
+        // Auth 4.0 has one verify: a plugin that does not declare it verifies nothing.
+        Verify::Done(Err(PortError::Call(CallError::NotDeclared)))
     }
 
     fn login<'a>(
@@ -202,7 +185,7 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
             let mut drv = Driver::new(&*self.needs, caller(inst, cx));
             let owned = self
                 .proxy
-                .login(&mut drv, req, code)
+                .login(&mut drv, crate::call::at(&cx), req, code)
                 .await
                 .map_err(PortError::Call)?;
             let a = owned.answer();
@@ -231,7 +214,7 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
             let mut drv = Driver::new(&*self.needs, caller(inst, cx));
             let owned = self
                 .proxy
-                .outbound(&mut drv, req)
+                .outbound(&mut drv, crate::call::at(&cx), req)
                 .await
                 .map_err(PortError::Call)?;
             let a = owned.answer();
@@ -256,7 +239,7 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
             let mut drv = Driver::new(&*self.needs, caller(inst, cx));
             let owned = self
                 .proxy
-                .refresh(&mut drv, req)
+                .refresh(&mut drv, crate::call::at(&cx), req)
                 .await
                 .map_err(PortError::Call)?;
             let a = owned.answer();
@@ -286,7 +269,7 @@ impl<N: Needs> AuthPort for AuthAdapter<N> {
             let mut drv = Driver::new(&*self.needs, caller(inst, cx));
             let owned = self
                 .proxy
-                .serve(&mut drv, req)
+                .serve(&mut drv, crate::call::at(&cx), req)
                 .await
                 .map_err(PortError::Call)?;
             let a = owned.answer();
@@ -333,95 +316,9 @@ fn view<'r>(req: &'r AuthIn<'r>, issued: &'r [u8], flags: u32) -> AuthReq<'r> {
     }
 }
 
-/// The owned copy of a request a second verify step reads: the verify_io encoding (`encode_verify_io`, no
-/// Q_ISSUED), so the sync view and the verify_io request are both rebuilt from the same bytes.
-fn snapshot(req: &AuthIn<'_>) -> Result<Reply, PortError> {
-    let mut snap = Reply::new();
-    Direct(req).encode(&mut snap).map_err(|_| over_max_out())?;
-    Ok(snap)
-}
-
-/// Rebuilds the sync verify view from a snapshot and runs `f` on it. The view and its header array live only
-/// inside this call (they are not `Send`).
-#[cfg(test)]
-fn snapshot_view<R>(
-    snap: &Reply,
-    issued: &[u8],
-    flags: u32,
-    f: impl FnOnce(&AuthReq<'_>) -> R,
-) -> Result<R, RecErr> {
-    let mut texts = [""; 5];
-    let mut blobs: [&[u8]; 2] = [&[], &[]];
-    let mut headers: Vec<Pair<'_>> = Vec::new();
-    let mut now_s = 0;
-    for rec in Records::new(snap.as_bytes()) {
-        let rec = rec?;
-        match rec.tag {
-            t::Q_METHOD => texts[0] = rec.text()?,
-            t::Q_PATH => texts[1] = rec.text()?,
-            t::Q_QUERY => texts[2] = rec.text()?,
-            t::Q_AUTHORITY => texts[3] = rec.text()?,
-            t::Q_PEER => texts[4] = rec.text()?,
-            t::Q_TLS_CERT => blobs[0] = rec.body,
-            t::Q_BODY => blobs[1] = rec.body,
-            tag::PAIR => {
-                let (name, value) = rec.pair()?;
-                headers.push(Pair {
-                    name: Str::new(name),
-                    value: Bytes::new(value),
-                });
-            }
-            tag::FACT => now_s = rec.pod::<FactRec>()?.value,
-            other => return Err(RecErr::Unknown(other)),
-        }
-    }
-    let [method, path, query, authority, peer] = texts;
-    let [tls_peer_cert, body] = blobs;
-    let req = AuthIn {
-        method,
-        path,
-        query,
-        authority,
-        headers: &headers,
-        peer,
-        tls_peer_cert,
-        body,
-        now_s,
-    };
-    Ok(f(&view(&req, issued, flags)))
-}
-
 /// One request encoding (§8.8), written into the chain's request buffer.
 trait Encode {
     fn encode<W: Writer>(&self, w: &mut W) -> Result<(), Full>;
-}
-
-/// The first verify_io request.
-struct Direct<'r>(&'r AuthIn<'r>);
-impl Encode for Direct<'_> {
-    fn encode<W: Writer>(&self, w: &mut W) -> Result<(), Full> {
-        enc::encode_verify_io(w, self.0, None)
-    }
-}
-
-/// The verify_io request again, from the snapshot: every record as it was, with Q_ISSUED (after a lookup)
-/// written right before the closing FACT(F_NOW_S), where `encode_verify_io` puts it.
-struct Again<'r> {
-    snap: &'r Reply,
-    issued: Option<&'r [u8]>,
-}
-impl Encode for Again<'_> {
-    fn encode<W: Writer>(&self, w: &mut W) -> Result<(), Full> {
-        for rec in Records::new(self.snap.as_bytes()).map_while(Result::ok) {
-            if rec.tag == tag::FACT {
-                if let Some(issued) = self.issued {
-                    w.put(t::Q_ISSUED, issued)?;
-                }
-            }
-            w.put(rec.tag, rec.body)?;
-        }
-        Ok(())
-    }
 }
 
 struct Login<'r>(&'r LoginIn<'r>);
@@ -462,7 +359,7 @@ fn chain_req(max_out: usize, e: &impl Encode) -> Result<PooledOut, PortError> {
 }
 
 /// D_CRED_HEADER*: lowercase header names (core strips them upstream and keys the verdict cache on them).
-fn decode_cred_headers(describe: Records<'_>) -> Result<Box<[Box<str>]>, RecErr> {
+pub fn decode_cred_headers(describe: Records<'_>) -> Result<Box<[Box<str>]>, RecErr> {
     let mut names: Vec<Box<str>> = Vec::new();
     for rec in describe {
         let rec = rec?;
@@ -484,7 +381,7 @@ fn decode_cred_headers(describe: Records<'_>) -> Result<Box<[Box<str>]>, RecErr>
 
 /// A login OK answer for `step` (§8.3): BEGIN = REDIRECT then STATE; COMPLETE = GRANT for a caller connection
 /// (L_CONNECT), else ID_*; CREDENTIAL = ID_*.
-fn decode_login(step: u32, connect: bool, records: Records<'_>) -> Result<LoginAnswer, RecErr> {
+pub fn decode_login(step: u32, connect: bool, records: Records<'_>) -> Result<LoginAnswer, RecErr> {
     if step == abi::LOGIN_BEGIN {
         let mut url: Option<&str> = None;
         let mut state: Option<&[u8]> = None;
@@ -524,7 +421,7 @@ fn decode_login(step: u32, connect: bool, records: Records<'_>) -> Result<LoginA
 
 /// An outbound OK answer (§8.3): SET_HEADER*, SET_QUERY* (pair shape), GRANT_UPDATE?, FACT(F_CACHE_S)? (absent
 /// = 0, already expired, §12.2 rule 5).
-fn decode_outbound(records: Records<'_>) -> Result<OutboundAnswer, RecErr> {
+pub fn decode_outbound(records: Records<'_>) -> Result<OutboundAnswer, RecErr> {
     let mut out = OutboundAnswer {
         headers: Vec::new(),
         query: Vec::new(),
@@ -562,7 +459,7 @@ fn decode_outbound(records: Records<'_>) -> Result<OutboundAnswer, RecErr> {
 }
 
 /// A refresh OK answer (§8.3): FACT(F_NEXT_REFRESH_S)?.
-fn decode_refresh(records: Records<'_>) -> Result<Option<u32>, RecErr> {
+pub fn decode_refresh(records: Records<'_>) -> Result<Option<u32>, RecErr> {
     let mut next: Option<u32> = None;
     for rec in records {
         let rec = rec?;
@@ -993,71 +890,5 @@ mod tests {
         let mut w = Reply::new();
         put_fact(&mut w, abi::F_CACHE_S, 900);
         assert_eq!(decode_refresh(recs(&w)).unwrap_err(), RecErr::Size);
-    }
-
-    // The second verify_io request is the first one with Q_ISSUED right before FACT(F_NOW_S), exactly where
-    // `encode_verify_io(.., Some(issued))` writes it; without a lookup it is byte-identical.
-    #[test]
-    fn the_snapshot_requeues_with_q_issued_before_the_clock() {
-        let req = auth_in(&[]);
-        let snap = snapshot(&req).unwrap();
-        let mut again = Reply::new();
-        Again {
-            snap: &snap,
-            issued: None,
-        }
-        .encode(&mut again)
-        .unwrap();
-        assert_eq!(again.as_bytes(), snap.as_bytes());
-
-        let mut again = Reply::new();
-        Again {
-            snap: &snap,
-            issued: Some(b"AKIDSECRET"),
-        }
-        .encode(&mut again)
-        .unwrap();
-        let mut direct = Reply::new();
-        enc::encode_verify_io(&mut direct, &req, Some(b"AKIDSECRET")).unwrap();
-        assert_eq!(again.as_bytes(), direct.as_bytes());
-    }
-
-    // The sync re-verify view is rebuilt from the snapshot with the looked-up credential and the flag.
-    #[test]
-    fn the_snapshot_rebuilds_the_sync_view() {
-        let req = auth_in(&[]);
-        let snap = snapshot(&req).unwrap();
-        let got = snapshot_view(&snap, b"issued-key", abi::REQ_ISSUED_LOOKED_UP, |v| {
-            (
-                v.flags,
-                v.method.len(),
-                v.path.len(),
-                v.query.len(),
-                v.authority.len(),
-                v.headers.get().len(),
-                v.peer.len(),
-                v.tls_peer_cert.len(),
-                v.body.len(),
-                v.issued.len(),
-                v.now_s,
-            )
-        })
-        .unwrap();
-        assert_eq!(
-            got,
-            (
-                abi::REQ_ISSUED_LOOKED_UP,
-                4,
-                5,
-                3,
-                10,
-                0,
-                12,
-                4,
-                2,
-                10,
-                1_700_000_000
-            )
-        );
     }
 }
