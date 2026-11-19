@@ -102,6 +102,10 @@ pub const KEYS: &str = crate::config::KEYS_MODULE;
 /// `auth: { chain: [anonymous] }` to run an open relay; nothing is one by omission.
 pub const ANONYMOUS: &str = "anonymous";
 
+/// The provider a request a core ticket admitted is attributed to (`auth::native_ticket`). It is
+/// not a chain member: no operator names it, and it is never the anonymous principal.
+pub const TICKET: &str = "ticket";
+
 /// The load refusal of an explicitly empty chain. An empty list is what a templating slip
 /// produces, and everywhere else an empty list means none: here it would mean everyone.
 pub const EMPTY_CHAIN_REFUSED: &str =
@@ -248,6 +252,28 @@ impl NativeChain {
             cx,
             cutoff: None,
             core: Some(core),
+            origin: Origin::Keys,
+        })
+    }
+
+    /// The identity of a request a core ticket admitted. Only the ticket verifier's value
+    /// (`auth::native_ticket::TicketVerified`) can make one: its key is the issuer's governed key
+    /// as it stands now, and it is never the anonymous principal.
+    pub fn ticket_identity(
+        self: &Arc<Self>,
+        cx: CallCx,
+        request: Arc<ChargedRequestSnapshot>,
+        verified: &super::native_ticket::TicketVerified,
+    ) -> Arc<PreparedNativeIdentity> {
+        Arc::new(PreparedNativeIdentity {
+            chain: Arc::clone(self),
+            instance: None,
+            request,
+            identity: verified.identity().clone(),
+            cx,
+            cutoff: None,
+            core: None,
+            origin: Origin::Ticket(Arc::clone(verified.key())),
         })
     }
 
@@ -266,6 +292,7 @@ impl NativeChain {
             cx,
             cutoff: None,
             core: None,
+            origin: Origin::Anonymous,
         }))
     }
 
@@ -402,6 +429,7 @@ impl NativeChain {
                             cx,
                             cutoff,
                             core: None,
+                            origin: Origin::Instance,
                         },
                     )));
                 }
@@ -494,6 +522,22 @@ pub struct PreparedNativeIdentity {
     /// The core-signed token the built-in member `keys` verified; `None` for every other
     /// identity. Its key is the identity's key: no role binding is consulted for it.
     core: Option<super::native_keys::CoreKey>,
+    /// How the identity was reached. Stated by its constructor, never inferred from which other
+    /// field is empty: "no instance verified it" is not "anonymous" (a ticket or a core-signed
+    /// token is verified by core itself).
+    origin: Origin,
+}
+
+/// How a [`PreparedNativeIdentity`] was reached.
+enum Origin {
+    /// An instance of the chain verified the credential.
+    Instance,
+    /// The built-in member `anonymous`: the caller presented no credential.
+    Anonymous,
+    /// The built-in member `keys` verified a core-signed token.
+    Keys,
+    /// A core ticket admitted the request; the issuer's governed key as it stands now.
+    Ticket(Arc<busbar_contract::records::VirtualKey>),
 }
 
 impl std::fmt::Debug for PreparedNativeIdentity {
@@ -567,26 +611,39 @@ impl PreparedNativeIdentity {
         &self.request
     }
     pub fn provider(&self) -> &str {
-        match (&self.instance, &self.core) {
+        match (&self.instance, &self.origin) {
             (Some(instance), _) => &instance.opened.who.name,
-            (None, Some(_)) => KEYS,
-            (None, None) => ANONYMOUS,
+            (None, Origin::Keys) => KEYS,
+            (None, Origin::Ticket(_)) => TICKET,
+            (None, Origin::Anonymous | Origin::Instance) => ANONYMOUS,
         }
     }
     /// The provider's name as a verdict holds it: the instance's own shared name, not a copy.
     pub(crate) fn provider_text(&self) -> busbar_contract::kept::Text {
-        match (&self.instance, &self.core) {
+        match (&self.instance, &self.origin) {
             (Some(instance), _) => {
                 busbar_contract::kept::Text::from(Arc::clone(&instance.opened.who.name))
             }
-            (None, Some(_)) => busbar_contract::kept::Text::fixed(KEYS),
-            (None, None) => busbar_contract::kept::Text::fixed(ANONYMOUS),
+            (None, Origin::Keys) => busbar_contract::kept::Text::fixed(KEYS),
+            (None, Origin::Ticket(_)) => busbar_contract::kept::Text::fixed(TICKET),
+            (None, Origin::Anonymous | Origin::Instance) => {
+                busbar_contract::kept::Text::fixed(ANONYMOUS)
+            }
         }
     }
-    /// Whether this is the anonymous principal: verified by no instance and by no built-in
-    /// verifier. A caller whose core-signed token `keys` verified is never anonymous.
+    /// Whether this is the anonymous principal: the built-in member `anonymous` admitted a caller
+    /// that presented no credential. Stated by the constructor, never inferred from an empty
+    /// instance: a caller a ticket admitted or whose core-signed token `keys` verified is never
+    /// anonymous and never earns `role_bindings.anonymous`.
     pub fn is_anonymous(&self) -> bool {
-        self.instance.is_none() && self.core.is_none()
+        matches!(self.origin, Origin::Anonymous)
+    }
+    /// The issuer's governed key of a request a core ticket admitted, if this is one.
+    pub(crate) fn ticket_key(&self) -> Option<&Arc<busbar_contract::records::VirtualKey>> {
+        match &self.origin {
+            Origin::Ticket(key) => Some(key),
+            _ => None,
+        }
     }
     /// The core-signed token the built-in member `keys` verified for this identity, if it is one.
     pub(crate) fn core_key(&self) -> Option<&super::native_keys::CoreKey> {

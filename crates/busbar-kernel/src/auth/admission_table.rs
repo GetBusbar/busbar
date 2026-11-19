@@ -949,6 +949,8 @@ pub struct Offered {
     pub chain_yields_shared: bool,
     /// A transport on the listener can carry an upgrade.
     pub upgrade_transport: bool,
+    /// Core's ticket store is open (a signing key is configured): a ticket can be minted and redeemed.
+    pub ticket_store: bool,
     /// A signature verifier is configured for the route.
     pub signature_verifier: bool,
     /// The route's challenge names a public URL and none is configured.
@@ -963,6 +965,7 @@ pub enum NotMounted {
     DistinctCallersUnderAnOpenChain,
     NoUpgradeTransport,
     NoSignatureVerifier,
+    NoTicketStore,
     NoPublicUrlForItsChallenge,
     /// A line or recovery route: no client reaches it, by design.
     Internal,
@@ -979,6 +982,9 @@ impl NotMounted {
             }
             Self::NoUpgradeTransport => "no transport on this listener can carry an upgrade",
             Self::NoSignatureVerifier => "no signature verifier is configured for this route",
+            Self::NoTicketStore => {
+                "the route admits a ticket and no signing key is configured to mint one"
+            }
             Self::NoPublicUrlForItsChallenge => {
                 "the route's challenge names the plane's public URL and none is configured"
             }
@@ -1003,6 +1009,9 @@ pub fn mounted(record: &RouteRecord, offered: Offered) -> Result<Admission, NotM
         }
         // A ticket is core's own; the chain is needed only where a key is also admitted.
         VerifyBy::TicketOrChain => {
+            if !offered.ticket_store {
+                return Err(NotMounted::NoTicketStore);
+            }
             if record.who.has(Who::PRINCIPAL) && !offered.verifier_reads_header {
                 return Err(NotMounted::NoVerifierReadsItsHeader);
             }

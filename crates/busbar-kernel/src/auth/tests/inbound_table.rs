@@ -908,6 +908,7 @@ fn what_is_not_mounted_and_why() {
         chain_yields_shared: false,
         upgrade_transport: true,
         signature_verifier: true,
+        ticket_store: true,
         challenge_unresolved: false,
     };
     for route in reference_plane::routes() {
@@ -923,6 +924,7 @@ fn what_is_not_mounted_and_why() {
         chain_yields_shared: false,
         upgrade_transport: false,
         signature_verifier: false,
+        ticket_store: false,
         challenge_unresolved: false,
     };
     let unread = Err(NotMounted::NoVerifierReadsItsHeader);
@@ -932,7 +934,7 @@ fn what_is_not_mounted_and_why() {
         (Admission::PrincipalOnly, unread),
         (Admission::Catalog, unread),
         (Admission::Optional, unread),
-        (Admission::Ticket, unread),
+        (Admission::Ticket, Err(NotMounted::NoTicketStore)),
         (Admission::Upgrade, unread),
         (
             Admission::SignedIngress,
@@ -976,6 +978,16 @@ fn what_is_not_mounted_and_why() {
     assert_eq!(
         mounted(&reference(Admission::Selected).record, no_url),
         Err(NotMounted::NoPublicUrlForItsChallenge)
+    );
+    // A ticket route with no ticket store (no signing key) is not mounted, never answered 401
+    // forever; every other offer does not change that.
+    let no_store = Offered {
+        ticket_store: false,
+        ..everything
+    };
+    assert_eq!(
+        mounted(&reference(Admission::Ticket).record, no_store),
+        Err(NotMounted::NoTicketStore)
     );
     // An internal route is never on a listener.
     let recovery = RouteRecord {

@@ -174,6 +174,7 @@ impl NativeDataRoute {
         chain_admits_anonymous: bool,
         upgrade_transport: bool,
         signature_verifier: bool,
+        ticket_store: bool,
     ) -> Planned {
         let record = &mounted.record;
         let offered = Offered {
@@ -181,6 +182,7 @@ impl NativeDataRoute {
             chain_yields_shared: chain_admits_anonymous,
             upgrade_transport,
             signature_verifier,
+            ticket_store,
             challenge_unresolved: record.mounted_challenge(seat.public_url()).is_err(),
         };
         match super::admission_table::mounted(record, offered) {
@@ -502,6 +504,19 @@ pub(crate) fn governed_key(
     chain: &NativeChain,
     now: u64,
 ) -> Result<Arc<VirtualKey>, DataRefused> {
+    // A request a core ticket admitted: the issuer's key, already judged as it stands now by the
+    // ticket verifier, judged again here at the gate's own reading. No role binding grants it
+    // anything, and it is never the anonymous principal.
+    if let Some(key) = prepared.ticket_key() {
+        return if key.deleted_at.is_some()
+            || key.expires_at.is_some_and(|until| now >= until)
+            || !key.enabled
+        {
+            Err(DataRefused::Policy)
+        } else {
+            Ok(Arc::clone(key))
+        };
+    }
     // The anonymous principal exists only on a chain that names `anonymous`.
     if prepared.is_anonymous() && !chain.admits_anonymous() {
         return Err(DataRefused::Binding);
