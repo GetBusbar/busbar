@@ -42,6 +42,157 @@ pub struct NativeBinding {
     spec: NativeBindingSpec,
     port: Arc<dyn AuthPort>,
     cache: Arc<CredCache>,
+    /// Registered (weakly) with the cache for this binding's keys; lives as long as the binding.
+    _report: Arc<NativeReport>,
+}
+
+/// The audit action of every BUSBAR-8026/8027 report and of a recovery.
+pub const REFRESH_ACTION: &str = "upstream_credential.refresh";
+
+/// Names a binding's member in its credential reports. Its source is the auth instance that mints the value: the
+/// members it serves share one BUSBAR-8026 rate. Never carries the credential or a digest of it.
+struct NativeReport {
+    plane: Box<str>,
+    pool: Box<str>,
+    member: Box<str>,
+    upstream: Box<str>,
+    auth_instance: u64,
+    style: &'static str,
+    report: &'static dyn Report,
+}
+
+impl NativeReport {
+    fn source(&self) -> String {
+        format!("auth:{}", self.auth_instance)
+    }
+
+    fn resource(&self) -> String {
+        format!("member:{}/{}/{}", self.plane, self.pool, self.member)
+    }
+
+    fn fields(&self, cause: &'static str, code: u32) -> Vec<(&'static str, String)> {
+        vec![
+            ("plane", self.plane.to_string()),
+            ("pool", self.pool.to_string()),
+            ("member", self.member.to_string()),
+            ("upstream", self.upstream.to_string()),
+            ("reference", self.source()),
+            ("style", self.style.to_string()),
+            ("cause", cause.to_string()),
+            ("error_kind", code.to_string()),
+        ]
+    }
+}
+
+fn millis(d: Duration) -> String {
+    d.as_millis().to_string()
+}
+
+impl CredObserver for NativeReport {
+    fn observe(&self, outcome: CredOutcome, now: Instant, gate: &Throttle) {
+        use busbar_plugin_abi::fail::refused::R_NOT_FOUND;
+        use tracing::Level;
+        match outcome {
+            CredOutcome::Failed {
+                streak,
+                code,
+                retry_in,
+                expires_in,
+            } => {
+                let mut fields = self.fields("resolve", code);
+                fields.push(("failures", streak.to_string()));
+                fields.push(("retry_in_ms", millis(retry_in)));
+                fields.push((
+                    "expires_in_ms",
+                    expires_in.map_or_else(|| "0".to_string(), millis),
+                ));
+                self.refresh_failed(
+                    gate,
+                    now,
+                    fields,
+                    "the member's upstream credential could not be refreshed; the value held is kept until it expires",
+                    Level::WARN,
+                );
+            }
+            CredOutcome::Confirming { code } => {
+                let what = if code == R_NOT_FOUND {
+                    "not-found"
+                } else {
+                    "permission-denied"
+                };
+                let mut fields = self.fields("resolve", code);
+                fields.push(("answer", what.to_string()));
+                fields.push(("confirm_in_ms", millis(CONFIRM_AFTER)));
+                self.refresh_failed(
+                    gate,
+                    now,
+                    fields,
+                    "the member's upstream credential source answered definitively; it is dropped if a re-read confirms it",
+                    Level::WARN,
+                );
+            }
+            CredOutcome::Revoked { code } => {
+                self.report.diag(
+                    &UPSTREAM_CREDENTIAL_LAPSED,
+                    Level::ERROR,
+                    "the member's upstream credential was revoked at its source and is no longer presented",
+                    &self.fields("revoked-at-source", code),
+                );
+                self.report
+                    .audit(REFRESH_ACTION, &self.resource(), OUTCOME_REJECTED);
+            }
+            CredOutcome::Lapsed => {
+                self.report.diag(
+                    &UPSTREAM_CREDENTIAL_LAPSED,
+                    Level::ERROR,
+                    "the member's upstream credential expired unrenewed and is no longer presented",
+                    &self.fields("lease-expired", 0),
+                );
+                self.report
+                    .audit(REFRESH_ACTION, &self.resource(), OUTCOME_REJECTED);
+            }
+            CredOutcome::Recovered => {
+                let fields = vec![
+                    ("plane", self.plane.to_string()),
+                    ("pool", self.pool.to_string()),
+                    ("member", self.member.to_string()),
+                    ("reference", self.source()),
+                ];
+                self.report
+                    .info("the member's upstream credential refreshed again", &fields);
+                self.report
+                    .audit(REFRESH_ACTION, &self.resource(), OUTCOME_APPLIED);
+            }
+        }
+    }
+}
+
+impl NativeReport {
+    /// BUSBAR-8026 at `level` once per source per minute, audited degraded; the rest at debug, counted in the next.
+    fn refresh_failed(
+        &self,
+        gate: &Throttle,
+        now: Instant,
+        mut fields: Vec<(&'static str, String)>,
+        message: &str,
+        level: tracing::Level,
+    ) {
+        match gate.pass(&self.source(), now) {
+            Some(others) => {
+                fields.push(("others", others.to_string()));
+                self.report
+                    .diag(&UPSTREAM_CREDENTIAL_REFRESH_FAILED, level, message, &fields);
+                self.report
+                    .audit(REFRESH_ACTION, &self.resource(), OUTCOME_DEGRADED);
+            }
+            None => self.report.diag(
+                &UPSTREAM_CREDENTIAL_REFRESH_FAILED,
+                tracing::Level::DEBUG,
+                message,
+                &fields,
+            ),
+        }
+    }
 }
 
 fn refused() -> PortError {
@@ -57,6 +208,16 @@ impl NativeBinding {
         spec: NativeBindingSpec,
         port: Arc<dyn AuthPort>,
         cache: Arc<CredCache>,
+    ) -> Result<Self, PortError> {
+        Self::reporting(spec, port, cache, &HOST_REPORT)
+    }
+
+    /// As `new`, reporting this binding's credential outcomes (BUSBAR-8026/8027) to `report`.
+    pub fn reporting(
+        spec: NativeBindingSpec,
+        port: Arc<dyn AuthPort>,
+        cache: Arc<CredCache>,
+        report: &'static dyn Report,
     ) -> Result<Self, PortError> {
         // Caller/grant provenance and durable delivery admission are a separately held activation.
         if spec.mode != UpstreamCreds::Own
