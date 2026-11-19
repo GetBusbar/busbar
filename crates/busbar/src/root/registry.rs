@@ -141,10 +141,18 @@ pub(crate) fn check(
     check_claim_transports(&claims, served)
 }
 
-/// [`check`] against the installed connector, or an explained exit 2.
+/// [`check`] against the build's carrier table (deletion plan E4): a claim's transport is served when the build
+/// assigns a MIN-3 transport image the carrier its word means. An installed old-interface door still serves the
+/// words it claims until the old interface is cut. A carrier table the build cannot read is an explained exit 2.
 pub(crate) fn check_or_exit(planes: &[LinkedClaims]) {
+    let carriers = crate::root::min3_framers::assigned(crate::LINKED_CARRIERS).unwrap_or_else(|why| {
+        eprintln!("busbar: the composition root did not seal: {why}");
+        crate::root::exit::exit(2);
+    });
     let connector = crate::root::connector::the();
-    check(planes, &|scheme| connector.framer_for(scheme).is_some()).unwrap_or_else(|refusal| {
+    let served =
+        |word: &str| carriers.serves_claim(word) || connector.framer_for(word).is_some();
+    check(planes, &served).unwrap_or_else(|refusal| {
         match refusal {
             // The deployment's installed plugins, not the build: the coded line says what to install.
             BootRefusal::UnregisteredClaimTransport { .. } => eprintln!("[error] {refusal}"),
