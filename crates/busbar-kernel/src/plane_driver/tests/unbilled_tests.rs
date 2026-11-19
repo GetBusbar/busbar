@@ -588,6 +588,17 @@ async fn session(
     caller: &Caller,
     walk: &mut Walk,
 ) -> Result<Ran, crate::plane_driver::port_session::SessionError> {
+    session_of(r, plane, caller, walk, unit_ctx()).await
+}
+
+/// [`session`], its books those of the unit `ctx` names.
+async fn session_of(
+    r: &Rig,
+    plane: &Plane,
+    caller: &Caller,
+    walk: &mut Walk,
+    ctx: UnitCtx,
+) -> Result<Ran, crate::plane_driver::port_session::SessionError> {
     let store = Store;
     let resolver = Resolver::new(&store, Some([1; 32]));
     let refusals = CoreRefusals::new();
