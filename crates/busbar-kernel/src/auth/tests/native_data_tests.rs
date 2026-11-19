@@ -529,7 +529,10 @@ fn arrival_with(
     fields: Vec<(String, Vec<u8>)>,
     body: &[u8],
 ) -> (CompletingPhysicalRequest, Wire, CallCx, StreamOwner) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let arrival =
+        crate::inbound::native::Arrival::at(crate::store::monotonic_ns(), Duration::from_secs(30))
+            .unwrap();
+    let deadline = arrival.deadline();
     let (request, owner) = f
         .connection
         .head(
@@ -542,7 +545,7 @@ fn arrival_with(
                 head
             },
             f.budget.try_enter(AdmissionClass::Data).unwrap(),
-            Some(deadline),
+            Some(arrival),
         )
         .unwrap();
     let credit = request.binding().request().try_reserve(body.len()).unwrap();

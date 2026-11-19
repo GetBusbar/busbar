@@ -359,7 +359,10 @@ fn arrival_at(
     target: &str,
     fields: &[(&str, &str)],
 ) -> (CompletingPhysicalRequest, CallCx, StreamOwner) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let arrival =
+        crate::inbound::native::Arrival::at(crate::store::monotonic_ns(), Duration::from_secs(30))
+            .unwrap();
+    let deadline = arrival.deadline();
     let mut head = crate::inbound::Head::default();
     head.method = "GET".into();
     head.target = target.into();
@@ -377,7 +380,7 @@ fn arrival_at(
             stream,
             head,
             f.budget.try_enter(AdmissionClass::Data).unwrap(),
-            Some(deadline),
+            Some(arrival),
         )
         .unwrap();
     let credit = request.binding().request().try_reserve(0).unwrap();
