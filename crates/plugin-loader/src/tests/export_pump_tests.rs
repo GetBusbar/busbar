@@ -461,6 +461,359 @@ fn a_scrape_renders_the_lowered_snapshot_at_scope_metrics() {
     assert_eq!(samples[2].1, 3.0);
 }
 
+/// One family exactly as a port is lent it: kind, name, help, and each sample's role, value bits, bound bits,
+/// stamp and labels. Floats as bits, so NaN compares and -0.0 differs from 0.0.
+type Lent = (
+    u32,
+    String,
+    String,
+    Vec<(u32, u64, u64, u64, Vec<(String, String)>)>,
+);
+
+fn lent(snapshot: &[FamilyIn<'_>]) -> Vec<Lent> {
+    snapshot
+        .iter()
+        .map(|f| {
+            (
+                f.kind,
+                f.name.to_string(),
+                f.help.to_string(),
+                f.samples
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.role,
+                            s.value.to_bits(),
+                            s.bound.to_bits(),
+                            s.ts_ms,
+                            s.labels
+                                .iter()
+                                .map(|(k, v)| (k.to_string(), v.to_string()))
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// The lowering as it was before the flat lists (a list per family of sample shapes, a list per family of
+/// samples, the families), copied verbatim: the reference the new lowering's output is compared against.
+fn nested_lowering<R>(families: &[Family], f: impl FnOnce(&[FamilyIn<'_>]) -> R) -> R {
+    fn shape<'f>(
+        family: &'f Family,
+        sample_name: &str,
+        labels: &'f [(String, String)],
+    ) -> (u32, f64, Vec<(&'f str, &'f str)>) {
+        let suffix = sample_name.strip_prefix(family.name.as_str()).unwrap_or("");
+        let coordinate = |key: &str| {
+            labels
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| super::number(v))
+        };
+        let (role, bound, drop) = match suffix {
+            "_bucket" => (
+                x::SAMPLE_BUCKET,
+                coordinate("le").unwrap_or(f64::NAN),
+                Some("le"),
+            ),
+            "_sum" => (x::SAMPLE_SUM, f64::NAN, None),
+            "_count" => (x::SAMPLE_COUNT, f64::NAN, None),
+            _ if super::family_kind(family.kind) == x::FAMILY_SUMMARY => {
+                match coordinate("quantile") {
+                    Some(q) => (x::SAMPLE_QUANTILE, q, Some("quantile")),
+                    None => (x::SAMPLE_VALUE, f64::NAN, None),
+                }
+            }
+            _ => (x::SAMPLE_VALUE, f64::NAN, None),
+        };
+        let kept = labels
+            .iter()
+            .filter(|(k, _)| Some(k.as_str()) != drop)
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        (role, bound, kept)
+    }
+    type Shape<'a> = (u32, f64, Vec<(&'a str, &'a str)>);
+    let shapes: Vec<Vec<Shape<'_>>> = families
+        .iter()
+        .map(|fam| {
+            fam.samples
+                .iter()
+                .map(|s| shape(fam, &s.name, &s.labels))
+                .collect()
+        })
+        .collect();
+    let samples: Vec<Vec<busbar_ports::export::SampleIn<'_>>> = families
+        .iter()
+        .zip(&shapes)
+        .map(|(fam, shapes)| {
+            fam.samples
+                .iter()
+                .zip(shapes)
+                .map(
+                    |(s, (role, bound, labels))| busbar_ports::export::SampleIn {
+                        value: super::number(&s.value),
+                        bound: *bound,
+                        ts_ms: 0,
+                        role: *role,
+                        labels,
+                    },
+                )
+                .collect()
+        })
+        .collect();
+    let snapshot: Vec<FamilyIn<'_>> = families
+        .iter()
+        .zip(&samples)
+        .map(|(fam, samples)| FamilyIn {
+            kind: super::family_kind(fam.kind),
+            name: &fam.name,
+            help: fam.help.as_deref().unwrap_or(""),
+            samples,
+        })
+        .collect();
+    f(&snapshot)
+}
+
+/// Every shape the lowering distinguishes: each family kind (untyped renders as a gauge), help absent and
+/// present, a family with no samples, samples with no labels, `le` and `quantile` coordinates first, middle and
+/// last, a coordinate on a sample that does not drop it, a repeated coordinate key, a summary sample without a
+/// quantile, a sample name outside its family's prefix, and values that are spaced, signed, infinite or not
+/// numbers.
+fn lowering_fixtures() -> Vec<Family> {
+    let kind = |w: &str| busbar_contract::export_calls::kind_of(w).unwrap();
+    let sample = |name: &str, labels: &[(&str, &str)], value: &str| Sample {
+        name: name.into(),
+        labels: labels
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        value: value.into(),
+    };
+    let family = |name: &str, help: Option<&str>, kind: u8, samples: Vec<Sample>| Family {
+        name: name.into(),
+        help: help.map(Into::into),
+        unit: None,
+        kind,
+        samples,
+    };
+    vec![
+        family(
+            "requests_total",
+            Some("requests served"),
+            kind("counter"),
+            vec![
+                sample("requests_total", &[("route", "a"), ("code", "200")], "12"),
+                sample("requests_total", &[], " 3 "),
+                sample("requests_total", &[("le", "1"), ("route", "b")], "-0"),
+            ],
+        ),
+        family("empty", None, kind("gauge"), Vec::new()),
+        family(
+            "temp",
+            None,
+            kind("gauge"),
+            vec![
+                sample("temp", &[("zone", "x")], "+Inf"),
+                sample("temp", &[("zone", "y")], "NaN"),
+                sample("temp", &[("zone", "z")], "not a number"),
+            ],
+        ),
+        family(
+            "lat",
+            Some("latency"),
+            kind("histogram"),
+            vec![
+                sample("lat_bucket", &[("le", "0.1"), ("route", "r")], "1"),
+                sample(
+                    "lat_bucket",
+                    &[("route", "r"), ("le", "0.5"), ("m", "GET")],
+                    "3",
+                ),
+                sample("lat_bucket", &[("route", "r"), ("le", "+Inf")], "4"),
+                sample("lat_bucket", &[("route", "r")], "4"),
+                sample("lat_bucket", &[("le", "1"), ("le", "2")], "5"),
+                sample("lat_sum", &[("route", "r"), ("le", "9")], "1.25"),
+                sample("lat_count", &[("route", "r")], "4"),
+            ],
+        ),
+        family(
+            "rpc",
+            Some(""),
+            kind("summary"),
+            vec![
+                sample("rpc", &[("quantile", "0.5"), ("svc", "s")], "0.2"),
+                sample("rpc", &[("svc", "s"), ("quantile", "0.99")], "0.9"),
+                sample("rpc", &[("svc", "s")], "0.4"),
+                sample("rpc_sum", &[("svc", "s"), ("quantile", "1")], "7"),
+                sample("rpc_count", &[], "9"),
+            ],
+        ),
+        family(
+            "raw",
+            Some("untyped"),
+            kind("untyped"),
+            vec![
+                sample("raw", &[("quantile", "0.5")], "1e3"),
+                sample("other_name", &[("le", "1")], "2"),
+            ],
+        ),
+    ]
+}
+
+#[test]
+fn the_flat_lowering_lends_the_port_what_the_nested_lowering_did() {
+    let families = lowering_fixtures();
+    let before = nested_lowering(&families, lent);
+    let after = super::with_snapshot(&families, lent);
+    assert_eq!(after, before);
+    assert_eq!(after.len(), 6);
+    assert_eq!(
+        after.iter().map(|f| f.3.len()).sum::<usize>(),
+        20,
+        "every sample reaches the port"
+    );
+    // Each prefix of the families, and none: a family's run of samples never borrows its neighbour's.
+    for n in 0..=families.len() {
+        assert_eq!(
+            super::with_snapshot(&families[..n], lent),
+            nested_lowering(&families[..n], lent)
+        );
+    }
+    for one in &families {
+        let one = std::slice::from_ref(one);
+        assert_eq!(super::with_snapshot(one, lent), nested_lowering(one, lent));
+    }
+}
+
+#[test]
+fn the_flat_lowering_reaches_the_port_through_scrape_and_render_scope() {
+    let (port, _rx) = Double::new(&[x::STREAM_METRICS]);
+    let door = open(port.clone(), Arc::new(Disk::default()));
+    let families = lowering_fixtures();
+    assert_eq!(door.scrape(&families).unwrap(), b"rendered");
+    let served = door
+        .render_scope(x::SCOPE_METRICS, &families)
+        .expect("renders");
+    assert_eq!(served.body, b"rendered");
+    let expected: Vec<Rendered> = nested_lowering(&families, |snapshot| {
+        snapshot
+            .iter()
+            .map(|f| {
+                (
+                    x::SCOPE_METRICS,
+                    f.name.to_string(),
+                    f.kind,
+                    f.samples
+                        .iter()
+                        .map(|s| {
+                            (
+                                s.role,
+                                s.value,
+                                s.bound,
+                                s.labels
+                                    .iter()
+                                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                                    .collect(),
+                            )
+                        })
+                        .collect(),
+                )
+            })
+            .collect()
+    });
+    let seen = port.rendered.lock().unwrap();
+    assert_eq!(
+        seen.len(),
+        2 * expected.len(),
+        "one scrape, one scope render"
+    );
+    let bits = |r: &[Rendered]| {
+        r.iter()
+            .map(|(scope, name, kind, samples)| {
+                (
+                    *scope,
+                    name.clone(),
+                    *kind,
+                    samples
+                        .iter()
+                        .map(|(role, value, bound, labels)| {
+                            (*role, value.to_bits(), bound.to_bits(), labels.clone())
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(bits(&seen[..expected.len()]), bits(&expected));
+    assert_eq!(bits(&seen[expected.len()..]), bits(&expected));
+}
+
+#[test]
+fn each_attempt_lends_the_tail_not_yet_accepted() {
+    let (port, rx) = Double::new(&[x::STREAM_LOGS]);
+    let (release, gate) = channel();
+    *port.gate.lock().unwrap() = Some(gate);
+    // "x" is acked whole. The set {a, b, c, d}: 1 appended verbatim, then a failure, then 1 acked, then the rest.
+    port.answer(Ok(Delivered::Acked {
+        accepted: 1,
+        custody: ACCEPTED,
+    }));
+    port.answer(Ok(Delivered::Append {
+        dest: 0,
+        bytes: None,
+        accepted: 1,
+    }));
+    port.answer(Err(PortError::Failed {
+        code: 1,
+        text: "down".into(),
+        retry_after_s: None,
+        backend_status: None,
+        error: None,
+    }));
+    port.answer(Ok(Delivered::Acked {
+        accepted: 1,
+        custody: ACCEPTED,
+    }));
+    let disk = Arc::new(Disk::default());
+    let door = open(port, disk.clone());
+    send(&door, x::STREAM_LOGS, "x");
+    let _ = next(&rx); // the pump is held inside this call
+    for line in ["a", "b", "c", "d"] {
+        send(&door, x::STREAM_LOGS, line);
+    }
+    release.send(()).unwrap();
+    let lines = |c: &Call| c.lines.clone();
+    let set = next(&rx);
+    assert_eq!(
+        lines(&set),
+        vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec(), b"d".to_vec()]
+    );
+    assert_eq!(set.attempt, 1);
+    let after_append = next(&rx);
+    assert_eq!(
+        lines(&after_append),
+        vec![b"b".to_vec(), b"c".to_vec(), b"d".to_vec()]
+    );
+    assert_eq!(after_append.attempt, 2);
+    assert_ne!(after_append.delivery, set.delivery);
+    let resent = next(&rx);
+    assert_eq!(
+        resent.lines, after_append.lines,
+        "a resend lends the same tail"
+    );
+    assert_eq!(resent.delivery, after_append.delivery);
+    assert_eq!(resent.attempt, 3);
+    // Out of attempts after the third send: c and d are dropped, never sent again.
+    assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+    assert_eq!(*disk.appended.lock().unwrap(), vec![(0, b"a\n".to_vec())]);
+    assert_eq!(door.delivered(), 3, "x, a and b");
+    assert_eq!(door.dropped(), 2);
+}
+
 #[test]
 fn a_terminal_limit_failure_is_not_reoffered() {
     let (port, rx) = Double::new(&[x::STREAM_LOGS]);

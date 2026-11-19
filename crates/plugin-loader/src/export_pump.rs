@@ -373,6 +373,9 @@ impl Shared {
 
     /// Delivers one line set until every line is accepted, refused or out of attempts.
     fn deliver_set(&self, stream: u8, lines: &[Line]) {
+        // The set's views, made once: each attempt lends the tail not yet accepted. Released with the set.
+        let mut views: Vec<&[u8]> = Vec::with_capacity(lines.len());
+        views.extend(lines.iter().map(|l| l.bytes.as_slice()));
         let mut delivery = mint_delivery();
         let mut attempt = 1u32;
         let mut start = 0usize;
@@ -387,11 +390,11 @@ impl Shared {
                 self.drop_lines(lines.len() - start, ExportDropReason::AttemptsExhausted);
                 return;
             }
-            let views: Vec<&[u8]> = lines[start..].iter().map(|l| l.bytes.as_slice()).collect();
+            let views = &views[start..];
             // Per attempt: an attempt already running on the old binding completes there; every later one
             // goes to whatever the cell holds then (DES-454 §4.3).
             let binding = self.binding.load_full();
-            let Some(answer) = self.call(&*binding.port, stream, delivery, attempt, &views) else {
+            let Some(answer) = self.call(&*binding.port, stream, delivery, attempt, views) else {
                 self.drop_lines(lines.len() - start, ExportDropReason::Stopped);
                 return;
             };
@@ -956,12 +959,12 @@ fn number(v: &str) -> f64 {
     v.trim().parse::<f64>().unwrap_or(f64::NAN)
 }
 
-/// One sample's role, bound and the labels it keeps (the `le` / `quantile` coordinate becomes `bound`).
-fn sample_shape<'f>(
-    family: &'f Family,
+/// One sample's role, bound and the label it does not keep (the `le` / `quantile` coordinate becomes `bound`).
+fn sample_shape(
+    family: &Family,
     sample_name: &str,
-    labels: &'f [(String, String)],
-) -> (u32, f64, Vec<(&'f str, &'f str)>) {
+    labels: &[(String, String)],
+) -> (u32, f64, Option<&'static str>) {
     let suffix = sample_name.strip_prefix(family.name.as_str()).unwrap_or("");
     let coordinate = |key: &str| {
         labels
@@ -969,7 +972,7 @@ fn sample_shape<'f>(
             .find(|(k, _)| k == key)
             .map(|(_, v)| number(v))
     };
-    let (role, bound, drop) = match suffix {
+    match suffix {
         "_bucket" => (
             x::SAMPLE_BUCKET,
             coordinate("le").unwrap_or(f64::NAN),
@@ -982,56 +985,61 @@ fn sample_shape<'f>(
             None => (x::SAMPLE_VALUE, f64::NAN, None),
         },
         _ => (x::SAMPLE_VALUE, f64::NAN, None),
-    };
-    let kept = labels
-        .iter()
-        .filter(|(k, _)| Some(k.as_str()) != drop)
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
-    (role, bound, kept)
+    }
 }
 
-/// One sample as the port borrows it: its kind, value and labels.
-type SampleShape<'a> = (u32, f64, Vec<(&'a str, &'a str)>);
+/// The labels a sample keeps, in recorder order: all but its `drop` coordinate.
+fn kept<'f>(
+    labels: &'f [(String, String)],
+    drop: Option<&'static str>,
+) -> impl Iterator<Item = (&'f str, &'f str)> {
+    labels
+        .iter()
+        .filter(move |(k, _)| Some(k.as_str()) != drop)
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+}
 
-/// Lowers the recorder snapshot into the port's borrowed snapshot and runs `f` over it.
+/// Lowers the recorder snapshot into the port's borrowed snapshot and runs `f` over it. Three lists per
+/// scrape whatever the family count: every kept label, every sample, every family; each sample lends its run
+/// of the labels and each family its run of the samples, in recorder order. Released when `f` returns.
 fn with_snapshot<R>(families: &[Family], f: impl FnOnce(&[FamilyIn<'_>]) -> R) -> R {
-    let shapes: Vec<Vec<SampleShape<'_>>> = families
-        .iter()
-        .map(|fam| {
-            fam.samples
-                .iter()
-                .map(|s| sample_shape(fam, &s.name, &s.labels))
-                .collect()
-        })
-        .collect();
-    let samples: Vec<Vec<SampleIn<'_>>> = families
-        .iter()
-        .zip(&shapes)
-        .map(|(fam, shapes)| {
-            fam.samples
-                .iter()
-                .zip(shapes)
-                .map(|(s, (role, bound, labels))| SampleIn {
-                    value: number(&s.value),
-                    bound: *bound,
-                    ts_ms: 0,
-                    role: *role,
-                    labels,
-                })
-                .collect()
-        })
-        .collect();
-    let snapshot: Vec<FamilyIn<'_>> = families
-        .iter()
-        .zip(&samples)
-        .map(|(fam, samples)| FamilyIn {
+    let all = || {
+        families
+            .iter()
+            .flat_map(|fam| fam.samples.iter().map(move |s| (fam, s)))
+    };
+    let mut labels: Vec<(&str, &str)> =
+        Vec::with_capacity(all().map(|(_, s)| s.labels.len()).sum());
+    for (fam, s) in all() {
+        let (_, _, drop) = sample_shape(fam, &s.name, &s.labels);
+        labels.extend(kept(&s.labels, drop));
+    }
+    let mut samples: Vec<SampleIn<'_>> = Vec::with_capacity(all().count());
+    let mut at = 0usize;
+    for (fam, s) in all() {
+        let (role, bound, drop) = sample_shape(fam, &s.name, &s.labels);
+        let end = at + kept(&s.labels, drop).count();
+        samples.push(SampleIn {
+            value: number(&s.value),
+            bound,
+            ts_ms: 0,
+            role,
+            labels: &labels[at..end],
+        });
+        at = end;
+    }
+    let mut snapshot: Vec<FamilyIn<'_>> = Vec::with_capacity(families.len());
+    let mut at = 0usize;
+    for fam in families {
+        let end = at + fam.samples.len();
+        snapshot.push(FamilyIn {
             kind: family_kind(fam.kind),
             name: &fam.name,
             help: fam.help.as_deref().unwrap_or(""),
-            samples,
-        })
-        .collect();
+            samples: &samples[at..end],
+        });
+        at = end;
+    }
     f(&snapshot)
 }
 

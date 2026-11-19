@@ -58,9 +58,93 @@ mod delivery;
 mod storage;
 pub use delivery::Delivery;
 use delivery::DeliveryIo;
-pub use storage::{Name, Payload};
-/// A complete callback answer whose backing charge follows its consumer.
-pub type Actions = storage::Items<Act>;
+pub use storage::{Name, Payload, Span};
+
+/// A complete callback answer whose backing charge follows its consumer: what it asks of core, in order,
+/// and the socket bytes its WRITE and WIRE_PART records name, held in the session's one output buffer.
+/// Both are the session's own, kept across answers and always cleared together, so no span outlives
+/// the bytes it names.
+#[derive(Debug)]
+pub struct Actions {
+    items: storage::Items<Act>,
+    out: storage::Output,
+}
+
+impl Actions {
+    pub(crate) fn new(
+        source: &busbar_contract::storage::StorageSource,
+    ) -> Result<Self, busbar_contract::storage::StorageDenied> {
+        Ok(Self {
+            items: storage::Items::new(source)?,
+            out: storage::Output::new(source)?,
+        })
+    }
+
+    /// An action that carries no socket bytes (those go through [`Self::write`] and [`Self::part`]).
+    pub(crate) fn push(&mut self, act: Act) -> Result<(), busbar_contract::storage::StorageDenied> {
+        debug_assert!(!matches!(act, Act::Write(_) | Act::WirePart { .. }));
+        self.items.push(act)
+    }
+
+    /// WRITE: the borrowed bytes appended to the output buffer, the action naming them pushed.
+    pub(crate) fn write(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<(), busbar_contract::storage::StorageDenied> {
+        let span = self.out.append(bytes)?;
+        self.items.push(Act::Write(span))
+    }
+
+    /// WIRE_PART: as [`Self::write`], with the serializer's attribution.
+    pub(crate) fn part(
+        &mut self,
+        stream: u64,
+        class: WireClass,
+        bytes: &[u8],
+    ) -> Result<(), busbar_contract::storage::StorageDenied> {
+        let bytes = self.out.append(bytes)?;
+        self.items.push(Act::WirePart {
+            stream,
+            class,
+            bytes,
+        })
+    }
+
+    /// Every action goes and every byte held is wiped.
+    pub(crate) fn clear(&mut self) {
+        self.items.clear();
+        self.out.clear();
+    }
+
+    pub(crate) fn last_mut(&mut self) -> Option<&mut Act> {
+        self.items.last_mut()
+    }
+
+    /// The actions, taken out in order, beside the buffer their spans index. The caller clears the
+    /// buffer when it is done with them, however it stops.
+    fn drain(&mut self) -> (std::vec::Drain<'_, Act>, &mut storage::Output) {
+        (self.items.drain(), &mut self.out)
+    }
+
+    /// Read the captured actions in order.
+    #[must_use]
+    pub fn as_slice(&self) -> &[Act] {
+        self.items.as_slice()
+    }
+
+    /// The bytes a WRITE's or WIRE_PART's span names that the socket has not taken yet.
+    #[must_use]
+    pub fn bytes(&self, span: Span) -> &[u8] {
+        self.out.unwritten(span)
+    }
+}
+
+impl std::ops::Deref for Actions {
+    type Target = [Act];
+    fn deref(&self) -> &[Act] {
+        self.as_slice()
+    }
+}
 
 /// A breach of the per-call answer grammar (count, order, place): `RecErr::Size`, as the adapter's own
 /// grammar breaches are.
@@ -76,19 +160,20 @@ const FEED_GONE_STATUS: u32 = 500;
 const FEED_GONE_TEXT: &str = "the exchange feeding this stream ended before the stream did";
 
 /// What one transport answer asks of core, owned: a `TransportOut` borrows the framer's buffer, and the
-/// session task acts on it only after the call returned.
+/// session task acts on it only after the call returned. Socket bytes are copied into the session's one
+/// output buffer ([`Actions`]) and named by a [`Span`]; bytes for the plane keep their own [`Payload`].
 #[derive(Debug)]
 pub enum Act {
     /// WRITE: bytes for the socket, in order.
-    Write(Payload),
-    /// Serializer-attributed ordered wire bytes, retaining their charged backing.
+    Write(Span),
+    /// Serializer-attributed ordered wire bytes, held in the session's charged output buffer.
     WirePart {
         /// Host response stream, or zero for connection control.
         stream: u64,
         /// Actual serializer payload/control classification.
         class: WireClass,
-        /// The charged serialized bytes.
-        bytes: Payload,
+        /// The serialized bytes.
+        bytes: Span,
     },
     /// A finite response wire prefix requiring an actual carrier operation.
     WireEnd {
@@ -303,10 +388,7 @@ impl Answers {
         }
         if self.called == Called::Close {
             match *out {
-                TransportOut::Write(bytes) if !self.closing => {
-                    self.acts
-                        .push(Act::Write(Payload::copy(&self.source, bytes)?))?;
-                }
+                TransportOut::Write(bytes) if !self.closing => self.acts.write(bytes)?,
                 TransportOut::Close { abort } if !self.closing => {
                     self.closing = true;
                     self.acts.push(Act::Close { abort })?;
@@ -316,11 +398,7 @@ impl Answers {
                     stream,
                     class,
                     bytes,
-                } if !self.closing => self.acts.push(Act::WirePart {
-                    stream,
-                    class,
-                    bytes: Payload::copy(&self.source, bytes)?,
-                })?,
+                } if !self.closing => self.acts.part(stream, class, bytes)?,
                 TransportOut::WireEnd {
                     stream,
                     requirement,
@@ -354,11 +432,7 @@ impl Answers {
                 stream,
                 class,
                 bytes,
-            } => self.acts.push(Act::WirePart {
-                stream,
-                class,
-                bytes: Payload::copy(&self.source, bytes)?,
-            })?,
+            } => self.acts.part(stream, class, bytes)?,
             TransportOut::WireEnd {
                 stream,
                 requirement,
@@ -368,9 +442,7 @@ impl Answers {
             })?,
             TransportOut::ResponseAbort { stream, .. } => self.acts.push(Act::Abort(stream))?,
             TransportOut::ResponseQuiescent(stream) => self.acts.push(Act::Quiescent(stream))?,
-            TransportOut::Write(bytes) => self
-                .acts
-                .push(Act::Write(Payload::copy(&self.source, bytes)?))?,
+            TransportOut::Write(bytes) => self.acts.write(bytes)?,
             TransportOut::Close { abort } => {
                 self.acts.push(Act::Close { abort })?;
                 self.closed = true;
@@ -1092,8 +1164,21 @@ struct Task {
 }
 
 impl Task {
-    /// The answer's acts, in order: socket writes now, stream items queued for core.
+    /// The answer's acts, in order: socket writes now, stream items queued for core. However it ends,
+    /// the output buffer is wiped before it returns: no unwritten byte waits for the session's drop.
     async fn apply<S: AsyncWrite + Unpin>(
+        &mut self,
+        acts: &mut Actions,
+        io: &mut DeliveryIo<S>,
+        write_timeout: Duration,
+        clock: &mut Option<(Instant, u64)>,
+    ) -> Flow {
+        let flow = self.apply_acts(acts, io, write_timeout, clock).await;
+        acts.clear();
+        flow
+    }
+
+    async fn apply_acts<S: AsyncWrite + Unpin>(
         &mut self,
         acts: &mut Actions,
         io: &mut DeliveryIo<S>,
@@ -1102,16 +1187,16 @@ impl Task {
     ) -> Flow {
         let mut prefix = io.ledger().adopted_prefix();
         if let Err(reason) = io.prepare(acts) {
-            acts.clear();
             return Flow::Rejected(reason);
         }
         let mut wrote = false;
         let deadline = tokio::time::Instant::from_std(wake_clock(clock).0) + write_timeout;
-        for act in acts.drain() {
+        let (drained, out) = acts.drain();
+        for act in drained {
             match act {
-                Act::Write(mut bytes) | Act::WirePart { mut bytes, .. } => {
-                    prefix += bytes.len() as u64; // checked by whole-answer preparation
-                    if let Err(error) = write_bounded(io, &mut bytes, deadline).await {
+                Act::Write(span) | Act::WirePart { bytes: span, .. } => {
+                    prefix += span.len() as u64; // checked by whole-answer preparation
+                    if let Err(error) = write_bounded(io, out, span, deadline).await {
                         return Flow::Lost(error);
                     }
                     wrote = true;
@@ -1210,20 +1295,26 @@ fn timed_out() -> std::io::Error {
     std::io::Error::from(std::io::ErrorKind::TimedOut)
 }
 
+/// One record's bytes to the socket, front to back: each byte the socket takes is wiped at once, and a
+/// partial write resumes at the first byte it did not take.
 async fn write_bounded<S: AsyncWrite + Unpin>(
     io: &mut S,
-    bytes: &mut Payload,
+    out: &mut storage::Output,
+    span: Span,
     deadline: tokio::time::Instant,
 ) -> std::io::Result<()> {
     tokio::time::timeout_at(deadline, async {
-        while !bytes.is_empty() {
-            let written = io.write(bytes.as_slice()).await?;
+        loop {
+            let unwritten = out.unwritten(span);
+            if unwritten.is_empty() {
+                return Ok(());
+            }
+            let written = io.write(unwritten).await?;
             if written == 0 {
                 return Err(std::io::ErrorKind::WriteZero.into());
             }
-            bytes.consume(written);
+            out.take(written);
         }
-        Ok(())
     })
     .await
     .unwrap_or_else(|_| Err(timed_out()))
@@ -1302,11 +1393,13 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
         return Ended2::Ended(conn.reject_output(reason));
     }
     let mut abort = false;
-    for act in conn.actions().drain() {
+    // An early return drops `conn`, and with it the output buffer (its drop wipes what is unwritten).
+    let (drained, out) = conn.actions().drain();
+    for act in drained {
         match act {
-            Act::Write(mut bytes) | Act::WirePart { mut bytes, .. } => {
-                prefix += bytes.len() as u64;
-                if let Err(error) = write_bounded(io, &mut bytes, deadline).await {
+            Act::Write(span) | Act::WirePart { bytes: span, .. } => {
+                prefix += span.len() as u64;
+                if let Err(error) = write_bounded(io, out, span, deadline).await {
                     return Ended2::Lost(error);
                 }
             }

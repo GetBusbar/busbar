@@ -144,6 +144,11 @@ pub struct UnitReason {
     pub code: &'static str,
     /// `client`, `policy`, `upstream` or `engine`.
     pub class: &'static str,
+    /// The hook that vetoed the unit, by the key the deployment configured it under. Absent when
+    /// a hook did not refuse it (and on a record sealed before the hook rows carried their
+    /// decision).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hook: Option<String>,
 }
 
 /// A unit's timing, in microseconds; a member is null when it was not measured.
