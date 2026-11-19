@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use busbar_contract::plugin_rows::{PluginRows, Row, Skipped};
 
-use crate::cold::rows::{archive_sha256, linked_rows, loadable_rows, row, skipped, skipped_rows};
+use crate::cold::rows::{archive_sha256, loadable_rows, row, skipped, skipped_rows};
 use crate::PluginRegistry;
 
 impl PluginRows for PluginRegistry {
@@ -27,7 +27,7 @@ impl PluginRows for PluginRegistry {
 
     fn signature_present(&self, name_or_alias: &str) -> bool {
         PluginRegistry::resolve(self, name_or_alias)
-            .is_some_and(|image| !image.linked() && !image.manifest.signature.is_empty())
+            .is_some_and(|image| !image.manifest.signature.is_empty())
     }
 
     fn unresolved_reason(&self, name_or_alias: &str) -> Option<Skipped> {
@@ -39,7 +39,7 @@ impl PluginRows for PluginRegistry {
     }
 
     fn linked(&self) -> Vec<Row> {
-        linked_rows(self)
+        Vec::new()
     }
 
     fn skipped(&self) -> Vec<Skipped> {
