@@ -66,9 +66,17 @@ pub(super) async fn prepare(
 ) -> Result<Prepared, data::DataPrepareError> {
     let binding = ready.request.binding().clone();
     let deadline = binding.deadline().ok_or(InputError::Invalid)?.into();
-    let data_request = matches!(binding.route().target(), RouteTarget::Plane(_));
+    let upgrade_request = crate::root::min3_physical::is_upgrade(binding.route());
+    let data_request =
+        matches!(binding.route().target(), RouteTarget::Plane(_)) && !upgrade_request;
     let work = async {
         let (response, authority, settlement) = match binding.route().target() {
+            RouteTarget::Plane(_) if upgrade_request => {
+                let slot =
+                    (native.select)(binding.app(), &native.slot).ok_or(InputError::Invalid)?;
+                let (response, refusal) = super::upgrade::prepare(ready.request, slot).await?;
+                (response, ResponseAuthority::Refused(refusal), None)
+            }
             RouteTarget::Plane(_) => {
                 let slot =
                     (native.select)(binding.app(), &native.slot).ok_or(InputError::Invalid)?;

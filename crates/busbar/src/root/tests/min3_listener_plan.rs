@@ -101,6 +101,47 @@ fn native_plan_refuses_need_routes_unknown_slots_and_duplicate_addresses() {
 }
 
 #[test]
+fn a_plane_with_upgrade_routes_is_assembled_while_no_instance_could_be_handed_one() {
+    // E9a: the blanket "native plane upgrades have no complete physical producer" is gone. With
+    // no admitted websocket instance every authorized upgrade request is answered 501.
+    assert_eq!(upgrades_honoured(true, None), Ok(()));
+    assert_eq!(upgrades_honoured(false, None), Ok(()));
+    let websocket = ServedTransport {
+        instance: Arc::from("transport-ws"),
+        port: crate::root::min3_boot::transports::tests::framer(&["websocket"]),
+    };
+    assert_eq!(upgrades_honoured(false, Some(&websocket)), Ok(()));
+    // With one, the request would have to be handed over, and no adopter is linked (E9b).
+    let refused = upgrades_honoured(true, Some(&websocket)).unwrap_err();
+    assert!(refused.contains("`transport-ws`") && refused.contains("not linked"));
+}
+
+#[test]
+fn native_plan_records_the_admitted_websocket_upgrade_target() {
+    let needs = ListenerNeeds {
+        binds: vec![bind("listen", 8080)],
+        ..Default::default()
+    };
+    let none = NativeListenerPlan::new(
+        needs.clone(),
+        &NativeFramers::new(vec![initial("http", &["listen"])]),
+    )
+    .unwrap();
+    assert!(none.websocket.is_none());
+    let websocket = ServedTransport {
+        instance: Arc::from("transport-ws"),
+        port: crate::root::min3_boot::transports::tests::framer(&["WebSocket"]),
+    };
+    let port = Arc::clone(&websocket.port);
+    let some = NativeListenerPlan::new(
+        needs,
+        &NativeFramers::new(vec![initial("http", &["listen"]), websocket]),
+    )
+    .unwrap();
+    assert!(Arc::ptr_eq(&some.websocket.unwrap().port, &port));
+}
+
+#[test]
 fn an_explicit_root_bind_cannot_disappear_from_native_plan() {
     assert!(NativeListenerPlan::new(
         ListenerNeeds {

@@ -285,6 +285,11 @@ impl NativeFramers {
         )
     }
 
+    /// The instance declaring D_PROTOCOL `protocol` (an upgrade target), if one is admitted.
+    pub(crate) fn for_protocol(&self, protocol: &str) -> Option<ServedTransport> {
+        super::min3_boot::transports::declaring(&self.served, protocol).cloned()
+    }
+
     /// Exactly one instance explicitly declares this configuration slot. Image names, ALPN and
     /// upgrade protocols are never fallback selectors. Unknown declarations create no listeners.
     pub(crate) fn for_slot(&self, slot: &str) -> Result<ServedTransport, String> {

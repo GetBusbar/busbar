@@ -10,6 +10,7 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use busbar_contract::abi::transport::route::{method_bit, METHOD_HEAD, PATH_EXACT, PATH_PATTERN};
 use busbar_kernel::auth::native_data::{DataRouteOwners, NativeDataRoute};
+use busbar_kernel::auth::native_upgrade::NativeUpgradeRoute;
 use busbar_kernel::door::UnitKeyMint;
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth};
 use busbar_kernel::inbound::native::{PhysicalPlan, RequestBinding, RouteBinding, RouteTarget};
@@ -24,6 +25,7 @@ use busbar_ports::plane::PlaneIn;
 use busbar_ports::transport::TransportPort;
 
 use super::min3_auth::AuthSet;
+use super::min3_boot::transports::ServedTransport;
 use super::serve::DoorMounts;
 
 /// These are the configured sources already used by this candidate's actual seat egress.
@@ -150,6 +152,11 @@ pub(crate) struct NativeSlot {
     slot: Box<str>,
     prepared: Arc<PreparedListener>,
     data: Vec<(Arc<RouteBinding>, Arc<NativeDataRoute>)>,
+    /// The ROUTE_UPGRADE routes (§12.27) and their auth completions.
+    upgrades: Vec<(Arc<RouteBinding>, Arc<NativeUpgradeRoute>)>,
+    /// The candidate's admitted instance declaring D_PROTOCOL `websocket`, the only carrier an
+    /// upgrade route can be handed to. `None`: every authorized upgrade request is answered 501.
+    websocket: Option<ServedTransport>,
 }
 impl std::fmt::Debug for NativeSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -179,6 +186,28 @@ impl NativeSlot {
             .map(|(_, data)| Arc::clone(data))
             .ok_or_else(|| "native request has no DATA completion for its actual route".into())
     }
+    pub(crate) fn upgrade_for(
+        &self,
+        binding: &RequestBinding,
+    ) -> Result<Arc<NativeUpgradeRoute>, String> {
+        if !Arc::ptr_eq(binding.prepared(), &self.prepared) {
+            return Err("native request belongs to another prepared listener".into());
+        }
+        self.upgrades
+            .iter()
+            .find(|(route, _)| Arc::ptr_eq(route, binding.route()))
+            .map(|(_, upgrade)| Arc::clone(upgrade))
+            .ok_or_else(|| "native request has no upgrade completion for its actual route".into())
+    }
+    pub(crate) fn websocket(&self) -> Option<&ServedTransport> {
+        self.websocket.as_ref()
+    }
+}
+
+/// Whether a route token is a ROUTE_UPGRADE route of its plane (§8.6: the flag stands alone).
+pub(crate) fn is_upgrade(binding: &RouteBinding) -> bool {
+    matches!(binding.target(), RouteTarget::Plane(target)
+        if target.mounted().flags == busbar_plugin_abi::plane::ROUTE_UPGRADE)
 }
 
 fn declared_core_auth(
@@ -242,6 +271,7 @@ pub(crate) fn assemble_slot(
     guests: GuestList,
     mounts: DoorMounts,
     owners: &SlotOwners,
+    websocket: Option<ServedTransport>,
 ) -> Result<Arc<NativeSlot>, String> {
     let DoorMounts {
         data: dispatch,
@@ -289,11 +319,11 @@ pub(crate) fn assemble_slot(
                 if matching.next().is_some() {
                     return Err("native plane seat ownership is ambiguous".into());
                 }
-                let route = seat
-                    .driver
-                    .routes()
+                let routes = seat.driver.routes();
+                let route = routes
                     .data
                     .iter()
+                    .chain(&routes.upgrade)
                     .find(|route| route.route == line.route.rung)
                     .ok_or_else(|| {
                         format!("{instance}: physical line has no actual native route")
@@ -330,6 +360,7 @@ pub(crate) fn assemble_slot(
     let plan = PhysicalPlan::new(slot.into(), transport, guests, bindings)
         .map_err(|_| "native physical plan does not cover the complete slot".to_string())?;
     let mut data = Vec::new();
+    let mut upgrades = Vec::new();
     for binding in plan.routes() {
         let RouteTarget::Plane(target) = binding.target() else {
             continue;
@@ -338,6 +369,19 @@ pub(crate) fn assemble_slot(
             .iter()
             .find(|seat| seat.driver.caller().same_incarnation(target.caller()))
             .ok_or_else(|| "native physical route lost its plane incarnation".to_string())?;
+        if is_upgrade(binding) {
+            // §12.27: the route's own chain on the head; no resources, no unit before a 101.
+            let chain = owners
+                .auth
+                .data_chain(owners.epoch, target.auth_instances())?;
+            let upgrade = NativeUpgradeRoute::bind(app, seat, Arc::clone(binding), Arc::new(chain))
+                .map_err(|_| {
+                    "native upgrade route class or actual candidate owners are unsupported"
+                        .to_string()
+                })?;
+            upgrades.push((Arc::clone(binding), upgrade));
+            continue;
+        }
         let generation = dispatch
             .generation
             .as_ref()
@@ -373,6 +417,8 @@ pub(crate) fn assemble_slot(
         slot: slot.into(),
         prepared: Arc::new(prepared),
         data,
+        upgrades,
+        websocket,
     }))
 }
 
@@ -444,6 +490,8 @@ pub(crate) fn assemble_admin_slot(
         slot: slot.into(),
         prepared: Arc::new(prepared),
         data: Vec::new(),
+        upgrades: Vec::new(),
+        websocket: None,
     }))
 }
 

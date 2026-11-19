@@ -33,6 +33,8 @@ mod dispatch;
 mod response;
 #[path = "listener_native_serve.rs"]
 mod serving;
+#[path = "listener_native_upgrade.rs"]
+mod upgrade;
 pub(crate) use delivery::RegisteredDelivery;
 pub(crate) use serving::{serve_admitted, NativeCarrierRetired};
 
