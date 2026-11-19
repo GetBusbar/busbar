@@ -580,3 +580,72 @@ async fn authenticated_route_caller_stop_reload_and_future_drop_cancel_before_ad
     assert_eq!(far.0, 0);
     assert_eq!(plane.upstreams.load(Ordering::SeqCst), 0);
 }
+
+/// The anonymous principal is the one subject every caller of an open chain shares
+/// (`native_chain::ANONYMOUS`): it is no caller reference. A record another anonymous caller
+/// left in what would be the anonymous scope is never read by the next one: the store is not
+/// asked, the plane gets no record, and no destination is resolved (the deleted continuation
+/// refused `PrincipalId::anonymous()`; NEEDS P056, manager decision 19 Nov).
+#[tokio::test]
+async fn authenticated_route_anonymous_callers_never_read_each_others_records() {
+    let anonymous = crate::auth::native_chain::ANONYMOUS;
+    let plane = Interactions::default();
+    let host = Records {
+        rows: vec![(Some(subject_scope(anonymous)), KEY, DEST)],
+        ..Records::default()
+    };
+    let resolver = Resolver::new(&host, None).with_principal(anonymous, &[]);
+    let mut request = request(59, key(anonymous, None));
+    let mut far = Dials::default();
+    let result = serve(&plane, &mut request, &resolver, &mut far).await;
+    assert!(result.is_err(), "{result:?}");
+    assert!(
+        host.asked.lock().unwrap().is_empty(),
+        "an anonymous caller has no caller scope: the store is never asked"
+    );
+    assert_eq!(*plane.looked.lock().unwrap(), [false]);
+    assert_eq!(
+        asked(&request),
+        ["money Local"],
+        "no destination is resolved"
+    );
+    assert_eq!(far.0, 0);
+}
+
+/// An anonymous caller's caller-scoped LOOKUP is refused by core (no scope, the host never
+/// asked), and a verified caller's lookup in her own scope still works beside it.
+#[tokio::test]
+async fn authenticated_route_anonymous_caller_scoped_lookup_is_refused_and_a_verified_caller_still_works(
+) {
+    let anonymous = crate::auth::native_chain::ANONYMOUS;
+    let host = alices_record();
+    let plane = Interactions::default();
+    let unscoped = Resolver::new(&host, None).with_principal(anonymous, &[]);
+    assert_eq!(
+        unscoped.subject(),
+        None,
+        "the anonymous principal has no scope"
+    );
+    let mut request_anonymous = request(60, key(anonymous, None));
+    let mut far = Dials::default();
+    let result = serve(&plane, &mut request_anonymous, &unscoped, &mut far).await;
+    assert!(result.is_err(), "{result:?}");
+    assert!(host.asked.lock().unwrap().is_empty());
+    assert_eq!(*plane.looked.lock().unwrap(), [false]);
+
+    let plane = Interactions::default();
+    let alice = Resolver::new(&host, None).with_principal("alice", &[]);
+    assert_eq!(alice.subject(), Some(subject_scope("alice")));
+    let mut request_alice = request(61, key("alice", None));
+    let result = serve(&plane, &mut request_alice, &alice, &mut far).await;
+    assert!(
+        matches!(&result, Err(SessionError::AdmissionRefused(refusal)) if refusal.status == 402),
+        "{result:?}"
+    );
+    assert_eq!(*host.asked.lock().unwrap(), [Some(subject_scope("alice"))]);
+    assert_eq!(*plane.looked.lock().unwrap(), [true]);
+    assert_eq!(
+        asked(&request_alice),
+        [format!("money DirectModel({MODEL:?})")]
+    );
+}
