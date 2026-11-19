@@ -10,7 +10,7 @@ use super::base::Pins;
 use super::*;
 use busbar_kernel_wal::{Entry, RecordClass};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 #[path = "conditional.rs"]
@@ -189,6 +189,9 @@ struct State {
     seq_map: Vec<(u64, u64)>,
     /// The Ephemeral journal cut's state (SEALING-FIX §3.9); unused on a journal never cut.
     cut: cut::CutState,
+    /// The root's audit flusher has not committed for longer than its stall limit (design 2,
+    /// A8). Set and cleared only by that flusher ([`RuntimeJournal::set_flusher_stalled`]).
+    flusher_stalled: bool,
 }
 
 /// Why a journal cannot record money now.
@@ -197,6 +200,9 @@ enum Refusal {
     Failed(RuntimeError),
     Conditional,
     Full,
+    /// Judged last: the flusher's own staging check ([`RuntimeJournal::refuses_staging`]) skips
+    /// it, so the flusher's report never stops its own recovery.
+    Stalled,
 }
 
 impl State {
@@ -214,7 +220,10 @@ impl State {
         if self.conditional.is_some() {
             return Some(Refusal::Conditional);
         }
-        (self.records >= budget.records || self.bytes >= budget.bytes).then_some(Refusal::Full)
+        if self.records >= budget.records || self.bytes >= budget.bytes {
+            return Some(Refusal::Full);
+        }
+        self.flusher_stalled.then_some(Refusal::Stalled)
     }
 }
 
@@ -246,9 +255,6 @@ pub struct RuntimeJournal {
     cut_taken: AtomicBool,
     /// Lookups of a live original that fell below the replay base; a pin invariant violation.
     locate_truncated: std::sync::atomic::AtomicU64,
-    /// The root's audit flusher has not committed for longer than its stall limit (design 2, A8):
-    /// set and cleared only by that flusher; read by [`RuntimeJournal::refuses_money`].
-    flusher_stalled: AtomicBool,
     /// Test probe: acquisitions of the publication driver, the journal lane (SHUTDOWN-HANG 8.3).
     #[cfg(test)]
     lane_holds: std::sync::atomic::AtomicU64,
@@ -323,6 +329,7 @@ impl RuntimeJournal {
                 conditional: None,
                 seq_map,
                 cut,
+                flusher_stalled: false,
             }),
             // A fresh state accepts, has not failed, holds no conditional slot and no record
             // (the budget is nonzero above): it admits money.
@@ -333,17 +340,24 @@ impl RuntimeJournal {
             pins: ephemeral.then(|| Arc::new(Pins::default())),
             cut_taken: AtomicBool::new(false),
             locate_truncated: std::sync::atomic::AtomicU64::new(0),
-            flusher_stalled: AtomicBool::new(false),
             #[cfg(test)]
             lane_holds: std::sync::atomic::AtomicU64::new(0),
         }))
     }
 
     /// The root's audit flusher reports whether its last good commit is older than its stall
-    /// limit (design 2, A8). While set, [`RuntimeJournal::refuses_money`] refuses: a billable open
+    /// limit (design 2, A8). While set, [`RuntimeJournal::admits_money`] is false: a billable open
     /// is answered with the "cannot record" refusal instead of growing what cannot be committed.
+    /// Set under the state lock and mirrored into the one flag by [`Self::mark`].
     pub fn set_flusher_stalled(&self, stalled: bool) {
-        self.flusher_stalled.store(stalled, Ordering::Release);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if state.flusher_stalled != stalled {
+            state.flusher_stalled = stalled;
+            self.mark(&state);
+        }
     }
 
     /// Mirror `completed` and `failed` to confirm waiters. Called with `state`
@@ -452,19 +466,17 @@ impl RuntimeJournal {
     }
 
     pub fn refuses_money(&self) -> Option<String> {
-        // One relaxed load: the store's slot queue is full (STORE_INFLIGHT_EXHAUSTED).
-        if self.store.exhausted() {
-            return Some("store in-flight queue exhausted".into());
-        }
-        if self.flusher_stalled.load(Ordering::Acquire) {
-            return Some("audit records have not been committed within the stall limit".into());
-        }
-        self.refuses_staging()
+        self.refusal_reason(true)
     }
 
     /// Whether this journal refuses to stage now, judged without the flusher's own stall report:
     /// the flusher asks this before it stages, so its report never stops its own recovery.
     pub fn refuses_staging(&self) -> Option<String> {
+        self.refusal_reason(false)
+    }
+
+    fn refusal_reason(&self, stalled_counts: bool) -> Option<String> {
+        // One relaxed load: the store's slot queue is full (STORE_INFLIGHT_EXHAUSTED).
         if self.store.exhausted() {
             return Some("store in-flight queue exhausted".into());
         }
@@ -477,6 +489,10 @@ impl RuntimeJournal {
             Refusal::Failed(error) => format!("native journal custody failed: {error:?}"),
             Refusal::Conditional => "native journal conditional publication is pending".into(),
             Refusal::Full => "native journal custody buffer is full".into(),
+            Refusal::Stalled if stalled_counts => {
+                "audit records have not been committed within the stall limit".into()
+            }
+            Refusal::Stalled => return None,
         })
     }
 
