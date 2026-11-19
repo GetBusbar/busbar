@@ -116,3 +116,39 @@ impl Exchange {
         self.ws.is_some()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Said;
+
+    #[test]
+    fn an_entry_states_the_kind_of_the_piece_last_read_and_nothing_before_one() {
+        let said = Said::default();
+        assert_eq!(said.text(), None, "no piece was read");
+        said.read_piece(Some(true));
+        assert_eq!(said.text(), Some(true));
+        said.read_piece(Some(false));
+        assert_eq!(said.text(), Some(false));
+        // A piece whose kind the transport did not state is not the kind of the one before it.
+        said.read_piece(None);
+        assert_eq!(said.text(), None);
+    }
+
+    #[test]
+    fn an_entry_keeps_the_code_its_far_end_closed_with_zero_included() {
+        let said = Said::default();
+        assert_eq!(said.close_code(), None, "the far end has not closed");
+        said.closed(None);
+        assert_eq!(said.close_code(), None, "a failure with no code states none");
+        said.closed(Some(0));
+        assert_eq!(said.close_code(), Some(0), "code 0 is a code, not its absence");
+        let said = Said::default();
+        said.closed(Some(1001));
+        assert_eq!(said.close_code(), Some(1001));
+        said.closed(Some(u32::MAX));
+        assert_eq!(said.close_code(), Some(u32::MAX));
+        // The first code stays through a later failure of the same entry that states none.
+        said.closed(None);
+        assert_eq!(said.close_code(), Some(u32::MAX));
+    }
+}

@@ -19,7 +19,7 @@ use busbar_plugin_abi::plane::{
 use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn};
 use busbar_ports::PortError;
 
-use super::{piece_flags, ClientEvent, ClientMessages, Ending, UpMessage};
+use super::{caller_close_code, piece_flags, ClientEvent, ClientMessages, Ending, UpMessage};
 use crate::plane_driver::port_session::{
     finish, Calls, ClientSink, Effects, SessionError, Task, ToClient, UpExchange, Violation,
 };
@@ -368,6 +368,8 @@ struct Wire {
     closed: AtomicUsize,
     /// How many messages the far end takes before a write fails (`None` = all).
     takes: Option<usize>,
+    /// The code the far end closed with, where its failure is its own close with a code.
+    close_code: Option<u32>,
 }
 
 impl Wire {
@@ -411,6 +413,10 @@ impl UpChunks for Rest {
 
     fn take_queued(&mut self) -> Vec<(u32, Vec<u8>)> {
         std::mem::take(&mut self.queued)
+    }
+
+    fn close_code(&self) -> Option<u32> {
+        self.wire.close_code
     }
 }
 
@@ -1007,4 +1013,131 @@ fn the_piece_flags_are_the_transports_message_flags() {
         P_BINARY | P_FIN,
         "a piece that states no kind is bytes, and still a message"
     );
+}
+
+/// A committed session whose far end ends failed, having closed with `code` (`None` = with none).
+fn closed_with(code: Option<u32>) -> Ran {
+    Session::new(
+        vec![Step::Far(Err(SendFailed))],
+        vec![commit(), vec![It::End, It::Finish]],
+    )
+    .run_with(|_| {}, |wire| wire.close_code = code)
+}
+
+#[test]
+fn a_text_message_of_the_far_end_reaches_the_caller_as_text_and_a_binary_one_as_binary() {
+    let ran = Session::new(
+        vec![
+            answers(TEXT, b"words"),
+            answers(BINARY, &[0, 255]),
+            answers(MSG_TEXT, b"wo"),
+            answers(TEXT, b"rds"),
+            Step::Far(Ok(None)),
+        ],
+        vec![
+            commit(),
+            vec![It::Msg(TEXT, b"words")],
+            vec![It::Msg(BINARY, &[0, 255])],
+            vec![It::Msg(MSG_TEXT, b"wo")],
+            vec![It::Msg(TEXT, b"rds")],
+            vec![It::End, It::Finish],
+        ],
+    )
+    .run();
+    assert!(ran.result.is_ok(), "{:?}", ran.result);
+    let from_far: Vec<(u32, Vec<u8>)> = ran
+        .plane
+        .handed()
+        .into_iter()
+        .filter(|piece| piece.0 == FROM_UPSTREAM && piece.2 & (P_TEXT | P_BINARY) != 0)
+        .map(|piece| (piece.2, piece.3))
+        .collect();
+    assert_eq!(
+        from_far,
+        [
+            (P_TEXT | P_FIN, b"words".to_vec()),
+            (P_BINARY | P_FIN, vec![0, 255]),
+            (P_TEXT, b"wo".to_vec()),
+            (P_TEXT | P_FIN, b"rds".to_vec()),
+        ],
+        "the plane is handed each piece as the kind the far end stated, a fragment included"
+    );
+    let to_caller: Vec<(u32, Vec<u8>)> = ran
+        .side_items
+        .iter()
+        .filter_map(|item| match item {
+            ToClient::Msg { flags, bytes } => Some((*flags, bytes.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        to_caller,
+        [
+            (TEXT, b"words".to_vec()),
+            (BINARY, vec![0, 255]),
+            (MSG_TEXT, b"wo".to_vec()),
+            (TEXT, b"rds".to_vec()),
+        ],
+        "and the caller is written the kind the plane answered with"
+    );
+}
+
+#[test]
+fn a_far_end_close_code_the_protocol_lets_an_endpoint_send_reaches_the_caller() {
+    for code in [1001_u16, 1003, 1008, 1013, 3000, 4000, 4999] {
+        let ran = closed_with(Some(u32::from(code)));
+        assert!(ran.result.is_ok(), "{:?}", ran.result);
+        assert_eq!(
+            ran.endings,
+            [Ending::UpstreamClosed(code)],
+            "the caller's close carries the far end's own code {code}"
+        );
+        // The plane is told what it is told of every far end that did not end in order.
+        assert_eq!(ran.plane.handed().last().unwrap().2, P_ERROR);
+    }
+}
+
+#[test]
+fn a_far_end_close_code_no_endpoint_may_send_does_not_reach_the_caller() {
+    // RFC 6455 section 7.4.1: 1005, 1006 and 1015 are never set in a close frame, 1004 is reserved;
+    // section 7.4.2: under 1000 is not used, 1016 to 2999 is the protocol's and unassigned, above 4999 is
+    // no code. The engine's own stall cut (`RESET_STALLED`) is no wire code either.
+    for code in [
+        0_u32,
+        999,
+        1004,
+        1005,
+        1006,
+        1014,
+        1015,
+        1016,
+        2999,
+        5000,
+        65_536 + 1001,
+        0xFFFF_0001,
+    ] {
+        let ran = closed_with(Some(code));
+        assert!(ran.result.is_ok(), "{:?}", ran.result);
+        assert_eq!(
+            ran.endings,
+            [Ending::UpstreamFailed],
+            "code {code} is written as the failure's close"
+        );
+    }
+    assert_eq!(closed_with(None).endings, [Ending::UpstreamFailed]);
+}
+
+#[test]
+fn the_callers_close_code_is_the_far_ends_only_where_an_endpoint_may_send_it() {
+    for code in (1000_u16..=1003).chain(1007..=1013).chain(3000..=4999) {
+        assert_eq!(caller_close_code(u32::from(code)), Some(code), "{code}");
+    }
+    for code in (0_u32..1000)
+        .chain(1004..=1006)
+        .chain(1014..3000)
+        .chain(5000..=70_000)
+    {
+        assert_eq!(caller_close_code(code), None, "{code}");
+    }
+    assert_eq!(caller_close_code(u32::MAX), None);
 }
