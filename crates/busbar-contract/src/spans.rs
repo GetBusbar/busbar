@@ -43,15 +43,7 @@ pub fn string_end(b: &[u8], open_quote: usize) -> Option<usize> {
     if b.get(open_quote) != Some(&b'"') {
         return None;
     }
-    let mut i = open_quote + 1;
-    while let Some(c) = b.get(i) {
-        match c {
-            b'\\' => i += 2,
-            b'"' => return Some(i + 1),
-            _ => i += 1,
-        }
-    }
-    None
+    busbar_json::past_string_body(b, open_quote + 1)
 }
 
 /// One past the JSON value that starts at `start` (whitespace before it allowed), respecting nested

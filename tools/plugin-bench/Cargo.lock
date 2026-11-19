@@ -304,6 +304,7 @@ name = "busbar-json"
 version = "1.6.0"
 dependencies = [
  "busbar-count",
+ "memchr",
  "serde",
  "sonic-rs",
 ]

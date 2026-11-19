@@ -701,7 +701,10 @@ pub(crate) struct Replay<'j, 's> {
 
 /// Read-ahead for a replay. The proven prefix is immutable, so reading the next few ordinals in
 /// one backend read returns the same rows one-row reads would, for one crossing instead of one
-/// per original. The window adapts to keep retained bytes near [`Ahead::BYTES`].
+/// per original. The window is sized from the previous batch's largest original so that a batch
+/// like it retains about [`Ahead::BYTES`]: a target, not a bound. A window can outgrow the store's
+/// per-read limit when originals grow, so a failed multi-row read is retried as a one-row read
+/// before the replay fails.
 #[derive(Default)]
 pub(crate) struct Ahead {
     rows: std::collections::VecDeque<Option<Secret<Vec<u8>>>>,
@@ -758,11 +761,23 @@ impl Replay<'_, '_> {
         let ordinal = self.observed.count.checked_add(1).ok_or(Error::Overflow)?;
         if self.ahead.rows.is_empty() {
             let left = self.target.head.count - self.observed.count;
+            let window = self.ahead.next_window(left);
             let addresses = (ordinal..)
-                .take(self.ahead.next_window(left))
+                .take(window)
                 .map(|at| self.journal.address(b'R', at))
                 .collect();
-            let rows = self.journal.read(addresses).await?;
+            let rows = match self.journal.read(addresses).await {
+                Ok(rows) => rows,
+                // A window sized from earlier, smaller originals can exceed the store's per-read
+                // limit. Read the current original alone before failing the replay; `fill` then
+                // sizes the next window from it.
+                Err(_) if window > 1 => {
+                    self.journal
+                        .read(vec![self.journal.address(b'R', ordinal)])
+                        .await?
+                }
+                Err(error) => return Err(error),
+            };
             self.ahead.fill(rows);
         }
         let Some(bytes) = self.ahead.rows.pop_front().flatten() else {
