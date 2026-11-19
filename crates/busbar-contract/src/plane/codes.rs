@@ -7,9 +7,7 @@
 //! this module is their one path for every caller, and their definitions move here when `abi/` goes
 //! (`K0-HOMES.md`). Nothing here is part of the plugin interface.
 
-pub use crate::abi::plane::check::{
-    check_tail, entry_fact, entry_path_matches, raw_affix_matches, Bounds, EntryPredicate,
-};
+pub use crate::abi::plane::check::{check_tail, raw_affix_matches, Bounds};
 pub use crate::abi::plane::{
     cancel_bills_reported_units, class_of, slot, CollectionMode, RecordCollection, RefusalClass,
     RefusalCode, AUDIT_APPLIED, AUDIT_DEGRADED, AUDIT_REJECTED, CANCEL_ABORTED, CANCEL_FAILED,

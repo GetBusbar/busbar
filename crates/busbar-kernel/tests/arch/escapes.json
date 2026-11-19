@@ -16,7 +16,6 @@
     "crates/busbar-kernel/src/appbuild.rs": 1,
     "crates/busbar-kernel/src/audit/stream_registry.rs": 1,
     "crates/busbar-kernel/src/auth/mod.rs": 1,
-    "crates/busbar-kernel/src/catalogue.rs": 1,
     "crates/busbar-kernel/src/config_validate/mod.rs": 2,
     "crates/busbar-kernel/src/config_validate/tests/deal.rs": 2,
     "crates/busbar-kernel/src/config/provider_grammar.rs": 2,

@@ -571,18 +571,6 @@ abi_op! {
     }
 }
 
-/// The most lines one guest list may lend.
-pub const MAX_LINES: u64 = 1024;
-
-/// A guest line schedules the union of its providers' points. Distinct providers may
-/// need HEAD and HEAD_BODY on the same line; an individual auth style still cannot.
-pub(crate) const fn check_line_points(points: u32) -> Result<(), Fault> {
-    if points & !(POINT_PEER | POINT_HEAD | POINT_HEAD_BODY) != 0 {
-        return Err(fault(Rule::UnknownCode, "line.points"));
-    }
-    Ok(())
-}
-
 /// A `begin`'s binding: on [`super::SIDE_DIAL`] a valid point set with a handle exactly when it
 pub const fn check_binding(i: &super::BeginIn) -> Result<(), Fault> {
     if i.side != super::SIDE_DIAL {

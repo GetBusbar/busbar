@@ -16,10 +16,6 @@ pub fn hotpath_enabled() -> bool {
     tracing::level_filters::LevelFilter::current() >= HOTPATH_LEVEL
 }
 
-pub mod arrival;
-
-pub mod request;
-
 /// One log event that carries plugin text (IF §12.16 round 34, PLUGIN-ERROR-CODES §2.6). `message` is core's own
 /// words. The plugin's text is a plain `&str` field `text` (never `message`, never `%` or `?`), so the stock `fmt`
 /// formatter writes it with `{:?}`: one quoted value with `"`, `\`, `\n`, `\r`, `\t` and other controls escaped,

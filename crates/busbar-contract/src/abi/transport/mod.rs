@@ -177,7 +177,6 @@ pub mod adopted_session;
 pub mod check;
 pub mod datagram;
 pub mod fields;
-pub mod guest_policy;
 pub mod listener_bindings;
 pub mod route;
 

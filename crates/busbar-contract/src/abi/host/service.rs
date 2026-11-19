@@ -537,9 +537,6 @@ pub const FLOW_CONTINUE: u32 = 0;
 /// [`AuthAnswer::flow`]: the transport stops the request and asks [`op::UNIT_REFUSE`] for the answer.
 pub const FLOW_STOP: u32 = 1;
 
-/// [`UnitHandInIn::line`] and [`UnitRefuseIn::line`]: no line matched.
-pub const LINE_NONE: u32 = u32::MAX;
-
 /// [`UnitRefuseIn::cause`]: the request matched no line.
 pub const REFUSE_NO_ROUTE: u32 = 1;
 /// [`UnitRefuseIn::cause`]: a line's path and fields matched and no line admits the method.
