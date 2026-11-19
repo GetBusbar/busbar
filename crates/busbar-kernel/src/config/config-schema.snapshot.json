@@ -9,9 +9,21 @@
     "AdvancedCfg": {
       "deny_unknown_fields": true,
       "fields": {
+        "allow_destinations": {
+          "optional": true,
+          "type": "IgnoredAny"
+        },
         "block_private_addresses": {
           "optional": true,
           "type": "bool"
+        },
+        "forwarded_header": {
+          "optional": true,
+          "type": "String"
+        },
+        "proxy_resolution": {
+          "optional": true,
+          "type": "ProxyResolution"
         },
         "rate_sweep_interval": {
           "optional": true,
@@ -20,6 +32,18 @@
         "response_headers": {
           "optional": true,
           "type": "ResponseHeadersCfg"
+        },
+        "shutdown": {
+          "optional": true,
+          "type": "AdvancedShutdownCfg"
+        },
+        "tls": {
+          "optional": true,
+          "type": "OutboundTlsCfg"
+        },
+        "trusted_proxies": {
+          "optional": true,
+          "type": "Vec<String>"
         },
         "upstream_h2_prior_knowledge": {
           "optional": true,
