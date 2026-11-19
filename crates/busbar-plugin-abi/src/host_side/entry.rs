@@ -31,13 +31,13 @@ pub(crate) fn pure() -> bool {
 
 /// Pure selection has no Host service authority. Buffer growth is only output allocation.
 /// This is entry-local enforcement, not a sandbox against a malicious native plugin.
-pub(crate) struct Pure {
+pub struct Pure {
     active: bool,
     violation: bool,
 }
 
 impl Pure {
-    pub(crate) fn enter() -> Self {
+    pub fn enter() -> Self {
         Self {
             active: PURE.with(|p| p.replace(true)),
             violation: PURE_VIOLATION.with(|v| v.replace(false)),
@@ -70,7 +70,7 @@ impl StoreMigrationAdmission {
 }
 
 impl Pure {
-    pub(crate) fn violated(&self) -> bool {
+    pub fn violated(&self) -> bool {
         PURE_VIOLATION.with(Cell::get)
     }
 }

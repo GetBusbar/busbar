@@ -141,7 +141,10 @@ fn incompatible_native_stamps_never_reach_staging_or_an_initializer() {
         Err(crate::scan::StampScanErr::Malformed { byte: 64, .. })
     ));
     let before = crate::stage::STAGED_HERE.with(std::cell::Cell::get);
-    assert!(complete(&reserved, assertions(), None).is_err(), "offset 64");
+    assert!(
+        complete(&reserved, assertions(), None).is_err(),
+        "offset 64"
+    );
     assert_eq!(crate::stage::STAGED_HERE.with(std::cell::Cell::get), before);
     for at in [28usize, 32, 40, 48, 56, 72, 184, 248, 36] {
         let mut bytes = good;
