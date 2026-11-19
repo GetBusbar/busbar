@@ -48,7 +48,15 @@ impl Node {
     fn boot(upstream: Option<u16>, operator: bool) -> Self {
         let dir = workdir();
         let (data, admin) = (boot::free_port(), boot::free_port());
-        write_configs(&dir, data, admin, operator, upstream);
+        let digest = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes());
+        let settings = format!("{{ sha256: \"{digest}\" }}");
+        write_configs(
+            &dir,
+            data,
+            admin,
+            operator.then_some(settings.as_str()),
+            upstream,
+        );
         let log = std::fs::File::create(dir.join("out.log")).expect("the boot log");
         let process = boot::Reap(
             Command::new(boot::exe())
@@ -126,7 +134,8 @@ fn workdir() -> PathBuf {
     dir
 }
 
-fn write_configs(dir: &Path, data: u16, admin: u16, operator: bool, upstream: Option<u16>) {
+/// `operator`: the admin-tokens definition's `settings` (a YAML flow map) when the admin listener sits behind it.
+fn write_configs(dir: &Path, data: u16, admin: u16, operator: Option<&str>, upstream: Option<u16>) {
     let (catalog, routing) = upstream.map_or_else(
         || ("{}\n".to_owned(), String::new()),
         |upstream| {
@@ -137,15 +146,15 @@ fn write_configs(dir: &Path, data: u16, admin: u16, operator: bool, upstream: Op
         },
     );
     std::fs::write(dir.join("providers.yaml"), catalog).expect("providers.yaml");
-    let (operator, admin_auth) = if operator {
-        let digest = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes());
-        (
-            format!("identity-providers:\n  admin-tokens: {{ module: admin-tokens, settings: {{ sha256: \"{digest}\" }} }}\n"),
-            "  admin_auth: [admin-tokens]\n",
-        )
-    } else {
-        (String::new(), "")
-    };
+    let (operator, admin_auth) = operator.map_or_else(
+        || (String::new(), ""),
+        |settings| {
+            (
+                format!("identity-providers:\n  admin-tokens: {{ module: admin-tokens, settings: {settings} }}\n"),
+                "  admin_auth: [admin-tokens]\n",
+            )
+        },
+    );
     std::fs::write(
         dir.join("config.yaml"),
         format!(
@@ -374,5 +383,57 @@ fn a_provider_call_dials_out_through_the_linked_http_image_and_the_memory_store_
     assert!(
         usage.contains(MODEL),
         "the memory store recorded the call under its model: {usage}"
+    );
+}
+
+/// E5's order on the real binary: the operator credential's native admin-tokens instance is opened before the admin
+/// chain installs, and the chain installs before any listener binds. A credential whose instance cannot open (a blank
+/// 1.5 `token`, which the plugin refuses at open) stops the boot with neither listener having accepted a connection, so
+/// no admin request is judged while the instance is unopened.
+#[test]
+fn an_operator_credential_that_cannot_open_stops_the_boot_before_any_listener_accepts() {
+    let dir = workdir();
+    let (data, admin) = (boot::free_port(), boot::free_port());
+    write_configs(&dir, data, admin, Some("{ token: \"\" }"), None);
+    let log = std::fs::File::create(dir.join("out.log")).expect("the boot log");
+    let mut process = boot::Reap(
+        Command::new(boot::exe())
+            .current_dir(&dir)
+            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+            .stdout(log.try_clone().expect("the boot log"))
+            .stderr(log)
+            .spawn()
+            .expect("boot the default binary"),
+    );
+    let read_log = || std::fs::read_to_string(dir.join("out.log")).unwrap_or_default();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        for (port, which) in [(admin, "admin"), (data, "data")] {
+            assert!(
+                TcpStream::connect(("127.0.0.1", port)).is_err(),
+                "the {which} listener accepted while the operator's instance is unopened; log:\n{}",
+                read_log()
+            );
+        }
+        if let Some(status) = process.try_wait().expect("try_wait") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the boot neither served nor stopped; log:\n{}",
+            read_log()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let log = read_log();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!status.success(), "the boot is refused; log:\n{log}");
+    assert!(
+        !log.contains("busbar listening"),
+        "no listener came up; log:\n{log}"
+    );
+    assert!(
+        log.contains("serving auth"),
+        "the boot stops at the operator instance's open, before listener assembly; log:\n{log}"
     );
 }

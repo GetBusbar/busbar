@@ -27,6 +27,7 @@ pub mod hostio;
 pub mod io;
 pub(crate) mod line;
 pub mod listen;
+pub mod native_dial;
 pub mod pool;
 pub mod process;
 pub(crate) mod program;

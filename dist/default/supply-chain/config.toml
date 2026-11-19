@@ -49,6 +49,10 @@ notes = "Exact-revision adopted native HTTP fork; its explicit exemption is not 
 audit-as-crates-io = true
 notes = "Exact-revision adopted native HTTP fork; its explicit exemption is not an imported or self-authored audit."
 
+[policy.is]
+audit-as-crates-io = true
+notes = "Unchanged is 0.11.1 from the MattJackson/str0m fork repository; see the str0m exemption."
+
 [policy.jobserver]
 audit-as-crates-io = true
 notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
@@ -77,16 +81,20 @@ notes = "Exact-revision Git fork of sonic-rs 0.5.11; see its exemption."
 audit-as-crates-io = true
 notes = "Unchanged sonic-simd 0.1.4 from the sonic-rs fork repository; see the sonic-rs exemption."
 
+[policy.str0m]
+audit-as-crates-io = true
+notes = "MattJackson/str0m fork at 36833da (str0m 0.24.1 plus `set_fill`, the Host random source for ICE credentials); not yet proposed upstream. See the str0m exemption."
+
+[policy.str0m-proto]
+audit-as-crates-io = true
+notes = "str0m-proto 0.7.0 from the MattJackson/str0m fork at 36833da, the crate that gains `set_fill`; see the str0m exemption."
+
 [policy.stringprep]
 audit-as-crates-io = true
 notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
 
 [policy.tungstenite]
 audit-as-crates-io = true
-
-[[exemptions.aes]]
-version = "0.8.4"
-criteria = "safe-to-deploy"
 
 [[exemptions.ahash]]
 version = "0.8.12"
@@ -473,8 +481,9 @@ version = "2.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.is]]
-version = "0.11.1"
+version = "0.11.1@git:36833da71bb86b5dfc9a88e3f56afa3353bb70db"
 criteria = "safe-to-deploy"
+notes = "Unchanged is 0.11.1 from the allow-listed MattJackson/str0m fork revision (str0m 0.24.1 plus `set_fill`), required by the linked webrtc image. No self-audit is claimed."
 
 [[exemptions.itertools]]
 version = "0.14.0"
@@ -910,8 +919,9 @@ version = "1.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.sctp-proto]]
-version = "0.10.5"
+version = "0.10.8"
 criteria = "safe-to-deploy"
+notes = "The version the webrtc image's own lock and CI run (transport-webrtc a9d7912), aligned from 0.10.5."
 
 [[exemptions.serde]]
 version = "1.0.229"
@@ -1020,12 +1030,14 @@ criteria = "safe-to-run"
 notes = "Test-only allocation counter: a dev-dependency of the root tests the distribution builds (a68e05861e). The workspace root already exempts the same version. No self-audit is claimed."
 
 [[exemptions.str0m]]
-version = "0.24.1"
+version = "0.24.1@git:36833da71bb86b5dfc9a88e3f56afa3353bb70db"
 criteria = "safe-to-deploy"
+notes = "Allow-listed MattJackson/str0m fork revision: str0m 0.24.1 plus one commit adding `str0m_proto::set_fill` (the media stack's random source points at the host, so every ICE credential is Host-random). Not yet proposed upstream. Required by the linked webrtc image. No self-audit is claimed."
 
 [[exemptions.str0m-proto]]
-version = "0.7.0"
+version = "0.7.0@git:36833da71bb86b5dfc9a88e3f56afa3353bb70db"
 criteria = "safe-to-deploy"
+notes = "str0m-proto 0.7.0 at the allow-listed MattJackson/str0m fork revision, the crate that gains `set_fill`; see the str0m exemption. No self-audit is claimed."
 
 [[exemptions.stringprep]]
 version = "0.1.5@git:e81fc4b8a718e5a80bbdf87e5d183565dd5e66cf"
