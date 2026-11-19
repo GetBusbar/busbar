@@ -67,8 +67,7 @@ impl Node {
         let settings = format!("{{ sha256: \"{digest}\" }}");
         let sections = if planes {
             format!(
-                "public_url: \"http://127.0.0.1:{data}\"\nmcp:\n  canonical_uri: \"http://127.0.0.1:{data}/mcp\"\n  \
-                 authorization_servers: [\"http://127.0.0.1:{admin}\"]\n"
+                "public_url: \"http://127.0.0.1:{data}\"\nmcp:\n  canonical_uri: \"http://127.0.0.1:{data}/mcp\"\n"
             )
         } else {
             String::new()
