@@ -100,21 +100,26 @@ impl AuthSet {
     /// Names have already been resolved by the selected route's effective_chain rule.
     /// The kernel retains actual opened reservations; no operator policy is reused.
     pub(crate) fn data_chain(&self, epoch: u64, names: &[Box<str>]) -> Result<NativeChain, String> {
-        // No names: the configured data chain is the operator's explicit `auth.chain: []` (a
-        // route's own list is never empty, `min3_listener_plan::plan_route_names`). 1.5.5 served
-        // it as an open relay; every request is admitted as the anonymous principal.
+        use busbar_kernel::auth::native_chain::{ANONYMOUS, EMPTY_CHAIN_REFUSED};
         if names.is_empty() {
-            return Ok(NativeChain::open_data(epoch, Arc::clone(&self.owners)));
+            return Err(EMPTY_CHAIN_REFUSED.to_owned());
         }
+        let anonymous = names.iter().any(|name| &**name == ANONYMOUS);
         let instances = names
             .iter()
+            .filter(|name| &***name != ANONYMOUS)
             .map(|name| {
                 self.get(name).cloned().ok_or_else(|| {
                     format!("data auth: '{name}' has no opened native auth instance")
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        NativeChain::data(epoch, instances, Arc::clone(&self.owners)).map_err(str::to_owned)
+        if anonymous {
+            NativeChain::data_admitting_anonymous(epoch, instances, Arc::clone(&self.owners))
+        } else {
+            NativeChain::data(epoch, instances, Arc::clone(&self.owners))
+        }
+        .map_err(str::to_owned)
     }
 
     /// The configured operator chain under the candidate's frozen bindings and current generation.
