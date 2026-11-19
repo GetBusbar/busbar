@@ -33,7 +33,6 @@ use std::time::{Duration, Instant};
 
 const ADMIN_TOKEN: &str = "min3-images-operator-token";
 const MODEL: &str = "min3-test-model";
-const PLANE_SECTIONS: &str = include_str!("fixtures/front_door_plane_section.yaml");
 
 /// The data chain the boot test writes. `Keys`: the engine's own key verifier, its signing key generated for this run
 /// by the binary under test (`--generate-signing-key`), every data request carrying a key the operator minted. `Empty`:
@@ -59,20 +58,15 @@ impl Node {
         Self::boot_with_planes(upstream, operator, false)
     }
 
-    /// `planes`: add the mcp plane section of `fixtures/front_door_plane_section.yaml` and the data listener's
-    /// `public_url`, so the routes whose challenge names the plane's public URL are mounted too.
+    /// `planes`: add the data listener's `public_url`, so the routes whose challenge names the plane's public URL
+    /// (mcp) are mounted too.
     fn boot_with_planes(upstream: Option<u16>, operator: bool, planes: bool) -> Self {
         let dir = workdir();
         let (data, admin) = (boot::free_port(), boot::free_port());
         let digest = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes());
         let settings = format!("{{ sha256: \"{digest}\" }}");
         let sections = if planes {
-            format!(
-                "public_url: \"http://127.0.0.1:{data}\"\n{}",
-                PLANE_SECTIONS
-                    .replace("{data_port}", &data.to_string())
-                    .replace("{admin_port}", &admin.to_string())
-            )
+            format!("public_url: \"http://127.0.0.1:{data}\"\n")
         } else {
             String::new()
         };
@@ -91,7 +85,6 @@ impl Node {
                 .current_dir(&dir)
                 .env("BUSBAR_CONFIG", dir.join("config.yaml"))
                 .env("MOCK_KEY", "mock-upstream-key")
-                .env("RUST_LOG", "debug")
                 .stdout(log.try_clone().expect("the boot log"))
                 .stderr(log)
                 .spawn()
