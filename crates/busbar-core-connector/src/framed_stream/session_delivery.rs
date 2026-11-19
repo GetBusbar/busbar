@@ -65,6 +65,9 @@ pub(super) struct DeliveryIo<S> {
     io: Option<S>,
     delivery: Option<Delivery>,
     source: StorageSource,
+    /// The wire events of the answer being validated: one charged array the session owns, made at its
+    /// first answer, refilled per answer, freed with the session. It holds counts, never bytes.
+    events: Option<storage::Items<WireEvent>>,
 }
 
 impl<S> DeliveryIo<S> {
@@ -73,6 +76,7 @@ impl<S> DeliveryIo<S> {
             io: Some(io),
             delivery: Some(delivery),
             source,
+            events: None,
         }
     }
 
@@ -82,7 +86,14 @@ impl<S> DeliveryIo<S> {
 
     /// A complete callback is validated before its first write, including records after CLOSE.
     pub(super) fn prepare(&mut self, acts: &Actions) -> Result<(), ResponseStop> {
-        let mut events = storage::Items::new(&self.source).map_err(|_| ResponseStop::Capacity)?;
+        if self.events.is_none() {
+            self.events =
+                Some(storage::Items::new(&self.source).map_err(|_| ResponseStop::Capacity)?);
+        }
+        let Some(events) = self.events.as_mut() else {
+            return Err(ResponseStop::Capacity);
+        };
+        events.clear();
         let mut terminal = false;
         let mut shutdown = false;
         for act in acts.iter() {
@@ -130,7 +141,8 @@ impl<S> DeliveryIo<S> {
                 events.push(event).map_err(|_| ResponseStop::Capacity)?;
             }
         }
-        self.ledger().prepare_batch(events.as_slice())?.commit();
+        let delivery = self.delivery.as_mut().expect("live delivery owner");
+        delivery.ledger.prepare_batch(events.as_slice())?.commit();
         Ok(())
     }
 
