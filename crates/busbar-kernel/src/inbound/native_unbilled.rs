@@ -172,3 +172,145 @@ impl CompletingPhysicalRequest {
         })
     }
 }
+
+/// What verified the caller of a core route that requires a key.
+pub struct CoreKeyAuthorization {
+    binding: Arc<RequestBinding>,
+    key: Arc<busbar_contract::records::VirtualKey>,
+    _lease: AdmissionLease,
+}
+
+impl CoreKeyAuthorization {
+    /// Minted only by [`crate::auth::native_data::verify_core_key`], after the data chain verified
+    /// the caller, key policy passed and the replay claim was won.
+    pub(crate) fn new(
+        binding: Arc<RequestBinding>,
+        key: Arc<busbar_contract::records::VirtualKey>,
+        lease: AdmissionLease,
+    ) -> Self {
+        Self {
+            binding,
+            key,
+            _lease: lease,
+        }
+    }
+}
+
+/// One request on a core route that requires a key (`RouteAuth::Key`: `/stats`, an export or hook
+/// plugin's own keyed route), verified by the data chain. No unit: a listing of the caller's own
+/// figures, or a scrape, uses nothing. Dropping it cancels the request.
+pub struct PhysicalKeyExecution {
+    authorization: CoreKeyAuthorization,
+}
+
+impl PhysicalKeyExecution {
+    pub fn binding(&self) -> &Arc<RequestBinding> {
+        &self.authorization.binding
+    }
+
+    /// Execute only the original request against its retained prepared generation, with the
+    /// verified caller's key attached: the handler filters its answer by that key's grants.
+    pub async fn http_response(&self) -> Result<axum::response::Response, ArrivalRefusal> {
+        use tower::ServiceExt;
+        let binding = &self.authorization.binding;
+        binding.check_executing()?;
+        let snapshot = binding.snapshot().map_err(|_| ArrivalRefusal::Capacity)?;
+        let mut request =
+            crate::inbound::http_projection::HttpProjection::from_snapshot(snapshot.clone())
+                .map_err(|_| ArrivalRefusal::Capacity)?
+                .into_request(axum::body::Body::from(snapshot.body_bytes()));
+        request.extensions_mut().insert(binding.app.clone());
+        request.extensions_mut().insert(crate::governance::GovCtx {
+            key: Some(Arc::clone(&self.authorization.key)),
+        });
+        let prepared = &binding.prepared;
+        let router =
+            (prepared.dispatch_layer)(prepared.router.clone()).with_state(binding.handle.clone());
+        Ok(router
+            .oneshot(request)
+            .await
+            .unwrap_or_else(|never| match never {}))
+    }
+}
+
+impl Drop for PhysicalKeyExecution {
+    fn drop(&mut self) {
+        self.authorization.binding.state.cancel();
+    }
+}
+
+/// The answer to a request on a core keyed route that was not verified (or whose verifier could
+/// not answer): the refusal row core decided, and nothing of the route.
+pub struct PhysicalKeyRefusal {
+    binding: Arc<RequestBinding>,
+    _reason: crate::auth::native_data::DataRefused,
+}
+
+impl PhysicalKeyRefusal {
+    pub fn binding(&self) -> &Arc<RequestBinding> {
+        &self.binding
+    }
+}
+
+impl Drop for PhysicalKeyRefusal {
+    fn drop(&mut self) {
+        self.binding.state.cancel();
+    }
+}
+
+impl CompletingPhysicalRequest {
+    fn check_key_route(&self) -> Result<(), ArrivalRefusal> {
+        if !matches!(
+            self.binding.route.target(),
+            RouteTarget::Core(busbar_contract::route::RouteAuth::Key)
+        ) {
+            return Err(ArrivalRefusal::Class);
+        }
+        Ok(())
+    }
+
+    /// Complete a core keyed route for the caller its authorization verified.
+    pub fn complete_core_key(
+        mut self,
+        authorization: CoreKeyAuthorization,
+    ) -> Result<PhysicalKeyExecution, ArrivalRefusal> {
+        self.check_key_route()?;
+        if !Arc::ptr_eq(&self.binding, &authorization.binding) {
+            return Err(ArrivalRefusal::ForeignInput);
+        }
+        self.enter_unbilled(PreparationState::Unused)?;
+        self.cancel_on_drop = false;
+        Ok(PhysicalKeyExecution { authorization })
+    }
+
+    /// Refuse a core keyed route for a reason the refusal table answers.
+    pub fn refuse_core_key(
+        mut self,
+        reason: crate::auth::native_data::DataRefused,
+    ) -> Result<PhysicalKeyRefusal, ArrivalRefusal> {
+        self.check_key_route()?;
+        if reason.refusal(false).is_none() {
+            return Err(ArrivalRefusal::Cancelled);
+        }
+        {
+            let mut phase = self
+                .binding
+                .state
+                .phase
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *phase != Phase::Completing {
+                return Err(ArrivalRefusal::Cancelled);
+            }
+            if self.binding.deadline.is_some_and(|at| Instant::now() >= at) {
+                return Err(ArrivalRefusal::Deadline);
+            }
+            *phase = Phase::Refusing;
+        }
+        self.cancel_on_drop = false;
+        Ok(PhysicalKeyRefusal {
+            binding: self.binding.clone(),
+            _reason: reason,
+        })
+    }
+}

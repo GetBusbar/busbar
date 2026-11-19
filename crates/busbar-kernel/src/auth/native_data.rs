@@ -1450,6 +1450,69 @@ impl DataExecutionAdmission {
     }
 }
 
+/// Verify the caller of a core route that requires a key (`/stats`, a plugin's own keyed route)
+/// with the data chain: the credential on the head, the key the identity earns valid now, the
+/// replay claim. The same three steps a plane's principal route runs; no plane, no selection, no
+/// unit.
+pub async fn verify_core_key(
+    chain: &Arc<NativeChain>,
+    binding: &Arc<RequestBinding>,
+    cx: CallCx,
+) -> Result<crate::inbound::native::CoreKeyAuthorization, DataRefused> {
+    let live_at = binding
+        .check_live_now()
+        .map_err(|_| DataRefused::Cancelled)?;
+    if !chain.is_data()
+        || cx.request_id != binding.invocation().request_id().get()
+        || binding.deadline().is_some_and(|at| cx.deadline > at)
+        || live_at >= cx.deadline
+    {
+        return Err(DataRefused::Binding);
+    }
+    let snapshot = binding.snapshot().map_err(|_| DataRefused::Capacity)?;
+    refuse_bound_carriers(&snapshot, chain, None)?;
+    let prepared = match chain
+        .prepare_snapshot(cx, snapshot)
+        .await
+        .map_err(|_| DataRefused::Unavailable)?
+    {
+        NativePreparedAnswer::Identity(prepared) => prepared,
+        _ => return Err(DataRefused::Credential),
+    };
+    binding.check_live().map_err(|_| DataRefused::Cancelled)?;
+    let mut key = None;
+    let mut refused = DataRefused::Policy;
+    let lease = binding
+        .handle()
+        .admit_current(binding.app(), binding.invocation(), |app| {
+            let now = crate::store::now();
+            prepared.fresh(now).map_err(|_| DataRefused::Policy)?;
+            if !prepared.belongs_to(chain)
+                || app.config_generation.load(Ordering::Acquire) != chain.epoch()
+            {
+                refused = DataRefused::Binding;
+                return Err(DataRefused::Binding);
+            }
+            key = Some(
+                governed_key(app, &prepared, chain, now).inspect_err(|reason| refused = *reason)?,
+            );
+            Ok(())
+        })
+        .map_err(|_| refused)?;
+    match prepared.claim_classified().await {
+        super::native_admin::NativeReplayClaim::Claimed => {}
+        super::native_admin::NativeReplayClaim::Duplicate => return Err(DataRefused::Replay),
+        super::native_admin::NativeReplayClaim::Unknown(_) => return Err(DataRefused::Unavailable),
+        super::native_admin::NativeReplayClaim::Inconsistent => return Err(DataRefused::Binding),
+    }
+    binding.check_live().map_err(|_| DataRefused::Cancelled)?;
+    Ok(crate::inbound::native::CoreKeyAuthorization::new(
+        Arc::clone(binding),
+        key.ok_or(DataRefused::Policy)?,
+        lease,
+    ))
+}
+
 #[cfg(test)]
 #[path = "tests/native_data_tests.rs"]
 mod tests;

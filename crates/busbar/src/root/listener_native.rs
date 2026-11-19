@@ -24,6 +24,8 @@ use tokio_util::compat::{Compat, FuturesAsyncReadCompatExt, TokioAsyncReadCompat
 
 #[path = "listener_native_answer.rs"]
 mod answer;
+#[path = "listener_native_corekey.rs"]
+mod corekey;
 #[path = "listener_native_data.rs"]
 mod data;
 #[path = "listener_native_delivery.rs"]

@@ -34,6 +34,10 @@ pub(super) enum ResponseAuthority {
     Unbilled(Arc<busbar_kernel::inbound::native::PhysicalUnbilledExecution>),
     /// An upgrade request handed over: the 101, or the plane's own answer before one.
     Upgrade(Arc<busbar_kernel::inbound::native::PhysicalUpgrade>),
+    /// A core route that requires a key, served to the caller the data chain verified.
+    CoreKey(Arc<busbar_kernel::inbound::native::PhysicalKeyExecution>),
+    /// A core keyed route refused: the one unverified answer, or the verifier's 503.
+    CoreKeyRefused(busbar_kernel::inbound::native::PhysicalKeyRefusal),
     Refused(PhysicalRefusal),
 }
 impl ResponseAuthority {
@@ -44,6 +48,8 @@ impl ResponseAuthority {
             Self::Public(owner) => owner.binding(),
             Self::Unbilled(owner) => owner.binding(),
             Self::Upgrade(owner) => owner.binding(),
+            Self::CoreKey(owner) => owner.binding(),
+            Self::CoreKeyRefused(owner) => owner.binding(),
             Self::Refused(owner) => owner.binding(),
         }
     }
@@ -57,6 +63,8 @@ impl ResponseAuthority {
             | Self::Public(_)
             | Self::Unbilled(_)
             | Self::Upgrade(_)
+            | Self::CoreKey(_)
+            | Self::CoreKeyRefused(_)
             | Self::Refused(_) => Ok(None),
         }
     }

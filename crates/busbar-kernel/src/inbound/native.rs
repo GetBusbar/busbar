@@ -36,7 +36,9 @@ pub use refusal::{
     DataPreparation, DataPreparationDenied, DataPreparationSuccess, PhysicalRefusal,
     PhysicalUpgrade,
 };
-pub use unbilled::PhysicalUnbilledExecution;
+pub use unbilled::{
+    CoreKeyAuthorization, PhysicalKeyExecution, PhysicalKeyRefusal, PhysicalUnbilledExecution,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindError {

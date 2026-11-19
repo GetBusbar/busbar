@@ -369,6 +369,19 @@ pub(super) async fn prepare(
                     };
                     (response, authority, None)
                 }
+                (RouteTarget::Core(RouteAuth::Key), _) => {
+                    // `/stats` and a plugin's own keyed route: the data chain verifies the
+                    // caller, the handler filters by the verified key, no unit is opened.
+                    let slot = (native.select)(binding.app(), &native.slot);
+                    match super::corekey::prepare(ready.request, slot).await? {
+                        super::corekey::KeyAnswered::Served(response, owner) => {
+                            (response, ResponseAuthority::CoreKey(owner), None)
+                        }
+                        super::corekey::KeyAnswered::Refused(response, owner) => {
+                            (response, ResponseAuthority::CoreKeyRefused(owner), None)
+                        }
+                    }
+                }
                 (RouteTarget::Unrouted, _) => {
                     // No route matched: the data chain judges the caller. 404 or 405 to a verified
                     // one; the one unverified answer, identical to a real route's, to anyone else.
@@ -376,7 +389,6 @@ pub(super) async fn prepare(
                     let (response, refusal) = super::unrouted::prepare(ready.request, slot).await?;
                     (response, ResponseAuthority::Refused(refusal), None)
                 }
-                (RouteTarget::Core(_), _) => return Err(InputError::Invalid.into()),
             };
         let registered = match RegisteredResponse::register(
             &connection,
