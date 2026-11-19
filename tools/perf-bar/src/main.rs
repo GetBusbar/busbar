@@ -268,16 +268,21 @@ fn drive(mode: &str, args: &[String]) -> Result<(), Fault> {
         handles.push(std::thread::spawn(move || -> Result<Out, Fault> {
             let mut buf = Vec::with_capacity(65536);
             let mut out = Out::default();
+            // A worker that fails before the start line still walks through both barriers, so a
+            // failed connection ends the run with its error and never leaves the others waiting.
             if keep {
-                let (mut s, _) = target.open(1)?;
-                for _ in 0..warm {
-                    if s.write_all(&request).is_err() || response(s.as_mut(), &mut buf).0 == 1 {
-                        out.closed = true;
-                        break;
+                let opened: Result<Box<dyn Wire>, Fault> = target.open(1).map(|(mut s, _)| {
+                    for _ in 0..warm {
+                        if s.write_all(&request).is_err() || response(s.as_mut(), &mut buf).0 == 1 {
+                            out.closed = true;
+                            break;
+                        }
                     }
-                }
+                    s
+                });
                 warmed.wait();
                 go.wait();
+                let mut s = opened?;
                 for _ in 0..n {
                     if out.closed {
                         break;
@@ -316,11 +321,10 @@ fn drive(mode: &str, args: &[String]) -> Result<(), Fault> {
                     }
                     Ok(())
                 };
-                for i in 0..warm {
-                    one(i, None)?;
-                }
+                let warmed_up = (0..warm).try_for_each(|i| one(i, None));
                 warmed.wait();
                 go.wait();
+                warmed_up?;
                 for i in 0..n {
                     one(warm + i, Some(&mut out))?;
                 }
