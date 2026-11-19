@@ -2695,15 +2695,36 @@ mod plugins_fetch_refusal_tests;
 #[path = "tests/provider_protocol_tests.rs"]
 mod provider_protocol_tests;
 
-/// The dialects a provider's `protocol` may name in this build: those the registered planes list.
-fn supported_provider_dialects(_read: Option<&config::grammar::PreparedConfigRead>) -> Vec<&str> {
-    crate::plane_driver::dispatch::provider_dialects()
+/// The dialects a provider's `protocol` may name in this build, from what the admitted planes
+/// declare and never from a list of core's own: each new-interface plane image this read admitted
+/// with a provider schema states its dialects in its description (D_DIALECT, carried on the
+/// read's provider planes), and a registered old-interface plane lists its provider dialects on
+/// its row. Old-interface rows first, in registration order; then each admitted plane's, in
+/// instance order; each dialect once. Built once per application build and dropped with it.
+fn supported_provider_dialects(read: Option<&config::grammar::PreparedConfigRead>) -> Vec<&str> {
+    let mut supported: Vec<&str> = crate::plane_driver::dispatch::provider_dialects();
+    let admitted = read
+        .into_iter()
+        .flat_map(config::grammar::PreparedConfigRead::provider_planes)
+        .flat_map(|plane| plane.dialects.iter().map(String::as_str));
+    for dialect in admitted {
+        if !supported.contains(&dialect) {
+            supported.push(dialect);
+        }
+    }
+    supported
 }
 
 /// A lane whose provider names a protocol outside `supported` is refused, naming the supported ones.
 fn provider_protocol_refusal(supported: &[&str], provider: &str, protocol: &str) -> Option<String> {
     if supported.contains(&protocol) {
         return None;
+    }
+    if supported.is_empty() {
+        return Some(format!(
+            "provider '{provider}' uses unknown protocol '{protocol}' (supported: none; no \
+             admitted plane declares a provider protocol)"
+        ));
     }
     Some(format!(
         "provider '{provider}' uses unknown protocol '{protocol}' (supported: {})",
