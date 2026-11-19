@@ -38,7 +38,7 @@ use crate::plane_driver::port_egress::{
     SessionFacts, Targets,
 };
 use crate::plane_driver::port_intents::{IntentHost, Looked, Namespace};
-use crate::plane_driver::port_upstream::{Members, UpSend, Wants};
+use crate::plane_driver::port_upstream::Wants;
 use crate::plane_driver::request_admission::{
     RequestAllocation, RequestPoolReceipt, RequestRoutes,
 };
@@ -64,27 +64,38 @@ impl EndPost for Posted {
 
 struct NoIntents;
 impl IntentHost for NoIntents {
-    fn lookup(
-        &self,
+    fn lookup<'a>(
+        &'a self,
         _: Scope,
         _: u32,
         _: u32,
-        _: &[u8],
-        _: &mut Looked,
-    ) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+        _: &'a [u8],
+        _: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
-    fn store(&self, _: Scope, _: u32, _: u64, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+    fn store<'a>(
+        &'a self,
+        _: Scope,
+        _: u32,
+        _: u64,
+        _: &'a [u8],
+        _: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
-    fn delete(&self, _: Scope, _: &[u8]) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+    fn delete<'a>(&'a self, _: Scope, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
-    fn commit(&self, _: Scope, _: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+    fn commit<'a>(
+        &'a self,
+        _: Scope,
+        _: &'a [CommitOp<'a>],
+    ) -> BoxFut<'a, Result<CommitOutcome, RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
-    fn push(&self, _: u64, _: &[u8]) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+    fn push<'a>(&'a self, _: u64, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
     fn signal(&self, _: &[u8], _: Option<[u8; 32]>) {}
 }
@@ -198,7 +209,11 @@ impl PortUpstream for CurrentTargets {
     fn target(&self, pool: &str, member: &str) -> Option<MemberTarget> {
         (self.0)(pool, member)
     }
-    fn walk(&self, _: SessionFacts, _: &mut dyn FnMut(&mut dyn Members, &mut dyn UpSend)) {
+    fn walk<'a>(
+        &'a self,
+        _: SessionFacts,
+        _: crate::plane_driver::port_serve::SessionRun<'a>,
+    ) -> BoxFut<'a, Result<crate::plane_driver::port_serve::Ran, SessionError>> {
         unreachable!("the fixture retains its actual EgressWalk")
     }
 }
@@ -509,10 +524,17 @@ fn signed_selected_preparation_rechecks_current_policy_and_revocation_before_han
     let kernel = crate::teller::Kernel::new();
     let route = Pass::mint(kernel.seal());
     let make = |_: &Wants, _: Option<&RequestPoolReceipt>| NoSend;
-    let runtime = rt.handle().clone();
-    let walk = EgressWalk::new(&make, &route, &runtime, &*targets);
-    let (mut task, prepared, _walk) =
-        prepare_fixture(&script, &request, b"{}", &effects, pending.clone(), walk).unwrap();
+    let walk = EgressWalk::new(&make, &route, &*targets);
+    let (mut task, prepared, _walk) = rt
+        .block_on(prepare_fixture(
+            &script,
+            &request,
+            b"{}",
+            &effects,
+            pending.clone(),
+            walk,
+        ))
+        .unwrap();
     assert_eq!(money.open_units(), 1);
     assert!(Arc::ptr_eq(prepared.receipt().cost(), &original_cost));
     assert!(Arc::ptr_eq(prepared.receipt().key(), &original_key));
@@ -893,11 +915,17 @@ fn a_selected_catalog_attempt_records_its_instance_qualified_pool() {
         let walk = walk_key.clone();
         move |_: &Wants, _: Option<&RequestPoolReceipt>| CatalogNoSend { walk: walk.clone() }
     };
-    let runtime = rt.handle().clone();
-    let walk = EgressWalk::new(&make, &route, &runtime, &*targets);
-    let (_task, prepared, _walk) =
-        prepare_fixture(&script, &request, b"{}", &effects, pending.clone(), walk)
-            .expect("a selected attempt over a catalog pool is prepared");
+    let walk = EgressWalk::new(&make, &route, &*targets);
+    let (_task, prepared, _walk) = rt
+        .block_on(prepare_fixture(
+            &script,
+            &request,
+            b"{}",
+            &effects,
+            pending.clone(),
+            walk,
+        ))
+        .expect("a selected attempt over a catalog pool is prepared");
     let unit_key = prepared.receipt().unit();
     let view = money.usage_view(unit_key).unwrap();
     let crate::plane_driver::money::UsageView::Partitioned(snapshot) = view.as_ref() else {

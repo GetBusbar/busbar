@@ -36,8 +36,8 @@ fn b64url(text: &str) -> Vec<u8> {
 fn sign_results_arrive_first_in_order() {
     let rt = runtime();
     let deployment = rt.block_on(Deployment::new());
-    let host = deployment.intents(&rt, std::sync::Arc::new(deployment.connections()));
-    let pieces = resolve(&host, CONNECT_STATUS);
+    let host = deployment.intents(std::sync::Arc::new(deployment.connections()));
+    let pieces = resolve(&rt, &host, CONNECT_STATUS);
     assert_eq!(order(&pieces), if_order());
     let signed = records_of::<SignedRec>(piece(&pieces, P_SIGNED), tag::SIGNED);
     assert_eq!(signed.len(), 1);

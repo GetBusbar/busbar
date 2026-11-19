@@ -70,7 +70,6 @@ use busbar_plugin_abi::need::need_flag::{TLS_NONE, TLS_REQUIRED};
 use busbar_ports::plane::PlanePort;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::process::Command;
-use tokio::runtime::Handle;
 
 use super::secret_custody::BootSecrets;
 
@@ -941,7 +940,6 @@ pub(crate) fn compose(
     who: &Namespace,
     caller: Caller,
     port: Arc<dyn PlanePort>,
-    rt: Handle,
 ) -> Result<SeatWiring, String> {
     let channel_budget = shared
         .channel_budgets
@@ -1014,7 +1012,6 @@ pub(crate) fn compose(
             let walk = PortEgress::new(
                 Arc::new(egress),
                 Arc::clone(&shared.kernel),
-                rt.clone(),
                 pool.pool.clone(),
                 accept,
                 targets,
@@ -1041,7 +1038,6 @@ pub(crate) fn compose(
         Arc::clone(&shared.signals),
         who.clone(),
         clock,
-        rt,
     );
     Ok(SeatWiring {
         request_routes,

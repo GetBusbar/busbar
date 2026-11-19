@@ -596,16 +596,11 @@ impl Run {
         if generation.stopping.load(Ordering::Acquire) {
             return;
         }
-        let demuxer = Arc::clone(&self.shared.demuxer);
-        let key = generation.key.clone();
-        let routed = tokio::task::spawn_blocking(move || {
-            let routed = demuxer.demux(&key, &message);
-            (message, routed)
-        })
-        .await;
-        let (message, routed) = match routed {
-            Ok((message, Ok(routed))) => (message, routed),
-            Ok((_, Err(_))) | Err(_) => {
+        // The plane's `demux` is one direct entry on this task (a panic answers FAULT, a stuck entry is the
+        // watchdog's).
+        let routed = match self.shared.demuxer.demux(&generation.key, &message) {
+            Ok(routed) => routed,
+            Err(_) => {
                 generation.stopping.store(true, Ordering::Release);
                 generation.stop.notify_one();
                 return;

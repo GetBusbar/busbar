@@ -398,7 +398,7 @@ impl<K: Calls + ?Sized> Task<'_, K> {
             || answer.exchanges[0].cut
             || !answer.exchanges[0].end
             || (!admission.is_empty()
-                && (!buffered.emits.borrow().is_empty()
+                && (!buffered.emits.with(|emits| emits.is_empty())
                     || !answer.client.is_empty()
                     || !answer.intents.is_empty()
                     || !answer.ex_msgs.is_empty()
