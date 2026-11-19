@@ -16,6 +16,7 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Instant;
 
 use busbar_ffi::host::{OpenAnswer, OutLease};
 use busbar_ffi::image::Admitted;
@@ -247,6 +248,55 @@ fn a_forged_context_in_a_session_call_answers_fault_and_quarantines() {
     let mut buf = Pool::global().acquire(MAX_OUT);
     assert_eq!(
         session.upstream(&mut buf, Mono::NONE, &target(0)).err(),
+        Some(CallError::Quarantined),
+        "a quarantined instance was called again"
+    );
+}
+
+/// The chain's caller, as the plane adapter builds it from the instance. The deadline is the one clock reading;
+/// `admin` here makes no Need, so the step loop never consults it.
+fn caller(inst: &Instance) -> Caller<'_> {
+    Caller {
+        plugin: &inst.identity,
+        kind: inst.kind,
+        name: &inst.name,
+        instance: inst.id,
+        slot: inst.slot,
+        chain: 0,
+        deadline: Instant::now(),
+        stack: CallStack::default(),
+        out_of_process: false,
+        limits: inst.limits,
+    }
+}
+
+/// P079B: the same forgery at the start of an async method's final answer (`admin`, a chain: the driver
+/// validates its terminal answer, not the loader's sync shims).
+#[test]
+fn a_forged_context_in_an_async_final_answer_answers_fault_and_quarantines() {
+    let inst = hosted();
+    let proxy = Proxy::bind(Arc::clone(&inst)).expect("a plane instance");
+    let needs = crate::chains::DeniedNeeds;
+    let admin = |op: u32| {
+        let mut drv = Driver::new(&needs, caller(&inst));
+        let arg = Pool::global().acquire(MAX_OUT);
+        futures::executor::block_on(proxy.admin(&mut drv, Mono::NONE, arg, op))
+    };
+
+    let honest = admin(0).expect("an honest admin answers");
+    assert!(honest.answer().is_ok());
+    drop(honest);
+    assert!(inst.is_live(), "an honest call is not a fault");
+
+    assert_eq!(
+        admin(FORGE).err(),
+        Some(CallError::Fault(FaultReason::UnknownTag(tag::TOKEN))),
+        "the forging admin's final answer was taken"
+    );
+    assert!(!inst.is_live(), "the forging instance was not quarantined");
+
+    assert_eq!(
+        admin(0).err(),
         Some(CallError::Quarantined),
         "a quarantined instance was called again"
     );
