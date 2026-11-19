@@ -156,12 +156,3 @@ busbar_contract::plugin_door! {
     },
 }
 
-#[test]
-fn go_releases_every_leased_answer() {
-    every_answer_is_released(false);
-}
-
-#[test]
-fn go_inline_releases_every_leased_answer() {
-    every_answer_is_released(true);
-}

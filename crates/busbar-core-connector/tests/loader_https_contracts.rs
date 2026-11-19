@@ -33,49 +33,6 @@ fn runtime() -> &'static tokio::runtime::Handle {
     })
 }
 
-fn dispatcher() -> &'static Arc<Dispatcher> {
-    static DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
-    DISPATCHER.get_or_init(|| {
-        let dispatcher = Dispatcher::new(
-            DispatchConfig::default(),
-            busbar_contract::services::test_caller_binding(),
-        );
-        dispatcher.install_runtime(runtime().clone());
-        dispatcher.install_io(busbar_core_connector::hostio::process());
-        Arc::new(dispatcher)
-    })
-}
-
-fn actual_transport(name: &str, row: &LinkedRow) -> Entry {
-    static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
-    let dispatcher = dispatcher();
-    let plugin = load_linked::<Transport>(
-        row,
-        Bind {
-            accept: Default::default(),
-            instance: Arc::from(format!(
-                "{name}-{}",
-                NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed)
-            )),
-            max_inflight_cap: 1024,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
-        },
-    )
-    .expect("the actual transport image loads");
-    let door = Dispatched::open_on(
-        plugin,
-        &TransportSettings::default(),
-        Arc::clone(dispatcher),
-    )
-    .expect("the actual transport opens");
-    Entry {
-        door: Arc::new(door),
-        alpn: std::sync::Arc::default(),
-    }
-}
-
 fn need(transport: &str, class: u32) -> ReadNeed {
     ReadNeed {
         direction: DIRECTION_OUTBOUND,
