@@ -151,6 +151,7 @@ async fn install(f: &Fixture) -> PreparedGrantOperation {
 
 #[tokio::test]
 async fn native_success_is_two_transactions_and_foreground_result_is_single_use() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let f = fixture().await;
     let mut operation = install(&f).await;
     assert_eq!(operation.drive().await.unwrap(), Outcome::Applied);
@@ -162,6 +163,7 @@ async fn native_success_is_two_transactions_and_foreground_result_is_single_use(
 
 #[tokio::test]
 async fn lost_prepare_reply_never_crosses_main_until_exact_native_retry() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let f = fixture().await;
     let mut operation = install(&f).await;
     f.backend.lose_reply.store(true, Ordering::SeqCst);
@@ -175,6 +177,7 @@ async fn lost_prepare_reply_never_crosses_main_until_exact_native_retry() {
 
 #[tokio::test]
 async fn canceled_prepare_is_retained_then_closed_without_installing_a_grant() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let f = fixture().await;
     let mut operation = install(&f).await;
     f.backend.hang.store(true, Ordering::SeqCst);
@@ -190,6 +193,7 @@ async fn canceled_prepare_is_retained_then_closed_without_installing_a_grant() {
 
 #[tokio::test]
 async fn restart_fences_original_writer_and_resolves_prepared_intent_without_main_replay() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let f = fixture().await;
     let operation = install(&f).await;
     let prepared = operation

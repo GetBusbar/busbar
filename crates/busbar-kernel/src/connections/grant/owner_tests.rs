@@ -267,6 +267,7 @@ async fn failed_store_completion_never_returns_a_credential() {
 
 #[tokio::test]
 async fn explicit_revoke_of_absence_blocks_the_actual_pending_first_callback() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let backend = Arc::new(Backend::default());
     let a = owner(backend, 4).await;
     let first = a.begin_connection(key()).await.unwrap();
@@ -280,6 +281,7 @@ async fn explicit_revoke_of_absence_blocks_the_actual_pending_first_callback() {
 
 #[tokio::test]
 async fn restart_after_lost_remote_rotation_never_replays_mint_or_reuses_old_grant() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     use crate::persistence::caller_intents::fixture::Backend as NativeBackend;
     let backend = Arc::new(NativeBackend::new());
     let first = CallerGrantOwner::new(
