@@ -461,11 +461,6 @@ impl NativeDataRoute {
         let Ok(challenge) = record.mounted_challenge(seat.public_url()) else {
             return Err(DataRefused::Unsupported);
         };
-        // A route that keeps state per caller is never bound under a chain whose callers share
-        // one subject: the plan leaves it unmounted, and a plan that did not is refused here.
-        if record.caller_state == CallerState::Distinct && owners.chain.admits_anonymous() {
-            return Err(DataRefused::Unsupported);
-        }
         if !seat.driver.caller().same_incarnation(target.caller())
             || !Arc::ptr_eq(seat.driver.core(), owners.generation.core())
             || !seat

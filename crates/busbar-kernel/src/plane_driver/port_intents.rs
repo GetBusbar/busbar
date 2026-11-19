@@ -10,8 +10,9 @@
 //!
 //! [`IntentHost`] is the seam: [`KernelIntents`] is its production form over [`PluginRecords`], the push queue and
 //! the session signal registry; a test fakes it. A caller-scoped record (`LK_CALLER`, `REC_CALLER`), a WORK and a
-//! caller-scoped SIGNAL all need a verified subject: without one core answers the refusal itself and the host is
-//! never asked (it would otherwise answer from the shared namespace).
+//! caller-scoped SIGNAL all need a caller reference: a verified subject, or for the anonymous caller the handle its
+//! session stated (HANDLE, [`handle_scope`]). Without one core answers the refusal itself and the host is never
+//! asked (it would otherwise answer from the shared namespace).
 //!
 //! The grant, trust, media and custody intents (`Entitle`, `Judge`, `Mint`, `Sign`, `Connect`, `Sight`, `Trust*`,
 //! `Rendezvous`, `Obs*`) are driven the same way, each onto its kernel service (`port_services::Services`); a service
@@ -975,7 +976,8 @@ impl<'h> Resolver<'h> {
                 | Intent::Judge { .. }
                 | Intent::Mint { .. }
                 | Intent::Sign { .. }
-                | Intent::Connect { .. } => {}
+                | Intent::Connect { .. }
+                | Intent::Handle { .. } => {}
             }
         }
         let kinds = [
@@ -1455,7 +1457,8 @@ impl<'h> Resolver<'h> {
     }
 
     /// The CONNECT_ANS of every CONNECT of the answer, in intent order; `None` when it has none. A connection
-    /// is the verified subject's: without one the state is `CONN_REFUSED` and the host is not asked.
+    /// is the verified subject's: without one (or for the anonymous subject every open-chain caller shares) the
+    /// state is `CONN_REFUSED` and the host is not asked.
     async fn connects(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
@@ -1468,7 +1471,7 @@ impl<'h> Resolver<'h> {
             else {
                 continue;
             };
-            let (state, url) = match self.principal {
+            let (state, url) = match self.principal.filter(|_| !self.anonymous) {
                 None => (CONN_REFUSED, None),
                 Some(p) => {
                     self.host
@@ -1512,7 +1515,7 @@ impl<'h> Resolver<'h> {
                 identity: self.principal.map_or(&[], |p| p.identity),
             };
             let outcome = if self.subject.is_none() {
-                // §12.24: no verified principal, no row to bind.
+                // §12.24: no verified principal (the anonymous one is none), no row to bind.
                 WorkOutcome::refused(R_DENIED)
             } else {
                 self.host.work(&asked).await
@@ -1709,6 +1712,7 @@ fn prerequisite(intent: &Intent) -> bool {
             | Intent::Entitle { .. }
             | Intent::Judge { .. }
             | Intent::Work { op: WORK_FIND, .. }
+            | Intent::Handle { .. }
     )
 }
 
