@@ -2571,14 +2571,14 @@ mod anchor_seals {
             }),
             ..Anchors::default()
         };
-        let secure = format!("https://localhost:{}/v1", 443);
+        let secure = "https://localhost:443/v1";
         assert_eq!(
-            c.anchor(OWNER, NEED, "", &secure, &bad),
+            c.anchor(OWNER, NEED, "", secure, &bad),
             Err(ConnError::Refused),
             "an identity that does not parse refuses the seal"
         );
         assert_eq!(
-            c.anchor(OWNER, NEED, "planner", &secure, &bad),
+            c.anchor(OWNER, NEED, "planner", secure, &bad),
             Err(ConnError::Refused)
         );
         for member in ["", "planner"] {
