@@ -1903,3 +1903,7 @@ fn the_keys_member_exists_only_on_a_data_chain_that_names_it() {
         "the admin listener's chain has no `keys` member"
     );
 }
+
+/// A ticket route at its own preparation, end to end.
+#[path = "native_data_ticket_tests.rs"]
+mod ticket;
