@@ -21,8 +21,6 @@ use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
 #[cfg(test)]
 use busbar_plugin_abi::records::Reply;
 use busbar_plugin_abi::records::{tag, FactRec, Full, RecErr, Records, Writer};
-#[cfg(test)]
-use busbar_plugin_abi::types::Pair;
 use busbar_plugin_abi::types::{Bytes, Slice, Status, Str};
 
 use crate::call::kinds::auth::Proxy;

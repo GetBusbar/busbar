@@ -603,13 +603,6 @@ impl busbar_contract::secret::SecretResolve for Resolver {
     }
 }
 
-fn dropped_cand(name: &str, version: &str) -> Candidate {
-    Candidate {
-        version: version.into(),
-        ..cand(KindCode::Hook, name, &["short"], &[], &[])
-    }
-}
-
 #[test]
 fn a_literal_at_a_wildcard_declared_secret_path_is_refused_as_an_exact_one_is() {
     let scope = busbar_contract::config_time::ConfigScope::config_time();
