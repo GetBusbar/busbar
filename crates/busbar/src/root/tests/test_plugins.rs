@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_plugin_loader::{
-    list_plugin_files, plugin_library_filename, scan_and_validate,
-    sign::{sha256_hex, sign, Manifest, SigningKey, TrustPolicy},
-    supported_abi, tarball, PluginRegistry,
+    PluginRegistry, list_plugin_files, plugin_library_filename, scan_and_validate,
+    sign::{Manifest, SigningKey, TrustPolicy, sha256_hex, sign},
+    supported_abi, tarball,
 };
 use std::path::{Path, PathBuf};
 

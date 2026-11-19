@@ -13,7 +13,7 @@
 mod common;
 mod e2e_support;
 
-use e2e_support::{closed_port, send, Deployment, Node};
+use e2e_support::{Deployment, Node, closed_port, send};
 use serde_json::Value;
 
 /// The registered agent's name.

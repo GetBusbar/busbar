@@ -197,7 +197,7 @@ pub struct Owner {
 /// it in this process (FIRST-START-TAKEOVER §2.4). Every Store call opens and ends its own
 /// transaction inside the call, so once this returns the owner holds no Store lock.
 pub async fn admit_in_process(directory: &Path) -> Owner {
-    use busbar_plugin_loader::test_host::{admit_bytes, test_sign, NativeStores, TEST_PUBLISHER};
+    use busbar_plugin_loader::test_host::{NativeStores, TEST_PUBLISHER, admit_bytes, test_sign};
     let creation = std::fs::read(directory.join(CREATION_FILE)).expect("creation provenance reads");
     let provenance = json::parse_value(&creation).unwrap();
     let library = PathBuf::from(

@@ -44,7 +44,13 @@ pub(super) fn scratch(tag: &str) -> PathBuf {
 }
 
 /// Write `manifest` signed by `key` over `lib`, packaged, as the archive `file` of `dir`.
-pub(super) fn drop_signed(dir: &Path, key: &SigningKey, file: &str, manifest: Manifest, lib: &[u8]) {
+pub(super) fn drop_signed(
+    dir: &Path,
+    key: &SigningKey,
+    file: &str,
+    manifest: Manifest,
+    lib: &[u8],
+) {
     let manifest = crate::sign::sign(key, manifest, lib);
     let archive = crate::tarball::package(&manifest, "lib.so", lib).expect("the archive packages");
     std::fs::write(dir.join(file), archive).expect("drop the archive in");

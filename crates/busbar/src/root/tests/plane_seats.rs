@@ -781,7 +781,11 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         2 * pool.members.len(),
         "each member's own need and its ride, nothing else"
     );
-    assert_eq!(anchored.len(), declared.len(), "every declared need is anchored");
+    assert_eq!(
+        anchored.len(),
+        declared.len(),
+        "every declared need is anchored"
+    );
     assert!(
         reached.iter().filter(|(_, reach)| *reach).count() == 2,
         "only the registration that allows private reach carries it, on both its needs: {reached:?}"
@@ -799,7 +803,10 @@ async fn a_member_binds_every_need_its_style_names_one_per_transport() {
         .collect();
     assert!(!catalog.sealed.routes.is_empty());
     for route in catalog.sealed.routes.values() {
-        assert!(route.auth.is_some(), "the model's binding is sealed on its route");
+        assert!(
+            route.auth.is_some(),
+            "the model's binding is sealed on its route"
+        );
         assert!(needs.insert(route.need), "its own need is no other route's");
         assert_eq!(
             route.rides.len(),
@@ -823,7 +830,10 @@ async fn a_member_binds_every_need_its_style_names_one_per_transport() {
             "a WebSocket request rides it"
         );
         let unbound = needs.iter().map(|n| n.0).max().unwrap() + 2;
-        assert!(route.ride(unbound).is_none(), "a need it does not bind is no ride");
+        assert!(
+            route.ride(unbound).is_none(),
+            "a need it does not bind is no ride"
+        );
     }
 }
 

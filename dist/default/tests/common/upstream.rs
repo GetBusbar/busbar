@@ -6,7 +6,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub fn read_request(conn: &mut TcpStream) -> Option<(String, Vec<u8>)> {
     conn.set_read_timeout(Some(Duration::from_secs(20))).ok()?;
