@@ -2058,6 +2058,7 @@ mod anchor_seals {
     use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
     use busbar_contract::conn::{Bytes, ConnId, NO_TICKET};
     use busbar_contract::crypto::testing::rcgen;
+    use busbar_contract::crypto::testing::rcgen::PublicKeyData as _;
     use busbar_contract::transport::trust::{Anchors, ClientIdentity, EgressTrust};
     use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
