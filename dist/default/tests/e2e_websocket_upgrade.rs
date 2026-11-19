@@ -658,7 +658,9 @@ fn revoked_session_ends() {
 
         // The other key's session is live: what its caller sends still reaches the provider.
         other
-            .send(Message::text(r#"{"type":"response.create","marker":"kept"}"#))
+            .send(Message::text(
+                r#"{"type":"response.create","marker":"kept"}"#,
+            ))
             .await
             .expect("the unrevoked session sends");
         provider
