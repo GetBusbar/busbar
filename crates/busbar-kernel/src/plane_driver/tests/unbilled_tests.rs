@@ -1179,20 +1179,14 @@ fn deadline() -> Instant {
     Instant::now() + std::time::Duration::from_secs(DEFAULT_FAILOVER_DEADLINE_SECS)
 }
 
-/// The owner's settlement of a unit whose session was cancelled or failed (`port_mount::Settle`:
-/// dropped unfinished, or `Err`): a gateway failure that ran nothing.
-fn settle_cancelled(r: &Rig) {
-    r.money
-        .settle_end_as(UnitKey::new(UNIT), end_of(502, false));
-}
-
 /// What every cancelled or failed case asserts once the session is gone: the owner's settlement
-/// bills exactly `tokens`, closes the unit, and a second settlement adds nothing.
+/// ([`settle_failed`]) bills exactly `tokens`, closes the unit, and a second settlement adds
+/// nothing.
 async fn assert_settled_once(r: &Rig, tokens: u64, what: &str) {
-    settle_cancelled(r);
+    settle_failed(r);
     assert_eq!(ledgered(r).await, Count::from(tokens), "{what}, exactly");
     assert_eq!(r.money.open_units(), 0, "the settlement closed the unit");
-    settle_cancelled(r);
+    settle_failed(r);
     assert_eq!(
         ledgered(r).await,
         Count::from(tokens),
@@ -1293,11 +1287,12 @@ async fn unbilled_a_count_refused_done_piece_straddling_the_deadline_bills_the_l
             r.seam.log()
         );
         assert_settled_once(r, 7, "the last accepted report (3 + 4)").await;
-        let rows = r.rows.0.lock().unwrap().clone();
-        assert_eq!(rows.len(), 1, "one unread row: {rows:?}");
-        assert!(
-            rows[0].ends_with(&format!("unit:{UNIT} reason:Unpriced")),
-            "{rows:?}"
+        assert_eq!(
+            *r.rows.0.lock().unwrap(),
+            [format!(
+                "plane-usage-unread unit:{UNIT} lane:m reason:unpriced refused:class"
+            )],
+            "the refused report is audited once, with its reason"
         );
     }
     assert_eq!(
