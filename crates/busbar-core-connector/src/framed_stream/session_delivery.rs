@@ -237,9 +237,14 @@ impl<S: AsyncWrite + Unpin> DeliveryIo<S> {
         Ok(())
     }
 
-    /// Everything queued goes out, flushed: [`Self::write_out`] then [`Self::flush`].
-    pub(super) async fn deliver(&mut self, deadline: tokio::time::Instant) -> io::Result<()> {
-        self.write_out(deadline).await?;
+    /// The answer's run goes out, flushed: [`Self::write_out`] then [`Self::flush`].
+    pub(super) async fn deliver(
+        &mut self,
+        answered: &Answered,
+        acts: &Actions,
+        deadline: tokio::time::Instant,
+    ) -> io::Result<()> {
+        self.write_out(answered, acts, deadline).await?;
         self.flush(deadline).await
     }
 }
