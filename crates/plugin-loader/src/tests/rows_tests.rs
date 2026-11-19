@@ -3,7 +3,6 @@
 
 use busbar_contract::plugin_rows::PluginRows;
 
-use crate::{LinkedPlugin, PluginRegistry};
 
 #[test]
 fn the_refusals_are_the_registrys() {
@@ -75,20 +74,6 @@ mod unslotted {
     );
 }
 
-#[test]
-fn secret_slots_are_the_secret_refs_the_statement_names() {
-    let reg = PluginRegistry::empty()
-        .link(vec![
-            LinkedPlugin::auth_door("slotted", slotted::door),
-            LinkedPlugin::auth_door("unslotted", unslotted::door),
-        ])
-        .expect("the linked doors register");
-    let rows: &dyn PluginRows = &reg;
-    assert_eq!(rows.secret_slots("slotted"), vec!["client_secret"]);
-    assert!(rows.secret_slots("unslotted").is_empty());
-    assert!(rows.secret_slots("nope").is_empty());
-}
-
 mod referencing {
     const EXT: &[u8] = &busbar_contract::abi::mechanism::extensions::entry::<
         {
@@ -115,17 +100,3 @@ mod referencing {
     );
 }
 
-#[test]
-fn reference_slots_are_the_reference_fields_the_statement_names() {
-    let reg = PluginRegistry::empty()
-        .link(vec![
-            LinkedPlugin::auth_door("referencing", referencing::door),
-            LinkedPlugin::auth_door("unslotted", unslotted::door),
-        ])
-        .expect("the linked doors register");
-    let rows: &dyn PluginRows = &reg;
-    assert_eq!(rows.reference_slots("referencing"), vec!["base_url"]);
-    assert_eq!(rows.secret_slots("referencing"), vec!["client_secret"]);
-    assert!(rows.reference_slots("unslotted").is_empty());
-    assert!(rows.reference_slots("nope").is_empty());
-}

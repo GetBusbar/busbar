@@ -3,7 +3,6 @@
 
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
 
-use crate::dispatch_tests::UnloadWitness;
 
 #[test]
 fn dlclose_on_worker_runs_this_images_finalizer_on_a_permanent_worker() {

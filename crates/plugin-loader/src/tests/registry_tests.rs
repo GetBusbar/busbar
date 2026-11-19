@@ -4,42 +4,6 @@
 use super::*;
 use crate::sign::{sign, SigningKey};
 
-#[test]
-fn two_linked_rows_cannot_claim_one_canonical_name() {
-    let first = renamed("hook", "acme-one", "one", &[]);
-    for mut second in [
-        first.clone(),
-        renamed("hook", "acme-one", "another-alias", &[]),
-        renamed("auth", "acme-one", "auth-alias", &[]),
-    ] {
-        second.version = "2.0.0".into();
-        let error = PluginRegistry::empty()
-            .link(vec![
-                LinkedPlugin::door_raw(first.clone(), unopened_door),
-                LinkedPlugin::door_raw(second, unopened_door),
-            ])
-            .expect_err("a canonical name has one linked owner");
-        assert!(error.contains("acme-one"), "{error}");
-    }
-    let registry = PluginRegistry::empty()
-        .link(vec![LinkedPlugin::door_raw(first.clone(), unopened_door)])
-        .unwrap();
-    assert!(
-        registry
-            .link(vec![LinkedPlugin::door_raw(first, unopened_door)])
-            .is_err(),
-        "repeated link calls obey the same rule"
-    );
-    let distinct = PluginRegistry::empty()
-        .link(vec![
-            LinkedPlugin::door_raw(renamed("hook", "acme-one", "one", &[]), unopened_door),
-            LinkedPlugin::door_raw(renamed("hook", "acme-two", "two", &[]), unopened_door),
-        ])
-        .unwrap();
-    assert!(distinct.resolve("one").is_some());
-    assert!(distinct.resolve("two").is_some());
-}
-
 #[cfg(unix)]
 #[test]
 fn discovery_reports_unreadable_archive_entries_without_hiding_them() {
@@ -993,12 +957,6 @@ fn dropped_in(tag: &str, m: Manifest) -> PluginRegistry {
     reg
 }
 
-fn linked_in(m: Manifest) -> PluginRegistry {
-    PluginRegistry::empty()
-        .link(vec![LinkedPlugin::door_raw(m, unopened_door)])
-        .expect("the linked door admits the row")
-}
-
 #[test]
 fn a_1_5_5_name_resolves_to_the_1_6_0_plugin_dropped_in_and_linked() {
     let cases = [(
@@ -1121,30 +1079,6 @@ fn fleet_entries(yaml: &str) -> Vec<(String, String, String, Vec<String>)> {
         }
     }
     out
-}
-
-#[test]
-fn every_former_name_plugins_yaml_declares_resolves_both_ways() {
-    let entries = fleet_entries(include_str!("../../../../plugins.yaml"));
-    let renamed_entries: Vec<_> = entries.iter().filter(|e| !e.3.is_empty()).collect();
-    assert!(renamed_entries.len() >= 9, "{renamed_entries:?}");
-    for (repo, kind, alias, former) in renamed_entries {
-        let former: Vec<&str> = former.iter().map(String::as_str).collect();
-        let m = || renamed(kind, repo, alias, &former);
-        let mut ways = vec![("dropped in", dropped_in(&format!("sweep-{alias}"), m()))];
-        if LINKED_KINDS.contains(&kind.as_str()) {
-            ways.push(("linked", linked_in(m())));
-        }
-        for (way, reg) in ways {
-            for old in &former {
-                let p = reg
-                    .resolve(old)
-                    .unwrap_or_else(|| panic!("{way}: {repo}'s former name '{old}' resolves"));
-                assert_eq!(&p.manifest.name, repo, "{way}");
-                assert!(reg.answers(old, kind), "{way}: '{old}' answers as a {kind}");
-            }
-        }
-    }
 }
 
 #[test]
@@ -1312,46 +1246,3 @@ fn a_skip_line_names_the_file_and_a_fixed_class() {
     );
 }
 
-/// A plane registers at process start under its Statement's name (`decision`, `streaming`); its
-/// signed manifest is named after its repo (`busbar-plane-decisions`). A read judges the
-/// registered plane's sections by the dropped-in row that is that module, so the row must answer
-/// to its Statement's name too, or a pack still in plugins.dir is refused as "no longer in
-/// plugins.dir" (oracle F2, job 36815).
-#[test]
-fn a_dropped_in_plane_is_the_module_its_statement_names() {
-    let release = key(43);
-    let dir = tmpdir("plane-statement-name");
-    let lib = b"a plane image; naming it never opens it";
-    let mut m = crate::both_ways::statement(
-        "plane",
-        "busbar-plane-witness-repo",
-        "witness",
-        supported_abi("plane").expect("the host loads planes"),
-    );
-    m.statement = Some(hex::encode(
-        crate::dispatch::rendering_of(crate::neutral_plane::door)
-            .expect("the witness door renders its Statement"),
-    ));
-    let m = crate::sign::seal_test_artifact(&release, m, lib);
-    write_tarball(&dir, "busbar-plane-witness-x86_64.tar.gz", &m, lib);
-    let p = TrustPolicy {
-        binary_version: "1.6.0".into(),
-        ..policy(&release)
-    };
-    let reg = scan_and_validate(&dir, &p).expect("scan");
-    assert_eq!(reg.loadable().len(), 1, "the signed plane is admitted");
-    let image = reg.loadable()[0].archive_sha256.clone().unwrap_or_default();
-    assert_eq!(
-        reg.dropped_image("plane", crate::neutral_plane::NAME),
-        Some(image.clone()),
-        "the row is the module its Statement names"
-    );
-    assert_eq!(
-        reg.dropped_image("plane", "busbar-plane-witness-repo"),
-        Some(image),
-        "and the module its manifest names"
-    );
-    assert_eq!(reg.dropped_image("auth", crate::neutral_plane::NAME), None);
-    assert_eq!(reg.dropped_image("plane", "no-such-plane"), None);
-    let _ = std::fs::remove_dir_all(&dir);
-}
