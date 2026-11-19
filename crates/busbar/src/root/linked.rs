@@ -3,23 +3,16 @@
 
 use std::sync::Arc;
 
-use busbar_kernel::plane_driver::registry::PlaneDecl;
-use busbar_kernel::plane_driver::registry::PlaneDeclaration;
 use busbar_kernel::plane_driver::EngineHost;
-use busbar_kernel::preflight::{LinkedAuth, RootInstall};
+use busbar_kernel::preflight::RootInstall;
 
 pub type Compose = Box<dyn FnOnce(&dyn busbar_contract::secret::SecretResolve) + Send>;
 
+/// The build's linked table (`$OUT_DIR/linked.rs`, written by `linked_gen.rs`). Every plugin is a
+/// MIN-3 image ([`LinkedImage`]); the other axes are the linked crates' Rust entries.
 pub struct Linked {
     /// Compiled MIN-3 headers, admitted through the same checked loader path on every platform.
     pub images: &'static [LinkedImage],
-    pub plane_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
-
-    pub plane_door_declares: &'static [(
-        &'static str,
-        busbar_contract::abi::mechanism::door::DoorFn,
-        &'static str,
-    )],
 
     pub protocol_seams: &'static [fn()],
 
@@ -29,17 +22,7 @@ pub struct Linked {
 
     pub compose: &'static [fn(&busbar_kernel::config::RootCfg) -> Option<Compose>],
 
-    pub export_doors: &'static std::sync::LazyLock<Vec<LinkedDoorExport>>,
-
-    pub auths: &'static [LinkedAuth],
-
-    pub transports: &'static [LinkedTransport],
-
     pub claims: &'static [LinkedClaims],
-
-    /// The former names each linked store, auth, secret and plane door declares
-    /// (`DoorDecl::FORMER_NAMES`), read by [`words_of`].
-    pub former: &'static std::sync::LazyLock<Vec<LinkedFormer>>,
 }
 
 /// The generated root calls the loader with the plugin's unforgeable static header. Keeping the
@@ -105,42 +88,6 @@ pub mod node {
     pub(crate) type Handed = (PrincipalId, OpClassId, &'static str, Build);
 }
 
-/// One linked wire, as its door's Statement states it: its upgrade and first-line claims. Every
-/// field is read off the row's bare `door` (`linked_transport!`): no row reads a constant of its
-/// crate's, so a door-root crate whose only public item is `door` (`BUSBAR-1.6.0.md` l.3560) links
-/// exactly as a crate with a `linked` module does (l.3561: a linked row holds the same `door`
-/// pointer).
-#[derive(Clone, Copy)]
-pub struct LinkedTransport {
-    /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
-    /// upgrade lines (`crate::root::serve::upgrade_carriers`).
-    pub upgrades: ClaimsOf,
-    /// The claims whose unit 0 opens on the FIRST LINE, read off the door's Statement: the line
-    /// carrier the process's own stdin/stdout serves (`crate::root::serve::lines::line_carrier`).
-    pub lines: ClaimsOf,
-}
-
-pub type ClaimsOf = fn() -> Vec<&'static str>;
-
-/// The linked transport row is built from its bare `door`: its upgrade lines and first-line claims
-/// are read off the door. The generated linked table expands one per `transport` row, so every
-/// transport, whatever its crate exports beside `door`, is linked through this one path. Core alone
-/// links no transport, so it expands nowhere there.
-#[cfg(any(test, linked_transport_rows))]
-macro_rules! linked_transport {
-    ($door:path) => {{
-        fn upgrades() -> ::std::vec::Vec<&'static str> {
-            $crate::root::doors::upgrades_of($door)
-        }
-        fn lines() -> ::std::vec::Vec<&'static str> {
-            $crate::root::doors::lines_of($door)
-        }
-        $crate::root::linked::LinkedTransport { upgrades, lines }
-    }};
-}
-#[cfg(any(test, linked_transport_rows))]
-pub(crate) use linked_transport;
-
 /// One linked plane's contribution to the boot seal: the pure plane registered under its own key,
 /// and the claims that plane declares.
 #[derive(Clone, Copy)]
@@ -149,129 +96,6 @@ pub struct LinkedClaims {
     pub plane: fn() -> Arc<dyn busbar_contract::Plugin>,
     /// The bytes it claims.
     pub claims: &'static [busbar_contract::grammar::Claim],
-}
-
-/// A linked export sink on the export kind's MEMORY ABI: what its signed tarball states (its name,
-/// its alias, the manifest `declares` section as JSON) and its door (`plugin_door!`), the same door
-/// its `cdylib` exports.
-#[derive(Clone, Copy)]
-pub struct LinkedDoorExport {
-    /// The plugin's name.
-    pub name: &'static str,
-    /// The module name an `export:` instance names it by.
-    pub alias: &'static str,
-    /// Its manifest `declares` section.
-    pub declares: &'static str,
-    /// Its door.
-    pub door: busbar_contract::abi::mechanism::door::DoorFn,
-    /// The names an earlier release answered to (its `FORMER_NAMES`); empty when it declares none.
-    pub former_names: &'static [&'static str],
-}
-
-/// The words a linked door answers to besides its alias: its `FORMER_NAMES`, then the `from` of
-/// each `REWRITE_ALIAS` rewrite its Statement states, as one list.
-pub(crate) fn door_words(former: &[&str], rewrites: &[(u32, String, String)]) -> Vec<String> {
-    let aliases = rewrites
-        .iter()
-        .filter(|(class, _, _)| *class == busbar_contract::abi::mechanism::door::REWRITE_ALIAS)
-        .map(|(_, from, _)| from.clone());
-    former
-        .iter()
-        .map(|word| (*word).to_string())
-        .chain(aliases)
-        .collect()
-}
-
-/// One linked door's declared former names, on a kind axis that registers by key or by name.
-/// The generated table holds one per row that declares any (and one per store row).
-#[derive(Clone, Copy)]
-pub struct LinkedFormer {
-    /// The axis: `store`, `auth`, `secret` or `plane`.
-    pub axis: &'static str,
-    /// The registry key the row answers on, or empty when the door's Statement name is the key.
-    pub key: &'static str,
-    /// The row's door: its Statement's `REWRITE_ALIAS` words join the former names.
-    pub door: busbar_contract::abi::mechanism::door::DoorFn,
-    /// The door's `FORMER_NAMES`.
-    pub former_names: &'static [&'static str],
-}
-
-/// A door's Statement name and the rewrites it states: each rewrite's code, from and to.
-type StatementRewrites = (String, Vec<(u32, String, String)>);
-
-/// A door's Statement name and the rewrites it states; `None` when it does not read back.
-fn door_statement(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
-) -> Option<StatementRewrites> {
-    let bytes = crate::root::loader::dispatch::rendering_of(door).ok()?;
-    let statement = busbar_contract::abi::mechanism::rendering::read(&bytes).ok()?;
-    Some((statement.name, statement.rewrites))
-}
-
-/// The words the linked row `key` on `axis` answers to besides its own: for each matching
-/// [`LinkedFormer`], its door's `FORMER_NAMES` then its `REWRITE_ALIAS` words (`door_words`).
-pub(crate) fn words_of(former: &[LinkedFormer], axis: &str, key: &str) -> Vec<String> {
-    former
-        .iter()
-        .filter(|f| f.axis == axis)
-        .filter_map(|f| {
-            let (name, rewrites) = door_statement(f.door).unwrap_or_default();
-            let row = if f.key.is_empty() {
-                name.as_str()
-            } else {
-                f.key
-            };
-            (row == key).then(|| door_words(f.former_names, &rewrites))
-        })
-        .flatten()
-        .collect()
-}
-
-fn export_abi() -> u32 {
-    crate::root::loader::supported_abi("export").unwrap_or_default()
-}
-
-pub(crate) fn linked_exports(
-    doors: &[LinkedDoorExport],
-) -> Result<Vec<crate::root::loader::LinkedPlugin>, String> {
-    let manifest = |name: &str, alias: &str, declares: &str| {
-        let declares = crate::root::loader::sign::Declares::from_declares_json(declares.as_bytes())
-            .map_err(|e| format!("linked export '{name}': its declares section: {e}"))?;
-        Ok::<_, String>(crate::root::loader::sign::Manifest {
-            name: name.into(),
-            alias: alias.into(),
-            kind: "export".into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            publisher: crate::root::loader::sign::FIRST_PARTY_PUBLISHER.into(),
-            abi_version: export_abi(),
-            sha256: String::new(),
-            signature: String::new(),
-            description: String::new(),
-            homepage: String::new(),
-            license: String::new(),
-            needs: Default::default(),
-            settings_schema: None,
-            schema_derived: false,
-            host: None,
-            declares,
-            statement: None,
-            former_names: Vec::new(),
-        })
-    };
-    doors
-        .iter()
-        .map(|d| {
-            manifest(d.name, d.alias, d.declares).map(|m| {
-                let rewrites = crate::root::loader::dispatch::rendering_of(d.door)
-                    .ok()
-                    .and_then(|bytes| busbar_contract::abi::mechanism::rendering::read(&bytes).ok())
-                    .map(|statement| statement.rewrites)
-                    .unwrap_or_default();
-                crate::root::loader::LinkedPlugin::door(m, d.door)
-                    .with_former_names(door_words(d.former_names, &rewrites))
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()
 }
 
 pub struct RootUnit {
@@ -300,6 +124,9 @@ pub fn register_protocols(linked: &Linked) {
     }
 }
 
+/// The root's install record: the seams the kernel reads of the composition root. A seam the old
+/// plugin interface served (the door auth axis, the auth chain module, the dispatcher latch) has no
+/// root half any more and is stated absent.
 pub fn register_stores() {
     busbar_kernel::preflight::install_linked_rows(RootInstall {
         linked_images: linked_images(),
@@ -316,9 +143,9 @@ pub fn register_stores() {
         admission: Some(&crate::root::admission::ADMISSION),
         durable: Some(&crate::root::admission::DURABLE),
         hook_facts: Some(&crate::root::off_path::hooks::NATIVE),
-        auth_chain_module: Some(crate::root::admission::auth_chain_module),
-        dispatch_latched: Some(crate::root::admission::dispatch_latched),
-        auth_axis: Some(crate::root::dispatch::auth_axis),
+        auth_chain_module: None,
+        dispatch_latched: None,
+        auth_axis: None,
 
         in_process_auth: None,
         native_auth: Some(crate::root::native_operator::answers_auth),
@@ -334,99 +161,9 @@ pub(crate) fn disk_lane() -> std::sync::Arc<busbar_kernel::host_disk::DiskLane> 
     DISK.get_or_init(std::sync::Arc::default).clone()
 }
 
-pub fn register_planes() {
-    match plane_rows() {
-        Ok(rows) => busbar_kernel::plane_driver::registry::install_planes(rows.leak()),
-        Err(refusal) => {
-            eprintln!("busbar: {refusal}");
-            crate::root::exit::exit(2);
-        }
-    }
-}
-
-fn plane_rows() -> Result<Vec<&'static PlaneDecl>, String> {
-    let rows = door_rows()?;
-    let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
-    busbar_contract::plane::check_metric_families(
-        &declared,
-        busbar_kernel::snapshot::catalogue::plane_carried_series(),
-    )?;
-    busbar_contract::plane::check_served_op_classes(&declared)?;
-    Ok(rows)
-}
-
-pub(crate) fn refuse_a_key_two_doors_register(named: &[(String, &str)]) -> Result<(), String> {
-    for (i, (name, key)) in named.iter().enumerate() {
-        if let Some((first, _)) = named[..i].iter().find(|(_, k)| k == key) {
-            return Err(format!(
-                "the plane door rows `{first}` and `{name}` both register the plane `{key}` on \
-                 the same axis; one row owns an axis's key"
-            ));
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn door_probe_dispatcher() -> Arc<crate::root::loader::dispatch::Dispatcher> {
-    crate::root::dispatch::dispatcher()
-}
-
-fn door_rows() -> Result<Vec<&'static PlaneDecl>, String> {
-    let doors = crate::root::boot::DOOR_CANDIDATES
-        .get()
-        .map_or(&[][..], Vec::as_slice);
-    if doors.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let probe = door_probe_dispatcher();
-    let registrations = doors
-        .iter()
-        .map(|candidate| {
-            let name = candidate.name.clone();
-            let bound = candidate.clone();
-            let probe = Arc::clone(&probe);
-            let bind: crate::root::loader::dispatch::kinds::plane::ProbeBind =
-                Arc::new(move || {
-                    if matches!(
-                        &bound.origin,
-                        crate::root::loader::boot::Origin::Dropped { .. }
-                    ) {
-                        crate::root::boot::authorize_early_plugin(&bound.name)?;
-                    }
-                    crate::root::loader::boot::load_planes(
-                        std::slice::from_ref(&bound),
-                        crate::root::boot::plugin_logs(),
-                        Arc::new(crate::root::loader::dispatch::NoSink),
-                        probe.adopter(),
-                        u32::MAX,
-                        crate::root::loader::dispatch::ConnTable::Probe,
-                    )?
-                    .into_iter()
-                    .next()
-                    .map(|(_, plane)| plane)
-                    .ok_or_else(|| format!("{}: the door bound nothing", bound.name))
-                });
-            Ok((
-                name,
-                crate::root::loader::dispatch::kinds::plane::stated_registration(candidate, bind)?,
-            ))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let named: Vec<(String, &str)> = (registrations.iter())
-        .map(|(name, reg)| (name.clone(), reg.key))
-        .collect();
-    refuse_a_key_two_doors_register(&named)?;
-    registrations
-        .into_iter()
-        .map(|(_, reg)| busbar_kernel::plane_driver::door::fold(reg))
-        .collect()
-}
-
-pub(crate) fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegistry>) {
-    let _ = crate::root::dispatch::dispatcher()
-        .observing()
-        .install_host_series(host_series);
+/// Hold the start scan's registry of `plugins.dir` for the readers that answer from it (the export
+/// axis's secret and reference fields, the diagnostics catalogue).
+pub(crate) fn register_dropped(dropped: Option<&'static crate::root::loader::PluginRegistry>) {
     if let Some(registry) = dropped {
         let _ = DROPPED.set(registry);
     }
@@ -434,71 +171,6 @@ pub(crate) fn register_exports(dropped: Option<&'static crate::root::loader::Plu
 
 pub(crate) fn dropped() -> Option<&'static crate::root::loader::PluginRegistry> {
     DROPPED.get().copied()
-}
-
-pub fn plane_door_declares(
-    linked: &Linked,
-) -> Vec<(
-    &'static str,
-    busbar_contract::abi::mechanism::door::DoorFn,
-    &'static str,
-)> {
-    linked.plane_door_declares.to_vec()
-}
-
-pub(crate) fn door_breaker(
-    linked: &Linked,
-    dropped: Option<&crate::root::loader::PluginRegistry>,
-    plane: &str,
-) -> Result<Option<crate::root::loader::sign::BreakerDecl>, String> {
-    for (row, door, json) in &plane_door_declares(linked) {
-        let stated = crate::root::loader::dispatch::LinkedRow::of(*door)
-            .map_err(|e| format!("plugin '{row}': {e}"))?;
-        let name = busbar_contract::abi::mechanism::rendering::read(&stated.statement)
-            .map_err(|e| {
-                format!(
-                    "plugin '{row}': its Statement rendering does not read back at byte {}",
-                    e.at
-                )
-            })?
-            .name;
-        if name != plane {
-            continue;
-        }
-        let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
-            .map_err(|e| {
-                format!("plugin '{row}' states a `declares` section that does not read: {e}")
-            })?;
-        return Ok(declares.breaker);
-    }
-    let Some(registry) = dropped else {
-        return Ok(None);
-    };
-    let planes = registry.loadable().iter();
-    for p in planes.filter(|p| p.manifest.kind == busbar_contract::abi::mechanism::kind::PLANE) {
-        let Some(stated) = p
-            .manifest
-            .stated()
-            .map_err(|e| format!("plugin '{}': {e}", p.manifest.name))?
-        else {
-            continue;
-        };
-        if stated.name == plane {
-            return Ok(p.manifest.declares.breaker);
-        }
-    }
-    Ok(None)
-}
-
-/// The plugin series reservation: a host metric family (DES-337 catalogue) or a series a host
-/// histogram derives from one (`_sum`, `_count`, `_bucket`). Plugin describe time only.
-pub(crate) fn host_series(name: &str) -> bool {
-    let base = ["_sum", "_count", "_bucket"]
-        .iter()
-        .find_map(|suffix| name.strip_suffix(suffix));
-    busbar_kernel::snapshot::catalogue::HOST_METRICS
-        .iter()
-        .any(|d| d.name == name || Some(d.name) == base)
 }
 
 static DROPPED: std::sync::OnceLock<&'static crate::root::loader::PluginRegistry> =
@@ -514,26 +186,21 @@ pub(crate) fn catalogue() -> busbar_kernel::diagnostics::Catalogue {
         .unwrap_or(busbar_kernel::diagnostics::Catalogue::NEUTRAL)
 }
 
+/// The diagnostics catalogue: the host's codes, each linked crate's `diagnostics` axis, and the codes
+/// a first-party dropped-in plugin declares.
 pub fn register_diagnostics(linked: &Linked) -> busbar_kernel::diagnostics::Catalogue {
     let mut installed: Vec<&'static busbar_contract::diagnostic::Diagnostic> = linked
         .diagnostics
         .iter()
         .flat_map(|diags| diags.iter().copied())
         .collect();
-    match door_declared_diagnostics(&plane_door_declares(linked), &installed) {
-        Ok(declared) => installed.extend(declared),
-        Err(refusal) => {
-            eprintln!("busbar: {refusal}");
-            crate::root::exit::exit(2);
-        }
-    }
-    let declared = catalogue_registry(linked, DROPPED.get().copied())
-        .and_then(|registry| declared_diagnostics(&registry, &installed));
-    match declared {
-        Ok(declared) => installed.extend(declared),
-        Err(refusal) => {
-            eprintln!("busbar: {refusal}");
-            crate::root::exit::exit(2);
+    if let Some(registry) = DROPPED.get().copied() {
+        match declared_diagnostics(registry, &installed) {
+            Ok(declared) => installed.extend(declared),
+            Err(refusal) => {
+                eprintln!("busbar: {refusal}");
+                crate::root::exit::exit(2);
+            }
         }
     }
     let catalogue = busbar_kernel::diagnostics::Catalogue::lent(installed.leak());
@@ -546,7 +213,7 @@ pub(crate) fn declared_diagnostics(
     taken: &[&'static busbar_contract::diagnostic::Diagnostic],
 ) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
     let mut declared = Vec::new();
-    for p in registry.linked().iter().chain(registry.loadable()) {
+    for p in registry.loadable() {
         let name = p.key();
         let declarations = p.declarations().map_err(|e| {
             format!("plugin '{name}' states a `declares` section that does not read: {e}")
@@ -564,57 +231,6 @@ pub(crate) fn declared_diagnostics(
     Ok(declared)
 }
 
-#[cfg(test)]
-pub(crate) fn linked_declared_diagnostics(
-    linked: &Linked,
-    taken: &[&'static busbar_contract::diagnostic::Diagnostic],
-) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
-    declared_diagnostics(&catalogue_registry(linked, None)?, taken)
-}
-
-fn catalogue_registry(
-    linked: &Linked,
-    scanned: Option<&crate::root::loader::PluginRegistry>,
-) -> Result<crate::root::loader::PluginRegistry, String> {
-    use crate::root::loader::{LinkedPlugin, PluginRegistry};
-
-    let rows: Vec<_> = linked
-        .auths
-        .iter()
-        .map(|(key, canonical, door)| {
-            LinkedPlugin::auth_door_named(canonical, key, *door).with_former_names(words_of(
-                linked.former,
-                "auth",
-                key,
-            ))
-        })
-        .collect();
-    scanned
-        .cloned()
-        .unwrap_or_else(PluginRegistry::empty)
-        .link(rows)
-}
-
-pub(crate) fn door_declared_diagnostics(
-    doors: &[(
-        &'static str,
-        busbar_contract::abi::mechanism::door::DoorFn,
-        &'static str,
-    )],
-    taken: &[&'static busbar_contract::diagnostic::Diagnostic],
-) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
-    let mut declared = Vec::new();
-    for (name, _, json) in doors {
-        let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
-            .map_err(|e| {
-                format!("plugin '{name}' states a `declares` section that does not read: {e}")
-            })?;
-        let held: Vec<_> = taken.iter().chain(&declared).copied().collect();
-        declared.extend(catalogue_entries(name, &declares.diagnostics, &held)?);
-    }
-    Ok(declared)
-}
-
 fn catalogue_entries(
     name: &str,
     decls: &[crate::root::loader::sign::DiagnosticDecl],
@@ -625,43 +241,41 @@ fn catalogue_entries(
     let taken = held_already;
     let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
     let mut declared: Vec<&'static Diagnostic> = Vec::new();
-    {
-        for d in decls {
-            let refuse = |why: &str| {
-                Err(format!(
-                    "plugin '{name}' declares BUSBAR-{:04}: {why}",
-                    d.code
-                ))
-            };
-            let class = Class::ALL
-                .into_iter()
-                .find(|c| c.ordinal() == d.code / 1000);
-            let severity = [
-                Severity::BenignRecurring,
-                Severity::Actionable,
-                Severity::Fatal,
-            ]
+    for d in decls {
+        let refuse = |why: &str| {
+            Err(format!(
+                "plugin '{name}' declares BUSBAR-{:04}: {why}",
+                d.code
+            ))
+        };
+        let class = Class::ALL
             .into_iter()
-            .find(|s| s.as_str() == d.severity);
-            let held = REGISTRY.iter().chain(taken).chain(&declared);
-            let (Some(class), Some(severity)) = (class, severity) else {
-                return refuse("its class or severity is not the host's");
-            };
-            if held.map(|h| h.code).any(|code| code == d.code) {
-                return refuse("the catalogue already holds that code");
-            }
-            declared.push(Box::leak(Box::new(Diagnostic {
-                code: d.code,
-                class,
-                slug: leak(&d.slug),
-                title: leak(&d.title),
-                severity,
-                summary: leak(&d.summary),
-                action: leak(&d.action),
-                since: leak(&d.since),
-                retired: false,
-            })));
+            .find(|c| c.ordinal() == d.code / 1000);
+        let severity = [
+            Severity::BenignRecurring,
+            Severity::Actionable,
+            Severity::Fatal,
+        ]
+        .into_iter()
+        .find(|s| s.as_str() == d.severity);
+        let held = REGISTRY.iter().chain(taken).chain(&declared);
+        let (Some(class), Some(severity)) = (class, severity) else {
+            return refuse("its class or severity is not the host's");
+        };
+        if held.map(|h| h.code).any(|code| code == d.code) {
+            return refuse("the catalogue already holds that code");
         }
+        declared.push(Box::leak(Box::new(Diagnostic {
+            code: d.code,
+            class,
+            slug: leak(&d.slug),
+            title: leak(&d.title),
+            severity,
+            summary: leak(&d.summary),
+            action: leak(&d.action),
+            since: leak(&d.since),
+            retired: false,
+        })));
     }
     Ok(declared)
 }
@@ -676,28 +290,8 @@ pub fn seal(units: &[&RootUnit]) {
 }
 
 #[cfg(test)]
-#[path = "tests/linked.rs"]
-mod tests;
-
-#[cfg(all(test, linked_operator_auth, linked_section_pools))]
-#[path = "tests/linked_auth.rs"]
-mod auth_tests;
-
-#[cfg(test)]
-#[path = "tests/linked_canonical.rs"]
-mod linked_canonical;
-
-#[cfg(all(test, linked_every_plane_door))]
-#[path = "tests/linked_protocols.rs"]
-mod linked_protocols;
-
-#[cfg(test)]
 #[path = "tests/linked_store_double.rs"]
 mod linked_store_double;
-
-#[cfg(test)]
-#[path = "tests/linked_declarations.rs"]
-mod linked_declarations;
 
 /// The build's compiled-in MIN-3 images (`LINKED.images`), each admitted (the loader's `admit_linked`, a read of
 /// the static header) for its verified identity and kind: the kernel's `RootInstall::linked_images` rows. An image

@@ -10,9 +10,9 @@
 // linked crates' own docs and the README for what a running deployment answers on the wire, and
 // `root::cli` (what `busbar --help` renders) for the CLI surface this binary exposes.
 //
-// See `register_protocols`/`register_planes`/`register_diagnostics` below
-// for the composition root's one write into each axis: each linked crate contributes its own
-// declarations here, under its own Cargo feature, and nowhere else.
+// See `register_protocols`/`register_root`/`register_diagnostics` below for the composition root's
+// one write into each axis. Every plugin is a MIN-3 image (`busbar-plugin-abi`): the linked images
+// are admitted through the loader's one checked path and opened by the boot in `root::min3_boot`.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(dead_code, unused_imports, unused_macros))]
@@ -300,9 +300,11 @@ fn register_protocols() {
     root::linked::register_protocols(&LINKED);
 }
 
-fn register_planes() {
+/// The root's one write into the kernel's install seams, before any configuration is read: the
+/// root's install record, the native images' start prepare, the start scan of `plugins.dir`, the
+/// operator binding, the public settings table and the start grammar.
+fn register_root() {
     root::linked::register_stores();
-    busbar_kernel::preflight::install_linked_auth(LINKED.auths);
 
     // WP3 step 2: the native image prepare (verify, manifest read, describe; no instance opens) runs before
     // the start scan, so --validate, --list-plugins and the start grammar read the native secret words.
@@ -311,15 +313,11 @@ fn register_planes() {
         root::exit::exit(2);
     }
     let scan = root::boot::start_scan();
-    let dropped = root::boot::install_start(scan, &LINKED);
+    let dropped = root::boot::install_start(scan);
     busbar_kernel::preflight::install_operator(root::auth_bindings::operator_binding(dropped));
+    root::linked::register_dropped(dropped);
 
-    busbar_kernel::preflight::install_declared_styles(root::door_steps::declared_styles());
-    root::boot::discover_planes(&LINKED, dropped);
-    root::linked::register_planes();
-    root::linked::register_exports(dropped);
-
-    root::settings_public::install(&LINKED, dropped);
+    root::settings_public::install();
     root::boot::bind_start_grammar();
 
     busbar_core_oauth2::install::<root::connector::AuthServerConns>();
@@ -350,23 +348,14 @@ fn main() {
         root::exit::exit(code);
     }
 
-    let bootstrap_services = root::serve::Services::bootstrap();
     root::boot::install_native_load_guard().unwrap_or_else(|error| die(error));
 
-    if let Err(e) = root::loader::dispatch::handle::arm() {
-        eprintln!("busbar: {e}");
-        root::exit::exit(1);
-    }
     // Force this boot's node now, so its one OS draw never lands on a request worker.
     let _ = busbar_kernel::door::node();
-    let dispatcher = root::dispatch::boot(WORKERS.0, &bootstrap_services);
-    root::doors::install_dispatcher(dispatcher);
 
     register_protocols();
 
-    register_planes();
-
-    root::doors::install_plugin_logs(root::boot::plugin_logs());
+    register_root();
 
     let catalogue = register_diagnostics();
 
@@ -555,7 +544,7 @@ mod bootstrap_destination_tests {
         };
         let holder = BootstrapDestJudge::new(root::connector::guard_for(&policy(false)).unwrap());
         let installed: Arc<dyn busbar_kernel::host_services::DestJudge> = holder.clone();
-        let class = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+        let class = busbar_contract::conn::codes::EGRESS_PROVIDER;
         let target = busbar_kernel::host_services::Destination {
             authority: "\x310.2.3.4:443",
             secure: true,
@@ -727,32 +716,19 @@ async fn run(
     let boot_guard = guard_judge.guard().clone();
     let dest = BootstrapDestJudge::new(guard_judge);
     let commit_guard: Arc<dyn busbar_kernel::host_services::DestJudge> = dest.clone();
-    root::boot::note_provider_urls(
-        base_cfg
-            .providers
-            .values()
-            .map(|provider| provider.base_url.clone()),
-    );
-    root::boot::check_bootstrap_transports(&deploy.plugins).unwrap_or_else(|error| {
-        die(boot_error(
-            "principal transition bootstrap transport admission refused",
-            format!("bootstrap transport archive admission: {error}"),
-        ))
-    });
     // Cold configuration, migration and recovery explicitly run without billable measurements.
     // Keep the scope on the actual future: synchronous Secret resolution and every resumed
     // native Store/Transport call inherit it before the durable measurement runtime exists.
     let bootstrap = Box::pin(root::measurements::maintenance(async {
         let _connector = root::connector::boot(
             process_io.handle(),
-            LINKED_TRANSPORT_DOORS,
             &root::policy::client_settings(&base_cfg.limits),
             dest.clone(),
             &base_cfg.own_listens(),
         );
         root::connector::install_trust_store(&base_cfg, false);
         // The MIN-3 registry boots here, before the Store opens and before any listener serves: images, the
-        // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
+        // kernel's sides, then 2a, 2b, the deployment point, 2c. A Store with no admitted MIN-3 image stops the boot.
         let conversion_images = file_images.clone();
         let (bootstrap_ready, store_admission) = root::min3_boot::prepare_bootstrap(
             process_io.handle(), &plugin_process, file_images, &base_cfg, boot_guard.clone(), root::cli::argv().stdio,
@@ -1085,16 +1061,8 @@ async fn run(
         .check(&cfg)
         .unwrap_or_else(|error| die(error));
 
-    let door_kernel_sections = root::door_steps::kernel_sections(&cfg)
-        .unwrap_or_else(|error| die_list("config errors", [error]));
-
     dest.replace(root::connector::dest_judge(&cfg));
     root::connector::install_trust_store(&cfg, true);
-    root::boot::note_provider_urls(
-        cfg.providers
-            .values()
-            .map(|provider| provider.base_url.clone()),
-    );
     root::connector::finalize_boot(
         &root::policy::client_settings(&cfg.limits),
         &cfg.own_listens(),
@@ -1143,34 +1111,13 @@ async fn run(
 
     root::registry::check_or_exit(LINKED.claims);
 
-    let dropped_doors =
-        root::boot::dropped_transports(&root::policy::client_settings(&cfg.limits)).doors;
-
-    root::boot::load_door_planes(
-        deploy
-            .door_sections()
-            .keys()
-            .chain(door_kernel_sections.keys())
-            .copied(),
-    );
-
     let export_config = cfg.export.clone();
-
-    let door_providers = root::door_steps::provider_routes(
-        &cfg.providers,
-        &config_validate::MetadataPosture::global(&cfg),
-    );
-
-    let door_model_pools = root::model_egress::ModelPools::of(&cfg);
-
-    let door_pools = root::serve::door_pools(&cfg.plane_pools);
 
     let root_rules = Arc::new(root::door_steps::Rules::with_reader(
         Some(commit_guard),
         Arc::new(config_rules),
     ));
 
-    root_rules.hold_unloaded(root::door_steps::unloaded_doors());
     let listener_needs = root::door_steps::listener_needs(&cfg).unwrap_or_else(|error| die(error));
     let native_request_timeout = Duration::from_secs(cfg.limits.request_body_read_timeout_secs);
     let native_handshake_timeout = Duration::from_secs(cfg.limits.tls_handshake_timeout_secs);
@@ -1217,9 +1164,6 @@ async fn run(
     )
     .await
     .unwrap_or_else(|error| die(error));
-    // Each plane section's core-held acceptance (#297), kept for the door planes composed after
-    // the configuration moves into the boot App.
-    let plane_acceptance = cfg.min3.insecure_transport.clone();
     let preparation = root::boot_app::Preparation {
         secret_resolver: serving_ready.resolver(),
         startup: store_admission,
@@ -1290,7 +1234,6 @@ async fn run(
         book,
         limits: boot_limits,
         node_lease_task,
-        deploy,
         ..
     } = ready;
     root::plane_node::node().bind_book(Arc::clone(&book.durability));
@@ -1314,19 +1257,13 @@ async fn run(
     // The same durably confirmed generation becomes live before any producer starts.
     boot_limits.keep().notify();
 
-    let planes: Vec<_> = busbar_kernel::plane_driver::registry::plane_decls()
-        .iter()
-        .map(|d| &d.declaration)
-        .collect();
     let services = root::serve::compose(
         dest.clone(),
         &app,
         store_admission
             .store()
             .unwrap_or_else(|| die("S7 has no admitted Store")),
-        &planes,
     );
-    let serving_dispatcher = Arc::new(root::dispatch::build(WORKERS.0, &services));
 
     // Explicit same-open ephemeral initialization uses its newly committed principal baseline
     // as a real Store witness. It follows exactly the ordinary receipt consumer before admission.
@@ -1427,40 +1364,12 @@ async fn run(
             .unwrap_or_else(|error| die_list("config errors", [error])),
     );
 
-    let door_live_handle = Arc::default();
-    let door_models = model_serving(door_model_pools, &app, &door_live_handle);
-    let door_reach = door_reach_of(
-        &app,
-        &door_providers,
-        &door_models,
-        Some(&deploy.models),
-        app.limits.as_ref(),
-        root::serve::upgrade_carriers(LINKED.transports, &dropped_doors),
-    );
-    let served = root::serve::compose_served_checked(
-        Some(Arc::clone(&native)),
+    // The native seats this generation serves, their billing and the node's posting site.
+    let served = root::serve::compose_native(
+        Arc::clone(&native),
         app.governance.clone(),
-        root::boot::door_planes(),
-        &serving_dispatcher,
-        &services,
-        &root::serve::with_pools(
-            {
-                let mut sections = deploy.door_sections();
-                for (key, value) in door_kernel_sections {
-                    sections.entry(key).or_insert(value);
-                }
-                sections
-            },
-            &door_pools,
-        ),
-        &plane_acceptance,
-        deploy.public_url.as_deref(),
-        &door_reach,
         &app.serve_tables,
-        &|_| Ok(listener_plan.binds().to_vec()),
-    )
-    .await
-    .unwrap_or_else(|error| die(error));
+    );
     let native_candidates = root::min3_candidate::Factory::new(
         Arc::clone(&plugin_process),
         native_bootstrap_sources,
@@ -1486,6 +1395,9 @@ async fn run(
         keys: root::plane_node::node().kernel_and_keys().1,
         core: root::min3_listener_plan::core_lines(&app, &served).into(),
     };
+    // THE ADMIN PLANE'S ORDER (deletion plan E5): the auth instances opened in `min3_boot::finish`
+    // (admin-tokens among them), the admin chain installed above (`min3_admin_auth::install`), and
+    // only now the listener slots assembled over that chain. Nothing binds until the end of `run`.
     let slots = listener_plan
         .assemble(&app, &served, &owners)
         .unwrap_or_else(|error| die(error));
@@ -1493,17 +1405,6 @@ async fn run(
     root::min3_candidate::install_initial(&mut app, Arc::clone(&native), Arc::clone(&services))
         .unwrap_or_else(|error| die(error));
     let app = Arc::new(app);
-    root_rules.hold_owned_anchors(&served.need_trust());
-    root_rules.hold_member_tls_sections(&served.member_tls_sections());
-
-    if app.governance.is_some() {
-        root_rules.hold_unopened(
-            served
-                .unopened(root::boot::door_planes())
-                .into_iter()
-                .chain(root::boot::unbound_sections()),
-        );
-    }
 
     tracing::info!(
         "reliability state (breakers, cooldowns, latency, hard-down) starts fresh on boot and is \
@@ -1512,8 +1413,6 @@ async fn run(
 
     let tls_secret_resolver = app.secret_resolver.clone();
 
-    let door_appliers = served.appliers();
-    let door_post = served.post.clone();
     let recovery_served = served.clone();
 
     let mut served = served;
@@ -1539,11 +1438,6 @@ async fn run(
         root::listener::deferred_dispatch_layer,
     )
     .layer(axum::Extension(probes.clone()));
-    let _ = door_live_handle.set(std::sync::Arc::downgrade(&app_handle));
-
-    let _ = root::inbound::install(root::doors::dispatcher());
-    stage_native_inbound(&app_handle.load());
-    let _ = root::inbound::publish(&app_handle.load());
     export::plugin::publish_observers(&app_handle.load()).unwrap_or_else(|e| die(e));
     if let Some(publisher) = trace_publisher {
         publisher
@@ -1568,64 +1462,6 @@ async fn run(
         root::min3_candidate::Workers::start(&app_handle.load(), generation_workers)
             .unwrap_or_else(|error| die(error));
     generation_workers.bind(&app_handle);
-    app_handle.on_apply(Box::new(|app| {
-        stage_native_inbound(app);
-        let _ = root::inbound::publish(app);
-    }));
-    app_handle.on_apply_async(Box::new({
-        let door_appliers = door_appliers.clone();
-        move |app| {
-            let appliers = door_appliers.clone();
-            Box::pin(async move { appliers.apply(&app).await })
-        }
-    }));
-
-    if let Some(post) = door_post {
-        let live = std::sync::Arc::clone(&door_live_handle);
-        let upgrades = root::serve::upgrade_carriers(LINKED.transports, &dropped_doors);
-        app_handle.on_apply(Box::new(move |next| {
-            let Some(cfg) = next
-                .config_projection
-                .as_ref()
-                .and_then(|p| p.downcast_ref::<root::door_steps::DoorConfig>())
-            else {
-                return;
-            };
-            let sections = match &cfg.sections {
-                Ok(sections) => sections,
-                Err(error) => {
-                    tracing::error!(%error, "refusing invalid model configuration projection");
-                    return;
-                }
-            };
-            let models = model_serving(cfg.model_pools.clone(), next, &live);
-            let reach = door_reach_of(
-                next,
-                &cfg.providers,
-                &models,
-                None,
-                busbar_kernel::config::limits::installed().as_ref(),
-                upgrades.clone(),
-            );
-            door_appliers.refresh_models(
-                sections,
-                &root::serve::DoorEgress {
-                    reach: &reach,
-                    journal: std::sync::Arc::clone(&post)
-                        as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
-                },
-            );
-        }));
-    }
-
-    app_handle.on_apply(Box::new(|_| {
-        let refused = root::doors::refresh_live(&root::policy::client_settings(
-            &busbar_kernel::config::limits::installed().unwrap_or_default(),
-        ));
-        for why in refused {
-            tracing::warn!(error = %why, "a transport kept its settings across a config apply");
-        }
-    }));
 
     #[cfg(distribution_root)]
     if let Some(book) = &book {
@@ -1933,49 +1769,6 @@ fn spawn_predecessor_task(
     Some((handle, fence))
 }
 
-/// A door egress's model serving over `app`'s lanes; boot and every apply build it here.
-fn model_serving(
-    pools: root::model_egress::ModelPools,
-    app: &Arc<busbar_kernel::state::App>,
-    live: &Arc<std::sync::OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>>,
-) -> root::model_egress::ModelServing {
-    root::model_egress::ModelServing {
-        pools,
-        lanes: app
-            .engine_tables_view()
-            .model_indices()
-            .into_iter()
-            .map(|(model, lane)| (model.to_string(), lane))
-            .collect(),
-        app: root::model_egress::LiveApp::new(Arc::clone(live), app),
-    }
-}
-
-/// The one construction of a door's reach, for boot and every apply.
-fn door_reach_of<'a>(
-    app: &busbar_kernel::state::App,
-    providers: &'a std::collections::BTreeMap<String, root::door_steps::ProviderRoute>,
-    models: &'a root::model_egress::ModelServing,
-    catalog: Option<&'a std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
-    limits: Option<&busbar_kernel::config::LimitsResolved>,
-    upgrades: Vec<&'static str>,
-) -> root::door_steps::DoorReach<'a> {
-    root::door_steps::DoorReach {
-        providers,
-        secrets: Arc::clone(&app.secret_resolver)
-            as Arc<dyn busbar_contract::secret::SecretResolve>,
-        auths: root::door_steps::process_auths(),
-        conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
-        stream_ceiling_secs: limits.map_or(
-            busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
-            |l| l.upstream_request_timeout_secs,
-        ),
-        catalog,
-        models: Some(models),
-        upgrades,
-    }
-}
-
 async fn refresh_node_lease(
     lease: Arc<busbar_kernel::persistence::boot_identity::NodeLease>,
     mut stop: tokio::sync::watch::Receiver<bool>,
@@ -2027,18 +1820,6 @@ async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
     tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| die(format!("cannot bind listen address '{addr}': {e}")))
-}
-
-fn stage_native_inbound(app: &busbar_kernel::state::App) {
-    let Some(slot) = root::serve::native_slot(app, "listen") else {
-        return;
-    };
-    let routes = slot
-        .prepared()
-        .data()
-        .and_then(|data| data.downcast::<root::serve::DataRoutes>().ok())
-        .unwrap_or_else(|| die("native data slot has no retained route owner"));
-    root::inbound::stage(routes.guests.clone(), slot.prepared().refusals.clone());
 }
 
 async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {
@@ -2169,11 +1950,7 @@ fn serve_thread_per_core(
                              runtime {i}): {e}"
                             ))
                         });
-                    tracing::debug!(
-                        listen = %listen,
-                        carrier = %crate::root::connector::carrier_name(via.as_ref()),
-                        "data door listening through the connector"
-                    );
+                    tracing::debug!(listen = %listen, "data listener bound through the connector");
                     serve_listener(
                         listener,
                         native,

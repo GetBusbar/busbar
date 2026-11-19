@@ -209,7 +209,7 @@ impl NativeListener {
                 leftover: &[],
                 head: &[],
                 local_fingerprint: "",
-                mono_ns: super::loader::dispatch::now_ns(),
+                mono_ns: busbar_kernel::store::monotonic_ns(),
             },
             self.limits.stall_ms,
             Instant::now(),

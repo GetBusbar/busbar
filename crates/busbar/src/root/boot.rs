@@ -1135,16 +1135,11 @@ pub(crate) fn start_scan() -> StartScan {
 /// admission puts the set on the axis).
 pub(crate) fn install_start(
     scan: StartScan,
-    linked: &Linked,
 ) -> Option<&'static crate::root::loader::PluginRegistry> {
     let StartScan { plugins, scanned } = scan;
     if let Some(plugins) = &plugins {
         plugins.warn_invalid_floors();
     }
-    let rows = linked_exports(linked.export_doors).unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        crate::root::exit::exit(2);
-    });
     let judged = scanned.unwrap_or_else(|refusal| {
         let _ = START_REFUSAL.set(refusal);
         None
@@ -1170,15 +1165,7 @@ pub(crate) fn install_start(
         (None, None) => linked_grammar().map_err(busbar_kernel::config::GrammarRefusal),
     };
     let _ = START_JUDGED.set(StartJudged { grammar });
-    if registry.is_none() && rows.is_empty() {
-        return None;
-    }
-    let registry = registry.unwrap_or_else(crate::root::loader::PluginRegistry::empty);
-    let registry = registry.link(rows).unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        crate::root::exit::exit(2);
-    });
-
+    let registry = registry?;
     Some(REGISTRY.get_or_init(|| registry))
 }
 

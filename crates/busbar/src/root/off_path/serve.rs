@@ -467,6 +467,46 @@ impl LeaseTick {
     }
 }
 
+/// THE SERVING GENERATION'S PLANES, composed once after the first app is built: the native seats
+/// `min3_boot::finish` opened, the node's posting site and, with a governance book, the billing of
+/// the requests those seats serve. With no book a port request is not a billed unit (audit rows
+/// only).
+pub(crate) fn compose_native(
+    native: Arc<crate::root::min3_boot::Booted>,
+    gov: Option<Arc<busbar_kernel::governance::GovState>>,
+    tables: &ServeTables,
+) -> Served {
+    let ports = native.seats.clone();
+    let Some(gov) = gov else {
+        return Served {
+            ports,
+            native: Some(native),
+            tables: tables.clone(),
+            ..Served::default()
+        };
+    };
+    let node = crate::root::plane_node::node();
+    let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::clone(&node)));
+    let billing = busbar_kernel::plane_driver::port_billing::PortBilling::new(
+        Arc::new(PlaneMoney::new(
+            Arc::clone(&gov),
+            Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
+        )),
+        Arc::clone(&gov),
+        node.kernel_and_keys().1,
+        Arc::new(busbar_kernel::plane_driver::CoreAudit),
+    )
+    .with_journal(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>);
+    Served {
+        ports,
+        native: Some(native),
+        post: Some(post),
+        billing: Some(billing),
+        tables: tables.clone(),
+        ..Served::default()
+    }
+}
+
 pub(crate) async fn compose_served_checked(
     native: Option<Arc<crate::root::min3_boot::Booted>>,
     gov: Option<Arc<busbar_kernel::governance::GovState>>,

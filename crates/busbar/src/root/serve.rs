@@ -72,11 +72,12 @@ pub(crate) fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
         .with_disk_lane(crate::root::linked::disk_lane())
 }
 
+/// The serving generation's kernel services: the core store, the blocking pool, the signer and
+/// ticket press over governance, the destination judge, the credentials and the disk lane.
 pub(crate) fn compose(
     dest: Arc<dyn DestJudge>,
     app: &busbar_kernel::state::App,
     core: Arc<busbar_kernel::persistence::facade::CoreStore>,
-    planes: &[&PlaneDeclaration],
 ) -> Arc<Services> {
     let signer = app.governance.clone().map(|gov| gov as Arc<dyn SignKey>);
     let tickets = app.governance.as_ref().map(|governance| {
@@ -93,7 +94,7 @@ pub(crate) fn compose(
         )),
         signer,
         demotions: Arc::clone(&app.demotion_record),
-        demotion_owner: demotion_owner(planes).map(Arc::from),
+        demotion_owner: None,
         tickets,
         standing: busbar_kernel::plane_driver::policy_standing(
             app.governance.clone(),
@@ -105,7 +106,7 @@ pub(crate) fn compose(
         )),
         disk: crate::root::linked::disk_lane(),
     })
-    .with_mono_clock(Arc::new(crate::root::loader::dispatch::now_ns));
+    .with_mono_clock(Arc::new(busbar_kernel::store::monotonic_ns));
     Services::serving(Arc::new(kernel))
 }
 
@@ -714,33 +715,18 @@ pub(crate) fn demotion_owner(planes: &[&PlaneDeclaration]) -> Option<&'static st
     }
 }
 
-/// Complete services for a phase. Bootstrap owns a permanently restricted provider;
-/// a serving generation owns its fully constructed kernel.
+/// The serving generation's fully constructed kernel services.
 pub(crate) struct Services {
-    pub(crate) slot: Arc<ServicesSlot>,
     kernel: Option<Arc<KernelServices>>,
 }
 
-pub(crate) const NOT_INSTALLED: &str = "bootstrap services do not have serving authority";
-
 impl Services {
-    pub(crate) fn bootstrap() -> Arc<Self> {
-        Arc::new(Self {
-            slot: ServicesSlot::of(Arc::new(BootstrapServices)),
-            kernel: None,
-        })
-    }
-
     pub(crate) fn serving(kernel: Arc<KernelServices>) -> Arc<Self> {
         Arc::new(Self {
-            slot: ServicesSlot::of(kernel.clone()),
             kernel: Some(kernel),
         })
     }
 
-    pub(crate) fn slot(&self) -> Arc<ServicesSlot> {
-        Arc::clone(&self.slot)
-    }
     pub(crate) fn kernel(&self) -> Option<Arc<KernelServices>> {
         self.kernel.clone()
     }
@@ -750,19 +736,6 @@ impl Services {
         if let Some(kernel) = self.kernel() {
             workers.push(async move { kernel.flushes().await });
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn fixture(provider: Arc<dyn HostServices>) -> Arc<Self> {
-        Arc::new(Self {
-            slot: ServicesSlot::of(provider),
-            kernel: None,
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn served(&self) -> Arc<dyn HostServices> {
-        Arc::clone(self.slot.get())
     }
 }
 
@@ -778,145 +751,6 @@ pub(crate) fn admin_trust(
     let kernel = services.kernel();
     let readout = kernel.clone().map(busbar_kernel::trust::TrustReadout::over);
     (kernel, readout)
-}
-
-pub(crate) struct BootstrapServices;
-
-fn not_installed() -> Stored {
-    Stored::refused(NOT_INSTALLED)
-}
-
-impl HostServices for BootstrapServices {
-    fn now(&self) -> Reading {
-        Reading {
-            wall_ns: busbar_kernel::store::now_ns(),
-            mono_ns: crate::root::loader::dispatch::now_ns(),
-        }
-    }
-
-    fn dest_judge(&self, _: &str, _: u32, _: u32, _: Option<Later>) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn records_get(&self, _: &Caller, _: &str, _: &[u8], _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn records_list(&self, _: &Caller, _: RecordsList, _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn records_claim(&self, _: &Caller, _: &str, _: &[u8], _: u64, _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn sign(&self, _: &Caller, _: &[u8]) -> Stored {
-        not_installed()
-    }
-
-    fn trust_sight(&self, _: &Caller, _: &str, _: &str, _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn trust_unreached(&self, _: &Caller, _: &str) -> Stored {
-        not_installed()
-    }
-
-    fn trust_decide(
-        &self,
-        _: &Caller,
-        _ticket: busbar_contract::abi::mechanism::ticket::Ticket,
-        _: busbar_contract::services::TrustKeyRef<'_>,
-        _: Option<&str>,
-        _: bool,
-        _: Later,
-    ) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn trust_state(&self, _: &Caller, _: &str) -> Stored {
-        not_installed()
-    }
-
-    fn trust_sight_item(&self, _: &Caller, _: &str, _: &str, _: &str, _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn trust_serves(&self, _: &Caller, _: &str, _: Option<&str>, _: Option<&str>) -> Stored {
-        not_installed()
-    }
-
-    fn trust_due(&self, _: &Caller) -> Stored {
-        not_installed()
-    }
-
-    fn trust_verify(&self, _: &Caller, _: &str, _: &[u8], _: &[u8]) -> Stored {
-        not_installed()
-    }
-
-    fn random_fill(&self, _: u64) -> Stored {
-        not_installed()
-    }
-
-    fn session_emit(&self, _: &Caller, _: u64, _: &[u8]) -> Stored {
-        not_installed()
-    }
-
-    fn ticket_mint(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8], _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn ticket_take(&self, _: &Caller, _: Option<u64>) -> Stored {
-        not_installed()
-    }
-
-    fn records_secret(&self, _: &str, _: &str, _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn unit_nest(&self, _: &Caller, _: Option<u64>, _: NestAsk, _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn work_open(&self, _: &Caller, _: Option<u64>, _: &str, _: &[u8], _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn work_find(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn work_settle(&self, _: &Caller, _: Option<u64>, _: u64, _: &[u8], _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn work_resume(&self, _: &Caller, _: Option<u64>, _: u64, _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn disk_append(&self, _: &DiskDest, _: Vec<u8>, _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn verify_lookup(&self, _: &Caller, _: &[u8], _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn verify_store(&self, _: &Caller, _: &[u8], _: &[u8], _: u64) -> Stored {
-        not_installed()
-    }
-
-    fn content_scan(&self, _: &Caller, _: Option<u64>, _: &[u8], _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn hook_call(&self, _: &Caller, _: Option<u64>, _: HookAsk, _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
-
-    fn snapshot_read(&self, _: &Caller, _: u32, _: Later) -> Ran {
-        Ran::Now(not_installed())
-    }
 }
 
 /// ONE DOOR PLANE, COMPOSED: its instance, the driver the
