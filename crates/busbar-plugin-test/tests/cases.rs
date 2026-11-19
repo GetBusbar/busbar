@@ -382,6 +382,8 @@ mod min3_secret;
 mod min3_store;
 #[path = "fixtures/min3_transport.rs"]
 mod min3_transport;
+#[path = "fixtures/native_store.rs"]
+mod native_store;
 #[path = "fixtures/ref_auth.rs"]
 mod ref_auth;
 #[path = "fixtures/ref_export.rs"]

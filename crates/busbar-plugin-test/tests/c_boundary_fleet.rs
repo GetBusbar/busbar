@@ -12,7 +12,8 @@
 //! - the element the revision moved or added on that kind arrives and is honoured end to end (secret:
 //!   `F_LEASE_S` reaches `SecretAnswer::lease_s`; export: `deliver`'s `lines` is the batch's record count;
 //!   hook: the three stages, and only they; auth: the host's HMAC over parts equals the MAC of the
-//!   concatenation, by a published known answer; store: the whole store suite on the in-tree store);
+//!   concatenation, by a published known answer; store: describe, open and `info` on the host's own store
+//!   fixture, the rest by the store suite on `busbar-store-memory`, the kind's reference implementation);
 //! - the kind's own conformance suite passes on the reference, so the suite and the engine agree on the kind
 //!   before any shipped plugin is pointed at either.
 //!
@@ -37,7 +38,7 @@ use busbar_ports::export::Delivered;
 use busbar_ports::hook::{CandidateIn, HookAnswer, HookCall, HookView};
 use busbar_ports::{CallCx, FactRef, PortError};
 
-use crate::{min3_store, ref_auth, ref_export, ref_hook, ref_secret};
+use crate::{native_store, ref_auth, ref_export, ref_hook, ref_secret};
 
 /// One header as the engine hands it to an auth plugin: a borrowed name and a borrowed value.
 fn header<'a>(name: &'a str, value: &'a [u8]) -> Pair<'a> {
@@ -364,11 +365,29 @@ fn auth_the_hmac_over_parts_is_the_mac_of_the_concatenation() {
 // store 4.0
 // ---------------------------------------------------------------------------------------------------------
 
-/// The store contract changes for a plugin only in how `migrate_admit` is reached (store service 1) and in the
-/// call shape under `read`, `scan`, `commit` and `clock`; nothing a store author writes moves. The whole store
-/// suite on the in-tree store image is therefore the boundary test: every method crosses by the one call
-/// shape, through the engine's store adapter, against the suite's own model of the answers.
+/// The engine tree holds no conforming store (a store's rows are its own; the store suite runs on the shipped
+/// stores, in their repositories, and `busbar-store-memory` is the reference implementation of the kind). What
+/// the tree does hold is the host's own store fixture, a real `plugin!(Store)` image with a fixed dataset and
+/// clock: so the boundary proved here is the crossing itself. `describe` and `open` (head: flags; blob: the
+/// settings) and the plain method `info` (no head, no texts, no blobs) cross by the one call shape through the
+/// engine's store adapter, and every fact the image states arrives as it stated it. `read`, `scan`, `commit`
+/// and `clock` over the call shape are proven by the store suite on `busbar-store-memory` against this tree.
 #[test]
-fn store_the_suite_passes_over_the_in_tree_store() {
-    suites::store(min3_store::inline::PLUGIN.plugin(), b"{}", FakeNeeds::new());
+fn store_describe_open_and_info_cross_by_the_one_call_shape() {
+    use busbar_contract::persistence::Durability;
+
+    let h = Harness::admit(native_store::PLUGIN.plugin(), FakeNeeds::new())
+        .expect("the store fixture is admitted");
+    let store = h.open_store("store", b"{}").expect("opens");
+    let info = store.backend.info();
+    assert_eq!(info.atomic_domain, native_store::DOMAIN);
+    assert_eq!(info.clock_authority, native_store::AUTHORITY);
+    assert_eq!(info.physical_version, 1);
+    assert_eq!(info.durability, Durability::Ephemeral);
+    assert_eq!(info, store.backend.info(), "info is cached at open");
+    // A second instance of the same image is its own instance with the same stated facts.
+    let other = h
+        .open_store("store-b", b"{}")
+        .expect("a second instance opens");
+    assert_eq!(other.backend.info(), info);
 }
