@@ -653,7 +653,10 @@ pub(crate) async fn trust_decide_effect(
 
 /// A trust verb's refusal of its own, before the kernel decides: nothing was applied (r3 §4.5).
 pub(crate) fn trust_refused(reason: &str, message: &str) -> AdminAnswer {
-    trust_effect(refused_reason(reason, message, &no_details()), "not_applied")
+    trust_effect(
+        refused_reason(reason, message, &no_details()),
+        "not_applied",
+    )
 }
 
 /// A JSON answer of `status` whose body is already encoded.

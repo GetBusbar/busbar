@@ -739,6 +739,31 @@ pub(crate) struct TrustKeyReq {
     _expected_digest: Option<String>,
 }
 
+/// `POST /agents/{name}/approve`: the card fingerprint the operator reviewed.
+#[cfg(feature = "openapi-schema")]
+#[derive(Deserialize, JsonSchema)]
+pub(crate) struct AgentApproveReq {
+    /// The fingerprint `POST /agents/{name}/connect` reported: 64 lowercase hex digits.
+    #[schemars(regex(pattern = r"^[0-9a-f]{64}$"))]
+    #[serde(rename = "fingerprint")]
+    _fingerprint: String,
+}
+
+/// `POST /agents/{name}/approve`'s answer: the agent's card, approved.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct AgentApproveView {
+    /// The agent, as its registration names it.
+    agent: String,
+    /// The card's trust key, `<instance>/<agent>/card`, as `GET /trust` lists it.
+    key: String,
+    /// The fingerprint the card is approved at.
+    fingerprint: String,
+    /// `approved`.
+    #[schemars(extend("enum" = ["approved"]))]
+    state: String,
+}
+
 /// `POST /commit-upgrade`: the release the fleet commits to.
 #[cfg(feature = "openapi-schema")]
 #[derive(Deserialize, JsonSchema)]
@@ -1150,6 +1175,63 @@ fn doc_for(
                 ],
             }
         }
+        KernelVerb::AgentApprove => VerbDoc {
+            summary: "Approve a registered A2A agent's card at the fingerprint `connect` reported",
+            description: "The operator's second act on an agent: `POST /agents/{name}/connect` \
+                          fetches the card, records the sighting and reports its fingerprint, and \
+                          approves nothing; this approves the agent's card trust key \
+                          `<instance>/<agent>/card` at that fingerprint, the same decision \
+                          `POST /trust/approve` makes. The fingerprint must equal the card's \
+                          current sighting: a card that changed since `connect` is 409 \
+                          `reviewed_digest_stale`, and nothing changes. A card never sighted is 404 \
+                          `unknown_resource`; an agent name two plane instances register is 409 \
+                          `state_conflict` (approve its key through `POST /trust/approve`). The \
+                          decision is kept durably before the answer; every attempt is audited \
+                          once, as `trust_approve` naming the key when the trust book decided, \
+                          else as `agent_approve`. `Idempotency-Key` makes the request replayable \
+                          exactly as on `POST /trust/approve`, and `x-busbar-trust-effect` \
+                          classifies every answer: `applied`, `not_applied` or `unknown`."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<AgentApproveView>()),
+                "The agent's card, approved",
+            ),
+            request: Some(schema_of(req_gen.subschema_for::<AgentApproveReq>())),
+            query: vec![json!({"name": "name", "in": "path", "required": true,
+                               "description": "The agent, as its registration names it",
+                               "schema": {"type": "string"}})],
+            errors: vec![
+                (
+                    "400",
+                    format!(
+                        "`invalid_request`: `malformed_body` — a body that is not the closed \
+                         object `{{fingerprint}}` of 64 lowercase hex digits, or an invalid \
+                         `Idempotency-Key`; or {BODY_UNREADABLE}"
+                    ),
+                ),
+                gated_403(),
+                (
+                    "404",
+                    "`not_found`: `unknown_resource` — no card of that agent has been sighted: \
+                     run `connect` first"
+                        .to_string(),
+                ),
+                (
+                    "409",
+                    "`conflict`: `reviewed_digest_stale` (the card changed since `connect`), \
+                     `decision_in_progress`, `action_in_flight`, `state_conflict` (two plane \
+                     instances register the name, the card has no authenticity root, or its last \
+                     sighting failed verification), `outcome_not_applied`, \
+                     `idempotency_mismatch` or `idempotency_in_flight`"
+                        .to_string(),
+                ),
+                unavailable_503(
+                    "`service_unavailable`: native trust custody is not installed or cannot \
+                     keep decisions, the store did not apply the decision, or its outcome is \
+                     unknown (replay the same Idempotency-Key to resolve it)",
+                ),
+            ],
+        },
         KernelVerb::PlaneRecordWrite => VerbDoc {
             summary: "Upsert one record of a plane this node serves",
             description: "Upserted by `(kind, id)` through the plane-facing store the planes \
@@ -1716,7 +1798,10 @@ pub(crate) fn operations(
                 "content": {"application/json": {"schema": schema}}
             });
         }
-        if matches!(verb, KernelVerb::TrustApprove | KernelVerb::TrustRevoke) {
+        if matches!(
+            verb,
+            KernelVerb::TrustApprove | KernelVerb::TrustRevoke | KernelVerb::AgentApprove
+        ) {
             // The decision handler reads `Idempotency-Key` (the root's `replayable`, checked by
             // `valid_idempotency_key`), so a generated client must be able to send it.
             let idempotency = json!({

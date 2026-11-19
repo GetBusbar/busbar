@@ -208,7 +208,10 @@ mod tests {
             row("a2a", "support", Some(ITEM)),
             row("mcp", "billing", Some("tool")),
         ];
-        assert_eq!(card_key(&rows, "billing").ok(), Some("a2a/billing/card".into()));
+        assert_eq!(
+            card_key(&rows, "billing").ok(),
+            Some("a2a/billing/card".into())
+        );
         assert_eq!(card_key(&rows, "nobody").map_err(|a| a.status), Err(404));
         let two = [
             row("a2a", "billing", Some(ITEM)),

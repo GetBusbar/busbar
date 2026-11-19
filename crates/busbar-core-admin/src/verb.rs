@@ -198,6 +198,7 @@ pub enum KernelVerb {
     GetTrust,
     TrustApprove,
     TrustRevoke,
+    AgentApprove,
 
     GetLedgerTotals,
     GetLedgerCheckpoints,
@@ -299,6 +300,7 @@ pub const TABLE: &[VerbRow] = table! {
     New GetTrust "GET" "/api/v1/admin/trust" "get_trust";
     New TrustApprove "POST" "/api/v1/admin/trust/approve" "trust_approve";
     New TrustRevoke "POST" "/api/v1/admin/trust/revoke" "trust_revoke";
+    New AgentApprove "POST" "/api/v1/admin/agents/{name}/approve" "agent_approve";
     Ledger GetLedgerTotals "GET" "/api/v1/admin/ledger/totals" "get_ledger_totals";
     Ledger GetLedgerCheckpoints "GET" "/api/v1/admin/ledger/checkpoints" "get_ledger_checkpoints";
     Ledger GetLedgerReconciliation "GET" "/api/v1/admin/ledger/reconciliation" "get_ledger_reconciliation";
