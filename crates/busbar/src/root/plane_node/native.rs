@@ -105,6 +105,55 @@ impl NativeNodeHandle {
 }
 
 impl Node {
+    /// Bind one native serving generation's money seam for the exit walk. Called where the
+    /// generation is composed, before any of its units opens. Binding the same seam again is a
+    /// no-op; seams already destroyed are dropped here, so the list is as long as the generations
+    /// that still hold a unit.
+    pub(crate) fn bind_native_money(&self, money: &Arc<busbar_kernel::plane_driver::PlaneMoney>) {
+        let mut held = self
+            .native_money
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.retain(|seen| seen.strong_count() != 0);
+        if !held
+            .iter()
+            .any(|seen| std::ptr::eq(seen.as_ptr(), Arc::as_ptr(money)))
+        {
+            held.push(Arc::downgrade(money));
+        }
+    }
+
+    /// The bound seams that are still alive, read outside every money lock.
+    fn native_money_live(&self) -> Vec<Arc<busbar_kernel::plane_driver::PlaneMoney>> {
+        self.native_money
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect()
+    }
+
+    /// SHUTDOWN-HANG F4 on the native path: every unit still open in a native serving
+    /// generation's money seam, read once at exit, off the request path. Each seam is walked
+    /// once; the evidence shares the unit's money facts and holds a clone of its grant.
+    pub(crate) fn native_open_units(&self) -> Vec<busbar_kernel::plane_driver::OpenUnitEvidence> {
+        let mut out = Vec::new();
+        for money in self.native_money_live() {
+            busbar_kernel::plane_driver::MoneySeam::open_units(money.as_ref(), &mut out);
+        }
+        out
+    }
+
+    /// How many native units are open, for the drain's progress line: a count, no evidence.
+    pub(crate) fn native_open_unit_count(&self) -> usize {
+        self.native_money_live()
+            .iter()
+            .map(|money| money.open_units())
+            .sum()
+    }
+}
+
+impl Node {
     pub(crate) fn native_pending(&self) -> usize {
         self.lost
             .lock()

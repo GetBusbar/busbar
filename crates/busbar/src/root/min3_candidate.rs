@@ -406,6 +406,8 @@ fn native_served(
             Arc::clone(governance),
             Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
         ));
+        // The exit walk reports this generation's open units through the Node.
+        node.bind_native_money(&money);
         served.billing = Some(
             busbar_kernel::plane_driver::port_billing::PortBilling::new(
                 money,

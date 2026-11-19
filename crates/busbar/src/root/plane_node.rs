@@ -180,6 +180,11 @@ pub(crate) struct Node {
     dispatch: Arc<dyn crate::root::transports::PlaneDispatch>,
 
     pub(crate) ticket_custody: Arc<crate::root::serve::TicketCustody>,
+
+    /// The money seams of the native serving generations, held weakly: what the exit walk reads
+    /// for its open-units report (SHUTDOWN-HANG F4). A generation that a reload replaced stays
+    /// listed while one of its units is still open and drops out when its seam is destroyed.
+    native_money: Mutex<Vec<std::sync::Weak<busbar_kernel::plane_driver::PlaneMoney>>>,
 }
 
 impl std::fmt::Debug for Node {
@@ -229,6 +234,7 @@ impl Node {
             #[cfg(test)]
             dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
             ticket_custody: crate::root::serve::TicketCustody::new(),
+            native_money: Mutex::new(Vec::new()),
         }
     }
 
