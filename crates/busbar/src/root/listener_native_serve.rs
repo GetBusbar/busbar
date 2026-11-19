@@ -13,7 +13,7 @@ use busbar_plugin_abi::transport::{CR_DRAIN, CR_NORMAL};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 
-use super::{InputError, NativeListener, OpenedConnection, ReadyInput, LIVE_RESPONSES};
+use super::{InputError, NativeListener, OpenedConnection, ReadyInput};
 use crate::root::listener::{ConnBalancer, ConnCountGuard};
 use crate::root::plane_node::Node;
 
@@ -159,21 +159,9 @@ async fn supervise(
         progress,
         delivery,
     } = opened;
-    let source = conn.storage().clone();
-    let _queue_credit = source
-        .try_reserve(
-            LIVE_RESPONSES
-                .checked_mul(std::mem::size_of::<Waiting>())
-                .ok_or(InputError::Capacity)?,
-        )
-        .map_err(|_| InputError::Capacity)?;
+    // Heads waiting their turn, in order: empty until the first head (allocation ruling); each head
+    // is bounded by its own admission, not by a fixed queue.
     let mut waiting = VecDeque::new();
-    waiting
-        .try_reserve_exact(LIVE_RESPONSES)
-        .map_err(|_| InputError::Capacity)?;
-    if waiting.capacity() > LIVE_RESPONSES {
-        return Err(InputError::Capacity);
-    }
     let connection = Arc::new(
         node.response_intents()
             .ok_or(InputError::Invalid)?
@@ -198,6 +186,10 @@ async fn supervise(
             write_timeout: native.limits.write_timeout,
             drain_grace: native.limits.drain_grace,
             counters: Arc::default(),
+            // No housekeeping tick walks a listener's read blocks yet (the usage flush tick runs
+            // in the kernel's budget flusher, started in main.rs): until it does, a read block,
+            // once made, is kept until its connection ends.
+            read_holders: None,
         },
     );
     let mut driver = std::pin::pin!(driver);
@@ -329,12 +321,6 @@ async fn supervise(
             input = inputs.recv(), if input_open => {
                 let Some(input) = input else { input_open = false; continue };
                 if let Inbound::Head { stream, .. } = &input {
-                    if waiting.len() == LIVE_RESPONSES {
-                        failure.get_or_insert(InputError::Capacity);
-                        input_open = false;
-                        stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
-                        continue;
-                    }
                     waiting.push_back(Waiting { stream: *stream, ready: None });
                 }
                 let reset = match &input {
