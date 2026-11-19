@@ -1020,6 +1020,34 @@ async fn foreign_void_triggers_rescan() {
 }
 
 #[tokio::test]
+async fn the_stored_history_is_read_from_the_store_not_from_this_nodes_copy() {
+    let backend = Arc::new(Backend::default());
+    let (store, book) = runtime_book(backend.clone()).await;
+    let base = book.own().unwrap().0;
+    // Another node's entry lands in the store; this node has not rescanned, so its copy lags.
+    let foreign = foreign_future_entry(&store, crate::store::now_ms() + 60_000, base).await;
+    assert!(book.entry(&foreign).is_none(), "the copy has not caught up");
+    let stored = book.stored().await.unwrap();
+    assert!(stored.entries.contains_key(&foreign));
+    assert!(stored.entries.contains_key(&base));
+    assert!(stored.generation.is_some());
+    assert_eq!(
+        stored.entries.keys().copied().collect::<Vec<_>>(),
+        store
+            .prices()
+            .snapshot()
+            .await
+            .unwrap()
+            .entries
+            .keys()
+            .copied()
+            .collect::<Vec<_>>()
+    );
+    // Reading it changed nothing this node holds.
+    assert!(book.entry(&foreign).is_none());
+}
+
+#[tokio::test]
 async fn guard_error_falls_back_to_scan() {
     let backend = Arc::new(Backend::default());
     let (store, book) = runtime_book(backend.clone()).await;

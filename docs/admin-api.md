@@ -292,12 +292,12 @@ The live endpoint requires a booted, authenticated instance. So that tooling can
 There is one administrative OpenAPI document. It is generated from the code and describes every
 operation the build can serve — the 1.6.0 additions included. A node serves it at
 `GET /api/v1/admin/openapi.json`, unfiltered; the release asset is the same document. The
-shipped document lists 81 operations (43 `read-only`, 38 `full`). Each plane that declares admin
+shipped document lists 81 operations (44 `read-only`, 37 `full`). Each plane that declares admin
 operations adds its own at runtime on top of that, so the total a given build serves depends on the
 planes it carries. One mark says what a reader cannot tell from the path alone (the document
 explains it itself, under `info.x-busbar-marks`):
 
-- **`x-busbar-since: 1.6.0`** — one of the 29 operations in the shipped document that 1.6.0 adds. They
+- **`x-busbar-since: 1.6.0`** — one of the 30 operations in the shipped document that 1.6.0 adds. They
   are answered by the node's administrative loop or by the reads added alongside it: the kernel
   verbs and trust verbs below, the ledger views, the audit-chain reads, the `kinds` reads, `GET /whoami`,
   `GET /records` and `plane-record-write`.
@@ -362,14 +362,35 @@ The ledger views and audit-chain reads:
 | `GetLedgerCheckpoints` | `GET /api/v1/admin/ledger/checkpoints` | `read-only` |
 | `GetLedgerReconciliation` | `GET /api/v1/admin/ledger/reconciliation` | `read-only` |
 | `GetLedgerMigration` | `GET /api/v1/admin/ledger/migration` | `read-only` |
+| `GetLedgerRateHistory` | `GET /api/v1/admin/ledger/rate-history` | `read-only` |
 | `GetAuditHead` | `GET /api/v1/admin/audit/head` | `read-only` |
 | `GetAuditRange` | `GET /api/v1/admin/audit/range?from=&to=` | `read-only` |
 | `GetAuditKeys` | `GET /api/v1/admin/audit/keys` | `read-only` |
 
 Every one is a read and takes exactly what `GET /api/v1/admin/usage` takes — the same credential,
-presented the same way. Money figures come back as **decimal strings**, not JSON numbers: the ledger
-keeps them in 128-bit integers; binary64 client numbers are exact only through 2^53, so a busy day's
-nano-unit total would lose digits in a binary64 client. Existing Count fields remain exact scale-6 JSON numeric tokens and require lossless parsing.
+presented the same way. Money figures in these views come back as **decimal strings** (decimal
+integers, no fraction), not JSON numbers: the ledger keeps them in 128-bit integers; binary64
+client numbers are exact only through 2^53, so a busy day's nano-unit total would lose digits in a
+binary64 client. Existing Count fields remain exact scale-6 JSON numeric tokens and require lossless parsing.
+
+The unit of each figure in the ledger views (every money field of the whole admin API and its
+unit is listed in [Money fields and their units](#money-fields-and-their-units)):
+
+- `GET /ledger/totals`: each row is one key's all-time bucket (`lane` and `provider` are empty
+  strings). `priced_nanos` is in **nano-units** of the cost unit (1e-9 of it) and `priced_micros` in
+  **micro-units** (1e-6). This node derives `priced_nanos` from the bucket's micro-unit figure
+  (the one truncation to whole micro-units, below) multiplied by 1000, so `priced_nanos` is always a
+  multiple of 1000 and `priced_micros` is exactly `priced_nanos / 1000`. A bucket whose counts a
+  present card refuses to price is not a row: it is listed in `refused`, with `dimension`
+  `nano-units`.
+- `GET /ledger/checkpoints` and `GET /ledger/reconciliation`: the shapes the document describes
+  carry money figures (the checkpoint cells `budget`, `drawn`, `released`, `settled`, `open_holds`,
+  `open_slice_remainders`, `adjustments`, `unreconciled`, `overdraft_carried_in`,
+  `overdraft_carried_out`, `cross_window_transfers`, `disputed`; the residual's `accounted`,
+  `drawn`, `amount`). Each is a decimal integer string in the unit the cell's `dimension` names,
+  and the only money dimension this node names anywhere is `nano-units`. **This node never fills
+  them:** `/ledger/checkpoints` always answers `{"checkpoints":[]}`, and `/ledger/reconciliation`
+  answers `discrepancies: []` always, with `holds` false exactly when `refused` is not empty.
 
 With one `Idempotency-Key` header (1–128 ASCII graphic bytes), `POST /adjust` selects the durable exact-Count action profile. Per-class deltas accept decimal strings (preferred for new clients) or lossless JSON numeric tokens, within signed i128 scale 6. The same actor/action and exact body bytes replay one retained outcome across restart; changed bytes return `idempotency_mismatch`. Claims and receipts do not automatically expire or recycle. Without the header, the legacy signed-integer request remains `nonretryable_without_idempotency_key`.
 
@@ -392,12 +413,137 @@ with a message naming the fault. `POST /api/v1/admin/ledger/amend-rate-history` 
 fleet's operator key to the dated rate-card history. Each corrected rate's `micro_per_unit` is a
 decimal in micro-units per unit, and it must be exact to one nano-unit (a multiple of `0.001`): the
 card holds integers, and a finer figure is refused `400 invalid_request` rather than rounded into a
-price the signature does not cover. The correction changes only what it names: the card in force
-for the window keeps every other rate, every other plane's card and its `per_request_fee` unless the
-correction names a fee. A lane spelt `<plane>\u001f<lane>` corrects that plane's card. A window
+price the signature does not cover. `micro_per_unit` is a JSON number, read from its decimal text
+(not through a binary double). The correction's `per_request_fee` is a JSON integer in **minor
+units** (hundredths of the cost unit), never negative. The correction changes only what it names:
+the card in force for the window keeps every other rate, every other plane's card and its
+`per_request_fee` unless the correction names a fee. A lane spelt `<plane>\u001f<lane>` corrects that plane's card. A window
 that two cards price (a config apply or an earlier correction lands inside it), or a cell on a plane
 with no card of its own, is refused `400 invalid_request` and nothing is recorded: split the
 window at the boundary and sign each part.
+
+### Reading the rate-card history: `GET /ledger/rate-history`
+
+`GET /api/v1/admin/ledger/rate-history` reads back what the configuration and
+`amend-rate-history` wrote: the dated rate-card history, one row per entry. With these rows and
+the ledger's counts a reader recomputes every spend figure itself: spend is the card in force at
+the count's instant times the count. It is a ledger view: `read-only` scope, the same credential
+`GET /usage` takes, and it mutates nothing.
+
+**A card prices an instant from its start, inclusive, to its end, exclusive.** An instant exactly
+at an entry's start is priced by that entry. Of the live entries whose window covers an instant,
+the one with the highest `key` (the one written last) is the card in force.
+
+Each page reads the history **from the store**, never from this node's copy of it (a node's copy
+is refreshed every few seconds), so every node answers the same rows for the same store state.
+Rows come in `key` order, which is the order the entries were written in. Pages work as every
+other admin list: `?limit=` (default 200, at most 1000) and `?cursor=` (the previous page's
+`next_cursor`, which is `null` after the last row); a malformed cursor is `400 malformed_cursor`
+and a cursor of another list is `400 cursor_mismatch`. `generation` is the store generation of the
+history the page was read at, as decimal text: it moves with every write to the history by any
+node, so pages with different `generation` values were read from different histories (start again
+from the first page). There is no `ETag`, as on `GET /records` and `GET /audit`. A node whose
+history is not loaded answers `503`.
+
+| Field | Meaning |
+| --- | --- |
+| `key` | The entry's identity: 40 lowercase hex digits, the same on every node and after every restart |
+| `entry_id` | The id the ledger files counts priced by this entry under (24 hex digits: the first 12 bytes of SHA-256 of `key`) |
+| `effective_from_ms` | The start of the entry's window, inclusive, milliseconds since the epoch. A configuration entry starts when its activation was authorized |
+| `effective_until_ms` | The end of its window, exclusive, milliseconds since the epoch. Absent: open-ended. A configuration entry is stored open-ended and the next one written ends it |
+| `authored_from_ms` | The start the writer stored, before an activation moved it |
+| `in_force` | The spans `{from_ms, until_ms}` (start inclusive, end exclusive; `until_ms` absent means open, the card in force now) in which this entry IS the card in force under the rule above. The spans of all entries never overlap. After a configuration change the first entry's span ends at exactly the second's start |
+| `voided` | The entry prices nothing. Its id stays known |
+| `written_as` | `configuration` or `correction` (written by `amend-rate-history`) |
+| `author` | As stored: `opening`, `change`, `amend` or `migrated` |
+| `actor` | Who wrote it, as stored. A correction stores the authenticated admin principal that submitted it. A configuration entry stores where it came from (`boot of node <id>`, or `a configuration change`); it names no principal |
+| `writer_node` | The writing node's durable id, 16 lowercase hex digits |
+| `appended_at_ms` | When the entry was written, milliseconds since the epoch |
+| `base_key`, `set_fields` | The entry it extended, and the card fields that changed from it |
+| `correction` | For a correction: `{from_ms, until_ms, reason_sha256}`, its window and the SHA-256 of its reason, as stored. No correction carries a signature: no admin verb takes an operator signature |
+| `migrated_from` | For an entry copied from a node's journal: `{node, node_seq, opening}` |
+| `envelope` | The entry's stored correction envelope, hex, when it has one |
+| `card` | The whole card (below) |
+
+Every money figure in `card` is a decimal string, never a JSON number:
+
+- `per_request_fee_minor`: the flat per-request fee, in **minor units** (hundredths of the cost
+  unit the card is priced in; `GET /usage` names that unit in `currency`).
+- `cards[]`: the flat card (`plane` null, the pools plane's) when a `rate_card` is configured,
+  then each other plane's own card. Each lane has `lane`, `card_lane` (the lane as the whole card
+  keys it: `<plane>` U+001F `<lane>` for another plane's, the spelling `amend-rate-history`
+  takes) and `rates[]`. A plane with no card in `cards` is not priced by the entry; a card that
+  names no lane refuses to price that lane.
+- `rates[]`: `class`, `micro_per_unit` (the rate as stored, in **micro-units of the cost unit per
+  unit of the class**, exact decimal text that reads back to the stored figure exactly) and
+  `nanos_per_unit` (the rate the card prices with, in **nano-units of the cost unit per unit of the
+  class**; `nanos_per_unit` = `micro_per_unit` x 1000, an integer). `null` means the stored figure
+  is finer than one nano-unit (more than three decimal places of micro-units) and the card holds
+  that class **unpriced**: it is never rounded and never read as zero. See "A rate finer than one
+  nano-unit" below. A lane with no `cache_write` row prices cache writes at its `input` rate.
+- `plane_fees[]`: each other plane's `per_request_minor` and `per_session_minor`, in **minor
+  units**.
+- `measurements[]`: plugin measurement rates by `kind` and `namespace`, with the same `rates[]`.
+
+Recomputing a spend figure: a count the ledger filed under `entry_id` E at instant t is priced by
+E's card, unless a correction written after E (a higher `key`, `written_as: correction`, not
+voided) covers t; then the highest-keyed such correction prices it. A billable request's flat fee
+is found the same way. The arithmetic, exactly (a client that follows it matches the engine to the
+last digit):
+
+1. **A line** is `count x nanos_per_unit`, in nano-units of the cost unit. A count is an exact
+   decimal with at most six fractional places, so the product has up to six fractional places of a
+   nano-unit. **Nothing is rounded per line, per event, per record, per class or per plane**:
+   keep every line at full precision (an integer count-in-millionths times the integer
+   `nanos_per_unit` is exact in a 128-bit integer).
+2. **Fees** join the same sum, unrounded, as lines of their own. One minor unit is 10^7
+   nano-units, so a request's flat fee is `per_request_fee_minor` x 10,000,000 nano-units per
+   billable request, and a plane's `per_request_minor` and `per_session_minor` are
+   10,000,000 nano-units per minor unit per billable request or per opened session. A fee is added
+   before any truncation, so it makes no difference whether it is summed before or after.
+3. **One truncation, at the end, toward zero, of the figure being reported** (never half-up, never
+   half-even; the admin reads apply no tier multiplier): the full-precision sum is
+   divided by 10^6 for a nano-unit figure, 10^9 for a micro-unit figure, 10^13 for a minor-unit
+   figure. Which sum a figure covers depends on the endpoint (see the table below): a `/records`
+   row truncates each record to whole nano-units; a `/usage` figure truncates the sum of all the
+   rows it covers (the total, a model, a key, `others`, one class) to whole micro-units.
+   Truncating the parts and adding is not the same as adding and truncating: two keys of 0.5
+   micro-unit each are `0` and `0` as keys and `1` as the total.
+4. **A class the card holds unpriced is a refusal, not a zero** (below).
+
+Worked example. A lane's card is `input` 0.012 micro-units per token (`nanos_per_unit` 12), and
+`per_request_fee_minor` is 1. One request: 1,234 input tokens, one billable request.
+
+- line: 1,234 x 12 = 14,808 nano-units
+- fee: 1 x 10,000,000 = 10,000,000 nano-units
+- sum: 10,014,808 nano-units, so `GET /records` `spend_micros` is `"10014.808"` (micro-units, the
+  sum truncated to whole nano-units, written as micro-units with up to three decimals)
+- the day's `GET /usage` `spend_micros`, if this is the only traffic: 10,014,808 / 1,000 = 10014
+  micro-units (truncated; the 0.808 is dropped)
+- the key's `spend_cents`: 10,014,808 / 10,000,000 = 1 minor unit
+
+A fractional count: 0.5 of a unit of a class at 3 nano-units per unit is 1.5 nano-units. `/records`
+serves `0.001` micro-units for it (1 nano-unit: the half nano-unit is dropped). Take 667 such
+records in one day: their counts sum to 333.5 units, the exact sum is 1,000.5 nano-units, and
+`/usage` serves 1 micro-unit; the 667 `/records` figures add to 0.667 micro-units. So the sum of the
+day's `/records` `spend_micros` figures can be lower than the day's `/usage` figure by the
+nano-unit parts the records dropped (less than one nano-unit per record). With whole counts (the
+usual case) no part is ever dropped, and the sum of the `/records` figures equals the exact sum
+that `/usage` truncates to micro-units. The two can also differ for reasons that are not rounding:
+`/usage` includes counts moved by `adjust`; `/records` does not.
+
+**A rate finer than one nano-unit.** The card is integers: nano-units per unit. A configured or
+corrected rate that is not a whole number of nano-units is refused where it is configured, never
+rounded: `amend-rate-history` answers `400 invalid_request`, and a configuration whose
+`input_utok`, `output_utok`, `cache_read_utok` or `cache_write_utok` is finer than one nano-unit
+(more than three decimals of micro-units, or past about 1.8e16) is invalid, as is an open-class rate
+under `units:`. A `null` `nanos_per_unit` is therefore only a stored rate that was not refused at
+entry. The card holds that class as an unpriced cell, and a count of it cannot be priced: it is
+neither zero nor rounded. `GET /usage` for a day with such a row answers `409 unpriced_class` (a
+range read, `from`/`to`, does not refuse: the cell that holds the row is served with
+`priced: false` and `spend_micros: null`). `GET /records` serves that record with `priced: false`,
+`spend_micros: null` and `priced_by: null`: no total is served for a record with an unpriced class,
+and the record's other classes are not priced into a partial figure.
 
 These money-governance verbs are not part of the verb table (`set_operator_key`,
 `set_escrow`, `set_dual_control`, `set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`,
@@ -409,6 +555,43 @@ These paths are served by the composition root's own loop. A node built without 
 exactly as it answers any other path it does not have — the same `404` envelope, no hint that the
 operation exists elsewhere.
 
+### Money fields and their units
+
+The cost unit is whatever the operator priced the `rate_card` in (`GET /usage` names it in
+`currency`). Its scales: 1 **minor unit** = 1/100 of the cost unit (called "cents" in some field
+names) = 10^4 **micro-units** = 10^7 **nano-units**; 1 micro-unit = 10^3 nano-units. The rate card
+holds rates in whole nano-units per unit. A count is an exact decimal with up to six fractional
+places. "Truncated" means toward zero, once, from the exact sum (see the arithmetic under
+[Reading the rate-card history](#reading-the-rate-card-history-get-ledgerrate-history)).
+
+| Endpoint | Field | Unit | On the wire | Exact or rounded |
+| --- | --- | --- | --- | --- |
+| `GET /usage` | `total`, `by_model[]`, `by_key[]`, `others`: `spend_micros` | micro-units | JSON integer | truncated, from the exact sum of the rows that figure covers (so `total` can exceed the sum of `by_key[]` + `others` by whole micro-units) |
+| `GET /usage` | the same objects' `classes{}.cost` | micro-units | JSON integer | truncated from that class's own exact sum, apart from `spend_micros`: the class costs need not add up to `spend_micros` |
+| `GET /usage` | `observations[].spend_micros` | micro-units, up to three decimals (whole nano-units) | decimal string | exact: the committed settlement, never repriced |
+| `GET /usage` range mode (`from`, `to`) | `items[].usage.spend_micros`, `items[].usage.classes{}.cost` | micro-units | JSON integer; `spend_micros` is `null` when `priced` is `false` | truncated, as the single-day read |
+| `GET /records` | `items[].spend_micros` | micro-units, up to three decimals (whole nano-units) | decimal string, or `null` when `priced` is `false` | truncated to whole nano-units, once per record |
+| `GET /keys/{id}/usage` | `spend_cents` | minor units | JSON integer | truncated |
+| `GET /groups/{name}/usage` | `buckets[].spend_cents` | minor units | JSON integer | truncated |
+| `GET /groups/{name}/usage` | `buckets[].budget_cap` | minor units | JSON integer | exact (the configured cap) |
+| `GET /groups/{name}/usage` | `buckets[].budget_remaining_cents` | minor units | JSON integer | exact: the cap less `spend_cents`, never below 0 |
+| group limit views | `limits[].amount` when `metric` is `budget` | minor units | JSON integer | exact (the configured cap) |
+| `GET /ledger/totals` | `rows[].priced_nanos` | nano-units | decimal integer string | the micro-unit figure (truncated) x 1000: always a multiple of 1000 |
+| `GET /ledger/totals` | `rows[].priced_micros` | micro-units | decimal integer string | truncated |
+| `GET /ledger/checkpoints` | the cells' `budget`, `drawn`, `released`, `settled`, `open_holds`, `open_slice_remainders`, `adjustments`, `unreconciled`, `overdraft_carried_in`, `overdraft_carried_out`, `cross_window_transfers`, `disputed` | the unit the cell's `dimension` names (`nano-units` is the only money dimension this node names) | decimal integer string | exact; **never served by this node** (`checkpoints` is always `[]`) |
+| `GET /ledger/reconciliation` | `discrepancies[].residual.accounted`, `.drawn`, `.amount` | as the checkpoint cells (nano-units) | decimal integer string | exact; **never served by this node** (`discrepancies` is always `[]`) |
+| `GET /ledger/rate-history` | `card.per_request_fee_minor` | minor units | decimal integer string | exact |
+| `GET /ledger/rate-history` | `card.plane_fees[].per_request_minor`, `.per_session_minor` | minor units | decimal integer string | exact |
+| `GET /ledger/rate-history` | `rates[].micro_per_unit` | micro-units per unit of the class | decimal string (no exponent) | exact, as stored |
+| `GET /ledger/rate-history` | `rates[].nanos_per_unit` | nano-units per unit of the class | decimal integer string, or `null` (unpriced) | exact |
+| `POST /ledger/amend-rate-history` | request `per_request_fee` | minor units | JSON integer, never negative | exact |
+| `POST /ledger/amend-rate-history` | request `rates[].micro_per_unit` | micro-units per unit of the class | JSON number, read from its decimal text; at most three decimals | exact (finer is refused) |
+| `PUT /config/settings` (and the configuration file) | `per_request_fee` | minor units | JSON integer | exact |
+| `PUT /config/settings` (and the configuration file) | `rate_card.<lane>.input_utok`, `output_utok`, `cache_read_utok`, `cache_write_utok` | micro-units per token | JSON number | exact when it has at most three decimals; finer is refused |
+| `PUT /config/settings` (and the configuration file) | `rate_card.<lane>.units.<class>` | micro-units per unit of the class | JSON integer, or a decimal string | exact (finer than a nano-unit is refused) |
+
+The `amend-rate-history` answer, and `GET /ledger/migration`, carry no money figure.
+
 ---
 
 ## What you can read
@@ -419,8 +602,8 @@ operation exists elsewhere.
 |---|---|
 | `GET /info` | This node's identity, readable by every admin credential: `version` (informational), `deployment_id`, `node_id`, `incarnation` (the join-id term: a random 128-bit process generation, stable across reloads), `started_at_ms` (epoch milliseconds of process start; a changed value means a new process), `config_generation` (the durable config generation), `warnings[]` (`{code, message, since_ms}`; `overlay_ignored` when the process was booted with `--ignore-overlay`) and `crypto` (`{validated_mode, validation}`: `validation` is the linked crypto backend's validation statement, a certificate reference, or null, and `validated_mode` is true only when it is stated). It names no topology, no compiled-in plugin and no crypto module: the crypto backend's name, module version and contract version are the `core/process` state `crypto` (`{backend, module, api, validated_mode, validation}`, `GET /kinds/core/instances/process`), the node lease rows are the `core/process` view `nodes`, counts come from `/kinds`, whether API config changes survive a restart is the `core/durability` state `store.persistence`, and the `/kinds` ETag is the discovery revision |
 | `GET /whoami` | The caller, as the admin chain identified it: `principal` (`key:<id>` for a key), `credential` (`kind` is `operator`, `key` or `identity_provider`, plus `id`, `provider` and `expires_at`, each `null` where it does not apply), `scope` (`read-only` or `full`, `null` when the credential earns neither), `verbs` (every closed-table verb the caller may call, sorted) and `verbs_all`, `require_if_match` (whether mutations must carry `If-Match`), and `rate` (the `read`, `config`, `crud` and `plugin_inspect` budgets, each `{limit, window_s, remaining}`; `read.limit` is `0` because reads are not metered). Any identified admin credential may read its own identity, whatever verbs it holds. `read-only` scope, mutates nothing |
-| `GET /records` | The node's per-unit records: the sealed audit chain, one record per unit, oldest first, as a feed. Response `{source, items, next_cursor, complete}`; `next_cursor` is always a string (round-trip it as `?cursor=`) and `complete: true` means the page reached the newest sealed record. Without a cursor the feed starts at the oldest retained record. `?limit=` (default 200), `?wait=<seconds>` (hold the request open when the page would be empty and caught up), `?from_ms=` (a seek to the first record whose `arrived_at_ms` is at least that, ignored with a cursor), `?to_ms=` (only records arriving before it), and exact-match filters `kind`, `instance`, `key`, `group`, `model`, `provider`, `target`, `outcome`, `reason` and `unit`. A request scans at most 10000 sealed records, so a filtered page can be short or empty and still carry a cursor that continues. Records are per node (the `core/process` view `nodes` lists the nodes): a cursor from another node is `400 cursor_mismatch` (`details.cursor_node_id`), an unretained position is `410 cursor_expired` (`details.oldest_available` resumes), and a node that binds no audit chain answers `404 not_found`. Spend is priced at read time by the rule `GET /usage` uses. A unit that did not complete carries `reason {stage, code, class}` (`code` is the reason code, `class` is `client`, `policy`, `upstream` or `engine`); when a hook vetoed it, `reason.hook` also names that hook by the key the deployment configured it under, and the member is absent for a unit refused by anything else (a limit, authentication, a budget), for a hook that ran and let the unit through, and for a hook that failed. `read-only` scope |
-| `GET /kinds/core/instances/routing` | Routing configuration (`config.models`, `config.providers`, `config.pools`); its view `pools` serves each pool member's **live** status: `usable` + `cooldown_remaining_seconds` (breaker), `available_concurrency`, `inflight`, `latency_ms` (EWMA), `ok`/`err` tallies, `dead`, and `trip_count` + `last_trip_at`. |
+| `GET /records` | The node's per-unit records: the sealed audit chain, one record per unit, oldest first, as a feed. Response `{source, items, next_cursor, complete}`; `next_cursor` is always a string (round-trip it as `?cursor=`) and `complete: true` means the page reached the newest sealed record. Without a cursor the feed starts at the oldest retained record. `?limit=` (default 200), `?wait=<seconds>` (hold the request open when the page would be empty and caught up), `?from_ms=` (a seek to the first record whose `arrived_at_ms` is at least that, ignored with a cursor), `?to_ms=` (only records arriving before it), and exact-match filters `kind`, `instance`, `key`, `group`, `model`, `provider`, `target`, `outcome`, `reason` and `unit`. A request scans at most 10000 sealed records, so a filtered page can be short or empty and still carry a cursor that continues. Records are per node (the `core/process` view `nodes` lists the nodes): a cursor from another node is `400 cursor_mismatch` (`details.cursor_node_id`), an unretained position is `410 cursor_expired` (`details.oldest_available` resumes), and a node that binds no audit chain answers `404 not_found`. Spend is priced at read time by the rule `GET /usage` uses: `spend_micros` is the unit's spend in **micro-units** of the cost unit, a decimal string with at most three decimals (it is the exact sum of the unit's lines and fee, truncated once to whole nano-units, then written in micro-units), or `null` with `priced: false` when a class the unit used is unpriced on its card or its card entry cannot be found; `priced_by` is the entry that priced it. The sum of a day's `spend_micros` figures can differ from `GET /usage` `spend_micros` for the same day (see the rounding and `adjust` notes under [Reading the rate-card history](#reading-the-rate-card-history-get-ledgerrate-history)). A unit that did not complete carries `reason {stage, code, class}` (`code` is the reason code, `class` is `client`, `policy`, `upstream` or `engine`); when a hook vetoed it, `reason.hook` also names that hook by the key the deployment configured it under, and the member is absent for a unit refused by anything else (a limit, authentication, a budget), for a hook that ran and let the unit through, and for a hook that failed. `read-only` scope |
+| `GET /kinds/core/instances/routing` | Routing configuration (`config.models`, `config.providers`, `config.pools`); its view `pools` serves each pool member's **live** status: `usable` + `cooldown_remaining_seconds` (breaker), `available_concurrency`, `inflight`, `latency_ms` (EWMA), `ok`/`err` tallies, `dead`, and `trip_count` + `last_trip_at`. `last_trip_at` is a `time` field: **epoch milliseconds** (Unix time in milliseconds of the most recent Closed-to-Open breaker trip on that lane; `null` = never tripped). It is the whole-second reading the breaker took, times 1000, so it always ends in `000`. (The pool-member status the view is built from holds epoch **seconds**; the view multiplies it by 1000 before serving it.) |
 
 The `core/process` view `nodes` (`GET /kinds/core/instances/process/views/nodes`) lists every node the Store holds a lease row for: `node_id`, `role` (`writer` or `replica`), `state` (`live`, `lost` or `stopped`), `started_at_ms` and `last_seen_at_ms`, so a client can prove it reads the whole deployment.
 
@@ -566,8 +749,8 @@ The fleet FinOps read. Design principle: Busbar exposes the **raw inputs of cost
 ```
 
 - **One bucket, always.** A response is exactly one fixed UTC-day metering bucket (`window` is `[start, end)` epoch seconds). `?window=<bucket-start-epoch>` selects a past bucket (default: the current one); a value that isn't a bucket start, or is in the future, is `400`. Billing periods aggregate client-side from day buckets: raw counts are stored, so the math is exact.
-- **The ledger rule:** `spend_micros` (MICRO-units of the cost unit the operator priced the top-level `rate_card` in, so the math is integer and sub-cent precise; the response's top-level **`currency`** field names its denomination, currently `"USD"`) is derived at read time per model from the dated rate-card history (each request priced at the card in force when it was served) plus the flat per-request fee; a later card does not reprice earlier traffic, and only an attributed backdated amendment changes its declared window. Never store it as a ledger charge; **bill from the raw token split**. With no `rate_card` configured, the token component derives to 0 and only the flat fee contributes. `currency` is emitted ONLY on this endpoint. The per-key/per-group usage views stay currency-agnostic raw-split ledgers.
-- `by_key` is capped at the top 1000 rows by spend; `by_key_truncated` says the cap fired, and `others` (present exactly then) carries the summed remainder, so `total == sum(by_key) + others` always holds. `by_model` is never capped. A deleted key's history keeps its `id` (`name` goes `null`).
+- **The ledger rule:** `spend_micros` (MICRO-units of the cost unit the operator priced the top-level `rate_card` in, so the math is integer and sub-cent precise; the response's top-level **`currency`** field names its denomination, currently `"USD"`; a JSON integer, **truncated toward zero** from the exact sum of every row the figure covers, so it drops any part of a micro-unit; `classes{}.cost` is the same unit and truncation, taken from that class's own sum; `observations[].spend_micros` is a decimal string with up to three decimals, exact) is derived at read time per model from the dated rate-card history (each request priced at the card in force when it was served) plus the flat per-request fee; a later card does not reprice earlier traffic, and only an attributed backdated amendment changes its declared window. Never store it as a ledger charge; **bill from the raw token split**. With no `rate_card` configured, the token component derives to 0 and only the flat fee contributes. `currency` is emitted ONLY on this endpoint. The per-key/per-group usage views stay currency-agnostic raw-split ledgers.
+- `by_key` is capped at the top 1000 rows by spend; `by_key_truncated` says the cap fired, and `others` (present exactly then) carries the summed remainder, so the counts satisfy `total == sum(by_key) + others` exactly. `spend_micros` is truncated separately for each object, from that object's own exact sum, so the `spend_micros` figures can differ by whole micro-units (the total is never lower than the sum of the parts). `by_model` is never capped. A deleted key's history keeps its `id` (`name` goes `null`).
 - `as_of` marks read freshness (counters accumulate live). With no keys minted the aggregations are truthfully empty. Key ids/names only, never a token.
 
 Per-key budget *enforcement* state lives on `GET /keys/{id}/usage`, not here.

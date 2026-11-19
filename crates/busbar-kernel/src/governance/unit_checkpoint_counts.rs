@@ -216,11 +216,11 @@ impl GovState {
         if snapshot.partitions.is_none() {
             return Ok(());
         }
-        // Measured as it would be sealed now: the first-sent time is part of the encoded size.
+        // Measured as it would be sealed now: the first-sent time is part of the encoded size, and
+        // each child's payload is its own encoding, so the children are built to be measured. The
+        // sealed record itself is not built: its size is the snapshot's with the children in place.
         let events = Self::selected_terminal_events(snapshot, crate::store::now_ms())?;
-        let mut sealed = snapshot.clone();
-        sealed.terminal = Some(events);
-        super::unit_checkpoint::partitions::check_size(&sealed)
+        super::unit_checkpoint::partitions::check_sealed_size(snapshot, &events)
     }
 
     /// Once a recovered unit's durable receipts settle, reload its exact targets before allowing

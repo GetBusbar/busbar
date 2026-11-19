@@ -207,7 +207,7 @@ async fn selected_startup_terminal_captures_latest_original_audit_facts() {
     facts.store(2, Ordering::Release);
     drop(rollback);
     let snapshot = terminal.wait().await.unwrap();
-    assert_eq!(snapshot.audit, Some(vec![2]));
+    assert_eq!(snapshot.audit.as_deref(), Some(&[2][..]));
     assert!(snapshot.ended);
     assert_eq!(money.open_units(), 0);
 }

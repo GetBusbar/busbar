@@ -118,8 +118,10 @@ pub struct UnitRecord {
     /// Complete signed partition evidence, present only on v2 items.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub billing: Option<UnitBilling>,
-    /// The unit's spend in micro-units, priced at read by the rule `/usage` uses, as exact
-    /// decimal text (at most three fractional places); null when unpriced.
+    /// The unit's spend in micro-units (1e-6 of the cost unit), priced at read by the rule
+    /// `/usage` uses, as exact decimal text (at most three fractional places): the exact sum of
+    /// the unit's lines and fee, truncated once to whole nano-units. Null when unpriced (a class
+    /// the card holds unpriced, or no card entry found).
     pub spend_micros: Option<String>,
     /// The sealed rate-card entry key (hex), or a legacy recipe's ordinal.
     pub rate_card_version: Option<String>,

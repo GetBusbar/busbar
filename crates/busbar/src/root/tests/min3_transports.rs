@@ -237,6 +237,19 @@ fn two_instances_declaring_one_protocol_refuse_the_boot_naming_both() {
     );
 }
 
+/// An opened instance with these describe facts (roles) and nothing declared: the carrier table's fixture.
+pub(crate) fn with_facts(instance: &str, facts: u64) -> ServedTransport {
+    ServedTransport {
+        instance: Arc::from(instance),
+        port: Arc::new(Framer {
+            protocols: Box::default(),
+            slots: Box::default(),
+            alpn: Box::default(),
+            facts,
+        }),
+    }
+}
+
 pub(crate) fn initial(instance: &str, slots: &[&str]) -> ServedTransport {
     ServedTransport {
         instance: Arc::from(instance),

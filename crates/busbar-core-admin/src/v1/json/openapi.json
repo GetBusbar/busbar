@@ -362,7 +362,7 @@
           },
           "per_request_fee": {
             "default": null,
-            "description": "The corrected flat per-request fee. Never negative.",
+            "description": "The corrected flat per-request fee, in minor units (hundredths of the cost unit), as a JSON\ninteger. Never negative.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -1831,7 +1831,7 @@
         "description": "One plane-declared class's consumption on a usage row: its raw count and its cost.\n\nNEW IN 1.6.0 (1.5.5's usage rows carried the token split alone, and 1.5.5 served no plane that\ndeclares a class of its own): ledgered by the FLIP-A2A ruling. `cost` is in the same MICRO-units\nas [`UsageBreakdown::spend_micros`], priced by the same card in force at the row's instant, and is\npart of that row's `spend_micros`, never added to it a second time.",
         "properties": {
           "cost": {
-            "description": "What the card in force priced that count at, in micro-units.",
+            "description": "What the card in force priced that count at, in micro-units (1e-6 of the cost unit), as a\nJSON integer truncated toward zero from this class's own exact sum.",
             "format": "int64",
             "type": "integer",
             "x-busbar-exact-number": {
@@ -4284,6 +4284,7 @@
         "description": "One `(window, pool?)` enforcement bucket's usage vs caps inside a [`GroupUsageView`].",
         "properties": {
           "budget_cap": {
+            "description": "The budget cap, in minor units (hundredths of the cost unit), as configured; compared with\n`spend_cents`.",
             "format": "int64",
             "type": [
               "integer",
@@ -4296,7 +4297,7 @@
             }
           },
           "budget_remaining_cents": {
-            "description": "Cents left under `budget_cap` (floored at 0); absent when no budget cap is set.",
+            "description": "Minor units left under `budget_cap` (floored at 0); absent when no budget cap is set.",
             "format": "int64",
             "type": [
               "integer",
@@ -4341,7 +4342,7 @@
             }
           },
           "spend_cents": {
-            "description": "Spend derived at read time (tokens x current rate card), abstract cents.",
+            "description": "Spend derived at read time from the ledger's counts, each priced at the rate card in force\nwhen it was earned, in minor units (hundredths of the cost unit), as a JSON integer\ntruncated toward zero from the exact sum.",
             "format": "int64",
             "type": "integer",
             "x-busbar-exact-number": {
@@ -5290,6 +5291,7 @@
             }
           },
           "spend_cents": {
+            "description": "The key's spend, derived at read time from its ledger counts (each priced at the rate card\nin force when it was earned, plus the flat per-request fee), in minor units (hundredths of\nthe cost unit), as a JSON integer truncated toward zero from the exact sum.",
             "format": "int64",
             "type": "integer",
             "x-busbar-exact-number": {
@@ -5446,7 +5448,7 @@
             }
           },
           "spend_micros": {
-            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the raw token\nsplit x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate\ncard's numbers are whatever unit the operator priced in; display/denomination is entirely\nthe consumer's concern. A consumer with its own per-model catalog recomputes from the raw\ntoken split instead.",
+            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the counts x\nthe dated rate-card history (each row priced at the card in force at its own instant, plus\nthe flat per-request fee). A JSON integer, truncated toward zero from the exact sum of the\nrows this object covers (so the figures of `total`, `by_model[]` and `by_key[]` are each\ntruncated apart). Busbar attaches no currency - the rate card's numbers are whatever unit\nthe operator priced in; display/denomination is entirely the consumer's concern. A consumer\nwith its own per-model catalog recomputes from the raw token split instead.",
             "format": "int64",
             "type": "integer",
             "x-busbar-exact-number": {
@@ -6173,15 +6175,15 @@
         "properties": {
           "accounted": {
             "$ref": "#/components/schemas/Amount",
-            "description": "Where the value the ledger drew is now."
+            "description": "Where the value the ledger drew is now, in nano-units of the cost unit, as a decimal\ninteger string. This node never serves a discrepancy."
           },
           "amount": {
             "$ref": "#/components/schemas/Amount",
-            "description": "`accounted` minus `drawn`. Zero is the good answer; the sign says which side is missing the\ndifference."
+            "description": "`accounted` minus `drawn`, in nano-units of the cost unit, as a decimal integer string.\nZero is the good answer; the sign says which side is missing the difference."
           },
           "drawn": {
             "$ref": "#/components/schemas/Amount",
-            "description": "What the previous release's row records as taken."
+            "description": "What the previous release's row records as taken, in nano-units of the cost unit, as a\ndecimal integer string."
           }
         },
         "required": [
@@ -6216,28 +6218,33 @@
         "type": "object"
       },
       "LedgerTotalsCell": {
-        "description": "One sealed balance, as the checkpoint holds it. Every money figure is an [`Amount`].",
+        "description": "One sealed balance, as the checkpoint holds it. Every money figure is an [`Amount`]: a decimal\ninteger string, in the unit the cell's `dimension` names (`nano-units`, 1e-9 of the cost unit,\nis the only money dimension this node names). This node never serves a checkpoint:\n`GET /ledger/checkpoints` always answers an empty list.",
         "properties": {
           "adjustments": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "bucket": {
             "type": "string"
           },
           "budget": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "cross_window_transfers": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "dimension": {
             "type": "string"
           },
           "disputed": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "drawn": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "oldest_dispute_age_secs": {
             "format": "uint64",
@@ -6270,28 +6277,35 @@
             }
           },
           "open_holds": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "open_slice_remainders": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "overdraft_carried_in": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "overdraft_carried_out": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "released": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "scope": {
             "type": "string"
           },
           "settled": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "unreconciled": {
-            "$ref": "#/components/schemas/Amount"
+            "$ref": "#/components/schemas/Amount",
+            "description": "In the unit of `dimension` (nano-units for money); a decimal integer string."
           },
           "window": {
             "description": "The window's opening instant, in whole seconds.",
@@ -6363,11 +6377,11 @@
           },
           "priced_micros": {
             "$ref": "#/components/schemas/Amount",
-            "description": "The same figure in micro-units: ONE truncating divide over the summed nano-units, never a\nsum of per-line divides."
+            "description": "The same figure in MICRO-units of the cost unit (1e-6 of it), as a decimal integer string:\nthe bucket's exact sum truncated once toward zero, never a sum of per-line truncations."
           },
           "priced_nanos": {
             "$ref": "#/components/schemas/Amount",
-            "description": "The summed priced amount of the row's lines in nano-units, each line priced against the\nrate card in force at its own arrival instant."
+            "description": "The priced amount of the row, in NANO-units of the cost unit (1e-9 of it), as a decimal\ninteger string: each line priced against the rate card in force at its own arrival\ninstant. This node derives it from the bucket's micro-unit figure times 1000, so it is\nalways a multiple of 1000."
           },
           "provider": {
             "description": "The serving lane's provider (empty where the node keeps no finer width).",
@@ -6389,7 +6403,7 @@
         "description": "One limit inside a `GroupView`: an explicit `{ metric, amount, per, pool }` projection of a\nconfig `LimitCfg`. The config file's compact `{ budget: 3000, per: month }` form is\ndeserialize-only sugar; the read API projects it explicitly so a consumer never has to know\nthe metric is the map key. `per` is `None` only for `concurrent` (an instantaneous gauge, no\nwindow); `pool` is present only on a pool-scoped limit.",
         "properties": {
           "amount": {
-            "description": "The cap amount (requests/tokens/cents, or the in-flight gauge for `concurrent`).",
+            "description": "The cap amount (requests, tokens, minor units of the cost unit for `budget`, or the\nin-flight gauge for `concurrent`).",
             "format": "uint64",
             "minimum": 0,
             "type": "integer",
@@ -6537,7 +6551,7 @@
             }
           },
           "spend_micros": {
-            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the raw token\nsplit x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate\ncard's numbers are whatever unit the operator priced in; display/denomination is entirely\nthe consumer's concern. A consumer with its own per-model catalog recomputes from the raw\ntoken split instead.",
+            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the counts x\nthe dated rate-card history (each row priced at the card in force at its own instant, plus\nthe flat per-request fee). A JSON integer, truncated toward zero from the exact sum of the\nrows this object covers (so the figures of `total`, `by_model[]` and `by_key[]` are each\ntruncated apart). Busbar attaches no currency - the rate card's numbers are whatever unit\nthe operator priced in; display/denomination is entirely the consumer's concern. A consumer\nwith its own per-model catalog recomputes from the raw token split instead.",
             "format": "int64",
             "type": "integer",
             "x-busbar-exact-number": {
@@ -6719,7 +6733,7 @@
             "type": "string"
           },
           "spend_micros": {
-            "description": "Committed spend in micro-units, as an exact decimal string (up to three fractional places).",
+            "description": "Committed spend in micro-units (1e-6 of the cost unit), as an exact decimal string (up to\nthree fractional places: whole nano-units). Never repriced.",
             "type": "string"
           }
         },
@@ -7600,6 +7614,466 @@
         },
         "required": [
           "admin_auth"
+        ],
+        "type": "object"
+      },
+      "RateHistoryCard": {
+        "description": "A whole card, as the entry stores it. Every money figure is an exact decimal string.",
+        "properties": {
+          "cards": {
+            "description": "Every rate card the entry holds: the flat card (`plane` null, the pools plane's) when one\nis configured, then each other plane's own card. A plane with no card here is not priced\nby this entry; a card here that names no lane refuses to price that lane.",
+            "items": {
+              "$ref": "#/components/schemas/RateHistoryPlaneCard"
+            },
+            "type": "array"
+          },
+          "measurements": {
+            "description": "Plugin measurement rates, by plugin kind and configured namespace.",
+            "items": {
+              "$ref": "#/components/schemas/RateHistoryMeasurement"
+            },
+            "type": "array"
+          },
+          "per_request_fee_minor": {
+            "description": "The flat per-request fee, in minor units (hundredths of the cost unit the card is priced\nin), as decimal text.",
+            "type": "string"
+          },
+          "plane_fees": {
+            "description": "Each other plane's own fees.",
+            "items": {
+              "$ref": "#/components/schemas/RateHistoryPlaneFees"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "per_request_fee_minor",
+          "cards",
+          "plane_fees",
+          "measurements"
+        ],
+        "type": "object"
+      },
+      "RateHistoryCorrection": {
+        "description": "A correction, as stored.",
+        "properties": {
+          "from_ms": {
+            "description": "The corrected window's start, inclusive, in milliseconds since the epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer",
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
+          "reason_sha256": {
+            "description": "The SHA-256 of the stated reason, as stored (the text itself is not kept).",
+            "type": "string"
+          },
+          "until_ms": {
+            "description": "The corrected window's end, exclusive, in milliseconds since the epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          }
+        },
+        "required": [
+          "from_ms",
+          "reason_sha256"
+        ],
+        "type": "object"
+      },
+      "RateHistoryEntry": {
+        "description": "One entry of the history: a whole card, and the instants it prices. A card prices an instant\nfrom its start, inclusive, to its end, exclusive.",
+        "properties": {
+          "actor": {
+            "description": "Who or what wrote the entry, exactly as stored. A correction stores the authenticated\nadmin principal that submitted it; a configuration entry stores where it came from (`boot\nof node <id>`, or the text the configuration path supplied).",
+            "type": "string"
+          },
+          "appended_at_ms": {
+            "description": "When the entry was written, in milliseconds since the epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer",
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
+          "author": {
+            "description": "The stored author: `opening` (the first entry, from instant zero), `change` (a change of\nthe configured card), `amend` (a correction) or `migrated` (copied from a node's journal).",
+            "enum": [
+              "opening",
+              "change",
+              "amend",
+              "migrated"
+            ],
+            "type": "string",
+            "x-busbar-extensible-enum": true
+          },
+          "authored_from_ms": {
+            "description": "The start the writer stored with the entry, in milliseconds since the epoch, before any\nactivation moved it. Equal to `effective_from_ms` unless an activation moved it.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer",
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
+          "base_key": {
+            "description": "The key of the entry this one extended, when it extended one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "card": {
+            "$ref": "#/components/schemas/RateHistoryCard",
+            "description": "The card."
+          },
+          "correction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RateHistoryCorrection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A correction's window and reason. Present exactly when `written_as` is `correction`."
+          },
+          "effective_from_ms": {
+            "description": "The first instant the entry's window covers, inclusive, in milliseconds since the epoch. A\nconfiguration entry's start is the instant its activation was authorized.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer",
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
+          "effective_until_ms": {
+            "description": "The first instant its window does not cover, exclusive, in milliseconds since the epoch.\nAbsent: the window is open-ended. A configuration entry is stored open-ended; the entry\nwritten after it ends it, and `in_force` says where.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
+          "entry_id": {
+            "description": "The id the ledger files counts priced by this entry under: the first 12 bytes of the\nSHA-256 of the key, 24 lowercase hexadecimal digits.",
+            "pattern": "^[0-9a-f]{24}$",
+            "type": "string"
+          },
+          "envelope": {
+            "description": "The entry's stored correction envelope, as lowercase hexadecimal, when it has one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "in_force": {
+            "description": "The instants at which this entry IS the card in force, under the history's rule (of the\nlive entries whose window covers an instant, the one with the highest key). Each span is\nstart inclusive, end exclusive; the spans of all entries never overlap. Empty: the entry\nis voided or out-ranked wherever its window lies.",
+            "items": {
+              "$ref": "#/components/schemas/RateHistorySpan"
+            },
+            "type": "array"
+          },
+          "key": {
+            "description": "The entry's identity: its key in the fleet-shared history, 40 lowercase hexadecimal digits.\nThe same entry has the same key on every node and after every restart.",
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "migrated_from": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RateHistoryMigration"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where a migrated entry was copied from. Present exactly when `author` is `migrated`."
+          },
+          "set_fields": {
+            "description": "The card fields that changed from the entry it extended, as stored.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "voided": {
+            "description": "The entry is VOID: it prices no instant. A voided entry's id stays known.",
+            "type": "boolean"
+          },
+          "writer_node": {
+            "description": "The durable id of the node that wrote the entry, 16 lowercase hexadecimal digits.",
+            "pattern": "^[0-9a-f]{16}$",
+            "type": "string"
+          },
+          "written_as": {
+            "description": "How the entry was written: `configuration` (a configuration resolved a card) or\n`correction` (the amend verb, `POST /ledger/amend-rate-history`).",
+            "enum": [
+              "configuration",
+              "correction"
+            ],
+            "type": "string",
+            "x-busbar-extensible-enum": true
+          }
+        },
+        "required": [
+          "key",
+          "entry_id",
+          "effective_from_ms",
+          "authored_from_ms",
+          "in_force",
+          "voided",
+          "written_as",
+          "author",
+          "actor",
+          "writer_node",
+          "appended_at_ms",
+          "set_fields",
+          "card"
+        ],
+        "type": "object"
+      },
+      "RateHistoryLane": {
+        "description": "One lane's rates.",
+        "properties": {
+          "card_lane": {
+            "description": "The lane as the whole card keys it: the lane for the flat card, `<plane>` U+001F `<lane>`\nfor another plane's (the spelling the amend verb takes).",
+            "type": "string"
+          },
+          "lane": {
+            "description": "The lane (model) as the plane's card names it.",
+            "type": "string"
+          },
+          "rates": {
+            "description": "Every class the lane prices. A lane with no `cache_write` row prices cache writes at its\n`input` rate.",
+            "items": {
+              "$ref": "#/components/schemas/RateHistoryRate"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "lane",
+          "card_lane",
+          "rates"
+        ],
+        "type": "object"
+      },
+      "RateHistoryMeasurement": {
+        "description": "One plugin measurement namespace's rates.",
+        "properties": {
+          "card_lane": {
+            "description": "The measurement lane as the whole card keys it.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "The plugin kind.",
+            "type": "string"
+          },
+          "namespace": {
+            "description": "The configured namespace.",
+            "type": "string"
+          },
+          "rates": {
+            "description": "Every class the namespace prices.",
+            "items": {
+              "$ref": "#/components/schemas/RateHistoryRate"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "namespace",
+          "card_lane",
+          "rates"
+        ],
+        "type": "object"
+      },
+      "RateHistoryMigration": {
+        "description": "Where a migrated entry came from.",
+        "properties": {
+          "node": {
+            "description": "The journal node, 16 lowercase hexadecimal digits.",
+            "type": "string"
+          },
+          "node_seq": {
+            "description": "Its position on that node's chain, as decimal text.",
+            "type": "string"
+          },
+          "opening": {
+            "description": "Whether it was that chain's opening entry.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "node",
+          "node_seq",
+          "opening"
+        ],
+        "type": "object"
+      },
+      "RateHistoryPage": {
+        "description": "`GET /ledger/rate-history`: one page of the dated rate-card history, in entry-key order.",
+        "properties": {
+          "generation": {
+            "description": "The store generation of the rate-card history this page was read at, as decimal text. It\nmoves with every write to the history, by any node. Pages read at different generations\nwere read from different histories: start again from the first page to see one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "items": {
+            "description": "The entries of this page, in key order: the order they were written in.",
+            "items": {
+              "$ref": "#/components/schemas/RateHistoryEntry"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "The cursor for the next page, or null after the last entry.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "generation"
+        ],
+        "type": "object"
+      },
+      "RateHistoryPlaneCard": {
+        "description": "One plane's card.",
+        "properties": {
+          "lanes": {
+            "description": "The lanes the card prices, in lane order.",
+            "items": {
+              "$ref": "#/components/schemas/RateHistoryLane"
+            },
+            "type": "array"
+          },
+          "plane": {
+            "description": "The plane registry key; null for the flat card.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "plane",
+          "lanes"
+        ],
+        "type": "object"
+      },
+      "RateHistoryPlaneFees": {
+        "description": "One plane's fees, in minor units of the cost unit, as decimal text.",
+        "properties": {
+          "per_request_minor": {
+            "description": "Charged once per billable request of the plane, in minor units.",
+            "type": "string"
+          },
+          "per_session_minor": {
+            "description": "Charged once per session the plane opens, in minor units.",
+            "type": "string"
+          },
+          "plane": {
+            "description": "The plane registry key.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plane",
+          "per_request_minor",
+          "per_session_minor"
+        ],
+        "type": "object"
+      },
+      "RateHistoryRate": {
+        "description": "One class's rate.",
+        "properties": {
+          "class": {
+            "description": "The billable class.",
+            "type": "string"
+          },
+          "micro_per_unit": {
+            "description": "The rate as stored, in micro-units of the cost unit per unit of the class, as exact\ndecimal text: it reads back to the stored figure exactly.",
+            "type": "string"
+          },
+          "nanos_per_unit": {
+            "description": "The rate the card prices with, in nano-units of the cost unit per unit of the class, as\ndecimal text. Null: the stored figure is finer than one nano-unit, so the card cannot hold\nit and refuses to price the class.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "class",
+          "micro_per_unit",
+          "nanos_per_unit"
+        ],
+        "type": "object"
+      },
+      "RateHistorySpan": {
+        "description": "A span of instants, start inclusive, end exclusive.",
+        "properties": {
+          "from_ms": {
+            "description": "The first instant, inclusive, in milliseconds since the epoch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer",
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          },
+          "until_ms": {
+            "description": "The first instant after it, exclusive, in milliseconds since the epoch. Absent: open,\nthe card in force now and from now on until another entry is written.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ],
+            "x-busbar-exact-number": {
+              "client": "lossless-number-token-v1; preserve raw token before binary64 conversion",
+              "integer_format": "uint64",
+              "representation": "json-integer-token"
+            }
+          }
+        },
+        "required": [
+          "from_ms"
         ],
         "type": "object"
       },
@@ -8555,7 +9029,7 @@
             "type": "string"
           },
           "spend_micros": {
-            "description": "The unit's spend in micro-units, priced at read by the rule `/usage` uses, as exact\ndecimal text (at most three fractional places); null when unpriced.",
+            "description": "The unit's spend in micro-units (1e-6 of the cost unit), priced at read by the rule\n`/usage` uses, as exact decimal text (at most three fractional places): the exact sum of\nthe unit's lines and fee, truncated once to whole nano-units. Null when unpriced (a class\nthe card holds unpriced, or no card entry found).",
             "type": [
               "string",
               "null"
@@ -8768,7 +9242,7 @@
             }
           },
           "spend_micros": {
-            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the raw token\nsplit x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate\ncard's numbers are whatever unit the operator priced in; display/denomination is entirely\nthe consumer's concern. A consumer with its own per-model catalog recomputes from the raw\ntoken split instead.",
+            "description": "Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -\ninteger math, sub-cent precise, no float drift), recomputed at read time from the counts x\nthe dated rate-card history (each row priced at the card in force at its own instant, plus\nthe flat per-request fee). A JSON integer, truncated toward zero from the exact sum of the\nrows this object covers (so the figures of `total`, `by_model[]` and `by_key[]` are each\ntruncated apart). Busbar attaches no currency - the rate card's numbers are whatever unit\nthe operator priced in; display/denomination is entirely the consumer's concern. A consumer\nwith its own per-model catalog recomputes from the raw token split instead.",
             "format": "int64",
             "type": "integer",
             "x-busbar-exact-number": {
@@ -33694,6 +34168,286 @@
         "x-busbar-verb": "get_ledger_migration"
       }
     },
+    "/api/v1/admin/ledger/rate-history": {
+      "get": {
+        "description": "One row per entry of the fleet-shared rate-card history, read from the store (never this node's copy of it), in key order: the entry's identity, its window in milliseconds since the epoch, the spans in which it is the card in force, how and by whom it was written, and every rate and fee of its card as exact decimal text. A card prices an instant from its start, inclusive, to its end, exclusive. Every node answers the same rows for the same store state; `generation` names the state a page was read at. Pages with `cursor` and `limit`. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
+        "operationId": "GetLedgerRateHistory",
+        "parameters": [
+          {
+            "description": "Opaque continuation cursor from `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page size (default 200, max 1000).",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateHistoryPage"
+                }
+              }
+            },
+            "description": "A page of the history, in key order",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`invalid_request`: malformed pagination `cursor`",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Missing/invalid admin credential (error code `unauthorized`)",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Admin request exceeds the listener body limit (request_too_large)",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`unavailable`: the node could not take the unit, its rate-card history is not loaded, or the store did not answer. The body is the admin error envelope with code `unavailable`",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Delay in seconds when supplied by the listener's rate/backpressure refusal; absence makes no retry promise.",
+                "schema": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Other typed administrative refusal. Branch on known codes while preserving unknown strings; retry depends on operation semantics.",
+            "headers": {
+              "Cache-Control": {
+                "description": "Administrative responses, including credential issuance and replay, must not be stored.",
+                "schema": {
+                  "const": "no-store",
+                  "type": "string"
+                }
+              },
+              "X-Client-Request-Id": {
+                "description": "The client's own X-Request-Id, echoed when it was 1 to 128 of [A-Za-z0-9._:-] (kept on the request's audit rows as client_request_id); absent otherwise.",
+                "schema": {
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "The request id the engine minted for this request; equals request_id in an error body and on the request's audit rows. A client X-Request-Id never replaces it.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "traceparent": {
+                "description": "W3C Trace Context: present when the request carried a valid traceparent; the same trace id and flags, naming the admin span.",
+                "schema": {
+                  "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "The dated rate-card history: every entry, its window and its card",
+        "x-busbar-required-scope": "read-only",
+        "x-busbar-since": "1.6.0",
+        "x-busbar-verb": "get_ledger_rate_history"
+      }
+    },
     "/api/v1/admin/ledger/reconciliation": {
       "get": {
         "description": "There is one ledger, so there is no second set of figures to be out by: `discrepancies` is always empty, and `holds` is true unless a key's counts the rate card refused to price are named under `refused`. A read: it mutates nothing, is never posture-gated, and needs no more authority than `GET /usage`.",
@@ -43161,6 +43915,11 @@
       },
       {
         "bound": true,
+        "name": "get_ledger_rate_history",
+        "scope": "read-only"
+      },
+      {
+        "bound": true,
         "name": "get_audit_head",
         "scope": "read-only"
       },
@@ -46604,6 +47363,7 @@
                       "get_ledger_checkpoints",
                       "get_ledger_reconciliation",
                       "get_ledger_migration",
+                      "get_ledger_rate_history",
                       "get_audit_head",
                       "get_audit_range",
                       "get_audit_keys",

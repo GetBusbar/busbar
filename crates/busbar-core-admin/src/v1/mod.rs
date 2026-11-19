@@ -5,6 +5,7 @@ pub mod contract;
 pub mod json;
 mod named_def_views;
 mod plugin_configuration;
+pub mod rate_history;
 pub mod records;
 pub(crate) mod secret_rule;
 pub mod service;

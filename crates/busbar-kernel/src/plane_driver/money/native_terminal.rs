@@ -12,7 +12,7 @@ use super::{
     NativeAdmissionError, PlaneMoney,
 };
 use crate::governance::unit_checkpoint::{
-    SelectedTerminalCompletion, SelectedTransfer, UnitCheckpoint,
+    AuditFacts, SelectedTerminalCompletion, SelectedTransfer, UnitCheckpoint,
 };
 use crate::governance::GovState;
 use crate::plane_driver::request_admission::AdmittedRequest;
@@ -200,11 +200,11 @@ impl PlaneMoney {
                 return Err(NativeAttemptError::Binding);
             }
             let mut snapshot = native.checkpoint().as_ref().clone();
-            snapshot.audit = Some(
+            snapshot.audit = Some(AuditFacts::from(
                 self.post
                     .checkpoint_facts(request.unit())
                     .ok_or(NativeAttemptError::Custody)?,
-            );
+            ));
             let expected = native.accepted_revision();
             let parts = snapshot
                 .partitions

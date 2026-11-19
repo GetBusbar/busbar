@@ -937,7 +937,7 @@ impl Shape for EgressFarEnd<'_> {
             members.to_mut().retain(|m| {
                 grants
                     .get(pool)
-                    .is_some_and(|allowed| allowed.iter().any(|name| m.name == *name))
+                    .is_some_and(|allowed| allowed.contains(&m.name))
             });
             order.retain(|id| members.iter().any(|m| m.destination == *id));
         }
@@ -1871,10 +1871,10 @@ impl EgressFarEnd<'_> {
             || self.route.connection_required;
         let presented = if let Some(pending) = pending {
             pending
-                .take(need.0, &member, url, now.secs)
+                .take(need.0, member, url, now.secs)
                 .map(crate::host_outbound::Presentation::Body)
         } else {
-            delegated.and_then(|bound| bound.present(need.0, &member, url, now.secs))
+            delegated.and_then(|bound| bound.present(need.0, member, url, now.secs))
         };
         if bound && presented.is_none() {
             self.lock().refused = Some(ReasonCode::CredentialUnavailable);
@@ -2990,7 +2990,7 @@ impl FarEnd for EgressFarEnd<'_> {
                         .is_none_or(|grants| {
                             grants
                                 .get(pool.name.as_str())
-                                .is_some_and(|allowed| allowed.iter().any(|name| m.name == *name))
+                                .is_some_and(|allowed| allowed.contains(&m.name))
                         })
                 })
                 .filter(|(_, m)| {

@@ -38,7 +38,7 @@ fn an_undeclared_usage_class_is_dropped_and_audited() {
     let Bill::Usage(kept) = bill(Ending::End, &session) else {
         panic!("an end with USAGE bills it");
     };
-    let mapped = declared.map(&kept);
+    let mapped = declared.map(kept);
     assert_eq!(
         mapped.dropped,
         vec![Box::<str>::from("images")],

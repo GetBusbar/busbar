@@ -65,6 +65,8 @@ pub(crate) fn prepare(
             .map_err(|error| GrammarRefusal(error.to_string()))?;
     }
     let images = builder.finish();
+    // The build's carrier assignment, against these images' described facts (nothing is opened here).
+    crate::root::min3_framers::validate(&images).map_err(GrammarRefusal)?;
     crate::root::settings_public::install_native(&images).map_err(GrammarRefusal)?;
     let grammar = crate::root::secret_grammar::of_images(
         &images,
@@ -113,7 +115,7 @@ impl FileImages {
     /// linkage and ranking words from. Called by the stage that prepares the images it serves or validates, never
     /// by a per-read phase one (which mutates nothing).
     pub(crate) fn publish_hooks(&self) {
-        crate::root::off_path::hooks::NATIVE.publish_images(
+        crate::root::off_path::hooks::publish_images(
             &self.images,
             &self.aliases,
             self.proofs

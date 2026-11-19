@@ -153,7 +153,7 @@ pub struct RootInstall {
     /// The admitted native hook images' facts (WP3 hook step): what config validation reads of hooks (the names
     /// and aliases a hook image answers to, which are linked, and the D_WORD words they declare). `None` = no hook
     /// image is admitted.
-    pub hook_facts: Option<&'static dyn busbar_contract::hook_calls::HookImageFacts>,
+    pub hook_facts: Option<&'static HookImageFacts>,
     /// Whether a linked auth door's Statement declares an INBOUND auth-chain module.
     /// `None` = no linked row is an auth-chain module.
     pub auth_chain_module: Option<AuthChainModule>,
@@ -312,8 +312,94 @@ pub fn linked_rows() -> Vec<LinkedRow> {
 }
 
 /// The admitted native hook images' facts (WP3 hook step).
-fn hook_facts() -> Option<&'static dyn busbar_contract::hook_calls::HookImageFacts> {
+fn hook_facts() -> Option<&'static HookImageFacts> {
     root_rows().hook_facts
+}
+
+/// What the admitted native hook images declare of themselves, as the stage that prepared them
+/// published it.
+struct AdmittedHooks {
+    /// Every identity, name and alias of an admitted hook image, with its identity.
+    names: std::collections::BTreeMap<String, String>,
+    /// The identities of the linked (compiled-in) hook images.
+    linked: std::collections::BTreeSet<String>,
+    /// Every D_WORD an admitted hook image declares.
+    words: std::collections::BTreeSet<String>,
+}
+
+/// THE NATIVE HOOK IMAGES' FACTS, as config validation asks them (WP3 hook step). Native hooks open
+/// only in the serving walk and bind to native planes there; validation reads only what the admitted
+/// images declare. The root holds the process's one (installed as `RootInstall.hook_facts`) and
+/// publishes into it at every image preparation; each publication replaces the last, which is
+/// released when its last reader drops it.
+pub struct HookImageFacts {
+    admitted: arc_swap::ArcSwapOption<AdmittedHooks>,
+}
+
+impl HookImageFacts {
+    /// No hook image admitted yet.
+    #[must_use]
+    pub const fn new() -> Self {
+        HookImageFacts {
+            admitted: arc_swap::ArcSwapOption::const_empty(),
+        }
+    }
+
+    /// Publish what the admitted hook images declare: `names` maps every identity, name and alias
+    /// to its identity, `linked` holds the linked images' identities and `words` every D_WORD.
+    pub fn publish(
+        &self,
+        names: std::collections::BTreeMap<String, String>,
+        linked: std::collections::BTreeSet<String>,
+        words: std::collections::BTreeSet<String>,
+    ) {
+        self.admitted.store(Some(Arc::new(AdmittedHooks {
+            names,
+            linked,
+            words,
+        })));
+    }
+
+    fn identity(&self, module: &str) -> Option<String> {
+        self.admitted
+            .load()
+            .as_ref()
+            .and_then(|admitted| admitted.names.get(module).cloned())
+    }
+
+    /// Whether an admitted hook image answers to `module` (its identity, a name or an alias).
+    #[must_use]
+    pub fn answers(&self, module: &str) -> bool {
+        self.identity(module).is_some()
+    }
+
+    /// Whether `module` names a hook image this build LINKS (as opposed to one dropped in).
+    #[must_use]
+    pub fn linked(&self, module: &str) -> bool {
+        let Some(identity) = self.identity(module) else {
+            return false;
+        };
+        self.admitted
+            .load()
+            .as_ref()
+            .is_some_and(|admitted| admitted.linked.contains(&identity))
+    }
+
+    /// Whether some admitted hook image declares `word` (a D_WORD item): a pool ranking strategy's
+    /// spelling.
+    #[must_use]
+    pub fn declares_word(&self, word: &str) -> bool {
+        self.admitted
+            .load()
+            .as_ref()
+            .is_some_and(|admitted| admitted.words.contains(word))
+    }
+}
+
+impl Default for HookImageFacts {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Whether `name` is a ranking strategy: a D_WORD some admitted native hook image declares.

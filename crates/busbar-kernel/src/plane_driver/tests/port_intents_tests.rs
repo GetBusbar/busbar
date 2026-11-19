@@ -46,7 +46,9 @@ impl Held for Bridge {
     fn send(&mut self, _: &[u8], _: bool) -> Result<(), RecordsDenied> {
         Err(RecordsDenied::Invalid)
     }
-    fn ready(&mut self, _: &[u8]) {}
+    fn ready(&mut self, _: &[u8]) -> Result<(), RecordsDenied> {
+        Ok(())
+    }
     fn remote(&mut self, description: &str) -> Result<(), RecordsDenied> {
         self.log
             .lock()
@@ -848,7 +850,9 @@ fn the_trust_item_buffer_keeps_items_in_order() {
         approved: None,
         sighted: Some([6; 32]),
     });
-    let all: Vec<(String, u32, Option<[u8; 32]>, Option<[u8; 32]>)> = items
+    /// An item's name, verdict, approved digest and sighted digest, owned.
+    type Row = (String, u32, Option<[u8; 32]>, Option<[u8; 32]>);
+    let all: Vec<Row> = items
         .iter()
         .map(|i| (i.name.to_owned(), i.verdict, i.approved, i.sighted))
         .collect();

@@ -993,6 +993,9 @@ impl busbar_core_admin::Governance for CoreGovernance {
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _request: &[u8],
     ) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
+        if verb == KernelVerb::GetLedgerRateHistory {
+            return rate_history_page(self.request.path(), &crate::root::kernel::ROOT_CARD).await;
+        }
         let body = render_ledger_view(verb, self.ledger.as_ref()).await?;
         Ok(json_answer(body))
     }
@@ -1035,26 +1038,7 @@ async fn audit_keys_page(
             .map_err(|_| busbar_core_admin::GovernanceError::Validation)?;
     let window = match cursor::window(&query, "audit-keys", "", LIST_LIMIT_DEFAULT) {
         Ok(window) => window,
-        Err(response) => {
-            let (parts, body) = (*response).into_parts();
-            let bytes = axum::body::to_bytes(body, 64 * 1024)
-                .await
-                .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
-            return Ok(AdminAnswer {
-                status: parts.status.as_u16(),
-                headers: parts
-                    .headers
-                    .iter()
-                    .map(|(name, value)| {
-                        (
-                            name.as_str().to_string(),
-                            value.to_str().unwrap_or_default().to_string(),
-                        )
-                    })
-                    .collect(),
-                body: bytes.to_vec(),
-            });
-        }
+        Err(response) => return refusal_answer(*response).await,
     };
     let body: json::Value = json::parse_value(expose::keys_body(&view.keys()).as_bytes())
         .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
@@ -1083,6 +1067,59 @@ async fn audit_keys_page(
     json::to_vec(&json::Value::from(body))
         .map(json_answer)
         .map_err(|_| busbar_core_admin::GovernanceError::Store)
+}
+
+/// A refusal the shared admin seams built as a response, carried as this loop's answer.
+async fn refusal_answer(
+    response: axum::response::Response,
+) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
+    let (parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, 64 * 1024)
+        .await
+        .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
+    Ok(AdminAnswer {
+        status: parts.status.as_u16(),
+        headers: parts
+            .headers
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.as_str().to_string(),
+                    value.to_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect(),
+        body: bytes.to_vec(),
+    })
+}
+
+/// `GET /ledger/rate-history`: one page of the history AS THE STORE HOLDS IT. Each page reads the
+/// store's history afresh, never this node's copy (which a rescan refreshes only every few
+/// seconds), so every node answers the same rows for the same store state. It writes nothing and
+/// takes no lock the card holder, admission or the flusher takes.
+async fn rate_history_page(
+    target: &str,
+    history: &crate::root::kernel::RootHistory,
+) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
+    use busbar_core_admin::v1::rate_history;
+    use busbar_core_admin::GovernanceError;
+
+    let uri = target.parse().map_err(|_| GovernanceError::Validation)?;
+    let axum::extract::Query(query) =
+        axum::extract::Query::<std::collections::HashMap<String, String>>::try_from_uri(&uri)
+            .map_err(|_| GovernanceError::Validation)?;
+    let window = match rate_history::window(&query) {
+        Ok(window) => window,
+        Err(response) => return refusal_answer(*response).await,
+    };
+    let store = history.card_store().ok_or(GovernanceError::Store)?;
+    let snapshot = store.stored().await.map_err(|why| {
+        tracing::warn!(why = %why, "the rate-card history could not be read from the store");
+        GovernanceError::Store
+    })?;
+    busbar_contract::json::to_vec(&rate_history::page(&snapshot, &window))
+        .map(json_answer)
+        .map_err(|_| GovernanceError::Store)
 }
 
 fn json_answer(body: Vec<u8>) -> AdminAnswer {

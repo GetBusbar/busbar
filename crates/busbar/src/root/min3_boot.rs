@@ -2361,10 +2361,15 @@ pub(super) async fn finish_with_store(
     )?;
     let framers = match fixed_transports {
         Some(fixed) => fixed.framers,
-        None => super::min3_framers::NativeFramers::new(transports::table(transports::opened(
-            &walked.opened,
-            &specs,
-        ))?),
+        None => {
+            // The carrier table is bound once, here, and held for the process: a reload keeps `fixed.framers`.
+            let framers = super::min3_framers::NativeFramers::new(transports::table(
+                transports::opened(&walked.opened, &specs),
+            )?)
+            .carrying(&super::min3_framers::assigned(crate::LINKED_CARRIERS)?)?;
+            tracing::info!("{}", framers.carrier_line());
+            framers
+        }
     };
     let transport_sources = TransportSources {
         framers: framers.clone(),

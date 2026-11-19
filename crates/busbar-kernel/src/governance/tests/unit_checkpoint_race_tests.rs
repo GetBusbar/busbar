@@ -570,7 +570,7 @@ fn unit(revision: u64) -> UnitCheckpoint {
         metered: true,
         ended: terminal,
         terminal: terminal.then(|| vec![terminal_event()]),
-        audit: Some(b"{}".to_vec()),
+        audit: Some(b"{}".to_vec().into()),
         measurement: None,
         unread: None,
         partitions: None,

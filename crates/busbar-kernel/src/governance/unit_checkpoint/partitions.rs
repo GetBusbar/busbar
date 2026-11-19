@@ -11,6 +11,7 @@ use busbar_contract::Count;
 use serde::{Deserialize, Serialize};
 
 use super::{RecordStoreError, RecordStoreResult, UnitCheckpoint, UnitTarget};
+use crate::governance::recovery::RecoveryEvent;
 use busbar_kernel_ledger::cost::RawRateEra;
 
 pub const MAX_PREPARATIONS: usize = 256;
@@ -749,13 +750,18 @@ pub fn validate_successor(
     Ok(())
 }
 
-struct ByteBound(usize);
+/// Counts the bytes an encoding writes and keeps none of them; the encoding stops as soon as the
+/// count would pass `bound`.
+struct ByteBound {
+    count: usize,
+    bound: usize,
+}
 impl std::io::Write for ByteBound {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0 = self
-            .0
+        self.count = self
+            .count
             .checked_add(bytes.len())
-            .filter(|n| *n <= MAX_CHECKPOINT_BYTES)
+            .filter(|n| *n <= self.bound)
             .ok_or_else(|| std::io::Error::other("selected checkpoint exceeds byte bound"))?;
         Ok(bytes.len())
     }
@@ -764,7 +770,43 @@ impl std::io::Write for ByteBound {
     }
 }
 
+/// The length of `value`'s stored encoding, written nowhere; `None` past `bound` or when it does
+/// not encode.
+fn encoded_len<T: Serialize + ?Sized>(value: &T, bound: usize) -> Option<usize> {
+    let mut count = ByteBound { count: 0, bound };
+    busbar_contract::json::to_writer(&mut count, value).ok()?;
+    Some(count.count)
+}
+
+fn oversized() -> RecordStoreError {
+    invalid("selected checkpoint exceeds its encoded byte bound")
+}
+
 pub(crate) fn check_size(snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
-    busbar_contract::json::to_writer(ByteBound(0), snapshot)
-        .map_err(|_| invalid("selected checkpoint exceeds its encoded byte bound"))
+    encoded_len(snapshot, MAX_CHECKPOINT_BYTES)
+        .map(drop)
+        .ok_or_else(oversized)
+}
+
+/// The exact length of `snapshot`'s stored encoding once `terminal` is sealed into it, measured
+/// without building that record. The encoding is compact JSON, where a member's value is written
+/// the same wherever it stands: the sealed record is the snapshot's bytes with its `terminal`
+/// value (`null` while running) replaced by the vector's. `None` when a part does not encode.
+pub(crate) fn sealed_size(snapshot: &UnitCheckpoint, terminal: &[RecoveryEvent]) -> Option<usize> {
+    let whole = encoded_len(snapshot, usize::MAX)?;
+    let unsealed = encoded_len(&snapshot.terminal, usize::MAX)?;
+    let sealed = encoded_len(terminal, usize::MAX)?;
+    whole.checked_sub(unsealed)?.checked_add(sealed)
+}
+
+/// [`check_size`] of `snapshot` sealed with `terminal`, refused exactly as that record's own
+/// encoding would be.
+pub(crate) fn check_sealed_size(
+    snapshot: &UnitCheckpoint,
+    terminal: &[RecoveryEvent],
+) -> RecordStoreResult<()> {
+    sealed_size(snapshot, terminal)
+        .filter(|bytes| *bytes <= MAX_CHECKPOINT_BYTES)
+        .map(drop)
+        .ok_or_else(oversized)
 }

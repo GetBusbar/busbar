@@ -131,7 +131,7 @@ pub fn plane_decls() -> &'static [&'static PlaneDecl] {
     let folded: &'static [&'static PlaneDecl] =
         merged_boot_plane_decls(installed, &[], builtin_plane_decls()).leak();
     // A list another reader folded and published first wins; this fold stays leaked unread.
-    *PLANES
+    PLANES
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get_or_insert(folded)

@@ -355,7 +355,8 @@ pub struct PoolMemberStatusView {
     /// count instead of trying to catch the live edge. Carried across config apply and
     /// restart with the rest of the learned health.
     pub trip_count: u64,
-    /// Epoch seconds of the most recent trip; `None` = never tripped.
+    /// Epoch seconds of the most recent trip; `None` = never tripped. The `core/routing` view
+    /// `pools` serves it multiplied by 1000, as epoch milliseconds.
     pub last_trip_at: Option<u64>,
 }
 
@@ -532,7 +533,8 @@ pub struct LimitView {
     pub enforcement: Option<&'static str>,
     /// One of `requests` | `tokens` | `budget` | `concurrent`.
     pub metric: &'static str,
-    /// The cap amount (requests/tokens/cents, or the in-flight gauge for `concurrent`).
+    /// The cap amount (requests, tokens, minor units of the cost unit for `budget`, or the
+    /// in-flight gauge for `concurrent`).
     pub amount: u64,
     /// The accounting window: `minute` | `hour` | `day` | `month` | `total`. Absent for `concurrent`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -620,16 +622,20 @@ pub struct GroupBucketUsageView {
         schemars(with = "f64", extend("x-busbar-count-scale" = 6))
     )]
     pub tokens: busbar_contract::count::Count,
-    /// Spend derived at read time (tokens x current rate card), abstract cents.
+    /// Spend derived at read time from the ledger's counts, each priced at the rate card in force
+    /// when it was earned, in minor units (hundredths of the cost unit), as a JSON integer
+    /// truncated toward zero from the exact sum.
     pub spend_cents: i64,
     /// The bucket's caps, when configured (absent = uncapped on that metric).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requests_cap: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_cap: Option<u64>,
+    /// The budget cap, in minor units (hundredths of the cost unit), as configured; compared with
+    /// `spend_cents`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_cap: Option<i64>,
-    /// Cents left under `budget_cap` (floored at 0); absent when no budget cap is set.
+    /// Minor units left under `budget_cap` (floored at 0); absent when no budget cap is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_remaining_cents: Option<i64>,
 }
@@ -1017,7 +1023,8 @@ pub struct ObservationUsageView {
     pub accounting_time: String,
     /// Disjoint raw class counts, as canonical decimal strings. No derived parents are inserted.
     pub counts: std::collections::BTreeMap<String, String>,
-    /// Committed spend in micro-units, as an exact decimal string (up to three fractional places).
+    /// Committed spend in micro-units (1e-6 of the cost unit), as an exact decimal string (up to
+    /// three fractional places: whole nano-units). Never repriced.
     pub spend_micros: String,
 }
 
@@ -1044,7 +1051,8 @@ pub struct ClassUsage {
         schemars(with = "f64", extend("x-busbar-count-scale" = 6))
     )]
     pub count: busbar_contract::count::Count,
-    /// What the card in force priced that count at, in micro-units.
+    /// What the card in force priced that count at, in micro-units (1e-6 of the cost unit), as a
+    /// JSON integer truncated toward zero from this class's own exact sum.
     pub cost: i64,
 }
 
@@ -1076,11 +1084,13 @@ pub struct UsageBreakdown {
     pub tokens_cache_creation: busbar_contract::count::Count,
     pub requests: u64,
     /// Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -
-    /// integer math, sub-cent precise, no float drift), recomputed at read time from the raw token
-    /// split x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate
-    /// card's numbers are whatever unit the operator priced in; display/denomination is entirely
-    /// the consumer's concern. A consumer with its own per-model catalog recomputes from the raw
-    /// token split instead.
+    /// integer math, sub-cent precise, no float drift), recomputed at read time from the counts x
+    /// the dated rate-card history (each row priced at the card in force at its own instant, plus
+    /// the flat per-request fee). A JSON integer, truncated toward zero from the exact sum of the
+    /// rows this object covers (so the figures of `total`, `by_model[]` and `by_key[]` are each
+    /// truncated apart). Busbar attaches no currency - the rate card's numbers are whatever unit
+    /// the operator priced in; display/denomination is entirely the consumer's concern. A consumer
+    /// with its own per-model catalog recomputes from the raw token split instead.
     pub spend_micros: i64,
     /// Every ledgered class outside the reserved token split, keyed by class name ([`ClassUsage`]).
     /// Includes open classes from every provider and plane. Absent when the row carries none.

@@ -193,11 +193,12 @@ impl Held for Wire {
         Ok(())
     }
 
-    fn ready(&mut self, tail: &[u8]) {
+    fn ready(&mut self, tail: &[u8]) -> Result<(), RecordsDenied> {
         self.0
             .lock()
             .unwrap()
             .push(format!("ready {}", String::from_utf8_lossy(tail)));
+        Ok(())
     }
 }
 

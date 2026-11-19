@@ -233,7 +233,7 @@ fn unit() -> UnitCheckpoint {
         metered: true,
         ended: false,
         terminal: None,
-        audit: Some(json::to_vec(&audit).unwrap()),
+        audit: Some(json::to_vec(&audit).unwrap().into()),
         measurement: None,
         unread: None,
         partitions: None,
@@ -1410,7 +1410,7 @@ async fn selected_recovery_keeps_signed_partition_and_rejects_replayed_attributi
         policy_epoch: 3,
         hooks: Vec::new(),
     };
-    report.audit = Some(json::to_vec(&facts).unwrap());
+    report.audit = Some(json::to_vec(&facts).unwrap().into());
     let sink = unit_checkpoint_sink(&book);
     sink.recover_audit(&report).await.unwrap();
     let (_, audit) = book

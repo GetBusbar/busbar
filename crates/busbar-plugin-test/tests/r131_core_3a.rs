@@ -88,10 +88,6 @@ const LEFT_OUT: &[(&str, &str)] = &[
         "abi/** (W3-D-CONTRACT deletes it); also needs Watch::armed_here (!2305)",
     ),
     (
-        "busbar-contract/tests/signing_gate_reader.rs",
-        "abi/** (W3-D-CONTRACT deletes it)",
-    ),
-    (
         "busbar-contract/tests/zero_declarations.rs",
         "abi/** (W3-D-CONTRACT deletes it)",
     ),
