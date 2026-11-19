@@ -3285,6 +3285,9 @@ mod chain_walk_tests;
 #[cfg(test)]
 #[path = "tests/instances_tests.rs"]
 mod instances_tests;
+#[cfg(test)]
+#[path = "tests/no_axis_tests.rs"]
+mod no_axis_tests;
 
 #[cfg(test)]
 #[path = "tests/acceptance_1_5_5_tests.rs"]
