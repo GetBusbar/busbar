@@ -33,8 +33,6 @@ pub(super) enum ResponseAuthority {
     /// A plane route answered with no unit: verified and not billed, or admitted with nobody to
     /// verify (`busbar_kernel::inbound::native::PhysicalUnbilledExecution`).
     Unbilled(Arc<busbar_kernel::inbound::native::PhysicalUnbilledExecution>),
-    /// An upgrade request handed over: the 101, or the plane's own answer before one.
-    Upgrade(Arc<busbar_kernel::inbound::native::PhysicalUpgrade>),
     /// A core route that requires a key, served to the caller the data chain verified.
     CoreKey(Arc<busbar_kernel::inbound::native::PhysicalKeyExecution>),
     /// A core keyed route refused: the one unverified answer, or the verifier's 503.
@@ -50,7 +48,6 @@ impl ResponseAuthority {
             Self::Admin(owner) => owner.binding(),
             Self::Public(owner) => owner.binding(),
             Self::Unbilled(owner) => owner.binding(),
-            Self::Upgrade(owner) => owner.binding(),
             Self::CoreKey(owner) => owner.binding(),
             Self::CoreKeyRefused(owner) => owner.binding(),
             Self::Gate(owner) => owner.binding(),
@@ -95,7 +92,6 @@ impl ResponseAuthority {
             Self::Admin(_)
             | Self::Public(_)
             | Self::Unbilled(_)
-            | Self::Upgrade(_)
             | Self::CoreKey(_)
             | Self::CoreKeyRefused(_)
             | Self::Gate(_)
@@ -384,6 +380,9 @@ impl RegisteredResponse {
                 ended
             }
         };
+        // The request's deadline (`limits.request_timeout`) bounds the WHOLE answer, an upgraded
+        // one included: a WebSocket session is closed (1000) when it passes. Kept strict on
+        // purpose; a session limit of its own is the owner's to add, never an unbounded session.
         let result = tokio::select! {
             result = run => result,
             _ = binding.cancelled() => Err(InputError::Delivery(ResponseStop::Cancelled)),
