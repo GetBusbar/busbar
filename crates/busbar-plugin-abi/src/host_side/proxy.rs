@@ -102,7 +102,7 @@ pub(crate) async fn chain<'a, 'i, K, N, F>(
 where
     K: Kind,
     N: Needs,
-    F: FnOnce(&PooledOut, &mut OutLease) -> First<'i, K> + Send,
+    F: FnOnce(&mut PooledOut, &mut OutLease) -> First<'i, K> + Send,
 {
     if !inst.is_live() {
         return Err(CallError::Quarantined);
@@ -112,10 +112,15 @@ where
         .map(|finished| finished.answer)
 }
 
-/// A chain's argument buffers: `req` copied in as buffer 0 (busbar-ffi keeps them until the token retires and
-/// zeroes them when they drop, I11), and the index to build the raw argument from.
-pub(crate) fn staged(req: &PooledOut) -> (busbar_ffi::host::ChainBufs, usize) {
+/// A chain's argument buffers: `req`'s pooled block lent as buffer 0, its written bytes as the argument, and the
+/// index to build the raw argument from. busbar-ffi keeps the block until the token retires, then zeroes those
+/// bytes (I11) and gives the block back to the pool (`pool::give_back`): no copy and no allocation (IF §0 I5: an
+/// async chain's request buffer is the pooled one). `req` is empty after.
+pub(crate) fn staged(req: &mut PooledOut) -> (busbar_ffi::host::ChainBufs, usize) {
     let mut bufs = busbar_ffi::host::ChainBufs::new();
-    let at = bufs.push(req.bytes().to_vec());
+    let at = match req.take_block() {
+        Some((block, len)) => bufs.lend_block(block, len, crate::host_side::pool::give_back),
+        None => bufs.push(Vec::new()),
+    };
     (bufs, at)
 }
