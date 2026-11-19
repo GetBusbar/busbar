@@ -7,12 +7,6 @@ use busbar_contract::abi::plane::{self, Ops};
 use busbar_contract::plane_calls::{Cancelled, Retirement};
 use busbar_kernel::plane_driver::{CancelBill, Checkpoint, MoneySeam};
 use busbar_kernel::teller::{Ended, UnitCtx};
-use busbar_plugin_loader::dispatch::kinds::plane::Plane;
-use busbar_plugin_loader::dispatch::plane_calls::PlaneInstance;
-use busbar_plugin_loader::dispatch::{
-    self, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, LinkedRow, NoSink,
-};
-
 #[path = "../../../../dist/default/tests/fixtures/plane_driver_test_plane.rs"]
 mod fixture;
 

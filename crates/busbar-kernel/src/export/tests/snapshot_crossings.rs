@@ -12,41 +12,6 @@ use std::sync::Arc;
 #[path = "snapshot_export_fixture.rs"]
 mod fixture;
 
-fn sink() -> Arc<dyn ExportCalls> {
-    use busbar_plugin_loader::dispatch::{
-        kinds::export::Export, load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow,
-        NoSink,
-    };
-    let mut services = busbar_kernel::host_services::KernelServices::new();
-    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-        services = services.with_pool(Arc::new(busbar_kernel::host_services::BlockingPool::new(
-            runtime, 64,
-        )));
-    }
-    let dispatcher = Arc::new(Dispatcher::with_services(
-        DispatchConfig::default(),
-        Arc::new(services),
-        busbar_kernel::host_services::caller_binding(),
-    ));
-    let row = LinkedRow::of(fixture::door).expect("the neutral kind fixture declares itself");
-    let plugin = load_linked::<Export>(
-        &row,
-        Bind {
-            accept: Default::default(),
-            instance: "export.snapshot-crossing".into(),
-            max_inflight_cap: 4,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
-        },
-    )
-    .expect("the SDK fixture loads with the real asynchronous host services");
-    Arc::new(
-        busbar_plugin_loader::export_door::ExportInstance::open(plugin, dispatcher, b"{}")
-            .expect("the neutral export opens"),
-    )
-}
-
 fn get(path: &str) -> EndpointRequest {
     EndpointRequest {
         method: "GET".into(),
