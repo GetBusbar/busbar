@@ -409,6 +409,24 @@ async fn request_trailers_are_answered_and_the_connection_is_kept() {
     assert_eq!(next.refused, None);
 }
 
+/// The body cap a request on `stream` is read under: the app's configured one, else the
+/// listener's (what `NativeIngress::accept` computes for each body piece).
+fn effective_cap(ingress: &NativeIngress, stream: u64) -> usize {
+    let slot = ingress
+        .slots
+        .iter()
+        .find(|slot| slot.stream == stream)
+        .expect("the stream's slot");
+    slot.pending
+        .as_ref()
+        .expect("input not yet complete")
+        .binding()
+        .app()
+        .limits
+        .as_ref()
+        .map_or(ingress.body_limit, |limits| limits.request_body_max_bytes)
+}
+
 /// REFUSAL ROW 6: a body that runs past the cap is not a connection error. What was read is
 /// released, the rest is discarded as it arrives, and the request is completed at its end
 /// carrying the row it is answered by.
@@ -421,12 +439,21 @@ async fn a_body_over_the_cap_is_answered_and_nothing_past_the_cap_is_kept() {
         .accept(public_head(&source, 1, false), None)
         .unwrap()
         .is_none());
+    let cap = effective_cap(&ingress, 1);
+    assert!(
+        cap <= 4096,
+        "the fixture app configures a {cap}-byte body cap; this test sends cap + 1 bytes and \
+         needs a small one (`limits.request_body_max_bytes`) in `physical_app`"
+    );
     let body = |bytes: &[u8]| Inbound::Body {
         stream: 1,
         flags: 0,
         bytes: payload(&source, bytes),
     };
-    assert!(ingress.accept(body(b"12345678"), None).unwrap().is_none());
+    assert!(ingress
+        .accept(body(&vec![b'1'; cap]), None)
+        .unwrap()
+        .is_none());
     assert!(
         ingress.accept(body(b"9"), None).unwrap().is_none(),
         "over the cap is not a connection error"
@@ -450,21 +477,32 @@ async fn a_declared_length_over_the_cap_is_refused_on_the_head() {
     use busbar_kernel::auth::admission_table::Refusal;
     let (mut ingress, source) = ingress_fixture().await;
     ingress.body_limit = 8;
+    // A first request tells the cap this connection's requests are read under.
+    assert!(ingress
+        .accept(public_head(&source, 1, false), None)
+        .unwrap()
+        .is_none());
+    let cap = effective_cap(&ingress, 1);
+    let over = (cap as u64 + 1).to_string();
     let ready = ingress
-        .accept(head_with(&source, 1, "content-length", b"9"), None)
+        .accept(
+            head_with(&source, 2, "content-length", over.as_bytes()),
+            None,
+        )
         .unwrap()
         .expect("completed on the head");
     assert_eq!(ready.refused, Some(Refusal::BodyTooLarge));
     let late = Inbound::Body {
-        stream: 1,
+        stream: 2,
         flags: 0,
         bytes: payload(&source, b"123456789"),
     };
     assert!(ingress.accept(late, None).unwrap().is_none());
-    assert!(ingress.accept(Inbound::End(1), None).unwrap().is_none());
+    assert!(ingress.accept(Inbound::End(2), None).unwrap().is_none());
     // At the cap exactly, the request is taken as usual.
+    let at = cap.to_string();
     assert!(ingress
-        .accept(head_with(&source, 2, "content-length", b"8"), None)
+        .accept(head_with(&source, 3, "content-length", at.as_bytes()), None)
         .unwrap()
         .is_none());
 }
