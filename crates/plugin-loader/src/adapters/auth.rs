@@ -682,20 +682,6 @@ mod tests {
         w.put_fact(key, value).unwrap();
     }
 
-    fn auth_in<'a>(headers: &'a [Pair<'a>]) -> AuthIn<'a> {
-        AuthIn {
-            method: "POST",
-            path: "/v1/x",
-            query: "a=1",
-            authority: "gw.example",
-            headers,
-            peer: "10.0.0.1:443",
-            tls_peer_cert: b"cert",
-            body: b"{}",
-            now_s: 1_700_000_000,
-        }
-    }
-
     // C-SCRUB-CUT, auth adapter: a REFUSED/FAILED text is scrubbed, then cut to 512 bytes, before it is a
     // PortError text; a short clean text passes unchanged.
     #[test]

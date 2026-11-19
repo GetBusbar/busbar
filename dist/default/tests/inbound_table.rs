@@ -287,7 +287,7 @@ limits:
 identity-providers:
   admin-tokens:
     module: admin-tokens
-    token: {{ env: BUSBAR_ADMIN_TOKEN }}
+    settings: {{ sha256: "{admin_sha}" }}
 auth:
   chain: [keys]
   signing_key: {{ file: "{signing}" }}
@@ -299,7 +299,8 @@ models:
   test-model:
     provider: mock
 {planes}"#,
-            signing = dir.join("signing.key").display()
+            signing = dir.join("signing.key").display(),
+            admin_sha = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes())
         ),
     )
     .unwrap();

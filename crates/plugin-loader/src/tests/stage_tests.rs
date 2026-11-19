@@ -263,32 +263,7 @@ fn pid_liveness() {
     assert!(!pid_alive(4_294_967_294));
 }
 
-#[cfg(target_os = "linux")]
-const REUSED_FD_CHILD: &str = "BUSBAR_STAGE_REUSED_FD_CHILD";
-
-#[cfg(target_os = "linux")]
-fn build_probe_library(dir: &std::path::Path, stem: &str, src: &str, extra: &[&str]) -> Vec<u8> {
-    let c = dir.join(format!("{stem}.c"));
-    let so = dir.join(format!("{stem}.so"));
-    std::fs::write(&c, src).expect("write probe source");
-    let out = std::process::Command::new("cc")
-        .args(["-shared", "-fPIC", "-o"])
-        .arg(&so)
-        .arg(&c)
-        .args(extra)
-        .output()
-        .expect("run cc (the system C compiler rustc links with)");
-    assert!(
-        out.status.success(),
-        "cc failed building {stem}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    std::fs::read(&so).expect("read probe library")
-}
-
 mod staged_file_pin {
-    use super::*;
-
     pub(super) fn two_libraries() -> (Vec<u8>, Vec<u8>) {
         let verified = std::fs::read(crate::both_ways::example_cdylib("json_contract_auth"))
             .expect("read the verified fixture library");
@@ -298,13 +273,6 @@ mod staged_file_pin {
         assert_ne!(verified, other, "the two fixtures must differ");
         (verified, other)
     }
-}
-
-#[cfg(unix)]
-mod on_unix {
-    use super::staged_file_pin::*;
-    use super::*;
-    use std::os::unix::fs::PermissionsExt as _;
 }
 
 #[cfg(windows)]
@@ -375,16 +343,3 @@ mod on_windows {
     }
 }
 
-#[cfg(target_os = "linux")]
-mod on_linux_memfd {
-    use super::staged_file_pin::*;
-    use super::*;
-    use std::os::fd::AsRawFd as _;
-}
-
-/// A file that is not a shared object, at `path` (its parents made).
-#[cfg(target_os = "linux")]
-fn not_a_shared_object(path: &std::path::Path) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, b"this is not an ELF image, only text").unwrap();
-}

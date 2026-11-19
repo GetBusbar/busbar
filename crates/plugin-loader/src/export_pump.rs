@@ -75,15 +75,6 @@ pub trait DestAppend: Send + Sync + 'static {
     fn append(&self, dest: u32, bytes: AppendBytes<'_>) -> Result<(), AppendDenied>;
 }
 
-/// A [`DestAppend`] for an instance that binds no destination: every `Append` answer is foreign.
-pub struct NoDest;
-
-impl DestAppend for NoDest {
-    fn append(&self, _dest: u32, _bytes: AppendBytes<'_>) -> Result<(), AppendDenied> {
-        Err(AppendDenied::Foreign)
-    }
-}
-
 /// One export instance's live binding: its port and its disk lane, always swapped together (DES-454 §4.1).
 pub struct ExportBinding {
     pub port: Arc<dyn ExportPort>,
@@ -1049,26 +1040,6 @@ fn with_snapshot<R>(families: &[Family], f: impl FnOnce(&[FamilyIn<'_>]) -> R) -
         at = end;
     }
     f(&snapshot)
-}
-
-/// W2-SW-EXPORT: one export instance on the MIN-3 path. Opens `spec` through the registry (`open_export`, L2/L7)
-/// and hands the kernel's export lane a [`PortDoor`] over the port: the round-33 pump
-/// (core-minted `delivery`, counted `attempt`), the image's FB_SPAN_RECORDS and custody ceiling read through
-/// L7, APPEND answers handed to `disk` (core's bound destinations, §12.21).
-pub async fn open_min3<N: busbar_plugin_abi::host_side::needs::Needs>(
-    registry: &crate::instance::Registry,
-    spec: &crate::instance::InstanceSpec<'_>,
-    needs: &Arc<N>,
-    refs: &Arc<dyn busbar_ports::binder::RefSource>,
-    disk: Arc<dyn DestAppend>,
-    observer: Arc<dyn ExportObserver>,
-    clock: HostClock,
-) -> Result<Arc<PortDoor>, String> {
-    let port = registry
-        .open_export(spec, needs, refs)
-        .await
-        .map_err(|e| crate::cold::export_pump::not_opened(spec.name, &e))?;
-    PortDoor::open(spec.name, port, disk, &spec.limits, observer, clock)
 }
 
 #[cfg(test)]

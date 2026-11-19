@@ -172,7 +172,7 @@ pub struct Candidate {
     pub kind: KindCode,
     /// Its name.
     pub name: String,
-    /// Its version, as its Statement states it (the one-version rule's, [`one_owner`]).
+    /// Its version, as its Statement states it.
     pub version: String,
     /// The other names config may give it: its Statement's alias rewrites and, for a dropped
     /// plugin, its manifest's alias and former names.
@@ -289,10 +289,6 @@ impl Candidate {
         self
     }
 
-    fn words(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(self.name.as_str()).chain(self.aliases.iter().map(String::as_str))
-    }
-
     pub(crate) fn answers(&self, word: &str) -> bool {
         self.name == word || self.aliases.iter().any(|a| a == word)
     }
@@ -313,11 +309,6 @@ impl Candidate {
                     )
                     .is_ok_and(|bindings| bindings.iter().any(|binding| binding.slot == "listen"))
                 }))
-    }
-
-    #[must_use]
-    pub fn sectioned(&self, uses: &Uses) -> bool {
-        plane_use(uses, self).is_some()
     }
 }
 
@@ -363,27 +354,6 @@ fn with_origins(mut refusal: String, candidates: &[Candidate]) -> String {
         refusal.push(')');
     }
     refusal
-}
-
-pub fn one_owner(candidates: &[Candidate]) -> Result<(), String> {
-    for (i, a) in candidates.iter().enumerate() {
-        for b in &candidates[i + 1..] {
-            if a.name == b.name {
-                continue;
-            }
-            if let Some(word) = a.words().find(|w| b.answers(w)) {
-                return Err(format!(
-                    "plugin claim conflict: '{word}' is claimed by both '{}' ({}) and '{}' ({}) - \
-                     a name, alias or former name must resolve to one plugin; remove one",
-                    a.name,
-                    origin_of(a),
-                    b.name,
-                    origin_of(b)
-                ));
-            }
-        }
-    }
-    Ok(())
 }
 
 /// One selected instance: which candidate, under which instance name (the config key).
@@ -501,15 +471,6 @@ pub fn registry(
         }
     }
     Ok(registry)
-}
-
-#[must_use]
-pub fn used_planes(uses: &Uses, doors: &[Candidate]) -> Vec<Candidate> {
-    doors
-        .iter()
-        .filter(|c| c.sectioned(uses))
-        .cloned()
-        .collect()
 }
 
 pub use busbar_contract::conn::inbound::DEFAULT_MAX_CONNS;

@@ -374,11 +374,20 @@ async fn run_pending_session<K: Calls + ?Sized, M: Members, S: UpSend>(
 ) -> Result<Ran, SessionError> {
     use super::port_hooks::stage::{self, Buffered, Observed, When};
     let buffered = Buffered::new(drive.effects);
-    let (mut task, first) = Task::begin(calls, req, body, &buffered)?;
+    // Which step of the pending admission a failure ended in: the request is then answered as
+    // failed (`port::drive_session`), and this line says where.
+    let at = |step: &'static str| {
+        move |error: SessionError| {
+            tracing::warn!(step, ?error, "a pending admission ended before its unit opened");
+            error
+        }
+    };
+    let (mut task, first) = Task::begin(calls, req, body, &buffered).map_err(at("begin"))?;
     let outcome = async {
         let mut answers = task
             .resolve_before_hooks(first, drive.resolver, &buffered)
-            .await?;
+            .await
+            .map_err(at("screen"))?;
         let wants = answers
             .iter()
             .find_map(|answer| answer.forward.as_ref())
@@ -390,11 +399,13 @@ async fn run_pending_session<K: Calls + ?Sized, M: Members, S: UpSend>(
         // charged, and its refusal drops `resolved` with the monetary callback never run.
         // (3) The money: the unit is opened and held. A route with no hook goes from (1) to (3)
         // with nothing between them: no stage is built, nothing is allocated, no hook is called.
-        let resolved = pending.resolve_walk(
-            drive.members.as_deref_mut(),
-            wants.as_ref(),
-            task.request_declaration()?,
-        )?;
+        let resolved = pending
+            .resolve_walk(
+                drive.members.as_deref_mut(),
+                wants.as_ref(),
+                task.request_declaration().map_err(at("declaration"))?,
+            )
+            .map_err(at("walk"))?;
         let stage = match drive
             .effects
             .hooks()
@@ -420,7 +431,7 @@ async fn run_pending_session<K: Calls + ?Sized, M: Members, S: UpSend>(
             if let (Some(stage), SessionError::AdmissionRefused(refusal)) = (&stage, &error) {
                 stage.money_refused(refusal.status, completion.as_ref());
             }
-            return Err(error);
+            return Err(at("money")(error));
         }
         task.bind_admission(pending)?;
         if let Some(stage) = &stage {

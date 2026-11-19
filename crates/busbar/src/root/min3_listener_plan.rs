@@ -9,8 +9,11 @@ use std::sync::Arc;
 
 use busbar_contract::route::AuthPoints;
 use busbar_contract::route::{RouteAuth, RouteMethod};
+use busbar_kernel::auth::admission_table::NotMounted;
+use busbar_kernel::auth::native_chain::ANONYMOUS;
 use busbar_kernel::auth::native_data::NativeDataRoute;
 use busbar_kernel::auth::native_upgrade::NativeUpgradeRoute;
+use busbar_kernel::auth::route_record::CallerState;
 use busbar_kernel::state::App;
 
 use super::boot::ListenerNeeds;
@@ -439,6 +442,22 @@ fn route_chains(
                     route.route,
                     &route.pattern,
                     why,
+                ))
+            } else if route.record.caller_state == CallerState::Distinct
+                && match own {
+                    Some(Some(names)) => names.iter().any(|name| name == ANONYMOUS),
+                    _ => config.data_chain.iter().any(|name| name == ANONYMOUS),
+                }
+            {
+                // A route that keeps state per caller is never served to the subject every
+                // anonymous caller shares (`NotMounted::DistinctCallersUnderAnOpenChain`, the
+                // binding's own refusal in `NativeDataRoute::bind`): it is left unmounted here,
+                // with its line, and the rest of the slot is served.
+                Some(unadmitted_line(
+                    &seat.instance,
+                    route.route,
+                    &route.pattern,
+                    NotMounted::DistinctCallersUnderAnOpenChain.reason(),
                 ))
             } else {
                 // With `auth.chain: [anonymous]` (the operator's open relay) a route that runs the data

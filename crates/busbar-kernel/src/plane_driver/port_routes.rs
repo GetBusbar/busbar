@@ -253,6 +253,10 @@ fn declare_stated_kinds(table: &PortRoutes) {
         .chain(&table.line)
         .chain(&table.recovery)
         .map(|mounted| &mounted.record);
+    declare_kinds(records);
+}
+
+fn declare_kinds<'a>(records: impl Iterator<Item = &'a RouteRecord>) {
     let mut kinds = STATED_KINDS
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -261,6 +265,33 @@ fn declare_stated_kinds(table: &PortRoutes) {
             kinds.insert(kind.into());
         }
     }
+}
+
+/// Add the kinds a loaded plane image's describe states, before any instance opens: each route's
+/// record built from its `D_ROUTE` and `D_ROUTE_ADMISSION` (and `D_ROUTE_RESOURCES`) exactly as
+/// [`plan`] builds it at mount, so the configuration's `role_bindings.*.allowed_<kind>s` are judged
+/// against the kinds the loaded planes will state, on the first boot as on every later one. A
+/// describe with a route that states no admission, or whose admission builds no record, declares
+/// nothing (as a refused plane declares nothing at mount).
+pub fn declare_described_kinds(routes: &[RouteInfo], admissions: &[wire::AdmissionItem<'_>]) {
+    let mut records = Vec::with_capacity(routes.len());
+    for route in routes {
+        let Some(admission) = admissions.iter().find(|item| item.route == route.route) else {
+            return;
+        };
+        let Some(record) = RouteRecord::from_wire(
+            route.flags,
+            route.auth,
+            route.cred_header.as_deref(),
+            &route.resource_kinds,
+            admission,
+            None,
+        ) else {
+            return;
+        };
+        records.push(record);
+    }
+    declare_kinds(records.iter());
 }
 
 /// Whether a mounted route's record states `kind`.

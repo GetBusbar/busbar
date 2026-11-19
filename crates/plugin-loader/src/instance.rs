@@ -1538,6 +1538,17 @@ impl Described {
                 .flatten()
         })
     }
+
+    /// A plane image's describe, decoded under the plane rules its admission already held it to
+    /// (its routes, each with its stated admission and resource kinds), read before any instance
+    /// opens. `None` for an image of another kind, or a describe those rules refuse.
+    pub fn plane_describe(&self) -> Option<crate::adapters::plane::PlaneDescribe> {
+        if self.kind != KindCode::Plane {
+            return None;
+        }
+        let frame = chains::frame(&self.items);
+        crate::adapters::plane::decode_describe(Records::new(&frame), self.methods, self.facts).ok()
+    }
 }
 
 /// Indices into the `instances` slice given to `boot_plan`, in execution order, with the r6 phase of each.

@@ -930,31 +930,12 @@ fn read_file_capped_bounds_the_stream_not_the_stale_metadata() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-extern "C" fn unopened_door() -> *const busbar_contract::abi::mechanism::door::Door {
-    std::ptr::null()
-}
-
 fn renamed(kind: &str, name: &str, alias: &str, former: &[&str]) -> Manifest {
     let mut m = manifest(name, alias, "busbar");
     m.kind = kind.into();
     m.abi_version = supported_abi(kind).unwrap();
     m.former_names = former.iter().map(|s| s.to_string()).collect();
     m
-}
-
-fn dropped_in(tag: &str, m: Manifest) -> PluginRegistry {
-    let release = key(1);
-    let dir = tmpdir(tag);
-    let lib = format!("{tag} lib");
-    write_tarball(
-        &dir,
-        "plugin.tar.gz",
-        &crate::sign::seal_test_artifact(&release, m, lib.as_bytes()),
-        lib.as_bytes(),
-    );
-    let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
-    let _ = std::fs::remove_dir_all(&dir);
-    reg
 }
 
 #[test]
@@ -1012,35 +993,6 @@ fn two_plugins_claiming_one_former_name_are_refused() {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-fn fleet_entries(yaml: &str) -> Vec<(String, String, String, Vec<String>)> {
-    let mut out: Vec<(String, String, String, Vec<String>)> = Vec::new();
-    for line in yaml.lines() {
-        if let Some(repo) = line.strip_prefix("  - repo: ") {
-            out.push((repo.trim().into(), String::new(), String::new(), Vec::new()));
-            continue;
-        }
-        let Some(e) = out.last_mut() else { continue };
-        let Some(field) = line.strip_prefix("    ") else {
-            continue;
-        };
-        if let Some(v) = field.strip_prefix("kind: ") {
-            e.1 = v.trim().into();
-        } else if let Some(v) = field.strip_prefix("alias: ") {
-            e.2 = v.trim().into();
-        } else if let Some(v) = field.strip_prefix("former_names: ") {
-            e.3 = v
-                .trim()
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .split(',')
-                .map(|w| w.trim().to_string())
-                .filter(|w| !w.is_empty())
-                .collect();
-        }
-    }
-    out
 }
 
 #[test]

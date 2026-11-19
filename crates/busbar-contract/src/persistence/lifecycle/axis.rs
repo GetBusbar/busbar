@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Retained native capabilities. None grants a serving business facade.
-use super::{Error, Id, OpenBinding, Request, Response, UpgradeRef};
+use super::{Error, OpenBinding, Request, Response, UpgradeRef};
 use crate::persistence::{axis::OpenedBackend, PersistenceBackend};
 use std::{future::Future, pin::Pin, sync::Arc};
 
@@ -26,10 +26,7 @@ pub type BootstrapCall<'a> =
 /// A retained native preparation capability.
 pub type Prepared = Arc<dyn PreparedStore>;
 /// Existing primitive backend restricted to the retained inactive upgrade target.
-pub trait MigrationTarget: PersistenceBackend {
-    /// Durable upgrade whose session and target remain retained by this capability.
-    fn upgrade_id(&self) -> Id;
-}
+pub trait MigrationTarget: PersistenceBackend {}
 /// Migration-only target, never an admitted serving facade.
 pub type TargetBackend = Arc<dyn MigrationTarget>;
 /// Obtain the target after an actual native Target response.

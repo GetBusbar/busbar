@@ -228,28 +228,34 @@ impl Pending {
         wants: Option<&Wants>,
         declaration: RequestDeclaration,
     ) -> Result<ResolvedWalk, SessionError> {
+        // Each way the walk cannot be resolved is said by name: the request is then answered as
+        // failed (`port::drive_session`), and the log names which check it failed.
+        let unresolved = |why: &'static str| {
+            tracing::warn!(why, "a request's walk could not be resolved");
+            SessionError::NotDriven
+        };
         if !declaration.context().same_unit(&self.context) || !declaration.context().is_live() {
-            return Err(SessionError::NotDriven);
+            return Err(unresolved("the declaration is not this live unit's"));
         }
         let commit = self
             .commit
             .lock()
             .unwrap()
             .take()
-            .ok_or(SessionError::NotDriven)?;
+            .ok_or_else(|| unresolved("the admission was already taken"))?;
         let selected_required = declaration.selected();
         if selected_required && declaration.original_route().is_none() {
-            return Err(SessionError::NotDriven);
+            return Err(unresolved("a selected declaration names no original route"));
         }
         if declaration.selected() && matches!(&commit, Commit::Ordinary(_)) {
-            return Err(SessionError::NotDriven);
+            return Err(unresolved("a selected declaration on an ordinary admission"));
         }
         let allocation = self
             .allocation
             .lock()
             .unwrap()
             .take()
-            .ok_or(SessionError::NotDriven)?;
+            .ok_or_else(|| unresolved("the allocation was already taken"))?;
         let mut members = members;
         let receipt = match wants {
             Some(wants)
@@ -267,22 +273,32 @@ impl Pending {
                             .as_deref()
                             .expect("classified actual command"),
                     )
-                    .map_err(|_| SessionError::NotDriven)?
+                    .map_err(|_| unresolved("the command registration did not resolve"))?
             }
             Some(wants) => {
-                let members = members.as_deref_mut().ok_or(SessionError::NotDriven)?;
-                let walk = members.request_walk().ok_or(SessionError::NotDriven)?;
+                let members = members
+                    .as_deref_mut()
+                    .ok_or_else(|| unresolved("a FORWARD on a seat with no walk"))?;
+                let walk = members
+                    .request_walk()
+                    .ok_or_else(|| unresolved("the seat's members state no walk"))?;
                 let receipt = allocation
                     .forward(&self.routes, walk, wants.model.as_deref())
-                    .map_err(forward_refused)?;
+                    .map_err(|error| {
+                        if !matches!(error, super::request_admission::AdmissionError::Scope) {
+                            tracing::warn!(?error, "a request's walk could not be resolved");
+                        }
+                        forward_refused(error)
+                    })?;
                 if !members.select_request(&receipt, wants) {
-                    return Err(SessionError::NotDriven);
+                    return Err(unresolved("no member could be selected for the walk"));
                 }
                 receipt
             }
-            None => allocation
-                .local(&self.routes)
-                .map_err(|_| SessionError::NotDriven)?,
+            None => allocation.local(&self.routes).map_err(|error| {
+                tracing::warn!(?error, "a request's local admission could not be resolved");
+                SessionError::NotDriven
+            })?,
         };
         Ok(ResolvedWalk {
             commit,

@@ -998,6 +998,79 @@ fn anonymous_is_no_admin_member_and_no_identity_provider() {
     assert!(resolve_auth_errors("auth:\n  chain: [anonymous]\n").is_empty());
 }
 
+/// ANON-E2E (NEEDS row 17): a role binding is judged before any plane mounts, so the kinds a loaded
+/// plane image's describe states (each route's walk kind and the kinds of a route that selects,
+/// built into the route's record as mount builds it) are declared from the describe first. A kind
+/// no described route states stays refused, and a describe with a route that states no admission
+/// declares nothing.
+#[test]
+fn an_anonymous_binding_grants_only_the_kinds_a_loaded_plane_image_states() {
+    use crate::auth::route_record::wire::{
+        AdmissionItem, CALLERS_DISTINCT, MONEY_UNIT, SCOPE_SELECTED, SCOPE_WALK,
+    };
+    use crate::plane_driver::port_routes::declare_described_kinds;
+    use busbar_plugin_abi::plane::AUTH_PRINCIPAL;
+    use busbar_ports::plane::RouteInfo;
+
+    let judged = |binding: &str| {
+        let yaml = format!(
+            "auth:\n  chain: [anonymous]\n  role_bindings:\n    anonymous:\n      \"*\": {binding}\n"
+        );
+        let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+        cfg.auth = Some(parse_auth(&yaml));
+        validate(&cfg)
+    };
+    let refuses = |binding: &str, field: &str| {
+        let errs = judged(binding).expect_err(&format!("{binding} must be refused"));
+        assert!(
+            errs.iter().any(|e| e.contains(&format!("role_bindings.anonymous.*.{field}"))
+                && e.contains("BUSBAR-3114")),
+            "{binding}: {errs:?}"
+        );
+    };
+    let route = |id: u32, kinds: &[&str]| RouteInfo {
+        route: id,
+        methods: 1,
+        flags: 0,
+        auth: AUTH_PRINCIPAL,
+        pattern: "/anon-e2e".into(),
+        cred_header: None,
+        resource_kinds: kinds.iter().map(|kind| Box::<str>::from(*kind)).collect(),
+    };
+    let walks_and_selects = AdmissionItem {
+        route: 1,
+        scope: SCOPE_WALK | SCOPE_SELECTED,
+        money: MONEY_UNIT,
+        callers: CALLERS_DISTINCT,
+        walk_kind: "anon_e2e_server",
+    };
+    let granted =
+        "{ allowed_pools: [], allowed_anon_e2e_servers: [github], allowed_anon_e2e_tools: [search] }";
+
+    // Before the image is described, neither kind is declared: refused.
+    refuses(granted, "allowed_anon_e2e_servers");
+    refuses(granted, "allowed_anon_e2e_tools");
+
+    // A describe whose route states no admission declares nothing.
+    declare_described_kinds(&[route(1, &["anon_e2e_tool"]), route(2, &[])], &[walks_and_selects]);
+    refuses(granted, "allowed_anon_e2e_servers");
+
+    // The loaded image's describe states the walk kind and the selected kind: both grantable.
+    declare_described_kinds(&[route(1, &["anon_e2e_tool"])], &[walks_and_selects]);
+    assert!(
+        judged(granted).is_ok(),
+        "the kinds a loaded plane image states are grantable: {:?}",
+        judged(granted)
+    );
+
+    // A kind no described route states stays refused, as does core's `pool` as a plane kind.
+    refuses(
+        "{ allowed_pools: [], allowed_anon_e2e_agents: [a] }",
+        "allowed_anon_e2e_agents",
+    );
+    assert!(!crate::governance::plane_declares_kind("pool"));
+}
+
 #[test]
 fn test_browser_login_requires_public_url() {
     let auth = parse_auth(

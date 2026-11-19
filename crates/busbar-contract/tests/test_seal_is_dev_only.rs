@@ -236,8 +236,8 @@ fn test_support_and_abi_scan_are_named_only_on_dev_edges_or_the_facade() {
     }
     let facade = std::fs::read_to_string(root.join(FACADE)).expect("the facade manifest exists");
     assert!(
-        facade.contains("test-support") && facade.contains("abi-scan"),
-        "the facade no longer carries `test-support` and `abi-scan`: the named exception is stale"
+        facade.contains("test-support"),
+        "the facade no longer carries `test-support`: the named exception is stale"
     );
 }
 

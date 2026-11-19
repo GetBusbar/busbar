@@ -73,10 +73,6 @@ test-seal = ["test-support", "busbar-seal/test-seal"]
 # behind the dev-dependency-only `test-seal` feature.
 test-support = ["busbar-crypto/test-support", "busbar-secure/test-support"]
 
-# R131 `test-unsafe-outside-boundary` (`abi_scan`): test-reachable files, scanned as tokens. Test-only
-# (it rides `test-support`); called from core's tests and the plugin template's `tests/abi_scan.rs`.
-abi-scan = ["test-support"]
-
 # TLS configs and verifiers through the crypto facade (TLS crates and tests only).
 tls = ["busbar-crypto/tls"]
 
