@@ -214,9 +214,12 @@ impl NativeDataRoute {
     /// selection, a principal-only route, a catalog, and an optional route's request that presents
     /// a credential. A plane bound to an audience is served: a bearer that states an audience is
     /// judged on the head ([`refuse_foreign_audience`]). A deployment with `oauth_as` is served
-    /// for every credential its chain's instances verify; a token core itself minted is still
-    /// refused by [`refuse_bound_carriers`] until core's own token verifier is a chain member
-    /// (it must not be accepted unverified). A route with a hook bound is NOT admitted here yet:
+    /// for every credential its chain's instances verify, and on an audience-bound plane an
+    /// access token of its own authorization server must also still stand in that server's
+    /// store (`native_keys::as_standing`). A token core itself signed is verified by the chain's
+    /// built-in member `keys` (`native_keys::judge`) where the chain names it, and refused by
+    /// [`refuse_bound_carriers`] where it does not; it is never accepted unverified. A
+    /// DPoP-bound token is refused: this path verifies no proof. A route with a hook bound is NOT admitted here yet:
     /// the session refuses to run a hook without the admitted unit and its invocation
     /// (`plane_driver::port::serve_session`: "native hooks need the admitted unit and
     /// generation"), and the native path does not hand it either. Such a route stays unmounted
@@ -390,13 +393,45 @@ impl NativeDataRoute {
                 RouteTarget::Plane(route) => route.mounted().cred_header.as_deref(),
                 RouteTarget::Core(_) | RouteTarget::Unrouted => None,
             };
-            refuse_bound_carriers(&snapshot, &self.owners.chain, cred_header)?;
-            if let Some(audience) = self.audience.as_deref() {
-                refuse_foreign_audience(&snapshot, &self.owners.chain, audience)?;
+            let chain = &self.owners.chain;
+            let audience = self.audience.as_deref();
+            // A chain that does not name `keys` refuses every core-signed token outright; one
+            // that does lets exactly that token through to core's own verifier below. A
+            // sender-constrained presentation is refused on either.
+            if chain.admits_keys() {
+                refuse_sender_bound(&snapshot, chain, cred_header)?;
+            } else {
+                refuse_bound_carriers(&snapshot, chain, cred_header)?;
             }
-            let prepared = self
-                .owners
-                .chain
+            if let Some(audience) = audience {
+                refuse_foreign_audience(&snapshot, chain, audience)?;
+            }
+            // The engine's own token, judged by the engine: verified under the governance of
+            // the generation this request was admitted by, for this route's audience exactly
+            // (none, on a route bound to none). No instance of the chain is handed it.
+            let core = super::native_keys::judge(
+                &snapshot,
+                chain,
+                cred_header,
+                binding.app().governance.as_deref(),
+                audience,
+                snapshot.now_s(),
+            )?;
+            if let Some(core) = core {
+                binding.check_live().map_err(|_| DataRefused::Cancelled)?;
+                return Ok((chain.core_identity(cx, snapshot, core), true));
+            }
+            // An access token of this deployment's own authorization server, on an
+            // audience-bound plane: its issuer's store must still hold it for this resource.
+            // The chain below still verifies it.
+            let minted_here = match audience {
+                Some(audience) => {
+                    super::native_keys::as_standing(binding.app(), &snapshot, chain, audience)
+                        .await?
+                }
+                None => false,
+            };
+            let prepared = chain
                 .prepare_snapshot(cx, snapshot)
                 .await
                 .map_err(|_| DataRefused::Unavailable)?;
@@ -404,15 +439,16 @@ impl NativeDataRoute {
             let NativePreparedAnswer::Identity(prepared) = prepared else {
                 return Err(DataRefused::Credential);
             };
-            Ok(prepared)
+            Ok((prepared, minted_here))
         }
         .await;
         match result {
-            Ok(prepared) => Ok(PendingData {
+            Ok((prepared, minted_here)) => Ok(PendingData {
                 preparation,
                 route: self.clone(),
                 selected: None,
                 prepared,
+                minted_here,
                 deadline: cx.deadline,
             }),
             Err(reason) => Err(preparation_failed(
@@ -441,6 +477,15 @@ pub(crate) fn governed_key(
     // The anonymous principal exists only on a chain that names `anonymous`.
     if prepared.is_anonymous() && !chain.admits_anonymous() {
         return Err(DataRefused::Binding);
+    }
+    // A caller whose core-signed token `keys` verified is admitted as that token's own key, as
+    // it stands now (unexpired, its audience this route's, not revoked, held, rotated, deleted
+    // or disabled): no role binding grants it anything. It exists only on a chain naming `keys`.
+    if let Some(core) = prepared.core_key() {
+        if !chain.admits_keys() {
+            return Err(DataRefused::Binding);
+        }
+        return core.standing_in(app, now);
     }
     let identity = prepared.identity();
     // The provider of the anonymous principal is the member that named it: `anonymous`, so its
@@ -539,11 +584,34 @@ pub fn withheld_carriers(chain: &NativeChain, cred_header: Option<&str>) -> Arc<
 /// The restrictive scan of every credential carrier a native route reads (`authorization`, the
 /// chain's own headers and the route's `D_ROUTE_CRED_HEADER`), before any verifier runs: a
 /// DPoP-bound or core-signed token is refused on these routes. Every occurrence is scanned, not a
-/// decoy first bearer. DATA and the upgrade route run this same scan.
+/// decoy first bearer. The upgrade route, the unrouted judgement, a keyed core route, and a DATA
+/// route whose chain does not name `keys` run this scan; a DATA route whose chain names `keys`
+/// runs [`refuse_sender_bound`] and hands a core-signed token to core's own verifier
+/// (`native_keys::judge`), never to an instance.
 pub(crate) fn refuse_bound_carriers(
     snapshot: &crate::inbound::request_snapshot::ChargedRequestSnapshot,
     chain: &NativeChain,
     cred_header: Option<&str>,
+) -> Result<(), DataRefused> {
+    scan_bound_carriers(snapshot, chain, cred_header, true)
+}
+
+/// [`refuse_bound_carriers`] without its refusal of a core-signed token: every sender-constrained
+/// presentation (the `DPoP` scheme, a token carrying `cnf.jkt`) is still refused, on every
+/// occurrence of every carrier. The native path verifies no DPoP proof, so none is accepted.
+pub(crate) fn refuse_sender_bound(
+    snapshot: &crate::inbound::request_snapshot::ChargedRequestSnapshot,
+    chain: &NativeChain,
+    cred_header: Option<&str>,
+) -> Result<(), DataRefused> {
+    scan_bound_carriers(snapshot, chain, cred_header, false)
+}
+
+fn scan_bound_carriers(
+    snapshot: &crate::inbound::request_snapshot::ChargedRequestSnapshot,
+    chain: &NativeChain,
+    cred_header: Option<&str>,
+    refuse_core_signed: bool,
 ) -> Result<(), DataRefused> {
     // The open relay (`anonymous` alone) reads no credential, so no carrier is judged.
     if chain.is_open() {
@@ -575,7 +643,8 @@ pub(crate) fn refuse_bound_carriers(
                     continue;
                 };
                 if super::dpop::is_dpop_bound(token)
-                    || token.starts_with(crate::governance::signing::TOKEN_PREFIX)
+                    || (refuse_core_signed
+                        && token.starts_with(crate::governance::signing::TOKEN_PREFIX))
                 {
                     return Err(DataRefused::Credential);
                 }
@@ -591,6 +660,9 @@ pub struct PendingData {
     route: Arc<NativeDataRoute>,
     selected: Option<Arc<SelectedResources>>,
     prepared: Arc<PreparedNativeIdentity>,
+    /// The credential is this engine's own: a core-signed token `keys` verified, or an access
+    /// token this deployment's authorization server still holds for the route's audience.
+    minted_here: bool,
     deadline: Instant,
 }
 impl PendingData {
@@ -724,6 +796,17 @@ impl PendingData {
                     }
                     let resolved = governed_key(app, &self.prepared, &self.route.owners.chain, now)
                         .inspect_err(|reason| refused = *reason)?;
+                    // An engine-minted token on an audience-bound plane must carry the scope
+                    // the route's record requires: a restricted key with no grant of any kind
+                    // the record names is refused here (403), before the plane is asked. The
+                    // names it may use are still judged by the selection and the walk.
+                    if self.minted_here
+                        && self.route.audience.is_some()
+                        && !super::native_keys::holds_record_scope(&self.route.record, &resolved)
+                    {
+                        refused = DataRefused::Scope;
+                        return Err(DataRefused::Scope);
+                    }
                     // With a selection the key's scope is judged against it here; with none, the
                     // request walk judges the key's grant of the pool or model the plane names
                     // (`RequestRoutes::scope_admits`), before any money.

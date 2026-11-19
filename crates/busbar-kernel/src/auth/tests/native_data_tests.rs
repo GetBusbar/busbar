@@ -1809,3 +1809,97 @@ async fn native_data_route_that_selects_nothing_lends_no_selection() {
         .is_err());
     assert_eq!(lent.into_inner().unwrap().calls, 0);
 }
+
+fn chain_owners() -> Arc<AuthOwners> {
+    let replay = Arc::new(Owners(AtomicUsize::new(0), AtomicBool::new(false)));
+    Arc::new(AuthOwners {
+        issued: replay.clone(),
+        replay,
+        cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+    })
+}
+
+fn names(names: &[&str]) -> Vec<Box<str>> {
+    names.iter().map(|name| Box::<str>::from(*name)).collect()
+}
+
+/// The built-in member `keys` (core's own token verifier) is a member only of a data chain that
+/// names it: the operator chain never has it, so a core-minted token is never judged on the
+/// admin listener.
+#[test]
+fn the_keys_member_exists_only_on_a_data_chain_that_names_it() {
+    use crate::auth::native_chain::BuiltIn;
+    let keys_only = NativeChain::data_with(
+        7,
+        Vec::new(),
+        chain_owners(),
+        BuiltIn {
+            anonymous: false,
+            keys: true,
+        },
+    )
+    .expect("`chain: [keys]` is a closed chain, not an empty one");
+    assert!(keys_only.admits_keys());
+    assert!(!keys_only.admits_anonymous());
+    assert!(
+        !keys_only.is_open(),
+        "a chain with a verifier reads its credential"
+    );
+    assert!(keys_only.matches_names(&names(&["keys"])));
+    assert!(!keys_only.matches_names(&names(&[])));
+    assert!(!keys_only.matches_names(&names(&["keys", "anonymous"])));
+
+    let port = Arc::new(Port {
+        calls: AtomicUsize::new(0),
+        not_mine: false,
+        native: true,
+    });
+    let plain = NativeChain::data(7, vec![instance(42, port.clone())], chain_owners()).unwrap();
+    assert!(!plain.admits_keys());
+    assert!(plain.matches_names(&names(&["provider-42"])));
+    assert!(
+        !plain.matches_names(&names(&["provider-42", "keys"])),
+        "a route that names `keys` is never bound to a chain without the member"
+    );
+
+    let both = NativeChain::data_with(
+        7,
+        vec![instance(42, port.clone())],
+        chain_owners(),
+        BuiltIn {
+            anonymous: true,
+            keys: true,
+        },
+    )
+    .unwrap();
+    assert!(both.matches_names(&names(&["provider-42", "keys", "anonymous"])));
+    assert!(!both.is_open());
+    let relay = NativeChain::data_with(
+        7,
+        Vec::new(),
+        chain_owners(),
+        BuiltIn {
+            anonymous: true,
+            keys: true,
+        },
+    )
+    .unwrap();
+    assert!(
+        !relay.is_open(),
+        "`[keys, anonymous]` still reads a credential: a core token presented is judged"
+    );
+    assert!(
+        NativeChain::data_with(7, Vec::new(), chain_owners(), BuiltIn::default()).is_err(),
+        "an empty chain is still refused"
+    );
+
+    let operator = NativeChain::operator(
+        vec![instance(42, port)],
+        crate::auth::native_policy::ChainPolicy::new(7, Vec::new()),
+        chain_owners(),
+    );
+    assert!(
+        !operator.admits_keys(),
+        "the admin listener's chain has no `keys` member"
+    );
+}

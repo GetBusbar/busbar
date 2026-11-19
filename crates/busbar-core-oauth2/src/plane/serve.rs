@@ -145,6 +145,44 @@ impl AsPlane {
         )
     }
 
+    /// The standing of `token` at `resource`, a protected resource of this same deployment
+    /// (`busbar_kernel::oauth_as::seam::AccessStanding`), read from this server's own store.
+    ///
+    /// A token that does not name this server as its issuer is not judged here. One that does is
+    /// live only while the store holds its record (this server wrote it, and revocation removes
+    /// it), the record is unexpired, and the grant's resource indicators name `resource` exactly;
+    /// a grant that named none stands on its signed audience, which the resource judges. The
+    /// `iss` is read off an unverified payload, which is sound because the answer only ever
+    /// refuses: a forged token naming this issuer is not in the store, and the resource's chain
+    /// still verifies every token's signature.
+    pub(crate) async fn access_standing(
+        &self,
+        token: &str,
+        resource: &str,
+    ) -> busbar_kernel::oauth_as::seam::AccessStanding {
+        use busbar_kernel::oauth_as::seam::AccessStanding;
+        use oauth_as::store::Storage as _;
+        let ours = oauth_as::jwt::CompactJws::parse(token)
+            .is_ok_and(|jws| jws.claim_str("iss") == Some(self.identity.issuer()));
+        if !ours {
+            return AccessStanding::NotMine;
+        }
+        match self.server.store().get_token(token).await {
+            Err(_) => AccessStanding::Unavailable,
+            Ok(None) => AccessStanding::Dead,
+            Ok(Some(issued)) => {
+                let unexpired = crate::shared::now_time() < issued.expires_at;
+                let granted = issued.resource.is_empty()
+                    || issued.resource.iter().any(|named| named == resource);
+                if unexpired && granted {
+                    AccessStanding::Live
+                } else {
+                    AccessStanding::Dead
+                }
+            }
+        }
+    }
+
     pub(crate) async fn handle<B>(&self, request: http::Request<B>) -> oauth_as::http::Response
     where
         B: axum::body::HttpBody,
@@ -417,6 +455,26 @@ fn granted_default(client: &oauth_as::client::Client) -> oauth_as::scope::ScopeS
             .filter(|s| client.allowed_scopes.contains(s)),
     )
     .unwrap_or_default()
+}
+
+pub(crate) fn seam_access_standing<'a>(
+    plane: &'a Arc<dyn std::any::Any + Send + Sync>,
+    token: &'a str,
+    resource: &'a str,
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = busbar_kernel::oauth_as::seam::AccessStanding> + Send + 'a,
+    >,
+> {
+    let plane = Arc::clone(plane).downcast::<AsPlane>().ok();
+    Box::pin(async move {
+        match plane {
+            // The handle is not this owner's plane: nothing can be said for the token, and
+            // nothing is admitted on that.
+            None => busbar_kernel::oauth_as::seam::AccessStanding::Unavailable,
+            Some(plane) => plane.access_standing(token, resource).await,
+        }
+    })
 }
 
 pub(crate) fn seam_verify_dpop<'a>(
