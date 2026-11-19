@@ -11,6 +11,7 @@ use busbar_contract::route::{method_bit, METHOD_HEAD, PATH_EXACT, PATH_PATTERN};
 use busbar_contract::route::{RouteAuth, RouteMethod};
 use busbar_kernel::auth::native_chain::NativeChain;
 use busbar_kernel::auth::native_data::{DataRouteOwners, NativeDataRoute};
+use busbar_kernel::auth::native_signed_route::{NativeSignedRoute, SignedUnmounted};
 use busbar_kernel::auth::native_upgrade::NativeUpgradeRoute;
 use busbar_kernel::door::UnitKeyMint;
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth};
@@ -155,6 +156,9 @@ pub(crate) struct NativeSlot {
     data: Vec<(Arc<RouteBinding>, Arc<NativeDataRoute>)>,
     /// The ROUTE_UPGRADE routes (§12.27) and their auth completions.
     upgrades: Vec<(Arc<RouteBinding>, Arc<NativeUpgradeRoute>)>,
+    /// The signed routes and their completions: the route's own chain as its signature verifier,
+    /// under the body bound that chain's instances state. A signed route has no data completion.
+    signed: Vec<(Arc<RouteBinding>, Arc<NativeSignedRoute>)>,
     /// The candidate's admitted instance declaring D_PROTOCOL `websocket`, the only carrier an
     /// upgrade route can be handed to. `None`: every authorized upgrade request is answered 501.
     websocket: Option<ServedTransport>,
@@ -227,6 +231,21 @@ impl NativeSlot {
     pub(crate) fn websocket(&self) -> Option<&ServedTransport> {
         self.websocket.as_ref()
     }
+    /// The signed-ingress completion of this request's route; `Err` when its route is not a
+    /// signed route of this slot. A signed route is served through this and nothing else.
+    pub(crate) fn signed_for(
+        &self,
+        binding: &RequestBinding,
+    ) -> Result<Arc<NativeSignedRoute>, String> {
+        if !Arc::ptr_eq(binding.prepared(), &self.prepared) {
+            return Err("native request belongs to another prepared listener".into());
+        }
+        self.signed
+            .iter()
+            .find(|(route, _)| Arc::ptr_eq(route, binding.route()))
+            .map(|(_, signed)| Arc::clone(signed))
+            .ok_or_else(|| "native request has no signed completion for its actual route".into())
+    }
 }
 
 /// Whether a route token is a ROUTE_UPGRADE route of its plane (§8.6: the flag stands alone).
@@ -254,6 +273,46 @@ fn slot_data_chain<C>(
         return Ok(None);
     }
     build(names).map(|chain| Some(Arc::new(chain)))
+}
+
+/// Whether a declared route's record admits a signed sender (`Admission::SignedIngress`): the
+/// class served by a [`NativeSignedRoute`], never by a data completion.
+pub(crate) fn is_signed_route(route: &Mounted) -> bool {
+    busbar_kernel::auth::admission_table::admission_of(&route.record)
+        == busbar_kernel::auth::admission_table::Admission::SignedIngress
+}
+
+/// What each named member of a signed route's chain declares about the body: its describe facts
+/// and its `D_BODY_MAX`, in chain order. The route's coverage is judged from exactly these
+/// (`NativeSignedRoute::offered`). A built-in member (`anonymous`, `keys`) verifies no sender's
+/// signature, and a name with no opened instance verifies nothing.
+pub(crate) fn signed_members<S: AsRef<str>>(
+    auth: &AuthSet,
+    names: &[S],
+) -> Result<Vec<(u64, Option<u64>)>, SignedUnmounted> {
+    names
+        .iter()
+        .map(|name| {
+            let name = name.as_ref();
+            if busbar_kernel::auth::native_chain::BuiltIn::is(name) {
+                return Err(SignedUnmounted::BuiltIn);
+            }
+            let instance = auth.get(name).ok_or(SignedUnmounted::Coverage(
+                busbar_kernel::auth::native_signed::NotCovered::NoVerifier,
+            ))?;
+            let port = &instance.opened.port;
+            Ok((port.facts(), port.body_max()))
+        })
+        .collect()
+}
+
+/// The listener's own body cap, as a signed route's bound is held under it. With no resolved
+/// limits the listener's configured cap still bounds what is read; the route's bound is then its
+/// verifier's alone.
+pub(crate) fn signed_body_cap(app: &App) -> u64 {
+    app.limits.as_ref().map_or(u64::MAX, |limits| {
+        u64::try_from(limits.request_body_max_bytes).unwrap_or(u64::MAX)
+    })
 }
 
 fn declared_core_auth(
@@ -410,6 +469,7 @@ pub(crate) fn assemble_slot(
         .with_unrouted();
     let mut data = Vec::new();
     let mut upgrades = Vec::new();
+    let mut signed = Vec::new();
     for binding in plan.routes() {
         let RouteTarget::Plane(target) = binding.target() else {
             continue;
@@ -418,6 +478,26 @@ pub(crate) fn assemble_slot(
             .iter()
             .find(|seat| seat.driver.caller().same_incarnation(target.caller()))
             .ok_or_else(|| "native physical route lost its plane incarnation".to_string())?;
+        if is_signed_route(target.mounted()) {
+            // A signed route's completion is its own: the chain named for it (the readers of its
+            // signature header) is its signature verifier, under the bound those instances state.
+            // It gets no data completion: its sender earns no key and opens no unit. The plan
+            // mounted the route only where this binding succeeds (`route_chains`).
+            let names = target.auth_instances();
+            let members = signed_members(&owners.auth, names)
+                .map_err(|why| format!("native signed route is not served: {}", why.reason()))?;
+            let chain = owners.auth.data_chain(owners.epoch, names)?;
+            let route = NativeSignedRoute::bind(
+                seat,
+                Arc::clone(binding),
+                Arc::new(chain),
+                &members,
+                signed_body_cap(app),
+            )
+            .map_err(|why| format!("native signed route is not served: {}", why.reason()))?;
+            signed.push((Arc::clone(binding), route));
+            continue;
+        }
         if is_upgrade(binding) {
             // §12.27: the upgrade completion is kept for a build that binds no data admission for
             // the route. The route is ALSO bound as a data route below (owner decision 18): an
@@ -500,6 +580,7 @@ pub(crate) fn assemble_slot(
         prepared: Arc::new(prepared),
         data,
         upgrades,
+        signed,
         websocket,
         data_chain,
         patterns,
@@ -575,6 +656,7 @@ pub(crate) fn assemble_admin_slot(
         prepared: Arc::new(prepared),
         data: Vec::new(),
         upgrades: Vec::new(),
+        signed: Vec::new(),
         websocket: None,
         data_chain: None,
         patterns: Vec::new(),

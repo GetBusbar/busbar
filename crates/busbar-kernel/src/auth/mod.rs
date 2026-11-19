@@ -31,6 +31,7 @@ pub(crate) mod native_dpop;
 pub mod native_keys;
 pub mod native_policy;
 pub mod native_signed;
+pub mod native_signed_route;
 pub mod native_ticket;
 pub mod native_upgrade;
 pub mod verdicts;

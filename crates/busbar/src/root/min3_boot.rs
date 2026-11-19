@@ -402,6 +402,13 @@ impl RouteSecrets for CustodySecrets {
 /// Standard Webhooks verifier over custody and the replay claim in the core store. The IF names no config key for a
 /// route's webhook secret and K7's `Min3Config` carries none yet, so no route has one: every signed route answers
 /// `R_BAD_CREDENTIAL` until the operator's `routes.<id>` block supplies it (the same answer the unwired route gave).
+///
+/// This is the OLD mount's check only (`port_mount::signed_of`), and it admits nothing. A native listener serves
+/// a signed route through the route's own auth instances instead: the opened instances that read its signature
+/// header (`busbar-auth-webhook-signature`, whose signing secret is its own settings' reference), bound as a
+/// `NativeSignedRoute` under the body bound those instances state as `D_BODY_MAX` (`AuthPort::body_max`), by
+/// the listener plan (`min3_listener_plan::signed_admits`, `min3_physical::assemble_slot`). Nothing here is on
+/// that path, and it needs no boot wiring beyond the auth instances every candidate already opens.
 pub(crate) fn signed_ingress(booted: &Booted) -> Arc<Ingress> {
     Arc::new(Ingress {
         verifier: Arc::new(StandardWebhooks::new(CustodySecrets(Arc::clone(

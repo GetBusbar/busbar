@@ -400,6 +400,12 @@ fn route_chains(
             let unserved = if let Some(None) = own {
                 let header = route.cred_header.as_deref().unwrap_or_default();
                 Some(unserved_line(&seat.instance, route.route, header))
+            } else if super::min3_physical::is_signed_route(route) {
+                // A signed route is the signed class's, never the data path's: it is mounted
+                // exactly where its whole path exists (its own chain covers and bounds the body).
+                signed_admits(app, seat, route, own, owners)
+                    .err()
+                    .map(|why| unadmitted_line(&seat.instance, route.route, &route.pattern, why))
             } else if let Err(why) = if route.flags & busbar_plugin_abi::plane::ROUTE_UPGRADE != 0 {
                 // Nothing is served without its admission.
                 NativeUpgradeRoute::admits(app, seat, route)
@@ -433,6 +439,38 @@ fn route_chains(
         }
     }
     Ok(chains)
+}
+
+/// Whether a signed route's whole path exists under this candidate; `Err`: why it is not mounted.
+/// Its signature verifier is its own chain (`own`: the opened instances that read its signature
+/// header, or the operator's `auth_instances` for it) and never the data chain: a signed route
+/// with no chain of its own has no verifier. Every member must cover the body and state its
+/// bound (`D_BODY_MAX`), none may be a built-in member, no hook may be bound, and the operator's
+/// class must be the route's own (`NativeSignedRoute::admits`, the same judgement its binding
+/// makes again in `assemble_slot`).
+fn signed_admits(
+    app: &App,
+    seat: &busbar_kernel::plane_driver::port::PortSeat,
+    route: &busbar_kernel::plane_driver::port_routes::Mounted,
+    own: Option<&Option<Vec<String>>>,
+    owners: &SlotOwners,
+) -> Result<(), &'static str> {
+    use busbar_kernel::auth::native_signed_route::{NativeSignedRoute, SignedUnmounted};
+    let members = match own {
+        Some(Some(names)) => Some(
+            super::min3_physical::signed_members(&owners.auth, names)
+                .map_err(SignedUnmounted::reason)?,
+        ),
+        Some(None) | None => None,
+    };
+    NativeSignedRoute::admits(
+        seat,
+        route,
+        members.as_deref(),
+        super::min3_physical::signed_body_cap(app),
+    )
+    .map(|_bound| ())
+    .map_err(SignedUnmounted::reason)
 }
 
 /// The chain entries of `names`, each an opened native auth instance that can verify. The chain's
