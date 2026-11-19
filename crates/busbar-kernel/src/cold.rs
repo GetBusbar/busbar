@@ -77,25 +77,6 @@ pub(crate) fn served_audit_names(kind: &str, verb: &str, name: &str) -> (String,
 
 // --- plane_driver ---
 
-impl crate::plane_driver::DriverConfig {
-    /// The status a refusal renders under: the plane's own row for its dialect and reason, else its
-    /// any-dialect row, else the kernel's choice. Looked up only when a unit is refused.
-    #[cold]
-    pub fn status(&self, dialect: u32, reason: busbar_contract::caps::ReasonCode) -> u32 {
-        use busbar_contract::plane::codes::{reason_code, REFUSAL_ANY_DIALECT};
-        let code = reason_code(reason);
-        let row = |d: u32| {
-            self.refusal_statuses
-                .iter()
-                .find(|r| r.dialect == d && r.reason == code)
-                .map(|r| r.status)
-        };
-        row(dialect)
-            .or_else(|| row(REFUSAL_ANY_DIALECT))
-            .unwrap_or_else(|| (self.status_of)(reason))
-    }
-}
-
 /// `plane_driver`: the audit resource of a settled unit whose provider's final usage went unbilled.
 #[cold]
 pub(crate) fn usage_unread_resource(unit: u64, reason: &str) -> String {

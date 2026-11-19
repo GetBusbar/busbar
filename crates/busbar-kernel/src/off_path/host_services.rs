@@ -36,31 +36,6 @@ pub(crate) fn decision_clears(instance: &str, counterparty: &str, default: bool)
     clear
 }
 
-/// The flusher's tick prunes dropped planes and hands back the live registrations to sweep.
-pub(crate) fn live_planes(
-    registered: &mut Vec<Weak<crate::plane_driver::PlaneDriver>>,
-) -> Vec<Weak<crate::plane_driver::PlaneDriver>> {
-    registered.retain(|driver| driver.strong_count() != 0);
-    registered.clone()
-}
-
-/// SHUTDOWN-HANG F4 `open_at_exit`: every unit still open in the live planes' money seams, read
-/// once at exit. A money seam two drivers share is walked once.
-pub(crate) fn open_unit_evidence(
-    drivers: Vec<Weak<crate::plane_driver::PlaneDriver>>,
-) -> Vec<crate::plane_driver::OpenUnitEvidence> {
-    let mut walked: Vec<Arc<crate::plane_driver::PlaneDriver>> = Vec::new();
-    let mut out = Vec::new();
-    for driver in drivers.into_iter().filter_map(|driver| driver.upgrade()) {
-        if walked.iter().any(|seen| seen.shares_money_with(&driver)) {
-            continue;
-        }
-        driver.open_unit_evidence(&mut out);
-        walked.push(driver);
-    }
-    out
-}
-
 /// The shutdown drain of the write-behind queue: flush until idle, every 2 ms until the deadline.
 pub(crate) fn drain_until(
     deadline: Duration,

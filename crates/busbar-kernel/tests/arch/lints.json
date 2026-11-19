@@ -55,7 +55,7 @@
       "crates/busbar-kernel/src/plane_driver/far_end.rs": ["MemberSignals"],
       "crates/busbar-kernel/src/plane_driver/hooks.rs": ["HookJournal"],
       "crates/busbar-kernel/src/plane_driver/host.rs": ["EngineHost"],
-      "crates/busbar-kernel/src/plane_driver/mod.rs": ["AuditSink", "DriverSteps"],
+      "crates/busbar-kernel/src/plane_driver/mod.rs": ["AuditSink"],
       "crates/busbar-kernel/src/plane_driver/money.rs": ["EndPost"],
       "crates/busbar-kernel/src/plane_driver/port_channels.rs": ["ChannelHost"],
       "crates/busbar-kernel/src/plane_driver/port_egress.rs": ["PortUpstream"],

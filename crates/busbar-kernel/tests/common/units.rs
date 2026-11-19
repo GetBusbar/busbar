@@ -11,7 +11,6 @@ use busbar_contract::caps::{
     ReasonCode, Refusal, Route, ScopeFacts, SeatVerdict, StepName, UnitKey, Usage, UsageLine,
     VerifiedDestination, Verify,
 };
-use busbar_kernel::plane_driver::DriverSteps;
 use busbar_kernel::registry::Generation;
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx};
 
@@ -179,7 +178,8 @@ fn seated<S: busbar_contract::caps::Step>(
 
 pub const TAP_FAULT_PROTOCOL: &str = "plane-driver-test";
 
-impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
+/// The fixture's own step answers, which its seats and unit ends hand out.
+impl TestUnits {
     fn arrival(&self, _ctx: &UnitCtx) -> Result<busbar_contract::caps::ArrivalRecord, Refusal> {
         step!(self, StepName::Arrival, arrival_record())
     }
@@ -319,7 +319,7 @@ impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
 
 impl busbar_kernel::teller::seats::DoorSeats for TestUnits {
     fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
-        seated(token, DriverSteps::arrival(self, ctx))
+        seated(token, TestUnits::arrival(self, ctx))
     }
 
     fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> SeatVerdict<Decode> {
@@ -334,7 +334,7 @@ impl busbar_kernel::teller::seats::DoorSeats for TestUnits {
     }
 
     fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
-        seated(token, DriverSteps::authenticate(self, ctx))
+        seated(token, TestUnits::authenticate(self, ctx))
     }
 
     fn verify(
@@ -344,7 +344,7 @@ impl busbar_kernel::teller::seats::DoorSeats for TestUnits {
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> SeatVerdict<Verify> {
-        seated(token, DriverSteps::verify(self, trust, ctx, principal))
+        seated(token, TestUnits::verify(self, trust, ctx, principal))
     }
 
     fn approve(
@@ -356,7 +356,7 @@ impl busbar_kernel::teller::seats::DoorSeats for TestUnits {
     ) -> SeatVerdict<Approve> {
         seated(
             token,
-            DriverSteps::approve(self, ctx, principal, destinations),
+            TestUnits::approve(self, ctx, principal, destinations),
         )
     }
 
@@ -371,7 +371,7 @@ impl busbar_kernel::teller::seats::DoorSeats for TestUnits {
     ) -> SeatVerdict<Admit> {
         seated(
             token,
-            DriverSteps::admit(self, admit, ctx, principal, destinations, leases),
+            TestUnits::admit(self, admit, ctx, principal, destinations, leases),
         )
     }
 }
@@ -401,12 +401,12 @@ impl busbar_kernel::teller::UnitEnds for TestUnits {
     ) -> SeatVerdict<Meter> {
         seated(
             token,
-            DriverSteps::meter(self, usage_token, ctx, provisional, destinations),
+            TestUnits::meter(self, usage_token, ctx, provisional, destinations),
         )
     }
 
     fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
-        SeatVerdict::proceed(token, DriverSteps::audit(self, ctx, outcome))
+        SeatVerdict::proceed(token, TestUnits::audit(self, ctx, outcome))
     }
 
     fn audit_refused(
@@ -415,7 +415,7 @@ impl busbar_kernel::teller::UnitEnds for TestUnits {
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> SeatVerdict<Audit> {
-        SeatVerdict::proceed(token, DriverSteps::audit_refused(self, ctx, refusal))
+        SeatVerdict::proceed(token, TestUnits::audit_refused(self, ctx, refusal))
     }
 
     fn encode(
@@ -429,6 +429,6 @@ impl busbar_kernel::teller::UnitEnds for TestUnits {
     }
 
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
-        DriverSteps::evidence(self, ctx)
+        TestUnits::evidence(self, ctx)
     }
 }
