@@ -298,6 +298,12 @@ providers:
 models:
   test-model:
     provider: mock
+pools:
+  pool-a:
+    members:
+      - { model: test-model }
+llm:
+  insecure_transport: {{ accept: plaintext, reason: "loopback test upstream" }}
 {planes}"#,
             signing = dir.join("signing.key").display(),
             admin_sha = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes())
@@ -679,14 +685,14 @@ fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
                 if matches!(got.status, 401 | 403 | 405 | 500 | 501)
                     || (got.status == 404 && got.body == not_found.body)
                 {
-                    failures.push(format!("{label}: not served, answered {}", got.status));
+                    failures.push(format!("{label}: not served, answered {} {}", got.status, String::from_utf8_lossy(&got.body)));
                 } else {
                     answered += 1;
                 }
             }
             "answers" => {
                 if ADMISSION_STATUSES.contains(&got.status) || got.status >= 500 {
-                    failures.push(format!("{label}: not served, answered {}", got.status));
+                    failures.push(format!("{label}: not served, answered {} {}", got.status, String::from_utf8_lossy(&got.body)));
                 } else {
                     answered += 1;
                 }
@@ -699,8 +705,11 @@ fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
                     ));
                 } else if got.status != 404 || got.body != not_found.body {
                     failures.push(format!(
-                        "{label}: refused on purpose but answered {}",
-                        got.status
+                        "{label}: refused on purpose but answered {} {} (the router replies {} {})",
+                        got.status,
+                        String::from_utf8_lossy(&got.body),
+                        not_found.status,
+                        String::from_utf8_lossy(&not_found.body)
                     ));
                 } else {
                     refused += 1;
