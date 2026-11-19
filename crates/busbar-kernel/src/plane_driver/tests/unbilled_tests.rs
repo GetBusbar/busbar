@@ -731,4 +731,428 @@ async fn unbilled_a_done_piece_cut_by_budget_bills_the_stated_usage() {
 // ---------------------------------------------------------------------------------------------
 // P088: the second half (a done piece straddling the deadline or a reload; a unit buried with its
 // done piece in flight or settled). Its cases follow here, on the same fixture.
+//
+// THE PORT'S CANCEL. On the port the plane's calls are synchronous entries made between the
+// session's awaits, so no cancel can land inside the plane's done answer: whatever cancels a unit
+// (its deadline, a reload of its plane, its caller gone) does it by dropping the session at its
+// next await, and the unit's owner then settles it as a gateway failure that ran nothing
+// (`port_mount::Settle`'s drop, `end_of(502, false)`). A done piece "straddling" a cancel is one
+// the plane answered and whose write to the caller was still pending when the cancel came; a done
+// piece "in flight" is one the far end had not yet delivered. The rule every case asserts: the
+// session bills exactly the usage it accepted, once, whatever its ending; a report the session
+// refused is never billed. The deadline runs on tokio's paused clock: nothing sleeps for real.
 // ---------------------------------------------------------------------------------------------
+
+use std::future::Future;
+use std::sync::atomic::AtomicBool;
+
+use tokio::sync::Notify;
+use tokio::time::Instant;
+
+use crate::config::pools::DEFAULT_FAILOVER_DEADLINE_SECS;
+use crate::plane_driver::port_session::{SessionError, UpExchange};
+use crate::plane_driver::port_upstream::{Chunk, UpChunks};
+
+/// The far end on the paused clock: it answers 200 `ok` at once, and its reply's end arrives at
+/// `end_at` (never, when `None`). `awaiting_end` is set once the session waits for that end.
+struct Timed {
+    end_at: Option<Instant>,
+    awaiting_end: Arc<AtomicBool>,
+}
+
+impl Timed {
+    fn ending_at(end_at: Option<Instant>) -> Self {
+        Self {
+            end_at,
+            awaiting_end: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+struct TimedRest {
+    body: Option<Vec<u8>>,
+    end_at: Option<Instant>,
+    awaiting_end: Arc<AtomicBool>,
+}
+
+impl UpChunks for TimedRest {
+    async fn next(&mut self) -> Result<Option<Chunk>, SendFailed> {
+        if let Some(body) = self.body.take() {
+            return Ok(Some(Chunk::Body(body)));
+        }
+        self.awaiting_end.store(true, Ordering::SeqCst);
+        match self.end_at {
+            Some(at) => tokio::time::sleep_until(at).await,
+            None => std::future::pending::<()>().await,
+        }
+        Ok(None)
+    }
+}
+
+impl UpSend for Timed {
+    type Rest<'a> = TimedRest;
+
+    async fn open<'a>(
+        &'a mut self,
+        _: &'a Candidate,
+        _: UpExchange,
+    ) -> Result<UpOpen<TimedRest>, SendFailed> {
+        Ok(UpOpen {
+            status: 200,
+            headers: Vec::new(),
+            rest: TimedRest {
+                body: Some(b"ok".to_vec()),
+                end_at: self.end_at,
+                awaiting_end: Arc::clone(&self.awaiting_end),
+            },
+        })
+    }
+}
+
+/// A caller that takes nothing from the done answer on: its first write is never answered
+/// (`Pending`, as a client that stopped reading), so the session waits there until its owner
+/// drops it. `held` tells whoever waits for that moment.
+#[derive(Default)]
+struct Holding {
+    polls: AtomicUsize,
+    held: Notify,
+}
+
+impl ClientSink for Holding {
+    fn poll_items(&self, _: &mut Context<'_>, _: &mut Vec<ToClient>) -> Poll<bool> {
+        if self.polls.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.held.notify_one();
+        }
+        Poll::Pending
+    }
+}
+
+impl Effects for Holding {
+    fn emit(&self, _: u64, _: &[u8]) {}
+
+    fn client(&self) -> Option<&dyn ClientSink> {
+        Some(self)
+    }
+}
+
+/// [`serve`] over any far end, its outcome as the session returned it.
+async fn session_over<S: UpSend>(
+    r: &Rig,
+    plane: &Plane,
+    effects: &dyn Effects,
+    walk: &mut Walk,
+    far: &mut S,
+) -> Result<Ran, SessionError> {
+    let store = Store;
+    let resolver = Resolver::new(&store, Some([1; 32]));
+    let refusals = CoreRefusals::new();
+    let money = PortMoney::new(
+        Arc::clone(&r.seam) as Arc<dyn MoneySeam>,
+        classes(),
+        Arc::clone(&r.rows) as Arc<dyn AuditSink>,
+    );
+    let ctx = unit_ctx();
+    let books = UnitBooks::new(&money, &ctx, Some("k"));
+    super::run_session(
+        plane,
+        &req(),
+        b"{}",
+        Drive {
+            resolver: &resolver,
+            members: Some(walk),
+            send: Some(far),
+            dialect: "openai",
+            refusals: &refusals,
+            effects,
+            books: &books,
+            carrier: None,
+        },
+    )
+    .await
+}
+
+/// The unit's deadline on the paused clock: the request's default failover deadline from now.
+fn deadline() -> Instant {
+    Instant::now() + std::time::Duration::from_secs(DEFAULT_FAILOVER_DEADLINE_SECS)
+}
+
+/// The owner's settlement of a unit whose session was cancelled or failed (`port_mount::Settle`:
+/// dropped unfinished, or `Err`): a gateway failure that ran nothing.
+fn settle_cancelled(r: &Rig) {
+    r.money
+        .settle_end_as(UnitKey::new(UNIT), end_of(502, false));
+}
+
+/// What every cancelled or failed case asserts once the session is gone: the owner's settlement
+/// bills exactly `tokens`, closes the unit, and a second settlement adds nothing.
+async fn assert_settled_once(r: &Rig, tokens: u64, what: &str) {
+    settle_cancelled(r);
+    assert_eq!(ledgered(r).await, Count::from(tokens), "{what}, exactly");
+    assert_eq!(r.money.open_units(), 0, "the settlement closed the unit");
+    settle_cancelled(r);
+    assert_eq!(
+        ledgered(r).await,
+        Count::from(tokens),
+        "a second settlement bills nothing again"
+    );
+}
+
+/// The running usage (3, 4) the far end's HEAD piece states, and a done answer for the far end's
+/// END piece: the whole reply and `usage`.
+fn plane_done_with(done: &[It]) -> Plane {
+    let mut piece = vec![It::Respond(200), It::Body(b"done"), It::End];
+    piece.extend_from_slice(done);
+    Plane::answering(
+        vec![It::Usage("input", 3), It::Usage("output", 4)],
+        Vec::new(),
+        piece,
+    )
+}
+
+/// The checkpoint entry the witness logs for counts (7, 11), whatever the verdict.
+fn took_the_final_report(log: &[String]) -> bool {
+    let counts = format!("checkpoint {:?}", vec![(0u32, 7u64), (1, 11)]);
+    log.iter().any(|entry| entry.starts_with(&counts))
+}
+
+/// K0 site 2: the far end's END reaches the plane at the unit's deadline, the plane answers it
+/// done with (7, 11), and the deadline cuts the session while that answer's write is pending. The
+/// stated usage bills, once, and nothing goes unread.
+#[tokio::test]
+async fn unbilled_a_done_piece_straddling_the_deadline_bills_the_stated_usage() {
+    let r = rig().await;
+    tokio::time::pause();
+    let at = deadline();
+    let plane = plane_done_with(&[It::Usage("input", 7), It::Usage("output", 11)]);
+    let caller = Holding::default();
+    let mut walk = Walk::of_b();
+    let mut far = Timed::ending_at(Some(at));
+    let cut =
+        tokio::time::timeout_at(at, session_over(&r, &plane, &caller, &mut walk, &mut far)).await;
+    tokio::time::resume();
+    assert!(cut.is_err(), "the deadline cut the session");
+    assert!(
+        plane.pieces.lock().unwrap().is_empty(),
+        "the plane answered the far end's END: its done piece"
+    );
+    assert_eq!(
+        caller.polls.load(Ordering::SeqCst),
+        1,
+        "the done answer's write was pending when the deadline came"
+    );
+    assert_settled_once(&r, 18, "the provider's stated usage (7 + 11)").await;
+    assert!(
+        r.rows.0.lock().unwrap().is_empty(),
+        "nothing went unread: {:?}",
+        r.rows.0.lock().unwrap()
+    );
+}
+
+/// K0b site 2: the same deadline, but the done piece states a count the session refuses (a class
+/// no plane may name). The refusal ends the session before the deadline can: it bills the last
+/// report the session accepted, (3, 4), records the refused one unread, and takes nothing of it.
+/// Raced against the deadline or not, the bill and the rows are the same.
+#[tokio::test]
+async fn unbilled_a_count_refused_done_piece_straddling_the_deadline_bills_the_last_accepted_report(
+) {
+    let refused = [It::Usage("input", 7), It::Usage("Output", 11)];
+
+    let raced = rig().await;
+    tokio::time::pause();
+    let at = deadline();
+    let plane = plane_done_with(&refused);
+    let caller = Caller::staying();
+    let mut walk = Walk::of_b();
+    let mut far = Timed::ending_at(Some(at));
+    let ran = tokio::time::timeout_at(
+        at,
+        session_over(&raced, &plane, &caller, &mut walk, &mut far),
+    )
+    .await;
+    tokio::time::resume();
+    assert!(
+        matches!(ran, Ok(Err(SessionError::Violation(_)))),
+        "the refusal ended the session, not the deadline: {ran:?}"
+    );
+    assert!(plane.pieces.lock().unwrap().is_empty());
+
+    let unraced = rig().await;
+    let plane = plane_done_with(&refused);
+    let caller = Caller::staying();
+    let mut walk = Walk::of_b();
+    let ran = session_over(&unraced, &plane, &caller, &mut walk, &mut Far).await;
+    assert!(matches!(ran, Err(SessionError::Violation(_))), "{ran:?}");
+
+    for r in [&raced, &unraced] {
+        assert!(
+            !took_the_final_report(&r.seam.log()),
+            "nothing of the refused piece was taken: {:?}",
+            r.seam.log()
+        );
+        assert_settled_once(r, 7, "the last accepted report (3 + 4)").await;
+        let rows = r.rows.0.lock().unwrap().clone();
+        assert_eq!(rows.len(), 1, "one unread row: {rows:?}");
+        assert!(
+            rows[0].ends_with(&format!("unit:{UNIT} reason:Unpriced")),
+            "{rows:?}"
+        );
+    }
+    assert_eq!(
+        (raced.seam.log(), raced.rows.0.lock().unwrap().clone()),
+        (unraced.seam.log(), unraced.rows.0.lock().unwrap().clone()),
+        "the raced and the un-raced refusals book the same"
+    );
+}
+
+/// K0 site 2's reload twin: the plane's generation is replaced while the done answer's write is
+/// pending, and the reload stops the session (the port's cancel). The stated usage bills, once.
+#[tokio::test]
+async fn unbilled_a_done_piece_straddling_a_reload_bills_the_stated_usage() {
+    let r = rig().await;
+    let plane = plane_done_with(&[It::Usage("input", 7), It::Usage("output", 11)]);
+    let caller = Holding::default();
+    let mut walk = Walk::of_b();
+    let mut far = Far;
+    let mut running = Box::pin(session_over(&r, &plane, &caller, &mut walk, &mut far));
+    tokio::select! {
+        biased;
+        ended = running.as_mut() => panic!("the caller never takes the done answer: {ended:?}"),
+        () = caller.held.notified() => {}
+    }
+    // The reload: the old generation's session is stopped where it waits.
+    drop(running);
+    assert!(
+        plane.pieces.lock().unwrap().is_empty(),
+        "the done piece was answered"
+    );
+    assert_settled_once(&r, 18, "the provider's stated usage (7 + 11)").await;
+    assert!(
+        r.rows.0.lock().unwrap().is_empty(),
+        "nothing went unread: {:?}",
+        r.rows.0.lock().unwrap()
+    );
+}
+
+/// GUARD (K0b `Panic`, site 2): the plane answers the far end's END, at the deadline, with a
+/// far-bound FORWARD beside its done reply and (7, 11): a shape no piece answer may take. The
+/// session fails on it before the deadline can cut it; nothing of that answer is folded or billed,
+/// and the usage the session accepted before it, (3, 4), bills once.
+#[tokio::test]
+async fn unbilled_a_far_bound_done_piece_on_the_far_leg_straddling_the_deadline_is_not_folded() {
+    let r = rig().await;
+    tokio::time::pause();
+    let at = deadline();
+    let plane = Plane::answering(
+        vec![It::Usage("input", 3), It::Usage("output", 4)],
+        Vec::new(),
+        vec![
+            It::Forward,
+            It::Respond(200),
+            It::Body(b"done"),
+            It::End,
+            It::Usage("input", 7),
+            It::Usage("output", 11),
+        ],
+    );
+    let caller = Caller::staying();
+    let mut walk = Walk::of_b();
+    let mut far = Timed::ending_at(Some(at));
+    let ran =
+        tokio::time::timeout_at(at, session_over(&r, &plane, &caller, &mut walk, &mut far)).await;
+    tokio::time::resume();
+    assert!(
+        matches!(ran, Ok(Err(SessionError::Violation(_)))),
+        "the breach failed the session, not the deadline: {ran:?}"
+    );
+    assert!(
+        caller.took().is_empty(),
+        "nothing of the breach reached the caller"
+    );
+    assert!(walk.served.is_empty(), "no member served by that answer");
+    assert!(
+        !took_the_final_report(&r.seam.log()),
+        "a contract breach is never folded: {:?}",
+        r.seam.log()
+    );
+    assert_settled_once(&r, 7, "the usage accepted before the breach (3 + 4)").await;
+}
+
+/// K0 site 4: the unit is buried (its session dropped) while the far end has not yet delivered the
+/// END its done piece answers. The session accepted the HEAD's (3, 4) and nothing after it: those
+/// bill, once; no report was stated and left unread.
+#[tokio::test]
+async fn unbilled_a_unit_buried_with_its_done_piece_in_flight_records_and_bills() {
+    let r = rig().await;
+    let plane = plane_done_with(&[It::Usage("input", 7), It::Usage("output", 11)]);
+    let caller = Caller::staying();
+    let mut walk = Walk::of_b();
+    let mut far = Timed::ending_at(None);
+    let awaiting_end = Arc::clone(&far.awaiting_end);
+    let mut running = Box::pin(session_over(&r, &plane, &caller, &mut walk, &mut far));
+    std::future::poll_fn(|cx| {
+        assert!(
+            running.as_mut().poll(cx).is_pending(),
+            "the far end's END never comes"
+        );
+        assert!(
+            awaiting_end.load(Ordering::SeqCst),
+            "the session waits for the far end's END"
+        );
+        Poll::Ready(())
+    })
+    .await;
+    drop(running);
+    assert_eq!(
+        plane.pieces.lock().unwrap().len(),
+        1,
+        "the done piece was never answered"
+    );
+    assert!(r.seam.log().iter().all(|entry| entry != "finished"));
+    assert_settled_once(&r, 7, "the usage the session accepted (3 + 4)").await;
+    assert!(
+        r.rows.0.lock().unwrap().is_empty(),
+        "{:?}",
+        r.rows.0.lock().unwrap()
+    );
+}
+
+/// K0 site 3: the unit is buried after the plane answered the far end's END done with (7, 11)
+/// (its answer settled), while that answer's write to the caller is pending. The usage the
+/// session accepted is the stated (7, 11): it bills, once, on the unit's lane.
+#[tokio::test]
+async fn unbilled_a_unit_buried_with_its_done_piece_settled_is_attributed() {
+    let r = rig().await;
+    let plane = plane_done_with(&[It::Usage("input", 7), It::Usage("output", 11)]);
+    let caller = Holding::default();
+    let mut walk = Walk::of_b();
+    let mut far = Far;
+    let mut running = Box::pin(session_over(&r, &plane, &caller, &mut walk, &mut far));
+    std::future::poll_fn(|cx| {
+        assert!(running.as_mut().poll(cx).is_pending(), "the caller holds");
+        Poll::Ready(())
+    })
+    .await;
+    assert_eq!(
+        caller.polls.load(Ordering::SeqCst),
+        1,
+        "the done answer's write"
+    );
+    drop(running);
+    assert!(
+        plane.pieces.lock().unwrap().is_empty(),
+        "the done piece was answered"
+    );
+    assert_eq!(
+        r.money
+            .serving(UnitKey::new(UNIT), str::to_owned)
+            .as_deref(),
+        Some("m"),
+        "the unit is billed on its lane"
+    );
+    assert_settled_once(&r, 18, "the provider's stated usage (7 + 11)").await;
+    assert!(
+        r.rows.0.lock().unwrap().is_empty(),
+        "{:?}",
+        r.rows.0.lock().unwrap()
+    );
+}
