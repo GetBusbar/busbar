@@ -109,12 +109,12 @@ impl Root {
             boot.limits.max_inbound_concurrent
         );
         changed!(
-            "/advanced/upstream_http1_only",
+            "/outbound/http1_only",
             self.limits.upstream_http1_only,
             boot.limits.upstream_http1_only
         );
         changed!(
-            "/advanced/upstream_h2_prior_knowledge",
+            "/outbound/h2_prior_knowledge",
             self.limits.upstream_h2_prior_knowledge,
             boot.limits.upstream_h2_prior_knowledge
         );
@@ -139,42 +139,42 @@ pub(crate) struct Source {
 impl Source {
     fn capture(cfg: &DeployCfg) -> Self {
         Self {
-            deregister_delay: cfg.advanced.shutdown.deregister_delay,
-            headers: cfg.advanced.response_headers.clone(),
+            deregister_delay: cfg.shutdown.delay(),
+            headers: cfg.telemetry.response_headers.clone(),
             admin_mtls: cfg.admin_require_mtls,
-            trusted_proxies: cfg.advanced.trusted_proxies.clone(),
-            forwarded_header: cfg.advanced.forwarded_header.clone(),
-            block_private_addresses: cfg.advanced.block_private_addresses,
-            proxy_resolution: cfg.advanced.proxy_resolution,
-            tls: cfg.advanced.tls.clone(),
+            trusted_proxies: cfg.client_address.trusted_proxies.clone(),
+            forwarded_header: cfg.client_address.header.clone(),
+            block_private_addresses: cfg.outbound.block_private_addresses,
+            proxy_resolution: cfg.outbound.proxy_resolution,
+            tls: cfg.outbound.tls.clone(),
         }
     }
 
     fn changed(&self, boot: &Self) -> Vec<String> {
         let mut paths = Vec::new();
         if self.deregister_delay != boot.deregister_delay {
-            paths.push("/advanced/shutdown/deregister_delay".to_owned());
+            paths.push("/shutdown/deregister_delay".to_owned());
         }
         if self.headers != boot.headers {
-            paths.push("/advanced/response_headers".to_owned());
+            paths.push("/telemetry/response_headers".to_owned());
         }
         if self.admin_mtls != boot.admin_mtls {
             paths.push("/admin_require_mtls".to_owned());
         }
         if self.trusted_proxies != boot.trusted_proxies {
-            paths.push("/advanced/trusted_proxies".to_owned());
+            paths.push("/client_address/trusted_proxies".to_owned());
         }
         if self.forwarded_header != boot.forwarded_header {
-            paths.push("/advanced/forwarded_header".to_owned());
+            paths.push("/client_address/header".to_owned());
         }
         if self.block_private_addresses != boot.block_private_addresses {
-            paths.push("/advanced/block_private_addresses".to_owned());
+            paths.push("/outbound/block_private_addresses".to_owned());
         }
         if self.proxy_resolution != boot.proxy_resolution {
-            paths.push("/advanced/proxy_resolution".to_owned());
+            paths.push("/outbound/proxy_resolution".to_owned());
         }
         if self.tls != boot.tls {
-            paths.push("/advanced/tls".to_owned());
+            paths.push("/outbound/tls".to_owned());
         }
         paths
     }
@@ -244,17 +244,14 @@ mod tests {
     }
 
     #[test]
-    fn connector_protocol_changes_use_authored_advanced_paths() {
+    fn connector_protocol_changes_use_authored_outbound_paths() {
         let boot = baseline();
         let mut next = boot.clone();
         next.limits.upstream_http1_only = !boot.limits.upstream_http1_only;
         next.limits.upstream_h2_prior_knowledge = !boot.limits.upstream_h2_prior_knowledge;
         assert_eq!(
             next.changed(&boot),
-            [
-                "/advanced/upstream_http1_only",
-                "/advanced/upstream_h2_prior_knowledge"
-            ]
+            ["/outbound/http1_only", "/outbound/h2_prior_knowledge"]
         );
         let mut live = boot.clone();
         live.limits.request_body_max_bytes += 1;
@@ -265,13 +262,13 @@ mod tests {
     fn source_only_headers_and_mtls_changes_are_not_lost_by_resolution() {
         let mut deploy: DeployCfg = busbar_contract::yaml::from_str("{}").unwrap();
         let boot = Source::capture(&deploy);
-        deploy.advanced.response_headers.server_timing =
-            !deploy.advanced.response_headers.server_timing;
+        deploy.telemetry.response_headers.server_timing =
+            !deploy.telemetry.response_headers.server_timing;
         deploy.admin_require_mtls = !deploy.admin_require_mtls;
         let next = Source::capture(&deploy);
         assert_eq!(
             next.changed(&boot),
-            ["/advanced/response_headers", "/admin_require_mtls"]
+            ["/telemetry/response_headers", "/admin_require_mtls"]
         );
         assert!(next.changed(&next).is_empty());
     }
@@ -282,20 +279,20 @@ mod tests {
     fn boot_bound_security_settings_report_a_pending_restart() {
         let mut deploy: DeployCfg = busbar_contract::yaml::from_str("{}").unwrap();
         let boot = Source::capture(&deploy);
-        deploy.advanced.trusted_proxies = vec!["10.0.0.0/8".to_owned()];
-        deploy.advanced.forwarded_header = Some("forwarded".to_owned());
-        deploy.advanced.block_private_addresses = !deploy.advanced.block_private_addresses;
-        deploy.advanced.proxy_resolution = crate::config::tls::ProxyResolution::Proxy;
-        deploy.advanced.tls = busbar_contract::yaml::from_str("roots: none\n").unwrap();
+        deploy.client_address.trusted_proxies = vec!["10.0.0.0/8".to_owned()];
+        deploy.client_address.header = Some("forwarded".to_owned());
+        deploy.outbound.block_private_addresses = !deploy.outbound.block_private_addresses;
+        deploy.outbound.proxy_resolution = crate::config::tls::ProxyResolution::Proxy;
+        deploy.outbound.tls = busbar_contract::yaml::from_str("roots: none\n").unwrap();
         let next = Source::capture(&deploy);
         assert_eq!(
             next.changed(&boot),
             [
-                "/advanced/trusted_proxies",
-                "/advanced/forwarded_header",
-                "/advanced/block_private_addresses",
-                "/advanced/proxy_resolution",
-                "/advanced/tls"
+                "/client_address/trusted_proxies",
+                "/client_address/header",
+                "/outbound/block_private_addresses",
+                "/outbound/proxy_resolution",
+                "/outbound/tls"
             ]
         );
         assert!(next.changed(&next).is_empty());
@@ -349,18 +346,15 @@ mod shutdown_tests {
     fn stored_deregister_delay_changes_report_restart_without_rewriting_boot() {
         let mut document: DeployCfg = busbar_contract::yaml::from_str("{}").unwrap();
         let boot = Source::capture(&document);
-        document.advanced.shutdown.deregister_delay = std::time::Duration::ZERO;
+        document.shutdown.deregister_delay = Some(std::time::Duration::from_secs(5));
         let changed = Source::capture(&document);
-        assert_eq!(
-            changed.changed(&boot),
-            ["/advanced/shutdown/deregister_delay"]
-        );
-        assert_eq!(boot.deregister_delay, std::time::Duration::from_secs(5));
+        assert_eq!(changed.changed(&boot), ["/shutdown/deregister_delay"]);
+        assert_eq!(boot.deregister_delay, std::time::Duration::ZERO);
         assert!(
             changed.changed(&changed).is_empty(),
             "the next boot consumes the stored value"
         );
-        document.advanced.shutdown = Default::default();
+        document.shutdown = Default::default();
         assert!(
             Source::capture(&document).changed(&boot).is_empty(),
             "reset removes the pending restart difference"

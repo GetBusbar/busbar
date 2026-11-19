@@ -118,15 +118,15 @@ The thousands digit is the area.
 | [BUSBAR-3134](/docs/1.6/errors/BUSBAR-3134/) | An allowlist entry names a cloud-metadata destination *(retired)* | 1.6.0 |
 | [BUSBAR-3135](/docs/1.6/errors/BUSBAR-3135/) | A registration still carries the retired per-registration private-address switch *(retired)* | 1.6.0 |
 | [BUSBAR-3136](/docs/1.6/errors/BUSBAR-3136/) | A retired cloud-metadata carve-out key is set | 1.6.0 |
-| [BUSBAR-3137](/docs/1.6/errors/BUSBAR-3137/) | An advanced.tls trust anchor is not a usable CA | 1.6.0 |
-| [BUSBAR-3138](/docs/1.6/errors/BUSBAR-3138/) | An advanced.tls trust anchor was accepted | 1.6.0 |
-| [BUSBAR-3139](/docs/1.6/errors/BUSBAR-3139/) | An advanced.tls trust anchor expires within 30 days | 1.6.0 |
+| [BUSBAR-3137](/docs/1.6/errors/BUSBAR-3137/) | An outbound.tls trust anchor is not a usable CA | 1.6.0 |
+| [BUSBAR-3138](/docs/1.6/errors/BUSBAR-3138/) | An outbound.tls trust anchor was accepted | 1.6.0 |
+| [BUSBAR-3139](/docs/1.6/errors/BUSBAR-3139/) | An outbound.tls trust anchor expires within 30 days | 1.6.0 |
 | [BUSBAR-3140](/docs/1.6/errors/BUSBAR-3140/) | No trust anchor applies to a TLS destination | 1.6.0 |
 | [BUSBAR-3141](/docs/1.6/errors/BUSBAR-3141/) | Plaintext is not admitted to this destination | 1.6.0 |
 | [BUSBAR-3144](/docs/1.6/errors/BUSBAR-3144/) | A plaintext destination entry is not an exact host or IP | 1.6.0 |
 | [BUSBAR-3145](/docs/1.6/errors/BUSBAR-3145/) | A destination wildcard is too wide | 1.6.0 |
 | [BUSBAR-3147](/docs/1.6/errors/BUSBAR-3147/) | System CA bundle entries were not used | 1.6.0 |
-| [BUSBAR-3148](/docs/1.6/errors/BUSBAR-3148/) | An advanced.tls destination entry is invalid | 1.6.0 |
+| [BUSBAR-3148](/docs/1.6/errors/BUSBAR-3148/) | An outbound.tls destination entry is invalid | 1.6.0 |
 | [BUSBAR-3149](/docs/1.6/errors/BUSBAR-3149/) | Outbound connections go through a proxy | 1.6.0 |
 | [BUSBAR-3160](/docs/1.6/errors/BUSBAR-3160/) | A plugin instance would connect without TLS | 1.6.0 |
 | [BUSBAR-3162](/docs/1.6/errors/BUSBAR-3162/) | A plugin instance runs with insecure_transport accepted | 1.6.0 |

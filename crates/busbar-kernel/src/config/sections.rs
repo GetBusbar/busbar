@@ -230,14 +230,16 @@ impl SecretModuleCfg {
     }
 }
 
-/// The `advanced:` block - INTERNAL tuning knobs (formerly under `governance:`). Every field
-/// defaults to its historical value; the whole block is normally omitted.
+/// The `advanced:` block: the durability tuning (`usage_flush_interval_ms`) and nothing else an
+/// operator chooses. Every other key here is an old one: REMOVED (no longer a setting, ignored)
+/// or MOVED (read, then carried to its own section when the document is read,
+/// [`super::DeployCfg::carry_moved`]). Neither kind is ever written back.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct AdvancedCfg {
-    /// Operator deregistration allowance, captured at boot; edit through the config document.
-    #[serde(default)]
-    pub shutdown: super::shutdown::AdvancedShutdownCfg,
+    /// MOVED to top-level `shutdown`.
+    #[serde(default, skip_serializing)]
+    pub shutdown: Option<super::shutdown::ShutdownCfg>,
     /// REMOVED (was the budget-table sweep cadence): accepted from an old configuration, ignored,
     /// never written back; [`AdvancedCfg::removed`] names it so `config::resolve` logs one line.
     #[serde(default, skip_serializing)]
@@ -251,57 +253,30 @@ pub struct AdvancedCfg {
     /// an old configuration, ignored, never written back; named by [`AdvancedCfg::removed`].
     #[serde(default, skip_serializing)]
     pub worker_threads: Option<serde::de::IgnoredAny>,
-    /// Pin the shared upstream client to HTTP/1.1 (`advanced.upstream_http1_only`, migrated from
-    /// `BUSBAR_UPSTREAM_HTTP1_ONLY`). BOOT-TIME (client-build) knob; default `false` (ALPN default:
-    /// h2 where the backend accepts it, h1 otherwise). The `BUSBAR_UPSTREAM_HTTP1_ONLY` env var was
-    /// deprecated in 1.5.3 and removed in 1.6.0. Read by the HTTP transport (it declares this key
-    /// in its settings). If `upstream_h2_prior_knowledge` is also true, this one wins: the transport
-    /// offers `http/1.1` on TLS and no h2c on cleartext; the engine passes both through unchanged.
-    #[serde(default)]
-    pub upstream_http1_only: bool,
-    /// Force HTTP/2 prior-knowledge to cleartext upstreams (`advanced.upstream_h2_prior_knowledge`,
-    /// migrated from `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`). BOOT-TIME (client-build) knob; default
-    /// `false` — prior-knowledge h2c measurably HURT throughput in perf testing. The
-    /// `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` env var was deprecated in 1.5.3 and removed in 1.6.0.
-    /// Read by the HTTP transport. Ignored when `upstream_http1_only` is also true (that one wins).
-    #[serde(default)]
-    pub upstream_h2_prior_knowledge: bool,
-    /// The `advanced.response_headers:` block — opt-in toggles for every busbar-INJECTED response
-    /// header. Every busbar-injected header is a fingerprint an unauthenticated client
-    /// can observe on every response, so each one is OFF by default and an operator opts IN
-    /// per-header. See `docs/observability.md#response-headers` for the full catalogue. BOOT-TIME
-    /// (restart-to-apply), same freezing mechanism as the rest of this struct's non-`Patch`able
-    /// fields: `server_timing` is baked into router middleware state at process start
-    /// (`main.rs::apply_common_layers`) and is not rebuilt by a config apply.
-    #[serde(default)]
-    pub response_headers: ResponseHeadersCfg,
-    /// The destination guard refuses ordinary private-address dials by default. A core-selected
-    /// registration may carry its own `allow_private`; configured providers retain reach only to
-    /// their own base/token origins. Operator-infrastructure Needs retain their declared-target
-    /// policy. Metadata, own-listener protection and TLS policy remain enforced. BOOT-TIME.
-    #[serde(default = "default_block_private_addresses")]
-    pub block_private_addresses: bool,
-    /// The ingresses and load balancers that may state a client's address for it (an IP or a
-    /// CIDR each, read by the destination guard's CIDR reader). Their `forwarded_header` is
-    /// honoured; nobody else's is. Default empty: the socket peer is the client. BOOT-TIME.
-    #[serde(default)]
-    pub trusted_proxies: Vec<String>,
-    /// The one forwarding header read from a trusted proxy: `x-forwarded-for` (default) or
-    /// `forwarded`. BOOT-TIME.
-    #[serde(default)]
+    /// MOVED to `outbound.http1_only`.
+    #[serde(default, skip_serializing)]
+    pub upstream_http1_only: Option<bool>,
+    /// MOVED to `outbound.h2_prior_knowledge`.
+    #[serde(default, skip_serializing)]
+    pub upstream_h2_prior_knowledge: Option<bool>,
+    /// MOVED to `telemetry.response_headers`.
+    #[serde(default, skip_serializing)]
+    pub response_headers: Option<ResponseHeadersCfg>,
+    /// MOVED to `outbound.block_private_addresses`.
+    #[serde(default, skip_serializing)]
+    pub block_private_addresses: Option<bool>,
+    /// MOVED to `client_address.trusted_proxies`.
+    #[serde(default, skip_serializing)]
+    pub trusted_proxies: Option<Vec<String>>,
+    /// MOVED to `client_address.header`.
+    #[serde(default, skip_serializing)]
     pub forwarded_header: Option<String>,
-    /// The outbound TLS trust store (`advanced.tls`): base roots, global trust anchors and
-    /// per-destination entries, selected by the guard-judged dial host. BOOT-TIME.
-    #[serde(
-        default,
-        skip_serializing_if = "super::tls::OutboundTlsCfg::is_default"
-    )]
-    pub tls: super::tls::OutboundTlsCfg,
-    /// `advanced.proxy_resolution`: `local` (default: the guard judges a proxied target by
-    /// address and the CONNECT names the judged address) or `proxy` (CONNECT by name; a name that
-    /// does not resolve here is the proxy's to check). BOOT-TIME.
-    #[serde(default, skip_serializing_if = "is_local_resolution")]
-    pub proxy_resolution: super::tls::ProxyResolution,
+    /// MOVED to `outbound.tls`.
+    #[serde(default, skip_serializing)]
+    pub tls: Option<super::tls::OutboundTlsCfg>,
+    /// MOVED to `outbound.proxy_resolution`.
+    #[serde(default, skip_serializing)]
+    pub proxy_resolution: Option<super::tls::ProxyResolution>,
     /// REMOVED (was the global destination allowlist): accepted from an old configuration, ignored,
     /// never written back; [`AdvancedCfg::removed`] names it so `config::resolve` logs one line.
     #[serde(default, skip_serializing)]
@@ -316,6 +291,103 @@ pub const DEFAULT_BLOCK_PRIVATE_ADDRESSES: bool = true;
 
 pub(crate) fn default_block_private_addresses() -> bool {
     DEFAULT_BLOCK_PRIVATE_ADDRESSES
+}
+
+/// The top-level `outbound:` section: how the engine dials out. Every key is read once at boot
+/// (restart to apply).
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct OutboundCfg {
+    /// The destination guard refuses ordinary private-address dials (default `true`). A GLOBAL
+    /// switch, kept until per-registration private reach replaces it: a core-selected
+    /// registration may carry its own `allow_private`; configured providers retain reach only to
+    /// their own base/token origins; operator-infrastructure Needs retain their declared-target
+    /// policy. Metadata, own-listener protection and TLS policy remain enforced either way.
+    #[serde(default = "default_block_private_addresses")]
+    pub block_private_addresses: bool,
+    /// The outbound TLS trust store: base roots, global trust anchors and per-destination entries,
+    /// selected by the guard-judged dial host.
+    #[serde(
+        default,
+        skip_serializing_if = "super::tls::OutboundTlsCfg::is_default"
+    )]
+    pub tls: super::tls::OutboundTlsCfg,
+    /// `local` (default: the guard judges a proxied target by address and the CONNECT names the
+    /// judged address) or `proxy` (CONNECT by name; a name that does not resolve here is the
+    /// proxy's to check).
+    #[serde(default, skip_serializing_if = "is_local_resolution")]
+    pub proxy_resolution: super::tls::ProxyResolution,
+    /// Speak only HTTP/1.1 to upstreams (default `false`: TLS negotiates h2 or http/1.1 by ALPN,
+    /// cleartext is http/1.1). Dealt to the HTTP transport under the settings path its schema
+    /// names (`advanced.upstream_http1_only`). Wins when `h2_prior_knowledge` is also true.
+    #[serde(default)]
+    pub http1_only: bool,
+    /// Speak HTTP/2 without negotiation, including to cleartext upstreams (default `false`). Dealt
+    /// to the HTTP transport under `advanced.upstream_h2_prior_knowledge`.
+    #[serde(default)]
+    pub h2_prior_knowledge: bool,
+}
+
+impl Default for OutboundCfg {
+    fn default() -> Self {
+        Self {
+            block_private_addresses: DEFAULT_BLOCK_PRIVATE_ADDRESSES,
+            tls: super::tls::OutboundTlsCfg::default(),
+            proxy_resolution: super::tls::ProxyResolution::Local,
+            http1_only: false,
+            h2_prior_knowledge: false,
+        }
+    }
+}
+
+/// The top-level `client_address:` section: who may state a client's address for it. Read once
+/// at boot (restart to apply).
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ClientAddressCfg {
+    /// The ingresses and load balancers that may state a client's address (an IP or a CIDR each).
+    /// Their `header` is honoured; nobody else's is. Default empty: the socket peer is the client.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_proxies: Vec<String>,
+    /// The one forwarding header read from a trusted proxy: `x-forwarded-for` (default) or
+    /// `forwarded`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+}
+
+/// The `advanced` keys that moved to their own section: the old key (under `advanced`) and its new
+/// home. The one place a move is worded ([`moved_advanced_line`]).
+pub const MOVED_ADVANCED: [(&str, &str); 9] = [
+    ("shutdown.deregister_delay", "shutdown.deregister_delay"),
+    ("trusted_proxies", "client_address.trusted_proxies"),
+    ("forwarded_header", "client_address.header"),
+    ("tls", "outbound.tls"),
+    ("proxy_resolution", "outbound.proxy_resolution"),
+    (
+        "block_private_addresses",
+        "outbound.block_private_addresses",
+    ),
+    ("upstream_http1_only", "outbound.http1_only"),
+    ("upstream_h2_prior_knowledge", "outbound.h2_prior_knowledge"),
+    (
+        "response_headers.server_timing",
+        "telemetry.response_headers.server_timing",
+    ),
+];
+
+/// The line said when an old configuration carries `advanced.<old>`: carried over, or ignored
+/// because the new home is written too (it wins).
+#[must_use]
+pub fn moved_advanced_line(old: &str, carried: bool) -> String {
+    let new = MOVED_ADVANCED
+        .iter()
+        .find(|(from, _)| *from == old)
+        .map_or(old, |(_, to)| to);
+    if carried {
+        format!("advanced.{old} moved to {new}; the value was carried over")
+    } else {
+        format!("advanced.{old} moved to {new}; {new} is also written and wins, the old value is ignored")
+    }
 }
 
 /// THE DESTINATION GUARD'S INPUTS, as one deployment states them (`RootCfg::destinations`): the
@@ -357,17 +429,17 @@ impl super::RootCfg {
 impl Default for AdvancedCfg {
     fn default() -> Self {
         Self {
-            shutdown: super::shutdown::AdvancedShutdownCfg::default(),
+            shutdown: None,
             rate_sweep_interval: None,
             usage_flush_interval_ms: default_usage_flush_interval_ms(),
             worker_threads: None,
-            upstream_http1_only: false,
-            upstream_h2_prior_knowledge: false,
-            response_headers: ResponseHeadersCfg::default(),
-            block_private_addresses: DEFAULT_BLOCK_PRIVATE_ADDRESSES,
-            tls: super::tls::OutboundTlsCfg::default(),
-            proxy_resolution: super::tls::ProxyResolution::Local,
-            trusted_proxies: Vec::new(),
+            upstream_http1_only: None,
+            upstream_h2_prior_knowledge: None,
+            response_headers: None,
+            block_private_addresses: None,
+            tls: None,
+            proxy_resolution: None,
+            trusted_proxies: None,
             forwarded_header: None,
             allow_destinations: None,
         }
@@ -450,7 +522,7 @@ impl AdvancedCfg {
 /// response header, unified in ONE place instead of each header having its own bespoke gate. Every field defaults `false`
 /// (invisible out of the box) — see each field's doc comment for the header it controls and why it
 /// defaults off.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ResponseHeadersCfg {
     /// Emit the `Server-Timing: busbar;dur=<ms>` response header (default `false`). MIGRATED from

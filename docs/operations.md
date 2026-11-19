@@ -28,7 +28,7 @@ never silent.
 | Provider key vars | n/a | Named by each provider's `api_key: { env: ... }` reference (e.g. `ANTHROPIC_KEY`). |
 | Token/secret vars | n/a | Anything referenced via `${VAR}` in either file (client tokens, admin token, …). |
 
-Provider selection and upstream HTTP behaviour are configured in config.yaml (`providers_file:` or `--providers`, `advanced.upstream_http1_only`, `advanced.upstream_h2_prior_knowledge`), not by environment variables, and the worker count is not a setting (see below); see [the upgrade guide](migration-1.6.md#retired-environment-variables) for the variables an older deployment may still set.
+Provider selection and upstream HTTP behaviour are configured in config.yaml (`providers_file:` or `--providers`, `outbound.http1_only`, `outbound.h2_prior_knowledge`), not by environment variables, and the worker count is not a setting (see below); see [the upgrade guide](migration-1.6.md#retired-environment-variables) for the variables an older deployment may still set.
 `BUSBAR_CONFIG`, `RUST_LOG`, and explicit secret environment references are read. A few further
 variables are read for specific purposes and are not configuration inputs: `BUSBAR_DATA_DIR` (the
 data directory the plugin registry uses when plugins are enabled), `BUSBAR_RECORD_BOOTSTRAP_RECEIPT`
@@ -211,7 +211,8 @@ clients.
 The first operator signal or an admin restart released by its asking unit immediately makes
 `/readyz` return 503. `/livez` remains independent of this shutdown state. Existing listeners,
 ordinary request handling and credential refresh continue for the boot-captured
-`advanced.shutdown.deregister_delay` (default `5s`, configurable `0s..300s`). At that fixed
+`shutdown.deregister_delay` (default none, configurable `0s..300s`; set it to your load balancer's
+health-check period times its failure threshold). At that fixed
 deadline listeners begin draining and the full 20-second engine drain starts. Repeated operator
 requests do not restart the allowance. Native writer renewal continues until retirement.
 

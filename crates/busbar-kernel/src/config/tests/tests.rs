@@ -143,6 +143,10 @@ pub(crate) fn base_deploy() -> DeployCfg {
         store: None,
         secrets: Default::default(),
         advanced: AdvancedCfg::default(),
+        shutdown: Default::default(),
+        client_address: Default::default(),
+        outbound: Default::default(),
+        carried: Vec::new(),
         plugins: Default::default(),
         security: None,
         limits: LimitsCfg::default(),
@@ -1556,6 +1560,7 @@ models:
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &deploy.advanced,
+        &deploy.outbound,
         &crate::config::resolve_export(&deploy.export, &mut Vec::new()),
         &deploy.health,
         &deploy.routing,
@@ -1613,6 +1618,7 @@ fn test_limits_resolved_default_matches_from_sections_defaults() {
     let b = LimitsResolved::from_sections(
         &LimitsCfg::default(),
         &AdvancedCfg::default(),
+        &OutboundCfg::default(),
         &ExportCfg::default(),
         &HealthDefaultsCfg::default(),
         &RoutingCfg::default(),
@@ -1648,6 +1654,7 @@ limits:
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &AdvancedCfg::default(),
+        &OutboundCfg::default(),
         &ExportCfg::default(),
         &HealthDefaultsCfg::default(),
         &RoutingCfg::default(),
@@ -2524,11 +2531,14 @@ advanced:
         d.advanced.worker_threads.is_some(),
         "the removed key is accepted"
     );
-    assert!(d.advanced.upstream_http1_only);
-    assert!(d.advanced.upstream_h2_prior_knowledge);
+    assert!(d.outbound.http1_only, "the old key is carried to outbound");
+    assert!(
+        d.outbound.h2_prior_knowledge,
+        "the old key is carried to outbound"
+    );
     let mut deploy = base_deploy();
-    deploy.advanced.upstream_http1_only = true;
-    deploy.advanced.upstream_h2_prior_knowledge = true;
+    deploy.outbound.http1_only = true;
+    deploy.outbound.h2_prior_knowledge = true;
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert!(
         cfg.limits.upstream_http1_only,
@@ -2784,7 +2794,8 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
          `admin_listen_insecure_transport`, \
          `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, \
          `hooks`, `groups`, `rate_card`, `per_request_fee`, `store`, \
-         `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`, \
+         `secrets`, `advanced`, `shutdown`, `client_address`, `outbound`, `export`, `plugins`, \
+         `security`, `limits`, `health`, `routing`, \
          `telemetry`, `records`, `audit`. `bogus_key` is not a core section and no admitted \
          plane answers to it; plane sections are: (none) at line 3 column 1"
     );
@@ -3286,15 +3297,22 @@ fn plugin_trust_has_one_explicit_unverified_optin_and_scoped_keys() {
 
 #[test]
 fn shutdown_deregister_delay_is_a_bounded_document_duration() {
-    let default: AdvancedCfg = busbar_contract::yaml::from_str("{}").unwrap();
-    let view = busbar_contract::json::to_value(&default).unwrap();
-    assert_eq!(view["shutdown"]["deregister_delay"], "5s");
+    let default: ShutdownCfg = busbar_contract::yaml::from_str("{}").unwrap();
+    assert_eq!(
+        default.delay(),
+        std::time::Duration::ZERO,
+        "no stated interval"
+    );
+    assert_eq!(
+        busbar_contract::json::to_string(&default).unwrap(),
+        "{}",
+        "an unstated interval is not written"
+    );
     for (written, expected) in [("0s", "0s"), ("5s", "5s"), ("300s", "300s"), ("5m", "300s")] {
-        let value: AdvancedCfg =
-            busbar_contract::yaml::from_str(&format!("shutdown:\n  deregister_delay: {written}\n"))
-                .unwrap();
+        let value: ShutdownCfg =
+            busbar_contract::yaml::from_str(&format!("deregister_delay: {written}\n")).unwrap();
         let view = busbar_contract::json::to_value(&value).unwrap();
-        assert_eq!(view["shutdown"]["deregister_delay"], expected);
+        assert_eq!(view["deregister_delay"], expected);
     }
     for written in [
         "301s",

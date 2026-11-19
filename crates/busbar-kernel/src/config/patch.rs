@@ -5,11 +5,13 @@ use serde::{Deserialize, Serialize};
 
 /// Build a section patch: an all-`Option` twin, its per-field `apply`, and its accumulate-across-
 /// PUTs `merge`. A `removed` key (one that stopped being a setting) is accepted from an old body or
-/// overlay, carried onto the base so `config::resolve` says its one line, and never persisted.
+/// overlay, carried onto the base so `config::resolve` says its one line, and never persisted. A
+/// `moved` key (one whose home is now another section) is kept as written and set on the base's
+/// old-key slot, which [`crate::config::DeployCfg::carry_moved`] carries to its new home.
 macro_rules! section_patch {
     ($(#[$m:meta])* $patch:ident => $src:path {
-        $($(#[$fm:meta])* $field:ident : $ty:ty),+ $(,)?
-    } $(removed { $($removed:ident),+ $(,)? })?) => {
+        $($(#[$fm:meta])* $field:ident : $ty:ty),* $(,)?
+    } $(removed { $($removed:ident),+ $(,)? })? $(moved { $($moved:ident : $mty:ty),+ $(,)? })?) => {
         $(#[$m])*
         #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -18,25 +20,31 @@ macro_rules! section_patch {
                 #[serde(default, skip_serializing_if = "Option::is_none")]
                 $(#[$fm])*
                 pub $field: Option<$ty>,
-            )+
+            )*
             $($(
                 #[serde(default, skip_serializing)]
                 pub $removed: Option<serde::de::IgnoredAny>,
+            )+)?
+            $($(
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                pub $moved: Option<$mty>,
             )+)?
         }
 
         impl $patch {
             /// Splice the named fields onto a resolved base; unnamed fields keep the base's value.
             pub fn apply(&self, base: &mut $src) {
-                $( if let Some(v) = &self.$field { base.$field = v.clone(); } )+
+                $( if let Some(v) = &self.$field { base.$field = v.clone(); } )*
                 $($( if self.$removed.is_some() { base.$removed = self.$removed; } )+)?
+                $($( if let Some(v) = &self.$moved { base.$moved = Some(v.clone()); } )+)?
             }
 
             /// Accumulate a newer patch over an older one, per field, for the persisted overlay.
             pub fn merge(self, older: Self) -> Self {
                 Self {
-                    $( $field: self.$field.or(older.$field), )+
+                    $( $field: self.$field.or(older.$field), )*
                     $($( $removed: None, )+)?
+                    $($( $moved: self.$moved.or(older.$moved), )+)?
                 }
             }
         }
@@ -76,12 +84,14 @@ section_patch!(
     /// Per-field patch for [`crate::config::AdvancedCfg`].
     AdvancedPatch => crate::config::AdvancedCfg {
         usage_flush_interval_ms: u64,
-        // BOOT-TIME (restart-to-apply), same class as `emit_server_timing` was: `server_timing` is
-        // baked into router middleware state, so a live PUT is stored but does not take effect until a restart (see `reload_to_apply_fields`).
-        response_headers: crate::config::ResponseHeadersCfg,
     } removed {
         rate_sweep_interval,
         worker_threads,
+    } moved {
+        // Home: `telemetry.response_headers`. BOOT-TIME (restart-to-apply): `server_timing` is
+        // baked into router middleware state, so a live PUT is stored but does not take effect
+        // until a restart (see `reload_to_apply_fields`).
+        response_headers: crate::config::ResponseHeadersCfg,
     }
 );
 

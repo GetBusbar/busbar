@@ -38,6 +38,7 @@ routing:
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &deploy.advanced,
+        &deploy.outbound,
         &busbar_kernel::config::resolve_export(&deploy.export, &mut Vec::new()),
         &deploy.health,
         &deploy.routing,

@@ -221,15 +221,20 @@ limits:                         # global operational caps  → #limits
 health:                         # process-wide probe fallbacks  → #health-probing
   { default_probe_interval_secs: 30, default_probe_timeout_secs: 5 }
 routing: { default_policy_timeout_ms: 1 }
-advanced:                       # internal tuning (normally omitted)  → #advanced
-  { usage_flush_interval_ms: 100,
-    upstream_http1_only: false, upstream_h2_prior_knowledge: false,
-    response_headers: { server_timing: false },  # opt-in headers → observability.md#response-headers
-    trusted_proxies: [] }                                      # ingress addresses whose X-Forwarded-For is believed → #advanced
+advanced:                       # durability tuning (normally omitted)  → #advanced
+  { usage_flush_interval_ms: 100 }
+outbound:                       # how the engine dials out (restart to apply)  → #outbound
+  { block_private_addresses: true, proxy_resolution: local,
+    http1_only: false, h2_prior_knowledge: false, tls: { roots: bundled } }
+client_address:                 # ingress addresses whose X-Forwarded-For is believed  → #client_address
+  { trusted_proxies: [] }
+shutdown:                       # deregistration interval before draining; default none  → #shutdown
+  { deregister_delay: 10s }
 config:                         # config-management policy (persistence follows Store) → #config
   { locked: false }
 telemetry:                      # in-process metric registry → #telemetry
-  { enabled: true, retention_seconds: 300, max_lane_series: 1024 }
+  { enabled: true, retention_seconds: 300, max_lane_series: 1024,
+    response_headers: { server_timing: false } }   # opt-in headers → observability.md#response-headers
 providers_file: providers.yaml  # provider catalog pointer (overridden by the --providers flag)
 ```
 

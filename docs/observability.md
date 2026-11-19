@@ -264,7 +264,7 @@ advanced:
 
 | Header | Toggle | Carries | Fires | Default |
 |---|---|---|---|---|
-| `Server-Timing: busbar;dur=<ms>` | `advanced.response_headers.server_timing` | Busbar's OWN added latency (total request wall-clock minus the upstream round-trip), at millisecond precision per the W3C `Server-Timing` spec. | On every response, once enabled, including admin/health/early-error responses that never dispatched upstream (in which case the full request time is reported). | `false` |
+| `Server-Timing: busbar;dur=<ms>` | `telemetry.response_headers.server_timing` | Busbar's OWN added latency (total request wall-clock minus the upstream round-trip), at millisecond precision per the W3C `Server-Timing` spec. | On every response, once enabled, including admin/health/early-error responses that never dispatched upstream (in which case the full request time is reported). | `false` |
 
 This is the only fingerprinting header. 1.6.0 removed the 1.5.5 `x-busbar-route-policy` / `x-busbar-route-target` headers and their `route_policy` toggle: the deciding policy and the answering member are on the unit record (`GET /api/v1/admin/records`, `hooks` and the attempt's member) and in the request log's `route_policy` field. Headers that are part of an endpoint's own contract are not toggles: admin responses always carry `X-Request-Id` (it matches `error.request_id`) and `Cache-Control: no-store`, a `429` carries `Retry-After`, and a `401` carries `WWW-Authenticate: Bearer`.
 

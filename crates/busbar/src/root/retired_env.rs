@@ -57,15 +57,15 @@ pub(crate) const RETIRED_LAUNCH_ENV: [Retired; 5] = [
         name: "BUSBAR_UPSTREAM_HTTP1_ONLY",
         empty_is_unset: false,
         carry: Carry::UpstreamFlag,
-        line: "applied over `advanced.upstream_http1_only`, as 1.5.5 applied it; set that key in \
+        line: "applied over `outbound.http1_only`, as 1.5.5 applied it; set that key in \
                config.yaml, then remove it from the launcher",
     },
     Retired {
         name: "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE",
         empty_is_unset: false,
         carry: Carry::UpstreamFlag,
-        line: "applied over `advanced.upstream_h2_prior_knowledge`, as 1.5.5 applied it; set that \
-               key in config.yaml, then remove it from the launcher",
+        line: "applied over `outbound.h2_prior_knowledge`, as 1.5.5 applied it; set that key in \
+               config.yaml, then remove it from the launcher",
     },
 ];
 

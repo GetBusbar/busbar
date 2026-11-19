@@ -217,12 +217,12 @@ fn count(key: &str, raw: Option<u32>, default: u32, max: u32, errors: &mut Vec<S
     }
 }
 
-/// Resolve `auth.login_limits`, the providers' `browser_login` overrides and the `advanced`
-/// client-address keys; every refusal is a BUSBAR-3133 line.
+/// Resolve `auth.login_limits`, the providers' `browser_login` overrides and `client_address`;
+/// every refusal is a BUSBAR-3133 line.
 pub(crate) fn resolve(
     cfg: Option<&crate::config::LoginLimitsCfg>,
     providers: &crate::config::IdentityProviders,
-    advanced: &crate::config::AdvancedCfg,
+    client_address: &crate::config::ClientAddressCfg,
 ) -> Result<LoginLimitsPolicy, Vec<String>> {
     let default_cfg = crate::config::LoginLimitsCfg::default();
     let cfg = cfg.unwrap_or(&default_cfg);
@@ -330,8 +330,8 @@ pub(crate) fn resolve(
         );
     }
     let proxies = TrustedProxies::read(
-        &advanced.trusted_proxies,
-        advanced.forwarded_header.as_deref(),
+        &client_address.trusted_proxies,
+        client_address.header.as_deref(),
     )
     .unwrap_or_else(|e| {
         errors.push(invalid(&e));
@@ -359,13 +359,13 @@ impl TrustedProxies {
                 Ok(net) => nets.push(net),
                 Err(busbar_contract::net::IpNetError::HostBitsSet) => {
                     return Err(format!(
-                    "advanced.trusted_proxies[{i}]: `{entry}` sets address bits past its prefix \
+                    "client_address.trusted_proxies[{i}]: `{entry}` sets address bits past its prefix \
                          length; write the network address"
                 ))
                 }
                 Err(busbar_contract::net::IpNetError::NotNetwork) => {
                     return Err(format!(
-                        "advanced.trusted_proxies[{i}]: `{entry}` is not an IP address or a CIDR"
+                        "client_address.trusted_proxies[{i}]: `{entry}` is not an IP address or a CIDR"
                     ))
                 }
             }
@@ -373,9 +373,7 @@ impl TrustedProxies {
         let header = match header {
             None => ForwardedHeader::default(),
             Some(name) => ForwardedHeader::parse(name).ok_or_else(|| {
-                format!(
-                    "advanced.forwarded_header: `{name}` is not `x-forwarded-for` or `forwarded`"
-                )
+                format!("client_address.header: `{name}` is not `x-forwarded-for` or `forwarded`")
             })?,
         };
         Ok(Self { nets, header })

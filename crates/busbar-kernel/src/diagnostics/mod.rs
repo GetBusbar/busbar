@@ -313,7 +313,7 @@ diagnostics! {
     PLUGIN_USES_DEPRECATED_ABI_VALUE = 6015, Plugins, Actionable, "plugin-uses-deprecated-abi-value", "1.6.0", false,
         "A plugin requested the retired UPGRADE_VERIFY_OFF flag (refused)",
         "A plugin requested `UPGRADE_VERIFY_OFF` on a connection upgrade. Busbar refuses this flag in 1.6.0: a plugin cannot turn off certificate verification through the upgrade call. The refusal is logged once per instance and audited.",
-        "Upgrade the plugin to a version that uses the core-held transport policy on its declared need. Configure verified TLS; for a server with a private CA, configure `advanced.tls.trust_anchors` and `advanced.tls.destinations`. Any deliberate exception uses the instance's explicit `insecure_transport` policy, never `UPGRADE_VERIFY_OFF`.";
+        "Upgrade the plugin to a version that uses the core-held transport policy on its declared need. Configure verified TLS; for a server with a private CA, configure `outbound.tls.trust_anchors` and `outbound.tls.destinations`. Any deliberate exception uses the instance's explicit `insecure_transport` policy, never `UPGRADE_VERIFY_OFF`.";
 
     /// RETIRED: a registration's `allow_private` is core's own key again and is not refused.
     CONFIG_PRIVATE_REACH_RETIRED = 3135, Config, Fatal, "config-private-reach-retired", "1.6.0", true,
@@ -1712,7 +1712,7 @@ diagnostics! {
     /// A login-limits setting is out of range or malformed; boot refuses.
     CONFIG_LOGIN_LIMITS_INVALID = 3133, Config, Fatal, "config-login-limits-invalid", "1.6.0", false,
         "A login attempt limit setting is invalid",
-        "A key of `auth.login_limits`, a provider's `browser_login.max_failures` or `browser_login.failure_window`, `advanced.trusted_proxies` or `advanced.forwarded_header` is out of range or does not parse, so busbar refuses the config rather than run with a limit nobody chose. Counts are 1..=100 (per account) or at least 1, windows 1m..=24h, `per_account.max_failures` may not exceed `per_source.max_failures`, every trusted proxy is an IP or a CIDR, and the forwarded header is `x-forwarded-for` or `forwarded`.",
+        "A key of `auth.login_limits`, a provider's `browser_login.max_failures` or `browser_login.failure_window`, `client_address.trusted_proxies` or `client_address.header` is out of range or does not parse, so busbar refuses the config rather than run with a limit nobody chose. Counts are 1..=100 (per account) or at least 1, windows 1m..=24h, `per_account.max_failures` may not exceed `per_source.max_failures`, every trusted proxy is an IP or a CIDR, and the forwarded header is `x-forwarded-for` or `forwarded`.",
         "Fix the key the message names.";
 
     /// A first-start owner made no progress write for longer than its step budget.
@@ -1742,8 +1742,8 @@ diagnostics! {
     /// A credential sign-in or admin request came from a source busbar cannot identify; per-source limits do not apply to it.
     LOGIN_CLIENT_ADDRESS_UNKNOWN = 4036, Auth, Actionable, "login-client-address-unknown", "1.6.0", false,
         "Client address unknown: per-source login limits skipped",
-        "busbar could not tell who sent a request: the server has no socket peer (an embedded server), a trusted proxy forwarded an unparseable hop, or a private or loopback peer sent `X-Forwarded-For` or `Forwarded` while `advanced.trusted_proxies` is empty, which means an ingress sits in front of busbar and every user would otherwise share one bucket. Per-source limits are skipped for such requests; the per-account limiter still applies. Warned once, then at debug.",
-        "List the ingress or load balancer addresses in `advanced.trusted_proxies` (and set `advanced.forwarded_header` if it sends `Forwarded`).";
+        "busbar could not tell who sent a request: the server has no socket peer (an embedded server), a trusted proxy forwarded an unparseable hop, or a private or loopback peer sent `X-Forwarded-For` or `Forwarded` while `client_address.trusted_proxies` is empty, which means an ingress sits in front of busbar and every user would otherwise share one bucket. Per-source limits are skipped for such requests; the per-account limiter still applies. Warned once, then at debug.",
+        "List the ingress or load balancer addresses in `client_address.trusted_proxies` (and set `client_address.header` if it sends `Forwarded`).";
 
     /// Credential sign-in failures on this node passed the global alarm threshold; per-source limits are tightened.
     LOGIN_GLOBAL_ALARM = 4034, Auth, Actionable, "login-global-alarm", "1.6.0", false,
@@ -1785,7 +1785,7 @@ diagnostics! {
     LOGIN_THROTTLED_SOURCE = 4033, Auth, BenignRecurring, "login-throttled-source", "1.6.0", false,
         "Credential sign-in throttled: the client's source spent its budget",
         "One client source (an IPv4 address, or an IPv6 /64 with /48 and /32 aggregates) exceeded the per-source failure ceiling or the submission rate inside the window, typically one client spraying many usernames. busbar answered 429 with Retry-After without calling the login plugin. The first refusal per source and window is logged at warn and audited; later ones log at debug.",
-        "None for a single client. If every user arrives from one address (an ingress or load balancer), configure `advanced.trusted_proxies` so busbar sees the real client address.";
+        "None for a single client. If every user arrives from one address (an ingress or load balancer), configure `client_address.trusted_proxies` so busbar sees the real client address.";
 
     STORE_COMMIT_FENCED_IN_DOUBT = 1011, Durability, Actionable, "store-commit-fenced-in-doubt", "1.6.0", false,
         "A store commit whose earlier send may have applied was fenced on retry",
@@ -1827,7 +1827,7 @@ diagnostics! {
     /// A `plaintext: true` destination entry names a wildcard or a CIDR.
     CONFIG_PLAINTEXT_ENTRY_NOT_EXACT = 3144, Config, Fatal, "config-plaintext-entry-not-exact", "1.6.0", false,
         "A plaintext destination entry is not an exact host or IP",
-        "`plaintext: true` on an `advanced.tls.destinations` entry is accepted only on an exact host name or an exact IP. A wildcard or a CIDR would admit cleartext to destinations nobody named.",
+        "`plaintext: true` on an `outbound.tls.destinations` entry is accepted only on an exact host name or an exact IP. A wildcard or a CIDR would admit cleartext to destinations nobody named.",
         "Write one entry per host or IP that must be reached in clear.";
 
     /// An outbound proxy is configured: the guard judges names, and addresses where they resolve locally.
@@ -1836,53 +1836,53 @@ diagnostics! {
         "HTTP(S)_PROXY / ALL_PROXY is set. busbar judges every target's name, and when the name resolves locally it judges every address it answers and refuses a private or metadata answer even behind the proxy. A name that does not resolve locally is reached through the proxy's own resolution, so the address check is delegated to the proxy for it. One line at boot (proxy endpoint redacted, NO_PROXY) and one audit record. Trust anchors are selected by the target, never by the proxy hop.",
         "Nothing, if the proxy is yours. Make sure the proxy enforces your egress policy for names it resolves.";
 
-    /// One accepted `advanced.tls` trust anchor, or the base set loaded, with its fingerprint (info).
+    /// One accepted `outbound.tls` trust anchor, or the base set loaded, with its fingerprint (info).
     CONFIG_TLS_ANCHOR_ACCEPTED = 3138, Config, BenignRecurring, "config-tls-anchor-accepted", "1.6.0", false,
-        "An advanced.tls trust anchor was accepted",
+        "An outbound.tls trust anchor was accepted",
         "Logged once at boot for each operator trust anchor busbar accepted (SHA-256 of the DER certificate, subject, issuer, notAfter, and the scope: `global` or the destination entry), and once for the base set (`roots`: its count and a SHA-256 over the sorted set, and the bundle path for `system`). Each accepted anchor also writes one `config.tls_trust_anchor` audit record.",
         "Nothing to do. Compare the fingerprints with the CAs you intended to trust.";
 
-    /// An `advanced.tls` trust anchor expires within 30 days.
+    /// An `outbound.tls` trust anchor expires within 30 days.
     CONFIG_TLS_ANCHOR_EXPIRING = 3139, Config, Actionable, "config-tls-anchor-expiring", "1.6.0", false,
-        "An advanced.tls trust anchor expires within 30 days",
+        "An outbound.tls trust anchor expires within 30 days",
         "An operator trust anchor's notAfter is within 30 days. The warning is logged at boot and repeated once a day by the hourly trust-store sweep. When the anchor expires, the sweep withdraws it from new connections (BUSBAR-5048) and the next boot refuses it (BUSBAR-3137).",
         "Rotate the CA: list the new CA beside the old one, restart, then remove the old one once every server presents a chain to the new CA.";
 
-    /// An `advanced.tls` trust anchor fails boot validation.
+    /// An `outbound.tls` trust anchor fails boot validation.
     CONFIG_TLS_ANCHOR_INVALID = 3137, Config, Fatal, "config-tls-anchor-invalid", "1.6.0", false,
-        "An advanced.tls trust anchor is not a usable CA",
-        "A trust anchor listed under `advanced.tls.trust_anchors` or `advanced.tls.destinations[].trust_anchors` was refused at boot: it could not be read, does not parse as PEM, holds no certificate or holds a private key, is not an X.509 v3 CA (`basicConstraints CA:TRUE`, and `keyCertSign` when `keyUsage` is present), is not yet valid (more than five minutes before `notBefore`) or has expired, or rustls does not accept it. busbar refuses to boot rather than open connections with a trust set the operator did not intend. The line names the key, the index, the source (file, env or inline) and the destination it scopes; never the certificate bytes.",
+        "An outbound.tls trust anchor is not a usable CA",
+        "A trust anchor listed under `outbound.tls.trust_anchors` or `outbound.tls.destinations[].trust_anchors` was refused at boot: it could not be read, does not parse as PEM, holds no certificate or holds a private key, is not an X.509 v3 CA (`basicConstraints CA:TRUE`, and `keyCertSign` when `keyUsage` is present), is not yet valid (more than five minutes before `notBefore`) or has expired, or rustls does not accept it. busbar refuses to boot rather than open connections with a trust set the operator did not intend. The line names the key, the index, the source (file, env or inline) and the destination it scopes; never the certificate bytes.",
         "List the CA that issued the server's certificate (not the server's own certificate), as a PEM file, environment variable or inline PEM. Rotate an expired CA before restarting. A self-signed server certificate (`CA:FALSE`) is not a trust anchor: issue the server a certificate from a CA you control and list that CA.";
 
     /// `roots: system` dropped certificates from the OS bundle (expired, not a CA, unreadable).
     CONFIG_TLS_BASE_ROOTS_DROPPED = 3147, Config, Actionable, "config-tls-base-roots-dropped", "1.6.0", false,
         "System CA bundle entries were not used",
-        "With `advanced.tls.roots: system`, certificates in the operating system's CA bundle that are expired, are not CA certificates, or do not parse are not used as trust anchors. One warning at boot carries the count and the first reason. Operating-system bundles routinely carry such entries, so the boot continues.",
-        "Usually nothing. If a CA you rely on is in the count, update the base image's ca-certificates package or list the CA under `advanced.tls.trust_anchors`.";
+        "With `outbound.tls.roots: system`, certificates in the operating system's CA bundle that are expired, are not CA certificates, or do not parse are not used as trust anchors. One warning at boot carries the count and the first reason. Operating-system bundles routinely carry such entries, so the boot continues.",
+        "Usually nothing. If a CA you rely on is in the count, update the base image's ca-certificates package or list the CA under `outbound.tls.trust_anchors`.";
 
-    /// An `advanced.tls.destinations` entry is malformed (match, pin, client identity or shape).
+    /// An `outbound.tls.destinations` entry is malformed (match, pin, client identity or shape).
     CONFIG_TLS_DESTINATION_INVALID = 3148, Config, Fatal, "config-tls-destination-invalid", "1.6.0", false,
-        "An advanced.tls destination entry is invalid",
-        "An `advanced.tls.destinations` entry was refused at boot: its `match` is not a host, `*.domain`, IP or CIDR; a `pin_spki_sha256` is not `sha256/<base64>` of 32 bytes; its `client_identity` certificate or key cannot be read or do not belong together; or a `plaintext: true` entry also lists TLS settings. The line names the index and the key, never key material.",
+        "An outbound.tls destination entry is invalid",
+        "An `outbound.tls.destinations` entry was refused at boot: its `match` is not a host, `*.domain`, IP or CIDR; a `pin_spki_sha256` is not `sha256/<base64>` of 32 bytes; its `client_identity` certificate or key cannot be read or do not belong together; or a `plaintext: true` entry also lists TLS settings. The line names the index and the key, never key material.",
         "Correct the entry. Client identity keys are read by core from a file or environment variable and are never handed to a plugin.";
 
     /// No trust anchor applies: `roots: none` with nothing listed, or an empty system bundle.
     CONFIG_TLS_TRUST_EMPTY = 3140, Config, Fatal, "config-tls-trust-empty", "1.6.0", false,
         "No trust anchor applies to a TLS destination",
-        "`advanced.tls.roots: system` found no usable certificate in the operating system's CA bundle (refused at boot), or `advanced.tls.roots: none` is set and a TLS dial matched neither a global trust anchor nor a destination entry listing one (the dial is refused; a pinned destination is refused the same way, never a panic). busbar never opens a TLS connection it cannot verify.",
-        "Install the distribution's ca-certificates package or set SSL_CERT_FILE for `roots: system`; with `roots: none`, list the CA under `advanced.tls.trust_anchors` or a matching `advanced.tls.destinations` entry; or use `roots: bundled` (the default).";
+        "`outbound.tls.roots: system` found no usable certificate in the operating system's CA bundle (refused at boot), or `outbound.tls.roots: none` is set and a TLS dial matched neither a global trust anchor nor a destination entry listing one (the dial is refused; a pinned destination is refused the same way, never a panic). busbar never opens a TLS connection it cannot verify.",
+        "Install the distribution's ca-certificates package or set SSL_CERT_FILE for `roots: system`; with `roots: none`, list the CA under `outbound.tls.trust_anchors` or a matching `outbound.tls.destinations` entry; or use `roots: bundled` (the default).";
 
     /// A cleartext write past the negotiation window on a connection to a destination plaintext is not admitted to.
     CONFIG_PLAINTEXT_NOT_ADMITTED = 3141, Config, Actionable, "config-plaintext-not-admitted", "1.6.0", false,
         "Plaintext is not admitted to this destination",
-        "A plugin's connection to a destination wrote application bytes in cleartext, and the destination is neither loopback nor an exact `advanced.tls.destinations` entry with `plaintext: true`. busbar refuses the write and closes the connection: a connection that must be secured carries only a short negotiation request (at most 64 bytes) before it is. The refusal names the destination class, never the bytes.",
-        "Secure the connection (turn on the plugin's TLS setting and make the server's certificate verifiable), or, if the destination must stay cleartext, add it as an exact host or IP under `advanced.tls.destinations` with `plaintext: true`.";
+        "A plugin's connection to a destination wrote application bytes in cleartext, and the destination is neither loopback nor an exact `outbound.tls.destinations` entry with `plaintext: true`. busbar refuses the write and closes the connection: a connection that must be secured carries only a short negotiation request (at most 64 bytes) before it is. The refusal names the destination class, never the bytes.",
+        "Secure the connection (turn on the plugin's TLS setting and make the server's certificate verifiable), or, if the destination must stay cleartext, add it as an exact host or IP under `outbound.tls.destinations` with `plaintext: true`.";
 
     /// A plugin instance declares an endpoint that would be dialled without TLS and has no `insecure_transport` acceptance.
     CONFIG_PLAINTEXT_ENDPOINT_REFUSED = 3160, Config, Fatal, "config-plaintext-endpoint-refused", "1.6.0", false,
         "A plugin instance would connect without TLS",
         "At `check`, a plugin instance declared an endpoint busbar would dial without TLS (a TCP, `http://` or unix-socket destination with no TLS) and the instance has no `insecure_transport` acceptance for it. busbar 1.6.0 connects only over verified TLS and nothing is exempt, not loopback and not unix sockets. The configuration is refused before any connection is opened.",
-        "Turn on TLS for the connection and make the server's certificate verifiable (a CA under `advanced.tls.trust_anchors`, or a pin under `advanced.tls.destinations`); or, if verified TLS is not possible, add `insecure_transport: { accept: plaintext, reason: \"<why this is acceptable>\" }` to the instance's block.";
+        "Turn on TLS for the connection and make the server's certificate verifiable (a CA under `outbound.tls.trust_anchors`, or a pin under `outbound.tls.destinations`); or, if verified TLS is not possible, add `insecure_transport: { accept: plaintext, reason: \"<why this is acceptable>\" }` to the instance's block.";
 
     /// A plane seat or plugin instance runs with an `insecure_transport` acceptance.
     CONFIG_INSECURE_TRANSPORT_ACCEPTED = 3162, Config, Actionable, "config-insecure-transport-accepted", "1.6.0", false,
@@ -1896,10 +1896,10 @@ diagnostics! {
         "An `insecure_transport` block was refused at load: it is not a map, its `accept` list is empty, repeated or names an unknown value (the values are `plaintext` and `unverified_tls`), it names a key other than `accept` and `reason`, its `reason` is missing or unusable, or none of the instance's declared endpoints needs the acceptance. The line names the path and the key.",
         "Fix or delete the block. `accept` takes `plaintext`, `unverified_tls` or both, once each, with a `reason`; an acceptance an instance does not need is refused, so remove it.";
 
-    /// An `advanced.tls.destinations` wildcard covers a single label.
+    /// An `outbound.tls.destinations` wildcard covers a single label.
     CONFIG_WILDCARD_OVER_PUBLIC_SUFFIX = 3145, Config, Fatal, "config-wildcard-over-public-suffix", "1.6.0", false,
         "A destination wildcard is too wide",
-        "An `advanced.tls.destinations` `match` is a wildcard over a single label (for example `*.com` or `*.internal`), which would scope the entry's CAs, pins or identity to names nobody named. Public-suffix-list wildcards (for example `*.co.uk`) are not detected in 1.6.0.",
+        "An `outbound.tls.destinations` `match` is a wildcard over a single label (for example `*.com` or `*.internal`), which would scope the entry's CAs, pins or identity to names nobody named. Public-suffix-list wildcards (for example `*.co.uk`) are not detected in 1.6.0.",
         "Name the domain you own: `*.corp.example.com`.";
 
     /// A used config word, section or style is declared differently by what admission (or the
@@ -1931,7 +1931,7 @@ diagnostics! {
     EGRESS_DIAL_REFUSED = 5051, Proxy, BenignRecurring, "egress-dial-refused", "1.6.0", false,
         "An outbound dial was refused",
         "busbar refused an outbound connection: the destination guard refused the host or an address it answered, plaintext was not admitted to it (BUSBAR-3141), or no trust anchor applies (BUSBAR-3140). The line carries the verdict, the class, the host, the owning plugin and need; it is rate-limited per host and reason, and each refusal writes one `egress.dial_refused` audit record.",
-        "For a private registration target, set allow_private on that declared registration. Configured provider reach applies only to its own selected base/token origins. Use TLS and configure its CA under advanced.tls when needed; metadata and strict OPEN_WEB checks remain enforced.";
+        "For a private registration target, set allow_private on that declared registration. Configured provider reach applies only to its own selected base/token origins. Use TLS and configure its CA under outbound.tls when needed; metadata and strict OPEN_WEB checks remain enforced.";
 
     /// The host's own outbound framer could not render the request before any answer.
     EGRESS_LOCAL_FRAMER_FAILED = 5052, Proxy, Actionable, "egress-local-framer-failed", "1.6.0", false,
@@ -1939,13 +1939,13 @@ diagnostics! {
         "The engine's local outbound framer could not render the request before any answer. The log identifies the pool, member and framing fault. The request is refused as an internal error without charging member health.",
         "Inspect the framing fault and the named pool and member in the log. Report a reproducible local framing failure with the engine version and request shape, excluding credentials and secret content.";
 
-    /// An `advanced.tls` trust anchor expired at runtime and was withdrawn.
+    /// An `outbound.tls` trust anchor expired at runtime and was withdrawn.
     EGRESS_TLS_ANCHOR_EXPIRED_WITHDRAWN = 5048, Proxy, Actionable, "egress-tls-anchor-expired-withdrawn", "1.6.0", false,
         "An expired trust anchor was withdrawn",
         "The hourly trust-store sweep found an operator trust anchor past its notAfter and withdrew it from new connections (audited as `egress.tls_anchor_withdrawn`). A dial whose matching destination entry has no anchor left is refused. Connections already open are unaffected.",
         "Rotate the CA, list the new one, and restart.";
 
-    /// An `advanced.tls` anchor file changed on disk since boot.
+    /// An `outbound.tls` anchor file changed on disk since boot.
     EGRESS_TLS_ANCHOR_FILE_CHANGED = 5049, Proxy, Actionable, "egress-tls-anchor-file-changed", "1.6.0", false,
         "A trust anchor file changed; restart to apply",
         "The hourly trust-store sweep found that a trust anchor file's contents differ from what busbar loaded at boot (for example cert-manager trust-manager rotated the bundle). The trust store is boot-time, so the change is not applied until restart. Logged once per change and audited as `egress.tls_anchor_file_changed`.",
@@ -1954,8 +1954,8 @@ diagnostics! {
     /// An outbound TLS handshake failed certificate or key-pin verification.
     EGRESS_TLS_VERIFICATION_FAILED = 5047, Proxy, Actionable, "egress-tls-verification-failed", "1.6.0", false,
         "An outbound TLS connection failed verification",
-        "The far end's certificate did not verify: unknown issuer, wrong host name, expired, or a key that is not the pinned one. The line and the `egress.tls_verification_failed` audit record carry the dialled host, the `advanced.tls.destinations` entries that matched, the fingerprints of the operator anchors in force, and the reason; never the certificate body. busbar never skips verification.",
-        "List the CA that issued the server's certificate under `advanced.tls.destinations` for that host (or `trust_anchors` for a corporate root), fix the server's certificate, or update the pin.";
+        "The far end's certificate did not verify: unknown issuer, wrong host name, expired, or a key that is not the pinned one. The line and the `egress.tls_verification_failed` audit record carry the dialled host, the `outbound.tls.destinations` entries that matched, the fingerprints of the operator anchors in force, and the reason; never the certificate body. busbar never skips verification.",
+        "List the CA that issued the server's certificate under `outbound.tls.destinations` for that host (or `trust_anchors` for a corporate root), fix the server's certificate, or update the pin.";
 
     /// A process that owned an unpublished first start could not retire its writer on exit; the next start waits the stall window.
     FIRST_START_EXIT_RETIRE_FAILED = 9018, Boot, Actionable, "first-start-exit-retire-failed", "1.6.0", false,

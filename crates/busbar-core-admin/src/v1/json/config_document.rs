@@ -607,6 +607,12 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
         "/limits/pool_max_idle_per_host",
         "/limits/pool_idle_timeout_secs",
         "/limits/max_inbound_concurrent",
+        "/telemetry/response_headers",
+        "/shutdown/deregister_delay",
+        "/outbound",
+        "/client_address",
+        // The old homes of the keys above: an edit there is carried to the new home when the
+        // document is read, so it needs the same restart.
         "/advanced/response_headers",
         "/advanced/shutdown/deregister_delay",
         "/advanced/upstream_http1_only",
@@ -843,6 +849,19 @@ mod tests {
 
     #[test]
     fn boot_bound_security_settings_are_pending_restart_when_edited() {
+        let homes = [
+            "/client_address/trusted_proxies",
+            "/client_address/header",
+            "/outbound/block_private_addresses",
+            "/outbound/proxy_resolution",
+            "/outbound/tls/roots",
+            "/outbound/http1_only",
+            "/shutdown/deregister_delay",
+            "/telemetry/response_headers/server_timing",
+        ]
+        .map(str::to_owned);
+        assert_eq!(restart_paths(&homes), homes);
+        assert!(restart_paths(&["/telemetry/enabled".to_owned()]).is_empty());
         let paths = [
             "/advanced/trusted_proxies",
             "/advanced/forwarded_header",

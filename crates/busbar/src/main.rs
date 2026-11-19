@@ -885,8 +885,20 @@ async fn run(
     let data_workers = *WORKERS;
     busbar_kernel::topology::set_data_workers(data_workers);
 
-    let deregister_delay = deploy.advanced.shutdown.deregister_delay;
-    let response_headers_cfg = deploy.advanced.response_headers.clone();
+    let deregister_delay = deploy.shutdown.delay();
+    // The default is no deregistration interval (v1.5.5 had none). A stamped (1.6) document
+    // that states none may have relied on the 5 s that 1.6 development builds assumed: say so
+    // once at boot, with how to set it.
+    if deploy.shutdown.deregister_delay.is_none() && deploy.config_version.is_some() {
+        tracing::warn!(
+            "shutdown.deregister_delay is not set: the engine begins draining as soon as a \
+             shutdown starts (no deregistration interval; 1.6 development builds assumed 5s). \
+             Behind a load balancer, set it to the balancer's health-check period times its \
+             failure threshold (for example 5s period x 2 failures = `shutdown: \
+             {{ deregister_delay: 10s }}`)"
+        );
+    }
+    let response_headers_cfg = deploy.telemetry.response_headers.clone();
     // `audit.seal_every` (SEALING-FIX §3.4): the notary's stamp cadence, validated 1-1000 ms.
     let audit_seal_every = deploy.audit.seal_every;
 

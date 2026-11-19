@@ -35,7 +35,7 @@
         },
         "shutdown": {
           "optional": true,
-          "type": "AdvancedShutdownCfg"
+          "type": "ShutdownCfg"
         },
         "tls": {
           "optional": true,
@@ -436,6 +436,10 @@
           "optional": true,
           "type": "AuthDeployCfg"
         },
+        "client_address": {
+          "optional": true,
+          "type": "ClientAddressCfg"
+        },
         "config": {
           "optional": true,
           "type": "ConfigMgmtCfg"
@@ -488,6 +492,10 @@
           "optional": true,
           "type": "serde_yaml::Value"
         },
+        "outbound": {
+          "optional": true,
+          "type": "OutboundCfg"
+        },
         "per_request_fee": {
           "optional": true,
           "type": "i64"
@@ -527,6 +535,10 @@
         "security": {
           "optional": true,
           "type": "SecurityCfg"
+        },
+        "shutdown": {
+          "optional": true,
+          "type": "ShutdownCfg"
         },
         "store": {
           "optional": true,

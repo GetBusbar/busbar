@@ -4,8 +4,8 @@
 //! THE CLIENT ADDRESS: who sent a request, as far as busbar can honestly tell.
 //!
 //! The listener stamps every request with the socket peer ([`ClientAddr`]). Forwarding headers are
-//! read only when that peer is a configured trusted proxy (`advanced.trusted_proxies`), only the one
-//! header `advanced.forwarded_header` names, right to left past trusted hops. A source busbar cannot
+//! read only when that peer is a configured trusted proxy (`client_address.trusted_proxies`), only the one
+//! header `client_address.header` names, right to left past trusted hops. A source busbar cannot
 //! tell is UNKNOWN, never "the proxy": a private peer that forwards for others while no proxy is
 //! configured would otherwise put every user behind it in one bucket.
 
@@ -18,7 +18,7 @@ use busbar_contract::net::IpNet;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClientAddr(pub SocketAddr);
 
-/// The one forwarding header honoured from a trusted proxy (`advanced.forwarded_header`).
+/// The one forwarding header honoured from a trusted proxy (`client_address.header`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ForwardedHeader {
     /// `X-Forwarded-For` (the default).
@@ -50,7 +50,7 @@ impl ForwardedHeader {
     }
 }
 
-/// `advanced.trusted_proxies` and `advanced.forwarded_header`, resolved.
+/// `client_address.trusted_proxies` and `client_address.header`, resolved.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrustedProxies {
     /// The proxies' networks (the outbound guard's CIDR reader).

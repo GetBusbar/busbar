@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The trust store, driven from the `advanced.tls` YAML an operator writes.
+//! The trust store, driven from the `outbound.tls` YAML an operator writes.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -73,7 +73,7 @@ fn ca(name: &str) -> Ca {
 }
 
 fn cfg(yaml: &str) -> OutboundTlsCfg {
-    busbar_contract::yaml::from_str(yaml).expect("advanced.tls parses")
+    busbar_contract::yaml::from_str(yaml).expect("outbound.tls parses")
 }
 
 fn inline(pem: &str) -> String {
@@ -150,7 +150,7 @@ fn a_valid_ca_is_accepted_with_its_fingerprint_and_scope() {
     let anchors: Vec<_> = s.anchors().collect();
     assert_eq!(anchors.len(), 1);
     assert_eq!(anchors[0].scope, "global");
-    assert_eq!(anchors[0].key, "advanced.tls.trust_anchors[0]");
+    assert_eq!(anchors[0].key, "outbound.tls.trust_anchors[0]");
     assert!(anchors[0].fingerprint().starts_with("sha256:"));
     assert_eq!(anchors[0].fingerprint().len(), "sha256:".len() + 64);
     assert!(
@@ -168,7 +168,7 @@ fn a_leaf_certificate_is_not_a_trust_anchor() {
         "BUSBAR-3137",
     );
     assert!(why.contains("not a CA certificate"), "{why}");
-    assert!(why.contains("advanced.tls.trust_anchors[0]"), "{why}");
+    assert!(why.contains("outbound.tls.trust_anchors[0]"), "{why}");
 }
 
 #[test]
