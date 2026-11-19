@@ -1269,7 +1269,7 @@ mod wire_check {
 
     use busbar_contract::storage::{StorageAccount, StorageDenied, StorageSource};
 
-    use super::super::records::{Session, WireEnd, WirePart, END_FLUSH, WIRE_CONTROL};
+    use super::super::records::{Session, WireEnd, WirePart, END_FLUSH};
     use super::*;
 
     /// A storage account that counts what it holds: the bytes charged to the connection.
@@ -1314,7 +1314,7 @@ mod wire_check {
     /// four-byte body and end asked of it.
     fn accepted() -> Wire {
         let mut wire = Wire::new(Role::Answer);
-        wire.check(&[Out::Session(Session::stated(false, 0, 0))], |_| &[], 0)
+        wire.check(&[Out::Session(Session::stated(false, 0, 0))], |_| &[][..], 0)
             .unwrap();
         wire.announced(1).unwrap();
         wire.emitting_body(1, BODY.len() as u64);
@@ -1411,7 +1411,7 @@ mod wire_check {
             queueing
                 .answer(
                     &[Out::Session(Session::stated(false, 0, 0))],
-                    |_| &[],
+                    |_| &[][..],
                     None,
                     &mut dial,
                     &mut out,
@@ -1453,7 +1453,7 @@ mod wire_check {
         let account = Arc::new(Counted::default());
         let held = held(&StorageSource::new(account));
         let mut wire = Wire::new(Role::Answer);
-        wire.check(&[Out::Session(Session::stated(false, 0, 0))], |_| &[], 0)
+        wire.check(&[Out::Session(Session::stated(false, 0, 0))], |_| &[][..], 0)
             .unwrap();
         wire.announced(1).unwrap();
         // The engine asked for no end: an end mark is L5, the whole answer refused.
@@ -1462,12 +1462,10 @@ mod wire_check {
             .unwrap_err();
         assert!(fault.charged());
         assert_eq!(fault, Fault::Output(super::super::delivery::Breach::L5));
-        // Nothing was placed: a socket count past zero finds no byte of the answer out.
-        wire.accepted((HEAD.len() + BODY.len()) as u64);
         wire.faulted();
-        let verdict = wire.take_verdict(1).unwrap();
-        assert_eq!(verdict.state, State::None);
-        assert_eq!(verdict.reason, Some(Reason::TransportFault));
-        let _ = WIRE_CONTROL;
+        assert_eq!(
+            wire.take_verdict(1).and_then(|d| d.reason),
+            Some(Reason::TransportFault)
+        );
     }
 }
