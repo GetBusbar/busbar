@@ -311,6 +311,7 @@ name = "busbar-artifact-metadata"
 version = "1.6.0"
 dependencies = [
  "busbar-json",
+ "busbar-plugin-abi",
  "serde",
  "time",
 ]
@@ -834,7 +835,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=81860e43947bb7a988c6230053fc04f80b402dfc#81860e43947bb7a988c6230053fc04f80b402dfc"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=1e964b29de2847a95ae26500c23ae6b8b7dffc69#1e964b29de2847a95ae26500c23ae6b8b7dffc69"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
