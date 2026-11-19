@@ -559,11 +559,11 @@ members = ["."]
 [workspace.dependencies]
 # Test-only (dev-dependency): its admin_application and migration_table_hook root test sources. house/oss-green
 # 4a91545 re-aims them onto the current root fixtures and hook model (the door-era bea7485 named removed root items).
-busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "2f32a79871f4ffc24e7f92d7232ccc370cfc4fa7" }
+busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "1ed384ad0b6edfff63f91a75584a28b5706b6ae5" }
 busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "1e4c78245472c22cfcf000a5176362731631b2f0" }
 busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "757ef895a737a130807b5d3af91ceeba2393d973" }
 # Published MIN-3 LLM implementation, linked through its PLUGIN header.
-busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "794cbd541192798496e5f7b8b8c878c23a6f89d7" }
+busbar-plane-llm = { git = "https://github.com/GetBusbar/busbar-plane-llm", rev = "204bce8e9e755aa35127a74fcf8e6a258bac9821" }
 # ── External plugin crates: ONE pin each (ONE HOME PER FACT); members use `workspace = true` ──
 busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "cdb3f7bbbe7a9a4640e65684358f4947f80ad6ff" }
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "cdb3f7bbbe7a9a4640e65684358f4947f80ad6ff" }
@@ -573,12 +573,12 @@ busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-a
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
-busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "5339132f5f01570130d68b4bf346573b5c6452c3" }
-busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "510e283690f6e48524a6561c50551c6b8acdc3d4" }
+busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "327d2c01546d065c4c33559caf78f015e453ae76" }
+busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "08e5b00ed8e935713e191526118b7e2ee8df6055" }
 # THE HTTP TRANSPORT (kind: transport), a MIN-3 image pulled at a pinned rev; the logic crate whose `PLUGIN` header
 # the root admits. The pin is the transport 2.0 image (its line/all head 6860ddb): one output model, every byte
 # either role writes a WIRE_PART naming its stream; an image before transport 2.0 is refused at load by its version.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "6860ddb93dc09a5b109686c20ad361d37f4cb834" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "56fd5fb4bac8f119b2d76e2e7a2cf075eada985f" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (row `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split). The pin ranks
 # 1.5.5's `bearer` and `api-key` first (arch-audit u29 F1, busbar-auth-header #35).
@@ -612,7 +612,7 @@ busbar-hook-complexity = { git = "https://github.com/GetBusbar/busbar-hook-compl
 # pinned rev; the logic crate whose `PLUGIN` header the root admits. The pin is its transport 2.0 head f3c2bec (line/all;
 # the image declares its alias `webrtc` as a former name). Its dropped-in cdylib twin and its gates live in
 # that repo's plugin CI. Its media stack (str0m, aes) is pinned in that repo's own manifest.
-busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "f3c2bece2a2f8b42bae0351582025f01d1655357" }
+busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "0d519c6309f5cab16bcdaddf3a30911777c0b7ce" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its tests link the external testkit's R-FIX3
@@ -627,11 +627,11 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # Explicit usage cleanup preserves billing; unsigned expiry cells retain permanent node claims.
 busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "5c0406091fd9f811f73c69940741f382ecbdcda3" }
 # Published MIN-3 MCP implementation, linked through its PLUGIN header.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "03a0711712d91f16ad8868258543432aa577802a" }
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "3164da79cd0fb8ab9f272f4d2c6adc47aef34144" }
 # Published MIN-3 decisions implementation, linked through its PLUGIN header.
-busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "d00c2aaecc0f57baa930340624ad03b8f0d41305" }
+busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "b7ffc3fde9305f93985025445c8941237a43307d" }
 # Published MIN-3 A2A implementation, linked through its PLUGIN header.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "33053b658f28661a525d888e272f3a388d5f1227" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "b8f2bb68ab87faf8300e3a2eb261ede3ca6e6df4" }
 # Published MIN-3 streaming implementation and its matching dropped-in artifact.
 busbar-plane-streaming = { git = "https://github.com/GetBusbar/busbar-plane-streaming", rev = "48a9e16db1ce04708f8538a50920f95a54141aa4" }
 # Its cdylib twin, at the SAME rev: the voice conformance harness builds it in THIS workspace
