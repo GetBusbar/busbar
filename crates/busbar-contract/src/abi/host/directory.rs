@@ -7,7 +7,7 @@
 //! `DIRECTORY_GET` … `DIRECTORY_DELETE`), on the shared service call shape.
 //!
 //! WHO MAY CALL. Auth instances only ([`super::access`]), and at call time only an instance whose
-//! Statement states [`CAP_PROVISION`](crate::abi::auth::CAP_PROVISION) and whose definition carries
+//! Statement states `CAP_PROVISION` and whose definition carries
 //! a `provisioning:` block; any other caller is REFUSED. Each instance sees only its own records.
 //! Callable from `serve` and from `tick` (pull-sync writes state `SOURCE_PULL`). Every service may
 //! pend.

@@ -13,12 +13,12 @@ use crate::abi::host::conn::connector::Need;
 /// exists, then `magic == DOOR_MAGIC`, `mechanism_version == MECHANISM_VERSION` and `kind_abi ==`
 /// the host's version for `kind`. Older and newer are both refused. Once the Statement is read,
 /// `layout` must be the host's layout fingerprint for `kind`
-/// ([`super::KindCode::layout_fingerprint`]), or the door is refused naming the kind and both
+/// (`super::KindCode::layout_fingerprint`), or the door is refused naming the kind and both
 /// numbers.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Door {
-    /// [`super::DOOR_MAGIC`].
+    /// `super::DOOR_MAGIC`.
     pub(crate) magic: u64,
     /// [`super::MECHANISM_VERSION`].
     pub(crate) mechanism_version: u32,
@@ -32,18 +32,18 @@ pub struct Door {
     pub(crate) statement: *const Statement,
     /// The kind's ops table; every kind's table begins with [`OpsHead`].
     pub(crate) ops: *const OpsHead,
-    /// APPEND-ONLY TAIL: `ready` (`abi::mechanism::lifecycle`, READY), in [`super::lifecycle::ReadyIn`],
+    /// APPEND-ONLY TAIL: `ready` (`abi::mechanism::lifecycle`, READY), in `super::lifecycle::ReadyIn`,
     /// out [`super::call::OutHead`]; `None` = the plugin has none and is opened exactly as before.
     /// A door whose `size` ends before this field has none: the host reads it only when `size`
     /// covers it.
     pub(crate) ready: Option<Op>,
     /// APPEND-ONLY TAIL: `migrate` (`abi::mechanism::lifecycle`, MIGRATE), in
-    /// [`super::lifecycle::ValidateIn`], out [`super::call::OutHead`]; `None` = the plugin has none,
+    /// `super::lifecycle::ValidateIn`, out [`super::call::OutHead`]; `None` = the plugin has none,
     /// and the boot's migration passes its settings section through unchanged. A door whose
     /// `size` ends before this field has none: the host reads it only when `size` covers it.
     pub(crate) migrate: Option<Op>,
     /// APPEND-ONLY TAIL: the kind's layout fingerprint as the plugin was built
-    /// ([`super::KindCode::layout_fingerprint`]). A door whose `size` ends before this field states
+    /// (`super::KindCode::layout_fingerprint`). A door whose `size` ends before this field states
     /// none (`0`) and is refused.
     pub(crate) layout: u64,
 }
@@ -51,11 +51,11 @@ pub struct Door {
 /// The door function: the ONE symbol a plugin exports. `extern "C"`: a panic escaping it aborts.
 pub type DoorFn = extern "C" fn() -> &'static Door;
 
-/// A door's fields, plain: what [`Door::__from_parts`] takes and [`Door::read_parts`] answers. A
+/// A door's fields, plain: what [`Door::__from_parts`] takes and `Door::read_parts` answers. A
 /// `DoorParts` is no door: nothing admits one, so building one is safe.
 #[derive(Debug, Clone, Copy)]
 pub struct DoorParts {
-    /// [`super::DOOR_MAGIC`].
+    /// `super::DOOR_MAGIC`.
     pub magic: u64,
     /// [`super::MECHANISM_VERSION`].
     pub mechanism_version: u32,
@@ -72,7 +72,7 @@ pub struct DoorParts {
     /// The optional `ready` op.
     pub ready: Option<Op>,
     /// APPEND-ONLY TAIL: the kind's layout fingerprint as the plugin was built
-    /// ([`super::KindCode::layout_fingerprint`], `abi/<kind>/`'s `LAYOUT_FINGERPRINT`). The loader
+    /// (`super::KindCode::layout_fingerprint`, `abi/<kind>/`'s `LAYOUT_FINGERPRINT`). The loader
     /// refuses a door whose number is not the host's: it was built against other shapes of its
     /// kind and would read and write them at the wrong offsets. A door whose `size` ends before
     /// this field predates it, states `0` and is refused the same.
@@ -136,7 +136,7 @@ impl Door {
         }
     }
 
-    /// [`super::DOOR_MAGIC`].
+    /// `super::DOOR_MAGIC`.
     #[must_use]
     pub const fn magic(&self) -> u64 {
         self.magic
@@ -422,7 +422,7 @@ impl Statement {
 /// HOW A `Statement` IS MADE: from
 /// [`statement`](crate::abi::sdk::door::statement) (its name, version and in-flight bound, every
 /// list empty), each list set by its setter to items that live for the program, the kind tail by
-/// [`Statement::with_kind_tail`]. Its other fields are plain and set directly.
+/// `Statement::with_kind_tail`. Its other fields are plain and set directly.
 ///
 /// ```
 /// use busbar_contract::abi::mechanism::call::AbiStr;
@@ -517,7 +517,7 @@ pub struct Rewrite {
     pub _reserved: u32,
     /// What config says.
     pub from: AbiStr,
-    /// What it becomes: named for [`REWRITE_KEY`] and the sugar classes after it, optional for
+    /// What it becomes: named for `REWRITE_KEY` and the sugar classes after it, optional for
     /// [`REWRITE_SUGAR`], absent for [`REWRITE_ALIAS`].
     pub to: AbiStr,
 }

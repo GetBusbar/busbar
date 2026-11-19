@@ -398,7 +398,7 @@ abi_op! {
 }
 
 abi_op! {
-    /// One rewrite, as [`check_rewrites`] states.
+    /// One rewrite, as `check_rewrites` states.
     fn check_rewrite(r: &Rewrite) as "rewrite", REWRITE_RULES for r: Rewrite {
         code(class, REWRITE_ALIAS, REWRITE_SUGAR_ROLE);
         named(from);
@@ -441,7 +441,7 @@ abi_op! {
 }
 
 abi_op! {
-    /// One need, as [`check_needs`] states.
+    /// One need, as `check_needs` states.
     fn check_need(n: &Need) as "need", NEED_RULES for n: Need {
         code(direction, DIRECTION_INBOUND, DIRECTION_OUTBOUND);
         code(egress_class, EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED);

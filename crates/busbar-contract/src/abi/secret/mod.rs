@@ -59,7 +59,7 @@ abi_struct! {
         /// argument is NULL), never pends, [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call).
         /// In [`CheckIn`], out [`OutHead`]. READY: the reference is well-formed. FAILED: why, in
         /// `CheckIn::err_buf`, under the lifecycle `validate` refusal rule
-        /// ([`check_validate_refusal`](super::mechanism::lifecycle::check_validate_refusal)); the host
+        /// (`check_validate_refusal`); the host
         /// renders each line as `<config path of the reference>: <line>`. An absent (NULL)
         /// `check` slot, which is what the SDK leaves for a door that wires none, or a REFUSED answer,
         /// means every reference passes.
@@ -125,7 +125,7 @@ pub const MAX_SECRET_BYTES: usize = crate::abi::mechanism::check::HARD_MAX_BYTES
 
 abi_struct! {
     /// `check`'s `in`: one reference's settings object and the host's reason buffer, as
-    /// [`ValidateIn`](super::mechanism::lifecycle::ValidateIn) lends one to `validate`.
+    /// `ValidateIn` lends one to `validate`.
     #[repr(C)]
     #[derive(Debug, Clone, Copy)]
     pub struct CheckIn {

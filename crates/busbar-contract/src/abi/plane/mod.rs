@@ -32,16 +32,16 @@
 //! at `arrive`; a plane keeps what it needs of it keyed by `unit`, and no piece re-sends it.
 //!
 //! THE KERNEL DRIVES THE ROUTE (`BUSBAR-1.6.0.md` Part 3, the plane driver). The kernel keeps the caller's body
-//! and runs its own egress walk. Each attempt starts with an ATTEMPT piece ([`FROM_KERNEL`],
+//! and runs its own egress walk. Each attempt starts with an ATTEMPT piece (`FROM_KERNEL`,
 //! [`OnPieceIn::member`], [`OnPieceIn::attempt_no`]); the plane answers with the request bound for
 //! the far end, its verb and target as explicit fields ([`OnPieceOut::verb`],
 //! [`OnPieceOut::target`]), then its dialect fields and body. Far-end pieces come back
-//! [`FROM_FAR_END`], and the plane's answer may carry a `VERDICT_*` beside the walk's status table.
+//! `FROM_FAR_END`, and the plane's answer may carry a `VERDICT_*` beside the walk's status table.
 //! When a hook is bound, [`slot::PROJECT`] (pure, once per unit) writes the hook kind's own request
 //! view, its prompt view and the body's end user; a request-stage hook's rewrite comes back to it
 //! as [`ProjectIn::rewrite`], which the plane applies to the body ([`ProjectOut::rewritten`]) and
 //! re-projects. A duplex session's unsolicited output reaches the kernel through the instance's one driver
-//! ticket: `drive` ([`PlaneDriveIn`], [`PlaneDriveOut`]) names the ready sessions.
+//! ticket: `drive` (`PlaneDriveIn`, [`PlaneDriveOut`]) names the ready sessions.
 //!
 //! WHAT CROSSES AND WHEN:
 //!
@@ -106,7 +106,7 @@
 //! # The catalogue-moved tick
 //!
 //! A session that asked to be told when the catalogue moves ([`EMIT_WATCH_CATALOGUE`] on any of
-//! its pieces) is given a [`PIECE_CATALOGUE_MOVED`] piece ([`FROM_KERNEL`], no bytes) on its stream
+//! its pieces) is given a [`PIECE_CATALOGUE_MOVED`] piece (`FROM_KERNEL`, no bytes) on its stream
 //! when the catalogue generation moves. The watch is keyed by (session stream, the session's
 //! authenticated principal, the one the kernel verified); a repeated WATCH is idempotent, and
 //! [`EMIT_UNWATCH_CATALOGUE`] drops it, as does the session ending or being evicted, so the watch
@@ -119,12 +119,12 @@
 //!
 //! An `arrive` that answers REFUSED states why in its `head.error`: the plane's own words, at most
 //! [`MAX_REFUSAL_TEXT`] bytes. The kernel carries them to the plane's `refusal` as
-//! [`RefusalIn::text`] with [`REFUSAL_ARRIVE`] and the arrival's claimant dialect, so the caller
+//! [`RefusalIn::text`] with `REFUSAL_ARRIVE` and the arrival's claimant dialect, so the caller
 //! is answered in the plane's dialect and words:
 //!
 //! 1. The bytes are opaque: the kernel never parses or changes them.
 //! 2. More than [`MAX_REFUSAL_TEXT`] is a FAULT of that `arrive`; the kernel refuses the arrival in
-//!    its own words ([`REFUSAL_KERNEL`]) and never cuts the text.
+//!    its own words (`REFUSAL_KERNEL`) and never cuts the text.
 //! 3. The text reaches the caller only through the plane's `refusal` rendering.
 //! 4. The kernel never logs or audits the text, since it may echo what the caller sent.
 //! 5. [`MAX_REFUSAL_TEXT`] is at or above the largest field line a transport admits, so words that
@@ -133,11 +133,11 @@
 //!
 //! The caller's grant is judged before the entry's standing. A REFUSED
 //!    `arrive` that names the entry its refusal concerns ([`ArriveOut::pool`] with a
-//!    [`ROUTE_POOL`] or [`ROUTE_DIRECT`] [`ArriveOut::route`], and its operation class and
+//!    `ROUTE_POOL` or `ROUTE_DIRECT` [`ArriveOut::route`], and its operation class and
 //!    dialect) is held: the kernel judges the caller's identity and its grant over that entry
 //!    first (a refusal there wins), then renders this refusal before admission, so nothing is
 //!    charged. Its status may be 400 to 599 (the entry, not the caller, may be at fault). With
-//!    [`REFUSED_AFTER_ADMISSION`] in [`ArriveOut::refusal_flags`] the refusal is held one step
+//!    `REFUSED_AFTER_ADMISSION` in [`ArriveOut::refusal_flags`] the refusal is held one step
 //!    further: after the caller's identity and its grant over the entry, the kernel runs the
 //!    entry's ADMISSION (its group limits and budget; a refusal there wins, in admission's own
 //!    status and words), and only then renders this refusal. That rendering refunds or releases
@@ -145,7 +145,7 @@
 //!
 //! [`RefusalOut::status`] lets the rendering name the status its dialect answers with; `0` keeps
 //! the one the kernel chose. The gate-rejected audit marker is the kernel's: it sets it from
-//! [`REFUSAL_GATE`], and a plane never sets [`RefusalOut::marker`].
+//! `REFUSAL_GATE`, and a plane never sets [`RefusalOut::marker`].
 //!
 //! EVERY `PlaneDecl` FIELD, AND WHERE IT WENT (nothing dropped silently):
 //!
@@ -158,7 +158,7 @@
 //! | `label` | tail [`PlaneTail::label`] |
 //! | `provided_carriers` | tail [`PlaneTail::ingress`] (`INGRESS_*` bits, same numbering) |
 //! | `config_validate` | lifecycle `validate` |
-//! | `build` | lifecycle `open` ([`PlaneOpenIn`], [`PlaneOpenOut`]) |
+//! | `build` | lifecycle `open` (`PlaneOpenIn`, [`PlaneOpenOut`]) |
 //! | `hydrate` | kind op [`slot::HYDRATE`] |
 //! | `start` | kind op [`slot::START`] |
 //! | `admin_routes` | snapshot [`PlaneSnapshot::admin_routes`]; served through [`slot::SERVE`] |
@@ -193,8 +193,8 @@
 //! KERNEL-OWNED TRUST KEYS. The trust lifecycle (pin, re-verification cadence, demotion) is the
 //! kernel's. A plane whose registrations carry those keys DECLARES them in its tail
 //! ([`PlaneTail::trust_keys`], each a [`TrustKey`]): which per-registration key of its declaring
-//! section holds the pin ([`TRUST_PIN`]), the re-verification bound ([`TRUST_REVERIFY_TTL`]) and the
-//! recovery backoff ([`TRUST_RECOVERY_BACKOFF`]). The kernel parses and validates those keys; the
+//! section holds the pin (`TRUST_PIN`), the re-verification bound (`TRUST_REVERIFY_TTL`) and the
+//! recovery backoff (`TRUST_RECOVERY_BACKOFF`). The kernel parses and validates those keys; the
 //! plane's own validator does not.
 //!
 //! ```
@@ -270,9 +270,9 @@ pub const SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ops {
-    /// The lifecycle. `open` is in [`PlaneOpenIn`], out [`PlaneOpenOut`]; `refresh` out is
-    /// [`PlaneRefreshOut`]; `drive` is in [`PlaneDriveIn`], out [`PlaneDriveOut`]; `cancel` is in
-    /// [`PlaneCancelIn`], out [`PlaneCancelOut`], and answers a `CANCEL_*` disposition.
+    /// The lifecycle. `open` is in `PlaneOpenIn`, out [`PlaneOpenOut`]; `refresh` out is
+    /// [`PlaneRefreshOut`]; `drive` is in `PlaneDriveIn`, out [`PlaneDriveOut`]; `cancel` is in
+    /// `PlaneCancelIn`, out [`PlaneCancelOut`], and answers a `CANCEL_*` disposition.
     pub head: OpsHead,
     /// [`slot::ARRIVE`]: in [`ArriveIn`], out [`ArriveOut`].
     pub arrive: Option<Op>,
@@ -282,9 +282,9 @@ pub struct Ops {
     pub refusal: Option<Op>,
     /// [`slot::SERVE`]: in [`ServeIn`], out [`ServeOut`].
     pub serve: Option<Op>,
-    /// [`slot::HYDRATE`]: in [`GenIn`], out [`OutHead`].
+    /// [`slot::HYDRATE`]: in `GenIn`, out [`OutHead`].
     pub hydrate: Option<Op>,
-    /// [`slot::START`]: in [`GenIn`], out [`OutHead`].
+    /// [`slot::START`]: in `GenIn`, out [`OutHead`].
     pub start: Option<Op>,
     /// [`slot::PROJECT`]: in [`ProjectIn`], out [`ProjectOut`].
     pub project: Option<Op>,
@@ -316,7 +316,7 @@ pub const TAIL_PROBES: u32 = 1 << 1;
 pub const TAIL_HOOKS_GATED: u32 = 1 << 2;
 /// [`PlaneTail::flags`]: the plane takes a unit's refusal as a piece first where the unit's hop
 pub const TAIL_REFUSED_PIECE: u32 = 1 << 3;
-/// The plane can resolve [`ROUTE_AUTHENTICATED`] through its optional continuation.
+/// The plane can resolve `ROUTE_AUTHENTICATED` through its optional continuation.
 pub const TAIL_AUTHENTICATED_ROUTE: u32 = 1 << 4;
 
 /// [`DialectAuth::flags`]: a provider's `protocol` may name this dialect.
@@ -382,15 +382,15 @@ pub const PIECE_END_OF_FRAME: u32 = 1;
 pub const PIECE_LAST: u32 = 1 << 1;
 /// [`OnPieceIn::flags`]: `status_code`/`status_class` are set.
 pub const PIECE_HAS_STATUS: u32 = 1 << 2;
-/// [`OnPieceIn::flags`], [`FROM_FAR_END`]: the bytes are a head of the far end's fields that
+/// [`OnPieceIn::flags`], `FROM_FAR_END`: the bytes are a head of the far end's fields that
 pub const PIECE_FIELDS: u32 = 1 << 3;
-/// [`OnPieceIn::flags`]: the CATALOGUE-MOVED TICK. With [`FROM_KERNEL`], `attempt_no == 0` and no
+/// [`OnPieceIn::flags`]: the CATALOGUE-MOVED TICK. With `FROM_KERNEL`, `attempt_no == 0` and no
 pub const PIECE_CATALOGUE_MOVED: u32 = 1 << 4;
-/// [`OnPieceIn::flags`]: the REFUSED PIECE. With [`FROM_KERNEL`], [`PIECE_LAST`],
+/// [`OnPieceIn::flags`]: the REFUSED PIECE. With `FROM_KERNEL`, [`PIECE_LAST`],
 pub const PIECE_REFUSED: u32 = 1 << 5;
-/// [`OnPieceIn::flags`], [`FROM_FAR_END`] with [`PIECE_LAST`]: the far end's answer ended without
+/// [`OnPieceIn::flags`], `FROM_FAR_END` with [`PIECE_LAST`]: the far end's answer ended without
 pub const PIECE_CUT: u32 = 1 << 6;
-/// [`OnPieceIn::flags`], [`FROM_FAR_END`] with [`PIECE_HAS_STATUS`] (the answer's first piece): the
+/// [`OnPieceIn::flags`], `FROM_FAR_END` with [`PIECE_HAS_STATUS`] (the answer's first piece): the
 pub const PIECE_FINAL: u32 = 1 << 7;
 
 /// [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller).
@@ -475,7 +475,7 @@ pub const CHAIN_DIGESTS_SCOPE: u32 = 1;
 /// THE WIRE REFUSAL CODES: a refusal reason as it crosses the plane ABI ([`RefusalStatus::reason`],
 /// [`RefusalIn::reason`]). Every number is written out and the table is APPEND-ONLY: a code never
 /// changes meaning, and a reason the kernel's vocabulary gains takes the next number here. The
-/// kernel's vocabulary maps to and from it ([`reason_code`], [`reason_of`]) by name, derived from
+/// kernel's vocabulary maps to and from it (`reason_code`, [`reason_of`]) by name, derived from
 /// its one table (`caps::ReasonCode`), so a new reason cannot be left off. This crate's tests pin
 /// every code to its word.
 #[repr(u32)]
@@ -939,13 +939,13 @@ impl RecordChain {
 /// One record kind's RETENTION RULE, as the plane declares it: which of the kind's rows older than
 /// a purge's cutoff the host's purge drops. The host passes the rule with every purge of the kind
 /// (the store ABI's `KindBeforeIn::retention`), so no store infers it from the kind's name. A kind
-/// the plane lists no rule for is purged by age ([`RETENTION_AGE`](crate::host_records::RETENTION_AGE)).
+/// the plane lists no rule for is purged by age (`RETENTION_AGE`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordRetention {
     /// Index into [`PlaneTail::record_kinds`].
     pub kind: u32,
-    /// [`RETENTION_AGE`](crate::host_records::RETENTION_AGE) |
+    /// `RETENTION_AGE` |
     /// [`RETENTION_TERMINAL_ONLY`](crate::host_records::RETENTION_TERMINAL_ONLY).
     pub rule: u32,
 }
@@ -955,13 +955,13 @@ impl RecordRetention {
     pub const ZERO: Self = Self { kind: 0, rule: 0 };
 }
 
-/// One pin mechanism a [`TRUST_PIN`] key accepts, as the operator spells it.
+/// One pin mechanism a `TRUST_PIN` key accepts, as the operator spells it.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct PinMechanism {
     /// The config token.
     pub token: AbiStr,
-    /// [`MECHANISM_ROOT`] (with [`MECHANISM_PEER_KEY`] where its material is the far end's key) or
+    /// `MECHANISM_ROOT` (with `MECHANISM_PEER_KEY` where its material is the far end's key) or
     /// `0`.
     pub flags: u32,
     /// Alignment padding.
@@ -978,16 +978,16 @@ impl PinMechanism {
 }
 
 /// The status one refusal reason wears in one dialect (or in every dialect, with
-/// [`REFUSAL_ANY_DIALECT`]). The kernel chooses a refusal's status from the plane's rows: the row
-/// for the unit's dialect, else the [`REFUSAL_ANY_DIALECT`] row, else its own default. A protocol
+/// `REFUSAL_ANY_DIALECT`). The kernel chooses a refusal's status from the plane's rows: the row
+/// for the unit's dialect, else the `REFUSAL_ANY_DIALECT` row, else its own default. A protocol
 /// whose dialects answer the same condition with different statuses states each here, so the
 /// status a client reads is the dialect's own.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RefusalStatus {
-    /// Index into [`PlaneTail::dialects`], or [`REFUSAL_ANY_DIALECT`].
+    /// Index into [`PlaneTail::dialects`], or `REFUSAL_ANY_DIALECT`.
     pub dialect: u32,
-    /// The reason's code ([`reason_code`]).
+    /// The reason's code (`reason_code`).
     pub reason: u32,
     /// The status number, 400 to 599.
     pub status: u32,
@@ -1002,13 +1002,13 @@ pub struct RefusalStatus {
 pub struct TrustKey {
     /// The key, as written inside one registration.
     pub key: AbiStr,
-    /// [`TRUST_PIN`] | [`TRUST_REVERIFY_TTL`] | [`TRUST_RECOVERY_BACKOFF`] |
-    /// [`TRUST_PRIVATE_REACH`] | [`TRUST_ITEM_APPROVALS`].
+    /// `TRUST_PIN` | `TRUST_REVERIFY_TTL` | `TRUST_RECOVERY_BACKOFF` |
+    /// `TRUST_PRIVATE_REACH` | `TRUST_ITEM_APPROVALS`.
     pub role: u32,
-    /// [`PIN_FINGERPRINT`] on a pin; `0` otherwise.
+    /// `PIN_FINGERPRINT` on a pin; `0` otherwise.
     pub flags: u32,
     /// A duration key's value when a registration writes none; absent = zero. A pin has none. On a
-    /// [`TRUST_ITEM_APPROVALS`] key: the field of each item's object holding its approved digest.
+    /// `TRUST_ITEM_APPROVALS` key: the field of each item's object holding its approved digest.
     pub default: AbiStr,
     /// A pin's mechanisms; empty for a duration key.
     pub mechanisms: *const PinMechanism,
@@ -1169,7 +1169,7 @@ pub struct PlaneTail {
     /// absent = none. A tail addition.
     pub admin_openapi: Blob,
     /// THE PLANE'S STREAM CEILING, seconds: how long a
-    /// unit whose `arrive` stated [`ROUTE_STREAM`] may run, measured from the moment its route is
+    /// unit whose `arrive` stated `ROUTE_STREAM` may run, measured from the moment its route is
     /// known. The kernel stamps it as the unit's deadline, so it bounds the whole streamed answer
     /// and a caller that stops reading it alike: when it passes, the unit is cut
     /// (`DeadlineExceeded`) and bills what it delivered (Part 2 #62). `0` = NO ceiling: the
@@ -1399,7 +1399,7 @@ pub struct AdminRoute {
     pub verb: AbiStr,
     /// The target path.
     pub target: AbiStr,
-    /// [`ROUTE_PUBLIC`], with [`ROUTE_CARRIES_OWN_TOKEN`] beside it where it is set, or `0`.
+    /// `ROUTE_PUBLIC`, with `ROUTE_CARRIES_OWN_TOKEN` beside it where it is set, or `0`.
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -1450,7 +1450,7 @@ pub struct PlaneSnapshot {
     /// claims, parallel to [`PlaneSnapshot::claims`]:
     /// entry `i` names the span an arrival on `claims[i]` opens, empty = that claim opens none. Each
     /// name is DATA the kernel builds one tracing callsite for when it binds the snapshot, never per
-    /// request; a non-empty name is `[a-z0-9_]`, at most [`MAX_ARRIVAL_SPAN`] bytes. NULL/0 = no
+    /// request; a non-empty name is `[a-z0-9_]`, at most `MAX_ARRIVAL_SPAN` bytes. NULL/0 = no
     /// claim opens one; any other length than `claims_len` refuses the snapshot. A tail addition: a
     /// snapshot whose `size` ends before it opens none, and the host reads nothing past that `size`.
     pub arrival_spans: *const AbiStr,
@@ -1581,8 +1581,8 @@ pub struct ArriveOut {
     /// fault by definition; 400 to 599 for a refusal about an entry (see "A refused arrival",
     /// rule 6). `0` on every other outcome.
     pub refusal_status: u32,
-    /// On REFUSED: `REFUSED_*` bits, the refusal's neutral outcome ([`REFUSED_UNSUPPORTED_ACTION`])
-    /// and, on a refusal about an entry, its order ([`REFUSED_AFTER_ADMISSION`]); `0` on every
+    /// On REFUSED: `REFUSED_*` bits, the refusal's neutral outcome (`REFUSED_UNSUPPORTED_ACTION`)
+    /// and, on a refusal about an entry, its order (`REFUSED_AFTER_ADMISSION`); `0` on every
     /// other outcome. In what was padding.
     pub refusal_flags: u32,
     /// This unit's CORRELATION KEY: a non-zero value the plane derives from the arrival (for
@@ -1601,15 +1601,15 @@ pub struct ArriveOut {
     /// resolves (plane key, entry) and never parses the name; none named is refused. Plane memory,
     /// valid until the instance's next call. A tail addition; absent on every other outcome.
     pub pool: AbiStr,
-    /// On READY: [`ROUTE_POOL`] or [`ROUTE_DIRECT`], what [`ArriveOut::pool`] names, or
-    /// [`ROUTE_LOCAL`], [`ROUTE_SCOPE`] or [`ROUTE_SCOPE_LOCAL`] with no pool named
-    /// (the scope's two naming their candidates there), or [`ROUTE_AUTHENTICATED`] with
+    /// On READY: `ROUTE_POOL` or `ROUTE_DIRECT`, what [`ArriveOut::pool`] names, or
+    /// `ROUTE_LOCAL`, `ROUTE_SCOPE` or `ROUTE_SCOPE_LOCAL` with no pool named
+    /// (the scope's two naming their candidates there), or `ROUTE_AUTHENTICATED` with
     /// no pool to request the declared authenticated continuation. A tail addition;
-    /// [`ROUTE_POOL`] on every
+    /// `ROUTE_POOL` on every
     /// other outcome.
     pub route: u8,
-    /// On READY: `ROUTE_*` flag bits ([`ROUTE_ONCE`], [`ROUTE_SESSION`], [`ROUTE_STREAM`],
-    /// [`ROUTE_COUNTED`]); `0`
+    /// On READY: `ROUTE_*` flag bits (`ROUTE_ONCE`, `ROUTE_SESSION`, `ROUTE_STREAM`,
+    /// `ROUTE_COUNTED`); `0`
     /// on every other outcome. A tail addition, in what was padding.
     pub route_flags: u8,
     /// Alignment padding.
@@ -1651,7 +1651,7 @@ pub struct AuthenticatedRouteIn {
     pub caller_ref: AbiStr,
     /// Host-owned storage for the selected entry's UTF-8 bytes.
     pub entry_buf: *mut u8,
-    /// At most [`MAX_ROUTE_ENTRY_BYTES`]; no short-buffer continuation is supported.
+    /// At most `MAX_ROUTE_ENTRY_BYTES`; no short-buffer continuation is supported.
     pub entry_cap: usize,
 }
 
@@ -1667,7 +1667,7 @@ pub struct AuthenticatedRouteOut {
     pub refusal: u32,
     /// 400–499 on REFUSED, zero otherwise.
     pub refusal_status: u32,
-    /// [`ROUTE_DIRECT`] or [`ROUTE_POOL`] on READY; zero otherwise.
+    /// `ROUTE_DIRECT` or `ROUTE_POOL` on READY; zero otherwise.
     pub route: u8,
     /// Must be zero.
     pub _reserved: [u8; 3],
@@ -1681,7 +1681,7 @@ pub struct OnPieceIn {
     pub head: InHead,
     /// The unit, as the kernel minted it: the key its [`ArriveIn::unit`] carried.
     pub unit: u64,
-    /// [`FROM_CALLER`] | [`FROM_FAR_END`] | [`FROM_KERNEL`].
+    /// `FROM_CALLER` | `FROM_FAR_END` | `FROM_KERNEL`.
     pub from: u32,
     /// `PIECE_*` bits.
     pub flags: u32,
@@ -1714,7 +1714,7 @@ pub struct OnPieceIn {
     /// Its capacity.
     pub arena_cap: usize,
     /// On an ATTEMPT piece: the operator's name for the member the kernel picked. On every piece
-    /// with `attempt_no` `0` of a [`ROUTE_SCOPE_LOCAL`] unit: the entry its scope resolved to (it
+    /// with `attempt_no` `0` of a `ROUTE_SCOPE_LOCAL` unit: the entry its scope resolved to (it
     /// is walked to no member). Absent otherwise.
     pub member: AbiStr,
     /// On an ATTEMPT piece: the attempt's number, from `1`; `0` on every other piece.
@@ -1732,7 +1732,7 @@ pub struct OnPieceIn {
     pub claim: u32,
     /// On every piece of a unit: the dialect `arrive` answered (`ArriveOut::dialect`).
     pub dialect: u32,
-    /// With [`FROM_FAR_END`] on the answer's first piece: the far end's response head fields the
+    /// With `FROM_FAR_END` on the answer's first piece: the far end's response head fields the
     /// plane's need keeps (`Need::keep_response_headers`), in the far end's order, names lower-case;
     /// no other response field ever crosses. NULL with `0` otherwise.
     pub head_fields: *const Field,
@@ -1742,7 +1742,7 @@ pub struct OnPieceIn {
     /// caller's own credential to the far end (the operator configured its upstream credentials as
     /// passthrough), `0` otherwise and before any attempt.
     pub passthrough: u32,
-    /// With [`PIECE_REFUSED`]: the code of the reason the unit was refused for ([`reason_code`]);
+    /// With [`PIECE_REFUSED`]: the code of the reason the unit was refused for (`reason_code`);
     /// `0` on every other piece. Laid in what was the struct's tail padding.
     pub reason: u32,
 }
@@ -1804,10 +1804,10 @@ pub struct OnPieceOut {
     pub fault: u8,
     /// THE UNIT'S USAGE-TAP FAULT (`TAP_FAULT_*`), beside the units this answer reports: why the
     /// plane's usage tap could not read a same-protocol 2xx body, so the request billed 0 tokens
-    /// ([`crate::codec::UsageTapFault`]). The kernel counts it, once per answer that carries it, on
+    /// (`crate::codec::UsageTapFault`). The kernel counts it, once per answer that carries it, on
     /// `busbar_billing_tap_decode_fail_total{protocol,reason}` under the unit's dialect, and warns
     /// once per `(protocol, reason)`: the fault crosses as data, never as a host call. A CLOSED
-    /// enum: [`TAP_FAULT_NONE`] = none, then the named reasons; any other value is counted under
+    /// enum: `TAP_FAULT_NONE` = none, then the named reasons; any other value is counted under
     /// `reason="unknown"` (and warned once), never ignored and never read as none. Laid in the
     /// padding after `fault` (pre-release, at the unchanged plane ABI version).
     pub tap_fault: u8,
@@ -1865,18 +1865,18 @@ pub struct OnPieceOut {
 pub struct RefusalIn {
     /// The head.
     pub head: InHead,
-    /// [`REFUSAL_KERNEL`] | [`REFUSAL_GATE`] | [`REFUSAL_ARRIVE`].
+    /// `REFUSAL_KERNEL` | `REFUSAL_GATE` | `REFUSAL_ARRIVE`.
     pub cause: u32,
     /// The status number the kernel chose.
     pub status: u32,
     /// Index into [`PlaneTail::dialects`].
     pub dialect: u32,
-    /// The refusal reason's code ([`reason_code`]): with the status and the dialect, what the
+    /// The refusal reason's code (`reason_code`): with the status and the dialect, what the
     /// plane renders. Two reasons may share a status and still read differently to a client.
     pub reason: u32,
     /// The refusal text: the kernel's own message for the refusal (for a limit, it names the
-    /// bucket that blocked); never secret material. With [`REFUSAL_ARRIVE`]: the refused arrival's
-    /// `head.error`, byte for byte. With [`REFUSAL_GATE`]: the vetoing hook's own message, as the
+    /// bucket that blocked); never secret material. With `REFUSAL_ARRIVE`: the refused arrival's
+    /// `head.error`, byte for byte. With `REFUSAL_GATE`: the vetoing hook's own message, as the
     /// kernel's hook engine sanitised it.
     pub text: AbiStr,
     /// HOST buffer for the rendered body.
@@ -1907,7 +1907,7 @@ pub struct RefusalIn {
     pub records_buf: *mut RecordWrite,
     /// Its capacity.
     pub records_cap: usize,
-    /// With [`REFUSAL_GATE`]: the name of the hook that vetoed the unit, opaque bytes; absent on
+    /// With `REFUSAL_GATE`: the name of the hook that vetoed the unit, opaque bytes; absent on
     /// every other refusal. A tail addition.
     pub hook: AbiStr,
     /// With [`RefusalCode::Untrusted`]: why the kernel's Approve did not trust the unit's stated
@@ -1933,7 +1933,7 @@ pub struct RefusalOut {
     pub arena_written: u64,
     /// Short answer: the bytes `arena_buf` needs.
     pub arena_needed: u64,
-    /// Always `0`: the kernel sets [`MARK_GATE_REJECTED`] itself; a plane that sets it is FAULT.
+    /// Always `0`: the kernel sets `MARK_GATE_REJECTED` itself; a plane that sets it is FAULT.
     pub marker: u32,
     /// Fields written to `fields_buf`.
     pub fields_written: u32,
@@ -2122,7 +2122,7 @@ pub struct ProjectIn {
     pub head: InHead,
     /// Index into the snapshot's claims the arrival matched.
     pub claim: u32,
-    /// Statements about the hooks core bound to this unit ([`PROJECT_IN_OBSERVE_ONLY`]); every
+    /// Statements about the hooks core bound to this unit (`PROJECT_IN_OBSERVE_ONLY`); every
     /// other bit is zero. 0 states nothing.
     pub flags: u32,
     /// The request target.
@@ -2192,7 +2192,7 @@ pub struct ProjectOut {
     ///   pass-through, the unit forwarded unmodified with the hook on record as a pass and a
     ///   warning naming it;
     /// - any other unapplied rewrite (the mark clear): the kernel refuses the unit (the hook's 503
-    ///   under `on_error: reject`, [`PROJECT_FAULT_STATUS`] otherwise), never forwarding the body
+    ///   under `on_error: reject`, `PROJECT_FAULT_STATUS` otherwise), never forwarding the body
     ///   un-rewritten.
     ///
     /// A rewrite naming no messages is no rewrite (1.5.5).

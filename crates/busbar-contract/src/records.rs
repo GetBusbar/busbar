@@ -943,7 +943,7 @@ impl PlaneRecord {
 
 /// A borrowed [`PlaneRecord`] for core history operations.
 /// as it is, with no copy on the request path. A store that keeps the
-/// record copies it itself ([`PlaneRecordRef::to_record`]).
+/// record copies it itself (`PlaneRecordRef::to_record`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaneRecordRef<'a> {
     /// See [`PlaneRecord::kind`].

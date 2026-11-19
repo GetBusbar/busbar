@@ -170,7 +170,7 @@ unsafe fn items<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
 ///
 /// # Safety
 ///
-/// `st` passed [`super::check::check_statement`]: every non-NULL list and string points at its
+/// `st` passed `super::check::check_statement`: every non-NULL list and string points at its
 /// stated count of live entries (a door's `'static` Statement does). A NULL list with a count is
 /// rendered as empty, never read. A non-NULL `kind_tail` is `'static` plugin data of at least its
 /// stated size whose lists and strings point at their stated counts of live entries (each is

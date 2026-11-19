@@ -18,7 +18,7 @@ pub const REASON_NOT_GRANTED: &str = "not_granted";
 /// The caller was entitled and the EGRESS CREDENTIAL gate refused: no registration, no lease, or a
 pub const REASON_EGRESS_DENIED: &str = "egress_denied";
 
-/// The call WENT OUT and the upstream then failed. It rides [`OUTCOME_DISPATCHED`], not
+/// The call WENT OUT and the upstream then failed. It rides `OUTCOME_DISPATCHED`, not
 pub const REASON_UPSTREAM_FAILED: &str = "upstream_failed";
 
 /// The PRINCIPAL is no longer live: deleted, disabled, or past its expiry. Distinct from

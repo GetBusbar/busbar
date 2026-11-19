@@ -143,7 +143,7 @@ pub const KEEP_ALL_EXCEPT_DENIED: u32 = 1;
 /// What [`KEEP_ALL_EXCEPT_DENIED`] always strips, the kernel's list: every hop-by-hop field
 pub const ALWAYS_DENIED: &[&str] = &["content-length", "content-encoding"];
 
-/// [`keeps_response_field`] over the lists as the caller holds them (`String`s or `&str`s).
+/// `keeps_response_field` over the lists as the caller holds them (`String`s or `&str`s).
 #[must_use]
 pub fn keeps_response_field_of<'a>(
     mode: u32,
@@ -269,33 +269,33 @@ pub struct ConnectorSlots {
     pub size: u32,
     /// [`SERVICES`].
     pub slots: u32,
-    /// [`service::ESTABLISH`], in [`EstablishIn`].
+    /// [`service::ESTABLISH`], in `EstablishIn`.
     pub establish: Option<ServiceFn>,
-    /// [`service::REJECT_ENDPOINT`], in [`StreamIn`].
+    /// [`service::REJECT_ENDPOINT`], in `StreamIn`.
     pub reject_endpoint: Option<ServiceFn>,
-    /// [`service::SIDE_STREAM`], in [`StreamIn`].
+    /// [`service::SIDE_STREAM`], in `StreamIn`.
     pub side_stream: Option<ServiceFn>,
-    /// [`service::READ`], in [`IoIn`].
+    /// [`service::READ`], in `IoIn`.
     pub read: Option<ServiceFn>,
-    /// [`service::WRITE`], in [`IoIn`].
+    /// [`service::WRITE`], in `IoIn`.
     pub write: Option<ServiceFn>,
-    /// [`service::UPGRADE_SECURE`], in [`UpgradeIn`].
+    /// [`service::UPGRADE_SECURE`], in `UpgradeIn`.
     pub upgrade_secure: Option<ServiceFn>,
-    /// [`service::FACTS`], in [`FactsIn`].
+    /// [`service::FACTS`], in `FactsIn`.
     pub facts: Option<ServiceFn>,
-    /// [`service::CHECKOUT`], in [`CheckoutIn`].
+    /// [`service::CHECKOUT`], in `CheckoutIn`.
     pub checkout: Option<ServiceFn>,
-    /// [`service::CHECKIN`], in [`CheckinIn`].
+    /// [`service::CHECKIN`], in `CheckinIn`.
     pub checkin: Option<ServiceFn>,
-    /// [`service::CLOSE`], in [`StreamIn`].
+    /// [`service::CLOSE`], in `StreamIn`.
     pub close: Option<ServiceFn>,
-    /// [`service::RANDOM`], in [`RandomIn`]: RETIRED, always NULL (`random.fill` is the one random
+    /// [`service::RANDOM`], in `RandomIn`: RETIRED, always NULL (`random.fill` is the one random
     /// service).
     pub random: Option<ServiceFn>,
-    /// [`service::IDENTITY`], in [`IdentityIn`].
+    /// [`service::IDENTITY`], in `IdentityIn`.
     pub identity: Option<ServiceFn>,
-    /// [`service::READ_REPLY`], in [`ReplyIn`].
+    /// [`service::READ_REPLY`], in `ReplyIn`.
     pub read_reply: Option<ServiceFn>,
-    /// [`service::WRITE_REQUEST`], in [`RequestIn`].
+    /// [`service::WRITE_REQUEST`], in `RequestIn`.
     pub write_request: Option<ServiceFn>,
 }

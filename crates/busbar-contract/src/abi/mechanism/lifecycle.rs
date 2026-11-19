@@ -42,21 +42,21 @@ pub struct OpsHead {
     pub size: u32,
     /// How many slots the whole kind table holds, lifecycle included; equal to the host's.
     pub slots: u32,
-    /// Pure validation of a settings blob. In [`ValidateIn`], out [`OutHead`].
+    /// Pure validation of a settings blob. In `ValidateIn`, out [`OutHead`].
     pub validate: Option<Op>,
-    /// Boot, on the control lane; may pend. In [`OpenIn`], out [`OpenOut`].
+    /// Boot, on the control lane; may pend. In `OpenIn`, out [`OpenOut`].
     pub open: Option<Op>,
-    /// Reload with the new config; may pend. In [`RefreshIn`], out [`OutHead`].
+    /// Reload with the new config; may pend. In `RefreshIn`, out [`OutHead`].
     pub refresh: Option<Op>,
-    /// After the RCU drain of a generation. In [`GenIn`], out [`OutHead`].
+    /// After the RCU drain of a generation. In `GenIn`, out [`OutHead`].
     pub retire: Option<Op>,
-    /// The kernel clock. In [`TickIn`], out [`TickOut`].
+    /// The kernel clock. In `TickIn`, out [`TickOut`].
     pub tick: Option<Op>,
-    /// A driver ticket woke. In [`DriveIn`], out [`OutHead`].
+    /// A driver ticket woke. In `DriveIn`, out [`OutHead`].
     pub drive: Option<Op>,
-    /// A deadline, or a client drop on a request-path op. In [`CancelIn`], out [`CancelOut`].
+    /// A deadline, or a client drop on a request-path op. In `CancelIn`, out [`CancelOut`].
     pub cancel: Option<Op>,
-    /// The host is done with off-path or secret bytes. In [`ReleaseIn`], out [`OutHead`].
+    /// The host is done with off-path or secret bytes. In `ReleaseIn`, out [`OutHead`].
     pub release: Option<Op>,
     /// Shutdown, or a retired instance. In [`InHead`], out [`OutHead`].
     pub close: Option<Op>,

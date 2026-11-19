@@ -20,7 +20,7 @@
 //! of its stack.
 //!
 //! Direction is a usage mode, never a kind: the same carrier accepts and dials, the same framer
-//! runs on either side ([`SIDE_ACCEPT`] / [`SIDE_DIAL`]). A plugin of ANY kind declares what it needs
+//! runs on either side (`SIDE_ACCEPT` / [`SIDE_DIAL`]). A plugin of ANY kind declares what it needs
 //! as `(transport, auth)` per direction ([`crate::abi::host::conn::connector::Need`]); the kernel's
 //! connector builds every connection as carrier → \[connection security\] → framer. Connection
 //! security is core-only and never crosses this table: a framer is told only what the handshake
@@ -121,7 +121,7 @@
 //! and spawns through the host's I/O table (`abi::host::io`, `io.*`): it never holds a descriptor,
 //! and the host opens only what it admitted for the dial that asked. Its frames: a carrier carried
 //! as ITSELF (a need over its own claim, no framer above it) delimits them with
-//! [`READ_END_OF_FRAME`] and [`WRITE_END_OF_FRAME`]; under a framer, its bytes are a stream.
+//! [`READ_END_OF_FRAME`] and `WRITE_END_OF_FRAME`; under a framer, its bytes are a stream.
 //!
 //! WHAT THE HOT-LANE `TransportDecl` BECOMES (a mechanical re-heading):
 //!
@@ -265,7 +265,7 @@ pub struct Ops {
     pub listen: Option<Op>,
     /// [`slot::ACCEPT`]: in [`AcceptIn`], out [`AcceptOut`].
     pub accept: Option<Op>,
-    /// [`slot::DIAL`]: in [`DialIn`], out [`ConnOut`].
+    /// [`slot::DIAL`]: in `DialIn`, out `ConnOut`.
     pub dial: Option<Op>,
     /// [`slot::READ`]: in [`ReadIn`], out [`IoOut`] (`len` 0 = the end).
     pub read: Option<Op>,
@@ -273,7 +273,7 @@ pub struct Ops {
     pub write: Option<Op>,
     /// [`slot::FLUSH`]: in [`ConnIn`], out [`OutHead`].
     pub flush: Option<Op>,
-    /// [`slot::SHUT`]: in [`ShutIn`], out [`OutHead`].
+    /// [`slot::SHUT`]: in `ShutIn`, out [`OutHead`].
     pub shut: Option<Op>,
     /// [`slot::ARRIVAL`]: in [`ArrivalIn`], out [`ArrivalOut`]; FAILED for an unknown connection.
     pub arrival: Option<Op>,
@@ -512,7 +512,7 @@ impl StatusRow {
 /// status class is the fee decision's leg and is never bent to serve the breaker.
 ///
 /// A claim that states status rows states fault rows too, or the load is refused
-/// ([`check::check_fault_cover`]): an answer the framer can class it can also read for the breaker.
+/// (`check::check_fault_cover`): an answer the framer can class it can also read for the breaker.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FaultRow {
@@ -697,13 +697,13 @@ impl TransportTail {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Destination {
-    /// [`DEST_AUTHORITY`] | [`DEST_PROGRAM`] | [`DEST_RETIRED`].
+    /// `DEST_AUTHORITY` | `DEST_PROGRAM` | `DEST_RETIRED`.
     pub kind: u32,
     /// Alignment padding.
     pub _reserved: u32,
-    /// The authority ([`DEST_AUTHORITY`]).
+    /// The authority (`DEST_AUTHORITY`).
     pub authority: AbiStr,
-    /// The program's absolute path ([`DEST_PROGRAM`]).
+    /// The program's absolute path (`DEST_PROGRAM`).
     pub program: AbiStr,
     /// Its arguments.
     pub args: *const AbiStr,
@@ -853,7 +853,7 @@ pub struct FramerSink {
 /// the exact decoded fields admitted after auth stripping; a DIALLED response drops hop-by-hop
 /// fields, `te` among them. Each slot's bytes are in [`FramerSink::frame`].
 ///
-/// * An ACCEPTED stream ([`SIDE_ACCEPT`]) fills `method`, `target` and, where the caller named one,
+/// * An ACCEPTED stream (`SIDE_ACCEPT`) fills `method`, `target` and, where the caller named one,
 ///   `authority`: the kernel fills the plane's `ArriveIn::method` and target from these slots, never
 ///   by reading bytes.
 /// * A DIALLED stream ([`SIDE_DIAL`]) fills `reason` only: the far end's reason phrase exactly as
@@ -895,7 +895,7 @@ pub struct FramerYield {
     /// position, in the framer's own ACCEPTING offer (what `locate` answers with
     /// [`LocateIn::accept`]), of the protocol the connection speaks; `0` = not stated. An opaque
     /// position, never a protocol's name: the host resolves it against the offer the listener
-    /// made ([`check::check_agreed_position`]: past the offer is refused, and a dial states
+    /// made (`check::check_agreed_position`: past the offer is refused, and a dial states
     /// none). Carved from what was alignment padding (pre-tag, R9 as clarified 2026-09-28: the
     /// layout golden regenerated, no version bump); the size, alignment and every offset are
     /// unchanged.
@@ -990,7 +990,7 @@ pub struct WriteIn {
     pub bytes: *const u8,
     /// How many.
     pub len: usize,
-    /// `WRITE_*` bits: [`WRITE_END_OF_FRAME`].
+    /// `WRITE_*` bits: `WRITE_END_OF_FRAME`.
     pub flags: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -1160,23 +1160,23 @@ pub struct FramerOut {
 pub struct BeginIn {
     /// The head.
     pub head: InHead,
-    /// [`SIDE_ACCEPT`] | [`SIDE_DIAL`] | [`SIDE_ACCEPT_STREAM`].
+    /// `SIDE_ACCEPT` | [`SIDE_DIAL`] | `SIDE_ACCEPT_STREAM`.
     pub side: u32,
     /// THE CONNECTION'S SCHEME, as a code
-    /// ([`SCHEME_*`](crate::abi::host::service::SCHEME_PLAIN)), set by the HOST on every side:
+    /// (`SCHEME_*`), set by the HOST on every side:
     /// on [`SIDE_DIAL`] from the route's upstream (whether the dial runs the connector's
-    /// connection security), on [`SIDE_ACCEPT`] and [`SIDE_ACCEPT_STREAM`] from the listener
+    /// connection security), on `SIDE_ACCEPT` and `SIDE_ACCEPT_STREAM` from the listener
     /// (whether the connector terminated connection security on it). The framer copies it into
     /// every request view it builds for its auth call
     /// ([`HeadView::scheme`](crate::abi::host::service::HeadView::scheme)); the host does not fill
     /// that view's scheme itself. [`SCHEME_UNDECLARED`](crate::abi::host::service::SCHEME_UNDECLARED)
     /// (`0`, a zeroed `in`) or an unknown code is REFUSED at `begin`
-    /// ([`check::check_begin_scheme`]): a zero never grants, and is never read as plain. Carved
+    /// (`check::check_begin_scheme`): a zero never grants, and is never read as plain. Carved
     /// from what was alignment padding; every other offset is unchanged.
     pub scheme: u8,
     /// Alignment padding.
     pub _reserved: [u8; 3],
-    /// The target ([`SIDE_ACCEPT_STREAM`]: the stream's path and query).
+    /// The target (`SIDE_ACCEPT_STREAM`: the stream's path and query).
     pub target: AbiStr,
     /// What connection security established.
     pub facts: *const ConnFacts,
@@ -1190,14 +1190,14 @@ pub struct BeginIn {
     /// [`auth`](Self::auth) at [`points`](Self::points)
     /// ([`op::AUTH_CALL`](crate::abi::host::service::op::AUTH_CALL)), then appends what the auth
     /// answers, replacing any line of the same name, and adds nothing after. A tail addition.
-    /// [`SIDE_ACCEPT_STREAM`]: the stream's head fields, as the caller sent them.
+    /// `SIDE_ACCEPT_STREAM`: the stream's head fields, as the caller sent them.
     pub fields: *const Field,
     /// How many.
     pub fields_len: usize,
     /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
     pub lane: *const DatagramLane,
-    /// [`SIDE_ACCEPT`] | [`SIDE_ACCEPT_STREAM`]: the listener's guest list, in match order, lent
-    /// for the framing's life ([`check::check_lines`]); NULL on [`SIDE_DIAL`]. A tail addition
+    /// `SIDE_ACCEPT` | `SIDE_ACCEPT_STREAM`: the listener's guest list, in match order, lent
+    /// for the framing's life (`check::check_lines`); NULL on [`SIDE_DIAL`]. A tail addition
     /// (pre-tag v1).
     pub lines: *const route::LineEntry,
     /// How many, at most [`check::MAX_LINES`].
@@ -1257,7 +1257,7 @@ pub struct EmitIn {
     pub len: usize,
     /// `1` = they complete the frame.
     pub end_of_frame: u32,
-    /// `EMIT_*` bits: [`EMIT_TEXT`] or [`EMIT_TRAILERS`], never both.
+    /// `EMIT_*` bits: `EMIT_TEXT` or `EMIT_TRAILERS`, never both.
     pub flags: u32,
     /// The sink.
     pub sink: FramerSink,
@@ -1295,7 +1295,7 @@ pub struct EmitIn {
     /// whose head states its body's length writes that line itself, before its auth call. A
     /// streamed body states no length (`body_len_known` `0`, `body_len` `0`), and the framer
     /// states none, as 1.5.5 did. `0` on every other emit, on its re-calls and resumes alike, and
-    /// on an accepting side ([`check::check_emit_body_len`]). A tail addition (pre-tag v1).
+    /// on an accepting side (`check::check_emit_body_len`). A tail addition (pre-tag v1).
     pub body_len: u64,
     /// `1` = [`body_len`](Self::body_len) is the opening body's length; `0` = no length is stated
     /// (a streamed body, or an emit that carries no request head). No other value.
@@ -1367,7 +1367,7 @@ pub struct RefuseIn {
 
 /// `finish`'s `in` (the framer's `close`).
 ///
-/// THE FINAL STATUS: on a framing begun on [`SIDE_ACCEPT_STREAM`], the
+/// THE FINAL STATUS: on a framing begun on `SIDE_ACCEPT_STREAM`, the
 /// close is the stream's last answer, and the four `final_*` fields state how it ended, as the unit
 /// stated it: `final_status` in the numbering of the claim the stream arrived on (a number the
 /// claim's status rows cover; `0` where the unit stated none and the claim's numbering has one for
@@ -1424,7 +1424,7 @@ pub struct FramingIn {
 pub struct AdoptIn {
     /// The head.
     pub head: InHead,
-    /// [`SIDE_ACCEPT`] | [`SIDE_DIAL`].
+    /// `SIDE_ACCEPT` | [`SIDE_DIAL`].
     pub side: u32,
     /// Alignment padding.
     pub _reserved: u32,

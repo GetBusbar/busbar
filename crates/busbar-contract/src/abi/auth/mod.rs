@@ -84,35 +84,35 @@ pub struct Ops {
     /// Judge an inbound request at one AUTH POINT ([`VerifyIn::point`]; THE DESIGN, "Auth
     /// points and guest lists": the inbound point call reuses this slot). REQUEST-PATH; may pend
     /// (a key-set fetch or a directory read over the plugin's need);
-    /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass). In [`VerifyIn`] (fixed
+    /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass). In `VerifyIn` (fixed
     /// 320 B, plus the line, peer and body bytes), out [`IdentifyOut`] (fixed 232 B; results in
-    /// the host's [`IdentityBuf`], [`IDENTITY_BUF_BYTES`] and [`IDENTITY_GROUPS`] to start, and its
-    /// strip array, [`FIELDS_MAX`] to start). The verdict is [`VERDICT_IDENTITY`],
-    /// [`VERDICT_REJECT`] or [`VERDICT_PASS`]; the decision is [`DECISION_CONTINUE`] or
-    /// [`DECISION_STOP`]; the credential lines to strip are named whatever the verdict. The
+    /// the host's [`IdentityBuf`], `IDENTITY_BUF_BYTES` and `IDENTITY_GROUPS` to start, and its
+    /// strip array, `FIELDS_MAX` to start). The verdict is [`VERDICT_IDENTITY`],
+    /// [`VERDICT_REJECT`] or `VERDICT_PASS`; the decision is [`DECISION_CONTINUE`] or
+    /// `DECISION_STOP`; the credential lines to strip are named whatever the verdict. The
     /// transport receives only the decision and the strips; the verdict, the identity and the
     /// credential go to the kernel. OVERLOAD: when the instance's `max_inflight` is full, the host does not
     /// queue the call and answers the request 503 (an accepted difference from 1.5.5). The plugin
     /// never signals overload itself.
     pub verify: Option<Op>,
     /// Start a login. OFF-PATH; may pend through the plugin's own need; `Call`. In
-    /// [`BeginLoginIn`] (fixed 168 B), out [`BeginLoginOut`] (fixed 136 B; URL and form held under
+    /// `BeginLoginIn` (fixed 168 B), out `BeginLoginOut` (fixed 136 B; URL and form held under
     /// `OutHead.lease`).
     pub begin_login: Option<Op>,
     /// Finish a login: the token exchange runs over the plugin's own need to its need-declared
-    /// targets. OFF-PATH; may pend; `Call`. In [`CompleteLoginIn`] (fixed 232 B), out
+    /// targets. OFF-PATH; may pend; `Call`. In `CompleteLoginIn` (fixed 232 B), out
     /// [`IdentifyOut`] (fixed 232 B; host [`IdentityBuf`]). The verdict is [`LOGIN_IDENTITY`],
-    /// [`LOGIN_BAD_CREDENTIAL`], [`LOGIN_OUTAGE`] or [`LOGIN_SECURITY_CHECK_FAILED`].
+    /// `LOGIN_BAD_CREDENTIAL`, [`LOGIN_OUTAGE`] or [`LOGIN_SECURITY_CHECK_FAILED`].
     pub complete_login: Option<Op>,
     /// Bind one outbound style to its credential and answer a handle. OFF-PATH, at generation
     /// seal; never pends (the first mint runs in the background on `tick`); `Call`. In
-    /// [`OpenOutboundIn`] (fixed 152 B), out [`OpenOutboundOut`] (fixed 104 B). A handle is
+    /// `OpenOutboundIn` (fixed 152 B), out `OpenOutboundOut` (fixed 104 B). A handle is
     /// GENERATION DATA: the kernel re-opens every handle at each generation, and a handle is valid
     /// until `retire` of the generation it was opened at. There is no close slot. The token cache
     /// behind a handle is keyed by (style, credential, settings) and outlives it.
     pub open_outbound: Option<Op>,
     /// The handle's `ready` fact, read by the health prober. OFF-PATH; never pends; `Call`. In
-    /// [`OutboundReadyIn`] (fixed 96 B), out [`OutboundReadyOut`] (fixed 104 B).
+    /// `OutboundReadyIn` (fixed 96 B), out `OutboundReadyOut` (fixed 104 B).
     pub outbound_ready: Option<Op>,
     /// The per-attempt call the kernel makes before encode: the auth fields for this request.
     /// REQUEST-PATH; may pend only when the cached token has expired and its refresh failed
@@ -120,8 +120,8 @@ pub struct Ops {
     /// Called at the style's AUTH POINTS ([`FieldsIn::point`]; THE DESIGN, "Auth points and
     /// guest lists", step 5): the host REPLACES the plane's lines of the same name with the fields
     /// answered and adds nothing to the head after them; REFUSED or FAILED stops the request.
-    /// In [`FieldsIn`] (fixed 288 B), out [`FieldsOut`] (fixed 112 B; fields in the host's
-    /// buffer, [`FIELDS_BUF_BYTES`] and [`FIELDS_MAX`] to start; one re-call when short). READY
+    /// In `FieldsIn` (fixed 288 B), out `FieldsOut` (fixed 112 B; fields in the host's
+    /// buffer, `FIELDS_BUF_BYTES` and `FIELDS_MAX` to start; one re-call when short). READY
     /// with zero fields = no auth header, so the upstream answers 401: 1.5.5's answer before the
     /// first mint and for an un-encodable key.
     pub fields: Option<Op>,
@@ -142,8 +142,8 @@ pub struct Ops {
     /// [`ServeIn::client`]), out [`ServeOut`] (the hook kind's; headers and body under
     /// `head.lease`, memory class iv). The kernel never forwards `Authorization` or any of the
     /// instance's carrier fields, and calls `serve` only on an instance stating
-    /// [`CAP_PROVISION`]. NULL: the plugin serves no routes (every plugin without
-    /// [`CAP_PROVISION`]).
+    /// `CAP_PROVISION`. NULL: the plugin serves no routes (every plugin without
+    /// `CAP_PROVISION`).
     pub serve: Option<Op>,
 }
 
@@ -168,10 +168,10 @@ pub const fn ranked(rank: u8) -> u32 {
 pub struct StyleDecl {
     /// The style name.
     pub name: AbiStr,
-    /// [`STYLE_NEEDS_HEADERS`] | [`STYLE_CALLER_CREDENTIAL`] | [`STYLE_ENDPOINT_TOKEN_URL`] |
+    /// [`STYLE_NEEDS_HEADERS`] | `STYLE_CALLER_CREDENTIAL` | [`STYLE_ENDPOINT_TOKEN_URL`] |
     /// [`STYLE_ENDPOINT_FROM_CREDENTIAL`], and a list rank ([`STYLE_RANK_MASK`]).
     pub flags: u32,
-    /// The [`AuthPoints`] the style needs: a valid, non-empty set ([`check_style_decl`]). A style
+    /// The [`AuthPoints`] the style needs: a valid, non-empty set (`check_style_decl`). A style
     /// that signs the body needs [`POINT_HEAD_BODY`] and reads [`FieldsIn::body`]; a style over
     /// the head alone needs [`POINT_HEAD`].
     pub points: u32,
@@ -192,29 +192,29 @@ impl StyleDecl {
 pub struct AuthTail {
     /// The tail head (`size` = `size_of::<AuthTail>()`).
     pub head: KindTailHead,
-    /// [`CAP_INBOUND`] | [`CAP_LOGIN`] | [`CAP_OUTBOUND`].
+    /// [`CAP_INBOUND`] | [`CAP_LOGIN`] | `CAP_OUTBOUND`.
     pub caps: u32,
-    /// [`FACT_CACHEABLE`] | [`FACT_INBOUND_NEEDS_BODY_HASH`] | [`FACT_INBOUND_ALL_HEADERS`] |
-    /// [`FACT_OPERATOR`] | [`FACT_READS_CREDENTIALS`] | [`FACT_DEFAULT_INBOUND_STYLE`].
+    /// `FACT_CACHEABLE` | `FACT_INBOUND_NEEDS_BODY_HASH` | `FACT_INBOUND_ALL_HEADERS` |
+    /// `FACT_OPERATOR` | `FACT_READS_CREDENTIALS` | `FACT_DEFAULT_INBOUND_STYLE`.
     pub facts: u32,
-    /// [`LOGIN_KIND_NONE`] | [`LOGIN_KIND_REDIRECT`] | [`LOGIN_KIND_CREDENTIAL`]: the
+    /// `LOGIN_KIND_NONE` | `LOGIN_KIND_REDIRECT` | `LOGIN_KIND_CREDENTIAL`: the
     /// classification the login chooser reads without calling `begin_login`. It is `NONE` exactly
     /// when [`CAP_LOGIN`] is absent; a tail where the two disagree refuses the load.
     pub login_kind: u32,
     /// The [`AuthPoints`] `verify` needs inbound: with [`CAP_INBOUND`] a valid, non-empty set;
-    /// without it `0` ([`check_inbound_points`]; the loader refuses any other tail). A mechanism
+    /// without it `0` (`check_inbound_points`; the loader refuses any other tail). A mechanism
     /// that checks a signature over the body needs [`POINT_HEAD_BODY`] and reads
     /// [`VerifyIn::body`].
     pub inbound_points: u32,
-    /// The outbound styles served ([`CAP_OUTBOUND`]).
+    /// The outbound styles served (`CAP_OUTBOUND`).
     pub styles: *const StyleDecl,
     /// How many.
     pub styles_len: usize,
-    /// With [`FACT_OPERATOR`]: the principal id the operator credential identifies; empty
-    /// otherwise. APPENDED after the tail froze at [`TAIL_FROZEN`] bytes: a tail of that size
+    /// With `FACT_OPERATOR`: the principal id the operator credential identifies; empty
+    /// otherwise. APPENDED after the tail froze at `TAIL_FROZEN` bytes: a tail of that size
     /// reads it empty.
     pub operator_principal: AbiStr,
-    /// With [`FACT_READS_CREDENTIALS`]: the credential kinds `verify` reads through
+    /// With `FACT_READS_CREDENTIALS`: the credential kinds `verify` reads through
     /// `records.secret`; none otherwise. APPENDED after [`AuthTail::operator_principal`]: an older
     /// tail reads none.
     pub credential_kinds: *const AbiStr,

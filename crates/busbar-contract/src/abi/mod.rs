@@ -15,7 +15,7 @@
 //!
 //! The cross-boundary discipline, hoisted here so there is one definition:
 //!
-//! 1. **The airlock preamble** ([`AbiPreamble`]) — a `#[repr(C)]` header FROZEN
+//! 1. **The airlock preamble** (`AbiPreamble`) — a `#[repr(C)]` header FROZEN
 //!    FOR ALL TIME. Its three fields (`magic`, `abi_major`, `abi_minor`) may NEVER be reordered,
 //!    resized, or removed. A major mismatch or a magic mismatch is fail-closed (the seam refuses),
 //!    so an incompatible peer can never be reached across the boundary.

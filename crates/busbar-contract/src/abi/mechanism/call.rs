@@ -25,7 +25,7 @@ pub enum Outcome {
     /// Done; `out` holds the answer.
     Ready = 1,
     /// Not ready: the plugin registered interest and will `wake` the ticket; the host re-invokes
-    /// the same op with [`FLAG_RESUME`].
+    /// the same op with `FLAG_RESUME`.
     Pending = 2,
     /// The operation failed, as the kind defines failure. Distinct from any "no opinion" answer.
     Failed = 3,
@@ -307,7 +307,7 @@ pub struct Blob {
     pub ptr: *const u8,
     /// Their length.
     pub len: usize,
-    /// [`BLOB_ABSENT`] | [`BLOB_JSON`] | [`BLOB_JSONL`] | [`BLOB_OCTETS`].
+    /// [`BLOB_ABSENT`] | [`BLOB_JSON`] | `BLOB_JSONL` | [`BLOB_OCTETS`].
     pub fmt: u32,
     /// [`BLOB_SECRET`].
     pub flags: u32,
@@ -359,7 +359,7 @@ impl Blob {
         Self::of(bytes).with_fmt(BLOB_JSON)
     }
 
-    /// The same bytes, stated as `fmt` ([`BLOB_ABSENT`] | [`BLOB_JSON`] | [`BLOB_JSONL`] |
+    /// The same bytes, stated as `fmt` ([`BLOB_ABSENT`] | [`BLOB_JSON`] | `BLOB_JSONL` |
     #[must_use]
     pub const fn with_fmt(mut self, fmt: u32) -> Blob {
         self.fmt = fmt;
@@ -421,7 +421,7 @@ pub struct InHead {
     pub size: u32,
     /// The slot index this call is for, in the kind's table order.
     pub op: u32,
-    /// [`FLAG_RESUME`].
+    /// `FLAG_RESUME`.
     pub flags: u32,
     /// [`DeadlineClass`], as its byte.
     pub deadline_class: u8,
@@ -451,7 +451,7 @@ pub struct InHead {
 pub struct MetricEntry {
     /// Index into [`super::door::Statement::families`].
     pub family_idx: u32,
-    /// [`METRIC_ADD`] | [`METRIC_SET`] | [`METRIC_OBSERVE`]; must agree with the family's kind.
+    /// `METRIC_ADD` | `METRIC_SET` | `METRIC_OBSERVE`; must agree with the family's kind.
     pub kind: u8,
     /// Alignment padding.
     pub _reserved: [u8; 3],
@@ -468,15 +468,15 @@ pub struct MetricEntry {
 ///
 /// PLUGIN LOGGING. Whatever a plugin, or a library inside it, logs through `tracing` or `log`
 /// during a call is captured by the door macro's trampoline and rides that call's reply as
-/// [`DIAG_LOG`] entries; the host writes them to the plugin's own log file. One path, every kind,
+/// `DIAG_LOG` entries; the host writes them to the plugin's own log file. One path, every kind,
 /// compiled in or dropped in (`BUSBAR-1.6.0.md` decision #85).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Diag {
-    /// Index into [`super::door::Statement::diag_ids`], or [`DIAG_LOG`] / [`DIAG_LOG_DROPPED`].
+    /// Index into [`super::door::Statement::diag_ids`], or `DIAG_LOG` / `DIAG_LOG_DROPPED`.
     pub id_idx: u32,
-    /// [`SEVERITY_INFO`], [`SEVERITY_WARN`] or [`SEVERITY_ERROR`]; a [`DIAG_LOG`] entry may also
-    /// state [`SEVERITY_DEBUG`] or [`SEVERITY_TRACE`].
+    /// `SEVERITY_INFO`, `SEVERITY_WARN` or `SEVERITY_ERROR`; a `DIAG_LOG` entry may also
+    /// state `SEVERITY_DEBUG` or `SEVERITY_TRACE`.
     pub severity: u8,
     /// Alignment padding.
     pub _reserved: [u8; 3],

@@ -16,7 +16,7 @@ pub mod reply;
 #[derive(Serialize)]
 pub struct HookRequest<'a> {
     /// The message kind: `decide` (a gate's blocking decision), `transform` (a rewrite pass), or
-    /// `notify` (a fire-and-forget tap — never answer it). See [`OP_DECIDE`].
+    /// `notify` (a fire-and-forget tap — never answer it). See `OP_DECIDE`.
     pub op: &'static str,
     pub request: HookReqProjection<'a>,
     pub candidates: Vec<HookCandidate<'a>>,

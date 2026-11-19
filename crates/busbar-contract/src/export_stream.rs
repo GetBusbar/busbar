@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 ///   DISCLOSURE change and belongs in release notes as one.
 ///
 /// ONE TYPE, BOTH LANES: the discriminant is the stream's position in [`ExportStream::ALL`], the
-/// order the export kind's Statement tail (`streams[]`) and [`DeliverIn`] carry it in; the serde
+/// order the export kind's Statement tail (`streams[]`) and `DeliverIn` carry it in; the serde
 /// token is [`ExportStream::as_token`].
 ///
 /// `audit` is deliberately NOT here. It was a USE CASE masquerading as a data type: an auditor is a

@@ -53,25 +53,25 @@ pub struct IoSlots {
     pub size: u32,
     /// [`SLOTS`].
     pub slots: u32,
-    /// [`op::OPEN`], in [`OpenIn`].
+    /// [`op::OPEN`], in `OpenIn`.
     pub open: Option<ServiceFn>,
     /// [`op::LISTEN`], in [`ListenIn`].
     pub listen: Option<ServiceFn>,
-    /// [`op::ACCEPT`], in [`AddrIn`].
+    /// [`op::ACCEPT`], in `AddrIn`.
     pub accept: Option<ServiceFn>,
     /// [`op::READ`], in [`ReadIn`].
     pub read: Option<ServiceFn>,
     /// [`op::WRITE`], in [`WriteIn`].
     pub write: Option<ServiceFn>,
-    /// [`op::READY`], in [`ReadyIn`].
+    /// [`op::READY`], in `ReadyIn`.
     pub ready: Option<ServiceFn>,
-    /// [`op::SHUT`], in [`ShutIn`].
+    /// [`op::SHUT`], in `ShutIn`.
     pub shut: Option<ServiceFn>,
-    /// [`op::CLOSE`], in [`HandleIn`].
+    /// [`op::CLOSE`], in `HandleIn`.
     pub close: Option<ServiceFn>,
-    /// [`op::SPAWN`], in [`SpawnIn`].
+    /// [`op::SPAWN`], in `SpawnIn`.
     pub spawn: Option<ServiceFn>,
-    /// [`op::ENDS`], in [`AddrIn`].
+    /// [`op::ENDS`], in `AddrIn`.
     pub ends: Option<ServiceFn>,
 }
 

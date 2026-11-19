@@ -9,9 +9,9 @@
 //!
 //! # Host-owned scrape buffers
 //!
-//! 2. `scrape`'s rendered-exposition buffer is HOST-owned and lives in [`ScrapeIn`]
+//! 2. `scrape`'s rendered-exposition buffer is HOST-owned and lives in `ScrapeIn`
 //!    (`buf`/`cap`), never a plugin-owned pointer in `out`: the host zeroes `out` before the call,
-//!    so nothing the plugin needs may live there. [`ScrapeOut`] carries `written`/`needed`: too
+//!    so nothing the plugin needs may live there. `ScrapeOut` carries `written`/`needed`: too
 //!    small a `cap` means the plugin writes nothing, sets `needed`, and the host re-invokes ONCE
 //!    with a bigger buffer.
 //! 3. Off-path plugin-owned results ([`ServeOut::body`], [`StatusOut::status`],
@@ -21,7 +21,7 @@
 //! # Routes and scrape samples
 //! - [`Tail::routes`] carries [`Route`] entries (`path`, `method`, `auth`), not bare path
 //!   strings: none/key/admin auth cannot be read off a path alone.
-//! - [`ScrapeSample`] carries its own `name` and [`ScrapeLabel`] key/value pairs (not
+//! - `ScrapeSample` carries its own `name` and `ScrapeLabel` key/value pairs (not
 //!   value-only, family-shared keys): a histogram's `_bucket`/`_sum`/`_count` legs and a
 //!   summary's `quantile` legs need their own series name and their own `le`/`quantile` label,
 //!   and `value` is the recorder's own string spelling, not `f64` — so the exposition `scrape`
@@ -41,7 +41,7 @@
 //! - **Listener.** `/metrics` is served on the data listener through the export route exception,
 //!   confined to `/metrics` or `/exports/<name>/*`, the reserved paths and the 64-header cap.
 //!   `/metrics/hooks` is rendered by the same sink over the same `scrape`, the host setting
-//!   [`SCRAPE_FLAG_HOOK_FAMILIES`] on the head (P2 D4); no new op.
+//!   `SCRAPE_FLAG_HOOK_FAMILIES` on the head (P2 D4); no new op.
 //! - **Behaviour.** A sink that delivers over the network uses driver tickets (the shared
 //!   mechanism's [`Ticket`](super::mechanism::ticket::Ticket) `drive`/`DriveIn` lifecycle slot, not
 //!   a new export op). The JSON contract's `Host` and `Started` response variants are retired: `deliver` answers
@@ -115,17 +115,17 @@ pub struct Ops {
     pub head: OpsHead,
     /// Hand one already-projected batch for a declared stream to the sink. OFF-PATH, `may_pend`,
     /// [`DeadlineClass::WriteBehind`](super::mechanism::call::DeadlineClass::WriteBehind). In
-    /// [`DeliverIn`], out [`OutHead`] (nothing to read back).
+    /// `DeliverIn`, out [`OutHead`] (nothing to read back).
     pub deliver: Option<Op>,
     /// Render the host recorder's snapshot as this sink's exposition text. REQUEST-PATH,
     /// `may_pend`, [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call). In
-    /// [`ScrapeIn`], out [`ScrapeOut`].
+    /// `ScrapeIn`, out `ScrapeOut`.
     pub scrape: Option<Op>,
     /// What the sink has to report when the host renders its status exposition. OFF-PATH, not
-    /// `may_pend`. In [`InHead`], out [`StatusOut`] (the sink's status blob).
+    /// `may_pend`. In [`InHead`], out `StatusOut` (the sink's status blob).
     pub status: Option<Op>,
     /// The sink's own configuration/operational checks. OFF-PATH, not `may_pend`. In
-    /// [`CheckIn`], out [`CheckOut`].
+    /// [`CheckIn`], out `CheckOut`.
     pub check: Option<Op>,
     /// The sink's own HTTP surface (`/exports/<name>/*`). OFF-PATH, `may_pend`,
     /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call). In [`ServeIn`], out
@@ -420,7 +420,7 @@ pub const SCRAPE_KIND_COUNTER: u8 = 0;
 pub const SCRAPE_KIND_GAUGE: u8 = 1;
 /// [`ScrapeFamily::kind`]: a histogram (`_bucket`/`_sum`/`_count` legs as separate
 pub const SCRAPE_KIND_HISTOGRAM: u8 = 2;
-/// [`ScrapeFamily::kind`]: a summary (`quantile` legs as separate [`ScrapeSample`]s).
+/// [`ScrapeFamily::kind`]: a summary (`quantile` legs as separate `ScrapeSample`s).
 pub const SCRAPE_KIND_SUMMARY: u8 = 3;
 /// [`ScrapeFamily::kind`]: untyped.
 pub const SCRAPE_KIND_UNTYPED: u8 = 4;
@@ -447,7 +447,7 @@ pub struct CheckInstance {
 pub struct CheckIn {
     /// The head.
     pub head: InHead,
-    /// [`CHECK_PHASE_LIMITS`] | [`CHECK_PHASE_INSTANCES`] | [`CHECK_PHASE_RECORDER`].
+    /// [`CHECK_PHASE_LIMITS`] | [`CHECK_PHASE_INSTANCES`] | `CHECK_PHASE_RECORDER`.
     pub phase: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -511,7 +511,7 @@ pub struct Route {
     pub path: AbiStr,
     /// The HTTP method.
     pub method: AbiStr,
-    /// [`ROUTE_AUTH_NONE`] | [`ROUTE_AUTH_KEY`] | [`ROUTE_AUTH_ADMIN`].
+    /// `ROUTE_AUTH_NONE` | `ROUTE_AUTH_KEY` | `ROUTE_AUTH_ADMIN`.
     pub auth: u32,
     /// Alignment padding.
     pub _reserved: u32,

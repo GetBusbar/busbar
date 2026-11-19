@@ -77,8 +77,8 @@ impl ServiceHead {
 }
 
 /// Every service's `out`, in either table. The caller states its `size`; the host writes
-/// `min(size, its own)` bytes of it ([`write_out`]), and refuses an `out` below
-/// [`SERVICE_OUT_V1`] before the service runs ([`lent_out`]), so an `out` may grow by appending
+/// `min(size, its own)` bytes of it (`write_out`), and refuses an `out` below
+/// `SERVICE_OUT_V1` before the service runs (`lent_out`), so an `out` may grow by appending
 /// and an older caller's smaller one is never overrun.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -611,93 +611,93 @@ pub struct HostSlots {
     pub size: u32,
     /// [`SERVICES`].
     pub slots: u32,
-    /// [`op::CLOCK_NOW`], in [`ClockNowIn`].
+    /// [`op::CLOCK_NOW`], in `ClockNowIn`.
     pub clock_now: Option<ServiceFn>,
-    /// [`op::RECORDS_GET`], in [`RecordsGetIn`].
+    /// [`op::RECORDS_GET`], in `RecordsGetIn`.
     pub records_get: Option<ServiceFn>,
-    /// [`op::RECORDS_LIST`], in [`RecordsListIn`].
+    /// [`op::RECORDS_LIST`], in `RecordsListIn`.
     pub records_list: Option<ServiceFn>,
-    /// [`op::RECORDS_CLAIM`], in [`RecordsClaimIn`].
+    /// [`op::RECORDS_CLAIM`], in `RecordsClaimIn`.
     pub records_claim: Option<ServiceFn>,
-    /// [`op::DEST_JUDGE`], in [`DestJudgeIn`].
+    /// [`op::DEST_JUDGE`], in `DestJudgeIn`.
     pub dest_judge: Option<ServiceFn>,
-    /// [`op::SIGN`], in [`SignIn`].
+    /// [`op::SIGN`], in `SignIn`.
     pub sign: Option<ServiceFn>,
-    /// [`op::UNIT_NEST`], in [`UnitNestIn`].
+    /// [`op::UNIT_NEST`], in `UnitNestIn`.
     pub unit_nest: Option<ServiceFn>,
-    /// [`op::WORK_OPEN`], in [`WorkOpenIn`].
+    /// [`op::WORK_OPEN`], in `WorkOpenIn`.
     pub work_open: Option<ServiceFn>,
-    /// [`op::WORK_FIND`], in [`WorkFindIn`].
+    /// [`op::WORK_FIND`], in `WorkFindIn`.
     pub work_find: Option<ServiceFn>,
-    /// [`op::WORK_SETTLE`], in [`WorkSettleIn`].
+    /// [`op::WORK_SETTLE`], in `WorkSettleIn`.
     pub work_settle: Option<ServiceFn>,
-    /// [`op::WORK_RESUME`], in [`WorkResumeIn`].
+    /// [`op::WORK_RESUME`], in `WorkResumeIn`.
     pub work_resume: Option<ServiceFn>,
-    /// [`op::TRUST_SIGHT`], in [`TrustSightIn`].
+    /// [`op::TRUST_SIGHT`], in `TrustSightIn`.
     pub trust_sight: Option<ServiceFn>,
-    /// [`op::TRUST_DUE`], in [`TrustDueIn`].
+    /// [`op::TRUST_DUE`], in `TrustDueIn`.
     pub trust_due: Option<ServiceFn>,
-    /// [`op::VERIFY_LOOKUP`], in [`VerifyLookupIn`].
+    /// [`op::VERIFY_LOOKUP`], in `VerifyLookupIn`.
     pub verify_lookup: Option<ServiceFn>,
-    /// [`op::VERIFY_STORE`], in [`VerifyStoreIn`].
+    /// [`op::VERIFY_STORE`], in `VerifyStoreIn`.
     pub verify_store: Option<ServiceFn>,
-    /// [`op::CONTENT_SCAN`], in [`ContentScanIn`].
+    /// [`op::CONTENT_SCAN`], in `ContentScanIn`.
     pub content_scan: Option<ServiceFn>,
-    /// [`op::HOOK_CALL`], in [`HookCallIn`].
+    /// [`op::HOOK_CALL`], in `HookCallIn`.
     pub hook_call: Option<ServiceFn>,
-    /// [`op::RANDOM_FILL`], in [`RandomFillIn`].
+    /// [`op::RANDOM_FILL`], in `RandomFillIn`.
     pub random_fill: Option<ServiceFn>,
-    /// [`op::NEED_ADMIT`], in [`NeedAdmitIn`].
+    /// [`op::NEED_ADMIT`], in `NeedAdmitIn`.
     pub need_admit: Option<ServiceFn>,
-    /// [`op::TRUST_VERIFY`], in [`TrustVerifyIn`].
+    /// [`op::TRUST_VERIFY`], in `TrustVerifyIn`.
     pub trust_verify: Option<ServiceFn>,
-    /// [`op::RECORDS_SECRET`], in [`RecordsSecretIn`].
+    /// [`op::RECORDS_SECRET`], in `RecordsSecretIn`.
     pub records_secret: Option<ServiceFn>,
-    /// [`op::DISK_APPEND`], in [`DiskAppendIn`].
+    /// [`op::DISK_APPEND`], in `DiskAppendIn`.
     pub disk_append: Option<ServiceFn>,
-    /// [`op::SNAPSHOT_READ`], in [`SnapshotReadIn`].
+    /// [`op::SNAPSHOT_READ`], in `SnapshotReadIn`.
     pub snapshot_read: Option<ServiceFn>,
-    /// [`op::TRUST_SIGHT_ITEM`], in [`TrustSightItemIn`]. A tail addition.
+    /// [`op::TRUST_SIGHT_ITEM`], in `TrustSightItemIn`. A tail addition.
     pub trust_sight_item: Option<ServiceFn>,
-    /// [`op::TRUST_SERVES`], in [`TrustServesIn`]. A tail addition.
+    /// [`op::TRUST_SERVES`], in `TrustServesIn`. A tail addition.
     pub trust_serves: Option<ServiceFn>,
-    /// [`op::TRUST_DECIDE`], in [`TrustDecideIn`]. A tail addition.
+    /// [`op::TRUST_DECIDE`], in `TrustDecideIn`. A tail addition.
     pub trust_decide: Option<ServiceFn>,
-    /// [`op::TRUST_STATE`], in [`TrustStateIn`]. A tail addition.
+    /// [`op::TRUST_STATE`], in `TrustStateIn`. A tail addition.
     pub trust_state: Option<ServiceFn>,
-    /// [`op::SESSION_EMIT`], in [`SessionEmitIn`].
+    /// [`op::SESSION_EMIT`], in `SessionEmitIn`.
     pub session_emit: Option<ServiceFn>,
-    /// [`op::AUTH_CALL`], in [`AuthCallIn`].
+    /// [`op::AUTH_CALL`], in `AuthCallIn`.
     pub auth_call: Option<ServiceFn>,
-    /// [`op::UNIT_HAND_IN`], in [`UnitHandInIn`].
+    /// [`op::UNIT_HAND_IN`], in `UnitHandInIn`.
     pub unit_hand_in: Option<ServiceFn>,
-    /// [`op::UNIT_REFUSE`], in [`UnitRefuseIn`].
+    /// [`op::UNIT_REFUSE`], in `UnitRefuseIn`.
     pub unit_refuse: Option<ServiceFn>,
-    /// [`op::TICKET_MINT`], in [`TicketMintIn`]. A tail addition.
+    /// [`op::TICKET_MINT`], in `TicketMintIn`. A tail addition.
     pub ticket_mint: Option<ServiceFn>,
-    /// [`op::TICKET_TAKE`], in [`TicketTakeIn`]. A tail addition.
+    /// [`op::TICKET_TAKE`], in `TicketTakeIn`. A tail addition.
     pub ticket_take: Option<ServiceFn>,
-    /// [`op::WORK_STATUS`], in [`WorkStatusIn`]. Optional size-checked tail addition.
+    /// [`op::WORK_STATUS`], in `WorkStatusIn`. Optional size-checked tail addition.
     pub work_status: Option<ServiceFn>,
     /// [`op::OUTBOUND_AUTHORIZE`]. Optional size-checked tail addition.
     pub outbound_authorize: Option<ServiceFn>,
     /// [`op::HOOK_CHILD`], optional size-checked tail.
     pub hook_child: Option<ServiceFn>,
-    /// [`op::DIRECTORY_GET`], in [`super::directory::DirectoryGetIn`]. A tail addition (1.6.0).
+    /// [`op::DIRECTORY_GET`], in `super::directory::DirectoryGetIn`. A tail addition (1.6.0).
     pub directory_get: Option<ServiceFn>,
-    /// [`op::DIRECTORY_LOOKUP`], in [`super::directory::DirectoryLookupIn`]. A tail addition.
+    /// [`op::DIRECTORY_LOOKUP`], in `super::directory::DirectoryLookupIn`. A tail addition.
     pub directory_lookup: Option<ServiceFn>,
-    /// [`op::DIRECTORY_SCAN`], in [`super::directory::DirectoryScanIn`]. A tail addition.
+    /// [`op::DIRECTORY_SCAN`], in `super::directory::DirectoryScanIn`. A tail addition.
     pub directory_scan: Option<ServiceFn>,
-    /// [`op::DIRECTORY_COUNT`], in [`super::directory::DirectoryCountIn`]. A tail addition.
+    /// [`op::DIRECTORY_COUNT`], in `super::directory::DirectoryCountIn`. A tail addition.
     pub directory_count: Option<ServiceFn>,
-    /// [`op::DIRECTORY_CREATE`], in [`super::directory::DirectoryCreateIn`]. A tail addition.
+    /// [`op::DIRECTORY_CREATE`], in `super::directory::DirectoryCreateIn`. A tail addition.
     pub directory_create: Option<ServiceFn>,
-    /// [`op::DIRECTORY_APPLY`], in [`super::directory::DirectoryApplyIn`]. A tail addition.
+    /// [`op::DIRECTORY_APPLY`], in `super::directory::DirectoryApplyIn`. A tail addition.
     pub directory_apply: Option<ServiceFn>,
-    /// [`op::DIRECTORY_DELETE`], in [`super::directory::DirectoryDeleteIn`]. A tail addition.
+    /// [`op::DIRECTORY_DELETE`], in `super::directory::DirectoryDeleteIn`. A tail addition.
     pub directory_delete: Option<ServiceFn>,
-    /// [`op::MIGRATE_ADMIT`], in [`MigrateAdmitIn`]. A tail addition (MIGRATE-ON-BOOT r34).
+    /// [`op::MIGRATE_ADMIT`], in `MigrateAdmitIn`. A tail addition (MIGRATE-ON-BOOT r34).
     pub migrate_admit: Option<ServiceFn>,
 }
 

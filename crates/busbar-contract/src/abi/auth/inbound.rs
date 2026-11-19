@@ -76,7 +76,7 @@ pub struct IdentityOut {
 /// and serves the retry from it, never repeating the work (an authorization code redeems once).
 /// `FAILED` with both at `0` is a real failure. A buffer is at most `u32::MAX` bytes ([`Span`]).
 ///
-/// THE ANSWER RULES, enforced by [`super::check_identify`] and [`super::check_complete_login`]
+/// THE ANSWER RULES, enforced by `super::check_identify` and `super::check_complete_login`
 /// in `u64` math (any violation is FAULT). On REFUSED or PENDING, every `needed_*` is `0`. On
 /// READY, every `needed_*` is `0`; the verdict is in the op's vocabulary; for `verify` the
 /// decision is in its vocabulary, `strip_len <= strip_cap`, every strip name is present and in
@@ -104,8 +104,8 @@ pub struct IdentityOut {
 pub struct IdentifyOut {
     /// The head.
     pub head: OutHead,
-    /// `verify`: [`super::VERDICT_IDENTITY`] | [`super::VERDICT_REJECT`] | [`super::VERDICT_PASS`].
-    /// `complete_login`: [`super::LOGIN_IDENTITY`] | [`super::LOGIN_BAD_CREDENTIAL`] |
+    /// `verify`: [`super::VERDICT_IDENTITY`] | [`super::VERDICT_REJECT`] | `super::VERDICT_PASS`.
+    /// `complete_login`: [`super::LOGIN_IDENTITY`] | `super::LOGIN_BAD_CREDENTIAL` |
     /// [`super::LOGIN_OUTAGE`] | [`super::LOGIN_SECURITY_CHECK_FAILED`]. `0` is FAULT.
     pub verdict: u32,
     /// Short buffer: the group spans needed.
@@ -114,10 +114,10 @@ pub struct IdentifyOut {
     pub needed_bytes: u64,
     /// Who, for an identity verdict.
     pub identity: IdentityOut,
-    /// `verify` on READY: [`super::DECISION_CONTINUE`] | [`super::DECISION_STOP`], what the
+    /// `verify` on READY: [`super::DECISION_CONTINUE`] | `super::DECISION_STOP`, what the
     /// transport does with the request. `complete_login`: `0`.
     pub decision: u32,
-    /// `verify` on READY: how many [`StripName`]s the plugin wrote into [`VerifyIn::strip`],
+    /// `verify` on READY: how many `StripName`s the plugin wrote into [`VerifyIn::strip`],
     /// whatever the verdict. `complete_login`: `0`.
     pub strip_len: u32,
     /// Short buffer: the strip names needed.
@@ -134,7 +134,7 @@ pub struct LoginField {
     pub name: AbiStr,
     /// Its label.
     pub label: AbiStr,
-    /// [`super::FORM_TEXT`] | [`super::FORM_PASSWORD`].
+    /// `super::FORM_TEXT` | `super::FORM_PASSWORD`.
     pub kind: u32,
     /// `1` = required.
     pub required: u32,

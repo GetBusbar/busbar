@@ -4,8 +4,8 @@
 //! THE KIND TAIL'S FACTS (`kind_tail_facts` in the rendering's format): every field of a kind's
 //! Statement tail, so the signed manifest carries the tail itself and not only
 //! its size. A reader that must not open the plugin reads a
-//! dropped-in row's tail from its manifest ([`read_auth_tail`] for an auth row,
-//! [`read_plane_cli_help`] for a plane's command-line help), and the admit comparison covers the
+//! dropped-in row's tail from its manifest (`read_auth_tail` for an auth row,
+//! `read_plane_cli_help` for a plane's command-line help), and the admit comparison covers the
 //! tail, so a manifest stating another tail than the door's refuses the load.
 //!
 //! THE FORMAT. The tail is read as this host's tail type by THE KIND TAIL GROWTH RULE (the plugin's

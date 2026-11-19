@@ -13,7 +13,7 @@ pub const INFLIGHT_KEY: &str = "max_inflight_deliveries";
 pub const DEFAULT_INFLIGHT: u32 = 64;
 
 /// One metric family of a host recorder's snapshot, in the recorder's render order. The loader
-/// lowers it to [`crate::abi::export::ScrapeFamily`] for the `scrape` op.
+/// lowers it to `crate::abi::export::ScrapeFamily` for the `scrape` op.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Family {
     /// The raw metric family name; exporters own wire identifier normalization.

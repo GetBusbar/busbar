@@ -259,7 +259,7 @@ impl Throttle {
 }
 
 /// WHERE A REFRESH REPORTS: the operator's log (a coded diagnostic, or an uncoded INFO) and the
-/// audit trail. The host's is [`HostReport`]; a test captures instead.
+/// audit trail. The host's is `HostReport`; a test captures instead.
 pub trait Report: Send + Sync {
     /// A coded diagnostic at `level`.
     fn diag(

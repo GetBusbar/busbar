@@ -265,7 +265,7 @@ pub trait LoginCall: Future<Output = LoginOutcome> + Send + Unpin {
     }
 
     /// Why a declined credential was declined, when the plugin said
-    /// ([`crate::abi::auth::EXT_REJECT_HINT`] on a `LOGIN_BAD_CREDENTIAL` reply). The host acts on it
+    /// (`crate::abi::auth::EXT_REJECT_HINT` on a `LOGIN_BAD_CREDENTIAL` reply). The host acts on it
     /// (it stops forwarding attempts for the account) and never shows it to the client. `None`
     /// before the step answered, for any other answer, and when the plugin stated nothing.
     fn reject_hint(&self) -> Option<RejectHint> {
@@ -274,7 +274,7 @@ pub trait LoginCall: Future<Output = LoginOutcome> + Send + Unpin {
 }
 
 /// What a plugin may say about WHY it declined a credential (`complete_login`'s reply extension
-/// [`crate::abi::auth::EXT_REJECT_HINT`]). Additive: a plugin that states nothing is a plain decline.
+/// `crate::abi::auth::EXT_REJECT_HINT`). Additive: a plugin that states nothing is a plain decline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectHint {
     /// The directory reports the account locked (for example Active Directory `data 775`).
@@ -305,7 +305,7 @@ impl LoginCall for LoginSettled {
 
 /// THE SHAPE OF THE CREDENTIAL THE HOST ISSUES for an auth row that reads host-held credentials,
 /// as the row's Statement states it in its `MARK_WORD_ISSUED_*` word marks
-/// ([`crate::plugin_settings::sugar_words::MARK_WORD_ISSUED_ID_PREFIX`] and its siblings), checked at load.
+/// (`crate::plugin_settings::sugar_words::MARK_WORD_ISSUED_ID_PREFIX` and its siblings), checked at load.
 /// Kind-neutral: the host draws every symbol after the prefix from the OS CSPRNG over the stated
 /// alphabets, each symbol with equal weight, and names no format of its own.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -330,12 +330,12 @@ pub trait AuthCalls: Send + Sync {
     /// The tail's facts (`abi::auth::FACT_*`).
     fn facts(&self) -> u32;
 
-    /// With [`crate::auth_calls::codes::FACT_READS_CREDENTIALS`]: the host-held credential kinds `verify`
+    /// With `crate::auth_calls::codes::FACT_READS_CREDENTIALS`: the host-held credential kinds `verify`
     fn credential_kinds(&self) -> Vec<String> {
         Vec::new()
     }
 
-    /// With [`crate::auth_calls::codes::FACT_READS_CREDENTIALS`]: the shape of the credential the host issues
+    /// With `crate::auth_calls::codes::FACT_READS_CREDENTIALS`: the shape of the credential the host issues
     fn issued_shape(&self) -> Option<IssuedShape> {
         None
     }

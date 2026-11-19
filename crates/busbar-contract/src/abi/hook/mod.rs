@@ -15,30 +15,30 @@
 //! # Host-owned request results
 //!
 //! 1. **No plugin-pointer results on the request path.** `decide`/`transform` are REQUEST-PATH, so
-//!    every result they write goes into a HOST-owned buffer named in [`DecideIn`]
+//!    every result they write goes into a HOST-owned buffer named in `DecideIn`
 //!    (`reject_message_buf`/`_cap`, `restrict_tags_buf`/`_cap`, `rewrite_buf`/`_cap`, alongside the
 //!    existing `order_buf`/`_cap`), never a plugin-owned pointer in the `out`. Each has a
-//!    `*_written`/`*_needed` pair in [`DecideOut`]/[`TransformOut`]: too small a cap means the
+//!    `*_written`/`*_needed` pair in `DecideOut`/`TransformOut`: too small a cap means the
 //!    plugin writes nothing, sets `*_needed`, and the host re-invokes ONCE with a bigger buffer.
-//! 2. Off-path lists/text the plugin DOES own ([`ScrapeIn`]'s snapshot aside — see export) stay
+//! 2. Off-path lists/text the plugin DOES own (`ScrapeIn`'s snapshot aside — see export) stay
 //!    [`Blob`]/pointer results ONLY on off-path ops, under memory class (iv): held live under
-//!    `head.lease` until `release(lease)`. [`StatusOut`], [`DescribeOut`] and off-path route
+//!    `head.lease` until `release(lease)`. `StatusOut`, `DescribeOut` and off-path route
 //!    responses are that class; noted on each.
 //! 3. [`SignalEntry`] carries a TAGGED value (`tag` + a 16-byte payload), not a bare `f64`, so an
 //!    integer signal renders as an integer and a string signal as a string once wired (1.5.5's
 //!    `SignalBag` JSON is not all-numeric).
-//! 4. [`StageView`] gains the OLD `HookStageProjection` fields (`at`, `model`, `attempt_number`,
+//! 4. `StageView` gains the OLD `HookStageProjection` fields (`at`, `model`, `attempt_number`,
 //!    `remaining_candidates`, `previous_failure`, `outcome`, `status`), presence-bitmasked, so a
 //!    stage tap (candidate/routing/response) carries what 1.5.5 carried; a REQUEST-stage tap sets
 //!    no stage-projection presence bit (1.5.5's `stage: None`).
-//! 5. [`DecideIn`] gains the OLD `HookContext` (`budget_remaining` + presence,
+//! 5. `DecideIn` gains the OLD `HookContext` (`budget_remaining` + presence,
 //!    `budget: *const `[`BudgetBucketState`]).
 //! 6. **Zero-copy body, no kernel-built JSON.**
 //!    [`PromptView::body`] is the RAW origin-dialect request bytes
 //!    ([`super::mechanism::call::BLOB_OCTETS`]), not kernel-flattened JSON; the SDK/plugin parses
-//!    its own dialect. [`TransformOut`]'s rewrite bytes are likewise plugin-produced dialect bytes
+//!    its own dialect. `TransformOut`'s rewrite bytes are likewise plugin-produced dialect bytes
 //!    written into the host's `rewrite_buf`, opaque octets, never kernel-built JSON.
-//! 7. [`DecideOut`] gains `VERB_HAS_REJECT_STATUS`; without it the mechanism's 403 default applies
+//! 7. `DecideOut` gains `VERB_HAS_REJECT_STATUS`; without it the mechanism's 403 default applies
 //!    (a plugin that rejects without an opinion on the status need not compute one).
 //! 8. `ingress_protocol` renamed `ingress_dialect` throughout (the SDK maps it to the frozen 1.5.5
 //!    wire key, whatever that key's own spelling is — a wire-key rename is not implied).
@@ -50,7 +50,7 @@
 //! 9. [`Tail::routes`] carries [`Route`] entries (`path`, `method`, `auth`), not bare path
 //!    strings: none/key/admin auth cannot be read off a path, and `{path, method}` is the
 //!    collision key the kernel checks at load (the same shape B.5 gives export's routes).
-//! 10. [`ConfigureIn`] gains `name`, echoing the OLD `ConfigureBody`'s instance name.
+//! 10. `ConfigureIn` gains `name`, echoing the OLD `ConfigureBody`'s instance name.
 //! 11. Hook words are Statement word marks
 //!     ([`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK)): STATIC, a Statement fact.
 //!
@@ -68,12 +68,12 @@
 //! - **Views** (fixed, no JSON on the request path — [`PromptView::body`] crosses as raw octets,
 //!   never a kernel-built document; a `flags`/`present` bitmask marks optional fields):
 //!   [`RequestView`] (the OLD `RoutingRequest`/`HookReqProjection`); the static half of
-//!   `candidates[]` ([`CandidateStatic`], OLD `Candidate`'s config fields), built at generation,
-//!   with the dynamic fields ([`CandidateDynamic`]) filled per request; the prompt view and body
+//!   `candidates[]` (`CandidateStatic`, OLD `Candidate`'s config fields), built at generation,
+//!   with the dynamic fields (`CandidateDynamic`) filled per request; the prompt view and body
 //!   blob ([`PromptView`], OLD `PromptProjection`), both present iff `prompt` ∈ {ro, rw}, IDENTICAL
 //!   for both (rw differs only at the reply, in `transform`'s rewrite grant); the user view
-//!   ([`UserView`], OLD `CallerIdentity`) iff granted; the requested signals ([`SignalEntry`], OLD
-//!   `SignalBag`, in push/insertion order); the OLD `HookContext` budget fields on [`DecideIn`].
+//!   (`UserView`, OLD `CallerIdentity`) iff granted; the requested signals ([`SignalEntry`], OLD
+//!   `SignalBag`, in push/insertion order); the OLD `HookContext` budget fields on `DecideIn`.
 //! - **Slots:** [`slot::DECIDE`] (P, may_pend): out verb bits, `reject_status` + presence,
 //!   a reject-message write into the host buffer, a restrict-tags write into the host buffer,
 //!   `order` into the host `order_buf`. [`slot::TRANSFORM`] (P): out verb bits plus a rewrite-bytes
@@ -81,7 +81,7 @@
 //!   request-serving code invoked this chain) parses and validates the bytes, and proceeds
 //!   unmodified on failure; a `ro` rewrite is dropped by the kernel from the grant.
 //!   [`slot::NOTIFY`] (P, taps): `in` is copied into the host-owned tap pool (global cap 1024, drop
-//!   metric, [`StageView`] plus the request's declared signals and — under a `prompt: ro` grant
+//!   metric, `StageView` plus the request's declared signals and — under a `prompt: ro` grant
 //!   only — the prompt view (WIRE-HOOK Q5), `groups:` filter); it never holds the request. [`slot::CONFIGURE`], [`slot::STATUS`], [`slot::DESCRIBE`] (O): run on a FRESH
 //!   MANAGEMENT INSTANCE through the same door; status and describe return the 1.5.5 blobs (as
 //!   [`Blob`] payloads — off-path JSON is allowed here); configure acks the pushed version, 5s
@@ -89,7 +89,7 @@
 //!   dispatcher after host confinement and auth checks; leased response bytes are copied before
 //!   release. A hook declaring no routes may retain the SDK's ordinary stub.
 //! - **Kernel normalizers** (HOST-SIDE, enforced on the fixed struct, unchanged from 1.5.5; not new
-//!   shapes): `reject_status` clamped to 400-499, else 403 when [`VERB_HAS_REJECT_STATUS`] is
+//!   shapes): `reject_status` clamped to 400-499, else 403 when `VERB_HAS_REJECT_STATUS` is
 //!   unset; the full 1.5.5 sanitiser on the reject-message bytes (control characters, U+2028/2029,
 //!   U+200B-200F, U+202A-202E, U+2066-2069, U+FEFF; whitespace-only falls back to the default),
 //!   capped at 300 characters on a character boundary; restrict-tags trimmed, empties dropped.
@@ -191,25 +191,25 @@ pub struct Ops {
     pub head: OpsHead,
     /// Rank/gate a request. REQUEST-PATH, `may_pend`,
     /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call), off-worker. In
-    /// [`DecideIn`], out [`DecideOut`].
+    /// `DecideIn`, out `DecideOut`.
     pub decide: Option<Op>,
     /// Rewrite a request the plugin has `ro`/`rw` prompt access to. REQUEST-PATH, `may_pend`,
     /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call), off-worker. In
-    /// [`DecideIn`] (the same views `decide` sees), out [`TransformOut`].
+    /// `DecideIn` (the same views `decide` sees), out `TransformOut`.
     pub transform: Option<Op>,
     /// Watch a request; fire-and-forget. REQUEST-PATH, `may_pend`,
     /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call), off-worker,
-    /// off-request (it never holds the request open). In [`NotifyIn`], out [`OutHead`].
+    /// off-request (it never holds the request open). In `NotifyIn`, out [`OutHead`].
     pub notify: Option<Op>,
     /// Push settings to a fresh management instance. OFF-PATH, `may_pend`, 5s deadline
     /// ([`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call)), off-worker. In
-    /// [`ConfigureIn`], out [`ConfigureOut`].
+    /// `ConfigureIn`, out `ConfigureOut`.
     pub configure: Option<Op>,
     /// The hook's status blob (JSON). OFF-PATH, not `may_pend`, off-worker. In [`InHead`], out
-    /// [`StatusOut`] (memory class iv: the blob lives under `head.lease` until `release`).
+    /// `StatusOut` (memory class iv: the blob lives under `head.lease` until `release`).
     pub status: Option<Op>,
     /// The hook's self-description blob (JSON). OFF-PATH, not `may_pend`, off-worker. In [`InHead`],
-    /// out [`DescribeOut`] (memory class iv: the blob lives under `head.lease` until `release`).
+    /// out `DescribeOut` (memory class iv: the blob lives under `head.lease` until `release`).
     pub describe: Option<Op>,
     /// The plugin's own HTTP surface (`/hooks/<name>/*`, [`Tail::routes`]). OFF-PATH, `may_pend`,
     /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call), off-worker. In
@@ -231,15 +231,15 @@ pub mod signal {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub union SignalValue {
-    /// Live iff `tag == `[`SIGNAL_TAG_U64`].
+    /// Live iff `tag == ``SIGNAL_TAG_U64`.
     pub u64_: u64,
-    /// Live iff `tag == `[`SIGNAL_TAG_I64`].
+    /// Live iff `tag == ``SIGNAL_TAG_I64`.
     pub i64_: i64,
-    /// Live iff `tag == `[`SIGNAL_TAG_F64`].
+    /// Live iff `tag == ``SIGNAL_TAG_F64`.
     pub f64_: f64,
-    /// Live iff `tag == `[`SIGNAL_TAG_BOOL`]; `0` false, `1` true (widened for a stable layout).
+    /// Live iff `tag == ``SIGNAL_TAG_BOOL`; `0` false, `1` true (widened for a stable layout).
     pub boolean: u8,
-    /// Live iff `tag == `[`SIGNAL_TAG_STR`].
+    /// Live iff `tag == ``SIGNAL_TAG_STR`.
     pub str_: AbiStr,
 }
 
@@ -256,8 +256,8 @@ impl std::fmt::Debug for SignalValue {
 pub struct SignalEntry {
     /// A [`signal`] constant.
     pub id: u32,
-    /// [`SIGNAL_TAG_U64`] | [`SIGNAL_TAG_I64`] | [`SIGNAL_TAG_F64`] | [`SIGNAL_TAG_STR`] |
-    /// [`SIGNAL_TAG_BOOL`].
+    /// `SIGNAL_TAG_U64` | `SIGNAL_TAG_I64` | `SIGNAL_TAG_F64` | `SIGNAL_TAG_STR` |
+    /// `SIGNAL_TAG_BOOL`.
     pub tag: u32,
     /// The value; read the field `tag` names.
     pub value: SignalValue,
@@ -308,7 +308,7 @@ pub struct RequestView {
 }
 
 /// The prompt view and body blob: present, and IDENTICAL, whenever
-/// `prompt` is granted `ro` or `rw` ([`PROMPT_RO`]/[`PROMPT_RW`]); absent (`system` NULL, `body`
+/// `prompt` is granted `ro` or `rw` (`PROMPT_RO`/`PROMPT_RW`); absent (`system` NULL, `body`
 /// absent, `message_count == 0`) otherwise.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -357,14 +357,14 @@ pub struct BudgetBucketState {
     pub pool: AbiStr,
     /// The `spend_micros_at_current_rate`.
     pub spend_micros_at_current_rate: i64,
-    /// The `remaining_micros`, meaningful only when [`BUDGET_HAS_REMAINING_MICROS`] is set
+    /// The `remaining_micros`, meaningful only when `BUDGET_HAS_REMAINING_MICROS` is set
     /// (unset = an uncapped bucket).
     pub remaining_micros: i64,
     /// The `window_start`.
     pub window_start: u64,
     /// The `budget_period` (`minute` | `hour` | `day` | `month` | `total`).
     pub budget_period: AbiStr,
-    /// [`BUDGET_HAS_REMAINING_MICROS`].
+    /// `BUDGET_HAS_REMAINING_MICROS`.
     pub present: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -438,7 +438,7 @@ pub struct Route {
     pub path: AbiStr,
     /// The HTTP method.
     pub method: AbiStr,
-    /// [`ROUTE_AUTH_NONE`] | [`ROUTE_AUTH_KEY`] | [`ROUTE_AUTH_ADMIN`].
+    /// `ROUTE_AUTH_NONE` | `ROUTE_AUTH_KEY` | `ROUTE_AUTH_ADMIN`.
     pub auth: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -452,11 +452,11 @@ pub struct Route {
 pub struct Tail {
     /// The head.
     pub head: KindTailHead,
-    /// [`CLASS_GATE`] | [`CLASS_TAP`].
+    /// `CLASS_GATE` | `CLASS_TAP`.
     pub kind_class: u32,
-    /// [`PROMPT_NO`] | [`PROMPT_RO`] | [`PROMPT_RW`].
+    /// `PROMPT_NO` | `PROMPT_RO` | `PROMPT_RW`.
     pub prompt_access: u32,
-    /// [`USER_NO`] | [`USER_RO`].
+    /// `USER_NO` | `USER_RO`.
     pub user_access: u32,
     /// Non-zero: an INFALLIBLE hook — the chain terminal is forced `Weighted`, grants are forced
     /// off, `on_empty` is forced `Reject`, and the timeout is forced to the default.

@@ -454,8 +454,8 @@ abi_op! {
     /// over nothing (a framer with an empty `composes_over` frames directly over the host's socket);
     /// framing and fact bits are known; one to [`MAX_CLAIMS`]
     /// claim rows; no list is counted with a NULL pointer. The lists' elements: [`check_claims`] (and
-    /// each row's [`check_claim_facts`]), [`check_composes_over`], [`check_upgrades_to`],
-    /// [`check_status_rows`], [`check_fault_rows`], [`check_fault_cover`], [`check_settings`].
+    /// each row's `check_claim_facts`), `check_composes_over`, `check_upgrades_to`,
+    /// `check_status_rows`, `check_fault_rows`, `check_fault_cover`, `check_settings`.
     ///
     /// # Errors
     ///
@@ -509,7 +509,7 @@ abi_op! {
 }
 
 abi_op! {
-    /// One status row, as [`check_status_rows`] states.
+    /// One status row, as `check_status_rows` states.
     fn check_status_row(r: &StatusRow, claims_len: u64) as "status_row", STATUS_ROW_RULES for r: StatusRow {
         index(claim, claims_len);
         deny(r.lo > r.hi, Contradiction, "status_row.lo_hi");
@@ -518,7 +518,7 @@ abi_op! {
 }
 
 abi_op! {
-    /// One fault row, as [`check_fault_rows`] states.
+    /// One fault row, as `check_fault_rows` states.
     fn check_fault_row(r: &FaultRow, claims_len: u64) as "fault_row", FAULT_ROW_RULES for r: FaultRow {
         index(claim, claims_len);
         deny(r.lo > r.hi, Contradiction, "fault_row.lo_hi");
@@ -527,7 +527,7 @@ abi_op! {
 }
 
 abi_op! {
-    /// One setting, as [`check_settings`] states.
+    /// One setting, as `check_settings` states.
     fn check_setting(s: &SettingDecl) as "setting", SETTING_RULES for s: SettingDecl {
         deny(s.path.len == 0, Missing, "setting.path");
         text(path);

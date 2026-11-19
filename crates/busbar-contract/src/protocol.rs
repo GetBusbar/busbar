@@ -25,7 +25,7 @@ pub const ERR_TYPE_REQUEST_TOO_LARGE: &str = "request_too_large";
 
 /// Agnostic forward kind for a generic upstream/API failure.
 pub const KIND_API_ERROR: &str = ERR_TYPE_API_ERROR;
-/// Bare `overloaded` — DELIBERATELY distinct from [`ERR_TYPE_OVERLOADED`] ("overloaded_error", one
+/// Bare `overloaded` — DELIBERATELY distinct from `ERR_TYPE_OVERLOADED` ("overloaded_error", one
 pub const KIND_OVERLOADED: &str = "overloaded";
 /// Caller-authentication failure forward kind (aliases the `authentication_error` type).
 pub const KIND_AUTHENTICATION: &str = ERR_TYPE_AUTHENTICATION;

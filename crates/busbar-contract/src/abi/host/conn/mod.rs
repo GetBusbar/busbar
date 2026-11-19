@@ -154,7 +154,7 @@ slot_table! {
 extern "C";
 }
 
-/// The heap-stable state behind a [`ConnHost`]: what its [`ConnCtx`] points at.
+/// The heap-stable state behind a `ConnHost`: what its [`ConnCtx`] points at.
 struct HostState {
     conns: Arc<dyn Conns>,
     instance: InstanceId,
