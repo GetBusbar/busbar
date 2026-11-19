@@ -3,7 +3,9 @@
 
 //! What the rate lookup costs, measured.
 
-use stats_alloc::StatsAlloc;
+use std::alloc::{GlobalAlloc, Layout};
+use std::cell::Cell;
+
 #[cfg(target_env = "msvc")]
 use std::alloc::System as Base;
 #[cfg(not(target_env = "msvc"))]
@@ -11,19 +13,53 @@ use tikv_jemallocator::Jemalloc as Base;
 
 use busbar_kernel_ledger::cost::{LaneClass, RateCard};
 
-/// The shipped allocator (jemalloc), counted process-wide by `stats_alloc`. The counts are
-/// process-wide, so the measuring tests run one at a time (nextest runs each in its own process).
-#[global_allocator]
-static COUNTING: StatsAlloc<Base> = StatsAlloc::new(Base);
-
-/// Allocations and reallocations made so far.
-fn allocations() -> u64 {
-    let stats = COUNTING.stats();
-    stats.allocations as u64 + stats.reallocations as u64
+thread_local! {
+    /// Allocations and reallocations made by this thread.
+    static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
 }
 
-/// One measuring test at a time: a second test building its card must not land inside a window.
-static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// The shipped allocator (jemalloc), counted PER THREAD: the harness's own threads allocate while a
+/// test runs, and a process-wide count would charge their allocations to the lookups under test.
+struct Counting;
+
+#[global_allocator]
+static COUNTING: Counting = Counting;
+
+fn count() {
+    let _ = ALLOCATIONS.try_with(|n| n.set(n.get().wrapping_add(1)));
+}
+
+// SAFETY: every call is delegated unchanged to the base allocator; the count is a thread-local
+// integer that never allocates.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        count();
+        // SAFETY: the caller upholds GlobalAlloc's contract for `layout`.
+        unsafe { Base.alloc(layout) }
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        count();
+        // SAFETY: as in `alloc`.
+        unsafe { Base.alloc_zeroed(layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        count();
+        // SAFETY: `ptr` and `layout` came from this allocator, which forwards to `Base`.
+        unsafe { Base.realloc(ptr, layout, new_size) }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` and `layout` came from this allocator, which forwards to `Base`.
+        unsafe { Base.dealloc(ptr, layout) }
+    }
+}
+
+/// Allocations and reallocations this thread has made so far.
+fn allocations() -> u64 {
+    ALLOCATIONS.with(Cell::get)
+}
 
 /// A card over one lane pricing four classes.
 fn four_class_card() -> RateCard {
@@ -41,7 +77,6 @@ fn four_class_card() -> RateCard {
 /// A RATE LOOKUP ALLOCATES NOTHING.
 #[test]
 fn a_rate_lookup_allocates_nothing() {
-    let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
     let card = four_class_card();
     let view = card.lane_rates("lane").expect("the lane is priced");
 
@@ -70,7 +105,6 @@ fn a_rate_lookup_allocates_nothing() {
 /// Resolving the lane itself allocates nothing either, so a whole priced line — lane, then class —
 #[test]
 fn resolving_a_lane_allocates_nothing() {
-    let _alone = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
     let card = four_class_card();
     assert!(card.lane_rates("lane").is_some());
     assert!(card.lane_rates("mystery").is_none());

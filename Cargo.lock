@@ -681,7 +681,6 @@ dependencies = [
  "foldhash",
  "hex",
  "serde",
- "stats_alloc",
  "tikv-jemallocator",
 ]
 
