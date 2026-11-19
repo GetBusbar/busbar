@@ -2197,6 +2197,10 @@ mod advanced_destinations_tests;
 mod retired_advanced_tests;
 
 #[cfg(test)]
+#[path = "tests/moved_advanced_tests.rs"]
+mod moved_advanced_tests;
+
+#[cfg(test)]
 #[path = "tests/worker_threads_tests.rs"]
 mod worker_threads_tests;
 
