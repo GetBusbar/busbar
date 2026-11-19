@@ -106,6 +106,20 @@ mod fixture {
                     };
                     need::fetch(&request).await.err() == Some(expected)
                 }
+                // The same request as a status-only FETCH (core 3.0): it is judged at the same gates.
+                "fetch_status" => {
+                    let request = need::Fetch {
+                        method: "GET",
+                        url: dest,
+                        headers: &[],
+                        body: &[],
+                        max_body: 0,
+                        trust: TrustHandle(0),
+                        cert: mutual.then_some(SecretHandle(1)),
+                        egress,
+                    };
+                    need::fetch_status(&request).await.err() == Some(expected)
+                }
                 _ => return Err(Fail::refused_because(R_INVALID, "fixture operation")),
             };
             if !denied {
@@ -157,6 +171,8 @@ struct Effects {
     fetch: AtomicUsize,
     pool: AtomicUsize,
     custody: AtomicUsize,
+    /// FETCHes that reached the transport flagged status-only (not part of `snapshot`).
+    status_only: AtomicUsize,
 }
 
 impl Effects {
@@ -218,6 +234,9 @@ impl NeedIo for Io {
         _: &mut NeedOut<'_>,
     ) -> Result<(), NeedErr> {
         self.0.fetch.fetch_add(1, Ordering::SeqCst);
+        if req.need.status_only {
+            self.0.status_only.fetch_add(1, Ordering::SeqCst);
+        }
         let (host, port) = crate::need::judge::split_url(req.need.url)?;
         admission.dial(&host, port, true).await?;
         Err(NeedErr::Denied)
@@ -477,7 +496,7 @@ async fn real_native_driver_admits_exact_check_authority_before_network_and_cust
         .await;
     assert_eq!(harness.effects.snapshot(), [1, 1, 0, 3, 0]);
 
-    for op in ["open", "fetch"] {
+    for op in ["open", "fetch", "fetch_status"] {
         for class in [2, 4, 15] {
             for tls in [1, 2] {
                 let before = harness.effects.snapshot();
@@ -509,6 +528,16 @@ async fn real_native_driver_admits_exact_check_authority_before_network_and_cust
                "op":"fetch","dest":url,"class":2,"tls":2}),
         json!({"check_op":"fetch","check_dest":url,"check_class":4,
                "op":"fetch","dest":url,"class":2,"tls":1}),
+        // A status-only FETCH inherits nothing a full FETCH would not: another host, another class,
+        // another TLS mode and an OPEN registration are each denied before the network.
+        json!({"check_op":"fetch","check_dest":url,"check_class":2,
+               "op":"fetch_status","dest":"https://private.example:8444/secret","class":2,"tls":1}),
+        json!({"check_op":"fetch","check_dest":url,"check_class":4,
+               "op":"fetch_status","dest":url,"class":2,"tls":1}),
+        json!({"check_op":"fetch","check_dest":url,"check_class":2,
+               "op":"fetch_status","dest":url,"class":2,"tls":2}),
+        json!({"check_op":"open","check_dest":host,"check_class":2,"check_tls":1,
+               "op":"fetch_status","dest":url,"class":2,"tls":1}),
     ]
     .into_iter()
     .enumerate()
@@ -531,6 +560,21 @@ async fn real_native_driver_admits_exact_check_authority_before_network_and_cust
         )
         .await;
     assert_eq!(harness.effects.snapshot(), [2, 1, 1, 3, 0]);
+    assert_eq!(harness.effects.status_only.load(Ordering::SeqCst), 0);
+    // The positive control of the status-only FETCH: with the same CHECK authority it reaches the same
+    // transport seam, flagged, and its one connection is judged by the same dial (one more lookup, one
+    // more fetch, nothing else).
+    let fetch_status = harness
+        .open(
+            "allowed-fetch-status",
+            json!({
+                "check_op":"fetch","check_dest":url,"check_class":2,
+                "op":"fetch_status","dest":url,"class":2,"tls":1
+            }),
+        )
+        .await;
+    assert_eq!(harness.effects.snapshot(), [3, 1, 2, 3, 0]);
+    assert_eq!(harness.effects.status_only.load(Ordering::SeqCst), 1);
     // Checked privileges still pass immutable metadata, own-listener and class4 address policy.
     for (index, (dest, class, additional_dns)) in [
         ("169.254.169.254:443", 2, 0),
@@ -554,5 +598,5 @@ async fn real_native_driver_admits_exact_check_authority_before_network_and_cust
         assert_eq!(harness.effects.snapshot(), expected);
         drop(port);
     }
-    drop((foreign_open, foreign_fetch, open, fetch));
+    drop((foreign_open, foreign_fetch, open, fetch, fetch_status));
 }

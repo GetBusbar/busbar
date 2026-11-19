@@ -1896,6 +1896,29 @@ pub mod need {
             );
             assert_eq!(args[3], b"grant");
 
+            // Status only (core 3.0): the one extra bit, beside the same TLS mode and egress class.
+            let (rec, args) = written(&Req::Fetch(&fetch, true));
+            assert_eq!(rec.op, op::FETCH);
+            assert_eq!(
+                rec.flags,
+                (3 << 16) | crate::vocab::net1::FETCH_STATUS_ONLY,
+                "the egress class is stated exactly as on a full FETCH"
+            );
+            assert_eq!(args[1], b"https://idp.test/token");
+            assert_eq!(args[3], b"grant");
+            let mutual = Fetch {
+                cert: Some(SecretHandle(4)),
+                ..fetch
+            };
+            let (rec, _) = written(&Req::Fetch(&mutual, true));
+            assert_eq!(
+                (rec.flags, rec.secret),
+                (
+                    need_flag::TLS_MUTUAL | (3 << 16) | crate::vocab::net1::FETCH_STATUS_ONLY,
+                    4
+                )
+            );
+
             let preds = [Pred::Equals {
                 key: b"k",
                 value: b"v1",

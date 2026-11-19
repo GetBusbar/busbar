@@ -61,6 +61,8 @@ mod c_blind;
 mod c_boot_order;
 #[path = "c_boundary_fleet.rs"]
 mod c_boundary_fleet;
+#[path = "c_fetch_status.rs"]
+mod c_fetch_status;
 #[path = "c_cancel.rs"]
 mod c_cancel;
 #[path = "c_cancel_bill.rs"]
@@ -392,6 +394,8 @@ mod ref_export;
 mod ref_hook;
 #[path = "fixtures/ref_secret.rs"]
 mod ref_secret;
+#[path = "fixtures/ref_status_fetch.rs"]
+mod ref_status_fetch;
 
 /// Every `tests/*.rs` is wired: a module of this binary or a `[[test]]` target of the manifest
 /// (`autotests = false`, so an unwired file would never run).
