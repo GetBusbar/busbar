@@ -27,6 +27,7 @@ use busbar_contract::records::ScopeRef;
 use busbar_contract::route::{METHOD_POST, PATH_EXACT};
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::Caller as AbiCaller;
+use busbar_plugin_abi::plane::AUTH_PRINCIPAL;
 use busbar_plugin_abi::host_side::caller::{BoxFut, InstanceLimits};
 use busbar_plugin_abi::records::{tag, Records, Reply, U64Rec, Writer};
 use busbar_ports::auth::{

@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::auth::native_data::DataRefused;
-use crate::auth::route_record::{RouteRecord, Scope};
+use crate::auth::route_record::{Money, RouteClass, RouteRecord, Scope, Who};
 use crate::governance::signing::{TokenSigner, TOKEN_PREFIX};
 use crate::governance::{GovState, NewKeySpec, VirtualKey};
 use crate::oauth_as::seam::AccessStanding;
@@ -321,18 +321,7 @@ fn key_with(scopes: Option<Vec<(&str, &str)>>) -> VirtualKey {
 }
 
 fn record(scope: Scope) -> RouteRecord {
-    let mut record = RouteRecord::from_declared(
-        0,
-        busbar_plugin_abi::plane::AUTH_PRINCIPAL,
-        None,
-        &[],
-        None,
-        true,
-    )
-    .expect("a principal data route");
-    record.scope = scope;
-    record.scope_stated = true;
-    record
+    RouteRecord::stated(RouteClass::Data, Who::PRINCIPAL, scope, Money::Unit)
 }
 
 #[test]
