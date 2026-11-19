@@ -314,3 +314,54 @@ impl CompletingPhysicalRequest {
         })
     }
 }
+
+/// The answer to a request refused at the gate (refusal rows 1 and 22: the gateway is full, or
+/// draining): step 0 of the sequence, before any route, caller or unit is looked at. It is
+/// counted, not audited; the request is answered and its connection kept.
+pub struct PhysicalGateRefusal {
+    binding: Arc<RequestBinding>,
+}
+
+impl PhysicalGateRefusal {
+    pub fn binding(&self) -> &Arc<RequestBinding> {
+        &self.binding
+    }
+}
+
+impl Drop for PhysicalGateRefusal {
+    fn drop(&mut self) {
+        self.binding.state.cancel();
+    }
+}
+
+impl CompletingPhysicalRequest {
+    /// Refuse this request at the gate, whatever its route: nothing of it was judged.
+    pub fn refuse_at_gate(mut self) -> Result<PhysicalGateRefusal, ArrivalRefusal> {
+        {
+            let mut phase = self
+                .binding
+                .state
+                .phase
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if *phase != Phase::Completing {
+                return Err(ArrivalRefusal::Cancelled);
+            }
+            if *self
+                .binding
+                .state
+                .preparation
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                != PreparationState::Unused
+            {
+                return Err(ArrivalRefusal::Cancelled);
+            }
+            *phase = Phase::Refusing;
+        }
+        self.cancel_on_drop = false;
+        Ok(PhysicalGateRefusal {
+            binding: self.binding.clone(),
+        })
+    }
+}

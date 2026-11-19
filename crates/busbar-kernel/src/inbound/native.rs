@@ -37,7 +37,8 @@ pub use refusal::{
     PhysicalUpgrade,
 };
 pub use unbilled::{
-    CoreKeyAuthorization, PhysicalKeyExecution, PhysicalKeyRefusal, PhysicalUnbilledExecution,
+    CoreKeyAuthorization, PhysicalGateRefusal, PhysicalKeyExecution, PhysicalKeyRefusal,
+    PhysicalUnbilledExecution,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

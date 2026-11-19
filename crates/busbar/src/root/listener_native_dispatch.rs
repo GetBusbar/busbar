@@ -221,6 +221,21 @@ pub(super) async fn prepare(
     let work = async {
         let (response, authority, settlement): Answered =
             match (binding.route().target(), admission) {
+                // Step 0: the gateway is full or draining. Answered before any route, caller
+                // or unit is looked at, on every route and on none; the connection is kept.
+                _ if matches!(
+                    ready.refused,
+                    Some(
+                        busbar_kernel::auth::admission_table::Refusal::GatewayFull
+                            | busbar_kernel::auth::admission_table::Refusal::Draining
+                    )
+                ) =>
+                {
+                    let refusal = ready.refused.ok_or(InputError::Invalid)?;
+                    let response = answer::core(&binding, refusal, false, "", None)?;
+                    let owner = ready.request.refuse_at_gate()?;
+                    (response, ResponseAuthority::Gate(owner), None)
+                }
                 // The request's own input refused it (a body over the cap, request trailers).
                 // Its caller is judged as for any request, so an unverified one still receives
                 // the one 401; a verified one is answered the row. Nothing is served.

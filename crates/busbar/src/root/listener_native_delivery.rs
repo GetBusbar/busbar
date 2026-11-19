@@ -38,6 +38,8 @@ pub(super) enum ResponseAuthority {
     CoreKey(Arc<busbar_kernel::inbound::native::PhysicalKeyExecution>),
     /// A core keyed route refused: the one unverified answer, or the verifier's 503.
     CoreKeyRefused(busbar_kernel::inbound::native::PhysicalKeyRefusal),
+    /// Refused at the gate (the gateway is full or draining): step 0, nothing judged.
+    Gate(busbar_kernel::inbound::native::PhysicalGateRefusal),
     Refused(PhysicalRefusal),
 }
 impl ResponseAuthority {
@@ -50,6 +52,7 @@ impl ResponseAuthority {
             Self::Upgrade(owner) => owner.binding(),
             Self::CoreKey(owner) => owner.binding(),
             Self::CoreKeyRefused(owner) => owner.binding(),
+            Self::Gate(owner) => owner.binding(),
             Self::Refused(owner) => owner.binding(),
         }
     }
@@ -65,6 +68,7 @@ impl ResponseAuthority {
             | Self::Upgrade(_)
             | Self::CoreKey(_)
             | Self::CoreKeyRefused(_)
+            | Self::Gate(_)
             | Self::Refused(_) => Ok(None),
         }
     }

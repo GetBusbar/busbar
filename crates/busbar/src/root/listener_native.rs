@@ -474,10 +474,18 @@ impl NativeIngress {
                     return Err(InputError::Invalid);
                 }
                 self.last_head = stream;
-                let request = self
-                    .budget
-                    .try_enter(self.class)
-                    .map_err(|_| InputError::Capacity)?;
+                // A full gateway answers (refusal row 1): the head is taken under a lease that
+                // holds no place in the process count and room for one head only, the request is
+                // answered 503 on its own stream, and the connection and its other streams go on.
+                let (request, shed) = match self.budget.try_enter(self.class) {
+                    Ok(request) => (request, false),
+                    Err(_) => (
+                        self.budget
+                            .shed_lease(self.class)
+                            .map_err(|_| InputError::Capacity)?,
+                        true,
+                    ),
+                };
                 let DecodedHead {
                     head: decoded,
                     credit,
@@ -490,7 +498,8 @@ impl NativeIngress {
                 let body = InputBody::new(&request)?;
                 // A head that presents no credential its route could read cannot be verified:
                 // it is answered now, on the head, and none of its body is taken into memory.
-                let unverifiable = !end_stream
+                let unverifiable = !shed
+                    && !end_stream
                     && self
                         .screen
                         .as_ref()
@@ -505,14 +514,18 @@ impl NativeIngress {
                     owner: Arc::new(owner),
                     node: None,
                     carrier_reported: false,
-                    refused: unverifiable.then_some(
-                        busbar_kernel::auth::admission_table::Refusal::Unverified {
+                    refused: if shed {
+                        Some(busbar_kernel::auth::admission_table::Refusal::GatewayFull)
+                    } else if unverifiable {
+                        Some(busbar_kernel::auth::admission_table::Refusal::Unverified {
                             presented: false,
-                        },
-                    ),
-                    answered_at_head: unverifiable,
+                        })
+                    } else {
+                        None
+                    },
+                    answered_at_head: unverifiable || shed,
                 });
-                if end_stream || unverifiable {
+                if end_stream || unverifiable || shed {
                     self.end(stream).map(Some)
                 } else {
                     Ok(None)
