@@ -85,7 +85,11 @@ const CALLERS: [&str; 4] = [
 ];
 
 fn rows() -> Vec<Row> {
-    let mut lines = ROUTES.split("\n\n").next().expect("the first table").lines();
+    let mut lines = ROUTES
+        .split("\n\n")
+        .next()
+        .expect("the first table")
+        .lines();
     let header: Vec<&str> = lines.next().expect("a header").split('\t').collect();
     let at = |name: &str| {
         header
@@ -93,13 +97,8 @@ fn rows() -> Vec<Row> {
             .position(|column| *column == name)
             .unwrap_or_else(|| panic!("routes.tsv has no `{name}` column"))
     };
-    let (id, method, path, plane, body) = (
-        at("row"),
-        at("method"),
-        at("path"),
-        at("plane"),
-        at("body"),
-    );
+    let (id, method, path, plane, body) =
+        (at("row"), at("method"), at("path"), at("plane"), at("body"));
     let cells = [
         at("no_credential"),
         at("bad_credential"),
@@ -501,8 +500,20 @@ fn inbound_table_every_route_answers_every_caller_as_the_table_says() {
     let narrow = mint(&rt, &booted, "inbound-table-narrow", true, None);
     // The fixture's MCP section (law7_plane_sections.yaml): canonical_uri on the data listener.
     let mcp_audience = format!("http://{}/mcp", booted.data);
-    let mcp_good = mint(&rt, &booted, "inbound-table-mcp-good", false, Some(&mcp_audience));
-    let mcp_narrow = mint(&rt, &booted, "inbound-table-mcp-narrow", true, Some(&mcp_audience));
+    let mcp_good = mint(
+        &rt,
+        &booted,
+        "inbound-table-mcp-good",
+        false,
+        Some(&mcp_audience),
+    );
+    let mcp_narrow = mint(
+        &rt,
+        &booted,
+        "inbound-table-mcp-narrow",
+        true,
+        Some(&mcp_audience),
+    );
     let mut failures: Vec<String> = Vec::new();
     // The one unverified answer: every 401 with no declared challenge has these exact bytes.
     let mut unverified: Option<(Vec<u8>, Option<String>, Option<String>)> = None;
@@ -682,7 +693,9 @@ fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
         ) {
             Ok(got) => got,
             Err(cut) => {
-                failures.push(format!("{label}: the request was cut, not answered: {cut:?}"));
+                failures.push(format!(
+                    "{label}: the request was cut, not answered: {cut:?}"
+                ));
                 continue;
             }
         };
@@ -691,14 +704,22 @@ fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
                 if matches!(got.status, 401 | 403 | 405 | 500 | 501)
                     || (got.status == 404 && same_refusal(&got.body, &not_found.body))
                 {
-                    failures.push(format!("{label}: not served, answered {} {}", got.status, String::from_utf8_lossy(&got.body)));
+                    failures.push(format!(
+                        "{label}: not served, answered {} {}",
+                        got.status,
+                        String::from_utf8_lossy(&got.body)
+                    ));
                 } else {
                     answered += 1;
                 }
             }
             "answers" => {
                 if ADMISSION_STATUSES.contains(&got.status) || got.status >= 500 {
-                    failures.push(format!("{label}: not served, answered {} {}", got.status, String::from_utf8_lossy(&got.body)));
+                    failures.push(format!(
+                        "{label}: not served, answered {} {}",
+                        got.status,
+                        String::from_utf8_lossy(&got.body)
+                    ));
                 } else {
                     answered += 1;
                 }
@@ -777,7 +798,9 @@ struct ConfigBudget {
 
 impl ConfigBudget {
     fn spend(&mut self, method: &str, path: &str) {
-        use busbar_kernel::ratelimit::{classify_mutation, MutationClass, MUTATION_RATE_WINDOW_SECS};
+        use busbar_kernel::ratelimit::{
+            classify_mutation, MutationClass, MUTATION_RATE_WINDOW_SECS,
+        };
         if matches!(method, "GET" | "HEAD") {
             return;
         }
