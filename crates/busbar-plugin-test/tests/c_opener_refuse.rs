@@ -211,13 +211,21 @@ pub(crate) mod fixture {
         static DROPPED: Cell<usize> = const { Cell::new(0) };
         static PIECES: Cell<usize> = const { Cell::new(0) };
         static CHANNELS: Cell<usize> = const { Cell::new(0) };
+        static SELECTS: Cell<usize> = const { Cell::new(0) };
     }
+
+    /// The `select_resources` variant (`PlaneReq::route`) that asks a host service during the pure call.
+    pub const ASK_HOST: u32 = 5;
 
     pub fn pieces() -> usize {
         PIECES.replace(0)
     }
     pub fn channels() -> usize {
         CHANNELS.replace(0)
+    }
+    /// `select_resources` entries the plane fixture ran on this thread since the last read; resets.
+    pub fn selects() -> usize {
+        SELECTS.replace(0)
     }
 
     /// (sessions the fixtures made, sessions they dropped) on this thread since the last read; resets both.
@@ -435,6 +443,22 @@ pub(crate) mod fixture {
                         busbar_plugin_abi::records::tag::TOKEN,
                         &TokenRec { token: 99 },
                     )?;
+                }
+                Ok(())
+            }
+            /// Answers no records; on route [`super::ASK_HOST`] it first asks a host service (the clock).
+            fn select_resources(
+                &self,
+                h: &Host,
+                _mode: u32,
+                req: &PlaneReq<'_>,
+                _body: Bytes<'_>,
+                _out: &mut Out<'_>,
+            ) -> Result<(), Fail> {
+                use busbar_plugin_abi::host::HostExt;
+                super::SELECTS.set(super::SELECTS.get() + 1);
+                if req.route == super::ASK_HOST {
+                    let _ = h.now_ns();
                 }
                 Ok(())
             }

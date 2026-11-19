@@ -1581,13 +1581,15 @@ impl DeclaredConns for Connector {
 
 impl Connector {
     /// A PROGRAM NEED IS NOT SERVED: no transport on the new interface spawns a program, so its
-    /// declaration is refused and the refusal kept, as an unserved scheme's is.
+    /// declaration is refused and the refusal kept, as an unserved scheme's is; an earlier native
+    /// record of the same need goes with it, so the refused need is never opened.
     fn program_unserved(
         &self,
         owner: InstanceId,
         need: NeedId,
         spec: &ReadNeed,
     ) -> Result<(), ConnError> {
+        self.set_native_need(owner, need, None);
         let answer = Err(ConnError::Refused);
         self.declared.lock().expect("declared needs").insert(
             (owner, need),

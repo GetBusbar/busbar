@@ -787,7 +787,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=ace4888fae27989bd10fe754ca3435b95b885cf5#ace4888fae27989bd10fe754ca3435b95b885cf5"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=b6c5c75ffb14672fe3031c3cb5bfd72eddb40bc0#b6c5c75ffb14672fe3031c3cb5bfd72eddb40bc0"
 dependencies = [
  "busbar-plugin-abi",
  "pbjson",
@@ -834,7 +834,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=e6b8e0ea51c48f80e0a7422acb83ef4c1d95a21b#e6b8e0ea51c48f80e0a7422acb83ef4c1d95a21b"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=0a36fe3645b795607d0c93b8171af60433f2c0a4#0a36fe3645b795607d0c93b8171af60433f2c0a4"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
