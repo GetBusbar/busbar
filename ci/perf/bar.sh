@@ -64,10 +64,11 @@ admin_sha256=$(printf '%s' "$BUSBAR_ADMIN_TOKEN" | sha256sum | cut -d' ' -f1)
 tls=$work/tls
 mkdir -p "$tls"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=perf-bar CA" \
+  -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
   -keyout "$tls/ca.key" -out "$tls/ca.pem" 2>/dev/null
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=localhost" \
   -keyout "$tls/leaf.key" -out "$tls/leaf.csr" 2>/dev/null
-printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\n' > "$tls/san.cnf"
+printf 'basicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:localhost,IP:127.0.0.1\n' > "$tls/san.cnf"
 openssl x509 -req -in "$tls/leaf.csr" -CA "$tls/ca.pem" -CAkey "$tls/ca.key" -CAcreateserial \
   -days 2 -extfile "$tls/san.cnf" -out "$tls/leaf.pem" 2>/dev/null
 
