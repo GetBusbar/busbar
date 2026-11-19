@@ -5,7 +5,7 @@
 //!
 //! An accepted connection is driven by the same driver as a dialled one
 //! ([`crate::outbound::wire::Wire`], here with [`Role::Answer`]): every answer of the transport is
-//! checked against the output model (L1 to L7, L9), queued for the connection as one run, and the
+//! checked against the output model (L1 to L7, L9) and placed for the connection as one run, and the
 //! delivery state machine ([`crate::outbound::delivery`]) says, per answer, how much of it the
 //! operating system accepted. [`DeliveryLedger`] is that driver for one accepted connection, with the
 //! one thing the dial does not have: each answer's OWNER, the request's side in the root, which reads
@@ -24,6 +24,11 @@
 //! NOTHING IS MADE AHEAD (owner's allocation ruling): an empty ledger holds no array and no cell; an
 //! entry is made when the transport announces a stream, a cell when its request is admitted, the wake
 //! cell with the first of those.
+//!
+//! NO ANSWER BYTE IS HELD HERE (OPEN-3 16, money): the session already holds each answer's bytes in
+//! its own output buffer, charged to the connection's storage account. The ledger checks the answer
+//! and places its run ([`Wire::check`]) without copying a byte; the connection is given
+//! [`DeliveryLedger::give`] straight from the session's buffer, which is cleared only after the write.
 
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -33,14 +38,12 @@ use std::time::{Duration, Instant};
 use busbar_contract::response_delivery::{
     CarrierProgress, DeliverySnapshot, DeliveryTerminal, ResponseKey, ResponseStop,
 };
-use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::transport as abi;
 use futures::task::AtomicWaker;
 
 use crate::outbound::delivery::{Delivery as Verdict, Reason, Role, State as Sent};
 use crate::outbound::records::Out;
-use crate::outbound::tunnel::Dialling;
-use crate::outbound::wire::{Fault, Outcome, Wire};
+use crate::outbound::wire::{Checked, Fault, Wire};
 
 #[cfg(test)]
 #[path = "response_delivery_tests.rs"]
@@ -275,23 +278,20 @@ struct Answer {
 }
 
 /// THE ACCEPTED CONNECTION'S OUTPUT, DRIVEN: the delivery driver in the answering role, the
-/// connection's queue of bytes the transport made, and each answer's owner.
+/// connection's counts of the bytes the transport made, and each answer's owner. It holds no byte of
+/// an answer: those stay in the session's own charged buffer until the connection took them.
 ///
 /// It moves whole across the hand-over of an UPGRADE, counters and all ([`Self::adopt`]). However it
 /// goes, every answer still open has its verdict frozen as the socket's progress stands and handed to
 /// its owner, which then holds only that small value.
 pub struct DeliveryLedger {
     wire: Wire,
-    /// An accepted connection has no layer below its session here (its TLS is the connection's own,
-    /// beneath the writer the session is given): the driver's run goes straight into `queue`.
-    below: Dialling,
-    /// Bytes the transport made that the connection has not taken yet.
-    queue: SecureVec,
-    /// Bytes of the queue the connection has ever taken.
+    /// Bytes of the placed runs the connection has ever taken.
     written: u64,
-    /// Bytes ever queued for the connection.
+    /// Bytes ever placed for the connection: every checked run, byte for byte (an accepted
+    /// connection has no layer below its session here; its TLS is beneath the writer it is given).
     queued: u64,
-    /// A write failed: what was queued and not taken was wiped, and nothing more is queued.
+    /// A write failed: the rest of its run is not given, and nothing more is placed.
     lost: bool,
     answers: Vec<Answer>,
     /// CREDIT OWED to the transport, one entry a stream: (stream, bytes). Two things put a credit
@@ -310,7 +310,7 @@ impl fmt::Debug for DeliveryLedger {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DeliveryLedger")
             .field("answers", &self.answers.len())
-            .field("queued", &self.queue.len())
+            .field("queued", &self.queued)
             .field("written", &self.written)
             .field("retired", &self.retired)
             .finish_non_exhaustive()
@@ -322,8 +322,6 @@ impl Default for DeliveryLedger {
     fn default() -> Self {
         Self {
             wire: Wire::new(Role::Answer),
-            below: Dialling::direct(false),
-            queue: SecureVec::new(),
             written: 0,
             queued: 0,
             lost: false,
@@ -585,29 +583,28 @@ impl DeliveryLedger {
         self.next_overdue(limit).is_some_and(|due| due <= now)
     }
 
-    /// ONE ANSWER of the transport, as the driver reads it: checked whole, then its parts queued for
-    /// the connection as one run. `tail(i)` = the bytes of the `WIRE_PART` at index `i`.
+    /// ONE ANSWER of the transport, as the driver reads it: checked whole, then its parts placed for
+    /// the connection as one run, after every run before it. `tail(i)` = the bytes of the
+    /// `WIRE_PART` at index `i`, where the session holds them. Nothing is copied: the caller gives
+    /// the connection [`Self::give`] of the returned [`Checked`] from those same bytes, in order,
+    /// before it answers again, and keeps them (charged) until the connection took them.
     ///
     /// # Errors
-    /// The [`Fault`]: nothing of the answer was queued. The caller ends the session and calls
-    /// [`Self::faulted`] (or [`Self::gone`] for [`Fault::Queue`]).
+    /// The [`Fault`]: nothing of the answer was placed. The caller ends the session and calls
+    /// [`Self::faulted`] (or [`Self::gone`] for [`Fault::Queue`]). [`Fault::Queue`] also when the
+    /// run before was not all given: a run placed after bytes that never went out would stand at
+    /// the wrong place.
     pub(crate) fn answer<'a>(
         &mut self,
         items: &[Out],
         tail: impl Fn(usize) -> &'a [u8],
-    ) -> Result<Outcome, Fault> {
-        if self.retired || self.lost {
+    ) -> Result<Checked, Fault> {
+        if self.retired || self.lost || self.written != self.queued {
             return Err(Fault::Queue);
         }
-        let mut outcome = self.wire.answer(
-            items,
-            tail,
-            None,
-            &mut self.below,
-            &mut self.queue,
-            self.written,
-        )?;
-        self.queued = self.written + self.queue.len() as u64;
+        let mut checked = self.wire.check(items, tail, self.queued)?;
+        self.queued += checked.bytes();
+        let outcome = &mut checked.outcome;
         for item in items {
             if let Out::End(end) = *item {
                 if let Some(at) = self.at(end.stream) {
@@ -638,35 +635,34 @@ impl DeliveryLedger {
         }
         // An end mark whose bytes were all out already is final now.
         self.settle();
-        Ok(outcome)
+        Ok(checked)
     }
 
-    /// The bytes the connection has still to take, in order.
-    pub(crate) fn unwritten(&self) -> &[u8] {
-        self.queue.as_slice()
+    /// The bytes of a [`Checked`] answer to give the connection, in order, read where the session
+    /// holds them (`tail`, the same as given to [`Self::answer`]): no byte is copied. The writer
+    /// counts each write the connection took into the returned [`Giving`] as it goes, so the count
+    /// stands however the write ends.
+    pub(crate) fn give<'s, 'a: 's>(
+        &'s mut self,
+        checked: &Checked,
+        tail: impl Fn(usize) -> &'a [u8],
+    ) -> Giving<'s> {
+        Giving {
+            pieces: self.wire.written(checked, tail),
+            written: &mut self.written,
+            queued: self.queued,
+        }
     }
 
-    /// The connection's writer took the first `count` bytes of the queue (they are wiped).
-    pub(crate) fn took(&mut self, count: usize) {
-        let count = count.min(self.queue.len());
-        self.queue.consume(count);
-        self.written += count as u64;
-        // Nothing is kept between runs: an idle connection holds no block for its output here (the
-        // dial's rule for its own queue).
-        self.queue.shrink_when_empty(0);
-    }
-
-    /// A write to the connection failed (or ran out of time): what was queued and not taken is wiped
-    /// now, not when the connection is dropped. Nothing more is queued; the verdicts come with
+    /// A write to the connection failed (or ran out of time): the rest of its run is not given, and
+    /// nothing more is placed. The session wipes its buffer; the verdicts come with
     /// [`Self::retire`].
     pub(crate) fn discard(&mut self) {
-        self.queue.clear();
-        self.queue.shrink_when_empty(0);
         self.lost = true;
     }
 
     /// The flush after the last write succeeded, and `progress` is what the connection's own carrier
-    /// then reports: the driver learns how far the operating system accepted the queue, as whole
+    /// then reports: the driver learns how far the operating system accepted the placed runs, as whole
     /// encrypted records under TLS. Answers whose bytes are all out get their verdicts.
     ///
     /// # Errors
@@ -733,7 +729,6 @@ impl DeliveryLedger {
         }
         self.retired = true;
         self.wire.gone(reason);
-        self.queue.clear();
         self.settle();
         self.owed.clear();
     }
@@ -761,7 +756,6 @@ impl DeliveryLedger {
         }
         self.retired = true;
         self.wire.faulted();
-        self.queue.clear();
         self.settle();
         self.owed.clear();
     }
@@ -794,6 +788,23 @@ impl DeliveryLedger {
                 freeze(&cell, verdict, answer.cut);
             }
         }
+    }
+}
+
+/// One checked answer being given to the connection ([`DeliveryLedger::give`]): its pieces, borrowed
+/// from the session's charged buffer (and a sealed value's slot), and the ledger's count of what the
+/// connection took, kept as each write returns.
+pub(crate) struct Giving<'s> {
+    /// The run's bytes, in order.
+    pub(crate) pieces: smallvec::SmallVec<[&'s [u8]; 16]>,
+    written: &'s mut u64,
+    queued: u64,
+}
+
+impl Giving<'_> {
+    /// The connection took `count` more bytes of the run (never counted past what was placed).
+    pub(crate) fn took(&mut self, count: usize) {
+        *self.written = self.written.saturating_add(count as u64).min(self.queued);
     }
 }
 
