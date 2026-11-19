@@ -575,6 +575,7 @@ pub async fn run_attempts<K: Calls + ?Sized, M: Members + ?Sized, S: UpSend>(
                 continue;
             };
             let owned = super::port_egress::OwnedPreparation::new(prepared, task.data().cloned());
+            effects.dialled();
             let opened = match send.open_selected(owned).await {
                 Ok(opened) => opened,
                 Err(error) => {

@@ -529,6 +529,8 @@ pub trait Effects: Sync {
     }
     fn response(&self, _status: u16) {}
     fn observed_usage(&self, _usage: &super::usage::SessionUsage) {}
+    /// A member's far end is about to be dialled for this session (the unit has run from here on).
+    fn dialled(&self) {}
 
     /// Execution context supplied by the root's admitted dispatch. Open/check and
     /// health-only operations have no nested execution authority.

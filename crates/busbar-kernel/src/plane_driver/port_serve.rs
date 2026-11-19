@@ -663,7 +663,7 @@ async fn walk<K: Calls + ?Sized, M: Members, S: UpSend>(
     }
 }
 
-async fn drive_answers<K: Calls + ?Sized, M: Members, S: UpSend>(
+async fn answer_session<K: Calls + ?Sized, M: Members, S: UpSend>(
     task: &mut Task<'_, K>,
     answers: Vec<Answer>,
     req: &PlaneIn<'_>,
@@ -738,7 +738,107 @@ async fn drive_answers<K: Calls + ?Sized, M: Members, S: UpSend>(
     ran.usage = task.usage().clone();
     drive.effects.observed_usage(task.usage());
     hand_out(drive.effects, &mut ran.client).await;
-    drive.books.ended(Ending::End, &ran.usage);
+    Ok(ran)
+}
+
+/// The session's effects with its money metered: every USAGE the session accepts goes to the books as it is
+/// accepted (the effects are told the session's usage after every answer: [`Effects::observed_usage`]), once
+/// per change, and a far end dialled is booked as run. Every other effect is the inner one's.
+struct Metered<'e> {
+    inner: &'e dyn Effects,
+    books: &'e dyn Books,
+    /// The usage revision the books last took, with the money's answer to it.
+    taken: std::sync::Mutex<Option<(u64, Option<super::Checkpoint>)>>,
+}
+
+impl Metered<'_> {
+    /// The money's answer to the last running checkpoint, when it was taken of exactly `usage`.
+    fn taken(&self, usage: &SessionUsage) -> Option<super::Checkpoint> {
+        let taken = *self
+            .taken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        taken
+            .filter(|(revision, _)| *revision == usage.revision())
+            .and_then(|(_, verdict)| verdict)
+    }
+}
+
+impl Effects for Metered<'_> {
+    fn admission_owner(&self) -> Option<&Arc<super::port_admission::Pending>> {
+        self.inner.admission_owner()
+    }
+    fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        self.inner.data()
+    }
+    fn admission(&self) -> Option<&super::port_admission::Pending> {
+        self.inner.admission()
+    }
+    fn hooks(&self) -> Option<&super::port_hooks::Invocation> {
+        self.inner.hooks()
+    }
+    fn routing(&self, attempt: u32, model: &str, remaining: Option<usize>, failed: Option<&str>) {
+        self.inner.routing(attempt, model, remaining, failed);
+    }
+    fn response(&self, status: u16) {
+        self.inner.response(status);
+    }
+    fn observed_usage(&self, usage: &SessionUsage) {
+        self.inner.observed_usage(usage);
+        if usage.is_empty() {
+            return;
+        }
+        let mut taken = self
+            .taken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if taken.is_some_and(|(revision, _)| revision == usage.revision()) {
+            return;
+        }
+        *taken = Some((usage.revision(), self.books.running(usage)));
+    }
+    fn dialled(&self) {
+        self.inner.dialled();
+        self.books.dialled();
+    }
+    fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
+        self.inner.invocation()
+    }
+    fn emit(&self, carrier: u64, bytes: &[u8]) {
+        self.inner.emit(carrier, bytes);
+    }
+    fn client(&self) -> Option<&dyn ClientSink> {
+        self.inner.client()
+    }
+}
+
+/// The session from its resolved answers to its end, its effects [`Metered`]: on its end the books take the
+/// usage it accepted, once ([`Books::closed`]).
+async fn drive_answers<K: Calls + ?Sized, M: Members, S: UpSend>(
+    task: &mut Task<'_, K>,
+    answers: Vec<Answer>,
+    req: &PlaneIn<'_>,
+    drive: &mut Drive<'_, M, S>,
+) -> Result<Ran, SessionError> {
+    let metered = Metered {
+        inner: drive.effects,
+        books: drive.books,
+        taken: std::sync::Mutex::new(None),
+    };
+    let mut metering = Drive {
+        resolver: drive.resolver,
+        members: drive.members.take(),
+        send: drive.send.take(),
+        dialect: drive.dialect,
+        refusals: drive.refusals,
+        effects: &metered,
+        books: drive.books,
+        carrier: drive.carrier,
+    };
+    let ran = answer_session(task, answers, req, &mut metering).await?;
+    drive
+        .books
+        .closed(Ending::End, &ran.usage, metered.taken(&ran.usage));
     Ok(ran)
 }
 
