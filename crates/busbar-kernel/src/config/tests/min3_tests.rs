@@ -834,7 +834,7 @@ fn route_auth_instances_parse_by_plane_and_route_and_refuse_naming_the_path() {
         ),
         ("{\"5\": {auth: principal}}", "streaming.routes"),
     ] {
-        let why = parse_min3(&with(routes)).expect_err(routes);
+        let why = parse_min3(&with(routes)).err().expect(routes);
         assert!(
             why.iter().any(|reason| reason.contains(path)),
             "{routes}: {why:?}"
