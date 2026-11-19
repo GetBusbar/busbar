@@ -72,7 +72,7 @@ pub fn fallback_key() -> &'static str {
         .unwrap_or("")
 }
 
-/// A door's card/lane qualifier (`DoorFacts.plane`): the prefix of every lane the door routes,
+/// A door's card/lane qualifier (the card qualifier): the prefix of every lane the door routes,
 /// `""` for the models plane (its lanes are unqualified). It is NOT a plane key (LINT-RULES R29):
 /// it has no `Deref`, `AsRef`, `PartialEq<str>`, `From` or `Display` bridge to a string, so it can
 /// be neither compared with [`fallback_key`] nor passed where a plane key is expected. The plane
