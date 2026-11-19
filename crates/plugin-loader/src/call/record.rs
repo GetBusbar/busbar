@@ -205,7 +205,8 @@ struct Planted {
     /// The secret in every form searched for: as given, and base64 (standard and URL-safe, unpadded
     /// prefix) and lowercase hex of it, so a re-encoded copy is found too.
     forms: Vec<Box<[u8]>>,
-    /// Instance names allowed to read it (the secret plugin that resolved it, the auth plugin it was
+    /// Instance names or image identities allowed to read it (the secret plugin that resolved it, the
+    /// auth plugin it was
     /// minted by). Empty: no plugin may.
     owners: Vec<Box<str>>,
 }
@@ -304,7 +305,12 @@ impl Crossings {
         }
         let planted = self.planted.lock().unwrap_or_else(PoisonError::into_inner);
         for secret in planted.iter() {
-            if secret.owners.iter().any(|owner| **owner == *who.name) {
+            // An owner is named by its instance name or by its image's verified identity.
+            if secret
+                .owners
+                .iter()
+                .any(|owner| **owner == *who.name || **owner == *who.plugin)
+            {
                 continue;
             }
             if secret.forms.iter().any(|form| contains(hay, form)) {

@@ -16,7 +16,9 @@
 //!   in which the credential went nowhere proves nothing);
 //! - the verdict's planted count equals what this test wrote;
 //! - calls crossed toward a transport, a plane, a store and a secret plugin;
-//! - no planted secret was found in any crossing toward an instance that does not own it.
+//! - no planted secret was found in any crossing toward an image that does not own it: the provider
+//!   credential toward anything but the secret plugin that resolved it (the transport included); the
+//!   operator's token toward anything but its auth plugin and the transport that framed its request.
 //!
 //! Red before the sealed head records: today's engine writes the provider credential into the head it
 //! hands the HTTP transport, so this fails naming `provider-key`, the transport instance and the place.
@@ -41,10 +43,15 @@ const PROVIDER_KEY: &str = "sk-crossing-witness-4f9c2d71a8e35b06c1d7-provider-ke
 const ADMIN_TOKEN: &str = "crossing-witness-operator-token-93be07ac51d24f68";
 const MODEL: &str = "crossing-witness-model";
 
-/// The instances allowed to read the provider credential: the secret plugin that resolves it.
-const PROVIDER_KEY_OWNERS: [&str; 2] = ["env", "busbar-secret-env"];
-/// The instances allowed to read the operator's token: the auth plugin that verifies it.
-const ADMIN_TOKEN_OWNERS: [&str; 2] = ["admin-tokens", "busbar-auth-admin-tokens"];
+/// The images allowed to read the provider credential: the secret plugin that resolves it, and no
+/// other. Not the transport that carries the provider call: the engine writes the credential on the
+/// wire itself, at the mark the transport leaves for it.
+const PROVIDER_KEY_OWNERS: [&str; 1] = ["busbar-secret-env"];
+/// The images allowed to read the operator's token: the auth plugin that verifies it, and the
+/// transport that frames the connection it arrives on (a caller's own credential is in the bytes the
+/// caller sent; no interface can keep those from the framer). What the run proves for it: it reaches
+/// no plane, store, secret, hook or export plugin.
+const ADMIN_TOKEN_OWNERS: [&str; 2] = ["busbar-auth-admin-tokens", "busbar-transport-http"];
 
 /// The kinds the run must have crossed toward.
 const KINDS: [&str; 4] = ["transport", "plane", "store", "secret"];
