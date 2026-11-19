@@ -44,19 +44,6 @@ pub fn install(connector: Arc<Connector>) -> Result<&'static Arc<Connector>, Arc
     }
 }
 
-/// The composition root chooses the enforcement table before any settings are admitted. The
-/// authority is issued per process-lifetime table, not per configuration generation, so it carries
-/// the shorthand admission last published: there is no per-generation secret axis
-/// (SECRET-SHORTHAND-BOOT OQ3).
-pub(crate) fn admit(
-    table: Arc<dyn busbar_contract::conn::DeclaredConns>,
-) -> busbar_contract::conn::admissions::AdmissionAuthority {
-    busbar_contract::conn::admissions::AdmissionAuthority::issue(
-        &busbar_kernel::seal::acquire(),
-        table,
-        busbar_contract::secret::SecretAxis::sugars(&crate::root::native_secrets::NATIVE),
-    )
-}
 
 pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
     guard_for(&cfg.destinations()).unwrap_or_else(|refusal| {

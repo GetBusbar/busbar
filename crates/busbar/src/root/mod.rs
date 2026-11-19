@@ -221,7 +221,6 @@ pub mod serve;
 pub mod settings_public;
 pub mod shutdown;
 pub mod units_admin;
-pub mod userinfo;
 
 #[cfg(test)]
 #[path = "tests/admin_plugin_admission.rs"]

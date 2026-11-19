@@ -1360,11 +1360,7 @@ async fn run(
     );
 
     // The native seats this generation serves, their billing and the node's posting site.
-    let served = root::serve::compose_native(
-        Arc::clone(&native),
-        app.governance.clone(),
-        &app.serve_tables,
-    );
+    let served = root::serve::compose_native(Arc::clone(&native), app.governance.clone());
     let native_candidates = root::min3_candidate::Factory::new(
         Arc::clone(&plugin_process),
         native_bootstrap_sources,

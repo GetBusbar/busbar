@@ -3,18 +3,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use axum::body::{Body, Bytes};
-use axum::http::{HeaderName, HeaderValue, StatusCode};
-use axum::response::Response;
-use busbar_contract::caps::ReasonCode;
+use busbar_contract::abi::mechanism::route::RouteMethod;
 use busbar_contract::services::Caller;
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
 use busbar_kernel::limits::process_admission::RequestLease;
-use busbar_kernel::plane_driver::serve::ServeTables;
-use busbar_kernel::plane_driver::{refusal_status, HeadFields};
 use busbar_kernel::plane_routes::PlaneReqCtx;
-use busbar_contract::abi::mechanism::route::RouteMethod;
 
 // The composition this module's request path serves: built off the request path.
 pub(crate) use crate::root::off_path::serve::*;
@@ -170,10 +164,6 @@ pub(crate) struct Served {
     /// The posting site the ports' money steps post an abandoned end to, and the units' facts are
     /// opened on while they run: the process's one node's.
     pub(crate) post: Option<Arc<crate::root::plane_node::NodeEndPost>>,
-    /// THE PUBLISHED INSTANCES' ADMIN TABLE these instances were published into: the generation's
-    /// (`App::serve_tables`) the composition was lent, held here for the data listener's public
-    /// mount ([`public_routes`]).
-    pub(crate) tables: ServeTables,
 }
 
 pub(crate) struct DataRoutes {
@@ -204,9 +194,12 @@ impl DataRoutes {
         unit.ctx.generation = generation
             .routing_generation()
             .ok_or("native route has no allocated routing generation")?;
-        let app = Arc::clone(&ctx.engine)
+        if Arc::clone(&ctx.engine)
             .downcast::<busbar_kernel::state::App>()
-            .map_err(|_| "native invocation needs its selected App snapshot")?;
+            .is_err()
+        {
+            return Err("native invocation needs its selected App snapshot");
+        }
         let key = ctx
             .gov
             .as_ref()
@@ -257,7 +250,6 @@ impl DataRoutes {
         self.frames_lock().insert(
             id,
             DispatchFrame {
-                app,
                 request: ctx.request.clone(),
             },
         );
@@ -283,11 +275,10 @@ pub(crate) struct DispatchSnapshot {
     pub(crate) frames: Mutex<foldhash::HashMap<u64, DispatchFrame>>,
 }
 
-/// A nested operation inherits its parent's exact application and logical request admission.
-/// Cloning the frame shares that admission; no child acquires another request-count permit.
+/// A nested operation inherits its parent's logical request admission. Cloning the frame shares
+/// that admission; no child acquires another request-count permit.
 #[derive(Clone)]
 pub(crate) struct DispatchFrame {
-    pub(crate) app: Arc<busbar_kernel::state::App>,
     pub(crate) request: RequestLease,
 }
 
@@ -363,47 +354,6 @@ pub(crate) fn listener_method_bits(method: RouteMethod) -> u32 {
         } else {
             0
         }
-}
-
-pub(crate) trait Stated {
-    fn stated(&self) -> Option<u32>;
-
-    fn ended(&self, _outcome: Option<busbar_contract::caps::Outcome>) {}
-
-    /// The drive minted the unit this caller is answered for: `id` is its node-qualified id.
-    fn minted(&self, _id: busbar_kernel_audit::UnitId) {}
-
-    /// The drive began the unit at `at`: the clock its first write is read against.
-    fn began(&self, _at: std::time::Instant) {}
-
-    /// Nanoseconds from the unit's start to its first successful body write, `0` before one (or
-    /// for a caller that does not measure it).
-    fn first_write_ns(&self) -> u64 {
-        0
-    }
-}
-
-pub(crate) type Head = (u32, HeadFields);
-
-pub(crate) fn stated((status, fields): Head, body: Body) -> Response {
-    let status = [status, refusal_status(ReasonCode::PlanePanic)]
-        .into_iter()
-        .find_map(|s| StatusCode::from_u16(u16::try_from(s).ok()?).ok())
-        .unwrap_or(StatusCode::BAD_GATEWAY);
-    let mut response = Response::new(body);
-    *response.status_mut() = status;
-    let headers = response.headers_mut();
-    for (name, value) in fields {
-        // The value's own allocation becomes the header value (checked as `from_bytes` checks
-        // it): the head's values are handed to the response, not copied into it.
-        if let (Ok(name), Ok(value)) = (
-            HeaderName::from_bytes(&name),
-            HeaderValue::from_maybe_shared(Bytes::from(value)),
-        ) {
-            headers.append(name, value);
-        }
-    }
-    response
 }
 
 #[path = "serve_lines.rs"]

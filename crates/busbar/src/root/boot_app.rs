@@ -180,7 +180,6 @@ pub(crate) struct ReadyCandidate {
     pub book: NodeBook,
     pub limits: ConfirmedLimits,
     pub node_lease_task: Option<JoinHandle<Result<(), String>>>,
-    pub deploy: DeployCfg,
     pub overlay: Option<Arc<OverlayStore>>,
     pub configuration_fingerprint: [u8; 32],
 }
@@ -366,7 +365,6 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
         book: failed.book.take().expect("retained native book"),
         limits,
         node_lease_task: failed.node_lease_task.take(),
-        deploy,
         overlay,
         configuration_fingerprint,
     })

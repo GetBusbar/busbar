@@ -35,59 +35,6 @@ pub struct LinkedImage {
     >,
 }
 
-pub mod node {
-    use std::sync::Arc;
-
-    #[cfg(test)]
-    use busbar_contract::caps::{OpClassId, PrincipalId};
-    #[cfg(test)]
-    use busbar_kernel::plane_driver::PlaneAnswer;
-    #[cfg(test)]
-    use busbar_kernel::teller::RouteAwait;
-
-    pub type Resolve = Arc<dyn Fn(&str) -> Option<busbar_contract::LaneId> + Send + Sync>;
-
-    #[cfg(test)]
-    pub type Lent = (Resolve, u64);
-
-    /// What a unit consumed: its usage, its fee count, its serving lane and its sealed
-    /// attribution (`group`, `pool`, `provider`; ADMIN-API-1.6 §3.2).
-    pub type LegacyReport = (busbar_contract::billing::ExactUsage, u32, String, String);
-
-    pub enum Reported {
-        Legacy(LegacyReport),
-        /// A factual preview; it is never substituted for terminal custody.
-        Partitioned,
-    }
-
-    impl Reported {
-        pub(crate) fn legacy(self) -> Option<LegacyReport> {
-            match self {
-                Self::Legacy(report) => Some(report),
-                Self::Partitioned => None,
-            }
-        }
-    }
-
-    pub type Late = Box<dyn FnOnce() -> Option<Reported> + Send>;
-
-    #[cfg(test)]
-    pub type Finish = Box<dyn FnOnce() -> (Option<PlaneAnswer>, Option<Late>) + Send>;
-
-    #[cfg(test)]
-    pub type Built = (
-        Arc<dyn busbar_kernel::teller::seats::SeatedUnits + Send + Sync>,
-        Arc<dyn RouteAwait + Send + Sync>,
-        Finish,
-    );
-
-    #[cfg(test)]
-    pub type Build = Box<dyn FnOnce(Lent) -> Built + Send>;
-
-    #[cfg(test)]
-    pub(crate) type Handed = (PrincipalId, OpClassId, &'static str, Build);
-}
-
 /// One linked plane's contribution to the boot seal: the pure plane registered under its own key,
 /// and the claims that plane declares.
 #[derive(Clone, Copy)]
@@ -176,16 +123,6 @@ pub(crate) fn dropped() -> Option<&'static crate::root::loader::PluginRegistry> 
 static DROPPED: std::sync::OnceLock<&'static crate::root::loader::PluginRegistry> =
     std::sync::OnceLock::new();
 
-static CATALOGUE: std::sync::OnceLock<busbar_kernel::diagnostics::Catalogue> =
-    std::sync::OnceLock::new();
-
-pub(crate) fn catalogue() -> busbar_kernel::diagnostics::Catalogue {
-    CATALOGUE
-        .get()
-        .copied()
-        .unwrap_or(busbar_kernel::diagnostics::Catalogue::NEUTRAL)
-}
-
 /// The diagnostics catalogue: the host's codes, each linked crate's `diagnostics` axis, and the codes
 /// a first-party dropped-in plugin declares.
 pub fn register_diagnostics(linked: &Linked) -> busbar_kernel::diagnostics::Catalogue {
@@ -203,9 +140,7 @@ pub fn register_diagnostics(linked: &Linked) -> busbar_kernel::diagnostics::Cata
             }
         }
     }
-    let catalogue = busbar_kernel::diagnostics::Catalogue::lent(installed.leak());
-    let _ = CATALOGUE.set(catalogue);
-    catalogue
+    busbar_kernel::diagnostics::Catalogue::lent(installed.leak())
 }
 
 pub(crate) fn declared_diagnostics(

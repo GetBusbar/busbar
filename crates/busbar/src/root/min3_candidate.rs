@@ -393,7 +393,6 @@ fn native_served(
     let mut served = super::serve::Served {
         ports: native.seats.clone(),
         native: Some(native),
-        tables: app.serve_tables.clone(),
         ..Default::default()
     };
     if let Some(governance) = &app.governance {

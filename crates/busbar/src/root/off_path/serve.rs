@@ -9,7 +9,6 @@
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_kernel::plane_driver::serve::ServeTables;
 use busbar_kernel::plane_driver::PlaneMoney;
 use busbar_kernel::plane_routes::{PlaneRefusalSpec, PlaneRouteSpec};
 
@@ -188,14 +187,12 @@ impl LeaseTick {
 pub(crate) fn compose_native(
     native: Arc<crate::root::min3_boot::Booted>,
     gov: Option<Arc<busbar_kernel::governance::GovState>>,
-    tables: &ServeTables,
 ) -> Served {
     let ports = native.seats.clone();
     let Some(gov) = gov else {
         return Served {
             ports,
             native: Some(native),
-            tables: tables.clone(),
             ..Served::default()
         };
     };
@@ -216,7 +213,6 @@ pub(crate) fn compose_native(
         native: Some(native),
         post: Some(post),
         billing: Some(billing),
-        tables: tables.clone(),
         ..Served::default()
     }
 }

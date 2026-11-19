@@ -382,26 +382,6 @@ pub(crate) fn restart<T>(
     exec()
 }
 
-/// THE RECOVERABLE GATE (§3 step 2 (a)): whether this boot can seal the `n` recoverable 1.5.5
-/// credentials a store's data step is about to hand core. Core answers from its own config alone,
-/// through the signing key (the at-rest key derives from it) the store bootstrap resolved before the
-/// store opened, with the resolver it built from the store's secret instances.
-///
-/// The MIN-3 `Host::migrate_admit` answer (IF §5, §12.10; WBS K9), the same verdict as the loader's
-/// today's-ABI slot, on every load path: `n == 0` or a resolved at-rest key is OK, else core's text
-/// (the store's REFUSED R_CONFIG). Valid only during a store's open; the host vtable entry that
-/// calls this knows that, not this function.
-///
-/// # Errors
-/// Core's refusal text.
-pub(crate) fn admit_for_host(n: u64) -> Result<(), String> {
-    let dir = CONFIG_DIR
-        .get()
-        .cloned()
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
-    admit_answer(n, busbar_kernel::appbuild::bootstrap_at_rest(), &dir)
-}
-
 /// The native Store-open operation's exact core-owned refusal, using its retained resolution verdict.
 pub(crate) fn native_admission_refusal(n: u64, verdict: Result<bool, String>) -> String {
     let dir = CONFIG_DIR

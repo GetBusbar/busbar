@@ -7,7 +7,7 @@ use super::loader::{boot::*, PluginRegistry};
 use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::plugin_rows::PluginRows;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
-use busbar_kernel::config_validate::deal::{Document, Seat};
+use busbar_kernel::config_validate::deal::Document;
 use busbar_kernel::preflight::{BuildNote, Fetched, RegistryIn};
 
 /// A host-owned pairing of the admitted archive and the exact retained library allocation.
@@ -304,14 +304,6 @@ pub(crate) async fn admit_recovered_plugins(plugins: &PluginsCfg) -> Result<(), 
     Ok(())
 }
 
-pub fn registry(
-    plugins: Option<&PluginsCfg>,
-    _data_dir: Option<&std::path::Path>,
-    note: &mut dyn FnMut(Note<'_>),
-) -> Result<PluginRegistry, String> {
-    registry_with_floor(plugins, true, note)
-}
-
 fn registry_with_floor(
     plugins: Option<&PluginsCfg>,
     _check_floor: bool,
@@ -423,18 +415,6 @@ pub(crate) fn plugins_fetch(
         .collect())
 }
 
-fn config_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(crate::root::cli::resolve_config_path(
-        crate::root::cli::argv().config.as_deref(),
-    ))
-}
-
-pub fn plan(path: &std::path::Path) -> Uses {
-    document(path)
-        .map(|doc| Uses::of(doc.value()))
-        .unwrap_or_default()
-}
-
 pub fn document(path: &std::path::Path) -> Option<Document> {
     let raw = std::fs::read_to_string(path).ok()?;
     let text = busbar_kernel::config::interpolate_env_with(
@@ -444,26 +424,6 @@ pub fn document(path: &std::path::Path) -> Option<Document> {
     )
     .ok()?;
     Document::parse(text).ok()
-}
-
-pub(crate) fn validate_dealt<'s>(
-    doc: &Document,
-    seats: impl IntoIterator<Item = (&'s str, Seat<'s>)>,
-    mut validate: impl FnMut(&'s str, &[u8]) -> Result<(), String>,
-) -> Result<(), String> {
-    for (instance, seat) in seats {
-        let Some(section) = doc.deal(seat)? else {
-            continue;
-        };
-        let seal = busbar_kernel::seal::lend();
-        validate(instance, section.settings.expose(&seal)).map_err(|reason| {
-            format!(
-                "config.yaml: invalid YAML: {}",
-                doc.refuse(&section, &reason)
-            )
-        })?;
-    }
-    Ok(())
 }
 
 pub fn discover(registry: &PluginRegistry) -> Result<Vec<Candidate>, String> {
@@ -1262,20 +1222,6 @@ pub(crate) static REGISTRY: std::sync::OnceLock<crate::root::loader::PluginRegis
     std::sync::OnceLock::new();
 
 static BASE_BOOTSTRAP_PLUGINS: std::sync::OnceLock<PluginsCfg> = std::sync::OnceLock::new();
-
-pub(crate) fn authorize_early_plugin(name: &str) -> Result<(), String> {
-    let registry = REGISTRY
-        .get()
-        .ok_or("the early plugin inventory is not initialized")?;
-    let base = BASE_BOOTSTRAP_PLUGINS
-        .get()
-        .ok_or("the operator's base bootstrap archive pins are not initialized")?;
-    busbar_kernel::appbuild::validate_bootstrap_artifacts(
-        registry,
-        &std::collections::BTreeSet::from([name.to_string()]),
-        base,
-    )
-}
 
 pub(crate) fn dropped_registry() -> Option<&'static crate::root::loader::PluginRegistry> {
     REGISTRY.get()
