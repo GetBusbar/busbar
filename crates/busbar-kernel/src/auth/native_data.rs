@@ -132,6 +132,12 @@ impl NativeDataRoute {
     /// declare ([`RouteRecord::from_declared`]): the walk kind is the seat's own stated scope
     /// kind, and a plane bound to an audience (its `canonical_uri`) keeps a session per caller.
     pub fn record_of(seat: &PortSeat, mounted: &Mounted) -> Option<RouteRecord> {
+        // A record the image stated wins, whole: nothing about that route is inferred. The
+        // loader decoded it with `RouteRecord::from_wire` and validated it before the route
+        // was mounted.
+        if let Some(stated) = &mounted.record {
+            return Some(stated.clone());
+        }
         RouteRecord::from_declared(
             mounted.flags,
             mounted.auth,
