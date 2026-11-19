@@ -620,3 +620,7 @@ mod access_standing_tests;
 #[cfg(test)]
 #[path = "tests/native_dpop_tests.rs"]
 mod native_dpop_tests;
+
+#[cfg(test)]
+#[path = "tests/native_oauth_as_tests.rs"]
+mod native_oauth_as_tests;

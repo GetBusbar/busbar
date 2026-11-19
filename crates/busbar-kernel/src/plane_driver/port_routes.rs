@@ -29,7 +29,7 @@ use busbar_ports::plane::{PlaneIn, PlanePort, RouteInfo};
 use busbar_ports::{CallCx, PortError};
 
 use super::port_auth::effective_classes;
-use crate::auth::route_record::{wire, PlaneMethods, RecordRefused, RouteRecord};
+use crate::auth::route_record::{wire, PlaneMethods, RecordRefused, RouteRecord, KIND_POOL};
 
 /// How long the plane has to answer one admin call.
 const ADMIN_GRACE: Duration = Duration::from_secs(30);
@@ -231,7 +231,44 @@ pub fn plan(
     if any_admin && admin_openapi.is_none() {
         return Err(RouteRefused::AdminWithoutOpenapi);
     }
+    declare_stated_kinds(&table);
     Ok(table)
+}
+
+/// The scope kinds the records of every plane mounted in this process state (their walk kind and
+/// their selected kinds), core's `pool` aside. A MIN-3 plane declares its kinds here and nowhere
+/// else, so these are the kinds a key may be granted beside the declared planes' own
+/// (`governance::plane_declares_kind`). Additive for the process: a kind is never withdrawn, and
+/// a grant of a kind no mounted route states matches no route.
+static STATED_KINDS: std::sync::RwLock<std::collections::BTreeSet<Box<str>>> =
+    std::sync::RwLock::new(std::collections::BTreeSet::new());
+
+/// Add the kinds of a plane whose every route was accepted. A refused plane declares nothing.
+fn declare_stated_kinds(table: &PortRoutes) {
+    let records = table
+        .data
+        .iter()
+        .chain(&table.admin)
+        .chain(&table.upgrade)
+        .chain(&table.line)
+        .chain(&table.recovery)
+        .map(|mounted| &mounted.record);
+    let mut kinds = STATED_KINDS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for kind in records.flat_map(|record| record.scope.kinds()) {
+        if kind != KIND_POOL && !kinds.contains(kind) {
+            kinds.insert(kind.into());
+        }
+    }
+}
+
+/// Whether a mounted route's record states `kind`.
+pub fn kind_stated(kind: &str) -> bool {
+    STATED_KINDS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(kind)
 }
 
 /// The request core originates to deliver a durable-work poll (§12.24 step 3): a GET on the recovery route the

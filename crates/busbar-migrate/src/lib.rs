@@ -31,6 +31,7 @@ mod catalog;
 #[cfg(any(test, feature = "counted"))]
 pub mod counted;
 mod files;
+mod former_builtins;
 mod legacy_credentials;
 pub use legacy_credentials::{Mark, MIGRATED};
 mod legacy_markers;
@@ -893,3 +894,7 @@ mod scratch;
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/former_builtins_tests.rs"]
+mod former_builtins_tests;

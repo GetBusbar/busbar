@@ -30,7 +30,8 @@ use busbar_plugin_abi::host_side::pool::{Pool, PooledOut, sync_out};
 use busbar_plugin_abi::host_side::watch;
 use busbar_plugin_abi::plugin::__rt::host::{Instance, OpenAnswer, OutLease, Session};
 use busbar_plugin_abi::plugin::__rt::image::Admitted;
-use busbar_plugin_abi::plugin::__rt::{Arg, kind as marker};
+use busbar_plugin_abi::transport::{pack, slot};
+use busbar_plugin_abi::plugin::__rt::kind as marker;
 use busbar_plugin_abi::transport::{self as tp, ConnInfo};
 use busbar_plugin_abi::types::{Bytes, Status, Str};
 use busbar_plugin_test::FakeNeeds;
@@ -73,7 +74,7 @@ static HOST: Host = Host::new(
         log_level: None,
         grow: None,
         deployment: None,
-        migrate_admit: None,
+        service: None,
     },
 );
 
@@ -142,7 +143,9 @@ impl Raw {
         lease: &mut OutLease<'_>,
     ) -> Session<marker::Transport> {
         let conn = conn_info();
-        let (status, session) = inst.open_session1(|vt| &vt.begin, Arg::view(&conn), lease);
+        let (status, session) = pack::begin(conn.mono_ns, &conn, |call| {
+            inst.open_session(slot::begin, call, lease)
+        });
         assert_eq!(status, Status::OK, "the fixture opens a client session");
         session.expect("a session")
     }

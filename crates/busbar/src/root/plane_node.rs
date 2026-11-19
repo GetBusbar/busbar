@@ -421,14 +421,6 @@ impl Node {
             Err(error) => tracing::warn!(?error, "store slot settle pass failed"),
         }
     }
-    /// Why a request that would create a record must be refused now, judged by the age of the
-    /// flusher's last good commit (design 2, A8), never by a count of held records: the journal
-    /// failed for this process, or nothing has been committed for longer than the stall limit.
-    #[must_use]
-    pub(crate) fn journal_refusal(&self) -> Option<String> {
-        // The flusher's stall is one of the journal's money-refusal causes (`State::refusal`).
-        self.lane.get().and_then(|journal| journal.refuses_money())
-    }
 
     /// A new core's audit state, pulled by this node's flusher (design 2, A1). The core's
     /// listener loop owns it and hands it to each connection.

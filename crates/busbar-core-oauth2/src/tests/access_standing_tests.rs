@@ -150,10 +150,13 @@ async fn a_revoked_token_is_dead_at_once() {
 async fn a_token_that_names_this_issuer_and_was_never_issued_is_dead() {
     let plane = plane().await;
     let access = token(&plane, Some(RESOURCE)).await;
-    // The issued token with one byte of its signature changed: it still names this issuer.
+    // The issued token with one byte of its signature changed: it still names this issuer. The
+    // first character of the signature is changed, not the last: the last base64url character of
+    // a 64-byte signature carries padding bits, and a non-canonical one is not a JWS at all.
+    let at = access.rfind('.').expect("a compact JWS has three parts") + 1;
+    let first = access.as_bytes()[at];
     let mut forged = access.clone();
-    let last = forged.pop().expect("a token is not empty");
-    forged.push(if last == 'A' { 'B' } else { 'A' });
+    forged.replace_range(at..=at, if first == b'A' { "B" } else { "A" });
     assert_eq!(
         plane.access_standing(&forged, RESOURCE).await,
         AccessStanding::Dead

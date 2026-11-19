@@ -76,7 +76,7 @@ pub(super) fn judge(asks: bool, websocket: Option<&ServedTransport>, stream: u64
         carrier: None,
     };
     match port_mount::upgrade_step(asks, websocket) {
-        UpgradeStep::Refuse(_) if !asks => refused(Refusal::NotAnUpgrade),
+        UpgradeStep::Refuse(refusal) if refusal.status == 400 => refused(Refusal::NotAnUpgrade),
         UpgradeStep::Refuse(_) => refused(Refusal::NoUpgradeTransport),
         UpgradeStep::HandOver(_) if stream != ADOPTED_STREAM => {
             refused(Refusal::NoUpgradeTransport)

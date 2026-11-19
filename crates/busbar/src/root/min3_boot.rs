@@ -719,7 +719,7 @@ pub(crate) fn declared_planes(
             .described(&instance.identity)
             .ok_or_else(|| format!("{}: the plane image has not been admitted", instance.name))?;
         let pointers: Vec<_> = described
-            .paths(busbar_plugin_abi::records::tag::D_UPSTREAM_PATH)
+            .paths(busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH)
             .collect();
         let authored = busbar_contract::json::parse_value(&instance.config)
             .map_err(|e| format!("{}: its authored config is invalid: {e}", instance.name))?;
@@ -2224,7 +2224,7 @@ pub(super) async fn finish_with_store(
                 plane_checks.push((
                     instance.name.clone(),
                     described
-                        .paths(busbar_plugin_abi::records::tag::D_UPSTREAM_PATH)
+                        .paths(busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH)
                         .map(str::to_owned)
                         .collect(),
                 ));
@@ -2316,7 +2316,7 @@ pub(super) async fn finish_with_store(
             plane_checks.push((
                 instance.name.clone(),
                 described
-                    .paths(busbar_plugin_abi::records::tag::D_UPSTREAM_PATH)
+                    .paths(busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH)
                     .map(str::to_owned)
                     .collect(),
             ));

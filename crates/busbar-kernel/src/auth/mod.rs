@@ -3390,3 +3390,7 @@ pub mod route_record;
 #[cfg(test)]
 #[path = "tests/inbound_table.rs"]
 mod inbound_table;
+
+#[cfg(test)]
+#[path = "tests/public_metadata_tests.rs"]
+mod public_metadata_tests;

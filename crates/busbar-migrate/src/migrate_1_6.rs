@@ -39,6 +39,7 @@ pub(crate) fn run(
     drop_hostless_metadata_entries(root, resolved, report);
     price_open_units(root, facts, report)?;
     bind_ungoverned_principals(root, report);
+    crate::former_builtins::report_plugins(resolved, report);
     Ok(())
 }
 

@@ -310,7 +310,7 @@ abi_struct! {
     pub struct CommitOut {
         /// Shared answer head.
         pub head: OutHead,
-        /// COMMIT_APPLIED through COMMIT_STALE on READY.
+        /// COMMIT_APPLIED through COMMIT_CAPACITY_REFUSED on READY.
         pub code: u32,
         /// Must be zero.
         pub _reserved: u32,
@@ -440,6 +440,9 @@ pub const COMMIT_OPID_CONFLICT: u32 = 4;
 pub const COMMIT_FENCED: u32 = 5;
 /// The slot already evaluated a later sequence; this send applied nothing and never will.
 pub const COMMIT_STALE: u32 = 6;
+/// The store rolled back because its database is at capacity; nothing committed. A refusal, not a
+/// decision about the candidate: the same candidate may be offered again once capacity returns.
+pub const COMMIT_CAPACITY_REFUSED: u32 = 7;
 /// Slot value of a self-fenced candidate, which must carry sequence zero.
 pub const SLOT_SELF_FENCED: u32 = u32::MAX;
 /// Exclusive upper bound of a writer's queue slots; each store keeps at most this many
@@ -593,7 +596,7 @@ pub mod check {
             code(
                 u64::from(out.code),
                 u64::from(COMMIT_APPLIED),
-                u64::from(COMMIT_STALE),
+                u64::from(COMMIT_CAPACITY_REFUSED),
                 "store.v4.commit.code",
             )?;
             if out.code == COMMIT_STALE && input.candidate.slot == SLOT_SELF_FENCED {

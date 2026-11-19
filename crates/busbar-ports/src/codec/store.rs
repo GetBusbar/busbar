@@ -228,11 +228,25 @@ pub fn decode_scan(a: &Answer<'_>, namespace: [u8; 16]) -> Result<ScanOutcome, R
     scan_outcome(a.records(), namespace)
 }
 
+/// A COMMITTED answer: a decision about the candidate, or the store's capacity refusal.
+pub enum CommitVerdict {
+    /// Codes 1..=6: the store evaluated the candidate.
+    Decided(Decision),
+    /// Code 7: the store rolled back because its database is at capacity; nothing committed. It is a
+    /// refusal, never a success and never a stale slot.
+    CapacityRefused,
+}
+
 /// Round 30: COMMITTED code 1..=6 -> `Decision::{Applied, ConditionConflict, TimeGuardFailed{observed_at},
 /// OpIdConflict, Fenced, Stale}` (f6e2cf05d7 persistence.rs:442-459); core supplies Applied's result from its own
-/// candidate (N5); code 0 or ≥ 7 is RecErr::Size.
+/// candidate (N5); code 0 or ≥ 7 is RecErr::Size. Code 7 is not a decision: use `decode_commit_verdict`.
 pub fn decode_decision(a: &Answer<'_>) -> Result<Decision, RecErr> {
     decision(a.records())
+}
+
+/// COMMITTED code 1..=7: the decision, or `CapacityRefused` for code 7; any other code is RecErr::Size.
+pub fn decode_commit_verdict(a: &Answer<'_>) -> Result<CommitVerdict, RecErr> {
+    commit_verdict(a.records())
 }
 
 pub fn decode_clock(a: &Answer<'_>) -> Result<ClockObservation, RecErr> {
@@ -384,20 +398,28 @@ fn scan_outcome(mut recs: Records<'_>, namespace: [u8; 16]) -> Result<ScanOutcom
     }))
 }
 
-fn decision(mut recs: Records<'_>) -> Result<Decision, RecErr> {
+fn commit_verdict(mut recs: Records<'_>) -> Result<CommitVerdict, RecErr> {
     let done = one(&mut recs, wire::tag::COMMITTED)?.pod::<wire::Committed>()?;
     end(&mut recs)?;
     reserved(done._r)?;
     let observed_at = observed(done.authority, done.observed_at)?;
-    Ok(match done.code {
+    Ok(CommitVerdict::Decided(match done.code {
         wire::COMMIT_APPLIED => Decision::Applied(Secret::default()),
         wire::COMMIT_CONDITION_CONFLICT => Decision::ConditionConflict,
         wire::COMMIT_TIME_GUARD_FAILED => Decision::TimeGuardFailed { observed_at },
         wire::COMMIT_OPID_CONFLICT => Decision::OpIdConflict,
         wire::COMMIT_FENCED => Decision::Fenced,
         wire::COMMIT_STALE => Decision::Stale,
+        wire::COMMIT_CAPACITY_REFUSED => return Ok(CommitVerdict::CapacityRefused),
         _ => return Err(RecErr::Size),
-    })
+    }))
+}
+
+fn decision(recs: Records<'_>) -> Result<Decision, RecErr> {
+    match commit_verdict(recs)? {
+        CommitVerdict::Decided(decision) => Ok(decision),
+        CommitVerdict::CapacityRefused => Err(RecErr::Size),
+    }
 }
 
 fn clock(mut recs: Records<'_>) -> Result<ClockObservation, RecErr> {

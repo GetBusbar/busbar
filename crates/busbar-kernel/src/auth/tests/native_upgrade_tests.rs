@@ -329,6 +329,7 @@ fn fixture_on(bound: bool, cred_header: Option<&'static str>) -> Fixture {
     let route = Arc::new(NativeUpgradeRoute {
         withheld: withheld_carriers(&chain, cred_header),
         audience: None,
+        public_url: None,
         binding,
         caller,
         chain,
@@ -630,5 +631,110 @@ mod route_credential_header {
         assert!(refusal.unit().is_none());
         assert!(binding.check_executing().is_err());
         assert_eq!(f.port.calls.load(Ordering::SeqCst), 0, "no chain ran");
+    }
+}
+
+/// Sender-constrained presentations (RFC 9449) on the sites beside a plane's data route.
+mod audience_bound_dpop {
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct Buf(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Buf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Buf {
+        /// How many proof judgements refused a presentation for want of an authorization server.
+        fn unverifiable(&self) -> usize {
+            let text = String::from_utf8(self.0.lock().unwrap().clone()).unwrap();
+            text.lines()
+                .filter(|line| {
+                    line.contains("diag=BUSBAR-4032")
+                        // `&str` fields are written quoted.
+                        && line.contains("surface=\"native\"")
+                        && line.contains("reason=\"unverifiable\"")
+                })
+                .count()
+        }
+    }
+
+    const PRESENTED: [(&str, &str); 2] = [
+        ("authorization", "DPoP sender-bound-token"),
+        ("dpop", "a.proof.jwt"),
+    ];
+
+    /// The upgrade route of an audience-bound plane, the unrouted judgement and a keyed core route
+    /// judge a DPoP presentation's proof as a data route's preparation does
+    /// (`native_dpop::judge`): no site refuses it unjudged, and none admits it unproven. This
+    /// deployment has no authorization server, so each proof is unverifiable: refused, with its
+    /// reason recorded, and no chain runs and no replay key is spent.
+    #[tokio::test]
+    async fn audience_bound_dpop_presentation_is_judged_on_upgrade_unrouted_and_keyed_core_routes()
+    {
+        let buf = Buf::default();
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_target(false)
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
+        let _logs = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+
+        let mut f = fixture(true);
+        Arc::get_mut(&mut f.route).unwrap().audience =
+            Some(Arc::from("https://mcp.example.com/mcp"));
+
+        // The upgrade route.
+        let (mut request, cx, _owner) = arrival_at(&f, 1, PATH, &PRESENTED);
+        let refused = f
+            .route
+            .authorize(request.begin_data_preparation().unwrap(), cx)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.reason(), DataRefused::Credential);
+        assert_eq!(buf.unverifiable(), 1, "the upgrade route judged the proof");
+
+        // A head no route matches.
+        let (request, cx, _owner) = arrival_at(&f, 3, "/no/such/route", &PRESENTED);
+        let binding = request.binding().clone();
+        let (verified, policy) =
+            crate::auth::native_data::judge_unrouted(binding.app(), &f.route.chain, &binding, cx)
+                .await;
+        assert_eq!(
+            verified,
+            Some(crate::auth::admission_table::Verified::Denied)
+        );
+        assert!(policy.is_none());
+        assert_eq!(
+            buf.unverifiable(),
+            2,
+            "the unrouted judgement judged the proof"
+        );
+
+        // A core route that requires a key.
+        let (request, cx, _owner) = arrival_at(&f, 5, "/stats", &PRESENTED);
+        let binding = request.binding().clone();
+        assert!(matches!(
+            crate::auth::native_data::verify_core_key(&f.route.chain, &binding, cx).await,
+            Err(DataRefused::Credential)
+        ));
+        assert_eq!(
+            buf.unverifiable(),
+            3,
+            "the keyed core route judged the proof"
+        );
+
+        assert_eq!(f.port.calls.load(Ordering::SeqCst), 0, "no chain ran");
+        assert_eq!(f.replay.0.load(Ordering::SeqCst), 0, "no replay key spent");
     }
 }

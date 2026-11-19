@@ -862,6 +862,75 @@ fn a_challenge_is_resolved_once_at_mount() {
     assert_eq!(plain.record.mounted_challenge(None), Ok(None));
 }
 
+/// The uniform 401 on a route that declares its challenge (MCP's, RFC 9728 §5.1): the header is
+/// `Bearer resource_metadata="<the plane's public URL>/..."`, the same bytes for a caller that
+/// presented nothing and one whose credential failed, and the body is the one 401's body.
+#[test]
+fn www_authenticate_on_the_uniform_401_is_the_routes_declared_challenge() {
+    let route = reference(Admission::Selected);
+    let mounted = route
+        .record
+        .mounted_challenge(Some("https://gw.example/mcp/"))
+        .expect("a configured public URL resolves the challenge");
+    let expected = "Bearer resource_metadata=\"https://gw.example/mcp/.well-known/reference\"";
+    assert_eq!(mounted.as_deref(), Some(expected));
+    let generic = core_answer::unverified(false, None);
+    let absent = core_answer::unverified(false, mounted.as_deref());
+    let wrong = core_answer::unverified(true, mounted.as_deref());
+    // No oracle: whether a credential was presented, and which check failed, change no byte.
+    assert_eq!(absent, wrong);
+    assert_eq!(absent.status, 401);
+    assert_eq!(absent.body, generic.body);
+    assert_eq!(
+        absent.fields,
+        vec![
+            (b"content-type".to_vec(), b"application/json".to_vec()),
+            (b"www-authenticate".to_vec(), expected.as_bytes().to_vec()),
+        ]
+    );
+}
+
+/// A declared challenge is served to every unverified caller, so it may not state the outcome of
+/// a check (RFC 6750 §3.1: no `error` where no credential was presented), and the operator's
+/// public URL may not break out of its quoted `resource_metadata` value.
+#[test]
+fn www_authenticate_states_no_check_and_keeps_its_quoting() {
+    let all = reference_plane::METHODS;
+    for text in [
+        "Bearer error=\"invalid_token\", resource_metadata=\"https://gw.example/m\"",
+        "Bearer resource_metadata=\"https://gw.example/m\", error_description=\"bad key\"",
+        "Bearer resource_metadata=\"https://gw.example/m\",ERROR_URI = \"https://x\"",
+    ] {
+        let mut record = stated(RouteClass::Data, Who::PRINCIPAL, Scope::none(), Money::Unit);
+        record.challenge = Some(text.into());
+        assert_eq!(
+            record.validate(METHOD_POST, all),
+            Err(RecordRefused::Challenge),
+            "{text}"
+        );
+    }
+    // A parameter value that merely contains the word is not an error parameter.
+    let mut quoted = stated(RouteClass::Data, Who::PRINCIPAL, Scope::none(), Money::Unit);
+    quoted.challenge =
+        Some("Bearer realm=\"error=1\", resource_metadata=\"{public_url}/.well-known/m\"".into());
+    assert_eq!(quoted.validate(METHOD_POST, all), Ok(()));
+    // A public URL that would close the quoted value, or escape inside it, is no URL: the route
+    // is not mounted.
+    let route = reference(Admission::Selected);
+    for url in [
+        "https://gw.example/\", error=\"invalid_token",
+        "https://gw.example/a\\b",
+        "https://gw.example/a b",
+        "/",
+    ] {
+        assert_eq!(
+            route.record.mounted_challenge(Some(url)),
+            Err(crate::auth::route_record::NoPublicUrl),
+            "{url}"
+        );
+    }
+}
+
 /// A kind other than `pool` belongs to one image.
 #[test]
 fn a_scope_kind_has_one_owner() {

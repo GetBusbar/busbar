@@ -878,24 +878,6 @@ pub(crate) enum UpgradeStep<'a> {
     HandOver(&'a super::min3_boot::transports::ServedTransport),
 }
 
-/// The words of the native listener's one unauthenticated refusal (every route, and no route).
-pub(crate) const UNAUTHENTICATED: &str = "authentication required";
-
-/// The native listener's answer to a request that did not authenticate: 401, the same bytes on
-/// every route and on none. `presented`: the request carried one of the route's credential carriers.
-pub(crate) fn unauthenticated(presented: bool) -> busbar_kernel::refusal::ClientRefusal {
-    use busbar_plugin_abi::fail::refused::{R_AUTH_REQUIRED, R_BAD_CREDENTIAL};
-    busbar_kernel::refusal::ClientRefusal {
-        status: 401,
-        code: if presented {
-            R_BAD_CREDENTIAL
-        } else {
-            R_AUTH_REQUIRED
-        },
-        text: UNAUTHENTICATED.into(),
-    }
-}
-
 /// The words of core's two refusals before any 101.
 pub(crate) const NOT_AN_UPGRADE: &str = "this route accepts only a websocket upgrade request";
 pub(crate) const NO_WEBSOCKET: &str = "no transport on this listener can carry a websocket upgrade";

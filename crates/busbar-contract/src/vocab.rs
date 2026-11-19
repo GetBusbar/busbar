@@ -9,6 +9,8 @@ pub const OUTCOME_APPLIED: &str = "applied";
 pub const OUTCOME_REJECTED: &str = "rejected";
 /// Cross-protocol egress: the request STILL FORWARDED, but a caller control with no native target
 pub const OUTCOME_DEGRADED: &str = "degraded";
+/// Call stream: THE CALL WENT OUT. It may still carry a `reason` — see [`REASON_UPSTREAM_FAILED`].
+pub const OUTCOME_DISPATCHED: &str = "dispatched";
 /// Call stream: the call did NOT go out.
 pub const OUTCOME_REFUSED: &str = "refused";
 
@@ -18,8 +20,17 @@ pub const REASON_NOT_GRANTED: &str = "not_granted";
 /// The caller was entitled and the EGRESS CREDENTIAL gate refused: no registration, no lease, or a
 pub const REASON_EGRESS_DENIED: &str = "egress_denied";
 
-/// The call WENT OUT and the upstream then failed. It rides `OUTCOME_DISPATCHED`, not
+/// The call WENT OUT and the upstream then failed. It rides [`OUTCOME_DISPATCHED`], not
 pub const REASON_UPSTREAM_FAILED: &str = "upstream_failed";
+
+/// The request was answered with an unsatisfied caller-ask round. `refused`, not a third outcome:
+pub const REASON_CALLER_ASK_PENDING: &str = "caller_ask_pending";
+
+/// The request was answered with a TASK rather than a result. Also `refused`, for the same reason:
+pub const REASON_TASK_CREATED: &str = "task_created";
+
+/// The request's parameters were missing or malformed. RECORDED rather than dropped: the caller is
+pub const REASON_MALFORMED: &str = "malformed_params";
 
 /// The PRINCIPAL is no longer live: deleted, disabled, or past its expiry. Distinct from
 pub const REASON_IDENTITY_NOT_LIVE: &str = "identity_not_live";

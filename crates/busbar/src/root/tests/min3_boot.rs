@@ -619,7 +619,7 @@ fn plugin_secret_paths_cannot_authorize_consumed_core_nonsecret_fields() {
         facts: 0,
         items: vec![
             (
-                busbar_plugin_abi::records::tag::D_UPSTREAM_PATH,
+                busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH,
                 b"/members/*".to_vec(),
             ),
             (

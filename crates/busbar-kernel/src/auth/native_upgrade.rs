@@ -3,7 +3,7 @@
 
 //! The auth step of a native ROUTE_UPGRADE request (§12.27 step 2, "core runs the route's auth
 //! class on the head exactly as for any request"). It runs the same steps a DATA request runs
-//! before money: the bound-carrier scan, chain verification, identity freshness, the governed key
+//! before money: the sender constraint (a DPoP proof judged, else the bound-carrier scan), chain verification, identity freshness, the governed key
 //! under the live generation and the replay claim. An upgrade route selects no resources, opens no
 //! unit and charges nothing here; what follows is either core's refusal before any 101
 //! ([`crate::inbound::native::CompletingPhysicalRequest::refuse_upgrade`]) or the hand-over
@@ -20,7 +20,7 @@ use busbar_plugin_abi::plane::{AUTH_PRINCIPAL, ROUTE_UPGRADE};
 use busbar_ports::CallCx;
 
 use super::native_chain::{NativeChain, NativePreparedAnswer, PreparedNativeIdentity};
-use super::native_data::{refuse_bound_carriers, withheld_carriers, DataRefused};
+use super::native_data::{judge_sender, withheld_carriers, DataRefused};
 use crate::inbound::native::{
     DataPreparation, DataPreparationDenied, DataPreparationSuccess, RequestBinding, RouteBinding,
     RouteTarget,
@@ -38,6 +38,9 @@ pub struct NativeUpgradeRoute {
     withheld: Arc<[Box<str>]>,
     /// The audience the route's plane is bound to: a bearer that states one must state this.
     audience: Option<Arc<str>>,
+    /// Core's public URL as the route's plane instance is given it (`PortSeat::public_url`), kept
+    /// at bind: the origin a DPoP proof's `htu` names.
+    public_url: Option<Arc<str>>,
 }
 
 impl NativeUpgradeRoute {
@@ -92,6 +95,7 @@ impl NativeUpgradeRoute {
             chain,
             withheld,
             audience: seat.audience.as_deref().map(Arc::from),
+            public_url: seat.public_url().map(Arc::from),
         }))
     }
 
@@ -170,7 +174,17 @@ impl NativeUpgradeRoute {
         if !snapshot.request().same_request(binding.request()) {
             return Err(DataRefused::Binding);
         }
-        refuse_bound_carriers(&snapshot, &self.chain, self.cred_header())?;
+        // The sender constraint as a data route judges it: its proof names core's public URL
+        // (else the plane's audience). This path hands no token to core's own verifier.
+        let snapshot = judge_sender(
+            binding.app(),
+            snapshot,
+            &self.chain,
+            self.cred_header(),
+            self.public_url.as_deref().or(self.audience.as_deref()),
+            false,
+        )
+        .await?;
         if let Some(audience) = self.audience.as_deref() {
             super::native_data::refuse_foreign_audience(&snapshot, &self.chain, audience)?;
         }

@@ -188,6 +188,7 @@ crate::kind! {
             COMMIT_OPID_CONFLICT: u32 = 4;
             COMMIT_FENCED: u32 = 5;
             COMMIT_STALE: u32 = 6;
+            COMMIT_CAPACITY_REFUSED: u32 = 7;
             SLOT_SELF_FENCED: u32 = u32::MAX;
             MAX_SLOTS: u32 = 65_536;
             CODEC_VERSION: u32 = 1;
@@ -233,7 +234,7 @@ crate::kind! {
         /// One ordered namespace page. Answer: SCAN_DONE, ROW* (≤ max_rows, ≤ max_bytes), NEXT if SCAN_CONTINUE.
         async fn scan(&self, h: &'static Host, req: ChainBytes) -> Result<Reply, Fail>;
         /// One atomic native transaction: STORE-TRANSACTIONS §2.5 M1 (slot record, FENCEs, guard, predicates,
-        /// mutations). Answer: COMMITTED (code COMMIT_APPLIED..=COMMIT_STALE), with no RESULT (N5). Evaluated
+        /// mutations). Answer: COMMITTED (code COMMIT_APPLIED..=COMMIT_CAPACITY_REFUSED), with no RESULT (N5). Evaluated
         /// verdicts are answers (OK + COMMITTED). FAILED means unevaluated or unknown; core resolves it by readback.
         /// G1: a DeleteRange on SLOT_NS deletes the writer's slot records. G2: the SDK decode FAULTs any other
         /// SLOT_NS mutation, any GENERATION_NS mutation, and any condition on GENERATION_NS whose key is not 16 bytes.
