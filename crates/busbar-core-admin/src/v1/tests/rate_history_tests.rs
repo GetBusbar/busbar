@@ -85,12 +85,23 @@ fn an_empty_history_is_an_empty_page_with_no_cursor() {
     assert!(page.items.is_empty());
     assert_eq!(page.next_cursor, None);
     assert_eq!(page.generation.as_deref(), Some("3"));
-    let body: serde_json::Value =
-        serde_json::from_slice(&busbar_contract::json::to_vec(&page).unwrap()).unwrap();
     assert_eq!(
-        body,
-        serde_json::json!({"items": [], "next_cursor": null, "generation": "3"})
+        wire(&page),
+        r#"{"items":[],"next_cursor":null,"generation":"3"}"#
     );
+}
+
+/// The page as the node writes it.
+fn wire(page: &RateHistoryPage) -> String {
+    String::from_utf8(busbar_contract::json::to_vec(page).unwrap()).unwrap()
+}
+
+/// What follows each `"name":` in `text`, up to its first byte.
+fn first_bytes_after(text: &str, name: &str) -> Vec<char> {
+    let needle = format!("\"{name}\":");
+    text.match_indices(&needle)
+        .filter_map(|(at, _)| text[at + needle.len()..].chars().next())
+        .collect()
 }
 
 #[test]
@@ -121,15 +132,17 @@ fn one_configuration_entry_is_one_open_row_in_force_from_instant_zero() {
     assert_eq!(row.card.per_request_fee_minor, "7");
     assert!(row.card.cards.is_empty(), "no rate_card is configured");
 
-    let body: serde_json::Value =
-        serde_json::from_slice(&busbar_contract::json::to_vec(&page).unwrap()).unwrap();
-    let item = &body["items"][0];
+    let text = wire(&page);
     assert!(
-        item.get("effective_until_ms").is_none(),
-        "an open entry has no end: {item}"
+        !text.contains("\"effective_until_ms\""),
+        "an open entry has no end: {text}"
     );
-    assert!(item["in_force"][0].get("until_ms").is_none());
-    assert_eq!(item["card"]["per_request_fee_minor"], "7");
+    assert!(
+        !text.contains("\"until_ms\""),
+        "an open span has no end: {text}"
+    );
+    assert!(text.contains("\"in_force\":[{\"from_ms\":0}]"), "{text}");
+    assert!(text.contains("\"per_request_fee_minor\":\"7\""), "{text}");
 }
 
 #[test]
@@ -462,20 +475,19 @@ fn every_rate_and_fee_is_exact_decimal_text_that_reads_back_to_the_stored_figure
     );
 
     // Through the wire: every figure is a JSON string, never a number.
-    let body: serde_json::Value =
-        serde_json::from_slice(&busbar_contract::json::to_vec(&page).unwrap()).unwrap();
-    let wire = &body["items"][0]["card"];
-    assert_eq!(wire["per_request_fee_minor"], "9007199254740993");
-    for card in wire["cards"].as_array().unwrap() {
-        for lane in card["lanes"].as_array().unwrap() {
-            for rate in lane["rates"].as_array().unwrap() {
-                assert!(rate["micro_per_unit"].is_string(), "{rate}");
-                assert!(
-                    rate["nanos_per_unit"].is_string() || rate["nanos_per_unit"].is_null(),
-                    "{rate}"
-                );
-            }
-        }
+    let text = wire(&page);
+    assert!(
+        text.contains("\"per_request_fee_minor\":\"9007199254740993\""),
+        "{text}"
+    );
+    let micros = first_bytes_after(&text, "micro_per_unit");
+    assert_eq!(micros.len(), checked);
+    assert!(micros.iter().all(|c| *c == '"'), "{text}");
+    let nanos = first_bytes_after(&text, "nanos_per_unit");
+    assert_eq!(nanos.len(), checked);
+    assert!(nanos.iter().all(|c| *c == '"' || *c == 'n'), "{text}");
+    for name in ["per_request_minor", "per_session_minor"] {
+        assert!(first_bytes_after(&text, name).iter().all(|c| *c == '"'));
     }
 }
 
