@@ -16,10 +16,8 @@
 //! The plaintext rule and an open's pinned addresses are applied to the target's judged address,
 //! never the proxy's.
 //!
-//! NOT YET DECLARED: `native_conns.rs` gains `#[path = "native_conns/route.rs"] mod route;` in
-//! the change that (a) gives `State::Judging` the field `via: Option<Via>`, (b) gives
-//! `NativeDial` the field `tunnel: Option<Tunnel>` read by `NativeConnection::dial` to make its
-//! `Dialling`, and (c) switches the three call sites named on the functions below.
+//! DECLARED by `native_conns.rs`: `State::Judging` carries `via`, `NativeDial` carries `tunnel`,
+//! and `open_native` and `Exchange::connected` call the functions below.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};

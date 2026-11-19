@@ -8,9 +8,8 @@
 //! everything after the 101 is messages, both ways, until one side closes. The states are
 //! `crate::outbound::ws::Upstream`; this file is where the exchange and the connection use them.
 //!
-//! NOT YET DECLARED: `native_conns.rs` gains `#[path = "native_conns/messages.rs"] mod messages;`
-//! in the change that gives `Exchange` the field `ws: Option<Upstream>` (set by `open_native`
-//! when `located.carrier == CARRIER_WEBSOCKET`) and switches the two call sites named below.
+//! DECLARED by `native_conns.rs`: `Exchange::ws` is set by `open_native` for a WebSocket carrier,
+//! `Exchange::write` and `Exchange::read` call the two functions below.
 
 use std::task::{Context, Poll};
 

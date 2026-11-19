@@ -43,6 +43,10 @@ pub mod socket;
 pub mod spawn_env;
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::off_path::conns::test_support;
+// Loopback stand-ins for the far side of a dial: a scripted HTTP/1.1 provider and a CONNECT proxy.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "test_support_far_ends.rs"]
+pub mod test_support_far_ends;
 pub mod tls;
 pub mod udp;
 pub mod wire;
@@ -1287,6 +1291,10 @@ pub struct Connector {
     /// address; `proxy` (`false`): a name that does not resolve here is CONNECTed by name and its
     /// address check is the proxy's (BUSBAR-3149 at boot).
     proxy_by_address: std::sync::atomic::AtomicBool,
+    /// Requests sent again on a fresh connection from the evidence of what was sent
+    /// (`native_conns/again.rs`): a kept connection that turned out closed, a stream the far end
+    /// refused unprocessed, a busy connection.
+    redials: std::sync::atomic::AtomicU64,
     /// THE NATIVE CARRIERS ([`Connector::carry_natively`]): the transport instance the build assigned each
     /// outbound carrier, and the account their sessions are charged to; set once at boot, held for the process.
     pub(crate) native: std::sync::OnceLock<native_conns::Natives>,
@@ -1328,6 +1336,7 @@ impl Default for Connector {
             spawn_secrets: None,
             trust: arc_swap::ArcSwapOption::empty(),
             proxy_by_address: std::sync::atomic::AtomicBool::new(true),
+            redials: std::sync::atomic::AtomicU64::new(0),
             native: std::sync::OnceLock::new(),
             native_needs: Mutex::new(HashMap::new()),
             native_idle: native_conns::Idle::default(),
@@ -4704,6 +4713,17 @@ impl Conns for Connector {
             return d.write(bytes, end, text);
         }
         if let Some(native) = &held.native {
+            // A WebSocket upstream carries messages after its open: the write's `end` and `text` are the
+            // message's. An HTTP exchange handed its whole request over at the open.
+            if native.carries_messages() {
+                return self.write_native_message(
+                    native,
+                    // As for every native write: a pended write is offered again on the caller's next wake.
+                    Waker::noop(),
+                    bytes,
+                    (text, end),
+                );
+            }
             return self.write_native(native, bytes);
         }
         if !self.settle(&held, None)? {

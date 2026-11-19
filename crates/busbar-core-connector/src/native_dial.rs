@@ -25,8 +25,8 @@
 //! socket and the TLS state are made by `dial`; the framer's session at the first exchange; the outbound byte
 //! buffer and the per-stream inbox when bytes are queued, each released (wiped, then its memory given back) when
 //! it empties. Every buffer that held request or answer bytes is a [`SecureVec`], wiped in one block. No pool,
-//! no table, no cap of its own: the connection-level bounds are the connector's ([`WRITE_HELD_MAX`],
-//! [`INBOX_HELD_MAX`] are the same figures `compose` holds a framed connection to).
+//! no table, no cap of its own: what a session can make the engine hold is bounded by the windows the session
+//! itself stated (`outbound::credit`), per stream and per connection.
 
 use std::collections::VecDeque;
 use std::future::Future as _;
@@ -58,13 +58,18 @@ use crate::io::{Direction, Registered};
 #[path = "native_dial/tests.rs"]
 mod tests;
 
-/// The most bytes one native connection holds for the socket and not yet written: the same figure a framed
-/// connection is held to (`compose::WRITE_BUFFER_BYTES`).
-pub const WRITE_HELD_MAX: usize = 256 * 1024;
+// Where the dial meets the outbound parts (delivery, sealing, credit, the proxy tunnel, the race over
+// a name's addresses): the dial keeps its socket, its TLS session and its queue, and decides nothing
+// about those itself.
+#[path = "native_dial/drive.rs"]
+pub(crate) mod drive;
+pub use drive::Tunnel;
 
-/// The most answer bytes one native connection holds read off the socket and not yet taken by its reader: the
-/// same figure a framed connection is held to (`compose::RECEIVE_BUFFER_BYTES`).
-pub const INBOX_HELD_MAX: usize = 1024 * 1024;
+use crate::outbound::connect::{Lane, Race, Step as RaceStep};
+use crate::outbound::delivery::{Reason, Role};
+use crate::outbound::seal::Slots;
+use crate::outbound::tunnel::{Dialling, Step};
+use crate::outbound::wire::Wire;
 
 /// One socket read. A stack buffer, wiped after each read: it never outlives the call.
 const READ_CHUNK: usize = 16 * 1024;
@@ -217,6 +222,9 @@ pub struct NativeDial {
     pub open_timeout: Duration,
     /// The connection's storage account: what the framer's session charges its answers to.
     pub storage: StorageSource,
+    /// The operator's proxy this dial goes through; `None` = straight to the target. With a tunnel, `addr`
+    /// and `also` are the proxy's judged addresses, and the plaintext rule was applied to the target's.
+    pub tunnel: Option<Tunnel>,
 }
 
 /// One request head as core hands it to the framer. Its values are moved in, not copied; the target and every
@@ -232,6 +240,10 @@ pub struct NativeHead {
     pub body_len: Option<u64>,
     /// The request's remaining deadline when the head goes (`H_BUDGET_NS`); `None` = none.
     pub budget: Option<Duration>,
+    /// The operator accepted plaintext for this destination (the route's own judged acceptance or an
+    /// exact per-destination entry, never the app-wide acceptance): only then may a sealed value of this
+    /// head cross a connection that is not secured.
+    pub sealed_in_clear: bool,
 }
 
 impl Drop for NativeHead {
@@ -242,6 +254,9 @@ impl Drop for NativeHead {
         }
     }
 }
+
+/// The words of a `STREAM_BUSY` answer.
+const BUSY: &str = "the connection takes no new stream now";
 
 /// Why a native dial failed: the stage, whether it was core's own outbound head the framer refused (a local
 /// fault: no destination is charged for it), and the text.
@@ -260,6 +275,18 @@ impl NativeFailure {
                 outbound: false,
             },
         }
+    }
+
+    /// The transport answered `STREAM_BUSY`: the connection takes no new stream now. Nothing of the
+    /// request left the engine.
+    fn busy() -> Self {
+        Self::at(stage::FRAMER, BUSY)
+    }
+
+    /// The failure is a `STREAM_BUSY` ([`Self::busy`]): the request goes to another connection.
+    #[must_use]
+    pub fn is_busy(&self) -> bool {
+        self.cause.stage == stage::FRAMER && self.cause.text == BUSY
     }
 
     fn outbound(text: impl Into<String>) -> Self {
@@ -290,23 +317,18 @@ enum Inbound {
         block: SecureVec,
     },
     /// Body bytes; `taken` of them were already handed up.
-    Body { bytes: SecureVec, taken: usize },
+    Body {
+        bytes: SecureVec,
+        taken: usize,
+        /// The piece ends its message (a message stream's `MSG_FIN`; always, on a byte stream).
+        last: bool,
+    },
     /// The trailers' field block.
     Trailers(SecureVec),
     /// STREAM_END.
     End,
     /// STREAM_RESET, with the wire's code.
     Reset(u32),
-}
-
-impl Inbound {
-    fn held(&self) -> usize {
-        match self {
-            Self::Head { block, .. } | Self::Trailers(block) => block.len(),
-            Self::Body { bytes, taken } => bytes.len().saturating_sub(*taken),
-            Self::End | Self::Reset(_) => 0,
-        }
-    }
 }
 
 /// One open stream: its inbox (made when its first piece arrives, released when it empties) and its state.
@@ -336,7 +358,25 @@ pub struct NativeConnection {
     carrier: NativeCarrier,
     located: Located,
     sock: Registered<TcpStream>,
-    fallback: VecDeque<SocketAddr>,
+    /// The steps below the session: connect, the proxy's own TLS, the CONNECT, the target's TLS.
+    dialling: Dialling,
+    /// Delivery, sealed values, credit and lending state of this connection's streams.
+    wire: Wire,
+    /// Which of the name's admitted addresses is connected to, when.
+    race: Race,
+    /// The first lane's socket (`sock`) is in flight.
+    first_live: bool,
+    /// The other address family's socket, while the race has one in flight.
+    second: Option<(Registered<TcpStream>, SocketAddr)>,
+    /// The race's next wake.
+    race_timer: Option<Pin<Box<tokio::time::Sleep>>>,
+    /// The race's time zero.
+    started: Instant,
+    last_connect_error: Option<io::Error>,
+    /// Bytes the proxy sent past its answer's head: the tunnel's first bytes.
+    tunnelled: SecureVec,
+    /// Sealed values a `STREAM_BUSY` handed back, or the exchange offered for a head sent again.
+    handed_back: Option<Slots>,
     peer: SocketAddr,
     phase: Phase,
     tls: Option<rustls::ClientConnection>,
@@ -352,8 +392,6 @@ pub struct NativeConnection {
     streams: Vec<Stream>,
     /// The framer's WAKE_AT, as a host instant, and the timer that fires it.
     wake: Option<Pin<Box<tokio::time::Sleep>>>,
-    /// PAUSE: the framer asked core to stop reading.
-    paused: bool,
     /// The far end ended its stream.
     eof: bool,
     /// The framer answered CLOSE: once `out` is written, the connection ends.
@@ -421,7 +459,9 @@ impl NativeConnection {
             anchors,
             open_timeout,
             storage,
+            tunnel,
         } = dial;
+        let dialling = drive::dialling_for(tunnel, located.secure)?;
         let presented = Arc::new(AtomicBool::new(false));
         let tls = if located.secure {
             let base = anchors
@@ -471,13 +511,46 @@ impl NativeConnection {
         } else {
             None
         };
-        let mut fallback: VecDeque<SocketAddr> = also.into();
-        let (sock, peer) = connect_first(addr, &mut fallback)?;
+        // The race over the name's admitted addresses: each its share of the open deadline, the other
+        // address family started after a short delay. Its first connect begins here.
+        let mut addrs: smallvec::SmallVec<[SocketAddr; 8]> = smallvec::SmallVec::new();
+        addrs.push(addr);
+        addrs.extend(also);
+        let deadline_ns = u64::try_from(open_timeout.as_nanos()).unwrap_or(u64::MAX);
+        let mut race = Race::new(&addrs, 0, deadline_ns);
+        let mut refused = None;
+        let (sock, peer) = loop {
+            match race.step(0) {
+                RaceStep::Connect(Lane::First, at) => {
+                    match crate::socket::connect(at).and_then(crate::io::register) {
+                        Ok(sock) => break (sock, at),
+                        Err(error) => {
+                            refused = Some(error);
+                            race.failed(Lane::First, 0);
+                        }
+                    }
+                }
+                RaceStep::Connect(Lane::Second, _) | RaceStep::Wait(_) | RaceStep::Failed => {
+                    return Err(io_failure(stage::CONNECT)(
+                        refused.unwrap_or_else(|| io::Error::other("no address to dial")),
+                    ));
+                }
+            }
+        };
         Ok(Self {
             carrier,
             located,
             sock,
-            fallback,
+            dialling,
+            wire: Wire::new(Role::Attempt),
+            race,
+            first_live: true,
+            second: None,
+            race_timer: None,
+            started: Instant::now(),
+            last_connect_error: None,
+            tunnelled: SecureVec::new(),
+            handed_back: None,
             peer,
             phase: Phase::Connecting,
             tls,
@@ -490,7 +563,6 @@ impl NativeConnection {
             out: SecureVec::new(),
             streams: Vec::new(),
             wake: None,
-            paused: false,
             eof: false,
             closing: false,
             open_deadline: Some(sleep_for(open_timeout)),
@@ -526,16 +598,27 @@ impl NativeConnection {
         if let Err(failure) = self.begin_session() {
             return Poll::Ready(Err(self.fail(failure)));
         }
-        let Some(taken) = head.take() else {
+        // The head is lent, not taken: its owner keeps it while the request may still be sent again
+        // (`outbound::redial::keeps_head`) and wipes it by dropping it. Its sealed values leave its fields
+        // here, into slots the engine alone holds; on a head sent again they are offered back
+        // (`offer_sealed`) and nothing is taken from the fields a second time.
+        let Some(lent) = head.as_mut() else {
             return Poll::Ready(Err(NativeFailure::outbound("no head to send")));
         };
-        let records = match self.head_records(&taken) {
+        let again = self.handed_back.take();
+        let in_clear = lent.sealed_in_clear;
+        // A refusal here is the engine's own and of this request alone: the connection is untouched.
+        let records = match self.seal_and_encode(lent, again, in_clear) {
             Ok(records) => records,
-            Err(failure) => return Poll::Ready(Err(self.fail(failure))),
+            Err(failure) => return Poll::Ready(Err(failure)),
         };
-        drop(taken);
         let stream = match self.emit(0, wire::E_HEAD, 0, &records) {
             Ok(Some(stream)) => stream,
+            Ok(None) if self.handed_back.is_some() => {
+                // STREAM_BUSY: no stream opened, nothing written, nothing of the head kept. Not a fault
+                // and not the connection's failure: the exchange offers the same head elsewhere.
+                return Poll::Ready(Err(NativeFailure::busy()));
+            }
             Ok(None) => {
                 return Poll::Ready(Err(self.fail(NativeFailure::outbound(
                     "the transport answered a request head without opening a stream",
@@ -552,6 +635,7 @@ impl NativeConnection {
             answered: false,
         });
         if !body_follows {
+            self.wire.emitting_end(stream);
             if let Err(failure) = self.emit(stream, wire::E_END, 0, &[]) {
                 return Poll::Ready(Err(self.fail(failure)));
             }
@@ -560,6 +644,12 @@ impl NativeConnection {
             return Poll::Ready(Err(failure));
         }
         Poll::Ready(Ok(stream))
+    }
+
+    /// The sealed values of the head about to be sent again (handed back by a `STREAM_BUSY`, or by a
+    /// failed attempt on another connection): offered here, then `poll_send_head`.
+    pub(crate) fn offer_sealed(&mut self, slots: Slots) {
+        self.handed_back = Some(slots);
     }
 
     /// One body piece on `stream`, then E_END when `end`. Ready with the bytes taken: `0` while the stream is
@@ -579,17 +669,21 @@ impl NativeConnection {
                 "a body for a stream that is not open",
             )));
         };
-        if self.streams[at].full || self.out.len() >= WRITE_HELD_MAX {
+        // The room is the session's own windows (per stream and per connection), never a figure of the
+        // engine's: one request with a full window cannot fill the socket queue and starve the others.
+        let room = self.body_room(stream);
+        if self.streams[at].full || (room == 0 && !bytes.is_empty()) {
             return Poll::Pending;
         }
-        let room = WRITE_HELD_MAX - self.out.len();
         let take = bytes.len().min(room);
         if take > 0 {
+            self.wire.emitting_body(stream, take as u64);
             if let Err(failure) = self.emit(stream, wire::E_BODY, 0, &bytes[..take]) {
                 return Poll::Ready(Err(self.fail(failure)));
             }
         }
         if end && take == bytes.len() {
+            self.wire.emitting_end(stream);
             if let Err(failure) = self.emit(stream, wire::E_END, 0, &[]) {
                 return Poll::Ready(Err(self.fail(failure)));
             }
@@ -611,6 +705,15 @@ impl NativeConnection {
     ) -> Poll<Result<Piece, NativeFailure>> {
         loop {
             if let Some(piece) = self.take_piece(stream, buf) {
+                // The reader took body bytes: on a multiplexed session that is the credit that reopens the
+                // stream's window (`CONSUMED`), given once half the window is owed.
+                if let Ok(taken) = &piece {
+                    if taken.kind == PieceKind::Body && taken.len > 0 {
+                        if let Err(failure) = self.give_credit(stream, taken.len) {
+                            return Poll::Ready(Err(self.fail(failure)));
+                        }
+                    }
+                }
                 return Poll::Ready(piece);
             }
             if let Some(cause) = &self.cause {
@@ -669,9 +772,12 @@ impl NativeConnection {
         let over = self.streams[at].over;
         self.streams.swap_remove(at);
         if !over && self.session.as_ref().is_some_and(TransportConn::is_live) {
-            // Code 0: core's own cancel, no wire code (the framer maps it to its protocol's cancel).
+            // Code 0: core's own cancel, no wire code (the framer maps it to its protocol's cancel). Only this
+            // stream is reset: the others on the connection finish.
+            self.wire.stopping(stream, Reason::Cancelled);
             let _ = self.emit(stream, wire::E_RESET, 0, &[]);
         }
+        let _ = self.stream_over(stream, false);
     }
 
     /// The exchange on `stream` ended and its reader took everything: the stream is forgotten.
@@ -682,6 +788,7 @@ impl NativeConnection {
             .position(|one| one.id == stream && one.over && one.inbox.is_empty())
         {
             self.streams.swap_remove(at);
+            let _ = self.stream_over(stream, false);
         }
     }
 
@@ -702,13 +809,15 @@ impl NativeConnection {
     /// Live, no stream open, nothing queued for the socket: the next exchange to the same destination may ride it.
     #[must_use]
     pub fn reusable(&self) -> bool {
-        self.live() && self.phase == Phase::Open && self.streams.is_empty() && self.out.is_empty()
+        self.streams.is_empty() && self.session_reusable()
     }
 
-    /// The agreed protocol multiplexes streams (h2): a second exchange may open while one is open.
+    /// The session carries several streams at once and takes another now: a second exchange may open
+    /// while one is open. The session's own statement (`SESSION`, `STREAM_BUSY`, `NO_NEW_STREAMS`),
+    /// never the protocol's name.
     #[must_use]
     pub fn multiplexes(&self) -> bool {
-        self.agreed.as_deref() == Some(b"h2")
+        self.session_multiplexes()
     }
 
     /// The connection runs connection security.
@@ -764,23 +873,19 @@ impl NativeConnection {
     pub fn close(mut self) {
         if let Some(session) = self.session.as_mut() {
             let now = Instant::now();
-            if let Ok(Some(acts)) = session.close(wire::CR_NORMAL, now) {
-                let mut queued = Vec::new();
-                for act in acts.iter() {
-                    if let Act::Write(span) | Act::WirePart { bytes: span, .. } = act {
-                        queued.push(SecureVec::from(acts.bytes(*span)));
-                    }
-                }
-                for bytes in &queued {
-                    let _ = self.queue_plain(bytes);
-                }
+            if session.close(wire::CR_NORMAL, now).is_ok() {
+                // E_CLOSE's answer is parts like any other: checked, then queued as one run.
+                let _ = self.apply_outbound();
             }
         }
         if let Some(tls) = self.tls.as_mut() {
             tls.send_close_notify();
-            let _ = drain_tls(tls, &mut self.out);
         }
+        let _ = self.drain_target();
+        // The engine's own TLS session to the proxy, where the proxy is reached over TLS, closes last.
+        self.dialling.close(&mut self.out);
         let _ = self.write_now();
+        self.outbound_gone(Reason::Shutdown);
     }
 
     // ---------------------------------------------------------------------------------------------------------
@@ -810,31 +915,16 @@ impl NativeConnection {
             }
         }
         if self.phase == Phase::Connecting {
-            match crate::socket::poll_connected(&self.sock, cx) {
-                Poll::Pending => return Ok(false),
-                Poll::Ready(Ok(())) => {
-                    self.phase = if self.tls.is_some() {
-                        Phase::Handshaking
-                    } else {
-                        self.open_deadline = None;
-                        Phase::Open
-                    };
-                }
-                Poll::Ready(Err(error)) => {
-                    let Some(next) = self.fallback.pop_front() else {
-                        return Err(io_failure(stage::CONNECT)(error));
-                    };
-                    let (sock, peer) = connect_first(next, &mut self.fallback)?;
-                    self.sock = sock;
-                    self.peer = peer;
-                    cx.waker().wake_by_ref();
-                    return Ok(false);
-                }
+            // The race over the name's addresses, then the first step below the session (the proxy's own
+            // TLS, the CONNECT). The phase stays `Connecting` to the dial's caller until the tunnel, where
+            // there is one, is open.
+            self.progress_connect(cx)?;
+            if self.socket_connecting() {
+                return Ok(false);
             }
         }
-        if let Some(tls) = self.tls.as_mut() {
-            drain_tls(tls, &mut self.out)?;
-        }
+        // The target's TLS writes nothing until the tunnel under it is open.
+        self.drain_target()?;
         self.write_ready(cx)?;
         let handed = self.read_ready(cx)?;
         if self.phase == Phase::Handshaking {
@@ -883,7 +973,13 @@ impl NativeConnection {
             .as_deref()
             .and_then(|id| std::str::from_utf8(id).ok())
             .unwrap_or_default();
-        let peer = crate::StackText::<{ crate::SOCKET_TEXT }>::of(&self.peer);
+        // On a tunnelled dial the transport is told the target's judged address (nothing, where the proxy
+        // resolves the name), never the proxy's.
+        let told = match self.dialling.tunnel_peer() {
+            None => Some(self.peer),
+            Some(target) => target,
+        };
+        let peer = told.map(|addr| crate::StackText::<{ crate::SOCKET_TEXT }>::of(&addr));
         let leaf = self
             .tls
             .as_ref()
@@ -895,7 +991,7 @@ impl NativeConnection {
             flags: 0,
             alpn,
             sni: self.located.name.as_deref().unwrap_or_default(),
-            peer: peer.as_str(),
+            peer: peer.as_ref().map_or("", |text| text.as_str()),
             local: "",
             tls_peer_cert: leaf.as_deref().unwrap_or_default(),
             leftover: &[],
@@ -943,10 +1039,13 @@ impl NativeConnection {
         let mut handed = false;
         let mut chunk = [0_u8; READ_CHUNK];
         loop {
-            if self.eof || self.paused || matches!(self.phase, Phase::Connecting) {
+            if self.eof || self.socket_connecting() {
                 break;
             }
-            if self.inbox_held() >= INBOX_HELD_MAX {
+            // A multiplexed session is always read: the windows it stated bound what can arrive, and a slow
+            // reader stalls its own stream only. A session with one stream is read when its reader holds
+            // nothing.
+            if !self.reads_socket() {
                 break;
             }
             let read = self
@@ -975,6 +1074,21 @@ impl NativeConnection {
 
     /// Bytes the socket read: through TLS where secured, then to `ingest`. `end` = the far end's EOF.
     fn feed(&mut self, bytes: &[u8], end: bool) -> Result<bool, NativeFailure> {
+        // Below the session first: the proxy's own TLS and its answer to the CONNECT take the bytes while
+        // the tunnel is made, and a tunnel through a TLS proxy unwraps every later read.
+        let lowered = self.below_session(bytes)?;
+        if matches!(
+            self.dialling.step(),
+            Step::ProxyHandshake | Step::Tunnelling
+        ) {
+            if end {
+                return Err(drive::proxy_failure(crate::outbound::tunnel::ProxyFailure(
+                    "the proxy closed the connection before the tunnel was open".to_owned(),
+                )));
+            }
+            return Ok(false);
+        }
+        let bytes = lowered.as_ref().map_or(bytes, |inner| inner.as_slice());
         let mut plain = SecureVec::new();
         if let Some(tls) = self.tls.as_mut() {
             let mut rest = bytes;
@@ -1004,7 +1118,9 @@ impl NativeConnection {
                 tls.read_tls(&mut io::empty())
                     .map_err(io_failure(stage::SECURITY))?;
             }
-            drain_tls(tls, &mut self.out)?;
+            self.dialling
+                .drain_target(tls, &mut self.out)
+                .map_err(io_failure(stage::SECURITY))?;
             if self.phase == Phase::Handshaking {
                 if end {
                     return Err(NativeFailure::at(
@@ -1073,34 +1189,38 @@ impl NativeConnection {
     }
 
     /// Act on the session's last answer, in order. `Ok(Some(stream))` = it carried STREAM_OPENED.
+    ///
+    /// Everything the answer writes or states about the connection goes through the outbound driver first
+    /// (`apply_outbound`): the parts are checked against the output model, the sealed grammar and the
+    /// windows, then queued for the socket as one run with the sealed values in place. A breach writes
+    /// nothing of the answer. What is left here is what the far end sent up: heads, bodies, trailers, ends
+    /// and resets for the streams' readers, the transport's timer, and its per-stream backpressure.
     fn apply_last(&mut self) -> Result<Option<u64>, NativeFailure> {
+        let outcome = self.apply_outbound()?;
+        let opened = outcome.opened;
+        // A WebSocket upstream's body pieces are messages: a piece ends its frame only with MSG_FIN.
+        let messages = self.located.carrier == busbar_plugin_abi::plane::CARRIER_WEBSOCKET;
         let Self {
             session,
-            tls,
-            out,
             streams,
             wake,
-            paused,
-            closing,
             ..
         } = self;
         let Some(session) = session.as_mut() else {
             return Ok(None);
         };
         let acts = session.actions();
-        let mut opened = None;
         for act in acts.iter() {
             match act {
-                Act::Write(span) | Act::WirePart { bytes: span, .. } => {
-                    queue(tls.as_mut(), out, acts.bytes(*span))?;
-                }
-                Act::WireEnd { .. } | Act::Abort(_) | Act::Quiescent(_) => {}
-                Act::Close { abort } => {
-                    *closing = true;
-                    if *abort {
-                        out.clear();
-                    }
-                }
+                // The driver's: already checked, queued and recorded.
+                Act::Session(_)
+                | Act::Opened(_)
+                | Act::Busy
+                | Act::NoNewStreams
+                | Act::WirePart { .. }
+                | Act::WireSealed(_)
+                | Act::WireEnd { .. }
+                | Act::Close { .. } => {}
                 Act::Wake(at) => {
                     let after = Duration::from_nanos(at.saturating_sub(mono()));
                     *wake = Some(sleep_for(after));
@@ -1111,9 +1231,6 @@ impl NativeConnection {
                         "the transport asked to upgrade a dialled connection",
                     ));
                 }
-                Act::Opened(stream) => opened = Some(*stream),
-                Act::Pause => *paused = true,
-                Act::Resume => *paused = false,
                 Act::Full(stream) => {
                     if let Some(one) = streams.iter_mut().find(|one| one.id == *stream) {
                         one.full = true;
@@ -1137,11 +1254,16 @@ impl NativeConnection {
                         one.inbox.push_back(Inbound::End);
                     }
                 }
-                Act::Body { stream, bytes, .. } => {
+                Act::Body {
+                    stream,
+                    bytes,
+                    flags,
+                } => {
                     let one = stream_of(streams, *stream)?;
                     one.inbox.push_back(Inbound::Body {
                         bytes: SecureVec::from(bytes.as_slice()),
                         taken: 0,
+                        last: !messages || flags & wire::MSG_FIN != 0,
                     });
                 }
                 Act::Trailers { stream, pairs } => {
@@ -1150,7 +1272,7 @@ impl NativeConnection {
                         .push_back(Inbound::Trailers(field_block(pairs.as_slice())?));
                 }
                 Act::End(stream) => stream_of(streams, *stream)?.inbox.push_back(Inbound::End),
-                Act::Reset { stream, code } => {
+                Act::Reset { stream, code, .. } => {
                     stream_of(streams, *stream)?
                         .inbox
                         .push_back(Inbound::Reset(*code));
@@ -1200,13 +1322,13 @@ impl NativeConnection {
                     declared_len: *declared_len,
                 }
             }
-            Inbound::Body { bytes, taken } => {
+            Inbound::Body { bytes, taken, last } => {
                 let rest = &bytes.as_slice()[*taken..];
                 let n = rest.len().min(buf.len());
                 buf[..n].copy_from_slice(&rest[..n]);
                 *taken += n;
                 let whole = *taken == bytes.len();
-                let piece = plain_piece(PieceKind::Body, id, n, whole);
+                let piece = plain_piece(PieceKind::Body, id, n, whole && *last);
                 if !whole {
                     return Some(Ok(piece));
                 }
@@ -1240,26 +1362,15 @@ impl NativeConnection {
         Some(Ok(piece))
     }
 
-    fn inbox_held(&self) -> usize {
-        self.streams
-            .iter()
-            .flat_map(|one| one.inbox.iter())
-            .map(Inbound::held)
-            .sum()
-    }
-
     fn inbox_pieces(&self) -> usize {
         self.streams.iter().map(|one| one.inbox.len()).sum()
     }
 
     /// Plaintext for the socket, through TLS where secured.
-    fn queue_plain(&mut self, bytes: &[u8]) -> Result<(), NativeFailure> {
-        queue(self.tls.as_mut(), &mut self.out, bytes)
-    }
-
     /// Write what the socket takes now; wake on writability while bytes remain.
     fn write_ready(&mut self, cx: &mut Context<'_>) -> Result<(), NativeFailure> {
-        while !self.out.is_empty() && !matches!(self.phase, Phase::Connecting) {
+        let before = self.flushed;
+        while !self.out.is_empty() && !self.socket_connecting() {
             let want = self.out.len();
             let out = &self.out;
             match self
@@ -1282,6 +1393,10 @@ impl NativeConnection {
             }
         }
         self.out.shrink_when_empty(0);
+        if self.flushed != before {
+            // What the operating system accepted is the delivery evidence of every stream.
+            self.socket_took();
+        }
         Ok(())
     }
 
@@ -1292,6 +1407,8 @@ impl NativeConnection {
         }
         let n = (&*self.sock.socket()).write(self.out.as_slice())?;
         self.out.consume(n);
+        self.flushed = self.flushed.saturating_add(n as u64);
+        self.socket_took();
         Ok(())
     }
 
@@ -1301,6 +1418,11 @@ impl NativeConnection {
             self.cause = Some(failure.cause.clone());
         }
         self.phase = Phase::Failed;
+        // Every open request's delivery verdict is frozen as the socket's progress stands, and every
+        // sealed value still held for it is wiped. A stream whose values the exchange takes back to send
+        // again (`stream_over(stream, true)`) is read before this by `Exchange::attempt_failed`: the
+        // streams are therefore left to the exchanges, and only the bytes go.
+        self.wire_failed(&failure);
         self.streams.clear();
         self.out.clear();
         self.out.shrink_when_empty(0);
@@ -1380,55 +1502,11 @@ impl NativeConnection {
 
 impl Drop for NativeConnection {
     fn drop(&mut self) {
-        // The buffers wipe themselves; the inboxes hold `SecureVec`s. Nothing else holds request bytes.
+        // The buffers wipe themselves; the inboxes hold `SecureVec`s; the sealed values' slots wipe when the
+        // driver lets go of them. Nothing else holds request bytes.
+        self.outbound_gone(Reason::CallerGone);
         self.streams.clear();
     }
-}
-
-/// Connect to `addr`, or to the next of `fallback` when the socket refuses at once.
-fn connect_first(
-    addr: SocketAddr,
-    fallback: &mut VecDeque<SocketAddr>,
-) -> Result<(Registered<TcpStream>, SocketAddr), NativeFailure> {
-    let mut next = Some(addr);
-    let mut last = None;
-    while let Some(addr) = next {
-        match crate::socket::connect(addr).and_then(crate::io::register) {
-            Ok(sock) => return Ok((sock, addr)),
-            Err(error) => last = Some(error),
-        }
-        next = fallback.pop_front();
-    }
-    Err(io_failure(stage::CONNECT)(
-        last.unwrap_or_else(|| io::Error::other("no address to dial")),
-    ))
-}
-
-/// Plaintext into `out`: through TLS where secured.
-fn queue(
-    tls: Option<&mut rustls::ClientConnection>,
-    out: &mut SecureVec,
-    bytes: &[u8],
-) -> Result<(), NativeFailure> {
-    match tls {
-        Some(tls) => {
-            tls.writer()
-                .write_all(bytes)
-                .map_err(io_failure(stage::SECURITY))?;
-            drain_tls(tls, out)
-        }
-        None => out
-            .extend(bytes)
-            .map_err(|_| NativeFailure::at(stage::FRAMER, "write buffer")),
-    }
-}
-
-/// The TLS records rustls has queued, appended to `out`.
-fn drain_tls(tls: &mut rustls::ClientConnection, out: &mut SecureVec) -> Result<(), NativeFailure> {
-    while tls.wants_write() {
-        tls.write_tls(out).map_err(io_failure(stage::SECURITY))?;
-    }
-    Ok(())
 }
 
 fn stream_of(streams: &mut [Stream], id: u64) -> Result<&mut Stream, NativeFailure> {

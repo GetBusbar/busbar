@@ -14,9 +14,6 @@
 //! every destination the proxy choice selects. GREEN when the dial is on the outbound parts
 //! (`busbar_core_connector::outbound`) and the image speaks transport 2.0.
 //!
-//! NOT YET A TEST TARGET: it lives in `tests/pending/` (not compiled) and moves to `tests/` in the
-//! change that puts the dial on the outbound parts.
-//!
 //! The same file proves the parts at the boundary before the real image exists: built with the
 //! reference transport fixture in place of `busbar_transport_http::PLUGIN` (the one line in
 //! [`Rig::new`]), every assertion stands.

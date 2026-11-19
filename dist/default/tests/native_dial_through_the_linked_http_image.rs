@@ -133,6 +133,7 @@ fn a_request_dialled_through_the_linked_http_image_reaches_the_upstream_and_its_
                 anchors: None,
                 open_timeout: Duration::from_secs(10),
                 storage,
+                tunnel: None,
             },
         )
         .expect("the dial begins");
@@ -145,6 +146,7 @@ fn a_request_dialled_through_the_linked_http_image_reaches_the_upstream_and_its_
             ],
             body_len: Some(7),
             budget: Some(Duration::from_secs(20)),
+            sealed_in_clear: false,
         });
         let stream = std::future::poll_fn(|cx| conn.poll_send_head(cx, &mut head, true))
             .await

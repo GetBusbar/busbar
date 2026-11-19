@@ -6,9 +6,9 @@
 //! keeps its socket, its TLS session to the target and its socket queue, and decides nothing
 //! itself about delivery, sealing, credit, the proxy or which address is tried.
 //!
-//! NOT YET DECLARED: `native_dial.rs` gains `#[path = "native_dial/drive.rs"] pub(crate) mod drive;` in the
-//! same change that gives `NativeConnection` the fields listed below and switches the four call
-//! sites. Until then the crate builds without this file.
+//! DECLARED by `native_dial.rs`, which is switched to these functions. What the one compile will
+//! ask of other lines is the last paragraph of this comment (the session adapter's `Act` and
+//! `TransportConn::consumed`).
 //!
 //! Fields `NativeConnection` gains (all made by `dial`, none before it):
 //!
@@ -453,6 +453,53 @@ impl NativeConnection {
         self.wire.accepted(self.flushed);
     }
 
+    /// The socket has not connected yet (the race over the name's addresses is still running): nothing is
+    /// read or written.
+    pub(super) fn socket_connecting(&self) -> bool {
+        self.dialling.step() == Step::Connecting
+    }
+
+    /// The target's TLS records that no run carries (its handshake, its close), queued for the socket
+    /// through the proxy's layer where there is one. Nothing is written before the tunnel under the
+    /// target's TLS is open.
+    pub(super) fn drain_target(&mut self) -> Result<(), NativeFailure> {
+        if !matches!(self.dialling.step(), Step::Handshaking | Step::Open) {
+            return Ok(());
+        }
+        let Some(tls) = self.tls.as_mut() else {
+            return Ok(());
+        };
+        self.dialling
+            .drain_target(tls, &mut self.out)
+            .map_err(|error| NativeFailure::at(stage::SECURITY, error.to_string()))
+    }
+
+    /// CALLED in `fail`: the delivery verdict of every open request is frozen with the reason the
+    /// connection failed for. The sealed values stay for the exchanges that may send again.
+    pub(super) fn wire_failed(&mut self, failure: &NativeFailure) {
+        let reason = if failure.cause.stage == stage::DEADLINE {
+            Reason::Deadline
+        } else {
+            Reason::CallerGone
+        };
+        self.wire.failed(reason);
+    }
+
+    /// CALLED in `poll_read` when the reader took `len` body bytes of `stream`: on a multiplexed
+    /// session, the credit that reopens the stream's window, given as `emit(stream, E_CONSUMED)`.
+    pub(super) fn give_credit(&mut self, stream: u64, len: usize) -> Result<(), NativeFailure> {
+        let Some(count) = self.reader_took(stream, len) else {
+            return Ok(());
+        };
+        let Some(session) = self.session.as_mut().filter(|session| session.is_live()) else {
+            return Ok(());
+        };
+        session
+            .consumed(stream, count, std::time::Instant::now())
+            .map_err(|ended| super::session_failure(&ended))?;
+        self.apply_outbound().map(|_| ())
+    }
+
     /// CALLED in `fail` and in `Drop`: every open request's verdict is frozen and every sealed
     /// value wiped.
     pub(super) fn outbound_gone(&mut self, reason: Reason) {
@@ -462,7 +509,7 @@ impl NativeConnection {
     }
 
     /// The sealed values a `STREAM_BUSY` handed back, for the exchange to offer elsewhere.
-    pub(super) fn take_handed_back(&mut self) -> Option<Slots> {
+    pub(crate) fn take_handed_back(&mut self) -> Option<Slots> {
         self.handed_back.take()
     }
 

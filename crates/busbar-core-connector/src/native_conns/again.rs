@@ -17,8 +17,8 @@
 //! * What was decided is kept on the exchange (`evidence`, `charge`) for the walk's breaker and
 //!   the unit's record: a proxy failure and a redial charge no provider.
 //!
-//! NOT YET DECLARED: `native_conns.rs` gains `#[path = "native_conns/again.rs"] mod again;` in the
-//! change that gives `Exchange` these fields and switches the call sites named below:
+//! DECLARED by `native_conns.rs`, whose `Exchange` carries these fields and calls these functions:
+//!
 //!
 //! ```text
 //! reopen: Option<Reopen>,          // what `open_native` computed, to dial again
@@ -49,6 +49,7 @@ use crate::conns::native_dial::NativeFailure;
 use crate::conns::Answer;
 use crate::outbound::delivery;
 use crate::outbound::redial::{self, Recorded};
+use crate::outbound::seal::Slots;
 
 /// What `open_native` computed for an open, kept so the same request can be dialled again.
 #[derive(Clone)]
@@ -66,36 +67,54 @@ impl Exchange {
     /// send again (the answer is `ConnError::Pending`: the caller's poll pends and the connector
     /// dials afresh), or fail for good with the charge and the record decided.
     pub(super) fn attempt_failed(&mut self, failure: &NativeFailure) -> ConnError {
-        let (sent, far_end, began) = match (&self.state, self.stream) {
-            (State::Dialled(conn), Some(stream)) => {
-                (conn.sent_state(stream), conn.far_end_ended(stream), true)
+        // What was sent of this attempt, how the far end itself ended it where it said so, whether a
+        // session had begun, and whether any of its answer was handed up.
+        let (sent, far_end, began, answered) = match (&self.state, self.stream) {
+            (State::Dialled(conn), Some(stream)) => (
+                conn.sent_state(stream),
+                conn.far_end_ended(stream),
+                true,
+                conn.answered(stream),
+            ),
+            (State::Dialled(conn), None) => {
+                (delivery::State::None, None, conn.session_began(), false)
             }
-            (State::Dialled(conn), None) => (delivery::State::None, None, conn.session_began()),
-            (State::Judging { .. } | State::Gone, _) => (delivery::State::None, None, false),
+            (State::Judging { .. } | State::Gone, _) => (delivery::State::None, None, false, false),
         };
         let ended = crate::conns::native_dial::drive::ended_of(failure, far_end, began);
-        let decision = redial::decide(sent, ended, self.kept, self.redialled);
+        // A busy connection is a lent one by its nature: the request goes elsewhere, nobody is charged.
+        let kept = self.kept || failure.is_busy();
+        let decision = redial::decide(sent, ended, kept, self.redialled);
         self.evidence.push(decision.record);
-        let can_resend = self.reopen.is_some()
+        let has_head = self.reopen.is_some()
             && self
                 .sending
                 .as_ref()
                 .is_some_and(|sending| sending.head.is_some());
-        if decision.resend && can_resend {
-            // The sealed values come back from the failed connection's slots, rewound; the
-            // connection itself is dropped (closed, its buffers wiped).
-            if let (State::Dialled(conn), Some(stream)) = (&mut self.state, self.stream) {
-                self.sealed = conn.stream_over(stream, true);
+        // Nothing is ever sent again once a piece of its answer was handed to the caller.
+        if decision.resend && has_head && !answered {
+            // The sealed values come back from the failed connection, rewound: from the stream's slots, or
+            // (a busy connection, no stream opened) as the transport's answer handed them back. A head
+            // whose values were already wiped is not sent again: it would go without them.
+            let sealed = match (&mut self.state, self.stream) {
+                (State::Dialled(conn), Some(stream)) => conn.stream_over(stream, true),
+                (State::Dialled(conn), None) => Some(conn.take_handed_back().unwrap_or_default()),
+                (State::Judging { .. } | State::Gone, _) => Some(Slots::default()),
+            };
+            if let Some(sealed) = sealed {
+                self.sealed = Some(sealed);
+                // The failed connection is dropped here: closed, its buffers wiped. A busy one is live and
+                // goes on serving the streams it has; it is left to them (dropping this exchange's hold).
+                self.state = State::Gone;
+                self.stream = None;
+                if let Some(sending) = self.sending.as_mut() {
+                    sending.sent = 0;
+                }
+                self.redialled = true;
+                self.resend = true;
+                self.kept = false;
+                return ConnError::Pending;
             }
-            self.state = State::Gone;
-            self.stream = None;
-            if let Some(sending) = self.sending.as_mut() {
-                sending.sent = 0;
-            }
-            self.redialled = true;
-            self.resend = true;
-            self.kept = false;
-            return ConnError::Pending;
         }
         self.charge = decision.charge;
         self.let_go_of_head(true);

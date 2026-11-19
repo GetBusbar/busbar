@@ -59,6 +59,8 @@ struct Sent {
     credit: StreamCredit,
     /// The far end's reset of the stream, if it sent one.
     reset: Option<StreamReset>,
+    /// The stream's sealed values were wiped (the head can no longer be sent again).
+    released: bool,
     /// The far end ended its side.
     ended: bool,
 }
@@ -144,6 +146,7 @@ impl Wire {
             credit: StreamCredit::default(),
             reset: None,
             ended: false,
+            released: false,
         });
         Ok(())
     }
@@ -219,6 +222,7 @@ impl Wire {
                         credit: StreamCredit::default(),
                         reset: None,
                         ended: false,
+                        released: false,
                     });
                     outcome.opened = Some(stream);
                 }
@@ -352,6 +356,7 @@ impl Wire {
     pub(crate) fn release_head(&mut self, stream: u64) {
         if let Some(at) = self.at(stream) {
             self.streams[at].slots.wipe();
+            self.streams[at].released = true;
         }
     }
 
@@ -384,7 +389,8 @@ impl Wire {
             .credit
             .as_mut()
             .and_then(|credit| credit.over(&mut sent.credit));
-        let slots = if resend {
+        // A head whose values were already wiped cannot be sent again: it would go without them.
+        let slots = if resend && !sent.released {
             sent.slots.rewind();
             Some(sent.slots)
         } else {
@@ -399,12 +405,22 @@ impl Wire {
         self.ledger.take(stream)
     }
 
+    /// The connection failed: every open message's verdict is frozen as the socket's progress stands and
+    /// the connection takes no more streams. The sealed values stay in their slots for the exchanges that
+    /// may send their request again ([`Self::over`]); [`Self::gone`] wipes what is left when the connection
+    /// is dropped.
+    pub(crate) fn failed(&mut self, reason: Reason) {
+        self.ledger.gone(reason);
+        self.in_use.gone();
+    }
+
     /// The connection is gone: every open message's verdict is frozen, every sealed value wiped.
     pub(crate) fn gone(&mut self, reason: Reason) {
         self.ledger.gone(reason);
         self.in_use.gone();
         for sent in &mut self.streams {
             sent.slots.wipe();
+            sent.released = true;
         }
         self.offered = None;
     }
@@ -415,6 +431,7 @@ impl Wire {
         self.in_use.gone();
         for sent in &mut self.streams {
             sent.slots.wipe();
+            sent.released = true;
         }
         self.offered = None;
     }

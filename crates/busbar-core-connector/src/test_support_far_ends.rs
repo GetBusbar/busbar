@@ -10,8 +10,8 @@
 //! proxy (the tunnel, the refusal, the password in the CONNECT only, no second CONNECT on a kept
 //! connection). Standard library only, so the linked-image tests can use them unchanged.
 //!
-//! NOT YET DECLARED: `lib.rs` gains this file beside `test_support.rs`, under the same
-//! `#[cfg(any(test, feature = "test-support"))]`, as `pub mod test_support_far_ends;`.
+//! Declared by `conns.rs` beside `test_support`, under the same
+//! `#[cfg(any(test, feature = "test-support"))]`.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};

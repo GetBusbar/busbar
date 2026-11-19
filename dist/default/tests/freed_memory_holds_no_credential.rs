@@ -15,9 +15,6 @@
 //! RED at the integration head (the library's read buffer and header values are freed unwiped).
 //! GREEN with the fork change stated at the end of this file.
 //!
-//! NOT YET A TEST TARGET: it lives in `tests/pending/` (not compiled) and moves to `tests/` with
-//! its `[[test]]` entry (`harness = true`; it needs its own process because it installs a global
-//! allocator).
 
 #![cfg(unix)]
 
