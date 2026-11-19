@@ -100,8 +100,25 @@ pub struct NativeDataRoute {
     admission: Admission,
 }
 
+/// How the listener plan mounts one declared route ([`NativeDataRoute::planned`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Planned {
+    /// Bind a [`NativeDataRoute`] with the route's chain: the listener verifies, then serves by
+    /// the route's admission (with a unit, or verified and not billed).
+    Data,
+    /// Bind a `NativeUpgradeRoute` with the route's chain.
+    Upgrade,
+    /// Mount with no completion: the route's record admits nobody in particular.
+    Public,
+    /// The admin plan's: not a data listener's route.
+    Admin,
+    /// Not mounted, for a reason that is the operator's configuration.
+    NotMounted(NotMounted),
+    /// The image's declaration is unusable (the loader refuses such an image).
+    Unusable(&'static str),
+}
+
 const OTHER_PATH_PUBLIC: &str = "a public route is served by the listener's public class";
-const OTHER_PATH_OPTIONAL: &str = "an optional route is served by the listener's optional class";
 const OTHER_PATH_TICKET: &str = "a ticket route is served by the listener's ticket class";
 const OTHER_PATH_SIGNED: &str = "a signed route is served by the listener's signed-ingress class";
 const OTHER_PATH_UPGRADE: &str = "an upgrade route is served by the native upgrade path";
@@ -123,9 +140,6 @@ impl NativeDataRoute {
         self.owners.inventory.is_some()
     }
 
-    /// Whether this path can admit `mounted` on `seat` at all, before any owner exists: the
-    /// route-shape half of [`Self::bind`]. Err names what it lacks. A route this path cannot admit
-    /// is never served unadmitted: the listener leaves it unmounted.
     /// The record of `mounted` on `seat`: the record its image declared, read once here.
     ///
     /// An image built before the route record states its four fields is read by what it does
@@ -167,15 +181,61 @@ impl NativeDataRoute {
         Ok((record, admission))
     }
 
+    /// How the listener plan mounts `mounted` on `seat`: the one decision the plan makes about a
+    /// declared route. `chain`: the chain the route would be judged by (its own instances where
+    /// it declares a credential header, else the data chain), `None` when no configured instance
+    /// reads its credential. Every route is mounted by its admission or left unmounted for a
+    /// reason that is the operator's configuration, logged once and listed by the admin API.
+    pub fn planned(
+        seat: &PortSeat,
+        mounted: &Mounted,
+        chain: Option<&NativeChain>,
+        upgrade_transport: bool,
+        signature_verifier: bool,
+    ) -> Planned {
+        let Some(record) = Self::record_of(seat, mounted) else {
+            return Planned::Unusable("the route's declaration names no class or no caller");
+        };
+        let offered = Offered {
+            verifier_reads_header: chain.is_some(),
+            chain_yields_shared: chain.is_some_and(NativeChain::admits_anonymous),
+            upgrade_transport,
+            signature_verifier,
+            challenge_unresolved: record.mounted_challenge(seat.public_url()).is_err(),
+        };
+        match super::admission_table::mounted(&record, offered) {
+            Err(why) => Planned::NotMounted(why),
+            Ok(
+                Admission::Walk
+                | Admission::Selected
+                | Admission::PrincipalOnly
+                | Admission::Catalog
+                | Admission::Optional,
+            ) => Planned::Data,
+            Ok(Admission::Upgrade) => Planned::Upgrade,
+            Ok(Admission::Public) => Planned::Public,
+            // A plane's admin routes are mounted on the admin door by the admin plan.
+            Ok(Admission::Operator) => Planned::Admin,
+            // No native verifier exists for a ticket or a sender's signature: such a route is
+            // left unmounted and says so, until its verifier is linked.
+            Ok(Admission::Ticket) => Planned::NotMounted(NotMounted::NoVerifierReadsItsHeader),
+            Ok(Admission::SignedIngress) => Planned::NotMounted(NotMounted::NoSignatureVerifier),
+            Ok(Admission::Internal) => Planned::NotMounted(NotMounted::Internal),
+        }
+    }
+
     /// Whether this path can admit `mounted` on `seat` at all, before any owner exists: the
     /// route-shape half of [`Self::bind`]. Err names what it lacks. A route this path cannot admit
     /// is never served unadmitted: the listener leaves it unmounted.
     ///
-    /// This path owns every admission whose caller the route's chain verifies as a principal: a
-    /// walk, a selection, a principal-only route, a catalog. A plane bound to an audience and a
-    /// deployment with `oauth_as` are served: the audience is judged on the head
-    /// ([`refuse_foreign_audience`]) and a core-minted token by the chain. A route with hooks is
-    /// served: its hooks run inside the admitted session (`PortDriver::serve_inner` binds them).
+    /// This path owns every admission whose caller the route's chain verifies: a walk, a
+    /// selection, a principal-only route, a catalog, and an optional route's request that presents
+    /// a credential. A plane bound to an audience is served: a bearer that states an audience is
+    /// judged on the head ([`refuse_foreign_audience`]). A deployment with `oauth_as` is served
+    /// for every credential its chain's instances verify; a token core itself minted is still
+    /// refused by [`refuse_bound_carriers`] until core's own token verifier is a chain member
+    /// (it must not be accepted unverified). A route with hooks is served: its hooks run inside
+    /// the admitted session (`PortDriver::serve_inner` binds them).
     pub fn admits(_app: &App, seat: &PortSeat, mounted: &Mounted) -> Result<(), &'static str> {
         let Some(record) = Self::record_of(seat, mounted) else {
             return Err("the route's declaration names no class or no caller");
@@ -184,21 +244,23 @@ impl NativeDataRoute {
             Admission::Walk
             | Admission::Selected
             | Admission::PrincipalOnly
-            | Admission::Catalog => {}
+            | Admission::Catalog
+            | Admission::Optional => {}
             Admission::Public => return Err(OTHER_PATH_PUBLIC),
-            Admission::Optional => return Err(OTHER_PATH_OPTIONAL),
             Admission::Ticket => return Err(OTHER_PATH_TICKET),
             Admission::SignedIngress => return Err(OTHER_PATH_SIGNED),
             Admission::Upgrade => return Err(OTHER_PATH_UPGRADE),
             Admission::Operator => return Err(OTHER_PATH_OPERATOR),
             Admission::Internal => return Err("an internal route is not on a listener"),
         }
-        if mounted.effective != AUTH_PRINCIPAL {
-            return Err("the operator's auth choice for this route is not a principal");
+        if mounted.effective != mounted.auth {
+            return Err("the operator's auth choice for this route is not the route's own");
         }
         // A route that declares resource kinds is admitted only through its plane's selection;
         // a route that declares none is admitted through the plane's `request` (no selection).
-        if !record.scope.selected.is_empty() && !seat.driver.port().selects_resources() {
+        if !record.scope.selected.is_empty()
+            && seat.driver.port().facts() & busbar_plugin_abi::plane::FB_RESOURCE_ADMISSION == 0
+        {
             return Err("the route declares resource kinds its plane does not select");
         }
         Ok(())
