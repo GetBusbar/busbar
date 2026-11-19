@@ -634,15 +634,16 @@ mod tests {
     #[test]
     fn once_the_key_multiplexes_a_later_open_joins_the_dial_in_flight() {
         let mut set: InUse<&str, Conn> = InUse::new();
-        let first = conn(&h2());
+        let first = dialling();
         set.dial_began(&"k", &first);
         set.dial_opened(&"k", &h2());
+        session_began(&first, &h2());
         opened(&first);
         // The first connection drains (the far end is closing it); a new dial begins.
         let mut draining = first.get();
         draining.draining();
         first.set(draining);
-        let second = conn(&h2());
+        let second = dialling();
         set.dial_began(&"k", &second);
         match set.lend(&"k", view, false, false) {
             Lent::Join(joined) => assert!(Rc::ptr_eq(&joined, &second)),

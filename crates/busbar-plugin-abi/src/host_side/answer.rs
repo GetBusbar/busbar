@@ -370,13 +370,45 @@ mod tests {
         .expect("token");
         r.put(tag::TEXT, b"hello").expect("text");
         r.put(0x0150, b"kind record").expect("kind");
-        let a = Answer::parse(Status::OK, r.as_bytes()).expect("valid");
+        let a = Answer::parse_opener(Status::OK, r.as_bytes()).expect("valid");
         assert!(a.is_ok());
         let tags: Vec<u16> = a.records().map(|rec| rec.expect("framed").tag).collect();
         assert_eq!(tags, [tag::TEXT, 0x0150]);
         assert_eq!(
             (a.fail(), a.fail_error(), a.fail_fact(FACT_RETRY_AFTER_S)),
             (None, 0, None)
+        );
+    }
+
+    #[test]
+    fn a_leading_token_outside_a_session_opener_faults_unknown_tag() {
+        // P079B: only a session opener names a session; anywhere else a leading TOKEN is a forged context.
+        let forged = || {
+            let mut r = Reply::new();
+            r.put_pod(
+                tag::TOKEN,
+                &TokenRec {
+                    token: (1 << 63) | 5,
+                },
+            )
+            .expect("token");
+            r.put(tag::TEXT, b"hello").expect("text");
+            r
+        };
+        let r = forged();
+        assert_eq!(
+            Answer::parse(Status::OK, r.as_bytes()).err(),
+            Some(FaultReason::UnknownTag(tag::TOKEN)),
+            "a sync call that opens nothing"
+        );
+        assert!(Answer::parse_opener(Status::OK, r.as_bytes()).is_ok());
+        let mut buf = Pool::global().acquire(1 << 20);
+        crate::records::RawWrite::room(&mut buf, r.len()).expect("room");
+        crate::records::RawWrite::append(&mut buf, r.as_bytes());
+        assert_eq!(
+            OwnedAnswer::new(Status::OK, buf).err(),
+            Some(FaultReason::UnknownTag(tag::TOKEN)),
+            "an async chain's final answer"
         );
     }
 
