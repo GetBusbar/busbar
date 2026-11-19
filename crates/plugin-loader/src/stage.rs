@@ -11,20 +11,6 @@ use std::sync::{Mutex, OnceLock};
 // arrive through `load_library_from_bytes` under the native load guard; the standalone path loads
 // are refused once that guard is installed.
 
-/// Open the library at `path` on the permanent plugin thread.
-pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String> {
-    // SAFETY: loading an operator-placed library runs its init code, which is the same trust as
-    // compiling it in. Callers apply the trust gate first.
-    match crate::ffi_thread::on_plugin_thread(|| {
-        crate::ffi_thread::debug_assert_permanent("dlopen");
-        unsafe { Library::new(path) }
-    }) {
-        Ok(r) => r.map_err(|e| loader_error(&e)),
-
-        Err(_) => Err("the library's initializer panicked while loading".to_string()),
-    }
-}
-
 /// A libloading error as the loader reported it. libloading's `Display` for `DlOpen`/`DlSym` is
 /// only the label ("dlopen failed"); the `dlerror` text (e.g. "version `GLIBC_2.38' not found") is
 /// the error's `source`, so the whole chain is joined, then made safe by [`loader_reason`].
@@ -69,17 +55,6 @@ pub(crate) fn loader_reason(text: &str) -> String {
         }
     }
     out
-}
-
-/// Unload `lib` on the permanent plugin thread, so its finalizers never run on a caller thread
-/// that may retire (`ffi_thread`).
-pub(crate) fn dlclose_on_worker(lib: Library) {
-    #[cfg(test)]
-    crate::UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
-    let _ = crate::ffi_thread::on_plugin_thread(move || {
-        crate::ffi_thread::debug_assert_permanent("dlclose");
-        drop(lib);
-    });
 }
 
 /// Why admit step 8 opened no image.
@@ -576,87 +551,6 @@ pub(crate) fn allow_standalone_path_load() -> Result<(), String> {
         return Err("this host requires a retained admitted archive before native loading; direct path loading is unavailable".into());
     }
     Ok(())
-}
-
-pub(crate) fn load_library_from_bytes(
-    bytes: &[u8],
-    display: &str,
-) -> Result<(Library, Staged), String> {
-    if let Some(guard) = NATIVE_LOAD_GUARD.get() {
-        guard(bytes, display)?;
-    }
-    #[cfg(test)]
-    STAGED_HERE.with(|n| n.set(n.get() + 1));
-    #[cfg(target_os = "linux")]
-    {
-        match load_via_memfd(bytes, display) {
-            Ok(loaded) => return Ok(loaded),
-            Err(e) => {
-                eprintln!(
-                    "[warn] memfd load unavailable for plugin '{display}' ({e}); falling back to \
-                     private temp staging"
-                );
-            }
-        }
-    }
-    load_via_staged_file(bytes, display, &mut |_| {})
-}
-
-fn load_via_staged_file(
-    bytes: &[u8],
-    display: &str,
-    before_load: &mut dyn FnMut(&std::path::Path),
-) -> Result<(Library, Staged), String> {
-    let (path, pin) = stage_temp_file(bytes)?;
-
-    let abandon = |pin: std::fs::File, path: &PathBuf| {
-        drop(pin);
-        release_temp_file(path);
-    };
-    before_load(&path);
-    if let Err(why) = verify_pinned(&pin, &path, bytes) {
-        abandon(pin, &path);
-        return Err(format!(
-            "refusing to load plugin '{display}': its staged file {why}"
-        ));
-    }
-    // SAFETY: running an operator-trusted plugin's init code - the same trust as compiling it in.
-    // The file was created by us, in a directory we created 0700, from already-verified bytes,
-    // and was verified at its name through the pin immediately above.
-    let lib = match crate::stage::dlopen_on_worker(std::ffi::OsStr::new(&path)) {
-        Ok(lib) => lib,
-        Err(e) => {
-            abandon(pin, &path);
-            return Err(format!("failed to load plugin '{display}': {e}"));
-        }
-    };
-    if let Err(why) = verify_pinned(&pin, &path, bytes) {
-        crate::stage::dlclose_on_worker(lib);
-        abandon(pin, &path);
-        return Err(format!(
-            "refusing to load plugin '{display}': its staged file changed while it was loading \
-             ({why}); unloaded"
-        ));
-    }
-    Ok((
-        lib,
-        Staged::TempFile {
-            path,
-            pin: Some(pin),
-        },
-    ))
-}
-
-#[cfg(target_os = "linux")]
-fn load_via_memfd(bytes: &[u8], display: &str) -> Result<(Library, Staged), String> {
-    let fd = sealed_memfd(bytes)?;
-    let path = memfd_name(&fd);
-    // SAFETY: same operator-trust as any plugin load; the fd content is exactly the verified bytes
-    // and is not reachable by path from any other process's namespace. The name is not held by any
-    // resident image: a released image that stays resident keeps its fd, so `N` is not free.
-    let lib = crate::stage::dlopen_on_worker(std::ffi::OsStr::new(&path))
-        .map_err(|e| format!("failed to load plugin '{display}' from memfd: {e}"))?;
-    Ok((lib, Staged::Memfd { fd: Some(fd) }))
 }
 
 /// A memfd holding exactly `bytes`, sealed against every later write, grow and shrink.
