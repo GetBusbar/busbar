@@ -669,3 +669,64 @@ async fn close_racing_governed_admissions_counts_each_once() {
         );
     }
 }
+
+/// RECOVERY REPLAY CHARGES ONCE. A unit that was open when the process died is replayed at boot
+/// as recovered custody with its last counts. While its removal cannot be acknowledged it is
+/// visited by every flush pass; each visit refreshes its targets from the Store and none may add
+/// its counts to the hot cell again. Settling it, and passes after it settled, add nothing either.
+/// (The in-memory re-count of a selected unit in the same flusher is proven once-only by
+/// `selected_memory_capacity_retains_all_facts_then_retries_once`.)
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replayed_unit_is_counted_once_across_flush_passes_and_its_settlement() {
+    const BUCKET: &str = "group:A@total";
+    let replayed = UnitCheckpoint {
+        ended: true,
+        terminal: Some(Vec::new()),
+        ..unit(7, 7, &[(BUCKET, 0)], &[("work", Count::ONE)])
+    };
+    // Attaching the sink replays the unit and runs the first flush; removal is refused.
+    let (gov, sink) = gov(vec![replayed]).await;
+    assert!(
+        gov.unit_checkpoint_pending(&id(7)),
+        "the replayed unit is held as recovered custody"
+    );
+    assert_eq!(
+        gov.check_unit_checkpoint_book(),
+        1,
+        "exactly one recovered entry: the replay did not duplicate the unit"
+    );
+    let after_replay = hot_cell(&gov, BUCKET);
+
+    for pass in 1..=3 {
+        let _ = gov.flush_unit_checkpoints().await;
+        assert!(
+            gov.unit_checkpoint_pending(&id(7)),
+            "custody whose removal is refused stays held (pass {pass})"
+        );
+        assert_eq!(
+            hot_cell(&gov, BUCKET),
+            after_replay,
+            "flush pass {pass} over unresolved recovered custody counted the unit again"
+        );
+    }
+
+    sink.stuck.store(false, Ordering::SeqCst);
+    gov.flush_unit_checkpoints().await.unwrap();
+    assert!(
+        !gov.unit_checkpoint_pending(&id(7)),
+        "recovered custody settled once its removal was acknowledged"
+    );
+    assert_eq!(
+        hot_cell(&gov, BUCKET),
+        after_replay,
+        "settling recovered custody counted the unit again"
+    );
+
+    gov.flush_unit_checkpoints().await.unwrap();
+    assert_eq!(
+        hot_cell(&gov, BUCKET),
+        after_replay,
+        "a pass after settlement counted the unit again"
+    );
+    assert_eq!(gov.check_unit_checkpoint_book(), 0);
+}
