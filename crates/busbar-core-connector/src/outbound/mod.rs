@@ -20,6 +20,7 @@
 //! * [`connect`]: several addresses for one name: each its share of the time, the other family
 //!   started after a short delay.
 //! * [`ws`]: a WebSocket upstream on the dial.
+//! * [`retry_after`]: `Retry-After` as seconds or as a date, both read.
 //! * [`wire`]: the driver. One connection's ledger, slots, credit and lending state, applied to
 //!   each answer of the transport in the one order that is right. The dial calls the driver and
 //!   the three planners (`lend::choose`, `tunnel::Dialling`, `connect::Race`), nothing else.
@@ -48,6 +49,7 @@ pub(crate) mod delivery;
 pub(crate) mod lend;
 pub(crate) mod records;
 pub(crate) mod redial;
+pub(crate) mod retry_after;
 pub(crate) mod seal;
 pub(crate) mod tunnel;
 pub(crate) mod wire;

@@ -36,6 +36,7 @@ use std::time::Duration;
 
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::records::{record_size, Fixed, Writer};
+use busbar_plugin_abi::transport as wire;
 
 use super::{sleep_for, stage, NativeConnection, NativeFailure, NativeHead, Phase};
 use crate::framed_stream::session::Act;
@@ -572,6 +573,62 @@ impl NativeConnection {
             }
         }
         slots
+    }
+}
+
+/// MESSAGES ON A WEBSOCKET UPSTREAM (`native_conns/messages.rs` is the exchange's side).
+impl NativeConnection {
+    /// One piece of a message on `stream`: `emit(stream, E_BODY)` with the message's flags.
+    /// Ready with the bytes taken (`0` while the stream is held or the socket queue is not
+    /// drained: the wake comes with the next readiness). A message piece is taken whole or not
+    /// at all, so a frame is never split by the engine.
+    pub fn poll_send_message(
+        &mut self,
+        cx: &mut Context<'_>,
+        stream: u64,
+        bytes: &[u8],
+        flags: u32,
+    ) -> Poll<Result<usize, NativeFailure>> {
+        if let Err(failure) = self.progress(cx) {
+            return Poll::Ready(Err(failure));
+        }
+        let Some(at) = self.streams.iter().position(|one| one.id == stream) else {
+            return Poll::Ready(Err(NativeFailure::outbound(
+                "a message for a stream that is not open",
+            )));
+        };
+        if self.streams[at].full || self.body_room(stream) < bytes.len() {
+            return Poll::Pending;
+        }
+        self.wire.emitting_body(stream, bytes.len() as u64);
+        if let Err(failure) = self.emit(stream, wire::E_BODY, flags, bytes) {
+            return Poll::Ready(Err(self.fail(failure)));
+        }
+        if let Err(failure) = self.progress(cx) {
+            return Poll::Ready(Err(failure));
+        }
+        Poll::Ready(Ok(bytes.len()))
+    }
+
+    /// The engine's close of the session on `stream`: `emit(stream, E_END)`. The transport writes
+    /// its close frame; the session's delivery verdict is `whole` once that frame is accepted and
+    /// flushed.
+    pub fn poll_close_stream(
+        &mut self,
+        cx: &mut Context<'_>,
+        stream: u64,
+    ) -> Poll<Result<(), NativeFailure>> {
+        if let Err(failure) = self.progress(cx) {
+            return Poll::Ready(Err(failure));
+        }
+        self.wire.emitting_end(stream);
+        if let Err(failure) = self.emit(stream, wire::E_END, 0, &[]) {
+            return Poll::Ready(Err(self.fail(failure)));
+        }
+        match self.progress(cx) {
+            Err(failure) => Poll::Ready(Err(failure)),
+            Ok(_) => Poll::Ready(Ok(())),
+        }
     }
 }
 
