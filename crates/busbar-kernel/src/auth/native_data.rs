@@ -974,11 +974,15 @@ impl NativeDataPending {
         decision: &ClientRefusal,
     ) -> Result<(PhysicalExecutionOwner, DataRefusalCustody), DataRefused> {
         let mut custody = self.custody.lock().map_err(|_| DataRefused::Unit)?;
-        if custody.phase != DataCommitPhase::ExpectedPreMoneyRefusal
-            || custody.refusal.as_ref() != Some(decision)
-            || self.execution.get().is_some()
-            || self.pending.admitted().is_some()
-        {
+        // Either money itself refused this decision, or the session refused before money was
+        // ever asked (the key's grant, the plane's own refusal of its input): the commit never
+        // ran, and once the bundle leaves here it never can.
+        let before_money = match custody.phase {
+            DataCommitPhase::ExpectedPreMoneyRefusal => custody.refusal.as_ref() == Some(decision),
+            DataCommitPhase::Awaiting => custody.refusal.is_none(),
+            _ => false,
+        };
+        if !before_money || self.execution.get().is_some() || self.pending.admitted().is_some() {
             return Err(DataRefused::Unit);
         }
         let bundle = custody.bundle.take().ok_or(DataRefused::Unit)?;
