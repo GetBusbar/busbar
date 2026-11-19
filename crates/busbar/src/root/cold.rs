@@ -122,40 +122,6 @@ pub(crate) fn media_unopened(why: &str) -> String {
     format!("the offer cannot open a media session: {why}")
 }
 
-/// `serve`: a refused media offer, rendered by its plane (or as its plain text when the plane
-/// renders none) and audited as rejected.
-#[cold]
-pub(crate) fn refused_open(
-    served: &crate::root::serve::ServedPlane,
-    principal: &str,
-    arrival: &busbar_kernel::plane_driver::Arrival,
-    carrier: &str,
-    reason: busbar_contract::caps::ReasonCode,
-    text: &str,
-) -> busbar_kernel::plane_driver::Rendered {
-    let status = busbar_kernel::plane_driver::refusal_status(reason);
-    let dialect = served
-        .snapshot
-        .claims
-        .get(arrival.claim as usize)
-        .map_or(0, |c| u32::from(c.refusal_dialect));
-    let rendered = served
-        .driver
-        .refuse_kernel(reason, status, text, dialect, &arrival.target)
-        .unwrap_or_else(|| busbar_kernel::plane_driver::Rendered {
-            status,
-            fields: Vec::new(),
-            body: text.as_bytes().to_vec(),
-        });
-    busbar_kernel::audit::auditlog::emit_admin_hostless_now(
-        "door.session_open",
-        &format!("{}:{carrier}", served.instance),
-        busbar_contract::vocab::OUTCOME_REJECTED,
-        principal,
-    );
-    rendered
-}
-
 /// `serve`: a pool name a plane decoded that is not UTF-8, replaced lossily.
 #[cold]
 pub(crate) fn lossy_name(bytes: &[u8]) -> String {

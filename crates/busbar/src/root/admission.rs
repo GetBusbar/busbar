@@ -207,20 +207,12 @@ impl PluginAdmission for RootAdmission {
                 )));
             }
         }
-        let linked: Vec<_> = busbar_kernel::preflight::linked_rows()
-            .iter()
-            .map(crate::root::boot::linked_row)
-            .collect();
-        let linked_serves = crate::root::loader::PluginRegistry::empty()
-            .link(linked)
-            .and_then(|rows| rows.linked_copy(manifest, file))
-            .map_err(Refusal::Conflict)?
-            .is_some();
+        // No linked row of the old interface serves a dropped-in manifest in its place.
         Ok(Admitted {
             stated: stated(manifest).map_err(Refusal::Validation)?,
             judged,
             verification,
-            linked_serves,
+            linked_serves: false,
         })
     }
 

@@ -397,9 +397,6 @@ fn admit_dropped_images(
     let policy = super::boot::trust_policy(plugins, env!("CARGO_PKG_VERSION"))
         .map_err(|error| format!("plugins.trust is invalid: {error}"))?;
     for row in scanned.loadable() {
-        if row.linked() {
-            continue;
-        }
         match busbar_plugin_loader::admit::admit_bytes(&row.lib_bytes, &row.manifest, &policy) {
             Ok(image) => admitted.push((image, row.manifest.alias.clone())),
             Err(refusal) => tracing::debug!(

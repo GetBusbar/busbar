@@ -26,7 +26,7 @@ use busbar_ports::transport::TransportPort;
 
 use super::min3_auth::AuthSet;
 use super::min3_boot::transports::ServedTransport;
-use super::serve::DoorMounts;
+use super::serve::DataMounts;
 
 /// These are the configured sources already used by this candidate's actual seat egress.
 #[derive(Clone)]
@@ -262,18 +262,18 @@ fn core_method_mask(method: RouteMethod) -> u32 {
         }
 }
 
-/// Assemble only after the actual DoorMounts and candidate inventories exist. Every sealed
+/// Assemble only after the actual DataMounts and candidate inventories exist. Every sealed
 /// guest must have a supported complete class; unsupported guests refuse the whole candidate.
 pub(crate) fn assemble_slot(
     app: &App,
     slot: &str,
     transport: Arc<dyn TransportPort>,
     guests: GuestList,
-    mounts: DoorMounts,
+    mounts: DataMounts,
     owners: &SlotOwners,
     websocket: Option<ServedTransport>,
 ) -> Result<Arc<NativeSlot>, String> {
-    let DoorMounts {
+    let DataMounts {
         data: dispatch,
         routes,
         refusals,

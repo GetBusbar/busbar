@@ -45,9 +45,10 @@ impl NativeOperator {
         self.auth_names.store(Some(Arc::new(names)));
     }
 
-    /// `claims` with the published native claims added. One canonical plugin is one claim: a native claim whose
-    /// canonical name a door row already claims is not added twice.
-    pub(crate) fn merged(&self, mut claims: OperatorClaims) -> OperatorClaims {
+    /// The published native claims. One canonical plugin is one claim: a native claim whose canonical name is
+    /// already claimed is not added twice.
+    pub(crate) fn claims(&self) -> OperatorClaims {
+        let mut claims = OperatorClaims::default();
         if let Some(native) = self.claims.load_full() {
             for claim in native.iter() {
                 if !claims.claims.iter().any(|c| c.canonical == claim.canonical) {

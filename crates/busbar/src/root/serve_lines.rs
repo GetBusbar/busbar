@@ -189,7 +189,7 @@ where
     {
         Ok(gov) => gov,
         Err(sentence) => {
-            refuse(instance, PORT_LINE_CARRIER, &sentence);
+            eprintln!("busbar: {instance} {PORT_LINE_CARRIER} serve refused to start: {sentence}");
             return 1;
         }
     };

@@ -32,13 +32,8 @@ pub(crate) fn prepare(
             .first_party_floors
             .insert(name.clone(), version.clone());
     }
-    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
-        .iter()
-        .map(super::linked_row)
-        .collect();
-    linked.extend(super::linked_exports(crate::LINKED.export_doors).map_err(GrammarRefusal)?);
     // The read owns one capture: executable admission and grammar consume its exact bytes.
-    let metadata = super::scanned_registry(linked, &plugins).map_err(GrammarRefusal)?;
+    let metadata = super::scanned_registry(&plugins).map_err(GrammarRefusal)?;
     let admitted =
         crate::root::min3_boot::admit_images(&plugins, &metadata).map_err(GrammarRefusal)?;
     audit_untrusted(&admitted);
@@ -281,12 +276,7 @@ pub(crate) fn fixture(
     process: &ProcessResources,
     plugins: &busbar_kernel::config::PluginsCfg,
 ) -> Result<FileImages, String> {
-    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
-        .iter()
-        .map(super::linked_row)
-        .collect();
-    linked.extend(super::linked_exports(crate::LINKED.export_doors)?);
-    let metadata = super::scanned_registry(linked, plugins)?;
+    let metadata = super::scanned_registry(plugins)?;
     let policy = super::trust_policy(plugins, env!("CARGO_PKG_VERSION"))?;
     let mut admitted = Vec::new();
     for row in crate::LINKED.images {

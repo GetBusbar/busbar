@@ -23,7 +23,7 @@ const CONSTRAINTS_UNAVAILABLE: &str = "native child target and spend constraints
 const PARENT_ADMISSION: &str = "native child has no live parent billing admission";
 
 /// Built once before the serving generation is published. The same guest precedence rules
-/// choose native, legacy and core claims; matching a core claim never falls through to a plane.
+/// choose native and core claims; matching a core claim never falls through to a plane.
 pub(crate) struct NativeNests {
     pub(crate) guests: GuestList,
     pub(crate) destinations: BTreeMap<(String, u32), usize>,
@@ -43,8 +43,8 @@ impl NativeNests {
             .map(|seat| (*seat, line.route.rung))
     }
 
-    /// `None` means this table selected no native destination; the existing legacy dispatcher
-    /// may resolve its own claim. Every selected native refusal is terminal, with no fallback.
+    /// `None` means this table selected no native destination: the nested unit is unserved. Every
+    /// selected native refusal is terminal, with no fallback.
     pub(crate) async fn dispatch(
         &self,
         snapshot: Arc<DispatchSnapshot>,

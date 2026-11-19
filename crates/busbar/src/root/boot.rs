@@ -3,12 +3,12 @@
 
 use std::sync::Arc;
 
-use super::loader::{boot::*, LinkedPlugin, PluginRegistry};
-use busbar_contract::kinds::KindCode;
+use super::loader::{boot::*, PluginRegistry};
+use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::plugin_rows::PluginRows;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
 use busbar_kernel::config_validate::deal::{Document, Seat};
-use busbar_kernel::preflight::{BuildNote, CopyLine, Fetched, LinkedRow, RegistryIn};
+use busbar_kernel::preflight::{BuildNote, Fetched, RegistryIn};
 
 /// A host-owned pairing of the admitted archive and the exact retained library allocation.
 /// Weak ownership follows the caller's generation without keeping retired images alive forever.
@@ -29,7 +29,6 @@ fn remember_native_images(registry: &PluginRegistry, plugins: &PluginsCfg) {
     let fresh: Vec<_> = registry
         .loadable()
         .iter()
-        .filter(|image| !image.linked())
         .filter_map(|image| {
             Some(NativeImage {
                 bytes: Arc::downgrade(&image.lib_bytes),
@@ -263,7 +262,7 @@ async fn hold_plugin_floor(rows: &dyn PluginRows, plugins: &PluginsCfg) -> Resul
         // The synchronous dlopen guard checks this proof; it performs no Store I/O.
         if let Some(registry) = super::loader::rows::registry_of(rows) {
             let mut prepared = Vec::new();
-            for image in registry.loadable().iter().filter(|image| !image.linked()) {
+            for image in registry.loadable() {
                 let row = PluginRows::resolve(registry, &image.manifest.name)
                     .ok_or("admitted native image lost its registry row")?;
                 let archive = image
@@ -306,16 +305,14 @@ pub(crate) async fn admit_recovered_plugins(plugins: &PluginsCfg) -> Result<(), 
 }
 
 pub fn registry(
-    linked: Vec<LinkedPlugin>,
     plugins: Option<&PluginsCfg>,
     _data_dir: Option<&std::path::Path>,
     note: &mut dyn FnMut(Note<'_>),
 ) -> Result<PluginRegistry, String> {
-    registry_with_floor(linked, plugins, true, note)
+    registry_with_floor(plugins, true, note)
 }
 
 fn registry_with_floor(
-    linked: Vec<LinkedPlugin>,
     plugins: Option<&PluginsCfg>,
     _check_floor: bool,
     note: &mut dyn FnMut(Note<'_>),
@@ -330,7 +327,7 @@ fn registry_with_floor(
             dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
         }),
     };
-    let registry = super::loader::boot::registry(Build { linked, scan }, note)?;
+    let registry = super::loader::boot::registry(Build { scan }, note)?;
     if let Some(plugins) = plugins {
         remember_native_images(&registry, plugins);
     }
@@ -342,49 +339,20 @@ pub(crate) fn registry_rows(
     i: RegistryIn<'_>,
     note: &mut dyn FnMut(BuildNote<'_>),
 ) -> Result<Arc<dyn PluginRows>, String> {
-    let linked: Vec<_> = i.linked.iter().map(linked_row).collect();
-    let registry = registry_with_floor(linked, i.plugins, !i.inventory_only, &mut |n| match n {
+    // The kernel's linked rows are the old interface's linked auth doors: no registry row reads them.
+    let registry = registry_with_floor(i.plugins, !i.inventory_only, &mut |n| match n {
         Note::FloorUnreadable(detail) => note(BuildNote::FloorUnreadable(detail)),
         Note::Off => note(BuildNote::Off),
+        // No linked row is copied by a dropped-in image: the old interface's linked rows are gone.
         Note::Scanned(scanned) => {
-            let copies: Vec<CopyLine> = scanned
-                .linked_copies()
-                .iter()
-                .map(|c| CopyLine {
-                    name: c.name.clone(),
-                    version: c.version.clone(),
-                    file: c.file.clone(),
-                    line: c.line(),
-                })
-                .collect();
             note(BuildNote::Scanned {
                 rows: scanned,
-                copies: &copies,
+                copies: &[],
             });
         }
         Note::FloorUnwritable(e) => note(BuildNote::FloorUnwritable(e)),
     })?;
     Ok(Arc::new(registry))
-}
-
-#[must_use]
-pub(crate) fn linked_row(row: &LinkedRow) -> LinkedPlugin {
-    match *row {
-        LinkedRow::Auth((key, canonical, door)) => {
-            LinkedPlugin::auth_door_named(canonical, key, door)
-        }
-    }
-}
-
-#[must_use]
-pub(crate) fn linked_registry() -> PluginRegistry {
-    let linked: Vec<_> = busbar_kernel::preflight::linked_rows()
-        .iter()
-        .map(linked_row)
-        .collect();
-    PluginRegistry::empty()
-        .link(linked)
-        .expect("the build's linked plugin declarations must not conflict")
 }
 
 pub fn trust_policy(
@@ -813,17 +781,12 @@ impl Stages {
                     .filter(|s| s.candidate == i)
                     .map(|s| s.instance.as_str())
                     .collect();
-                let abi = ManifestFacts::read(&c.stated).map_or(0, |f| f.kind_abi);
                 let status = if used.is_empty() {
                     "not used by this config".to_string()
                 } else {
                     format!("selected as {}", used.join(", "))
                 };
-                format!(
-                    "    plugin: {} ({}, ABI {abi}) — {status}",
-                    c.name,
-                    kind_word(c.kind)
-                )
+                format!("    plugin: {} ({}) — {status}", c.name, kind_word(c.kind))
             })
             .chain(
                 self.inbound
@@ -867,99 +830,18 @@ pub fn validate(
         }
     }
     let mut stages = stages(&doc, discover(registry)?, binds)?;
-    resolve_validation_listeners(
-        &mut stages,
-        registry,
-        &transport_uses_for(path, &[]),
-        root_required,
-    )?;
-    Ok(stages)
-}
-
-/// Resolve validation's physical binds from declarations without calling lifecycle OPEN.
-fn resolve_validation_listeners(
-    stages: &mut Stages,
-    registry: &PluginRegistry,
-    uses: &Uses,
-    root_required: bool,
-) -> Result<(), String> {
-    use super::loader::dispatch::{
-        kinds::transport::{self, TransportFacts},
-        Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
-    };
-    let mut facts = crate::LINKED_TRANSPORT_DOORS
-        .iter()
-        .map(|(_, door)| transport::linked_facts(*door))
-        .collect::<Result<Vec<_>, _>>()?;
-    let dispatcher = Dispatcher::new(
-        DispatchConfig::default(),
-        busbar_kernel::host_services::caller_binding(),
-    );
-    let bind = Bind {
-        accept: Default::default(),
-        instance: Arc::from("configuration-listeners"),
-        max_inflight_cap: 1,
-        sink: Arc::new(NoSink),
-        dispatcher: dispatcher.adopter(),
-        conns: ConnTable::NoNeeds,
-    };
-    let declared = registry.open_transport_entries(&bind, uses, plugin_logs())?;
-    for plugin in &declared.doors {
-        facts.push(
-            plugin
-                .context::<TransportFacts>()
-                .cloned()
-                .ok_or("listener transport has no validated declaration")?,
-        );
-    }
-    let accepting: Vec<_> = facts
-        .iter()
-        .filter(|facts| facts.role == busbar_contract::abi::transport::ROLE_FRAMER && facts.accepts)
-        .collect();
+    // Validation calls no lifecycle OPEN: the data listener is kept when the configuration states
+    // it or a selected plugin needs an inbound connection.
     let data_required = stages.selected.iter().any(|selection| {
         stages.candidates[selection.candidate]
             .needs
             .iter()
-            .any(|need| {
-                need.direction == busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND
-            })
+            .any(|need| need.direction == busbar_contract::conn::codes::DIRECTION_INBOUND)
     });
-    if !root_required && !data_required && accepting.is_empty() {
+    if !root_required && !data_required {
         stages.inbound.retain(|bind| bind.at != "listen");
-    } else {
-        let claim = busbar_contract::abi::transport::listener_bindings::resolve(
-            "listen",
-            accepting.iter().flat_map(|facts| &facts.listener_bindings),
-        )?;
-        if !accepting
-            .iter()
-            .any(|facts| facts.claims.contains(&claim.as_str()) && !facts.datagram)
-        {
-            return Err("listen: its declared claim requires an accepting stream framer".into());
-        }
-        for bind in &mut stages.inbound {
-            if bind.owner == BindOwner::Root && bind.at == "listen" {
-                bind.transport.clone_from(&claim);
-            }
-        }
     }
-    for bind in stages
-        .inbound
-        .iter()
-        .filter(|bind| bind.at != "admin_listen")
-    {
-        let count = accepting
-            .iter()
-            .filter(|facts| facts.claims.contains(&bind.transport.as_str()))
-            .count();
-        if count != 1 {
-            return Err(format!(
-                "{}: expected one accepting framer for {}, found {count}",
-                bind.at, bind.transport
-            ));
-        }
-    }
-    Ok(())
+    Ok(stages)
 }
 
 /// The addresses the host's own listeners take, as the resolved configuration states them.
@@ -1012,29 +894,6 @@ pub fn stages(
     let uses = Uses::of(doc);
     let selected = select(&uses, &candidates);
     let inbound = listener_needs(doc, &candidates, &selected, root)?.binds;
-    for s in &selected {
-        let c = &candidates[s.candidate];
-        let facts =
-            ManifestFacts::read(&c.stated).map_err(|e| format!("plugin '{}': {e}", c.name))?;
-        let host = facts.kind.abi_version();
-        let refusal =
-            if facts.mechanism_version != busbar_contract::abi::mechanism::MECHANISM_VERSION {
-                Some(LoadError::ManifestMechanism {
-                    stated: facts.mechanism_version,
-                    host: busbar_contract::abi::mechanism::MECHANISM_VERSION,
-                })
-            } else if facts.kind_abi != host {
-                Some(LoadError::ManifestKindAbi {
-                    stated: facts.kind_abi,
-                    host,
-                })
-            } else {
-                None
-            };
-        if let Some(r) = refusal {
-            return Err(format!("plugin '{}' ({}): {r}", c.name, s.instance));
-        }
-    }
     Ok(Stages {
         candidates,
         selected,
@@ -1062,7 +921,7 @@ pub(crate) struct Judged {
 pub(crate) fn start_scan() -> StartScan {
     let plugins = configured_block();
     let scanned = match &plugins {
-        Some(p) => judge(Vec::new(), p).map(Some),
+        Some(p) => judge(p).map(Some),
         None => Ok(None),
     };
     StartScan { plugins, scanned }
@@ -1164,8 +1023,8 @@ pub(crate) fn phase_one(
 
 /// The scan of `plugins`' directory under its trust policy, with `linked`, and the secret modules
 /// it admits judged together with the linked secret rows: one owner per word, name and alias.
-fn judge(linked: Vec<LinkedPlugin>, plugins: &PluginsCfg) -> Result<Judged, String> {
-    let registry = scanned_registry(linked, plugins)?;
+fn judge(plugins: &PluginsCfg) -> Result<Judged, String> {
+    let registry = scanned_registry(plugins)?;
     // WP3 step 2: the secret words are the native images' (published by the start-stage images prepare).
     let sugars = crate::root::native_secrets::NATIVE.sugars();
     Ok(Judged { registry, sugars })
@@ -1173,10 +1032,7 @@ fn judge(linked: Vec<LinkedPlugin>, plugins: &PluginsCfg) -> Result<Judged, Stri
 
 /// The registry build's scan, alone: no data dir (the high-water marks are neither read nor
 /// written), no native-image record, no admission.
-fn scanned_registry(
-    linked: Vec<LinkedPlugin>,
-    plugins: &PluginsCfg,
-) -> Result<PluginRegistry, String> {
+fn scanned_registry(plugins: &PluginsCfg) -> Result<PluginRegistry, String> {
     let scan = Scan {
         policy: trust_policy(plugins, env!("CARGO_PKG_VERSION"))
             .map_err(|e| format!("plugins.trust is invalid: {e}"))?,
@@ -1186,10 +1042,7 @@ fn scanned_registry(
             .then_some(std::path::Path::new(&plugins.dir)),
     };
     super::loader::boot::registry(
-        Build {
-            linked,
-            scan: Some(scan),
-        },
+        Build { scan: Some(scan) },
         &mut |_| {},
     )
 }
@@ -1234,11 +1087,7 @@ fn owners_of(
                 row.manifest.name.clone(),
                 busbar_kernel::config::grammar::Owner {
                     version: row.manifest.version.clone(),
-                    origin: if row.linked() {
-                        "linked".to_owned()
-                    } else {
-                        row.file.clone()
-                    },
+                    origin: row.file.clone(),
                     trust: trust.to_owned(),
                 },
             )
@@ -1260,55 +1109,31 @@ fn not_admitted(registry: &PluginRegistry, plugins: Option<&PluginsCfg>, file: &
         .unwrap_or_else(|| format!("\"{}\" is no longer in plugins.dir", file.escape_debug()))
 }
 
-/// The outbound auth styles a dropped-in auth row's signed statement declares.
-fn row_styles(row: &crate::root::loader::LoadablePlugin) -> Vec<String> {
-    row.manifest
-        .stated_rendering()
-        .ok()
-        .flatten()
-        .and_then(|stated| crate::root::loader::dispatch::kinds::auth::rendered_facts(&stated).ok())
-        .map(|facts| facts.styles.into_iter().map(|style| style.name).collect())
-        .unwrap_or_default()
-}
-
-/// What this process registered at start (SECRET-SHORTHAND-BOOT §3.6): its plane doors (name,
-/// declaring sections, and the dropped-in file, `None` for a linked one), its linked auth rows'
-/// outbound styles, and the start registry the dropped-in images and auth rows are read from.
+/// What this process registered at start (SECRET-SHORTHAND-BOOT §3.6): its plane images (name and
+/// the dropped-in file, `None` for a linked one), and the start registry the dropped-in images are
+/// read from.
 pub(crate) struct Registered<'a> {
     pub(crate) planes: Vec<(String, Option<String>)>,
-    pub(crate) linked_styles: Vec<(String, Vec<String>)>,
     pub(crate) start: Option<&'a PluginRegistry>,
 }
 
-/// This process's start registration, once process start registered its planes.
+/// This process's start registration, once process start admitted its registry.
 fn registered() -> Option<Registered<'static>> {
-    let candidates = DOOR_CANDIDATES.get()?;
-    let planes = candidates
+    let start = REGISTRY.get()?;
+    let planes = start
+        .loadable()
         .iter()
-        .filter(|c| c.kind == KindCode::Plane)
-        .map(|c| {
-            let file = match &c.origin {
-                Origin::Linked(_) => None,
-                Origin::Dropped { file, .. } => Some(file.clone()),
-            };
-            (c.name.clone(), file)
-        })
-        .collect();
-    let linked_styles = crate::LINKED
-        .auths
-        .iter()
-        .filter_map(|(_, canonical, door)| {
-            let facts = crate::root::loader::dispatch::kinds::auth::stated_facts(*door).ok()?;
-            Some((
-                (*canonical).to_string(),
-                facts.styles.into_iter().map(|style| style.name).collect(),
-            ))
+        .filter(|row| row.manifest.kind == "plane")
+        .map(|row| {
+            (
+                row.manifest.name.clone(),
+                Some(row.file.clone()),
+            )
         })
         .collect();
     Some(Registered {
         planes,
-        linked_styles,
-        start: REGISTRY.get(),
+        start: Some(start),
     })
 }
 
@@ -1392,47 +1217,12 @@ pub(crate) fn classify_against(
         };
         push(ItemKind::Section, vec![instance], name, &image, &standing);
     }
-    for (module, styles) in &registered.linked_styles {
-        push(
-            ItemKind::Style,
-            styles.clone(),
-            module,
-            "linked",
-            &Standing::Counts,
-        );
-    }
-    for row in registered
-        .start
-        .map_or(&[][..], PluginRegistry::loadable)
-        .iter()
-        .filter(|row| !row.linked() && row.manifest.kind == "auth")
-    {
-        known.insert(row.manifest.name.clone());
-        let (image, standing) = judged("auth", &row.manifest.name, &row.file);
-        push(
-            ItemKind::Style,
-            row_styles(row),
-            &row.manifest.name,
-            &image,
-            &standing,
-        );
-    }
     for row in registry.loadable().iter().filter(|row| {
-        !row.linked()
-            && (row.manifest.kind == "plane" || row.manifest.kind == "auth")
+        row.manifest.kind == "plane"
             && !known.iter().any(|name| row.is_module(name))
     }) {
         let image = row.archive_sha256.clone().unwrap_or_default();
-        if row.manifest.kind == "auth" {
-            let styles = row_styles(row);
-            push(
-                ItemKind::Style,
-                styles,
-                &row.manifest.name,
-                &image,
-                &Standing::Unregistered,
-            );
-        } else if let Ok(Some(_)) = row.candidate() {
+        if let Ok(Some(_)) = row.candidate() {
             let instance = match row.manifest.alias.as_str() {
                 "" => row.manifest.name.clone(),
                 alias => alias.to_owned(),

@@ -523,34 +523,98 @@ impl Drop for HeldBody {
 /// Each plane instance's section pools, by instance name.
 pub(crate) type SectionPoolsByInstance = BTreeMap<String, Arc<BTreeMap<String, SectionPool>>>;
 
-/// Read each plane section's `pools:` exactly as the 1.5.5 door did (`DoorPools::of`): members,
+/// Read each plane section's `pools:` exactly as the 1.5.5 door did: members,
 /// `on_exhausted.fallback_pool` and `member_granted`. These become native walks (#108).
 ///
 /// # Errors
-/// A section's pool is malformed (the door's own refusal).
+/// A section's pool is malformed (the 1.5.5 refusal).
 pub(crate) fn section_pools(
     sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
 ) -> Result<SectionPoolsByInstance, String> {
     sections
         .iter()
         .map(|(instance, section)| {
-            let door = super::door_steps::DoorPools::of(section, instance)
-                .map_err(|why| format!("{instance}: {why}"))?;
-            let pools = door
-                .pools
-                .iter()
-                .map(|(name, members)| {
-                    let pool = SectionPool {
-                        members: members.clone(),
-                        fallback: door.fallbacks.get(name).cloned(),
-                        member_granted: door.member_granted.contains(name),
-                    };
-                    (name.clone(), pool)
-                })
-                .collect();
+            let pools = pools_of(section).map_err(|why| format!("{instance}: {why}"))?;
             Ok(((*instance).to_owned(), Arc::new(pools)))
         })
         .collect()
+}
+
+/// One section's reserved `pools:` sub-key: each named pool's members, its
+/// `on_exhausted.fallback_pool` and whether it is `member_granted`. A section that is no mapping
+/// states no pool.
+fn pools_of(
+    section: &busbar_contract::yaml::Value,
+) -> Result<BTreeMap<String, SectionPool>, String> {
+    use busbar_contract::yaml::{MappingExt, Value, ValueExt as _};
+    let Some(declared) = section
+        .as_mapping()
+        .and_then(|map| map.get_key(busbar_contract::section::RESERVED_POOLS_KEY))
+        .and_then(Value::as_mapping)
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let mut pools = BTreeMap::new();
+    for (name, pool) in declared {
+        let Some(name) = name.as_str() else {
+            continue;
+        };
+        let members = pool_members(pool).map_err(|e| format!("pool '{name}': {e}"))?;
+        let fallback = pool
+            .get(super::door_steps::ON_EXHAUSTED_KEY)
+            .and_then(|on| on.get(super::door_steps::FALLBACK_POOL_KEY))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let member_granted = pool
+            .get(busbar_contract::section::POOL_MEMBER_GRANTED_KEY)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        pools.insert(
+            name.to_owned(),
+            SectionPool {
+                members,
+                fallback,
+                member_granted,
+            },
+        );
+    }
+    Ok(pools)
+}
+
+/// A pool's member names, in order. A member is a name, `{name, tier}` or an llm pool's
+/// `{model, ..}`; a member naming neither, or a tier that is no `u32`, refuses the load: skipping
+/// it would load a pool whose walk reaches no member.
+fn pool_members(pool: &busbar_contract::yaml::Value) -> Result<Vec<String>, String> {
+    use busbar_contract::section::{POOL_MEMBERS_KEY, POOL_MEMBER_MODEL_KEY, POOL_MEMBER_NAME_KEY};
+    use busbar_contract::yaml::{Value, ValueExt as _};
+    let Some(list) = pool.get(POOL_MEMBERS_KEY).and_then(Value::as_sequence) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for (i, m) in list.iter().enumerate() {
+        if let Some(name) = m.as_str() {
+            out.push(name.to_owned());
+            continue;
+        }
+        let Some(name) = m
+            .get(POOL_MEMBER_NAME_KEY)
+            .or_else(|| m.get(POOL_MEMBER_MODEL_KEY))
+            .and_then(Value::as_str)
+        else {
+            return Err(format!(
+                "member {i} names no entry (expected `{POOL_MEMBER_NAME_KEY}` or `{POOL_MEMBER_MODEL_KEY}`)"
+            ));
+        };
+        if let Some(written) = m.get(busbar_contract::section::POOL_MEMBER_TIER_KEY) {
+            if written.as_u64().and_then(|t| u32::try_from(t).ok()).is_none() {
+                return Err(format!(
+                    "member '{name}' has tier {written:?}, which is no unsigned integer that fits u32"
+                ));
+            }
+        }
+        out.push(name.to_owned());
+    }
+    Ok(out)
 }
 
 /// The section pools this seat walks: each pool keeps only its members that are walked URL

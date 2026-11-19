@@ -235,9 +235,6 @@ impl Node {
             busbar_contract::caps::OpClassId::new("data"),
             owner.context().origin,
         );
-        if let Some(slot) = owner.slot() {
-            self.ticket_custody.bind_source(owner.context(), slot);
-        }
         Ok((handle, unit, ordinary))
     }
 }

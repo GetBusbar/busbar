@@ -167,11 +167,6 @@ pub(crate) struct Node {
     sealing: std::sync::OnceLock<crate::root::durability::LineIdentity>,
 
     durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
-
-    #[cfg(test)]
-    dispatch: Arc<dyn crate::root::transports::PlaneDispatch>,
-
-    pub(crate) ticket_custody: Arc<crate::root::serve::TicketCustody>,
 }
 
 impl std::fmt::Debug for Node {
@@ -215,10 +210,6 @@ impl Node {
             lost: Arc::new(RetainedBook(Mutex::new(Self::fixture_terminal_book()))),
             mono: AtomicU64::new(0),
             clock: Arc::new(busbar_kernel::WallClock),
-
-            #[cfg(test)]
-            dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
-            ticket_custody: crate::root::serve::TicketCustody::new(),
         }
     }
 
@@ -332,12 +323,6 @@ impl Node {
         Arc<busbar_kernel::door::UnitKeyMint>,
     ) {
         (Arc::clone(&self.kernel), Arc::clone(&self.next_key))
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn driven(&self) -> Option<u64> {
-        self.dispatch.driven()
     }
 
     pub(crate) fn arrived(&self) -> Arrived {
@@ -516,16 +501,10 @@ impl Node {
         lines: Vec<RecordLine>,
     ) -> Option<TerminalConfirmation> {
         let seal = seal.map(Into::<Sealing>::into)?;
-        let key = seal.seal.key;
-        let completed =
-            matches!(&ended, Ended::Settled { end, .. } if end.outcome().is_completed());
         let receipt = self.seal_end_ack(principal, arrived, card, ended, seal, lines);
         match receipt {
-            Ok(receipt) => receipt.confirm_terminal(self.ticket_custody.clone(), key, completed),
-            Err(error) => {
-                self.ticket_custody.terminal(key, false);
-                Some(TerminalConfirmation::failed(error))
-            }
+            Ok(receipt) => receipt.confirm_terminal(),
+            Err(error) => Some(TerminalConfirmation::failed(error)),
         }
     }
 
@@ -902,7 +881,6 @@ impl Node {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        self.ticket_custody.bind_source(&ctx, &slot);
         let ended = busbar_kernel::teller::run_unit_async(
             &self.kernel,
             units,
@@ -1038,7 +1016,6 @@ impl Node {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        self.ticket_custody.bind_source(&ctx, &slot);
         let opened = busbar_kernel::teller::open_unit_screened(
             &self.kernel,
             units,
@@ -1091,7 +1068,6 @@ impl Node {
             ctx: ctx.clone(),
             meter,
             own,
-            money: None,
         };
         Some((opened, ctx, session))
     }
@@ -1108,12 +1084,10 @@ impl Node {
     ) -> Option<TerminalConfirmation> {
         if let Some(ended) = ended {
             let Ended::Settled { end, .. } = ended else {
-                self.ticket_custody.terminal(key, false);
                 return None;
             };
             open.sealing.said = Some(end.outcome());
             if end.into_posted().is_err() {
-                self.ticket_custody.terminal(key, false);
                 return None;
             }
         }
@@ -1149,13 +1123,8 @@ impl Node {
             attribution,
         );
         match acknowledged {
-            Ok(receipt) => {
-                receipt.confirm_terminal(self.ticket_custody.clone(), key, outcome.is_completed())
-            }
-            Err(error) => {
-                self.ticket_custody.terminal(key, false);
-                Some(TerminalConfirmation::failed(error))
-            }
+            Ok(receipt) => receipt.confirm_terminal(),
+            Err(error) => Some(TerminalConfirmation::failed(error)),
         }
     }
 
@@ -1330,7 +1299,6 @@ impl Node {
         Some(LateAccrual {
             book: Arc::clone(book),
             line: self.sealing.get().copied(),
-            custody: Arc::clone(&self.ticket_custody),
             history,
 
             durability_token: self.kernel.durability_token(),
@@ -1379,7 +1347,6 @@ impl Report {
 }
 
 struct LateAccrual {
-    custody: Arc<crate::root::serve::TicketCustody>,
     book: Arc<Mutex<crate::root::durability::Durability>>,
     /// The book's boot constants, so the late line is prepared before its lock.
     line: Option<crate::root::durability::LineIdentity>,
@@ -1409,7 +1376,6 @@ impl LateAccrual {
 
     fn post(self) -> Option<TerminalConfirmation> {
         let LateAccrual {
-            custody,
             book,
             line,
             history,
@@ -1426,7 +1392,7 @@ impl LateAccrual {
         // A report that bills nothing is not sealed as usage, but its attribution still is.
         let reported = late();
         if matches!(reported, Some(Reported::Partitioned)) {
-            return preview_confirmation(&custody, outcome, seal);
+            return preview_confirmation(outcome, seal);
         }
         let (report, attribution) = match reported.and_then(Reported::legacy).map(Report::of) {
             Some(report)
@@ -1442,7 +1408,6 @@ impl LateAccrual {
         let (Some(seal), Some(outcome)) = (seal, outcome) else {
             return None;
         };
-        let key = seal.seal.key;
         let acknowledged = match report {
             Some(report) => {
                 let lines = report_lines(&report);
@@ -1480,17 +1445,11 @@ impl LateAccrual {
                 None,
                 attribution,
             ),
-            None => {
-                custody.terminal(key, false);
-                return None;
-            }
+            None => return None,
         };
         match acknowledged {
-            Ok(receipt) => receipt.confirm_terminal(custody, key, posted && completed),
-            Err(error) => {
-                custody.terminal(key, false);
-                Some(TerminalConfirmation::failed(error))
-            }
+            Ok(receipt) => receipt.confirm_terminal(),
+            Err(error) => Some(TerminalConfirmation::failed(error)),
         }
     }
 }
@@ -1698,10 +1657,6 @@ pub(crate) struct SessionSlot<'n> {
     ctx: UnitCtx,
     meter: Arc<AccrualMeter>,
     own: Option<busbar_kernel::teller::SessionOwn>,
-    money: Option<(
-        std::sync::Weak<busbar_kernel::plane_driver::PlaneMoney>,
-        crate::root::door_steps::DoorFacts,
-    )>,
 }
 
 impl std::fmt::Debug for SessionSlot<'_> {
@@ -1713,21 +1668,6 @@ impl std::fmt::Debug for SessionSlot<'_> {
 }
 
 impl SessionSlot<'_> {
-    pub(crate) fn with_money(
-        mut self,
-        money: &Arc<busbar_kernel::plane_driver::PlaneMoney>,
-        facts: &crate::root::door_steps::DoorFacts,
-    ) -> Self {
-        self.money = Some((Arc::downgrade(money), facts.clone()));
-        self
-    }
-
-    fn money_report(&self) -> Option<crate::root::linked::node::Reported> {
-        let (money, facts) = self.money.as_ref()?;
-        let money = money.upgrade()?;
-        crate::root::serve::report_of(money.as_ref(), self.key, facts)
-    }
-
     #[cfg(test)]
     pub(crate) async fn finish(mut self, post: &NodeEndPost) -> Result<(), String> {
         let confirmation = self.finish_inner(post, None, Evidence::default());
@@ -1753,26 +1693,17 @@ impl SessionSlot<'_> {
         evidence: Evidence,
     ) -> Option<TerminalConfirmation> {
         let node = self.occupied.node;
-        let mut open = post.take(self.key);
-        if let Some(open) = open.as_mut() {
-            if open.sealing.report.is_none() {
-                open.sealing.report = self
-                    .money_report()
-                    .and_then(Reported::legacy)
-                    .map(Report::of);
-            }
-        }
+        let open = post.take(self.key);
         let outcome = override_outcome
             .or_else(|| open.as_ref().and_then(|o| o.sealing.said))
             .unwrap_or(Outcome::Aborted(busbar_contract::caps::Abort::Kernel {
                 reason: busbar_contract::caps::ReasonCode::ClientGone,
             }));
         if let Some(reason) = refusal_reason(outcome) {
-            let instance: &str = match self.money.as_ref() {
-                Some((_, facts)) => facts.plane.plane_key(),
-                None => busbar_kernel::plane_driver::dispatch::fallback_key(),
-            };
-            busbar_kernel::telemetry::unit_refusal_on(instance, reason.as_str());
+            busbar_kernel::telemetry::unit_refusal_on(
+                busbar_kernel::plane_driver::dispatch::fallback_key(),
+                reason.as_str(),
+            );
         }
         let ended = self.own.take().map(|own| {
             own.finish(
@@ -1794,7 +1725,6 @@ impl SessionSlot<'_> {
         let confirmation = if let Some(open) = open {
             node.seal_session_task(self.key, open, ended)
         } else {
-            node.ticket_custody.terminal(self.key, false);
             None
         };
         self.occupied.reached_end = true;
@@ -1816,28 +1746,13 @@ impl Drop for SessionSlot<'_> {
     fn drop(&mut self) {
         if self.own.is_some() {
             if let Some(post) = self.occupied.post {
-                let evidence = self
-                    .money_report()
-                    .and_then(Reported::legacy)
-                    .map(|(_, fee_units, _, _)| Evidence {
-                        fee_units,
-                        ..Evidence::default()
-                    })
-                    .unwrap_or_default();
                 drop(self.finish_inner(
                     post,
                     Some(Outcome::Aborted(busbar_contract::caps::Abort::Kernel {
                         reason: busbar_contract::caps::ReasonCode::ClientGone,
                     })),
-                    evidence,
+                    Evidence::default(),
                 ));
-                if let Some(money) = self.money.as_ref().and_then(|(money, _)| money.upgrade()) {
-                    busbar_kernel::plane_driver::MoneySeam::abandoned(
-                        &*money,
-                        &self.ctx,
-                        Ended::AlreadySettled,
-                    );
-                }
             }
         }
     }
@@ -2518,15 +2433,13 @@ impl Accruing {
 // awaited, or its awaiter cancelled mid-confirm) is restarted in one detached
 // task, so cancellation never abandons its original. `confirm` is cancel-safe.
 fn preview_confirmation(
-    custody: &crate::root::serve::TicketCustody,
     outcome: Option<Outcome>,
     seal: Option<Sealing>,
 ) -> Option<TerminalConfirmation> {
-    let (Some(seal), Some(_)) = (seal, outcome) else {
+    let (Some(_), Some(_)) = (seal, outcome) else {
         return None;
     };
-    // A partitioned usage preview is never terminal custody: refuse the seal and fail the ticket.
-    custody.terminal(seal.seal.key, false);
+    // A partitioned usage preview is never terminal custody: refuse the seal.
     Some(TerminalConfirmation {
         inner: Err("selected audit requires final reader custody, not a usage preview".into()),
     })
@@ -2546,19 +2459,10 @@ impl TerminalTask {
             Self::Staged(confirm) => confirm.run().await,
         }
     }
-
-    fn failed(&self) {
-        match self {
-            Self::Staged(confirm) => confirm.custody.terminal(confirm.key, false),
-        }
-    }
 }
 
 struct Confirm {
     audit: StagedAudit,
-    custody: Arc<crate::root::serve::TicketCustody>,
-    key: UnitKey,
-    completed: bool,
 }
 
 impl Confirm {
@@ -2567,8 +2471,6 @@ impl Confirm {
         if confirmed.is_ok() {
             crate::root::durability::records_pulse().notify_waiters();
         }
-        self.custody
-            .terminal(self.key, self.completed && confirmed.is_ok());
         confirmed.map_err(|error| crate::root::cold::terminal_audit_unconfirmed(&error))
     }
 }
@@ -2585,9 +2487,6 @@ impl TerminalConfirmation {
             return Ok(());
         };
         let confirmed = inner.run().await;
-        if confirmed.is_err() {
-            inner.failed();
-        }
         self.inner = Ok(None);
         confirmed
     }
@@ -2598,13 +2497,10 @@ impl Drop for TerminalConfirmation {
         let Ok(Some(mut inner)) = std::mem::replace(&mut self.inner, Ok(None)) else {
             return;
         };
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => drop(runtime.spawn(async move {
-                if inner.run().await.is_err() {
-                    inner.failed();
-                }
-            })),
-            Err(_) => inner.failed(),
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(async move {
+                let _ = inner.run().await;
+            }));
         }
     }
 }
@@ -2621,23 +2517,10 @@ struct StagedAudit {
     run: Arc<busbar_kernel::persistence::journal::runtime::StagedRun>,
 }
 impl StagedAudit {
-    fn confirm_terminal(
-        self,
-        custody: Arc<crate::root::serve::TicketCustody>,
-        key: UnitKey,
-        completed: bool,
-    ) -> Option<TerminalConfirmation> {
-        if tokio::runtime::Handle::try_current().is_err() {
-            custody.terminal(key, false);
-            return None;
-        }
+    fn confirm_terminal(self) -> Option<TerminalConfirmation> {
+        tokio::runtime::Handle::try_current().ok()?;
         Some(TerminalConfirmation {
-            inner: Ok(Some(TerminalTask::Staged(Confirm {
-                audit: self,
-                custody,
-                key,
-                completed,
-            }))),
+            inner: Ok(Some(TerminalTask::Staged(Confirm { audit: self }))),
         })
     }
 }

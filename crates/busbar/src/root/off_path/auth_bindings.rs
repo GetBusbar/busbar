@@ -6,32 +6,23 @@
 //! load; [`bind_from_planned`] runs once, on a start whose `plugins:` block is pre-1.6, from the
 //! migrate seam's planned config. `auth_bindings` re-exports both under their old names.
 
-/// THE OPERATOR CREDENTIAL, judged at process start from the auth rows the start scan admits:
-/// the linked rows and the dropped-in ones alike (OPERATOR-FROM-ADMITTED-AUTH §3.1, §3.4). A start
-/// whose `plugins:` block is in a pre-1.6 shape is `Deferred`: [`bind_from_planned`] binds it from
-/// the migrate seam's planned config (§3.4.1).
+/// THE OPERATOR CREDENTIAL, judged at process start from the native auth images the start stage
+/// admitted (OPERATOR-FROM-ADMITTED-AUTH §3.1, §3.4). A start whose `plugins:` block is in a pre-1.6
+/// shape is `Deferred`: [`bind_from_planned`] binds it from the migrate seam's planned config
+/// (§3.4.1).
 #[must_use]
-pub(crate) fn operator_binding(
-    dropped: Option<&crate::root::loader::PluginRegistry>,
-) -> busbar_kernel::preflight::OperatorBinding {
+pub(crate) fn operator_binding() -> busbar_kernel::preflight::OperatorBinding {
     if crate::root::boot::plugins_block_is_historical() {
         return busbar_kernel::preflight::OperatorBinding::Deferred;
     }
-    busbar_kernel::preflight::OperatorBinding::Bound(judged_operator(dropped))
+    busbar_kernel::preflight::OperatorBinding::Bound(judged_operator())
 }
 
-/// The operator judged from the linked rows, the rows of `dropped`, and the native (MIN-3) auth images the start
-/// stage published ([`crate::root::native_operator`]).
+/// The operator judged from the native (MIN-3) auth images the start stage published
+/// ([`crate::root::native_operator`]).
 #[must_use]
-pub(crate) fn judged_operator(
-    dropped: Option<&crate::root::loader::PluginRegistry>,
-) -> busbar_kernel::preflight::Judged {
-    let linked = crate::root::boot::linked_registry();
-    let dropped = dropped.map_or(&[][..], crate::root::loader::PluginRegistry::loadable);
-    let claims = crate::root::native_operator::NATIVE.merged(
-        crate::root::loader::auth_axis::operator_claims(linked.linked().iter().chain(dropped)),
-    );
-    busbar_kernel::preflight::choose_operator(&claims)
+pub(crate) fn judged_operator() -> busbar_kernel::preflight::Judged {
+    busbar_kernel::preflight::choose_operator(&crate::root::native_operator::NATIVE.claims())
 }
 
 /// A DEFERRED START'S OPERATOR (OPERATOR-FROM-ADMITTED-AUTH §3.4.1; MIGRATE-ON-BOOT r42 §3 step 2): on a start
@@ -57,21 +48,11 @@ pub(crate) fn bind_from_planned(config: &std::path::Path) -> Result<(), String> 
     .map_err(|e| format!("config.yaml: {e}"))?;
     let doc = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&text)
         .map_err(|e| format!("config.yaml: {e}"))?;
-    let plugins = doc
-        .get("plugins")
+    // The planned `plugins:` block must read; the operator is judged from the native auth images.
+    doc.get("plugins")
         .cloned()
         .map(busbar_contract::yaml::from_value::<busbar_kernel::config::PluginsCfg>)
         .transpose()
         .map_err(|e| crate::root::cold::upgraded_plugins_unreadable(&e))?;
-    let data_dir = busbar_kernel::preflight::fleet_data_dir();
-    let registry = match &plugins {
-        Some(p) if p.enabled => Some(crate::root::boot::registry(
-            Vec::new(),
-            Some(p),
-            data_dir.as_deref(),
-            &mut |_| {},
-        )?),
-        _ => None,
-    };
-    busbar_kernel::preflight::bind_deferred(judged_operator(registry.as_ref()))
+    busbar_kernel::preflight::bind_deferred(judged_operator())
 }

@@ -314,7 +314,7 @@ fn register_root() {
     }
     let scan = root::boot::start_scan();
     let dropped = root::boot::install_start(scan);
-    busbar_kernel::preflight::install_operator(root::auth_bindings::operator_binding(dropped));
+    busbar_kernel::preflight::install_operator(root::auth_bindings::operator_binding());
     root::linked::register_dropped(dropped);
 
     root::settings_public::install();
@@ -1546,7 +1546,6 @@ async fn run(
     });
     let work_recovery = recovery_served.spawn_work_recovery(
         app_handle.clone(),
-        Arc::clone(&request_admission),
         shutdown_tx.subscribe(),
     );
     drop(recovery_served);
