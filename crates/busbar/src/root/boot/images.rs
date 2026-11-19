@@ -125,7 +125,8 @@ impl FileImages {
     }
 
     /// Declare the scope kinds these plane images' routes state (each route's walk kind, and the
-    /// resource kinds of a route that selects), read from their describes before configuration is
+    /// resource kinds of a route that selects) and the kinds they check grants under that no route
+    /// states (`D_CHECKED_KIND`), read from their describes before configuration is
     /// judged: `role_bindings.*.allowed_<kind>s` is judged against them
     /// (`governance::plane_declares_kind`), as a key's grant is once the planes mount. Called by the
     /// stage that prepares the images it serves or validates, beside [`Self::publish_hooks`].
@@ -153,6 +154,7 @@ impl FileImages {
             busbar_kernel::plane_driver::port_routes::declare_described_kinds(
                 &describe.routes,
                 &admissions,
+                &describe.checked_kinds,
             );
         }
     }

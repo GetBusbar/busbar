@@ -1060,11 +1060,15 @@ fn an_anonymous_binding_grants_only_the_kinds_a_loaded_plane_image_states() {
     refuses(granted, "allowed_anon_e2e_tools");
 
     // A describe whose route states no admission declares nothing.
-    declare_described_kinds(&[route(1, &["anon_e2e_tool"]), route(2, &[])], &[walks_and_selects]);
+    declare_described_kinds(
+        &[route(1, &["anon_e2e_tool"]), route(2, &[])],
+        &[walks_and_selects],
+        &[],
+    );
     refuses(granted, "allowed_anon_e2e_servers");
 
     // The loaded image's describe states the walk kind and the selected kind: both grantable.
-    declare_described_kinds(&[route(1, &["anon_e2e_tool"])], &[walks_and_selects]);
+    declare_described_kinds(&[route(1, &["anon_e2e_tool"])], &[walks_and_selects], &[]);
     assert!(
         judged(granted).is_ok(),
         "the kinds a loaded plane image states are grantable: {:?}",

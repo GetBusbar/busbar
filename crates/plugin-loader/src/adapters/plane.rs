@@ -2946,23 +2946,23 @@ mod route_item_tests {
     /// image wrote them, once each, in the generic kind grammar; anything else refuses the image.
     #[test]
     fn role_binding_plane_scope_checked_kinds_are_kept_once_each_in_the_kind_grammar() {
-        let mut r = Reply::new();
-        chat_route(&mut r);
-        r.put(t::D_ROUTE_ADMISSION, &admission(1, 2, 2, 1, "pool"))
-            .unwrap();
-        assert!(describe(&r).unwrap().checked_kinds.is_empty());
-        r.put(t::D_CHECKED_KIND, b"mcp_tool").unwrap();
-        assert_eq!(describe(&r).unwrap().checked_kinds, [Box::from("mcp_tool")]);
-
-        let bad = Err(DescribeInvalid("describe.checked_kind"));
-        let mut twice = r.clone();
-        twice.put(t::D_CHECKED_KIND, b"mcp_tool").unwrap();
-        assert_eq!(describe(&twice), bad);
-        for kind in [&b""[..], b"Tool", b"9tool", b"mcp-tool", &[0xFF, 0xFE]] {
+        let routed = || {
             let mut r = Reply::new();
             chat_route(&mut r);
             r.put(t::D_ROUTE_ADMISSION, &admission(1, 2, 2, 1, "pool"))
                 .unwrap();
+            r
+        };
+        assert!(describe(&routed()).unwrap().checked_kinds.is_empty());
+        let mut r = routed();
+        r.put(t::D_CHECKED_KIND, b"mcp_tool").unwrap();
+        assert_eq!(describe(&r).unwrap().checked_kinds, [Box::from("mcp_tool")]);
+
+        let bad = Err(DescribeInvalid("describe.checked_kind"));
+        r.put(t::D_CHECKED_KIND, b"mcp_tool").unwrap();
+        assert_eq!(describe(&r), bad);
+        for kind in [&b""[..], b"Tool", b"9tool", b"mcp-tool", &[0xFF, 0xFE]] {
+            let mut r = routed();
             r.put(t::D_CHECKED_KIND, kind).unwrap();
             assert_eq!(describe(&r), bad, "{kind:?}");
         }

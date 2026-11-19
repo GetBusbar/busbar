@@ -232,6 +232,7 @@ pub fn plan(
         return Err(RouteRefused::AdminWithoutOpenapi);
     }
     declare_stated_kinds(&table);
+    declare_checked_kinds(port.checked_kinds());
     Ok(table)
 }
 
@@ -257,10 +258,20 @@ fn declare_stated_kinds(table: &PortRoutes) {
 }
 
 fn declare_kinds<'a>(records: impl Iterator<Item = &'a RouteRecord>) {
+    declare_kind_names(records.flat_map(|record| record.scope.kinds()));
+}
+
+/// The kinds a plane checks a caller's grant under that no route of it states (its describe's
+/// `D_CHECKED_KIND`, read by the loader): declared with the route-stated kinds of the same plane.
+fn declare_checked_kinds(checked: &[Box<str>]) {
+    declare_kind_names(checked.iter().map(|kind| &**kind));
+}
+
+fn declare_kind_names<'a>(names: impl Iterator<Item = &'a str>) {
     let mut kinds = STATED_KINDS
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    for kind in records.flat_map(|record| record.scope.kinds()) {
+    for kind in names {
         if kind != KIND_POOL && !kinds.contains(kind) {
             kinds.insert(kind.into());
         }
@@ -269,11 +280,16 @@ fn declare_kinds<'a>(records: impl Iterator<Item = &'a RouteRecord>) {
 
 /// Add the kinds a loaded plane image's describe states, before any instance opens: each route's
 /// record built from its `D_ROUTE` and `D_ROUTE_ADMISSION` (and `D_ROUTE_RESOURCES`) exactly as
-/// [`plan`] builds it at mount, so the configuration's `role_bindings.*.allowed_<kind>s` are judged
-/// against the kinds the loaded planes will state, on the first boot as on every later one. A
-/// describe with a route that states no admission, or whose admission builds no record, declares
-/// nothing (as a refused plane declares nothing at mount).
-pub fn declare_described_kinds(routes: &[RouteInfo], admissions: &[wire::AdmissionItem<'_>]) {
+/// [`plan`] builds it at mount, and the kinds it checks grants under that no route states
+/// (`D_CHECKED_KIND`, `checked`), so the configuration's `role_bindings.*.allowed_<kind>s` are
+/// judged against the kinds the loaded planes will state, on the first boot as on every later one.
+/// A describe with a route that states no admission, or whose admission builds no record, declares
+/// nothing, its checked kinds included (as a refused plane declares nothing at mount).
+pub fn declare_described_kinds(
+    routes: &[RouteInfo],
+    admissions: &[wire::AdmissionItem<'_>],
+    checked: &[Box<str>],
+) {
     let mut records = Vec::with_capacity(routes.len());
     for route in routes {
         let Some(admission) = admissions.iter().find(|item| item.route == route.route) else {
@@ -292,6 +308,7 @@ pub fn declare_described_kinds(routes: &[RouteInfo], admissions: &[wire::Admissi
         records.push(record);
     }
     declare_kinds(records.iter());
+    declare_checked_kinds(checked);
 }
 
 /// Whether a mounted route's record states `kind`.

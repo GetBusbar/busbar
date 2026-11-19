@@ -73,6 +73,18 @@ impl<K: Kind> Bound<K> {
 /// `Sync`: every call takes `&mut`, so one entry per token runs at a time; dropping it cancels the token.
 pub use busbar_ports::KindSession as Sess;
 
+/// The answer of a call that opens no session, validated: the envelope (`Answer::parse`), and no context
+/// named back. A session TOKEN leads only a session opener's OK answer (§6.4 step 7); a call that opens
+/// nothing and is answered with one names a session context the host did not hand it (a forged context),
+/// which is FAULT `UnknownTag(TOKEN)` like any TOKEN out of its place.
+fn opens_nothing(status: Status, bytes: &[u8]) -> Result<Answer<'_>, FaultReason> {
+    let answer = Answer::parse(status, bytes)?;
+    match Records::new(bytes).next() {
+        Some(Ok(rec)) if rec.tag == tag::TOKEN => Err(FaultReason::UnknownTag(tag::TOKEN)),
+        _ => Ok(answer),
+    }
+}
+
 fn host_fault() -> CallError {
     // The boundary crate's nesting bound was reached: a host fault, not the plugin's (no sink, no
     // quarantine).
@@ -99,7 +111,7 @@ pub fn plain<'o, K: Kind, H: Head, const T: usize, const B: usize>(
     })
     .ok_or_else(host_fault)?;
     record::back(inst, method, status, buf.bytes());
-    Answer::parse(status, buf.bytes()).map_err(|reason| inst.charge(reason))
+    opens_nothing(status, buf.bytes()).map_err(|reason| inst.charge(reason))
 }
 
 /// Shim 2: a call that opens a session. The session exists if and only if the answer is OK with a
