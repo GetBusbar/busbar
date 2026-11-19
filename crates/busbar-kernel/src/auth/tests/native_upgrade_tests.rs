@@ -329,6 +329,7 @@ fn fixture_on(bound: bool, cred_header: Option<&'static str>) -> Fixture {
     let route = Arc::new(NativeUpgradeRoute {
         withheld: withheld_carriers(&chain, cred_header),
         audience: None,
+        public_url: None,
         binding,
         caller,
         chain,

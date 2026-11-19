@@ -1432,13 +1432,12 @@ pub async fn judge_unrouted(
         return (Some(Verified::Unavailable), None);
     };
     // A DPoP proof here names core's public URL: no plane's route matched.
-    let snapshot = match judge_sender(app, snapshot, chain, None, app.public_url.as_deref(), false)
-        .await
-    {
-        Ok(snapshot) => snapshot,
-        Err(DataRefused::Unavailable) => return (Some(Verified::Unavailable), None),
-        Err(_) => return (Some(Verified::Denied), None),
-    };
+    let snapshot =
+        match judge_sender(app, snapshot, chain, None, app.public_url.as_deref(), false).await {
+            Ok(snapshot) => snapshot,
+            Err(DataRefused::Unavailable) => return (Some(Verified::Unavailable), None),
+            Err(_) => return (Some(Verified::Denied), None),
+        };
     let prepared = match chain.prepare_snapshot(cx, snapshot).await {
         Ok(NativePreparedAnswer::Identity(prepared)) => prepared,
         Ok(_) => return (Some(Verified::Denied), None),
@@ -2071,7 +2070,8 @@ pub async fn verify_core_key(
     let snapshot = binding.snapshot().map_err(|_| DataRefused::Capacity)?;
     // A core route's DPoP proof names core's public URL.
     let app = binding.app();
-    let snapshot = judge_sender(app, snapshot, chain, None, app.public_url.as_deref(), false).await?;
+    let snapshot =
+        judge_sender(app, snapshot, chain, None, app.public_url.as_deref(), false).await?;
     let prepared = match chain
         .prepare_snapshot(cx, snapshot)
         .await
