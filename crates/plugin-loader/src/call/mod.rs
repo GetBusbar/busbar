@@ -32,7 +32,8 @@ use busbar_plugin_abi::host_side::answer::{Answer, OwnedAnswer};
 use busbar_plugin_abi::host_side::driver::{Driver, Instance};
 use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::PooledOut;
-use busbar_plugin_abi::types::Pair;
+use busbar_plugin_abi::records::{tag, Records};
+use busbar_plugin_abi::types::{Pair, Status};
 use zerocopy::IntoBytes;
 
 pub use ffi::{Call, Kind, Live, LiveSession};
@@ -170,7 +171,7 @@ pub fn on<'o, K: Kind, H: Head, const T: usize, const B: usize>(
     })
     .ok_or_else(host_fault)?;
     record::back(inst, method, status, buf.bytes());
-    Answer::parse(status, buf.bytes()).map_err(|reason| inst.charge(reason))
+    opens_nothing(status, buf.bytes()).map_err(|reason| inst.charge(reason))
 }
 
 /// Shim 3 on caller-owned fixed storage: exactly one call, no pool, no growth, no replay. The caller has
@@ -203,7 +204,7 @@ pub fn on_fixed<'o, K: Kind, H: Head, const T: usize, const B: usize>(
         .get(..len)
         .ok_or_else(|| inst.charge(FaultReason::BadInstance))?;
     record::back(inst, method, status, bytes);
-    Answer::parse(status, bytes)
+    opens_nothing(status, bytes)
         .map(|answer| (answer, len))
         .map_err(|reason| inst.charge(reason))
 }
@@ -231,7 +232,7 @@ pub fn ends<'o, K: Kind, H: Head, const T: usize, const B: usize>(
     })
     .ok_or_else(host_fault)?;
     record::back(inst, method, status, buf.bytes());
-    Answer::parse(status, buf.bytes()).map_err(|reason| inst.charge(reason))
+    opens_nothing(status, buf.bytes()).map_err(|reason| inst.charge(reason))
 }
 
 /// Shim 5: an async method, to its terminal answer. `req` holds the method's one byte argument

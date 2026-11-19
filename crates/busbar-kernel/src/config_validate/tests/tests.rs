@@ -1083,6 +1083,76 @@ fn an_anonymous_binding_grants_only_the_kinds_a_loaded_plane_image_states() {
     assert!(!crate::governance::plane_declares_kind("pool"));
 }
 
+/// MCP-TOOLKIND: a plane checks grants under a kind no route of it states (plane-mcp asks under
+/// `mcp_tool`; its routes walk `mcp_server`). The describe's `D_CHECKED_KIND` declares it with the
+/// route-stated kinds before role bindings are judged, so a per-name grant of it validates. A
+/// describe refused for a route without admission declares none of its checked kinds, a kind no
+/// describe names stays refused, and `pool` is never a plane kind.
+#[test]
+fn role_binding_plane_scope_a_checked_kind_is_grantable_before_mount() {
+    use crate::auth::route_record::wire::{AdmissionItem, CALLERS_DISTINCT, MONEY_UNIT, SCOPE_WALK};
+    use crate::plane_driver::port_routes::declare_described_kinds;
+    use busbar_plugin_abi::plane::AUTH_PRINCIPAL;
+    use busbar_ports::plane::RouteInfo;
+
+    let judged = |binding: &str| {
+        let yaml = format!(
+            "auth:\n  chain: [anonymous]\n  role_bindings:\n    anonymous:\n      \"*\": {binding}\n"
+        );
+        let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
+        cfg.auth = Some(parse_auth(&yaml));
+        validate(&cfg)
+    };
+    let refuses = |binding: &str, field: &str| {
+        let errs = judged(binding).expect_err(&format!("{binding} must be refused"));
+        assert!(
+            errs.iter().any(|e| e.contains(&format!("role_bindings.anonymous.*.{field}"))
+                && e.contains("BUSBAR-3114")),
+            "{binding}: {errs:?}"
+        );
+    };
+    let route = |id: u32| RouteInfo {
+        route: id,
+        methods: 1,
+        flags: 0,
+        auth: AUTH_PRINCIPAL,
+        pattern: "/toolkind".into(),
+        cred_header: None,
+        resource_kinds: Vec::<Box<str>>::new().into(),
+    };
+    let walks = AdmissionItem {
+        route: 1,
+        scope: SCOPE_WALK,
+        money: MONEY_UNIT,
+        callers: CALLERS_DISTINCT,
+        walk_kind: "toolkind_server",
+    };
+    let checked: [Box<str>; 2] = ["toolkind_tool".into(), "pool".into()];
+    let granted = "{ allowed_pools: [], allowed_toolkind_servers: [github], \
+                   allowed_toolkind_tools: [github_search] }";
+
+    refuses(granted, "allowed_toolkind_tools");
+
+    // A describe refused for a route without admission declares none of its checked kinds.
+    declare_described_kinds(&[route(1), route(2)], &[walks], &checked);
+    refuses(granted, "allowed_toolkind_tools");
+
+    // The whole describe: the walk kind and the checked kind are both grantable, per name.
+    declare_described_kinds(&[route(1)], &[walks], &checked);
+    assert!(
+        judged(granted).is_ok(),
+        "a kind the loaded plane checks is grantable: {:?}",
+        judged(granted)
+    );
+
+    // A kind no describe names stays refused; `pool` stated as checked is not a plane kind.
+    refuses(
+        "{ allowed_pools: [], allowed_toolkind_prompts: [p] }",
+        "allowed_toolkind_prompts",
+    );
+    assert!(!crate::governance::plane_declares_kind("pool"));
+}
+
 #[test]
 fn test_browser_login_requires_public_url() {
     let auth = parse_auth(

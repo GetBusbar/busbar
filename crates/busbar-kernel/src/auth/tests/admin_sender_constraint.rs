@@ -292,7 +292,10 @@ mod native_gate {
                 before + 1,
                 "{case}: the provider identified the caller; the gate refused after it"
             );
-            assert!(!carried.no_verdict, "{case}: a refusal, not a missing verdict");
+            assert!(
+                !carried.no_verdict,
+                "{case}: a refusal, not a missing verdict"
+            );
             assert!(carried.native.is_none(), "{case}: nothing is prepared");
             assert!(carried.strips.is_empty(), "{case}");
         }
