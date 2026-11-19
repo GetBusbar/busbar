@@ -135,12 +135,29 @@ impl NativeListenerPlan {
                 }
                 let chain = configured_chain(app, owners)?;
                 let route_chains = route_chains(app, served, owners)?;
+                // The native listener completes a core route only as public or admin: a core route
+                // that takes a data key has no producer here, so it is not mounted (one line) and is
+                // answered as an unknown route is, never served unauthenticated.
+                let served_core: Vec<_> = core
+                    .iter()
+                    .filter(|(path, method, auth)| {
+                        let keyed = *auth == RouteAuth::Key;
+                        if keyed {
+                            tracing::warn!(
+                                "core route '{} {path}' is not served: the native listener has no producer for a key-authenticated core route",
+                                method.as_str()
+                            );
+                        }
+                        !keyed
+                    })
+                    .cloned()
+                    .collect();
                 let mounts = super::serve::door_mounts_planned(
                     served.clone(),
                     || super::kernel::ROOT_CARD.pin(),
                     &chain,
                     &route_chains,
-                    &core,
+                    &served_core,
                     &[],
                     &[],
                 )?;
@@ -371,34 +388,46 @@ fn route_chains(
     for seat in &served.ports {
         let routes = names.get(&seat.instance);
         for route in served_routes(seat) {
-            // Nothing is served without its admission: a route neither native path can admit is
-            // not mounted (one line), whatever its chain.
-            let admitted = if route.flags & busbar_plugin_abi::plane::ROUTE_UPGRADE != 0 {
+            // `Some(Some(names))`: the route's own chain; `Some(None)`: no instance reads its
+            // credential header; `None`: it runs the data chain.
+            let own = routes.and_then(|routes| routes.get(&route.route));
+            // Each route not served is not mounted, with one line saying why; the first reason
+            // that applies is the one logged.
+            let unserved = if let Some(None) = own {
+                let header = route.cred_header.as_deref().unwrap_or_default();
+                Some(unserved_line(&seat.instance, route.route, header))
+            } else if let Err(why) = if route.flags & busbar_plugin_abi::plane::ROUTE_UPGRADE != 0 {
+                // Nothing is served without its admission.
                 NativeUpgradeRoute::admits(app, seat, route)
             } else {
                 NativeDataRoute::admits(app, seat, route)
+            } {
+                Some(unadmitted_line(
+                    &seat.instance,
+                    route.route,
+                    &route.pattern,
+                    why,
+                ))
+            } else if own.is_none() && config.data_chain.is_empty() {
+                // `auth.chain: []` (the operator's open relay) has no native producer yet: neither
+                // native path can verify the anonymous principal, so the route is not mounted
+                // rather than served unjudged.
+                Some(unadmitted_line(
+                    &seat.instance,
+                    route.route,
+                    &route.pattern,
+                    "auth.chain is empty and the native path has no producer for the anonymous principal yet",
+                ))
+            } else {
+                None
             };
-            if let Err(why) = admitted {
-                tracing::warn!(
-                    "{}",
-                    unadmitted_line(&seat.instance, route.route, &route.pattern, why)
-                );
-                chains
-                    .entry(seat.instance.clone())
-                    .or_default()
-                    .insert(route.route, None);
-                continue;
-            }
-            let Some(names) = routes.and_then(|routes| routes.get(&route.route)) else {
-                continue;
-            };
-            let chain = match names {
-                Some(names) => Some(chain_points(owners, names)?),
-                None => {
-                    let header = route.cred_header.as_deref().unwrap_or_default();
-                    tracing::warn!("{}", unserved_line(&seat.instance, route.route, header));
+            let chain = match (unserved, own) {
+                (Some(line), _) => {
+                    tracing::warn!("{line}");
                     None
                 }
+                (None, Some(Some(names))) => Some(chain_points(owners, names)?),
+                (None, _) => continue,
             };
             chains
                 .entry(seat.instance.clone())
