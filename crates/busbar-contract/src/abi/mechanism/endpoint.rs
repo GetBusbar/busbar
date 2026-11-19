@@ -34,4 +34,3 @@ pub struct EndpointResponse {
     /// The response body bytes.
     pub body: Vec<u8>,
 }
-

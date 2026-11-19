@@ -281,4 +281,3 @@ macro_rules! statement_extensions {
         };
     };
 }
-

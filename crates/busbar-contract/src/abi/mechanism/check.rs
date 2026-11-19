@@ -673,4 +673,3 @@ macro_rules! contract {
     };
 }
 pub(crate) use contract;
-

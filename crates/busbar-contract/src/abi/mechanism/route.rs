@@ -69,4 +69,3 @@ pub struct Route {
     /// The auth level busbar enforces before forwarding a matched request to the plugin.
     pub auth: RouteAuth,
 }
-

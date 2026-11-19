@@ -86,7 +86,6 @@
     "macro_implemented": {
       "crates/busbar-contract/src/caps/capability.rs": ["Capability", "Sealed"],
       "crates/busbar-contract/src/caps/step.rs": ["Sealed", "Step"],
-      "crates/busbar-contract/src/ir/handle.rs": ["Sealed"],
       "crates/busbar-contract/src/plugin.rs": ["KindMarker", "KindSeal"],
       "crates/busbar-contract/src/redacted.rs": ["Minted", "OwnerSeal"],
       "crates/busbar-ffi/src/raw.rs": ["Sealed"],

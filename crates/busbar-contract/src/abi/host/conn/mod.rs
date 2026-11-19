@@ -913,4 +913,3 @@ impl HostConns {
         unsafe { f(self.ctx, conn.0) }.result()
     }
 }
-

@@ -515,4 +515,3 @@ pub fn append_receipt(
 ) -> Result<Vec<u8>, InspectionError> {
     append(blob, EXT_REPLY, &encode_receipt(receipt)?)
 }
-

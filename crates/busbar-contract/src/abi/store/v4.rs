@@ -533,18 +533,6 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
 /// Fingerprint of the primitive shapes, independent from the legacy business layout.
 pub const LAYOUT_FINGERPRINT: u64 = 0xb74ff4246792db2d;
 
-// SAFETY: C structs leading with the shared head and containing only plain data.
-unsafe impl crate::abi::sdk::door::AbiIn for ReadIn {}
-unsafe impl crate::abi::sdk::door::AbiIn for ScanIn {}
-unsafe impl crate::abi::sdk::door::AbiIn for CommitIn {}
-unsafe impl crate::abi::sdk::door::AbiIn for ClockIn {}
-unsafe impl crate::abi::sdk::door::AbiIn for BootstrapIn {}
-unsafe impl crate::abi::sdk::door::AbiOut for ReadOut {}
-unsafe impl crate::abi::sdk::door::AbiOut for ScanOut {}
-unsafe impl crate::abi::sdk::door::AbiOut for CommitOut {}
-unsafe impl crate::abi::sdk::door::AbiOut for ClockOut {}
-unsafe impl crate::abi::sdk::door::AbiOut for BootstrapOut {}
-
 /// Safe output-envelope checks. The future admitted loader must additionally
 /// validate every returned descriptor/cursor against host-owned written bytes,
 /// inspect Blob format/flags, and validate input spans with checked arithmetic.
@@ -726,4 +714,3 @@ pub mod check {
         Ok(())
     }
 }
-

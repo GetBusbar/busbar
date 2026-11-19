@@ -298,4 +298,3 @@ pub fn decode(bytes: &[u8]) -> Result<Policy, &'static str> {
         lines,
     })
 }
-

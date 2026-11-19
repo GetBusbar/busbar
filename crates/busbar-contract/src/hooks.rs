@@ -438,18 +438,4 @@ pub trait RoutingPolicy: Send + Sync + 'static {
     async fn status(&self, _budget: std::time::Duration) -> Option<HookStatus> {
         None
     }
-
-    /// TAP (fire-and-forget): hand the hook the tap's fixed view (`tap`, built once per firing by
-    /// [`NotifyFrame::build`](crate::abi::host::hook::NotifyFrame::build) and shared by every tap it
-    /// fires) and return. A tap is write-only in steady state, so NO reply is read. Best-effort and
-    /// bounded by `budget`; ANY error is swallowed, because a tap can NEVER delay or fail the served
-    /// request (the caller SPAWNS this off the request path, which is why it takes an owned frame,
-    /// not a borrowed projection). DEFAULT no-op: in-process ranking policies are not taps.
-    async fn notify(
-        &self,
-        _tap: std::sync::Arc<crate::abi::host::hook::NotifyFrame>,
-        _budget: std::time::Duration,
-    ) {
-    }
 }
-pub mod codes;

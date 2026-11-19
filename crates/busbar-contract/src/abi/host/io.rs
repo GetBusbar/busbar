@@ -235,4 +235,3 @@ pub fn check_spawn_in(i: &SpawnIn) -> Result<(), Fault> {
     check::listed(i.args, i.args_len, "io.spawn.args")?;
     check::listed(i.env, i.env_len, "io.spawn.env")
 }
-

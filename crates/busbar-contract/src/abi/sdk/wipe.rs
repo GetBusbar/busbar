@@ -82,62 +82,7 @@ impl Drop for WipedBytes {
 
 impl zeroize::ZeroizeOnDrop for WipedBytes {}
 
-/// A reply head that wipes its status, reason, fields and body when it drops: the field type of
-/// [`ProtectedResponse::head`](super::exchange::ProtectedResponse::head), the exchange's reply and
-/// [`ExchangeFailure`](super::exchange::ExchangeFailure)'s head. `ExchangeResponse` itself has no
-/// `Drop`, so its fields still move out (`reply.body`); this holder wipes whatever is left.
-#[derive(Clone, Default, PartialEq, Eq)]
-pub struct ResponseHead(super::exchange::ExchangeResponse);
-
-impl ResponseHead {
-    /// Take ownership of `response`; it is wiped when this drops.
-    #[must_use]
-    pub fn new(response: super::exchange::ExchangeResponse) -> Self {
-        Self(response)
-    }
-}
-
-impl From<super::exchange::ExchangeResponse> for ResponseHead {
-    fn from(response: super::exchange::ExchangeResponse) -> Self {
-        Self(response)
-    }
-}
-
-impl core::fmt::Debug for ResponseHead {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        core::fmt::Debug::fmt(&self.0, f)
-    }
-}
-
-impl core::ops::Deref for ResponseHead {
-    type Target = super::exchange::ExchangeResponse;
-    fn deref(&self) -> &super::exchange::ExchangeResponse {
-        &self.0
-    }
-}
-
-impl core::ops::DerefMut for ResponseHead {
-    fn deref_mut(&mut self) -> &mut super::exchange::ExchangeResponse {
-        &mut self.0
-    }
-}
-
-impl zeroize::Zeroize for ResponseHead {
-    fn zeroize(&mut self) {
-        zeroize::Zeroize::zeroize(&mut self.0);
-    }
-}
-
-impl Drop for ResponseHead {
-    fn drop(&mut self) {
-        zeroize::Zeroize::zeroize(&mut self.0);
-    }
-}
-
-impl zeroize::ZeroizeOnDrop for ResponseHead {}
-
-/// A conditional plane request is secret in every instance: it wipes its candidate on drop. The
-/// body lives here, outside the request-path tree.
+/// A conditional plane request is secret in every instance: it wipes its candidate on drop.
 impl Drop for super::plane::conditional::Request {
     fn drop(&mut self) {
         zeroize::Zeroize::zeroize(self);
@@ -145,4 +90,3 @@ impl Drop for super::plane::conditional::Request {
 }
 
 impl zeroize::ZeroizeOnDrop for super::plane::conditional::Request {}
-

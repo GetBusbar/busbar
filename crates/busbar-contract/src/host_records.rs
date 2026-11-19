@@ -39,8 +39,6 @@ pub const RETENTION_TERMINAL_ONLY: u32 = 1;
 
 /// Shared conditional host-record codec.
 pub mod conditional;
-/// Historical exact accounting correction codec.
-pub mod correction;
 /// Shared logical operation fingerprints and replay results.
 pub mod dedupe;
 

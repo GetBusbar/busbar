@@ -70,4 +70,3 @@ fn resolved(out: &ResolveOut, buf: usize, cap: u64) -> Result<(), Fault> {
     }
     Ok(())
 }
-

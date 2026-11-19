@@ -989,4 +989,3 @@ abi_answers! {
         check_cancel(outcome, o.disposition)
     }
 }
-

@@ -113,4 +113,3 @@ pub unsafe fn check_tail_entries(streams: &[u8], routes: &[Route]) -> Result<(),
     }
     Ok(())
 }
-

@@ -42,9 +42,6 @@ mod alloc_counter;
 #[path = "tests/wipe_support.rs"]
 mod support;
 
-mod sdk_hyper;
-
-pub mod auth_egress;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod billing;
 pub mod bounded;
@@ -57,7 +54,6 @@ pub mod config;
 pub mod config_time;
 pub mod confined_path;
 pub mod conn;
-pub mod lookup;
 pub use busbar_count::count;
 pub mod dest;
 
@@ -65,11 +61,9 @@ pub mod diagnostic;
 pub mod duration;
 pub mod export_calls;
 pub mod export_stream;
-pub mod fixed;
 pub mod framing_scope;
 pub mod grammar;
 pub mod header;
-pub mod hook_calls;
 
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod hook_wire;
@@ -78,9 +72,6 @@ pub mod hooks;
 pub mod host_records;
 pub mod ids;
 
-pub mod io_host;
-#[allow(missing_docs, missing_debug_implementations)]
-pub mod ir;
 pub mod json;
 pub mod jsonrpc;
 pub mod kept;
@@ -108,7 +99,6 @@ pub mod retry;
 
 #[allow(missing_docs)]
 pub mod records;
-pub mod scratch;
 #[allow(missing_docs)]
 pub mod secret;
 pub mod secure;
@@ -120,7 +110,6 @@ pub mod settings_public;
 pub mod plugin_settings;
 
 pub mod secret_fields;
-pub mod secret_json;
 pub mod section;
 /// SemVer 2.0 precedence for plugin version floors (#359 SEC-L11); owned by the artifact metadata
 /// crate so the standalone artifact verifier compares floors with the same one comparator.
@@ -180,7 +169,6 @@ pub use kinds::{
 };
 pub use plugin::{AbiVersion, Kind, KindMarker, Plugin};
 pub use redacted::{constant_time_eq, sha256_hex, OwnerSeal, Secret, SharedSecret};
-pub use scratch::{Scratch, ScratchRefused};
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use transport::{check_composition, CompositionError, Registered, TRANSPORT_ABI};
 pub use unit::{AuditFacts, FinishClass, RefusalReason, ResourceLocator, ScopeFacts};

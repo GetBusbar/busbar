@@ -313,4 +313,3 @@ use busbar_artifact_metadata::rendering::In;
 pub use busbar_artifact_metadata::rendering::{
     read, Read, ReadBlob, ReadFamily, ReadMeasurementClass, ReadNeed, Unreadable,
 };
-

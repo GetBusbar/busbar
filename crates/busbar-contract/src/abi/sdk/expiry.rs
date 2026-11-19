@@ -182,4 +182,3 @@ impl<T: Ord> Counted<BTreeSet<T>> {
         self.counting(self.inner.range(range))
     }
 }
-

@@ -36,18 +36,11 @@ pub(crate) const ROOT_HOST: &str = "RootHost";
 const RETIRED_KEYS: [&str; 3] = ["former.", "retired.", "name_1_5_5"];
 
 /// The † anchors of MIGRATE-ON-BOOT §7: (file, the fn's `impl` type or "" for a free fn, fn name).
-pub(crate) const ANCHORS: [(&str, &str, &str); 2] = [
-    (
-        "crates/busbar-kernel/src/persistence/startup.rs",
-        "Manifest",
-        "decode",
-    ),
-    (
-        "crates/busbar-contract/src/abi/sdk/migrate.rs",
-        "",
-        "read_answer",
-    ),
-];
+pub(crate) const ANCHORS: [(&str, &str, &str); 1] = [(
+    "crates/busbar-kernel/src/persistence/startup.rs",
+    "Manifest",
+    "decode",
+)];
 
 pub(crate) fn flag_text(root: &Path) -> Result<Vec<String>, String> {
     let mut files = Vec::new();

@@ -139,7 +139,6 @@
 
 use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
 
-pub mod validate;
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
@@ -983,67 +982,3 @@ pub mod cancel {
     /// The pending op was aborted before it produced a verdict/response; `on_error` runs as
     pub const ABORTED: u32 = 0;
 }
-
-// THE SDK's VIEW OF THE HOOK TABLE (`abi::sdk::door`): each kind op's `in`/`out`, stated next to
-// the table, so `plugin_door!` refuses a hook plugin that wires a kind op to another op's
-// structs. Every struct named here is plain data (integers, raw pointers, `AbiStr`/`Blob`, nested
-// plain structs): every bit pattern is a valid value, which is what `AbiIn`/`AbiOut` promise.
-//
-// SAFETY (all below): `#[repr(C)]`, leading with `InHead`/`OutHead`, plain data only.
-unsafe impl super::sdk::door::AbiIn for DecideIn {}
-unsafe impl super::sdk::door::AbiIn for NotifyIn {}
-unsafe impl super::sdk::door::AbiIn for ConfigureIn {}
-unsafe impl super::sdk::door::AbiIn for ServeIn {}
-unsafe impl super::sdk::door::AbiOut for DecideOut {}
-unsafe impl super::sdk::door::AbiOut for TransformOut {}
-unsafe impl super::sdk::door::AbiOut for ConfigureOut {}
-unsafe impl super::sdk::door::AbiOut for StatusOut {}
-unsafe impl super::sdk::door::AbiOut for DescribeOut {}
-unsafe impl super::sdk::door::AbiOut for ServeOut {}
-
-super::sdk::door::slot_structs!(
-    /// Each hook kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs. A
-    /// plugin wiring a slot to another op's structs does not compile:
-    ///
-    /// ```compile_fail,E0271
-    /// use busbar_contract::abi::hook::{ConfigureIn, ConfigureOut, DecideIn, DecideOut};
-    /// use busbar_contract::abi::hook::{DescribeOut, NotifyIn, ServeIn, ServeOut, StatusOut, TransformOut};
-    /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
-    /// use busbar_contract::abi::mechanism::lifecycle::*;
-    /// use busbar_contract::abi::sdk::door::RawSlot;
-    /// # use std::ffi::c_void;
-    /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
-    /// #     struct $n;
-    /// #     impl RawSlot for $n { type In = $i; type Out = $o;
-    /// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
-    /// # } }
-    /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
-    /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
-    /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
-    /// # ready!(Decide, DecideIn, DecideOut); ready!(Transform, DecideIn, TransformOut);
-    /// # ready!(Configure, ConfigureIn, ConfigureOut); ready!(Status, InHead, StatusOut);
-    /// # ready!(Describe, InHead, DescribeOut); ready!(Serve, ServeIn, ServeOut);
-    /// ready!(Notify, ConfigureIn, ConfigureOut); // `configure`'s structs on `notify`: refused
-    /// busbar_contract::plugin_door! {
-    ///     ops: busbar_contract::abi::hook::Ops,
-    ///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
-    ///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
-    ///                  cancel: Cn, release: Rl, close: Cl },
-    ///     kind_ops: { decide: Decide, transform: Transform, notify: Notify, configure: Configure,
-    ///                 status: Status, describe: Describe, serve: Serve },
-    /// }
-    /// # fn main() { let _ = door(); }
-    /// ```
-    ///
-    /// With `Notify` reading [`NotifyIn`] and writing [`OutHead`] the same plugin compiles
-    /// (`abi/sdk/tests/door_tests.rs`, `a_hook_plugin_wires_every_kind_op`).
-    Ops {
-        slot::DECIDE => DecideIn, DecideOut;
-        slot::TRANSFORM => DecideIn, TransformOut;
-        slot::NOTIFY => NotifyIn, OutHead;
-        slot::CONFIGURE => ConfigureIn, ConfigureOut;
-        slot::STATUS => InHead, StatusOut;
-        slot::DESCRIBE => InHead, DescribeOut;
-        slot::SERVE => ServeIn, ServeOut;
-    }
-);

@@ -85,7 +85,3 @@ pub(crate) fn deliver_request_log(exports: &plugin::Exports, facts: &RequestLogF
         |projection| build_request_log(projection, facts),
     );
 }
-
-#[cfg(test)]
-#[path = "tests/snapshot_crossings.rs"]
-mod snapshot_crossings;

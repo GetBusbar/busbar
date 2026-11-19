@@ -178,4 +178,3 @@ pub struct DatagramYield {
     /// The rendezvous terms, on the answer to a rendezvous.
     pub terms: RendezvousTerms,
 }
-

@@ -4,19 +4,7 @@
     "crates/busbar-contract/src/abi/mechanism/decl.rs": 2,
     "crates/busbar-contract/src/abi/mod.rs": 2,
     "crates/busbar-contract/src/abi/sdk/door.rs": 1,
-    "crates/busbar-contract/src/abi/sdk/exchange.rs": 1,
-    "crates/busbar-contract/src/abi/sdk/hook.rs": 1,
-    "crates/busbar-contract/src/abi/sdk/life.rs": 4,
-    "crates/busbar-contract/src/abi/sdk/plane_life.rs": 1,
-    "crates/busbar-contract/src/abi/sdk/tests/auth_kit_tests.rs": 1,
-    "crates/busbar-contract/src/abi/sdk/tests/cred_lent_tests.rs": 2,
-    "crates/busbar-contract/src/abi/sdk/tests/cred_tests.rs": 3,
-    "crates/busbar-contract/src/abi/sdk/tests/export_tests.rs": 1,
-    "crates/busbar-contract/src/abi/sdk/tests/life_tests.rs": 3,
-    "crates/busbar-contract/src/abi/sdk/tests/safe_tests.rs": 1,
-    "crates/busbar-contract/src/ir/handle.rs": 2,
     "crates/busbar-contract/src/redacted.rs": 1,
-    "crates/busbar-contract/src/sdk_hyper.rs": 2,
     "crates/busbar-contract/src/secret_ref/context.rs": 1,
     "crates/busbar-contract/src/tests/redacted_tests.rs": 1,
     "crates/busbar-core-admin/src/v1/contract/mod.rs": 1,
@@ -50,14 +38,11 @@
     "crates/busbar/src/root/mod.rs": 1,
     "crates/busbar/src/root/tests/test_plugins.rs": 1,
     "crates/busbar/src/test_source_gen_tests.rs": 1,
-    "crates/plugin-loader/src/tests/auth_door_tests.rs": 1,
-    "crates/plugin-loader/src/tests/dispatch_tests.rs": 1
   },
   "forbid": [
     "ci/hop/src/main.rs",
     "crates/busbar-artifact-metadata/src/lib.rs",
     "crates/busbar-artifact-verifier/src/lib.rs",
-    "crates/busbar-contract/src/abi/sdk/typed_json.rs",
     "crates/busbar-contract/src/caps/mod.rs",
     "crates/busbar-contract/src/secure.rs",
     "crates/busbar-contract/src/yaml.rs",
@@ -83,8 +68,6 @@
     "crates/busbar-plugin-abi/src/lib.rs",
     "crates/busbar-plugin-bench/src/lib.rs",
     "crates/busbar-plugin-test/src/lib.rs",
-    "crates/busbar-plugin-test/tests/fixtures/carrier_target.rs",
-    "crates/busbar-plugin-test/tests/fixtures/framer_target.rs",
     "crates/busbar-ports/src/lib.rs",
     "crates/busbar-seal/src/lib.rs",
     "crates/busbar-secure/src/lib.rs",
@@ -93,8 +76,5 @@
     "tools/openapi-diff/src/main.rs"
   ],
   "admitted": {
-    "crates/busbar-plugin-test/tests/fixtures/carrier_target.rs": "Owner, 18 Nov 2026: \"before round 2 do the old interface deletion so we audit minimal code\"; deleted with the old-interface host target (DELETE-OLD-INTERFACE-v2 R4)",
-    "crates/busbar-plugin-test/tests/fixtures/framer_target.rs": "Owner, 18 Nov 2026: \"before round 2 do the old interface deletion so we audit minimal code\"; deleted with the old-interface host target (DELETE-OLD-INTERFACE-v2 R4)",
-    "crates/busbar-contract/src/json_grammar.rs": "DES-SONIC-WIPE r3 §1 #3 (adopted 2026-11-17, COORD ack): moved verbatim to crates/busbar-contract/src/abi/sdk/typed_json.rs, which keeps the forbid"
   }
 }

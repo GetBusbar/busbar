@@ -349,4 +349,3 @@ impl Observations {
 }
 
 pub use busbar_artifact_metadata::observe::{DiagnosticDecl, SeriesDecl};
-

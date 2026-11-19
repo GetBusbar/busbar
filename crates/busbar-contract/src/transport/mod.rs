@@ -7,7 +7,6 @@ pub mod codes;
 pub mod dest;
 pub mod fields;
 pub mod registry;
-pub mod surface;
 
 pub mod trust;
 pub mod wire;
@@ -20,12 +19,6 @@ pub use crate::abi::versions::AbiVersion;
 pub use registry::{
     check_composition, facts, CompositionError, Registered, TransportSettings,
     DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_REQUEST_TIMEOUT_SECS, TRANSPORT_ABI,
-};
-
-/// A plane's SERVED SURFACE as data — the operations, how each is addressed on each binding, how it
-pub use surface::{
-    match_target, resolve_target, Answering, Bar, BindingDecl, Capture, Dispatch, Operation,
-    WireSurface, MAX_CAPTURES,
 };
 
 /// Where a dial lands, as the transport family that dials it spells it — named at the transport
