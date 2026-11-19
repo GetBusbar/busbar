@@ -943,7 +943,7 @@ fn a_claim_conflict_names_both_files() {
             .admit_described(
                 owner,
                 &[0; 64],
-                &[&format!("{owner}-alias"), "shared-word"],
+                &[format!("{owner}-alias").as_str(), "shared-word"],
                 owner_signer,
                 described(),
             )
