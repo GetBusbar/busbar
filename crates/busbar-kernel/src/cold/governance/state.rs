@@ -39,12 +39,6 @@ pub(crate) fn mod_meter_key_first(key: &MeterKey) -> MeterKey {
     key.clone()
 }
 
-/// `mod`: the overflow warning throttle's clock reading, taken only once the accumulator is at cap.
-#[cold]
-pub(crate) fn mod_overflow_instant() -> std::time::Instant {
-    std::time::Instant::now()
-}
-
 /// `state`: an admission refused because the key names a group this node does not have.
 #[cold]
 pub(crate) fn state_missing_group(group: &str) -> LimitBlocked {

@@ -129,6 +129,12 @@ fn finish_front(pending: &PendingMetering) {
 
 impl GovState {
     pub(super) async fn flush_metering_deduped(&self, shutdown: bool) -> usize {
+        // The pass reports the accumulator's overflow coalesces, first, so an outage that keeps
+        // the store away is still named. The pass's own reading: nothing waits before its use.
+        if self.pending_metering.coalesced_unreported() {
+            self.pending_metering
+                .report_coalesced(crate::store::monotonic_ns(), shutdown);
+        }
         let core = match self.core_store() {
             Ok(core) => core,
             Err(error) => {
@@ -195,8 +201,9 @@ impl GovState {
                 return flushed;
             };
             let op = write.op.unwrap_or_else(|| {
-                let first_sent_at_ms =
-                    crate::off_path::governance::state::metering_flush_attempt_clock();
+                // A first attempt's first-send wall time, read after the awaits that came
+                // before it in this pass.
+                let first_sent_at_ms = crate::store::now_ms();
                 let op = MeteringAttempt {
                     id: crate::door::op_id(),
                     first_sent_at_ms,

@@ -1940,10 +1940,7 @@ impl GovState {
                 // One flag swap per tick selects the shards written since the last tick (W6). Pass 2
                 // walks those again plus any written during the await between the passes, so a
                 // shard pass 1 selected is never dropped. Shutdown and the backstop walk them all.
-                let backstop = !shutdown
-                    && self
-                        .budget
-                        .backstop_due(crate::off_path::governance::state::state_flush_instant());
+                let backstop = !shutdown && self.budget.backstop_due(crate::store::monotonic_ns());
                 let flagged = self.budget.take_flags();
                 let mask1 = if shutdown || backstop {
                     ALL_SHARDS

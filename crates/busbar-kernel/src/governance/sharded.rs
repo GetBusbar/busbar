@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use busbar_contract::kept::Text;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::GOV_SHARDS;
 
@@ -88,8 +88,8 @@ pub(super) fn put<V>(map: &mut HashMap<Text, V>, name: &str, cell: V) {
 
 pub(super) struct Sharded<V, K = String> {
     shards: Box<[MapShard<V, K>; GOV_SHARDS]>,
-    /// When the flush last walked every shard (the backstop).
-    last_full_walk: Mutex<Option<Instant>>,
+    /// When the flush last walked every shard (the backstop), in monotonic nanoseconds.
+    last_full_walk: Mutex<Option<u64>>,
     #[cfg(test)]
     pub(super) flush_shard_locks: AtomicU64,
     #[cfg(test)]
@@ -174,14 +174,17 @@ impl<V, K> Sharded<V, K> {
             .store(true, Ordering::Release);
     }
 
-    /// Whether the full-walk backstop is due; arms the next one when it is.
-    pub(super) fn backstop_due(&self, now: Instant) -> bool {
+    /// Whether the full-walk backstop is due at the tick's monotonic reading `now` (nanoseconds);
+    /// arms the next one when it is.
+    pub(super) fn backstop_due(&self, now: u64) -> bool {
         let mut last = self
             .last_full_walk
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         match *last {
-            Some(at) if now.saturating_duration_since(at) < BUDGET_FLUSH_BACKSTOP => false,
+            Some(at) if u128::from(now.saturating_sub(at)) < BUDGET_FLUSH_BACKSTOP.as_nanos() => {
+                false
+            }
             Some(_) => {
                 *last = Some(now);
                 true

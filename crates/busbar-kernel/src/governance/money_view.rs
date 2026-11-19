@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::{
-    wall_ms, BudgetCell, DerivedUsage, EntryId, History, MoneyError, RawFeeEras, RawRateEra,
-};
+use super::{BudgetCell, DerivedUsage, EntryId, History, MoneyError, RawFeeEras, RawRateEra};
 
 type Priced = Result<DerivedUsage, MoneyError>;
 use foldhash::HashMap;
@@ -49,14 +47,15 @@ impl PartialEq for Inputs {
 }
 
 impl Inputs {
+    /// `now_ms` is the viewing operation's wall reading: one scrape views every bucket at it.
     pub(in crate::governance) fn of(
         cost: &crate::cost::CostModel,
         period: &str,
         include_fee: bool,
         cell: &BudgetCell,
+        now_ms: u64,
     ) -> Self {
         let history = crate::rate_apply::dated_history().map(|h| {
-            let now_ms = wall_ms();
             let view = h.current();
             let (len, in_force) = (
                 view.entries().len(),
