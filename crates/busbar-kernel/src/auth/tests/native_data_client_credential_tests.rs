@@ -31,6 +31,20 @@ fn presented() -> Vec<(String, Vec<u8>)> {
     ]
 }
 
+/// [`presented`] with the client's DPoP proof beside it (RFC 9449): core verifies the proof from the
+/// request itself (`native_dpop`, the gate's `ConsumedCredentials`); the plane is never lent it.
+fn proved() -> Vec<(String, Vec<u8>)> {
+    let mut fields = presented();
+    fields.insert(
+        1,
+        (
+            "DPoP".to_owned(),
+            b"eyJ0eXAiOiJkcG9wK2p3dCJ9.e30.c2ln".to_vec(),
+        ),
+    );
+    fields
+}
+
 /// The names of the head fields the plane is lent, lowercase, in order.
 fn lent_names(http: &HttpIn) -> Vec<String> {
     let mut names = Vec::new();
@@ -55,7 +69,7 @@ fn lent_on_native_route(chain: &NativeChain) -> Vec<String> {
             method: "POST".into(),
             path: "/v1/messages".into(),
             query: String::new(),
-            headers: presented(),
+            headers: proved(),
         },
         bytes::Bytes::new(),
         1,
@@ -70,7 +84,7 @@ fn lent_on_native_route(chain: &NativeChain) -> Vec<String> {
 #[test]
 fn the_plane_port_path_lends_the_plane_no_client_credential() {
     let mut headers = http::HeaderMap::new();
-    for (name, value) in presented() {
+    for (name, value) in proved() {
         headers.append(
             http::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
             http::header::HeaderValue::from_bytes(&value).unwrap(),
@@ -140,7 +154,9 @@ fn every_client_credential_field_is_one_the_specification_names() {
     use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
     for field in crate::plane_driver::port::CLIENT_CREDENTIAL_FIELDS {
         assert!(
-            NEVER_KEPT.contains(&field) || field == "x-admin-token",
+            NEVER_KEPT.contains(&field)
+                || field == "x-admin-token"
+                || field == crate::auth::dpop::DPOP_HEADER.as_str(),
             "{field}"
         );
     }

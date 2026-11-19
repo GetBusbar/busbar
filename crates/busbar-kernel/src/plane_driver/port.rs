@@ -1069,7 +1069,8 @@ pub struct HttpIn {
 
 /// The head fields a client's credential travels in: the credential half of the connector's caller-side strip
 /// (`busbar_contract::abi::host::conn::connector::NEVER_KEPT`) and the 1.5 admin carrier (`port_admin`'s
-/// `ADMIN_CREDENTIAL_FIELDS`). A plane is never lent one of them, whatever the route's chain read (an anonymous chain
+/// `ADMIN_CREDENTIAL_FIELDS`), and the client's DPoP proof (RFC 9449, `auth::dpop::DPOP_HEADER`), which core
+/// verifies from the request itself before anything is lent. A plane is never lent one of them, whatever the route's chain read (an anonymous chain
 /// reads none): the plane builds every upstream request from what it is lent, so a credential the client presented to
 /// Busbar never reaches an upstream through it. The upstream gets the credential core seals for it; a caller's own
 /// credential reaches an upstream only through core's configured passthrough (`upstream_credentials: passthrough`,
