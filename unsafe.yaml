@@ -35,6 +35,18 @@ ffi:
     crates/busbar-plugin-abi/Cargo.toml: forwards host
     crates/plugin-loader/Cargo.toml: host
     crates/busbar-plugin-test/Cargo.toml: no host
+  # The owner's approved rises of `total`, each exact: against a comparison revision whose total is `from`,
+  # the total may be `to` only when the measured total is exactly `to`, the named file measures exactly
+  # `tokens` (= to - from) and is a module behind `feature`, and every other busbar-ffi file together still
+  # measures at most `from`. Any other rise stays red. An entry is never edited after it merges.
+  approved_rises:
+    - from: 92
+      to: 108
+      file: src/test_watch.rs
+      tokens: 16
+      feature: test-support
+      ruling: "owner, 18 Nov 2026: 'Yes: move it into ffi'"
+      reason: "the allocation watch (Watch, Freed, Block; a GlobalAlloc, test code only) leaves busbar-contract (abi/sdk/test_support/watch.rs, 14 tokens outside ffi) for ffi; 16 here because ffi's lints split realloc's copy and free into two blocks and the file carries its own allow. Two copies exist until the cut: the 14 interim tokens outside ffi go with the cut's deletion of abi/."
 # E1: every other tracked .rs file holding an escape token (unsafe, a linker identifier, an extern block,
 # an allow/expect/warn of unsafe_code, an OUT_DIR include, a build.rs writing .rs), with its exact count
 # and the package that deletes it. Rows are never added or raised; the whole map is deleted at the end

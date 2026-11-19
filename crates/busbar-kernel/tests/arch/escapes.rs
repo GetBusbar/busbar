@@ -1069,6 +1069,134 @@ mod fixtures {
         assert!(failures.is_empty(), "a net-zero move passes: {failures:?}");
     }
 
+    /// A file of three tokens: its allow and two blocks.
+    const FFI_WATCH: &str = "#![allow(unsafe_code)]\nfn a(p: *const u8) -> u8 {\n    \
+        // SAFETY: fixture.\n    unsafe { *p }\n}\nfn b(p: *const u8) -> u8 {\n    \
+        // SAFETY: fixture.\n    unsafe { *p }\n}\n";
+    /// One more token, for a planted block.
+    const PLANTED: &str =
+        "fn planted(p: *const u8) -> u8 {\n    // SAFETY: fixture.\n    unsafe { *p }\n}\n";
+    /// The owner's rise from the fixture base's 4 to 7: `src/watch.rs`, 3 tokens, behind `test-support`.
+    const RISE: &str = "  approved_rises:\n    - { from: 4, to: 7, file: src/watch.rs, tokens: 3, \
+        feature: test-support, ruling: \"owner, fixture\", reason: \"fixture\" }\n";
+
+    /// The fixture tree with `src/watch.rs` added as a `test-support` module of busbar-ffi.
+    fn watch_tree() -> Tree {
+        let mut tree = tree();
+        tree.files.insert(
+            "crates/busbar-ffi/src/lib.rs".to_string(),
+            format!("{FFI_LIB}#[cfg(feature = \"test-support\")]\npub mod watch;\n"),
+        );
+        tree.files.insert(
+            "crates/busbar-ffi/src/watch.rs".to_string(),
+            FFI_WATCH.to_string(),
+        );
+        tree
+    }
+
+    /// The register with `src/watch.rs` pinned at `watch` tokens, and `rise` (or nothing) as its approved rises.
+    fn watch_register(total: usize, raw: usize, watch: usize, rise: &str) -> Register {
+        let text = register_text(total, raw, "")
+            .replace(
+                "  dependencies:\n",
+                &format!(
+                    "    src/watch.rs: {{ tokens: {watch}, reason: watch }}\n  dependencies:\n"
+                ),
+            )
+            .replace(
+                "crates/busbar-plugin-abi/Cargo.toml: forwards host\n",
+                &format!("crates/busbar-plugin-abi/Cargo.toml: forwards host\n{rise}"),
+            );
+        parse_register("fixture", &text).expect("fixture register")
+    }
+
+    /// The owner's approved rise passes exactly as approved; without the entry it is red.
+    #[test]
+    fn an_approved_rise_passes_only_as_approved() {
+        let failures = judge(&watch_tree(), &watch_register(7, 2, 3, RISE), &base());
+        assert!(
+            failures.is_empty(),
+            "the approved rise passes: {failures:?}"
+        );
+        red(
+            &watch_tree(),
+            &watch_register(7, 2, 3, ""),
+            &base(),
+            "rose above 4 at base",
+        );
+        // Not behind the named feature: red.
+        let mut ungated = watch_tree();
+        ungated.files.insert(
+            "crates/busbar-ffi/src/lib.rs".to_string(),
+            format!("{FFI_LIB}pub mod watch;\n"),
+        );
+        red(
+            &ungated,
+            &watch_register(7, 2, 3, RISE),
+            &base(),
+            "rose above 4 at base",
+        );
+        // Against a base at another total, the entry does not apply.
+        let other = vec![("other".to_string(), Some(register(5, 3, "")))];
+        red(
+            &watch_tree(),
+            &watch_register(7, 2, 3, RISE),
+            &other,
+            "rose above 5 at other",
+        );
+    }
+
+    /// A planted token anywhere fails, whether the pins are raised to cover it or not.
+    #[test]
+    fn a_planted_token_under_an_approved_rise_is_red() {
+        let rise = watch_register(7, 2, 3, RISE);
+        // In the approved file, pins raised to match: the total is not the approved one.
+        let mut in_watch = watch_tree();
+        in_watch.files.insert(
+            "crates/busbar-ffi/src/watch.rs".to_string(),
+            format!("{FFI_WATCH}{PLANTED}"),
+        );
+        red(
+            &in_watch,
+            &watch_register(8, 2, 4, RISE),
+            &base(),
+            "rose above 4 at base",
+        );
+        red(&in_watch, &rise, &base(), "above its pin of 3");
+        // In another busbar-ffi file, pins raised to match.
+        let mut in_raw = watch_tree();
+        in_raw.files.insert(
+            "crates/busbar-ffi/src/raw.rs".to_string(),
+            format!("{FFI_RAW}{PLANTED}"),
+        );
+        red(
+            &in_raw,
+            &watch_register(8, 3, 3, RISE),
+            &base(),
+            "rose above 4 at base",
+        );
+        // In another busbar-ffi file, paid for by a token taken out of the approved file (the total stays at the
+        // approved figure): what is outside the approved file rose, so it is red.
+        let mut traded = in_raw;
+        traded.files.insert(
+            "crates/busbar-ffi/src/watch.rs".to_string(),
+            "#![allow(unsafe_code)]\nfn a(p: *const u8) -> u8 {\n    // SAFETY: fixture.\n    unsafe { *p }\n}\n"
+                .to_string(),
+        );
+        red(
+            &traded,
+            &watch_register(7, 3, 2, RISE),
+            &base(),
+            "rose above 4 at base",
+        );
+        // Outside busbar-ffi: E1, as without the entry.
+        let mut outside = watch_tree();
+        outside
+            .files
+            .insert("crates/x/src/d.rs".to_string(), PLANTED.to_string());
+        red(&outside, &rise, &base(), "unsafe: crates/x/src/d.rs has 1");
+    }
+
     /// RT4: tests hold no `unsafe` (TST-7): no test-range exemption.
     #[test]
     fn tests_hold_no_unsafe() {
