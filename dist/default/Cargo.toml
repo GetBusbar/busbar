@@ -171,8 +171,8 @@ busbar-transport-grpc = { workspace = true }
 # WebSocket: the streaming plane's edge, always linked.
 busbar-transport-ws = { workspace = true }
 busbar-transport-stdio = { workspace = true }
-# WebRTC: the datagram framer door (ICE, SRTP, SCTP) over the connector's datagram port and secure
-# layer. Always linked: its row is the wire's one registration.
+# WebRTC: a MIN-3 image (its logic crate's `PLUGIN` header) in the datagram role (ICE, SRTP, SCTP), on
+# `min3-images`; it carries the `rtc` carrier (deletion plan E10). Always linked.
 busbar-transport-webrtc = { workspace = true }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
@@ -347,7 +347,8 @@ transport-http = "min3-images"
 transport-ws = "transport transport-door"
 transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
-transport-webrtc = "transport transport-door"
+# The webrtc transport is a MIN-3 image in the datagram role, admitted as one transport instance.
+transport-webrtc = "min3-images"
 plane-decisions = "min3-images"
 # MIN-3 planes register their PLUGIN header; open describes their dialects and routes.
 plane-llm-door = "min3-images"
@@ -444,12 +445,13 @@ row = "auth-admin-tokens"
 # The generator (src/linked_gen.rs `carrier_rows`) refuses an unknown key, a key stated twice, a value
 # that is not a linked row on `min3-images`, and one row under two keys (one image frames one carrier);
 # boot and every config read refuse an assigned image that is not an admitted transport with the
-# carrier's role. http is assigned with its row's move to `min3-images` (deletion step E3); grpc (E8),
-# websocket (E9b) and rtc (E10) are not yet, so `busbar --list-plugins` and the boot line print `none`
-# for them. The FIPS build's exclude script must drop an
-# excluded row's key with its row (its post-check refuses any remaining mention of the package).
+# carrier's role. http (deletion step E3) and rtc (E10) are assigned with their rows' move to
+# `min3-images`; grpc (E8) and websocket (E9b) are not yet, so `busbar --list-plugins` and the boot line
+# print `none` for them. The FIPS build's exclude script must drop an excluded row's key with its row (its
+# post-check refuses any remaining mention of the package).
 [package.metadata.busbar.carriers]
 http = "transport-http"
+rtc = "transport-webrtc"
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
@@ -822,12 +824,11 @@ busbar-hook-complexity = { git = "https://github.com/GetBusbar/busbar-hook-compl
 # c599ed8 (house/oss-green): its root test builds the dispatcher over the serving Services (LateServices is
 # gone, 395b97f138); the crate source differs from 725ccf6 only in test plumbing (tests moved out of src/).
 busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "c599ed8ea52b09bedd1ff10c63f8b045be5fe2d4" }
-# THE WEBRTC TRANSPORT: the datagram framer door (ICE, SRTP, SCTP; kind: transport), pulled at a
-# pinned rev; the logic crate the root links behind `transport-webrtc`. Its dropped-in cdylib twin
-# (`busbar-transport-webrtc-plugin`), the published suite's datagram script and its gates live in that
-# repo's plugin CI; busbar's gates read the pinned crate through the base layer. Its media stack (str0m,
-# aes) is pinned in that repo's own manifest: no member here inherits it.
-busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "624ad1e78cda33033671937786b13c7b02882da8" }
+# THE WEBRTC TRANSPORT (kind: transport), a MIN-3 image in the datagram role (ICE, SRTP, SCTP), pulled at a
+# pinned rev; the logic crate whose `PLUGIN` header the root admits. The pin is its dev head a9d7912 (house/oss-green
+# merged: the image declares its alias `webrtc` as a former name). Its dropped-in cdylib twin and its gates live in
+# that repo's plugin CI. Its media stack (str0m, aes) is pinned in that repo's own manifest.
+busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "a9d7912abcd63ec991c649eb135b44826f726b1f" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its tests link the external testkit's R-FIX3
@@ -1111,6 +1112,13 @@ sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "1241c129cef
 # Canonical JSON: olpc-cjson 0.1.4 with serde_json optional and a sonic-rs Formatter, offered upstream
 # (awslabs/tough). busbar's workspace row turns its default (serde_json) off and takes the sonic-rs formatter.
 olpc-cjson = { git = "https://github.com/MattJackson/olpc-cjson", rev = "0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e" }
+# The webrtc image's media stack random source (IF §8.7 round 18, §15.4 rule 4): str0m-proto gains `set_fill`, which
+# the plugin points at the host in `open`, so every ICE credential is Host-random. One fork of the str0m workspace at
+# its 0.24.1 tag plus that commit (upstream PR to algesten/str0m pending); the same three rows and revision the
+# webrtc repository's own manifest carries. A patch applies only at the consuming workspace root.
+str0m = { git = "https://github.com/MattJackson/str0m", rev = "36833da71bb86b5dfc9a88e3f56afa3353bb70db" }
+str0m-proto = { git = "https://github.com/MattJackson/str0m", rev = "36833da71bb86b5dfc9a88e3f56afa3353bb70db" }
+is = { git = "https://github.com/MattJackson/str0m", rev = "36833da71bb86b5dfc9a88e3f56afa3353bb70db" }
 
 [profile.dev]
 # The assembled distribution links every first-party plugin into one `busbar` test executable.
