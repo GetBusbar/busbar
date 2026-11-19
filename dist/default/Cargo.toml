@@ -441,17 +441,18 @@ row = "auth-admin-tokens"
 # key per carrier (`http`, `grpc`, `websocket`, `rtc`), each naming the linked row whose MIN-3 image
 # carries that dial, stated here in packaging so the root's source names no transport:
 #   [package.metadata.busbar.carriers]
-#   http = "<row key>"
-# The generator (src/linked_gen.rs `carrier_rows`) refuses an unknown key, a key stated twice, a value
+#   http = "<the row's package, or its row key>"
+# Each value here is the row's PACKAGE name (`busbar-...`), so a build that excludes the plugin drops this line with
+# the plugin's other rows: the FIPS repository's `ci/exclude-plugins.sh` deletes a non-comment line naming
+# `busbar-<package>`, and its post-check refuses any remaining mention. The generator (src/linked_gen.rs `carrier_rows`) refuses an unknown key, a key stated twice, a value
 # that is not a linked row on `min3-images`, and one row under two keys (one image frames one carrier);
 # boot and every config read refuse an assigned image that is not an admitted transport with the
 # carrier's role. http (deletion step E3) and rtc (E10) are assigned with their rows' move to
 # `min3-images`; grpc (E8) and websocket (E9b) are not yet, so `busbar --list-plugins` and the boot line
-# print `none` for them. The FIPS build's exclude script must drop an excluded row's key with its row (its
-# post-check refuses any remaining mention of the package).
+# print `none` for them.
 [package.metadata.busbar.carriers]
-http = "transport-http"
-rtc = "transport-webrtc"
+http = "busbar-transport-http"
+rtc = "busbar-transport-webrtc"
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
@@ -494,7 +495,6 @@ source_file = "busbar-secret-file"
 
 [package.metadata.busbar.test-source-contexts]
 root_stdio = "busbar-transport-stdio"
-boot_carrier_locate = "busbar-transport-tcp"
 listener_session = "busbar-transport-ws"
 listener_carrier = "busbar-transport-tcp"
 admin_application = "busbar-hook-webrequest"
@@ -1114,7 +1114,7 @@ sonic-rs = { git = "https://github.com/MattJackson/sonic-rs", rev = "1241c129cef
 olpc-cjson = { git = "https://github.com/MattJackson/olpc-cjson", rev = "0a96a65b1122a2bbb93fd36cae3b36dd2b045c7e" }
 # The webrtc image's media stack random source (IF §8.7 round 18, §15.4 rule 4): str0m-proto gains `set_fill`, which
 # the plugin points at the host in `open`, so every ICE credential is Host-random. One fork of the str0m workspace at
-# its 0.24.1 tag plus that commit (upstream PR to algesten/str0m pending); the same three rows and revision the
+# its 0.24.1 tag plus that commit (not yet proposed upstream to algesten/str0m); the same three rows and revision the
 # webrtc repository's own manifest carries. A patch applies only at the consuming workspace root.
 str0m = { git = "https://github.com/MattJackson/str0m", rev = "36833da71bb86b5dfc9a88e3f56afa3353bb70db" }
 str0m-proto = { git = "https://github.com/MattJackson/str0m", rev = "36833da71bb86b5dfc9a88e3f56afa3353bb70db" }
