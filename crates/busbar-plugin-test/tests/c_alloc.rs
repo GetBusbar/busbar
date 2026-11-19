@@ -289,11 +289,38 @@ mod ref_auth;
 
 /// Interface revision E.1: the host's HMAC over parts makes NO heap call and copies no part. An auth
 /// `verify` that MACs a 64 KiB body where the host lent it costs exactly what a `verify` that reads nothing
-/// costs: the two allocations of its value (the `Identity`'s records and `Arc`), nothing for the MAC.
+/// costs (the arm above): the two allocations of its value (the `Identity`'s records and `Arc`), and
+/// nothing for the MAC.
 #[test]
 fn an_auth_verify_that_macs_its_body_over_parts_adds_no_heap_call() {
     use busbar_plugin_abi::types::{Bytes, Pair, Str};
     use busbar_ports::auth::{AuthIn, Verify, VerifyAnswer};
+
+    fn request<'a>(headers: &'a [Pair<'a>], body: &'a [u8]) -> AuthIn<'a> {
+        AuthIn {
+            method: "POST",
+            path: "/hook",
+            query: "",
+            authority: "example",
+            headers,
+            peer: "192.0.2.1:50000",
+            tls_peer_cert: &[],
+            body,
+            now_s: 1_800_000_000,
+        }
+    }
+    fn signed<'a>(signature: &'a [u8]) -> [Pair<'a>; 2] {
+        [
+            Pair {
+                name: Str::new(ref_auth::ID_HEADER),
+                value: Bytes::new(b"what do ya want "),
+            },
+            Pair {
+                name: Str::new(ref_auth::SIGNATURE_HEADER),
+                value: Bytes::new(signature),
+            },
+        ]
+    }
 
     let _one = ONE_AT_A_TIME
         .lock()
@@ -307,29 +334,6 @@ fn an_auth_verify_that_macs_its_body_over_parts_adds_no_heap_call() {
             br#"{"key":"0123456789abcdefghij","subject":"reference-caller"}"#,
         )
         .unwrap_or_else(|e| panic!("open: {e:?}"));
-
-    // A published-style known answer first (computed with openssl): the MAC that is counted is the right one.
-    let known = [
-        Pair {
-            name: Str::new(ref_auth::ID_HEADER),
-            value: Bytes::new(b"what do ya want "),
-        },
-        Pair {
-            name: Str::new(ref_auth::SIGNATURE_HEADER),
-            value: Bytes::new(b"19cc895f09b77219ab2686e68c0dc433411a0621ab3f8e3f54e214084f931167"),
-        },
-    ];
-    let request = |headers, body| AuthIn {
-        method: "POST",
-        path: "/hook",
-        query: "",
-        authority: "example",
-        headers,
-        peer: "192.0.2.1:50000",
-        tls_peer_cert: &[],
-        body,
-        now_s: 1_800_000_000,
-    };
     let accepted = |req: &AuthIn<'_>| match port.verify(cx(deadline), req, None) {
         Verify::Done(Ok(VerifyAnswer::Identity(identity))) => {
             black_box(identity);
@@ -338,25 +342,23 @@ fn an_auth_verify_that_macs_its_body_over_parts_adds_no_heap_call() {
         Verify::Done(_) => false,
         Verify::Io(_) => panic!("a sync verify answers at once"),
     };
-    assert!(accepted(&request(&known, b"for nothing?")));
-    assert!(
-        !accepted(&request(&known, b"for nothing!")),
-        "one wrong byte of the body is refused"
-    );
 
-    // The counted call: a 64 KiB body under a signature that does not match. A refusal has no value, so
-    // every heap call counted is the machinery's or the MAC's: there must be none.
-    let big = vec![0x5a_u8; 64 << 10];
-    let refused = request(&known, &big);
-    let calls = heap_calls(|| {
-        assert!(!accepted(black_box(&refused)));
-    });
-    let nothing = request(&[], &[]);
-    let baseline = heap_calls(|| {
-        assert!(!accepted(black_box(&nothing)));
+    // Known answers first (HMAC-SHA256 under the 20-byte key, computed with openssl): the MAC that is
+    // counted below is the right MAC, and one wrong byte of the body is refused.
+    let small = signed(b"19cc895f09b77219ab2686e68c0dc433411a0621ab3f8e3f54e214084f931167");
+    assert!(accepted(&request(&small, b"for nothing?")));
+    assert!(!accepted(&request(&small, b"for nothing!")));
+
+    // The counted call: the id header and a 64 KiB body, MACed as two parts.
+    let body = vec![b'Z'; 64 << 10];
+    let big = signed(b"95a13ba5c0d04b41a8ca5a62610cd745d92a5a8e183e0e1aac784f31b65ea021");
+    let req = request(&big, &body);
+    let verify = heap_calls(|| {
+        assert!(accepted(black_box(&req)));
     });
     assert_eq!(
-        calls, baseline,
-        "auth verify with an HMAC over parts of a 64 KiB body: the heap calls of a verify that MACs nothing"
+        verify,
+        2 * CALLS,
+        "auth verify with an HMAC over parts of a 64 KiB body: the Identity's records and Arc, nothing else"
     );
 }
