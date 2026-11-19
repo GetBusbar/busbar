@@ -1154,7 +1154,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=c3ead54ee453e1cfc1569a933e8acb47abce5172#c3ead54ee453e1cfc1569a933e8acb47abce5172"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=a3d946475d64542fbc78f9b948e29392787a02c5#a3d946475d64542fbc78f9b948e29392787a02c5"
 dependencies = [
  "busbar-plugin-abi",
  "bytes",
