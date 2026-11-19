@@ -50,6 +50,18 @@ fn section_key() -> &'static str {
 }
 
 fn write_config(dir: &Path, data_port: u16, admin_port: u16, auth_block: &str) -> PathBuf {
+    write_config_with(dir, data_port, admin_port, auth_block, true)
+}
+
+/// The deployment, with or without the MCP plane's section: auth is plane-agnostic, so what the
+/// chain does must not depend on it.
+fn write_config_with(
+    dir: &Path,
+    data_port: u16,
+    admin_port: u16,
+    auth_block: &str,
+    with_plane: bool,
+) -> PathBuf {
     std::fs::write(dir.join("providers.yaml"), "{}\n").unwrap();
     let catalog = if cfg!(linked_section_pools) {
         "providers: {}\nmodels: {}\n"
@@ -66,7 +78,11 @@ store: {{module: memory}}
 {catalog}pools: {{}}
 {auth_block}
 {section}"#,
-            section = plane_section(data_port, admin_port),
+            section = if with_plane {
+                plane_section(data_port, admin_port)
+            } else {
+                String::new()
+            },
         ),
     )
     .unwrap();

@@ -638,7 +638,11 @@ mod fixed_piece {
                     &fixture::plane_req(route),
                     b"",
                 );
-                assert_eq!(fixture::selects(), 1, "mode {mode} route {route}: one entry");
+                assert_eq!(
+                    fixture::selects(),
+                    1,
+                    "mode {mode} route {route}: one entry"
+                );
                 if ok {
                     let answer = answer.expect("a selector that asks nothing answers");
                     assert!(answer.is_ok(), "mode {mode} route {route}");
