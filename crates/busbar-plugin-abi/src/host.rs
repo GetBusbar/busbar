@@ -1414,6 +1414,25 @@ mod tests {
         assert_eq!(absent.err(), Some(CryptoErr::Rng));
     }
 
+    /// The core services are part of the core contract: the id, the most parts and the stated layout live
+    /// in the block `fp::CORE_FP` folds, so moving any of them moves the fingerprint and the pin. A core id
+    /// has no kind code, so it can never be a kind's own service; and the largest answer (a status and a
+    /// 64-byte tag) fits the smallest block a plugin may hand.
+    #[test]
+    fn the_core_service_numbers_are_fixed_and_fingerprinted() {
+        assert_eq!(core_service::HMAC_PARTS, 1);
+        assert_eq!(core_service::HMAC_PARTS_MAX, 8);
+        assert_eq!(core_service::HMAC_PARTS >> 32, 0);
+        assert_ne!(core_service::HMAC_PARTS, SERVICE_STORE_MIGRATE_ADMIT);
+        for kind in crate::types::KindCode::ALL {
+            assert_ne!(service_id(kind, 1), core_service::HMAC_PARTS, "{kind:?}");
+        }
+        for token in ["core_service", "HMAC_PARTS", "HMAC_PARTS_MAX"] {
+            assert!(MECHANISM_BLOCK.contains(token), "{token}");
+        }
+        assert!(4 + 64 <= busbar_ffi::RawOut::MIN);
+    }
+
     #[test]
     fn ct_eq_is_true_only_for_equal_whole_slices() {
         assert!(ct_eq(b"", b""));

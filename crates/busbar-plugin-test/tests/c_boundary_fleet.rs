@@ -42,7 +42,10 @@ use crate::{native_store, ref_auth, ref_export, ref_hook, ref_secret};
 
 /// One header as the engine hands it to an auth plugin: a borrowed name and a borrowed value.
 fn header<'a>(name: &'a str, value: &'a [u8]) -> Pair<'a> {
-    header(Str::new(name), Bytes::new(value))
+    Pair {
+        name: Str::new(name),
+        value: Bytes::new(value),
+    }
 }
 
 fn cx() -> CallCx {
