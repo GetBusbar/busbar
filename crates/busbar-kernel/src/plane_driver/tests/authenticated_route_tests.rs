@@ -42,6 +42,10 @@ const MODEL: &str = "m";
 /// The old continuation's own ceiling on its wait (`LOOKUP_CEILING`), which the port path's record
 /// calls keep (`Namespace::caller`): the request's deadline in these tests.
 const DEADLINE: Duration = Duration::from_secs(30);
+/// One anonymous session's server-issued handle (an `Mcp-Session-Id`: 16 random bytes as hex).
+const MINE: &str = "6f1c0e5a9d2b47c38e104a7f5b9d2c61";
+/// Another anonymous session's handle: guessed, or another caller's.
+const FOREIGN: &str = "0b7e2f4c6a8d4e1f9a3c5b7d9e1f2a4c";
 
 struct NoChildren;
 impl NestRoute for NoChildren {
@@ -602,10 +606,10 @@ async fn authenticated_route_caller_stop_reload_and_future_drop_cancel_before_ad
 }
 
 /// The anonymous principal is the one subject every caller of an open chain shares
-/// (`native_chain::ANONYMOUS`): it is no caller reference. A record another anonymous caller
-/// left in what would be the anonymous scope is never read by the next one: the store is not
-/// asked, the plane gets no record, and no destination is resolved (the deleted continuation
-/// refused `PrincipalId::anonymous()`; NEEDS P056, manager decision 19 Nov).
+/// (`native_chain::ANONYMOUS`): its subject is no caller reference, and a session that states no
+/// handle has none. A record another anonymous caller left in what would be the anonymous scope is
+/// never read by the next one: the store is not asked, the plane gets no record, and no destination
+/// is resolved (NEEDS P056, manager decision 19 Nov; kept by ANON-PLANES for a handle-less session).
 #[tokio::test]
 async fn authenticated_route_anonymous_callers_never_read_each_others_records() {
     let anonymous = crate::auth::native_chain::ANONYMOUS;
