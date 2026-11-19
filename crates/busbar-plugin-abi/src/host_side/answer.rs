@@ -59,12 +59,23 @@ fn ok_generic(t: u16) -> bool {
     )
 }
 
-fn layout_ok(bytes: &[u8]) -> Result<Layout, FaultReason> {
+/// Whose answer is validated: a session opener's may lead with the session TOKEN (§6.4 step 7); any other
+/// call's (a plain or session call, a session end, an async chain's final answer) names no session, so a
+/// TOKEN there is a context the host never handed it (a forged context): FAULT UnknownTag(TOKEN).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Caller {
+    Opener,
+    Other,
+}
+
+fn layout_ok(bytes: &[u8], caller: Caller) -> Result<Layout, FaultReason> {
     let mut layout = Layout::default();
     for (i, rec) in Records::new(bytes).enumerate() {
         let rec = rec.map_err(FaultReason::BadRecords)?;
         match rec.tag {
-            tag::TOKEN if i == 0 => layout.at = record_size(rec.body.len()),
+            tag::TOKEN if i == 0 && caller == Caller::Opener => {
+                layout.at = record_size(rec.body.len())
+            }
             // The kind ranges (interface revision D.2): 0x0100..=0x01FF, extended to 0x4FFF. Which of
             // them a kind declares, and which it has retired, is the kind decoder's to judge.
             0x0100..=0x4FFF => {}
@@ -142,9 +153,9 @@ fn layout_fail(status: Status, bytes: &[u8]) -> Result<Layout, FaultReason> {
     Ok(layout)
 }
 
-fn layout(status: Status, bytes: &[u8]) -> Result<Layout, FaultReason> {
+fn layout(status: Status, bytes: &[u8], caller: Caller) -> Result<Layout, FaultReason> {
     match status {
-        Status::OK => layout_ok(bytes),
+        Status::OK => layout_ok(bytes, caller),
         Status::REFUSED | Status::FAILED => layout_fail(status, bytes),
         Status::NEED => Err(FaultReason::NeedOutsideAsync),
         Status::FAULT => Err(FaultReason::Panic),
@@ -161,8 +172,16 @@ pub struct Answer<'o> {
 }
 impl<'o> Answer<'o> {
     /// Validates a terminal answer (module doc) and borrows it. Every proxy and the driver build answers here.
+    /// The answer of a call that opens no session: a TOKEN anywhere, first included, is FAULT UnknownTag (a
+    /// forged context, P079B). A session opener's answer is `parse_opener`'s.
     pub fn parse(status: Status, bytes: &'o [u8]) -> Result<Answer<'o>, FaultReason> {
-        Ok(Answer::at(status, bytes, layout(status, bytes)?))
+        Ok(Answer::at(status, bytes, layout(status, bytes, Caller::Other)?))
+    }
+
+    /// Validates a session opener's terminal answer (§6.4 step 7): as `parse`, but its OK answer may lead with
+    /// the session TOKEN (busbar-ffi's `open_sessionN` reads it; `records()` excludes it).
+    pub fn parse_opener(status: Status, bytes: &'o [u8]) -> Result<Answer<'o>, FaultReason> {
+        Ok(Answer::at(status, bytes, layout(status, bytes, Caller::Opener)?))
     }
 
     fn at(status: Status, bytes: &'o [u8], layout: Layout) -> Answer<'o> {

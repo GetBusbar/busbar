@@ -202,6 +202,15 @@ fn fixture(bound: bool) -> Fixture {
 /// the one instance whose image declares that header (§12.11), named `twilio`. `None` = the data
 /// chain: the bearer instance `provider-42`.
 fn fixture_on(bound: bool, cred_header: Option<&'static str>) -> Fixture {
+    fixture_with(bound, cred_header, |_| {})
+}
+
+/// [`fixture_on`] on a deployment `deploy` edits first (its public URL, its authorization server).
+fn fixture_with(
+    bound: bool,
+    cred_header: Option<&'static str>,
+    deploy: impl FnOnce(&mut App),
+) -> Fixture {
     let provider = if cred_header.is_some() {
         "twilio"
     } else {
@@ -209,6 +218,7 @@ fn fixture_on(bound: bool, cred_header: Option<&'static str>) -> Fixture {
     };
     let caller = Caller::for_test(Arc::from("plane/test"), KindCode::Plane);
     let mut app = (*app()).clone();
+    deploy(&mut app);
     app.config_generation.store(7, Ordering::Release);
     if bound {
         app.role_bindings = BTreeMap::from([(
