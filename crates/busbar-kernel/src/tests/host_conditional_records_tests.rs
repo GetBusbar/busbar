@@ -690,6 +690,48 @@ fn opt_in_refuses_legacy_writes_and_mixed_chain_operations_before_effects() {
         .is_err());
 }
 
+/// A billed request's unit exists from its registration, before its money is admitted: no record
+/// transaction runs under it until its effects are allowed (OPEN-3 row 15).
+#[test]
+fn unit_write_needs_effects_before_a_record_transaction_runs_under_it() {
+    let rows = Arc::new(AtomicRows::default());
+    let host = services(Arc::clone(&rows), true);
+    let plane = caller();
+    let record = || crate::host_units::UnitRecord {
+        principal: Some(Arc::new(busbar_contract::records::VirtualKey {
+            id: "alice".into(),
+            name: "alice".into(),
+            enabled: true,
+            ..Default::default()
+        })),
+        depth: 0,
+    };
+    assert!(host.units().pre_admitted_for(72, &plane, record()));
+    assert!(host
+        .record_transaction(
+            &plane,
+            Some(72),
+            logical(),
+            Box::new(|_| panic!("no write before money"))
+        )
+        .is_err());
+    assert!(rows.0.lock().unwrap().calls.is_empty());
+    assert!(rows.0.lock().unwrap().rows.is_empty());
+    assert_eq!(host.pending().queued(), 0);
+
+    host.units().admitted_for(72, &plane, record());
+    let answers = Arc::new(Mutex::new(Vec::new()));
+    let into = Arc::clone(&answers);
+    host.record_transaction(
+        &plane,
+        Some(72),
+        logical(),
+        Box::new(move |answer| into.lock().unwrap().push(answer)),
+    )
+    .unwrap();
+    assert_eq!(answers.lock().unwrap()[0].decision, Ok(Decision::Applied));
+}
+
 #[test]
 fn submitted_request_survives_caller_unit_retirement() {
     let rows = Arc::new(AtomicRows::default());

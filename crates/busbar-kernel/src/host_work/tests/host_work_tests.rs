@@ -643,6 +643,45 @@ fn an_open_is_refused_before_anything_is_written() {
     );
 }
 
+/// A billed request's unit exists from its registration, before its money is admitted: no work
+/// is opened, found or resumed under it until its effects are allowed (OPEN-3 row 15).
+#[test]
+fn unit_write_needs_effects_before_any_work_is_opened_under_it() {
+    let r = rig();
+    let plane = caller("inst");
+    assert!(r.s.units().pre_admitted_for(
+        40,
+        &plane,
+        UnitRecord {
+            principal: Some(key("alice")),
+            depth: 0,
+        },
+    ));
+    let (handle, reference) = open(&r, 1, b"alice's");
+    let refused = |s: Stored| {
+        assert_eq!(
+            (s.outcome, s.error),
+            (Outcome::Refused, refusal::NO_UNIT),
+            "a unit before its money writes and reads no work"
+        );
+    };
+    refused(run(|l| r.s.work_open(&plane, Some(40), "job", b"r", l)));
+    refused(run(|l| r.s.work_find(&plane, Some(40), &reference, l)));
+    refused(run(|l| r.s.work_resume(&plane, Some(40), handle, l)));
+    assert_eq!(r.s.work().held(), 1, "nothing was opened under the unit");
+
+    r.s.units().admitted_for(
+        40,
+        &plane,
+        UnitRecord {
+            principal: Some(key("alice")),
+            depth: 0,
+        },
+    );
+    let s = run(|l| r.s.work_open(&plane, Some(40), "job", b"r", l));
+    assert_eq!((s.outcome, s.error), (Outcome::Ready, ""), "admitted: opened");
+}
+
 #[test]
 fn a_row_round_trips_and_a_tombstone_reads_as_nothing() {
     let instance: Arc<str> = Arc::from("inst");
