@@ -59,9 +59,27 @@ fn end(stream: u64, how: u32, arg: u32) -> Item {
     (Out::End(WireEnd { stream, how, arg }), &[])
 }
 
-fn answer(ledger: &mut DeliveryLedger, items: &[Item]) -> Result<Outcome, Fault> {
+fn answer(ledger: &mut DeliveryLedger, items: &[Item]) -> Result<Checked, Fault> {
     let outs: Vec<Out> = items.iter().map(|item| item.0).collect();
     ledger.answer(&outs, |index| items[index].1)
+}
+
+/// One answer checked, and the bytes the connection is to be given for it, in order, read where
+/// `items` holds them.
+fn given(ledger: &mut DeliveryLedger, items: &[Item]) -> Vec<u8> {
+    let checked = answer(ledger, items).unwrap();
+    ledger.give(&checked, |index| items[index].1).pieces.concat()
+}
+
+/// The connection's writer took `count` more bytes of the placed runs, counted as the writer counts.
+fn took(ledger: &mut DeliveryLedger, count: u64) {
+    let queued = ledger.queued;
+    Giving {
+        pieces: smallvec::SmallVec::new(),
+        written: &mut ledger.written,
+        queued,
+    }
+    .took(usize::try_from(count).unwrap());
 }
 
 /// A ledger whose session is stated, as `begin`'s answer does.
@@ -75,10 +93,10 @@ fn ledger() -> DeliveryLedger {
     ledger
 }
 
-/// The connection takes everything queued and its flush succeeds: the carrier reports all of it.
+/// The connection takes everything placed and its flush succeeds: the carrier reports all of it.
 fn flush(ledger: &mut DeliveryLedger) -> u64 {
-    let queued = ledger.unwritten().len();
-    ledger.took(queued);
+    let rest = ledger.queued - ledger.written;
+    took(ledger, rest);
     let total = ledger.written;
     ledger.flushed(progress(total, total, total)).unwrap();
     total
