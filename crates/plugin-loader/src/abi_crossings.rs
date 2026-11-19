@@ -240,7 +240,7 @@ impl Verdict {
                 ["crossings", n] => crossings = n.parse::<u64>().ok(),
                 ["bytes", _] => {}
                 ["kind", word, n] => match n.parse::<u64>() {
-                    Ok(n) => by_kind.push((word, n)),
+                    Ok(n) => by_kind.push((*word, n)),
                     Err(_) => out.push(format!("unreadable verdict line: {line}")),
                 },
                 ["leak", label, kind, name, plugin, method, place] => out.push(format!(

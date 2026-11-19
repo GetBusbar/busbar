@@ -168,7 +168,7 @@ pub mod plane {
             cx.selected,
             cx.exchange,
             a.records(),
-            &mut |_| {},
+            &mut |_: busbar_ports::plane::PlaneOut<'_>| {},
         )
     }
 }
@@ -186,7 +186,12 @@ pub mod transport {
         if !ok_only(a) {
             return Ok(());
         }
-        grammar::decode(a.records(), call, &mut |_| {}).map_err(grammar::Bad::reason)
+        grammar::decode(
+            a.records(),
+            call,
+            &mut |_: busbar_ports::transport::TransportOut<'_>| {},
+        )
+        .map_err(grammar::Bad::reason)
     }
     /// `offer` for `role`.
     pub fn offer(a: &Answer<'_>, role: u32) -> Result<(), FaultReason> {

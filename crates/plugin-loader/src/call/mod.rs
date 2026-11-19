@@ -71,8 +71,8 @@ impl<K: Kind> Bound<K> {
 /// A live session and the instance it runs on. `Send`, not `Sync`: every method takes `&mut self`, so
 /// one entry per token runs at a time; dropping it cancels the token.
 pub struct Sess<K: Kind> {
-    inst: Arc<Instance>,
-    session: LiveSession<K>,
+    pub inst: Arc<Instance>,
+    pub session: LiveSession<K>,
 }
 
 impl<K: Kind> Sess<K> {

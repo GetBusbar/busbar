@@ -29,8 +29,6 @@ pub struct Holder<'a> {
     pub id: u64,
     /// The index of the thread's watch word.
     pub word: u32,
-    /// Entries nested on that thread when it was found stuck (1: the hung entry alone).
-    pub depth: u32,
 }
 
 impl Holder<'static> {
@@ -39,7 +37,6 @@ impl Holder<'static> {
         name: None,
         id: 0,
         word: u32::MAX,
-        depth: 0,
     };
 }
 
@@ -50,7 +47,6 @@ impl<'a> Holder<'a> {
             name: held.thread_name.as_deref(),
             id: held.thread_id,
             word: held.word,
-            depth: held.depth,
         }
     }
 }
@@ -326,10 +322,9 @@ mod holder_tests {
             thread_name: Some("busbar-worker-3".into()),
             thread_id: 41,
             word: 7,
-            depth: 2,
         };
         let holder = Holder::of(&held);
         assert_eq!(holder.name, Some("busbar-worker-3"));
-        assert_eq!((holder.id, holder.word, holder.depth), (41, 7, 2));
+        assert_eq!((holder.id, holder.word), (41, 7));
     }
 }

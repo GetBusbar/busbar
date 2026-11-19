@@ -2021,7 +2021,6 @@ impl SlotTable {
                 thread = holder.name.unwrap_or("unnamed"),
                 thread_id = holder.id,
                 watch_word = holder.word,
-                nested = holder.depth,
                 "plugin_hung: a plugin entry passed its watchdog ceiling on the named thread; the instance is quarantined"
             );
         }

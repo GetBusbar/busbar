@@ -97,6 +97,10 @@ busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
 # The plugin boundary (UNSAFE-MIN r3.1): admit opens, bounds-checks and admits images through its `image` module
 # (the `host` dependent role in unsafe.yaml).
 busbar-ffi = { path = "../busbar-ffi", features = ["host"] }
+# The call builder lends a method's numbers as the bytes of a plain record (`call::frame`): zerocopy
+# proves at compile time that the record has no padding and no pointer. Already in the lock (the
+# contract crate's).
+zerocopy = { version = "0.8", features = ["derive"] }
 libloading = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
 futures = { workspace = true }
