@@ -1431,6 +1431,7 @@ impl DeclaredConns for Connector {
                     busbar_kernel::audit::auditlog::PluginRefusal::Need,
                     &crate::cold::conns::untargeted_infrastructure(&spec.transport),
                 );
+                self.set_native_need(owner, need, None);
                 Err(ConnError::Refused)
             }
             Ok(tls) if !(spec.transport.is_empty() || unresolved || credentialed) => self
@@ -1448,6 +1449,7 @@ impl DeclaredConns for Connector {
                     Some(pinned) => self
                         .admits_pinned(owner, need, pinned, spec.egress_class)
                         .map_err(|refused| {
+                            self.set_native_need(owner, need, None);
                             why = Some(refused);
                             ConnError::Refused
                         }),
@@ -1463,6 +1465,7 @@ impl DeclaredConns for Connector {
                 } else {
                     refusal_text::CHECKS
                 }));
+                self.set_native_need(owner, need, None);
                 Err(ConnError::Refused)
             }
         };
