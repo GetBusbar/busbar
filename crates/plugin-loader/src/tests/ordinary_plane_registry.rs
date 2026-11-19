@@ -10,7 +10,7 @@ fn plane_manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         kind: "plane".into(),
         version: "1.6.0".into(),
         publisher: publisher.into(),
-        abi_version: busbar_contract::abi::plane::ABI_VERSION,
+        abi_version: busbar_plugin_abi::versions::PLANE,
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),
@@ -82,7 +82,7 @@ fn a_plane_with_no_door_is_refused() {
 fn plane_supported_abi_is_the_plane_kinds_one_version() {
     assert_eq!(
         crate::registry::supported_abi("plane"),
-        Some(busbar_contract::abi::plane::ABI_VERSION)
+        Some(busbar_plugin_abi::versions::PLANE)
     );
     assert!(crate::registry::supported_abi("store").is_some());
     assert_eq!(crate::registry::supported_abi("nonsense"), None);

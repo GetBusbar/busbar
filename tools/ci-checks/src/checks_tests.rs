@@ -38,14 +38,13 @@ forbidden_plugin_dependencies = ["busbar-contract", "plugin-loader", "busbar-ker
 "#;
 
 fn yaml_with(ported: usize) -> String {
-    let mut text = String::from("excluded_repos:\n  - hindsight-hook # docs\n  - busbar-hook-headroom\narchived_repos:\n  - busbar-transport-tcp\n  - busbar-transport-stdio\nplugins:\n");
+    let mut text = String::from(
+        "excluded_repos:\n  - hindsight-hook # docs\n  - busbar-hook-headroom\nplugins:\n",
+    );
     for index in 0..ported {
         text.push_str(&format!(
             "  - repo: busbar-store-p{index}\n    kind: store\n    alias: p{index}\n"
         ));
-    }
-    for repo in ["busbar-transport-tcp", "busbar-transport-stdio"] {
-        text.push_str(&format!("  - repo: {repo}\n    kind: transport\n"));
     }
     text
 }
@@ -82,16 +81,10 @@ fn the_closure_table_is_required_and_exact() {
 }
 
 #[test]
-fn the_repo_list_counts_33_ported_two_archived_and_no_headroom_entry() {
+fn the_repo_list_counts_33_ported_and_no_headroom_entry() {
     let found = fleet_findings(DEPS_OK, &yaml_with(32));
     assert!(
         found.iter().any(|f| f.contains("32 ported repos")),
-        "{found:?}"
-    );
-    let no_archive = yaml_with(33).replace("archived_repos:", "other_repos:");
-    let found = fleet_findings(DEPS_OK, &no_archive);
-    assert!(
-        found.iter().any(|f| f.contains("archived_repos")),
         "{found:?}"
     );
     let headroom = format!("{}  - repo: busbar-hook-headroom\n", yaml_with(33));
@@ -142,7 +135,7 @@ fn c_alias_finds_a_header_missing_an_alias_or_a_former_name() {
         .any(|f| f.contains("excluded repo must have no manifest entry")));
 }
 
-/// The real tree: fleet/deps.toml carries the closure and plugins.yaml the 33 + 2 + headroom shape.
+/// The real tree: fleet/deps.toml carries the closure and plugins.yaml the 33 + headroom shape.
 #[test]
 fn the_real_fleet_manifest_is_the_min3_closure() {
     let root = repo_root();

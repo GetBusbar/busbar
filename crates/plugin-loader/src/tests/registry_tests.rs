@@ -92,15 +92,15 @@ fn key(seed: u8) -> SigningKey {
 
 #[test]
 fn supported_abi_is_one_version_per_kind() {
-    use busbar_contract::abi;
+    use busbar_plugin_abi::versions;
     let shipped: &[(&str, u32, u32)] = &[
-        ("store", abi::store::ABI_VERSION, 3),
-        ("secret", abi::secret::ABI_VERSION, 2),
-        ("auth", abi::auth::ABI_VERSION, 3),
-        ("hook", abi::hook::ABI_VERSION, 2),
-        ("export", abi::export::ABI_VERSION, 3),
-        ("plane", abi::plane::ABI_VERSION, 1),
-        ("transport", abi::transport::ABI_VERSION, 1),
+        ("store", versions::STORE, 3),
+        ("secret", versions::SECRET, 2),
+        ("auth", versions::AUTH, 3),
+        ("hook", versions::HOOK, 2),
+        ("export", versions::EXPORT, 3),
+        ("plane", versions::PLANE, 1),
+        ("transport", versions::TRANSPORT, 1),
     ];
     for &(kind, version, number) in shipped {
         assert_eq!(supported_abi(kind), Some(version), "{kind}");
@@ -151,7 +151,7 @@ fn an_export_with_preencoded_metric_semantics_is_refused() {
     let mut m = manifest("export-prior-generation", "prior-generation", "busbar");
     m.kind = "export".into();
     // The generation before the current export ABI: its metric semantics are pre-encoded.
-    let prior = busbar_contract::abi::export::ABI_VERSION - 1;
+    let prior = busbar_plugin_abi::versions::EXPORT - 1;
     m.abi_version = prior;
     let m = crate::sign::seal_test_artifact(&release, m, b"prior export image");
     write_tarball(&dir, "prior.tar.gz", &m, b"prior export image");
@@ -174,7 +174,7 @@ fn a_store_newer_than_the_host_is_refused() {
     let release = key(1);
     let dir = tmpdir("newer");
     let mut m = manifest("busbar-store-edge", "edge", "busbar");
-    m.abi_version = busbar_contract::abi::store::ABI_VERSION + 1;
+    m.abi_version = busbar_plugin_abi::versions::STORE + 1;
     let m = crate::sign::seal_test_artifact(&release, m, b"edge lib");
     write_tarball(&dir, "edge.tar.gz", &m, b"edge lib");
 
@@ -200,7 +200,7 @@ fn manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
         kind: "store".into(),
         version: "1.5.0".into(),
         publisher: publisher.into(),
-        abi_version: busbar_contract::abi::store::ABI_VERSION,
+        abi_version: busbar_plugin_abi::versions::STORE,
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),
@@ -559,7 +559,7 @@ fn open_store_refuses_non_store_kind() {
     let mut m = manifest("busbar-hook-ranker", "ranker", "busbar");
     m.kind = "hook".into();
 
-    m.abi_version = busbar_contract::abi::hook::ABI_VERSION;
+    m.abi_version = busbar_plugin_abi::versions::HOOK;
     let m = crate::sign::seal_test_artifact(&release, m, b"hook lib");
     write_tarball(&dir, "hook.tar.gz", &m, b"hook lib");
     let reg = scan_and_validate(&dir, &policy(&release)).expect("scan");
@@ -575,7 +575,7 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
 
     let mut m = manifest("busbar-secret-delta", "delta", "busbar");
     m.kind = "secret".into();
-    m.abi_version = busbar_contract::abi::secret::ABI_VERSION;
+    m.abi_version = busbar_plugin_abi::versions::SECRET;
     let m = crate::sign::seal_test_artifact(&release, m, b"secret lib");
     write_tarball(&dir, "delta.tar.gz", &m, b"secret lib");
 
@@ -630,7 +630,7 @@ fn the_auth_refusal_keeps_the_resolution_words_and_names_the_rebuild() {
     let dir = tmpdir("authrefusal");
     let mut m = manifest("busbar-auth-idp-plugin", "idp", "busbar");
     m.kind = "auth".into();
-    m.abi_version = busbar_contract::abi::auth::ABI_VERSION;
+    m.abi_version = busbar_plugin_abi::versions::AUTH;
     let m = crate::sign::seal_test_artifact(&release, m, b"auth lib");
     write_tarball(&dir, "idp.tar.gz", &m, b"auth lib");
     let st = crate::sign::seal_test_artifact(
@@ -1154,7 +1154,7 @@ fn an_old_build_beside_its_successor_is_skipped_with_a_warning_not_refused() {
     let new_lib = b"new store lib".as_slice();
     let old = || {
         let mut m = manifest("busbar-store-alpha-plugin", "alpha", "busbar");
-        m.abi_version = busbar_contract::abi::store::ABI_VERSION - 1;
+        m.abi_version = busbar_plugin_abi::versions::STORE - 1;
         m.version = "1.0.6".into();
         crate::sign::seal_test_artifact(&release, m, old_lib)
     };

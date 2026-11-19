@@ -586,7 +586,7 @@ serde_json = { workspace = true }
 # Built with its `dropped-in` feature: only then does the cdylib export `busbar_plugin_door`.
 busbar-export-file-plugin = { workspace = true, features = ["dropped-in"] }
 # The dropped-in transport proofs (`tests/transport_dropped_in_serves.rs`, the tcp-less boot in
-# `tests/linked_export_sinks_boot_as_their_own_kind.rs`): the tcp transport repo's cdylib crate at the
+# `tests/linked_export_sinks_boot_as_their_own_kind.rs`): the old tcp carrier plugin's cdylib crate at the
 # SAME pinned rev as the linked `busbar-transport-tcp` edge above, found in this target dir under
 # `deps/` (hashed) by the door it loads as. The wire's own both-doors conformance lives in its repo.
 busbar-transport-tcp-plugin = { workspace = true }
@@ -777,8 +777,9 @@ busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-g
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
 busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "21ab18eb964d2819857dacc62d52c66e940bbd7b" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "06a8ade187e1cd961b348d45face2f2b2a1add27" }
-# THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
-# links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
+# THE OLD-INTERFACE TCP CARRIER PLUGIN (busbar-transport-tcp, kind: transport on the old interface): one
+# pin for the logic crate the root links and the cdylib crate the loader's both-ways proof builds. Same
+# repo, same rev, one resolved copy. TCP is a core carrier; this row goes at the deletion plan's H1.
 busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "213adb20132938ce6f4575ea691a9f620f9e55f0" }
 busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "213adb20132938ce6f4575ea691a9f620f9e55f0" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
@@ -815,9 +816,9 @@ busbar-auth-webhook-signature = { git = "https://github.com/GetBusbar/busbar-aut
 # `linked_hook_ranking` tests prove the double states what this door states.
 busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "0e2337f63338bd806c44d9554deb356f3b7d5cfc" }
 busbar-hook-complexity = { git = "https://github.com/GetBusbar/busbar-hook-complexity", rev = "372b3a6f618fbe387d343d4fbac10956b02932e4" }
-# THE STDIO TRANSPORT: the carrier of a spawned program's pipes (kind: transport), pulled at a pinned
-# rev; the logic crate the root links on the transport-door axis. Its dropped-in cdylib twin
-# (`busbar-transport-stdio-plugin`) and its gates live in that repo's plugin CI.
+# THE OLD-INTERFACE STDIO CARRIER PLUGIN (busbar-transport-stdio, kind: transport on the old
+# interface): a spawned program's pipes, pulled at a pinned rev; the logic crate the root links on the
+# transport-door axis. Stdio is a core carrier; this row goes at the deletion plan's H1.
 # c599ed8 (house/oss-green): its root test builds the dispatcher over the serving Services (LateServices is
 # gone, 395b97f138); the crate source differs from 725ccf6 only in test plumbing (tests moved out of src/).
 busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "c599ed8ea52b09bedd1ff10c63f8b045be5fe2d4" }
