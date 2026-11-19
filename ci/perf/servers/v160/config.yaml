@@ -1,7 +1,8 @@
-# 1.6.0 on the engine line. Today it serves /healthz only (see routes); when the engine serves a
-# model call, add the providers, models and pools blocks of ../v155/config.yaml with
-# providers.yaml beside this file, and add chat and stream to routes.
+# 1.6.0 on the engine line. The same provider, model, pool and mock upstream as ../v155/config.yaml
+# (providers.yaml beside this file is the same catalog), in 1.6.0's config shape. Unauthenticated
+# like v155: auth.chain is empty in both.
 listen: "0.0.0.0:18160"
+providers_file: @RUN@/providers.yaml
 listen_insecure_transport: { accept: [plaintext], reason: "loopback measurement in a private network namespace" }
 admin_listen: "127.0.0.1:18161"
 admin_listen_insecure_transport: { accept: [plaintext], reason: "loopback measurement in a private network namespace" }
@@ -15,3 +16,13 @@ auth:
   chain: []
   admin_auth:
     - admin-tokens
+providers:
+  mock:
+    api_key: { env: MOCK_KEY }
+models:
+  test-model:
+    provider: mock
+pools:
+  default:
+    members:
+      - model: test-model

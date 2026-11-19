@@ -1,7 +1,7 @@
-# 1.6.0 on the engine line. Today it serves /healthz only (see routes); when the engine serves a
-# model call, add the providers, models and pools blocks of ../v155/config.yaml with
-# providers.yaml beside this file, and add chat and stream to routes.
+# 1.6.0 on the engine line, over TLS. The same provider, model, pool and mock upstream as
+# ../v155/config-tls.yaml, in 1.6.0's config shape.
 listen: "0.0.0.0:18160"
+providers_file: @RUN@/providers.yaml
 admin_listen: "127.0.0.1:18161"
 admin_listen_insecure_transport: { accept: [plaintext], reason: "loopback measurement in a private network namespace" }
 admin_require_mtls: false
@@ -14,6 +14,16 @@ auth:
   chain: []
   admin_auth:
     - admin-tokens
+providers:
+  mock:
+    api_key: { env: MOCK_KEY }
+models:
+  test-model:
+    provider: mock
+pools:
+  default:
+    members:
+      - model: test-model
 # The same listener terminating TLS with this run's certificate (docs/configuration.md `tls`);
 # the plaintext exception of config.yaml is not stated here.
 tls:
