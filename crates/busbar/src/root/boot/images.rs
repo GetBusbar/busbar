@@ -285,7 +285,8 @@ pub(crate) fn fixture(
             row.alias.to_owned(),
         ));
     }
-    for row in metadata.loadable().iter().filter(|row| !row.linked()) {
+    // Every loadable row is a dropped-in archive: the registry holds no linked rows.
+    for row in metadata.loadable() {
         if let Ok(image) =
             busbar_plugin_loader::admit::admit_bytes(&row.lib_bytes, &row.manifest, &policy)
         {

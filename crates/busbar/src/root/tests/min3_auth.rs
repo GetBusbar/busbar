@@ -285,13 +285,72 @@ async fn prepared_native_chain_retains_original_request_without_spending_replay(
     assert_eq!(owners.0.load(Ordering::SeqCst), 0);
 }
 
+/// An App over the actual application Store (a MIN-3 image) with the keys chain and the operator
+/// as its admin chain: the part of the deleted root inbound fixture these admin cases stood on.
+async fn store_app() -> Arc<busbar_kernel::state::App> {
+    use crate::root::test_plugins as plugins;
+    crate::dist_root_install::install();
+    let library_path = plugins::application_store_library();
+    let manifest = plugins::native_manifest("store", &library_path, plugins::FIXTURE_PUBLISHER);
+    let module = manifest.name.clone();
+    let library = std::fs::read(&library_path).expect("the actual store library reads");
+    let directory = plugins::scratch(&format!(
+        "min3-auth-app-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let signing = directory.join("signing-key");
+    std::fs::write(&signing, hex::encode([7u8; 32])).expect("write the configured signing key");
+    let operator_token = directory.join("operator-token");
+    std::fs::write(&operator_token, "actual-min3-auth-operator")
+        .expect("write the operator credential");
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
+        "public_url": "https://gw.example",
+        "providers": {},
+        "models": {},
+        "auth": { "chain": ["keys"], "admin_auth": [operator], "signing_key": {"file": signing} },
+        "identity-providers": {},
+        "store": { "module": module, "settings": plugins::application_store_settings(&directory) },
+        "advanced": {},
+    });
+    document["identity-providers"][operator] = serde_json::json!({
+        "module": operator, "settings": { "sha256": plugins::operator_sha256_of(&operator_token) },
+    });
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the deployment resolves");
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, _rotate, limits) = crate::root::real_store::build_app(
+        config,
+        plugins::trusted_config(&directory),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .await
+    .expect("the actual product builds the deployment");
+    limits.stage_boot();
+    Arc::new(app)
+}
+
 async fn admin_fixture() -> (
     Arc<busbar_kernel::state::AppHandle>,
     Arc<busbar_kernel::state::App>,
     Arc<Owners>,
     Arc<Port>,
 ) {
-    let original = crate::root::inbound_tests::app(false).await.0;
+    let original = store_app().await;
     let mut app = (*original).clone();
     app.admin_chain = vec!["provider-42".into()];
     app.auth_scope_caps

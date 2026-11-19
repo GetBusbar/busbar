@@ -104,15 +104,12 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
     });
-    // Each actual plane supplies its own valid configuration through its kind test fixture.
+    // Each actual plane supplies its own valid configuration through its kind test fixture. The
+    // linked plane doors that supplied them are gone and no native plane fixture exists yet: a
+    // nonfallback plane declaration with no fixture fails the census below.
     // The census owns coverage, but has no knowledge of any plane's configuration grammar.
-    let mut fixtures = std::collections::BTreeMap::new();
-    for (section, value) in crate::root::serve::door_cells_minimal_configs() {
-        assert!(
-            fixtures.insert(section, value).is_none(),
-            "duplicate plane fixture: {section}"
-        );
-    }
+    let mut fixtures: std::collections::BTreeMap<&'static str, serde_json::Value> =
+        std::collections::BTreeMap::new();
     let declarations = busbar_kernel::plane_driver::registry::plane_decls();
     let expected: std::collections::BTreeSet<_> = declarations
         .iter()

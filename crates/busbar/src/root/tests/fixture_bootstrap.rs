@@ -111,7 +111,7 @@ pub(crate) struct ServingFixture {
 pub(crate) struct PlaneFixture {
     pub(crate) seat: PortSeat,
     /// Held behind a lock: the fixture is retained in `Served` (shared across threads) while its
-    /// dormant workers, `Send` but not `Sync`, wait to be taken by [`PlaneFixture::served`].
+    /// dormant workers, `Send` but not `Sync`, wait to be taken by the test that serves it.
     pub(crate) workers: std::sync::Mutex<crate::root::boot::workers::PreparedWorkers>,
     _owners: Arc<Owners>,
     _prefix: Arc<BootSecrets>,
@@ -135,93 +135,6 @@ impl PlaneFixture {
         &self,
     ) -> Result<std::collections::BTreeMap<String, HookFixture>, String> {
         Ok(self.hooks.clone())
-    }
-
-    /// The production dispatcher shape, retaining the fixture's actual opened instance leases.
-    /// Its workers remain dormant until the caller has published the complete listener plan.
-    pub(crate) fn served(
-        mut self,
-        app: &Arc<busbar_kernel::state::App>,
-        post: Arc<crate::root::plane_node::NodeEndPost>,
-        billing: busbar_kernel::plane_driver::port_billing::PortBilling,
-    ) -> (
-        crate::root::serve::Served,
-        crate::root::boot::workers::PreparedWorkers,
-    ) {
-        let workers = std::mem::replace(
-            self.workers
-                .get_mut()
-                .unwrap_or_else(PoisonError::into_inner),
-            crate::root::boot::workers::PreparedWorkers::new(),
-        );
-        let owner = Arc::new(self);
-        let served = crate::root::serve::Served {
-            ports: vec![owner.seat.clone()],
-            native_fixture: Some(owner),
-            billing: Some(billing),
-            post: Some(post),
-            ..Default::default()
-        };
-        (served, workers)
-    }
-
-    /// Publish the actual native HTTP mounts and their checked generation before starting any
-    /// prepared instance worker. Callers retain this owner while either router can serve.
-    pub(crate) fn publish(
-        self,
-        app: Arc<busbar_kernel::state::App>,
-        post: Arc<crate::root::plane_node::NodeEndPost>,
-        billing: busbar_kernel::plane_driver::port_billing::PortBilling,
-        body_limit: usize,
-    ) -> Result<PublishedFixture, String> {
-        let (served, workers) = self.served(&app, post, billing);
-        let mounts = crate::root::serve::door_mounts(
-            served,
-            || crate::root::kernel::ROOT_CARD.pin(),
-            &[],
-            &[],
-            &[],
-            &[],
-        )?;
-        let (data, admin, handle) = busbar_kernel::build_split_routers_serving_doors(
-            app,
-            mounts.routes,
-            mounts.refusals,
-            body_limit,
-            0,
-            false,
-        );
-        let guests = mounts.data.guests.clone();
-        let refuse_by_path = mounts.refuse_by_path;
-        if let Some(refuse) = &refuse_by_path {
-            handle.bind_door_refuser(Arc::clone(refuse));
-        }
-        let workers = workers.start();
-        Ok(PublishedFixture {
-            data,
-            admin,
-            handle,
-            guests,
-            refuse_by_path,
-            routes: mounts.data,
-            workers,
-        })
-    }
-}
-
-pub(crate) struct PublishedFixture {
-    pub(crate) data: axum::Router,
-    pub(crate) admin: axum::Router,
-    pub(crate) handle: Arc<busbar_kernel::state::AppHandle>,
-    pub(crate) guests: busbar_kernel::guest::GuestList,
-    pub(crate) refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
-    pub(crate) routes: Arc<crate::root::serve::DataRoutes>,
-    workers: crate::root::boot::workers::RunningWorkers,
-}
-
-impl PublishedFixture {
-    pub(crate) async fn stop(self) -> Result<(), String> {
-        self.workers.stop().await
     }
 }
 
@@ -667,8 +580,7 @@ async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_
     )
     .expect("stage signed actual Store");
     crate::root::linked::register_stores();
-    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {}, "auth": {"chain": []},

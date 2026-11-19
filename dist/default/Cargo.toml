@@ -386,7 +386,6 @@ ranking_hook = "busbar-hook-ranking"
 source_file = "busbar-secret-file"
 
 [package.metadata.busbar.test-source-contexts]
-admin_application = "busbar-hook-webrequest"
 migration_table_hook = "busbar-hook-webrequest"
 
 [package.metadata.busbar.test-linked]
