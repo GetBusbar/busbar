@@ -134,7 +134,10 @@ async fn a_node(trust: Arc<busbar_kernel::host_services::KernelServices>) -> axu
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         serde_json::json!({
             "providers": {}, "models": {},
-            "auth": {"chain": []},
+            "auth": {
+                "chain": [],
+                "admin_auth": [busbar_kernel::config::operator_provider()],
+            },
             "store": {"module": module, "settings": settings},
             "advanced": {},
         }),
