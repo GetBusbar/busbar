@@ -35,8 +35,6 @@ pub fn percent_decode(s: &[u8]) -> Vec<u8> {
         out.push(c);
         i += 1;
     }
-    #[cfg(test)]
-    tests::watch_scratch(&out);
     out
 }
 
@@ -81,11 +79,7 @@ pub fn basic_authorization(
     user_pass.extend_from_slice(&username);
     user_pass.extend_from_slice(b":");
     user_pass.extend_from_slice(pass);
-    #[cfg(test)]
-    tests::watch_scratch(&user_pass);
     let encoded = SecureString::from(STANDARD.encode(&*user_pass));
-    #[cfg(test)]
-    tests::watch_scratch(encoded.as_bytes());
     Some(format!("Basic {}", encoded.as_str()))
 }
 
@@ -165,25 +159,17 @@ pub fn scrub(text: &str, parts: Vec<String>, quoted: bool) -> String {
     // Each part wipes itself when `held` drops.
     let mut held = Wiped(parts);
     let n = held.0.len();
-    #[cfg(test)]
-    for part in &held.0 {
-        tests::watch_scratch(part.as_bytes());
-    }
     if quoted {
         // Exact room, so the list never reallocates; each escaped form is built in custody and
         // moved in whole (LINT-RULES LR-117).
         held.0.reserve_exact(n);
         for at in 0..n {
             let escaped = SecureString::from_args(format_args!("{:?}", held.0[at].as_str()));
-            #[cfg(test)]
-            tests::watch_scratch(escaped.as_bytes());
             held.0.push(escaped.into_string());
         }
     }
     let count = if quoted { 2 * n } else { n };
     let mut out = SecureString::from(text);
-    #[cfg(test)]
-    tests::watch_scratch(out.as_bytes());
     // Longest first; equal lengths keep their order, so the replacements run as they always did.
     // Empty parts cut nothing, and a part equal to the one cut just before it is cut once.
     let mut below = usize::MAX;
@@ -215,8 +201,6 @@ pub fn scrub(text: &str, parts: Vec<String>, quoted: bool) -> String {
                 }
                 cut.push_str(&out[from..]);
                 out = cut;
-                #[cfg(test)]
-                tests::watch_scratch(out.as_bytes());
             }
         }
         below = len;

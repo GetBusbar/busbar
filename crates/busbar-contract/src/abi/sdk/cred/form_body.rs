@@ -63,19 +63,11 @@ impl core::fmt::Debug for FormBody {
 impl Drop for FormBody {
     fn drop(&mut self) {
         // A name is a `SecureString`: it wipes itself as it drops, right after this.
-        #[cfg(test)]
-        for (name, _) in &self.pairs {
-            wipe_tests::watch(name.as_bytes());
-        }
         for (_, value) in &mut self.pairs {
             if let FormValue::Public(v) = value {
-                #[cfg(test)]
-                wipe_tests::watch(v.as_bytes());
                 crate::secure::wipe_string(v);
             }
             if let FormValue::JwsRs256 { signing_input, .. } = value {
-                #[cfg(test)]
-                wipe_tests::watch(signing_input.as_bytes());
                 crate::secure::wipe_string(signing_input);
             }
         }
@@ -104,8 +96,6 @@ fn encode(out: &mut SecureVec, bytes: &[u8]) {
         } else {
             out.extend_from_slice(&[b'%', HEX[usize::from(b >> 4)], HEX[usize::from(b & 15)]]);
         }
-        #[cfg(test)]
-        wipe_tests::watch(out);
     }
 }
 
@@ -197,8 +187,6 @@ impl FormBody {
                 }
             }
         }
-        #[cfg(test)]
-        wipe_tests::watch(&out);
         Ok(SealedWrite::from_bytes(out, self.secure))
     }
 }

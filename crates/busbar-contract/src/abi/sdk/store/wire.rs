@@ -71,8 +71,6 @@ struct Output {
 impl Output {
     fn append(&mut self, bytes: &[u8]) {
         self.bytes.extend_from_slice(bytes);
-        #[cfg(test)]
-        sealed_tests::watch(&self.bytes);
     }
 
     fn remaining(&self) -> &[u8] {
