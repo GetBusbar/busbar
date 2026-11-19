@@ -653,10 +653,6 @@ close_fds = "=0.3.2"
 # CPU-core enumeration + per-thread pinning for the thread-per-core data plane (the one unix
 # topology). Used ONLY by the `busbar` binary's boot seam; nothing on the request path names it.
 core_affinity = "0.8"
-crc32fast = "1"
-# DTLS for the connector's dtls engine (WebRTC), on ring through the connector's own provider:
-# no default features, so neither aws-lc-rs nor the RustCrypto suite enters.
-dimpl = { version = "=0.7.4", default-features = false }
 # str0m and aes (the webrtc framer's media stack and its SRTP key derivation) left with the framer
 # (#964): busbar-transport-webrtc pins them in its own repo, and no member here inherits them.
 # 3.x dropped its `std` feature (core::error::Error); no default features keeps pkcs8/pem, rand_core and zeroize out.
@@ -690,8 +686,6 @@ loom = "0.7"
 # transports rely on directly instead of reaching it by accident. Pure computation: no allocator,
 # no I/O, no platform surface beyond the SIMD it selects at runtime.
 memchr = "2"
-# Already in both lockfiles (hyper, axum): the content-type parameter grammar, quoted values included.
-mime = "0.3.17"
 metrics = "0.24.6"
 metrics-util = { version = "0.20.4", default-features = false }
 # THE OAUTH 2.1 AUTHORIZATION SERVER (scope item A of 1.5.5).

@@ -250,8 +250,6 @@ dependencies = [
  "subtle",
  "time",
  "tracing",
- "tracing-core",
- "tracing-log",
  "windows-sys 0.61.2",
  "zeroize",
 ]

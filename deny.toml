@@ -125,7 +125,7 @@ deny = [
     { crate = "hyper-rustls", wrappers = ["reqwest"], reason = "TLS configs come from crypto::tls" },
     { crate = "quinn", wrappers = ["reqwest"], reason = "no HTTP/3" },
     { crate = "quinn-proto", wrappers = ["quinn"], reason = "no HTTP/3" },
-    { crate = "dimpl", wrappers = ["busbar-crypto", "busbar-crypto-backend", "busbar-core-connector", "str0m", "str0m-proto"], reason = "the DTLS provider is the crypto backend's" },
+    { crate = "dimpl", wrappers = ["busbar-crypto", "busbar-crypto-backend", "str0m", "str0m-proto"], reason = "the DTLS provider is the crypto backend's" },
     { crate = "busbar-crypto-backend", wrappers = ["busbar-crypto"], reason = "the backend is reached only through the facade" },
     { crate = "busbar-crypto-backend", deny-multiple-versions = true, reason = "one backend per graph" },
     { crate = "busbar-crypto", wrappers = ["busbar-artifact-verifier", "busbar-contract", "busbar-plugin-abi"], reason = "every crate reaches the facade as busbar_contract::crypto; busbar-plugin-abi[host] sits below busbar-contract and names it directly (ABI-MIN3-INTERFACE §1, §16.23), and so does busbar-artifact-verifier, the standalone YAML-free verifier that does not depend on busbar-contract (7ba7137edc; named in busbar-crypto/Cargo.toml)" },
