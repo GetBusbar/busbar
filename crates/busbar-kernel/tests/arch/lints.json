@@ -80,6 +80,7 @@
       "crates/busbar-kernel/src/teller.rs": ["UnitEnds", "UnitTaps", "Units"],
       "crates/busbar-kernel/src/tick.rs": ["ClockWork"],
       "crates/busbar-plugin-abi/src/host.rs": ["HostExt"],
+      "crates/busbar/src/root/boot/walk.rs": ["BootSteps"],
       "crates/busbar/src/root/units_admin/mod.rs": ["AuditView"],
       "crates/plugin-loader/src/cold/dispatch/services.rs": ["Sweep"],
       "crates/plugin-loader/src/dispatch/auth_handle.rs": ["AuthHandleHost"],
@@ -138,6 +139,7 @@
     "crates/busbar-kernel-audit/src/linked_walk.rs LinkedRange": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)",
     "crates/busbar-kernel-audit/src/linked_walk.rs TrustedHead": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)",
     "crates/busbar-kernel-audit/src/linked_walk.rs WalkedLine": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)",
+    "crates/busbar/src/root/boot/walk.rs BootSteps": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): the boot walk's ordering and deployment-point rules are verified through fixtures in three suites; made concrete when the boot walk is folded into BootstrapSteps with those rules tested over it",
     "crates/busbar-kernel/src/governance/fee_debt.rs FeeDebtAssociate": "PM decision under the owner's unattended hand-over, 18 Nov 2026 (owner to confirm): a cross-crate boundary: declared in a lower crate, implemented once in a higher one; to be made concrete when the crate merge that removes the boundary lands (crate audit packets M1 to M6)"
   }
 }

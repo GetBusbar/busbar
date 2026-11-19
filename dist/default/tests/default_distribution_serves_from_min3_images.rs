@@ -96,7 +96,12 @@ impl Node {
                 "/healthz never answered on the data listener; log:\n{}",
                 self.log()
             );
-            if boot::healthz_answers(self.data) {
+            // Ready when both listeners accept: the admin listener is bound after the data
+            // listener's workers start, so a data answer alone does not mean the admin side is up.
+            if boot::healthz_answers(self.data)
+                && TcpStream::connect(("127.0.0.1", self.admin)).is_ok()
+                && boot::log_shows_data_and_admin_listening(&self.log())
+            {
                 return;
             }
             std::thread::sleep(Duration::from_millis(5));

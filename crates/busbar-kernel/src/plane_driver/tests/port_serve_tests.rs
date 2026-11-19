@@ -934,21 +934,62 @@ fn a_retry_after_the_plane_stated_is_never_overwritten() {
     assert_eq!(fields.len(), 1);
 }
 
+/// A GovState over the real store, for a seat's bindings, built on its own runtime so a
+/// synchronous test can hold one.
+fn governance() -> Arc<crate::governance::GovState> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(gov_state())
+}
+
+/// [`governance`] inside a test's own runtime.
+async fn gov_state() -> Arc<crate::governance::GovState> {
+    Arc::new(
+        crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    )
+}
+
+/// The seat's actual bindings, active and enforcing on [`req`]'s route and walking `pool`, every
+/// caller selecting `chosen`.
+fn bindings(
+    chosen: &crate::plane_driver::port_hooks::Selected,
+    governance: Arc<crate::governance::GovState>,
+) -> Arc<crate::plane_driver::native_hook_bindings::Bindings> {
+    Arc::new(
+        crate::plane_driver::native_hook_bindings::Bindings::selecting(
+            vec![req().route],
+            "pool",
+            chosen,
+            governance,
+        ),
+    )
+}
+
 #[test]
 fn a_native_hook_cannot_run_without_its_admitted_invocation() {
-    use crate::plane_driver::port_hooks::{Binder, Invocation, Selected, Selection};
-    struct Required;
-    impl Binder for Required {
-        fn active(&self, _: u32) -> bool {
-            true
-        }
-        fn enforcing(&self, _: u32) -> bool {
-            true
-        }
-        fn select(&self, _: &Selection<'_>) -> Result<Selected, &'static str> {
-            panic!("unadmitted hook selection must never run")
-        }
-    }
+    use crate::plane_driver::port_hooks::{Invocation, Selected, Taps};
+    // Active and enforcing; the invocation carries no admitted context, so selection is never
+    // reached.
+    let chosen = Selected {
+        rewrites: Arc::default(),
+        gates: Arc::default(),
+        policy: None,
+        taps: Taps::default(),
+        key: None,
+        budget: Vec::new(),
+        rate_headroom: None,
+        cost: Arc::new(crate::cost::CostModel::resolve_parts(
+            None,
+            0,
+            &Default::default(),
+        )),
+        reads: Arc::new(|_, _, _, _| Box::pin(async { Ok(()) })),
+        counters: None,
+    };
     struct Hooked(Invocation);
     impl Effects for Hooked {
         fn hooks(&self) -> Option<&Invocation> {
@@ -959,7 +1000,7 @@ fn a_native_hook_cannot_run_without_its_admitted_invocation() {
         }
     }
     let effects = Hooked(Invocation {
-        binder: Arc::new(Required),
+        binder: bindings(&chosen, governance()),
         principal: None,
         identity: None,
         now_s: 1,
@@ -1000,7 +1041,7 @@ fn a_native_hook_cannot_run_without_its_admitted_invocation() {
 async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
     use crate::config::{PromptAccess, UserAccess};
     use crate::plane_driver::port_hooks::tests::{configured, Fixture};
-    use crate::plane_driver::port_hooks::{Binder, Invocation, Selected, Selection};
+    use crate::plane_driver::port_hooks::Invocation;
     use busbar_plugin_abi::kinds::hook::hook as abi;
     use busbar_ports::hook::{HookAnswer, HookCall, HookPort, HookView};
     use busbar_ports::CallCx;
@@ -1043,18 +1084,6 @@ async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
             }))
         }
     }
-    struct Bound(Selected);
-    impl Binder for Bound {
-        fn active(&self, _: u32) -> bool {
-            true
-        }
-        fn enforcing(&self, _: u32) -> bool {
-            true
-        }
-        fn select(&self, _: &Selection<'_>) -> Result<Selected, &'static str> {
-            Ok(self.0.clone())
-        }
-    }
     struct Hooked {
         invocation: Invocation,
         context: crate::host_services::InvocationContext,
@@ -1079,7 +1108,7 @@ async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
     selected.taps.response = Arc::from([call]);
     let effects = Hooked {
         invocation: Invocation {
-            binder: Arc::new(Bound(selected)),
+            binder: bindings(&selected, gov_state().await),
             principal: None,
             identity: None,
             now_s: 1,
@@ -1211,9 +1240,7 @@ async fn route_policy_selections_and_rejections_counters_move() {
     use crate::config::{PromptAccess, UserAccess};
     use crate::plane_driver::hooks::{CandidateFacts, Candidates, Constraint};
     use crate::plane_driver::port_hooks::tests::{configured, Fixture};
-    use crate::plane_driver::port_hooks::{
-        Binder, Call, Invocation, RouteCounters, Selected, Selection,
-    };
+    use crate::plane_driver::port_hooks::{Call, Invocation, RouteCounters};
     use crate::plane_driver::port_upstream::Wants;
     use busbar_plugin_abi::kinds::hook::hook as abi;
     use busbar_ports::hook::{HookAnswer, HookCall, HookPort, HookView};
@@ -1239,18 +1266,6 @@ async fn route_policy_selections_and_rejections_counters_move() {
             restrict: Vec::new(),
             message: None,
             rewrite: None,
-        }
-    }
-    struct Bound(Selected);
-    impl Binder for Bound {
-        fn active(&self, _: u32) -> bool {
-            true
-        }
-        fn enforcing(&self, _: u32) -> bool {
-            true
-        }
-        fn select(&self, _: &Selection<'_>) -> Result<Selected, &'static str> {
-            Ok(self.0.clone())
         }
     }
     struct Hooked {
@@ -1331,6 +1346,7 @@ async fn route_policy_selections_and_rejections_counters_move() {
     });
     let base = fixture.selected.clone();
     let context = fixture.context.clone();
+    let governance = gov_state().await;
     let counted = tokio::task::spawn_blocking(move || {
         let counted = Counted::default();
         metrics::with_local_recorder(&counted, || {
@@ -1345,7 +1361,7 @@ async fn route_policy_selections_and_rejections_counters_move() {
                 selected.counters = Some(Arc::clone(&counters));
                 let effects = Hooked {
                     invocation: Invocation {
-                        binder: Arc::new(Bound(selected)),
+                        binder: bindings(&selected, Arc::clone(&governance)),
                         principal: None,
                         identity: None,
                         now_s: 1,
