@@ -811,7 +811,8 @@ fn a_plane_config_does_not_use_is_never_opened() {
     #[cfg(target_os = "linux")]
     {
         let refused = crate::admit::admit_bytes(&row.lib_bytes, &row.manifest, &policy)
-            .expect_err("bytes that are not an image are never admitted");
+            .err()
+            .expect("bytes that are not an image are never admitted");
         assert_eq!(
             refused.code,
             crate::refusal::RefusalCode::StampMissing,
@@ -931,7 +932,7 @@ fn a_claim_conflict_names_both_files() {
         proof: busbar_artifact_metadata::rows::Verification::default(),
     };
     for (owner, owner_signer, owner_file) in [
-        ("linked-owner", Signer::Linked, "linked"),
+        ("compiled-owner", Signer::Linked, "linked"),
         ("first-owner", dropped(), "first-owner.tar.gz"),
     ] {
         let mut images = ImagesBuilder::new(
