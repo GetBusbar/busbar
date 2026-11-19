@@ -205,14 +205,4 @@ pub mod code {
             Side::Dial => 1,
         }
     }
-
-    /// The inverse of [`side`].
-    #[must_use]
-    pub const fn side_of(b: u8) -> Option<Side> {
-        match b {
-            0 => Some(Side::Accept),
-            1 => Some(Side::Dial),
-            _ => None,
-        }
-    }
 }

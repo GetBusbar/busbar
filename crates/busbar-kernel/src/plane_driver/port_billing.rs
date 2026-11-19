@@ -345,3 +345,7 @@ pub fn end_of(caller_status: u32, ran: bool) -> UnitEnd {
 #[cfg(test)]
 #[path = "tests/port_billing_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/port_retirement_money.rs"]
+mod retirement_money;

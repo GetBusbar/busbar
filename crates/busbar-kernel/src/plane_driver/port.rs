@@ -313,6 +313,25 @@ impl PortDriver {
         Arc::clone(&self.usage)
     }
 
+    /// The indices of the declared usage classes that are core's fee units
+    /// ([`busbar_contract::plane::PER_REQUEST`], [`busbar_contract::plane::PER_SESSION`]): their
+    /// counts settle the fee charged at admission and are never ledgered as usage on the serving
+    /// member's lane (#21).
+    #[must_use]
+    pub fn fee_units(&self) -> Arc<[u32]> {
+        self.usage
+            .iter()
+            .enumerate()
+            .filter(|(_, class)| {
+                matches!(
+                    class.as_str(),
+                    busbar_contract::plane::PER_REQUEST | busbar_contract::plane::PER_SESSION
+                )
+            })
+            .filter_map(|(at, _)| u32::try_from(at).ok())
+            .collect()
+    }
+
     /// The routes this instance declares, sorted by where core mounts them.
     #[must_use]
     pub fn routes(&self) -> &PortRoutes {
@@ -1067,6 +1086,34 @@ pub struct HttpIn {
     withheld: Option<Arc<[Box<str>]>>,
 }
 
+/// The head fields a client's credential travels in: the credential half of the connector's caller-side strip
+/// (`busbar_contract::abi::host::conn::connector::NEVER_KEPT`) and the 1.5 admin carrier (`port_admin`'s
+/// `ADMIN_CREDENTIAL_FIELDS`), and the client's DPoP proof (RFC 9449, `auth::dpop::DPOP_HEADER`), which core
+/// verifies from the request itself before anything is lent. A plane is never lent one of them, whatever the route's chain read (an anonymous chain
+/// reads none): the plane builds every upstream request from what it is lent, so a credential the client presented to
+/// Busbar never reaches an upstream through it. The upstream gets the credential core seals for it; a caller's own
+/// credential reaches an upstream only through core's configured passthrough (`upstream_credentials: passthrough`,
+/// the lent `auth::CallerCredential`), never through the plane.
+pub const CLIENT_CREDENTIAL_FIELDS: [&str; 9] = [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "x-api-key",
+    "api-key",
+    "x-goog-api-key",
+    "x-amz-security-token",
+    "x-admin-token",
+    "dpop",
+];
+
+/// Whether `name` is a head field a client's credential travels in ([`CLIENT_CREDENTIAL_FIELDS`]).
+#[must_use]
+pub fn is_client_credential(name: &str) -> bool {
+    CLIENT_CREDENTIAL_FIELDS
+        .iter()
+        .any(|field| field.eq_ignore_ascii_case(name))
+}
+
 /// Where a request's method, target and header fields live (see [`HttpIn`]).
 pub enum HttpHead {
     /// The inbound request's parts: its route method, its URI (path and query read from it) and its header map.
@@ -1103,11 +1150,12 @@ impl HttpIn {
     }
 
     fn is_withheld(&self, name: &str) -> bool {
-        self.withheld.as_deref().is_some_and(|carriers| {
-            carriers
-                .iter()
-                .any(|carrier| carrier.eq_ignore_ascii_case(name))
-        })
+        is_client_credential(name)
+            || self.withheld.as_deref().is_some_and(|carriers| {
+                carriers
+                    .iter()
+                    .any(|carrier| carrier.eq_ignore_ascii_case(name))
+            })
     }
 
     #[must_use]
@@ -1553,7 +1601,14 @@ async fn drive_session(
         None => Resolver::new(intents, None),
     }
     .with_route(route)
-    .with_admission(effects.admission.as_deref());
+    .with_admission(effects.admission.as_deref())
+    // A LOOKUP never waits past the request's own deadline (a DATA request's binding states it).
+    .with_deadline(
+        effects
+            .data
+            .as_ref()
+            .and_then(|data| data.binding().deadline()),
+    );
     let session = carrier.map(|carrier| {
         carrier
             .session_with_budget(
@@ -1696,3 +1751,7 @@ mod thread_tests;
 #[cfg(test)]
 #[path = "tests/session_ceiling_tests.rs"]
 mod session_ceiling_tests;
+
+#[cfg(test)]
+#[path = "tests/unkeyed_unit_and_nest_cap.rs"]
+mod unkeyed_unit_and_nest_cap;

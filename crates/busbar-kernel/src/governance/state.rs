@@ -394,6 +394,17 @@ impl GovState {
         self.denylist.contains(sub)
     }
 
+    /// Have `cut` fired when `sub` is revoked (at once, if it already is), for as long as the
+    /// returned watch is held: how a live connection learns that a credential or grant one of its
+    /// requests was admitted on was revoked, here or on a peer (read by the revocation re-sync).
+    pub fn watch_revocation(
+        &self,
+        sub: &str,
+        cut: &Arc<super::revocation::RevocationCut>,
+    ) -> super::revocation::RevocationWatch {
+        self.denylist.watch(sub, cut)
+    }
+
     #[must_use]
     pub fn caller_ref_slot(&self) -> crate::plane_driver::CallerRefs {
         Arc::clone(&self.caller_refs)

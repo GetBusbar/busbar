@@ -93,6 +93,10 @@ pub struct PlaneDescribe {
     /// protocol's specification or its own documented default. `None`: the plane states none (a
     /// describe written before the item), and the engine puts no ceiling of its own in its place.
     pub session_ceiling_s: Option<u64>,
+    /// D_CHECKED_KIND, one per kind: the scope kinds the plane checks a caller's grant under that no
+    /// route's admission states. Core declares them beside the route-stated kinds. Empty: the plane
+    /// states none (a describe written before the item).
+    pub checked_kinds: Vec<Box<str>>,
 }
 
 /// The longest session ceiling the engine can enforce: whole seconds its nanosecond clock holds.
@@ -271,6 +275,16 @@ pub fn decode_describe(
                 {
                     return Err(bad);
                 }
+            }
+            t::D_CHECKED_KIND => {
+                let bad = DescribeInvalid("describe.checked_kind");
+                let kind = rec.text().map_err(|_| bad)?;
+                if !busbar_plugin_abi::resource_admission::valid_kind(kind)
+                    || d.checked_kinds.iter().any(|k| k.as_ref() == kind)
+                {
+                    return Err(bad);
+                }
+                d.checked_kinds.push(kind.into());
             }
             // Plane 2.0: the positions core writes `public_url` and the caller's upstreams at
             // (`chains::prepare_with_id`): an RFC 6901 pointer to a member, each at most once.
@@ -633,7 +647,7 @@ fn place(call: Call, s: &mut Seen, rec: &Rec<'_>) -> Result<(), FaultReason> {
         t::EMIT => session || call == Call::Tick,
         t::OBSERVE => flow || call == Call::End,
         t::SIGHT => flow || call == Call::End,
-        t::COMMIT | t::WAKE_AT | t::DETACH | t::SIGNAL | t::FINISH => flow,
+        t::COMMIT | t::WAKE_AT | t::DETACH | t::SIGNAL | t::FINISH | t::HANDLE => flow,
         t::RESPOND | t::BODY | t::MSG | t::END | t::TRAILERS => flow,
         t::FORWARD | t::EXPECT => call == Call::Request || call == Call::Piece(p::FROM_CORE),
         t::UP_CARRIER => upstream,
@@ -951,6 +965,12 @@ fn item<'o>(rec: &Rec<'o>) -> Result<PlaneOut<'o>, RecErr> {
             }
         }
         t::FINISH => empty(PlaneOut::Finish)?,
+        t::HANDLE => {
+            // TEXT, 1..=128 bytes: the bound of the IF's other key texts (CHANNEL, SIGNAL keys).
+            let handle = rec.text()?;
+            check((1..=128).contains(&handle.len()))?;
+            PlaneOut::Handle(handle)
+        }
         t::COMMIT => {
             let (c, tail) = rec.pod_tail::<p::CommitRec>()?;
             let ops = Records::new(tail);
@@ -1681,6 +1701,10 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
 
     fn session_ceiling_s(&self) -> Option<u64> {
         self.describe.session_ceiling_s
+    }
+
+    fn checked_kinds(&self) -> &[Box<str>] {
+        &self.describe.checked_kinds
     }
 
     fn admin_openapi(&self) -> Option<&str> {
@@ -2922,5 +2946,31 @@ mod route_item_tests {
             .put(t::D_ROUTE_CHALLENGE, &challenge(1, 0, "Basic"))
             .unwrap();
         assert_eq!(describe(&twice), bad);
+    }
+
+    /// MCP-TOOLKIND: the kinds a plane checks a grant under that no route states are kept as the
+    /// image wrote them, once each, in the generic kind grammar; anything else refuses the image.
+    #[test]
+    fn role_binding_plane_scope_checked_kinds_are_kept_once_each_in_the_kind_grammar() {
+        let routed = || {
+            let mut r = Reply::new();
+            chat_route(&mut r);
+            r.put(t::D_ROUTE_ADMISSION, &admission(1, 2, 2, 1, "pool"))
+                .unwrap();
+            r
+        };
+        assert!(describe(&routed()).unwrap().checked_kinds.is_empty());
+        let mut r = routed();
+        r.put(t::D_CHECKED_KIND, b"mcp_tool").unwrap();
+        assert_eq!(describe(&r).unwrap().checked_kinds, [Box::from("mcp_tool")]);
+
+        let bad = Err(DescribeInvalid("describe.checked_kind"));
+        r.put(t::D_CHECKED_KIND, b"mcp_tool").unwrap();
+        assert_eq!(describe(&r), bad);
+        for kind in [&b""[..], b"Tool", b"9tool", b"mcp-tool", &[0xFF, 0xFE]] {
+            let mut r = routed();
+            r.put(t::D_CHECKED_KIND, kind).unwrap();
+            assert_eq!(describe(&r), bad, "{kind:?}");
+        }
     }
 }

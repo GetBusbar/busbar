@@ -552,7 +552,11 @@ fn allocate_unit(
 }
 
 /// A unit's settlement, owed once whatever becomes of the request: dropped unfinished (a panic, a cancelled
-/// task) it settles as a gateway failure that ran nothing, so the unit never stays open and its hold never leaks.
+/// task) it settles as `end_of(502, false)`, so the unit never stays open and its hold never leaks. The money
+/// rule is that a session bills exactly the usage it accepted, once, whatever its ending: a dropped or failed
+/// session bills what it accepted so far, a request whose far end was dialled stays counted as having run, an
+/// unpriced final report writes `BUSBAR-5046` `plane-usage-unread` and leaves the unit unresolved, and a
+/// refused report is audited, never billed.
 struct Settle {
     billing: PortBilling,
     key: busbar_contract::UnitKey,
@@ -701,6 +705,7 @@ async fn answer(
             };
             let billing = billing.clone();
             let classes = seat.driver.usage_classes();
+            let fee_units = seat.driver.fee_units();
             let route_id = route.route;
             let retry_after = Arc::clone(&retry_after);
             Some(Arc::new(
@@ -719,9 +724,7 @@ async fn answer(
                             .admit_existing(
                                 receipt,
                                 classes,
-                                busbar_kernel::plane_driver::FeeRefund::PlaneFeeUnits(
-                                    Arc::from([]),
-                                ),
+                                busbar_kernel::plane_driver::FeeRefund::PlaneFeeUnits(fee_units),
                                 busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
                             )
                             .map_err(|error| match error {

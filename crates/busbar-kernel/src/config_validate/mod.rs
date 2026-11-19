@@ -2098,6 +2098,7 @@ pub use instance_ids::{instance_id_collisions, CORE_INSTANCES};
 
 pub(crate) mod secret_refs;
 mod undeclared_secret_refs;
+pub use secret_refs::builtins_resolve;
 pub(crate) use secret_refs::{keyless_credential_allowed, secret_refs};
 pub(crate) use undeclared_secret_refs::undeclared_secret_refs;
 
@@ -2454,3 +2455,7 @@ mod operator_third_party_tests;
 #[cfg(test)]
 #[path = "tests/instance_id_tests.rs"]
 mod instance_id_tests;
+
+#[cfg(test)]
+#[path = "tests/member_tls_anchor_shadow_tests.rs"]
+mod member_tls_anchor_shadow_tests;

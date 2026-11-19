@@ -275,6 +275,45 @@ pub trait Report: Send + Sync {
     fn audit(&self, action: &str, resource: &str, outcome: &'static str);
 }
 
+/// The host's report: `diagnostics::emit` and the admin audit ring, as `busbar`.
+pub struct HostReport;
+
+/// The one host report.
+pub static HOST_REPORT: HostReport = HostReport;
+
+impl Report for HostReport {
+    fn diag(
+        &self,
+        diag: &'static crate::diagnostics::Diagnostic,
+        level: tracing::Level,
+        message: &str,
+        fields: &[(&'static str, String)],
+    ) {
+        let level = if stopping() {
+            tracing::Level::DEBUG
+        } else {
+            level
+        };
+        let fields: Vec<(String, String)> = fields
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect();
+        crate::diagnostics::emit(diag, level, message, &fields);
+    }
+
+    fn info(&self, message: &str, fields: &[(&'static str, String)]) {
+        let shown: Vec<String> = fields.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        tracing::info!(fields = %shown.join(" "), "{message}");
+    }
+
+    fn audit(&self, action: &str, resource: &str, outcome: &'static str) {
+        if stopping() {
+            return;
+        }
+        crate::audit_ring::AUDIT.record_by(action, resource, outcome, "busbar");
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/refresh_tests.rs"]
 mod tests;

@@ -15,9 +15,15 @@
 //! own task and awaits the walk, the far end, the store and the client between them. It is generic over the walk
 //! (`M`) and the carrier (`S`), so none of those seams boxes a future.
 //!
+//! Every USAGE the session accepts reaches the books as it is accepted ([`Books::running`], driven by
+//! [`Metered`]), and a session bills exactly the usage it accepted, once, whatever its ending (P087B). A
+//! running checkpoint's `Cut` (the unit reached its spend ceiling) ends the session at the next point it
+//! would go on (BUDGET-CUT: [`super::port_session::within_budget`], refused `R_BUDGET`): the crossing
+//! report is billed as stated (the ceiling never rewrites what the provider stated), nothing after it is
+//! served or billed. A session whose crossing report is its last (its END piece) simply ends.
+//!
 //! Not done here (PLANE-DRIVER.md): intents a plane states in a `FROM_UPSTREAM` piece answer are not resolved (the
-//! feed in `port_upstream` takes no resolver); a reply is fed whole, so a streamed reply and a mid-stream
-//! `checkpoint` are not driven.
+//! feed in `port_upstream` takes no resolver).
 
 use busbar_plugin_abi::fail::refused::R_NO_ROUTE;
 use busbar_plugin_abi::host_side::caller::BoxFut;
@@ -34,10 +40,10 @@ use super::port_carrier::{write_channels, CarrierSession, Mapped};
 use super::port_intents::{Detach, Namespace, Resolver};
 use super::port_money::{AuditRow, PortMoney};
 use super::port_session::{
-    hand_out, Answer, Calls, Effects, Forward, SessionError, Task, ToClient,
+    hand_out, Answer, Calls, ClientSink, Effects, Forward, SessionError, Task, ToClient, Violation,
 };
 use super::port_upstream::{run_attempts, Attempted, Members, UpSend, Wants};
-use super::usage::{Ending, SessionUsage};
+use super::usage::{Ending, SessionUsage, UsageInvalid};
 use super::AuditSink;
 use crate::plane_grants::{TicketAdmitted, TicketDenied, Tickets};
 use crate::refusal::RefusalMap;
@@ -53,6 +59,27 @@ pub trait Books: Sync {
 
     /// The end user the plane projected on its request answer (PJ_END_USER), once. Default: kept nowhere.
     fn end_user(&self, _user: &str) {}
+
+    /// The session accepted a USAGE: its usage as it now stands goes to the money at once (a running
+    /// checkpoint), so a session that never reaches its end, or whose final report cannot be priced, bills
+    /// what it accepted (P087B). The money's answer, when there is one. Default: not billed.
+    fn running(&self, _usage: &SessionUsage) -> Option<super::Checkpoint> {
+        None
+    }
+
+    /// [`Self::ended`], where `taken` is the money's answer to the last running checkpoint, taken of exactly
+    /// `usage`: the end does not ask the money again. Default: [`Self::ended`].
+    fn closed(&self, ending: Ending, usage: &SessionUsage, taken: Option<super::Checkpoint>) {
+        let _ = taken;
+        self.ended(ending, usage);
+    }
+
+    /// The session refused a USAGE the plane stated (`why`); the refused report is never billed and is
+    /// audited. Called before the session's `Failed` end. Default: kept nowhere.
+    fn refused(&self, _why: UsageInvalid) {}
+
+    /// The session's far end is being dialled: the unit has run. Default: kept nowhere.
+    fn dialled(&self) {}
 }
 
 /// The books of a billed unit: the end through the unit's money seam, audit rows under the verified principal.
@@ -85,6 +112,23 @@ impl<'a> UnitBooks<'a> {
 impl Books for UnitBooks<'_> {
     fn ended(&self, ending: Ending, usage: &SessionUsage) {
         self.money.ended(self.ctx, ending, usage, self.principal);
+    }
+
+    fn running(&self, usage: &SessionUsage) -> Option<super::Checkpoint> {
+        Some(self.money.running(self.ctx, usage))
+    }
+
+    fn closed(&self, ending: Ending, usage: &SessionUsage, taken: Option<super::Checkpoint>) {
+        self.money
+            .ended_taken(self.ctx, ending, usage, taken, self.principal);
+    }
+
+    fn refused(&self, why: UsageInvalid) {
+        self.money.refused(self.ctx, why, self.principal);
+    }
+
+    fn dialled(&self) {
+        self.money.dialled(self.ctx);
     }
 
     fn audit(&self, row: &AuditRow) {
@@ -359,10 +403,19 @@ pub async fn run_session<K: Calls + ?Sized, M: Members, S: UpSend>(
     match drive_task(&mut task, first, req, &mut drive).await {
         Ok(ran) => Ok(ran),
         Err(error) => {
-            drive.books.ended(Ending::Failed, task.usage());
+            failed(drive.books, task.usage(), &error);
             Err(error)
         }
     }
+}
+
+/// A session that broke after it began: a USAGE it refused is audited (never billed), then it ends `Failed`,
+/// which bills the usage it accepted before it broke, once (P087B).
+fn failed(books: &dyn Books, usage: &SessionUsage, error: &SessionError) {
+    if let SessionError::Violation(Violation::Usage(why)) = error {
+        books.refused(*why);
+    }
+    books.ended(Ending::Failed, usage);
 }
 
 async fn run_pending_session<K: Calls + ?Sized, M: Members, S: UpSend>(
@@ -374,11 +427,24 @@ async fn run_pending_session<K: Calls + ?Sized, M: Members, S: UpSend>(
 ) -> Result<Ran, SessionError> {
     use super::port_hooks::stage::{self, Buffered, Observed, When};
     let buffered = Buffered::new(drive.effects);
-    let (mut task, first) = Task::begin(calls, req, body, &buffered)?;
+    // Which step of the pending admission a failure ended in: the request is then answered as
+    // failed (`port::drive_session`), and this line says where.
+    let at = |step: &'static str| {
+        move |error: SessionError| {
+            tracing::warn!(
+                step,
+                ?error,
+                "a pending admission ended before its unit opened"
+            );
+            error
+        }
+    };
+    let (mut task, first) = Task::begin(calls, req, body, &buffered).map_err(at("begin"))?;
     let outcome = async {
         let mut answers = task
             .resolve_before_hooks(first, drive.resolver, &buffered)
-            .await?;
+            .await
+            .map_err(at("screen"))?;
         let wants = answers
             .iter()
             .find_map(|answer| answer.forward.as_ref())
@@ -390,11 +456,13 @@ async fn run_pending_session<K: Calls + ?Sized, M: Members, S: UpSend>(
         // charged, and its refusal drops `resolved` with the monetary callback never run.
         // (3) The money: the unit is opened and held. A route with no hook goes from (1) to (3)
         // with nothing between them: no stage is built, nothing is allocated, no hook is called.
-        let resolved = pending.resolve_walk(
-            drive.members.as_deref_mut(),
-            wants.as_ref(),
-            task.request_declaration()?,
-        )?;
+        let resolved = pending
+            .resolve_walk(
+                drive.members.as_deref_mut(),
+                wants.as_ref(),
+                task.request_declaration().map_err(at("declaration"))?,
+            )
+            .map_err(at("walk"))?;
         let stage = match drive
             .effects
             .hooks()
@@ -420,7 +488,7 @@ async fn run_pending_session<K: Calls + ?Sized, M: Members, S: UpSend>(
             if let (Some(stage), SessionError::AdmissionRefused(refusal)) = (&stage, &error) {
                 stage.money_refused(refusal.status, completion.as_ref());
             }
-            return Err(error);
+            return Err(at("money")(error));
         }
         task.bind_admission(pending)?;
         if let Some(stage) = &stage {
@@ -470,8 +538,8 @@ async fn run_pending_session<K: Calls + ?Sized, M: Members, S: UpSend>(
         }
     }
     .await;
-    if outcome.is_err() {
-        drive.books.ended(Ending::Failed, task.usage());
+    if let Err(error) = &outcome {
+        failed(drive.books, task.usage(), error);
     }
     outcome
 }
@@ -536,8 +604,8 @@ async fn run_hook_session<K: Calls + ?Sized, M: Members, S: UpSend>(
         drive_answers(&mut task, resolved.unwrap_or_default(), req, &mut allowed).await
     }
     .await;
-    if outcome.is_err() {
-        drive.books.ended(Ending::Failed, task.usage());
+    if let Err(error) = &outcome {
+        failed(drive.books, task.usage(), error);
     }
     outcome
 }
@@ -601,7 +669,7 @@ async fn walk<K: Calls + ?Sized, M: Members, S: UpSend>(
     }
 }
 
-async fn drive_answers<K: Calls + ?Sized, M: Members, S: UpSend>(
+async fn answer_session<K: Calls + ?Sized, M: Members, S: UpSend>(
     task: &mut Task<'_, K>,
     answers: Vec<Answer>,
     req: &PlaneIn<'_>,
@@ -676,7 +744,118 @@ async fn drive_answers<K: Calls + ?Sized, M: Members, S: UpSend>(
     ran.usage = task.usage().clone();
     drive.effects.observed_usage(task.usage());
     hand_out(drive.effects, &mut ran.client).await;
-    drive.books.ended(Ending::End, &ran.usage);
+    Ok(ran)
+}
+
+/// The session's effects with its money metered: every USAGE the session accepts goes to the books as it is
+/// accepted (the effects are told the session's usage after every answer: [`Effects::observed_usage`]), once
+/// per change, and a far end dialled is booked as run. Every other effect is the inner one's.
+struct Metered<'e> {
+    inner: &'e dyn Effects,
+    books: &'e dyn Books,
+    /// The usage revision the books last took, with the money's answer to it.
+    taken: std::sync::Mutex<Option<(u64, Option<super::Checkpoint>)>>,
+    /// The money answered `Cut` to one of the session's running checkpoints: the unit reached its spend
+    /// ceiling and the session ends ([`super::port_session::within_budget`]). Once set it stays set.
+    cut: std::sync::atomic::AtomicBool,
+}
+
+impl Metered<'_> {
+    /// The money's answer to the last running checkpoint, when it was taken of exactly `usage`.
+    fn taken(&self, usage: &SessionUsage) -> Option<super::Checkpoint> {
+        let taken = *self
+            .taken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        taken
+            .filter(|(revision, _)| *revision == usage.revision())
+            .and_then(|(_, verdict)| verdict)
+    }
+}
+
+impl Effects for Metered<'_> {
+    fn admission_owner(&self) -> Option<&Arc<super::port_admission::Pending>> {
+        self.inner.admission_owner()
+    }
+    fn data(&self) -> Option<&Arc<crate::auth::native_data::NativeDataPending>> {
+        self.inner.data()
+    }
+    fn admission(&self) -> Option<&super::port_admission::Pending> {
+        self.inner.admission()
+    }
+    fn hooks(&self) -> Option<&super::port_hooks::Invocation> {
+        self.inner.hooks()
+    }
+    fn routing(&self, attempt: u32, model: &str, remaining: Option<usize>, failed: Option<&str>) {
+        self.inner.routing(attempt, model, remaining, failed);
+    }
+    fn response(&self, status: u16) {
+        self.inner.response(status);
+    }
+    fn observed_usage(&self, usage: &SessionUsage) {
+        self.inner.observed_usage(usage);
+        if usage.is_empty() {
+            return;
+        }
+        let mut taken = self
+            .taken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if taken.is_some_and(|(revision, _)| revision == usage.revision()) {
+            return;
+        }
+        let verdict = self.books.running(usage);
+        if verdict == Some(super::Checkpoint::Cut) {
+            self.cut.store(true, std::sync::atomic::Ordering::Release);
+        }
+        *taken = Some((usage.revision(), verdict));
+    }
+    fn budget_cut(&self) -> bool {
+        self.cut.load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn dialled(&self) {
+        self.inner.dialled();
+        self.books.dialled();
+    }
+    fn invocation(&self) -> Option<&crate::host_services::InvocationContext> {
+        self.inner.invocation()
+    }
+    fn emit(&self, carrier: u64, bytes: &[u8]) {
+        self.inner.emit(carrier, bytes);
+    }
+    fn client(&self) -> Option<&dyn ClientSink> {
+        self.inner.client()
+    }
+}
+
+/// The session from its resolved answers to its end, its effects [`Metered`]: on its end the books take the
+/// usage it accepted, once ([`Books::closed`]).
+async fn drive_answers<K: Calls + ?Sized, M: Members, S: UpSend>(
+    task: &mut Task<'_, K>,
+    answers: Vec<Answer>,
+    req: &PlaneIn<'_>,
+    drive: &mut Drive<'_, M, S>,
+) -> Result<Ran, SessionError> {
+    let metered = Metered {
+        inner: drive.effects,
+        books: drive.books,
+        taken: std::sync::Mutex::new(None),
+        cut: std::sync::atomic::AtomicBool::new(false),
+    };
+    let mut metering = Drive {
+        resolver: drive.resolver,
+        members: drive.members.take(),
+        send: drive.send.take(),
+        dialect: drive.dialect,
+        refusals: drive.refusals,
+        effects: &metered,
+        books: drive.books,
+        carrier: drive.carrier,
+    };
+    let ran = answer_session(task, answers, req, &mut metering).await?;
+    drive
+        .books
+        .closed(Ending::End, &ran.usage, metered.taken(&ran.usage));
     Ok(ran)
 }
 
@@ -740,3 +919,7 @@ fn stamp_retry_after(items: &mut [ToClient], wait: Option<u32>) {
 #[cfg(test)]
 #[path = "tests/port_serve_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/unbilled_tests.rs"]
+mod unbilled_tests;

@@ -184,6 +184,7 @@ name = "busbar-artifact-metadata"
 version = "1.6.0"
 dependencies = [
  "busbar-json",
+ "busbar-plugin-abi",
  "serde",
  "time",
 ]
@@ -358,7 +359,6 @@ name = "busbar-ports"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-ffi",
  "busbar-plugin-abi",
  "zeroize",
 ]

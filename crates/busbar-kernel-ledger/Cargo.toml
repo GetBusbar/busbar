@@ -28,7 +28,9 @@ serde = { workspace = true }
 foldhash = { workspace = true }
 
 [dev-dependencies]
-stats_alloc = { workspace = true }
+# The one audited test allocator (busbar-ffi `test_watch::Watch`, re-exported here): the per-thread
+# allocation count of tests/hot_path_allocation.rs. Never busbar-ffi directly (E12 dependents).
+busbar-plugin-test = { path = "../busbar-plugin-test" }
 
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }

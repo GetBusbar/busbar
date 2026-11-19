@@ -54,9 +54,12 @@ fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .clone();
+    // The bytes being opened are those of a retained, scanned image: the same allocation, or (on
+    // the admission path, which stages a sealed memfd and opens the verified copy it reads back)
+    // byte-for-byte the same content. The paired archive is validated below either way.
     let image = snapshots.into_iter().find_map(|image| {
         let held = image.bytes.upgrade()?;
-        (held.as_ptr() == bytes.as_ptr() && held.len() == bytes.len()).then_some((image, held))
+        (held.as_slice() == bytes).then_some((image, held))
     });
     let (image, _held) = image.ok_or_else(|| {
         format!("native plugin '{display}' has no retained admitted archive proof")

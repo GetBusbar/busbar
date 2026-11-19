@@ -1378,7 +1378,34 @@ fn normalize_queued_append(
     result.map_err(|_| ())
 }
 
+/// Test-only: while set, `drain_pending_audit` spawns no drain, so a full-queue test keeps the
+/// queue exactly as it filled it. `flush_pending` is an explicit drain and is not held.
+#[cfg(test)]
+static ADMIN_DRAIN_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Test-only: the hold on the admin audit queue's background drain, released on drop. Taken only
+/// under `ledger_test_guard`, which makes it the single holder.
+#[cfg(test)]
+pub(crate) struct AdminDrainHold(());
+
+#[cfg(test)]
+pub(crate) fn hold_admin_drain() -> AdminDrainHold {
+    ADMIN_DRAIN_HELD.store(true, Ordering::SeqCst);
+    AdminDrainHold(())
+}
+
+#[cfg(test)]
+impl Drop for AdminDrainHold {
+    fn drop(&mut self) {
+        ADMIN_DRAIN_HELD.store(false, Ordering::SeqCst);
+    }
+}
+
 fn drain_pending_audit() {
+    #[cfg(test)]
+    if ADMIN_DRAIN_HELD.load(Ordering::SeqCst) {
+        return;
+    }
     let Some(native) = native_owner(KIND_ID_AUDIT) else {
         return;
     };

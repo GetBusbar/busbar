@@ -487,6 +487,18 @@ impl Ledger {
     /// L2 for a stream that is not open, L4 for a second end, L5 for a successful end the engine did
     /// not ask for, L6 when the payload is not the body the engine emitted.
     pub(crate) fn end(&mut self, end: WireEnd) -> Result<(), Breach> {
+        self.end_in_answer(end)?;
+        self.settle();
+        Ok(())
+    }
+
+    /// A `WIRE_END` inside an answer being checked: recorded, but no verdict is frozen here. The
+    /// answer may still be refused whole, and a refused answer wrote nothing, so no end in it may
+    /// make a message `whole`; [`Self::queued`] settles once the whole answer passed.
+    ///
+    /// # Errors
+    /// As [`Self::end`].
+    pub(crate) fn end_in_answer(&mut self, end: WireEnd) -> Result<(), Breach> {
         if !matches!(end.how, END_FLUSH | END_SHUTDOWN | END_FAILED) {
             return Err(Breach::L1);
         }
@@ -516,7 +528,6 @@ impl Ledger {
         if end.how == END_SHUTDOWN {
             self.shutting = true;
         }
-        self.settle();
         Ok(())
     }
 

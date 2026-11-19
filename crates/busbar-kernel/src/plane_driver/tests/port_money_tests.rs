@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use busbar_contract::abi::plane::UnitCount;
 use busbar_contract::caps::{OriginKind, ReasonCode};
 use busbar_contract::measurement::{UNITS_ESTIMATED, UNITS_FLOOR, UNITS_REPORTED};
-use busbar_contract::plane::codes::{CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL};
+use busbar_contract::plane::codes::{CANCEL_ABORTED, CANCEL_OK_PARTIAL};
 use busbar_contract::UnitKey;
 use busbar_plugin_abi::plane::{
     UsageRec, AUDIT_APPLIED, AUDIT_REJECTED, SRC_ESTIMATED, SRC_FLOOR, SRC_REPORTED,
@@ -237,14 +237,36 @@ fn a_cancel_bills_reported_units_only_when_the_far_end_answered_and_a_byte_strea
     }
 }
 
+/// The cancel table's failed row (owner decision P087B): a failed session bills exactly the usage
+/// it accepted, once, at its owner's settlement: its billing sources reach the money as one
+/// checkpoint, the unit is finished, and it is no cancel (no CANCEL_FAILED bill of nothing).
 #[test]
-fn a_failed_session_bills_nothing_and_is_a_failed_cancel() {
+fn a_failed_session_bills_its_accepted_usage_once_and_no_cancel() {
     let seam = Arc::new(Seam::default());
-    let held = usage(&[("tokens", 5, 0, SRC_REPORTED)]);
+    let held = usage(&[
+        ("tokens", 5, 0, SRC_REPORTED),
+        ("requests", 1, 0, SRC_ESTIMATED),
+    ]);
     money(Arc::clone(&seam), Arc::default()).ended(&ctx(), Ending::Failed, &held, None);
-    let bills = seam.bills.lock().unwrap();
-    assert!(bills[0].billed.is_empty());
-    assert_eq!(bills[0].disposition, CANCEL_FAILED);
+    assert_eq!(*seam.log.lock().unwrap(), vec!["checkpoint", "finished"]);
+    assert_eq!(
+        *seam.counts.lock().unwrap(),
+        vec![vec![(1, UNITS_REPORTED, 5)]],
+        "the reported 5, never the estimate"
+    );
+    assert!(seam.bills.lock().unwrap().is_empty(), "no cancel bill");
+    let seam = Arc::new(Seam::default());
+    money(Arc::clone(&seam), Arc::default()).ended(
+        &ctx(),
+        Ending::Failed,
+        &SessionUsage::new(),
+        None,
+    );
+    assert_eq!(
+        *seam.log.lock().unwrap(),
+        vec!["finished"],
+        "nothing accepted: nothing asked"
+    );
 }
 
 #[test]

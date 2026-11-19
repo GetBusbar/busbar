@@ -128,3 +128,88 @@ fn an_unknown_flag_gets_the_generic_refusal() {
     assert_eq!(super::ordinary_cli_flags_of(&argv), Some(2));
     assert!(!render_help("<VERSION>").contains("mcp-stdio"));
 }
+
+/// SECREF-BOOT: `--validate` resolves the documented `{ file: .. }` and `{ env: .. }` secret
+/// references (docs/operations.md) through the linked secret images, as boot does: a config that
+/// boots validates. A reference that does not resolve, and one naming a secret module no image
+/// admits, are still refused.
+#[cfg(distribution_root)]
+#[test]
+fn secret_ref_validate_resolves_documented_env_and_file_references_as_boot_does() {
+    use crate::root::test_plugins as plugins;
+    crate::dist_root_install::install();
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
+    // The start stage's publish (`register_root`): the linked secret images' grammar.
+    crate::root::native_secrets::linked_for_tests();
+    let library_path = plugins::application_store_library();
+    let module = plugins::native_image(&library_path).name;
+    let manifest = plugins::native_manifest("store", &library_path, plugins::FIXTURE_PUBLISHER);
+    let library = std::fs::read(&library_path).expect("the application Store image reads");
+    let directory = plugins::scratch("validate-secret-ref");
+    std::fs::write(
+        directory.join("store.tar.gz"),
+        plugins::signed(&crate::dist_root_install::release_key(), manifest, &library),
+    )
+    .expect("stage the signed application Store");
+    let key = directory.join("signing.key");
+    std::fs::write(&key, "5a".repeat(32)).expect("write the signing key file");
+    let variable = "BUSBAR_SECREF_BOOT_VALIDATE_SIGNING_KEY";
+    std::env::set_var(variable, "5a".repeat(32));
+    let providers = directory.join("providers.yaml");
+    std::fs::write(&providers, "{}\n").expect("write providers.yaml");
+    let plain = serde_json::json!({ "accept": ["plaintext"], "reason": "validate fixture" });
+    let validate = |signing_key: serde_json::Value| -> Result<(), String> {
+        let config = directory.join("config.yaml");
+        let document = serde_json::json!({
+            "providers": {},
+            "models": {},
+            "listen_insecure_transport": plain,
+            "admin_listen_insecure_transport": plain,
+            "auth": { "chain": [], "signing_key": signing_key },
+            "store": { "module": module, "settings": plugins::application_store_settings(&directory) },
+            "plugins": plugins::trusted_config_document(&directory),
+        });
+        std::fs::write(
+            &config,
+            serde_json::to_string(&document).expect("the document encodes"),
+        )
+        .expect("write config.yaml");
+        super::validate_judged(&config, Some(&providers), false)
+            .map(drop)
+            .map_err(|refused| refused.render())
+    };
+
+    let file = validate(serde_json::json!({ "file": key }));
+    assert!(
+        file.is_ok(),
+        "a documented `{{file: ..}}` signing key that resolves validates: {file:?}"
+    );
+    let env = validate(serde_json::json!({ "env": variable }));
+    assert!(
+        env.is_ok(),
+        "a documented `{{env: ..}}` signing key that resolves validates: {env:?}"
+    );
+    let absent = validate(serde_json::json!({ "file": directory.join("absent.key") }));
+    assert!(
+        absent
+            .as_ref()
+            .is_err_and(|refused| refused.contains("auth.signing_key")),
+        "a `{{file: ..}}` that does not resolve is refused by its position: {absent:?}"
+    );
+    let unset = validate(serde_json::json!({ "env": "BUSBAR_SECREF_BOOT_NEVER_SET" }));
+    assert!(
+        unset
+            .as_ref()
+            .is_err_and(|refused| refused.contains("auth.signing_key")),
+        "an `{{env: ..}}` naming an unset variable is refused by its position: {unset:?}"
+    );
+    let unadmitted = validate(serde_json::json!({
+        "module": "secret-not-admitted", "settings": { "path": key },
+    }));
+    assert!(
+        unadmitted.is_err(),
+        "a reference to a secret module no image admits is refused"
+    );
+    std::env::remove_var(variable);
+    std::fs::remove_dir_all(&directory).expect("remove the validate fixture");
+}

@@ -159,6 +159,7 @@ impl CompletingPhysicalRequest {
             return Err(ArrivalRefusal::Class);
         }
         self.enter_unbilled(PreparationState::Authorized)?;
+        self.binding.watch_revocation(&authorization.key().id);
         self.cancel_on_drop = false;
         Ok(PhysicalUnbilledExecution {
             binding: self.binding.clone(),
@@ -421,6 +422,7 @@ impl CompletingPhysicalRequest {
             return Err(ArrivalRefusal::ForeignInput);
         }
         self.enter_unbilled(PreparationState::Unused)?;
+        self.binding.watch_revocation(&authorization.key.id);
         self.cancel_on_drop = false;
         Ok(PhysicalKeyExecution { authorization })
     }

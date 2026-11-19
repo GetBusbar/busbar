@@ -34,6 +34,10 @@ pub(crate) fn prepare(
     }
     // The read owns one capture: executable admission and grammar consume its exact bytes.
     let metadata = super::scanned_registry(&plugins).map_err(GrammarRefusal)?;
+    // Admission maps these bytes through the native load guard, which serves only an allocation it
+    // holds the verified archive of: record this capture's images (each archive is re-validated by
+    // the guard), or every dropped-in image is refused and stays off the MIN-3 path.
+    super::remember_native_images(&metadata, &plugins);
     let admitted =
         crate::root::min3_boot::admit_images(&plugins, &metadata).map_err(GrammarRefusal)?;
     audit_untrusted(&admitted);
@@ -118,6 +122,41 @@ impl FileImages {
                 .filter(|(_, proof)| proof.digest.is_none())
                 .map(|(identity, _)| identity.as_str()),
         );
+    }
+
+    /// Declare the scope kinds these plane images' routes state (each route's walk kind, and the
+    /// resource kinds of a route that selects) and the kinds they check grants under that no route
+    /// states (`D_CHECKED_KIND`), read from their describes before configuration is
+    /// judged: `role_bindings.*.allowed_<kind>s` is judged against them
+    /// (`governance::plane_declares_kind`), as a key's grant is once the planes mount. Called by the
+    /// stage that prepares the images it serves or validates, beside [`Self::publish_hooks`].
+    pub(crate) fn publish_scope_kinds(&self) {
+        use busbar_kernel::auth::route_record::wire::AdmissionItem;
+        for (identity, _) in &self.aliases {
+            let Some(describe) = self
+                .images
+                .described(identity)
+                .and_then(|described| described.plane_describe())
+            else {
+                continue;
+            };
+            let admissions: Vec<AdmissionItem<'_>> = describe
+                .route_admissions
+                .iter()
+                .map(|admission| AdmissionItem {
+                    route: admission.route,
+                    scope: admission.scope,
+                    money: admission.money,
+                    callers: admission.callers,
+                    walk_kind: &*admission.walk_kind,
+                })
+                .collect();
+            busbar_kernel::plane_driver::port_routes::declare_described_kinds(
+                &describe.routes,
+                &admissions,
+                &describe.checked_kinds,
+            );
+        }
     }
 
     /// Publish the operator claims of these images' auth images (D-OPERATOR): the start judgement, `--validate`
@@ -363,6 +402,7 @@ pub(crate) fn publish_start() -> Result<(), String> {
     let prepared = prepare(&process, &PhaseOneIn::of(&plugins)).map_err(|refusal| refusal.0)?;
     prepared.publish_secrets();
     prepared.publish_hooks();
+    prepared.publish_scope_kinds();
     prepared.publish_operator();
     let _ = START_IMAGES_GRAMMAR.set(prepared.grammar.clone());
     Ok(())

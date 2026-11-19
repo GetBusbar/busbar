@@ -378,6 +378,76 @@ fn a_plane_settles_its_whole_top_level_bag_and_lifts_only_admitted_slots() {
     assert_eq!(applied.secrets()[0].bytes(), b"literal");
 }
 
+/// A plane section as an operator writes it: the plane's own keys beside core's words in that
+/// section (its transport acceptance, its card and fees, its routes, its audience).
+const PLANE_WITH_CORE_WORDS: &str = "plane:\n  old: true\n  insecure_transport: { accept: plaintext, reason: \"loopback upstream\" }\n  rate_card: { m: { input_utok: 1 } }\n  fees: { per_request: 1 }\n  routes: { r1: { auth_instances: [a] } }\n  canonical_uri: \"https://gateway.example/mcp\"\nstore: {module: m}\n";
+
+fn plane_block(settings: &str) -> Settled {
+    let mut answer = store(2, Some(settings), Vec::new());
+    answer.path = vec!["plane".to_owned()];
+    answer.placement = crate::settle::BagPlacement::Block;
+    answer
+}
+
+/// Core lifts its own words off a plane section before the plane reads it, so the plane's settled
+/// bag never states them. Settling the plane's whole block replaces the plane's bag and keeps every
+/// one of core's words as the operator wrote it: an upgrade never drops a transport consent, a
+/// price, a route binding or an audience.
+#[test]
+fn a_settled_plane_block_keeps_cores_own_words_in_its_section() {
+    let applied = apply(
+        PLANE_WITH_CORE_WORDS,
+        &[plane_block(r#"{"format":2}"#)],
+        false,
+    )
+    .unwrap();
+    let doc = tree(&applied);
+    let written: Value = yaml::from_str(PLANE_WITH_CORE_WORDS).unwrap();
+    assert!(
+        doc.at("plane").get("old").is_none(),
+        "the plane's bag is replaced"
+    );
+    assert_eq!(doc.at("plane").get("format"), Some(&json("2")));
+    for key in [
+        "insecure_transport",
+        "rate_card",
+        "fees",
+        "routes",
+        "canonical_uri",
+    ] {
+        assert_eq!(
+            doc.at("plane").get(key),
+            written.at("plane").get(key),
+            "`plane.{key}` is core's and stays as written:\n{}",
+            applied.text()
+        );
+    }
+}
+
+/// A plane's settled bag that states one of core's words otherwise than the operator wrote it is
+/// a plane writing core's configuration (its own transport acceptance, its own price): refused,
+/// nothing written.
+#[test]
+fn a_settled_plane_bag_that_rewrites_a_core_word_is_refused() {
+    for bag in [
+        r#"{"format":2,"insecure_transport":{"accept":["plaintext","unverified_tls"],"reason":"plane"}}"#,
+        r#"{"format":2,"rate_card":{"m":{"input_utok":0}}}"#,
+        r#"{"format":2,"canonical_uri":"https://elsewhere.example/mcp"}"#,
+    ] {
+        let refused = apply(PLANE_WITH_CORE_WORDS, &[plane_block(bag)], false)
+            .expect_err("a plane never writes core's words");
+        assert_eq!(refused.word(), "CONFIG", "{bag}");
+    }
+    let unwritten = "plane:\n  old: true\nstore: {module: m}\n";
+    let refused = apply(
+        unwritten,
+        &[plane_block(r#"{"format":2,"fees":{"per_request":0}}"#)],
+        false,
+    )
+    .expect_err("a plane never adds core's words either");
+    assert_eq!(refused.word(), "CONFIG");
+}
+
 /// The settled LIMITS, TRUST_APPROVAL and ROUTE_MEDIA answers are never filed into config.yaml: the grammar has no
 /// `limits`, `trust` or `routes` key, so writing one would break the next boot. The document comes out as it went in.
 #[test]

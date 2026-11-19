@@ -172,8 +172,7 @@ macro_rules! kind {
         /// block names its field types as it always did.
         #[doc(hidden)]
         pub mod __views {
-            #[allow(unused_imports)]
-            use $crate::types::{Bytes, Pair, Slice, Str};
+            pub use $crate::types::{Bytes, Pair, Slice, Str};
             $(
                 $(#[$vd])*
                 #[derive(Clone, Copy)]
@@ -192,8 +191,7 @@ macro_rules! kind {
                 }
             )*
         }
-        #[allow(unused_imports)]
-        pub use self::__views::*;
+        $( pub use self::__views::$V; )*
         /// The views' wire text: names, field names, field types, in order.
         const FP_VIEWS: &str = stringify!($( struct $V { $( $vf: $vt ),* } )*);
     };
@@ -465,10 +463,9 @@ macro_rules! kind {
                 args: $crate::plugin::__rt::Args<'_>,
                 out: &mut $crate::plugin::__rt::Out<'_>,
             ) -> $crate::types::Status {
-                #[allow(unused_mut, unused_variables)]
-                let mut r = $crate::call::Reader::new(args);
+                let _r = &mut $crate::call::Reader::new(args);
                 $(
-                    let $a: $($rty)* = match $crate::call::Get::get(&mut r) {
+                    let $a: $($rty)* = match $crate::call::Get::get(&mut *_r) {
                         ::core::option::Option::Some(v) => v,
                         ::core::option::Option::None => return $crate::types::Status::FAULT,
                     };
@@ -487,10 +484,9 @@ macro_rules! kind {
                 args: $crate::plugin::__rt::Args<'_>,
                 out: &mut $crate::plugin::__rt::Out<'_>,
             ) -> ::core::result::Result<<Self as $crate::plugin::__rt::shim::Image>::Session, $crate::types::Status> {
-                #[allow(unused_mut, unused_variables)]
-                let mut r = $crate::call::Reader::new(args);
+                let _r = &mut $crate::call::Reader::new(args);
                 $(
-                    let $a: $($rty)* = match $crate::call::Get::get(&mut r) {
+                    let $a: $($rty)* = match $crate::call::Get::get(&mut *_r) {
                         ::core::option::Option::Some(v) => v,
                         ::core::option::Option::None => {
                             return ::core::result::Result::Err($crate::types::Status::FAULT);
@@ -512,10 +508,9 @@ macro_rules! kind {
                 args: $crate::plugin::__rt::Args<'_>,
                 out: &mut $crate::plugin::__rt::Out<'_>,
             ) -> $crate::types::Status {
-                #[allow(unused_mut, unused_variables)]
-                let mut r = $crate::call::Reader::new(args);
+                let _r = &mut $crate::call::Reader::new(args);
                 $(
-                    let $a: $($rty)* = match $crate::call::Get::get(&mut r) {
+                    let $a: $($rty)* = match $crate::call::Get::get(&mut *_r) {
                         ::core::option::Option::Some(v) => v,
                         ::core::option::Option::None => return $crate::types::Status::FAULT,
                     };
@@ -549,9 +544,8 @@ macro_rules! kind {
                 $crate::plugin::__rt::ChainFut<'i, $crate::plugin::Outcome<T>>,
                 $crate::bridge::Inbox,
             )> {
-                #[allow(unused_mut, unused_variables)]
-                let mut r = $crate::call::ChainReader::new(args);
-                $( let $a: $($rty)* = $crate::call::ChainGet::get(&mut r)?; )*
+                let _r = &mut $crate::call::ChainReader::new(args);
+                $( let $a: $($rty)* = $crate::call::ChainGet::get(&mut *_r)?; )*
                 ::core::option::Option::Some($crate::plugin::chain(<T as $Trait>::$name(p, h $(, $a)*)))
             }
         }
@@ -591,17 +585,18 @@ macro_rules! kind {
         /// is the host's one clock reading for the operation. The session of a session method is not an
         /// argument: the host's session handle puts its own token in the call.
         pub mod pack {
-            #[allow(unused_imports)]
             use super::*;
+            /// Ties this import to the kind's own table size, so it is used even when no method names a kind type.
+            const _: usize = ENTRIES;
             $(
-                #[allow(clippy::too_many_arguments, unused_mut)]
+                #[allow(clippy::too_many_arguments)]
                 pub fn $name<R>(
                     mono_ns: u64,
                     $( $a: $($hty)*, )*
                     f: impl ::core::ops::FnOnce(&$crate::types::Call<'_>) -> R,
                 ) -> R {
-                    let mut w = $crate::call::Packer::new();
-                    $( $crate::call::Put::put($a, &mut w); )*
+                    let w = &mut $crate::call::Packer::new();
+                    $( $crate::call::Put::put($a, &mut *w); )*
                     w.with(mono_ns, f)
                 }
             )*

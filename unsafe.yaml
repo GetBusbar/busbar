@@ -52,36 +52,23 @@ ffi:
 # and the package that deletes it. Rows are never added or raised; the whole map is deleted at the end
 # of wave 3 (taken from the `git ls-files` walk at W1-U0).
 interim:
-  crates/busbar-contract/src/abi/auth/mod.rs: { tokens: 14, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/export/mod.rs: { tokens: 8, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/export/validate.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/hook/mod.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/host/conn/mod.rs: { tokens: 32, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/host/service.rs: { tokens: 91, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/measurement.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/host/service.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/measurement.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/mechanism/call.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/mechanism/check.rs: { tokens: 19, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/mechanism/check.rs: { tokens: 6, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/mechanism/decl.rs: { tokens: 6, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/mechanism/door.rs: { tokens: 9, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/mechanism/door.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/mechanism/rendering/mod.rs: { tokens: 13, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/mechanism/rendering/tail.rs: { tokens: 24, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/mod.rs: { tokens: 8, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/plane/check.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/plane/mod.rs: { tokens: 23, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/door.rs: { tokens: 61, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/plane/conditional.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/mod.rs: { tokens: 7, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/sdk/plane/conditional.rs: { tokens: 2, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/secret_bytes.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/store/v4/mod.rs: { tokens: 4, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/test_support/cpu.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/sdk/test_support/mod.rs: { tokens: 1, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/test_support/watch.rs: { tokens: 14, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/tests/store_conditional_tests.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/sdk/wipe.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/secret/mod.rs: { tokens: 3, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/abi/shared.rs: { tokens: 5, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/store/v4.rs: { tokens: 10, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/transport/check.rs: { tokens: 15, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
-  crates/busbar-contract/src/abi/transport/mod.rs: { tokens: 24, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
+  crates/busbar-contract/src/abi/transport/check.rs: { tokens: 13, by: "W2-SW / W3-D-CONTRACT (the old ABI)" }
   crates/busbar-contract/src/lib.rs: { tokens: 1, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/src/persistence/archive.rs: { tokens: 1, by: "W1-U1 (§4.3, §4.4) / W3-D-CONTRACT" }
   crates/busbar-contract/src/persistence/archive/spool.rs: { tokens: 5, by: "PLATFORMS OQ-5 (the Windows owner-DACL create; the unix half is rustix)" }
@@ -96,14 +83,12 @@ interim:
   crates/busbar-core-connector/src/child_job.rs: { tokens: 17, by: "W1-C1C, then PLATFORMS OQ-5" }
   crates/busbar-core-connector/src/conns.rs: { tokens: 2, by: "W1-U1 (counting swap, Q24)" }
   crates/busbar-core-connector/src/tests/support_lib.rs: { tokens: 6, by: "W1-U1 (counting swap, Q24)" }
-  crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs: { tokens: 2, by: "W3-D-BINARY" }
+  crates/busbar-kernel/src/plane_driver/tests/far_end_tests.rs: { tokens: 1, by: "W3-D-BINARY" }
   crates/busbar-kernel/src/plane_driver/tests/retirement_tests.rs: { tokens: 1, by: "W3-D-BINARY" }
-  crates/busbar-kernel/src/seal.rs: { tokens: 2, by: "W3-D-CONTRACT (boot OnceLock seals)" }
   crates/busbar/build.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/main.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/root/serve.rs: { tokens: 2, by: "W3-D-BINARY (linked tables, generated code)" }
+  crates/busbar/src/root/serve.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/root/tests/test_plugins.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
-  crates/busbar/src/tests/distribution.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/busbar/src/tests/generated_escapes.rs: { tokens: 1, by: "W3-D-BINARY (linked tables, generated code)" }
   crates/plugin-loader/src/durable_documents.rs: { tokens: 25, by: "PLATFORMS P6 (OQ-5, OQ-6)" }
   crates/plugin-loader/src/ffi_thread.rs: { tokens: 5, by: "W1-L1 / W1-L2" }

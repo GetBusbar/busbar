@@ -976,3 +976,116 @@ fn a_narrowed_member_grant_loses_the_member_on_the_current_check() {
     assert!(routes.allows_current_pair(&admitted, admitted.key(), "p", &m1));
     assert!(!routes.allows_current_pair(&admitted, &pool_scoped("member", &["m2"]), "p", &m1));
 }
+
+/// v1.6 `a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowhere`
+/// (PROOF-093-F row 319), on the native seat: over the member-granted pool `p` (members m1, m2),
+/// a key's walk reaches exactly the entries its grant names (one: only m1; both: m1 and m2), and a
+/// key that reaches none is refused before any money (Scope, answered 403: the native refusal for
+/// what the door answered NoDestination). A local (unrouted) unit, whatever the key reaches,
+/// routes nowhere: no walk, no member granted, the seat's own empty lane.
+#[test]
+fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowhere() {
+    let routes = section_routes("pool");
+    let reaches: [(&[&str], Result<&[&str], AdmissionError>); 3] = [
+        (&["m1"][..], Ok(&["m1"][..])),
+        (&["m1", "m2"][..], Ok(&["m1", "m2"][..])),
+        (&[][..], Err(AdmissionError::Scope)),
+    ];
+    for (unit, (grant, expected)) in (70..).step_by(2).zip(reaches) {
+        let (ctx, _lease) = context_with_key(unit, pool_scoped("reach", grant));
+        let walk = RequestWalk::new(&ctx).unwrap();
+        let walked = allocation(ctx)
+            .forward(&routes, &walk, Some("p"))
+            .map(|receipt| {
+                assert_eq!(
+                    receipt.member_grants().len(),
+                    1,
+                    "{grant:?}: the grant reaches the one walk it names"
+                );
+                receipt.member_grants().get("p").cloned()
+            });
+        assert_eq!(
+            walked,
+            expected.map(|members| Some(lanes(members))),
+            "{grant:?}"
+        );
+
+        let (ctx, _lease) = context_with_key(unit + 1, pool_scoped("reach", grant));
+        let local = allocation(ctx).local(&routes).unwrap();
+        assert_eq!(local.domain(), &RequestDomain::Local, "{grant:?}");
+        assert_eq!(local.pool(), format!("seat{PLANE_LANE_SEP}"), "{grant:?}");
+        assert!(
+            local.member_grants().is_empty(),
+            "{grant:?}: a local unit is granted no member"
+        );
+        assert_eq!(
+            local.walk_key(),
+            None,
+            "{grant:?}: a local unit routes nowhere"
+        );
+    }
+}
+
+/// SECURITY (v1.6 `an_unrelated_same_name_entry_keeps_its_primary_grant_boundary`, PROOF-093-F
+/// row 427): a catalog model and an unrelated entry of the same name never share a grant. On one
+/// seat the alias is refused before the routes are published; on two seats each name is judged in
+/// its own seat's kind, so a key granted the catalog model `m` (kind `pool`) is not granted the
+/// command registration `m` (kind `server`), and the reverse.
+#[test]
+fn an_unrelated_same_name_entry_keeps_its_primary_grant_boundary() {
+    let unrelated = || table(&[definition("m", true)]);
+    assert_eq!(
+        catalog_routes().with_registrations(unrelated()).err(),
+        Some(AdmissionError::Route),
+        "an entry aliasing a catalog model on the same seat is refused"
+    );
+    let catalog = catalog_routes();
+    let commands = RequestRoutes::new("seat", Some(Arc::from("server")), None, None)
+        .unwrap()
+        .with_registrations(unrelated())
+        .unwrap();
+    let granted = |kind: &str| {
+        Arc::new(VirtualKey {
+            id: format!("granted-{kind}-m").into(),
+            enabled: true,
+            allowed_scopes: Some(vec![busbar_contract::records::ScopeRef {
+                kind: kind.into(),
+                value: "m".into(),
+            }]),
+            ..Default::default()
+        })
+    };
+    let model = |unit: u64, key: Arc<VirtualKey>| {
+        let (ctx, _lease) = context_with_key(unit, key);
+        let walk = RequestWalk::new(&ctx).unwrap();
+        allocation(ctx)
+            .forward(&catalog, &walk, Some("m"))
+            .map(|receipt| receipt.domain().clone())
+    };
+    let command = |unit: u64, key: Arc<VirtualKey>| {
+        let (ctx, _lease) = context_with_key(unit, key);
+        allocation(ctx)
+            .registration(&commands, None, "m")
+            .map(|receipt| receipt.domain().clone())
+    };
+    assert_eq!(
+        model(80, granted("pool")),
+        Ok(RequestDomain::DirectModel("m".into())),
+        "the catalog model's own grant reaches it"
+    );
+    assert_eq!(
+        command(81, granted("pool")),
+        Err(AdmissionError::Scope),
+        "the catalog model's grant is no grant of the same-named command"
+    );
+    assert_eq!(
+        command(82, granted("server")),
+        Ok(RequestDomain::Registration("m".into())),
+        "the command's own grant reaches it"
+    );
+    assert_eq!(
+        model(83, granted("server")),
+        Err(AdmissionError::Scope),
+        "the command's grant is no grant of the same-named catalog model"
+    );
+}

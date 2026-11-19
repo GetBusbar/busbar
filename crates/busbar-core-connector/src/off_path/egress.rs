@@ -70,26 +70,23 @@ pub(crate) mod proxy {
         };
         let parsed = url::Url::parse(&url)
             .map_err(|e| format!("proxy env value {shown:?} is not a valid URL: {e}"))?;
-        // `http://`: a plain CONNECT proxy. `https://`: the proxy itself is reached over TLS
-        // (v1.5.5's client spoke both); the engine runs a TLS session to the proxy and the
-        // CONNECT rides it (`outbound::tunnel::Outer`). Anything else (socks) is refused by name.
-        let over_tls = if parsed.scheme() == busbar_contract::http::uri::Scheme::HTTP.as_str() {
-            false
-        } else if parsed.scheme() == busbar_contract::http::uri::Scheme::HTTPS.as_str() {
-            true
-        } else {
+        // Only a plain `http://` CONNECT proxy is read from the environment. An `https://` value
+        // (TLS to the proxy itself) is refused by name, as every other scheme (socks) is: reaching
+        // a proxy over TLS is an operator opt-in that needs its own setting, never something a
+        // proxy variable turns on by its spelling.
+        if parsed.scheme() != busbar_contract::http::uri::Scheme::HTTP.as_str() {
             return Err(format!(
-                "proxy env value {shown:?} uses scheme {:?}: only http:// and https:// CONNECT \
-                 proxies are spoken",
+                "proxy env value {shown:?} uses scheme {:?}: only plain http:// CONNECT proxies \
+                 are read from the proxy environment (a proxy reached over TLS is not enabled)",
                 parsed.scheme()
             ));
-        };
+        }
         let host = parsed
             .host_str()
             .ok_or_else(|| format!("proxy env value {shown:?} has no host"))?
             .to_owned();
         // A proxy address with no port takes its scheme's own (RFC 9110 section 4.2).
-        let port = parsed.port().unwrap_or(if over_tls { 443 } else { 80 });
+        let port = parsed.port().unwrap_or(80);
         let auth = (!parsed.username().is_empty()).then(|| {
             use base64::Engine;
 
@@ -104,8 +101,7 @@ pub(crate) mod proxy {
                 base64::engine::general_purpose::STANDARD.encode(creds)
             )
         });
-        let hop = ProxyHop::new(host, port, auth);
-        Ok(if over_tls { hop.over_tls() } else { hop })
+        Ok(ProxyHop::new(host, port, auth))
     }
 
     /// A hop's spellings, made once with the hop: its own `host:port` (a v6 host bracketed) and
@@ -512,3 +508,9 @@ pub(crate) mod guard {
         }
     }
 }
+
+// The download's refusals before any dial. Its exchange with a far end needs a transport image as
+// the HTTP carrier: `dist/default/tests/plugins_fetch_download.rs`.
+#[cfg(test)]
+#[path = "../tests/fetch_download_tests.rs"]
+mod fetch_download_tests;

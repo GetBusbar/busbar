@@ -413,6 +413,57 @@ impl RecordLedger {
     }
 }
 
+/// Test-only: this ledger and the admin audit queue it offers to are process-wide, and the test
+/// harness runs tests in parallel threads of one process. One test's confirmation, retry or full
+/// queue is another's lost or refused record, so every test that offers to, settles, confirms or
+/// fills them holds this for its whole run.
+#[cfg(test)]
+static LEDGER_TESTS: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// Test-only: the one exclusive hold on the ledger and the admin audit queue. Every holder starts
+/// alike, whatever ran before it: the native audit owner installed, and the queue drained.
+#[cfg(test)]
+pub(crate) async fn ledger_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    let guard = LEDGER_TESTS.lock().await;
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    assert!(
+        crate::audit::auditlog::flush_pending().await.is_ok(),
+        "the admin audit queue drains before the test"
+    );
+    guard
+}
+
+/// Test-only: fills the admin audit queue to its bound from a thread with no runtime, so no drain
+/// is spawned while it fills (a drain is spawned only on a runtime). Returns the rows it added.
+#[cfg(test)]
+pub(crate) fn fill_admin_queue() -> usize {
+    std::thread::spawn(|| {
+        let mut filled = 0;
+        while crate::audit::auditlog::try_emit_admin_hostless_now("test.fill", "x", "ok", "system")
+            .is_ok()
+        {
+            filled += 1;
+            assert!(
+                filled <= crate::audit::auditlog::MAX_PENDING_AUDIT,
+                "the admin audit queue is bounded"
+            );
+        }
+        filled
+    })
+    .join()
+    .expect("the fill thread returns")
+}
+
+/// Test-only: `retry_unrecorded` from a thread with no runtime, so its offers spawn no drain and
+/// meet the queue exactly as the caller left it.
+#[cfg(test)]
+pub(crate) fn retry_unrecorded_without_drain() -> usize {
+    std::thread::spawn(|| undrained_records().retry_unrecorded())
+        .join()
+        .expect("the retry thread returns")
+}
+
 #[cfg(test)]
 #[path = "tests/undrained_tests.rs"]
 mod tests;

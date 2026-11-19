@@ -71,7 +71,8 @@ mod fixed_loan_tests {
         })
         .expect("a fixed entry");
         assert_eq!(&backing[..written], b"protected reply");
-        assert!(backing[written..].iter().all(|byte| *byte == 0));
+        // Core 3.0: the lent block is not pre-filled and nothing past the answer is written.
+        assert!(backing[written..].iter().all(|byte| *byte == 0xa5));
     }
 
     #[test]

@@ -67,6 +67,7 @@ fn port(routes: &[RouteInfo], admin_openapi: Option<&str>, states: bool) -> Admi
         routes: routes.to_vec(),
         openapi: admin_openapi.map(str::to_owned),
         states,
+        checked: Vec::new(),
         answer: Err(()),
     }
 }
@@ -156,6 +157,39 @@ fn restricted_key_kinds_are_the_kinds_mounted_route_records_state() {
     )
     .unwrap();
     assert!(!plane_declares_kind("pool"));
+}
+
+/// MCP-TOOLKIND: the kinds a plane checks grants under that no route states (`D_CHECKED_KIND`)
+/// are declared when the plane mounts, as its route-stated kinds are; a plane refused at mount
+/// declares none of them.
+#[test]
+fn role_binding_plane_scope_checked_kinds_are_declared_at_mount() {
+    use crate::governance::plane_declares_kind;
+    let checked = |routes: &[RouteInfo], kind: &str| {
+        let mut port = port(routes, None, true);
+        port.checked = vec![Box::<str>::from(kind)];
+        super::plan(&port, &none)
+    };
+    assert!(checked(
+        &[
+            route(1, ROUTE_LINE, AUTH_PRINCIPAL, "/l1"),
+            route(2, ROUTE_LINE, AUTH_PRINCIPAL, "/l2"),
+        ],
+        "toolkind_refused_tool",
+    )
+    .is_err());
+    assert!(!plane_declares_kind("toolkind_refused_tool"));
+
+    assert!(!plane_declares_kind("toolkind_mounted_tool"));
+    checked(
+        &[route(1, 0, AUTH_PRINCIPAL, "/mcp")],
+        "toolkind_mounted_tool",
+    )
+    .unwrap();
+    assert!(
+        plane_declares_kind("toolkind_mounted_tool"),
+        "a kind a mounted plane checks can be granted to a key"
+    );
 }
 
 #[test]
@@ -328,6 +362,8 @@ struct Admin {
     openapi: Option<String>,
     /// Whether the port states its routes' admissions (a port that does not mounts nothing).
     states: bool,
+    /// The kinds this port checks grants under that no route states (`D_CHECKED_KIND`).
+    checked: Vec<Box<str>>,
     answer: Result<Vec<u8>, ()>,
 }
 
@@ -348,6 +384,9 @@ impl PlanePort for Admin {
             return None;
         }
         self.routes.iter().find(|r| r.route == route).map(stated)
+    }
+    fn checked_kinds(&self) -> &[Box<str>] {
+        &self.checked
     }
     fn dialects(&self) -> &[Box<str>] {
         &[]
@@ -443,6 +482,7 @@ async fn hydrate_is_an_admin_op_and_its_answer_goes_to_core_as_it_is() {
         routes: Vec::new(),
         openapi: None,
         states: true,
+        checked: Vec::new(),
         answer: Ok(b"answer".to_vec()),
     };
     assert_eq!(admin_hydrate(&port, b"stored").await.unwrap(), b"answer");
@@ -455,6 +495,7 @@ async fn hydrate_is_an_admin_op_and_its_answer_goes_to_core_as_it_is() {
         routes: Vec::new(),
         openapi: None,
         states: true,
+        checked: Vec::new(),
         answer: Err(()),
     };
     assert!(admin_hydrate(&failing, b"stored").await.is_err());

@@ -187,6 +187,28 @@ impl Pending {
     pub fn admitted(&self) -> Option<&AdmittedUnit> {
         self.admitted.get()
     }
+    /// Whether the admitted request's rate card is present and names no price for `lane`. A
+    /// member on such a lane is never dialled: a call the engine cannot price is refused before
+    /// it is served, never served as free (#42, fail-closed). No admission yet reads as unpriced.
+    pub(crate) fn lane_unpriced(&self, lane: &str) -> bool {
+        self.admitted
+            .get()
+            .is_none_or(|admitted| admitted.request.cost().model_unpriced(lane))
+    }
+    /// The member that served an ordinary unit: its counts are priced, ledgered and metered under
+    /// `lane` with `provider`. A selected unit files each attempt under its own partition.
+    pub(crate) fn served(&self, lane: &str, provider: &str) {
+        if let Some(admitted) = self
+            .admitted
+            .get()
+            .filter(|admitted| admitted.selected.is_none())
+        {
+            admitted
+                .unit
+                .money
+                .served(&admitted.unit.ctx, lane, provider);
+        }
+    }
     pub(crate) fn accept_admission(&self) -> Result<(), SessionError> {
         let admitted = self.admitted.get().ok_or(SessionError::NotDriven)?;
         let mut held = admitted.rollback.lock().unwrap();
@@ -228,28 +250,36 @@ impl Pending {
         wants: Option<&Wants>,
         declaration: RequestDeclaration,
     ) -> Result<ResolvedWalk, SessionError> {
+        // Each way the walk cannot be resolved is said by name: the request is then answered as
+        // failed (`port::drive_session`), and the log names which check it failed.
+        let unresolved = |why: &'static str| {
+            tracing::warn!(why, "a request's walk could not be resolved");
+            SessionError::NotDriven
+        };
         if !declaration.context().same_unit(&self.context) || !declaration.context().is_live() {
-            return Err(SessionError::NotDriven);
+            return Err(unresolved("the declaration is not this live unit's"));
         }
         let commit = self
             .commit
             .lock()
             .unwrap()
             .take()
-            .ok_or(SessionError::NotDriven)?;
+            .ok_or_else(|| unresolved("the admission was already taken"))?;
         let selected_required = declaration.selected();
         if selected_required && declaration.original_route().is_none() {
-            return Err(SessionError::NotDriven);
+            return Err(unresolved("a selected declaration names no original route"));
         }
         if declaration.selected() && matches!(&commit, Commit::Ordinary(_)) {
-            return Err(SessionError::NotDriven);
+            return Err(unresolved(
+                "a selected declaration on an ordinary admission",
+            ));
         }
         let allocation = self
             .allocation
             .lock()
             .unwrap()
             .take()
-            .ok_or(SessionError::NotDriven)?;
+            .ok_or_else(|| unresolved("the allocation was already taken"))?;
         let mut members = members;
         let receipt = match wants {
             Some(wants)
@@ -267,22 +297,32 @@ impl Pending {
                             .as_deref()
                             .expect("classified actual command"),
                     )
-                    .map_err(|_| SessionError::NotDriven)?
+                    .map_err(|_| unresolved("the command registration did not resolve"))?
             }
             Some(wants) => {
-                let members = members.as_deref_mut().ok_or(SessionError::NotDriven)?;
-                let walk = members.request_walk().ok_or(SessionError::NotDriven)?;
+                let members = members
+                    .as_deref_mut()
+                    .ok_or_else(|| unresolved("a FORWARD on a seat with no walk"))?;
+                let walk = members
+                    .request_walk()
+                    .ok_or_else(|| unresolved("the seat's members state no walk"))?;
                 let receipt = allocation
                     .forward(&self.routes, walk, wants.model.as_deref())
-                    .map_err(forward_refused)?;
+                    .map_err(|error| {
+                        if !matches!(error, super::request_admission::AdmissionError::Scope) {
+                            tracing::warn!(?error, "a request's walk could not be resolved");
+                        }
+                        forward_refused(error)
+                    })?;
                 if !members.select_request(&receipt, wants) {
-                    return Err(SessionError::NotDriven);
+                    return Err(unresolved("no member could be selected for the walk"));
                 }
                 receipt
             }
-            None => allocation
-                .local(&self.routes)
-                .map_err(|_| SessionError::NotDriven)?,
+            None => allocation.local(&self.routes).map_err(|error| {
+                tracing::warn!(?error, "a request's local admission could not be resolved");
+                SessionError::NotDriven
+            })?,
         };
         Ok(ResolvedWalk {
             commit,
@@ -352,17 +392,48 @@ impl Pending {
     }
 }
 
+impl Pending {
+    /// The ordinary (not selected) unit's books, when the request was admitted.
+    fn ordinary_books(&self) -> Option<UnitBooks<'_>> {
+        self.admitted
+            .get()
+            .filter(|admitted| admitted.selected.is_none())
+            .and_then(|_| self.books())
+    }
+}
+
 impl Books for Pending {
     fn ended(&self, ending: super::usage::Ending, usage: &super::usage::SessionUsage) {
+        self.closed(ending, usage, None);
+    }
+    fn closed(
+        &self,
+        ending: super::usage::Ending,
+        usage: &super::usage::SessionUsage,
+        taken: Option<super::Checkpoint>,
+    ) {
         if let Some(money) = self.admitted.get().and_then(|unit| unit.selected.as_ref()) {
             if let Err(error) = money.work_ended(ending) {
                 tracing::warn!(?error, "selected work ending remains in original custody");
             }
         } else if let Some(books) = self.books() {
-            books.ended(ending, usage);
+            books.closed(ending, usage, taken);
         }
         if let Some(admitted) = self.admitted.get() {
             admitted.request.context().retire();
+        }
+    }
+    fn running(&self, usage: &super::usage::SessionUsage) -> Option<super::Checkpoint> {
+        self.ordinary_books()?.running(usage)
+    }
+    fn refused(&self, why: super::usage::UsageInvalid) {
+        if let Some(books) = self.ordinary_books() {
+            books.refused(why);
+        }
+    }
+    fn dialled(&self) {
+        if let Some(books) = self.ordinary_books() {
+            books.dialled();
         }
     }
     fn audit(&self, row: &super::port_money::AuditRow) {

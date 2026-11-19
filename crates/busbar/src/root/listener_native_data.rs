@@ -726,6 +726,7 @@ pub(super) async fn prepare_for(
     let mut allocation =
         NativeDataAllocation::register(authorized).map_err(|_| InputError::Invalid)?;
     let classes = seat.driver.usage_classes();
+    let fee_units = seat.driver.fee_units();
     let (native_node, unit, ordinary) = node
         .install_native(
             &mut allocation,
@@ -757,7 +758,7 @@ pub(super) async fn prepare_for(
                             receipt.begin().map_err(|_| unavailable())?,
                             &callback_slot,
                             classes,
-                            FeeRefund::PlaneFeeUnits(Arc::from([])),
+                            FeeRefund::PlaneFeeUnits(fee_units),
                             busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
                         )
                         .map_err(|error| match error {

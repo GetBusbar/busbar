@@ -205,3 +205,157 @@ fn a_forward_on_a_seat_composed_from_its_upstreams_reaches_the_upstream() {
         "the dial reached the configured URL"
     );
 }
+
+/// The base URL a member's WebSocket request dials: the need `websocket_ride` names, as `ride` reads it.
+fn websocket_base(route: &MemberRoute) -> Option<(NeedId, String)> {
+    let named = route.websocket_ride()?;
+    let ride = route.ride(named)?;
+    Some((ride.need, ride.base_url.to_owned()))
+}
+
+#[test]
+fn a_need_over_an_upgrade_framer_spells_the_base_url_in_its_scheme() {
+    let pool = SeatPool::of(
+        "voice",
+        &upstreams(json!({
+            "secure": {"url": "https://secure.test/v1"},
+            "plain": {"url": "http://127.0.0.1:9/v1"},
+            "socket": {"url": "wss://socket.test/live"},
+        })),
+    )
+    .expect("the seat composes");
+    let route = |name: &str| {
+        let member = pool
+            .members
+            .iter()
+            .find(|m| &*m.upstream == name)
+            .expect("the member");
+        pool.routes.get(&member.destination).expect("its route")
+    };
+    let secure = route("secure");
+    let (need, base) = websocket_base(secure).expect("an https member has a WebSocket ride");
+    assert_ne!(
+        need, secure.need,
+        "the WebSocket spelling rides its own need"
+    );
+    assert_eq!(base, "wss://secure.test/v1", "https is spelled wss");
+    assert_eq!(
+        secure.ride(0).map(|r| (r.need, r.base_url)),
+        Some((secure.need, "https://secure.test/v1")),
+        "an HTTP request still dials the base URL as the operator wrote it"
+    );
+    let plain = route("plain");
+    assert_eq!(
+        websocket_base(plain).map(|(_, base)| base).as_deref(),
+        Some("ws://127.0.0.1:9/v1"),
+        "http is spelled ws"
+    );
+    let socket = route("socket");
+    assert_eq!(
+        socket.websocket_ride(),
+        Some(0),
+        "a base URL already in a WebSocket scheme is the member's own ride"
+    );
+    assert!(
+        socket.rides.is_empty() && socket.spelled.is_empty(),
+        "and it rides no second need"
+    );
+}
+
+#[test]
+fn a_registration_member_rides_every_member_target_need() {
+    let pool = SeatPool::of("mcp", &three()).expect("the seat composes");
+    let mut needs = std::collections::BTreeSet::new();
+    for member in &pool.members {
+        let route = pool.routes.get(&member.destination).expect("a route");
+        assert!(
+            needs.insert(route.need),
+            "{}: its own need is its own",
+            member.upstream
+        );
+        assert_eq!(
+            route.rides.len(),
+            1,
+            "{}: an http(s) registration rides one more need, its WebSocket spelling",
+            member.upstream
+        );
+        let (ride, keep) = &route.rides[0];
+        assert!(
+            needs.insert(*ride),
+            "{}: no two needs of a seat are the same, own or ridden",
+            member.upstream
+        );
+        assert_eq!(
+            keep, &route.keep,
+            "the ride keeps the member's response-head rule"
+        );
+        let named = ride.0 + 1;
+        assert_eq!(route.ride(named).map(|r| r.need), Some(*ride));
+        assert_eq!(websocket_base(route).map(|(need, _)| need), Some(*ride));
+        let base = route.ride(named).expect("the ride").base_url;
+        assert_eq!(
+            base.split_once("://").map(|(_, rest)| rest),
+            member.url.split_once("://").map(|(_, rest)| rest),
+            "{}: the ride dials the member's own authority and path",
+            member.upstream
+        );
+    }
+    let unbound = needs.iter().map(|n| n.0).max().expect("needs") + 2;
+    for route in pool.routes.values() {
+        assert!(
+            route.ride(unbound).is_none(),
+            "a need no member binds is no ride"
+        );
+    }
+}
+
+#[test]
+fn connection_route_binds_nested_declared_exchange_without_shared_auth_or_peer_identity() {
+    let pool = SeatPool::of(
+        "mcp",
+        &upstreams(json!({"one": {
+            "url": "https://resource.example/rpc",
+            "allow_private": true,
+            "tls": {"pin_spki": [PIN_HEX]},
+        }})),
+    )
+    .expect("the seat composes");
+    let route = pool.routes.values().next().expect("the member's route");
+    assert!(
+        route.auth.is_none(),
+        "a registration route carries no shared configured auth"
+    );
+    assert_eq!(
+        route.rides.len(),
+        1,
+        "the registration rides its WebSocket spelling"
+    );
+    for (need, _) in &route.rides {
+        let base = route.ride(need.0 + 1).expect("the ride").base_url;
+        assert_eq!(
+            base, "wss://resource.example/rpc",
+            "a ride is the member's own origin, never another (an exchange endpoint is its auth's, not a ride)"
+        );
+        let anchors = route.anchors_for(*need);
+        assert!(
+            anchors.client_identity.is_none(),
+            "no client identity rides"
+        );
+        assert_eq!(
+            anchors.key_pin, route.anchors.key_pin,
+            "the member's own pin, at its own origin"
+        );
+        assert!(
+            anchors.private_reach,
+            "the member's own reach, at its own origin"
+        );
+    }
+    assert!(
+        route
+            .spelled
+            .iter()
+            .all(|(_, url)| url.starts_with("wss://resource.example/")),
+        "nothing is spelled at another origin: {:?}",
+        route.spelled
+    );
+}

@@ -2111,3 +2111,19 @@ async fn trust_replay_across_restart() {
         Some("idempotency_mismatch")
     );
 }
+
+/// The kernel's admin middleware answers a principal whose mutation budget is spent `429
+/// rate_limited` (admin-api.md, "Mutation rate limits"; failed attempts count). On a native request
+/// that answer is the request's own refusal, recorded as its admin unit like the middleware's 401,
+/// 403, 400 and 413, so the operator is told; an answer with no recorded refusal has no output
+/// authority and the listener cuts the connection with nothing written.
+#[test]
+fn a_spent_mutation_budget_is_a_refusal_the_admin_unit_records() {
+    assert_eq!(
+        denial_outcome(axum::http::StatusCode::TOO_MANY_REQUESTS),
+        Some(Outcome::Refused(
+            busbar_contract::caps::StepName::Admit,
+            ReasonCode::RateLimited
+        ))
+    );
+}

@@ -4,7 +4,7 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 
-use crate::v1::contract::{AdminError, HookView};
+use crate::v1::contract::HookView;
 
 /// Virtual-key metadata: the `key_meta()` shape returned by `GET /keys/{id}`, `PATCH /keys/{id}`,
 /// and as each item of `GET /keys`. Never the secret or its hash. 1.5.0: keys are PURE AUTH, no
@@ -556,22 +556,4 @@ pub struct AuditPageView {
 pub struct ConfigVersionPageView {
     pub items: Vec<crate::versions::ConfigVersion>,
     pub next_cursor: Option<String>,
-}
-
-fn _error_taxonomy_is_referenced(e: &AdminError) {
-    match e {
-        AdminError::NotFound { .. }
-        | AdminError::Unauthorized
-        | AdminError::MethodNotAllowed
-        | AdminError::Forbidden { .. }
-        | AdminError::Validation(_)
-        | AdminError::VersionConflict(_)
-        | AdminError::Conflict(_)
-        | AdminError::RateLimited
-        | AdminError::Internal
-        | AdminError::Unavailable(_)
-        | AdminError::RetryLater { .. }
-        | AdminError::UnpricedClass { .. }
-        | AdminError::PluginText { .. } => {}
-    }
 }

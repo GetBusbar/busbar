@@ -234,9 +234,24 @@ fn the_build_assignment_and_its_listing_read_the_generated_table() {
     assert_eq!(lines.len(), 4);
     for ((carrier, word), line) in super::CARRIERS.iter().zip(&lines) {
         assert!(line.starts_with(&format!("  {word}")), "{line}");
+        // A carrier the build does not assign is carried by the separately installed image the
+        // build names for it ([package.metadata.busbar.installed-carriers]; owner ruling: a former
+        // built-in such as the websocket transport is a separate plugin), when installed; else none.
         match carriers.get(*carrier) {
-            Ok(identity) => assert!(line.contains(&**identity), "{line}"),
-            Err(_) => assert!(line.ends_with(" none"), "{line}"),
+            Ok(identity) => assert!(
+                line.ends_with(&format!(" {identity} (assigned by the build)")),
+                "{line}"
+            ),
+            Err(_) => match crate::INSTALLED_CARRIERS
+                .iter()
+                .find(|row| row.carrier == *carrier)
+            {
+                Some(row) => assert!(
+                    line.ends_with(&format!(" {} (when installed)", row.identity)),
+                    "{line}"
+                ),
+                None => assert!(line.ends_with(" none"), "{line}"),
+            },
         }
     }
     assert!(super::assigned(&[]).is_ok());

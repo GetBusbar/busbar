@@ -59,8 +59,9 @@ impl Node {
     }
 
     /// `planes`: add the data listener's `public_url`, so the routes whose challenge names the plane's public URL
-    /// (mcp) are mounted too, and the documented `mcp: { canonical_uri }` (docs/mcp.md), the audience the MCP
-    /// plane is bound to (RFC 8707): `{MCP_AUDIENCE}` on the data listener.
+    /// (mcp) are mounted too, and the documented `mcp: { canonical_uri, authorization_servers }` (docs/mcp.md):
+    /// the audience the MCP plane is bound to (RFC 8707), `{MCP_AUDIENCE}` on the data listener, and the one
+    /// issuer its protected resource metadata names (required), the admin listener.
     fn boot_with_planes(upstream: Option<u16>, operator: bool, planes: bool) -> Self {
         let dir = workdir();
         let (data, admin) = (boot::free_port(), boot::free_port());
@@ -68,7 +69,8 @@ impl Node {
         let settings = format!("{{ sha256: \"{digest}\" }}");
         let sections = if planes {
             format!(
-                "public_url: \"http://127.0.0.1:{data}\"\nmcp:\n  canonical_uri: \"{}\"\n",
+                "public_url: \"http://127.0.0.1:{data}\"\nmcp:\n  canonical_uri: \"{}\"\n  \
+                 authorization_servers: [\"http://127.0.0.1:{admin}\"]\n",
                 mcp_audience(data)
             )
         } else {
@@ -581,6 +583,34 @@ fn an_empty_data_chain_is_refused_at_boot_before_any_listener_accepts() {
     assert!(
         log.contains("auth.chain is empty: no verifier"),
         "the refusal names the empty chain (BUSBAR-9007); log:\n{log}"
+    );
+}
+
+/// `mcp: { canonical_uri }` naming no issuer is refused at boot with the plane's own refusal (core hands the plane
+/// the whole block, canonical_uri included); no listener ever accepts. The documented full block boots (below).
+#[test]
+fn an_mcp_block_with_a_canonical_uri_and_no_issuer_is_refused_at_boot_by_the_plane() {
+    let dir = workdir();
+    let (data, admin) = (boot::free_port(), boot::free_port());
+    let digest = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes());
+    let settings = format!("{{ sha256: \"{digest}\" }}");
+    let sections = format!(
+        "public_url: \"http://127.0.0.1:{data}\"\nmcp:\n  canonical_uri: \"{}\"\n",
+        mcp_audience(data)
+    );
+    write_configs(
+        &dir,
+        data,
+        admin,
+        Some(&settings),
+        None,
+        Chain::Keys,
+        &sections,
+    );
+    let log = boot_is_refused(&dir, data, admin);
+    assert!(
+        log.contains("mcp.authorization_servers must list at least one issuer"),
+        "the refusal is the plane's: a block naming no issuer; log:\n{log}"
     );
 }
 

@@ -19,6 +19,8 @@
 )]
 pub mod adapters;
 pub mod admission;
+/// `POST /api/v1/admin/agents/{name}/approve`: an A2A agent's card approved by name.
+pub(crate) mod agents_approve;
 // busbar:request-path
 #[cfg_attr(
     not(test),

@@ -15,7 +15,7 @@ use busbar_plugin_abi::fail::refused::{
     R_RATE_LIMITED, R_REPLAYED, R_UNSUPPORTED,
 };
 
-use super::route_record::{CallerState, Money, RouteClass, RouteRecord, Who};
+use super::route_record::{Money, RouteClass, RouteRecord, Who};
 
 /// The admission a record names (design C4). `Internal` routes are never on a listener.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -292,7 +292,9 @@ pub enum Gate {
 /// Step 2's answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Verified {
-    /// A principal. `shared`: the subject is one every such caller shares (`anonymous`).
+    /// A principal. `shared`: the subject is one every such caller shares (`anonymous`). It gates no
+    /// route: a route that keeps state per caller keys an anonymous caller's state by the handle its
+    /// session states (`plane_driver::port_intents::handle_scope`), never by the shared subject.
     Identity {
         shared: bool,
     },
@@ -784,7 +786,6 @@ pub fn decide(target: Target<'_>, facts: &Facts) -> Decision {
         }
     }
     // Steps 2 and 3.
-    let mut shared = false;
     let verified = verifies(plan.verify, facts);
     if verified {
         let unverified = refuse(
@@ -811,9 +812,6 @@ pub fn decide(target: Target<'_>, facts: &Facts) -> Decision {
         if !admitted {
             return unverified;
         }
-        if let Verified::Identity { shared: is_shared } = identity {
-            shared = is_shared;
-        }
         // A ticket was minted for a key already judged; a signature and an operator earn no key.
         if plan.policy && matches!(identity, Verified::Identity { .. }) {
             match facts.policy {
@@ -823,11 +821,6 @@ pub fn decide(target: Target<'_>, facts: &Facts) -> Decision {
                 Some(Policy::Disabled) => return refuse(Refusal::KeyDisabled, true),
                 Some(Policy::Replayed) => return refuse(Refusal::Replayed, false),
             }
-        }
-        // A route that keeps state per caller is not served to a subject its callers share. Such
-        // a route is not mounted under an open chain; this is the same answer, per request.
-        if shared && record.caller_state == CallerState::Distinct {
-            return refuse(Refusal::NoRoute, true);
         }
     }
     // From here the caller is verified wherever the record asked for it.
@@ -945,8 +938,6 @@ pub fn decide_forward(money: Money, facts: &ForwardFacts) -> Result<(), Refusal>
 pub struct Offered {
     /// Some opened auth instance reads the route's credential header (or the chain's own).
     pub verifier_reads_header: bool,
-    /// The route's chain can yield a subject its callers share (`anonymous` is a member).
-    pub chain_yields_shared: bool,
     /// A transport on the listener can carry an upgrade.
     pub upgrade_transport: bool,
     /// Core's ticket store is open (a signing key is configured): a ticket can be minted and redeemed.
@@ -962,7 +953,6 @@ pub struct Offered {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NotMounted {
     NoVerifierReadsItsHeader,
-    DistinctCallersUnderAnOpenChain,
     NoUpgradeTransport,
     NoSignatureVerifier,
     NoTicketStore,
@@ -976,9 +966,6 @@ impl NotMounted {
         match self {
             Self::NoVerifierReadsItsHeader => {
                 "no configured auth instance reads this route's credential header"
-            }
-            Self::DistinctCallersUnderAnOpenChain => {
-                "the route keeps state per caller and the chain admits the shared anonymous caller"
             }
             Self::NoUpgradeTransport => "no transport on this listener can carry an upgrade",
             Self::NoSignatureVerifier => "no signature verifier is configured for this route",
@@ -1021,9 +1008,6 @@ pub fn mounted(record: &RouteRecord, offered: Offered) -> Result<Admission, NotM
                 return Err(NotMounted::NoSignatureVerifier);
             }
         }
-    }
-    if record.caller_state == CallerState::Distinct && offered.chain_yields_shared {
-        return Err(NotMounted::DistinctCallersUnderAnOpenChain);
     }
     if plan.upgrade && !offered.upgrade_transport {
         return Err(NotMounted::NoUpgradeTransport);

@@ -437,7 +437,7 @@ mod tests {
         assert_eq!(u32_at(16), 3, "format 3 (interface revision C.4)");
         assert_eq!(u32_at(20), 272);
         assert_eq!(u32_at(24), KindCode::Secret as u32);
-        assert_eq!(u32_at(28), 2);
+        assert_eq!(u32_at(28), 3, "the kind's first number: secret 3");
         assert_eq!(u32_at(32), CORE);
         assert_eq!(
             u32_at(36),

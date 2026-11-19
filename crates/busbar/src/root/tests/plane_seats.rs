@@ -141,6 +141,8 @@ impl PlanePort for Quiet {
 struct Table {
     declared: Mutex<Vec<(InstanceId, NeedId, String)>>,
     anchored: Mutex<Vec<(NeedId, String, Option<String>)>>,
+    /// The private reach each anchoring sealed, by need.
+    reached: Mutex<Vec<(NeedId, bool)>>,
 }
 
 impl Conns for Table {
@@ -193,6 +195,10 @@ impl PollConns for Table {
             .lock()
             .unwrap()
             .push((need, target.to_owned(), anchors.key_pin.clone()));
+        self.reached
+            .lock()
+            .unwrap()
+            .push((need, anchors.private_reach));
         Ok(())
     }
 }
@@ -701,6 +707,132 @@ fn each_registration_carries_only_its_own_private_reach_into_the_seat() {
         assert_eq!(
             route.anchors.private_reach,
             member.upstream.as_ref() == "allowed"
+        );
+    }
+}
+
+#[test]
+fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides() {
+    let split = busbar_kernel::upstreams::declared(
+        "p",
+        &json!({"members": {
+            "pinned": {"url":"https://pinned.internal/v1", "allow_private":true, "tls": {"pin_spki": [PIN_HEX]}},
+            "open": {"url":"http://open.internal:8080"}
+        }}),
+        &["/members/*"],
+        &busbar_kernel::plugin_config::upstream_anchor,
+    )
+    .unwrap();
+    let pool = SeatPool::of("p", &split.definitions).unwrap();
+    let table = Arc::new(Table::default());
+    egress_of(
+        "p",
+        seat_owner(7),
+        &ConnTable {
+            declared: table.clone(),
+            conns: table.clone(),
+        },
+        &pool,
+        None,
+        0,
+    )
+    .expect("the egress composes");
+    let declared = table.declared.lock().unwrap().clone();
+    let anchored = table.anchored.lock().unwrap().clone();
+    let reached = table.reached.lock().unwrap().clone();
+    for member in &pool.members {
+        let route = &pool.routes[&member.destination];
+        assert_eq!(
+            route.rides.len(),
+            1,
+            "{}: the member rides its WebSocket spelling",
+            member.upstream
+        );
+        let ride = route.rides[0].0;
+        let spelled = route.ride(ride.0 + 1).expect("the ride").base_url;
+        let scheme = if member.url.starts_with("https://") {
+            ("https", "wss")
+        } else {
+            ("http", "ws")
+        };
+        for (need, transport, target) in [
+            (route.need, scheme.0, &*member.url),
+            (ride, scheme.1, spelled),
+        ] {
+            assert!(
+                declared.contains(&(seat_owner(7), need, transport.to_owned())),
+                "{}: need {need:?} is declared over {transport}: {declared:?}",
+                member.upstream
+            );
+            assert!(
+                anchored.contains(&(need, target.to_owned(), route.anchors.key_pin.clone())),
+                "{}: the member's pin is sealed on need {need:?} at {target}: {anchored:?}",
+                member.upstream
+            );
+            assert!(
+                reached.contains(&(need, route.anchors.private_reach)),
+                "{}: the member's private reach is sealed on need {need:?}: {reached:?}",
+                member.upstream
+            );
+        }
+    }
+    assert_eq!(
+        declared.len(),
+        2 * pool.members.len(),
+        "each member's own need and its ride, nothing else"
+    );
+    assert_eq!(
+        anchored.len(),
+        declared.len(),
+        "every declared need is anchored"
+    );
+    assert!(
+        reached.iter().filter(|(_, reach)| *reach).count() == 2,
+        "only the registration that allows private reach carries it, on both its needs: {reached:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_member_binds_every_need_its_style_names_one_per_transport() {
+    let (catalog, _, _) = catalog().await;
+    let registration = SeatPool::of("mcp", &upstreams()).unwrap();
+    let mut needs: std::collections::BTreeSet<NeedId> = registration
+        .routes
+        .values()
+        .flat_map(|route| std::iter::once(route.need).chain(route.rides.iter().map(|(n, _)| *n)))
+        .collect();
+    assert!(!catalog.sealed.routes.is_empty());
+    for route in catalog.sealed.routes.values() {
+        assert!(
+            route.auth.is_some(),
+            "the model's binding is sealed on its route"
+        );
+        assert!(needs.insert(route.need), "its own need is no other route's");
+        assert_eq!(
+            route.rides.len(),
+            1,
+            "one need per transport: its own (https) and its WebSocket spelling"
+        );
+        let (ride, keep) = &route.rides[0];
+        assert!(needs.insert(*ride), "its ride is no other route's need");
+        assert_eq!(keep, &route.keep);
+        assert_eq!(
+            route.ride(0).map(|r| (r.need, r.base_url)),
+            Some((route.need, "https://provider.example/api"))
+        );
+        assert_eq!(
+            route.ride(ride.0 + 1).map(|r| (r.need, r.base_url)),
+            Some((*ride, "wss://provider.example/api"))
+        );
+        assert_eq!(
+            route.websocket_ride(),
+            Some(ride.0 + 1),
+            "a WebSocket request rides it"
+        );
+        let unbound = needs.iter().map(|n| n.0).max().unwrap() + 2;
+        assert!(
+            route.ride(unbound).is_none(),
+            "a need it does not bind is no ride"
         );
     }
 }

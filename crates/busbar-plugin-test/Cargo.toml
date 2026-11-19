@@ -17,6 +17,12 @@ name = "native_store_fixture"
 path = "tests/fixtures/native_store_fixture.rs"
 crate-type = ["cdylib"]
 
+# The native stream test's own copy of the loader's pack fixture, built here from current source.
+[[example]]
+name = "native_pack_fixture"
+path = "tests/fixtures/native_pack_fixture.rs"
+crate-type = ["cdylib"]
+
 [[test]]
 name = "canary_scan"
 path = "tests/canary_scan.rs"
@@ -79,7 +85,7 @@ busbar-ports = { path = "../busbar-ports" }
 zeroize = { workspace = true }
 rustls = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
-busbar-contract = { path = "../busbar-contract", features = ["test-support", "abi-scan"] }
+busbar-contract = { path = "../busbar-contract", features = ["test-support"] }
 busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
 # The MIN-3 interface the conformance harness drives (IF §14): `FakeNeeds` implements its host-side `Needs`.
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }

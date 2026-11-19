@@ -21,6 +21,7 @@ use super::request_snapshot::{ChargedRequestSnapshot, SnapshotError, SnapshotInp
 use super::Head;
 use crate::auth::native_admin::ExecutionAdmission;
 use crate::auth::native_data::{DataAuthorization, DataExecutionAdmission};
+use crate::governance::revocation::{RevocationCut, RevocationWatch};
 use crate::guest::{Claimant, GuestList, Line, Matched};
 use crate::limits::process_admission::{AdmissionClass, ByteCredit, RequestLease};
 use crate::plane_driver::port_routes::Mounted;
@@ -327,6 +328,7 @@ impl PhysicalListener {
             },
             facts: Arc::new(facts),
             streams: Arc::new(Mutex::new(HashMap::default())),
+            revocation: Arc::default(),
         }
     }
 }
@@ -450,15 +452,27 @@ type Streams = Arc<Mutex<HashMap<u64, Weak<StreamState>>>>;
 #[derive(Clone, Copy, Debug)]
 pub struct Arrival {
     mono_ns: u64,
+    /// The deadline on the arrival's own clock (`store::monotonic_ns`). Admission judges expiry
+    /// here, on the clock that took the reading, with no conversion between the two.
+    deadline_ns: u64,
     deadline: Instant,
 }
 impl Arrival {
     /// The arrival at `mono_ns` (one reading of `store::monotonic_ns`), due `timeout` after it.
     /// `None` when that deadline lies beyond the clock's range.
     pub fn at(mono_ns: u64, timeout: std::time::Duration) -> Option<Arrival> {
+        let deadline_ns = mono_ns.checked_add(u64::try_from(timeout.as_nanos()).ok()?)?;
         busbar_contract::mono_instant::instant_at(mono_ns)
             .checked_add(timeout)
-            .map(|deadline| Arrival { mono_ns, deadline })
+            .map(|deadline| Arrival {
+                mono_ns,
+                deadline_ns,
+                deadline,
+            })
+    }
+    /// Whether the deadline has passed at `now_ns`, a reading of the same clock as `mono_ns`.
+    fn expired_at(&self, now_ns: u64) -> bool {
+        now_ns >= self.deadline_ns
     }
     pub fn deadline(&self) -> Instant {
         self.deadline
@@ -469,11 +483,20 @@ pub struct PhysicalConnection {
     listener: PhysicalListener,
     facts: Arc<AcceptedConnection>,
     streams: Streams,
+    /// Fired when a credential or grant a live request of this connection was admitted on is
+    /// revoked ([`RequestBinding::watch_revocation`]).
+    revocation: Arc<RevocationCut>,
 }
 impl PhysicalConnection {
     /// The connection's frozen socket and security facts, lent for as long as the borrow.
     pub fn facts(&self) -> &AcceptedConnection {
         &self.facts
+    }
+
+    /// The connection's revocation cut: its supervisor waits on it and ends the connection with
+    /// `CR_REVOKED` once it fires.
+    pub fn revocation(&self) -> Arc<RevocationCut> {
+        Arc::clone(&self.revocation)
     }
 
     pub fn head(
@@ -490,7 +513,9 @@ impl PhysicalConnection {
         if request.class() != self.listener.class {
             return Err(ArrivalRefusal::Class);
         }
-        if deadline.is_some_and(|at| Instant::now() >= at) {
+        // Expiry is judged on the arrival's own clock: a head due at or before this reading is
+        // refused before any stream, route or credit exists.
+        if arrival.is_some_and(|arrival| arrival.expired_at(crate::store::monotonic_ns())) {
             return Err(ArrivalRefusal::Deadline);
         }
         let (app, prepared) = self.listener.selected().map_err(ArrivalRefusal::Binding)?;
@@ -510,6 +535,7 @@ impl PhysicalConnection {
             phase: Mutex::new(Phase::Pending),
             preparation: Mutex::new(PreparationState::Unused),
             cancelled: CancellationToken::new(),
+            revocation: Mutex::new(None),
             _request: request.clone(),
         });
         {
@@ -531,6 +557,7 @@ impl PhysicalConnection {
             deadline,
             mono_ns: arrival.map(|arrival| arrival.mono_ns),
             facts: self.facts.clone(),
+            revocation: self.revocation.clone(),
             state: state.clone(),
             stream,
             body: OnceLock::new(),
@@ -603,6 +630,9 @@ struct StreamState {
     phase: Mutex<Phase>,
     preparation: Mutex<PreparationState>,
     cancelled: CancellationToken,
+    /// The watch on the revocation of the subject this request was admitted on, held while the
+    /// request is live: a cancelled or retired request no longer cuts its connection.
+    revocation: Mutex<Option<RevocationWatch>>,
     // The response/feed owner may outlive both the Router call and all input backing.
     _request: RequestLease,
 }
@@ -610,6 +640,12 @@ impl StreamState {
     fn cancel(&self) {
         *self.phase.lock().unwrap_or_else(PoisonError::into_inner) = Phase::Cancelled;
         self.cancelled.cancel();
+        drop(
+            self.revocation
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        );
     }
 }
 
@@ -660,6 +696,8 @@ pub struct RequestBinding {
     /// The arrival's one monotonic reading (`Arrival`), the one `deadline` was derived from.
     mono_ns: Option<u64>,
     facts: Arc<AcceptedConnection>,
+    /// The connection's revocation cut ([`PhysicalConnection::revocation`]).
+    revocation: Arc<RevocationCut>,
     state: Arc<StreamState>,
     stream: u64,
     body: OnceLock<PhysicalBody>,
@@ -672,6 +710,31 @@ struct PhysicalBody {
     credit: ByteCredit,
 }
 impl RequestBinding {
+    /// Tie this admitted request to the revocation of `subject`, the governed key its credential
+    /// earned or the issuer key of the ticket (grant) that admitted it: while the request is live,
+    /// a revocation of that key, here or on a peer, fires its connection's cut. Called once the
+    /// request is admitted; a request already cancelled is not watched.
+    pub(crate) fn watch_revocation(&self, subject: &str) {
+        let Some(governance) = self.app.governance.as_deref() else {
+            return;
+        };
+        let mut held = self
+            .state
+            .revocation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if *self
+            .state
+            .phase
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            == Phase::Cancelled
+        {
+            return;
+        }
+        *held = Some(governance.watch_revocation(subject, &self.revocation));
+    }
+
     /// Compare the exact retained physical owner, including after cancellation or retirement.
     /// An equal wire stream number on another connection conveys no matching authority.
     pub fn owns_stream(&self, owner: &StreamOwner) -> bool {
@@ -1050,6 +1113,7 @@ impl CompletingPhysicalRequest {
             }
             *phase = Phase::Admitted;
         }
+        self.binding.watch_revocation(&authorization.key().id);
         self.cancel_on_drop = false;
         Ok(AuthorizedPhysicalData {
             authorization,

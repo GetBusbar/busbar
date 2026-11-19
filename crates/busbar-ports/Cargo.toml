@@ -9,9 +9,9 @@ license = "Apache-2.0"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
+# The session handle of a kind holds the boundary crate's live session, named through
+# busbar_plugin_abi::host_side::boundary (only plugin-abi, the loader and plugin-test depend on busbar-ffi: E12).
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
-# The session handle of a kind holds the boundary crate's live session.
-busbar-ffi = { path = "../busbar-ffi", features = ["host"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]

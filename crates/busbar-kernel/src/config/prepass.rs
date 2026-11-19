@@ -74,6 +74,21 @@ pub(crate) const PLANE_INSECURE_TRANSPORT_KEY: &str = "insecure_transport";
 /// here, judged by [`super::min3::parse_min3`], never part of the plane's bag.
 pub(crate) const PLANE_ROUTES_KEY: &str = "routes";
 
+/// A plane section's audience (RFC 8707 `canonical_uri`): core's word, read off the section by
+/// [`super::recognizer::plane_audiences`] and taken off the plane's bag before it opens.
+pub const PLANE_AUDIENCE_KEY: &str = "canonical_uri";
+
+/// Every word core owns in a plane section: its card and fees, its transport acceptance, its
+/// routes and its audience. None reaches the plane's bag, so a plane's settled bag never states
+/// one; the migrator's write-back of a settled plane block keeps them as the operator wrote them.
+pub const PLANE_CORE_KEYS: [&str; 5] = [
+    PLANE_CARD_KEYS[0],
+    PLANE_CARD_KEYS[1],
+    PLANE_INSECURE_TRANSPORT_KEY,
+    PLANE_ROUTES_KEY,
+    PLANE_AUDIENCE_KEY,
+];
+
 fn plane_remainder_in<'de, D: Deserializer<'de>>(
     section_key: &'static str,
     plane: &str,

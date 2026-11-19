@@ -13,7 +13,6 @@ use crate::walk;
 
 const DISPATCH: &str = "crates/busbar-kernel/src/plane_driver/dispatch.rs";
 const ENDPOINTS: &str = "crates/busbar-kernel/src/endpoints.rs";
-const DOOR_STEPS: &str = "crates/busbar/src/root/door_steps.rs";
 
 /// Trait impls that would let a qualifier pass for a `&str` silently.
 const OPEN_DOORS: &[&str] = &[
@@ -92,17 +91,84 @@ fn a_lane_qualifier_is_never_a_plane_key() {
         "R29: catalog_names takes the door's qualifier as `LaneQualifier`, found `{third}`"
     );
 
-    let door_steps = walk::one(DOOR_STEPS);
-    let plane_field = door_steps
-        .file
-        .items
-        .iter()
-        .flat_map(walk::named_fields)
-        .find(|(ty, f)| ty == "DoorFacts" && f.ident.as_ref().is_some_and(|i| i == "plane"))
-        .map(|(_, f)| f.ty.to_token_stream().to_string())
-        .unwrap_or_default();
+    // Every construction site of a `LaneQualifier` in production is found here, not listed by hand.
+    let mut sites = 0;
+    for src in walk::production(&["crates/busbar-kernel/src", "crates/busbar/src"]) {
+        for item in walk::items(&src.file.items) {
+            let (found, faults) = construction_sites(item.to_token_stream());
+            sites += found;
+            assert!(
+                faults.is_empty(),
+                "R29: {} builds a LaneQualifier from something other than the card-qualifier \
+                 source or `LaneQualifier::default()`: {faults:?}",
+                src.rel
+            );
+        }
+    }
     assert!(
-        plane_field.contains("LaneQualifier"),
-        "R29: DoorFacts.plane is the door's qualifier, typed `LaneQualifier`, found `{plane_field}`"
+        sites > 0,
+        "R29: no LaneQualifier construction site found in production; the scan lost its subject"
     );
+}
+
+/// Words that mark a plane key or a plane/provider/model name: a qualifier is never built from one.
+const KEY_WORDS: &[&str] = &["plane", "key", "name", "fallback"];
+
+/// The `LaneQualifier::<ctor>(..)` calls in `stream` (groups searched in place): how many there
+/// are, and the ones that are not `default()` or `parse(..)` over a non-key argument.
+fn construction_sites(stream: proc_macro2::TokenStream) -> (usize, Vec<String>) {
+    use proc_macro2::TokenTree;
+    let trees: Vec<TokenTree> = stream.into_iter().collect();
+    let mut found = 0;
+    let mut faults = Vec::new();
+    for (i, tt) in trees.iter().enumerate() {
+        if let TokenTree::Group(g) = tt {
+            let (n, f) = construction_sites(g.stream());
+            found += n;
+            faults.extend(f);
+        }
+        let is_path_start = matches!(tt, TokenTree::Ident(id) if id == "LaneQualifier")
+            && matches!(trees.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == ':')
+            && matches!(trees.get(i + 2), Some(TokenTree::Punct(p)) if p.as_char() == ':');
+        if !is_path_start {
+            continue;
+        }
+        let Some(TokenTree::Ident(ctor)) = trees.get(i + 3) else {
+            continue;
+        };
+        found += 1;
+        let args = match trees.get(i + 4) {
+            Some(TokenTree::Group(g)) => g.stream(),
+            _ => proc_macro2::TokenStream::new(),
+        };
+        let arg_idents = walk::idents(&walk::tokens(&args));
+        let keyed = arg_idents.iter().any(|w| {
+            let w = w.to_lowercase();
+            KEY_WORDS.iter().any(|k| w.contains(k))
+        });
+        let ok = match ctor.to_string().as_str() {
+            "default" => arg_idents.is_empty(),
+            "parse" => !keyed,
+            _ => false,
+        };
+        if !ok {
+            faults.push(format!("LaneQualifier::{ctor}({args})"));
+        }
+    }
+    (found, faults)
+}
+
+#[test]
+fn a_planted_plane_key_qualifier_is_caught() {
+    let scan = |src: &str| construction_sites(src.parse().expect("fixture parses"));
+    let (n, bad) = scan("fn a() { let q = LaneQualifier::parse(plane_key); }");
+    assert_eq!((n, bad.len()), (1, 1), "a plane key must be refused");
+    let (_, bad) = scan("fn a() { let q = LaneQualifier::parse(fallback_key()); }");
+    assert_eq!(bad.len(), 1, "the fallback plane key must be refused");
+    let (_, bad) = scan("fn a() { x(|| { LaneQualifier::parse(decl.name) }) }");
+    assert_eq!(bad.len(), 1, "a name inside nested groups must be refused");
+    let (_, bad) = scan("fn a() { LaneQualifier::from(\"x\") }");
+    assert_eq!(bad.len(), 1, "any other constructor must be refused");
+    let (n, bad) = scan("fn a() { LaneQualifier::default(); LaneQualifier::parse(card) }");
+    assert_eq!((n, bad.len()), (2, 0), "default and a card qualifier pass");
 }

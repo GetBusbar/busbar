@@ -222,20 +222,20 @@ mod non_unicode_environment {
 }
 
 #[test]
-fn proxy_url_parse_extracts_auth_and_reads_a_proxy_reached_over_tls() {
-    // v1.5.5 spoke a proxy reached over TLS; 1.6.0 serves it (the engine's own TLS session to the
-    // proxy, `outbound::tunnel::Outer`).
-    let over_tls = parse_proxy("https://u:p\x40proxy.corp").unwrap();
-    assert!(over_tls.secure());
-    assert_eq!(
-        over_tls.endpoint(),
-        "proxy.corp:443",
-        "an https:// proxy address with no port is 443"
-    );
-    assert_eq!(
-        parse_proxy("https://proxy.corp:3128").unwrap().endpoint(),
-        "proxy.corp:3128"
-    );
+fn proxy_url_parse_extracts_auth_and_refuses_https_proxies() {
+    // A proxy reached over TLS is an operator opt-in, never turned on by a proxy variable's
+    // spelling: the environment's `https://` value is refused by name, with or without a port.
+    for v in [
+        "https://u:p\x40proxy.corp",
+        "https://proxy.corp:3128",
+        "HTTPS://proxy.corp",
+    ] {
+        let err = parse_proxy(v).unwrap_err();
+        assert!(
+            err.contains("https"),
+            "an https:// proxy must be refused loudly, naming why: {err}"
+        );
+    }
     assert!(!parse_proxy("http://proxy.corp:3128").unwrap().secure());
     assert!(!parse_proxy("proxy.corp:3128").unwrap().secure());
     let err = parse_proxy("socks5://proxy.corp:1080").unwrap_err();

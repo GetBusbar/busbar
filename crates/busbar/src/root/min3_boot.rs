@@ -582,13 +582,10 @@ fn plane_instances(
         }
         let config = match sections.get(name.as_str()) {
             Some(section) => {
-                // The audience is core's word ([`plane_audiences`]): it binds the plane's routes and
-                // is never part of the plane's bag, whose reader does not know it.
-                let mut bag = section.clone();
-                if let Some(map) = busbar_contract::yaml::ValueExt::as_mapping_mut(&mut bag) {
-                    let _lifted = busbar_contract::yaml::MappingExt::remove_key(map, AUDIENCE_KEY);
-                }
-                serde_json::to_vec(&bag)
+                // The section reaches the plane unchanged: the plane owns and validates its whole
+                // documented block, `canonical_uri` included (core also reads the audience off it,
+                // [`plane_audiences`]).
+                serde_json::to_vec(section)
                     .map_err(|error| format!("{name}: the plane's section is not JSON ({error})"))?
             }
             None => b"{}".to_vec(),
@@ -1233,8 +1230,8 @@ impl Steps<'_> {
 
 /// A plane section's core-owned audience word: the RFC 8707 resource indicator the plane's routes and
 /// line session are bound to (MCP's documented `mcp.canonical_uri`, docs/mcp.md). Core reads it
-/// ([`plane_audiences`]) and lifts it off the section before the bag reaches the plane
-/// ([`plane_instances`]), as the pre-pass lifts `insecure_transport`.
+/// ([`plane_audiences`]); the section, key included, still reaches the plane unchanged
+/// ([`plane_instances`]), which validates its own block.
 const AUDIENCE_KEY: &str = "canonical_uri";
 
 /// Each plane section's audience, by instance name. A written audience that is not an absolute

@@ -21,8 +21,6 @@ use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
 #[cfg(test)]
 use busbar_plugin_abi::records::Reply;
 use busbar_plugin_abi::records::{tag, FactRec, Full, RecErr, Records, Writer};
-#[cfg(test)]
-use busbar_plugin_abi::types::Pair;
 use busbar_plugin_abi::types::{Bytes, Slice, Status, Str};
 
 use crate::call::kinds::auth::Proxy;
@@ -680,20 +678,6 @@ mod tests {
 
     fn put_fact(w: &mut Reply, key: u32, value: u64) {
         w.put_fact(key, value).unwrap();
-    }
-
-    fn auth_in<'a>(headers: &'a [Pair<'a>]) -> AuthIn<'a> {
-        AuthIn {
-            method: "POST",
-            path: "/v1/x",
-            query: "a=1",
-            authority: "gw.example",
-            headers,
-            peer: "10.0.0.1:443",
-            tls_peer_cert: b"cert",
-            body: b"{}",
-            now_s: 1_700_000_000,
-        }
     }
 
     // C-SCRUB-CUT, auth adapter: a REFUSED/FAILED text is scrubbed, then cut to 512 bytes, before it is a

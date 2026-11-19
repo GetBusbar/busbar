@@ -62,9 +62,19 @@ fn cumulative_usage_and_the_cancel_table() {
         "cancelled after the head, before a byte reached the client: 0"
     );
     assert_eq!(
-        bill(Ending::Failed, &session),
-        Bill::Nothing,
-        "a plane FAULT mid-stream posts nothing"
+        posted(&bill(Ending::Failed, &session)),
+        Some(vec![40]),
+        "a plane FAULT bills exactly the usage the session accepted (40), once, never an estimate"
+    );
+    // A report the session refuses is never kept, so it is never billed: the failed session still bills 40.
+    assert!(
+        session.answer("BAD CLASS", reported(999)).is_err(),
+        "a report with an invalid class is refused"
+    );
+    assert_eq!(
+        posted(&bill(Ending::Failed, &session)),
+        Some(vec![40]),
+        "the refused report adds nothing to what a failed session bills"
     );
 
     let mut estimated = SessionUsage::new();

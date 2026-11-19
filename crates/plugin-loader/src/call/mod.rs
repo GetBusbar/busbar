@@ -32,7 +32,7 @@ use busbar_plugin_abi::host_side::answer::{Answer, OwnedAnswer};
 use busbar_plugin_abi::host_side::driver::{Driver, Instance};
 use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::PooledOut;
-use busbar_plugin_abi::types::Pair;
+use busbar_plugin_abi::types::{Pair, Status};
 use zerocopy::IntoBytes;
 
 pub use ffi::{Call, Kind, Live, LiveSession};
@@ -123,7 +123,7 @@ pub fn opens<'o, K: Kind, H: Head, const T: usize, const B: usize>(
     })
     .ok_or_else(host_fault)?;
     record::back(inst, method, status, buf.bytes());
-    match Answer::parse(status, buf.bytes()) {
+    match Answer::parse_opener(status, buf.bytes()) {
         Ok(answer) => Ok((
             session.map(|session| Sess {
                 inst: Arc::clone(&to.inst),
@@ -267,3 +267,8 @@ pub async fn chain<'a, K: Kind, N: Needs, H: Head + Send + 'a>(
 pub fn at(cx: &busbar_ports::CallCx) -> Mono {
     Mono(cx.mono_ns)
 }
+
+#[cfg(test)]
+#[path = "../tests/forged_context_tests.rs"]
+#[deny(unsafe_code)]
+mod forged_context_tests;

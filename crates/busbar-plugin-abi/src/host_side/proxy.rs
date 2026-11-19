@@ -84,7 +84,7 @@ pub(crate) fn opener<'o, K: Kind>(
     }
     let (status, session) = step(inst.slot, entry, None, buf, call)
         .ok_or(CallError::Fault(FaultReason::BadInstance))?;
-    match Answer::parse(status, buf.bytes()) {
+    match Answer::parse_opener(status, buf.bytes()) {
         Ok(answer) => Ok((session, answer)),
         // `session` drops here: busbar-ffi cancels the token the plugin minted.
         Err(reason) => Err(report_fault(inst.slot, false, reason)),

@@ -25,18 +25,26 @@ const MAX_DESTINATION: usize = 2_048;
 #[derive(Clone)]
 pub struct PlaneJudge {
     judge: Option<Arc<dyn DestJudge>>,
+    /// BUSBAR-7108 latch, shared by clones: the deployment's one judge warns once.
+    warned: Arc<AtomicBool>,
 }
 
 impl PlaneJudge {
     #[must_use]
     pub fn new(judge: Arc<dyn DestJudge>) -> Self {
-        Self { judge: Some(judge) }
+        Self {
+            judge: Some(judge),
+            warned: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     /// No `DestJudge` installed: every destination answers `DEST_INTERNAL` (fail closed).
     #[must_use]
     pub fn unavailable() -> Self {
-        Self { judge: None }
+        Self {
+            judge: None,
+            warned: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     /// The `JudgeAns` verdict (`DEST_*`) for `dest` in egress `class` under `flags` (`JUDGE_RESOLVE`,
@@ -44,7 +52,7 @@ impl PlaneJudge {
     /// `DEST_UNRESOLVABLE`. Never fails.
     pub async fn judge(&self, dest: &str, class: u32, flags: u32, deadline: Instant) -> u32 {
         let Some(judge) = &self.judge else {
-            warn_unavailable();
+            warn_unavailable(&self.warned);
             return DEST_INTERNAL;
         };
         if dest.len() > MAX_DESTINATION {
@@ -77,10 +85,9 @@ impl PlaneJudge {
     }
 }
 
-/// BUSBAR-7108, once per process: later answers are the same condition and log at debug.
-fn warn_unavailable() {
-    static LOGGED: AtomicBool = AtomicBool::new(false);
-    if LOGGED.swap(true, Ordering::Relaxed) {
+/// BUSBAR-7108, once per judge (one per process): later answers are the same condition and log at debug.
+fn warn_unavailable(logged: &AtomicBool) {
+    if logged.swap(true, Ordering::Relaxed) {
         busbar_contract::diag_debug!(
             PLANE_JUDGE_UNAVAILABLE,
             "no destination judge is installed: JUDGE answers internal"

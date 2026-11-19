@@ -969,7 +969,14 @@ impl AuthMiddleware {
     /// with no inbound unit, so there is no carried credential to read instead.
     pub(crate) fn exchange_token(&self, headers: &HeaderMap) -> Option<String> {
         busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::ExchangeToken);
-        carried_credential(&self.carriers, headers)
+        // `keys` reads the engine's own token off `Authorization: Bearer` on every route
+        // (`native_keys`), so the exchange reads it there too: a presented key is named for what it
+        // is (`StaticKeyPresented`, never exchanged), not taken for no credential at all.
+        carried_credential(&self.carriers, headers).or_else(|| {
+            self.keys_in_chain
+                .then(|| carried_credential(&[AUTHORIZATION], headers))
+                .flatten()
+        })
     }
 
     pub fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
@@ -3334,6 +3341,10 @@ mod no_axis_tests;
 #[cfg(test)]
 #[path = "tests/acceptance_1_5_5_tests.rs"]
 mod acceptance_1_5_5_tests;
+
+#[cfg(test)]
+#[path = "tests/native_admin_permit_tests.rs"]
+mod native_admin_permit_tests;
 
 #[cfg(test)]
 #[path = "tests/ticket_admission_policy.rs"]

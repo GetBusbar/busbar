@@ -90,10 +90,16 @@ fn open_on_worker(
 pub(crate) fn close_on_worker(opened: busbar_ffi::image::Opened) {
     #[cfg(test)]
     crate::UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
-    let _ = crate::ffi_thread::on_plugin_thread(move || {
+    // The thread `dlclose` (and with it the image's finalizers) ran on, when that thread is a permanent worker.
+    let closed_on = crate::ffi_thread::on_plugin_thread(move || {
         crate::ffi_thread::debug_assert_permanent("dlclose");
         opened.close();
+        crate::ffi_thread::on_permanent_worker().then(|| std::thread::current().id())
     });
+    #[cfg(test)]
+    CLOSED_ON.with(|last| last.set(Some(closed_on.ok().flatten())));
+    #[cfg(not(test))]
+    let _ = closed_on;
 }
 
 /// Admit step 8 (IF §11.1): stage the verified bytes under the native load guard (a sealed memfd on Linux, else
@@ -135,11 +141,24 @@ pub(crate) fn open_image(
             }
         }
     }
+    open_staged_file(bytes, &mut |_| {})
+}
+
+/// The pinned private temp file (where no sealed memfd can be used): stage the verified bytes, re-verify them at
+/// their name before the open and again after it, and unload the image if the file changed while it loaded.
+/// `before_verify` runs between staging and the first check (open_image passes nothing; the staging tests tamper
+/// with the file there).
+#[cfg(unix)]
+fn open_staged_file(
+    bytes: &[u8],
+    before_verify: &mut dyn FnMut(&std::path::Path),
+) -> Result<(busbar_ffi::image::Opened, Staged), Unopened> {
     let (path, pin) = stage_temp_file(bytes).map_err(Unopened::Stage)?;
     let abandon = |pin: std::fs::File, path: &PathBuf| {
         drop(pin);
         release_temp_file(path);
     };
+    before_verify(&path);
     if let Err(why) = verify_pinned(&pin, &path, bytes) {
         abandon(pin, &path);
         return Err(Unopened::Stage(format!("its staged file {why}")));
@@ -533,6 +552,10 @@ std::thread_local! {
     /// TEST WITNESS: the libraries the calling thread staged through [`load_library_from_bytes`]
     /// (the staging is entered on the loading thread; only the `dlopen` runs on a worker).
     pub(crate) static STAGED_HERE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// TEST WITNESS: for the calling thread's last [`close_on_worker`], the permanent worker its `dlclose` ran
+    /// on (`Some(None)`: not a permanent worker, or the close panicked).
+    pub(crate) static CLOSED_ON: std::cell::Cell<Option<Option<std::thread::ThreadId>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 pub type NativeLoadGuard = fn(&[u8], &str) -> Result<(), String>;
@@ -542,14 +565,6 @@ pub fn install_native_load_guard(guard: NativeLoadGuard) -> Result<(), &'static 
     NATIVE_LOAD_GUARD
         .set(guard)
         .map_err(|_| "a native load guard is already installed")
-}
-
-#[cfg(any(test, feature = "test-support", feature = "pack"))]
-pub(crate) fn allow_standalone_path_load() -> Result<(), String> {
-    if NATIVE_LOAD_GUARD.get().is_some() {
-        return Err("this host requires a retained admitted archive before native loading; direct path loading is unavailable".into());
-    }
-    Ok(())
 }
 
 /// A memfd holding exactly `bytes`, sealed against every later write, grow and shrink.

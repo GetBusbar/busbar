@@ -10,7 +10,7 @@ use busbar_plugin_abi::types::Pair;
 
 use crate::{CallCx, FactRef, PortError};
 
-pub type PlaneSession = crate::KindSession<busbar_ffi::kind::Plane>;
+pub type PlaneSession = crate::KindSession<busbar_plugin_abi::host_side::boundary::kind::Plane>;
 
 /// Borrowed output, decoded from the call's OutBuf; valid until the sink returns.
 pub enum PlaneOut<'o> {
@@ -182,6 +182,9 @@ pub enum PlaneOut<'o> {
         flags: u32,
         key: &'o [u8],
     },
+    /// HANDLE: the server-issued handle this session acts on (1..=128 bytes of text). The anonymous
+    /// caller's caller reference; nothing for a verified caller.
+    Handle(&'o str),
     Finish,
     /// The nested REC_PRED*/REC_PUT*/REC_DEL* records, validated by the adapter; core runs PluginRecords::commit.
     Commit {
@@ -393,6 +396,12 @@ pub trait PlanePort: Send + Sync + 'static {
     /// number of its own in its place. Additive: a port that predates the item states none.
     fn session_ceiling_s(&self) -> Option<u64> {
         None
+    }
+    /// D_CHECKED_KIND: the scope kinds the plane checks a caller's grant under that no route's
+    /// admission states. Core declares them with the route-stated kinds when the plane mounts.
+    /// Additive: a port that predates the item states none.
+    fn checked_kinds(&self) -> &[Box<str>] {
+        &[]
     }
     /// D_ADMIN_OPENAPI: the OpenAPI fragment of the plane's ROUTE_ADMIN routes (round 8), for the admin document.
     fn admin_openapi(&self) -> Option<&str>;

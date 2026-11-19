@@ -847,8 +847,8 @@ fn before_the_unit(
 }
 
 /// The refusal a kernel admin answer states, for the admin unit that records it: the middleware's
-/// credential refusal (401), its scope refusal (403) and its refusals of the request itself (400,
-/// 413). `None` for every other status: an answer that is not a refusal of this request.
+/// credential refusal (401), its scope refusal (403), its refusals of the request itself (400,
+/// 413) and its spent mutation budget (429). `None` for every other status: an answer that is not a refusal of this request.
 fn denial_outcome(status: axum::http::StatusCode) -> Option<Outcome> {
     use busbar_contract::caps::StepName;
     match status.as_u16() {
@@ -858,6 +858,9 @@ fn denial_outcome(status: axum::http::StatusCode) -> Option<Outcome> {
         )),
         403 => Some(Outcome::Refused(StepName::Approve, ReasonCode::ScopeDenied)),
         400 | 413 => Some(Outcome::Refused(StepName::Decode, ReasonCode::DecodeFailed)),
+        // The principal's mutation budget is spent (admin-api.md, "Mutation rate limits"): the
+        // middleware refused it at admission, as its own `refuse` records.
+        429 => Some(Outcome::Refused(StepName::Admit, ReasonCode::RateLimited)),
         _ => None,
     }
 }

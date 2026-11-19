@@ -33,7 +33,8 @@ use busbar_ports::plane::TargetIn;
 use busbar_ports::{FactVal, PortError};
 
 use super::port_session::{
-    hand_out, AttemptItem, Calls, Effects, SessionError, Task, ToClient, UpExchange, Violation,
+    hand_out, within_budget, AttemptItem, Calls, Effects, SessionError, Task, ToClient, UpExchange,
+    Violation,
 };
 use super::HeadFields;
 use crate::retry::{Retry, RetryPolicy, RetrySite};
@@ -460,6 +461,8 @@ async fn feed<K: Calls + ?Sized, R: UpChunks>(
         // away as its 101 was handed over. Nothing was relayed; the far end is closed by its drop.
         return Ok(fed);
     }
+    // The unit reached its spend ceiling with the HEAD piece: nothing more is relayed or fed.
+    within_budget(effects)?;
     if let (Some(caller), true) = (caller, fed.asked.switched) {
         // The caller has its 101 (handed out by the step above): the rest of this attempt is the session.
         let asked = std::mem::take(&mut fed.asked);
@@ -475,12 +478,14 @@ async fn feed<K: Calls + ?Sized, R: UpChunks>(
                 if !bytes.is_empty() && !step(task, &mut fed, P_BODY, &bytes, effects).await? {
                     return Ok(fed);
                 }
+                within_budget(effects)?;
             }
             Ok(Some(Chunk::Trailers(block))) => {
                 let bytes = trailer_piece(&block)?;
                 if !step(task, &mut fed, P_TRAILERS, bytes.as_bytes(), effects).await? {
                     return Ok(fed);
                 }
+                within_budget(effects)?;
             }
             Ok(None) => {
                 step(task, &mut fed, P_END, &[], effects).await?;
@@ -575,6 +580,7 @@ pub async fn run_attempts<K: Calls + ?Sized, M: Members + ?Sized, S: UpSend>(
                 continue;
             };
             let owned = super::port_egress::OwnedPreparation::new(prepared, task.data().cloned());
+            effects.dialled();
             let opened = match send.open_selected(owned).await {
                 Ok(opened) => opened,
                 Err(error) => {
@@ -617,6 +623,7 @@ pub async fn run_attempts<K: Calls + ?Sized, M: Members + ?Sized, S: UpSend>(
                 continue;
             }
             let exchange = exchange_zero(answer.exchanges)?;
+            effects.dialled();
             let Ok(reply) = send.open(&member, exchange).await else {
                 members.failed(&member, &unsent);
                 continue;

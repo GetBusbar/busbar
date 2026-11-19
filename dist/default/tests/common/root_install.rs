@@ -33,6 +33,8 @@ pub fn install() {
         let judge = crate::root::connector::guard_for(&destinations)
             .expect("the fixture's default destination policy");
         crate::root::linked::register_stores();
+        // main's register_root order: the native image prepare publishes before any read.
+        crate::root::test_plugins::publish_linked_start();
         crate::register_protocols();
         crate::register_diagnostics();
         let deploy = busbar_kernel::config::deploy_from_yaml_str(

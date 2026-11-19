@@ -22,8 +22,45 @@ fn grow_to_16_mib_and_the_arena_is_zero_when_the_open_step_returns() {
 /// open and close lines to the configured name, the describe line to the kind: §10.7 gives describe no
 /// instance) and scrubbed with the slot's set (custody registered the password before the open held it); and
 /// describe, open and close each ran on this thread, the one that called `add`, `open_secret` and dropped the port.
+///
+/// The thread book (`fx::threads`) is process-wide and the loud image's describe is recorded by every case of
+/// this binary that admits it (c_close_log too), so "describe ran on this one thread" holds only in a process
+/// of its own: the walk runs in a fresh child process of this binary (`own_process`).
 #[test]
 fn describe_open_and_close_log_lines_are_attributed_and_scrubbed_and_64_kib_answers_pass() {
+    own_process(
+        "c_entry_guard::describe_open_and_close_log_lines_are_attributed_and_scrubbed_and_64_kib_answers_pass",
+        describe_open_and_close_arm,
+    );
+}
+
+/// Names the one test a child process of this binary runs (the child runs `arm` itself).
+const OWN_PROCESS: &str = "BUSBAR_C_ENTRY_GUARD_OWN_PROCESS";
+
+/// Runs `arm` in a fresh process of this test binary that runs only the test `name`. The parent passes only
+/// when that child ran exactly this one test and it passed.
+fn own_process(name: &str, arm: impl FnOnce()) {
+    if std::env::var_os(OWN_PROCESS).is_some_and(|child| child == name) {
+        arm();
+        return;
+    }
+    let out = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+        .args(["--exact", name, "--test-threads=1", "--nocapture"])
+        .env(OWN_PROCESS, name)
+        .output()
+        .expect("run this test in its own process");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        out.status.success() && stdout.contains("test result: ok. 1 passed; 0 failed"),
+        "{name} in its own process: {}\n{stdout}\n{stderr}",
+        out.status
+    );
+}
+
+fn describe_open_and_close_arm() {
     use busbar_contract::json::{self as facade, JsonValueTrait};
     use busbar_plugin_abi::host::level;
     use busbar_plugin_abi::types::KindCode;

@@ -645,7 +645,7 @@ impl AsyncWrite for PartialWriteThenPending {
 }
 
 #[tokio::test]
-async fn a_partial_write_takes_only_what_the_socket_took_from_the_queue() {
+async fn a_partial_write_takes_only_what_the_socket_took_from_the_run() {
     use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
     use futures::FutureExt;
     let source = ProcessAdmission::new(1).connection_storage(AdmissionClass::Data);
@@ -654,12 +654,33 @@ async fn a_partial_write_takes_only_what_the_socket_took_from_the_queue() {
     let mut io = DeliveryIo::new(carrier, Delivery::new(DeliveryLedger::default(), progress));
     let mut acts = Actions::new(&source).expect("owner");
     acts.part(0, WIRE_CONTROL, b"abcdef").expect("output");
-    io.answered(&acts).expect("a part on stream 0");
+    let answered = io.answered(&acts).expect("a part on stream 0");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-    assert!(io.write_out(deadline).now_or_never().is_none());
-    // The three bytes the socket took are gone from the queue (wiped as they went: the queue's own
-    // proof is `the_queue_wipes_each_byte_as_the_connection_takes_it`); the rest waits, in order.
-    assert_eq!(io.ledger().unwritten(), b"def");
+    assert!(io
+        .write_out(&answered, &acts, deadline)
+        .now_or_never()
+        .is_none());
+    // The ledger counted the three bytes the socket took, as the write returned, and not one more;
+    // the rest is still in the session's own buffer, in order, until the session wipes it.
+    let counts = format!("{:?}", io.ledger());
+    assert!(
+        counts.contains("queued: 6, written: 3"),
+        "the ledger's counts: {counts}"
+    );
+    assert_eq!(acts.bytes(span_of(&acts, 0)), b"abcdef");
+    // A run that was not all given places nothing after it.
+    assert_eq!(io.answered(&acts).err(), Some(Fault::Queue));
+}
+
+/// The span of the `index`th WIRE_PART of `acts`.
+fn span_of(acts: &Actions, index: usize) -> Span {
+    acts.iter()
+        .filter_map(|act| match act {
+            Act::WirePart { bytes, .. } => Some(*bytes),
+            _ => None,
+        })
+        .nth(index)
+        .expect("a WIRE_PART")
 }
 
 // ---- the answer grammar charged to C1 (§11.3) ----
@@ -2701,8 +2722,9 @@ async fn a_write_that_fails_mid_record_wipes_the_output_before_the_answer_is_let
     assert!(acts.is_empty());
     let block = acts.out.allocation().expect("kept for the session");
     assert!(block.iter().all(|byte| *byte == 0));
-    // Nor does the connection's queue keep what the socket did not take.
-    assert!(io.ledger().unwritten().is_empty());
+    // The driver holds no copy of what the socket did not take (it never made one), and the rest of
+    // the run is never given: nothing more is placed on the connection.
+    assert_eq!(io.answered(&acts).err(), Some(Fault::Queue));
     drop((acts, io));
     assert_eq!(account.used(), (0, 0), "every charge returned");
 }
@@ -2784,7 +2806,11 @@ async fn partial_socket_writes_resume_the_run_where_the_socket_stopped() {
             b"HTTP/1.1 200 OK\r\n\r\nfirst piece|second|after",
             "step {step}"
         );
-        assert!(io.ledger().unwritten().is_empty(), "step {step}");
+        let counts = format!("{:?}", io.ledger());
+        assert!(
+            counts.contains("queued: 43, written: 43"),
+            "step {step}: the ledger counted every byte the socket took, once: {counts}"
+        );
         assert_eq!(
             progress.snapshot().written_plaintext,
             43,
@@ -2793,7 +2819,7 @@ async fn partial_socket_writes_resume_the_run_where_the_socket_stopped() {
         let block = acts.out.allocation().expect("block");
         assert!(
             block.iter().all(|byte| *byte == 0),
-            "step {step}: the session's copy was wiped when the run was queued"
+            "step {step}: the session's copy was wiped once the connection took the run"
         );
     }
 }

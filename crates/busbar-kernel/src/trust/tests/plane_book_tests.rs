@@ -546,3 +546,325 @@ async fn verify_is_todays_trust_verify_body() {
         "no signatures is today's null document"
     );
 }
+
+/// LEDGER S-C9 (PROOF-059): the native instance admission, where a plane instance's counterparty pins are
+/// admitted and the operator's approvals of them replayed ([`CoreTrustBook::admit`], the successor of the old
+/// driver's `prepare_admission` over `InstanceDecl`). A reload that is dropped, rejected or refused keeps the live
+/// approval; one that commits keeps an approval only for the same pin and asks a new one for a new pin; and a
+/// decision made while a reload reads its rows is never undone by the older rows it read.
+mod instance_admission {
+    use std::future::Future;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use tokio::sync::Notify;
+
+    use super::*;
+    use crate::plugin_records::{ChainRead, CommitOp, CommitOutcome, PluginRecords, Scope};
+
+    const INSTANCE: &str = "agents";
+    const PARTY: &str = "remote";
+
+    /// Where an admission's read of its quarantine rows (the `D` prefix, its second durable read) stops: held
+    /// until the test lets it go, or refused.
+    #[derive(Default)]
+    struct Gate {
+        hold: AtomicBool,
+        refuse: AtomicBool,
+        reached: Notify,
+        go: Notify,
+    }
+
+    /// The store's records, with an admission's quarantine read behind a [`Gate`].
+    struct Gated {
+        inner: StoreRecords,
+        gate: Arc<Gate>,
+    }
+
+    impl PluginRecords for Gated {
+        fn get(
+            &self,
+            who: &Caller<'_>,
+            scope: Scope,
+            key: &[u8],
+            sink: &mut (dyn FnMut(&[u8]) + Send),
+        ) -> impl Future<Output = Result<bool, RecordsDenied>> + Send {
+            self.inner.get(who, scope, key, sink)
+        }
+        fn put(
+            &self,
+            who: &Caller<'_>,
+            scope: Scope,
+            key: &[u8],
+            value: &[u8],
+            ttl_s: u64,
+        ) -> impl Future<Output = Result<(), RecordsDenied>> + Send {
+            self.inner.put(who, scope, key, value, ttl_s)
+        }
+        fn claim_until(
+            &self,
+            who: &Caller<'_>,
+            scope: Scope,
+            key: &[u8],
+            value: &[u8],
+            expires_at_s: u64,
+        ) -> impl Future<Output = Result<bool, RecordsDenied>> + Send {
+            self.inner.claim_until(who, scope, key, value, expires_at_s)
+        }
+        fn claim(
+            &self,
+            who: &Caller<'_>,
+            scope: Scope,
+            key: &[u8],
+            value: &[u8],
+            ttl_s: u64,
+        ) -> impl Future<Output = Result<bool, RecordsDenied>> + Send {
+            self.inner.claim(who, scope, key, value, ttl_s)
+        }
+        fn del(
+            &self,
+            who: &Caller<'_>,
+            scope: Scope,
+            key: &[u8],
+        ) -> impl Future<Output = Result<(), RecordsDenied>> + Send {
+            self.inner.del(who, scope, key)
+        }
+        fn list(
+            &self,
+            who: &Caller<'_>,
+            scope: Scope,
+            prefix: &[u8],
+            limit: u32,
+            sink: &mut (dyn FnMut(&[u8], &[u8]) + Send),
+        ) -> impl Future<Output = Result<u32, RecordsDenied>> + Send {
+            async move {
+                if prefix.first() == Some(&b'D') {
+                    if self.gate.refuse.swap(false, Ordering::SeqCst) {
+                        return Err(RecordsDenied::Unavailable);
+                    }
+                    if self.gate.hold.swap(false, Ordering::SeqCst) {
+                        self.gate.reached.notify_one();
+                        self.gate.go.notified().await;
+                    }
+                }
+                self.inner.list(who, scope, prefix, limit, sink).await
+            }
+        }
+        fn commit(
+            &self,
+            who: &Caller<'_>,
+            scope: Scope,
+            ops: &[CommitOp<'_>],
+        ) -> impl Future<Output = Result<CommitOutcome, RecordsDenied>> + Send {
+            self.inner.commit(who, scope, ops)
+        }
+        fn append(
+            &self,
+            who: &Caller<'_>,
+            scope: Scope,
+            chain: &[u8],
+            entry: &[u8],
+        ) -> impl Future<Output = Result<u64, RecordsDenied>> + Send {
+            self.inner.append(who, scope, chain, entry)
+        }
+        fn chain(
+            &self,
+            who: &Caller<'_>,
+            scope: Scope,
+            chain: &[u8],
+            after: u64,
+            limit: u32,
+            sink: &mut (dyn FnMut(u64, &[u8]) + Send),
+        ) -> impl Future<Output = Result<ChainRead, RecordsDenied>> + Send {
+            self.inner.chain(who, scope, chain, after, limit, sink)
+        }
+    }
+
+    /// The instance's one counterparty, pinned to the authenticity root `key(seed)`.
+    fn pinned(seed: u8) -> Vec<(String, TrustEntry)> {
+        let entry = approval_entry(
+            "trust.agents.remote",
+            &json!({"root": {"mechanism": "jws_issuer_key", "key": key_info(&key(seed))}}),
+        )
+        .expect("a root approval");
+        vec![(PARTY.to_owned(), entry)]
+    }
+
+    /// A process's plain book over the rig's store, admitted under `key(seed)`'s pin.
+    async fn plain(rig: &Rig, seed: u8) -> CoreTrustBook<StoreRecords> {
+        let book = CoreTrustBook::new(
+            Arc::new(Judge::default()),
+            StoreRecords::new(Arc::clone(&rig.store)),
+            Arc::clone(&rig.audit),
+            clock,
+        );
+        book.admit(INSTANCE, pinned(seed)).await.expect("admitted");
+        book
+    }
+
+    /// A book admitted under `key(1)`'s pin whose counterparty the operator approved at its sighted catalogue.
+    async fn approved(rig: &Rig) -> (CoreTrustBook<Gated>, Arc<Gate>) {
+        let gate = Arc::new(Gate::default());
+        let book = CoreTrustBook::new(
+            Arc::new(Judge::default()),
+            Gated {
+                inner: StoreRecords::new(Arc::clone(&rig.store)),
+                gate: Arc::clone(&gate),
+            },
+            Arc::clone(&rig.audit),
+            clock,
+        );
+        book.admit(INSTANCE, pinned(1)).await.expect("admitted");
+        book.sight(&plane(), PARTY, Some(d(7)), &[])
+            .await
+            .expect("a sighting");
+        book.approve(INSTANCE, PARTY, "", d(7))
+            .await
+            .expect("the operator approves the sighted catalogue");
+        assert_eq!(book.serves(&plane(), PARTY, None), DISTRUST_NONE);
+        (book, gate)
+    }
+
+    #[tokio::test]
+    async fn a_dropped_reload_keeps_the_live_approval() {
+        let rig = Rig::new().await;
+        let (book, gate) = approved(&rig).await;
+        let before = book.judge().rows();
+        gate.hold.store(true, Ordering::SeqCst);
+        let mut reload = Box::pin(book.admit(INSTANCE, pinned(2)));
+        tokio::select! {
+            biased;
+            _ = &mut reload => panic!("the reload is held at its durable read"),
+            () = gate.reached.notified() => {}
+        }
+        drop(reload);
+        assert_eq!(book.judge().rows(), before);
+        assert_eq!(
+            book.serves(&plane(), PARTY, None),
+            DISTRUST_NONE,
+            "a reload dropped before it commits changes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_reload_keeps_the_live_approval() {
+        let rig = Rig::new().await;
+        let (book, _gate) = approved(&rig).await;
+        let before = book.judge().rows();
+        let error = approval_entry(
+            "trust.agents.remote",
+            &json!({
+                "root": {"mechanism": "jws_issuer_key", "key": key_info(&key(2))},
+                "items": {"search": "md5:00"},
+            }),
+        )
+        .expect_err("a digest in another form is refused where the approval loads");
+        assert!(
+            error.contains("must be `sha256:` and 64 hex digits"),
+            "{error}"
+        );
+        assert_eq!(book.judge().rows(), before);
+        assert_eq!(book.serves(&plane(), PARTY, None), DISTRUST_NONE);
+    }
+
+    #[tokio::test]
+    async fn a_reload_refused_at_its_durable_read_keeps_the_live_approval() {
+        let rig = Rig::new().await;
+        let (book, gate) = approved(&rig).await;
+        let before = book.judge().rows();
+        gate.refuse.store(true, Ordering::SeqCst);
+        assert_eq!(
+            book.admit(INSTANCE, pinned(2)).await,
+            Err(RecordsDenied::Unavailable),
+            "a reload that cannot read its decisions is refused"
+        );
+        assert_eq!(book.judge().rows(), before);
+        assert_eq!(
+            book.serves(&plane(), PARTY, None),
+            DISTRUST_NONE,
+            "the refused reload's new pin never replaced the approved one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_committed_reload_keeps_a_same_pin_approval_and_asks_a_new_one_for_a_new_pin() {
+        let rig = Rig::new().await;
+        let (book, _gate) = approved(&rig).await;
+        let before = book.judge().rows();
+        book.admit(INSTANCE, pinned(1))
+            .await
+            .expect("the same pin admits");
+        assert_eq!(book.judge().rows(), before);
+        assert_eq!(book.serves(&plane(), PARTY, None), DISTRUST_NONE);
+
+        book.admit(INSTANCE, pinned(2))
+            .await
+            .expect("a new pin admits");
+        assert_eq!(
+            book.serves(&plane(), PARTY, None),
+            DISTRUST_UNSIGHTED,
+            "an approval never rides a new pin"
+        );
+        let rows = book.judge().rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].approved, None);
+        assert_eq!(rows[0].seen, None);
+        assert_eq!(
+            plain(&rig, 2).await.serves(&plane(), PARTY, None),
+            DISTRUST_UNSIGHTED,
+            "nor does a restart under the new pin replay the old pin's approval"
+        );
+
+        book.sight(&plane(), PARTY, Some(d(8)), &[])
+            .await
+            .expect("a sighting under the new pin");
+        book.approve(INSTANCE, PARTY, "", d(8))
+            .await
+            .expect("the operator approves the new pin");
+        assert_eq!(book.serves(&plane(), PARTY, None), DISTRUST_NONE);
+    }
+
+    #[tokio::test]
+    async fn a_decision_made_while_a_reload_reads_its_rows_is_not_undone_by_them() {
+        let rig = Rig::new().await;
+        let (book, gate) = approved(&rig).await;
+        gate.hold.store(true, Ordering::SeqCst);
+        let reload = book.admit(INSTANCE, pinned(1));
+        let revoke = async {
+            gate.reached.notified().await;
+            book.revoke(INSTANCE, PARTY, "")
+                .await
+                .expect("the operator revokes while the reload reads");
+            gate.go.notify_one();
+        };
+        let (admitted, ()) = tokio::join!(reload, revoke);
+        admitted.expect("the reload admits");
+        assert_eq!(
+            book.serves(&plane(), PARTY, None),
+            DISTRUST_NOT_APPROVED,
+            "the revocation stands: the approval row the reload read before it is older"
+        );
+        assert_eq!(
+            plain(&rig, 1).await.serves(&plane(), PARTY, None),
+            DISTRUST_NOT_APPROVED,
+            "a restart reads the same revocation"
+        );
+
+        let replica = plain(&rig, 1).await;
+        replica
+            .sight(&plane(), PARTY, Some(d(7)), &[])
+            .await
+            .expect("the other replica sights");
+        replica
+            .approve(INSTANCE, PARTY, "", d(7))
+            .await
+            .expect("the other replica's operator approves");
+        book.admit(INSTANCE, pinned(1))
+            .await
+            .expect("the reload admits");
+        assert_eq!(
+            book.serves(&plane(), PARTY, None),
+            DISTRUST_NONE,
+            "a reload still reads what another replica decided before it read"
+        );
+    }
+}

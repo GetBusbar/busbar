@@ -436,14 +436,6 @@ impl Pool {
             drops: AtomicU64::new(0),
         }
     }
-    /// Set once at boot, before the first acquire (later calls are ignored and logged).
-    ///
-    /// W1-H1: the abi crate has no logger of its own, so "logged" is the caller's: this answers nothing and the
-    /// registry, which calls it once from `Registry::new`, can compare `Pool::global()`'s queue sizes (no API
-    /// call in the hot path depends on which call won).
-    pub fn init_global(caps: PoolCaps) {
-        let _ = GLOBAL.set(Pool::new(caps));
-    }
     pub fn global() -> &'static Pool {
         GLOBAL.get_or_init(|| Pool::new(PoolCaps::default()))
     }

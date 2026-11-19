@@ -433,16 +433,24 @@ auth:
 **Three orthogonal axes.** Data-plane admission, admin-API access, and governance
 enforcement are independent, each with one local source of truth:
 
-- **Data-plane admission** is decided **solely** by `auth.chain`: `[]` = open/anonymous, `[keys]` =
-  a virtual key is required and resolved, an IdP/plugin chain requires that IdP. Nothing else, in
-  particular **not** the admin token, decides whether a data-plane request needs a credential.
+- **Data-plane admission** is decided **solely** by `auth.chain`, for every plane alike (LLM, MCP,
+  A2A, decisions, streaming; no plane carries an auth rule of its own): `[anonymous]` = open, the
+  caller presenting no credential admitted as the principal `anonymous` and granted exactly what
+  `role_bindings.anonymous` names; `[keys]` = a virtual key is required and resolved, an IdP/plugin
+  chain requires that IdP. `[]` names no verifier and is refused at boot on every plane. Nothing
+  else, in particular **not** the admin token, decides whether a data-plane request needs a
+  credential.
 - **Admin-API access** is decided **solely** by `auth.admin_auth`; it gates `/api/v1/admin/*` and
   never touches the data plane. Minting lives behind it simply because mint is an admin endpoint.
 - **Governance enforcement** is automatic: it applies to whatever principal-with-group the chain
-  resolved. An open chain resolves no principal, so there is nothing to enforce.
+  resolved, `anonymous` included (its binding's group, budget and pool), on every plane.
 
 This makes **"protected admin API + open (anonymous) relay for users"** expressible: set
-`chain: []` with an `admin_auth` operator credential.
+`chain: [anonymous]` with a scoped `role_bindings.anonymous` and an `admin_auth` operator credential.
+Every plane serves it. A plane that keeps state per caller (MCP sessions, A2A tasks) keys the
+anonymous caller's state by the server-issued handle (the `Mcp-Session-Id`, the task id), never by
+the shared principal: a session or task is reached only by presenting its id, a foreign id is `404`,
+and nothing lists state across anonymous callers.
 
 **Bedrock ingress.** Native Bedrock SDK clients authenticate with AWS SigV4. Mint a key with
 `"issue_aws_credential": true`; the response includes `aws_access_key_id` +

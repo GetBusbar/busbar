@@ -202,8 +202,9 @@ pub enum Money {
     Unit,
 }
 
-/// Field 4: whether the route keeps state per caller. A `Distinct` route is not served where the
-/// chain can yield a shared subject (`anonymous`).
+/// Field 4: whether the route keeps state per caller. A `Distinct` route is served under every chain:
+/// for the anonymous caller (one subject every caller of an open chain shares) its state is keyed by
+/// the handle the session states (`plane_driver::port_intents::handle_scope`), never by the subject.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CallerState {
     Shared,

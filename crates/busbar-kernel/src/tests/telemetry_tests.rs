@@ -1192,8 +1192,36 @@ fn mounted_plane_request_series_are_banked_and_allocation_free() {
 /// thread, not replayed into the recorder on the request thread. A third full buffer on one slot,
 /// or one past the process-wide park budget, replays as before and is counted; after the tick the
 /// count and sum are what was recorded either way.
+///
+/// The park table, its per-slot counts and the replay counter are process-wide, and any other case's
+/// snapshot flushes (and so empties) the park table mid-walk: the walk runs in a fresh process of this
+/// test binary that runs only this test (`own_process`), never serialised or relaxed.
 #[test]
 fn a_full_histogram_buffer_parks_for_the_maintenance_thread_and_overflow_is_counted() {
+    const NAME: &str =
+        "telemetry::tests::a_full_histogram_buffer_parks_for_the_maintenance_thread_and_overflow_is_counted";
+    const OWN_PROCESS: &str = "BUSBAR_TELEMETRY_FULL_BUFFER_OWN_PROCESS";
+    if std::env::var_os(OWN_PROCESS).is_some_and(|child| child == NAME) {
+        full_histogram_buffer_walk();
+        return;
+    }
+    let out = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+        .args(["--exact", NAME, "--test-threads=1", "--nocapture"])
+        .env(OWN_PROCESS, NAME)
+        .output()
+        .expect("run this test in its own process");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        out.status.success() && stdout.contains("test result: ok. 1 passed; 0 failed"),
+        "{NAME} in its own process: {}\n{stdout}\n{stderr}",
+        out.status
+    );
+}
+
+fn full_histogram_buffer_walk() {
     const REPLAYS: &str = "busbar_telemetry_overflow_replays_total";
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let slot_for = |pool: &str| {

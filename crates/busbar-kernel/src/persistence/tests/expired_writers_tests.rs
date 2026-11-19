@@ -25,7 +25,7 @@ use super::{
     EXPIRED_PASS_MAX, INSTANCE, LEASE_TTL_MS, NODE_SCHEMA,
 };
 use crate::persistence::facade::{CoreStore, Limits, WriterAuthority};
-use crate::persistence::undrained::Placement;
+use crate::persistence::undrained::{ledger_test_guard, Placement};
 
 pub(super) const DATASET: DatasetId = DatasetId([1; 16]);
 const CLOCK_AUTHORITY: [u8; 16] = [3; 16];
@@ -617,15 +617,21 @@ pub(super) fn placement(writer: [u8; 16]) -> Placement {
     undrained_records().placement((EPOCH, writer))
 }
 
-/// Offered exactly once: recorded, or (queue full) refused and held, never both, never retained.
-fn assert_offered_once(writer: [u8; 16]) {
+/// Offered exactly once, read after `durable_records` drained the queue: one durable row (the
+/// ledger still holds it as recorded, or the pass's own drain already confirmed it), or (queue
+/// full) refused and held with no row; never both, never retained, never unconfirmed.
+fn assert_offered_once(writer: [u8; 16], records: &BTreeMap<String, Vec<String>>) {
     let placement = placement(writer);
     assert!(
-        placement.recorded.is_some() != placement.record_failed
-            && !placement.retained
-            && !placement.unconfirmed,
+        !placement.retained && !placement.unconfirmed,
         "{placement:?}"
     );
+    if placement.record_failed {
+        assert!(placement.recorded.is_none(), "{placement:?}");
+        assert_eq!(records_for(records, writer), 0, "refused: {placement:?}");
+    } else {
+        assert_eq!(records_for(records, writer), 1, "{placement:?}");
+    }
 }
 
 pub(super) async fn reached(hold: &TestHold) {
@@ -676,6 +682,7 @@ pub(super) fn records_for(records: &BTreeMap<String, Vec<String>>, writer: [u8; 
 
 #[tokio::test]
 async fn adoption_retirement_preserves_every_declared_epoch_and_slot_effect() {
+    let _guard = ledger_test_guard().await;
     for (retired_through, admitted_through) in [(0, 1), (0, 2), (1, 2), (2, 2)] {
         let store = Store::new();
         store.now.store(1_000, Ordering::SeqCst);
@@ -766,6 +773,7 @@ fn stop_flag() -> (
 /// expired for one TTL, so it never reaches the closer but is still reported.
 #[tokio::test]
 async fn a_live_writer_renewing_every_3_s_is_never_closed() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let fence = PredecessorFence::new(attach(&store, OWN).await, "f5-host").unwrap();
     let live = writer_id();
@@ -791,6 +799,7 @@ async fn a_live_writer_renewing_every_3_s_is_never_closed() {
 /// 8.14: a lease expired 8 s ago is `Live` (not closed); at 9 s, and at 30 s, it is closed.
 #[tokio::test]
 async fn a_lease_expired_8_s_is_live_and_one_expired_9_s_is_closed() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let core = attach(&store, OWN).await;
     let fence = PredecessorFence::new(core.clone(), "f5-host").unwrap();
@@ -819,7 +828,7 @@ async fn a_lease_expired_8_s_is_live_and_one_expired_9_s_is_closed() {
     assert_eq!(store.control(at_30s), Some(CLOSED));
     assert_eq!(store.lease_deletes(at_30s), 1);
     assert!(store.lease(at_30s).is_none());
-    assert_offered_once(at_30s);
+    assert_offered_once(at_30s, &durable_records().await);
 
     store.now.store(109, Ordering::SeqCst);
     let second = fence.run(stop).await;
@@ -828,7 +837,7 @@ async fn a_lease_expired_8_s_is_live_and_one_expired_9_s_is_closed() {
     assert_eq!(store.fence_applies(at_8s), 1);
     assert_eq!(store.lease_deletes(at_8s), 1);
     assert!(store.lease(at_8s).is_none());
-    assert_offered_once(at_8s);
+    assert_offered_once(at_8s, &durable_records().await);
     assert_eq!(store.fence_applies(at_30s), 1, "closed once, never again");
 }
 
@@ -837,6 +846,7 @@ async fn a_lease_expired_8_s_is_live_and_one_expired_9_s_is_closed() {
 /// evaluated at the store's own time, refuses it with no effect.
 #[tokio::test]
 async fn the_store_time_guard_alone_refuses_an_early_close() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let core = attach(&store, OWN).await;
     let writer = writer_id();
@@ -876,6 +886,7 @@ async fn the_store_time_guard_alone_refuses_an_early_close() {
 /// writer stays open, and the closer's next read finds it live.
 #[tokio::test]
 async fn a_renewal_racing_the_close_fails_its_exact_lease_predicate() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let fence = PredecessorFence::new(attach(&store, OWN).await, "f5-host").unwrap();
     let writer = writer_id();
@@ -903,7 +914,7 @@ async fn a_renewal_racing_the_close_fails_its_exact_lease_predicate() {
 /// eight have taken their snapshot, so every pass works through all 20.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn eight_starts_close_each_of_twenty_writers_once() {
-    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     store.now.store(1_000, Ordering::SeqCst);
     let writers: Vec<[u8; 16]> = (0..20).map(|_| writer_id()).collect();
@@ -970,6 +981,7 @@ async fn eight_starts_close_each_of_twenty_writers_once() {
 /// deleted, with no record; a second pass finds no lease row for it and closes nothing.
 #[tokio::test]
 async fn a_gracefully_retired_writer_is_fenced_with_no_record() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let fence = PredecessorFence::new(attach(&store, OWN).await, "f5-host").unwrap();
     let writer = writer_id();
@@ -994,6 +1006,7 @@ async fn a_gracefully_retired_writer_is_fenced_with_no_record() {
 /// next. Paused time: each close's 50 ms re-read costs nothing.
 #[tokio::test(start_paused = true)]
 async fn three_hundred_expired_writers_close_over_two_starts() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     store.now.store(1_000, Ordering::SeqCst);
     let fence = PredecessorFence::new(attach(&store, OWN).await, "f5-host").unwrap();
@@ -1027,17 +1040,19 @@ async fn three_hundred_expired_writers_close_over_two_starts() {
         (300 - EXPIRED_PASS_MAX, 0),
         "{second:?}"
     );
+    let records = durable_records().await;
     for writer in &writers {
         assert_eq!(store.fence_applies(*writer), 1);
         assert_eq!(store.lease_deletes(*writer), 1);
         assert!(store.lease(*writer).is_none());
-        assert_offered_once(*writer);
+        assert_offered_once(*writer, &records);
     }
 }
 
 /// 8.14: a malformed `writer:` row is never closed, and counted invalid once per pass.
 #[tokio::test]
 async fn a_malformed_writer_row_is_never_closed_and_counted_once_per_pass() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let fence = PredecessorFence::new(attach(&store, OWN).await, "f5-host").unwrap();
     store.now.store(1_000, Ordering::SeqCst);
@@ -1115,6 +1130,7 @@ fn shape(candidate: &PreparedCandidate) -> Shape {
 /// grace it differs only in `not_before`; with no grace the liveness check is today's expression.
 #[tokio::test]
 async fn retire_after_with_no_grace_builds_the_retire_candidate() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let core = attach(&store, OWN).await;
     let writer = writer_id();
@@ -1196,7 +1212,7 @@ async fn retire_after_with_no_grace_builds_the_retire_candidate() {
 /// the next start closes them, with no second record for the first.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_stop_flag_during_a_close_records_it_once_and_leaves_the_rest() {
-    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     store.now.store(1_000, Ordering::SeqCst);
     let fence = PredecessorFence::new(attach(&store, OWN).await, "f5-host").unwrap();
@@ -1254,6 +1270,7 @@ async fn the_stop_flag_during_a_close_records_it_once_and_leaves_the_rest() {
 /// and offers its `shutdown.drain_incomplete` record exactly once.
 #[tokio::test]
 async fn a_writer_that_rolled_its_epoch_and_died_is_recorded_as_never_retired() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let fence = PredecessorFence::new(attach(&store, OWN).await, "f5-host").unwrap();
     let writer = writer_id();
@@ -1275,5 +1292,5 @@ async fn a_writer_that_rolled_its_epoch_and_died_is_recorded_as_never_retired() 
         !fence.retirements.take_closed_open(EPOCH, writer),
         "the pass already took the open writer's close"
     );
-    assert_offered_once(writer);
+    assert_offered_once(writer, &durable_records().await);
 }

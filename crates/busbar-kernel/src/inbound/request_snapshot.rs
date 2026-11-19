@@ -79,6 +79,10 @@ pub struct ChargedRequestSnapshot {
     query_present: bool,
     now_s: u64,
     credit: ByteCredit,
+    /// A restated head ([`Self::restate_headers`]): the original whose method, target, authority,
+    /// peer, certificate and body this view shares, charged once by the original. `bytes` then
+    /// holds only the restated header block, and every other range indexes the original's bytes.
+    original: Option<Arc<ChargedRequestSnapshot>>,
 }
 
 impl std::fmt::Debug for ChargedRequestSnapshot {
@@ -162,10 +166,7 @@ impl ChargedRequestSnapshot {
         if !input.query_present && !input.query.is_empty() {
             return Err(SnapshotError::Invalid);
         }
-        let mut extent = add(
-            usize::from(input.query_present),
-            count.checked_mul(16).ok_or(SnapshotError::Overflow)?,
-        )?;
+        let mut extent = usize::from(input.query_present);
         for len in [
             input.method.len(),
             input.path.len(),
@@ -177,19 +178,7 @@ impl ChargedRequestSnapshot {
         ] {
             extent = add(extent, len)?;
         }
-        let mut observed = 0usize;
-        for (name, value) in measure {
-            observed = add(observed, 1)?;
-            if observed > count {
-                return Err(SnapshotError::Invalid);
-            }
-            u64::try_from(name.len()).map_err(|_| SnapshotError::Overflow)?;
-            u64::try_from(value.len()).map_err(|_| SnapshotError::Overflow)?;
-            extent = add(add(extent, name.len())?, value.len())?;
-        }
-        if observed != count {
-            return Err(SnapshotError::Invalid);
-        }
+        extent = add(extent, header_extent(measure, count)?)?;
         // The credit is acquired before either backing or content is allocated.
         let credit = request
             .try_reserve(extent)
@@ -207,22 +196,7 @@ impl ChargedRequestSnapshot {
         let certificate = append(&mut bytes, input.tls_peer_cert, extent)?;
         let body = append(&mut bytes, input.body, extent)?;
         let start = bytes.len();
-        let mut observed = 0usize;
-        for (name, value) in input.headers {
-            observed = add(observed, 1)?;
-            if observed > count {
-                return Err(SnapshotError::Invalid);
-            }
-            let name_len = u64::try_from(name.len()).map_err(|_| SnapshotError::Overflow)?;
-            let value_len = u64::try_from(value.len()).map_err(|_| SnapshotError::Overflow)?;
-            append(&mut bytes, &name_len.to_le_bytes(), extent)?;
-            append(&mut bytes, &value_len.to_le_bytes(), extent)?;
-            append(&mut bytes, name.as_bytes(), extent)?;
-            append(&mut bytes, value, extent)?;
-        }
-        if observed != count || bytes.len() != extent {
-            return Err(SnapshotError::Invalid);
-        }
+        pack_headers(&mut bytes, input.headers, count, extent)?;
         Ok(Arc::new(Self {
             bytes,
             method,
@@ -238,55 +212,109 @@ impl ChargedRequestSnapshot {
             query_present: input.query_present,
             now_s: input.now_s,
             credit,
+            original: None,
         }))
+    }
+
+    /// The same request with its headers restated (`headers`, in order): method, target,
+    /// authority, peer, certificate and body are the original's own bytes, shared and never
+    /// charged again; only the restated header block is a new copy, reserved on the original's
+    /// request before it is allocated. A request that cannot pay for that block is refused.
+    pub fn restate_headers<'a, H>(
+        original: &Arc<Self>,
+        headers: H,
+    ) -> Result<Arc<Self>, SnapshotError>
+    where
+        H: Clone + ExactSizeIterator<Item = (&'a str, &'a [u8])>,
+    {
+        // A view of a view shares the one original: the body is never charged twice.
+        let original = original.original.as_ref().unwrap_or(original);
+        let count = headers.len();
+        let extent = header_extent(headers.clone(), count)?;
+        let credit = original
+            .request()
+            .try_reserve(extent)
+            .map_err(SnapshotError::Capacity)?;
+        let mut bytes = SecureVec::with_capacity(extent).map_err(|_| SnapshotError::Allocation)?;
+        pack_headers(&mut bytes, headers, count, extent)?;
+        Ok(Arc::new(Self {
+            bytes,
+            method: original.method.clone(),
+            target: original.target.clone(),
+            path: original.path.clone(),
+            query: original.query.clone(),
+            authority: original.authority.clone(),
+            peer: original.peer.clone(),
+            certificate: original.certificate.clone(),
+            body: original.body.clone(),
+            headers: 0..extent,
+            header_count: count,
+            query_present: original.query_present,
+            now_s: original.now_s,
+            credit,
+            original: Some(Arc::clone(original)),
+        }))
+    }
+
+    /// The snapshot whose bytes hold this request's method, target, authority, peer,
+    /// certificate and body: the original for a restated head, else this one.
+    fn facts(self: &Arc<Self>) -> &Arc<Self> {
+        self.original.as_ref().unwrap_or(self)
+    }
+    fn fact(&self, range: &Range<usize>) -> &[u8] {
+        match &self.original {
+            Some(original) => original.slice(range),
+            None => self.slice(range),
+        }
+    }
+    fn fact_text(&self, range: &Range<usize>) -> &str {
+        std::str::from_utf8(self.fact(range)).expect("snapshot text was copied from str")
     }
 
     fn slice(&self, range: &Range<usize>) -> &[u8] {
         &self.bytes[range.clone()]
     }
-    fn text(&self, range: &Range<usize>) -> &str {
-        std::str::from_utf8(self.slice(range)).expect("snapshot text was copied from str")
-    }
     pub fn method(&self) -> &str {
-        self.text(&self.method)
+        self.fact_text(&self.method)
     }
     pub fn target(&self) -> &str {
-        self.text(&self.target)
+        self.fact_text(&self.target)
     }
     pub fn path(&self) -> &str {
-        self.text(&self.path)
+        self.fact_text(&self.path)
     }
     pub fn query(&self) -> &str {
-        self.text(&self.query)
+        self.fact_text(&self.query)
     }
     pub fn query_present(&self) -> bool {
         self.query_present
     }
     pub fn authority(&self) -> &str {
-        self.text(&self.authority)
+        self.fact_text(&self.authority)
     }
     pub fn peer(&self) -> &str {
-        self.text(&self.peer)
+        self.fact_text(&self.peer)
     }
     pub fn tls_peer_cert(&self) -> &[u8] {
-        self.slice(&self.certificate)
+        self.fact(&self.certificate)
     }
     pub fn body(&self) -> &[u8] {
-        self.slice(&self.body)
+        self.fact(&self.body)
     }
-    /// Share the body without copying; every nonempty Bytes clone/slice retains the full snapshot.
+    /// Share the body without copying; every nonempty Bytes clone/slice retains the full snapshot
+    /// that holds the body (the original, for a restated head).
     /// Empty operations must additionally retain the original request admission explicitly.
     pub fn body_bytes(self: &Arc<Self>) -> bytes::Bytes {
-        self.owned_bytes(self.body.clone())
+        self.facts().owned_bytes(self.body.clone())
     }
     /// Share the exact path and query, including an originally present empty query.
     /// Passing these Bytes to `http::Uri::from_maybe_shared` avoids a second payload copy.
     pub fn target_bytes(self: &Arc<Self>) -> bytes::Bytes {
-        self.owned_bytes(self.target.clone())
+        self.facts().owned_bytes(self.target.clone())
     }
     /// Share long HTTP methods through the maintained parser and its independent clones.
     pub fn method_bytes(self: &Arc<Self>) -> bytes::Bytes {
-        self.owned_bytes(self.method.clone())
+        self.facts().owned_bytes(self.method.clone())
     }
     fn owned_bytes(self: &Arc<Self>, range: Range<usize>) -> bytes::Bytes {
         bytes::Bytes::from_owner(SnapshotSpan {
@@ -374,6 +402,56 @@ impl ChargedRequestSnapshot {
         drop(credit);
         Ok(result)
     }
+}
+
+/// The packed size of a header block: per field, two 8-byte lengths, its name and its value.
+/// `measure` must yield exactly `count` fields.
+fn header_extent<'a>(
+    measure: impl Iterator<Item = (&'a str, &'a [u8])>,
+    count: usize,
+) -> Result<usize, SnapshotError> {
+    let mut extent = count.checked_mul(16).ok_or(SnapshotError::Overflow)?;
+    let mut observed = 0usize;
+    for (name, value) in measure {
+        observed = add(observed, 1)?;
+        if observed > count {
+            return Err(SnapshotError::Invalid);
+        }
+        u64::try_from(name.len()).map_err(|_| SnapshotError::Overflow)?;
+        u64::try_from(value.len()).map_err(|_| SnapshotError::Overflow)?;
+        extent = add(add(extent, name.len())?, value.len())?;
+    }
+    if observed != count {
+        return Err(SnapshotError::Invalid);
+    }
+    Ok(extent)
+}
+
+/// Pack exactly `count` header fields after what `bytes` holds; the whole buffer must then be
+/// exactly `extent`, the size reserved for it.
+fn pack_headers<'a>(
+    bytes: &mut SecureVec,
+    headers: impl Iterator<Item = (&'a str, &'a [u8])>,
+    count: usize,
+    extent: usize,
+) -> Result<(), SnapshotError> {
+    let mut observed = 0usize;
+    for (name, value) in headers {
+        observed = add(observed, 1)?;
+        if observed > count {
+            return Err(SnapshotError::Invalid);
+        }
+        let name_len = u64::try_from(name.len()).map_err(|_| SnapshotError::Overflow)?;
+        let value_len = u64::try_from(value.len()).map_err(|_| SnapshotError::Overflow)?;
+        append(bytes, &name_len.to_le_bytes(), extent)?;
+        append(bytes, &value_len.to_le_bytes(), extent)?;
+        append(bytes, name.as_bytes(), extent)?;
+        append(bytes, value, extent)?;
+    }
+    if observed != count || bytes.len() != extent {
+        return Err(SnapshotError::Invalid);
+    }
+    Ok(())
 }
 
 struct SnapshotSpan {

@@ -10,8 +10,9 @@
 //!
 //! [`IntentHost`] is the seam: [`KernelIntents`] is its production form over [`PluginRecords`], the push queue and
 //! the session signal registry; a test fakes it. A caller-scoped record (`LK_CALLER`, `REC_CALLER`), a WORK and a
-//! caller-scoped SIGNAL all need a verified subject: without one core answers the refusal itself and the host is
-//! never asked (it would otherwise answer from the shared namespace).
+//! caller-scoped SIGNAL all need a caller reference: a verified subject, or for the anonymous caller the handle its
+//! session stated (HANDLE, [`handle_scope`]). Without one core answers the refusal itself and the host is never
+//! asked (it would otherwise answer from the shared namespace).
 //!
 //! The grant, trust, media and custody intents (`Entitle`, `Judge`, `Mint`, `Sign`, `Connect`, `Sight`, `Trust*`,
 //! `Rendezvous`, `Obs*`) are driven the same way, each onto its kernel service (`port_services::Services`); a service
@@ -22,7 +23,7 @@
 
 use std::borrow::Cow;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::fail::failed::F_UNAVAILABLE;
 use busbar_plugin_abi::fail::refused::{R_DENIED, R_INVALID, R_RATE_LIMITED, R_UNSUPPORTED};
@@ -171,6 +172,11 @@ pub enum Intent {
     Signal {
         flags: u32,
         key: Span,
+    },
+    /// HANDLE: the server-issued handle the session acts on; the anonymous caller's caller reference
+    /// ([`Resolver::with_principal`]), nothing for a verified caller.
+    Handle {
+        handle: Span,
     },
     /// ENTITLE: does the verified principal hold `grant` (§12.11).
     Entitle {
@@ -456,6 +462,21 @@ pub trait IntentHost: Send + Sync {
         key: &'a [u8],
         looked: &'a mut Looked,
     ) -> BoxFut<'a, Result<(), RecordsDenied>>;
+    /// [`Self::lookup`], bounded by the request's own `deadline` as well: a host whose calls carry a ceiling of
+    /// their own ([`Namespace::caller`]) waits until the earlier of the two. Default: [`Self::lookup`] (a host with
+    /// no ceiling of its own is bounded by the request's future, which is dropped at the deadline).
+    fn lookup_within<'a>(
+        &'a self,
+        deadline: Instant,
+        scope: Scope,
+        flags: u32,
+        limit: u32,
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        let _ = deadline;
+        self.lookup(scope, flags, limit, key, looked)
+    }
     /// STORE. `flags & LK_CHAIN` appends `value` to the host chain `key`.
     fn store<'a>(
         &'a self,
@@ -656,6 +677,36 @@ pub struct Resolver<'h> {
     principal: Option<Principal<'h>>,
     route: u32,
     pending: Option<&'h super::port_admission::Pending>,
+    deadline: Option<Instant>,
+    /// The principal is the anonymous one every caller of an open chain shares: its caller reference
+    /// is the session's handle, never its subject.
+    anonymous: bool,
+    /// The anonymous caller's scope, from the session's HANDLE (the session's, so it outlives one answer).
+    handle: std::sync::Mutex<Handle>,
+}
+
+/// What the session's HANDLE intents made of the anonymous caller's caller reference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Handle {
+    /// No HANDLE yet: no caller scope.
+    Unset,
+    /// The scope [`handle_scope`] derived from the session's one handle.
+    Bound([u8; 32]),
+    /// The session stated two different handles: no caller scope for the rest of it.
+    Conflicted,
+}
+
+/// The scope of the anonymous caller that presents `handle`: SHA-256 over a prefix no ID_SUBJECT text can
+/// start with (0xFF is never a UTF-8 byte) and the handle, so it is never a verified subject's scope
+/// ([`subject_scope`]) and depends on the handle alone: whoever presents the handle reaches its records,
+/// and nobody else does.
+#[must_use]
+pub fn handle_scope(handle: &[u8]) -> [u8; 32] {
+    const DOMAIN: &[u8] = b"\xffbusbar.anonymous-handle\x00";
+    let mut framed = Vec::with_capacity(DOMAIN.len() + handle.len());
+    framed.extend_from_slice(DOMAIN);
+    framed.extend_from_slice(handle);
+    Sha256::digest(&framed)
 }
 
 /// The verified principal an intent runs as: its ID_SUBJECT text and the ID_* identity records it was admitted with.
@@ -675,13 +726,53 @@ impl<'h> Resolver<'h> {
             principal: None,
             route: 0,
             pending: None,
+            deadline: None,
+            anonymous: false,
+            handle: std::sync::Mutex::new(Handle::Unset),
         }
     }
 
-    /// The request's subject scope (SHA-256 of its ID_SUBJECT), when it has a verified principal.
+    /// The request's caller scope: SHA-256 of its ID_SUBJECT for a verified principal; for the anonymous
+    /// caller, the scope of the handle its session stated ([`handle_scope`]), if it stated one.
     #[must_use]
     pub fn subject(&self) -> Option<[u8; 32]> {
-        self.subject
+        if !self.anonymous {
+            return self.subject;
+        }
+        match *self
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            Handle::Bound(scope) => Some(scope),
+            Handle::Unset | Handle::Conflicted => None,
+        }
+    }
+
+    /// A HANDLE of the session: for the anonymous caller the first one binds its scope, the same one
+    /// again keeps it, and a different one leaves the session with no caller scope (logged). For a
+    /// verified caller it changes nothing.
+    fn bind_handle(&self, handle: &[u8]) {
+        if !self.anonymous {
+            return;
+        }
+        let scope = handle_scope(handle);
+        let mut bound = self
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *bound = match *bound {
+            Handle::Unset => Handle::Bound(scope),
+            Handle::Bound(held) if held == scope => Handle::Bound(held),
+            Handle::Bound(_) | Handle::Conflicted => {
+                tracing::warn!(
+                    audit = "caller_handle_conflict",
+                    route = self.route,
+                    "an anonymous session stated a second handle: it keeps no caller scope"
+                );
+                Handle::Conflicted
+            }
+        };
     }
 
     /// The mounted route the request arrived on (RENDEZVOUS picks the route's media listener).
@@ -699,10 +790,31 @@ impl<'h> Resolver<'h> {
     /// The request's verified principal: its ID_SUBJECT text and the identity records it was admitted with. It sets
     /// the subject scope as [`subject_scope`] does, and is what ENTITLE, MINT and CONNECT run as; without one they
     /// are refused here and the host is never asked.
+    ///
+    /// The anonymous principal (`native_chain::ANONYMOUS`) is the one subject every caller of an open chain
+    /// shares, so its subject is no caller reference. Its grants are its binding's (`role_bindings.anonymous`),
+    /// so ENTITLE and MINT run as it, exactly as on every plane. Its caller scope is the session's handle
+    /// (a HANDLE intent, [`handle_scope`]): a record one anonymous caller made is reached only by presenting
+    /// that handle, and without one every caller-scoped intent is refused (one anonymous caller never reads
+    /// another's records). CONNECT and WORK, which bind to the subject itself (a consented upstream
+    /// connection, a durable work row), stay refused for it. Matched by subject text, fail-closed.
     #[must_use]
     pub fn with_principal(mut self, subject: &'h str, identity: &'h [u8]) -> Self {
-        self.subject = Some(subject_scope(subject));
         self.principal = Some(Principal { subject, identity });
+        if subject == crate::auth::native_chain::ANONYMOUS {
+            self.subject = None;
+            self.anonymous = true;
+            return self;
+        }
+        self.subject = Some(subject_scope(subject));
+        self
+    }
+
+    /// The request's own deadline: a LOOKUP's wait ends at it when it comes before the host's own ceiling
+    /// ([`IntentHost::lookup_within`]). `None`: the host's ceiling alone.
+    #[must_use]
+    pub fn with_deadline(mut self, deadline: Option<Instant>) -> Self {
+        self.deadline = deadline;
         self
     }
 
@@ -713,13 +825,21 @@ impl<'h> Resolver<'h> {
         self
     }
 
-    /// The scope a flag word selects, or `None` when it asks for the caller's scope and there is no subject.
+    /// The scope a flag word selects, or `None` when it asks for the caller's scope and there is no subject: the
+    /// intent is then refused by core, the host never asked, and the refusal is logged for the audit trail.
     fn scope(&self, caller_bound: bool) -> Option<Scope> {
-        if caller_bound {
-            self.subject.map(|s| Scope { subject: Some(s) })
-        } else {
-            Some(Scope::default())
+        if !caller_bound {
+            return Some(Scope::default());
         }
+        let scope = self.subject().map(|s| Scope { subject: Some(s) });
+        if scope.is_none() {
+            tracing::warn!(
+                audit = "caller_scope_refused",
+                route = self.route,
+                "a caller-scoped intent was refused: the request has no caller reference"
+            );
+        }
+        scope
     }
 
     /// Applies `intents` in answer order and returns the pieces to deliver, in the IF order. `reads` is the
@@ -738,6 +858,12 @@ impl<'h> Resolver<'h> {
         let mut committed: Option<Reply> = None;
         let mut channel_pieces: smallvec::SmallVec<[Piece<'i>; 4]> = smallvec::SmallVec::new();
         let mut rendezvous_pieces: smallvec::SmallVec<[Piece<'i>; 4]> = smallvec::SmallVec::new();
+        // HANDLE before everything else: it decides the anonymous caller's scope for every intent here.
+        for intent in intents {
+            if let Intent::Handle { handle } = intent {
+                self.bind_handle(lent.bytes(*handle));
+            }
+        }
         for intent in intents {
             match intent {
                 Intent::Store {
@@ -785,12 +911,12 @@ impl<'h> Resolver<'h> {
                                 &admitted.request,
                                 *flags,
                                 key,
-                                self.subject,
+                                self.subject(),
                             );
                         }
                     } else if flags & LK_CALLER == 0 {
                         self.host.signal(key, None);
-                    } else if let Some(subject) = self.subject {
+                    } else if let Some(subject) = self.subject() {
                         self.host.signal(key, Some(subject));
                     }
                 }
@@ -810,7 +936,7 @@ impl<'h> Resolver<'h> {
                             flags: *flags,
                             framing: *framing,
                             key: lent.text(*key),
-                            subject: self.subject,
+                            subject: self.subject(),
                             head: lent.bytes(*head),
                         },
                     )
@@ -854,7 +980,8 @@ impl<'h> Resolver<'h> {
                 | Intent::Judge { .. }
                 | Intent::Mint { .. }
                 | Intent::Sign { .. }
-                | Intent::Connect { .. } => {}
+                | Intent::Connect { .. }
+                | Intent::Handle { .. } => {}
             }
         }
         let kinds = [
@@ -1007,11 +1134,14 @@ impl<'h> Resolver<'h> {
             index += 1;
             looked.clear();
             if let Some(scope) = self.scope(flags & LK_CALLER != 0) {
-                if let Err(denied) = self
-                    .host
-                    .lookup(scope, *flags, *limit, lent.bytes(*key), looked)
-                    .await
-                {
+                let key = lent.bytes(*key);
+                let read = match self.deadline {
+                    Some(deadline) => self
+                        .host
+                        .lookup_within(deadline, scope, *flags, *limit, key, looked),
+                    None => self.host.lookup(scope, *flags, *limit, key, looked),
+                };
+                if let Err(denied) = read.await {
                     tracing::warn!(?denied, "a plane lookup was refused; it reads as a miss");
                     looked.clear();
                 }
@@ -1331,7 +1461,8 @@ impl<'h> Resolver<'h> {
     }
 
     /// The CONNECT_ANS of every CONNECT of the answer, in intent order; `None` when it has none. A connection
-    /// is the verified subject's: without one the state is `CONN_REFUSED` and the host is not asked.
+    /// is the verified subject's: without one (or for the anonymous subject every open-chain caller shares) the
+    /// state is `CONN_REFUSED` and the host is not asked.
     async fn connects(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
@@ -1344,7 +1475,7 @@ impl<'h> Resolver<'h> {
             else {
                 continue;
             };
-            let (state, url) = match self.principal {
+            let (state, url) = match self.principal.filter(|_| !self.anonymous) {
                 None => (CONN_REFUSED, None),
                 Some(p) => {
                     self.host
@@ -1388,7 +1519,7 @@ impl<'h> Resolver<'h> {
                 identity: self.principal.map_or(&[], |p| p.identity),
             };
             let outcome = if self.subject.is_none() {
-                // §12.24: no verified principal, no row to bind.
+                // §12.24: no verified principal (the anonymous one is none), no row to bind.
                 WorkOutcome::refused(R_DENIED)
             } else {
                 self.host.work(&asked).await
@@ -1546,6 +1677,37 @@ impl<K: Calls + ?Sized> Task<'_, K> {
     }
 }
 
+/// Whether a record write is bound to the verified caller by its own flags: a STORE or DELETE in the
+/// caller's scope (`LK_CALLER`, never the instance-wide host chain `LK_CHAIN`), a COMMIT whose every
+/// record is the caller's (`REC_CALLER`). A DATA unit drives no other write: its records are the
+/// caller's by the kernel's rule, not by the plane's choice. `None` for an intent that is no record
+/// write.
+pub(crate) fn caller_scoped_write(intent: &Intent, lent: &Lent) -> Option<bool> {
+    match intent {
+        Intent::Store { flags, .. } | Intent::Delete { flags, .. } => {
+            Some(flags & LK_CALLER != 0 && flags & LK_CHAIN == 0)
+        }
+        Intent::Commit { ops, .. } => {
+            let mut any = false;
+            for rec in Records::new(lent.bytes(*ops)) {
+                let Ok(rec) = rec else { return Some(false) };
+                let flags = match rec.tag {
+                    tag::REC_PRED => rec.pod_tail::<RecPredRec>().map(|(head, _)| head.flags),
+                    tag::REC_PUT => rec.pod_tail::<RecPutRec>().map(|(head, _)| head.flags),
+                    tag::REC_DEL => rec.pod_tail::<RecDelRec>().map(|(head, _)| head.flags),
+                    _ => return Some(false),
+                };
+                match flags {
+                    Ok(flags) if flags & commit::REC_CALLER != 0 => any = true,
+                    _ => return Some(false),
+                }
+            }
+            Some(any)
+        }
+        _ => None,
+    }
+}
+
 /// These operations can discover a deferred route without opening a wire or changing state.
 fn prerequisite(intent: &Intent) -> bool {
     matches!(
@@ -1554,6 +1716,7 @@ fn prerequisite(intent: &Intent) -> bool {
             | Intent::Entitle { .. }
             | Intent::Judge { .. }
             | Intent::Work { op: WORK_FIND, .. }
+            | Intent::Handle { .. }
     )
 }
 
@@ -1586,6 +1749,15 @@ impl Namespace {
             out_of_process: false,
             limits: InstanceLimits::default(),
         }
+    }
+
+    /// [`Self::caller`] for one request: its ceiling cut to the request's `deadline` when that comes first. The
+    /// clock is read once, by [`Self::caller`].
+    #[must_use]
+    pub fn caller_until(&self, deadline: Instant) -> Caller<'_> {
+        let mut caller = self.caller();
+        caller.deadline = caller.deadline.min(deadline);
+        caller
     }
 }
 
@@ -1775,9 +1947,11 @@ impl<R: PluginRecords> KernelIntents<R> {
     }
 }
 
-impl<R: PluginRecords> IntentHost for KernelIntents<R> {
-    fn lookup<'a>(
+impl<R: PluginRecords> KernelIntents<R> {
+    /// One LOOKUP, asked of the records as `who` (whose deadline bounds the store's wait).
+    fn read<'a>(
         &'a self,
+        who: Caller<'a>,
         scope: Scope,
         flags: u32,
         limit: u32,
@@ -1785,7 +1959,6 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
         looked: &'a mut Looked,
     ) -> BoxFut<'a, Result<(), RecordsDenied>> {
         Box::pin(async move {
-            let who = self.who.caller();
             if flags & LK_CHAIN != 0 {
                 let split = key.len().checked_sub(8).ok_or(RecordsDenied::Invalid)?;
                 let (chain, after) = key.split_at(split);
@@ -1821,6 +1994,38 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
             }
             Ok(())
         })
+    }
+}
+
+impl<R: PluginRecords> IntentHost for KernelIntents<R> {
+    fn lookup<'a>(
+        &'a self,
+        scope: Scope,
+        flags: u32,
+        limit: u32,
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        self.read(self.who.caller(), scope, flags, limit, key, looked)
+    }
+
+    fn lookup_within<'a>(
+        &'a self,
+        deadline: Instant,
+        scope: Scope,
+        flags: u32,
+        limit: u32,
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        self.read(
+            self.who.caller_until(deadline),
+            scope,
+            flags,
+            limit,
+            key,
+            looked,
+        )
     }
 
     fn store<'a>(

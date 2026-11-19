@@ -543,7 +543,11 @@ impl FrozenRequest {
         f: impl FnOnce(&busbar_ports::plane::PlaneIn<'_>, &[u8]) -> R,
     ) -> Result<R, ResourceError> {
         use busbar_plugin_abi::types::{Bytes, Pair, Str};
-        let lent = |name: &str| !withheld.iter().any(|w| w.eq_ignore_ascii_case(name));
+        // Nor any client credential, whatever the route's chain read.
+        let lent = |name: &str| {
+            !crate::plane_driver::port::is_client_credential(name)
+                && !withheld.iter().any(|w| w.eq_ignore_ascii_case(name))
+        };
         if let RequestStorage::Native(original) = &self.storage {
             return original
                 .with_auth_input(|view| {

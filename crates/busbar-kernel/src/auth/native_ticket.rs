@@ -46,6 +46,14 @@ use crate::plugin_records::RecordsDenied;
 /// expiry core answers is the one the plane tells its client).
 pub const TICKET_LIFE_MAX_S: u64 = 600;
 
+/// The most unredeemed tickets one issuer key holds on one node: the 1.6 ticket custody's
+/// per-key bound (`TICKET_CUSTODY_PER_KEY`, ed9b07727e), whose test refused the 257th.
+pub const TICKETS_PER_KEY_MAX: usize = 256;
+
+/// The most unredeemed tickets one node holds across every key: the 1.6 ticket custody's node
+/// bound (`TICKET_CUSTODY_CAP`, ed9b07727e). Sixteen saturated keys fill a node.
+pub const TICKETS_PER_NODE_MAX: usize = 4_096;
+
 /// The door of a native ticket route: the audience a ticket is minted for when its plane states
 /// none (IF §8.6 `MT_AUDIENCE`: "the route class it is good for, `ticket`") and the audience every
 /// ticket route's desk redeems under. One text for both sides: a ticket minted for any other

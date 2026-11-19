@@ -42,6 +42,44 @@ fn picked(sel: &[Selected], cands: &[Candidate]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The Statement rendering of a `kind` plugin `name` 1.0.0 stating `sections`, `secret_refs` and the
+/// `extensions` blob (each list omitted when empty).
+fn rendered(
+    kind: KindCode,
+    name: &'static str,
+    sections: &'static [busbar_contract::abi::mechanism::door::Section],
+    secret_refs: &'static [busbar_contract::abi::mechanism::call::AbiStr],
+    extensions: &[u8],
+) -> Vec<u8> {
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
+    let mut st = busbar_contract::abi::mechanism::door::Statement {
+        kind: kind as u32,
+        ..statement(name, "1.0.0", 1)
+    };
+    if !sections.is_empty() {
+        st.sections = sections.as_ptr();
+        st.sections_len = sections.len();
+    }
+    if !secret_refs.is_empty() {
+        st.secret_refs = secret_refs.as_ptr();
+        st.secret_refs_len = secret_refs.len();
+    }
+    if !extensions.is_empty() {
+        st.extensions = Blob {
+            fmt: BLOB_OCTETS,
+            flags: 0,
+            len: extensions.len(),
+            ptr: extensions.as_ptr(),
+        };
+    }
+    // SAFETY: the lists are `'static` slices of their stated counts and `extensions` outlives the call.
+    unsafe { render(&st) }.unwrap()
+}
+
+/// `PluginRows`' slots over admitted dropped-in archives (their renderings are this file's).
+#[path = "rows_tests.rs"]
+mod rows_tests;
+
 #[test]
 fn uses_reads_each_class_of_root_key() {
     let u = Uses::of(&doc(r#"{
@@ -123,8 +161,9 @@ fn a_module_of_another_kind_selects_nothing_and_the_first_candidate_answers() {
     );
 }
 
-#[test]
-fn a_candidate_reads_its_facts_off_its_rendering() {
+/// The rendering of a secret plugin `the-plugin` 1.0.0 with one alias rewrite, one sugar rewrite, a
+/// declaring section `verb` and a consumed section `read-only`.
+fn the_plugin_rendering() -> Vec<u8> {
     const REWRITES: &[busbar_contract::abi::mechanism::door::Rewrite] = &[
         busbar_contract::abi::mechanism::door::Rewrite {
             class: busbar_contract::plugin_settings::sugar_words::REWRITE_ALIAS,
@@ -160,9 +199,13 @@ fn a_candidate_reads_its_facts_off_its_rendering() {
         ..statement("the-plugin", "1.0.0", 1)
     };
     // SAFETY: the lists are `'static` arrays of their stated counts.
-    let stated = unsafe { render(&st) }.unwrap();
+    unsafe { render(&st) }.unwrap()
+}
+
+#[test]
+fn a_candidate_reads_its_facts_off_its_rendering() {
     let c = Candidate::from_rendering(
-        stated,
+        the_plugin_rendering(),
         Some("manifest-alias"),
         Origin::Dropped {
             file: "f".into(),
@@ -230,6 +273,43 @@ fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
     assert!(select(&u, &cands).is_empty());
 }
 
+/// ABI-MECH: the pack tool's renderer stamps busbar-plugin-abi's `versions::CORE` (the mechanism a
+/// native stamp carries and `ci/abi.pin` pins), and admission reads back only that exact number: a
+/// rendering stamped with the previous or the next mechanism is refused.
+#[test]
+fn a_rendering_stamped_with_another_mechanism_is_refused_and_core_is_admitted() {
+    use busbar_plugin_abi::versions::CORE;
+    let stated = the_plugin_rendering();
+    assert_eq!(
+        stated[8..12],
+        CORE.to_le_bytes(),
+        "the renderer stamps CORE"
+    );
+    let stamped = |mechanism: u32| {
+        let mut bytes = stated.clone();
+        bytes[8..12].copy_from_slice(&mechanism.to_le_bytes());
+        Candidate::from_rendering(
+            bytes,
+            None,
+            Origin::Dropped {
+                file: "f".into(),
+                bytes: Arc::new(Vec::new()),
+            },
+        )
+    };
+    assert!(stamped(CORE).is_ok_and(|c| c.name == "the-plugin"));
+    for wrong in [CORE - 1, CORE + 1] {
+        let refused = stamped(wrong);
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|why| why.contains("the current mechanism version")),
+            "mechanism {wrong}: {:?}",
+            refused.map(|c| c.name)
+        );
+    }
+}
+
 fn example_cdylib(name: &str) -> PathBuf {
     let exe = std::env::current_exe().expect("the test binary's path");
     let path = exe
@@ -275,14 +355,7 @@ fn a_dropped_plane_is_selected_by_a_section_that_selects_it() {
             _reserved: 0,
         },
     ];
-    let st = busbar_contract::abi::mechanism::door::Statement {
-        kind: KindCode::Plane as u32,
-        sections: SECTIONS.as_ptr(),
-        sections_len: SECTIONS.len(),
-        ..statement("routing-plane", "1.0.0", 1)
-    };
-    // SAFETY: the sections list is a `'static` array of its stated count.
-    let stated = unsafe { render(&st) }.unwrap();
+    let stated = rendered(KindCode::Plane, "routing-plane", SECTIONS, &[], &[]);
     let c = Candidate::from_rendering(
         stated,
         None,
@@ -603,13 +676,6 @@ impl busbar_contract::secret::SecretResolve for Resolver {
     }
 }
 
-fn dropped_cand(name: &str, version: &str) -> Candidate {
-    Candidate {
-        version: version.into(),
-        ..cand(KindCode::Hook, name, &["short"], &[], &[])
-    }
-}
-
 #[test]
 fn a_literal_at_a_wildcard_declared_secret_path_is_refused_as_an_exact_one_is() {
     let scope = busbar_contract::config_time::ConfigScope::config_time();
@@ -683,4 +749,219 @@ fn a_dropped_listener_binding_selects_its_exact_declared_claim_without_a_url() {
     assert!(!unrelated.serves(&Uses::default()));
     assert!(read_candidate(br#"[{"slot":"listen","claim":"undeclared"}]"#).is_err());
     assert!(read_candidate(br#"[{"slot":"listen","claim":"foreign-wire","priority":0}]"#).is_err());
+}
+
+/// PROOF-093-A:5. A plane the configuration does not use is never opened and refuses nothing: a dropped-in,
+/// signed and trusted plane whose bytes are not a library (opening them would refuse) is admitted by the scan
+/// and the registry build refuses nothing; selection does not pick it for a configuration without its verb;
+/// and the admission the native boot runs over every scanned row refuses it at the stamp scan with nothing
+/// staged for opening. Once the configuration carries its verb it is picked (the fixture is reachable).
+#[test]
+fn a_plane_config_does_not_use_is_never_opened() {
+    const NOT_A_LIBRARY: &[u8] = b"not a library: opening this refuses the load";
+    let dir = rows_tests::scratch("unused-plane");
+    rows_tests::drop_signed(
+        &dir,
+        &crate::test_native::test_key(),
+        "unused-plane.tar.gz",
+        crate::sign::Manifest {
+            name: "unused-plane".into(),
+            alias: "unused-plane-alias".into(),
+            kind: "plane".into(),
+            version: "1.0.0".into(),
+            publisher: crate::test_native::TEST_PUBLISHER.into(),
+            abi_version: crate::supported_abi("plane").expect("the engine loads planes"),
+            ..crate::sign::Manifest::default()
+        },
+        NOT_A_LIBRARY,
+    );
+    let staged = crate::stage::STAGED_HERE.with(std::cell::Cell::get);
+    let policy = rows_tests::trusting(&["unused-plane"]);
+    let registry = registry(
+        Build {
+            scan: Some(Scan {
+                policy: policy.clone(),
+                data_dir: None,
+                dir: Some(&dir),
+            }),
+        },
+        &mut |_| {},
+    )
+    .expect("a plane the configuration does not use refuses nothing");
+    let row = registry
+        .resolve("unused-plane")
+        .expect("the scan admits the dropped-in plane");
+    assert_eq!(row.lib_bytes.as_slice(), NOT_A_LIBRARY);
+    let cands = vec![Candidate {
+        origin: Origin::Dropped {
+            file: row.file.clone(),
+            bytes: Arc::clone(&row.lib_bytes),
+        },
+        ..cand(KindCode::Plane, "unused-plane", &[], &[], &["unused"])
+    }];
+    for config in [
+        r#"{"providers": {}}"#,
+        r#"{"tools": {}, "models": {}, "export": {"m": {"module": "unused-plane"}}}"#,
+    ] {
+        assert!(
+            select(&Uses::of(&doc(config)), &cands).is_empty(),
+            "{config}: the unused plane is not selected"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let refused = crate::admit::admit_bytes(&row.lib_bytes, &row.manifest, &policy)
+            .err()
+            .expect("bytes that are not an image are never admitted");
+        assert_eq!(
+            refused.code,
+            crate::refusal::RefusalCode::StampMissing,
+            "refused before any open: {refused}"
+        );
+    }
+    assert_eq!(
+        crate::stage::STAGED_HERE.with(std::cell::Cell::get),
+        staged,
+        "nothing was staged for opening"
+    );
+    assert_eq!(
+        picked(
+            &select(&Uses::of(&doc(r#"{"unused": {}}"#)), &cands),
+            &cands
+        ),
+        vec![("unused-plane".to_string(), "unused".to_string())],
+        "a configuration carrying its verb selects it"
+    );
+    std::fs::remove_dir_all(dir).expect("remove the scratch directory");
+}
+
+/// A native-stamped store image `name` at `version`: only its stamp, which is all the scan reads.
+fn stamped_store(name: &str, version: &str) -> Vec<u8> {
+    busbar_plugin_abi::stamp::emit(&busbar_plugin_abi::stamp::Spec {
+        kind: busbar_plugin_abi::types::KindCode::Store,
+        kind_abi: busbar_plugin_abi::versions::STORE,
+        kind_minor: busbar_plugin_abi::versions::STORE_MINOR,
+        layout: busbar_plugin_abi::store::FP,
+        out_of_process: false,
+        engine_min: None,
+        engine_max: None,
+        name,
+        version,
+        build_id: None,
+        crypto: "host",
+    })
+    .0
+    .to_vec()
+}
+
+/// The signed native manifest of [`stamped_store`] `name` answering `words` (its alias first).
+fn native_store(name: &str, version: &str, words: &[&str]) -> crate::sign::Manifest {
+    crate::sign::Manifest {
+        name: name.into(),
+        alias: words[0].into(),
+        former_names: words.iter().map(|w| (*w).to_string()).collect(),
+        kind: "store".into(),
+        version: version.into(),
+        publisher: crate::test_native::TEST_PUBLISHER.into(),
+        abi_version: busbar_plugin_abi::versions::STORE,
+        ..crate::sign::Manifest::default()
+    }
+}
+
+/// PROOF-093-A:25 (SECRET-SHORTHAND-BOOT §3.10 G4 on the native path). A claim conflict (an identity or a
+/// `former_names` word answered twice) names where each claimant comes from, so the operator knows which archive
+/// to remove: both archives' files when both are dropped in, `linked` for an image this build compiles in.
+#[test]
+fn a_claim_conflict_names_both_files() {
+    use crate::admit::Signer;
+    use crate::instance::{Ceilings, Described, ImagesBuilder, SlotTable};
+    use crate::refusal::RefusalCode;
+
+    // The scan: two dropped-in native archives answering one identity, then one former name.
+    for (tag, first, second) in [
+        (
+            "identity",
+            ("same-owner", "1.0.0", vec!["first-alias"]),
+            ("same-owner", "1.1.0", vec!["second-alias"]),
+        ),
+        (
+            "word",
+            ("first-owner", "1.0.0", vec!["first-alias", "shared-word"]),
+            ("second-owner", "1.0.0", vec!["second-alias", "shared-word"]),
+        ),
+    ] {
+        let dir = rows_tests::scratch(&format!("claim-{tag}"));
+        for (file, (name, version, words)) in [
+            ("first-claim.tar.gz", &first),
+            ("second-claim.tar.gz", &second),
+        ] {
+            rows_tests::drop_signed(
+                &dir,
+                &crate::test_native::test_key(),
+                file,
+                native_store(name, version, words),
+                &stamped_store(name, version),
+            );
+        }
+        let refused = crate::scan_and_validate(&dir, &rows_tests::trusting(&[first.0, second.0]))
+            .err()
+            .unwrap_or_else(|| panic!("{tag}: two archives answering one word never both load"));
+        assert_eq!(refused.len(), 1, "{tag}: one conflict: {refused:?}");
+        assert!(
+            refused[0].contains("first-claim.tar.gz") && refused[0].contains("second-claim.tar.gz"),
+            "{tag}: the conflict names both archives: {}",
+            refused[0]
+        );
+        std::fs::remove_dir_all(dir).expect("remove the scratch directory");
+    }
+
+    // The admission: a dropped-in image answering a word an admitted image already answers to.
+    let described = || Described {
+        kind: busbar_plugin_abi::types::KindCode::Store,
+        methods: 0,
+        facts: 0,
+        items: Vec::new(),
+        schema: None,
+        metrics: Vec::new(),
+    };
+    let dropped = || Signer::Dropped {
+        verdict: crate::sign::Verdict::Trusted {
+            publisher: crate::test_native::TEST_PUBLISHER.into(),
+            first_party: false,
+        },
+        proof: busbar_artifact_metadata::rows::Verification::default(),
+    };
+    for (owner, owner_signer, owner_file) in [
+        ("compiled-owner", Signer::Linked, "linked"),
+        ("first-owner", dropped(), "first-owner.tar.gz"),
+    ] {
+        let mut images = ImagesBuilder::new(
+            &busbar_plugin_abi::host_side::host_vt::HOST,
+            Arc::new(SlotTable::new()),
+            Ceilings::DEFAULT,
+        );
+        images
+            .admit_described(
+                owner,
+                &[0; 64],
+                &[format!("{owner}-alias").as_str(), "shared-word"],
+                owner_signer,
+                described(),
+            )
+            .expect("the first claimant admits");
+        for words in [
+            vec!["claimant-alias", "shared-word"],
+            vec!["claimant-alias", owner],
+        ] {
+            let refused = images
+                .admit_described("claimant", &[0; 64], &words, dropped(), described())
+                .expect_err("a second image answering an admitted word is refused");
+            assert_eq!(refused.code, RefusalCode::NameConflict);
+            let line = refused.to_string();
+            assert!(
+                line.contains("claimant.tar.gz") && line.contains(owner_file),
+                "{owner} {words:?}: the conflict names both claimants' origins: {line}"
+            );
+        }
+    }
 }

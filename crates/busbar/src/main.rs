@@ -550,6 +550,8 @@ async fn run(
     file_images.publish_secrets();
     // ... and their hook facts are what config validation reads of hooks (WP3 hook step).
     file_images.publish_hooks();
+    // ... and the scope kinds their plane routes state are what role bindings are judged against.
+    file_images.publish_scope_kinds();
     let loaded = raw
         .typed(&file_images.grammar)
         .unwrap_or_else(|error| die(error));
@@ -2025,6 +2027,11 @@ mod dist_root_install;
 #[cfg(all(test, distribution_root))]
 #[path = "tests/distribution.rs"]
 mod distribution;
+
+/// The shared native-listener fixture (the application Store, its money book, the real listener).
+#[cfg(all(test, distribution_root, unix))]
+#[path = "tests/native_listener_fixture.rs"]
+pub(crate) mod native_listener_fixture;
 
 #[cfg(all(test, unix))]
 #[test]

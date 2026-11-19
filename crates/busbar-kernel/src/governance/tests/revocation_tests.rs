@@ -286,3 +286,47 @@ async fn failed_refreshes_under_a_regressing_clock_are_rate_limited_by_monotonic
     assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
     assert_eq!(rev.synced_at(), 10_000);
 }
+
+/// A revocation cuts exactly the connections watching its subject, a watch made after the
+/// subject is already revoked cuts at once, and a dropped watch (its request ended) is off the
+/// subject's list: nothing is cut for it and nothing of it is kept.
+#[tokio::test]
+async fn a_revocation_cuts_only_the_connections_watching_its_subject() {
+    let (_backend, rev) = faulty_sync(0).await;
+    let (revoked, kept, ended) = (
+        Arc::new(RevocationCut::default()),
+        Arc::new(RevocationCut::default()),
+        Arc::new(RevocationCut::default()),
+    );
+    let _revoked_watch = rev.watch("vk_revoked", &revoked);
+    let _kept_watch = rev.watch("vk_kept", &kept);
+    drop(rev.watch("vk_revoked", &ended));
+
+    rev.insert("vk_revoked");
+
+    let subject = tokio::time::timeout(Duration::from_secs(5), revoked.revoked())
+        .await
+        .expect("the watching connection is cut");
+    assert_eq!(subject, "vk_revoked");
+    assert_eq!(kept.revoked_subject(), None, "another subject's connection");
+    assert_eq!(
+        ended.revoked_subject(),
+        None,
+        "a request that already ended"
+    );
+    assert!(
+        !rev.watchers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key("vk_revoked"),
+        "the fired subject's list is gone"
+    );
+
+    let late = Arc::new(RevocationCut::default());
+    let _late_watch = rev.watch("vk_revoked", &late);
+    assert_eq!(
+        late.revoked_subject(),
+        Some("vk_revoked"),
+        "a request admitted on an already revoked subject is cut at once"
+    );
+}

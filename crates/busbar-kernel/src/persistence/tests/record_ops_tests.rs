@@ -28,6 +28,7 @@ use crate::persistence::record_ops::{
 };
 use crate::persistence::scoped::{self, ScopedStore};
 use crate::persistence::test_backend;
+use crate::persistence::undrained::ledger_test_guard;
 
 const SCHEMA: &str = "rows";
 
@@ -84,6 +85,7 @@ async fn expired_process(store: &Arc<Store>, host: &str, node: u64) -> ([u8; 16]
 /// B's receipts and owner rows survive. Red before DES-264: A's receipts remain for ever.
 #[tokio::test]
 async fn r1_a_closed_writers_generations_are_swept_and_b_keeps_its_own() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let (a_writer, a) = expired_process(&store, "host-a", 31).await;
     let b = attach(&store, OWN).await;
@@ -143,6 +145,7 @@ async fn r2_a_live_writers_generations_are_never_swept() {
 /// and still answers its re-derived operation as Applied.
 #[tokio::test]
 async fn r3_a_class_d_receipt_survives_the_crash_sweep_and_a_restart() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let (_, a) = expired_process(&store, "host-a", 41).await;
     let b = attach(&store, OWN).await;
@@ -210,6 +213,7 @@ async fn r4_a_concurrent_second_attachment_conflict_resolves_to_applied() {
 /// R5: the process dies with its sweep sent but undecided; the next F5 pass sweeps A's partition.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r5_a_sweep_lost_to_a_crash_is_redone_by_the_next_pass() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let (a_writer, a) = expired_process(&store, "host-a", 51).await;
     commit_ops(&records(&a, "r5"), "a", 4).await;

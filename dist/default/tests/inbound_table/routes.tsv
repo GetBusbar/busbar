@@ -123,6 +123,6 @@ V72	POST /auth/token	data	POST /auth/token	form	answers	data-plane route
 V73	GET /v1/models	data	GET /v1/models	-	answers	data-plane route
 V74	GET /v1beta/models	data	GET /v1beta/models	-	answers	data-plane route
 V75	POST /{name}/v1/messages	data	POST /pool-a/v1/messages	anthropic-chat	answers	named pool path
-V76	POST /{provider}/{model}/v1/messages	data	POST /prov/model-a/v1/messages	anthropic-chat	answers	ad-hoc path
+V76	POST /{provider}/{model}/v1/messages	data	POST /mock/test-model/v1/messages	anthropic-chat	answers	ad-hoc path
 V77	ANY catch-all	data	POST /v1/chat/completions	openai-chat	answers	the protocol dispatch fallback serves every protocol path
 V78	PLUGIN-DECLARED routes	data	GET /metrics	-	answers	the exporter plugin route

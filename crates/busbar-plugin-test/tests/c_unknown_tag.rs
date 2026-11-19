@@ -35,9 +35,10 @@ fn the_reader_hands_retired_and_unknown_tags_through() {
     assert_eq!((recs[1].tag, recs[1].body), (0x01FF, &b"abc"[..]));
 }
 
-/// The host's answer parse is the positional decoder of the generic layer: a retired tag (0x000A), an undefined
-/// generic tag, a tag above the kind range, ERROR outside a FAIL tail and a TOKEN that is not first are FAULT
-/// UnknownTag; a kind tag passes to the kind decoder.
+/// The host's answer parse is the positional decoder of the generic layer: a retired tag (0x000A and the
+/// retired generic describe numbers), an undefined generic tag, a tag above the kind range (0x0100..=0x4FFF
+/// since interface revision D.2; 0x5000 and up is never used), ERROR outside a FAIL tail and a TOKEN that is
+/// not first are FAULT UnknownTag; a kind tag, low or high in the range, passes to the kind decoder.
 #[test]
 fn the_positional_decoder_answers_fault_unknown_tag() {
     use busbar_plugin_abi::fail::FaultReason;
@@ -45,10 +46,16 @@ fn the_positional_decoder_answers_fault_unknown_tag() {
     use busbar_plugin_abi::records::tag;
     use busbar_plugin_abi::types::Status;
 
+    let retired = tag::RETIRED;
     for bad in [
         0x000A,
         0x0099,
-        0x0200,
+        retired[0],
+        retired[1],
+        retired[2],
+        retired[3],
+        0x5000,
+        0xFFFF,
         tag::ERROR,
         tag::NEED,
         tag::NEED_RES,
@@ -68,7 +75,9 @@ fn the_positional_decoder_answers_fault_unknown_tag() {
         Answer::parse(Status::OK, &late_token).err(),
         Some(FaultReason::UnknownTag(tag::TOKEN))
     );
-    let kind = record(0x01FF, b"abc");
-    let answer = Answer::parse(Status::OK, &kind).expect("kind tags are the kind decoder's");
-    assert_eq!(answer.records().count(), 1);
+    for kind_tag in [0x0100, 0x01FF, 0x0200, 0x4FFF] {
+        let kind = record(kind_tag, b"abc");
+        let answer = Answer::parse(Status::OK, &kind).expect("kind tags are the kind decoder's");
+        assert_eq!(answer.records().count(), 1, "{kind_tag:#06x}");
+    }
 }

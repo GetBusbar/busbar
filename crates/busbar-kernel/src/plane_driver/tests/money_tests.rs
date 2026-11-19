@@ -2778,6 +2778,83 @@ async fn a_child_keeps_the_admission_live_until_both_have_ended() {
     assert!(exit_evidence(&r).is_empty());
 }
 
+/// SHUTDOWN-HANG F4 (PROOF-007, PROOF-102): a unit still open at shutdown is reported by
+/// `open_at_exit` exactly once, with its principal, lane, arrival and last reported counts and its
+/// admission counted; reporting it ledgers nothing; once it has ended it is reported no more.
+#[tokio::test]
+async fn open_at_exit_reports_a_unit_open_at_shutdown_once_and_never_once_ended() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
+    // The rig opened unit 1 with no admission; unit 2 is a governed unit.
+    let grant = Arc::new(r.gov.try_admit(&r.cost, &r.key, "", NOW).expect("admitted"));
+    r.money
+        .open_admitted(UnitKey::new(2), r.unit.clone(), grant);
+    assert_eq!(
+        r.money.checkpoint(&ctx(2), &reported(40)),
+        Checkpoint::Continue
+    );
+
+    let exit = r.gov.open_at_exit(exit_evidence(&r));
+    let mut units: Vec<u64> = exit
+        .units
+        .iter()
+        .map(|open| open.evidence.unit.get())
+        .collect();
+    units.sort();
+    assert_eq!(units, [1, 2], "each open unit is reported exactly once");
+    let governed = &exit
+        .units
+        .iter()
+        .find(|open| open.evidence.unit == UnitKey::new(2))
+        .expect("the governed unit is reported")
+        .evidence;
+    assert_eq!(governed.money.key.id, "k");
+    assert_eq!(governed.money.lane, "m");
+    assert_eq!(governed.money.arrived, NOW);
+    assert_eq!(
+        governed
+            .reported
+            .iter()
+            .map(|count| (count.class, count.source, count.amount))
+            .collect::<Vec<_>>(),
+        [(INPUT, UNITS_REPORTED, 40)],
+        "the last reported counts, as the plane reported them"
+    );
+    assert!(governed.grant.is_some() && !governed.ledgered && !governed.finished);
+    assert_eq!(
+        (exit.live, exit.distinct_grants, exit.admitted_not_open()),
+        (1, 1, Some(0)),
+        "the open unit's admission is the one live admission"
+    );
+    drop(exit);
+    assert_eq!(
+        usage(&r).await.0,
+        Count::from(0u64),
+        "reporting a unit at exit ledgers nothing"
+    );
+
+    r.money.settle_end(UnitKey::new(2), 200);
+    let exit = r.gov.open_at_exit(exit_evidence(&r));
+    let units: Vec<u64> = exit
+        .units
+        .iter()
+        .map(|open| open.evidence.unit.get())
+        .collect();
+    assert_eq!(units, [1], "an ended unit is not reported as open");
+    assert_eq!(
+        (exit.live, exit.distinct_grants, exit.admitted_not_open()),
+        (0, 0, Some(0))
+    );
+    drop(exit);
+    assert_eq!(
+        usage(&r).await.0,
+        Count::from(40u64),
+        "the ended unit billed its last report, once"
+    );
+
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert!(exit_evidence(&r).is_empty());
+}
+
 /// SHUTDOWN-HANG 8.13: at the instant the gate's live count returns to 0 (seen from a second
 /// thread spinning on it), the unit's terminal checkpoint is already in the book as `ended`; and
 /// while the unit runs, its exit line carries the staged revision and no persisted one.

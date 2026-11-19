@@ -9,7 +9,7 @@ use busbar_plugin_abi::transport::{END_FAILED, END_FLUSH, MSG_BINARY, MSG_FIN, M
 fn native_signed_package_checks_structure_even_when_signature_and_digest_are_valid() {
     use busbar_plugin_loader::{sign, tarball, test_native};
 
-    // The same actual native cdylib used by the central self-pack producer proof, built by CI.
+    // This crate's own native_pack_fixture example, built from current source with the tests.
     // A missing fixture fails; a synthetic stamp or skipped arm cannot replace its image bytes.
     let exe = std::env::current_exe().unwrap();
     let path = exe
@@ -22,7 +22,7 @@ fn native_signed_package_checks_structure_even_when_signature_and_digest_are_val
             "native_pack_fixture",
         ));
     let bytes = std::fs::read(path)
-        .expect("CI must build busbar-plugin-loader's native_pack_fixture example");
+        .expect("cargo builds this crate's native_pack_fixture example with its tests");
     let mut manifest = test_native::test_manifest(&bytes, &["old-native", "native"]).unwrap();
     manifest.alias = "native".into();
     manifest = test_native::test_sign(manifest, &bytes);

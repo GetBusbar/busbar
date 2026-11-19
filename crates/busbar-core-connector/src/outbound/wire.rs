@@ -84,8 +84,25 @@ pub(crate) struct Outcome {
     pub(crate) left: smallvec::SmallVec<[(u64, u64); 2]>,
 }
 
+/// An answer [`Wire::check`] admitted: what it asks of the connection and the run to give it, as
+/// places in the caller's buffer and the slots (no byte of it is held here).
+#[derive(Debug)]
+pub(crate) struct Checked {
+    /// What the answer asks of the connection.
+    pub(crate) outcome: Outcome,
+    run: smallvec::SmallVec<[Run; 16]>,
+    len: u64,
+}
+
+impl Checked {
+    /// The bytes the run gives the connection.
+    pub(crate) const fn bytes(&self) -> u64 {
+        self.len
+    }
+}
+
 /// What pass one found a part to be.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Run {
     /// The tail of the `WIRE_PART` at this index of the answer.
     Tail(usize),
@@ -200,6 +217,79 @@ impl Wire {
         // close): the ledger's queue position is brought to where the queue stands before this answer's
         // parts are placed, so a stream's first byte is never placed before bytes that are not its own.
         self.ledger.queued(flushed + out.len() as u64);
+        let (mut outcome, run) = self.pass_one(items)?;
+        if !run.is_empty() {
+            let pieces = self.pieces(&run, &tail);
+            dial.run(target_tls, out, &pieces)
+                .map_err(|_| Fault::Queue)?;
+            outcome.wrote = true;
+        }
+        self.ledger.queued(flushed + out.len() as u64);
+        Ok(outcome)
+    }
+
+    /// ONE ANSWER of the transport, checked whole and placed in the delivery ledger, with NOTHING
+    /// QUEUED: for a connection whose session already holds the answer's bytes in its own buffer,
+    /// charged to the connection's storage account (the accepted side). The connection is given
+    /// [`Self::written`] straight from that buffer; the driver makes no copy of an answer byte.
+    ///
+    /// `queued` = the bytes ever given to the connection plus those it still has to take, before
+    /// this answer. On `Ok` the ledger stands at `queued` + [`Checked::bytes`]: the caller gives the
+    /// connection exactly [`Self::written`], in order, before any later answer's bytes, and reports
+    /// what the connection took with [`Self::accepted`] / [`Self::reached`] as for a queue.
+    ///
+    /// # Errors
+    /// The [`Fault`]: nothing of the answer may be written; the caller ends the session and calls
+    /// [`Self::faulted`].
+    pub(crate) fn check<'a>(
+        &mut self,
+        items: &[Out],
+        tail: impl Fn(usize) -> &'a [u8],
+        queued: u64,
+    ) -> Result<Checked, Fault> {
+        self.ledger.queued(queued);
+        let (mut outcome, run) = self.pass_one(items)?;
+        let len: u64 = self
+            .pieces(&run, &tail)
+            .iter()
+            .map(|piece| piece.len() as u64)
+            .sum();
+        outcome.wrote = !run.is_empty();
+        self.ledger.queued(queued + len);
+        Ok(Checked { outcome, run, len })
+    }
+
+    /// The bytes of a [`Checked`] answer to give the connection, in order: each `WIRE_PART`'s tail
+    /// where the caller holds it (`tail(i)`, the same as given to [`Self::check`]), and a sealed
+    /// value's run read from its slot into the write only. Nothing is copied.
+    pub(crate) fn written<'s, 'a: 's>(
+        &'s self,
+        checked: &Checked,
+        tail: impl Fn(usize) -> &'a [u8],
+    ) -> smallvec::SmallVec<[&'s [u8]; 16]> {
+        self.pieces(&checked.run, &tail)
+    }
+
+    /// The run's pieces: the tails of its parts and the covered runs of its sealed values.
+    fn pieces<'s, 'a: 's>(
+        &'s self,
+        run: &[Run],
+        tail: &impl Fn(usize) -> &'a [u8],
+    ) -> smallvec::SmallVec<[&'s [u8]; 16]> {
+        run.iter()
+            .map(|piece| match *piece {
+                Run::Tail(index) => tail(index),
+                Run::Sealed(at, covered) => self.streams[at].slots.bytes(covered),
+            })
+            .collect()
+    }
+
+    /// PASS ONE of an answer: every item checked, in order, and acted on; the run its parts make,
+    /// recorded in the ledger and returned. Nothing is queued or written here.
+    fn pass_one(
+        &mut self,
+        items: &[Out],
+    ) -> Result<(Outcome, smallvec::SmallVec<[Run; 16]>), Fault> {
         let mut outcome = Outcome::default();
         let mut run: smallvec::SmallVec<[Run; 16]> = smallvec::SmallVec::new();
         for (index, item) in items.iter().enumerate() {
@@ -292,7 +382,7 @@ impl Wire {
                             .before_payload_or_end()
                             .map_err(Fault::Sealed)?;
                     }
-                    self.ledger.end(end).map_err(Fault::Output)?;
+                    self.ledger.end_in_answer(end).map_err(Fault::Output)?;
                 }
                 Out::Body { stream, len } => {
                     // A late body piece of a stream the engine has left is not a breach: the stream
@@ -336,21 +426,7 @@ impl Wire {
                 }
             }
         }
-        if !run.is_empty() {
-            let streams = &self.streams;
-            let pieces: smallvec::SmallVec<[&[u8]; 16]> = run
-                .iter()
-                .map(|piece| match *piece {
-                    Run::Tail(index) => tail(index),
-                    Run::Sealed(at, covered) => streams[at].slots.bytes(covered),
-                })
-                .collect();
-            dial.run(target_tls, out, &pieces)
-                .map_err(|_| Fault::Queue)?;
-            outcome.wrote = true;
-        }
-        self.ledger.queued(flushed + out.len() as u64);
-        Ok(outcome)
+        Ok((outcome, run))
     }
 
     /// The socket has taken `flushed` bytes in all and the socket queue is empty of them.
@@ -1255,6 +1331,230 @@ mod tests {
                 .unwrap_err(),
             Fault::Output(crate::outbound::delivery::Breach::L2),
             "the HTTP session's number names nothing any more"
+        );
+    }
+}
+
+/// [`Wire::check`]: the accepted side's answer, checked and placed in the delivery ledger with no
+/// queue of the driver's. Every byte the connection is given is read from where the session holds
+/// it, which is charged to the connection's storage account; the driver adds no copy of its own.
+#[cfg(test)]
+mod wire_check {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use busbar_contract::storage::{StorageAccount, StorageDenied, StorageSource};
+
+    use super::super::records::{Session, WireEnd, WirePart, END_FLUSH};
+    use super::*;
+
+    /// A storage account that counts what it holds: the bytes charged to the connection.
+    #[derive(Default)]
+    struct Counted(AtomicUsize);
+
+    impl StorageAccount for Counted {
+        fn try_reserve(&self, bytes: usize) -> Result<(), StorageDenied> {
+            self.0.fetch_add(bytes, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn release(&self, bytes: usize) {
+            self.0.fetch_sub(bytes, Ordering::SeqCst);
+        }
+    }
+
+    const HEAD: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-length: 4\r\n\r\n";
+    const BODY: &[u8] = b"body";
+
+    /// The session's output buffer as the session holds it: the answer's bytes in one wiped block,
+    /// its whole capacity charged before it was made.
+    struct Held {
+        bytes: SecureVec,
+        _credit: busbar_contract::storage::StorageCredit,
+    }
+
+    fn held(source: &StorageSource) -> Held {
+        let len = HEAD.len() + BODY.len();
+        let credit = source.try_reserve(len).unwrap();
+        let mut bytes = SecureVec::with_capacity(len).unwrap();
+        assert!(
+            bytes.capacity() <= credit.len(),
+            "the block is charged whole"
+        );
+        bytes.extend(HEAD).unwrap();
+        bytes.extend(BODY).unwrap();
+        Held {
+            bytes,
+            _credit: credit,
+        }
+    }
+
+    /// An accepted connection whose session is stated, one stream announced, and the engine's
+    /// four-byte body and end asked of it.
+    fn accepted() -> Wire {
+        let mut wire = Wire::new(Role::Answer);
+        wire.check(
+            &[Out::Session(Session::stated(false, 0, 0))],
+            |_| &[][..],
+            0,
+        )
+        .unwrap();
+        wire.announced(1).unwrap();
+        wire.emitting_body(1, BODY.len() as u64);
+        wire.emitting_end(1);
+        wire
+    }
+
+    fn items() -> [Out; 3] {
+        [
+            Out::Part {
+                part: WirePart::stated(1, false),
+                len: HEAD.len() as u32,
+            },
+            Out::Part {
+                part: WirePart::stated(1, true),
+                len: BODY.len() as u32,
+            },
+            Out::End(WireEnd {
+                stream: 1,
+                how: END_FLUSH,
+                arg: 0,
+            }),
+        ]
+    }
+
+    /// The bytes of `WIRE_PART` `index` of [`items`], where the session holds them.
+    fn tail(held: &Held, index: usize) -> &[u8] {
+        let all = held.bytes.as_slice();
+        match index {
+            0 => &all[..HEAD.len()],
+            1 => &all[HEAD.len()..],
+            _ => &[],
+        }
+    }
+
+    #[test]
+    fn wire_check_every_answer_byte_the_connection_is_given_is_a_charged_byte() {
+        let account = Arc::new(Counted::default());
+        let source = StorageSource::new(account.clone());
+        let held = held(&source);
+        let charged = account.0.load(Ordering::SeqCst);
+        assert_eq!(charged, HEAD.len() + BODY.len());
+
+        let mut wire = accepted();
+        let checked = wire.check(&items(), |index| tail(&held, index), 0).unwrap();
+        assert!(checked.outcome.wrote);
+        assert_eq!(checked.bytes(), (HEAD.len() + BODY.len()) as u64);
+
+        // The bytes the connection is given, in order: every one of them is a byte of the charged
+        // block, none a copy the driver made, and checking charged nothing more.
+        let block = held.bytes.as_slice().as_ptr_range();
+        let given = wire.written(&checked, |index| tail(&held, index));
+        let mut charged_given = 0;
+        for piece in &given {
+            let range = piece.as_ptr_range();
+            assert!(
+                block.start <= range.start && range.end <= block.end,
+                "a byte the connection is given lies outside the charged block"
+            );
+            charged_given += piece.len();
+        }
+        assert_eq!(charged_given as u64, checked.bytes());
+        assert_eq!(given.concat(), [HEAD, BODY].concat());
+        // The writer is done with the pieces (they borrow the driver's slots).
+        drop(given);
+        assert_eq!(
+            account.0.load(Ordering::SeqCst),
+            charged,
+            "the check holds no answer byte of its own"
+        );
+
+        // The ledger stands where a queue would have put the run: half taken is not whole, all taken
+        // and flushed is, with the body counted.
+        wire.accepted(HEAD.len() as u64);
+        assert_eq!(wire.state_of(1), State::None);
+        wire.accepted(checked.bytes());
+        let verdict = wire.take_verdict(1).unwrap();
+        assert_eq!(verdict.state, State::Whole);
+        assert_eq!(verdict.body_bytes, BODY.len() as u64);
+    }
+
+    /// The check places the run exactly where [`Wire::answer`] queues it: the same verdicts, read
+    /// from the same socket counts.
+    #[test]
+    fn wire_check_places_the_run_where_the_queue_would() {
+        let account = Arc::new(Counted::default());
+        let held = held(&StorageSource::new(account));
+        for taken in 0..=(HEAD.len() + BODY.len()) as u64 {
+            let mut checking = accepted();
+            let checked = checking
+                .check(&items(), |index| tail(&held, index), 0)
+                .unwrap();
+            let mut queueing = Wire::new(Role::Answer);
+            let mut out = SecureVec::new();
+            let mut dial = Dialling::direct(false);
+            queueing
+                .answer(
+                    &[Out::Session(Session::stated(false, 0, 0))],
+                    |_| &[][..],
+                    None,
+                    &mut dial,
+                    &mut out,
+                    0,
+                )
+                .unwrap();
+            queueing.announced(1).unwrap();
+            queueing.emitting_body(1, BODY.len() as u64);
+            queueing.emitting_end(1);
+            queueing
+                .answer(
+                    &items(),
+                    |index| tail(&held, index),
+                    None,
+                    &mut dial,
+                    &mut out,
+                    0,
+                )
+                .unwrap();
+            assert_eq!(out.len() as u64, checked.bytes());
+            checking.accepted(taken);
+            queueing.accepted(taken);
+            assert_eq!(checking.state_of(1), queueing.state_of(1), "{taken}");
+            checking.reached(taken);
+            queueing.reached(taken);
+            checking.gone(Reason::CallerGone);
+            queueing.gone(Reason::CallerGone);
+            assert_eq!(
+                checking.take_verdict(1).map(|d| (d.state, d.reason)),
+                queueing.take_verdict(1).map(|d| (d.state, d.reason)),
+                "{taken}"
+            );
+        }
+    }
+
+    /// A breach is refused before anything is placed: there is no run to give the connection.
+    #[test]
+    fn wire_check_a_breach_gives_the_connection_nothing() {
+        let account = Arc::new(Counted::default());
+        let held = held(&StorageSource::new(account));
+        let mut wire = Wire::new(Role::Answer);
+        wire.check(
+            &[Out::Session(Session::stated(false, 0, 0))],
+            |_| &[][..],
+            0,
+        )
+        .unwrap();
+        wire.announced(1).unwrap();
+        // The engine asked for no end: an end mark is L5, the whole answer refused.
+        let fault = wire
+            .check(&items(), |index| tail(&held, index), 0)
+            .unwrap_err();
+        assert!(fault.charged());
+        assert_eq!(fault, Fault::Output(super::super::delivery::Breach::L5));
+        wire.faulted();
+        assert_eq!(
+            wire.take_verdict(1).and_then(|d| d.reason),
+            Some(Reason::TransportFault)
         );
     }
 }

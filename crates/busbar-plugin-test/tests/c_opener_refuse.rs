@@ -211,13 +211,21 @@ pub(crate) mod fixture {
         static DROPPED: Cell<usize> = const { Cell::new(0) };
         static PIECES: Cell<usize> = const { Cell::new(0) };
         static CHANNELS: Cell<usize> = const { Cell::new(0) };
+        static SELECTS: Cell<usize> = const { Cell::new(0) };
     }
+
+    /// The `select_resources` variant (`PlaneReq::route`) that asks a host service during the pure call.
+    pub const ASK_HOST: u32 = 5;
 
     pub fn pieces() -> usize {
         PIECES.replace(0)
     }
     pub fn channels() -> usize {
         CHANNELS.replace(0)
+    }
+    /// `select_resources` entries the plane fixture ran on this thread since the last read; resets.
+    pub fn selects() -> usize {
+        SELECTS.replace(0)
     }
 
     /// (sessions the fixtures made, sessions they dropped) on this thread since the last read; resets both.
@@ -438,6 +446,22 @@ pub(crate) mod fixture {
                 }
                 Ok(())
             }
+            /// Answers no records; on route [`super::ASK_HOST`] it first asks a host service (the clock).
+            fn select_resources(
+                &self,
+                h: &Host,
+                _mode: u32,
+                req: &PlaneReq<'_>,
+                _body: Bytes<'_>,
+                _out: &mut Out<'_>,
+            ) -> Result<(), Fail> {
+                use busbar_plugin_abi::host::HostExt;
+                super::SELECTS.set(super::SELECTS.get() + 1);
+                if req.route == super::ASK_HOST {
+                    let _ = h.now_ns();
+                }
+                Ok(())
+            }
             fn end(&self, _h: &Host, _s: Sess, _out: &mut Out<'_>) -> Result<(), Fail> {
                 Ok(())
             }
@@ -587,10 +611,53 @@ mod fixed_piece {
                 adapter
                     .channel(&mut session, &target, &mut |_| delivered += 1)
                     .is_ok(),
-                ok
+                ok,
+                "facts {facts:#x} attempt {attempt}"
             );
             assert_eq!(fixture::channels(), calls);
             assert_eq!(delivered, usize::from(ok));
+        }
+    }
+
+    /// `select_resources` is pure (no host service authority): a selector that asks a host service is
+    /// faulted even though it ignores the denial and answers OK; one that asks nothing answers OK.
+    #[test]
+    fn real_select_resources_callback_is_pure() {
+        use busbar_plugin_abi::fail::{CallError, FaultReason};
+        use busbar_plugin_abi::records::RecErr;
+        for mode in [plane::RESOURCE_INVENTORY, plane::RESOURCE_SELECT] {
+            for (route, ok) in [(fixture::ACCEPT_BARE, true), (fixture::ASK_HOST, false)] {
+                let inst = fixture::hosted::<plane::Marker>(&fixture::plane_fx::PLUGIN, plane::ALL);
+                let proxy = Proxy::bind(Arc::clone(&inst)).unwrap();
+                let mut buf = Pool::global().acquire(fixture::MAX_OUT);
+                fixture::selects();
+                let answer = proxy.select_resources(
+                    &mut buf,
+                    Mono::NONE,
+                    mode,
+                    &fixture::plane_req(route),
+                    b"",
+                );
+                assert_eq!(
+                    fixture::selects(),
+                    1,
+                    "mode {mode} route {route}: one entry"
+                );
+                if ok {
+                    let answer = answer.expect("a selector that asks nothing answers");
+                    assert!(answer.is_ok(), "mode {mode} route {route}");
+                    assert!(inst.is_live(), "a pure answer is not a fault");
+                } else {
+                    assert!(
+                        matches!(
+                            answer,
+                            Err(CallError::Fault(FaultReason::BadRecords(RecErr::Reserved)))
+                        ),
+                        "mode {mode}: a host service asked during pure select_resources must fault, \
+                         never succeed"
+                    );
+                }
+            }
         }
     }
 

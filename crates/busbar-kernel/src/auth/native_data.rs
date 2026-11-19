@@ -17,7 +17,7 @@ use super::native_chain::{NativeChain, NativePreparedAnswer, PreparedNativeIdent
 use super::native_ticket::{
     Presented as TicketPresented, Serving, TicketDesk, TicketJudged, TicketRefused,
 };
-use super::route_record::{CallerState, Money, RouteRecord, Who};
+use super::route_record::{Money, RouteRecord, Who};
 use crate::host_services::{InvocationContext, ServingGeneration};
 use crate::inbound::native::{
     AuthorizedPhysicalData, DataPreparation, DataPreparationDenied, DataPreparationSuccess,
@@ -187,12 +187,10 @@ impl NativeDataRoute {
     pub fn admission(
         seat: &PortSeat,
         mounted: &Mounted,
-        chain: &NativeChain,
         offered: Offered,
     ) -> Result<(RouteRecord, Admission), NotMounted> {
         let record = &mounted.record;
         let offered = Offered {
-            chain_yields_shared: chain.admits_anonymous(),
             challenge_unresolved: record.mounted_challenge(seat.public_url()).is_err(),
             ..offered
         };
@@ -202,21 +200,19 @@ impl NativeDataRoute {
 
     /// How the listener plan mounts `mounted` on `seat`: the one decision the plan makes about a
     /// declared route. `chain_reads_its_credential`: some configured instance reads the route's
-    /// credential (its own header's readers, else the data chain). `chain_admits_anonymous`: that
-    /// chain names the built-in member `anonymous`. Every route is mounted by its admission or left unmounted for a
+    /// credential (its own header's readers, else the data chain).
+    /// Every route is mounted by its admission or left unmounted for a
     /// reason that is the operator's configuration, logged once and listed by the admin API.
     pub fn planned(
         seat: &PortSeat,
         mounted: &Mounted,
         chain_reads_its_credential: bool,
-        chain_admits_anonymous: bool,
         upgrade_transport: bool,
         signature_verifier: bool,
     ) -> Planned {
         let record = &mounted.record;
         let offered = Offered {
             verifier_reads_header: chain_reads_its_credential,
-            chain_yields_shared: chain_admits_anonymous,
             upgrade_transport,
             signature_verifier,
             // Core's ticket store is open exactly where the boot gave the instance a desk.
@@ -461,11 +457,6 @@ impl NativeDataRoute {
         let Ok(challenge) = record.mounted_challenge(seat.public_url()) else {
             return Err(DataRefused::Unsupported);
         };
-        // A route that keeps state per caller is never bound under a chain whose callers share
-        // one subject: the plan leaves it unmounted, and a plan that did not is refused here.
-        if record.caller_state == CallerState::Distinct && owners.chain.admits_anonymous() {
-            return Err(DataRefused::Unsupported);
-        }
         if !seat.driver.caller().same_incarnation(target.caller())
             || !Arc::ptr_eq(seat.driver.core(), owners.generation.core())
             || !seat
@@ -878,7 +869,10 @@ pub(crate) fn governed_key(
 /// for none, and a credential that states no audience at all (an opaque key), are refused as any
 /// bad credential is: on an audience-bound plane an unbound credential is never enough. A token
 /// core minted is judged by its verifier, which has the signature and the claims. Every
-/// occurrence of `authorization` is scanned, not a decoy first bearer.
+/// carrier the chain reads is scanned, as the request path judged its carried credential
+/// (`auth::carried_credential`): the bearer on `authorization`, and the value of every header a
+/// chain instance declares (D_CRED_HEADER), so a plain key or a foreign token is never admitted
+/// by moving it to another carrier. Every occurrence is scanned, not a decoy first one.
 pub(crate) fn refuse_foreign_audience(
     snapshot: &crate::inbound::request_snapshot::ChargedRequestSnapshot,
     chain: &NativeChain,
@@ -891,18 +885,31 @@ pub(crate) fn refuse_foreign_audience(
     snapshot
         .with_auth_input(|request| {
             for field in request.headers {
-                if !field.name.get().eq_ignore_ascii_case("authorization") {
-                    continue;
-                }
-                let Ok(value) = std::str::from_utf8(field.value.get()) else {
+                let name = field.name.get();
+                let token = if name.eq_ignore_ascii_case("authorization") {
+                    let Ok(value) = std::str::from_utf8(field.value.get()) else {
+                        continue;
+                    };
+                    let Some((scheme, token)) = value.split_once(' ') else {
+                        continue;
+                    };
+                    if !scheme.eq_ignore_ascii_case("Bearer") {
+                        continue;
+                    }
+                    token
+                } else if chain.reads_header(name) {
+                    // An empty line presents nothing; a value that is not text states no
+                    // audience at all.
+                    if field.value.get().is_empty() {
+                        continue;
+                    }
+                    let Ok(value) = std::str::from_utf8(field.value.get()) else {
+                        return Err(DataRefused::Credential);
+                    };
+                    value
+                } else {
                     continue;
                 };
-                let Some((scheme, token)) = value.split_once(' ') else {
-                    continue;
-                };
-                if !scheme.eq_ignore_ascii_case("Bearer") {
-                    continue;
-                }
                 match super::audience::inspect_bearer(token.trim(), audience) {
                     super::audience::Binding::Mismatch | super::audience::Binding::Opaque => {
                         return Err(DataRefused::Credential)
@@ -1430,6 +1437,30 @@ impl DataAuthorization {
     }
 }
 
+/// Who presented a request on a core route or on no route: the engine's own token judged by the
+/// engine (`keys`, under this generation's governance, bound to no audience: a core route is bound
+/// to none), exactly as a data route judges it, else the chain's instances. A key the operator
+/// minted is the same caller on `/stats`, on an unknown path and on a plane's route.
+async fn core_or_chain(
+    app: &App,
+    chain: &Arc<NativeChain>,
+    cx: CallCx,
+    snapshot: Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot>,
+) -> Result<NativePreparedAnswer, DataRefused> {
+    let now = snapshot.now_s();
+    if let Some(core) =
+        super::native_keys::judge(&snapshot, chain, None, app.governance.as_deref(), None, now)?
+    {
+        return Ok(NativePreparedAnswer::Identity(
+            chain.core_identity(cx, snapshot, core),
+        ));
+    }
+    chain
+        .prepare_snapshot(cx, snapshot)
+        .await
+        .map_err(|_| DataRefused::Unavailable)
+}
+
 /// The data chain's judgement of a request no route matched (design C4, question 4): the facts
 /// the admission decision needs to answer 404 or 405 to a verified caller and the one 401 to
 /// anyone else. Nothing is lent to any plane and nothing is claimed: an unknown path consumes no
@@ -1444,16 +1475,26 @@ pub async fn judge_unrouted(
         return (Some(Verified::Unavailable), None);
     };
     // A DPoP proof here names core's public URL: no plane's route matched.
-    let snapshot =
-        match judge_sender(app, snapshot, chain, None, app.public_url.as_deref(), false).await {
-            Ok(snapshot) => snapshot,
-            Err(DataRefused::Unavailable) => return (Some(Verified::Unavailable), None),
-            Err(_) => return (Some(Verified::Denied), None),
-        };
-    let prepared = match chain.prepare_snapshot(cx, snapshot).await {
+    let snapshot = match judge_sender(
+        app,
+        snapshot,
+        chain,
+        None,
+        app.public_url.as_deref(),
+        chain.admits_keys(),
+    )
+    .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(DataRefused::Unavailable) => return (Some(Verified::Unavailable), None),
+        Err(_) => return (Some(Verified::Denied), None),
+    };
+    let prepared = match core_or_chain(app, chain, cx, snapshot).await {
         Ok(NativePreparedAnswer::Identity(prepared)) => prepared,
-        Ok(_) => return (Some(Verified::Denied), None),
-        Err(_) => return (Some(Verified::Unavailable), None),
+        Err(DataRefused::Unavailable | DataRefused::Capacity) => {
+            return (Some(Verified::Unavailable), None)
+        }
+        Ok(_) | Err(_) => return (Some(Verified::Denied), None),
     };
     if binding.check_live().is_err() {
         return (Some(Verified::Unavailable), None);
@@ -2082,13 +2123,16 @@ pub async fn verify_core_key(
     let snapshot = binding.snapshot().map_err(|_| DataRefused::Capacity)?;
     // A core route's DPoP proof names core's public URL.
     let app = binding.app();
-    let snapshot =
-        judge_sender(app, snapshot, chain, None, app.public_url.as_deref(), false).await?;
-    let prepared = match chain
-        .prepare_snapshot(cx, snapshot)
-        .await
-        .map_err(|_| DataRefused::Unavailable)?
-    {
+    let snapshot = judge_sender(
+        app,
+        snapshot,
+        chain,
+        None,
+        app.public_url.as_deref(),
+        chain.admits_keys(),
+    )
+    .await?;
+    let prepared = match core_or_chain(app, chain, cx, snapshot).await? {
         NativePreparedAnswer::Identity(prepared) => prepared,
         _ => return Err(DataRefused::Credential),
     };

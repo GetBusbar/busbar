@@ -196,7 +196,7 @@ async fn a_fips_backend_refusal_of_an_unsigned_drop_in_seals_one_external_crypto
         kind: "store".into(),
         version: "1.0.0".into(),
         publisher: "acme".into(),
-        abi_version: busbar_contract::abi::store::ABI_VERSION,
+        abi_version: busbar_plugin_abi::versions::abi_of(busbar_plugin_abi::types::KindCode::Store),
         sha256: sha256_hex(lib),
         ..Manifest::default()
     };

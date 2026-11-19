@@ -199,10 +199,11 @@ pub(crate) fn compose_native(
     let node = crate::root::plane_node::node();
     let post = Arc::new(crate::root::plane_node::NodeEndPost::new(Arc::clone(&node)));
     let billing = busbar_kernel::plane_driver::port_billing::PortBilling::new(
-        Arc::new(PlaneMoney::new(
-            Arc::clone(&gov),
+        native_money(
+            &node,
+            &gov,
             Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
-        )),
+        ),
         Arc::clone(&gov),
         node.kernel_and_keys().1,
         Arc::new(busbar_kernel::plane_driver::CoreAudit),
@@ -216,6 +217,22 @@ pub(crate) fn compose_native(
         ..Served::default()
     }
 }
+
+/// The serving generation's money seam, bound to the Node so the exit walk reports every unit it
+/// still holds at shutdown (SHUTDOWN-HANG F4 `open_at_exit`; PROOF-007).
+fn native_money(
+    node: &crate::root::plane_node::Node,
+    gov: &Arc<busbar_kernel::governance::GovState>,
+    post: Arc<dyn busbar_kernel::plane_driver::EndPost>,
+) -> Arc<PlaneMoney> {
+    let money = Arc::new(PlaneMoney::new(Arc::clone(gov), post));
+    node.bind_native_money(&money);
+    money
+}
+
+#[cfg(test)]
+#[path = "serve_open_units_tests.rs"]
+mod open_units_tests;
 
 /// Project only the candidate retained by this request. A current global handle is never
 /// consulted, so a reload cannot substitute a different physical route token mid-request.

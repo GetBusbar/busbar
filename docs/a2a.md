@@ -116,9 +116,11 @@ agents:
 
 **The `passthrough` refusal is the one to understand.** `passthrough` means "forward the CALLER's credential upstream". On the delegation plane that would hand a third-party vendor a working Busbar credential belonging to somebody else — the caller's key authenticated them *to Busbar* and authorised them against *Busbar's* scopes, and it means nothing anywhere else. **Busbar delegates as itself.** The word stays reserved on every plane so the vocabulary is learned once; the value is refused loudly.
 
-### Governance is required at runtime
+### Auth is core's, as on every plane
 
-The plane's admission is an audience on a Busbar-minted token plus that key's `agent` grants, and neither exists without governance and an `auth.chain`. A misconfiguration here surfaces as requests being refused at runtime rather than as a process that will not start. Configure `auth.chain` before you turn the plane on.
+The plane carries no auth policy of its own. A caller is admitted by the same `auth.chain`, role bindings and budgets as on every other plane: with a credentialed chain, an audience on a Busbar-minted token plus that key's `agent` grants; with `auth: { chain: [anonymous] }`, the principal `anonymous`, narrowed by `role_bindings.anonymous` exactly as on the LLM plane (each role names a scope, here `allowed_agents`; admin scopes and verbs are refused) and billed to that binding. An empty `auth.chain` is refused for every plane alike.
+
+**Anonymous tasks are reached by their id alone.** The anonymous principal is one subject every credential-less caller shares, so its task records are never keyed by it: the plane states the task id to core as the session's handle, and core derives the caller scope from that id alone. A task one anonymous caller created is reached only by presenting its id; a foreign or guessed id finds no record (`TaskNotFound`), and nothing lists tasks across anonymous callers. The id is the one the agent issued, so its unguessability is the agent's: front only agents that issue unguessable task ids (the A2A specification's server-generated ids, such as UUIDs) to anonymous callers.
 
 ### Failover pools: `agents.pools`
 

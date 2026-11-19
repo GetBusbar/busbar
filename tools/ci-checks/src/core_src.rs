@@ -326,7 +326,7 @@ pub(crate) fn no_licence(root: &Path) -> Outcome {
             Err(error) => findings.push(format!("{}: {error}", rel(root, &file))),
         }
     }
-    let header = root.join("crates/busbar-contract/include/busbar_plugin.h");
+    let header = root.join("crates/busbar-plugin-abi/include/busbar_plugin.h");
     if header.is_file() {
         let text = std::fs::read_to_string(&header).map_err(|e| format!("busbar_plugin.h: {e}"))?;
         for (line, _) in licence_header(&text) {

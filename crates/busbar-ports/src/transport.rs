@@ -10,7 +10,7 @@ use crate::PortError;
 
 /// One live transport session (a connection) and its output state.
 pub struct TransportSession {
-    pub s: crate::KindSession<busbar_ffi::kind::Transport>,
+    pub s: crate::KindSession<busbar_plugin_abi::host_side::boundary::kind::Transport>,
     /// The session's one validator of the output model: what the engine asked of each stream and
     /// what the session has written for it (rules L1 to L7 and L9).
     pub wire: busbar_plugin_abi::wire::Wire,

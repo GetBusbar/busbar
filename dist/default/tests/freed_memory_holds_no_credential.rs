@@ -9,8 +9,11 @@
 //! map's values. Nothing wipes those; they go back to the allocator as they are, so the
 //! credential stays readable in freed memory for as long as the allocator leaves it.
 //!
-//! The proof is the allocator's own view: every block handed back while the test is armed is
-//! scanned for the credential before it is released. Zero blocks may hold it.
+//! The proof is the allocator's own view: every block handed back, on any thread, while the test is
+//! armed is scanned for the credential before it is released (a block that moves on growth is
+//! scanned as its old copy is released). Zero blocks may hold it. The allocator is the one audited
+//! test watch (busbar-ffi `test_watch::Watch`, through busbar-plugin-test), so this file reads no
+//! raw memory itself.
 //!
 //! RED at the integration head (the library's read buffer and header values are freed unwiped).
 //! GREEN with the fork change stated at the end of this file.
@@ -18,8 +21,6 @@
 
 #![cfg(unix)]
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -28,71 +29,14 @@ use busbar_core_connector::framed_stream::session::TransportConn;
 use busbar_plugin_abi::transport as wire;
 use busbar_plugin_test::fake_needs::FakeNeeds;
 use busbar_plugin_test::suites::harness::Harness;
+use busbar_plugin_test::Watch;
 use busbar_ports::transport::ConnIn;
 
 /// The credential the caller sends. Distinct enough that no other block can hold it by chance.
 const CREDENTIAL: &[u8] = b"sk-caller-7f3a9c1e5b2d4f60-a8e6c4b2d0f1e3a5";
 
-/// Blocks are scanned only while this is set.
-static ARMED: AtomicBool = AtomicBool::new(false);
-/// Blocks handed back holding the credential.
-static DIRTY: AtomicUsize = AtomicUsize::new(0);
-/// The size of the first such block (what kind of buffer it was).
-static FIRST_DIRTY_SIZE: AtomicUsize = AtomicUsize::new(0);
-
-struct Scanning;
-
-fn scan(block: &[u8]) {
-    if block.len() >= CREDENTIAL.len()
-        && block
-            .windows(CREDENTIAL.len())
-            .any(|window| window == CREDENTIAL)
-    {
-        if DIRTY.fetch_add(1, Ordering::SeqCst) == 0 {
-            FIRST_DIRTY_SIZE.store(block.len(), Ordering::SeqCst);
-        }
-    }
-}
-
-// SAFETY: every call is forwarded verbatim to the system allocator. Before a block is released it
-// is read (never written) through the pointer and size the caller is giving back, which are valid
-// for reads until the forwarded call returns.
-unsafe impl GlobalAlloc for Scanning {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: forwarded as given.
-        unsafe { System.alloc(layout) }
-    }
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: forwarded as given.
-        unsafe { System.alloc_zeroed(layout) }
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        if ARMED.load(Ordering::Relaxed) {
-            // SAFETY: `ptr` is valid for reads of `layout.size()` bytes until it is released below.
-            scan(unsafe { std::slice::from_raw_parts(ptr, layout.size()) });
-        }
-        // SAFETY: forwarded as given.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        // A block that moves leaves its old bytes behind: allocate, copy, scan and release the old
-        // one here, so the old block is seen exactly as a plain release would see it.
-        // SAFETY: the new layout has the old alignment and a size the caller vouches for.
-        let fresh =
-            unsafe { System.alloc(Layout::from_size_align_unchecked(new_size, layout.align())) };
-        if fresh.is_null() {
-            return fresh;
-        }
-        // SAFETY: both blocks are valid for the smaller of the two sizes and do not overlap.
-        unsafe { std::ptr::copy_nonoverlapping(ptr, fresh, layout.size().min(new_size)) };
-        // SAFETY: the old block is released exactly once, through the scanning release.
-        unsafe { self.dealloc(ptr, layout) };
-        fresh
-    }
-}
-
 #[global_allocator]
-static ALLOC: Scanning = Scanning;
+static ALLOC: Watch = Watch::new();
 
 /// A storage account that admits everything.
 struct Open;
@@ -123,8 +67,7 @@ fn a_callers_credential_is_in_no_block_the_http_image_gives_back() {
     // The test's own copy of the request is made and wiped outside the armed window.
     let mut bytes = request();
 
-    ARMED.store(true, Ordering::SeqCst);
-    {
+    let freed = ALLOC.armed(CREDENTIAL, || {
         let conn = ConnIn {
             role: wire::ROLE_SERVER,
             flags: 0,
@@ -159,17 +102,14 @@ fn a_callers_credential_is_in_no_block_the_http_image_gives_back() {
         let _ = session.ingest(&[], Instant::now());
         let _ = session.close(wire::CR_NORMAL, Instant::now());
         drop(session);
-    }
-    ARMED.store(false, Ordering::SeqCst);
+    });
     bytes.fill(0);
 
     assert_eq!(
-        DIRTY.load(Ordering::SeqCst),
-        0,
-        "{} block(s) were given back still holding the caller's credential (the first was {} \
-         bytes): the HTTP library's copy of the request is not wiped",
-        DIRTY.load(Ordering::SeqCst),
-        FIRST_DIRTY_SIZE.load(Ordering::SeqCst),
+        freed.blocks_containing_canary, 0,
+        "{} block(s) were given back still holding the caller's credential (of {} freed, {} bytes): \
+         the HTTP library's copy of the request is not wiped",
+        freed.blocks_containing_canary, freed.count, freed.bytes,
     );
 }
 

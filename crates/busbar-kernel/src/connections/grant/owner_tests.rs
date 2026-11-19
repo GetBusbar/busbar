@@ -153,6 +153,7 @@ impl AuthPort for Rotating {
 
 #[tokio::test]
 async fn distinct_replicas_and_scopes_cannot_lend_the_same_rotating_grant() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let backend = Arc::new(Backend::default());
     let a = owner(backend.clone(), 4).await;
     let b = owner(backend, 5).await;
@@ -175,6 +176,7 @@ async fn distinct_replicas_and_scopes_cannot_lend_the_same_rotating_grant() {
 
 #[tokio::test]
 async fn remote_rotation_then_cancellation_never_reuses_the_predecessor() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let backend = Arc::new(Backend::default());
     let a = owner(backend.clone(), 4).await;
     let b = owner(backend, 5).await;
@@ -205,6 +207,7 @@ async fn remote_rotation_then_cancellation_never_reuses_the_predecessor() {
 
 #[tokio::test]
 async fn revoke_wins_while_remote_mint_is_parked_without_resurrection() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let backend = Arc::new(Backend::default());
     let a = owner(backend.clone(), 4).await;
     let b = owner(backend, 5).await;
@@ -226,6 +229,7 @@ async fn revoke_wins_while_remote_mint_is_parked_without_resurrection() {
 
 #[tokio::test]
 async fn no_update_success_still_settles_exclusion_before_credential_delivery() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let backend = Arc::new(Backend::default());
     let a = owner(backend, 4).await;
     let epoch = install(&a).await;
@@ -247,6 +251,7 @@ async fn no_update_success_still_settles_exclusion_before_credential_delivery() 
 
 #[tokio::test]
 async fn failed_store_completion_never_returns_a_credential() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let backend = Arc::new(Backend::default());
     let a = owner(backend.clone(), 4).await;
     let epoch = install(&a).await;
@@ -262,6 +267,7 @@ async fn failed_store_completion_never_returns_a_credential() {
 
 #[tokio::test]
 async fn explicit_revoke_of_absence_blocks_the_actual_pending_first_callback() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let backend = Arc::new(Backend::default());
     let a = owner(backend, 4).await;
     let first = a.begin_connection(key()).await.unwrap();
@@ -275,6 +281,7 @@ async fn explicit_revoke_of_absence_blocks_the_actual_pending_first_callback() {
 
 #[tokio::test]
 async fn restart_after_lost_remote_rotation_never_replays_mint_or_reuses_old_grant() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     use crate::persistence::caller_intents::fixture::Backend as NativeBackend;
     let backend = Arc::new(NativeBackend::new());
     let first = CallerGrantOwner::new(

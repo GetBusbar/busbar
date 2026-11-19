@@ -8,7 +8,6 @@
 //! (a parameter) with a loop or an iterator. One submodule per request-path module it serves.
 
 pub(crate) mod durable_documents;
-pub(crate) mod export_pump;
 pub(crate) mod ffi_thread;
 pub(crate) mod highwater;
 pub(crate) mod rows;

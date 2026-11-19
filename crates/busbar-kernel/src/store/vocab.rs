@@ -88,10 +88,9 @@ pub fn now_ns() -> u64 {
 
 /// Nanoseconds on the node's monotonic clock since its first reading in this process. It ORDERS
 /// and MEASURES (one reading at each end of an interval, subtracted); it never dates anything.
+/// The host clock's own origin, so `mono_instant::instant_at` converts a reading exactly.
 pub fn monotonic_ns() -> u64 {
-    static ORIGIN: std::sync::LazyLock<std::time::Instant> =
-        std::sync::LazyLock::new(std::time::Instant::now);
-    u64::try_from(ORIGIN.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    busbar_contract::mono_instant::monotonic_ns()
 }
 
 /// One reading of both node clocks at the same instant: the wall reading DATES a record, the

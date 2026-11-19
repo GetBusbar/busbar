@@ -18,6 +18,10 @@ const API_REVISION_DIGESTS: &[(u32, &str)] = &[
         2,
         "80315de24685e1fa65363fc5f0a77d48145c733bf83bd4d30de0be50e3719366",
     ),
+    (
+        3,
+        "e7f2a92b5204a3d6c3b939e48360e5b472b428ea863ae0d6b851d9660309cdc6",
+    ),
 ];
 
 const COMMITTED_OPENAPI: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/v1/json/openapi.json");

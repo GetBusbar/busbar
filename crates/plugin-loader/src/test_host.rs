@@ -64,27 +64,6 @@ pub fn admit_linked(
     crate::admit::admit_linked(plugin)
 }
 
-/// The cdylib built from `lib_name` (found as [`cdylib_bytes`] finds it), admitted through `admit` under a
-/// [`test_manifest`] stating `former_names`, trusted only for the explicit `expected_scope`.
-///
-/// # Errors
-/// The loader's refusal.
-///
-/// # Panics
-/// When no such file exists or it cannot be read.
-#[cfg(unix)]
-pub fn admit_cdylib(
-    lib_name: &str,
-    former_names: &[&str],
-    expected_scope: &str,
-) -> Result<crate::admit::Admitted, crate::refusal::Refusal> {
-    let path = locate(lib_name);
-    let bytes =
-        std::fs::read(&path).unwrap_or_else(|e| panic!("read the cdylib {}: {e}", path.display()));
-    let manifest = test_manifest(&bytes, former_names)?;
-    admit_bytes(&bytes, &manifest, expected_scope)
-}
-
 /// Native stores for tests outside a booted root (the dist fixtures): one registry over one admitted store image,
 /// opening each instance with no Needs and no reference sources. Enough for a store whose `open` makes no NEED and
 /// binds no reference (a local file store such as store-sqlite: it calls only host services). The registry

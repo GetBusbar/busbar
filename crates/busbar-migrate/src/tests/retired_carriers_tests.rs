@@ -27,11 +27,15 @@ fn dropped(source: &str) -> (Value, Vec<String>) {
 
 #[test]
 fn every_spelling_of_the_two_modules_is_a_retired_carrier_and_nothing_else_is() {
-    for word in ["tcp", "transport-tcp", "busbar-transport-tcp"] {
-        assert_eq!(retired(word), Some("busbar-transport-tcp"), "{word}");
-    }
-    for word in ["stdio", "transport-stdio", "busbar-transport-stdio"] {
-        assert_eq!(retired(word), Some("busbar-transport-stdio"), "{word}");
+    for carrier in "tcp stdio".split(' ') {
+        let plugin = format!("busbar-transport-{carrier}");
+        for word in [
+            carrier.to_string(),
+            format!("transport-{carrier}"),
+            plugin.clone(),
+        ] {
+            assert_eq!(retired(&word), Some(plugin.as_str()), "{word}");
+        }
     }
     for word in [
         "",
@@ -148,7 +152,7 @@ fn an_upgrade_plans_a_config_that_names_the_retired_carriers_and_reports_each_on
     use crate::{plan, Inputs};
 
     let scratch = Scratch::new();
-    let path = scratch.config(
+    let path = scratch.deployment(
         "listen: x\n\
          transport:\n  wire: {module: tcp}\n  pipes: {module: stdio}\n  wire2: {module: tcp}\n\
          store: {module: sqlite}\n",
@@ -176,8 +180,8 @@ fn an_upgrade_plans_a_config_that_names_the_retired_carriers_and_reports_each_on
     assert!(lines[1].contains("busbar-transport-stdio"), "{}", lines[1]);
 
     let living = Scratch::new();
-    let path =
-        living.config("listen: x\ntransport:\n  web: {module: http}\nstore: {module: sqlite}\n");
+    let path = living
+        .deployment("listen: x\ntransport:\n  web: {module: http}\nstore: {module: sqlite}\n");
     let refused = plan(&Inputs::new(&path, &facts(), &accept)).unwrap_err();
     assert_eq!(refused.word(), "CONFIG");
     assert!(refused.to_string().contains("`transport:`"), "{refused}");

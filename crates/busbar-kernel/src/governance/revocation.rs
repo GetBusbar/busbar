@@ -9,9 +9,9 @@
 //! ([`crate::refresh`]), so a node that serves no request still re-reads a peer's revokes.
 
 use crate::diagnostics::{diag_warn, REVOCATION_RESYNC_FAILED, REVOCATION_RESYNC_OUTSTANDING};
-use foldhash::HashSet;
+use foldhash::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use super::REVOCATION_SYNC_TTL_SECS;
@@ -35,6 +35,68 @@ pub(crate) struct RevocationSync {
     attempted: Mutex<Attempt>,
 
     inflight: AtomicBool,
+
+    /// The live connections that carry a request admitted on a subject, by subject: what a
+    /// revocation of that subject ends ([`RevocationSync::watch`]). An entry lives as long as the
+    /// [`RevocationWatch`] that made it.
+    watchers: Mutex<HashMap<Box<str>, Vec<(u64, Weak<RevocationCut>)>>>,
+    next_watch: AtomicU64,
+}
+
+/// One connection's revocation cut: fired once, with the subject whose revocation ended it, when
+/// a credential or grant any of its live requests was admitted on is revoked. The connection's
+/// supervisor waits on it and ends the connection with `CR_REVOKED`.
+#[derive(Default)]
+pub struct RevocationCut {
+    revoked: OnceLock<Box<str>>,
+    fired: tokio::sync::Notify,
+}
+
+impl RevocationCut {
+    fn fire(&self, subject: &str) {
+        if self.revoked.set(subject.into()).is_ok() {
+            // A permit is stored when nobody waits yet: the supervisor's next wait returns.
+            self.fired.notify_one();
+        }
+    }
+
+    /// The subject whose revocation cut this connection, once one did.
+    pub fn revoked_subject(&self) -> Option<&str> {
+        self.revoked.get().map(|subject| &**subject)
+    }
+
+    /// Resolves once a revocation cut this connection, with the revoked subject.
+    pub async fn revoked(&self) -> &str {
+        loop {
+            if let Some(subject) = self.revoked_subject() {
+                return subject;
+            }
+            self.fired.notified().await;
+        }
+    }
+}
+
+/// A request's watch on the revocation of the subject it was admitted on. Dropping it (the
+/// request ended, or was cancelled) takes the request off the subject's list.
+pub struct RevocationWatch {
+    sync: Weak<RevocationSync>,
+    subject: Box<str>,
+    id: u64,
+}
+
+impl Drop for RevocationWatch {
+    fn drop(&mut self) {
+        let Some(sync) = self.sync.upgrade() else {
+            return;
+        };
+        let mut watchers = sync.watchers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(listed) = watchers.get_mut(&self.subject) {
+            listed.retain(|(id, _)| *id != self.id);
+            if listed.is_empty() {
+                watchers.remove(&self.subject);
+            }
+        }
+    }
 }
 
 struct NativeRefresh {
@@ -81,6 +143,8 @@ impl RevocationSync {
             synced_tick: AtomicU64::new(0),
             attempted: Mutex::new(Attempt { wall: now, tick: 0 }),
             inflight: AtomicBool::new(false),
+            watchers: Mutex::new(HashMap::default()),
+            next_watch: AtomicU64::new(0),
         })
     }
 
@@ -91,9 +155,45 @@ impl RevocationSync {
             .contains(sub)
     }
 
+    /// Every revocation this node learns enters here: its own revoke or delete, and a peer's,
+    /// read by the re-sync. The set is written first and released; then every live connection
+    /// watching `sub` is cut. The work is the subject's own watchers, nothing else.
     pub(crate) fn insert(&self, sub: &str) {
-        let mut set = self.set.write().unwrap_or_else(|e| e.into_inner());
-        crate::off_path::governance::state::revocation_insert(&mut set, sub);
+        {
+            let mut set = self.set.write().unwrap_or_else(|e| e.into_inner());
+            crate::off_path::governance::state::revocation_insert(&mut set, sub);
+        }
+        let watching = self
+            .watchers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(sub);
+        for (_, cut) in watching.into_iter().flatten() {
+            if let Some(cut) = cut.upgrade() {
+                cut.fire(sub);
+            }
+        }
+    }
+
+    /// Watch `sub` for `cut`. The watch is listed before the set is read, and [`Self::insert`]
+    /// writes the set before it reads the list, so a revocation is never missed between a
+    /// request's admission and its watch: one already in the set cuts at once.
+    pub(crate) fn watch(&self, sub: &str, cut: &Arc<RevocationCut>) -> RevocationWatch {
+        let id = self.next_watch.fetch_add(1, Ordering::Relaxed);
+        let mut watchers = self.watchers.lock().unwrap_or_else(|e| e.into_inner());
+        watchers
+            .entry(sub.into())
+            .or_default()
+            .push((id, Arc::downgrade(cut)));
+        if self.contains(sub) {
+            cut.fire(sub);
+        }
+        drop(watchers);
+        RevocationWatch {
+            sync: self.me.clone(),
+            subject: sub.into(),
+            id,
+        }
     }
 
     #[cfg(test)]

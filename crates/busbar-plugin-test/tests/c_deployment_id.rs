@@ -68,17 +68,51 @@ mod root_boot_walk;
 /// userinfo masked), and no 2c instance opens. The id here is the walk's `deployment` read answered with a fixed
 /// id: the `busbar.deployment.v1`/`id` row through a store is (a)'s (W1-K9). `set_deployment` is process-wide
 /// and keep-once and every open runs its config-only CHECK first (694764d34e), so a 2b open after the id is
-/// published would refuse in its own check and never reach the re-check: the two halves run as two tests, each
-/// in its own process (nextest), and each walk starts with no id.
+/// published would refuse in its own check and never reach the re-check: the two halves run as two tests, and
+/// each runs its walk in a fresh process of this test binary (`own_process`), so each walk starts with no id
+/// under any runner, even when another case of this binary has already published one.
 #[test]
 fn the_2a_and_2b_recheck_sees_the_id_before_any_2c_open() {
-    recheck_arm(true);
+    own_process(
+        "c_deployment_id::the_2a_and_2b_recheck_sees_the_id_before_any_2c_open",
+        || recheck_arm(true),
+    );
 }
 
 /// (f), second half: a 2b store whose install binding names another deployment refuses its re-check.
 #[test]
 fn a_wrong_install_binding_refuses_the_2b_recheck() {
-    recheck_arm(false);
+    own_process(
+        "c_deployment_id::a_wrong_install_binding_refuses_the_2b_recheck",
+        || recheck_arm(false),
+    );
+}
+
+/// Names the one test a child process of this binary runs (the child runs `arm` itself).
+const OWN_PROCESS: &str = "BUSBAR_C_DEPLOYMENT_ID_OWN_PROCESS";
+
+/// Runs `arm` in a fresh process of this test binary that runs only the test `name`: the published id is
+/// process-wide and keep-once, so a walk that must start with no id cannot share a process with any case that
+/// publishes one. The parent passes only when that child ran exactly this one test and it passed.
+fn own_process(name: &str, arm: impl FnOnce()) {
+    if std::env::var_os(OWN_PROCESS).is_some_and(|child| child == name) {
+        arm();
+        return;
+    }
+    let out = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+        .args(["--exact", name, "--test-threads=1", "--nocapture"])
+        .env(OWN_PROCESS, name)
+        .output()
+        .expect("run this test in its own process");
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        out.status.success() && stdout.contains("test result: ok. 1 passed; 0 failed"),
+        "{name} in its own process: {}\n{stdout}\n{stderr}",
+        out.status
+    );
 }
 
 /// `ids`: the first half (what each instance saw); else the second (the refused re-check).

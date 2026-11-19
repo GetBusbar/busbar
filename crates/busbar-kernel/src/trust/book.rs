@@ -587,9 +587,42 @@ impl TrustBook {
         demoted: impl IntoIterator<Item = (&'a str, u64)>,
         decided: &[RulingRow],
     ) {
+        self.admit_read_since(instance, entries, demoted, decided, None);
+    }
+
+    /// [`Self::admit_with_decisions`] for rows `decided` read after `read_at` was taken. A
+    /// counterparty decided in this process since `read_at` (its decision epoch moved) replays none
+    /// of them: its live state holds a decision newer than every row read before it, and replaying
+    /// one would undo it (a revocation made while a reload read its rows would come back approved).
+    /// Any other counterparty replays them, so a reload still reads what another replica decided.
+    pub(crate) fn admit_read_since<'a>(
+        &self,
+        instance: &Arc<str>,
+        entries: impl IntoIterator<Item = (String, TrustEntry)>,
+        demoted: impl IntoIterator<Item = (&'a str, u64)>,
+        decided: &[RulingRow],
+        read_at: Option<&DecisionSnapshot>,
+    ) {
         let entries: BTreeMap<String, TrustEntry> = entries.into_iter().collect();
         let mut map = self.lock();
         let old = map.remove(instance).unwrap_or_default();
+        let decided_since: std::collections::BTreeSet<&str> =
+            read_at.map_or_else(std::collections::BTreeSet::new, |snapshot| {
+                let then = snapshot.0.get(instance.as_ref());
+                entries
+                    .keys()
+                    .filter(|name| {
+                        let was = then.and_then(|subjects| subjects.get(name.as_str()));
+                        let is = old.subjects.get(name.as_str()).map(|s| &s.decision_epoch);
+                        match (was, is) {
+                            (None, None) => false,
+                            (Some(was), Some(is)) => !Arc::ptr_eq(was, is),
+                            _ => true,
+                        }
+                    })
+                    .map(String::as_str)
+                    .collect()
+            });
         let mut subjects = BTreeMap::new();
         for (name, entry) in &entries {
             let kept = old
@@ -610,12 +643,18 @@ impl TrustBook {
                     Some(s.ledger.last_drift_ms.map_or(at_ms, |d| d.max(at_ms)));
             }
         }
+        let replayed: Vec<&RulingRow> = decided
+            .iter()
+            .filter(|r| {
+                r.instance == instance.as_ref() && !decided_since.contains(r.counterparty.as_str())
+            })
+            .collect();
         let mut book = Book {
             entries,
             subjects,
             deciding: old.deciding,
         };
-        for row in decided.iter().filter(|r| r.instance == instance.as_ref()) {
+        for row in replayed {
             replay_decision(&mut book, row);
         }
         map.insert(Arc::clone(instance), book);

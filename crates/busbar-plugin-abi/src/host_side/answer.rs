@@ -6,7 +6,8 @@
 //! An `Answer` exists only for a validated terminal answer: `Answer::parse` (and `OwnedAnswer::new`, which
 //! keeps the validated layout beside its buffer) walks the records once and refuses anything the generic
 //! layer can already judge. OK: a framing error is FAULT BadRecords; FAIL, NEED, NEED_RES, ERROR, the retired
-//! 0x000A, a TOKEN anywhere but first, a DIRECTORY-only nested tag at top level, an undefined generic tag and
+//! 0x000A, a TOKEN anywhere but first in a session opener's answer (`parse_opener`; anywhere at all in any
+//! other call's, P079B), a DIRECTORY-only nested tag at top level, an undefined generic tag and
 //! any tag above the kind range are FAULT UnknownTag (kind tags 0x0100..=0x4FFF pass to the kind decoder; 0x5000 and up is never used).
 //! REFUSED/FAILED: exactly FAIL, at most one ERROR directly after it, then (FAILED only) at most two FACTs with
 //! distinct keys in `FAIL_FACT_KEYS`; anything else is FAULT BadRecords. NEED is not an answer
@@ -59,12 +60,23 @@ fn ok_generic(t: u16) -> bool {
     )
 }
 
-fn layout_ok(bytes: &[u8]) -> Result<Layout, FaultReason> {
+/// Whose answer is validated: a session opener's may lead with the session TOKEN (§6.4 step 7); any other
+/// call's (a plain or session call, a session end, an async chain's final answer) names no session, so a
+/// TOKEN there is a context the host never handed it (a forged context): FAULT UnknownTag(TOKEN).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Caller {
+    Opener,
+    Other,
+}
+
+fn layout_ok(bytes: &[u8], caller: Caller) -> Result<Layout, FaultReason> {
     let mut layout = Layout::default();
     for (i, rec) in Records::new(bytes).enumerate() {
         let rec = rec.map_err(FaultReason::BadRecords)?;
         match rec.tag {
-            tag::TOKEN if i == 0 => layout.at = record_size(rec.body.len()),
+            tag::TOKEN if i == 0 && caller == Caller::Opener => {
+                layout.at = record_size(rec.body.len())
+            }
             // The kind ranges (interface revision D.2): 0x0100..=0x01FF, extended to 0x4FFF. Which of
             // them a kind declares, and which it has retired, is the kind decoder's to judge.
             0x0100..=0x4FFF => {}
@@ -142,9 +154,9 @@ fn layout_fail(status: Status, bytes: &[u8]) -> Result<Layout, FaultReason> {
     Ok(layout)
 }
 
-fn layout(status: Status, bytes: &[u8]) -> Result<Layout, FaultReason> {
+fn layout(status: Status, bytes: &[u8], caller: Caller) -> Result<Layout, FaultReason> {
     match status {
-        Status::OK => layout_ok(bytes),
+        Status::OK => layout_ok(bytes, caller),
         Status::REFUSED | Status::FAILED => layout_fail(status, bytes),
         Status::NEED => Err(FaultReason::NeedOutsideAsync),
         Status::FAULT => Err(FaultReason::Panic),
@@ -161,8 +173,24 @@ pub struct Answer<'o> {
 }
 impl<'o> Answer<'o> {
     /// Validates a terminal answer (module doc) and borrows it. Every proxy and the driver build answers here.
+    /// The answer of a call that opens no session: a TOKEN anywhere, first included, is FAULT UnknownTag (a
+    /// forged context, P079B). A session opener's answer is `parse_opener`'s.
     pub fn parse(status: Status, bytes: &'o [u8]) -> Result<Answer<'o>, FaultReason> {
-        Ok(Answer::at(status, bytes, layout(status, bytes)?))
+        Ok(Answer::at(
+            status,
+            bytes,
+            layout(status, bytes, Caller::Other)?,
+        ))
+    }
+
+    /// Validates a session opener's terminal answer (§6.4 step 7): as `parse`, but its OK answer may lead with
+    /// the session TOKEN (busbar-ffi's `open_sessionN` reads it; `records()` excludes it).
+    pub fn parse_opener(status: Status, bytes: &'o [u8]) -> Result<Answer<'o>, FaultReason> {
+        Ok(Answer::at(
+            status,
+            bytes,
+            layout(status, bytes, Caller::Opener)?,
+        ))
     }
 
     fn at(status: Status, bytes: &'o [u8], layout: Layout) -> Answer<'o> {
@@ -213,8 +241,8 @@ impl<'o> Answer<'o> {
     // W1-H1: `pub(crate) fn session_token(&self) -> Option<Token>` (IF §10.2: the session token a session
     // opener answered with, bit 63 checked; read only by the §10.4 session-handle constructor) is not written:
     // busbar-ffi's `Instance::open_sessionN` reads the leading session TOKEN itself and hands back the `Session`
-    // (UNSAFE-MIN §2.2), and a crate-private fn with no caller is dead code. `parse` already accepts a leading
-    // TOKEN and keeps it out of `records()`.
+    // (UNSAFE-MIN §2.2), and a crate-private fn with no caller is dead code. `parse_opener` already accepts a
+    // leading TOKEN and keeps it out of `records()`.
     pub fn is_ok(&self) -> bool {
         self.status == Status::OK
     }
@@ -227,10 +255,10 @@ pub struct OwnedAnswer {
     layout: Layout,
 }
 impl OwnedAnswer {
-    /// Validates the terminal answer in `buf` (as `Answer::parse`) and keeps it; on a FAULT the buffer drops
-    /// (zeroed, released).
+    /// Validates the terminal answer in `buf` (as `Answer::parse`: an async chain opens no session, so a TOKEN
+    /// in its final answer is FAULT UnknownTag) and keeps it; on a FAULT the buffer drops (zeroed, released).
     pub fn new(status: Status, buf: PooledOut) -> Result<OwnedAnswer, FaultReason> {
-        let layout = layout(status, buf.bytes())?;
+        let layout = layout(status, buf.bytes(), Caller::Other)?;
         Ok(OwnedAnswer {
             status,
             buf,
@@ -350,13 +378,45 @@ mod tests {
         .expect("token");
         r.put(tag::TEXT, b"hello").expect("text");
         r.put(0x0150, b"kind record").expect("kind");
-        let a = Answer::parse(Status::OK, r.as_bytes()).expect("valid");
+        let a = Answer::parse_opener(Status::OK, r.as_bytes()).expect("valid");
         assert!(a.is_ok());
         let tags: Vec<u16> = a.records().map(|rec| rec.expect("framed").tag).collect();
         assert_eq!(tags, [tag::TEXT, 0x0150]);
         assert_eq!(
             (a.fail(), a.fail_error(), a.fail_fact(FACT_RETRY_AFTER_S)),
             (None, 0, None)
+        );
+    }
+
+    #[test]
+    fn a_leading_token_outside_a_session_opener_faults_unknown_tag() {
+        // P079B: only a session opener names a session; anywhere else a leading TOKEN is a forged context.
+        let forged = || {
+            let mut r = Reply::new();
+            r.put_pod(
+                tag::TOKEN,
+                &TokenRec {
+                    token: (1 << 63) | 5,
+                },
+            )
+            .expect("token");
+            r.put(tag::TEXT, b"hello").expect("text");
+            r
+        };
+        let r = forged();
+        assert_eq!(
+            Answer::parse(Status::OK, r.as_bytes()).err(),
+            Some(FaultReason::UnknownTag(tag::TOKEN)),
+            "a sync call that opens nothing"
+        );
+        assert!(Answer::parse_opener(Status::OK, r.as_bytes()).is_ok());
+        let mut buf = Pool::global().acquire(1 << 20);
+        crate::records::RawWrite::room(&mut buf, r.len()).expect("room");
+        crate::records::RawWrite::append(&mut buf, r.as_bytes());
+        assert_eq!(
+            OwnedAnswer::new(Status::OK, buf).err(),
+            Some(FaultReason::UnknownTag(tag::TOKEN)),
+            "an async chain's final answer"
         );
     }
 

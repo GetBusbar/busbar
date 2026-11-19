@@ -403,6 +403,10 @@ pub(super) async fn relay<K: Calls + ?Sized, R: UpChunks>(
             relay.client_open = false;
         }
         relay.apply(task, first).await?;
+        // The unit reached its spend ceiling: a message session that has not ended ends here (BUDGET-CUT).
+        if !relay.done() {
+            super::port_session::within_budget(effects)?;
+        }
         while !relay.done() {
             let answer = match relay.wait().await {
                 Event::Client(ClientEvent::Message { flags, bytes }) => {
@@ -452,6 +456,9 @@ pub(super) async fn relay<K: Calls + ?Sized, R: UpChunks>(
                 }
             };
             relay.apply(task, answer).await?;
+            if !relay.done() {
+                super::port_session::within_budget(effects)?;
+            }
         }
         Ok(())
     }

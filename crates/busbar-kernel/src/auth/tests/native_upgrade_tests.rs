@@ -202,6 +202,15 @@ fn fixture(bound: bool) -> Fixture {
 /// the one instance whose image declares that header (§12.11), named `twilio`. `None` = the data
 /// chain: the bearer instance `provider-42`.
 fn fixture_on(bound: bool, cred_header: Option<&'static str>) -> Fixture {
+    fixture_with(bound, cred_header, |_| {})
+}
+
+/// [`fixture_on`] on a deployment `deploy` edits first (its public URL, its authorization server).
+fn fixture_with(
+    bound: bool,
+    cred_header: Option<&'static str>,
+    deploy: impl FnOnce(&mut App),
+) -> Fixture {
     let provider = if cred_header.is_some() {
         "twilio"
     } else {
@@ -209,6 +218,7 @@ fn fixture_on(bound: bool, cred_header: Option<&'static str>) -> Fixture {
     };
     let caller = Caller::for_test(Arc::from("plane/test"), KindCode::Plane);
     let mut app = (*app()).clone();
+    deploy(&mut app);
     app.config_generation.store(7, Ordering::Release);
     if bound {
         app.role_bindings = BTreeMap::from([(
@@ -736,5 +746,375 @@ mod audience_bound_dpop {
 
         assert_eq!(f.port.calls.load(Ordering::SeqCst), 0, "no chain ran");
         assert_eq!(f.replay.0.load(Ordering::SeqCst), 0, "no replay key spent");
+    }
+}
+
+/// OPEN-3 row 12: the upgrade route, the unrouted judgement and a keyed core route each run the
+/// one sender-constraint judge a data route's preparation runs (`native_data::judge_sender`). At
+/// every site a DPoP presentation whose proof is proven for the URL the request was received at
+/// (core's public URL and the path as received, RFC 9449 s4.3 (9)) goes on to the chain as the
+/// head's one credential and is admitted; one whose proof is not proven is the one 401, and no
+/// chain runs and no replay key is spent.
+///
+/// The authorization server here is a stand-in behind the same seam the real one fills
+/// (`oauth_as::seam::AsPlaneSeam::prove_dpop`, judged for real in `busbar-core-oauth2`): it
+/// proves a proof exactly when the proof names the URL, method and token it is asked about.
+mod dpop_at_every_site {
+    use super::*;
+    use crate::oauth_as::seam::{
+        AccessStanding, AsPlaneSeam, DpopAtResource, DpopPresentation, DpopRefused, DpopVerdict,
+    };
+    use std::any::Any;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    const PUBLIC_URL: &str = "https://gw.example.com";
+    const TOKEN: &str = "good";
+
+    /// The proof the stand-in server proves for `htu`.
+    fn proof_for(htu: &str) -> String {
+        format!("proof-for:{htu}")
+    }
+
+    fn prove<'a>(
+        _: &'a Arc<dyn Any + Send + Sync>,
+        at: DpopAtResource<'a>,
+    ) -> Pin<Box<dyn Future<Output = DpopVerdict> + Send + 'a>> {
+        let verdict = if at.method != "GET" {
+            DpopVerdict::Refused(DpopRefused::Method)
+        } else if at.token != TOKEN {
+            DpopVerdict::Refused(DpopRefused::NotHeld)
+        } else if at.proof != proof_for(at.htu) {
+            DpopVerdict::Refused(DpopRefused::Uri)
+        } else {
+            DpopVerdict::Proven
+        };
+        Box::pin(async move { verdict })
+    }
+
+    fn input_schema() -> serde_json::Value {
+        serde_json::Value::Null
+    }
+
+    fn check(
+        _: &busbar_contract::yaml::Value,
+    ) -> Result<Vec<(String, busbar_contract::SecretRef)>, String> {
+        Err("the stand-in authorization server is never configured".into())
+    }
+
+    type Plane = Arc<dyn Any + Send + Sync>;
+    type Built = Pin<Box<dyn Future<Output = Result<Plane, String>> + Send>>;
+
+    fn build(
+        _: busbar_contract::yaml::Value,
+        _: Vec<(String, String)>,
+        _: Vec<String>,
+        _: Option<Plane>,
+        _: Arc<crate::persistence::facade::CoreStore>,
+        _: String,
+    ) -> Built {
+        Box::pin(async { Err("the stand-in authorization server is never built".to_string()) })
+    }
+
+    fn mount(
+        router: crate::core_routes::CoreRouter,
+        _: Option<&Arc<dyn Any + Send + Sync>>,
+    ) -> crate::core_routes::CoreRouter {
+        router
+    }
+
+    fn mount_operator(router: crate::core_routes::CoreRouter) -> crate::core_routes::CoreRouter {
+        router
+    }
+
+    fn verify_dpop<'a>(
+        _: &'a Arc<dyn Any + Send + Sync>,
+        _: DpopPresentation<'a>,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        Box::pin(async { false })
+    }
+
+    fn access_standing<'a>(
+        _: &'a Arc<dyn Any + Send + Sync>,
+        _: &'a str,
+        _: &'a str,
+    ) -> Pin<Box<dyn Future<Output = AccessStanding> + Send + 'a>> {
+        Box::pin(async { AccessStanding::NotMine })
+    }
+
+    /// The seam is process-wide and set once; a deployment without `oauth_as` (every other
+    /// test's) is never asked through it.
+    fn install_seam() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            crate::oauth_as::seam::install_as_plane_seam(AsPlaneSeam {
+                input_schema,
+                check,
+                build,
+                mount,
+                mount_operator,
+                verify_dpop,
+                prove_dpop: prove,
+                access_standing,
+            })
+        });
+    }
+
+    /// The data chain's bearer instance on any path: it identifies `Bearer good` exactly when the
+    /// head carries no `DPoP` proof (a proven presentation reaches it restated as a bearer, its
+    /// proof spent), with a replay key of its own per verification.
+    struct AnyPath {
+        calls: AtomicUsize,
+    }
+
+    impl AuthPort for AnyPath {
+        fn facts(&self) -> u64 {
+            0
+        }
+        fn cred_headers(&self) -> &[Box<str>] {
+            &[]
+        }
+        fn issued_kind(&self) -> Option<&str> {
+            None
+        }
+        fn verify<'a>(&'a self, _: CallCx, req: &AuthIn<'_>, _: Option<&[u8]>) -> Verify<'a> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if req
+                .headers
+                .iter()
+                .any(|pair| pair.name.get().eq_ignore_ascii_case("dpop"))
+            {
+                return Verify::Done(Ok(VerifyAnswer::Refused {
+                    code: busbar_plugin_abi::auth::BAD_CREDENTIAL,
+                    text: "a proof reached the chain".into(),
+                }));
+            }
+            let presented = req
+                .headers
+                .iter()
+                .find(|pair| pair.name.get().eq_ignore_ascii_case("authorization"))
+                .map(|pair| pair.value.get().to_vec());
+            match presented.as_deref() {
+                None => Verify::Done(Ok(VerifyAnswer::NotMine)),
+                Some(b"Bearer good") => {
+                    let mut records = Reply::new();
+                    records.put_text(tag::ID_SUBJECT, "client").unwrap();
+                    records.put_text(tag::ID_GROUP, "reader").unwrap();
+                    records
+                        .put_pod_tail(
+                            busbar_plugin_abi::auth::tag::REPLAY,
+                            &U64Rec { value: 60 },
+                            format!("nonce-{call}").as_bytes(),
+                        )
+                        .unwrap();
+                    let VerifyOk::Identity(identity) =
+                        decode_verify_ok(Records::new(records.as_bytes())).unwrap()
+                    else {
+                        panic!("identity")
+                    };
+                    Verify::Done(Ok(VerifyAnswer::Identity(identity)))
+                }
+                Some(_) => Verify::Done(Ok(VerifyAnswer::Refused {
+                    code: busbar_plugin_abi::auth::BAD_CREDENTIAL,
+                    text: "bad".into(),
+                })),
+            }
+        }
+        fn login<'a>(
+            &'a self,
+            _: CallCx,
+            _: LoginIn<'a>,
+        ) -> BoxFut<'a, Result<LoginAnswer, PortError>> {
+            unsupported()
+        }
+        fn outbound<'a>(
+            &'a self,
+            _: CallCx,
+            _: &'a UpstreamIn<'a>,
+        ) -> BoxFut<'a, Result<OutboundAnswer, PortError>> {
+            unsupported()
+        }
+        fn refresh<'a>(&'a self, _: CallCx) -> BoxFut<'a, Result<Option<u32>, PortError>> {
+            unsupported()
+        }
+        fn serve<'a>(
+            &'a self,
+            _: CallCx,
+            _: &'a ServeIn<'a>,
+        ) -> BoxFut<'a, Result<ServeOut, PortError>> {
+            unsupported()
+        }
+    }
+
+    /// The upgrade fixture on a deployment that is its own authorization server and states its
+    /// public URL, its route judging with the [`AnyPath`] chain.
+    fn deployment() -> (Fixture, Arc<AnyPath>) {
+        install_seam();
+        let mut f = fixture_with(true, None, |app| {
+            app.public_url = Some(PUBLIC_URL.into());
+            app.oauth_as = Some(Arc::new(()));
+        });
+        let port = Arc::new(AnyPath {
+            calls: AtomicUsize::new(0),
+        });
+        let chain = Arc::new(
+            NativeChain::data(
+                7,
+                vec![Arc::new(AuthInstance {
+                    opened: OpenedAuth {
+                        who: Namespace {
+                            plugin: "verified-image".into(),
+                            name: "provider-42".into(),
+                            instance: 42,
+                            slot: 4,
+                        },
+                        port: port.clone(),
+                        methods: busbar_plugin_abi::auth::M_VERIFY,
+                        out_of_process: false,
+                        limits: InstanceLimits::default(),
+                    },
+                    keys: Arc::new(KeyRefresh::new(Duration::from_secs(30))),
+                    holds: Box::default(),
+                })],
+                Arc::new(AuthOwners {
+                    issued: f.replay.clone(),
+                    replay: f.replay.clone(),
+                    cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+                }),
+            )
+            .unwrap(),
+        );
+        let route = Arc::get_mut(&mut f.route).unwrap();
+        route.chain = chain;
+        route.public_url = Some(Arc::from(PUBLIC_URL));
+        (f, port)
+    }
+
+    fn presented(proof: &str) -> [(&'static str, String); 2] {
+        [
+            ("authorization", format!("DPoP {TOKEN}")),
+            ("dpop", proof.to_string()),
+        ]
+    }
+
+    fn fields<'h>(head: &'h [(&'static str, String); 2]) -> [(&'static str, &'h str); 2] {
+        [
+            (head[0].0, head[0].1.as_str()),
+            (head[1].0, head[1].1.as_str()),
+        ]
+    }
+
+    #[tokio::test]
+    async fn dpop_at_every_site_upgrade_route() {
+        let (f, port) = deployment();
+        let received = format!("{PUBLIC_URL}{PATH}");
+
+        // Unproven: a proof for another URL (the path with no origin is no URL it was received at).
+        let head = presented(&proof_for(PATH));
+        let (mut request, cx, _owner) = arrival_at(&f, 1, PATH, &fields(&head));
+        let refused = f
+            .route
+            .authorize(request.begin_data_preparation().unwrap(), cx)
+            .await
+            .unwrap_err();
+        assert_eq!(refused.reason(), DataRefused::Credential);
+        assert_eq!(port.calls.load(Ordering::SeqCst), 0, "no chain ran");
+        assert_eq!(f.replay.0.load(Ordering::SeqCst), 0, "no replay key spent");
+
+        // Proven at core's public URL and the path as received.
+        let head = presented(&proof_for(&received));
+        let (mut request, cx, _owner) = arrival_at(&f, 3, PATH, &fields(&head));
+        let authorization = f
+            .route
+            .authorize(request.begin_data_preparation().unwrap(), cx)
+            .await
+            .unwrap();
+        assert_eq!(authorization.identity().subject(), "client");
+        assert_eq!(port.calls.load(Ordering::SeqCst), 1, "the chain ran once");
+        assert_eq!(
+            f.replay.0.load(Ordering::SeqCst),
+            1,
+            "the replay key is spent"
+        );
+        assert!(
+            authorization
+                .snapshot()
+                .headers()
+                .all(|(name, _)| !name.eq_ignore_ascii_case("dpop")),
+            "the spent proof reaches nobody"
+        );
+    }
+
+    #[tokio::test]
+    async fn dpop_at_every_site_unrouted() {
+        let (f, port) = deployment();
+        let target = "/no/such/route";
+
+        // Unproven: a proof for the plane's route, not the path this request was received at.
+        let head = presented(&proof_for(&format!("{PUBLIC_URL}{PATH}")));
+        let (request, cx, _owner) = arrival_at(&f, 1, target, &fields(&head));
+        let binding = request.binding().clone();
+        let (verified, policy) =
+            crate::auth::native_data::judge_unrouted(binding.app(), &f.route.chain, &binding, cx)
+                .await;
+        assert_eq!(
+            verified,
+            Some(crate::auth::admission_table::Verified::Denied)
+        );
+        assert!(policy.is_none());
+        assert_eq!(port.calls.load(Ordering::SeqCst), 0, "no chain ran");
+
+        // Proven at core's public URL and the path as received.
+        let head = presented(&proof_for(&format!("{PUBLIC_URL}{target}")));
+        let (request, cx, _owner) = arrival_at(&f, 3, target, &fields(&head));
+        let binding = request.binding().clone();
+        let (verified, policy) =
+            crate::auth::native_data::judge_unrouted(binding.app(), &f.route.chain, &binding, cx)
+                .await;
+        assert_eq!(
+            verified,
+            Some(crate::auth::admission_table::Verified::Identity { shared: false })
+        );
+        assert_eq!(policy, Some(crate::auth::admission_table::Policy::Valid));
+        assert_eq!(port.calls.load(Ordering::SeqCst), 1, "the chain ran once");
+        assert_eq!(
+            f.replay.0.load(Ordering::SeqCst),
+            0,
+            "an unknown path claims no replay key"
+        );
+    }
+
+    #[tokio::test]
+    async fn dpop_at_every_site_keyed_core_route() {
+        let (f, port) = deployment();
+        let target = "/stats";
+
+        // Unproven: a proof that names no URL.
+        let head = presented("a.proof.jwt");
+        let (request, cx, _owner) = arrival_at(&f, 1, target, &fields(&head));
+        let binding = request.binding().clone();
+        assert!(matches!(
+            crate::auth::native_data::verify_core_key(&f.route.chain, &binding, cx).await,
+            Err(DataRefused::Credential)
+        ));
+        assert_eq!(port.calls.load(Ordering::SeqCst), 0, "no chain ran");
+        assert_eq!(f.replay.0.load(Ordering::SeqCst), 0, "no replay key spent");
+
+        // Proven at core's public URL and the path as received.
+        let head = presented(&proof_for(&format!("{PUBLIC_URL}{target}")));
+        let (request, cx, _owner) = arrival_at(&f, 3, target, &fields(&head));
+        let binding = request.binding().clone();
+        assert!(
+            crate::auth::native_data::verify_core_key(&f.route.chain, &binding, cx)
+                .await
+                .is_ok(),
+            "a proven presentation is the keyed core route's caller"
+        );
+        assert_eq!(port.calls.load(Ordering::SeqCst), 1, "the chain ran once");
+        assert_eq!(
+            f.replay.0.load(Ordering::SeqCst),
+            1,
+            "the replay key is spent"
+        );
     }
 }

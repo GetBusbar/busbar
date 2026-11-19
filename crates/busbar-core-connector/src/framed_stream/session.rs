@@ -113,14 +113,14 @@ impl Actions {
         self.items.last_mut()
     }
 
-    /// The socket bytes were handed to the connection's queue: this copy of them is wiped now, and
-    /// the actions stay to be taken in order.
+    /// The connection took the socket bytes, given from this buffer (the only copy, charged): they
+    /// are wiped now, and the actions stay to be taken in order.
     fn handed_over(&mut self) {
         self.out.clear();
     }
 
-    /// The actions, taken out in order. Their socket bytes were queued for the connection by the
-    /// delivery driver already; the caller clears the buffer when it is done, however it stops.
+    /// The actions, taken out in order. Their socket bytes were given to the connection already; the
+    /// caller clears the buffer when it is done, however it stops.
     fn drain(&mut self) -> std::vec::Drain<'_, Act> {
         self.items.drain()
     }
@@ -1419,8 +1419,9 @@ impl Task {
     }
 
     /// ONE ANSWER, APPLIED. The delivery driver takes it first, whole: checked against the output
-    /// model, then its parts queued for the connection as one run (a breach queues nothing). The run
-    /// goes to the connection and is flushed; only then are the answer's other acts taken in order
+    /// model, then its parts placed for the connection as one run (a breach places nothing). The run
+    /// goes to the connection from the session's own buffer and is flushed; only then are the
+    /// answer's other acts taken in order
     /// (stream items queued for core, the timer, an end that closes, a CLOSE, an UPGRADE). However it
     /// ends, the session's output buffer is wiped before it returns.
     async fn apply<S: AsyncWrite + Unpin>(
@@ -1445,22 +1446,25 @@ impl Task {
         write_timeout: Duration,
         clock: &mut Option<(Instant, u64)>,
     ) -> Flow {
-        let outcome = match io.answered(acts) {
-            Ok(outcome) => outcome,
+        let answered = match io.answered(acts) {
+            Ok(answered) => answered,
             Err(fault) => return Flow::Rejected(fault),
         };
-        // One copy of the answer's bytes from here on: the connection's queue.
-        acts.handed_over();
         let deadline = tokio::time::Instant::from_std(wake_clock(clock).0) + write_timeout;
-        if outcome.wrote {
-            if let Err(error) = io.deliver(deadline).await {
+        if answered.wrote() {
+            // The one copy of the answer's bytes is the session's own, charged: the connection is
+            // given them from it. A write that fails returns here, and `apply` wipes them.
+            if let Err(error) = io.deliver(&answered, acts, deadline).await {
                 return Flow::Lost(error);
             }
             self.flushed = true;
         }
+        // The connection took the run: the session's copy is wiped now, and the acts stay to be
+        // taken in order.
+        acts.handed_over();
         for act in acts.drain() {
             match act {
-                // The driver's: checked, queued, written and recorded above.
+                // The driver's: checked, placed, written and recorded above.
                 Act::Session(_)
                 | Act::Busy
                 | Act::NoNewStreams
@@ -1675,18 +1679,24 @@ async fn close_by_core<S: AsyncWrite + Unpin>(
         Err(ended) => return over(&mut io, ended),
     }
     // The goodbye goes through the driver like every answer: a breach writes nothing of it.
-    let answered = io.answered(conn.actions());
+    let answered = match io.answered(conn.actions()) {
+        Ok(answered) => answered,
+        Err(fault) => {
+            // Refused: none of its bytes is given, and the session's buffer is wiped now.
+            conn.actions().clear();
+            return finished(Flow::Rejected(fault), conn, io);
+        }
+    };
     let abort = conn
         .actions()
         .iter()
         .any(|act| matches!(act, Act::Close { abort: true }));
-    // Its bytes are in the connection's queue now (or refused): the session's buffer is wiped.
+    // The connection is given its bytes from the session's own (charged) buffer, which is wiped only
+    // after the write, however it ended. An early return drops `io`: the writer first, then the
+    // verdicts from the carrier's last reading.
+    let written = io.write_out(&answered, conn.actions(), deadline).await;
     conn.actions().clear();
-    if let Err(fault) = answered {
-        return finished(Flow::Rejected(fault), conn, io);
-    }
-    // An early return drops `io`: the writer first, then the verdicts from the carrier's last reading.
-    if let Err(error) = io.write_out(deadline).await {
+    if let Err(error) = written {
         return Outcome::Lost(error);
     }
     if !abort {

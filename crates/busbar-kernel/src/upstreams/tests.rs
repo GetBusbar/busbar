@@ -287,7 +287,15 @@ fn url_and_command_are_exclusive_one_is_required_and_a_url_never_echoes_userinfo
     );
     assert!(why.contains("two different servers"), "{why}");
     let why = refusals("x", json!({"url": "ftp://a.example/x"}));
-    assert!(why.contains("`http://` or `https://`"), "{why}");
+    assert!(
+        why.contains("must be an `http://`, `https://`, `ws://` or `wss://` endpoint"),
+        "{why}"
+    );
+    let why = refusals("x", json!({"url": "wss://svc:hunter2@a.example/x"}));
+    assert!(
+        why.contains("userinfo") && !why.contains("hunter2") && !why.contains("svc:"),
+        "{why}"
+    );
     let why = refusals("x", json!({"url": "https://svc:hunter2@a.example/x"}));
     assert!(
         why.contains("userinfo") && !why.contains("hunter2") && !why.contains("svc:"),

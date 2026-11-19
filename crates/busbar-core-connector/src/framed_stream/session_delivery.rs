@@ -3,10 +3,11 @@
 
 //! THE ACCEPTED CONNECTION'S ONE WRITER. Every byte a session writes to its connection goes
 //! through here, and only through here: the transport's answer is handed to the delivery driver
-//! ([`DeliveryLedger::answer`], the same driver the dial uses), which checks it whole and queues its
-//! parts as one run; this writer then gives the queue to the connection, flushes, and tells the
-//! driver what the connection's own carrier reports the operating system accepted. A write's return
-//! value is never treated as a receipt.
+//! ([`DeliveryLedger::answer`], the same driver the dial uses), which checks it whole and places its
+//! parts as one run; this writer then gives the run to the connection straight from the session's
+//! own output buffer (charged to the connection's storage account: no copy of an answer byte is
+//! made), flushes, and tells the driver what the connection's own carrier reports the operating
+//! system accepted. A write's return value is never treated as a receipt.
 
 use std::io;
 use std::pin::Pin;
@@ -19,8 +20,23 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use super::{Act, Actions, Span};
 use crate::outbound::delivery::{Breach, Reason};
 use crate::outbound::records::Out;
-use crate::outbound::wire::{Fault, Outcome};
+use crate::outbound::wire::{Checked, Fault};
 use crate::response_delivery::{DeliveryControl, DeliveryLedger};
+
+/// One answer the driver checked and placed: what it asks of the connection, and where each of its
+/// driven items' bytes are in the session's output buffer. No byte of it is held here: the buffer
+/// keeps them, charged, until [`DeliveryIo::write_out`] gave them to the connection.
+pub(super) struct Answered {
+    checked: Checked,
+    spans: smallvec::SmallVec<[Option<Span>; 16]>,
+}
+
+impl Answered {
+    /// The answer has bytes for the connection.
+    pub(super) fn wrote(&self) -> bool {
+        self.checked.outcome.wrote
+    }
+}
 
 /// The connection's delivery state and the reader of its genuine carrier, moved together across an
 /// upgrade: the entries, the counters with no reset, and the reader.
@@ -91,11 +107,12 @@ impl<S> DeliveryIo<S> {
 
     /// ONE ANSWER of the transport, handed to the driver: every stream a `STREAM_HEAD` of it announces
     /// is opened in its place, the caller's resets are noted, then the whole answer is checked and its
-    /// parts queued as one run. Nothing is written here.
+    /// parts placed as one run. Nothing is written or copied here: `acts` keeps the bytes until
+    /// [`Self::write_out`] gave them.
     ///
     /// # Errors
-    /// The [`Fault`]: nothing of the answer was queued and nothing of it will be written.
-    pub(super) fn answered(&mut self, acts: &Actions) -> Result<Outcome, Fault> {
+    /// The [`Fault`]: nothing of the answer was placed and nothing of it will be written.
+    pub(super) fn answered(&mut self, acts: &Actions) -> Result<Answered, Fault> {
         let ledger = self.ledger();
         let mut heads: smallvec::SmallVec<[u64; 4]> = smallvec::SmallVec::new();
         for act in acts.iter() {
@@ -128,9 +145,10 @@ impl<S> DeliveryIo<S> {
                 spans.push(span);
             }
         }
-        ledger.answer(&items, |index| {
+        let checked = ledger.answer(&items, |index| {
             spans[index].map_or(&[][..], |span| acts.bytes(span))
-        })
+        })?;
+        Ok(Answered { checked, spans })
     }
 
     pub(super) fn poll_control(&mut self, cx: &mut Context<'_>) -> Poll<DeliveryControl> {
@@ -146,30 +164,43 @@ impl<S> DeliveryIo<S> {
 }
 
 impl<S: AsyncWrite + Unpin> DeliveryIo<S> {
-    /// Give the connection everything queued, front to back, by `deadline`: each byte the connection
-    /// takes is wiped from the queue at once, and a partial write resumes at the first byte it did not
-    /// take.
-    pub(super) async fn write_out(&mut self, deadline: tokio::time::Instant) -> io::Result<()> {
+    /// Give the connection the run of `answered`, front to back, by `deadline`, read straight from
+    /// `acts` (the session's own charged buffer, the one the answer was checked from): a partial
+    /// write resumes at the first byte it did not take, and each write the connection took is
+    /// counted as it returns. The caller clears `acts` only after this, however it ended.
+    pub(super) async fn write_out(
+        &mut self,
+        answered: &Answered,
+        acts: &Actions,
+        deadline: tokio::time::Instant,
+    ) -> io::Result<()> {
         let Self { io, delivery } = self;
         let io = io.as_mut().expect("live writer");
         let ledger = &mut delivery.as_mut().expect("live delivery owner").ledger;
-        let written = tokio::time::timeout_at(deadline, async {
-            loop {
-                let unwritten = ledger.unwritten();
-                if unwritten.is_empty() {
-                    return Ok(());
+        let written = {
+            let mut giving = ledger.give(&answered.checked, |index| {
+                answered.spans[index].map_or(&[][..], |span| acts.bytes(span))
+            });
+            let pieces = std::mem::take(&mut giving.pieces);
+            tokio::time::timeout_at(deadline, async {
+                for piece in pieces {
+                    let mut rest = piece;
+                    while !rest.is_empty() {
+                        let took = io.write(rest).await?;
+                        if took == 0 {
+                            return Err(io::ErrorKind::WriteZero.into());
+                        }
+                        giving.took(took);
+                        rest = &rest[took..];
+                    }
                 }
-                let written = io.write(unwritten).await?;
-                if written == 0 {
-                    return Err(io::ErrorKind::WriteZero.into());
-                }
-                ledger.took(written);
-            }
-        })
-        .await
-        .unwrap_or_else(|_| Err(timed_out()));
+                Ok(())
+            })
+            .await
+            .unwrap_or_else(|_| Err(timed_out()))
+        };
         if written.is_err() {
-            // No unwritten byte waits for the connection's drop.
+            // The rest of the run is never given; the session wipes its buffer.
             ledger.discard();
         }
         written
@@ -206,9 +237,14 @@ impl<S: AsyncWrite + Unpin> DeliveryIo<S> {
         Ok(())
     }
 
-    /// Everything queued goes out, flushed: [`Self::write_out`] then [`Self::flush`].
-    pub(super) async fn deliver(&mut self, deadline: tokio::time::Instant) -> io::Result<()> {
-        self.write_out(deadline).await?;
+    /// The answer's run goes out, flushed: [`Self::write_out`] then [`Self::flush`].
+    pub(super) async fn deliver(
+        &mut self,
+        answered: &Answered,
+        acts: &Actions,
+        deadline: tokio::time::Instant,
+    ) -> io::Result<()> {
+        self.write_out(answered, acts, deadline).await?;
         self.flush(deadline).await
     }
 }

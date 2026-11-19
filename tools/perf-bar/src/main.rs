@@ -33,6 +33,9 @@
 //!
 //! Every run prints one tab-separated row ([`HEADER`]); times are nanoseconds.
 
+#![forbid(unsafe_code)]
+#![doc(test(attr(forbid(unsafe_code))))]
+
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream};
 use std::sync::{Arc, Barrier};

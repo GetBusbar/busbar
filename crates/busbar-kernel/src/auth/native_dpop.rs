@@ -39,7 +39,7 @@ use busbar_contract::secure::SecureString;
 use super::native_chain::NativeChain;
 use super::native_data::DataRefused;
 use crate::diagnostics::{diag_warn, AUTH_SENDER_CONSTRAINT_REFUSED};
-use crate::inbound::request_snapshot::{ChargedRequestSnapshot, SnapshotInput};
+use crate::inbound::request_snapshot::ChargedRequestSnapshot;
 use crate::oauth_as::seam::{DpopAtResource, DpopVerdict};
 use crate::state::App;
 
@@ -77,7 +77,7 @@ impl Reason {
 }
 
 /// What a head presents, as far as its sender constraint goes.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub(crate) enum Presentation<'h> {
     /// No DPoP presentation and no bound token on any carrier.
     Unbound,
@@ -87,6 +87,18 @@ pub(crate) enum Presentation<'h> {
         proof: &'h str,
     },
     Refused(Reason),
+}
+
+impl std::fmt::Debug for Presentation<'_> {
+    /// The variant and the refusal reason only: the token and its proof are credentials and are
+    /// never printed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unbound => f.write_str("Unbound"),
+            Self::Dpop { .. } => f.debug_struct("Dpop").finish_non_exhaustive(),
+            Self::Refused(reason) => f.debug_tuple("Refused").field(reason).finish(),
+        }
+    }
 }
 
 /// Read a head's sender constraint. `reads`: whether the route reads a credential from the named
@@ -207,8 +219,10 @@ fn refused(reason: &'static str) {
 /// The head a proven presentation is judged by from here on: the request exactly as received,
 /// its `Authorization: DPoP <token>` restated as `Bearer <token>` (the chain's members and the
 /// route's audience and standing checks read a bearer) and its spent `DPoP` proof left out (no
-/// member and no plane is handed it). Its bytes are charged to the same request as the original;
-/// a request that cannot pay for it is refused.
+/// member and no plane is handed it). Only its restated head is a new copy, charged to the same
+/// request as the original; its method, target, peer and body are the original's own bytes,
+/// charged once ([`ChargedRequestSnapshot::restate_headers`]). A request that cannot pay for the
+/// restated head is refused.
 pub(crate) fn as_bearer(
     original: &Arc<ChargedRequestSnapshot>,
     token: &str,
@@ -233,22 +247,8 @@ pub(crate) fn as_bearer(
             fields.push((name, value));
         }
     }
-    ChargedRequestSnapshot::capture(
-        SnapshotInput {
-            method: original.method(),
-            path: original.path(),
-            query: original.query(),
-            query_present: original.query_present(),
-            authority: original.authority(),
-            headers: fields.iter().copied(),
-            peer: original.peer(),
-            tls_peer_cert: original.tls_peer_cert(),
-            body: original.body(),
-            now_s: original.now_s(),
-        },
-        original.request(),
-    )
-    .map_err(|_| DataRefused::Capacity)
+    ChargedRequestSnapshot::restate_headers(original, fields.iter().copied())
+        .map_err(|_| DataRefused::Capacity)
 }
 
 /// A request's sender constraint, judged.

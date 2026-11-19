@@ -130,7 +130,13 @@ pub(crate) fn registry_refusal_with(
     Ok(())
 }
 
-pub(crate) fn builtins_resolve(cfg: &RootCfg) -> Result<(), String> {
+/// `--validate`'s last step: every reference boot resolves whose module is a LINKED secret image
+/// resolves through the native secret axis (the instances the caller opened for it), naming the
+/// first that does not. A reference served by a dropped-in secret plugin is not resolved here.
+///
+/// # Errors
+/// The first reference that does not resolve, by its config position.
+pub fn builtins_resolve(cfg: &RootCfg) -> Result<(), String> {
     let builtins = crate::config::secret::SecretResolver::builtins_only();
     for (what, r) in boot_resolved_secret_refs(cfg) {
         if !r
@@ -500,24 +506,6 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         SecretBearing::NotInResolvedConfig(
             "the DESERIALIZE-side provider entry (providers.yaml). `resolve` lowers it into \
              `ResolvedProvider`, which IS walked.",
-        ),
-    ),
-    (
-        "ProviderRoute",
-        SecretBearing::NotInResolvedConfig(
-            "the composition root's copy of a `ResolvedProvider` (`root::door_steps::\
-             provider_routes`), made for a door plane's members after the `ResolvedProvider` it \
-             copies was walked; it is never part of `RootCfg`.",
-        ),
-    ),
-    (
-        "Lent",
-        SecretBearing::NotInResolvedConfig(
-            "what the composition root's per-hop binding (`PerHop`) of a registration's own \
-             outbound credential holds (`root::door_steps::upstream_credential_binding`): a \
-             runtime CARRIER built from the reference a door section declares at its \
-             `settings.*.upstream_credential.secret` path, which the door section's walk \
-             (`DoorSection`) already reported; it is never part of `RootCfg`.",
         ),
     ),
     (

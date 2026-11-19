@@ -182,7 +182,7 @@ mod dropped {
                 kind: "secret".to_string(),
                 version: version.to_string(),
                 publisher: TEST_PUBLISHER.to_string(),
-                abi_version: 2,
+                abi_version: busbar_plugin_abi::versions::SECRET,
                 ..crate::sign::Manifest::default()
             },
             bytes,

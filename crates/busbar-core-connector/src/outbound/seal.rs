@@ -42,7 +42,8 @@ pub(crate) enum Place {
     /// A header's value (`H_SEALED_PAIR`).
     Header,
     /// The value of a query pair the transport appends to the request target, in record order,
-    /// before any fragment (`H_SEALED_QUERY`). The name is percent-encoded.
+    /// before any fragment (`H_SEALED_QUERY`). The name and the value are percent-encoded; the
+    /// value's length is its length so encoded, as it stands on the wire.
     Query,
 }
 
@@ -131,16 +132,19 @@ fn percent_encoded(bytes: &[u8]) -> bool {
 impl Slots {
     /// Take the sealed values out of an opener's `fields`, in place.
     ///
-    /// * Every `busbar-sealed-fields` field is removed; each header it names is sealed: the field
-    ///   leaves `fields` and its value moves (not copied) into a slot, in the fields' own order.
     /// * Every `busbar-sealed-query` field is removed; its `name=value` becomes a query slot, in
-    ///   the order written, after the header slots.
+    ///   the order written. Query slots come first: the request target is on the wire before the
+    ///   header lines, and slots are covered ascending (rule L9).
+    /// * Every `busbar-sealed-fields` field is removed; each header it names is sealed: the field
+    ///   leaves `fields` and its value moves (not copied) into a slot, in the fields' own order,
+    ///   after the query slots.
     ///
     /// What is left in `fields` is what the transport is handed as ordinary pairs.
     ///
     /// # Errors
     /// [`SEAL_UNREADABLE`] when a query pair has no `=`, is not percent-encoded, or a name is not
-    /// text. `fields` is then emptied (every value wiped): nothing of the request is sent.
+    /// text, or a sealed value is empty or longer than `u32`. `fields` is then emptied (every
+    /// value wiped): nothing of the request is sent.
     pub(crate) fn take_from(fields: &mut Vec<(String, Vec<u8>)>) -> Result<Self, &'static str> {
         let has_metadata = fields.iter().any(|(name, _)| {
             busbar_contract::conn::is_sealed_fields_field(name.as_bytes())
@@ -167,7 +171,30 @@ impl Slots {
                 true
             }
         });
+        let refuse = |fields: &mut Vec<(String, Vec<u8>)>| {
+            for (_, value) in fields.drain(..) {
+                drop(SecureVec::from(value));
+            }
+            SEAL_UNREADABLE
+        };
         let mut slots = Vec::with_capacity(sealed_names.len() + queries.len());
+        for pair in queries {
+            let split = pair.iter().position(|b| *b == b'=');
+            let readable = split.is_some_and(|eq| {
+                percent_encoded(&pair[..eq]) && percent_encoded(&pair[eq + 1..]) && eq > 0
+            });
+            let Some(eq) = split.filter(|_| readable) else {
+                return Err(refuse(fields));
+            };
+            // The name is unreserved bytes and escapes: text by the check above.
+            let name = String::from_utf8_lossy(&pair[..eq]).into_owned();
+            slots.push(Slot {
+                place: Place::Query,
+                name,
+                value: SecureVec::from(&pair[eq + 1..]),
+                covered: 0,
+            });
+        }
         let mut at = 0;
         while at < fields.len() {
             let sealed = sealed_names
@@ -185,31 +212,11 @@ impl Slots {
                 at += 1;
             }
         }
-        for pair in queries {
-            let split = pair.iter().position(|b| *b == b'=');
-            let readable = split.is_some_and(|eq| {
-                percent_encoded(&pair[..eq]) && percent_encoded(&pair[eq + 1..]) && eq > 0
-            });
-            let Some(eq) = split.filter(|_| readable) else {
-                for (_, value) in fields.drain(..) {
-                    drop(SecureVec::from(value));
-                }
-                return Err(SEAL_UNREADABLE);
-            };
-            // The name is unreserved bytes and escapes: text by the check above.
-            let name = String::from_utf8_lossy(&pair[..eq]).into_owned();
-            slots.push(Slot {
-                place: Place::Query,
-                name,
-                value: SecureVec::from(&pair[eq + 1..]),
-                covered: 0,
-            });
-        }
         if slots
             .iter()
-            .any(|slot| u32::try_from(slot.value.len()).is_err())
+            .any(|slot| slot.value.is_empty() || u32::try_from(slot.value.len()).is_err())
         {
-            return Err(SEAL_UNREADABLE);
+            return Err(refuse(fields));
         }
         Ok(Self {
             slots,
@@ -483,18 +490,23 @@ mod tests {
         let slots = Slots::take_from(&mut fields).unwrap();
         assert_eq!(fields.len(), 1, "the metadata is not sent upstream");
         let declared: Vec<Declared<'_>> = slots.declared().collect();
+        // The length as the value stands on the wire: percent-encoded, as written.
         assert_eq!(
             declared,
             [Declared {
                 place: Place::Query,
                 name: "key",
-                len: 14
+                len: b"AIza%2Fsecret".len() as u32
             }]
         );
+        assert_eq!(declared[0].len, 13);
     }
 
+    /// The request target goes on the wire before the header lines, and slots are covered
+    /// ascending (rule L9): a query slot after a header slot could never be covered in order, and
+    /// the transport refuses such a head.
     #[test]
-    fn header_slots_come_first_then_query_slots_in_the_order_written() {
+    fn query_slots_come_first_in_the_order_written_then_header_slots() {
         let mut fields = vec![
             ("busbar-sealed-query".to_owned(), b"a=1".to_vec()),
             ("authorization".to_owned(), b"Bearer t".to_vec()),
@@ -510,9 +522,9 @@ mod tests {
         assert_eq!(
             order,
             [
-                (Place::Header, "authorization", 8),
                 (Place::Query, "a", 1),
-                (Place::Query, "b", 2)
+                (Place::Query, "b", 2),
+                (Place::Header, "authorization", 8)
             ]
         );
     }
@@ -532,6 +544,35 @@ mod tests {
             );
             assert!(fields.is_empty(), "every value is wiped with the refusal");
         }
+    }
+
+    /// A sealed query pair is one `name=value` and nothing else: a value carrying a pair separator
+    /// (an injected second pair) or a second `=` is refused [`SEAL_UNREADABLE`] before anything is
+    /// sent, every value of the head is wiped, and the refusal names none of them.
+    #[test]
+    fn query_sealing_refuses_cleartext_or_malformed_metadata_without_exposing_values() {
+        for bad in [&b"k=v&injected=1"[..], b"k=v=w", b"k=sk-live&k2=v"] {
+            let mut fields = vec![
+                ("x-api-key".to_owned(), KEY.to_vec()),
+                ("busbar-sealed-fields".to_owned(), b"x-api-key".to_vec()),
+                ("busbar-sealed-query".to_owned(), bad.to_vec()),
+            ];
+            let refused = Slots::take_from(&mut fields).err();
+            assert_eq!(
+                refused,
+                Some(SEAL_UNREADABLE),
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
+            assert!(fields.is_empty(), "every value is wiped with the refusal");
+            assert!(!SEAL_UNREADABLE.contains("injected"));
+            assert!(!SEAL_UNREADABLE.contains("sk-live"));
+        }
+        // A well-formed sealed query is still never written in the clear without acceptance.
+        let mut fields = vec![("busbar-sealed-query".to_owned(), b"key=sk-live".to_vec())];
+        let slots = Slots::take_from(&mut fields).unwrap();
+        assert_eq!(slots.admit(false, false), Err(SEALED_IN_CLEAR));
+        assert!(!SEALED_IN_CLEAR.contains("sk-live"));
     }
 
     #[test]
@@ -661,28 +702,33 @@ mod tests {
         let mut slots = Slots::take_from(&mut fields).unwrap();
         slots.bind(1);
         assert_eq!(
-            slots.cover(sealed(1, 1, 0, 3)).err(),
+            slots.cover(sealed(1, 1, 0, 8)).err(),
             Some(SealBreach::OutOfOrder),
-            "the query slot before the header slot is whole"
+            "the header slot before the query slot is whole"
         );
-        slots.cover(sealed(1, 0, 0, 8)).unwrap();
-        slots.cover(sealed(1, 1, 0, 3)).unwrap();
+        slots.cover(sealed(1, 0, 0, 3)).unwrap();
+        slots.cover(sealed(1, 1, 0, 8)).unwrap();
         assert!(slots.covered());
     }
 
+    /// A sealed value of no bytes is a credential that is not there: refused before anything is
+    /// sent (the transport refuses a sealed record of length 0 too), every value wiped.
     #[test]
-    fn an_empty_sealed_value_is_a_slot_with_nothing_to_cover() {
-        let mut fields = vec![("busbar-sealed-query".to_owned(), b"key=".to_vec())];
-        let mut slots = Slots::take_from(&mut fields).unwrap();
-        slots.bind(1);
-        assert_eq!(slots.len(), 1);
-        assert!(
-            slots.covered(),
-            "the transport appends `key=` and marks nothing"
-        );
-        assert_eq!(
-            slots.cover(sealed(1, 0, 0, 1)).err(),
-            Some(SealBreach::PastEnd)
-        );
+    fn an_empty_sealed_value_sends_nothing() {
+        let empty_query = vec![
+            ("x-api-key".to_owned(), KEY.to_vec()),
+            ("busbar-sealed-fields".to_owned(), b"x-api-key".to_vec()),
+            ("accept".to_owned(), b"*/*".to_vec()),
+            ("busbar-sealed-query".to_owned(), b"key=".to_vec()),
+        ];
+        let empty_header = vec![
+            ("accept".to_owned(), b"*/*".to_vec()),
+            ("authorization".to_owned(), Vec::new()),
+            ("busbar-sealed-fields".to_owned(), b"authorization".to_vec()),
+        ];
+        for mut fields in [empty_query, empty_header] {
+            assert_eq!(Slots::take_from(&mut fields).err(), Some(SEAL_UNREADABLE));
+            assert!(fields.is_empty(), "every value is wiped with the refusal");
+        }
     }
 }

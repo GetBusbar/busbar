@@ -602,3 +602,119 @@ fn the_table_selects_this_verifier_for_a_ticket_route_only() {
     }
     assert!(selected_by(VerifyBy::TicketOrChain));
 }
+
+/// The sealed store, counting the mints that reached it: a mint refused before this count moves
+/// wrote no ticket row.
+struct Counting {
+    inner: SealedTickets<StoreRecords>,
+    mints: AtomicUsize,
+}
+
+impl Tickets for Counting {
+    fn mint<'a>(
+        &'a self,
+        who: &'a Caller<'_>,
+        m: TicketMint<'a>,
+    ) -> BoxFut<'a, Result<(Box<str>, u64), RecordsDenied>> {
+        self.mints.fetch_add(1, Ordering::SeqCst);
+        self.inner.mint(who, m)
+    }
+
+    fn is_ticket(&self, credential: &str) -> bool {
+        self.inner.is_ticket(credential)
+    }
+
+    fn admit<'a>(
+        &'a self,
+        plane: &'a Caller<'_>,
+        audience: &'a str,
+        credential: &'a str,
+        now_s: u64,
+    ) -> BoxFut<'a, Result<TicketAdmitted, TicketDenied>> {
+        self.inner.admit(plane, audience, credential, now_s)
+    }
+}
+
+/// SECURITY (resource bound; 1.6 `a_saturated_key_is_refused_before_its_ticket_record_is_written`):
+/// one issuer key mints its [`TICKETS_PER_KEY_MAX`] unredeemed tickets; the next is refused as a
+/// quota before any row is written, another key still mints, and redeeming one of the full key's
+/// tickets frees exactly one slot.
+#[tokio::test]
+async fn ticket_cap_a_saturated_key_is_refused_before_its_ticket_record_is_written() {
+    let core = crate::real_store::core().await;
+    let issuers = Issuers::new();
+    let book = Arc::new(Book::default());
+    let bound = Arc::new(IssuerBound::new(
+        Counting {
+            inner: SealedTickets::new(StoreRecords::with_clock(core, clock), &[7u8; 32], clock)
+                .expect("a 32-byte key"),
+            mints: AtomicUsize::new(0),
+        },
+        Arc::clone(&issuers),
+        book.standing(),
+        clock,
+    ));
+    let full = key("key-saturated", "g1");
+    let other = key("key-other", "g1");
+    book.put(&full);
+    book.put(&other);
+    let plane = who(NAME);
+    let mint = |subject: &'static str, issuer: &Arc<VirtualKey>| {
+        let serving = issuers.enter(INSTANCE, subject, issuer);
+        let bound = Arc::clone(&bound);
+        let plane = plane.clone();
+        async move {
+            let minted = bound
+                .mint(
+                    &plane.caller(),
+                    TicketMint {
+                        subject,
+                        scope: "realtime",
+                        audience: DOOR,
+                        ttl_s: 600,
+                        once: true,
+                        prefix: "ek_",
+                        record: b"opaque",
+                    },
+                )
+                .await;
+            drop(serving);
+            minted
+        }
+    };
+    let mut held = Vec::new();
+    for n in 0..TICKETS_PER_KEY_MAX {
+        let minted = mint("saturated", &full).await;
+        assert!(minted.is_ok(), "mint {n} is under the per-key cap");
+        held.push(minted.ok().expect("minted").0);
+    }
+    let written = bound.inner.mints.load(Ordering::SeqCst);
+    assert_eq!(written, TICKETS_PER_KEY_MAX);
+    let refused = mint("saturated", &full).await;
+    assert!(
+        matches!(refused, Err(RecordsDenied::Quota)),
+        "the key's next unredeemed ticket is refused as a quota"
+    );
+    assert_eq!(
+        bound.inner.mints.load(Ordering::SeqCst),
+        written,
+        "the refused mint wrote no ticket row"
+    );
+    assert!(
+        mint("other", &other).await.is_ok(),
+        "the cap is per key: another key still mints"
+    );
+    let spent = held.pop().expect("a held ticket");
+    let judged = NativeTicketVerifier::new(Arc::clone(&bound) as Arc<dyn Redeem>, who(NAME), DOOR)
+        .verify(&ticket_route(), head(&bearer(&spent)), clock())
+        .await;
+    assert!(matches!(judged, TicketJudged::Admitted(_)), "{judged:?}");
+    assert!(
+        mint("saturated", &full).await.is_ok(),
+        "a redeemed ticket frees its slot"
+    );
+    assert!(
+        matches!(mint("saturated", &full).await, Err(RecordsDenied::Quota)),
+        "and only that one"
+    );
+}

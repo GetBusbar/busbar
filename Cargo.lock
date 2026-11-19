@@ -345,6 +345,7 @@ name = "busbar-artifact-metadata"
 version = "1.6.0"
 dependencies = [
  "busbar-json",
+ "busbar-plugin-abi",
  "serde",
  "time",
 ]
@@ -677,10 +678,10 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-plugin-test",
  "foldhash",
  "hex",
  "serde",
- "stats_alloc",
  "tikv-jemallocator",
 ]
 
@@ -760,6 +761,7 @@ dependencies = [
  "libloading",
  "log",
  "olpc-cjson",
+ "rustix",
  "serde",
  "serde_json",
  "sonic-rs",
@@ -807,7 +809,6 @@ name = "busbar-ports"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-ffi",
  "busbar-plugin-abi",
  "zeroize",
 ]
@@ -1551,7 +1552,7 @@ dependencies = [
 [[package]]
 name = "hyper"
 version = "1.12.0"
-source = "git+https://github.com/MattJackson/hyper?rev=ebd3f6cff06032f9bcf531a5144309d8906e438b#ebd3f6cff06032f9bcf531a5144309d8906e438b"
+source = "git+https://github.com/MattJackson/hyper?rev=ba66651802c4aa70a709cfde732600e4f9bd488e#ba66651802c4aa70a709cfde732600e4f9bd488e"
 dependencies = [
  "atomic-waker",
  "bytes",

@@ -13,6 +13,7 @@ mod derive_once;
 mod escape_scope;
 mod escapes;
 mod lane_qualifier;
+mod plane_agnostic_auth;
 mod refusal_reason;
 mod rt_builders;
 mod secrets;

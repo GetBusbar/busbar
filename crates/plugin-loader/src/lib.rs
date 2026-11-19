@@ -83,8 +83,6 @@ mod ffi_thread;
 pub mod highwater;
 pub mod migration_secrets;
 #[deny(unsafe_code)]
-pub mod open_once;
-#[deny(unsafe_code)]
 pub mod registry;
 #[deny(unsafe_code)]
 pub mod release_trust;

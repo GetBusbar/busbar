@@ -24,22 +24,17 @@ use crate::migrate_1_6::remove_kept;
 /// The section a transport instance was configured under.
 const SECTION: &str = "transport";
 
-/// Every `module:` word that named one of the two carriers, with the plugin it named.
-const MODULES: [(&str, &str); 6] = [
-    ("tcp", "busbar-transport-tcp"),
-    ("transport-tcp", "busbar-transport-tcp"),
-    ("busbar-transport-tcp", "busbar-transport-tcp"),
-    ("stdio", "busbar-transport-stdio"),
-    ("transport-stdio", "busbar-transport-stdio"),
-    ("busbar-transport-stdio", "busbar-transport-stdio"),
-];
+/// The two retired carrier plugins. Every `module:` word that named one is spelled from its plugin name: the
+/// whole name, the name without `busbar-`, or the bare carrier word after `busbar-transport-`.
+const PLUGINS: [&str; 2] = ["busbar-transport-tcp", "busbar-transport-stdio"];
 
 /// The retired plugin a `module:` word names; `None` for every other word.
 fn retired(module: &str) -> Option<&'static str> {
-    MODULES
-        .iter()
-        .find(|(word, _)| *word == module)
-        .map(|(_, plugin)| *plugin)
+    PLUGINS.iter().copied().find(|plugin| {
+        let short = plugin.strip_prefix("busbar-").unwrap_or(plugin);
+        let bare = short.strip_prefix("transport-").unwrap_or(short);
+        [*plugin, short, bare].contains(&module)
+    })
 }
 
 /// The retired plugin one `transport:` entry names: its `module:` (the map form), or the bare word (the short

@@ -50,6 +50,18 @@ fn section_key() -> &'static str {
 }
 
 fn write_config(dir: &Path, data_port: u16, admin_port: u16, auth_block: &str) -> PathBuf {
+    write_config_with(dir, data_port, admin_port, auth_block, true)
+}
+
+/// The deployment, with or without the MCP plane's section: auth is plane-agnostic, so what the
+/// chain does must not depend on it.
+fn write_config_with(
+    dir: &Path,
+    data_port: u16,
+    admin_port: u16,
+    auth_block: &str,
+    with_plane: bool,
+) -> PathBuf {
     std::fs::write(dir.join("providers.yaml"), "{}\n").unwrap();
     let catalog = if cfg!(linked_section_pools) {
         "providers: {}\nmodels: {}\n"
@@ -66,7 +78,11 @@ store: {{module: memory}}
 {catalog}pools: {{}}
 {auth_block}
 {section}"#,
-            section = plane_section(data_port, admin_port),
+            section = if with_plane {
+                plane_section(data_port, admin_port)
+            } else {
+                String::new()
+            },
         ),
     )
     .unwrap();
@@ -102,32 +118,41 @@ fn busbar(cfg: &Path, args: &[&str]) -> Command {
 }
 
 fn assert_names_both_keys(where_: &str, text: &str) {
-    assert!(
-        text.contains(section_key()),
-        "{where_} must name the door's own config key; got:\n{text}"
-    );
+    // Auth is plane-agnostic (ANON-PLANES): the refusal is the chain's, the same for every plane;
+    // no plane has a refusal of its own (BUSBAR-3116 is retired).
     assert!(
         text.contains("auth.chain"),
         "{where_} must name the `auth.chain` key; got:\n{text}"
     );
+    assert!(
+        !text.contains("BUSBAR-3116"),
+        "{where_} is no plane-specific refusal; got:\n{text}"
+    );
 }
 
+/// `--validate` says the same of an empty chain whether the MCP plane is configured or not: the
+/// plane changes nothing about auth (empty-chain behaviour identical across planes).
 #[test]
-fn a_front_door_config_with_no_auth_chain_fails_validate_naming_both_keys() {
-    let dir = fixture_dir("validate");
-    let cfg = write_config(&dir, free_port(), free_port(), AUTH_OPEN);
-    let out = busbar(&cfg, &["--validate"]).output().expect("run busbar");
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
+fn a_front_door_config_with_no_auth_chain_validates_exactly_as_without_the_plane() {
+    let run = |with_plane: bool| {
+        let dir = fixture_dir(if with_plane { "validate-plane" } else { "validate-none" });
+        let cfg = write_config_with(&dir, free_port(), free_port(), AUTH_OPEN, with_plane);
+        let out = busbar(&cfg, &["--validate"]).output().expect("run busbar");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (out.status.code(), text.contains("auth.chain"), text)
+    };
+    let (code, chain, text) = run(true);
+    let (bare_code, bare_chain, bare_text) = run(false);
+    assert_eq!(
+        (code, chain),
+        (bare_code, bare_chain),
+        "an empty chain is judged the same with and without the plane:\nwith:\n{text}\nwithout:\n{bare_text}"
     );
-    assert_ne!(
-        out.status.code(),
-        Some(0),
-        "`--validate` accepted a deployment with an anonymous front door:\n{text}"
-    );
-    assert_names_both_keys("the --validate error", &text);
+    assert!(!text.contains("BUSBAR-3116"), "no plane-specific refusal:\n{text}");
 }
 
 #[test]

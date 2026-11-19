@@ -6,10 +6,13 @@
 //! call and keeps nothing.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{
+    Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
+};
 use std::time::{Duration, Instant};
 
 use busbar_plugin_abi::fail::failed::{F_BUSY, F_TIMEOUT};
+use busbar_plugin_abi::fail::refused::{R_DENIED, R_NOT_FOUND};
 use busbar_plugin_abi::fail::CallError;
 use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_ports::auth::OutboundAnswer;
@@ -60,7 +63,12 @@ pub enum CredGet<'a> {
 ///    stored Failed, retry_after_s = the window's remaining seconds))` without calling the plugin; core audits
 ///    `outbound_credential_backoff` once per window (core text, attributed by §12.20). A successful mint
 ///    resets `streak`. `Refused` is a verdict: never windowed, never cached, returned to the leader and its
-///    waiters only (R_CONNECT_REQUIRED then deletes the grant, §12.12).
+///    waiters only (R_CONNECT_REQUIRED then deletes the grant, §12.12). The owner-signed revocation rule
+///    (2026-11-12): an `R_NOT_FOUND`/`R_DENIED` answer about a value still held keeps it until a read at least
+///    [`CONFIRM_AFTER`] later; the same answer then drops it at once (BUSBAR-8027 revoked-at-source). A held
+///    value that expires after failed or definitive reads with no success since lapses (BUSBAR-8027
+///    lease-expired, from a timer, with or without a request); each failed read is BUSBAR-8026
+///    ([`CredOutcome`], reported by the binding's [`CredObserver`]).
 /// 5. **Per-request credentials** (round 24: a declared style property, never inferred from one answer): for a
 ///    binding with `UpstreamAuth.per_request` (its style declared STYLE_PER_REQUEST, §8.3) every call is
 ///    `Direct(mint())` (round 26: the port's future itself, never re-boxed or `Arc`-wrapped), unshared, with no cell, no entry and no window, and the answer's `cache_s` is ignored (a
@@ -110,6 +118,41 @@ pub enum CredEvent {
     NoLifetime,
 }
 
+/// What one settled mint, or a lapse, did to a key's held value (BUSBAR-8026/8027, P093F-3). The cache decides it;
+/// the binding's [`CredObserver`] names the member and reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredOutcome {
+    /// An outage (`PortError::Failed`, or the mint's deadline): the held value, if any, is kept until it expires.
+    Failed {
+        streak: u32,
+        code: u32,
+        retry_in: Duration,
+        expires_in: Option<Duration>,
+    },
+    /// The source answered definitively (`R_NOT_FOUND` or `R_DENIED`) while a value is held: it is kept until a
+    /// read at least [`CONFIRM_AFTER`] later answers the same.
+    Confirming { code: u32 },
+    /// The same definitive answer, [`CONFIRM_AFTER`] or more apart: the held value is dropped at once.
+    Revoked { code: u32 },
+    /// The held value expired after failed or definitive reads, with no successful mint since.
+    Lapsed,
+    /// A mint succeeded after any of the above.
+    Recovered,
+}
+
+/// The owner-signed revocation rule (2026-11-12): two definitive answers at least one second apart.
+pub const CONFIRM_AFTER: Duration = Duration::from_secs(1);
+/// At most one report a minute per source (BUSBAR-8026); the rest are counted in the next one.
+pub const REPORT_WINDOW: Duration = Duration::from_secs(60);
+
+/// Where a key's outcomes go: registered per `(auth_instance, upstream)` by the binding that owns those keys.
+pub trait CredObserver: Send + Sync {
+    /// `now` is the settling clock reading; `gate` is the cache's per-source report throttle.
+    fn observe(&self, outcome: CredOutcome, now: Instant, gate: &crate::refresh::Throttle);
+}
+
+type Observers = RwLock<HashMap<(u64, u64), Weak<dyn CredObserver>>>;
+
 const SHARDS: usize = 16;
 /// Rule 4: a `Stop` from the retry policy is a 300 s window.
 const STOP_WINDOW: Duration = Duration::from_secs(300);
@@ -133,6 +176,12 @@ struct Inner {
     shards: [RwLock<HashMap<CredKey, Entry>>; SHARDS],
     /// The origin of `Entry::used` (LRU order, rule 6).
     base: Instant,
+    /// Who reports each `(auth_instance, upstream)`'s outcomes.
+    observers: Observers,
+    /// BUSBAR-8026's rate: one report per source per [`REPORT_WINDOW`].
+    gate: crate::refresh::Throttle,
+    /// This cache, for the lapse timers it starts.
+    me: Weak<Inner>,
 }
 
 struct Entry {
@@ -145,6 +194,12 @@ struct Entry {
     /// Nanoseconds since `Inner::base` of the last use: a Relaxed store on the hit path, never an RMW.
     used: AtomicU64,
     told_no_lifetime: bool,
+    /// The revocation rule: the first definitive answer (`R_NOT_FOUND`/`R_DENIED`) about the held value, and when.
+    pending: Option<(u32, Instant)>,
+    /// A failure, definitive answer or lapse since the last successful mint (the next success is a recovery).
+    degraded: bool,
+    /// The held value's lapse timer, started by its first failed or definitive read.
+    lapse: Option<tokio::task::AbortHandle>,
 }
 
 struct Held {
@@ -192,14 +247,26 @@ impl CredCache {
         audit: impl Fn(CredKey, CredEvent) + Send + Sync + 'static,
     ) -> Self {
         CredCache {
-            inner: Arc::new(Inner {
+            inner: Arc::new_cyclic(|me| Inner {
                 policy,
                 window: Box::new(window),
                 audit: Box::new(audit),
                 shards: std::array::from_fn(|_| RwLock::new(HashMap::default())),
                 base: clock(),
+                observers: RwLock::new(HashMap::default()),
+                gate: crate::refresh::Throttle::new(REPORT_WINDOW),
+                me: me.clone(),
             }),
         }
+    }
+
+    /// Report the outcomes of `(auth_instance, upstream)`'s keys to `observer` (the binding that owns them).
+    pub fn observe(&self, auth_instance: u64, upstream: u64, observer: Weak<dyn CredObserver>) {
+        self.inner
+            .observers
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert((auth_instance, upstream), observer);
     }
 
     /// The policy (K6 and K8 copy `refresh_ahead_s` into `UpstreamIn.min_valid_s`, §11.3 round 35).
@@ -413,12 +480,18 @@ impl Inner {
         let now = clock();
         let shared = answer.map(Arc::new);
         let mut told = None;
+        let mut outcome = None;
         {
             let mut map = self.write(key.auth_instance);
             if let Some(entry) = map.get_mut(&key).filter(|entry| entry.minting(flight)) {
                 entry.flight = None;
                 match &shared {
                     Ok(answer) => {
+                        if std::mem::take(&mut entry.degraded) {
+                            outcome = Some(CredOutcome::Recovered);
+                        }
+                        entry.pending = None;
+                        entry.stop_lapse();
                         entry.streak = 0;
                         entry.failed_until = None;
                         entry.failure = None;
@@ -447,6 +520,45 @@ impl Inner {
                         entry.failed_until = Some(now + window);
                         entry.failure = Some(error.clone());
                         told = Some(CredEvent::Backoff);
+                        entry.degraded = true;
+                        let code = match error {
+                            PortError::Failed { code, .. } => *code,
+                            _ => F_TIMEOUT,
+                        };
+                        outcome = Some(CredOutcome::Failed {
+                            streak: entry.streak,
+                            code,
+                            retry_in: window,
+                            expires_in: entry
+                                .held
+                                .as_ref()
+                                .filter(|held| now < held.expires)
+                                .map(|held| held.expires - now),
+                        });
+                        self.watch_lapse(entry, key, now);
+                    }
+                    // The owner-signed revocation rule (2026-11-12): a definitive answer about a value still
+                    // held is confirmed by a read at least CONFIRM_AFTER later; the same answer drops it at
+                    // once. A different definitive answer is confirmed afresh; an outage confirms nothing.
+                    Err(PortError::Refused { code, .. })
+                        if (*code == R_NOT_FOUND || *code == R_DENIED) && entry.valid(now) =>
+                    {
+                        entry.degraded = true;
+                        match entry.pending {
+                            Some((pending, since)) if pending == *code => {
+                                if now >= since + CONFIRM_AFTER {
+                                    entry.held = None;
+                                    entry.pending = None;
+                                    entry.stop_lapse();
+                                    outcome = Some(CredOutcome::Revoked { code: *code });
+                                }
+                            }
+                            _ => {
+                                entry.pending = Some((*code, now));
+                                outcome = Some(CredOutcome::Confirming { code: *code });
+                                self.watch_lapse(entry, key, now);
+                            }
+                        }
                     }
                     Err(_) => {}
                 }
@@ -455,7 +567,71 @@ impl Inner {
         if let Some(event) = told {
             (self.audit)(key, event);
         }
+        if let Some(outcome) = outcome {
+            self.tell(key, outcome, now);
+        }
         shared
+    }
+
+    /// Hand `outcome` to the observer of `key`'s binding, outside every shard lock.
+    fn tell(&self, key: CredKey, outcome: CredOutcome, now: Instant) {
+        let observer = self
+            .observers
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(key.auth_instance, key.upstream))
+            .and_then(Weak::upgrade);
+        if let Some(observer) = observer {
+            observer.observe(outcome, now, &self.gate);
+        }
+    }
+
+    /// After a failed or definitive read of a held value, wake when it expires: if no mint has replaced it by
+    /// then, it lapsed (BUSBAR-8027, reported whether or not a request arrives). One timer per held value; no
+    /// runtime, no timer (the value still expires unserved, unreported).
+    fn watch_lapse(&self, entry: &mut Entry, key: CredKey, now: Instant) {
+        let Some(held) = entry.held.as_ref().filter(|held| now < held.expires) else {
+            return;
+        };
+        if entry.lapse.is_some() {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let watched = Arc::clone(&held.answer);
+        let expires = held.expires;
+        let me = Weak::clone(&self.me);
+        let task = runtime.spawn(async move {
+            tokio::time::sleep_until(expires.into()).await;
+            if let Some(inner) = me.upgrade() {
+                inner.lapse(key, &watched);
+            }
+        });
+        entry.lapse = Some(task.abort_handle());
+    }
+
+    /// The lapse timer of `watched` fired: drop it and report, unless a mint replaced it meanwhile.
+    fn lapse(&self, key: CredKey, watched: &Arc<OutboundAnswer>) {
+        let now = clock();
+        {
+            let mut map = self.write(key.auth_instance);
+            let Some(entry) = map.get_mut(&key) else {
+                return;
+            };
+            entry.lapse = None;
+            if !entry
+                .held
+                .as_ref()
+                .is_some_and(|held| Arc::ptr_eq(&held.answer, watched))
+            {
+                return;
+            }
+            entry.held = None;
+            entry.pending = None;
+            entry.degraded = true;
+        }
+        self.tell(key, CredOutcome::Lapsed, now);
     }
 }
 
@@ -470,6 +646,15 @@ impl Entry {
             failure: None,
             used: AtomicU64::new(used),
             told_no_lifetime: false,
+            pending: None,
+            degraded: false,
+            lapse: None,
+        }
+    }
+
+    fn stop_lapse(&mut self) {
+        if let Some(task) = self.lapse.take() {
+            task.abort();
         }
     }
 
@@ -484,6 +669,9 @@ impl Entry {
             if let Some(task) = lock(&flight.abort).as_ref() {
                 task.abort();
             }
+        }
+        if let Some(task) = &self.lapse {
+            task.abort();
         }
     }
 

@@ -521,14 +521,16 @@ fn signed_ingress_reads_a_bounded_body_then_verifies() {
     }
 }
 
-/// Field 4: a route that keeps state per caller is never served to the shared subject.
+/// Field 4 gates no caller (owner directive, auth is plane-agnostic): a route that keeps state per
+/// caller serves the shared anonymous subject exactly as it serves a distinct one; its state is
+/// keyed by the session's handle (`port_intents::handle_scope`), never by the subject.
 #[test]
-fn distinct_routes_are_not_served_to_a_shared_subject() {
+fn distinct_routes_serve_a_shared_subject_like_any_other() {
     let route = reference(Admission::Selected);
     assert_eq!(route.record.caller_state, CallerState::Distinct);
     assert_eq!(
         decide(Target::Route(&route.record), &passing(SHARED)),
-        refused(Refusal::NoRoute, true)
+        Decision::Serve(Authority::Billed)
     );
     assert_eq!(
         decide(Target::Route(&route.record), &passing(DISTINCT)),
@@ -974,7 +976,6 @@ fn a_scope_kind_has_one_owner() {
 fn what_is_not_mounted_and_why() {
     let everything = Offered {
         verifier_reads_header: true,
-        chain_yields_shared: false,
         upgrade_transport: true,
         signature_verifier: true,
         ticket_store: true,
@@ -990,7 +991,6 @@ fn what_is_not_mounted_and_why() {
     }
     let nothing = Offered {
         verifier_reads_header: false,
-        chain_yields_shared: false,
         upgrade_transport: false,
         signature_verifier: false,
         ticket_store: false,
@@ -1020,18 +1020,6 @@ fn what_is_not_mounted_and_why() {
             "{admission:?}"
         );
     }
-    let open = Offered {
-        chain_yields_shared: true,
-        ..everything
-    };
-    assert_eq!(
-        mounted(&reference(Admission::Selected).record, open),
-        Err(NotMounted::DistinctCallersUnderAnOpenChain)
-    );
-    assert_eq!(
-        mounted(&reference(Admission::Walk).record, open),
-        Ok(Admission::Walk)
-    );
     let no_socket = Offered {
         upgrade_transport: false,
         ..everything
@@ -1211,8 +1199,9 @@ fn an_empty_chain_is_refused_with_its_remedy() {
     assert!(EMPTY_CHAIN_REFUSED.contains("chain: [anonymous]"));
     assert!(EMPTY_CHAIN_REFUSED.contains("role_bindings.anonymous"));
     assert!(ANONYMOUS_UNLIMITED.contains("role_bindings.anonymous"));
-    // The anonymous principal is a shared subject: the decision serves it on a shared-state
-    // route and never on one that keeps state per caller.
+    // The anonymous principal is a shared subject, and auth is plane-agnostic: the decision serves
+    // it on a shared-state route and on one that keeps state per caller alike (the state is keyed
+    // by the session's handle, `port_intents::handle_scope`).
     let shared = passing(SHARED);
     assert_eq!(
         decide(Target::Route(&reference(Admission::Walk).record), &shared),
@@ -1223,7 +1212,7 @@ fn an_empty_chain_is_refused_with_its_remedy() {
             Target::Route(&reference(Admission::Selected).record),
             &shared
         ),
-        refused(Refusal::NoRoute, true)
+        Decision::Serve(Authority::Billed)
     );
     // With no binding the anonymous principal earns no key: it is not verified.
     let mut unbound = shared;
@@ -1350,7 +1339,9 @@ fn an_audience_bound_plane_takes_only_a_bound_credential() {
         assert_eq!(goes_on, binding == Binding::Bound, "{token}");
     }
     // A route of such a plane keeps a session per caller and says so in its record (callers
-    // distinct), so it is not served to a shared one.
+    // distinct); it is served to a shared subject as to any other (its state is keyed by the
+    // session's handle).
+
     let none: [Box<str>; 0] = [];
     let record = RouteRecord::from_wire(
         0,
@@ -1370,7 +1361,7 @@ fn an_audience_bound_plane_takes_only_a_bound_credential() {
     assert_eq!(record.caller_state, CallerState::Distinct);
     assert_eq!(
         decide(Target::Route(&record), &passing(SHARED)),
-        refused(Refusal::NoRoute, true)
+        Decision::Serve(Authority::Walk)
     );
     assert_eq!(
         decide(Target::Route(&record), &passing(DISTINCT)),

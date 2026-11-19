@@ -43,7 +43,7 @@ A plane exists because it is configured, not because its name appears in a path.
 | Key | Type | Required | Default | What it is |
 |---|---|---|---|---|
 | `canonical_uri` | string | **yes** | — | The RFC 8707 resource indicator: the absolute URI naming this deployment's MCP endpoint. It is the exact `aud` every inbound token must carry. Its path **must be `/mcp`**; any other path refuses boot. |
-| `authorization_servers` | list of strings | **yes**, non-empty | `[]` (refused) | RFC 9728 `authorization_servers`: the issuer identifiers permitted to mint tokens for this resource. This list is the entire content of the answer a credential-less client came for. |
+| `authorization_servers` | list of strings | no | `[]` | RFC 9728 `authorization_servers` (OPTIONAL in RFC 9728): the issuer identifiers permitted to mint tokens for this resource, the answer a credential-less client came for when the chain requires a credential. A deployment whose chain admits callers presenting none (`auth: { chain: [anonymous] }`) lists none. The plane carries no auth policy: an empty list is no refusal; a malformed entry is. |
 | `scopes_supported` | list of strings | no | `[]` | RFC 9728 `scopes_supported`. **Advisory metadata only** — authorization is decided by the caller's grant, never by this list. |
 | `allowed_origins` | list of strings | no | `[]` | Browser origins accepted on the ingress, for the `2026-07-28` `Origin` MUST. Empty means no browser origin is accepted; a request carrying no `Origin` (every non-browser client) is unaffected. |
 
@@ -63,9 +63,9 @@ That mounts the plane's served routes (`door.rs`, `ROUTES`; the claims are in `t
 | Route | Auth | What it is |
 |---|---|---|
 | `GET /.well-known/oauth-protected-resource/mcp` | **none** | RFC 9728 §3.1 metadata. The one open route on this plane — every caller who needs it is by definition one that has no token yet. |
-| `POST /mcp` | key | The endpoint. JSON-RPC 2.0. |
-| `GET /mcp`, `DELETE /mcp` | key | The session revisions (2025-11-25, 2025-06-18): a GET naming `Mcp-Session-Id` opens that session's event stream, a DELETE naming it ends it; a session another key presents is `404`. A GET accepting `text/event-stream` with no session and no `MCP-Protocol-Version` opens the 2024-11-05 event stream. Any other GET or DELETE is `405`. Behind the key so an anonymous caller gets the `401` challenge instead of a description of the surface. |
-| `POST /mcp/tasks/run` | key | A task's continuation (SEP-2663), nested by the unit that created the task: it runs under the principal its work handle recorded, and only once. |
+| `POST /mcp` | chain | The endpoint. JSON-RPC 2.0. |
+| `GET /mcp`, `DELETE /mcp` | chain | The session revisions (2025-11-25, 2025-06-18): a GET naming `Mcp-Session-Id` opens that session's event stream, a DELETE naming it ends it; a session another key presents is `404`. A GET accepting `text/event-stream` with no session and no `MCP-Protocol-Version` opens the 2024-11-05 event stream. Any other GET or DELETE is `405`. Behind the chain, so a credential-less caller on a chain that requires a credential gets the `401` challenge instead of a description of the surface. |
+| `POST /mcp/tasks/run` | chain | A task's continuation (SEP-2663), nested by the unit that created the task: it runs under the principal its work handle recorded, and only once. |
 
 The metadata path is the well-known prefix with the resource's path appended **after** it, per RFC 9728's path-insertion rule (`endpoint.rs`). Getting that backwards 404s every compliant client's discovery. The document Busbar renders carries `resource` always, `authorization_servers` and `scopes_supported` when non-empty, and `bearer_methods_supported: ["header"]`, with `Cache-Control: public, max-age=3600` (`crates/busbar-kernel/src/ingress/protocol.rs`). `bearer_methods_supported` is not configurable: Busbar accepts a bearer in the `Authorization` header and nowhere else, on every plane.
 
@@ -80,13 +80,9 @@ Every one of these stops the process. An MCP plane that is half-configured is wo
 | `… carries a query or fragment` | a `?` or `#` in the **path**, or a `#` in the **origin**. A `?` inside the authority is not tested by this arm — `split_absolute` cuts at the first `/`, so it lands in the origin, and `https://gateway.example.com?x/mcp` boots with that whole string as the audience and `/mcp` as the mount | `endpoint.rs` |
 | `… has no path` | path is empty or `/` — mounting at `/` would claim every path in the deployment | `endpoint.rs` |
 | `… but the MCP endpoint is served only at` `` `/mcp` `` | the path is anything but `/mcp`, trailing slashes aside | `endpoint.rs` |
-| `mcp.authorization_servers must list at least one issuer` | empty list | `endpoint.rs` |
 | `… entry is not an absolute http(s) URI` | any entry | `endpoint.rs` |
-| **`` `mcp:` is configured but auth.chain is empty ``** | `mcp:` present and `auth.chain` absent or `[]` | `crates/busbar-kernel/src/config_validate/mod.rs` |
 
-**The empty-`auth.chain` refusal is the one to understand.** With an empty chain the auth middleware admits with no principal at all. The plane's entire authorization model is that a caller sees and may call only what its key's grant permits — and a request that carries no key is never *narrowed* by one, so the grant predicate answers `true` for every `(kind, value)` pair it is asked. That is not "no access", it is wildcard access to every registered server and every approved tool, for anyone who can reach the port. The second half is transitive: the outbound credential Busbar spends is bound to the inbound principal's grant, and with no inbound principal there is nothing to bind to, so Busbar spends its own upstream credentials on behalf of an anonymous caller. Both properties go vacuous at once and neither failure is visible from outside — the deployment answers every request perfectly. Close the chain (`auth: { chain: [keys] }`, or an IdP auth plugin), or drop the `mcp:` block.
-
-This refusal is MCP-only. There is no equivalent check for `agents:` — see [A2A](/docs/a2a/).
+**There is no MCP-only auth refusal.** Auth is core's and plane-agnostic: the `mcp:` block is judged by the same chain, the same role bindings and the same budgets as every other plane. An empty `auth.chain` is refused for every plane alike ("auth.chain is empty: no verifier, so nobody could be admitted"; BUSBAR-3116, the MCP-only refusal this section used to describe, is retired). To serve callers that present no credential, name it: `auth: { chain: [anonymous] }`. The anonymous caller is then narrowed by `role_bindings.anonymous` exactly as on the LLM plane: each of its roles must name a scope (`allowed_mcp_servers`, `allowed_pools`, ...), admin scopes and verbs are refused, it sees and calls only the servers its binding grants, and its usage is billed to that binding's budget. See [Anonymous callers](#anonymous-callers-auth-chain-anonymous).
 
 ### The `tools:` section
 
@@ -290,6 +286,10 @@ Reroute never means Busbar found somewhere else to send a call on its own. It me
 
 ## Authentication and identity
 
+### Anonymous callers: `auth.chain: [anonymous]`
+
+Auth is core's and plane-agnostic: whatever `auth: { chain: [anonymous] }` does for the LLM plane, it does for this one. A caller presenting no credential is admitted as the principal `anonymous`, narrowed by `role_bindings.anonymous` (each role must name a scope; admin scopes and verbs are refused), and billed to its binding's budget and pool. `initialize`, `tools/list` and `tools/call` serve within the grant: `tools/list` lists only the servers the binding grants (`allowed_mcp_servers`), and a call outside it is refused by the plane's grant check, exactly as for a key. Per-caller state is isolated by the server-issued handle, never by the shared subject: a session's records live under its `Mcp-Session-Id` (see [Inbound: streamable HTTP](#inbound-streamable-http)), so two anonymous sessions never read or resume each other's. A credential-less caller on a stateless request has no session handle, so nothing caller-scoped is kept for it. With `anonymous` in the chain there is no `401` to answer, so `authorization_servers` may be empty; the RFC 9728 document is still served.
+
 ### The discovery loop
 
 An MCP client arrives with no credential. It gets `401` with an RFC 6750 `WWW-Authenticate: Bearer` challenge carrying a `resource_metadata` parameter — the **absolute** URL of this deployment's protected-resource document, because a client with no credential also has no reason to trust its own reconstruction of your origin (`endpoint.rs`, `crates/busbar-kernel/src/auth/challenge.rs`). It reads that document, finds `authorization_servers`, does ordinary OAuth against your IdP, and comes back with a token.
@@ -395,7 +395,7 @@ MCP is one dialect with dated revisions, and the plane speaks four of them, inbo
 
 An unsupported protocol version answers `-32022`.
 
-**The session revisions:** sessions are bound to the caller's key and bounded per owner in count and bytes (`door_sessions.rs`, `tool_sessions.rs`). A session request whose `MCP-Protocol-Version` disagrees with its session's revision is `400`. On an ungoverned chain every caller is one owner, so a session isolates nothing; the first `2024-11-05` stream on such an instance reports that once, as a warning.
+**The session revisions:** sessions are bound to the caller's key and bounded per owner in count and bytes (`door_sessions.rs`, `tool_sessions.rs`). A session request whose `MCP-Protocol-Version` disagrees with its session's revision is `400`. Under `auth: { chain: [anonymous] }` every caller presenting no credential is the one principal `anonymous`, so its sessions are not bound to a key: each session's records are keyed by its own `Mcp-Session-Id` (the plane states it to core as the session's handle; core derives the caller scope from it alone). The id is 16 bytes from the engine's CSPRNG, so a session is reached only by presenting its id: a guessed id, or one another anonymous caller holds and this one does not, is `404`, and nothing lists sessions across callers. The count and byte bounds per owner apply to `anonymous` as one owner.
 
 ### Inbound: `busbar --stdio`
 

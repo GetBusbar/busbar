@@ -619,6 +619,7 @@ async fn native_writer_retirement_unknown_retries_exact_fence_and_blocks_delayed
 
 #[tokio::test]
 async fn native_writer_retirement_adopts_current_intent_without_migration_or_duplicate_charge() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     let backend = Arc::new(Backend::default());
     let (initial, _) = native_usage(backend.clone(), false).await;
     native_writer_lease(&backend, 1, 10_000);
@@ -681,6 +682,7 @@ async fn native_writer_retirement_cancellation_retains_original_target_and_candi
 
 #[tokio::test]
 async fn native_writer_retirement_resolves_exact_applied_receipt_without_reapplying_chunk() {
+    let _guard = crate::persistence::undrained::ledger_test_guard().await;
     use crate::governance::GovState;
     let backend = Arc::new(Backend::default());
     let (initial, _) = native_usage(backend.clone(), false).await;

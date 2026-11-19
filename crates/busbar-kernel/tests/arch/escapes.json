@@ -36,7 +36,7 @@
     "crates/busbar/src/root/linked.rs": 2,
     "crates/busbar/src/root/mod.rs": 1,
     "crates/busbar/src/root/tests/test_plugins.rs": 1,
-    "crates/busbar/src/test_source_gen_tests.rs": 1,
+    "crates/busbar/src/test_source_gen_tests.rs": 1
   },
   "forbid": [
     "ci/hop/src/main.rs",

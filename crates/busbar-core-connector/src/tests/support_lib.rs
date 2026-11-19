@@ -29,6 +29,8 @@ thread_local! {
     static ALLOCATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// Bytes those allocations asked for, on this thread.
     static ALLOCATED_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Bytes this thread holds through this allocator: what it allocated less what it freed.
+    static HELD_BYTES: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
 }
 
 /// How many heap allocations `run` makes on the calling thread.
@@ -50,13 +52,12 @@ pub fn heap_during<T>(run: impl FnOnce() -> T) -> (T, u64, u64) {
     (result, calls, asked)
 }
 
-/// THE RELEASE PROOFS (owner's ruling on allocation, addendum): the bytes the process holds through this
-/// allocator now, on every thread. Under nextest each test is its own process, so a test reads its own.
-static HELD_BYTES: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-
-/// Bytes held now (see [`HELD_BYTES`]).
+/// THE RELEASE PROOFS (owner's ruling on allocation, addendum): the bytes the calling thread holds
+/// through this allocator now (allocated on it, less freed on it). Counted per thread, so a test reads
+/// its own whether the harness runs each test in its own process or many on threads of one: a session
+/// driven on the test's thread (a current-thread runtime, or polled by hand) makes and frees there.
 pub fn held_bytes() -> isize {
-    HELD_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+    HELD_BYTES.with(std::cell::Cell::get)
 }
 
 struct ObservingAllocator;
@@ -79,10 +80,8 @@ unsafe impl std::alloc::GlobalAlloc for ObservingAllocator {
         // SAFETY: the caller supplied GlobalAlloc's layout.
         let pointer = unsafe { std::alloc::GlobalAlloc::alloc(&std::alloc::System, layout) };
         if !pointer.is_null() {
-            HELD_BYTES.fetch_add(
-                isize::try_from(layout.size()).unwrap_or(isize::MAX),
-                std::sync::atomic::Ordering::Relaxed,
-            );
+            let size = isize::try_from(layout.size()).unwrap_or(isize::MAX);
+            let _ = HELD_BYTES.try_with(|held| held.set(held.get().wrapping_add(size)));
         }
         pointer
     }
@@ -114,10 +113,8 @@ unsafe impl std::alloc::GlobalAlloc for ObservingAllocator {
                 watch.set(state);
             }
         });
-        HELD_BYTES.fetch_sub(
-            isize::try_from(layout.size()).unwrap_or(isize::MAX),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        let size = isize::try_from(layout.size()).unwrap_or(isize::MAX);
+        let _ = HELD_BYTES.try_with(|held| held.set(held.get().wrapping_sub(size)));
         // SAFETY: the caller returned the allocation and original layout to its allocator.
         unsafe { std::alloc::GlobalAlloc::dealloc(&std::alloc::System, pointer, layout) };
     }

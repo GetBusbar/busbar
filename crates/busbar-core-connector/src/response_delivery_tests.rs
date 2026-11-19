@@ -59,9 +59,30 @@ fn end(stream: u64, how: u32, arg: u32) -> Item {
     (Out::End(WireEnd { stream, how, arg }), &[])
 }
 
-fn answer(ledger: &mut DeliveryLedger, items: &[Item]) -> Result<Outcome, Fault> {
+fn answer(ledger: &mut DeliveryLedger, items: &[Item]) -> Result<Checked, Fault> {
     let outs: Vec<Out> = items.iter().map(|item| item.0).collect();
     ledger.answer(&outs, |index| items[index].1)
+}
+
+/// One answer checked, and the bytes the connection is to be given for it, in order, read where
+/// `items` holds them.
+fn given(ledger: &mut DeliveryLedger, items: &[Item]) -> Vec<u8> {
+    let checked = answer(ledger, items).unwrap();
+    ledger
+        .give(&checked, |index| items[index].1)
+        .pieces
+        .concat()
+}
+
+/// The connection's writer took `count` more bytes of the placed runs, counted as the writer counts.
+fn took(ledger: &mut DeliveryLedger, count: u64) {
+    let queued = ledger.queued;
+    Giving {
+        pieces: smallvec::SmallVec::new(),
+        written: &mut ledger.written,
+        queued,
+    }
+    .took(usize::try_from(count).unwrap());
 }
 
 /// A ledger whose session is stated, as `begin`'s answer does.
@@ -75,20 +96,20 @@ fn ledger() -> DeliveryLedger {
     ledger
 }
 
-/// The connection takes everything queued and its flush succeeds: the carrier reports all of it.
+/// The connection takes everything placed and its flush succeeds: the carrier reports all of it.
 fn flush(ledger: &mut DeliveryLedger) -> u64 {
-    let queued = ledger.unwritten().len();
-    ledger.took(queued);
+    let rest = ledger.queued - ledger.written;
+    took(ledger, rest);
     let total = ledger.written;
     ledger.flushed(progress(total, total, total)).unwrap();
     total
 }
 
-/// A whole answer with a four-byte body on `stream`.
-fn serve(ledger: &mut DeliveryLedger, stream: u64) {
+/// A whole answer with a four-byte body on `stream`: the bytes the connection is to be given.
+fn serve(ledger: &mut DeliveryLedger, stream: u64) -> Vec<u8> {
     ledger.emitting(stream, E_BODY, 4);
     ledger.emitting(stream, E_END, 0);
-    answer(
+    given(
         ledger,
         &[
             part(stream, WIRE_CONTROL, b"head"),
@@ -96,18 +117,16 @@ fn serve(ledger: &mut DeliveryLedger, stream: u64) {
             end(stream, END_FLUSH, 0),
         ],
     )
-    .unwrap();
 }
 
 #[test]
 fn an_answer_is_whole_only_when_the_carrier_took_all_of_it_and_the_flush_succeeded() {
     let mut ledger = ledger();
     let handles = ledger.admit(key(1)).unwrap();
-    serve(&mut ledger, 1);
-    assert_eq!(ledger.unwritten(), b"headbody");
-    assert_eq!(handles.watch.record(), None, "queued is not delivered");
+    assert_eq!(serve(&mut ledger, 1), b"headbody");
+    assert_eq!(handles.watch.record(), None, "placed is not delivered");
     // The connection took it all; the carrier has written half as whole records.
-    ledger.took(8);
+    took(&mut ledger, 8);
     ledger.flushed(progress(8, 8, 4)).unwrap();
     assert_eq!(handles.watch.record(), None, "half is not delivered");
     ledger.flushed(progress(8, 8, 8)).unwrap();
@@ -130,9 +149,10 @@ fn an_answer_is_whole_only_when_the_carrier_took_all_of_it_and_the_flush_succeed
 }
 
 #[test]
-fn a_breach_queues_nothing_of_that_answer_not_even_its_valid_prefix() {
+fn a_breach_places_nothing_of_that_answer_not_even_its_valid_prefix() {
     let mut ledger = ledger();
     let _handles = ledger.admit(key(1)).unwrap();
+    let before = ledger.queued;
     assert_eq!(
         answer(
             &mut ledger,
@@ -144,7 +164,7 @@ fn a_breach_queues_nothing_of_that_answer_not_even_its_valid_prefix() {
         .unwrap_err(),
         Fault::Output(Breach::L2)
     );
-    assert!(ledger.unwritten().is_empty());
+    assert_eq!(ledger.queued, before, "no byte of it is placed");
 }
 
 #[test]
@@ -384,7 +404,7 @@ fn a_carriers_fault_delivers_nothing_more() {
     let mut ledger = ledger();
     let handles = ledger.admit(key(1)).unwrap();
     serve(&mut ledger, 1);
-    ledger.took(8);
+    took(&mut ledger, 8);
     let total = ledger.written;
     assert_eq!(
         ledger.flushed(CarrierProgress {
@@ -555,32 +575,53 @@ fn anonymous_security_keeps_the_exact_storage_origin_and_progress_reader() {
         .is_err());
 }
 
+/// OPEN-3 16 (money): the ledger copies no answer byte. What the connection is given is read where
+/// the caller holds it (the session's charged buffer), placing a run asks the heap for nothing, and a
+/// write that failed gives nothing more.
 #[test]
-fn the_queue_wipes_each_byte_as_the_connection_takes_it() {
+fn the_ledger_holds_no_answer_byte_and_gives_the_callers_own() {
     let mut ledger = ledger();
-    answer(&mut ledger, &[part(0, WIRE_CONTROL, b"abcdef")]).unwrap();
-    ledger.took(3);
-    assert_eq!(ledger.unwritten(), b"def");
-    let live = ledger.queue.live_range();
-    let block = ledger.queue.allocation();
-    assert!(
-        block[..live.start].iter().all(|byte| *byte == 0),
-        "what the connection took is wiped at once"
-    );
-    assert_eq!(&block[live], b"def");
-    // A write failed: nothing unwritten waits for the connection's drop, and nothing more is queued.
+    let held: &'static [u8] = b"abcdef";
+    let items = [part(0, WIRE_CONTROL, held)];
+    // The driver's items as the session hands them (made before the count: the helper's own list
+    // is the test's allocation, not the ledger's).
+    let outs = [items[0].0];
+    let (checked, calls) =
+        crate::support::allocations_during(|| ledger.answer(&outs, |index| items[index].1));
+    let checked = checked.unwrap();
+    assert_eq!(calls, 0, "placing a run makes nothing");
+    assert_eq!(checked.bytes(), 6);
+    let block = held.as_ptr_range();
+    let giving = ledger.give(&checked, |index| items[index].1);
+    assert!(giving.pieces.iter().all(|piece| {
+        let range = piece.as_ptr_range();
+        block.start <= range.start && range.end <= block.end
+    }));
+    assert_eq!(giving.pieces.concat(), held);
+    drop(giving);
+    // The connection took half, then a write failed: the rest is never given, and nothing more is
+    // placed.
+    took(&mut ledger, 3);
+    assert_eq!((ledger.written, ledger.queued), (3, 6));
     ledger.discard();
-    assert!(ledger.unwritten().is_empty());
-    assert!(ledger.queue.allocation().iter().all(|byte| *byte == 0));
-    // And once the connection took a whole run, no block is kept for the next.
-    let mut idle = self::ledger();
-    answer(&mut idle, &[part(0, WIRE_CONTROL, b"abcdef")]).unwrap();
-    flush(&mut idle);
-    assert_eq!(idle.queue.capacity(), 0);
     assert_eq!(
         answer(&mut ledger, &[part(0, WIRE_CONTROL, b"x")]).unwrap_err(),
         Fault::Queue
     );
+    // A run not all given places nothing after it either: it would stand behind bytes that never
+    // went out.
+    let mut behind = self::ledger();
+    given(&mut behind, &[part(0, WIRE_CONTROL, b"abcdef")]);
+    took(&mut behind, 5);
+    assert_eq!(
+        answer(&mut behind, &[part(0, WIRE_CONTROL, b"x")]).unwrap_err(),
+        Fault::Queue
+    );
+    // The writer's count never passes what was placed.
+    took(&mut behind, 100);
+    assert_eq!((behind.written, behind.queued), (6, 6));
+    given(&mut behind, &[part(0, WIRE_CONTROL, b"x")]);
+    assert_eq!(behind.queued, 7);
 }
 
 // ---- credit for a stream the engine has left (ENGINE-OPEN-2 row 2) ----------------------------
@@ -631,9 +672,9 @@ fn late_body_of_a_stream_the_engine_left_is_owed_as_credit_at_once_and_only_once
     // a half times the connection window. Nobody will read them: all of each is owed at once.
     let mut credited = 40;
     for _ in 0..10 {
-        let outcome = answer(&mut ledger, &[body(1, 32), body(1, 32)]).unwrap();
+        let checked = answer(&mut ledger, &[body(1, 32), body(1, 32)]).unwrap();
         assert!(
-            outcome.left.is_empty(),
+            checked.outcome.left.is_empty(),
             "the ledger took what the driver says is owed: nobody else can give it again"
         );
         assert_eq!(
@@ -672,8 +713,8 @@ fn a_session_with_one_stream_is_owed_no_credit_for_late_body() {
     let mut ledger = windowed(false);
     let _one = ledger.admit(key(1)).unwrap();
     leave(&mut ledger, 1);
-    let outcome = answer(&mut ledger, &[body(1, 64)]).unwrap();
-    assert!(outcome.left.is_empty());
+    let checked = answer(&mut ledger, &[body(1, 64)]).unwrap();
+    assert!(checked.outcome.left.is_empty());
     assert_eq!(
         ledger.take_owed(),
         None,
@@ -702,7 +743,7 @@ fn cut_at(carried: u64) -> (&'static str, &'static str) {
     let three = ledger.admit(key(3)).unwrap();
     ledger.emitting(1, E_BODY, 4);
     ledger.emitting(3, E_BODY, 4);
-    answer(
+    let run = given(
         &mut ledger,
         &[
             part(1, WIRE_CONTROL, b"head"),
@@ -710,10 +751,9 @@ fn cut_at(carried: u64) -> (&'static str, &'static str) {
             part(3, WIRE_CONTROL, b"head"),
             part(3, WIRE_PAYLOAD, b"body"),
         ],
-    )
-    .unwrap();
-    assert_eq!(ledger.unwritten().len(), 16);
-    ledger.took(carried as usize);
+    );
+    assert_eq!(run.len(), 16);
+    took(&mut ledger, carried);
     ledger.discard();
     ledger.retire(
         CarrierProgress {
@@ -762,7 +802,7 @@ fn a_failed_write_s_last_reading_never_makes_an_ended_answer_whole() {
     let one = ledger.admit(key(1)).unwrap();
     serve(&mut ledger, 1);
     // Every byte through the end mark is on the carrier, and the flush after it did not succeed.
-    ledger.took(8);
+    took(&mut ledger, 8);
     ledger.discard();
     ledger.retire(
         CarrierProgress {

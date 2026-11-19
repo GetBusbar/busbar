@@ -443,7 +443,9 @@ fn route_chains(
             } else {
                 // With `auth.chain: [anonymous]` (the operator's open relay) a route that runs the data
                 // chain is served as the anonymous principal, through admission like any other
-                // (the built-in chain member `anonymous`: `NativeChain::data_admitting_anonymous`).
+                // (the built-in chain member `anonymous`: `NativeChain::data_admitting_anonymous`). A
+                // route that keeps state per caller is no exception: auth is plane-agnostic, and the
+                // anonymous caller's state is keyed by its session's handle (`port_intents::handle_scope`).
                 None
             };
             let chain = match (unserved, own) {

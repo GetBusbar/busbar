@@ -1,38 +1,20 @@
 ---
-title: "BUSBAR-3116: A plane is configured while the data-plane auth chain is empty"
+title: "BUSBAR-3116: A plane is configured while the data-plane auth chain is empty — RETIRED"
 description: "What Busbar error BUSBAR-3116 means, why it happens, and how to fix it."
 slug: docs/1.6/errors/BUSBAR-3116
 ---
 
 **Area:** Config (3xxx) · **Severity:** fatal · **Since:** 1.6.0
 
-## Message
-
-```text
-BUSBAR-3116: <detail>. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3116
-```
+> **Retired.** Busbar no longer reports this code. The page stays so an old log line still resolves; the code is never reused.
 
 ## What it means
 
-A plane section (tools, agents and the like) is configured but `auth.chain` is empty, so the plane would serve anonymous callers with wildcard grants over every registered subject, and outbound credentials would have no inbound grant to bind to.
+RETIRED. Nothing emits this code: auth is plane-agnostic, and no plane has a refusal of its own. An empty `auth.chain` is refused for every plane alike ("auth.chain is empty: no verifier, so nobody could be admitted"); an open deployment names `auth: { chain: [anonymous] }` and is narrowed by `role_bindings.anonymous` on every plane (MCP and A2A included).
 
 ## How to fix it
 
-Close the data-plane chain (`auth: { chain: [keys] }` or an IdP auth plugin), or remove the plane block if this deployment does not serve it.
-
-## Example
-
-```text
-tools:
-  search: { url: https://mcp.example.com }
-# no auth.chain
-```
-
-Busbar reports:
-
-```text
-BUSBAR-3116: `tools:` is configured but auth.chain is empty, which serves the MCP endpoint to ANONYMOUS callers — and a request that carries no key is never narrowed by one, so it runs with WILDCARD grants over every registered subject on that plane. It also leaves `upstream::authorise` with no inbound grant to bind busbar's outbound credentials to. Close the data-plane chain (`auth: { chain: [keys] }`, or an IdP auth plugin), or remove the `tools:` block if this deployment is not a MCP endpoint. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3116
-```
+Nothing emits this code. To serve callers that present no credential, write `auth: { chain: [anonymous] }` and grant them under `role_bindings.anonymous`; see docs/mcp.md.
 
 ---
 

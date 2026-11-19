@@ -85,7 +85,11 @@ const CALLERS: [&str; 4] = [
 ];
 
 fn rows() -> Vec<Row> {
-    let mut lines = ROUTES.split("\n\n").next().expect("the first table").lines();
+    let mut lines = ROUTES
+        .split("\n\n")
+        .next()
+        .expect("the first table")
+        .lines();
     let header: Vec<&str> = lines.next().expect("a header").split('\t').collect();
     let at = |name: &str| {
         header
@@ -93,13 +97,8 @@ fn rows() -> Vec<Row> {
             .position(|column| *column == name)
             .unwrap_or_else(|| panic!("routes.tsv has no `{name}` column"))
     };
-    let (id, method, path, plane, body) = (
-        at("row"),
-        at("method"),
-        at("path"),
-        at("plane"),
-        at("body"),
-    );
+    let (id, method, path, plane, body) =
+        (at("row"), at("method"), at("path"), at("plane"), at("body"));
     let cells = [
         at("no_credential"),
         at("bad_credential"),
@@ -284,10 +283,14 @@ store: {{module: memory}}
 public_url: "http://127.0.0.1:{data_port}"
 limits:
   request_body_max_bytes: {BODY_CAP}
+# The data listener's `/metrics` is the Prometheus exporter's route, mounted only when one is
+# configured (operations.md, "Health & readiness"; so in v1.5.5 too).
+export:
+  metrics: {{ module: prometheus, settings: {{ buffer_seconds: 60 }} }}
 identity-providers:
   admin-tokens:
     module: admin-tokens
-    token: {{ env: BUSBAR_ADMIN_TOKEN }}
+    settings: {{ sha256: "{admin_sha}" }}
 auth:
   chain: [keys]
   signing_key: {{ file: "{signing}" }}
@@ -298,8 +301,15 @@ providers:
 models:
   test-model:
     provider: mock
+pools:
+  pool-a:
+    members:
+      - {{ model: test-model }}
+llm:
+  insecure_transport: {{ accept: plaintext, reason: "loopback test upstream" }}
 {planes}"#,
-            signing = dir.join("signing.key").display()
+            signing = dir.join("signing.key").display(),
+            admin_sha = busbar_contract::redacted::sha256_hex(ADMIN_TOKEN.as_bytes())
         ),
     )
     .unwrap();
@@ -362,6 +372,17 @@ fn send(
     token: Option<&str>,
     body: (Option<&'static str>, Vec<u8>, bool),
 ) -> Answered {
+    try_send(rt, addr, method, path, token, body).expect("the request is answered, not cut")
+}
+
+fn try_send(
+    rt: &tokio::runtime::Runtime,
+    addr: &str,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: (Option<&'static str>, Vec<u8>, bool),
+) -> Result<Answered, reqwest::Error> {
     let (content_type, bytes, trailers) = body;
     rt.block_on(async {
         let client = reqwest::Client::builder()
@@ -380,24 +401,20 @@ fn send(
             // A chunked body announcing a trailer section; the listener answers 400 for it.
             req = req.header("trailer", "x-checksum").header("te", "trailers");
         }
-        let resp = req
-            .body(bytes)
-            .send()
-            .await
-            .expect("the request is answered, not cut");
+        let resp = req.body(bytes).send().await?;
         let header = |name: reqwest::header::HeaderName| {
             resp.headers()
                 .get(name)
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned)
         };
-        Answered {
+        Ok(Answered {
             status: resp.status().as_u16(),
             challenge: header(reqwest::header::WWW_AUTHENTICATE),
             allow: header(reqwest::header::ALLOW),
             content_type: header(reqwest::header::CONTENT_TYPE),
             body: resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default(),
-        }
+        })
     })
 }
 
@@ -483,8 +500,20 @@ fn inbound_table_every_route_answers_every_caller_as_the_table_says() {
     let narrow = mint(&rt, &booted, "inbound-table-narrow", true, None);
     // The fixture's MCP section (law7_plane_sections.yaml): canonical_uri on the data listener.
     let mcp_audience = format!("http://{}/mcp", booted.data);
-    let mcp_good = mint(&rt, &booted, "inbound-table-mcp-good", false, Some(&mcp_audience));
-    let mcp_narrow = mint(&rt, &booted, "inbound-table-mcp-narrow", true, Some(&mcp_audience));
+    let mcp_good = mint(
+        &rt,
+        &booted,
+        "inbound-table-mcp-good",
+        false,
+        Some(&mcp_audience),
+    );
+    let mcp_narrow = mint(
+        &rt,
+        &booted,
+        "inbound-table-mcp-narrow",
+        true,
+        Some(&mcp_audience),
+    );
     let mut failures: Vec<String> = Vec::new();
     // The one unverified answer: every 401 with no declared challenge has these exact bytes.
     let mut unverified: Option<(Vec<u8>, Option<String>, Option<String>)> = None;
@@ -645,34 +674,52 @@ fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
     rows.sort_by_key(|row| row.path.ends_with("/restart"));
     let (mut answered, mut refused) = (0, 0);
     let mut failures: Vec<String> = Vec::new();
+    let mut budget = ConfigBudget::default();
     for row in &rows {
         let (addr, token) = if row.admin {
+            budget.spend(&row.method, &row.path);
             (&booted.admin, ADMIN_TOKEN)
         } else {
             (&booted.data, good.as_str())
         };
-        let got = send(
+        let label = format!("{} {} ({} {})", row.id, row.route, row.method, row.path);
+        let got = match try_send(
             &rt,
             addr,
             &row.method,
             &row.path,
             Some(token),
             body_of(&row.body, BODY_CAP),
-        );
-        let label = format!("{} {} ({} {})", row.id, row.route, row.method, row.path);
+        ) {
+            Ok(got) => got,
+            Err(cut) => {
+                failures.push(format!(
+                    "{label}: the request was cut, not answered: {cut:?}"
+                ));
+                continue;
+            }
+        };
         match row.outcome.as_str() {
             "answers" if row.admin => {
                 if matches!(got.status, 401 | 403 | 405 | 500 | 501)
-                    || (got.status == 404 && got.body == not_found.body)
+                    || (got.status == 404 && same_refusal(&got.body, &not_found.body))
                 {
-                    failures.push(format!("{label}: not served, answered {}", got.status));
+                    failures.push(format!(
+                        "{label}: not served, answered {} {}",
+                        got.status,
+                        String::from_utf8_lossy(&got.body)
+                    ));
                 } else {
                     answered += 1;
                 }
             }
             "answers" => {
                 if ADMISSION_STATUSES.contains(&got.status) || got.status >= 500 {
-                    failures.push(format!("{label}: not served, answered {}", got.status));
+                    failures.push(format!(
+                        "{label}: not served, answered {} {}",
+                        got.status,
+                        String::from_utf8_lossy(&got.body)
+                    ));
                 } else {
                     answered += 1;
                 }
@@ -683,10 +730,13 @@ fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
                         "{label}: the reason `{}` is not in docs/migration-1.6.md",
                         row.reason
                     ));
-                } else if got.status != 404 || got.body != not_found.body {
+                } else if got.status != 404 || !same_refusal(&got.body, &not_found.body) {
                     failures.push(format!(
-                        "{label}: refused on purpose but answered {}",
-                        got.status
+                        "{label}: refused on purpose but answered {} {} (the router replies {} {})",
+                        got.status,
+                        String::from_utf8_lossy(&got.body),
+                        not_found.status,
+                        String::from_utf8_lossy(&not_found.body)
                     ));
                 } else {
                     refused += 1;
@@ -701,7 +751,14 @@ fn inbound_table_every_v155_route_is_served_or_refused_with_a_stated_reason() {
         refused,
         failures.len()
     );
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    let log = read_to_string(&booted.log);
+    let tail: Vec<&str> = log.lines().rev().take(15).collect();
+    assert!(
+        failures.is_empty(),
+        "{}\n--- the node's log, last lines (newest first):\n{}",
+        failures.join("\n"),
+        tail.join("\n")
+    );
 }
 
 /// The table itself is well formed without a binary: every row parses, ids are unique, every
@@ -726,4 +783,59 @@ fn inbound_table_parses() {
             assert_eq!(none.status, good.status, "{}: a public route", row.id);
         }
     }
+}
+
+/// The operator's config-class mutation budget, as the table spends it (admin-api.md, "Mutation
+/// rate limits": budgeted per principal in fixed one-minute windows, failed attempts included; the
+/// static admin token is one principal). The v1.5.5 table holds more config-class mutations than
+/// one window admits, so a row past the budget waits for the next window: its answer then judges
+/// the route, never the limiter. The class, the budget and the window are the engine's own.
+#[derive(Default)]
+struct ConfigBudget {
+    window: u64,
+    spent: u32,
+}
+
+impl ConfigBudget {
+    fn spend(&mut self, method: &str, path: &str) {
+        use busbar_kernel::ratelimit::{
+            classify_mutation, MutationClass, MUTATION_RATE_WINDOW_SECS,
+        };
+        if matches!(method, "GET" | "HEAD") {
+            return;
+        }
+        let rel = path
+            .strip_prefix(busbar_contract::surface::ADMIN_PREFIX)
+            .unwrap_or(path);
+        if classify_mutation(rel) != MutationClass::Config {
+            return;
+        }
+        let window = busbar_kernel::store::now() / MUTATION_RATE_WINDOW_SECS;
+        if window != self.window {
+            *self = ConfigBudget { window, spent: 0 };
+        }
+        if self.spent >= MutationClass::Config.limit() {
+            let next = (window + 1) * MUTATION_RATE_WINDOW_SECS;
+            while busbar_kernel::store::now() < next {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            *self = ConfigBudget {
+                window: window + 1,
+                spent: 0,
+            };
+        }
+        self.spent += 1;
+    }
+}
+
+/// Two admin error bodies are the same refusal when they differ only in `request_id`.
+fn same_refusal(a: &[u8], b: &[u8]) -> bool {
+    fn without_request_id(body: &[u8]) -> String {
+        let text = String::from_utf8_lossy(body).into_owned();
+        match text.split_once("\"request_id\":\"") {
+            Some((head, rest)) => format!("{head}{}", rest.split_once('"').map_or("", |r| r.1)),
+            None => text,
+        }
+    }
+    without_request_id(a) == without_request_id(b)
 }

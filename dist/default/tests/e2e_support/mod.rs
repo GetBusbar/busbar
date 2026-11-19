@@ -12,7 +12,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::common;
 
@@ -290,6 +290,8 @@ pub struct Deployment {
     pub data: u16,
     pub admin: u16,
     providers: Vec<(String, String, String)>,
+    /// Providers that take no credential (`api_key: none`), by name.
+    keyless: Vec<String>,
     identities: String,
     sections: String,
     env: Vec<(String, String)>,
@@ -313,6 +315,7 @@ impl Deployment {
             data: common::boot::free_port(),
             admin: common::boot::free_port(),
             providers: Vec::new(),
+            keyless: Vec::new(),
             identities: String::new(),
             sections: String::new(),
             env: Vec::new(),
@@ -330,6 +333,14 @@ impl Deployment {
         self.providers
             .push((name.to_owned(), protocol.to_owned(), base_url.to_owned()));
         self
+    }
+
+    /// A provider of this protocol at this base URL that takes no credential (`api_key: none`):
+    /// a loopback plaintext upstream, as the live engine of the kit runs one. A credential is never
+    /// presented over plaintext, so a keyed provider there is not dialled.
+    pub fn keyless_provider(mut self, name: &str, protocol: &str, base_url: &str) -> Deployment {
+        self.keyless.push(name.to_owned());
+        self.provider(name, protocol, base_url)
     }
 
     /// One more `identity-providers` entry: its name and its definition as flow YAML.
@@ -398,7 +409,11 @@ impl Deployment {
             catalog.push_str(&format!(
                 "{name}:\n  protocol: {protocol}\n  base_url: \"{base_url}\"\n  error_map: {{}}\n"
             ));
-            keyed.push_str(&format!("  {name}:\n    api_key: {{ env: MOCK_KEY }}\n"));
+            if self.keyless.contains(name) {
+                keyed.push_str(&format!("  {name}:\n    api_key: none\n"));
+            } else {
+                keyed.push_str(&format!("  {name}:\n    api_key: {{ env: MOCK_KEY }}\n"));
+            }
         }
         if catalog.is_empty() {
             catalog.push_str("{}\n");
@@ -421,7 +436,8 @@ impl Deployment {
         std::fs::write(
             &config,
             format!(
-                r#"listen: "127.0.0.1:{data}"
+                r#"config_version: 1
+listen: "127.0.0.1:{data}"
 admin_listen: "127.0.0.1:{admin}"
 listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test node" }}
 admin_listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test node" }}
@@ -522,6 +538,11 @@ impl Drop for Node {
 impl Node {
     pub fn log(&self) -> String {
         std::fs::read_to_string(&self.log).unwrap_or_default()
+    }
+
+    /// The `config.yaml` this node booted from: a test rewrites it before a `/config/reload`.
+    pub fn config_path(&self) -> PathBuf {
+        self.dir.join("config.yaml")
     }
 
     /// One operator request on the admin listener.
@@ -676,9 +697,10 @@ pub fn realtime(deployment: Deployment, base_url: &str) -> Deployment {
 /// The streaming plane's section the realtime tests share; `extra` is appended inside it. A 1.6
 /// plane section is keyed by the admitted plane instance's name (`streaming`), not by the 1.5
 /// `streams:` key the plane's own bag still reads (the config recognizer, WP1-GAP-plane-sections).
+/// No `media:`: the browser media listener is core route config in 1.6 (`routes.<id>.media`); in
+/// the plane section it is the 1.5 shape the plane converts on open, which a 1.6 document refuses.
 pub fn streams_section(extra: &str) -> String {
     format!(
-        "streaming:\n  session:\n    model: test-model\n  context_window_tokens: 16384\n  media:\n    \
-         listen: \"127.0.0.1:0\"\n{extra}"
+        "streaming:\n  session:\n    model: test-model\n  context_window_tokens: 16384\n{extra}"
     )
 }

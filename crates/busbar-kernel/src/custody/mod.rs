@@ -23,7 +23,10 @@ use foldhash::HashMap;
 
 mod cred;
 
-pub use cred::{CredCache, CredEvent, CredGet, CredentialCache};
+pub use cred::{
+    CredCache, CredEvent, CredGet, CredObserver, CredOutcome, CredentialCache, CONFIRM_AFTER,
+    REPORT_WINDOW,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CustodyDenied {

@@ -527,3 +527,173 @@ async fn a_flush_pass_holds_the_journal_lane_nine_times() {
         "no confirmation in the pass took the lane"
     );
 }
+
+/// One process's store-backed custody: its recovery and unit checkpoint sinks over a node journal
+/// opened (or reopened, after a restart) on the shared Store.
+async fn attach_store_custody(gov: &GovState, store: &Arc<CoreStore>) {
+    let journal = crate::persistence::journal::runtime::RuntimeJournal::open(
+        store.core(),
+        7,
+        crate::persistence::journal::runtime::BufferBudget {
+            records: 1024,
+            bytes: 4 * 1024 * 1024,
+        },
+    )
+    .await
+    .unwrap();
+    gov.attach_recovery_sink(Arc::new(
+        crate::governance::persistence::recovery::StoreRecovery::new(
+            journal.clone(),
+            crate::teller::Kernel::new().durability_token(),
+        )
+        .unwrap(),
+    ))
+    .await
+    .unwrap();
+    let evidence = Arc::new(
+        crate::governance::unit_checkpoint_store::UnitCheckpointEvidence::new(
+            journal,
+            crate::teller::Kernel::new().durability_token(),
+        ),
+    );
+    gov.attach_unit_checkpoint_sink(Arc::new(
+        crate::governance::unit_checkpoint_store::StoreUnitCheckpoints::new(
+            evidence,
+            Arc::new(Signer(busbar_kernel_audit::AuditSigningKey::from_seed(
+                &[0x6a; 32],
+            ))),
+        ),
+    ))
+    .await
+    .unwrap();
+    assert!(gov.unit_checkpoints_enabled());
+}
+
+/// Every chain bucket's spend, in micros at the card's current rate, by bucket.
+fn spend(gov: &GovState, cm: &CostModel, key: &VirtualKey, now: u64) -> BTreeMap<String, i64> {
+    gov.budget_state(cm, key, now)
+        .into_iter()
+        .map(|state| (state.bucket_id, state.spend_micros_at_current_rate))
+        .collect()
+}
+
+/// The key's metering rows in the unit's metering bucket: (requests, input tokens, scale).
+async fn metering(gov: &GovState, key: &VirtualKey, now: u64) -> Vec<(u64, i128, u32)> {
+    gov.metering_for_async(crate::governance::metering_bucket(now))
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|row| row.key_id == key.id)
+        .map(|row| (row.requests, row.tokens_input, row.scale))
+        .collect()
+}
+
+/// PROOF-106 (LEDGER F-6), RESTART OVER A JOURNAL WITH AN OPEN UNIT CHARGES ONCE. Two GovStates
+/// on one core and the same Store: the first persists a running unit with 100 input tokens and
+/// dies before the unit ends. The second replays it from the node journal as recovered custody;
+/// its settlement (usage recovery into the Store, then the hot targets re-read from the Store)
+/// must charge exactly the 100 tokens once, in the budget book and in metering. Further flush
+/// passes, a budget flush and hydrate, and a third restart over the same Store add nothing.
+#[tokio::test]
+async fn a_restart_over_a_journal_with_an_open_unit_charges_it_once() {
+    const TOKENS: u64 = 100;
+    let store = crate::real_store::core().await;
+    let cm = grouped_cost();
+    let key = key("vk_restart_open_unit", Some("g"));
+    store.identity().put_key(&key).await.unwrap();
+    let now = crate::store::now();
+    let mut open = laneless_unit(&cm, &key, now, 0x6a);
+    open.lane = MODEL.into();
+    open.provider = Some("restart".into());
+    open.metered = true;
+    open.audit = Some(b"{}".to_vec().into());
+    open.units = BTreeMap::from([(
+        busbar_contract::records::UNIT_INPUT.into(),
+        busbar_contract::Count::from(TOKENS),
+    )]);
+    let none: BTreeMap<String, i64> = targets(&cm, &key, now)
+        .into_iter()
+        .map(|target| (target.bucket, 0))
+        .collect();
+    // The card prices one input token at one micro.
+    let charged = i64::try_from(TOKENS).unwrap();
+    let once: BTreeMap<String, i64> = none
+        .keys()
+        .map(|bucket| (bucket.clone(), charged))
+        .collect();
+    assert_eq!(once.len(), 2, "the key bucket and the group's day bucket");
+
+    // The first process: the running unit is durable in the journal, and charged nothing yet.
+    let first = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    attach_store_custody(&first, &store).await;
+    first.stage_unit_checkpoint(open.clone());
+    first.flush_unit_checkpoints().await.unwrap();
+    assert!(
+        first.unit_checkpoint_pending(&open.id),
+        "the running unit stays in custody"
+    );
+    first.flush_budgets().await;
+    first.flush_metering().await;
+    assert_eq!(
+        spend(&first, &cm, &key, now),
+        none,
+        "an open unit is not charged"
+    );
+    assert!(metering(&first, &key, now).await.is_empty());
+    drop(first);
+
+    // The restart: the open unit is replayed, settled and removed, charged exactly once.
+    let second = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    second.hydrate_budgets_async(&cm, now).await.unwrap();
+    attach_store_custody(&second, &store).await;
+    for pass in 0..3 {
+        second.flush_unit_checkpoints().await.unwrap();
+        assert!(
+            !second.unit_checkpoint_pending(&open.id),
+            "the replayed unit settled (pass {pass})"
+        );
+        assert_eq!(
+            spend(&second, &cm, &key, now),
+            once,
+            "the replayed unit is charged exactly once (pass {pass})"
+        );
+    }
+    second.flush_budgets().await;
+    second.flush_metering().await;
+    second.hydrate_budgets_async(&cm, now).await.unwrap();
+    assert_eq!(
+        spend(&second, &cm, &key, now),
+        once,
+        "a budget flush and hydrate add nothing"
+    );
+    let billed = metering(&second, &key, now).await;
+    assert_eq!(billed.len(), 1, "one metering row: {billed:?}");
+    let (requests, input, scale) = billed[0];
+    assert_eq!(requests, 1, "one request billed");
+    assert_eq!(
+        input,
+        i128::from(TOKENS) * 10i128.pow(scale),
+        "the input tokens billed exactly once"
+    );
+    drop(second);
+
+    // A third process over the same Store finds nothing left to replay and the same one charge.
+    let third = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    third.hydrate_budgets_async(&cm, now).await.unwrap();
+    attach_store_custody(&third, &store).await;
+    third.flush_unit_checkpoints().await.unwrap();
+    third.flush_metering().await;
+    assert!(!third.unit_checkpoint_pending(&open.id));
+    assert_eq!(
+        spend(&third, &cm, &key, now),
+        once,
+        "a restart after settlement charges nothing again"
+    );
+    assert_eq!(metering(&third, &key, now).await, billed);
+}

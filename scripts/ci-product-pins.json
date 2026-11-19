@@ -388,6 +388,6 @@
     "sdk": "de53a7b85b706ff189c5ced07ee224d7924d12fa",
     "kind": "secret",
     "language": "c",
-    "header": "crates/busbar-contract/include/busbar_plugin.h"
+    "header": "crates/busbar-plugin-abi/include/busbar_plugin.h"
   }
 }

@@ -451,6 +451,13 @@ struct Open {
     provider: Option<String>,
 
     laned: bool,
+
+    /// The unit's far end was dialled: it ran, so its end never releases the request count.
+    dialled: bool,
+
+    /// Why the provider's final stated usage was not accepted (`BUSBAR-5046`): the unit's terminal
+    /// checkpoint record carries it, and the unit bills only [`Self::last`], the usage accepted.
+    unread: Option<ReasonCode>,
 }
 
 impl Open {
@@ -484,6 +491,8 @@ impl Open {
             session: false,
             provider: None,
             laned: false,
+            dialled: false,
+            unread: None,
         }
     }
 
@@ -1151,15 +1160,20 @@ impl PlaneMoney {
             refused_unspent,
             ..
         } = end;
-        // A REFUSED, UNSPENT UNIT IS NOT COUNTED: no units reported (nor a cancel bill ledgered).
-        if refused_unspent && !open.ledgered && open.last.iter().all(|u| u.amount == 0) {
+        // A REFUSED, UNSPENT UNIT IS NOT COUNTED: no units reported (nor a cancel bill ledgered),
+        // and no far end dialled (a dialled far end ran, whatever the owner says).
+        if refused_unspent
+            && !open.dialled
+            && !open.ledgered
+            && open.last.iter().all(|u| u.amount == 0)
+        {
             self.gov.release_request(&open.money.charge);
         }
         if !open.ledgered {
             let delivered = (200..=299).contains(&caller_status);
             let fold = open.usage_fold();
             let counts = fold.counts();
-            if !self.finish_checkpoint(key, &open, counts, delivered) {
+            if !self.finish_checkpoint_unread(key, &open, counts, delivered, open.unread) {
                 self.bill(&open.money, open.provider.as_deref(), counts, |_| delivered);
             }
         }
@@ -1510,6 +1524,32 @@ impl MoneySeam for PlaneMoney {
         {
             return Checkpoint::Unpriced;
         }
+        // The unit's spend ceiling prices the report BEFORE it replaces the last one: a report the
+        // ceiling cannot price is `Unpriced` and the previous valid report is retained (it is what
+        // bills, P087B); a priced report at or past the ceiling is taken and then `Cut` (the ceiling
+        // never rewrites the provider's actual obligation).
+        let past_ceiling = match open.spend_ceiling_micros {
+            Some(ceiling) => {
+                let counts = reported(units);
+                let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(&open.money.lane);
+                let fee = u128::try_from(open.money.cost.request_fee_on(plane))
+                    .ok()
+                    .and_then(|n| n.checked_mul(busbar_kernel_ledger::cost::NANOS_PER_CENT));
+                let total = named(&open.money.classes, &usage_only(&open.money, &counts))
+                    .and_then(|counts| {
+                        open.money
+                            .cost
+                            .price_counts_nanos(&open.money.lane, &counts)
+                    })
+                    .zip(fee)
+                    .and_then(|(usage, fee)| usage.checked_add(fee));
+                match total {
+                    None => return Checkpoint::Unpriced,
+                    Some(total) => total >= u128::from(ceiling) * 1_000,
+                }
+            }
+            None => false,
+        };
         // CHECKPOINT ONLY ON CHANGE (SP-M2): a piece whose counts and checkpoint facts equal the
         // last ones taken replaces nothing and stages nothing; the budget is still asked below.
         let facts = self.post.checkpoint_facts(ctx.key);
@@ -1544,25 +1584,8 @@ impl MoneySeam for PlaneMoney {
             );
             self.gov.stage_unit_checkpoint(snapshot);
         }
-        if let Some(ceiling) = open.spend_ceiling_micros {
-            let counts = reported(units);
-            let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(&open.money.lane);
-            let fee = u128::try_from(open.money.cost.request_fee_on(plane))
-                .ok()
-                .and_then(|n| n.checked_mul(busbar_kernel_ledger::cost::NANOS_PER_CENT));
-            let total = named(&open.money.classes, &usage_only(&open.money, &counts))
-                .and_then(|counts| {
-                    open.money
-                        .cost
-                        .price_counts_nanos(&open.money.lane, &counts)
-                })
-                .zip(fee)
-                .and_then(|(usage, fee)| usage.checked_add(fee));
-            match total {
-                None => return Checkpoint::Unpriced,
-                Some(total) if total >= u128::from(ceiling) * 1_000 => return Checkpoint::Cut,
-                Some(_) => {}
-            }
+        if past_ceiling {
+            return Checkpoint::Cut;
         }
         if open.money.mode != ExhaustionMode::CutStream {
             return Checkpoint::Continue;
@@ -1592,7 +1615,7 @@ impl MoneySeam for PlaneMoney {
                 open,
                 &bill.billed,
                 bills(&usage_only(&open.money, &bill.billed)),
-                bill.unread,
+                bill.unread.or(open.unread),
             );
             let money = open.money.clone();
             let provider = open.provider.clone();
@@ -1631,11 +1654,12 @@ impl MoneySeam for PlaneMoney {
         if let Some((open, owed)) = removed {
             if owed {
                 let counts = reported(&open.last);
-                if !self.finish_checkpoint(
+                if !self.finish_checkpoint_unread(
                     ctx.key,
                     &open,
                     &counts,
                     bills(&usage_only(&open.money, &counts)),
+                    open.unread,
                 ) {
                     self.bill(&open.money, open.provider.as_deref(), &counts, bills);
                 }
@@ -1681,11 +1705,12 @@ impl MoneySeam for PlaneMoney {
             let money = open.money.clone();
             let provider = open.provider.clone();
             let counts = reported(&open.last);
-            let durable = self.finish_checkpoint(
+            let durable = self.finish_checkpoint_unread(
                 ctx.key,
                 open,
                 &counts,
                 bills(&usage_only(&open.money, &counts)),
+                open.unread,
             );
             let removed = if open.abandoned {
                 all.remove(&ctx.key)
@@ -1738,6 +1763,30 @@ impl MoneySeam for PlaneMoney {
             money.lane.push_str(lane);
             open.laned = true;
         }
+    }
+
+    fn dialled(&self, ctx: &UnitCtx) {
+        if let Some(open) = self.shard(ctx.key).get_mut(&ctx.key) {
+            if open.native.is_none() {
+                open.dialled = true;
+            }
+        }
+    }
+
+    fn unread(&self, ctx: &UnitCtx, reason: ReasonCode) -> bool {
+        match self.shard(ctx.key).get_mut(&ctx.key) {
+            Some(open) if open.native.is_none() && !open.ledgered => {
+                let first = open.unread.is_none();
+                open.unread.get_or_insert(reason);
+                first
+            }
+            // No open ordinary unit: nothing is left to mark, the row is still owed.
+            _ => true,
+        }
+    }
+
+    fn lane(&self, ctx: &UnitCtx) -> Option<String> {
+        self.serving(ctx.key, str::to_owned)
     }
 }
 

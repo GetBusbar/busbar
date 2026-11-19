@@ -23,8 +23,23 @@ fn listed(report: &[UndrainedWriter], seen: &UndrainedWriter) -> bool {
     report.iter().any(|s| s == seen)
 }
 
+/// The exclusive hold on the process-wide ledger and admin queue, taken through a runtime that
+/// is then left: the test's own code runs with no runtime, so its offers spawn no drain.
+fn exclusive() -> (
+    tokio::runtime::Runtime,
+    tokio::sync::MutexGuard<'static, ()>,
+) {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let guard = runtime.block_on(ledger_test_guard());
+    (runtime, guard)
+}
+
 #[test]
 fn a_record_is_confirmed_only_by_a_mark_taken_after_it() {
+    let (_runtime, _guard) = exclusive();
     let ledger = undrained_records();
     let early = writer(ObservedBy::Successor);
     ledger.retain(&early);
@@ -53,6 +68,7 @@ fn a_record_is_confirmed_only_by_a_mark_taken_after_it() {
 
 #[test]
 fn a_close_that_did_not_apply_records_nothing() {
+    let (_runtime, _guard) = exclusive();
     let ledger = undrained_records();
     let seen = writer(ObservedBy::ExpiredLeasePass);
     ledger.retain(&seen);
@@ -66,6 +82,7 @@ fn a_close_that_did_not_apply_records_nothing() {
 
 #[test]
 fn a_lost_decision_is_listed_unconfirmed() {
+    let (_runtime, _guard) = exclusive();
     let ledger = undrained_records();
     let seen = writer(ObservedBy::Successor);
     ledger.retain(&seen);
@@ -75,15 +92,14 @@ fn a_lost_decision_is_listed_unconfirmed() {
 
 #[test]
 fn a_record_the_full_queue_refuses_is_held_and_named() {
+    let (runtime, _guard) = exclusive();
+    let hold = crate::audit::auditlog::hold_admin_drain();
     let ledger = undrained_records();
-    // Fill the admin audit queue to its bound; nothing drains it (no native owner here).
-    let mut filled = 0;
-    while crate::audit::auditlog::try_emit_admin_hostless_now("test.fill", "x", "ok", "system")
-        .is_ok()
-    {
-        filled += 1;
-        assert!(filled <= 4096, "the admin audit queue is bounded");
-    }
+    // Fill the drained admin audit queue to its bound; with no runtime here nothing drains it.
+    assert_eq!(
+        fill_admin_queue(),
+        crate::audit::auditlog::MAX_PENDING_AUDIT
+    );
     let seen = writer(ObservedBy::ExpiredLeasePass);
     ledger.retain(&seen);
     assert!(
@@ -103,6 +119,28 @@ fn a_record_the_full_queue_refuses_is_held_and_named() {
         "still refused while the queue is full"
     );
     assert!(listed(&ledger.exit_report().unrecorded, &seen));
+
+    // The native owner drains the queue: the held record is accepted, then confirmed by a mark
+    // taken after it.
+    drop(hold);
+    assert!(runtime
+        .block_on(crate::audit::auditlog::flush_pending())
+        .is_ok());
+    assert!(ledger.retry_unrecorded() >= 1);
+    let placement = ledger.placement(seen.target());
+    assert!(
+        placement.recorded.is_some() && !placement.record_failed,
+        "{placement:?}"
+    );
+    let mark = ledger.mark();
+    assert!(runtime
+        .block_on(crate::audit::auditlog::flush_pending())
+        .is_ok());
+    ledger.confirm_before(mark);
+    assert_eq!(ledger.placement(seen.target()), Placement::default());
+    let report = ledger.exit_report();
+    assert!(!listed(&report.unrecorded, &seen));
+    assert!(!listed(&report.unconfirmed, &seen));
 }
 
 #[test]

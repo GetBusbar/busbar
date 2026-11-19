@@ -746,6 +746,97 @@ async fn l9_an_answer_carries_no_sealed_value() {
     assert_eq!(rig.progress.snapshot().written_plaintext, 0);
 }
 
+// ---- every byte given to the connection is a charged byte (OPEN-3 16, money) ----------------
+
+/// A connection that notes where each byte it took was read from (an address range, never a read).
+struct Noting<S> {
+    inner: S,
+    taken_from: Arc<std::sync::Mutex<Vec<std::ops::Range<usize>>>>,
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Noting<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        let polled = Pin::new(&mut this.inner).poll_write(cx, bytes);
+        if let Poll::Ready(Ok(took)) = polled {
+            let range = bytes[..took].as_ptr_range();
+            this.taken_from
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(range.start as usize..range.end as usize);
+        }
+        polled
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+/// The accepted side's twin of `outbound::wire::wire_check`: the session holds the answer's bytes in
+/// its own output buffer, charged to the connection's storage account, and every byte the connection
+/// is given is read from that block. The driver keeps no copy of its own (an uncharged one was the
+/// money fault), and the answer's record is still read from the socket's progress alone.
+#[tokio::test]
+async fn every_answer_byte_the_accepted_connection_is_given_is_a_charged_byte() {
+    let taken_from = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let noted = Arc::clone(&taken_from);
+    let mut rig = rig_over(
+        move |inner| Noting {
+            inner,
+            taken_from: noted,
+        },
+        true,
+    );
+    let handles = rig.admitted(1).await;
+    rig.io.ledger().emitting(1, E_BODY, 4);
+    rig.io.ledger().emitting(1, E_END, 0);
+    let mut acts = rig.acts();
+    acts.part(1, WIRE_CONTROL, HEAD).unwrap();
+    acts.part(1, WIRE_PAYLOAD, b"body").unwrap();
+    acts.push(Act::WireEnd {
+        stream: 1,
+        how: END_FLUSH,
+        arg: 0,
+    })
+    .unwrap();
+    let block = acts
+        .out
+        .allocation()
+        .expect("the answer's bytes are in the session's buffer")
+        .as_ptr_range();
+    let block = block.start as usize..block.end as usize;
+    assert!(matches!(rig.apply(acts).await, Flow::Go));
+    let taken_from = taken_from
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert!(
+        !taken_from.is_empty(),
+        "the connection was given the answer"
+    );
+    let mut given = 0;
+    for range in &taken_from {
+        assert!(
+            block.start <= range.start && range.end <= block.end,
+            "a byte the connection was given lies outside the session's charged block"
+        );
+        given += range.len();
+    }
+    assert_eq!(given, HEAD.len() + 4, "every byte of the answer, once");
+    assert_eq!(
+        read_some(&mut rig.peer, given).await,
+        [HEAD, b"body"].concat()
+    );
+    assert_eq!(handles.watch.record(), Some(record("whole", None, 4)));
+}
+
 // ---- the flush and the close are part of "delivered" ---------------------------------------
 
 /// A connection whose flush (or shutdown) fails after it took every byte.

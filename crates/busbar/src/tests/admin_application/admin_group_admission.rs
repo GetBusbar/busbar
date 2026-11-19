@@ -726,3 +726,183 @@ async fn test_max_keys_per_principal_atomic_under_concurrent_mint() {
     handle.abort();
     println!("{WITNESS}");
 }
+
+/// SECURITY (v1.6 `key_cap_and_delegation_refusals_are_reachable_declared_and_audited`, PROOF-093-E
+/// row 217): every refused mint is audited. A mint past `limits.max_keys_per_principal`, a mint
+/// naming a parent other than its group's existing one, and a mint naming a parent with no group
+/// each write one `key.create` / `rejected` row for the operator (resource `key:-`: no key was
+/// issued), and a rebind of an existing key into an at-cap group writes `key.patch` / `rejected`
+/// on that key. Nothing refused is recorded as applied.
+#[tokio::test]
+async fn key_cap_and_delegation_refusals_are_reachable_declared_and_audited() {
+    const CHILD: &str = "BUSBAR_ADMIN_BOOT_727F6FCE3A24";
+    const WITNESS: &str =
+        "actual root case key_cap_and_delegation_refusals_are_reachable_declared_and_audited completed";
+    isolated!(CHILD, WITNESS);
+    let groups = std::collections::BTreeMap::from([
+        (
+            "capped".to_string(),
+            busbar_kernel::config::GroupCfg {
+                limits: vec![budget_limit(1_000_000)],
+                ..Default::default()
+            },
+        ),
+        (
+            "roomy".to_string(),
+            busbar_kernel::config::GroupCfg {
+                limits: vec![budget_limit(1_000_000)],
+                ..Default::default()
+            },
+        ),
+        (
+            "user:bob".to_string(),
+            busbar_kernel::config::GroupCfg {
+                parent: Some("roomy".to_string()),
+                limits: vec![budget_limit(3000)],
+                ..Default::default()
+            },
+        ),
+    ]);
+    busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let (module, directory, settings) = crate::distribution::rig::actual_store(
+        "key_cap_and_delegation_refusals_are_reachable_declared_and_audited-actual-store",
+    );
+    assert!(
+        settings.is_object(),
+        "the actual Store settings are an object"
+    );
+    let signing_key = directory.join("signing-key");
+    let operator_token = directory.join("operator-token");
+    std::fs::write(&signing_key, hex::encode([9u8; 32])).expect("write the test signing input");
+    std::fs::write(&operator_token, "admintok").expect("write the test operator input");
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = json::json!({
+        "providers": {},
+        "models": {},
+        "auth": { "chain": [], "admin_auth": [operator], "signing_key": { "file": signing_key } },
+        "store": { "module": module, "settings": settings },
+        "advanced": {  },
+        "identity-providers": {},
+    });
+    document["identity-providers"][operator] = json::json!({
+        "module": operator, "settings": { "sha256": crate::root::test_plugins::operator_sha256_of(&operator_token) },
+    });
+    document["groups"] = json::to_value(&groups).expect("the actual group definitions serialize");
+    document["limits"] = json::json!({"max_keys_per_principal": 2});
+    let (addr, handle, _book) =
+        crate::distribution::rig::actual_root(document, &directory, &module).await;
+    let client = reqwest::Client::new();
+    let keys_url = format!("http://{addr}/api/v1/admin/keys");
+    let mint = |body: json::Value| {
+        client
+            .post(&keys_url)
+            .header("authorization", "Bearer admintok")
+            .json(&body)
+            .send()
+    };
+    let rows = |action: &'static str| {
+        let request = client
+            .get(format!("http://{addr}/api/v1/admin/audit"))
+            .query(&[("action", action)])
+            .header("authorization", "Bearer admintok")
+            .send();
+        async move {
+            let r = request.await.unwrap();
+            assert_eq!(r.status().as_u16(), 200, "the audit rows are readable");
+            json::parse_value(&r.bytes().await.unwrap()).unwrap()["items"]
+                .as_array()
+                .expect("the audit response has items")
+                .clone()
+        }
+    };
+    let rejected = |items: &[json::Value], resource: &str| {
+        items
+            .iter()
+            .filter(|e| e["outcome"] == "rejected" && e["resource"] == resource)
+            .count()
+    };
+
+    for name in ["a", "b"] {
+        let r = mint(json::json!({"name": name, "group": "capped"}))
+            .await
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 201, "mint {name} under the cap");
+    }
+    let roamer = mint(json::json!({"name": "roamer", "group": "roomy"}))
+        .await
+        .unwrap();
+    assert_eq!(roamer.status().as_u16(), 201);
+    let roamer = json::parse_value(&roamer.bytes().await.unwrap()).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        rejected(&rows("key.create").await, "key:-"),
+        0,
+        "no refusal yet, so no rejected mint row"
+    );
+
+    let refusals = [
+        (
+            json::json!({"name": "c", "group": "capped"}),
+            409,
+            "max_keys_per_principal",
+        ),
+        (
+            json::json!({"name": "d", "group": "user:bob", "parent": "capped"}),
+            409,
+            "already exists with parent",
+        ),
+        (
+            json::json!({"name": "e", "parent": "roomy"}),
+            400,
+            "`parent` was given without `group`",
+        ),
+    ];
+    for (n, (body, status, names)) in refusals.into_iter().enumerate() {
+        let r = mint(body.clone()).await.unwrap();
+        assert_eq!(r.status().as_u16(), status, "refused mint {body}");
+        let answer = json::parse_value(&r.bytes().await.unwrap()).unwrap();
+        assert!(
+            answer["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains(names),
+            "the refusal names its cause: {answer}"
+        );
+        let items = rows("key.create").await;
+        assert_eq!(
+            rejected(&items, "key:-"),
+            n + 1,
+            "refused mint {body} wrote exactly one rejected key.create row: {items:?}"
+        );
+    }
+    let applied = rows("key.create")
+        .await
+        .iter()
+        .filter(|e| e["outcome"] == "applied")
+        .count();
+    assert_eq!(
+        applied, 3,
+        "only the three issued keys are recorded applied"
+    );
+
+    let r = client
+        .patch(format!("{keys_url}/{roamer}"))
+        .header("authorization", "Bearer admintok")
+        .json(&json::json!({"group": "capped"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 409, "a rebind into an at-cap group");
+    let resource = format!("key:{roamer}");
+    let items = rows("key.patch").await;
+    assert_eq!(
+        rejected(&items, &resource),
+        1,
+        "the refused rebind of {resource} left one rejected key.patch row: {items:?}"
+    );
+
+    handle.abort();
+    println!("{WITNESS}");
+}

@@ -925,6 +925,41 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 )
                 .await;
             }
+            KernelVerb::AgentApprove => {
+                let Some(actor) = self.resolved_principal.as_deref() else {
+                    return Ok(bound::trust_actor_unresolved(verb));
+                };
+                // The trust arms' wrapper: replayed inside it, effect admitted only for a decision
+                // that runs, audited by the kernel's typed row (r3 §4.6, §5.2).
+                return bound::replayable(
+                    &self.replays,
+                    self.replay_store.as_ref(),
+                    bound::ReplayScope { verb, actor },
+                    &self.request,
+                    request,
+                    self.amendments.as_deref(),
+                    bound::ReplayContext::Trust {
+                        kernel: self.trust.as_deref(),
+                        audited: &self.trust_audited,
+                    },
+                    || async {
+                        let _effect = match self.admit_effect().await {
+                            Ok(guard) => guard,
+                            Err(answer) => return Ok(bound::EffectAnswer::unapplied(answer)),
+                        };
+                        crate::root::agents_approve::approve(
+                            self.trust.as_deref(),
+                            self.request.path(),
+                            request,
+                            actor,
+                            bound::idempotency_key(&self.request),
+                            &self.trust_audited,
+                        )
+                        .await
+                    },
+                )
+                .await;
+            }
 
             KernelVerb::PlaneRecordWrite => {
                 return bound::replayable(
@@ -2558,7 +2593,7 @@ fn seal_root_only(walk: &AdminWalk, resolved: &ResolvedVerb, applied: bool) {
     // (TRUST-ADMIN-PRODUCER-DESIGN r3 §5.2). Refusals before the kernel leave the flag unset.
     let trust_typed = matches!(
         kernel_verb(resolved),
-        Some(KernelVerb::TrustApprove | KernelVerb::TrustRevoke)
+        Some(KernelVerb::TrustApprove | KernelVerb::TrustRevoke | KernelVerb::AgentApprove)
     ) && walk.trust_audited.load(std::sync::atomic::Ordering::SeqCst);
     if trust_typed {
         return;
@@ -2655,6 +2690,10 @@ mod records_tests;
 #[cfg(test)]
 #[path = "tests/ledger_recovery_actual.rs"]
 mod ledger_recovery_actual;
+
+#[cfg(test)]
+#[path = "tests/agent_approve.rs"]
+mod agent_approve_tests;
 
 /// Test transport boundary: use actual process admission and gathering, never a fabricated lease.
 /// These service fixtures exercise the Admin consumer, not native socket/physical admission.

@@ -18,6 +18,7 @@ use super::{
     FenceMark, ObservedBy, PredecessorFence, PredecessorRetire, SealOutcome, SealRow,
     UndrainedWriter, LEASE_TTL_MS,
 };
+use crate::persistence::undrained::ledger_test_guard;
 
 const HOST: &str = "seal-host";
 
@@ -25,6 +26,7 @@ const HOST: &str = "seal-host";
 /// observations are refused immediately instead of being retried thirty times.
 #[tokio::test]
 async fn predecessor_failures_preserve_transient_and_permanent_classification() {
+    let _guard = ledger_test_guard().await;
     use super::RetireError;
     use crate::persistence::facade::AccessError;
     use busbar_contract::persistence::Failure;
@@ -114,6 +116,7 @@ fn mark(store: &Store, writer: [u8; 16]) -> Option<FenceMark> {
 /// already closed is never re-marked.
 #[tokio::test]
 async fn the_fence_writes_its_mark_in_the_same_compare_and_set() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let fence = PredecessorFence::new(attach(&store, OWN).await, HOST).unwrap();
     let dead = writer_id();
@@ -163,6 +166,7 @@ async fn the_fence_writes_its_mark_in_the_same_compare_and_set() {
 /// cleanup and the predecessor mark. A new process then seals from those durable rows.
 #[tokio::test]
 async fn fence_mark_and_writer_cleanup_survive_exact_replay_and_restart() {
+    let _guard = ledger_test_guard().await;
     use super::expired_writers_tests::{CLOSED, OPEN};
     use busbar_contract::Secret;
 
@@ -270,6 +274,7 @@ async fn fence_mark_and_writer_cleanup_survive_exact_replay_and_restart() {
 /// the mark; a second successor holding the state it read before loses and writes nothing.
 #[tokio::test]
 async fn one_seal_row_wins_and_the_mark_lists_its_node() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let first = PredecessorFence::new(attach(&store, OWN).await, HOST).unwrap();
     let second = PredecessorFence::new(attach(&store, OWN).await, HOST).unwrap();
@@ -313,6 +318,7 @@ async fn one_seal_row_wins_and_the_mark_lists_its_node() {
 /// unchanged), and the mark lists both. A break over an `unsealed_fenced` node leaves it unchanged.
 #[tokio::test]
 async fn one_writer_two_nodes_are_both_sealed_under_one_mark() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let fence = PredecessorFence::new(attach(&store, OWN).await, HOST).unwrap();
     let dead = writer_id();
@@ -354,6 +360,7 @@ async fn one_writer_two_nodes_are_both_sealed_under_one_mark() {
 /// another host's rows are never read, and the caller's own node is left out.
 #[tokio::test]
 async fn the_host_scan_lists_reserved_nodes_and_refuses_the_rest() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     let fence = PredecessorFence::new(attach(&store, OWN).await, HOST).unwrap();
     let (w1, w2, w3, w4) = (writer_id(), writer_id(), writer_id(), writer_id());

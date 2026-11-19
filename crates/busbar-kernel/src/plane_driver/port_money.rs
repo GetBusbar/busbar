@@ -13,21 +13,22 @@
 //! `PlanePort::end`'s answer feeds the final counts here before the unit is settled; the settlement itself
 //! (`PlaneMoney::settle_end_as`) stays with the unit's owner, exactly as it did with the old driver.
 
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use busbar_contract::abi::plane::UnitCount;
 use busbar_contract::caps::{PrincipalId, ReasonCode};
 use busbar_contract::measurement::{UNITS_ESTIMATED, UNITS_FLOOR, UNITS_REPORTED};
-use busbar_contract::plane::codes::{CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL};
+use busbar_contract::plane::codes::{CANCEL_ABORTED, CANCEL_OK_PARTIAL};
 use busbar_contract::vocab::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED};
 use busbar_plugin_abi::plane::{
     AUDIT_APPLIED, AUDIT_DEGRADED, AUDIT_REJECTED, SRC_ESTIMATED, SRC_FLOOR, SRC_REPORTED,
 };
 
 use super::cancel::{CancelBill, Checkpoint, MoneySeam};
-use super::usage::{bill, scaled, Bill, Ending, Reported, SessionUsage};
+use super::usage::{bill, scaled, Bill, Ending, Reported, SessionUsage, UsageInvalid};
 use super::AuditSink;
-use crate::diagnostics::{PLANE_USAGE_ROUNDED, PLANE_USAGE_UNDECLARED};
+use crate::diagnostics::{PLANE_USAGE_ROUNDED, PLANE_USAGE_UNDECLARED, PLANE_USAGE_UNREAD};
 use crate::teller::UnitCtx;
 
 /// The audit action of a USAGE class the plane never declared (diagnostic [`PLANE_USAGE_UNDECLARED`], §12.20).
@@ -95,6 +96,23 @@ const fn units_source(source: u32) -> Option<u32> {
         SRC_ESTIMATED => Some(UNITS_ESTIMATED),
         SRC_FLOOR => Some(UNITS_FLOOR),
         _ => None,
+    }
+}
+
+/// What a `plane-usage-unread` row states: the final report the money could not price, or why the session
+/// refused the report.
+enum Unread<'a> {
+    Stated(&'a SessionUsage),
+    Refused(UsageInvalid),
+}
+
+/// A USAGE source's word in an audit row.
+const fn source_name(source: u32) -> &'static str {
+    match source {
+        SRC_REPORTED => "reported",
+        SRC_ESTIMATED => "estimated",
+        SRC_FLOOR => "floor",
+        _ => "unknown",
     }
 }
 
@@ -203,6 +221,12 @@ impl PortMoney {
         counted
     }
 
+    /// The member that served the unit: its money lane and the provider it was sent to. The
+    /// unit's counts are priced, ledgered and metered under that lane from here on.
+    pub fn served(&self, ctx: &UnitCtx, lane: &str, provider: &str) {
+        self.seam.served(ctx, lane, provider);
+    }
+
     /// A running unit's cumulative usage: the budget decides whether the stream goes on.
     pub fn checkpoint(
         &self,
@@ -214,6 +238,19 @@ impl PortMoney {
         self.seam.checkpoint(ctx, &counted.counts)
     }
 
+    /// A running session's usage as it is accepted (P087B): the money takes each accepted report as it comes,
+    /// so the last report it accepted is what bills when a later one cannot be priced or never comes. Quiet:
+    /// a dropped or rounded class is audited once, at the session's end.
+    pub fn running(&self, ctx: &UnitCtx, usage: &SessionUsage) -> Checkpoint {
+        self.seam
+            .checkpoint(ctx, &counts_of(usage.last().iter(), &self.classes).counts)
+    }
+
+    /// The unit's far end is being dialled: the unit has run.
+    pub fn dialled(&self, ctx: &UnitCtx) {
+        self.seam.dialled(ctx);
+    }
+
     /// The session's end: the cancel table decides what is posted (§12.4); rule 4, the budget refund, is the
     /// unit owner's own act and is never folded in here.
     pub fn ended(
@@ -223,14 +260,38 @@ impl PortMoney {
         usage: &SessionUsage,
         principal: Option<&str>,
     ) {
+        self.ended_taken(ctx, ending, usage, None, principal);
+    }
+
+    /// [`Self::ended`], where `taken` is the money's answer to the session's last running checkpoint when it
+    /// was taken of exactly `usage` ([`Self::running`]); `None` asks the money now.
+    ///
+    /// An `End` or a `Failed` session bills exactly the usage it accepted, once, at its owner's settlement
+    /// (P087B): its bill's values reach the money as its final checkpoint and the unit is finished. A final
+    /// report the money cannot price (`Unpriced`) is not billed, neither as 0 nor at an invented price: the
+    /// money keeps the last report it accepted, the unit is left unread and audited
+    /// ([`Self::unread`]).
+    pub fn ended_taken(
+        &self,
+        ctx: &UnitCtx,
+        ending: Ending,
+        usage: &SessionUsage,
+        taken: Option<Checkpoint>,
+        principal: Option<&str>,
+    ) {
         match (bill(ending, usage), ending) {
-            (Bill::Usage(values), Ending::End) => {
+            (Bill::Usage(values), Ending::End | Ending::Failed) => {
                 let counted = self.counted(values.into_iter(), ctx, principal);
                 // The final cumulative counts; a budget that dries after the end has nothing left to cut.
-                let _ = self.seam.checkpoint(ctx, &counted.counts);
+                let verdict = taken.unwrap_or_else(|| self.seam.checkpoint(ctx, &counted.counts));
+                if verdict == Checkpoint::Unpriced {
+                    self.unread(ctx, Unread::Stated(usage), principal);
+                }
                 self.seam.finished(ctx);
             }
-            (Bill::Estimate | Bill::Nothing, Ending::End) => self.seam.finished(ctx),
+            (Bill::Estimate | Bill::Nothing, Ending::End | Ending::Failed) => {
+                self.seam.finished(ctx);
+            }
             (
                 billed,
                 Ending::Cancel {
@@ -263,18 +324,66 @@ impl PortMoney {
                     },
                 );
             }
-            (_, Ending::Failed) => self.seam.cancelled(
-                ctx,
-                &CancelBill {
-                    cause: ReasonCode::PlanePanic,
-                    disposition: CANCEL_FAILED,
-                    far_end_answered: false,
-                    streamed: false,
-                    billed: Vec::new(),
-                    unread: None,
-                },
-            ),
         }
+    }
+
+    /// The session refused a USAGE the plane stated (`why`): that report is never billed; it is audited
+    /// `plane-usage-unread` and the unit is left unread (P087B, old K0b).
+    pub fn refused(&self, ctx: &UnitCtx, why: UsageInvalid, principal: Option<&str>) {
+        self.unread(ctx, Unread::Refused(why), principal);
+    }
+
+    /// `BUSBAR-5046`: the provider's final stated usage was not accepted. The unit is told (once: its terminal
+    /// record carries the reason and it bills only the usage accepted before), and one `plane-usage-unread`
+    /// row names the unit, its lane, the reason and the raw stated counts (or why the report was refused).
+    fn unread(&self, ctx: &UnitCtx, what: Unread<'_>, principal: Option<&str>) {
+        let reason = ReasonCode::Unpriced;
+        if !self.seam.unread(ctx, reason) {
+            return;
+        }
+        let lane = self.seam.lane(ctx).unwrap_or_default();
+        let mut resource = format!(
+            "unit:{} lane:{lane} reason:{}",
+            ctx.key.get(),
+            reason.as_str()
+        );
+        match what {
+            Unread::Stated(usage) => {
+                resource.push_str(" stated:");
+                for (at, r) in usage.last().iter().enumerate() {
+                    if at > 0 {
+                        resource.push(',');
+                    }
+                    let _ = write!(resource, "{}={}", r.class, r.amount);
+                    if r.scale != 0 {
+                        let _ = write!(resource, "e-{}", r.scale);
+                    }
+                    resource.push('/');
+                    resource.push_str(source_name(r.source));
+                }
+            }
+            Unread::Refused(why) => {
+                resource.push_str(" refused:");
+                resource.push_str(match why {
+                    UsageInvalid::Class => "class",
+                    UsageInvalid::Scale => "scale",
+                    UsageInvalid::Source => "source",
+                });
+            }
+        }
+        let anonymous = PrincipalId::anonymous();
+        self.audit.record(
+            PLANE_USAGE_UNREAD.slug,
+            &resource,
+            OUTCOME_DEGRADED,
+            principal.unwrap_or_else(|| anonymous.as_str()),
+        );
+        crate::diagnostics::diag_warn!(
+            PLANE_USAGE_UNREAD,
+            unit = ctx.key.get(),
+            reason = reason.as_str(),
+            "provider usage not read: the unit bills only the usage accepted before its final report"
+        );
     }
 
     /// One AUDIT row, under the request's verified principal (`None` = anonymous).

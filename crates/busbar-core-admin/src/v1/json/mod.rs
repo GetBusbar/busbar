@@ -281,15 +281,16 @@ async fn port_admin_response(
     use busbar_kernel::limits::input_body::{gather, GatherError};
     use busbar_kernel::limits::process_admission::RequestLease;
 
-    // The carriers the admin gate consumed are stripped before the head is copied for the plane,
-    // as the data router strips them: the plane's admin route never sees the operator credential.
-    if let Some(consumed) = parts
-        .extensions
-        .get::<busbar_kernel::auth::ConsumedCredentials>()
-        .cloned()
-    {
-        consumed.strip(&mut parts.headers);
-    }
+    // The operator the admin gate admitted (it inserts `AuthPrincipal(Some(_))` on every request it
+    // admits): the plane's admin route is served as this principal and its audit rows name it. A
+    // request without one was not admitted by the gate and is refused, never served as anonymous.
+    let Some(busbar_kernel::auth::AuthPrincipal(Some(principal))) =
+        parts
+            .extensions
+            .remove::<busbar_kernel::auth::AuthPrincipal>()
+    else {
+        return err_json(&AdminError::Unauthorized);
+    };
 
     let Some(request) = parts.extensions.get::<RequestLease>().cloned() else {
         return err_json(&AdminError::Unavailable(
@@ -314,11 +315,15 @@ async fn port_admin_response(
         method: parts.method.as_str().to_owned(),
         path: parts.uri.path().to_owned(),
         query: parts.uri.query().unwrap_or_default().to_owned(),
-        headers: parts
-            .headers
-            .iter()
-            .map(|(name, value)| (name.as_str().to_owned(), value.as_bytes().to_vec()))
-            .collect(),
+        // The head as it arrived: `port_admin::answer` strips every carrier the gate consumed
+        // (and the credential floor) before the plane is handed any of it.
+        headers: std::mem::take(&mut parts.headers),
+        // Moved, not copied: the gate's hold on the caller credential has one owner, released
+        // by `port_admin::answer` before the plane is entered.
+        consumed: parts
+            .extensions
+            .remove::<busbar_kernel::auth::ConsumedCredentials>(),
+        principal: busbar_kernel::auth::AuthPrincipal(Some(principal)),
         body,
         request_id,
         now_s: busbar_kernel::store::now(),

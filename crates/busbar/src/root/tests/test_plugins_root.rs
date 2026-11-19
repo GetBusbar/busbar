@@ -223,9 +223,38 @@ pub fn linked_store_module() -> &'static str {
     .as_str()
 }
 
+/// The start stage's native image prepare for a process with no `plugins:` block, once per test
+/// process, as `main`'s `register_root` runs it (`boot::images::publish_start`) before any
+/// configuration is read: the linked images' secret words, hook facts, scope kinds and operator
+/// claims are published. Without it the test process has no native secret word (a `{file: …}`
+/// reference read under the linked grammar is refused BUSBAR-3170 at admission) and no operator
+/// claim (the operator binding judges none).
+pub(crate) fn publish_linked_start() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let process = crate::root::boot::images::process().expect("the process plugin resources");
+        let plugins = busbar_kernel::config::PluginsCfg {
+            enabled: false,
+            ..Default::default()
+        };
+        let prepared = crate::root::boot::images::prepare(
+            &process,
+            &busbar_kernel::config::grammar::PhaseOneIn::of(&plugins),
+        )
+        .map_err(|refusal| refusal.0)
+        .expect("the linked images prepare as the start stage prepares them");
+        prepared.publish_secrets();
+        prepared.publish_hooks();
+        prepared.publish_scope_kinds();
+        prepared.publish_operator();
+    });
+}
+
 /// Bind the linked first-party operator credential for this test process, through the production
-/// process-start binding, and return the provider key configuration names it by.
+/// process-start binding, and return the provider key configuration names it by. The start stage's
+/// publication runs first, as it does in `main`.
 pub fn bind_operator() -> &'static str {
+    publish_linked_start();
     busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
     busbar_kernel::config::operator_provider()
 }

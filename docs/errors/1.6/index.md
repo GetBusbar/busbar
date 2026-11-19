@@ -97,7 +97,7 @@ The thousands digit is the area.
 | [BUSBAR-3113](/docs/1.6/errors/BUSBAR-3113/) | An auth policy or key lifetime setting is invalid | 1.6.0 |
 | [BUSBAR-3114](/docs/1.6/errors/BUSBAR-3114/) | A role binding is invalid | 1.6.0 |
 | [BUSBAR-3115](/docs/1.6/errors/BUSBAR-3115/) | The auth chain cannot authenticate as configured | 1.6.0 |
-| [BUSBAR-3116](/docs/1.6/errors/BUSBAR-3116/) | A plane is configured while the data-plane auth chain is empty | 1.6.0 |
+| [BUSBAR-3116](/docs/1.6/errors/BUSBAR-3116/) | A plane is configured while the data-plane auth chain is empty — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3117](/docs/1.6/errors/BUSBAR-3117/) | A global limit or timing setting is out of range | 1.6.0 |
 | [BUSBAR-3118](/docs/1.6/errors/BUSBAR-3118/) | A rate card or fee is invalid | 1.6.0 |
 | [BUSBAR-3119](/docs/1.6/errors/BUSBAR-3119/) | A group's limits are invalid | 1.6.0 |

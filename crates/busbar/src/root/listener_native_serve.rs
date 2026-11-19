@@ -9,7 +9,7 @@ use std::sync::Arc;
 use busbar_core_connector::framed_stream::session::{self, Inbound, Wiring};
 use busbar_core_connector::listen::{Admits, Admitted};
 use busbar_kernel::inbound::native::StreamOwner;
-use busbar_plugin_abi::transport::{CR_DRAIN, CR_NORMAL, CR_TIMEOUT};
+use busbar_plugin_abi::transport::{CR_DRAIN, CR_NORMAL, CR_REVOKED, CR_TIMEOUT};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 
@@ -260,6 +260,9 @@ async fn supervise(
     // head that was read and never answered is said (`unanswered`), whatever ended it.
     let (mut heads, mut answered) = (0_usize, 0_usize);
     let mut ended = "the supervisor stopped";
+    // Fired when a credential or grant a live request of this connection was admitted on is
+    // revoked: the governance revocation itself wakes it, no clock is read for it.
+    let revocation = ingress.connection.revocation();
     loop {
         if driver_done {
             for slot in &mut ingress.slots {
@@ -303,6 +306,21 @@ async fn supervise(
             .min();
         tokio::select! {
             biased;
+            // A credential or grant this connection's live request was admitted on was revoked:
+            // the connection ends now, as revoked (CR_REVOKED, transport-ws 1008). Its requests
+            // are cancelled as for any end core decides, so each open unit settles once, as a
+            // cut answer billed what its plane stated.
+            subject = revocation.revoked(), if close.is_some() => {
+                tracing::warn!(
+                    listener = %native.slot,
+                    admin = native.admin.is_some(),
+                    key = %subject,
+                    "a native connection ended: a credential or grant its live request was \
+                     admitted on was revoked (CR_REVOKED)"
+                );
+                input_open = false;
+                stop_connection(&ingress, &mut waiting, &mut close, CR_REVOKED);
+            },
             () = async {
                 match request_deadline {
                     Some(deadline) => tokio::time::sleep_until(deadline.into()).await,

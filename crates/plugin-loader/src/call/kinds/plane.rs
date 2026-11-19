@@ -5,12 +5,14 @@
 //! `channel` run on one; `end` ends it; `render`, `demux` and `select_resources` are plain; `admin` is
 //! async.
 
-use busbar_plugin_abi::fail::CallError;
+use busbar_plugin_abi::fail::{CallError, FaultReason};
 use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::driver::Driver;
+use busbar_plugin_abi::host_side::entry::Pure;
 use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::PooledOut;
 use busbar_plugin_abi::plane::{PlaneReq, Target};
+use busbar_plugin_abi::records::RecErr;
 use busbar_plugin_abi::types::{Bytes, Str};
 use zerocopy::{Immutable, IntoBytes};
 
@@ -342,7 +344,14 @@ impl OnSession for SessionHandle {
         target: &Target<'_>,
     ) -> Result<Answer<'o>, CallError> {
         let frame = target_frame(target);
-        call::on(self, CHANNEL, at, &frame, target.params.get(), buf)
+        // Selected-channel preparation is pure: no host service authority, and a plugin that asks for
+        // one is faulted even if it ignores the denial and answers.
+        let pure = Pure::enter();
+        let answer = call::on(self, CHANNEL, at, &frame, target.params.get(), buf)?;
+        if pure.violated() {
+            return Err(self.inst.charge(FaultReason::BadRecords(RecErr::Reserved)));
+        }
+        Ok(answer)
     }
 
     /// `blobs[0]` = `bytes`.
