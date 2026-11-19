@@ -984,7 +984,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-postgres"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=757ef895a737a130807b5d3af91ceeba2393d973#757ef895a737a130807b5d3af91ceeba2393d973"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=fb25cb9f43d4bc08fd96f1409fe40a02bd56e8f0#fb25cb9f43d4bc08fd96f1409fe40a02bd56e8f0"
 dependencies = [
  "base64 0.22.1",
  "busbar-plugin-abi",
@@ -1002,7 +1002,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-sqlite"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=1e4c78245472c22cfcf000a5176362731631b2f0#1e4c78245472c22cfcf000a5176362731631b2f0"
+source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=eae3d167e70c97c2160928bede2f41d282e00db0#eae3d167e70c97c2160928bede2f41d282e00db0"
 dependencies = [
  "busbar-plugin-abi",
  "rusqlite",
