@@ -1031,8 +1031,10 @@ fn an_anonymous_binding_grants_only_the_kinds_a_loaded_plane_image_states() {
     let refuses = |binding: &str, field: &str| {
         let errs = judged(binding).expect_err(&format!("{binding} must be refused"));
         assert!(
-            errs.iter().any(|e| e.contains(&format!("role_bindings.anonymous.*.{field}"))
-                && e.contains("BUSBAR-3114")),
+            errs.iter().any(
+                |e| e.contains(&format!("role_bindings.anonymous.*.{field}"))
+                    && e.contains("BUSBAR-3114")
+            ),
             "{binding}: {errs:?}"
         );
     };
@@ -1090,7 +1092,9 @@ fn an_anonymous_binding_grants_only_the_kinds_a_loaded_plane_image_states() {
 /// describe names stays refused, and `pool` is never a plane kind.
 #[test]
 fn role_binding_plane_scope_a_checked_kind_is_grantable_before_mount() {
-    use crate::auth::route_record::wire::{AdmissionItem, CALLERS_DISTINCT, MONEY_UNIT, SCOPE_WALK};
+    use crate::auth::route_record::wire::{
+        AdmissionItem, CALLERS_DISTINCT, MONEY_UNIT, SCOPE_WALK,
+    };
     use crate::plane_driver::port_routes::declare_described_kinds;
     use busbar_plugin_abi::plane::AUTH_PRINCIPAL;
     use busbar_ports::plane::RouteInfo;
@@ -1106,8 +1110,10 @@ fn role_binding_plane_scope_a_checked_kind_is_grantable_before_mount() {
     let refuses = |binding: &str, field: &str| {
         let errs = judged(binding).expect_err(&format!("{binding} must be refused"));
         assert!(
-            errs.iter().any(|e| e.contains(&format!("role_bindings.anonymous.*.{field}"))
-                && e.contains("BUSBAR-3114")),
+            errs.iter().any(
+                |e| e.contains(&format!("role_bindings.anonymous.*.{field}"))
+                    && e.contains("BUSBAR-3114")
+            ),
             "{binding}: {errs:?}"
         );
     };
