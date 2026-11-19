@@ -49,12 +49,11 @@ impl StorageAccount for Free {
     fn release(&self, _: usize) {}
 }
 
-/// A TLS far end at `127.0.0.1` answering every request 200 on a kept connection; it counts the handshakes it
-/// completed and every byte of request it was sent after one.
+/// A TLS far end at `127.0.0.1` answering every request 200 on a kept connection; it counts every byte of request
+/// it was sent once a handshake completed.
 struct FarEnd {
     addr: SocketAddr,
     ca_der: Vec<u8>,
-    handshakes: Arc<AtomicUsize>,
     request_bytes: Arc<AtomicUsize>,
 }
 
@@ -79,13 +78,12 @@ fn far_end() -> FarEnd {
     .expect("the far end's TLS configuration");
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind the far end");
     let addr = listener.local_addr().expect("its address");
-    let handshakes = Arc::new(AtomicUsize::new(0));
     let request_bytes = Arc::new(AtomicUsize::new(0));
-    let (shook, sent) = (Arc::clone(&handshakes), Arc::clone(&request_bytes));
+    let sent = Arc::clone(&request_bytes);
     std::thread::spawn(move || {
         for mut conn in listener.incoming().flatten() {
             let config = Arc::clone(&config);
-            let (shook, sent) = (Arc::clone(&shook), Arc::clone(&sent));
+            let sent = Arc::clone(&sent);
             std::thread::spawn(move || {
                 let _ = conn.set_read_timeout(Some(Duration::from_secs(20)));
                 let Ok(mut session) = rustls::ServerConnection::new(config) else {
@@ -96,7 +94,6 @@ fn far_end() -> FarEnd {
                         return;
                     }
                 }
-                shook.fetch_add(1, Ordering::SeqCst);
                 let mut tls = rustls::StreamOwned::new(session, conn);
                 let mut seen = Vec::new();
                 let mut chunk = [0_u8; 4096];
@@ -125,7 +122,6 @@ fn far_end() -> FarEnd {
     FarEnd {
         addr,
         ca_der: ca.der().to_vec(),
-        handshakes,
         request_bytes,
     }
 }
@@ -273,7 +269,11 @@ fn anchor_mismatch_burst_sends_no_follower_bytes() {
     // The control: unpinned, the burst is served.
     for opened in fixture.burst(&target) {
         let conn = opened.expect("an unpinned open is made");
-        assert_eq!(fixture.read(conn), Ok(Some(200)), "unpinned, the far end serves");
+        assert_eq!(
+            fixture.read(conn),
+            Ok(Some(200)),
+            "unpinned, the far end serves"
+        );
         fixture.close(conn);
     }
     assert!(far.request_bytes.load(Ordering::SeqCst) > 0);
@@ -286,7 +286,6 @@ fn anchor_mismatch_burst_sends_no_follower_bytes() {
     };
     PollConns::anchor(&fixture.connector, OWNER, NEED, "", &target, &anchors)
         .expect("the destination is pinned");
-    let handshakes = far.handshakes.load(Ordering::SeqCst);
     let request_bytes = far.request_bytes.load(Ordering::SeqCst);
     for opened in fixture.burst(&target) {
         match opened {

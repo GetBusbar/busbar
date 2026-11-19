@@ -678,7 +678,7 @@ mod on_unix {
 #[cfg(target_os = "linux")]
 mod on_linux_memfd {
     use super::*;
-    use std::os::fd::AsRawFd as _;
+    use rustix::fs::SealFlags;
 
     /// PROOF-093-A:113.
     #[test]
@@ -695,13 +695,12 @@ mod on_linux_memfd {
             std::fs::read(&name).expect("read the memfd") == verified,
             "the memfd must hold exactly the verified bytes"
         );
-        // SAFETY: plain fcntl on an fd the staging owns; no pointers.
-        let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
-        let want = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+        let seals = rustix::fs::fcntl_get_seals(fd).expect("read the memfd's seals");
+        let want = SealFlags::WRITE | SealFlags::GROW | SealFlags::SHRINK | SealFlags::SEAL;
         assert_eq!(
             seals & want,
             want,
-            "the memfd must be sealed (got {seals:#x})"
+            "the memfd must be sealed (got {seals:?})"
         );
 
         let rewrite = std::fs::OpenOptions::new()
