@@ -98,7 +98,7 @@ fn issued_grants_keep_explicit_empty_policy_without_inventing_custody() {
 /// definition.
 fn operator_deployment(operator: &str, token: Option<&str>) -> busbar_kernel::config::RootCfg {
     crate::root::linked::register_stores();
-    // Written as the operator writes it (config.yaml text): this path names no serde_json.
+    // Written as the operator writes it: config.yaml text.
     let mut document = format!(
         "providers: {{}}\nmodels: {{}}\nstore:\n  module: memory\nauth:\n  chain: []\n  \
          admin_auth: [\"{operator}\"]\n"
