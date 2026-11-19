@@ -642,14 +642,6 @@ busbar-migrate = { path = "../../crates/busbar-migrate", features = ["counted"] 
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
 stats_alloc = { workspace = true }
 
-# THE PLANE DRIVER'S TEST PLANE (`tests/plane_driver.rs`): one source, compiled into the test as a
-# module (the LINKED door) and built here as a `cdylib` (the DROPPED door), so one unit runs end to end
-# through the kernel's plane driver and both doors. An example, not a crate: it never ships.
-[[example]]
-name = "plane_driver_test_plane"
-path = "tests/fixtures/plane_driver_test_plane.rs"
-crate-type = ["cdylib"]
-
 [[test]]
 name = "traces_stream_both_doors"
 path = "tests/traces_stream_both_doors.rs"
