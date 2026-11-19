@@ -235,14 +235,26 @@ impl CredCache {
         audit: impl Fn(CredKey, CredEvent) + Send + Sync + 'static,
     ) -> Self {
         CredCache {
-            inner: Arc::new(Inner {
+            inner: Arc::new_cyclic(|me| Inner {
                 policy,
                 window: Box::new(window),
                 audit: Box::new(audit),
                 shards: std::array::from_fn(|_| RwLock::new(HashMap::default())),
                 base: clock(),
+                observers: RwLock::new(HashMap::default()),
+                gate: crate::refresh::Throttle::new(REPORT_WINDOW),
+                me: me.clone(),
             }),
         }
+    }
+
+    /// Report the outcomes of `(auth_instance, upstream)`'s keys to `observer` (the binding that owns them).
+    pub fn observe(&self, auth_instance: u64, upstream: u64, observer: Weak<dyn CredObserver>) {
+        self.inner
+            .observers
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert((auth_instance, upstream), observer);
     }
 
     /// The policy (K6 and K8 copy `refresh_ahead_s` into `UpstreamIn.min_valid_s`, §11.3 round 35).
