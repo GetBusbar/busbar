@@ -44,6 +44,19 @@ impl Drop for Node {
 
 /// The default configuration on loopback: listeners, the memory store, no auth instance.
 fn boot_default() -> Node {
+    boot_with("")
+}
+
+/// The default configuration plus an operator: the admin listener behind the linked admin-tokens
+/// image, and still no instance that reads `x-twilio-signature`.
+fn boot_with_operator() -> Node {
+    let digest = busbar_contract::redacted::sha256_hex(b"route-cred-operator-token");
+    boot_with(&format!(
+        "identity-providers:\n  admin-tokens: {{ module: admin-tokens, settings: {{ sha256: \"{digest}\" }} }}\n"
+    ))
+}
+
+fn boot_with(operator: &str) -> Node {
     let dir = std::env::temp_dir().join(format!("busbar-route-cred-unread-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("the test's work directory");
@@ -58,9 +71,14 @@ listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test listen
 admin_listen: "127.0.0.1:{admin}"
 admin_listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test admin listener" }}
 store: {{ module: memory }}
-auth:
+{operator}auth:
   chain: []
-"#
+{admin_auth}"#,
+            admin_auth = if operator.is_empty() {
+                ""
+            } else {
+                "  admin_auth: [admin-tokens]\n"
+            }
         ),
     )
     .expect("config.yaml");
@@ -97,12 +115,18 @@ auth:
 
 /// One GET with `headers`: the raw response bytes.
 fn get(port: u16, path: &str, headers: &str) -> String {
+    send(port, "GET", path, headers)
+}
+
+/// One bodiless request with `headers`: the raw response bytes.
+fn send(port: u16, method: &str, path: &str, headers: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to busbar");
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .expect("read timeout");
-    let head =
-        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{headers}Connection: close\r\n\r\n");
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{headers}Content-Length: 0\r\nConnection: close\r\n\r\n"
+    );
     stream.write_all(head.as_bytes()).expect("write the head");
     let mut raw = Vec::new();
     let _ = stream.read_to_end(&mut raw);
@@ -139,4 +163,43 @@ fn the_default_configuration_boots_with_the_unread_route_unmounted_and_says_so()
         twilio, nowhere,
         "the unmounted route answers exactly as no route does"
     );
+}
+
+/// The rule is general: with `auth.chain: []` nothing reads plane-llm's Bedrock route header
+/// (`authorization`, SigV4), so that route is unmounted too and a data request to it gets the 401 every
+/// unknown route gets (v1.5.5's empty chain denied every data request).
+#[test]
+fn every_route_whose_header_nothing_reads_is_unmounted_with_its_own_line() {
+    let node = boot_default();
+    let log = node.log();
+    let bedrock =
+        "route 'llm/7' is not served: no configured auth instance reads 'authorization'";
+    assert_eq!(log.matches(bedrock).count(), 1, "log:\n{log}");
+    let data = send(
+        node.data,
+        "POST",
+        "/model/anthropic.claude-v2/invoke",
+        "Authorization: AWS4-HMAC-SHA256 Credential=x\r\n",
+    );
+    let nowhere = send(node.data, "POST", "/no/such/route", "");
+    let (data, nowhere) = (status_and_body(&data), status_and_body(&nowhere));
+    assert!(data.0.contains(" 401 "), "{data:?}");
+    assert_eq!(data, nowhere);
+}
+
+/// With an operator configured (admin-tokens) and still no instance that reads the Twilio header,
+/// `streaming/5` is unmounted and the boot goes on.
+#[test]
+fn with_an_operator_but_no_twilio_instance_the_twilio_route_is_unmounted() {
+    let node = boot_with_operator();
+    let log = node.log();
+    assert_eq!(log.matches(LINE).count(), 1, "log:\n{log}");
+    let twilio = status_and_body(&get(
+        node.data,
+        "/twilio/CA123",
+        "Connection: Upgrade\r\nUpgrade: websocket\r\nX-Twilio-Signature: c2lnbmF0dXJl\r\n",
+    ));
+    let nowhere = status_and_body(&get(node.data, "/no/such/route", ""));
+    assert!(twilio.0.contains(" 401 "), "{twilio:?}");
+    assert_eq!(twilio, nowhere);
 }
