@@ -138,6 +138,20 @@ impl ParentMoney {
         &self.money.cost
     }
 
+    /// Whether the budget this parent was admitted on is spent, judged in the parent's own
+    /// window (its one arrival reading: a child takes no clock reading of its own).
+    pub(in crate::plane_driver) fn budget_spent(
+        &self,
+        gov: &GovState,
+    ) -> Option<crate::governance::LimitBlocked> {
+        gov.budget_spent(
+            &self.money.cost,
+            &self.money.key,
+            &self.money.pool,
+            self.money.arrived,
+        )
+    }
+
     pub(in crate::plane_driver) fn matches_child_money(
         &self,
         money: &UnitMoney,

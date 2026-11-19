@@ -261,13 +261,13 @@ fn a_native_child_does_not_take_a_second_concurrency_hold() {
     r.billing.settle(next.ctx.key, super::end_of(200, true));
 }
 
-/// SUSPECT (red expected today): ci/owed/cut-root/MONEY-OWED.tsv row
+/// ci/owed/cut-root/MONEY-OWED.tsv row
 /// `a_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing`. On the old door a
-/// child nested after its parent's budget was spent answered 429 over_budget and was charged
-/// nothing. `PortBilling::child` shares the parent's admission and reads no budget, so a native
-/// child opens however far over budget its key is. The owner rules: the native child re-reads its
-/// chain's budget (this test goes green), or the difference from v1.5.5 is accepted in writing and
-/// this test is rewritten to state the accepted rule. No code changes before the ruling.
+/// child nested after the budget of its parent was spent answered 429 over_budget and was charged
+/// nothing. `PortBilling::child` shared the admission of the parent and read no budget, so a
+/// native child opened however far over budget its key was: red at a2bfc51020. The child now
+/// reads the budget (`GovState::budget_spent`), which is the v1.5.5 rule and the default taken
+/// until the owner rules; if he accepts the difference instead, the read and this test go.
 #[test]
 fn a_native_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing() {
     use crate::config::groups::{LimitCfg, LimitMetric, LimitWindow};

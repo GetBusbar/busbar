@@ -292,6 +292,11 @@ impl PortBilling {
         classes: Arc<[String]>,
     ) -> Result<Unit, busbar_contract::caps::ReasonCode> {
         let admitted = self.money.parent_money(parent, key)?;
+        // v1.5.5: a child nested after its parent's budget is spent is refused and charged
+        // nothing. The child shares the parent's admission, so only the budget is read.
+        if admitted.budget_spent(&self.gov).is_some() {
+            return Err(busbar_contract::caps::ReasonCode::OverBudget);
+        }
         let child = self.keys.mint();
         self.money.open_child(
             &admitted,
