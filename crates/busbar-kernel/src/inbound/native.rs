@@ -30,10 +30,13 @@ use crate::state::{AdmissionLease, App, AppHandle, InvocationId};
 #[path = "native_refusal.rs"]
 mod refusal;
 use refusal::PreparationState;
+#[path = "native_unbilled.rs"]
+mod unbilled;
 pub use refusal::{
     DataPreparation, DataPreparationDenied, DataPreparationSuccess, PhysicalRefusal,
     PhysicalUpgrade,
 };
+pub use unbilled::PhysicalUnbilledExecution;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BindError {
