@@ -370,9 +370,15 @@ crate::kind! {
         /// sent, gRPC `grpc-status` 8 RESOURCE_EXHAUSTED as stream.rs:17-21 does today; a data channel closed).
         /// Transport 2.0: the reasons the engine sends are these two. 1 (CR_PEER_CLOSED) and 6
         /// (CR_TRANSPORT_FAILED) were never sent by their own text; 3, 4, 5 and 7 (CR_POISONED, CR_REVOKED,
-        /// CR_TIMEOUT, CR_CAPACITY_EXHAUSTED) were sent by no engine file (E.9). The six numbers are retired.
+        /// CR_TIMEOUT, CR_CAPACITY_EXHAUSTED) were sent by no engine file (E.9). The six numbers were retired.
+        /// Transport 2.0, additive: 4 and 5 return with their old meaning, so that core can say why it ends
+        /// a session and a framer can tell them from a failure (transport-ws: RFC 6455 §7.4.1 1008 for
+        /// CR_REVOKED, 1013 for CR_TIMEOUT). CR_REVOKED: the session's credential or grant was revoked.
+        /// CR_TIMEOUT: a deadline core holds for the session passed. 1, 3, 6 and 7 stay retired.
             CR_NORMAL: u32 = 0;
             CR_DRAIN: u32 = 2;
+            CR_REVOKED: u32 = 4;
+            CR_TIMEOUT: u32 = 5;
             RESET_STALLED: u32 = 0xFFFF_0001;
             FB_SERVER: u64 = 1;
             FB_CLIENT: u64 = 2;
