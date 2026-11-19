@@ -48,6 +48,31 @@ type AsDpopVerifyFn = for<'a> fn(
     DpopPresentation<'a>,
 ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
 
+/// What the authorization server answers a protected resource of this same deployment about one
+/// access token presented for `resource` (`AsPlaneSeam::access_standing`). The answer only ever
+/// narrows what the resource admits: a live token still has to pass the resource's own chain
+/// (signature, issuer, expiry) and its audience check.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessStanding {
+    /// Not a token that names this server as its issuer: the resource judges it as it judges any
+    /// other issuer's.
+    NotMine,
+    /// This server issued it, its store still holds it, it is unexpired, and the grant's RFC 8707
+    /// resource indicators name `resource` exactly (or the grant named none).
+    Live,
+    /// It names this server as its issuer and the server does not hold it for `resource`:
+    /// revoked, expired, never issued, or granted for another resource.
+    Dead,
+    /// The server's store could not answer. Never an admission.
+    Unavailable,
+}
+
+type AsAccessStandingFn = for<'a> fn(
+    &'a Arc<dyn Any + Send + Sync>,
+    &'a str,
+    &'a str,
+) -> Pin<Box<dyn Future<Output = AccessStanding> + Send + 'a>>;
+
 pub struct AsPlaneSeam {
     /// Owner-produced raw oauth_as user-input schema; separate from resolved server state.
     pub input_schema: fn() -> serde_json::Value,
@@ -64,6 +89,10 @@ pub struct AsPlaneSeam {
     pub mount_operator: fn(CoreRouter) -> CoreRouter,
 
     pub verify_dpop: AsDpopVerifyFn,
+
+    /// `(plane, access token, resource)`: the standing of an access token at a protected resource
+    /// of this deployment, read from the server's own store ([`AccessStanding`]).
+    pub access_standing: AsAccessStandingFn,
 }
 
 static SEAM: OnceLock<AsPlaneSeam> = OnceLock::new();

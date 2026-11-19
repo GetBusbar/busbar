@@ -30,9 +30,12 @@ async fn gov() -> GovState {
     .expect("governance over the test store")
 }
 
+/// A key of its own name each time: two keys of one test never share a row.
 fn spec() -> NewKeySpec {
+    static MINTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let nth = MINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     NewKeySpec {
-        name: "mcp-client".into(),
+        name: format!("mcp-client-{nth}"),
         ..NewKeySpec::default()
     }
 }
@@ -126,25 +129,15 @@ async fn a_token_minted_by_another_issuer_is_refused() {
     let gov = gov().await;
     let (key, _) = minted(&gov, Some(PLANE_A)).await;
     // The same key id, kid, audience and expiry, signed by a key this engine does not hold.
-    let forged = TokenSigner::from_secret_bytes(&[8; 32], KID).mint_for_audience(
-        &key.id,
-        EXPIRES,
-        None,
-        PLANE_A,
-        None,
-    );
+    let forged = TokenSigner::from_secret_bytes(&[8; 32], KID)
+        .mint_for_audience(&key.id, EXPIRES, None, PLANE_A, None);
     assert_eq!(
         judged(&gov, &forged, Some(PLANE_A), NOW).unwrap_err(),
         DataRefused::Credential
     );
     // And one signed under a key id this engine does not know.
-    let unknown_kid = TokenSigner::from_secret_bytes(&SECRET, "k2").mint_for_audience(
-        &key.id,
-        EXPIRES,
-        None,
-        PLANE_A,
-        None,
-    );
+    let unknown_kid = TokenSigner::from_secret_bytes(&SECRET, "k2")
+        .mint_for_audience(&key.id, EXPIRES, None, PLANE_A, None);
     assert_eq!(
         judged(&gov, &unknown_kid, Some(PLANE_A), NOW).unwrap_err(),
         DataRefused::Credential
@@ -290,7 +283,10 @@ async fn one_core_token_and_nothing_else_is_what_a_head_may_present() {
 #[test]
 fn a_head_with_no_core_token_is_the_other_members_to_judge() {
     let fields = [
-        ("authorization", b"Bearer eyJhbGciOiJFUzI1NiJ9.e30.sig".to_vec()),
+        (
+            "authorization",
+            b"Bearer eyJhbGciOiJFUzI1NiJ9.e30.sig".to_vec(),
+        ),
         ("x-route-key", b"sk-other".to_vec()),
     ];
     let presented = scanned(&fields);

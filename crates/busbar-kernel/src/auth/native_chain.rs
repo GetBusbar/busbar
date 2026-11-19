@@ -63,7 +63,39 @@ pub struct NativeChain {
     /// identified as the principal `anonymous`. What that principal may use, and under which
     /// group it is limited, comes from `role_bindings.anonymous`, exactly as for any identity.
     anonymous: bool,
+    /// The chain names the built-in member `keys`: core's own verifier of the tokens core signs
+    /// (`auth::native_keys`). Only a data chain can; the operator chain never has it.
+    keys: bool,
 }
+
+/// The built-in members a data chain names beside its opened instances.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BuiltIn {
+    /// [`ANONYMOUS`].
+    pub anonymous: bool,
+    /// [`KEYS`].
+    pub keys: bool,
+}
+
+impl BuiltIn {
+    /// The built-in members `names` (a chain as the operator wrote it) names.
+    pub fn named<'a>(names: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut members = Self::default();
+        for name in names {
+            members.anonymous |= name == ANONYMOUS;
+            members.keys |= name == KEYS;
+        }
+        members
+    }
+
+    /// Whether `name` is a built-in member's word: it names no opened instance.
+    pub fn is(name: &str) -> bool {
+        name == ANONYMOUS || name == KEYS
+    }
+}
+
+/// The built-in chain member that verifies the tokens core itself signs: `auth.chain: [keys]`.
+pub const KEYS: &str = crate::config::KEYS_MODULE;
 
 /// The built-in chain member that admits a caller presenting no credential, and the principal it
 /// identifies that caller as (1.5.5's audit attribution for its open relay). An operator writes
@@ -94,7 +126,15 @@ impl NativeChain {
             owners,
             data: false,
             anonymous: false,
+            // SECURITY: the admin listener's chain never judges a core-minted token.
+            keys: false,
         }
+    }
+
+    /// Whether the chain names the built-in member `keys`: a core-signed token presented on its
+    /// route is judged by core's own verifier, and by no instance.
+    pub fn admits_keys(&self) -> bool {
+        self.keys
     }
 
     /// Whether the chain names the built-in member `anonymous`: it can yield a subject its callers
@@ -106,7 +146,7 @@ impl NativeChain {
     /// Whether the chain is `anonymous` alone: 1.5.5's open relay. No credential is read and no
     /// verifier runs; every caller is the principal `anonymous`.
     pub fn is_open(&self) -> bool {
-        self.anonymous && self.instances.is_empty()
+        self.anonymous && self.instances.is_empty() && !self.keys
     }
 
     /// Assemble one explicit DATA chain from the actual opened reservations. This is
@@ -118,7 +158,7 @@ impl NativeChain {
         instances: Vec<Arc<AuthInstance>>,
         owners: Arc<AuthOwners>,
     ) -> Result<Self, &'static str> {
-        Self::assemble(epoch, instances, owners, false)
+        Self::assemble(epoch, instances, owners, BuiltIn::default())
     }
 
     /// The DATA chain of an operator who named the built-in member `anonymous` among (or instead
@@ -129,18 +169,40 @@ impl NativeChain {
         instances: Vec<Arc<AuthInstance>>,
         owners: Arc<AuthOwners>,
     ) -> Result<Self, &'static str> {
-        Self::assemble(epoch, instances, owners, true)
+        Self::assemble(
+            epoch,
+            instances,
+            owners,
+            BuiltIn {
+                anonymous: true,
+                keys: false,
+            },
+        )
+    }
+
+    /// The DATA chain of an operator who named built-in members among (or instead of) its
+    /// verifiers: `instances` are the opened members, in order, and may be none where a built-in
+    /// member is named. `keys` judges a core-signed token whatever its place in the list (no
+    /// instance is ever handed one); `anonymous` is always last.
+    pub fn data_with(
+        epoch: u64,
+        instances: Vec<Arc<AuthInstance>>,
+        owners: Arc<AuthOwners>,
+        members: BuiltIn,
+    ) -> Result<Self, &'static str> {
+        Self::assemble(epoch, instances, owners, members)
     }
 
     fn assemble(
         epoch: u64,
         instances: Vec<Arc<AuthInstance>>,
         owners: Arc<AuthOwners>,
-        anonymous: bool,
+        members: BuiltIn,
     ) -> Result<Self, &'static str> {
+        let BuiltIn { anonymous, keys } = members;
         let mut ids = std::collections::BTreeSet::new();
         let mut names = std::collections::BTreeSet::new();
-        if instances.is_empty() && !anonymous {
+        if instances.is_empty() && !anonymous && !keys {
             return Err(EMPTY_CHAIN_REFUSED);
         }
         for instance in &instances {
@@ -165,6 +227,27 @@ impl NativeChain {
             owners,
             data: true,
             anonymous,
+            keys,
+        })
+    }
+
+    /// The identity of a caller whose core-signed token the built-in member `keys` verified
+    /// (`auth::native_keys::admit`): the key's id is the subject. It carries no replay key and
+    /// belongs to no instance; its key is re-judged at the gate (`CoreKey::standing`).
+    pub(crate) fn core_identity(
+        self: &Arc<Self>,
+        cx: CallCx,
+        request: Arc<ChargedRequestSnapshot>,
+        core: super::native_keys::CoreKey,
+    ) -> Arc<PreparedNativeIdentity> {
+        Arc::new(PreparedNativeIdentity {
+            chain: Arc::clone(self),
+            instance: None,
+            request,
+            identity: busbar_ports::auth::Identity::of_subject(core.subject()),
+            cx,
+            cutoff: None,
+            core: Some(core),
         })
     }
 
@@ -182,6 +265,7 @@ impl NativeChain {
             identity: busbar_ports::auth::Identity::of_subject(ANONYMOUS),
             cx,
             cutoff: None,
+            core: None,
         }))
     }
 
@@ -208,13 +292,18 @@ impl NativeChain {
         self.policy.epoch()
     }
 
+    /// Whether this chain is the one `names` (a route's chain as configured) states: the same
+    /// opened instances in the same order, and exactly the built-in members it names. A route
+    /// that names `keys` is never bound to a chain without the member, nor the reverse.
     pub fn matches_names(&self, names: &[Box<str>]) -> bool {
-        self.instances.len() == names.len()
-            && self
-                .instances
-                .iter()
-                .zip(names)
-                .all(|(instance, name)| instance.opened.who.name.as_ref() == name.as_ref())
+        let members = BuiltIn::named(names.iter().map(|name| &**name));
+        let mut opened = names.iter().filter(|name| !BuiltIn::is(name));
+        members.anonymous == self.anonymous
+            && members.keys == self.keys
+            && self.instances.iter().all(|instance| {
+                opened.next().map(|name| &**name) == Some(&*instance.opened.who.name)
+            })
+            && opened.next().is_none()
     }
 
     /// Existing admin projection over the same concrete preparation loop.
@@ -312,6 +401,7 @@ impl NativeChain {
                             identity,
                             cx,
                             cutoff,
+                            core: None,
                         },
                     )));
                 }
@@ -401,6 +491,9 @@ pub struct PreparedNativeIdentity {
     identity: busbar_ports::auth::Identity,
     cx: CallCx,
     cutoff: Option<u64>,
+    /// The core-signed token the built-in member `keys` verified; `None` for every other
+    /// identity. Its key is the identity's key: no role binding is consulted for it.
+    core: Option<super::native_keys::CoreKey>,
 }
 
 impl std::fmt::Debug for PreparedNativeIdentity {
@@ -474,22 +567,30 @@ impl PreparedNativeIdentity {
         &self.request
     }
     pub fn provider(&self) -> &str {
-        self.instance
-            .as_ref()
-            .map_or(ANONYMOUS, |instance| &instance.opened.who.name)
+        match (&self.instance, &self.core) {
+            (Some(instance), _) => &instance.opened.who.name,
+            (None, Some(_)) => KEYS,
+            (None, None) => ANONYMOUS,
+        }
     }
     /// The provider's name as a verdict holds it: the instance's own shared name, not a copy.
     pub(crate) fn provider_text(&self) -> busbar_contract::kept::Text {
-        match &self.instance {
-            Some(instance) => {
+        match (&self.instance, &self.core) {
+            (Some(instance), _) => {
                 busbar_contract::kept::Text::from(Arc::clone(&instance.opened.who.name))
             }
-            None => busbar_contract::kept::Text::fixed(ANONYMOUS),
+            (None, Some(_)) => busbar_contract::kept::Text::fixed(KEYS),
+            (None, None) => busbar_contract::kept::Text::fixed(ANONYMOUS),
         }
     }
-    /// Whether this is the anonymous principal of an explicitly empty data chain.
+    /// Whether this is the anonymous principal: verified by no instance and by no built-in
+    /// verifier. A caller whose core-signed token `keys` verified is never anonymous.
     pub fn is_anonymous(&self) -> bool {
-        self.instance.is_none()
+        self.instance.is_none() && self.core.is_none()
+    }
+    /// The core-signed token the built-in member `keys` verified for this identity, if it is one.
+    pub(crate) fn core_key(&self) -> Option<&super::native_keys::CoreKey> {
+        self.core.as_ref()
     }
     pub fn identity(&self) -> &busbar_ports::auth::Identity {
         &self.identity

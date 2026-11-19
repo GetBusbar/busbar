@@ -178,7 +178,9 @@ async fn a_token_of_another_issuer_is_not_this_servers_to_judge() {
         AccessStanding::NotMine
     );
     assert_eq!(
-        plane.access_standing("opaque-reference-token", RESOURCE).await,
+        plane
+            .access_standing("opaque-reference-token", RESOURCE)
+            .await,
         AccessStanding::NotMine,
         "not a JWT: this server mints only JWTs, and the audience check refuses it elsewhere"
     );
