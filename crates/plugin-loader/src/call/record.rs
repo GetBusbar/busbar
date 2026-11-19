@@ -19,6 +19,7 @@ use busbar_plugin_abi::host_side::driver::Instance;
 use busbar_plugin_abi::types::{Bytes, KindCode, Pair, Status, Str};
 
 use super::ffi::Call;
+use super::layout::{self, Drift};
 
 /// The instance a crossing goes toward.
 #[derive(Clone, Copy, Debug)]
@@ -121,9 +122,16 @@ fn toward_cold(
     hook.toward(&Who::of(inst), method, &Seen::of(session, call, list));
 }
 
-/// A chain start, whose call record is built past the bolt: the same parts, by content.
+/// A chain start, whose call record is built past the bolt: the same parts, by content. `blob` is the
+/// method's one byte argument, None for a method that takes no bytes.
 #[inline(always)]
-pub(crate) fn toward_start(inst: &Instance, method: u8, mono_ns: u64, head: &[u8], blob: &[u8]) {
+pub(crate) fn toward_start(
+    inst: &Instance,
+    method: u8,
+    mono_ns: u64,
+    head: &[u8],
+    blob: Option<&[u8]>,
+) {
     if let Some(hook) = HOOK.get() {
         start_cold(*hook, inst, method, mono_ns, head, blob);
     }
@@ -136,9 +144,10 @@ fn start_cold(
     method: u8,
     mono_ns: u64,
     head: &[u8],
-    blob: &[u8],
+    blob: Option<&[u8]>,
 ) {
-    let blobs = [Bytes::new(blob)];
+    let lent = [Bytes::new(blob.unwrap_or(&[]))];
+    let blobs: &[Bytes<'_>] = if blob.is_some() { &lent } else { &[] };
     hook.toward(
         &Who::of(inst),
         method,
@@ -147,7 +156,7 @@ fn start_cold(
             mono_ns,
             head,
             texts: &[],
-            blobs: &blobs,
+            blobs,
             list: &[],
         },
     );
@@ -206,6 +215,8 @@ struct Planted {
 pub struct Crossings {
     planted: Mutex<Vec<Planted>>,
     leaks: Mutex<Vec<Leak>>,
+    /// Calls that were not the call their row of the method table states.
+    drifts: Mutex<Vec<Drift>>,
     /// The instance name of each slot seen, so a resume (which names only the slot) is attributed.
     slots: Mutex<Vec<(u32, KindCode, Box<str>, Box<str>)>>,
     crossings: AtomicU64,
@@ -250,6 +261,14 @@ impl Crossings {
     /// Every leak found so far.
     pub fn leaks(&self) -> Vec<Leak> {
         self.leaks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Every call so far that was not the call its row of the method table states.
+    pub fn drifts(&self) -> Vec<Drift> {
+        self.drifts
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
@@ -331,6 +350,12 @@ impl Recorder for Crossings {
     fn toward(&self, who: &Who<'_>, method: u8, seen: &Seen<'_>) {
         self.crossings.fetch_add(1, Ordering::Relaxed);
         self.by_kind[who.kind as usize - 1].fetch_add(1, Ordering::Relaxed);
+        if let Err(drift) = layout::check(who.kind, method, seen) {
+            self.drifts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(drift);
+        }
         self.remember(who);
         self.scan(who, method, Place::Head, seen.head);
         for (at, text) in seen.texts.iter().enumerate() {

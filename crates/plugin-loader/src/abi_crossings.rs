@@ -45,6 +45,8 @@ pub struct Verdict {
     /// Calls toward each kind, index `KindCode as usize - 1`.
     pub by_kind: [u64; 7],
     pub leaks: Vec<Leak>,
+    /// Calls that were not the call their row of the method table states, as text.
+    pub drifts: Vec<String>,
 }
 
 /// The verdict of the armed recorder so far. None when `arm` was never called.
@@ -61,6 +63,7 @@ impl Verdict {
             bytes: crossings.bytes(),
             by_kind: KindCode::ALL.map(|kind| crossings.toward_kind(kind)),
             leaks: crossings.leaks(),
+            drifts: crossings.drifts().iter().map(ToString::to_string).collect(),
         }
     }
 
@@ -81,6 +84,9 @@ impl Verdict {
                     kind.word()
                 ));
             }
+        }
+        for drift in &self.drifts {
+            out.push(format!("SHAPE: {drift}"));
         }
         for leak in &self.leaks {
             out.push(format!(
@@ -210,6 +216,9 @@ impl Verdict {
                 self.by_kind[kind as usize - 1]
             );
         }
+        for drift in &self.drifts {
+            let _ = writeln!(out, "drift\t{drift}");
+        }
         for leak in &self.leaks {
             let _ = writeln!(
                 out,
@@ -239,6 +248,7 @@ impl Verdict {
                 ["planted", n] => seen_planted = n.parse::<usize>().ok(),
                 ["crossings", n] => crossings = n.parse::<u64>().ok(),
                 ["bytes", _] => {}
+                ["drift", what] => out.push(format!("SHAPE: {what}")),
                 ["kind", word, n] => match n.parse::<u64>() {
                     Ok(n) => by_kind.push((*word, n)),
                     Err(_) => out.push(format!("unreadable verdict line: {line}")),
@@ -274,11 +284,14 @@ impl Verdict {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call::frame::{Frame, Mono};
+    use crate::call::frame::{Frame, Head, Mono};
+    use crate::call::kinds;
     use crate::call::record::{Place, Recorder, Seen, Who};
 
     const PROVIDER_KEY: &[u8] = b"sk-live-planted-7c41d09be2f6a8-upstream-provider-key";
     const RESOLVED: &[u8] = b"resolved-secret-51f0aa93c7de4b12-from-the-vault";
+    /// A live session's token (bit 63 set).
+    const SESSION: u64 = (1 << 63) | 7;
 
     fn who(kind: KindCode, plugin: &'static str, name: &'static str, slot: u32) -> Who<'static> {
         Who {
@@ -290,40 +303,86 @@ mod tests {
         }
     }
 
-    /// One call toward `to` carrying `blob` as its only byte argument.
-    fn cross(rec: &Crossings, to: &Who<'_>, method: u8, blob: &[u8]) {
-        let frame = Frame::new((), [], [blob]);
-        let call = frame.call(Mono::NONE);
-        rec.toward(to, method, &Seen::of(0, &call, &[]));
+    fn vault() -> Who<'static> {
+        who(KindCode::Secret, "busbar-secret-vault", "vault", 1)
+    }
+    fn operator_auth() -> Who<'static> {
+        who(KindCode::Auth, "busbar-auth-apikey", "operator-auth", 2)
+    }
+    fn llm() -> Who<'static> {
+        who(KindCode::Plane, "busbar-plane-llm", "llm", 3)
+    }
+    fn http() -> Who<'static> {
+        who(KindCode::Transport, "busbar-transport-http", "http", 4)
+    }
+    fn ranking() -> Who<'static> {
+        who(KindCode::Hook, "busbar-hook-ranking", "ranking", 5)
     }
 
-    /// The run every case starts from: the vault resolves a secret, the auth plugin mints with it, a
-    /// plane and a transport carry a request whose head holds only a sealed mark.
+    /// One call toward `to`: `head` as the method's numbers, `blob` as its one byte argument.
+    fn cross<H: Head>(
+        rec: &Crossings,
+        to: &Who<'_>,
+        method: u8,
+        session: u64,
+        head: H,
+        blob: &[u8],
+    ) {
+        let frame = Frame::new(head, [], [blob]);
+        let call = frame.call(Mono::NONE);
+        rec.toward(to, method, &Seen::of(session, &call, &[]));
+    }
+
+    /// The engine hands a transport the head of a request to write.
+    fn emit_head(rec: &Crossings, head_bytes: &[u8]) {
+        let head = kinds::transport::EmitHead {
+            stream: 1,
+            pieces: 1,
+            arg: 0,
+            credit: 0,
+        };
+        cross(
+            rec,
+            &http(),
+            kinds::transport::EMIT,
+            SESSION,
+            head,
+            head_bytes,
+        );
+    }
+
+    /// The run every case starts from: the vault resolves a reference, the auth plugin that owns the
+    /// provider key signs with it, a plane rewrites a conversation, and a transport is handed a
+    /// request head that holds no credential (the engine writes it at a sealed mark).
     fn honest_run(rec: &Crossings) {
         rec.plant("provider-key", PROVIDER_KEY, &["vault", "operator-auth"]);
         rec.plant("vault-secret", RESOLVED, &["vault"]);
         cross(
             rec,
-            &who(KindCode::Secret, "busbar-secret-vault", "vault", 1),
+            &vault(),
+            kinds::secret::RESOLVE,
             0,
+            (),
             b"vault://kv/provider",
         );
         cross(
             rec,
-            &who(KindCode::Auth, "busbar-auth-apikey", "operator-auth", 2),
-            3,
+            &operator_auth(),
+            kinds::auth::OUTBOUND,
+            0,
+            (),
             PROVIDER_KEY,
         );
         cross(
             rec,
-            &who(KindCode::Plane, "busbar-plane-llm", "llm", 3),
-            0,
+            &llm(),
+            kinds::plane::REWRITE,
+            SESSION,
+            (),
             b"{\"model\":\"m\"}",
         );
-        cross(
+        emit_head(
             rec,
-            &who(KindCode::Transport, "busbar-transport-http", "http", 4),
-            2,
             b"POST /v1/messages HTTP/1.1\r\nhost: provider.example\r\n",
         );
     }
@@ -357,12 +416,7 @@ mod tests {
         honest_run(&rec);
         let mut head = b"POST /v1/messages HTTP/1.1\r\nx-api-key: ".to_vec();
         head.extend_from_slice(PROVIDER_KEY);
-        cross(
-            &rec,
-            &who(KindCode::Transport, "busbar-transport-http", "http", 4),
-            2,
-            &head,
-        );
+        emit_head(&rec, &head);
         Verdict::of(&rec).require_clean(&KINDS);
     }
 
@@ -370,18 +424,9 @@ mod tests {
     fn a_resolved_secret_handed_to_a_plane_or_a_hook_fails_the_run() {
         let rec = Crossings::new();
         honest_run(&rec);
-        cross(
-            &rec,
-            &who(KindCode::Plane, "busbar-plane-llm", "llm", 3),
-            2,
-            RESOLVED,
-        );
-        cross(
-            &rec,
-            &who(KindCode::Hook, "busbar-hook-ranking", "ranking", 5),
-            0,
-            RESOLVED,
-        );
+        cross(&rec, &llm(), kinds::plane::REWRITE, SESSION, (), RESOLVED);
+        let point = kinds::hook::PointHead { point: 1 };
+        cross(&rec, &ranking(), kinds::hook::ON, 0, point, RESOLVED);
         let verdict = Verdict::of(&rec);
         let failures = verdict.failures(&KINDS);
         assert_eq!(failures.len(), 2, "{failures:?}");
@@ -413,12 +458,7 @@ mod tests {
     #[test]
     fn a_run_that_planted_nothing_or_missed_a_kind_is_a_failure() {
         let rec = Crossings::new();
-        cross(
-            &rec,
-            &who(KindCode::Plane, "busbar-plane-llm", "llm", 3),
-            0,
-            b"{}",
-        );
+        cross(&rec, &llm(), kinds::plane::REWRITE, SESSION, (), b"{}");
         let failures = Verdict::of(&rec).failures(&KINDS);
         assert!(failures
             .iter()
@@ -431,36 +471,39 @@ mod tests {
             .iter()
             .any(|line| line.starts_with("no call crossed")));
     }
-}
 
-#[cfg(test)]
-mod witness_tests {
-    use super::*;
-    use crate::call::frame::{Frame, Mono};
-    use crate::call::record::{Recorder, Seen, Who};
-
-    const KEY: &[u8] = b"sk-live-planted-99aa01bb22cc33dd-upstream-provider-key";
-
-    fn run(leak: bool) -> Verdict {
+    /// A call that is not the call the method table states fails the run too, named by kind, method
+    /// and part: the engine's side of a contract fault is found at the crossing, not as a plugin's
+    /// fault on a call it could not read.
+    #[test]
+    fn a_call_that_drifts_from_the_method_table_fails_the_run() {
         let rec = Crossings::new();
-        rec.plant("provider-key", KEY, &["vault"]);
-        let http = Who {
-            kind: KindCode::Transport,
-            plugin: "busbar-transport-http",
-            name: "http",
-            instance: 4,
-            slot: 4,
-        };
-        let blob: &[u8] = if leak { KEY } else { b"GET / HTTP/1.1\r\n" };
-        let frame = Frame::new((), [], [blob]);
-        let call = frame.call(Mono::NONE);
-        rec.toward(&http, 2, &Seen::of(0, &call, &[]));
+        honest_run(&rec);
+        // `piece` with no head record and no session.
+        cross(&rec, &llm(), kinds::plane::PIECE, 0, (), b"chunk");
+        let failures = Verdict::of(&rec).failures(&KINDS);
+        assert_eq!(
+            failures,
+            ["SHAPE: plane piece (slot 2): called with no session token; the method runs on a session"]
+        );
+    }
+
+    // ---- the witness's file ----
+
+    fn witnessed(leak: bool) -> Verdict {
+        let rec = Crossings::new();
+        rec.plant("provider-key", PROVIDER_KEY, &["vault"]);
+        if leak {
+            emit_head(&rec, PROVIDER_KEY);
+        } else {
+            emit_head(&rec, b"GET / HTTP/1.1\r\n");
+        }
         Verdict::of(&rec)
     }
 
     #[test]
     fn a_clean_verdict_reads_back_clean() {
-        let text = run(false).to_text();
+        let text = witnessed(false).to_text();
         assert_eq!(
             Verdict::failures_of_text(&text, 1, &["transport"]),
             Vec::<String>::new()
@@ -469,18 +512,31 @@ mod witness_tests {
 
     #[test]
     fn a_leak_survives_the_file_and_the_file_holds_no_secret() {
-        let text = run(true).to_text();
+        let text = witnessed(true).to_text();
         let failures = Verdict::failures_of_text(&text, 1, &["transport"]);
         assert_eq!(failures.len(), 1, "{failures:?}");
         assert!(failures[0]
             .starts_with("LEAK: secret 'provider-key' crossed toward transport instance 'http'"));
-        assert!(!text.contains("99aa01bb22cc33dd"));
-        assert!(!text.contains(&hex::encode(KEY)));
+        assert!(!text.contains("7c41d09be2f6a8"));
+        assert!(!text.contains(&hex::encode(PROVIDER_KEY)));
+    }
+
+    #[test]
+    fn a_drift_survives_the_file() {
+        let rec = Crossings::new();
+        rec.plant("provider-key", PROVIDER_KEY, &["vault"]);
+        cross(&rec, &http(), kinds::transport::EMIT, SESSION, (), b"x");
+        let text = Verdict::of(&rec).to_text();
+        let failures = Verdict::failures_of_text(&text, 1, &["transport"]);
+        assert_eq!(
+            failures,
+            ["SHAPE: transport emit (slot 2): the head is 0 bytes; the table says 24"]
+        );
     }
 
     #[test]
     fn a_verdict_that_planted_less_than_the_test_wrote_is_a_failure() {
-        let text = run(false).to_text();
+        let text = witnessed(false).to_text();
         assert!(Verdict::failures_of_text(&text, 2, &["transport"])
             .iter()
             .any(|line| line.starts_with("the witness planted Some(1) secrets")));

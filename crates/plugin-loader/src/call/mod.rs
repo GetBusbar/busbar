@@ -22,6 +22,7 @@
 pub mod ffi;
 pub mod frame;
 pub mod kinds;
+pub mod layout;
 pub mod record;
 
 use std::sync::Arc;
@@ -254,7 +255,7 @@ pub async fn chain<'a, K: Kind, N: Needs, H: Head + Send + 'a>(
             method,
             at.0,
             head.as_bytes(),
-            if lends { req.bytes() } else { &[] },
+            if lends { Some(req.bytes()) } else { None },
         );
         let (bufs, blob_at) = if lends {
             let (bufs, at) = ffi::staged(req);
