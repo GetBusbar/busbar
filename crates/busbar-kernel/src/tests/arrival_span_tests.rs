@@ -111,7 +111,7 @@ fn opened(
 
 #[test]
 fn an_arrival_opens_the_first_fact_it_meets_else_its_claims_span() {
-    use busbar_contract::abi::plane::{CLAIM_ENTRY, CLAIM_RAW_AFFIX};
+    use busbar_contract::plane::codes::{CLAIM_ENTRY, CLAIM_RAW_AFFIX};
     let spans = super::EntrySpans::of([
         ("POST", "/own", 0, "entry_span_test_own"),
         (

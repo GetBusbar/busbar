@@ -389,18 +389,18 @@ fn refusal_connector(
     // the retired shape BUSBAR-6017 refuses at declaration, and these needs name no config target.
     let spec = ReadNeed {
         direction: DIRECTION_OUTBOUND,
-        egress_class: busbar_contract::abi::host::conn::connector::EGRESS_DEFAULT,
+        egress_class: busbar_contract::conn::codes::EGRESS_DEFAULT,
         transport: "frames".to_owned(),
         auth: String::new(),
         target_from: String::new(),
         trust_from: String::new(),
-        details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+        details: busbar_contract::rendering::ReadBlob {
             fmt: 0,
             flags: 0,
             bytes: Vec::new(),
         },
         timeout_ms: 0,
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
     };
@@ -481,7 +481,7 @@ fn a_refusal_names_the_hop_that_failed() {
             if dest == "far.test:80" {
                 return Some(Err(DEST_UNRESOLVABLE));
             }
-            Some(Err(busbar_contract::abi::host::service::DEST_INTERNAL))
+            Some(Err(busbar_contract::services::codes::DEST_INTERNAL))
         },
         Default::default(),
         proxy(),

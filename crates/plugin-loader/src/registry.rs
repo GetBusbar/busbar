@@ -27,7 +27,7 @@ use crate::sign::{
     evaluate_with_verification, validate_structure, Manifest, TrustPolicy, Verdict, HOST_IDENTITY,
 };
 use crate::tarball;
-use busbar_contract::abi::mechanism::kind;
+use busbar_contract::plugin_settings::sugar_words::kind;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -57,11 +57,11 @@ pub struct LoadablePlugin {
     /// Validated Statement schema, or the legacy manifest fallback. Never changes signed bytes.
     pub(crate) settings_schema: Option<String>,
     /// Parsed at admission; admin discovery never calls the door to read declarations.
-    configuration_statement: Option<Box<busbar_artifact_metadata::rendering::Read>>,
+    configuration_statement: Option<Box<busbar_contract::rendering::Read>>,
 }
 
 impl LoadablePlugin {
-    pub fn configuration_statement(&self) -> Option<&busbar_artifact_metadata::rendering::Read> {
+    pub fn configuration_statement(&self) -> Option<&busbar_contract::rendering::Read> {
         self.configuration_statement.as_deref()
     }
 

@@ -16,9 +16,9 @@ use crate::udp::{self, ReadyPort, UdpPort};
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::transport::{
     FramePiece, FrameSpan, RendezvousTerms, HANDSHAKE_ANSWERS, LANE_CLEAR, LANE_RENDEZVOUS,
-    PIECE_END_OF_FRAME, ROLE_FRAMER,
 };
 use busbar_contract::conn::ConnError;
+use busbar_contract::transport::codes::{PIECE_END_OF_FRAME, ROLE_FRAMER};
 
 #[derive(Default)]
 struct ReaderWake {

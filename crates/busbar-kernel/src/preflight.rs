@@ -563,7 +563,7 @@ pub fn plugins_preflight(
 
     let store_is_plugin = store_cfg.is_some()
         && linked()?.resolve(&store_ref).is_none()
-        && !linked_image_answers(busbar_contract::abi::mechanism::kind::STORE, &store_ref);
+        && !linked_image_answers(busbar_contract::kinds::codes::STORE, &store_ref);
 
     let in_process = root_rows().in_process_auth.unwrap_or(|_| false);
     let auth_plugin_refs: Vec<&str> = auth_cfg
@@ -1160,14 +1160,14 @@ impl OpenedSecrets {
         let calls = self
             .calls(key, open)
             .map_err(|text| config::secret::SecretRefused {
-                error_kind: busbar_contract::abi::secret::ERROR_KIND_INTERNAL,
+                error_kind: busbar_contract::secret::codes::ERROR_KIND_INTERNAL,
                 text,
             })?;
 
         let encoded = settings
             .encode()
             .map_err(|_| config::secret::SecretRefused {
-                error_kind: busbar_contract::abi::secret::ERROR_KIND_INVALID,
+                error_kind: busbar_contract::secret::codes::ERROR_KIND_INVALID,
                 text: "source settings could not be encoded".into(),
             })?;
         let seal = crate::seal::lend();

@@ -58,7 +58,7 @@ async fn kernel(record: Arc<DemotionRecord>) -> KernelServices {
     let later: Later = Box::new(|_| {});
     let caller = Caller::for_test(
         Arc::from("inst"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     assert!(matches!(
         k.trust_sight(&caller, "cp", "h1", later),

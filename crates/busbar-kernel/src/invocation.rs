@@ -31,7 +31,7 @@ impl KernelServices {
         self: &Arc<Self>,
         caller: &Caller,
     ) -> Result<NativeInvocationAdmission, &'static str> {
-        if caller.kind() != busbar_contract::abi::mechanism::KindCode::Plane {
+        if caller.kind() != busbar_contract::kinds::codes::KindCode::Plane {
             return Err("native invocation owner is not a plane");
         }
         if !self

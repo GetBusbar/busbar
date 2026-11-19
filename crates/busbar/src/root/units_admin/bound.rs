@@ -1252,7 +1252,7 @@ where
         )));
     }
     let name = busbar_core_admin::verb_name(scope.verb).unwrap_or_default();
-    let digest: [u8; 32] = busbar_contract::abi::sdk::digest::sha256(body);
+    let digest: [u8; 32] = busbar_contract::digest::sha256(body);
 
     use busbar_core_admin::idempotency::durable::{self, Refused, Settled};
 

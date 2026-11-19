@@ -3,11 +3,8 @@
 
 #[test]
 fn unknown_store_name_is_a_clear_boot_error() {
-    let available = crate::tests::dropped(
-        "acme-store-x",
-        "x",
-        busbar_contract::abi::mechanism::kind::STORE,
-    );
+    let available =
+        crate::tests::dropped("acme-store-x", "x", busbar_contract::kinds::codes::STORE);
     let store_ref = "dynamo";
     let err = super::missing_plugin_error(
         "plugins",

@@ -4339,13 +4339,13 @@ fn deferred_oauth_credential_does_not_hide_invalid_endpoint_settings() {
 // Host fixtures obtain references from the admitted source grammar, without naming a backend.
 pub(crate) fn source_fill(value: impl AsRef<str>) -> config::SecretRef {
     source_role(
-        busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL,
+        busbar_contract::plugin_settings::sugar_words::SUGAR_ROLE_FILL,
         value,
     )
 }
 pub(crate) fn source_path(value: impl AsRef<str>) -> config::SecretRef {
     source_role(
-        busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
+        busbar_contract::plugin_settings::sugar_words::SUGAR_ROLE_PATH,
         value,
     )
 }

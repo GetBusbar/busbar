@@ -18,8 +18,9 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::blank_out;
 use busbar_contract::abi::transport::check::check_datagram;
 use busbar_contract::abi::transport::{
-    slot, DatagramLane, EmitIn, FramerOut, LocateIn, LocateOut, WriteIn,
+    DatagramLane, EmitIn, FramerOut, LocateIn, LocateOut, WriteIn,
 };
+use busbar_contract::transport::codes::slot;
 use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::LoadError;
 use busbar_plugin_test::{both, Buf, Called, Host, Image, Loans, Mutant, Opened, Pending, Refused};
@@ -191,7 +192,7 @@ fn a_failing_ready_refuses_the_open_once_with_its_text() {
 
 #[test]
 fn scripted_services_answer_what_the_test_says_and_name_the_rest() {
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     use busbar_contract::services::HostServices;
     use busbar_plugin_test::{Caller, Reading, Services, Stored, UNSERVED};
 

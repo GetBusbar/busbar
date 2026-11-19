@@ -236,7 +236,7 @@ mod tests {
     }
     #[test]
     fn presentation_envelope_is_strict_and_absence_is_generic() {
-        use crate::abi::mechanism::extensions::encode;
+        use crate::extensions::encode;
         assert_eq!(login_presentation(&[]), Ok(None));
         for bad in [
             b"null".as_slice(),

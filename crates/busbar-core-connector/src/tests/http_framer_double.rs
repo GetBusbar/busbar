@@ -40,13 +40,16 @@ use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
     EmitIn, EncodeIn, FaultRow, FinishIn, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
     ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn, StatusRow,
-    TransportTail, WriteIn, CANCEL_NOTHING_MOVED, EMIT_TRAILERS, FACT_DIALS, FAULT_CALLER,
-    FAULT_HARD, FAULT_NONE, FAULT_RATE_LIMIT, FAULT_TRANSIENT, FRAME_PIECE_SIZE, FRAMING_STREAM,
-    ROLE_FRAMER, SIDE_DIAL, STATUS_AT_FIRST_FRAME, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT,
-    STATUS_OTHER, STATUS_SUCCESS, YIELD_ENDED,
+    TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FACT_DIALS, FAULT_CALLER, FRAME_PIECE_SIZE,
+    FRAMING_STREAM, STATUS_AT_FIRST_FRAME,
 };
 use busbar_contract::plugin::markers::TransportKind;
 use busbar_contract::secure::SecureVec;
+use busbar_contract::transport::codes::{
+    EMIT_TRAILERS, FAULT_HARD, FAULT_NONE, FAULT_RATE_LIMIT, FAULT_TRANSIENT, ROLE_FRAMER,
+    SIDE_DIAL, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
+    YIELD_ENDED,
+};
 use busbar_contract::transport::registry::facts as tfacts;
 use busbar_contract::SelectorForm;
 
@@ -963,8 +966,3 @@ busbar_contract::plugin_door! {
     },
 }
 
-/// The framer's linked row: its door and the Statement it renders, for `load_linked`.
-pub fn row() -> busbar_plugin_loader::dispatch::LinkedRow {
-    busbar_plugin_loader::dispatch::LinkedRow::of_macro(MACRO_DOOR)
-        .expect("the HTTP framer double states itself")
-}

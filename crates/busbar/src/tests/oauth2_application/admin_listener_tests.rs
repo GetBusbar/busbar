@@ -12,7 +12,7 @@ use super::browser::{
     cookie_path, location, path_of, percent_decode, query_param, send, sent_to, Jar,
 };
 use super::consent_tests::{register_client, serve_at};
-use busbar_contract::abi::mechanism::route::RouteAuth;
+use busbar_contract::route::RouteAuth;
 
 const REDIRECT_URI: &str = "http://127.0.0.1:9999/cb";
 const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";

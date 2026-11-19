@@ -317,11 +317,11 @@ async fn install_catalog_remove_roundtrip() {
     let upload_statement = busbar_plugin_loader::dispatch::rendering_of_library(&upload_path)
         .expect("the actual upload Store statement reads")
         .expect("the upload Store exports its Statement");
-    let upload = busbar_contract::abi::mechanism::rendering::read(&upload_statement)
+    let upload = busbar_contract::rendering::read(&upload_statement)
         .expect("the actual upload Store Statement is valid");
     assert_eq!(
         upload.kind,
-        busbar_contract::abi::mechanism::KindCode::Store as u32
+        busbar_contract::kinds::codes::KindCode::Store as u32
     );
     let upload_name = upload.name;
     assert_ne!(
@@ -638,11 +638,11 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
     let upload_statement = busbar_plugin_loader::dispatch::rendering_of_library(&upload_path)
         .expect("the actual upload Store statement reads")
         .expect("the upload Store exports its Statement");
-    let upload = busbar_contract::abi::mechanism::rendering::read(&upload_statement)
+    let upload = busbar_contract::rendering::read(&upload_statement)
         .expect("the actual upload Store Statement is valid");
     assert_eq!(
         upload.kind,
-        busbar_contract::abi::mechanism::KindCode::Store as u32
+        busbar_contract::kinds::codes::KindCode::Store as u32
     );
     let upload_name = upload.name;
     assert_ne!(
@@ -2255,11 +2255,11 @@ async fn install_filesystem_failures_are_internal_errors() {
     let upload_statement = busbar_plugin_loader::dispatch::rendering_of_library(&upload_path)
         .expect("the actual upload Store statement reads")
         .expect("the upload Store exports its Statement");
-    let upload = busbar_contract::abi::mechanism::rendering::read(&upload_statement)
+    let upload = busbar_contract::rendering::read(&upload_statement)
         .expect("the actual upload Store Statement is valid");
     assert_eq!(
         upload.kind,
-        busbar_contract::abi::mechanism::KindCode::Store as u32
+        busbar_contract::kinds::codes::KindCode::Store as u32
     );
     let upload_name = upload.name;
     assert_ne!(

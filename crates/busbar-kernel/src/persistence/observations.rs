@@ -241,7 +241,7 @@ impl BoundScope {
         self.id
     }
 }
-pub use busbar_contract::abi::sdk::plane::observation::Receipt;
+pub use busbar_contract::observation::Receipt;
 /// Content-free failures; an unknown outcome retains its original operation.
 #[derive(Debug)]
 pub enum Error {

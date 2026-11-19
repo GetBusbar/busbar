@@ -3097,7 +3097,7 @@ fn the_canonical_amend_payload_keeps_the_reason_hash_not_its_text() {
         !text.contains(reason),
         "the signed payload carries the reason text: {text}"
     );
-    let hash = hex::encode(busbar_contract::abi::sdk::digest::sha256(reason.as_bytes()));
+    let hash = hex::encode(busbar_contract::digest::sha256(reason.as_bytes()));
     assert!(
         text.contains(&format!("reason_sha256=\"{hash}\"\n")),
         "the signed payload names the reason by its SHA-256: {text}"

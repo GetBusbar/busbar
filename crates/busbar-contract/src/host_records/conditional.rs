@@ -5,10 +5,10 @@
 
 use super::dedupe::{Body, Dedupe};
 use crate::abi::mechanism::call::Outcome;
-use crate::abi::mechanism::check::HARD_MAX_BYTES;
-use crate::abi::mechanism::extensions;
 use crate::abi::sdk::secret_bytes::SecretBytes;
 use crate::bounded::MAX_RECORD_BYTES;
+use crate::kinds::codes::extensions;
+use crate::records::size_limits::HARD_MAX_BYTES;
 use crate::records::OpId;
 use crate::secure::{SecureString, SecureVec};
 use zeroize::Zeroize;

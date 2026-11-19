@@ -17,7 +17,7 @@ use std::sync::{Arc, Barrier};
 use std::time::Instant;
 
 use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::transport::{ROLE_FRAMER, SIDE_ACCEPT};
+use busbar_contract::transport::codes::{ROLE_FRAMER, SIDE_ACCEPT};
 use busbar_core_connector::framer::{Call, Crossed, DoorFacts, Established, FramerDoor, Framing};
 
 #[cfg(not(target_env = "msvc"))]

@@ -57,7 +57,7 @@ impl PluginRows for PluginRegistry {
     fn secret_slots(&self, name_or_alias: &str) -> Vec<String> {
         PluginRegistry::resolve(self, name_or_alias)
             .and_then(crate::registry::LoadablePlugin::statement)
-            .and_then(|bytes| busbar_artifact_metadata::rendering::read(&bytes).ok())
+            .and_then(|bytes| busbar_contract::rendering::read(&bytes).ok())
             .map(|stated| stated.secret_refs)
             .unwrap_or_default()
     }
@@ -65,7 +65,7 @@ impl PluginRows for PluginRegistry {
     fn reference_slots(&self, name_or_alias: &str) -> Vec<String> {
         PluginRegistry::resolve(self, name_or_alias)
             .and_then(crate::registry::LoadablePlugin::statement)
-            .and_then(|bytes| busbar_artifact_metadata::rendering::read(&bytes).ok())
+            .and_then(|bytes| busbar_contract::rendering::read(&bytes).ok())
             .and_then(|stated| stated.reference_fields().ok())
             .unwrap_or_default()
     }

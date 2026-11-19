@@ -151,7 +151,7 @@ impl AmendSink for Keep {
 #[tokio::test]
 async fn a_recorded_read_is_sealed_exactly_as_the_chain_seals_its_body() {
     use crate::export::projection::{Members, ProjectedRecord, Projection};
-    use busbar_contract::abi::export::ExportField;
+    use busbar_contract::export_calls::codes::ExportField;
     use busbar_contract::export_stream::ExportStream;
 
     let journal = NodeAmendments::new();

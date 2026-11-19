@@ -320,11 +320,11 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
                 busbar_plugin_loader::dispatch::rendering_of_library(&target_path)
                     .expect("the actual nonanchor Store Statement reads")
                     .expect("the actual nonanchor Store exports its Statement");
-            let read = busbar_contract::abi::mechanism::rendering::read(&target_statement)
+            let read = busbar_contract::rendering::read(&target_statement)
                 .expect("the nonanchor Statement is valid");
             assert_eq!(
                 read.kind,
-                busbar_contract::abi::mechanism::KindCode::Store as u32
+                busbar_contract::kinds::codes::KindCode::Store as u32
             );
             assert_ne!(
                 read.name, module,

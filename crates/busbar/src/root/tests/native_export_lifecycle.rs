@@ -47,7 +47,7 @@ fn stage_image(directory: &Path, kind: &str, path: &Path) -> String {
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(path)
             .expect("the installed image describes itself")
             .expect("the image has its signed statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+        let module = busbar_contract::rendering::read(&statement)
             .expect("the actual image statement parses")
             .name;
         let mut manifest = crate::root::test_plugins::manifest(

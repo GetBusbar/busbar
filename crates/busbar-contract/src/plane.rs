@@ -4,6 +4,7 @@
 //! The plane kind: what bytes mean. A plane names a transport only as a claim, never holds a
 //! connection.
 
+pub mod codes;
 use crate::ids::OpClassId;
 
 /// THE FACTS A PLANE STATES ABOUT ITSELF, as plain data — the item a plane crate exports to be

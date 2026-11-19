@@ -21,9 +21,10 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use busbar_contract::abi::plane::{RecordChain, CHAIN_LENGTH_PREFIXED};
+use busbar_contract::abi::plane::RecordChain;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::{RecordBytes, StoreError};
+use busbar_contract::plane::codes::CHAIN_LENGTH_PREFIXED;
 use busbar_kernel::host_chains::{ChainBook, ChainFraming};
 use busbar_kernel::host_records::{
     Owed, PendingRecords, RecordRows, Write, WriteBehind, WriteBytes,

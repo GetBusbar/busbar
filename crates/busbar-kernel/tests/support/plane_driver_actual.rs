@@ -21,9 +21,6 @@ mod session_input_cases;
 #[path = "plane_driver_session_route_cases.rs"]
 mod session_route_cases;
 
-#[path = "plane_driver_completion_retirement.rs"]
-mod completion_retirement;
-
 #[path = "plane_driver_retirement_cases.rs"]
 mod retirement_cases;
 
@@ -47,16 +44,19 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, S
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, ProjectIn, ProjectOut, RecordWrite,
-    RefusalIn, RefusalOut, UnitCount, AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED,
-    CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS,
-    PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_NONE, PRINCIPAL_OPTIONAL,
-    PRINCIPAL_REQUIRED, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, REFUSED_AFTER_ADMISSION,
-    ROUTE_LOCAL, ROUTE_POOL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED,
-    VERDICT_RETRY,
+    RefusalIn, RefusalOut, UnitCount, PRINCIPAL_NONE, PRINCIPAL_OPTIONAL,
 };
-use busbar_contract::abi::plane::{ServeIn, ServeOut, REFUSAL_GATE};
+use busbar_contract::abi::plane::{ServeIn, ServeOut};
 use busbar_contract::caps::OpClassId;
+use busbar_contract::measurement::{UNITS_ESTIMATED, UNITS_REPORTED};
+use busbar_contract::plane::codes::REFUSAL_GATE;
+use busbar_contract::plane::codes::{
+    AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS,
+    EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS,
+    PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_REQUIRED,
+    RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE, REFUSED_AFTER_ADMISSION, ROUTE_LOCAL, ROUTE_POOL,
+    ROUTE_SCOPE_LOCAL, ROUTE_SESSION, VERDICT_RETRY,
+};
 use busbar_contract::plane::{TrustKeyDecl, TrustRole};
 use busbar_contract::plane_calls::{
     Answered, ArrivedTrust, Grow, InstanceDecl, Lent, PieceInFlight, PlaneCalls, ServeInFlight,
@@ -932,7 +932,7 @@ impl PlaneCalls for Double {
                     vec![estimate(0)]
                 }
                 b"/authenticated" | b"/authenticated-refused" | b"/authenticated-pending" => {
-                    out.route = busbar_contract::abi::plane::ROUTE_AUTHENTICATED;
+                    out.route = busbar_contract::plane::codes::ROUTE_AUTHENTICATED;
                     vec![estimate(input.body.len as u64)]
                 }
                 b"/session" => {
@@ -1113,7 +1113,7 @@ impl PlaneCalls for Double {
                         row_value.len(),
                     );
                     *input.records_buf = RecordWrite {
-                        kind: busbar_contract::abi::plane::AUDIT_REJECTED,
+                        kind: busbar_contract::plane::codes::AUDIT_REJECTED,
                         op: RECORD_AUDIT,
                         key: Span {
                             offset: at as u32,
@@ -1347,7 +1347,7 @@ impl PlaneCalls for Double {
             out.end_user = end_user;
             out.body = if unit_body.is_empty() {
                 Span {
-                    offset: busbar_contract::abi::plane::SPAN_ABSENT,
+                    offset: busbar_contract::records::size_limits::SPAN_ABSENT,
                     len: 0,
                 }
             } else {
@@ -1690,9 +1690,9 @@ fn a_pending_piece_is_released_by_another_task_on_the_same_runtime() {
     });
 }
 
-use busbar_contract::abi::host::service as svc;
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::ids::RecordSchemaId;
+use busbar_contract::kinds::codes::KindCode;
+use busbar_contract::services::codes::service as svc;
 use busbar_contract::services::{Caller as Instance, HostServices, Ran, RecordsList, Stored};
 use busbar_kernel::host_services::{BlockingPool, InstanceFacts, KernelServices};
 #[path = "../../src/tests/real_store.rs"]
@@ -2837,7 +2837,7 @@ async fn a_planes_message_boundaries_and_final_status_reach_the_callers_side() {
 }
 
 struct Gone {
-    unsent: Option<busbar_contract::abi::plane::RefusalCode>,
+    unsent: Option<busbar_contract::plane::codes::RefusalCode>,
     sends: bool,
     then: busbar_kernel::plane_driver::Pick,
 }
@@ -2888,7 +2888,7 @@ impl busbar_kernel::plane_driver::FarEnd for Gone {
     fn unsent(
         &self,
         _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
-    ) -> Option<busbar_contract::abi::plane::RefusalCode> {
+    ) -> Option<busbar_contract::plane::codes::RefusalCode> {
         self.unsent
     }
 }
@@ -2961,7 +2961,7 @@ async fn came(far: Gone, takes: bool) -> Came {
 #[tokio::test]
 async fn a_credential_refusal_is_handed_as_a_piece_first_only_to_a_plane_that_takes_it() {
     use busbar_contract::caps::{Outcome as Unit, ReasonCode, StepName};
-    let code = busbar_contract::abi::plane::reason_code(ReasonCode::CredentialUnavailable);
+    let code = busbar_contract::plane::codes::reason_code(ReasonCode::CredentialUnavailable);
     let gone = || Gone {
         unsent: None,
         sends: true,
@@ -3000,7 +3000,7 @@ async fn a_credential_refusal_is_handed_as_a_piece_first_only_to_a_plane_that_ta
 async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() {
     use busbar_contract::caps::ReasonCode;
     use busbar_kernel::plane_driver::Pick;
-    let code = busbar_contract::abi::plane::reason_code(ReasonCode::BreakerOpen);
+    let code = busbar_contract::plane::codes::reason_code(ReasonCode::BreakerOpen);
     let expected_written = code.to_string().into_bytes();
     let exhausted = || Pick::Exhausted {
         status: 503,
@@ -3083,7 +3083,8 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
 
 #[tokio::test]
 async fn a_walk_that_exhausted_with_nothing_sent_names_why_on_its_refused_piece() {
-    use busbar_contract::abi::plane::{nothing_sent, RefusalCode};
+    use busbar_contract::abi::plane::nothing_sent;
+    use busbar_contract::plane::codes::RefusalCode;
     use busbar_kernel::plane_driver::Pick;
     let exhausted = || Pick::Exhausted {
         status: 503,
@@ -3097,7 +3098,7 @@ async fn a_walk_that_exhausted_with_nothing_sent_names_why_on_its_refused_piece(
     };
     let sent = came(gone(None), true).await;
     let breaker =
-        busbar_contract::abi::plane::reason_code(busbar_contract::caps::ReasonCode::BreakerOpen);
+        busbar_contract::plane::codes::reason_code(busbar_contract::caps::ReasonCode::BreakerOpen);
     assert_eq!(
         sent.refused,
         vec![breaker],
@@ -3357,8 +3358,8 @@ async fn drive_over<F: busbar_kernel::plane_driver::FarEnd>(
 
 #[tokio::test]
 async fn a_credential_that_cannot_be_presented_reaches_the_caller_as_a_fixed_class_refusal() {
-    use busbar_contract::abi::plane::{class_of, RefusalClass};
     use busbar_contract::caps::{Outcome as UnitOutcome, ReasonCode, StepName};
+    use busbar_contract::plane::codes::{class_of, RefusalClass};
     assert_eq!(class_of(ReasonCode::BreakerOpen), RefusalClass::Unreachable);
     let mut renders = Vec::new();
     for failing in failing_secrets() {

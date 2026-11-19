@@ -312,7 +312,7 @@ mod attachments {
 mod line_carriers {
     use std::sync::{Arc, Mutex};
 
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     use busbar_contract::services::{Caller, Incarnation};
 
     use crate::channels::line_carriers::{CarrierSink, LineCarriers};

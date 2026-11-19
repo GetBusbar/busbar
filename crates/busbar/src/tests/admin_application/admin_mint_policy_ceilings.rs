@@ -41,7 +41,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
@@ -186,7 +186,7 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
@@ -561,7 +561,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
@@ -709,7 +709,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
@@ -857,7 +857,7 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);

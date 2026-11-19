@@ -63,7 +63,7 @@ async fn signed_occurrence_survives_the_actual_admission_verdict_round_trip() {
     let records = crate::host_units::UnitRecords::default();
     let caller = busbar_contract::services::Caller::for_test(
         Arc::from("seat"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     assert!(records.pre_admitted_signed_for(91, &caller, returned, 0));
     assert!(!records.pre_admitted_signed_for(92, &caller, original, 0));

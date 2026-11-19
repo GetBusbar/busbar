@@ -46,7 +46,7 @@ fn separate_readers_keep_their_owned_grammar_context() {
 
 #[test]
 fn named_secret_is_bound_before_the_document_reads_shorthand() {
-    use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
+    use busbar_contract::plugin_settings::sugar_words::REWRITE_SUGAR;
     use busbar_kernel::config::grammar::SecretSource;
     let mut sugars = busbar_contract::secret_ref::Sugars::default();
     sugars

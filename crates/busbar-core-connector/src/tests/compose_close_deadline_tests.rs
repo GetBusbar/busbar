@@ -4,9 +4,7 @@
 //! Carrier EOF is not TLS close_notify; CONNECT has a stage bound inside the overall open.
 
 use super::*;
-use busbar_contract::abi::host::conn::connector::{
-    CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_SECURITY,
-};
+use busbar_contract::conn::codes::{CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_SECURITY};
 use futures::future::poll_fn;
 use std::future::Future;
 use std::task::Poll;

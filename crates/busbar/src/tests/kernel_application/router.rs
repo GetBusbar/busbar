@@ -80,8 +80,8 @@ async fn a_door_route_installed_at_construction_is_answered_ahead_of_the_fallbac
     const DOOR: &str = "/door-route-test/call";
     let route = busbar_kernel::plane_routes::PlaneRouteSpec {
         path: DOOR.to_string(),
-        method: busbar_contract::abi::mechanism::route::RouteMethod::Post,
-        auth: busbar_contract::abi::mechanism::route::RouteAuth::None,
+        method: busbar_contract::route::RouteMethod::Post,
+        auth: busbar_contract::route::RouteAuth::None,
         handler: Arc::new(|ctx: busbar_kernel::plane_routes::PlaneReqCtx| {
             Box::pin(async move {
                 let body = format!("door {} {}", ctx.path, String::from_utf8_lossy(&ctx.body));

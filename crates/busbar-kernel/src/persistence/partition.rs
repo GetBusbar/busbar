@@ -5,7 +5,7 @@
 //! Full partition identity remains in record keys/metadata: a hash collision can
 //! cause extra contention, never alias two business records or grant authority.
 
-use busbar_contract::abi::sdk::digest::Sha256Stream as Sha256;
+use busbar_contract::digest::Sha256Stream as Sha256;
 use busbar_contract::persistence::NamespaceId;
 
 pub(crate) fn namespace(owner: NamespaceId, parts: &[&[u8]]) -> NamespaceId {

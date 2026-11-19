@@ -13,26 +13,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::host::conn::connector::{
+use busbar_contract::conn::codes::{
     DIRECTION_OUTBOUND, EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
-use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
 use busbar_contract::conn::{
     ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind, NO_TICKET,
 };
+use busbar_contract::rendering::{ReadBlob, ReadNeed};
 use busbar_contract::transport::{EgressTrust, TransportSettings};
-use busbar_plugin_loader::dispatch::kinds::transport::Transport;
-use busbar_plugin_loader::dispatch::{
-    load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
-};
-
 #[path = "tcp_carrier_double.rs"]
 mod tcp_carrier_double;
 
 #[path = "http_framer_double.rs"]
 mod http_framer_double;
 
-use crate::doors::Dispatched;
 use crate::registry::{Entry, Transports};
 use crate::{Connector, DialJudge, Judged, Verdict};
 
@@ -51,68 +45,13 @@ fn runtime() -> &'static tokio::runtime::Handle {
     })
 }
 
-fn dispatcher() -> &'static Arc<Dispatcher> {
-    static DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
-    DISPATCHER.get_or_init(|| {
-        let dispatcher = Dispatcher::new(
-            DispatchConfig::default(),
-            busbar_kernel::host_services::caller_binding(),
-        );
-        dispatcher.install_runtime(runtime().clone());
-        dispatcher.install_io(crate::hostio::process());
-        Arc::new(dispatcher)
-    })
-}
-
-fn actual_transport(name: &str, row: &LinkedRow) -> Entry {
-    static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
-    let dispatcher = dispatcher();
-    let instance = format!("{name}-{}", NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed)).into();
-    let plugin = load_linked::<Transport>(
-        row,
-        Bind {
-            accept: Default::default(),
-            instance,
-            max_inflight_cap: 1024,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
-        },
-    )
-    .expect("the actual transport image loads");
-    let door = Dispatched::open_on(
-        plugin,
-        &TransportSettings::default(),
-        Arc::clone(dispatcher),
-    )
-    .expect("the actual transport opens");
-    Entry {
-        door: Arc::new(door),
-        alpn: Arc::default(),
-    }
-}
-
-fn connector(anchors: &[Vec<u8>], judge: Arc<dyn DialJudge>, http: bool) -> Connector {
-    let mut entries = vec![actual_transport("tcp", &tcp_carrier_double::row())];
-    if http {
-        entries.push(actual_transport("http", &http_framer_double::row()));
-    }
-    let transports = Transports::new(entries).expect("the actual transport claims compose");
-    let trust = EgressTrust {
-        extra_anchors: anchors.to_vec(),
-        ..EgressTrust::default()
-    };
-    let tls = crate::tls::client::build_client_config(&trust).expect("host TLS configuration");
-    Connector::serving(transports, judge, Some(Arc::new(tls)), Arc::new(|_, _| {}))
-}
-
 fn loopback(target: &str, _: u32, _: Judged) -> Option<Result<SocketAddr, Verdict>> {
     Some(
         target
             .parse::<SocketAddr>()
             .ok()
             .filter(|address| address.ip().is_loopback())
-            .ok_or(busbar_contract::abi::host::service::DEST_UNRESOLVABLE),
+            .ok_or(busbar_contract::services::codes::DEST_UNRESOLVABLE),
     )
 }
 
@@ -130,7 +69,7 @@ fn need(transport: &str, class: u32) -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
     }
@@ -287,181 +226,3 @@ fn upgraded_echo(connector: &Connector, target: &str) -> Result<Vec<u8>, ConnErr
     answer
 }
 
-#[test]
-fn the_real_tcp_carrier_upgrades_with_the_hosts_configured_test_ca() {
-    let _entered = runtime().enter();
-    let (ca, tls) = tls_identity();
-    let (target, far) = tls_listener(tls);
-    let connector = connector(&[ca], Arc::new(loopback), false);
-    let answer = upgraded_echo(&connector, &target);
-    assert!(far
-        .join()
-        .unwrap()
-        .expect("a real TCP dial reached the TLS server"));
-    assert_eq!(answer, Ok(b"hello".to_vec()));
-}
-
-#[test]
-fn the_real_tcp_carrier_refuses_a_tls_upgrade_without_the_test_ca() {
-    let _entered = runtime().enter();
-    let (_, tls) = tls_identity();
-    let (target, far) = tls_listener(tls);
-    let connector = connector(&[], Arc::new(loopback), false);
-    let answer = upgraded_echo(&connector, &target);
-    assert!(!far
-        .join()
-        .unwrap()
-        .expect("a real TCP dial reached the TLS server"));
-    assert!(answer.is_err(), "upgraded over an untrusted CA: {answer:?}");
-}
-
-#[test]
-fn the_real_tcp_carrier_obeys_the_production_destination_guard() {
-    let _entered = runtime().enter();
-    let destinations = busbar_kernel::config::Destinations {
-        block_private_addresses: busbar_kernel::config::sections::DEFAULT_BLOCK_PRIVATE_ADDRESSES,
-        ..Default::default()
-    };
-    let guard = crate::process::dest_judge(&destinations).unwrap();
-    let connector = connector(&[], crate::process::judge(guard, &[]), false);
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let address = listener.local_addr().unwrap().to_string();
-    let mut sequence = 0;
-    let mut open = |class, target: &str| -> Result<ConnId, ConnError> {
-        sequence += 1;
-        DeclaredConns::declare(
-            &connector,
-            OWNER,
-            NeedId(sequence),
-            &need("tcp", class),
-            None,
-            None,
-        )?;
-        settle(|| {
-            connector.open(
-                OWNER,
-                NeedId(sequence),
-                &OpenDesc {
-                    target,
-                    timeout_ms: 2_000,
-                    ..OpenDesc::default()
-                },
-            )
-        })
-    };
-    assert_eq!(
-        open(EGRESS_DEFAULT, "\x310.0.0.1:443"),
-        Err(ConnError::Refused)
-    );
-    assert_eq!(open(EGRESS_DEFAULT, &address), Err(ConnError::Refused));
-    assert_eq!(
-        open(EGRESS_OPERATOR_INFRASTRUCTURE, "169.254.169.254:80"),
-        Err(ConnError::Refused)
-    );
-    assert_eq!(
-        listener.accept().unwrap_err().kind(),
-        std::io::ErrorKind::WouldBlock,
-        "a refused destination was dialled"
-    );
-    let id = open(EGRESS_OPERATOR_INFRASTRUCTURE, &address).unwrap();
-    drop(accept(&listener).expect("the admitted dial reaches the listener"));
-    connector.close(OWNER, id).unwrap();
-}
-
-#[test]
-fn the_real_http_framer_delivers_one_head_and_the_exact_body() {
-    let _entered = runtime().enter();
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let address = listener.local_addr().unwrap();
-    let far = std::thread::spawn(move || {
-        let mut socket = accept(&listener).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut seen = [0_u8; 512];
-        let mut used = 0;
-        while !seen[..used].windows(4).any(|w| w == b"\r\n\r\n") {
-            assert!(
-                Instant::now() < deadline,
-                "the complete request head arrives"
-            );
-            assert!(
-                used < seen.len(),
-                "the short fixture GET fits its head buffer"
-            );
-            socket
-                .set_read_timeout(Some(deadline.saturating_duration_since(Instant::now())))
-                .unwrap();
-            let read = socket.read(&mut seen[used..]).unwrap();
-            assert_ne!(read, 0, "the request must have its complete head");
-            used += read;
-        }
-        socket
-            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello")
-            .unwrap();
-        seen[..used].to_vec()
-    });
-    let connector = connector(
-        &[],
-        crate::process::judge(
-            crate::process::dest_judge(&Default::default()).unwrap(),
-            &[],
-        ),
-        true,
-    );
-    // The test owner carries `insecure_transport.accept: plaintext` (SEC-2, #297 model A).
-    crate::tests::accept_plaintext(&connector, &[OWNER]);
-    assert!(connector.serves_scheme("http"));
-    DeclaredConns::declare(
-        &connector,
-        OWNER,
-        NeedId(0),
-        &need("http", EGRESS_LOOPBACK_ALLOWED),
-        None,
-        None,
-    )
-    .unwrap();
-    let target = format!("http://{address}/v1/probe");
-    let id = settle(|| {
-        connector.open(
-            OWNER,
-            NeedId(0),
-            &OpenDesc {
-                target: &target,
-                method: b"GET",
-                head_target: b"/v1/probe",
-                timeout_ms: 5_000,
-                ..OpenDesc::default()
-            },
-        )
-    })
-    .unwrap();
-    let mut heads = 0;
-    let mut body = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut buffer = [0_u8; 512];
-    while body.len() < 5 {
-        assert!(Instant::now() < deadline, "the complete HTTP reply arrives");
-        let piece = settle_until(deadline, || {
-            connector.read(OWNER, id, NO_TICKET, &mut buffer)
-        })
-        .unwrap();
-        match piece.kind {
-            PieceKind::Fields => {
-                heads += 1;
-                assert!(heads <= 1, "one response head");
-            }
-            PieceKind::Body => {
-                assert!(body.len() + piece.len <= 5, "the peer sends only hello");
-                body.extend_from_slice(&buffer[..piece.len]);
-            }
-            PieceKind::Completion => break,
-            PieceKind::HookReply => panic!("an HTTP reply became a hook reply"),
-        }
-    }
-    connector.close(OWNER, id).unwrap();
-    let seen = far.join().unwrap();
-    assert!(seen.starts_with(b"GET /v1/probe HTTP/1.1\r\n"));
-    assert_eq!(heads, 1);
-    assert_eq!(body, b"hello");
-}

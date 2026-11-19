@@ -58,7 +58,7 @@ fn guarded_string_propagates_the_underlying_resolve_error() {
     let resolver = fixed_resolver(vec![(
         reference.clone(),
         Err(SecretRefused {
-            error_kind: busbar_contract::abi::secret::ERROR_KIND_NOT_FOUND,
+            error_kind: busbar_contract::secret::codes::ERROR_KIND_NOT_FOUND,
             text: "cannot resolve the requested material".into(),
         }),
     )]);

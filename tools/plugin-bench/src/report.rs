@@ -1,46 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The envelope sink (counting, never formatting), the plain-text table and the JSON file.
+//! The plain-text table and the JSON file.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use busbar_contract::json::{self, json, Value};
-use busbar_plugin_loader::dispatch::{Diagnostic, Dropped, EnvelopeSink, Metric};
 
 use crate::stats::{OpStats, RSS_AT, WINDOWS};
 use crate::{Config, Outcome, Target};
-
-/// Counts what a plugin reports per call (metrics, diagnostics) and throws it away.
-#[derive(Debug, Default)]
-pub struct CountingSink {
-    pub metrics: AtomicU64,
-    pub diags: AtomicU64,
-    pub dropped: AtomicU64,
-}
-
-impl EnvelopeSink for CountingSink {
-    fn metric(&self, _: Metric<'_>) {
-        self.metrics.fetch_add(1, Ordering::Relaxed);
-    }
-    fn diag(&self, d: Diagnostic<'_>) {
-        self.diags.fetch_add(1, Ordering::Relaxed);
-        if verbose() {
-            eprintln!(
-                "[plugin diag sev={}] {}",
-                d.severity,
-                String::from_utf8_lossy(d.text)
-            );
-        }
-    }
-    fn dropped(&self, why: Dropped) {
-        if verbose() {
-            eprintln!("[plugin envelope dropped] {why:?}");
-        }
-        self.dropped.fetch_add(1, Ordering::Relaxed);
-    }
-}
 
 fn ns(v: Option<u64>) -> String {
     match v {
@@ -226,7 +194,6 @@ pub fn write_json(
 fn alloc_scope(counting: bool, target: &Target) -> &'static str {
     match (counting, target) {
         (false, _) => "none",
-        (true, Target::Linked(_)) => "host+plugin",
         (true, Target::Dropped(_)) => "host",
     }
 }

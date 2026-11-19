@@ -48,7 +48,7 @@ pub(crate) fn auth_refusal(
     module: &str,
 ) -> String {
     registry.kind_refusal(
-        busbar_contract::abi::mechanism::kind::AUTH,
+        busbar_contract::kinds::codes::AUTH,
         "serve as an auth module",
         module,
     )
@@ -430,7 +430,7 @@ pub(crate) fn admin_head(
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
     busbar_contract::auth_calls::VerifyRequest {
-        point: busbar_contract::abi::auth::AuthPoint::Head,
+        point: busbar_contract::route::AuthPoint::Head,
         lines: (headers.iter())
             .map(|(n, v)| {
                 let value = busbar_contract::redacted::Secret::new(v.as_bytes().to_vec());

@@ -397,7 +397,7 @@ pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(
     if !used.sections.is_empty() {
         // A plane section's `${VAR}` fills read through the fill role (`filled::plane_bound`).
         used.roles
-            .insert(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL.to_owned());
+            .insert(busbar_contract::plugin_settings::sugar_words::SUGAR_ROLE_FILL.to_owned());
     }
     deploy.grammar = super::grammar::GrammarField::bound_used(grammar.clone(), used);
     Ok(deploy)

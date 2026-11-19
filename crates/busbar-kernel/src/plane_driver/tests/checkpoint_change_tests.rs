@@ -4,8 +4,8 @@
 //! SP-M2: a unit's running checkpoint is staged only when its counts (or its checkpoint facts)
 //! change; an unchanged piece still asks the shared budget whether the stream must be cut.
 
-use busbar_contract::abi::plane::UNITS_REPORTED;
 use busbar_contract::caps::OriginKind;
+use busbar_contract::measurement::UNITS_REPORTED;
 use busbar_contract::records::{RecordStoreResult, VirtualKey};
 use busbar_contract::stage_probe::{Derive, Scope};
 

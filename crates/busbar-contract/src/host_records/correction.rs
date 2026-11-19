@@ -10,7 +10,7 @@ pub use crate::records::correction::{
 };
 
 use crate::abi::mechanism::call::Outcome;
-use crate::abi::mechanism::check::HARD_MAX_BYTES;
+use crate::records::size_limits::HARD_MAX_BYTES;
 
 /// Capability value for the supported codec version.
 pub const CAPABILITY_VALUE: &[u8] = b"1";

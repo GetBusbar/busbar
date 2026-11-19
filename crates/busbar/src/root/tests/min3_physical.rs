@@ -4,8 +4,8 @@
 use super::*;
 use std::sync::Mutex;
 
-use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_POST, PATH_EXACT};
+use busbar_contract::kinds::codes::KindCode;
+use busbar_contract::route::{METHOD_GET, METHOD_POST, PATH_EXACT};
 use busbar_contract::services::Caller;
 use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
 use busbar_kernel::host_services::KernelServices;
@@ -253,7 +253,7 @@ fn core_line() -> Line {
         dialect: 0,
         auth: LineAuth::None,
         upgrade: None,
-        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        offered: busbar_contract::route::AuthPoints::EMPTY,
     }
 }
 #[test]

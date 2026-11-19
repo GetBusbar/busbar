@@ -974,7 +974,7 @@ fn a_later_stop_request_cannot_extend_the_first_deadline() {
 
 #[test]
 fn declared_scopes_are_get_routes_before_the_pump_starts() {
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_contract::route::{RouteAuth, RouteMethod};
     let (mut port, _) = Double::new(&[x::STREAM_METRICS]);
     Arc::get_mut(&mut port).unwrap().scopes.push(ScopeInfo {
         scope: x::SCOPE_HOOKS,

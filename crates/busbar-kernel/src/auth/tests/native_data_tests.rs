@@ -21,9 +21,9 @@ use crate::plugin_records::RecordsDenied;
 use crate::resource_admission::{ForwardFact, FrozenRequest, ResourceFact};
 use crate::router::PreparedListener;
 use crate::state::AppHandle;
-use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
+use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::records::ScopeRef;
+use busbar_contract::route::{METHOD_POST, PATH_EXACT};
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::Caller as AbiCaller;
 use busbar_plugin_abi::host_side::caller::{BoxFut, InstanceLimits};
@@ -310,10 +310,10 @@ fn fixture(allowed: bool) -> Fixture {
         dialect: 0,
         auth: LineAuth::Chain(
             vec!["provider-42".into()],
-            busbar_contract::abi::auth::AuthPoints::EMPTY,
+            busbar_contract::route::AuthPoints::EMPTY,
         ),
         upgrade: None,
-        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        offered: busbar_contract::route::AuthPoints::EMPTY,
     };
     let port: Arc<dyn busbar_ports::transport::TransportPort> = Arc::new(Transport);
     let plan = PhysicalPlan::new(
@@ -1093,8 +1093,8 @@ fn begin_task<'a>(
 }
 
 fn assert_generic_effects_refused(f: &Fixture, context: &InvocationContext) {
-    use busbar_contract::abi::host::service::{OUTBOUND_BIND, OUTBOUND_PUBLISH, OUTBOUND_REVOKE};
     use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::services::codes::{OUTBOUND_BIND, OUTBOUND_PUBLISH, OUTBOUND_REVOKE};
     use busbar_contract::services::{HostServices, OutboundAuthorization, Ran};
     assert!(context
         .nest(

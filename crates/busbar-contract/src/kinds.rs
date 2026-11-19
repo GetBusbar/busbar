@@ -3,6 +3,7 @@
 
 //! The shapes the plugin kinds share outside `abi/`: a plane's fact and credential-locator
 
+pub mod codes;
 use crate::bounded::{Facts, MAX_RECORD_BYTES};
 use crate::ids::SchemeAlt;
 use core::fmt;

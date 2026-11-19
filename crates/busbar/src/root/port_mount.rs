@@ -33,10 +33,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_contract::abi::transport::route::{
-    METHOD_DELETE, METHOD_GET, METHOD_PATCH, METHOD_POST, METHOD_PUT,
-};
+use busbar_contract::route::{RouteAuth, RouteMethod};
+use busbar_contract::route::{METHOD_DELETE, METHOD_GET, METHOD_PATCH, METHOD_POST, METHOD_PUT};
 use busbar_contract::secret_ref::SecretRef;
 use busbar_kernel::auth::{AuthPrincipal, ChainHead, IdentityRefusal};
 use busbar_kernel::governance::{GovCtx, LimitBlocked};
@@ -104,9 +102,9 @@ pub(crate) const LINE_OFFERED: busbar_contract::route::AuthPoints =
 /// route id is the renderer's native selector; native render has no legacy dialect number.
 pub(crate) fn guest_lines(
     seats: &[PortSeat],
-    chain: &[(String, busbar_contract::abi::auth::AuthPoints)],
+    chain: &[(String, busbar_contract::route::AuthPoints)],
 ) -> Vec<busbar_kernel::guest::Line> {
-    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    use busbar_contract::route::{method_bit, PATH_EXACT, PATH_PATTERN};
     use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
     seats
         .iter()

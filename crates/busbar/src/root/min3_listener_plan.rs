@@ -7,8 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use busbar_contract::abi::auth::AuthPoints;
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+use busbar_contract::route::AuthPoints;
+use busbar_contract::route::{RouteAuth, RouteMethod};
 use busbar_kernel::state::App;
 
 use super::boot::ListenerNeeds;

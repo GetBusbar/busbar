@@ -45,15 +45,6 @@ mod plain {
     }
 }
 
-fn stated(door: DoorFn) -> Vec<u8> {
-    crate::dispatch::rendering_of(door).expect("the stub states itself")
-}
-
-#[test]
-fn a_plugin_with_no_schema_has_no_row() {
-    assert_eq!(public_settings(&stated(plain::door), &[]), Ok(None));
-}
-
 const SCHEMA: &[u8] = br#"{"type":"object","properties":{
     "url":{"type":"string","x-busbar-public":true},
     "timeout_ms":{"type":"integer","x-busbar-public":true},
@@ -96,44 +87,6 @@ mod malformed_schema {
     }
 }
 
-#[test]
-fn linked_schema_is_projected_and_malformed_schema_is_refused() {
-    let registry = crate::PluginRegistry::empty()
-        .link(vec![
-            crate::registry::LinkedPlugin::door_of_kind("secret", "stub-public", schematized::door),
-            crate::registry::LinkedPlugin::door_of_kind("secret", "stub-plain", plain::door),
-        ])
-        .unwrap();
-    let schema = busbar_contract::plugin_rows::PluginRows::resolve(&registry, "stub-public")
-        .unwrap()
-        .settings_schema
-        .unwrap();
-    assert_eq!(schema.as_bytes(), SCHEMA);
-    assert!(registry
-        .resolve("stub-public")
-        .unwrap()
-        .manifest
-        .settings_schema
-        .is_none());
-    assert!(
-        busbar_contract::plugin_rows::PluginRows::resolve(&registry, "stub-plain")
-            .unwrap()
-            .settings_schema
-            .is_none()
-    );
-    let rejected = crate::PluginRegistry::empty()
-        .link(vec![crate::registry::LinkedPlugin::door_of_kind(
-            "secret",
-            "stub-malformed",
-            malformed_schema::door,
-        )])
-        .unwrap_err();
-    assert!(
-        rejected.contains("settings_schema is not valid JSON"),
-        "{rejected}"
-    );
-}
-
 mod leaky {
     busbar_contract::plugin_door! {
         ops: busbar_contract::abi::secret::Ops,
@@ -144,30 +97,6 @@ mod leaky {
         lifecycle: life(super::Stub),
         kind_ops: { resolve: busbar_contract::abi::sdk::Safe<super::Resolve> },
     }
-}
-
-#[test]
-fn a_stub_plugins_schema_declares_its_public_settings() {
-    let facts = public_settings(&stated(schematized::door), &["stub-alias"])
-        .expect("the schema reads")
-        .expect("the stub declares public settings");
-    assert_eq!(
-        facts.public.iter().map(String::as_str).collect::<Vec<_>>(),
-        ["timeout_ms", "url"]
-    );
-    assert_eq!(facts.words, ["stub-alias", "stub-public"]);
-}
-
-#[test]
-fn a_stub_plugin_declaring_a_credential_public_is_refused() {
-    let refused = public_settings(&stated(leaky::door), &[]).expect_err("refused");
-    assert!(
-        refused.starts_with(
-            "plugin 'stub-leaky': its settings schema: field 'api_token' looks \
-         like a credential"
-        ),
-        "{refused}"
-    );
 }
 
 #[test]

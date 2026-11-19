@@ -9,8 +9,8 @@ use std::task::{Context, Waker};
 use std::thread;
 use std::time::Duration;
 
-use busbar_contract::abi::transport::ROLE_FRAMER;
 use busbar_contract::conn::Bytes;
+use busbar_contract::transport::codes::ROLE_FRAMER;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 

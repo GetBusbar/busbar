@@ -4,13 +4,13 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::plane::{
-    UnitCount, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL,
-    ROUTE_SCOPE_SEPARATOR,
-};
+use busbar_contract::abi::plane::UnitCount;
 use busbar_contract::caps::{
     Admittance, Authenticated, Consumption, Dial, Grant, OpClassId, Outcome, PrincipalId,
     QuantitySource, ReasonCode, Refusal, UsageLine, VerifiedDestination,
+};
+use busbar_contract::plane::codes::{
+    ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, ROUTE_SCOPE_SEPARATOR,
 };
 use busbar_contract::records::VirtualKey;
 use busbar_contract::MeterClassId;
@@ -1714,9 +1714,9 @@ impl DriverSteps for DoorSteps<'_> {
 
     fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
         let mut u = self.lock();
-        u.once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
-        u.counted = flags & busbar_contract::abi::plane::ROUTE_COUNTED != 0;
-        u.stream = flags & busbar_contract::abi::plane::ROUTE_STREAM != 0;
+        u.once = flags & busbar_contract::plane::codes::ROUTE_ONCE != 0;
+        u.counted = flags & busbar_contract::plane::codes::ROUTE_COUNTED != 0;
+        u.stream = flags & busbar_contract::plane::codes::ROUTE_STREAM != 0;
     }
 
     fn affinity(&self, _ctx: &UnitCtx, hash: u64) {
@@ -1939,7 +1939,7 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
         &self,
         owner: busbar_contract::conn::InstanceId,
         need: busbar_contract::conn::NeedId,
-        spec: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        spec: &busbar_contract::rendering::ReadNeed,
         target: Option<&str>,
         trust: Option<&str>,
     ) -> Result<(), busbar_contract::conn::ConnError> {
@@ -1983,7 +1983,7 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
         &self,
         owner: busbar_contract::conn::InstanceId,
         need: busbar_contract::conn::NeedId,
-        spec: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        spec: &busbar_contract::rendering::ReadNeed,
         program: &busbar_contract::conn::Program,
     ) -> Result<(), busbar_contract::conn::ConnError> {
         self.inner.declare_program(owner, need, spec, program)
@@ -2041,7 +2041,7 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
         &self,
         owner: busbar_contract::conn::InstanceId,
         need: busbar_contract::conn::NeedId,
-        spec: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        spec: &busbar_contract::rendering::ReadNeed,
         programs: &[(String, busbar_contract::conn::Program)],
     ) -> Result<(), busbar_contract::conn::ConnError> {
         self.inner

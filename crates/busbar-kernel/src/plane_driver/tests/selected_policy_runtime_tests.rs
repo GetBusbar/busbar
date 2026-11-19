@@ -8,8 +8,8 @@ use super::*;
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::caps::{Pass, Route};
+use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::services::Caller;
 use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::plane::{AUTH_PRINCIPAL, FB_ATTEMPT_USAGE, UNIT_TOKENS};

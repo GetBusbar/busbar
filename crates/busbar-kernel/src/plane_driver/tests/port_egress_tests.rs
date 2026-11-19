@@ -10,8 +10,10 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use busbar_contract::abi::auth::{NO_MEMBER_AUTH_FIELD, SCOPE_REQUEST_FIELD};
-use busbar_contract::abi::transport::{FAULT_HARD, FAULT_NONE, FAULT_RATE_LIMIT, FAULT_TRANSIENT};
 use busbar_contract::caps::{Pass, Route};
+use busbar_contract::transport::codes::{
+    FAULT_HARD, FAULT_NONE, FAULT_RATE_LIMIT, FAULT_TRANSIENT,
+};
 use busbar_plugin_abi::host_side::caller::Accept;
 use busbar_plugin_abi::plane::{
     ATT_HARD, ATT_RETRY, CARRIER_GRPC, CARRIER_HTTP, FC_RATE_LIMIT, FC_SERVER, OUTBOUND_NONE,

@@ -1442,7 +1442,7 @@ fn project_audit_event(
     projection: crate::export::projection::Projection,
     entry: &AuditEntry,
 ) -> crate::export::projection::Rendered {
-    use busbar_contract::abi::export::ExportField as F;
+    use busbar_contract::export_calls::codes::ExportField as F;
     use busbar_contract::export_stream::ExportStream;
 
     let mut record =

@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-use busbar_contract::abi::transport::{AcceptIn, AcceptOut, MAX_ADDR};
+use busbar_contract::abi::transport::{AcceptIn, AcceptOut};
+use busbar_contract::transport::codes::MAX_ADDR;
 
 use crate::carrier::{text, Carried, Carry, Driven};
 use crate::compose::{Accept, Connection, Failure, Slot, Via};

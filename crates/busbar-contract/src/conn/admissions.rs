@@ -7,8 +7,8 @@
 use std::sync::Arc;
 
 use super::{ConnError, DeclaredConns, InstanceId, NeedId, Program};
-use crate::abi::mechanism::rendering::ReadNeed;
 use crate::plugin_settings::Settings;
+use crate::rendering::ReadNeed;
 
 /// Authority to bind settings admission to the actual host enforcement table.
 /// Issuance is privileged kernel composition, subject to the host source-direction boundary.
@@ -338,13 +338,13 @@ mod tests {
 
     fn need() -> ReadNeed {
         ReadNeed {
-            direction: crate::abi::host::conn::connector::DIRECTION_OUTBOUND,
+            direction: crate::conn::codes::DIRECTION_OUTBOUND,
             egress_class: 0,
             transport: "byte-stream".into(),
             auth: String::new(),
             target_from: "settings.destination".into(),
             trust_from: String::new(),
-            details: crate::abi::mechanism::rendering::ReadBlob {
+            details: crate::rendering::ReadBlob {
                 fmt: 0,
                 flags: 0,
                 bytes: Vec::new(),
@@ -428,7 +428,9 @@ mod tests {
 
     #[test]
     fn program_source_ownership_is_captured_by_the_admission_authority() {
-        use crate::abi::mechanism::door::{REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL};
+        use crate::plugin_settings::sugar_words::{
+            REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL,
+        };
         use crate::secret_ref::Sugars;
         let mut sources = Sugars::default();
         sources

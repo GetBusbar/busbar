@@ -1196,7 +1196,8 @@ async fn a_full_journal_lane_refuses_a_new_unit_with_the_reason() {
 
 #[test]
 fn concurrent_unit_ends_land_their_money_while_the_book_is_held() {
-    use busbar_contract::abi::plane::{UnitCount, UNITS_REPORTED};
+    use busbar_contract::abi::plane::UnitCount;
+    use busbar_contract::measurement::UNITS_REPORTED;
     use busbar_kernel::plane_driver::{FeeRefund, MoneySeam, PlaneMoney, UnitMoney};
     const UNITS: u64 = 8;
     let book = native_node_book();

@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
+use busbar_contract::plugin_settings::sugar_words::REWRITE_SUGAR;
 use busbar_contract::secret_ref::SecretRef;
 use busbar_kernel::config::grammar::SecretSource;
 use busbar_kernel::config::{Grammar, SecretModuleCfg};

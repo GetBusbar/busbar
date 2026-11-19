@@ -8,7 +8,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::limits::output::{CaptureScope, Captured, OutputError};
 use crate::limits::process_admission::RequestLease;
-use busbar_contract::abi::export::{SCRAPE_KIND_COUNTER, SCRAPE_KIND_GAUGE, SCRAPE_KIND_SUMMARY};
+use busbar_contract::export_calls::codes::{
+    SCRAPE_KIND_COUNTER, SCRAPE_KIND_GAUGE, SCRAPE_KIND_SUMMARY,
+};
 use busbar_contract::export_calls::{Family, Sample};
 use metrics::atomics::AtomicU64;
 use metrics::{Counter, Gauge, Histogram, HistogramFn, Key, KeyName, Metadata, Recorder};

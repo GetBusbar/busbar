@@ -8,7 +8,7 @@ use crate::persistence::{
     host_records::tests::{attach, Backend},
     scoped::{migration_address, ScopedStore},
 };
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
 use std::sync::{atomic::Ordering, Arc};
 
 trait TestAdmission {

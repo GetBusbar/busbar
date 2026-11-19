@@ -18,7 +18,7 @@ pub(crate) const CALLER_REF_MATERIAL: &[u8] = b"busbar deployment keyset: caller
 #[must_use]
 pub(crate) fn fingerprint_of(key: &AuditVerifyingKey) -> [u8; 32] {
     let raw = hex::decode(key.public_key_hex()).expect("AuditVerifyingKey holds valid hex");
-    busbar_contract::abi::sdk::digest::sha256(&raw)
+    busbar_contract::digest::sha256(&raw)
 }
 
 #[must_use]

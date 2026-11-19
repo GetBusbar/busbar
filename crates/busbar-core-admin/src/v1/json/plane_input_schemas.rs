@@ -48,7 +48,7 @@ impl InputSchemas {
 }
 
 fn collect(statements: &[Stated]) -> InputSchemas {
-    use busbar_contract::abi::mechanism::door::{SECTION_CONSUMED, SECTION_DECLARING};
+    use busbar_contract::plugin_settings::sugar_words::{SECTION_CONSUMED, SECTION_DECLARING};
     let mut inputs = InputSchemas::default();
     for stated in statements.iter().filter(|stated| stated.kind == "plane") {
         let Some(declaration) = stated.configuration.as_ref().filter(|d| d.valid) else {

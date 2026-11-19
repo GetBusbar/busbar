@@ -644,7 +644,7 @@ pub(crate) fn mount_plane_route(
                     engine,
                     slot,
                     scheme: listener.map_or(
-                        busbar_contract::abi::host::service::SCHEME_UNDECLARED,
+                        busbar_contract::services::codes::SCHEME_UNDECLARED,
                         |axum::extract::Extension(l)| l.0,
                     ),
                 };
@@ -1160,8 +1160,8 @@ impl PreparedListener {
     ) -> impl Iterator<
         Item = (
             &str,
-            busbar_contract::abi::mechanism::route::RouteMethod,
-            busbar_contract::abi::mechanism::route::RouteAuth,
+            busbar_contract::route::RouteMethod,
+            busbar_contract::route::RouteAuth,
         ),
     > {
         self.core_routes

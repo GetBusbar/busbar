@@ -199,7 +199,7 @@ impl ResourceInventory {
         targets: Targets,
         config_byte_limit: usize,
     ) -> Result<Arc<Self>, ResourceError> {
-        if caller.kind() != busbar_contract::abi::mechanism::KindCode::Plane {
+        if caller.kind() != busbar_contract::kinds::codes::KindCode::Plane {
             return Err(ResourceError::Binding);
         }
         if kinds.is_empty()

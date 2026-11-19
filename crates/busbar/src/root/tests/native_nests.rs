@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_HEAD, METHOD_POST, PATH_EXACT};
+use busbar_contract::route::{METHOD_GET, METHOD_HEAD, METHOD_POST, PATH_EXACT};
 use busbar_kernel::guest::{Line, LineAuth, Route};
 use busbar_kernel::plane_driver::port_routes::Mounted;
 use busbar_kernel::plane_driver::port_routes::PortRoutes;
@@ -64,7 +64,7 @@ fn a_core_claim_cannot_fall_through_to_a_broader_native_destination() {
         dialect: 0,
         auth: LineAuth::None,
         upgrade: None,
-        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        offered: busbar_contract::route::AuthPoints::EMPTY,
     };
     let native = routes(&[(1, "/jobs/{id}", METHOD_GET | METHOD_POST)]);
     let selected = NativeNests::seal(vec![core], &[("native", &native)]).unwrap();

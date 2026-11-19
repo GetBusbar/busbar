@@ -149,9 +149,14 @@ pub fn boot(
     listens: &[&str],
 ) -> &'static Arc<Connector> {
     busbar_core_connector::io::install_process_reactor(reactor);
+    // No framer door is linked or dropped in, and no old-interface instance waits on a ticket: a
+    // native caller polls its connection with its own task's waker, so the ticket wake has no one
+    // to resume.
     let built = process::build_with_secrets(
+        || Ok(Vec::new()),
         dest,
         &process::own_ports(listens),
+        Arc::new(|_, _| {}),
         pool_posture(settings),
         spawn_secret_resolver(),
     );
@@ -170,7 +175,9 @@ pub fn boot(
 /// configuration is recovered.
 pub(crate) fn finalize_boot(settings: &TransportSettings, listens: &[&str]) -> Result<(), String> {
     let connector = installed().ok_or("the bootstrap connector is not installed")?;
-    connector.finalize_boot_metadata(&process::own_ports(listens), pool_posture(settings));
+    let view = busbar_core_connector::registry::Transports::new(Vec::new())
+        .map_err(|error| error.to_string())?;
+    connector.finalize_boot_metadata(view, &process::own_ports(listens), pool_posture(settings));
     Ok(())
 }
 

@@ -449,7 +449,7 @@ async fn idempotent(
         );
         framed.extend_from_slice(component);
     }
-    let fingerprint = busbar_contract::abi::sdk::digest::sha256(&framed);
+    let fingerprint = busbar_contract::digest::sha256(&framed);
     let now = busbar_kernel::store::now();
     let claim_key = (principal, format!("op:{key}"));
     // Replay is not a new mutation: its original precondition can be stale precisely because

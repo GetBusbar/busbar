@@ -31,10 +31,10 @@ use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
     EmitIn, EncodeIn, FinishIn, FramerOut, FramingIn, IngestIn, IoOut, ListenIn, ListenOut,
     LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn, TransportTail, WriteIn,
-    CANCEL_NOTHING_MOVED, DEST_AUTHORITY, FRAME_PIECE_SIZE, FRAMING_STREAM, READ_END_OF_FRAME,
-    ROLE_CARRIER, UNIT0_FIRST_BYTES,
+    CANCEL_NOTHING_MOVED, FRAME_PIECE_SIZE, FRAMING_STREAM, UNIT0_FIRST_BYTES,
 };
 use busbar_contract::plugin::markers::TransportKind;
+use busbar_contract::transport::codes::{DEST_AUTHORITY, READ_END_OF_FRAME, ROLE_CARRIER};
 use busbar_contract::transport::registry::facts as tfacts;
 use busbar_contract::SelectorForm;
 
@@ -497,8 +497,3 @@ busbar_contract::plugin_door! {
     },
 }
 
-/// The carrier's linked row: its door and the Statement it renders, for `load_linked`.
-pub fn row() -> busbar_plugin_loader::dispatch::LinkedRow {
-    busbar_plugin_loader::dispatch::LinkedRow::of_macro(MACRO_DOOR)
-        .expect("the TCP carrier double states itself")
-}

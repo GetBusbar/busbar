@@ -4,11 +4,11 @@
 use super::projection::{Projection, Rendered};
 use crate::limits::admission::AdmissionGate;
 use crate::plugin_routes::PluginHttpDispatch;
-use busbar_contract::abi::mechanism::endpoint::*;
 use busbar_contract::export_calls::{
     Delivered, ExportAxis, ExportCalls, ExportLossKind, ServeRequest,
 };
 use busbar_contract::export_stream::ExportStream;
+use busbar_contract::kinds::codes::endpoint::*;
 use std::sync::Arc;
 
 // The export sinks' config admission, boot (open, start), reload refresh and route table run off
@@ -28,7 +28,7 @@ use crate::off_path::export::{
 };
 pub use crate::off_path::export::{open_prepared, requires_restart, start};
 #[cfg(test)]
-use busbar_contract::abi::mechanism::route::Route;
+use busbar_contract::route::Route;
 
 pub(crate) const MAX_INFLIGHT_PLUGIN_DELIVERIES: usize = 64;
 

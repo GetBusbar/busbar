@@ -3,8 +3,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::host::service::{VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD};
 use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::services::codes::{VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD};
 use busbar_contract::services::{Later, Ran, Stored};
 
 use super::*;

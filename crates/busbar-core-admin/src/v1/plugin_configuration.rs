@@ -47,7 +47,7 @@ pub(crate) fn configuration(
     source: &'static str,
     available: bool,
 ) -> PluginConfiguration {
-    use busbar_contract::abi::mechanism::door::{
+    use busbar_contract::plugin_settings::sugar_words::{
         SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
     };
     let kind = Kind::ALL.into_iter().find(|k| k.to_string() == kind);
@@ -126,7 +126,7 @@ pub(crate) fn configuration(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use busbar_contract::abi::mechanism::door::{
+    use busbar_contract::plugin_settings::sugar_words::{
         SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
     };
 

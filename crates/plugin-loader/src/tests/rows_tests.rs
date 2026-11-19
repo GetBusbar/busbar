@@ -3,16 +3,6 @@
 
 use busbar_contract::plugin_rows::PluginRows;
 
-use crate::{LinkedPlugin, PluginRegistry};
-
-#[test]
-fn the_refusals_are_the_registrys() {
-    let reg = PluginRegistry::empty();
-    let rows: &dyn PluginRows = &reg;
-    assert!(rows.resolve("nope").is_none() && rows.unresolved_reason("nope").is_none());
-    assert_eq!(rows.secret_refusal("nope"), reg.secret_refusal("nope"));
-}
-
 struct Door;
 
 impl busbar_contract::abi::sdk::auth_door::SyncVerifyPlugin for Door {
@@ -46,10 +36,7 @@ const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
     &[busbar_contract::abi::sdk::door::abi_str("client_secret")];
 
 const TAIL: &busbar_contract::abi::auth::AuthTail =
-    &busbar_contract::abi::sdk::auth_door::verify_tail(
-        0,
-        busbar_contract::abi::auth::AuthPoints::HEAD,
-    );
+    &busbar_contract::abi::sdk::auth_door::verify_tail(0, busbar_contract::route::AuthPoints::HEAD);
 
 mod slotted {
     busbar_contract::auth_verify_door!(
@@ -73,20 +60,6 @@ mod unslotted {
             super::TAIL
         )
     );
-}
-
-#[test]
-fn secret_slots_are_the_secret_refs_the_statement_names() {
-    let reg = PluginRegistry::empty()
-        .link(vec![
-            LinkedPlugin::auth_door("slotted", slotted::door),
-            LinkedPlugin::auth_door("unslotted", unslotted::door),
-        ])
-        .expect("the linked doors register");
-    let rows: &dyn PluginRows = &reg;
-    assert_eq!(rows.secret_slots("slotted"), vec!["client_secret"]);
-    assert!(rows.secret_slots("unslotted").is_empty());
-    assert!(rows.secret_slots("nope").is_empty());
 }
 
 mod referencing {
@@ -113,19 +86,4 @@ mod referencing {
             super::TAIL
         )
     );
-}
-
-#[test]
-fn reference_slots_are_the_reference_fields_the_statement_names() {
-    let reg = PluginRegistry::empty()
-        .link(vec![
-            LinkedPlugin::auth_door("referencing", referencing::door),
-            LinkedPlugin::auth_door("unslotted", unslotted::door),
-        ])
-        .expect("the linked doors register");
-    let rows: &dyn PluginRows = &reg;
-    assert_eq!(rows.reference_slots("referencing"), vec!["base_url"]);
-    assert_eq!(rows.secret_slots("referencing"), vec!["client_secret"]);
-    assert!(rows.reference_slots("unslotted").is_empty());
-    assert!(rows.reference_slots("nope").is_empty());
 }

@@ -632,7 +632,7 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
         let facts = plugin.context::<TransportFacts>()?;
 
         if !facts.composes_over.is_empty()
-            || facts.role != busbar_contract::abi::transport::ROLE_CARRIER
+            || facts.role != busbar_contract::transport::codes::ROLE_CARRIER
             || !facts.ported
         {
             return None;

@@ -296,11 +296,11 @@ fn composed_judge(
 #[tokio::test]
 async fn a_need_never_reaches_the_engines_own_ports_as_the_root_composes_the_guard() {
     use crate::need::observations::Outcome;
-    use busbar_contract::abi::host::conn::connector::{
+    use busbar_contract::conn::codes::{
         EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
         EGRESS_PROVIDER,
     };
-    use busbar_contract::abi::host::service::DEST_INTERNAL;
+    use busbar_contract::services::codes::DEST_INTERNAL;
     const DATA: u16 = 18080;
     const ADMIN: u16 = 18081;
     const ELSEWHERE: u16 = 18082;

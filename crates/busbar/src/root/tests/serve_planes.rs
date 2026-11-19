@@ -252,7 +252,7 @@ async fn no_door_plane_composes_nothing_and_needs_no_services() {
 #[test]
 fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
     use crate::root::door_steps::DoorPools;
-    use busbar_contract::abi::plane::ROUTE_DIRECT;
+    use busbar_contract::plane::codes::ROUTE_DIRECT;
     let catalog: std::collections::HashMap<String, busbar_contract::config::ModelCfg> =
         busbar_contract::yaml::from_str(
             "gpt-rt: { provider: p, upstream_model: gpt-realtime, attempt_timeout_ms: 900 }\n",
@@ -310,7 +310,10 @@ async fn an_interpolated_credential_reaches_a_door_plane_as_its_reference_never_
     let reference = |name: &str| {
         json::to_value(
             &sources
-                .reference_for_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL, name)
+                .reference_for_role(
+                    busbar_contract::plugin_settings::sugar_words::SUGAR_ROLE_FILL,
+                    name,
+                )
                 .expect("the admitted source supplies the interpolation role")
                 .authoring(&seal),
         )
