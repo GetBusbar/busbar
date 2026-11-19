@@ -371,6 +371,7 @@ async fn a_gracefully_retired_writer_races_the_same_way_with_no_record() {
 #[tokio::test]
 async fn a_record_the_full_queue_refuses_is_recorded_once_the_queue_drains() {
     let _guard = ledger_test_guard().await;
+    let hold = crate::audit::auditlog::hold_admin_drain();
     undrained_records().close_retry_task();
     let rig = rig(false).await;
     settle_races_a_driving_retire(&rig, || {
@@ -402,6 +403,7 @@ async fn a_record_the_full_queue_refuses_is_recorded_once_the_queue_drains() {
     assert!(placement(rig.writer).record_failed);
 
     // The native owner drains the queue to empty.
+    drop(hold);
     assert!(crate::audit::auditlog::flush_pending().await.is_ok());
     assert!(undrained_records().retry_unrecorded() >= 1);
     let recorded = placement(rig.writer);

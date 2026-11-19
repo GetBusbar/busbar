@@ -115,7 +115,7 @@ impl SignedUnmounted {
 }
 
 /// What the plan knows of a signed route before any owner exists.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct SignedOffer<'a> {
     /// A hook is bound to the route.
     pub hooked: bool,
@@ -127,6 +127,19 @@ pub struct SignedOffer<'a> {
     pub members: Option<&'a [(u64, Option<u64>)]>,
     /// The listener's own body cap.
     pub cap: u64,
+}
+
+impl std::fmt::Debug for SignedOffer<'_> {
+    /// Whether a public URL is configured, never the URL: an operator's URL may carry userinfo
+    /// or query material.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignedOffer")
+            .field("hooked", &self.hooked)
+            .field("public_url_set", &self.public_url.is_some())
+            .field("members", &self.members)
+            .field("cap", &self.cap)
+            .finish()
+    }
 }
 
 /// What [`NativeSignedRoute::admit`] made of one request. Either way the owner is the output

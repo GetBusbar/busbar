@@ -77,7 +77,7 @@ impl Reason {
 }
 
 /// What a head presents, as far as its sender constraint goes.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub(crate) enum Presentation<'h> {
     /// No DPoP presentation and no bound token on any carrier.
     Unbound,
@@ -87,6 +87,18 @@ pub(crate) enum Presentation<'h> {
         proof: &'h str,
     },
     Refused(Reason),
+}
+
+impl std::fmt::Debug for Presentation<'_> {
+    /// The variant and the refusal reason only: the token and its proof are credentials and are
+    /// never printed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unbound => f.write_str("Unbound"),
+            Self::Dpop { .. } => f.debug_struct("Dpop").finish_non_exhaustive(),
+            Self::Refused(reason) => f.debug_tuple("Refused").field(reason).finish(),
+        }
+    }
 }
 
 /// Read a head's sender constraint. `reads`: whether the route reads a credential from the named

@@ -93,6 +93,7 @@ fn a_lost_decision_is_listed_unconfirmed() {
 #[test]
 fn a_record_the_full_queue_refuses_is_held_and_named() {
     let (runtime, _guard) = exclusive();
+    let hold = crate::audit::auditlog::hold_admin_drain();
     let ledger = undrained_records();
     // Fill the drained admin audit queue to its bound; with no runtime here nothing drains it.
     assert_eq!(
@@ -121,6 +122,7 @@ fn a_record_the_full_queue_refuses_is_held_and_named() {
 
     // The native owner drains the queue: the held record is accepted, then confirmed by a mark
     // taken after it.
+    drop(hold);
     assert!(runtime
         .block_on(crate::audit::auditlog::flush_pending())
         .is_ok());
