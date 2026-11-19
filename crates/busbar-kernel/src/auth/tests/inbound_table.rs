@@ -1178,3 +1178,31 @@ fn the_reference_plane_crosses_the_wire_unchanged() {
         ]
     );
 }
+
+/// Gap G10a: a seat's walk kind is what its routes state, so a key scoped to an MCP server, an
+/// agent, a decisions model or a streaming member is judged under that kind and not refused
+/// everywhere for want of one.
+#[test]
+fn a_seats_walk_kind_is_what_its_routes_state() {
+    use crate::auth::route_record::seat_walk_kind;
+    let record = |scope| stated(RouteClass::Data, Who::PRINCIPAL, scope, Money::Unit);
+    let public = stated(RouteClass::Data, Who::PUBLIC, Scope::none(), Money::None);
+    for kind in ["pool", "mcp_server", "agent", "decisions", "streaming"] {
+        let routes = [
+            record(Scope::walk(kind)),
+            public.clone(),
+            record(Scope::walk(kind)),
+        ];
+        assert_eq!(seat_walk_kind(&routes), Ok(Some(kind)));
+    }
+    assert_eq!(seat_walk_kind(&[public.clone()]), Ok(None));
+    assert_eq!(seat_walk_kind(std::iter::empty()), Ok(None));
+    let mixed = [record(Scope::walk("agent")), record(Scope::walk("pool"))];
+    assert_eq!(seat_walk_kind(&mixed), Err(("agent", "pool")));
+    // A selected kind is not the walk's: MCP walks `mcp_server` and selects `mcp_tool`.
+    let mcp = [record(Scope::walk_and_selected(
+        "mcp_server",
+        &["mcp_tool"],
+    ))];
+    assert_eq!(seat_walk_kind(&mcp), Ok(Some("mcp_server")));
+}

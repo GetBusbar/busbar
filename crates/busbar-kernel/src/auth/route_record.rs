@@ -671,3 +671,27 @@ impl RouteRecord {
         }
     }
 }
+
+/// The one kind a seat's walk judges a key under: the walk kind its routes' records state. Every
+/// route of one plane instance that walks hands core's walk names from one name space, so they
+/// state one kind; `Err` names two that differ (the loader refuses the image). `Ok(None)`: no
+/// route of the seat walks, and the walk judges nothing by kind (only an unrestricted key passes
+/// a walk such a seat should never start).
+///
+/// This replaces root's inference of `pool` from a seat carrying a catalog: the plane says it.
+pub fn seat_walk_kind<'a>(
+    records: impl IntoIterator<Item = &'a RouteRecord>,
+) -> Result<Option<&'a str>, (&'a str, &'a str)> {
+    let mut found: Option<&'a str> = None;
+    for record in records {
+        let Some(kind) = record.scope.walk.as_deref() else {
+            continue;
+        };
+        match found {
+            None => found = Some(kind),
+            Some(first) if first == kind => {}
+            Some(first) => return Err((first, kind)),
+        }
+    }
+    Ok(found)
+}
