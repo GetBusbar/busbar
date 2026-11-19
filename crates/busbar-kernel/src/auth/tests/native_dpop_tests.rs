@@ -323,7 +323,8 @@ fn dpop_body_charged_once() {
     let token = bound();
     let bearer = format!("Bearer {token}");
     let presented = format!("DPoP {token}");
-    let capture = |request, headers: &[(&'static str, &[u8])]| {
+    let capture = |request: &crate::limits::process_admission::RequestLease,
+                   headers: &[(&'static str, &[u8])]| {
         ChargedRequestSnapshot::capture(
             SnapshotInput {
                 method: "POST",
