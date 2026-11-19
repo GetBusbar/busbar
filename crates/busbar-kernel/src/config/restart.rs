@@ -259,6 +259,31 @@ mod tests {
         assert!(next.changed(&next).is_empty());
     }
 
+    /// These five are read once at boot (the destination guard, the login-limit source reader, the
+    /// outbound trust store), so a changed value is stored but not in force until a restart.
+    #[test]
+    fn boot_bound_security_settings_report_a_pending_restart() {
+        let mut deploy: DeployCfg = busbar_contract::yaml::from_str("{}").unwrap();
+        let boot = Source::capture(&deploy);
+        deploy.advanced.trusted_proxies = vec!["10.0.0.0/8".to_owned()];
+        deploy.advanced.forwarded_header = Some("forwarded".to_owned());
+        deploy.advanced.block_private_addresses = !deploy.advanced.block_private_addresses;
+        deploy.advanced.proxy_resolution = crate::config::tls::ProxyResolution::Proxy;
+        deploy.advanced.tls = busbar_contract::yaml::from_str("roots: none\n").unwrap();
+        let next = Source::capture(&deploy);
+        assert_eq!(
+            next.changed(&boot),
+            [
+                "/advanced/trusted_proxies",
+                "/advanced/forwarded_header",
+                "/advanced/block_private_addresses",
+                "/advanced/proxy_resolution",
+                "/advanced/tls"
+            ]
+        );
+        assert!(next.changed(&next).is_empty());
+    }
+
     #[test]
     fn changing_only_a_secret_instance_module_requires_restart() {
         let mut boot = baseline();
