@@ -303,6 +303,21 @@ fn fixture_of(
             },
         )]),
     )]);
+    // The open relay's principal earns its key like any other identity: from its binding
+    // (decision 11). This one keeps 1.5.5's reach: every pool, no group.
+    app.role_bindings.insert(
+        crate::auth::native_chain::ANONYMOUS.into(),
+        BTreeMap::from([(
+            crate::config::auth::UNGOVERNED_ROLE.into(),
+            crate::config::RoleBindingCfg {
+                allowed_pools: None,
+                group: None,
+                admin_scope: None,
+                verbs: None,
+                plane_grants: BTreeMap::new(),
+            },
+        )]),
+    );
     app.cost = Arc::new(crate::cost::CostModel::resolve_parts(
         None,
         1,
@@ -441,14 +456,34 @@ fn fixture_of(
         cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
     });
     let chain = Arc::new(if open {
-        NativeChain::open_data(7, owners)
+        NativeChain::data_admitting_anonymous(7, Vec::new(), owners).unwrap()
     } else {
         NativeChain::data(7, vec![instance(42, calls.clone())], owners).unwrap()
     });
     // Assemble only candidate configuration here. Every request proof below uses the public
     // physical factory, real charged selection, concrete verifier, publication and replay.
+    // The fixture's route is a principal data route that walks `pool` (or selects, when the
+    // fixture has an inventory) and opens a unit: the record `from_declared` reads for it.
+    let record = crate::auth::route_record::RouteRecord::from_declared(
+        0,
+        busbar_plugin_abi::plane::AUTH_PRINCIPAL,
+        None,
+        if selects {
+            &[Box::<str>::from("pool")]
+        } else {
+            &[]
+        },
+        None,
+        false,
+    )
+    .expect("a principal data route");
+    let admission = crate::auth::admission_table::admission_of(&record);
     let route = Arc::new(NativeDataRoute {
         withheld: withheld_carriers(&chain, None),
+        audience: None,
+        challenge: None,
+        record,
+        admission,
         binding,
         caller,
         cost: app.cost.clone(),
@@ -1477,7 +1512,7 @@ async fn no_selection_request(
 }
 
 async fn request_on(f: Fixture) -> (NoSelection, StreamOwner) {
-    let open = f.route.owners.chain.anonymous().is_some();
+    let open = f.route.owners.chain.is_open();
     assert!(!f.route.selects());
     let (request, wire, cx, owner) = arrival(&f, 1);
     let binding = request.binding().clone();
