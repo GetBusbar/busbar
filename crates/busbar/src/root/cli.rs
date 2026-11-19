@@ -212,7 +212,14 @@ impl Argv {
 /// This process's command line.
 pub(crate) fn argv() -> &'static Argv {
     static ARGV: std::sync::OnceLock<Argv> = std::sync::OnceLock::new();
-    ARGV.get_or_init(|| Argv::parse(std::env::args_os().skip(1)))
+    ARGV.get_or_init(|| {
+        let mut argv = Argv::parse(std::env::args_os().skip(1));
+        // A 1.5.5 launcher's catalog path, read as 1.5.5 read it, unless the command line names one.
+        if argv.providers.is_none() {
+            argv.providers = crate::root::retired_env::providers_path(|n| std::env::var_os(n));
+        }
+        argv
+    })
 }
 
 /// Explicit informational commands exit; ordinary startup owns data upgrades.
@@ -503,9 +510,8 @@ pub(crate) fn validate_judged(
 }
 
 pub(crate) fn validate_config_command() -> i32 {
-    if let Err(refusal) = crate::root::retired_env::check_launch_env(|n| std::env::var_os(n)) {
-        eprintln!("{refusal}");
-        return EXIT_FAILURE;
+    for note in crate::root::retired_env::check_launch_env(|n| std::env::var_os(n)) {
+        eprintln!("[warn] {note}");
     }
     let argv = argv();
     let providers_override = argv.providers.as_deref().map(std::path::PathBuf::from);

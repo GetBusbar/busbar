@@ -15,11 +15,20 @@
 //! r3.1).
 //!
 //! `B_OPEN_PAIRS` sets the pairs per thread (default 1,000,000), run in rounds of 1,024 open sessions per thread.
+//!
+//! **The OK arm** (`ok_arm`, run first, one thread): a transport `begin` and the session handle's drop through the
+//! port core calls, against a mark derived in the same run: the same pair straight through busbar-ffi, plus each
+//! kept protection timed alone (the entry guard, the thread's answer loan, the answer's validation, and the
+//! handle's own reference to its instance), plus the measured noise (`ok_arm/mod.rs`). The figure is recorded;
+//! C-ALLOC (no heap call per pair) is the hard gate.
 
-use std::sync::{Barrier, Mutex, PoisonError};
+use std::hint::black_box;
+use std::sync::{Arc, Barrier, Mutex, PoisonError};
 use std::time::Instant;
 
 use busbar_plugin_abi::slots::{OwnedSlot, Slots};
+
+mod ok_arm;
 
 const THREADS: usize = 16;
 const ROUND: usize = 1_024;
@@ -27,7 +36,33 @@ const ROUND: usize = 1_024;
 /// A 32-byte session state.
 type Session = [u64; 4];
 
+/// B-OPEN's OK arm: one session opened and closed through the port, against the interface floor and the kept parts.
+fn ok_arm() {
+    let mut raw = ok_arm::Raw::open();
+    let floor = ok_arm::time(|| {
+        raw.with(|inst, _session, lease| {
+            drop(black_box(ok_arm::Raw::begin(inst, lease)));
+        });
+    });
+    let port = ok_arm::Port::open();
+    let ok = ok_arm::time(|| {
+        drop(black_box(port.begin()));
+    });
+    let mut kept = ok_arm::protections();
+    let shared = Arc::new(0_u64);
+    let (refs, refs_p90) = ok_arm::time(|| {
+        drop(black_box(Arc::clone(&shared)));
+    });
+    kept.push((
+        "the session handle's reference to its instance",
+        refs,
+        refs_p90,
+    ));
+    ok_arm::verdict("B-OPEN OK arm, transport begin + drop", ok, floor, &kept);
+}
+
 fn main() {
+    ok_arm();
     let pairs = std::env::var("B_OPEN_PAIRS")
         .ok()
         .and_then(|value| value.parse().ok())

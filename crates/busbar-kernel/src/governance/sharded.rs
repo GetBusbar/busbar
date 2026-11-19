@@ -12,7 +12,7 @@
 use foldhash::HashMap;
 #[cfg(test)]
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use busbar_contract::kept::Text;
@@ -40,7 +40,6 @@ const _: () = assert!(
 pub(super) struct MapShard<V, K = String> {
     map: RwLock<HashMap<K, V>>,
     maybe_dirty: AtomicBool,
-    sweep_ticker: AtomicU32,
 }
 
 impl<V, K> Default for MapShard<V, K> {
@@ -48,7 +47,6 @@ impl<V, K> Default for MapShard<V, K> {
         Self {
             map: RwLock::new(HashMap::default()),
             maybe_dirty: AtomicBool::new(false),
-            sweep_ticker: AtomicU32::new(0),
         }
     }
 }
@@ -65,11 +63,6 @@ impl<V, K> MapShard<V, K> {
     #[inline]
     pub(super) fn read(&self) -> RwLockReadGuard<'_, HashMap<K, V>> {
         self.map.read().unwrap_or_else(|p| p.into_inner())
-    }
-
-    #[inline]
-    pub(super) fn sweep_ticker(&self) -> &AtomicU32 {
-        &self.sweep_ticker
     }
 }
 
@@ -166,6 +159,14 @@ impl<V, K> Sharded<V, K> {
         })
     }
 
+    /// Every shard, mutably, one at a time, for the writer tick's sweep. Never sets a flag: a
+    /// sweep only releases, so it leaves nothing for the flush to write.
+    pub(super) fn sweep_each(&self) -> impl Iterator<Item = RwLockWriteGuard<'_, HashMap<K, V>>> {
+        self.shards
+            .iter()
+            .map(|shard| shard.map.write().unwrap_or_else(|p| p.into_inner()))
+    }
+
     /// Mark a shard the flush left dirty, so the next tick walks it again.
     #[inline]
     pub(super) fn reflag(&self, index: usize) {
@@ -205,11 +206,6 @@ impl<V, K> Sharded<V, K> {
     #[cfg(test)]
     pub(super) fn flagged_at(&self, index: usize) -> bool {
         self.shards[index].maybe_dirty.load(Ordering::Acquire)
-    }
-
-    #[cfg(test)]
-    pub(super) fn sweep_ticker_for(&self, key_id: &str) -> &AtomicU32 {
-        &self.shard_for(key_id).sweep_ticker
     }
 
     #[cfg(test)]

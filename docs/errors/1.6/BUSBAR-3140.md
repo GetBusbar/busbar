@@ -8,11 +8,11 @@ slug: docs/1.6/errors/BUSBAR-3140
 
 ## What it means
 
-`advanced.tls.roots: system` found no usable certificate in the operating system's CA bundle (refused at boot), or `advanced.tls.roots: none` is set and a TLS dial matched neither a global trust anchor nor a destination entry listing one (the dial is refused; a pinned destination is refused the same way, never a panic). busbar never opens a TLS connection it cannot verify.
+`outbound.tls.roots: system` found no usable certificate in the operating system's CA bundle (refused at boot), or `outbound.tls.roots: none` is set and a TLS dial matched neither a global trust anchor nor a destination entry listing one (the dial is refused; a pinned destination is refused the same way, never a panic). busbar never opens a TLS connection it cannot verify.
 
 ## How to fix it
 
-Install the distribution's ca-certificates package or set SSL_CERT_FILE for `roots: system`; with `roots: none`, list the CA under `advanced.tls.trust_anchors` or a matching `advanced.tls.destinations` entry; or use `roots: bundled` (the default).
+Install the distribution's ca-certificates package or set SSL_CERT_FILE for `roots: system`; with `roots: none`, list the CA under `outbound.tls.trust_anchors` or a matching `outbound.tls.destinations` entry; or use `roots: bundled` (the default).
 
 ---
 

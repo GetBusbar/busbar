@@ -1,5 +1,5 @@
 ---
-title: "BUSBAR-3137: An advanced.tls trust anchor is not a usable CA"
+title: "BUSBAR-3137: An outbound.tls trust anchor is not a usable CA"
 description: "What Busbar error BUSBAR-3137 means, why it happens, and how to fix it."
 slug: docs/1.6/errors/BUSBAR-3137
 ---
@@ -8,7 +8,7 @@ slug: docs/1.6/errors/BUSBAR-3137
 
 ## What it means
 
-A trust anchor listed under `advanced.tls.trust_anchors` or `advanced.tls.destinations[].trust_anchors` was refused at boot: it could not be read, does not parse as PEM, holds no certificate or holds a private key, is not an X.509 v3 CA (`basicConstraints CA:TRUE`, and `keyCertSign` when `keyUsage` is present), is not yet valid (more than five minutes before `notBefore`) or has expired, or rustls does not accept it. busbar refuses to boot rather than open connections with a trust set the operator did not intend. The line names the key, the index, the source (file, env or inline) and the destination it scopes; never the certificate bytes.
+A trust anchor listed under `outbound.tls.trust_anchors` or `outbound.tls.destinations[].trust_anchors` was refused at boot: it could not be read, does not parse as PEM, holds no certificate or holds a private key, is not an X.509 v3 CA (`basicConstraints CA:TRUE`, and `keyCertSign` when `keyUsage` is present), is not yet valid (more than five minutes before `notBefore`) or has expired, or rustls does not accept it. busbar refuses to boot rather than open connections with a trust set the operator did not intend. The line names the key, the index, the source (file, env or inline) and the destination it scopes; never the certificate bytes.
 
 ## How to fix it
 

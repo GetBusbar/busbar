@@ -1222,20 +1222,6 @@ fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
         .is_some());
 }
 
-/// The sweep trims the budget tables (`state_sweep_budget_shard`); the refusal says so.
-#[test]
-fn the_rate_sweep_interval_refusal_names_the_budget_tables_it_sweeps() {
-    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
-    cfg.limits.rate_sweep_interval = 0;
-    let errs = validate(&cfg).expect_err("0 is refused");
-    let text = errs
-        .iter()
-        .find(|e| e.contains("advanced.rate_sweep_interval"))
-        .expect("the refusal names the setting");
-    assert!(text.contains("budget"), "{text}");
-    assert!(!text.contains("rate-map"), "{text}");
-}
-
 fn validate_cost_metadata(
     cfg: &RootCfg,
     declarations: &[&crate::plane_driver::registry::PlaneDeclaration],

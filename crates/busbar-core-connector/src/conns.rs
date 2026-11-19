@@ -260,7 +260,7 @@ fn carrier_window_admits(egress_class: u32) -> bool {
 /// THE ONE PLAINTEXT RULE (every class; SEC-2: nothing hard-coded exempt, not loopback): a dial
 /// that is not secured from its first byte is admitted only when its opener's core-held
 /// `insecure_transport.accept` admits plaintext to it ([`Planned::plaintext_accepted`], #297 model
-/// A) or an exact `advanced.tls.destinations` entry admits plaintext to it (`plain_admitted`, which a carrier that
+/// A) or an exact `outbound.tls.destinations` entry admits plaintext to it (`plain_admitted`, which a carrier that
 /// upgrades later also carries: its cleartext window is held on the connection instead,
 /// [`compose::Connection::hold_clear_window`]). `open-web` never admits plaintext.
 pub(crate) fn class_admits(
@@ -793,10 +793,10 @@ pub struct Connector {
     proxy: Option<Arc<proxy::ProxyChoice>>,
     /// HOW A PROGRAM'S ENVIRONMENT REFERENCES RESOLVE ([`spawn_env`]): the resolver the composition
     spawn_secrets: Option<spawn_env::SpawnSecretFn>,
-    /// THE OUTBOUND TLS TRUST STORE (`advanced.tls`), selected by the guard-judged dial host;
+    /// THE OUTBOUND TLS TRUST STORE (`outbound.tls`), selected by the guard-judged dial host;
     /// empty = the connector's own config (`tls`) for every dial.
     trust: arc_swap::ArcSwapOption<tls::store::TrustStore>,
-    /// `advanced.proxy_resolution: local` (the default, `true`): behind a proxy the target must
+    /// `outbound.proxy_resolution: local` (the default, `true`): behind a proxy the target must
     /// resolve here, every address it answers is judged, and the CONNECT names the judged
     /// address; `proxy` (`false`): a name that does not resolve here is CONNECTed by name and its
     /// address check is the proxy's (BUSBAR-3149 at boot).
@@ -924,7 +924,7 @@ impl Connector {
         }
     }
 
-    /// Set `advanced.proxy_resolution`: `true` = `local` (judge and CONNECT by address), `false`
+    /// Set `outbound.proxy_resolution`: `true` = `local` (judge and CONNECT by address), `false`
     /// = `proxy` (CONNECT by name; the proxy resolves a name busbar cannot).
     pub fn set_proxy_by_address(&self, by_address: bool) {
         self.proxy_by_address.store(by_address, Ordering::Relaxed);
@@ -946,7 +946,7 @@ impl Connector {
             .contains(&owner)
     }
 
-    /// Whether an exact `advanced.tls.destinations` entry admits plaintext to `authority`'s host.
+    /// Whether an exact `outbound.tls.destinations` entry admits plaintext to `authority`'s host.
     fn plaintext_admitted(&self, authority: &str) -> bool {
         self.trust
             .load()

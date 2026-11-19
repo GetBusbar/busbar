@@ -7,14 +7,22 @@
 //! Bytes read before or after the head open nothing. It refuses an E_HEAD that carries no H_AUTHORITY, as a
 //! dialled framer does, so the suite must hand it a real head. No `unsafe`: the glue is `plugin!`'s output only.
 
-use busbar_plugin_abi::fail::{failed, refused, Fail};
+// This file is compiled into crates of two editions (the test crate and the bench crate), whose
+// formatters order a capitalised name against a lower-case one differently. Each group below
+// holds names of one case only, so both agree on it.
+use busbar_plugin_abi::fail::Fail;
 use busbar_plugin_abi::host::Host;
 use busbar_plugin_abi::need::ChainBytes;
 use busbar_plugin_abi::plugin::{Describe, Endpoints, Open};
-use busbar_plugin_abi::records::{tag as head_tag, Out, Records, Writer};
-use busbar_plugin_abi::transport::{self as tp, tag, ConnInfo, StreamFlow};
+use busbar_plugin_abi::records::{Out, Records, Writer};
+use busbar_plugin_abi::transport::{self as tp, ConnInfo, StreamFlow};
 use busbar_plugin_abi::types::Bytes;
+
 use busbar_plugin_abi::Transport;
+
+use busbar_plugin_abi::fail::{failed, refused};
+use busbar_plugin_abi::records::tag as head_tag;
+use busbar_plugin_abi::transport::tag;
 
 /// The dial framer: no settings.
 pub struct Dial;

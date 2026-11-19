@@ -7,7 +7,7 @@
 use std::future::Future;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -128,6 +128,52 @@ impl Admits for Listening {
     }
 }
 
+/// A LISTENER'S STOP, held off its worker: [`ListenStop::stop`] takes the listener out of service from any thread,
+/// including while its worker is held (a plugin entry that never returns). Its socket is shut down (a second
+/// descriptor of it, held here), so it leaves its `SO_REUSEPORT` group and the kernel sends new connections to the
+/// group's other listeners; the ones already queued on it are reset unless `net.ipv4.tcp_migrate_req` is 1. Its
+/// accept loop admits nothing more. [`ListenStop::resume`] puts it back: its own task binds a new socket on its own
+/// worker, which joins the group (the shut one is closed).
+pub struct ListenStop {
+    state: Arc<StopState>,
+}
+
+/// What a listener and its stop share.
+#[derive(Default)]
+struct StopState {
+    stopped: AtomicBool,
+    /// A resume asked for, taken by the listener's own task.
+    resume: AtomicBool,
+    /// The listener's task while stopped, woken by a resume.
+    waker: futures::task::AtomicWaker,
+    /// A second descriptor of the socket in service, once a stop was taken.
+    socket: std::sync::Mutex<Option<socket2::Socket>>,
+}
+
+impl StopState {
+    fn socket(&self) -> std::sync::MutexGuard<'_, Option<socket2::Socket>> {
+        self.socket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl ListenStop {
+    /// Stop the listener (idempotent).
+    pub fn stop(&self) {
+        self.state.stopped.store(true, Ordering::Release);
+        if let Some(socket) = self.state.socket().as_ref() {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+    }
+
+    /// Put a stopped listener back in service: its task, woken here, rejoins at its next poll.
+    pub fn resume(&self) {
+        self.state.resume.store(true, Ordering::Release);
+        self.state.waker.wake();
+    }
+}
+
 /// One STREAM listener: the host's own listening socket on the calling worker's reactor, its cap
 /// and its accept backoff.
 pub struct Listening {
@@ -137,6 +183,8 @@ pub struct Listening {
     live: Arc<AtomicUsize>,
     backoff: AcceptBackoff,
     sleep: Option<Pin<Box<tokio::time::Sleep>>>,
+    /// Shared with this listener's [`ListenStop`].
+    stop: Arc<StopState>,
 }
 
 impl std::fmt::Debug for Listening {
@@ -160,6 +208,7 @@ impl Listening {
             live: Arc::new(AtomicUsize::new(0)),
             backoff: AcceptBackoff::default(),
             sleep: None,
+            stop: Arc::default(),
         })
     }
 
@@ -175,6 +224,25 @@ impl Listening {
         self.live.load(Ordering::Acquire)
     }
 
+    /// This listener's stop, to be held off its worker.
+    #[must_use]
+    pub fn stopper(&self) -> ListenStop {
+        *self.stop.socket() = self.sock.socket().try_clone().ok();
+        ListenStop {
+            state: Arc::clone(&self.stop),
+        }
+    }
+
+    /// A stopped listener back in service, on its own worker: it binds a new socket at the same address, which
+    /// joins the `SO_REUSEPORT` group (the shut socket is closed with the old handle).
+    fn rejoin(&mut self) -> std::io::Result<()> {
+        let fresh = reactor::register(socket::listen(&self.local.to_string())?)?;
+        *self.stop.socket() = Some(fresh.socket().try_clone()?);
+        self.sock = fresh;
+        self.stop.stopped.store(false, Ordering::Release);
+        Ok(())
+    }
+
     /// The next admitted socket, as it arrived, non-blocking: one past the cap is accepted and
     /// closed at once, no byte read or written.
     pub(crate) fn poll_accept_stream(
@@ -182,6 +250,14 @@ impl Listening {
         cx: &mut Context<'_>,
     ) -> Poll<(TcpStream, SocketAddr, Slot)> {
         loop {
+            if self.stop.stopped.load(Ordering::Acquire) {
+                // Stopped: nothing is admitted until a resume, which wakes this task to rejoin. A rejoin that
+                // cannot bind leaves it stopped; the next resume tries again.
+                self.stop.waker.register(cx.waker());
+                if !self.stop.resume.swap(false, Ordering::AcqRel) || self.rejoin().is_err() {
+                    return Poll::Pending;
+                }
+            }
             if let Some(sleep) = self.sleep.as_mut() {
                 std::task::ready!(sleep.as_mut().poll(cx));
                 self.sleep = None;

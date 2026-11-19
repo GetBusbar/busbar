@@ -742,6 +742,8 @@ version = "1.6.0"
 dependencies = [
  "busbar-plugin-abi",
  "busbar-plugin-loader",
+ "busbar-plugin-test",
+ "busbar-ports",
  "sharded-slab",
 ]
 
@@ -800,6 +802,7 @@ dependencies = [
  "httparse",
  "hyper",
  "rustls",
+ "stats_alloc",
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",

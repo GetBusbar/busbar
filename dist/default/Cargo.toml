@@ -1076,7 +1076,6 @@ busbar-plugin-abi = { path = "../../crates/busbar-plugin-abi" }
 # Adopted funded TLS output/ticket storage and actual wire provenance.
 rustls = { git = "https://github.com/MattJackson/rustls", rev = "02181ad51e81f9cb33a0648117b03039274716a3" }
 # Dependency patches are effective only at the consuming workspace root.
-mysql_common = { git = "https://github.com/MattJackson/rust_mysql_common", rev = "f8e1d4f6dbb61ed46e0cae1f1c451f9ffadded39" }
 postgres-protocol = { git = "https://github.com/MattJackson/rust-postgres", rev = "a0a2f6f8f7f3d23dd5204c06ff56768dc75bb3f2" }
 aws-lc-sys = { git = "https://github.com/MattJackson/aws-lc-sys", rev = "3469edb189e0cc2fab40e88f551713a828a5d867" }
 jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3efc1acc11add04854cc093f97876e439e129" }

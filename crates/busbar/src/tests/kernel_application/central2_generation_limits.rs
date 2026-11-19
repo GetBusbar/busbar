@@ -27,7 +27,6 @@ fn tagged_limits(tag: u64) -> busbar_kernel::config::LimitsResolved {
         max_honored_retry_after_secs: 3_600 + tag,
         tls_handshake_timeout_secs: 5 + tag,
         request_body_read_timeout_secs: 15 + tag,
-        rate_sweep_interval: 100 + u32::try_from(tag).expect("small tag"),
         ..busbar_kernel::config::LimitsResolved::default()
     }
 }

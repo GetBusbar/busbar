@@ -354,7 +354,7 @@ impl<'a, N: Needs> Driver<'a, N> {
     ) -> Result<Finished<K>, CallError>
     where
         K: Kind,
-        F: FnOnce(&PooledOut, &mut OutLease) -> First<'i, K> + Send,
+        F: FnOnce(&mut PooledOut, &mut OutLease) -> First<'i, K> + Send,
     {
         let caller = &self.caller;
         let mut guard: ChainGuard<'_, 'i, N, K> = ChainGuard {

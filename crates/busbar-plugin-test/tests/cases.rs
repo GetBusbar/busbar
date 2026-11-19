@@ -39,8 +39,6 @@ mod c_admit_unload;
 mod c_affinity;
 #[path = "c_alias.rs"]
 mod c_alias;
-#[path = "c_alloc.rs"]
-mod c_alloc;
 #[path = "c_alloc_load.rs"]
 mod c_alloc_load;
 #[path = "c_allow_dest.rs"]
@@ -137,6 +135,8 @@ mod c_key_carriers;
 mod c_keys_stale;
 #[path = "c_leak.rs"]
 mod c_leak;
+#[path = "c_lend_custody.rs"]
+mod c_lend_custody;
 #[path = "c_lift.rs"]
 mod c_lift;
 #[path = "c_limits.rs"]

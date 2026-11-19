@@ -28,7 +28,7 @@ never silent.
 | Provider key vars | n/a | Named by each provider's `api_key: { env: ... }` reference (e.g. `ANTHROPIC_KEY`). |
 | Token/secret vars | n/a | Anything referenced via `${VAR}` in either file (client tokens, admin token, …). |
 
-`TOKIO_WORKER_THREADS` is a supported fallback for `advanced.worker_threads`. Provider selection, worker count and upstream HTTP behaviour are configured in config.yaml (`providers_file:` or `--providers`, `advanced.worker_threads`, `advanced.upstream_http1_only`, `advanced.upstream_h2_prior_knowledge`), not by environment variables; see [the upgrade guide](migration-1.6.md#retired-environment-variables) for the variables an older deployment may still set.
+Provider selection and upstream HTTP behaviour are configured in config.yaml (`providers_file:` or `--providers`, `outbound.http1_only`, `outbound.h2_prior_knowledge`), not by environment variables, and the worker count is not a setting (see below); see [the upgrade guide](migration-1.6.md#retired-environment-variables) for the variables an older deployment may still set.
 `BUSBAR_CONFIG`, `RUST_LOG`, and explicit secret environment references are read. A few further
 variables are read for specific purposes and are not configuration inputs: `BUSBAR_DATA_DIR` (the
 data directory the plugin registry uses when plugins are enabled), `BUSBAR_RECORD_BOOTSTRAP_RECEIPT`
@@ -86,22 +86,38 @@ config:
   Other plugin pins are recovered before the complete application's plugin validation.
 
 **Worker threads and scaling.** Busbar's request path is CPU-bound (parse, translate, serialize), so
-throughput scales with data-plane workers. `advanced.worker_threads` is the **data-plane
-worker count**, not a tokio pool size: on unix, each worker is a **pinned single-threaded runtime with
-its own `SO_REUSEPORT` listener** on the data port, and the kernel spreads accepted connections across
-them; the admin plane and background tasks run on a separate small control-runtime thread. `N: 1` on a
-one-core box is the same design, just one worker. The default is **one worker per available core**
-(`available_parallelism`, which respects CPU affinity and the cgroup **cpuset**, but **not** the CFS
-`cpu.max` bandwidth quota, which it cannot see), capped at **128**, which gives linear scaling: ~9,750
-req/s per core, sub-millisecond, to ~156k on 16 cores in our
+throughput scales with data-plane workers. The **data-plane worker count** is not a tokio pool size:
+on unix, each worker is a **pinned single-threaded runtime with its own `SO_REUSEPORT` listener** on
+the data port, and the kernel spreads accepted connections across them; the admin plane and
+background tasks run on a separate small control-runtime thread. One worker on a one-core box is the
+same design. The count is **one worker per CPU core the process may use**, and it is not a setting:
+the operating system's answer (`available_parallelism`), which counts the process's CPU affinity and
+cpuset and, on Linux, the container's CPU limit (the cgroup v1 or v2 bandwidth quota, `cpu.max`).
+That gives linear scaling: ~9,750 req/s per core, sub-millisecond, to ~156k on 16 cores in our
 [benchmark](https://getbusbar.com/performance). Each worker carries a thread stack and, on glibc, its
-own malloc arena, so idle memory grows slowly with the count. For a **footprint-sensitive sidecar** set
-`advanced.worker_threads: 1` (or `2`). On a **CPU-quota-limited pod** (a k8s CPU *limit* on a many-core
-node) the default sizes to the node's full core count and oversubscribes the quota: **set
-`advanced.worker_threads` to your CPU limit**; likewise to cap a shared box, set it to the cores you
-want Busbar to use. Scale up by default, tune down deliberately. The topology is directly observable:
+own malloc arena, so idle memory grows slowly with the count. For a **footprint-sensitive sidecar**,
+give the container a CPU limit of 1 (or 2); on a **CPU-quota-limited pod** the count already follows
+the limit; to cap a shared box, narrow the process's CPU affinity (`taskset`, a cpuset). The topology
+is directly observable:
 the workers show up as threads named `busbar-core-0` … `busbar-core-N-1`, and `ss -tlnp` / `netstat`
 shows N listen sockets on the one data port.
+
+**A worker held by a hung plugin stops taking connections.** A plane plugin is called directly on the
+worker serving the request. If a plugin entry passes its watchdog ceiling, Busbar quarantines the
+instance (`plugin_hung` in the log), but the call still holds that worker's thread. At the next
+housekeeping tick (`advanced.usage_flush_interval_ms`) after that report, Busbar finds the worker that
+is held (it is the one that cannot run a task Busbar hands every worker) and closes its listener
+(`core_stopped` in the log, with the worker's index): it leaves the `SO_REUSEPORT` group and the kernel
+sends new connections to the other workers; `ss -tlnp` shows one listen socket fewer on the data port.
+Connections the kernel had already queued on that listener are **reset** (the client sees a connection
+reset and may retry) unless `net.ipv4.tcp_migrate_req = 1` (Linux 5.14+), which moves them to another
+worker's listener; set it on hosts where a reset at that moment is unacceptable. When the plugin call
+returns, the worker runs again and rejoins with a new listener (`core_resumed`); nothing is needed from
+the operator. A plugin call that never returns keeps that worker out until the process restarts; with
+one worker there is no other listener to take its connections, so new connections queue in the kernel
+until the call returns. This applies to the host's own data listener; a data door listening through a
+carrier plugin stops and resumes admitting, but connections the carrier accepted meanwhile wait in the
+carrier, unserved, until the worker resumes or the client gives up.
 
 Startup is fail-loud: an unset `${VAR}`, an unknown provider reference, an unknown
 protocol or auth mode, or an invalid `on_exhausted` action stops the process with a
@@ -212,7 +228,8 @@ clients.
 The first operator signal or an admin restart released by its asking unit immediately makes
 `/readyz` return 503. `/livez` remains independent of this shutdown state. Existing listeners,
 ordinary request handling and credential refresh continue for the boot-captured
-`advanced.shutdown.deregister_delay` (default `5s`, configurable `0s..300s`). At that fixed
+`shutdown.deregister_delay` (default none, configurable `0s..300s`; set it to your load balancer's
+health-check period times its failure threshold). At that fixed
 deadline listeners begin draining and the full 20-second engine drain starts. Repeated operator
 requests do not restart the allowance. Native writer renewal continues until retirement.
 
@@ -790,7 +807,7 @@ whole-workspace qualification. Account for these platform differences:
 | **Plugin staging** (`docs/plugins.md`) | Per-process staging dir `0700`, file `0600`; boot sweep removes staging left by a crashed prior process | Directory and file inherit the `%TEMP%` ACL — per-user in a default setup, but not the `0700` guarantee. The **boot sweep is a no-op**: it decides "is the prior pid dead" with `kill(pid, 0)`, which has no Windows implementation, so an abandoned staging directory accumulates per crash under `%TEMP%`. This costs disk, not integrity — a staged file is regenerated from the verified in-memory bytes on every load and is never trusted input. |
 | **Durable write** (`fsync` of the holding directory after a rename) | The directory entry is fsynced, so a publish survives power loss | **Not performed** — a directory cannot be opened for `fsync` on Windows and `FlushFileBuffers` on a directory handle is not the same barrier. File CONTENTS are still fsynced before the rename on every platform, so a power loss can lose the *rename* (old file, or no file) but never yields a torn one. |
 | **Orderly shutdown** | `SIGINT` and `SIGTERM` both drain in-flight requests | `SIGTERM` does not exist. Busbar handles `CTRL_C`, `CTRL_CLOSE` and `CTRL_SHUTDOWN`, which covers an interactive Ctrl+C, a closing console, `docker stop` on a Windows container, and machine shutdown. A `TerminateProcess` (Task Manager "End task", `taskkill /F`) is not interceptable by any process and does **not** drain. |
-| **Data-plane topology** (1.6.0) | Thread-per-core: `worker_threads` pinned single-threaded runtimes, each with its own `SO_REUSEPORT` listener on the data port (threads `busbar-core-N`); admin + background on a control thread | **Classic single work-stealing tokio runtime** with one listener — `SO_REUSEPORT` load distribution has no Windows equivalent. This is a compile-time platform shape, not a knob; `worker_threads` sizes that one runtime's pool. Same behaviour as pre-1.6.0, so nothing to migrate. |
+| **Data-plane topology** (1.6.0) | Thread-per-core: one pinned single-threaded runtime per usable CPU core, each with its own `SO_REUSEPORT` listener on the data port (threads `busbar-core-N`); admin + background on a control thread | **Classic single work-stealing tokio runtime** with one listener — `SO_REUSEPORT` load distribution has no Windows equivalent. This is a compile-time platform shape, not a knob; `worker_threads` sizes that one runtime's pool. Same behaviour as pre-1.6.0, so nothing to migrate. |
 
 **Select an explicit config path on Windows.** The default `/etc/busbar/config.yaml` is not an
 absolute Windows path. Use `-c C:\ProgramData\busbar\config.yaml` or set `BUSBAR_CONFIG` to that

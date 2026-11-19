@@ -1,5 +1,5 @@
 ---
-title: "BUSBAR-3139: An advanced.tls trust anchor expires within 30 days"
+title: "BUSBAR-3139: An outbound.tls trust anchor expires within 30 days"
 description: "What Busbar error BUSBAR-3139 means, why it happens, and how to fix it."
 slug: docs/1.6/errors/BUSBAR-3139
 ---

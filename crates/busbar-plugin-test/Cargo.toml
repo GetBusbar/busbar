@@ -59,6 +59,11 @@ path = "tests/store_no_growth_case.rs"
 name = "cases"
 path = "tests/cases.rs"
 
+# C-ALLOC counts heap calls with its own global allocator, so it is its own binary (the cases keep theirs).
+[[test]]
+name = "c_alloc"
+path = "tests/c_alloc.rs"
+
 [features]
 # Host targets, off by default and never in a release build: a plugin repository enables one in its
 # [dev-dependencies]. Every crate here is already in core's lock.
@@ -91,6 +96,8 @@ tikv-jemallocator = { workspace = true }
 hex = { workspace = true }
 # W1-K8B: the head-authority and card-redirect arms build URLs.
 url = { workspace = true }
+# C-ALLOC counts every heap call of a crossing.
+stats_alloc = { workspace = true }
 # The bridge fixture image (W1-A3, `tests/bridge_fixture.rs`) is wired by hand over busbar-ffi's safe adapter and host
 # API, as `plugin!` wires an image; never `host` here (the loader side reaches it through busbar-plugin-abi).
 busbar-ffi = { path = "../busbar-ffi" }

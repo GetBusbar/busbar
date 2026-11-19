@@ -103,12 +103,22 @@ impl Drop for ThreadArena {
 
 std::thread_local! {
     static ARENA: RefCell<ThreadArena> = RefCell::new(ThreadArena(Arena::new(ARENA_CAP)));
+    /// Set before the arena lends anything; cleared by the reset that zeroes it. An entry that lent nothing
+    /// (every transport, plane and auth call that asks no `random`/`crypto`) skips the reset (IF §0 I5, §10.7).
+    static ARENA_LENT: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
 
 /// The outermost entry guard's exit: zero everything lent in the entry and start the arena over (I11).
 /// Contract (W1-H1): call it only at the outermost exit of this thread's entries, never while a `Host::scoped`
-/// call is live, since every `RawLent` handed out in the entry ends here.
+/// call is live, since every `RawLent` handed out in the entry ends here. Untouched since the last reset: nothing
+/// to zero, and the arena is not even reached.
 pub fn reset_arena() {
+    if !ARENA_LENT
+        .try_with(|lent| lent.replace(false))
+        .unwrap_or(true)
+    {
+        return;
+    }
     let _ = ARENA.try_with(|cell| {
         if let Ok(mut arena) = cell.try_borrow_mut() {
             arena.0.drain().zeroize();
@@ -520,6 +530,7 @@ fn lend<'e>(ctx: Ctx<'e>, out: &CryptoOut) -> CryptoRet<'e> {
     if out.status != status::OK {
         return CryptoRet::empty(ctx, out.status);
     }
+    ARENA_LENT.with(|lent| lent.set(true));
     match ARENA.with_borrow_mut(|arena| arena.0.lend(ctx, &out.bytes)) {
         Some(lent) => CryptoRet {
             status: status::OK,

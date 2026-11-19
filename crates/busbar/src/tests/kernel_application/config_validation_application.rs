@@ -1158,27 +1158,6 @@ fn test_validate_rejects_admin_token_without_module() {
 }
 
 #[test]
-fn test_validate_rejects_zero_rate_sweep_interval() {
-    let (providers, models, pools) = valid_maps();
-    let mut cfg = make_root_cfg(providers, models, pools);
-    cfg.limits.rate_sweep_interval = 0;
-    let err = validate(&cfg).expect_err("rate_sweep_interval: 0 must be rejected at validation");
-    assert!(
-        err.iter()
-            .any(|e| e.contains("advanced.rate_sweep_interval")),
-        "the error must name advanced.rate_sweep_interval, got: {err:?}"
-    );
-
-    cfg.limits.rate_sweep_interval = busbar_kernel::config::DEFAULT_RATE_SWEEP_INTERVAL;
-    if let Err(errs) = validate(&cfg) {
-        assert!(
-            !errs.iter().any(|e| e.contains("rate_sweep_interval")),
-            "the default sweep interval must not error; got: {errs:?}"
-        );
-    }
-}
-
-#[test]
 fn test_validate_chain_tokens_module_removed_message() {
     for legacy in ["tokens", "static-tokens"] {
         let (providers, models, pools) = valid_maps();
@@ -3887,7 +3866,6 @@ advanced:
     assert!(cfg.rate_card.as_ref().unwrap().contains_key("claude"));
     assert!(cfg.groups.contains_key("eng"));
     assert_eq!(cfg.store.as_ref().unwrap().module, "memory");
-    assert_eq!(cfg.limits.rate_sweep_interval, 256);
 }
 
 #[test]
@@ -4005,7 +3983,10 @@ advanced:
         joined.contains("store.module must be non-empty"),
         "{joined}"
     );
-    assert!(joined.contains("advanced.rate_sweep_interval"), "{joined}");
+    assert!(
+        !joined.contains("advanced.rate_sweep_interval"),
+        "the removed key is ignored, not refused: {joined}"
+    );
 }
 
 #[test]
