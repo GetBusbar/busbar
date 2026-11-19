@@ -8360,6 +8360,13 @@
             "description": "The reason code (`components.x-busbar-unit-reasons`).",
             "type": "string"
           },
+          "hook": {
+            "description": "The hook that vetoed the unit, by the key the deployment configured it under. Absent when\na hook did not refuse it (and on a record sealed before the hook rows carried their\ndecision).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "stage": {
             "description": "The step it ended at, when it ended at one.",
             "type": [

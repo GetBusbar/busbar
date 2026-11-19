@@ -474,3 +474,94 @@ fn records_price_through_amendments_and_voids() {
         "a voided original still prices the units sealed against it"
     );
 }
+
+fn hook_row(
+    name: &'static str,
+    head: busbar_kernel_audit::HookHead,
+    failed: bool,
+) -> busbar_kernel_audit::HookApplied {
+    busbar_kernel_audit::HookApplied {
+        hook: busbar_contract::kept::Text::fixed(name),
+        head,
+        failed,
+    }
+}
+
+/// One sealed record ended as `outcome`, with `hooks` as the hook rows it sealed, projected.
+fn reason_after(
+    outcome: busbar_contract::caps::Outcome,
+    hooks: Vec<busbar_kernel_audit::HookApplied>,
+) -> Option<busbar_core_admin::v1::records::UnitReason> {
+    let mut record = Memory::sealed([1_700_000_000_250]).0.lock().unwrap().1[0].clone();
+    record.outcome.unit_end = outcome;
+    record.outcome.step = outcome.step();
+    record.controls.hooks_applied = hooks;
+    project(&record, &no_plane).0.reason
+}
+
+#[test]
+fn a_unit_a_hook_vetoed_names_the_hook_and_the_reason() {
+    use busbar_contract::caps::{Outcome, ReasonCode, StepName};
+    use busbar_kernel_audit::HookHead::{Pass, Veto};
+    let reason = reason_after(
+        Outcome::Refused(StepName::Approve, ReasonCode::HookVeto),
+        vec![
+            hook_row("audit-tap", Pass, false),
+            hook_row("pii-guard", Veto, false),
+        ],
+    )
+    .expect("a refused unit carries a reason");
+    assert_eq!(reason.code, "hook_veto");
+    assert_eq!(reason.class, "policy");
+    assert_eq!(reason.stage, Some("approve"));
+    assert_eq!(reason.hook.as_deref(), Some("pii-guard"));
+}
+
+#[test]
+fn a_unit_refused_by_something_else_has_a_reason_and_no_hook() {
+    use busbar_contract::caps::{Outcome, ReasonCode, StepName};
+    use busbar_kernel_audit::HookHead::Pass;
+    // A hook ran and let it through; the door refused it.
+    let reason = reason_after(
+        Outcome::Refused(StepName::Admit, ReasonCode::OverBudget),
+        vec![hook_row("pii-guard", Pass, false)],
+    )
+    .expect("a refused unit carries a reason");
+    assert_eq!(reason.code, "over_budget");
+    assert_eq!(reason.hook, None);
+    let reason = reason_after(
+        Outcome::Refused(StepName::Authenticate, ReasonCode::Unauthenticated),
+        Vec::new(),
+    )
+    .expect("a refused unit carries a reason");
+    assert_eq!(reason.code, "unauthenticated");
+    assert_eq!(reason.hook, None);
+}
+
+#[test]
+fn an_allowed_unit_shows_neither_reason_nor_hook() {
+    use busbar_contract::caps::Outcome;
+    use busbar_kernel_audit::HookHead::Pass;
+    assert_eq!(
+        reason_after(Outcome::Completed, vec![hook_row("pii-guard", Pass, false)]),
+        None
+    );
+}
+
+#[test]
+fn the_hook_name_is_served_only_inside_a_reason() {
+    use busbar_contract::caps::{Outcome, ReasonCode, StepName};
+    use busbar_kernel_audit::HookHead::Veto;
+    let mut record = Memory::sealed([1_700_000_000_250]).0.lock().unwrap().1[0].clone();
+    record.outcome.unit_end = Outcome::Refused(StepName::Approve, ReasonCode::HookVeto);
+    record.controls.hooks_applied = vec![hook_row("pii-guard", Veto, false)];
+    let body = busbar_contract::json::to_string(&project(&record, &no_plane).0).unwrap();
+    let body = json::parse_value(body.as_bytes()).unwrap();
+    assert_eq!(body["reason"]["hook"].as_str(), Some("pii-guard"));
+    record.outcome.unit_end = Outcome::Completed;
+    let body = busbar_contract::json::to_string(&project(&record, &no_plane).0).unwrap();
+    assert!(
+        !body.contains("pii-guard"),
+        "an allowed unit names no hook: {body}"
+    );
+}

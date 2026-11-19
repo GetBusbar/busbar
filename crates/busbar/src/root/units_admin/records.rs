@@ -18,7 +18,7 @@ use busbar_core_admin::v1::records::{
     TIMED_OUT, UNIT_RECORD_SCHEMA,
 };
 use busbar_kernel_audit::record::billing as signed;
-use busbar_kernel_audit::{AuditRecord, FinishClass, Recipe, Subject};
+use busbar_kernel_audit::{AuditRecord, FinishClass, HookHead, Recipe, Subject};
 
 use super::{AdminAnswer, AuditView};
 use crate::root::durability::{records_pulse, AUDIT_RING};
@@ -229,7 +229,28 @@ fn reason_of(record: &AuditRecord) -> Option<UnitReason> {
         }
         Outcome::TimedOut(_) => (TIMED_OUT, "upstream"),
     };
-    Some(UnitReason { stage, code, class })
+    Some(UnitReason {
+        stage,
+        code,
+        class,
+        hook: vetoing_hook(record),
+    })
+}
+
+/// The hook that refused the unit: the first sealed hook row whose head is a veto, and only when
+/// the unit ended refused for a hook veto. A hook that ran and let the unit through, or one that
+/// failed, is not named.
+fn vetoing_hook(record: &AuditRecord) -> Option<String> {
+    let Outcome::Refused(_, busbar_contract::caps::ReasonCode::HookVeto) = record.outcome.unit_end
+    else {
+        return None;
+    };
+    record
+        .controls
+        .hooks_applied
+        .iter()
+        .find(|row| row.head == HookHead::Veto && !row.failed)
+        .map(|row| row.hook.as_str().to_owned())
 }
 
 fn nonzero(n: u64) -> Option<u64> {
