@@ -677,6 +677,35 @@ pub struct Resolver<'h> {
     route: u32,
     pending: Option<&'h super::port_admission::Pending>,
     deadline: Option<Instant>,
+    /// The principal is the anonymous one every caller of an open chain shares: its caller reference
+    /// is the session's handle, never its subject.
+    anonymous: bool,
+    /// The anonymous caller's scope, from the session's HANDLE (the session's, so it outlives one answer).
+    handle: std::sync::Mutex<Handle>,
+}
+
+/// What the session's HANDLE intents made of the anonymous caller's caller reference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Handle {
+    /// No HANDLE yet: no caller scope.
+    Unset,
+    /// The scope [`handle_scope`] derived from the session's one handle.
+    Bound([u8; 32]),
+    /// The session stated two different handles: no caller scope for the rest of it.
+    Conflicted,
+}
+
+/// The scope of the anonymous caller that presents `handle`: SHA-256 over a prefix no ID_SUBJECT text can
+/// start with (0xFF is never a UTF-8 byte) and the handle, so it is never a verified subject's scope
+/// ([`subject_scope`]) and depends on the handle alone: whoever presents the handle reaches its records,
+/// and nobody else does.
+#[must_use]
+pub fn handle_scope(handle: &[u8]) -> [u8; 32] {
+    const DOMAIN: &[u8] = b"\xffbusbar.anonymous-handle\x00";
+    let mut framed = Vec::with_capacity(DOMAIN.len() + handle.len());
+    framed.extend_from_slice(DOMAIN);
+    framed.extend_from_slice(handle);
+    Sha256::digest(&framed)
 }
 
 /// The verified principal an intent runs as: its ID_SUBJECT text and the ID_* identity records it was admitted with.
@@ -697,13 +726,48 @@ impl<'h> Resolver<'h> {
             route: 0,
             pending: None,
             deadline: None,
+            anonymous: false,
+            handle: std::sync::Mutex::new(Handle::Unset),
         }
     }
 
-    /// The request's subject scope (SHA-256 of its ID_SUBJECT), when it has a verified principal.
+    /// The request's caller scope: SHA-256 of its ID_SUBJECT for a verified principal; for the anonymous
+    /// caller, the scope of the handle its session stated ([`handle_scope`]), if it stated one.
     #[must_use]
     pub fn subject(&self) -> Option<[u8; 32]> {
-        self.subject
+        if !self.anonymous {
+            return self.subject;
+        }
+        match *self.handle.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+            Handle::Bound(scope) => Some(scope),
+            Handle::Unset | Handle::Conflicted => None,
+        }
+    }
+
+    /// A HANDLE of the session: for the anonymous caller the first one binds its scope, the same one
+    /// again keeps it, and a different one leaves the session with no caller scope (logged). For a
+    /// verified caller it changes nothing.
+    fn bind_handle(&self, handle: &[u8]) {
+        if !self.anonymous {
+            return;
+        }
+        let scope = handle_scope(handle);
+        let mut bound = self
+            .handle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *bound = match *bound {
+            Handle::Unset => Handle::Bound(scope),
+            Handle::Bound(held) if held == scope => Handle::Bound(held),
+            Handle::Bound(_) | Handle::Conflicted => {
+                tracing::warn!(
+                    audit = "caller_handle_conflict",
+                    route = self.route,
+                    "an anonymous session stated a second handle: it keeps no caller scope"
+                );
+                Handle::Conflicted
+            }
+        };
     }
 
     /// The mounted route the request arrived on (RENDEZVOUS picks the route's media listener).
@@ -723,18 +787,21 @@ impl<'h> Resolver<'h> {
     /// are refused here and the host is never asked.
     ///
     /// The anonymous principal (`native_chain::ANONYMOUS`) is the one subject every caller of an open chain
-    /// shares, so it is no caller reference: it sets no scope and no principal, and every caller-scoped intent is
-    /// refused for it as for a request with no verified principal (one anonymous caller never reads another's
-    /// records; v1.5.5 refused it the same way).
+    /// shares, so its subject is no caller reference. Its grants are its binding's (`role_bindings.anonymous`),
+    /// so ENTITLE and MINT run as it, exactly as on every plane. Its caller scope is the session's handle
+    /// (a HANDLE intent, [`handle_scope`]): a record one anonymous caller made is reached only by presenting
+    /// that handle, and without one every caller-scoped intent is refused (one anonymous caller never reads
+    /// another's records). CONNECT and WORK, which bind to the subject itself (a consented upstream
+    /// connection, a durable work row), stay refused for it. Matched by subject text, fail-closed.
     #[must_use]
     pub fn with_principal(mut self, subject: &'h str, identity: &'h [u8]) -> Self {
+        self.principal = Some(Principal { subject, identity });
         if subject == crate::auth::native_chain::ANONYMOUS {
             self.subject = None;
-            self.principal = None;
+            self.anonymous = true;
             return self;
         }
         self.subject = Some(subject_scope(subject));
-        self.principal = Some(Principal { subject, identity });
         self
     }
 
@@ -759,7 +826,7 @@ impl<'h> Resolver<'h> {
         if !caller_bound {
             return Some(Scope::default());
         }
-        let scope = self.subject.map(|s| Scope { subject: Some(s) });
+        let scope = self.subject().map(|s| Scope { subject: Some(s) });
         if scope.is_none() {
             tracing::warn!(
                 audit = "caller_scope_refused",
