@@ -794,14 +794,10 @@ impl Harness {
                 "a test runtime",
             )
         })?;
-        static PROCESS: std::sync::OnceLock<
-            Result<busbar_plugin_loader::process::ProcessResources, String>,
-        > = std::sync::OnceLock::new();
-        let process = PROCESS.get_or_init(busbar_plugin_loader::process::ProcessResources::new);
+        let process = busbar_plugin_loader::test_host::shared_process();
         let needs = Arc::new(
             needs.over_slots(
                 process
-                    .as_ref()
                     .ok()
                     .map(|process| Arc::clone(process.slots())),
             ),

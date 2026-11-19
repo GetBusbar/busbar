@@ -25,7 +25,9 @@ use super::{
 };
 use crate::persistence::commit::SubmitResult;
 use crate::persistence::facade::{AccessError, PendingId};
-use crate::persistence::undrained::Placement;
+use crate::persistence::undrained::{
+    fill_admin_queue, ledger_test_guard, retry_unrecorded_without_drain, Placement,
+};
 
 /// One `PredecessorFence` over a store double and one writer W whose lease expired long ago.
 struct Rig {
@@ -143,7 +145,7 @@ async fn settle_races_a_driving_retire(rig: &Rig) {
 /// `shutdown.drain_incomplete`; `settle()` then finds nothing and returns. `recorded` holds W.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn settle_leaves_a_driven_decision_to_its_driver_which_records_it_once() {
-    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let _guard = ledger_test_guard().await;
     let rig = rig(false).await;
     settle_races_a_driving_retire(&rig).await;
     let offered = placement(rig.writer);
@@ -165,6 +167,7 @@ async fn settle_leaves_a_driven_decision_to_its_driver_which_records_it_once() {
 /// `try_lock` succeeds; it removes the entry with no record, and W is listed `unconfirmed`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn settle_lists_a_decision_lost_with_no_driver_in_flight() {
+    let _guard = ledger_test_guard().await;
     let rig = rig(false).await;
     rig.store.lose_fence_reply.store(true, Ordering::SeqCst);
     assert!(matches!(
@@ -293,7 +296,7 @@ const ROUND: usize = 100;
 /// `closed_open`, `recorded` or `record_failed`; exactly one admin audit row is made per target.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn take_decided_offers_one_record_whoever_reaches_it() {
-    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let _guard = ledger_test_guard().await;
     let retirements = WriterRetirements::default();
     let first = seen(writer_id(), "dead-c", 1, ObservedBy::Successor);
     retain(&retirements, &first, true);
@@ -331,6 +334,7 @@ async fn take_decided_offers_one_record_whoever_reaches_it() {
 /// 8.15 (d): a gracefully retired W (`old.admits(epoch) == false`): the same races, no record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_gracefully_retired_writer_races_the_same_way_with_no_record() {
+    let _guard = ledger_test_guard().await;
     let rig = rig(true).await;
     settle_races_a_driving_retire(&rig).await;
     assert_eq!(placement(rig.writer), Placement::default(), "no record");
@@ -363,6 +367,7 @@ async fn a_gracefully_retired_writer_races_the_same_way_with_no_record() {
 /// retries.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_record_the_full_queue_refuses_is_recorded_once_the_queue_drains() {
+    let _guard = ledger_test_guard().await;
     undrained_records().close_retry_task();
     let mut filled = 0;
     while crate::audit::auditlog::try_emit_admin_hostless_now("test.fill", "x", "ok", "system")
@@ -414,6 +419,7 @@ async fn a_record_the_full_queue_refuses_is_recorded_once_the_queue_drains() {
 /// after the report (100 runs).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_adopter_deciding_after_the_mark_is_listed_at_exit() {
+    let _guard = ledger_test_guard().await;
     let store = Store::new();
     store.now.store(1_000, Ordering::SeqCst);
     let core = attach(&store, OWN).await;
@@ -487,7 +493,7 @@ async fn an_adopter_deciding_after_the_mark_is_listed_at_exit() {
 /// is decided, and then it is recorded exactly once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_losing_closer_never_drops_the_winners_retained_close() {
-    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let _guard = ledger_test_guard().await;
     let rig = rig(false).await;
     let other = writer_id();
     rig.store.admit(other);

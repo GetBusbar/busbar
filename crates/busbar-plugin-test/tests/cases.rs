@@ -14,13 +14,9 @@
 #![forbid(unsafe_code)]
 
 /// Custom conformance registries share process-owned sinks, watchdog and instance IDs.
-/// Like the suite harness, these cases run one test per process under nextest.
+/// A process installs its plugin sinks once, so these cases and the suite harness borrow the one shared set.
 fn process_resources() -> &'static busbar_plugin_loader::process::ProcessResources {
-    static PROCESS: std::sync::OnceLock<busbar_plugin_loader::process::ProcessResources> =
-        std::sync::OnceLock::new();
-    PROCESS.get_or_init(|| {
-        busbar_plugin_loader::process::ProcessResources::new().expect("test process resources")
-    })
+    busbar_plugin_loader::test_host::shared_process().expect("test process resources")
 }
 
 #[path = "bridge_fixture.rs"]
