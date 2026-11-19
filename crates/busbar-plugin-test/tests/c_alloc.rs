@@ -151,7 +151,7 @@ fn sync_zero_and_async_steady_state_three() {
     // Sync: the transport's session methods and a session's open and close.
     {
         use busbar_plugin_abi::transport as tp;
-        use busbar_ports::transport::{ConnIn, TransportOut};
+        use busbar_ports::transport::{ConnIn, EmitParts, TransportOut};
         let h = Harness::admit(min3_transport::PLUGIN.plugin(), FakeNeeds::default())
             .unwrap_or_else(|r| panic!("admit: {r:?}"));
         let port = h
@@ -187,7 +187,11 @@ fn sync_zero_and_async_steady_state_three() {
                 1,
                 tp::E_BODY,
                 0,
-                black_box(&kib),
+                0,
+                EmitParts {
+                    body: Some(black_box(&kib[..])),
+                    ..EmitParts::default()
+                },
                 &mut |_o: TransportOut<'_>| {},
             )
             .expect("emit");
