@@ -19,6 +19,10 @@ use crate::common;
 /// The operator's token on every node these tests boot.
 pub const ADMIN_TOKEN: &str = "e2e-listener-admin";
 
+/// The SHA-256 of [`ADMIN_TOKEN`] (64 lower-case hex): the 1.6 operator credential is the admin-tokens plugin's
+/// `settings: {sha256}` (BUSBAR-3115), never the token itself.
+const ADMIN_TOKEN_SHA256: &str = "fedf2a2125e6a9e22b46439590e96f5d7cfc26d513b398d62102f5bf510f1f66";
+
 /// How long a test waits for something the node does after its answer (a record sealed, a far
 /// end told). Only a broken node reaches it.
 pub const WAIT: Duration = Duration::from_secs(20);
@@ -419,6 +423,8 @@ impl Deployment {
             format!(
                 r#"listen: "127.0.0.1:{data}"
 admin_listen: "127.0.0.1:{admin}"
+listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test node" }}
+admin_listen_insecure_transport: {{ accept: [plaintext], reason: "loopback test node" }}
 admin_require_mtls: false
 store: {{module: memory}}
 public_url: "http://127.0.0.1:{data}"
@@ -427,7 +433,7 @@ limits:
 {plugins}identity-providers:
   admin-tokens:
     module: admin-tokens
-    token: {{ env: BUSBAR_ADMIN_TOKEN }}
+    settings: {{ sha256: "{ADMIN_TOKEN_SHA256}" }}
 {identities}auth:
   chain: [keys]
   signing_key: {{ file: "{signing}" }}
