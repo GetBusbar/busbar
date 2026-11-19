@@ -4,11 +4,11 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use busbar_artifact_metadata::rendering::{read, Read, ReadNeed};
 use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
 use busbar_contract::abi::mechanism::door::{
     DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_CONSUMED, SECTION_DECLARING, SECTION_SELECTS,
 };
-use busbar_contract::abi::mechanism::rendering::{read, Read, ReadNeed};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::plugin::Kind;
 

@@ -65,13 +65,11 @@ pub struct LoadablePlugin {
     /// Validated Statement schema, or the legacy manifest fallback. Never changes signed bytes.
     pub(crate) settings_schema: Option<String>,
     /// Parsed at admission/link time; admin discovery never calls the door to read declarations.
-    configuration_statement: Option<Box<busbar_contract::abi::mechanism::rendering::Read>>,
+    configuration_statement: Option<Box<busbar_artifact_metadata::rendering::Read>>,
 }
 
 impl LoadablePlugin {
-    pub fn configuration_statement(
-        &self,
-    ) -> Option<&busbar_contract::abi::mechanism::rendering::Read> {
+    pub fn configuration_statement(&self) -> Option<&busbar_artifact_metadata::rendering::Read> {
         self.configuration_statement.as_deref()
     }
 
@@ -109,13 +107,12 @@ impl LoadablePlugin {
                 .map_err(|e| format!("plugin '{name}': its statement cannot be read: {e}"))?,
             None => return Err(unversioned(name)),
         };
-        let rendering =
-            busbar_contract::abi::mechanism::rendering::read(&statement).map_err(|e| {
-                format!(
-                    "plugin '{name}': its statement cannot be read: expected {} at statement byte {}",
-                    e.what, e.at
-                )
-            })?;
+        let rendering = busbar_artifact_metadata::rendering::read(&statement).map_err(|e| {
+            format!(
+                "plugin '{name}': its statement cannot be read: expected {} at statement byte {}",
+                e.what, e.at
+            )
+        })?;
         Some(rendering.version)
             .filter(|v| !v.is_empty())
             .ok_or_else(|| unversioned(&self.manifest.name))
@@ -145,7 +142,7 @@ impl LoadablePlugin {
     }
 
     pub fn declarations(&self) -> Result<crate::sign::Declares, String> {
-        use busbar_contract::abi::mechanism::{extensions, rendering};
+        use busbar_artifact_metadata::{extensions, rendering};
 
         let Some(door) = self.door() else {
             return Ok(self.manifest.declares.clone());
@@ -523,11 +520,8 @@ impl PluginRegistry {
             let mut configuration_statement = None;
             let settings_schema = match crate::dispatch::LinkedRow::of_raw(door) {
                 Ok(rendered) => {
-                    let stated =
-                        busbar_contract::abi::mechanism::rendering::read(&rendered.statement)
-                            .map_err(|e| {
-                                format!("linked Statement byte {} is not {}", e.at, e.what)
-                            })?;
+                    let stated = busbar_artifact_metadata::rendering::read(&rendered.statement)
+                        .map_err(|e| format!("linked Statement byte {} is not {}", e.at, e.what))?;
                     let schema = crate::settings_schema::statement_schema(&stated.settings_schema)?
                         .or_else(|| manifest.settings_schema.clone());
                     configuration_statement = Some(Box::new(stated));
