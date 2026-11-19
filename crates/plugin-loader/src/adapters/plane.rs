@@ -116,6 +116,7 @@ pub fn decode_describe(
     let mut attempt_classes: Vec<Box<str>> = Vec::new();
     let mut headers: Vec<(u32, &str)> = Vec::new();
     let mut resource_routes: Vec<(u32, Vec<Box<str>>)> = Vec::new();
+    let (mut public_url_path, mut caller_upstreams_path) = (false, false);
     for rec in describe {
         let rec = rec.map_err(|_| DescribeInvalid("describe"))?;
         match rec.tag {
@@ -271,7 +272,30 @@ pub fn decode_describe(
                     return Err(bad);
                 }
             }
-            t::D_PROVIDER_SCHEMA | t::D_DIALECT_AUTH => {}
+            // Plane 2.0: the positions core writes `public_url` and the caller's upstreams at
+            // (`chains::prepare_with_id`): an RFC 6901 pointer to a member, each at most once.
+            t::D_PUBLIC_URL_PATH | t::D_CALLER_UPSTREAMS_PATH => {
+                let (bad, seen) = if rec.tag == t::D_PUBLIC_URL_PATH {
+                    (
+                        DescribeInvalid("describe.public_url_path"),
+                        &mut public_url_path,
+                    )
+                } else {
+                    (
+                        DescribeInvalid("describe.caller_upstreams_path"),
+                        &mut caller_upstreams_path,
+                    )
+                };
+                let pointer = rec.text().map_err(|_| bad)?;
+                let member =
+                    crate::upstream_paths::tokens(pointer).is_some_and(|path| !path.is_empty());
+                if !member || core::mem::replace(seen, true) {
+                    return Err(bad);
+                }
+            }
+            // D_UPSTREAM_PATH is judged with every kind's describe (`upstream_paths::validate`, from
+            // `chains::decode_described`, before this decoder runs): `*`-final, at most four, disjoint.
+            t::D_UPSTREAM_PATH | t::D_PROVIDER_SCHEMA | t::D_DIALECT_AUTH => {}
             tag if tag < 0x0100 => {}
             _ => return Err(DescribeInvalid("describe")),
         }

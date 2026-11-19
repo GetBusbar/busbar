@@ -9,7 +9,7 @@ use std::sync::Arc;
 use busbar_core_connector::framed_stream::session::{self, Inbound, Wiring};
 use busbar_core_connector::listen::{Admits, Admitted};
 use busbar_kernel::inbound::native::StreamOwner;
-use busbar_plugin_abi::transport::{CR_DRAIN, CR_NORMAL};
+use busbar_plugin_abi::transport::{CR_DRAIN, CR_NORMAL, CR_TIMEOUT};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 
@@ -172,9 +172,16 @@ fn next_ready(waiting: &mut VecDeque<Waiting>) -> Option<ReadyInput> {
     }
 }
 
-/// The CR_* reason core states when it ends the connection over `error`.
-fn closed_for(_error: &InputError) -> u32 {
-    CR_NORMAL
+/// The CR_* reason core states when it ends the connection over `error`: CR_TIMEOUT when a
+/// deadline core holds passed (transport-ws closes 1013, RFC 6455 §7.4.1), else CR_NORMAL.
+fn closed_for(error: &InputError) -> u32 {
+    match error {
+        InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Deadline)
+        | InputError::Arrival(busbar_kernel::inbound::native::ArrivalRefusal::Deadline) => {
+            CR_TIMEOUT
+        }
+        _ => CR_NORMAL,
+    }
 }
 
 fn stop_connection(
@@ -499,7 +506,6 @@ mod tests {
     use super::*;
     use busbar_contract::response_delivery::ResponseStop;
     use busbar_kernel::inbound::native::ArrivalRefusal;
-    use busbar_plugin_abi::transport::CR_TIMEOUT;
 
     /// A connection core ends because a deadline passed says so (CR_TIMEOUT, transport-ws 1013);
     /// every other failure keeps CR_NORMAL.
