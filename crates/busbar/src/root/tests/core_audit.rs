@@ -164,3 +164,102 @@ async fn a_line_the_journal_refused_mid_pull_is_kept_and_its_waiter_released_onl
         "a waiter released as committed has its line in the journal"
     );
 }
+
+/// BUSBAR-2060, the chain half. Keeping the refused line means linking it a second time: it was
+/// linked once over the tail it was refused on, unlinked (`Linked::unlink`), carried, and linked
+/// again at whatever position was next. After that the node's chain must still be ONE chain:
+/// it verifies link by link, the three units appear once each and in their monotonic order, and
+/// no position is skipped or used twice. Two more refusals in a row (the journal still full on
+/// the next flush) must not change that: a line may be handed back any number of times.
+#[tokio::test]
+async fn a_line_handed_back_by_the_journal_is_sealed_once_in_order_on_one_verifiable_chain() {
+    use busbar_kernel::persistence::journal::{BufferBudget, RuntimeJournal};
+    use busbar_kernel_wal::{Entry, RecordClass};
+    let budget = BufferBudget {
+        records: 3,
+        bytes: 1024 * 1024,
+    };
+    let history = BufferBudget {
+        records: 64,
+        bytes: 1024 * 1024,
+    };
+    let faults = crate::root::store_double::NativeFaults::open().await;
+    let store = crate::root::real_store::core_over(faults).await;
+    let journal = RuntimeJournal::open(store, 884, budget).await.unwrap();
+    let book = crate::root::durability::node_book(journal.clone(), history)
+        .await
+        .unwrap()
+        .durability;
+    let node = Arc::new(crate::root::plane_node::Node::new());
+    node.bind_book(Arc::clone(&book));
+    let core = node.core_audit();
+    let sealed = || -> Vec<(u64, u64)> {
+        book.lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .audit_records()
+            .iter()
+            .map(|record| (record.seq, record.what.unit_key.get()))
+            .collect()
+    };
+    let first_seq = sealed().last().map_or(1, |(seq, _)| seq + 1);
+
+    // One record already held: room for two of the three lines.
+    journal
+        .stage_run(&[Entry::new(RecordClass::Load, vec![1])])
+        .unwrap();
+    let tickets: Vec<_> = (1..=3)
+        .map(|unit| core.records().append(at_mono(unit, unit)))
+        .collect();
+    assert!(
+        node.flush_cores().await.is_err(),
+        "the third stage is refused"
+    );
+    assert_eq!(
+        sealed()
+            .iter()
+            .filter(|(seq, _)| *seq >= first_seq)
+            .map(|(_, unit)| *unit)
+            .collect::<Vec<_>>(),
+        [1, 2],
+        "the refused line took no position: the chain holds the two lines that staged"
+    );
+
+    // The journal is filled again before the next flush: the kept line is refused a second time
+    // and handed back a second time, and a line that arrived meanwhile waits behind it.
+    for filler in 2..=4u8 {
+        journal
+            .stage_run(&[Entry::new(RecordClass::Load, vec![filler])])
+            .unwrap();
+    }
+    let late = core.records().append(at_mono(4, 4));
+    assert!(
+        node.flush_cores().await.is_err(),
+        "the kept line is refused again while the journal is full"
+    );
+    assert!(!core.records().is_committed(tickets[2]));
+    assert!(!core.records().is_committed(late));
+
+    // The journal's own driver drains it (a flush the flusher refused before staging does not).
+    journal.flush().await.unwrap();
+    node.flush_cores().await.unwrap();
+    assert!(core.records().is_committed(tickets[2]));
+    assert!(core.records().is_committed(late));
+
+    let ours: Vec<(u64, u64)> = sealed()
+        .into_iter()
+        .filter(|(seq, _)| *seq >= first_seq)
+        .collect();
+    assert_eq!(
+        ours,
+        [
+            (first_seq, 1),
+            (first_seq + 1, 2),
+            (first_seq + 2, 3),
+            (first_seq + 3, 4),
+        ],
+        "each unit is sealed once, in monotonic order, at consecutive positions"
+    );
+    let held = book.lock().unwrap_or_else(|poison| poison.into_inner());
+    busbar_kernel_audit::AuditChain::verify_window(held.audit_records())
+        .expect("the chain verifies link by link after a line was handed back twice");
+}

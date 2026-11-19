@@ -295,11 +295,11 @@ impl Durability {
         prepared: Prepared,
         pass: &busbar_contract::caps::Pass<busbar_contract::caps::Audit>,
         token: &Grant<DurableWrite>,
-    ) -> Result<LineAt, (DurabilityLost, Prepared)> {
+    ) -> Result<LineAt, Box<Prepared>> {
         let linked_ms = busbar_kernel::store::now_ms();
         let linked: Linked = self.record.link(prepared, linked_ms, pass);
         self.stage_linked_custody(linked, linked_ms, token, |line, _, _| line)
-            .map_err(|(lost, linked)| (lost, linked.unlink()))
+            .map_err(|(_, linked)| Box::new(linked.unlink()))
     }
 
     /// A line built for this node's chain (the boot incarnation copied in), not yet linked.
@@ -320,24 +320,30 @@ impl Durability {
             Arc<StagedRun>,
             Option<super::notary::original::OriginalLineWitness>,
         ) -> T,
-    ) -> Result<T, (DurabilityLost, Linked)> {
-        let lost = || DurabilityLost::observed(token, StepName::Audit);
+    ) -> Result<T, (DurabilityLost, Box<Linked>)> {
+        // The refused line rides back boxed: the refusal is the rare path and the result stays small.
+        let refuse = |linked: Linked| {
+            (
+                DurabilityLost::observed(token, StepName::Audit),
+                Box::new(linked),
+            )
+        };
         let Some(previous) = linked.record().seq.checked_sub(1) else {
-            return Err((lost(), linked));
+            return Err(refuse(linked));
         };
         let previous_fp = if previous == 0 && linked.record().prev_hash.is_empty() {
             Fingerprint::ZERO
         } else {
             match Fingerprint::from_hex(&linked.record().prev_hash) {
                 Some(fp) => fp,
-                None => return Err((lost(), linked)),
+                None => return Err(refuse(linked)),
             }
         };
         if !self.head.original.check_link(previous, previous_fp) {
-            return Err((lost(), linked));
+            return Err(refuse(linked));
         }
         let Ok(entry) = audit_entry(linked.record()) else {
-            return Err((lost(), linked));
+            return Err(refuse(linked));
         };
         // The line's chain seq and fingerprint ride with its run, so an Ephemeral journal's cut
         // writes the audit tail into its base without reading a row (SEALING-FIX §3.9).
@@ -347,7 +353,7 @@ impl Durability {
             linked.fingerprint().0,
         ) {
             Ok(run) => run,
-            Err(_) => return Err((lost(), linked)),
+            Err(_) => return Err(refuse(linked)),
         };
         let line = LineAt {
             chain_seq: linked.record().seq,
