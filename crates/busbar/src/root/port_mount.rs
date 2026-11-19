@@ -639,6 +639,17 @@ async fn answer(
         }
     }
     let mut unit = allocate_unit(seat, billing, &ctx);
+    // A billable unit opens only while its node's journal can record its money.
+    if unit.is_some() {
+        let gate = generation.and_then(|routes| routes.post.node());
+        if let Some(Err(refusal)) = gate.map(|node| node.money_gate()) {
+            let target = ctx
+                .uri
+                .path_and_query()
+                .map_or(ctx.path.as_str(), |pq| pq.as_str());
+            return render_kernel_refusal(seat, route.route, ctx.method.as_str(), target, refusal);
+        }
+    }
 
     let settle = match (&unit, billing) {
         (Some(unit), Some(billing)) => Some(Settle {

@@ -419,6 +419,11 @@ impl RuntimeJournal {
             .then(|| "native journal custody buffer is full".into())
     }
 
+    /// The request path's money check. Red: nothing on the native path asks the journal.
+    pub fn admits_money(&self) -> bool {
+        true
+    }
+
     /// Read a whole verified native selected history within an explicit host
     /// memory budget. Neither pending staged originals nor future appends can
     /// be mistaken for records in this selected immutable prefix.

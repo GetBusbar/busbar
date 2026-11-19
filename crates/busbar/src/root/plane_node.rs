@@ -43,6 +43,8 @@ impl RetainedBook {
     }
 }
 
+#[path = "plane_node/money_gate.rs"]
+mod money_gate;
 #[path = "plane_node/native.rs"]
 mod native;
 #[cfg(test)]
@@ -483,6 +485,7 @@ impl Node {
         let Some(journal) = self.lane.get() else {
             return;
         };
+        self.close_money_episode(journal);
         match journal.settle_store().await {
             Ok(states) => {
                 for (state, count) in [

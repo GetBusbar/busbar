@@ -581,11 +581,13 @@ pub(super) async fn prepare(
     let result: Result<DataResponse, InputError> = async {
         let callback_billing = billing.clone();
         let callback_slot = ordinary.clone();
+        let callback_node = node.clone();
         let journal = unit.journal.clone();
         let pending = Arc::new(
             allocation
                 .into_pending_runtime(&seat, journal, move |receipt| {
                     use busbar_kernel::refusal::RefusalMap;
+                    callback_node.money_gate()?;
                     let unavailable = || {
                         busbar_kernel::refusal::CoreRefusals::new()
                             .for_core(route, busbar_plugin_abi::fail::refused::R_NO_ROUTE)
