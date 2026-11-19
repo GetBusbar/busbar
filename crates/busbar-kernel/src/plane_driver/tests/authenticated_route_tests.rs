@@ -17,7 +17,7 @@
 //! interaction: the hit names the model, a miss is the plane's own 404.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::*;
 use busbar_contract::records::{ScopeRef, VirtualKey};
@@ -162,9 +162,23 @@ struct Records {
     asked: Mutex<Vec<Option<[u8; 32]>>>,
     during: Option<Box<dyn Fn() + Send + Sync>>,
     hang: bool,
+    /// The request deadline each LOOKUP was bounded by (`lookup_within`).
+    within: Mutex<Vec<Instant>>,
 }
 
 impl IntentHost for Records {
+    fn lookup_within<'a>(
+        &'a self,
+        deadline: Instant,
+        scope: Scope,
+        flags: u32,
+        limit: u32,
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        self.within.lock().unwrap().push(deadline);
+        self.lookup(scope, flags, limit, key, looked)
+    }
     fn lookup<'a>(
         &'a self,
         scope: Scope,
@@ -648,4 +662,52 @@ async fn authenticated_route_anonymous_caller_scoped_lookup_is_refused_and_a_ver
         asked(&request_alice),
         [format!("money DirectModel({MODEL:?})")]
     );
+}
+
+/// The record call's own ceiling (`Namespace::caller`, the old continuation's 30 s
+/// `LOOKUP_CEILING`) never outlives an earlier request deadline: the earlier of the two wins.
+#[test]
+fn authenticated_route_lookup_ceiling_never_outlives_an_earlier_request_deadline() {
+    let namespace = crate::plane_driver::port_intents::Namespace {
+        plugin: Arc::from("plane"),
+        name: Arc::from("seat"),
+        instance: 1,
+        slot: 0,
+    };
+    let ceiling = namespace.caller().deadline;
+    let earlier = ceiling - Duration::from_secs(1);
+    assert_eq!(namespace.caller_until(earlier).deadline, earlier);
+    let later = ceiling + DEADLINE;
+    let bounded = namespace.caller_until(later).deadline;
+    assert!(
+        bounded >= ceiling && bounded < later,
+        "a later request deadline leaves the ceiling"
+    );
+}
+
+/// The request's deadline reaches the record host with every LOOKUP the resolver asks; a request
+/// with no deadline of its own leaves the host its ceiling alone.
+#[tokio::test]
+async fn authenticated_route_lookup_is_bounded_by_the_request_deadline() {
+    let at = Instant::now() + DEADLINE;
+    let plane = Interactions::default();
+    let host = alices_record();
+    let resolver = Resolver::new(&host, None)
+        .with_principal("alice", &[])
+        .with_deadline(Some(at));
+    let mut request = request(62, key("alice", None));
+    let mut far = Dials::default();
+    let result = serve(&plane, &mut request, &resolver, &mut far).await;
+    assert!(result.is_err(), "{result:?}");
+    assert_eq!(*host.within.lock().unwrap(), [at]);
+    assert_eq!(*plane.looked.lock().unwrap(), [true]);
+
+    let plane = Interactions::default();
+    let host = alices_record();
+    let resolver = Resolver::new(&host, None).with_principal("alice", &[]);
+    let mut request = request(63, key("alice", None));
+    let result = serve(&plane, &mut request, &resolver, &mut far).await;
+    assert!(result.is_err(), "{result:?}");
+    assert!(host.within.lock().unwrap().is_empty());
+    assert_eq!(*plane.looked.lock().unwrap(), [true]);
 }

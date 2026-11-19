@@ -122,9 +122,10 @@ where
         },
         "rate_card": card.lanes,
         "per_request_fee": card.per_request_fee,
+        // The document states the very plugin policy the Store is admitted under, so the grammar
+        // admission gives at open is the one the document was read under (BUSBAR-3170).
+        "plugins": root::test_plugins::trusted_config_document(&directory),
     });
-    // The document is read under the grammar of the very plugin policy the Store is admitted
-    // under, so a `{file: …}` reference names the same admitted secret module at open.
     let plugins = root::test_plugins::trusted_config(&directory);
     let grammar = root::min3_boot::fixture::grammar(&plugins)
         .expect("the fixture's admitted images supply its grammar");
