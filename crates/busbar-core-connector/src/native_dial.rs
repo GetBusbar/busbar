@@ -1608,7 +1608,8 @@ fn field_block(records: &[u8]) -> Result<SecureVec, NativeFailure> {
     Ok(block)
 }
 
-/// The far end's `retry-after`, in seconds, where it stated a number of them.
+/// The far end's `retry-after`, in seconds: a number of them, or a date (RFC 9110 section 10.2.3; v1.5.5
+/// honoured both). The wall clock is read once, and only for a date.
 fn retry_after(block: &[u8]) -> Option<u64> {
     block
         .split(|b| *b == b'\n')
@@ -1618,7 +1619,16 @@ fn retry_after(block: &[u8]) -> Option<u64> {
             Some((&line[..at], &line[at + SEPARATOR.len()..]))
         })
         .find(|(name, _)| name.eq_ignore_ascii_case(b"retry-after"))
-        .and_then(|(_, value)| std::str::from_utf8(value).ok()?.trim().parse().ok())
+        .and_then(|(_, value)| {
+            let text = std::str::from_utf8(value).ok()?.trim();
+            text.parse().ok().or_else(|| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?
+                    .as_secs();
+                crate::outbound::retry_after::seconds(text, now)
+            })
+        })
 }
 
 /// Core's class of an HTTP status (the fee decision's leg): 2xx success, 4xx the caller's, 5xx the far end's.
