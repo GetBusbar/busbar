@@ -418,9 +418,9 @@ fn route_chains(
                     why,
                 ))
             } else {
-                // With `auth.chain: []` (the operator's open relay) a route that runs the data
+                // With `auth.chain: [anonymous]` (the operator's open relay) a route that runs the data
                 // chain is served as the anonymous principal, through admission like any other
-                // (`NativeChain::open_data`).
+                // (the built-in chain member `anonymous`: `NativeChain::data_admitting_anonymous`).
                 None
             };
             let chain = match (unserved, own) {
