@@ -149,6 +149,12 @@ pub struct OutboundRequest {
     /// The plane marked the request's message text (`PIECE_OUT_TEXT` on a far-bound answer): a far
     /// end whose wire tells text from binary is written it as text.
     pub text: bool,
+    /// The scope the exchange states for its credential call (`UpExchange::scope`); it is never a
+    /// head field. A scope field the plane wrote in its own head is read first, as it always was.
+    pub scope: Option<Vec<u8>>,
+    /// The exchange waives its member's credential (`OUTBOUND_NONE`): no member credential is sent.
+    /// The default, `false`, sends the member's credential.
+    pub no_member_auth: bool,
 }
 
 /// THE FAR END, as the pump reaches it: the kernel's egress walk and the connector stand behind it

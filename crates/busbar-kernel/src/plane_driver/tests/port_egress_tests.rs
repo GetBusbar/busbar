@@ -401,21 +401,32 @@ fn the_request_carries_the_exchange_the_member_and_the_pool() {
 }
 
 #[test]
-fn outbound_none_waives_the_member_credential_and_a_scope_rides_as_its_field() {
+fn outbound_none_waives_the_member_credential_and_a_scope_rides_with_the_request_not_in_its_head() {
     let none = UpExchange {
         outbound: OUTBOUND_NONE,
         scope: Some("tenant-1".into()),
         ..exchange()
     };
     let request = request_of(&"a".into(), &"p".into(), 1, none.clone()).unwrap();
-    assert!(request
-        .fields
-        .iter()
-        .any(|(n, _)| n == NO_MEMBER_AUTH_FIELD.as_bytes()));
-    assert!(request
-        .fields
-        .iter()
-        .any(|(n, v)| n == SCOPE_REQUEST_FIELD.as_bytes() && v == b"tenant-1"));
+    assert!(
+        request.no_member_auth,
+        "OUTBOUND_NONE waives the member's credential"
+    );
+    assert_eq!(request.scope.as_deref(), Some(&b"tenant-1"[..]));
+    assert_eq!(
+        request.fields, none.headers,
+        "the head is the plane's own fields, nothing added"
+    );
+    assert!(request.fields.iter().all(|(n, _)| {
+        !n.eq_ignore_ascii_case(NO_MEMBER_AUTH_FIELD.as_bytes())
+            && !n.eq_ignore_ascii_case(SCOPE_REQUEST_FIELD.as_bytes())
+    }));
+    let plain = request_of(&"a".into(), &"p".into(), 1, exchange()).unwrap();
+    assert!(
+        !plain.no_member_auth,
+        "any other mode sends the member's credential"
+    );
+    assert_eq!(plain.scope, None);
 }
 
 /// HEAD-OUT: turning an exchange into the far end's request moves its parts in and allocates
@@ -461,7 +472,7 @@ fn is_request_of_agrees_with_building_the_request_and_comparing_it() {
         };
         assert!(is_request_of(&built, "lane:a", "pool", &rich));
         assert!(agrees(&built));
-        // One difference in each of the other eight fields.
+        // One difference in each of the other fields.
         let mut differs: Vec<OutboundRequest> = Vec::new();
         for edit in [
             (|r: &mut OutboundRequest| r.member = format!("{}x", r.member).as_str().into())
@@ -477,6 +488,14 @@ fn is_request_of_agrees_with_building_the_request_and_comparing_it() {
             |r| r.body.push(b'x'),
             |r| r.need = 1,
             |r| r.text = true,
+            |r| r.scope = None,
+            |r| r.scope.get_or_insert_with(Vec::new).push(b'x'),
+            |r| r.no_member_auth = !r.no_member_auth,
+            // A marker field a request carries in its head is not the exchange's typed fact.
+            |r| {
+                r.fields
+                    .push((NO_MEMBER_AUTH_FIELD.as_bytes().to_vec(), b"1".to_vec()))
+            },
         ] {
             let mut other = built.clone();
             edit(&mut other);

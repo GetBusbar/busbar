@@ -757,6 +757,8 @@ fn request() -> OutboundRequest {
         fields: vec![(b"content-type".to_vec(), b"application/json".to_vec())],
         body: b"{}".to_vec(),
         need: 0,
+        scope: None,
+        no_member_auth: false,
     }
 }
 
@@ -2147,6 +2149,71 @@ async fn a_stated_scope_reaches_the_auth_call_and_never_the_wire() {
     }
 }
 
+/// HEAD-OUT: the exchange's own scope rides as the request's member. It reaches the credential call
+/// exactly as a scope field in the head did, the wire sees the same head either way, and a scope field
+/// the plane wrote in its head is still read first.
+#[tokio::test]
+async fn a_scope_member_reaches_the_auth_call_as_the_field_did_and_the_head_is_unchanged() {
+    use busbar_contract::abi::auth::{EXT_SCOPE, SCOPE_REQUEST_FIELD};
+    use busbar_contract::abi::mechanism::extensions;
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let field = |req: &mut OutboundRequest, scope: &str| {
+        req.fields.push((
+            SCOPE_REQUEST_FIELD.as_bytes().to_vec(),
+            scope.as_bytes().to_vec(),
+        ));
+    };
+    let mut by_field = request();
+    field(&mut by_field, "tenant-1");
+    let by_member = OutboundRequest {
+        scope: Some(b"tenant-1".to_vec()),
+        ..request()
+    };
+    let mut both = OutboundRequest {
+        scope: Some(b"typed".to_vec()),
+        ..request()
+    };
+    field(&mut both, "written");
+    for req in [by_field, by_member, both] {
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        assert!(far.send(&t, req).await);
+        let _ = drain(&far, &t).await;
+    }
+    let lent = r.auth.extensions.lock().unwrap().clone();
+    let scopes: Vec<_> = lent.iter().map(|l| extensions::get(l, EXT_SCOPE)).collect();
+    assert_eq!(
+        scopes,
+        [
+            Some(&b"tenant-1"[..]),
+            Some(&b"tenant-1"[..]),
+            Some(&b"written"[..])
+        ],
+        "the member scope is lent as the field's was; a written field comes first"
+    );
+    let signed = r.auth.heads.lock().unwrap().clone();
+    assert_eq!(
+        signed[0], signed[1],
+        "the credential call is lent the same head"
+    );
+    let opened = r.table.opened.lock().unwrap();
+    assert_eq!(opened.len(), 3);
+    assert_eq!(opened[0].0, opened[1].0);
+    assert_eq!(opened[0].1, opened[1].1, "the wire head is the same");
+    assert_eq!(opened[0].1, opened[2].1);
+    for (_, head, _, _) in opened.iter() {
+        assert!(
+            head.iter().all(|(n, _)| n != SCOPE_REQUEST_FIELD),
+            "{head:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn passthrough_hands_the_callers_credential_only_to_its_member() {
     let r = rig(
@@ -3134,6 +3201,60 @@ async fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_th
             head.iter()
                 .all(|(n, _)| !n.eq_ignore_ascii_case(NO_MEMBER_AUTH_FIELD)),
             "the host's field never reaches the wire: {head:?}"
+        );
+    }
+}
+
+/// HEAD-OUT: an exchange that waives its member's credential (`OUTBOUND_NONE`, the request's
+/// `no_member_auth`) sends none, exactly as the waiver field did: the same head on the wire, nothing
+/// asked of the binding, no sealed-fields line. A request that does not waive it sends it.
+#[tokio::test]
+async fn a_waived_member_sends_no_credential_and_the_same_head_the_waiver_field_sent() {
+    use busbar_contract::abi::auth::NO_MEMBER_AUTH_FIELD;
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let (per, auth) = resolving(&mut r, &[Some(5)]);
+    let t = token();
+    let mut by_field = request();
+    by_field
+        .fields
+        .push((NO_MEMBER_AUTH_FIELD.as_bytes().to_vec(), b"1".to_vec()));
+    let by_member = OutboundRequest {
+        no_member_auth: true,
+        ..request()
+    };
+    for req in [by_field, by_member, request()] {
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        assert!(far.send(&t, req).await);
+        let _ = drain(&far, &t).await;
+    }
+    assert_eq!(
+        authorizations(&r),
+        vec![None, None, Some(b"Bearer h5".to_vec())],
+        "both waived requests presented nothing; the other its member's credential"
+    );
+    assert_eq!(
+        per.asked.load(Ordering::SeqCst),
+        1,
+        "only the unwaived asked"
+    );
+    assert_eq!(auth.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *r.table.sealed.lock().unwrap(),
+        [None, None, Some(b"authorization".to_vec())]
+    );
+    let opened = r.table.opened.lock().unwrap();
+    assert_eq!(opened[0].0, opened[1].0);
+    assert_eq!(opened[0].1, opened[1].1, "the wire head is the same");
+    for (_, head, _, _) in opened.iter() {
+        assert!(
+            head.iter()
+                .all(|(n, _)| !n.eq_ignore_ascii_case(NO_MEMBER_AUTH_FIELD)),
+            "{head:?}"
         );
     }
 }

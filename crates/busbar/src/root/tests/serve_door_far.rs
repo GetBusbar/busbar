@@ -399,6 +399,8 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         fields: Vec::new(),
         body: b"{}".to_vec(),
         need: 0,
+        scope: None,
+        no_member_auth: false,
     };
     assert!(far.send(&t, request).await);
     let first = far.next(&t).await.expect("the 502 is relayed");
