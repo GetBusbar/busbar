@@ -1048,8 +1048,12 @@ fn a_delegation_only_multi_binding_plane_mounts_nothing() {
 
 #[test]
 fn a_plane_with_admin_verbs_documents_at_least_one_openapi_path() {
+    let verb_keys: Vec<&str> = super::admin_planeverbs_cross_plane::verb_planes()
+        .iter()
+        .map(|d| d.key)
+        .collect();
     for decl in builtin_plane_decls() {
-        if decl.admin_routes.is_none() {
+        if !verb_keys.contains(&decl.key) {
             continue;
         }
         let openapi = decl.openapi.unwrap_or_else(|| {

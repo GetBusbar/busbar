@@ -9,6 +9,7 @@ use busbar_contract::export_calls::{Delivered, ExportCalls, ExportDropReason, Ex
 use busbar_contract::export_stream::ExportStream;
 use busbar_plugin_loader::export_pump::{PortDoor, StopReport};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use tokio::sync::{mpsc, oneshot, Notify};
 
 const WAIT: Duration = Duration::from_secs(5);
