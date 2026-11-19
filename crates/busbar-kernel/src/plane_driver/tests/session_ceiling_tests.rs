@@ -37,7 +37,8 @@ fn upgrade_route(r: &mut Reply) {
         money: p::MONEY_NONE,
         callers: p::CALLERS_SHARED,
     };
-    r.put_pod_tail(t::D_ROUTE_ADMISSION, &admission, b"").unwrap();
+    r.put_pod_tail(t::D_ROUTE_ADMISSION, &admission, b"")
+        .unwrap();
 }
 
 fn describe(stated: &[u64]) -> Result<Option<u64>, DescribeInvalid> {
@@ -177,7 +178,10 @@ fn session_ceiling_a_plane_that_states_none_gets_no_engine_number() {
     assert_eq!(stated, None);
     let port = Stated(stated);
     assert_eq!(session_ceiling_secs(&port), 0);
-    assert_eq!(session_ends(Instant::now(), session_ceiling_secs(&port)), None);
+    assert_eq!(
+        session_ends(Instant::now(), session_ceiling_secs(&port)),
+        None
+    );
 }
 
 #[test]

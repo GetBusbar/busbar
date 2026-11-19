@@ -249,7 +249,7 @@ fn custody(
 /// whole input and the count still held, and both are released when the session ends.
 async fn input_held_through_the_crossing(payload: &[u8]) {
     let (budget, port, driver, input) = custody(payload);
-    let served = tokio::spawn(async move { driver.serve(input).await })
+    let served = tokio::spawn(async move { Box::pin(driver.serve(input)).await })
         .await
         .unwrap();
     assert!(served.is_ok());

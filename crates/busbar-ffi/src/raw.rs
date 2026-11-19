@@ -220,7 +220,7 @@ impl<'a> Bytes<'a> {
     pub const fn of_pairs(pairs: &'a [Pair<'a>]) -> Bytes<'a> {
         Bytes {
             ptr: Shared::new(pairs.as_ptr().cast()),
-            len: pairs.len() * size_of::<Pair<'static>>(),
+            len: size_of_val(pairs),
             _l: PhantomData,
         }
     }

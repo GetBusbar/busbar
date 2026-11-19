@@ -923,7 +923,10 @@ fn anonymous_in_auth_chain_with_its_binding_loads() {
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.auth = Some(auth);
     let res = validate(&cfg);
-    assert!(res.is_ok(), "the anonymous configuration must load: {res:?}");
+    assert!(
+        res.is_ok(),
+        "the anonymous configuration must load: {res:?}"
+    );
     // The member opens no plugin: preflight never looks for a `kind: auth` plugin named anonymous.
     assert!(!crate::preflight::is_real_auth_plugin_ref(
         crate::auth::native_chain::ANONYMOUS,
@@ -941,7 +944,9 @@ fn an_anonymous_binding_reaches_only_what_it_names() {
     let scopes = binding.scope_grant().expect("an explicit grant, never all");
     assert_eq!(
         scopes,
-        vec![busbar_contract::records::ScopeRef::pool("conformance".to_string())]
+        vec![busbar_contract::records::ScopeRef::pool(
+            "conformance".to_string()
+        )]
     );
     assert!(binding.admin_scope.is_none() && binding.verbs.is_none());
 }
@@ -958,7 +963,10 @@ fn an_anonymous_binding_with_no_scope_or_an_admin_grant_is_refused() {
             "admin",
         ),
         ("{ allowed_pools: [conformance], verbs: \"*\" }", "admin"),
-        ("{ allowed_pools: [conformance], verbs: [get_keys] }", "admin"),
+        (
+            "{ allowed_pools: [conformance], verbs: [get_keys] }",
+            "admin",
+        ),
     ] {
         let yaml = format!(
             "auth:\n  chain: [anonymous]\n  role_bindings:\n    anonymous:\n      \"*\": {binding}\n"

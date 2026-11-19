@@ -146,7 +146,7 @@ pub async fn answer(seats: &[PortSeat], request: AdminRequest) -> Option<AdminAn
         intents: std::sync::Arc::clone(&seat.intents),
         models: Vec::new(),
     };
-    Some(match seat.driver.serve(input).await {
+    Some(match Box::pin(seat.driver.serve(input)).await {
         Ok(Served::Refused(refused)) => joined(refused.items),
         Ok(Served::Ran(ran)) => joined(ran.client),
         Err(error) => {

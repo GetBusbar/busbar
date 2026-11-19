@@ -379,7 +379,7 @@ pub mod plumbing {
     use super::store::{
         self as wire, AttemptId, CandHead, Committed, MutationRec, PredicateRec, TimeGuard,
     };
-    use crate::records::{tag, Rec, RecErr, Records};
+    use crate::records::{Rec, RecErr, Records, tag};
     use crate::secure::{Overflow, SecureVec};
     use std::convert::Infallible;
     use zeroize::Zeroize;

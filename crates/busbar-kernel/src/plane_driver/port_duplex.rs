@@ -98,14 +98,13 @@ pub enum Ending {
 /// meaning an endpoint may state); anything under 1000 or over 4999, which is no close code (the engine's
 /// own stall cut among them).
 #[must_use]
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "the arm's ranges end at 4999"
-)]
 pub const fn caller_close_code(upstream: u32) -> Option<u16> {
     match upstream {
-        // The range is the proof the number fits.
-        1000..=1003 | 1007..=1013 | 3000..=4999 => Some(upstream as u16),
+        1000..=1003 | 1007..=1013 | 3000..=4999 => {
+            // The range is the proof the low two bytes carry the whole number.
+            let [low, high, ..] = upstream.to_le_bytes();
+            Some(u16::from_le_bytes([low, high]))
+        }
         _ => None,
     }
 }
