@@ -224,9 +224,7 @@ fn a_forged_context_in_a_session_call_answers_fault_and_quarantines() {
     assert!(inst.is_live(), "an honest call is not a fault");
 
     let mut buf = Pool::global().acquire(MAX_OUT);
-    let forged = session
-        .upstream(&mut buf, Mono::NONE, &target(FORGE))
-        .err();
+    let forged = session.upstream(&mut buf, Mono::NONE, &target(FORGE)).err();
     assert!(
         leads_with_forged(buf.bytes()),
         "the image crossed the forged session TOKEN first"

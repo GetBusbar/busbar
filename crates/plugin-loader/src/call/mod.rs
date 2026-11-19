@@ -267,3 +267,8 @@ pub async fn chain<'a, K: Kind, N: Needs, H: Head + Send + 'a>(
 pub fn at(cx: &busbar_ports::CallCx) -> Mono {
     Mono(cx.mono_ns)
 }
+
+#[cfg(test)]
+#[path = "../tests/forged_context_tests.rs"]
+#[deny(unsafe_code)]
+mod forged_context_tests;
