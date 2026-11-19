@@ -500,9 +500,10 @@ impl NativeDataRoute {
     }
 
     /// The URL whose origin a DPoP proof on this route must name (RFC 9449 s4.3 (9)): where the
-    /// request was received.
+    /// request was received, core's public URL. An audience (RFC 8707) names the resource, and its
+    /// origin can differ; it is stated only where no public URL is configured.
     pub(crate) fn proof_url(&self) -> Option<&str> {
-        self.audience.as_deref().or(self.public_url.as_deref())
+        self.public_url.as_deref().or(self.audience.as_deref())
     }
 
     /// The route token this completion was bound to.
@@ -594,35 +595,17 @@ impl NativeDataRoute {
             };
             let chain = &self.owners.chain;
             let audience = self.audience.as_deref();
-            // The sender constraint first (RFC 9449, `native_dpop::judge`): a bound token
-            // presented as a bearer is refused; a DPoP presentation is admitted to the chain only
-            // when its proof of possession is proven for this request, and then as the head's one
-            // credential, restated as a bearer for everything below; an unbound token is
-            // untouched. The proof's URL is the origin of the plane's public URL (its audience)
-            // and the path as received.
-            let snapshot = match super::native_dpop::judge(
+            // The sender constraint first ([`judge_sender`]). A chain that names `keys` lets a
+            // core-signed token through to core's own verifier below.
+            let snapshot = judge_sender(
                 binding.app(),
                 snapshot,
                 chain,
                 cred_header,
                 self.proof_url(),
+                chain.admits_keys(),
             )
-            .await?
-            {
-                super::native_dpop::Sender::Proven(proven) => proven,
-                super::native_dpop::Sender::Unconstrained(snapshot) => {
-                    // A chain that does not name `keys` refuses every core-signed token
-                    // outright; one that does lets exactly that token through to core's own
-                    // verifier below. A sender-constrained presentation that reached here
-                    // unproven is refused on either.
-                    if chain.admits_keys() {
-                        refuse_sender_bound(&snapshot, chain, cred_header)?;
-                    } else {
-                        refuse_bound_carriers(&snapshot, chain, cred_header)?;
-                    }
-                    snapshot
-                }
-            };
+            .await?;
             if let Some(audience) = audience {
                 refuse_foreign_audience(&snapshot, chain, audience)?;
             }
@@ -944,7 +927,8 @@ pub fn withheld_carriers(chain: &NativeChain, cred_header: Option<&str>) -> Arc<
 /// chain's own headers and the route's `D_ROUTE_CRED_HEADER`), before any verifier runs: a
 /// DPoP-bound or core-signed token is refused on these routes. Every occurrence is scanned, not a
 /// decoy first bearer. The upgrade route, the unrouted judgement, a keyed core route, and a DATA
-/// route whose chain does not name `keys` run this scan; a DATA route whose chain names `keys`
+/// route whose chain does not name `keys` run this scan on a head with no proven DPoP
+/// presentation ([`judge_sender`]); a DATA route whose chain names `keys`
 /// runs [`refuse_sender_bound`] and hands a core-signed token to core's own verifier
 /// (`native_keys::judge`), never to an instance.
 pub(crate) fn refuse_bound_carriers(
@@ -953,6 +937,37 @@ pub(crate) fn refuse_bound_carriers(
     cred_header: Option<&str>,
 ) -> Result<(), DataRefused> {
     scan_bound_carriers(snapshot, chain, cred_header, true)
+}
+
+/// The sender constraint of one request (RFC 9449, `native_dpop::judge`), judged the one way at
+/// every native site a chain verifies a head on: a plane's data and upgrade routes, the unrouted
+/// judgement and a keyed core route. A bound token presented as a bearer is refused; a DPoP
+/// presentation goes on only when its proof of possession is proven for this request at
+/// `proof_url` (the origin of the URL the request was received at, and the path as received), and
+/// then as the head's one credential, restated as a bearer; an unbound head is scanned by
+/// [`refuse_sender_bound`] where `core_tokens_verified` (the caller hands a core-signed token to
+/// core's own verifier, `native_keys::judge`), else by [`refuse_bound_carriers`]. A
+/// sender-constrained presentation is never accepted unproven. Answers the head everything after
+/// judges.
+pub(crate) async fn judge_sender(
+    app: &App,
+    snapshot: Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot>,
+    chain: &NativeChain,
+    cred_header: Option<&str>,
+    proof_url: Option<&str>,
+    core_tokens_verified: bool,
+) -> Result<Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot>, DataRefused> {
+    match super::native_dpop::judge(app, snapshot, chain, cred_header, proof_url).await? {
+        super::native_dpop::Sender::Proven(proven) => Ok(proven),
+        super::native_dpop::Sender::Unconstrained(snapshot) => {
+            if core_tokens_verified {
+                refuse_sender_bound(&snapshot, chain, cred_header)?;
+            } else {
+                refuse_bound_carriers(&snapshot, chain, cred_header)?;
+            }
+            Ok(snapshot)
+        }
+    }
 }
 
 /// [`refuse_bound_carriers`] without its refusal of a core-signed token: every sender-constrained
@@ -1416,9 +1431,14 @@ pub async fn judge_unrouted(
     let Ok(snapshot) = binding.snapshot() else {
         return (Some(Verified::Unavailable), None);
     };
-    if refuse_bound_carriers(&snapshot, chain, None).is_err() {
-        return (Some(Verified::Denied), None);
-    }
+    // A DPoP proof here names core's public URL: no plane's route matched.
+    let snapshot = match judge_sender(app, snapshot, chain, None, app.public_url.as_deref(), false)
+        .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(DataRefused::Unavailable) => return (Some(Verified::Unavailable), None),
+        Err(_) => return (Some(Verified::Denied), None),
+    };
     let prepared = match chain.prepare_snapshot(cx, snapshot).await {
         Ok(NativePreparedAnswer::Identity(prepared)) => prepared,
         Ok(_) => return (Some(Verified::Denied), None),
@@ -2049,7 +2069,9 @@ pub async fn verify_core_key(
         return Err(DataRefused::Binding);
     }
     let snapshot = binding.snapshot().map_err(|_| DataRefused::Capacity)?;
-    refuse_bound_carriers(&snapshot, chain, None)?;
+    // A core route's DPoP proof names core's public URL.
+    let app = binding.app();
+    let snapshot = judge_sender(app, snapshot, chain, None, app.public_url.as_deref(), false).await?;
     let prepared = match chain
         .prepare_snapshot(cx, snapshot)
         .await

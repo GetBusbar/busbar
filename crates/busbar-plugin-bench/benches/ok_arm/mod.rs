@@ -30,7 +30,7 @@ use busbar_plugin_abi::host_side::pool::{Pool, PooledOut, sync_out};
 use busbar_plugin_abi::host_side::watch;
 use busbar_plugin_abi::plugin::__rt::host::{Instance, OpenAnswer, OutLease, Session};
 use busbar_plugin_abi::plugin::__rt::image::Admitted;
-use busbar_plugin_abi::kinds::transport::{pack, slot};
+use busbar_plugin_abi::transport::{pack, slot};
 use busbar_plugin_abi::plugin::__rt::kind as marker;
 use busbar_plugin_abi::transport::{self as tp, ConnInfo};
 use busbar_plugin_abi::types::{Bytes, Status, Str};

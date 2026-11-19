@@ -28,7 +28,7 @@ use std::time::Instant;
 
 use busbar_plugin_abi::auth::BAD_CREDENTIAL;
 use busbar_plugin_abi::host_side::scrub::{Scrub, fail_text};
-use busbar_plugin_abi::kinds::transport::{pack, slot};
+use busbar_plugin_abi::transport::{pack, slot};
 use busbar_plugin_abi::types::Bytes;
 use busbar_plugin_loader::adapters::auth::rejected;
 use busbar_ports::transport::TransportOut;
