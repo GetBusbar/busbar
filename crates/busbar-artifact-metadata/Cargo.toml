@@ -9,6 +9,8 @@ license = "Apache-2.0"
 
 [dependencies]
 busbar-json = { path = "../busbar-json" }
+# The one source of the seven kind ABI numbers (`versions::abi_of`); `versions.rs` derives from it.
+busbar-plugin-abi = { path = "../busbar-plugin-abi", default-features = false }
 serde = { workspace = true }
 time = { workspace = true, features = ["formatting"] }
 

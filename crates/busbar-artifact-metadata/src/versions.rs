@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **Every ABI number, once.** The mechanism and the seven kinds each have exactly one version
-//! here; every `ABI_VERSION` / `MECHANISM_VERSION` constant elsewhere derives from this file.
+//! **Every ABI number, once.** The mechanism and the seven kinds each have exactly one version;
+//! every `ABI_VERSION` / `MECHANISM_VERSION` constant elsewhere derives from this file. The seven
+//! kind numbers are not kept here: each is busbar-plugin-abi's `versions::abi_of` (the call-shape
+//! generation the loader admits and a native stamp carries), so the two can never disagree.
 //!
-//! A number means only "release generation": each is its v1.5.5 value plus one (plane and
-//! transport are new at 1). Development-time layout drift is the layout fingerprint's job, not a
-//! bump here. `tests/abi_versions.rs` holds the v1.5.5 baselines, and busbar-release
-//! `ci/abi.pin` holds these numbers outside this repository.
+//! A number means only "release generation". Development-time layout drift is the layout
+//! fingerprint's job, not a bump here. `ci/abi.pin` holds the kind numbers with their
+//! fingerprints.
+
+use busbar_plugin_abi::types::KindCode;
 
 /// One ABI generation. It is only ever equal or not equal: there is no ordering, so no code can
 /// accept a range of versions.
@@ -36,17 +39,23 @@ impl core::fmt::Display for AbiVersion {
 
 /// The shared mechanism: v1.5.5 shipped 1 (`plugin-abi/src/lib.rs:71` `TRANSPORT_VERSION`).
 pub const MECHANISM: AbiVersion = AbiVersion(2);
-/// Store: v1.5.5 shipped 2 (`plugin-abi/src/lib.rs:128`).
-pub const STORE: AbiVersion = AbiVersion(3);
-/// Secret: v1.5.5 shipped 1 (`plugin-abi/src/lib.rs:379`).
-pub const SECRET: AbiVersion = AbiVersion(2);
-/// Auth: v1.5.5 shipped 2 (`plugin-abi/src/lib.rs:395`).
-pub const AUTH: AbiVersion = AbiVersion(3);
-/// Hook: v1.5.5 shipped 1 (`plugin-abi/src/hook.rs:38`).
-pub const HOOK: AbiVersion = AbiVersion(2);
-/// Export: v1.5.5 shipped 2 (`plugin-abi/src/export.rs:36`).
-pub const EXPORT: AbiVersion = AbiVersion(3);
-/// Plane: new since v1.5.5.
-pub const PLANE: AbiVersion = AbiVersion(1);
-/// Transport: new since v1.5.5.
-pub const TRANSPORT: AbiVersion = AbiVersion(1);
+/// Store: the call-shape number busbar-plugin-abi sets (`versions::abi_of`).
+pub const STORE: AbiVersion = kind(KindCode::Store);
+/// Secret: the call-shape number busbar-plugin-abi sets (`versions::abi_of`).
+pub const SECRET: AbiVersion = kind(KindCode::Secret);
+/// Auth: the call-shape number busbar-plugin-abi sets (`versions::abi_of`).
+pub const AUTH: AbiVersion = kind(KindCode::Auth);
+/// Hook: the call-shape number busbar-plugin-abi sets (`versions::abi_of`).
+pub const HOOK: AbiVersion = kind(KindCode::Hook);
+/// Export: the call-shape number busbar-plugin-abi sets (`versions::abi_of`).
+pub const EXPORT: AbiVersion = kind(KindCode::Export);
+/// Plane: the call-shape number busbar-plugin-abi sets (`versions::abi_of`).
+pub const PLANE: AbiVersion = kind(KindCode::Plane);
+/// Transport: the call-shape number busbar-plugin-abi sets (`versions::abi_of`).
+pub const TRANSPORT: AbiVersion = kind(KindCode::Transport);
+
+/// A kind's one version: busbar-plugin-abi's `versions::abi_of`, the number a native stamp carries
+/// and the loader admits. This file keeps no second table of kind numbers.
+const fn kind(code: KindCode) -> AbiVersion {
+    AbiVersion(busbar_plugin_abi::versions::abi_of(code))
+}

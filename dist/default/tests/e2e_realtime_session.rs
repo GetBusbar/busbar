@@ -228,6 +228,7 @@ fn runtime() -> tokio::runtime::Runtime {
 
 fn boot(tag: &str, provider: u16) -> Node {
     realtime(Deployment::new(tag), &format!("ws://127.0.0.1:{provider}"))
+        .env("RUST_LOG", "info,busbar_kernel=trace,busbar_plane_streaming=trace,busbar_kernel_egress=debug")
         .plugin("transport", WS_TRANSPORT_IMAGE)
         .section(&streams_section(""))
         .boot()

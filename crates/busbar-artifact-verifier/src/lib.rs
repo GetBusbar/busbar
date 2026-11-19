@@ -30,18 +30,13 @@ pub fn kind_word(kind: KindCode) -> &'static str {
 }
 
 /// The ONE abi_version this binary loads for `kind` (LINT-RULES R21: exact match, never a range
-/// or a set); `None` for a kind it does not know.
+/// or a set); `None` for a kind it does not know. The number is busbar-plugin-abi's
+/// `versions::abi_of`, the same one a native stamp must carry (`sign::validate_native_manifest`).
 pub fn supported_abi(kind: &str) -> Option<u32> {
-    match kind {
-        "store" => Some(busbar_artifact_metadata::versions::STORE.raw()),
-        "secret" => Some(busbar_artifact_metadata::versions::SECRET.raw()),
-        "auth" => Some(busbar_artifact_metadata::versions::AUTH.raw()),
-        "hook" => Some(busbar_artifact_metadata::versions::HOOK.raw()),
-        "export" => Some(busbar_artifact_metadata::versions::EXPORT.raw()),
-        "plane" => Some(busbar_artifact_metadata::versions::PLANE.raw()),
-        "transport" => Some(busbar_artifact_metadata::versions::TRANSPORT.raw()),
-        _ => None,
-    }
+    (1..=7)
+        .filter_map(KindCode::from_raw)
+        .find(|&code| kind_word(code) == kind)
+        .map(busbar_plugin_abi::versions::abi_of)
 }
 
 #[cfg(test)]
