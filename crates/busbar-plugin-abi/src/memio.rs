@@ -585,6 +585,130 @@ mod tests {
         assert!(out.0.is_empty());
     }
 
+    /// A host clock far from zero: an engine that has been up a minute states times like this.
+    const MINUTE: u64 = 60_000_000_000;
+    const GET: &[u8] = b"GET / HTTP/1.1\r\nhost: peer.test\r\n\r\n";
+
+    /// hyper arms its timers with `timer.now() + d`: `now` must be the time `run` was given, so the
+    /// deadline lands on the clock WAKE_AT is stated in.
+    #[test]
+    fn now_is_the_time_run_was_given_and_a_deadline_from_it_lands_on_that_clock() {
+        let mut m = MemIo::new();
+        let timer = m.timer();
+        let done = Arc::new(AtomicBool::new(false));
+        let d = done.clone();
+        m.spawn(async move {
+            let at = timer.now() + Duration::from_millis(10);
+            timer.sleep_until(at).await;
+            d.store(true, Ordering::SeqCst);
+        });
+        assert_eq!(m.run(MINUTE, 256), Ran::Idle);
+        assert!(
+            !done.load(Ordering::SeqCst),
+            "a ten-millisecond sleep fired at once"
+        );
+        let mut out = Rec::default();
+        m.flush(&mut out).unwrap();
+        assert_eq!(
+            out.0,
+            vec![(tag::WAKE_AT, (MINUTE + 10_000_000).to_le_bytes().to_vec())]
+        );
+        m.run(MINUTE + 9_999_999, 256);
+        assert!(!done.load(Ordering::SeqCst));
+        m.run(MINUTE + 10_000_000, 256);
+        assert!(done.load(Ordering::SeqCst));
+    }
+
+    /// `reset` (hyper's kept-alive header timer) states its new deadline from `now` too.
+    #[test]
+    fn a_reset_deadline_lands_on_the_run_clock() {
+        let mut m = MemIo::new();
+        let timer = m.timer();
+        let done = Arc::new(AtomicBool::new(false));
+        let d = done.clone();
+        m.spawn(async move {
+            let mut sleep = timer.sleep(Duration::from_secs(1));
+            timer.reset(&mut sleep, timer.now() + Duration::from_secs(30));
+            sleep.await;
+            d.store(true, Ordering::SeqCst);
+        });
+        m.run(MINUTE, 256);
+        assert!(!done.load(Ordering::SeqCst), "a reset sleep fired at once");
+        let mut out = Rec::default();
+        m.flush(&mut out).unwrap();
+        assert_eq!(
+            out.0,
+            vec![(
+                tag::WAKE_AT,
+                (MINUTE + 30_000_000_000).to_le_bytes().to_vec()
+            )]
+        );
+        m.run(MINUTE + 30_000_000_000, 256);
+        assert!(done.load(Ordering::SeqCst));
+    }
+
+    /// An HTTP/1.1 server conn over this MemIo with hyper's thirty-second header-read timeout.
+    fn http1_server(m: &mut MemIo) {
+        let io = m.io();
+        let timer = m.timer();
+        m.spawn(async move {
+            let mut b = hyper::server::conn::http1::Builder::new();
+            b.timer(timer).header_read_timeout(Duration::from_secs(30));
+            let service =
+                hyper::service::service_fn(|_: hyper::Request<hyper::body::Incoming>| async {
+                    Ok::<_, std::convert::Infallible>(hyper::Response::new(String::from("ok")))
+                });
+            let _ = b.serve_connection(io, service).await;
+        });
+    }
+
+    /// The `200` status lines in what `flush` wrote.
+    fn served(m: &mut MemIo) -> usize {
+        let mut out = Rec::default();
+        m.flush(&mut out).unwrap();
+        let wrote: Vec<u8> = out
+            .0
+            .iter()
+            .filter(|(t, _)| *t == tag::WRITE)
+            .flat_map(|(_, body)| body.iter().copied())
+            .collect();
+        wrote.windows(12).filter(|w| *w == b"HTTP/1.1 200").count()
+    }
+
+    #[test]
+    fn a_kept_alive_http1_conn_serves_a_second_request_a_minute_in() {
+        let mut m = MemIo::new();
+        http1_server(&mut m);
+        m.run(MINUTE, 256);
+        m.feed(GET);
+        m.run(MINUTE + 1_000, 256);
+        assert_eq!(served(&mut m), 1, "the first request was not served");
+        m.feed(GET);
+        m.run(MINUTE + 2_000, 256);
+        assert_eq!(
+            served(&mut m),
+            1,
+            "the second request on a kept-alive conn was not served"
+        );
+    }
+
+    #[test]
+    fn a_head_split_across_two_reads_is_served_a_minute_in() {
+        let mut m = MemIo::new();
+        http1_server(&mut m);
+        m.run(MINUTE, 256);
+        let (a, b) = GET.split_at(20);
+        m.feed(a);
+        m.run(MINUTE + 1_000, 256);
+        m.feed(b);
+        m.run(MINUTE + 2_000, 256);
+        assert_eq!(
+            served(&mut m),
+            1,
+            "a head split across two reads was not served"
+        );
+    }
+
     #[test]
     fn executor_spawns_run_on_the_next_poll_round() {
         let mut m = MemIo::new();
