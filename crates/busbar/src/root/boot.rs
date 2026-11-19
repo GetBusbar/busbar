@@ -2360,101 +2360,26 @@ mod start_scan_tests;
 #[path = "tests/bootstrap_pins.rs"]
 mod bootstrap_pin_tests;
 
-/// Select the exact admitted transport claim and run its pre-open, pure LOCATE operation.
-/// This path uses an isolated dispatcher with no connection needs and never opens an instance.
+/// A provider destination by core's one scheme table (deletion plan E6; dial decision v2 section 3): the URL's
+/// scheme gives its security, its default port and the carrier it rides, and the build must assign that carrier
+/// to a transport image. No plugin is asked what a URL means and nothing is opened. `rows` is the configuration's
+/// admitted plugins; the build's carrier assignment is read from its own generated table.
 pub(crate) fn locate_provider_destination(
-    rows: &Arc<dyn PluginRows>,
+    _rows: &Arc<dyn PluginRows>,
     target: &str,
 ) -> Result<busbar_kernel::config_validate::ProviderDestination, String> {
-    locate_provider_destination_with(rows, target, crate::LINKED_TRANSPORT_DOORS)
+    locate_provider_destination_with(target, crate::LINKED_CARRIERS)
 }
 
 fn locate_provider_destination_with(
-    rows: &Arc<dyn PluginRows>,
     target: &str,
-    linked: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)],
+    assigned: &[crate::root::min3_framers::LinkedCarrier],
 ) -> Result<busbar_kernel::config_validate::ProviderDestination, String> {
-    use crate::root::loader::dispatch::{
-        kinds::transport::{Transport, TransportFacts},
-        load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
-    };
-    let claim = target
-        .split_once("://")
-        .map(|(s, _)| s)
-        .filter(|s| {
-            s.starts_with(|c: char| c.is_ascii_alphabetic())
-                && s.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
-        })
-        .ok_or("endpoint must name an absolute registered transport claim")?
-        .to_ascii_lowercase();
-    let on = Dispatcher::new(
-        DispatchConfig::default(),
-        busbar_kernel::host_services::caller_binding(),
-    );
-    let bind = Bind {
-        accept: Default::default(),
-        instance: Arc::from("configuration-locate"),
-        max_inflight_cap: 1,
-        sink: Arc::new(NoSink),
-        dispatcher: on.adopter(),
-        conns: ConnTable::NoNeeds,
-    };
-    let mut selected = Vec::new();
-    for (_, door) in linked {
-        let facts = crate::root::loader::dispatch::kinds::transport::linked_facts(*door)?;
-        if facts.claims.iter().any(|c| *c == claim) {
-            let row = LinkedRow::of(*door).map_err(|e| e.to_string())?;
-            selected.push(load_linked::<Transport>(&row, bind.clone()).map_err(|e| e.to_string())?);
-        }
-    }
-    let registry = rows
-        .as_any()
-        .downcast_ref::<PluginRegistry>()
-        .ok_or("configuration registry cannot supply transport declarations")?;
-    let uses = Uses::default().reaching([target]);
-    // Loading/binding checks the signed declaration; it does not call lifecycle OPEN or READY.
-    let logs = crate::root::loader::dispatch::PluginLogConfig::from_words(
-        None,
-        None,
-        &std::collections::BTreeMap::new(),
-        None,
-        None,
-    )?;
-    selected.extend(
-        registry
-            .open_transport_entries(&bind, &uses, &logs)?
-            .doors
-            .into_iter()
-            .filter(|p| {
-                p.context::<TransportFacts>()
-                    .is_some_and(|f| f.claims.iter().any(|c| *c == claim))
-            }),
-    );
-    let plugin = match selected.as_slice() {
-        [] => return Err(format!("no admitted transport claims '{claim}'")),
-        [plugin] => plugin,
-        _ => {
-            return Err(format!(
-                "multiple admitted transports claim '{claim}': {}",
-                selected
-                    .iter()
-                    .map(|p| p.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-    };
-    let facts = plugin
-        .context::<TransportFacts>()
-        .ok_or("transport declaration disappeared")?;
-    let located = if facts.role == busbar_contract::abi::transport::ROLE_CARRIER && facts.ported {
-        // A network carrier is carried as itself at runtime too: its declared claim names an
-        // authority, and the connector never invents connection security for that authority.
-        busbar_core_connector::compose::carried_at(&claim, target).map_err(|e| e.to_string())?
-    } else {
-        crate::root::doors::locate_bound(plugin, target)?
-    };
+    let located = busbar_core_connector::native_dial::locate(target)?;
+    let carriers = crate::root::min3_framers::assigned(assigned)?;
+    carriers
+        .get(located.carrier)
+        .map_err(|refused| format!("the destination's carrier: {refused}"))?;
     Ok(busbar_kernel::config_validate::ProviderDestination {
         authority: located.authority,
         secure: located.secure,
