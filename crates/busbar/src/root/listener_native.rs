@@ -504,6 +504,26 @@ impl NativeIngress {
                         .screen
                         .as_ref()
                         .is_some_and(|screen| screen(pending.binding()));
+                // A declared length over the cap is refused unread (refusal row 6): the request
+                // is completed on its head and its caller judged, so an unverified one still
+                // receives the one 401 and a verified one 413; none of the body is buffered.
+                let declared_over = !shed && !end_stream && {
+                    let binding = pending.binding();
+                    let limit = binding
+                        .app()
+                        .limits
+                        .as_ref()
+                        .map_or(self.body_limit, |limits| limits.request_body_max_bytes);
+                    binding.head().fields.iter().any(|(name, value)| {
+                        name.eq_ignore_ascii_case("content-length")
+                            && std::str::from_utf8(value)
+                                .ok()
+                                .and_then(|text| text.trim().parse::<u64>().ok())
+                                .is_some_and(|declared| {
+                                    u64::try_from(limit).is_ok_and(|limit| declared > limit)
+                                })
+                    })
+                };
                 self.slots.push(InputSlot {
                     stream,
                     deadline,
@@ -520,12 +540,14 @@ impl NativeIngress {
                         Some(busbar_kernel::auth::admission_table::Refusal::Unverified {
                             presented: false,
                         })
+                    } else if declared_over {
+                        Some(busbar_kernel::auth::admission_table::Refusal::BodyTooLarge)
                     } else {
                         None
                     },
-                    answered_at_head: unverifiable || shed,
+                    answered_at_head: unverifiable || shed || declared_over,
                 });
-                if end_stream || unverifiable || shed {
+                if end_stream || unverifiable || shed || declared_over {
                     self.end(stream).map(Some)
                 } else {
                     Ok(None)
