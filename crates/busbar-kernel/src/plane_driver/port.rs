@@ -149,7 +149,9 @@ pub struct PortSeat {
     pub channel_budget: crate::channels::budget::InstanceBudget,
     pub driver: Arc<PortDriver>,
     pub audience: Option<String>,
-    /// The plane instance's configured public URL (its D_PUBLIC_URL_PATH setting). `None` until the boot fills it.
+    /// Core's public URL as this plane instance is given it (the value core writes at the plane's
+    /// D_PUBLIC_URL_PATH): what `{public_url}` in a route's challenge is replaced with when the route
+    /// is mounted. `None`: the operator configured none.
     pub public_url: Option<String>,
     /// What this instance's intents (records, push, signals, WORK) run against: [`PortDriver::serve`]'s `intents`.
     pub intents: Arc<dyn IntentHost>,
