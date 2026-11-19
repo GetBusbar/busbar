@@ -420,7 +420,7 @@ pub mod need {
     /// must live through await; dropping the future releases those borrows.
     ///
     /// ```
-    /// use busbar_plugin_abi::need::{Tls, need};
+    /// use busbar_plugin_abi::need::need::{self, Tls};
     /// use std::future::Future;
     /// fn legacy(dest: &str) -> impl Future<Output = Result<need::Opened, need::NeedErr>> + '_ {
     ///     need::open(dest, Tls::None, 2)
@@ -432,16 +432,16 @@ pub mod need {
     ///     let _ = need::open_parts(&parts, Tls::None, 2).await;
     /// }
     /// ```
-    /// ```compile_fail
-    /// use busbar_plugin_abi::need::{Tls, need};
+    /// ```compile_fail,E0597
+    /// use busbar_plugin_abi::need::need::{self, Tls};
     /// let future = {
     ///     let parts = ["example.test", ":80"];
     ///     need::open_parts(&parts, Tls::None, 2)
     /// };
     /// drop(future);
     /// ```
-    /// ```compile_fail
-    /// use busbar_plugin_abi::need::{Tls, need};
+    /// ```compile_fail,E0597
+    /// use busbar_plugin_abi::need::need::{self, Tls};
     /// let mut parts = ["example.test", ""];
     /// let future = {
     ///     let port = [b'8', b'0'];
