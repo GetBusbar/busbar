@@ -361,25 +361,25 @@ async fn a_gracefully_retired_writer_races_the_same_way_with_no_record() {
     }
 }
 
-/// 8.15 (e) at kernel level: as (b), with the admin audit queue pre-filled to its 256 rows and no
-/// native owner draining it. The driver's `take_decided` puts W in `record_failed`, not
-/// `recorded`. The first retry is refused while the queue is full; once the native owner drains
-/// it, the second retry accepts W, a mark taken after it confirms it, and exactly one record is
-/// in the audit log. (The retry task is closed first, as `finish`'s [5] does, so only this test
-/// retries.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+/// 8.15 (e) at kernel level: as (b), with the admin audit queue filled to its 256 rows just
+/// before the driver reaches `take_decided`, and nothing draining it in between. The driver's
+/// `take_decided` puts W in `record_failed`, not `recorded`. A retry is refused while the queue
+/// is full; once the native owner drains it, the next retry accepts W, a mark taken after it
+/// confirms it, and exactly one record is in the audit log. (The retry task is closed first, as
+/// `finish`'s [5] does, so only this test retries.) One runtime thread: a drain spawned on it
+/// runs only when this test awaits, so the queue is full exactly where the test fills it.
+#[tokio::test]
 async fn a_record_the_full_queue_refuses_is_recorded_once_the_queue_drains() {
     let _guard = ledger_test_guard().await;
     undrained_records().close_retry_task();
-    let mut filled = 0;
-    while crate::audit::auditlog::try_emit_admin_hostless_now("test.fill", "x", "ok", "system")
-        .is_ok()
-    {
-        filled += 1;
-        assert!(filled <= 4096, "the admin audit queue is bounded");
-    }
     let rig = rig(false).await;
-    settle_races_a_driving_retire(&rig, || {}).await;
+    settle_races_a_driving_retire(&rig, || {
+        assert_eq!(
+            fill_admin_queue(),
+            crate::audit::auditlog::MAX_PENDING_AUDIT
+        );
+    })
+    .await;
     assert_eq!(
         placement(rig.writer),
         Placement {
@@ -391,15 +391,18 @@ async fn a_record_the_full_queue_refuses_is_recorded_once_the_queue_drains() {
     let report = undrained_records().exit_report();
     assert!(report.unrecorded.contains(&rig.seen));
     assert!(!report.unconfirmed.contains(&rig.seen));
+    // The drain the refused offer spawned may have run since: fill the queue again, then retry
+    // with no await between.
+    fill_admin_queue();
     assert_eq!(
-        undrained_records().retry_unrecorded(),
+        retry_unrecorded_without_drain(),
         0,
         "still refused at 256 rows"
     );
     assert!(placement(rig.writer).record_failed);
 
     // The native owner drains the queue to empty.
-    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    assert!(crate::audit::auditlog::flush_pending().await.is_ok());
     assert!(undrained_records().retry_unrecorded() >= 1);
     let recorded = placement(rig.writer);
     let generation = recorded.recorded.expect("accepted by the second round");
