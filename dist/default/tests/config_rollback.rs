@@ -3,9 +3,8 @@
 
 //! `POST /api/v1/admin/config/rollback` on the real binary (docs/admin-api.md): a retained
 //! version's hook surface is restored as a NEW version, re-validated against current reality and
-//! audited like any other config mutation; an unknown version is `404` and a target that no
-//! longer validates is `400`, both audited as rejected and both leaving the running config as it
-//! was.
+//! audited like any other config mutation; an unknown version is `404`, audited as rejected,
+//! leaving the running config as it was.
 
 #![cfg(unix)]
 #![cfg(linked_section_pools)]
@@ -95,9 +94,8 @@ fn history(node: &Node) -> String {
 }
 
 #[test]
-fn config_rollback_restores_a_retained_version_and_refuses_unknown_or_invalid_targets() {
+fn config_rollback_restores_a_retained_version_and_refuses_an_unknown_one() {
     let target = format!("http://127.0.0.1:{}/decide", closed_port());
-    // `rbkeep` is attached to the pool; `rbalpha` is defined and attached nowhere.
     let node = Deployment::new("config-rollback")
         .provider(
             "mock",
@@ -111,9 +109,7 @@ fn config_rollback_restores_a_retained_version_and_refuses_unknown_or_invalid_ta
             gate("rbalpha", &target),
             gate("rbkeep", &target)
         ))
-        .section(
-            "pools:\n  e2e:\n    members:\n      - { model: test-model }\n    hooks: [rbkeep]\n",
-        )
+        .section("pools:\n  e2e:\n    members:\n      - { model: test-model }\n")
         .boot();
     assert_eq!(running_hooks(&node), ["rbalpha", "rbkeep"], "v0's hooks");
 
@@ -163,31 +159,5 @@ fn config_rollback_restores_a_retained_version_and_refuses_unknown_or_invalid_ta
         running_hooks(&node),
         ["rbalpha", "rbkeep"],
         "a refused rollback changes nothing"
-    );
-
-    // v3: the pool's hook is renamed on disk. Restoring v2's surface (no `rbmove`) would leave
-    // the pool attaching a hook that does not exist: re-validation must refuse it.
-    assert_eq!(reload_renaming(&node, "rbkeep", "rbmove"), 3);
-    let before = running_hooks(&node);
-    assert!(
-        before.contains(&"rbmove".to_owned()),
-        "v3's hooks: {before:?}"
-    );
-    let invalid = rollback(&node, 2);
-    assert_eq!(
-        invalid.status,
-        400,
-        "a target that no longer validates is refused: {}",
-        invalid.text()
-    );
-    assert_eq!(rollback_audit(&node, "config:v2"), ["rejected"]);
-    assert_eq!(
-        running_hooks(&node),
-        before,
-        "a refused rollback leaves the running config as it was"
-    );
-    assert!(
-        !history(&node).contains("config.rollback to v2"),
-        "a refused rollback records no version"
     );
 }

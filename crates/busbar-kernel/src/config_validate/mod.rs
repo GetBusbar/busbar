@@ -2454,3 +2454,7 @@ mod operator_third_party_tests;
 #[cfg(test)]
 #[path = "tests/instance_id_tests.rs"]
 mod instance_id_tests;
+
+#[cfg(test)]
+#[path = "tests/member_tls_anchor_shadow_tests.rs"]
+mod member_tls_anchor_shadow_tests;
