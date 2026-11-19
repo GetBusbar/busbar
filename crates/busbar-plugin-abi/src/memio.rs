@@ -825,6 +825,84 @@ mod tests {
         // First poll, then one wake for both feeds (the second feed finds no registered reader).
         assert!(polls.load(Ordering::SeqCst) <= 3);
     }
+
+    /// The drop probe: no strong reference to the conn's state is left once every handle is gone.
+    fn assert_freed(state: &std::sync::Weak<Shared>) {
+        assert_eq!(
+            state.strong_count(),
+            0,
+            "the conn's shared state outlived every handle to it"
+        );
+    }
+
+    #[test]
+    fn a_conn_dropped_with_hyper_parked_on_its_reader_frees_its_state() {
+        let mut m = MemIo::new();
+        http1_server(&mut m);
+        m.run(MINUTE, 256);
+        m.feed(GET);
+        m.run(MINUTE + 1_000, 256);
+        assert_eq!(served(&mut m), 1);
+        // The kept-alive conn now waits for its next request: hyper's task waker is in `pipes.reader`.
+        assert!(lock(&m.shared.pipes).reader.is_some());
+        let state = Arc::downgrade(&m.shared);
+        drop(m);
+        assert_freed(&state);
+    }
+
+    #[test]
+    fn an_attributed_conn_dropped_with_parked_wakers_frees_its_state_and_plan() {
+        let mut m = MemIo::new();
+        let plan = m.attributed_output(1, 4, 1024);
+        plan.admit(1, u64::MAX).unwrap();
+        let gate = plan.clone();
+        let mut io = m.io();
+        m.spawn(async move {
+            let _ = poll_fn(|cx| gate.poll_release(1, cx)).await;
+        });
+        m.spawn(async move {
+            let mut raw = [std::mem::MaybeUninit::<u8>::uninit(); 8];
+            let mut rb = ReadBuf::uninit(&mut raw);
+            let _ = poll_fn(|cx| Pin::new(&mut io).poll_read(cx, rb.unfilled())).await;
+        });
+        assert_eq!(m.run(0, 256), Ran::Idle);
+        assert!(lock(&m.shared.pipes).reader.is_some());
+        let state = Arc::downgrade(&m.shared);
+        drop(plan);
+        drop(m);
+        assert_freed(&state);
+    }
+
+    #[test]
+    fn a_task_spawned_after_the_last_run_is_dropped_with_the_conn() {
+        let mut m = MemIo::new();
+        let io = m.io();
+        m.executor().execute(async move { drop(io) });
+        let state = Arc::downgrade(&m.shared);
+        drop(m);
+        assert_freed(&state);
+    }
+
+    #[test]
+    fn a_wake_after_the_conn_is_dropped_does_nothing() {
+        let mut m = MemIo::new();
+        let mut io = m.io();
+        m.spawn(async move {
+            let mut raw = [std::mem::MaybeUninit::<u8>::uninit(); 8];
+            let mut rb = ReadBuf::uninit(&mut raw);
+            let _ = poll_fn(|cx| Pin::new(&mut io).poll_read(cx, rb.unfilled())).await;
+        });
+        m.run(0, 256);
+        let waker = lock(&m.shared.pipes)
+            .reader
+            .clone()
+            .expect("a parked reader");
+        let state = Arc::downgrade(&m.shared);
+        drop(m);
+        assert_freed(&state);
+        waker.wake_by_ref();
+        waker.wake();
+    }
 }
 
 #[cfg(test)]
