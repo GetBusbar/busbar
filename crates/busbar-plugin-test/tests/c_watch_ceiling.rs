@@ -17,6 +17,7 @@ use busbar_plugin_abi::host::{enter, init, leave, scan};
 use busbar_plugin_abi::host_side::scrub::Scrub;
 use busbar_plugin_abi::types::KindCode;
 use busbar_plugin_loader::instance::{ErrorBook, SlotRecord, SlotTable};
+use busbar_plugin_loader::watchdog::Holder;
 
 /// A slot number no other case's entries use.
 const SLOT: u32 = 0x00AB_CDEF;
@@ -110,12 +111,12 @@ fn a_report_for_a_released_epoch_quarantines_the_slots_next_owner_not() {
     let second = table.alloc(record(), &row);
     assert_eq!(second.slot(), slot, "the released slot is re-allocated");
     assert!(second.epoch() > old_epoch, "with a later epoch");
-    table.hung(slot, old_epoch, 3, 5_100);
+    table.hung(slot, old_epoch, 3, 5_100, &Holder::UNKNOWN);
     assert!(
         second.is_live(),
         "the old epoch's report quarantines nobody"
     );
-    table.hung(slot, second.epoch(), 3, 5_100);
+    table.hung(slot, second.epoch(), 3, 5_100, &Holder::UNKNOWN);
     assert!(
         !second.is_live(),
         "the current epoch's report quarantines its owner"

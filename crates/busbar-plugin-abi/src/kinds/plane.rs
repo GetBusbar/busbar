@@ -722,6 +722,13 @@ crate::kind! {
             /// the core once, at mount. The engine writes the 401; the plane is not called for an unverified
             /// caller.
             D_ROUTE_CHALLENGE = 0x019B;
+            /// Plane 2.0, additive, optional, at most once: the plane's session ceiling (U64Rec, whole
+            /// seconds, 1..=u64::MAX / 1e9 so the engine's nanosecond clock holds it). The longest an
+            /// upgraded session of this plane lives, counted from its request: the value its
+            /// protocol's specification states, or the plane's own documented default. The engine
+            /// enforces exactly this and borrows no number of its own; a plane that states none has
+            /// no engine ceiling on its sessions. A describe written without it still loads.
+            D_SESSION_CEILING_S = 0x019C;
             /// Plane 2.0: the plane-only describe items that left the core contract (the generic 0x004A,
             /// 0x004B and 0x004D are retired there). D_PUBLIC_URL_PATH: the config position where core writes
             /// its top-level `public_url` (a JSON string or `null`) before schema validation, `check` and

@@ -393,7 +393,10 @@ fn committed_codes_one_to_six_map_to_the_decisions() {
 #[test]
 fn committed_code_seven_is_a_capacity_refusal_not_a_decision() {
     let verdict = |code| commit_verdict(Records::new(committed(code).as_bytes()));
-    assert!(matches!(verdict(7), Ok(CommitVerdict::CapacityRefused)));
+    assert!(matches!(
+        verdict(7),
+        Ok(CommitVerdict::CapacityRefused { authority }) if authority == [6; 16]
+    ));
     assert!(matches!(
         verdict(6),
         Ok(CommitVerdict::Decided(Decision::Stale))

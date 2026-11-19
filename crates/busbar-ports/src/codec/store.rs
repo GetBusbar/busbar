@@ -234,7 +234,10 @@ pub enum CommitVerdict {
     Decided(Decision),
     /// Code 7: the store rolled back because its database is at capacity; nothing committed. It is a
     /// refusal, never a success and never a stale slot.
-    CapacityRefused,
+    CapacityRefused {
+        /// The clock authority the store named; the host admits the refusal only from its own.
+        authority: [u8; 16],
+    },
 }
 
 /// Round 30: COMMITTED code 1..=6 -> `Decision::{Applied, ConditionConflict, TimeGuardFailed{observed_at},
@@ -410,7 +413,11 @@ fn commit_verdict(mut recs: Records<'_>) -> Result<CommitVerdict, RecErr> {
         wire::COMMIT_OPID_CONFLICT => Decision::OpIdConflict,
         wire::COMMIT_FENCED => Decision::Fenced,
         wire::COMMIT_STALE => Decision::Stale,
-        wire::COMMIT_CAPACITY_REFUSED => return Ok(CommitVerdict::CapacityRefused),
+        wire::COMMIT_CAPACITY_REFUSED => {
+            return Ok(CommitVerdict::CapacityRefused {
+                authority: done.authority,
+            })
+        }
         _ => return Err(RecErr::Size),
     }))
 }
@@ -418,7 +425,7 @@ fn commit_verdict(mut recs: Records<'_>) -> Result<CommitVerdict, RecErr> {
 fn decision(recs: Records<'_>) -> Result<Decision, RecErr> {
     match commit_verdict(recs)? {
         CommitVerdict::Decided(decision) => Ok(decision),
-        CommitVerdict::CapacityRefused => Err(RecErr::Size),
+        CommitVerdict::CapacityRefused { .. } => Err(RecErr::Size),
     }
 }
 

@@ -436,6 +436,7 @@ async fn catalog_seat_uses_sealed_routes_policies_targets_and_shared_capacity() 
         },
         &pool,
         Some(&catalog),
+        0,
     )
     .unwrap();
     let held = egress
