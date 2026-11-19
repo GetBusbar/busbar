@@ -634,7 +634,36 @@ fn comparison_revisions(root: &Path) -> Result<Vec<String>, String> {
     let base = super::git(root, &["merge-base", "HEAD", &tip])
         .ok_or("no merge base with origin/dev: the history is too shallow (no fail-open)")?;
     if base == head {
-        let parent = resolve("HEAD^1").ok_or("HEAD has no first parent to compare against")?;
+        if let Some(parent) = resolve("HEAD^1") {
+            return Ok(vec![parent]);
+        }
+        // A depth-1 checkout (CI's on the target branch) holds HEAD without its parent: deepen the
+        // shallow boundary by one commit, as the target tip is fetched above when it is missing.
+        // The parent is then read from HEAD's own commit object, not through the shallow graft,
+        // which another test's `--depth=1` fetch may set back at HEAD; its objects stay.
+        let _ = super::git(
+            root,
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--no-write-fetch-head",
+                "--deepen=1",
+                "origin",
+                "+refs/heads/dev:refs/remotes/origin/dev",
+            ],
+        );
+        let parent = super::git(root, &["cat-file", "commit", &head])
+            .and_then(|commit| {
+                commit
+                    .lines()
+                    .take_while(|line| !line.is_empty())
+                    .find_map(|line| line.strip_prefix("parent ").map(str::to_string))
+            })
+            .filter(|parent| {
+                super::git(root, &["cat-file", "-e", &format!("{parent}^{{commit}}")]).is_some()
+            })
+            .ok_or("HEAD has no first parent to compare against, even deepened (no fail-open)")?;
         return Ok(vec![parent]);
     }
     let mut revisions = vec![base];
