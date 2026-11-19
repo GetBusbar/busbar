@@ -2074,6 +2074,7 @@ pub fn metadata_enforced_entries() -> Vec<String> {
 pub mod deal;
 mod destinations;
 pub mod instance_ids;
+pub mod schemes;
 pub use destinations::{validate_provider_destinations, ProviderDestination};
 pub use instance_ids::{instance_id_collisions, CORE_INSTANCES};
 
