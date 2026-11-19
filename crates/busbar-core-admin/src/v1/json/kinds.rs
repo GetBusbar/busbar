@@ -142,6 +142,23 @@ pub(crate) fn plane_kind(key: &str) -> String {
     id
 }
 
+/// The build's linked MIN-3 images of one kind (its kind word).
+fn linked_images(
+    category: &str,
+) -> impl Iterator<Item = &'static busbar_kernel::preflight::LinkedImage> + '_ {
+    busbar_kernel::preflight::root_rows()
+        .linked_images
+        .iter()
+        .filter(move |image| image.kind == category)
+}
+
+/// The identity of the linked image of `category` that `module` names (its identity or its alias).
+fn linked_identity(category: &str, module: &str) -> Option<String> {
+    linked_images(category)
+        .find(|image| image.identity == module || image.alias == module)
+        .map(|image| image.identity.clone())
+}
+
 fn module_of(config: &Value) -> Option<String> {
     config
         .get("module")
@@ -181,6 +198,21 @@ pub(crate) fn inventory(app: &App) -> Vec<Instance> {
                         id: category.to_owned(),
                         module: module_of(store),
                         config: store.clone(),
+                        plane: None,
+                    });
+                }
+            }
+            Kind::Transport => {
+                // A transport has no operator section: every admitted MIN-3 transport image is one
+                // opened instance named by its identity (the root's transport walk). The linked
+                // images are admitted at process start, so each is running.
+                for image in linked_images(category) {
+                    out.push(Instance {
+                        category,
+                        kind: category.to_owned(),
+                        id: image.identity.clone(),
+                        module: Some(image.identity.clone()),
+                        config: Value::from(Map::new()),
                         plane: None,
                     });
                 }
@@ -490,11 +522,13 @@ fn plugin_of(app: &App, instance: &Instance) -> Value {
         (None, None) => return Value::new_null(),
     };
     let row = app.plugin_registry.resolve(module);
+    // A linked MIN-3 image is named by its identity, never by the word the operator configured it with.
+    let name = match row.as_ref() {
+        Some(row) => row.name.clone(),
+        None => linked_identity(instance.category, module).unwrap_or_else(|| module.to_owned()),
+    };
     let mut plugin = Map::new();
-    plugin.insert(
-        "name",
-        Value::from(row.as_ref().map_or(module, |r| r.name.as_str())),
-    );
+    plugin.insert("name", Value::from(name.as_str()));
     plugin.insert(
         "version",
         row.as_ref()
