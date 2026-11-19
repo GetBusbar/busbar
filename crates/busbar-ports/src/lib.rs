@@ -106,12 +106,12 @@ impl core::fmt::Display for PluginCode {
 
 /// A live session of kind `K` and the instance it runs on. `Send`, not `Sync`: every call takes
 /// `&mut`, so one entry per token runs at a time; dropping it cancels the token.
-pub struct KindSession<K: busbar_ffi::Kind> {
+pub struct KindSession<K: busbar_plugin_abi::host_side::boundary::Kind> {
     pub inst: std::sync::Arc<busbar_plugin_abi::host_side::driver::Instance>,
-    pub session: busbar_ffi::host::Session<K>,
+    pub session: busbar_plugin_abi::host_side::boundary::Session<K>,
 }
 
-impl<K: busbar_ffi::Kind> KindSession<K> {
+impl<K: busbar_plugin_abi::host_side::boundary::Kind> KindSession<K> {
     pub fn instance(&self) -> &std::sync::Arc<busbar_plugin_abi::host_side::driver::Instance> {
         &self.inst
     }

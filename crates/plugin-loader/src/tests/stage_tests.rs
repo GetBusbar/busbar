@@ -626,7 +626,6 @@ mod staged_file_pin {
 mod on_unix {
     use super::staged_file_pin::*;
     use super::*;
-    use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
 
     /// PROOF-093-A:117.
@@ -679,7 +678,6 @@ mod on_unix {
 #[cfg(target_os = "linux")]
 mod on_linux_memfd {
     use super::*;
-    use std::io::Write as _;
     use std::os::fd::AsRawFd as _;
 
     /// PROOF-093-A:113.

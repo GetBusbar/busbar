@@ -664,6 +664,58 @@ mod tests {
         ));
     }
 
+    /// The in-use set under the idle set's own key: two needs of one instance to one authority, sealed by one
+    /// `Pools` and forced onto one hash, so only the key's `Eq` tells them apart.
+    #[test]
+    fn two_needs_one_authority_never_share() {
+        use busbar_contract::conn::{InstanceId, NeedId};
+        let key = |need| PoolKey {
+            owner: InstanceId(7),
+            need: NeedId(need),
+            door: 1,
+            authority: "api.example:443".into(),
+            secure: true,
+            name: Some("api.example".into()),
+            class: (0, 0),
+            reach: false,
+            anchored_as: None,
+            trust: None,
+            sealed: None,
+            hash: 0,
+        };
+        let pools = crate::pool::Pools::new(crate::pool::PoolPosture::NONE);
+        let first = pools.keyed(key(3));
+        let mut second = pools.keyed(key(4));
+        second.hash = first.hash;
+        let mut set: InUse<PoolKey, Conn> = InUse::new();
+        let riding = conn(&h2());
+        set.dial_began(&first, &riding);
+        set.dial_opened(&first, &h2());
+        opened(&riding);
+        assert!(matches!(
+            set.lend(&first, view, false, false),
+            Lent::Stream(_)
+        ));
+        assert!(
+            matches!(set.lend(&second, view, false, false), Lent::Dial),
+            "another need never rides the first need's connection"
+        );
+        // The first need's connection drains and its next dial is in flight: its own opens join it.
+        let mut draining = riding.get();
+        draining.draining();
+        riding.set(draining);
+        let in_flight = dialling();
+        set.dial_began(&first, &in_flight);
+        assert!(matches!(
+            set.lend(&first, view, false, false),
+            Lent::Join(_)
+        ));
+        assert!(
+            matches!(set.lend(&second, view, false, false), Lent::Dial),
+            "another need never joins the first need's dial"
+        );
+    }
+
     #[test]
     fn a_key_is_forgotten_with_its_last_connection() {
         let mut set: InUse<&str, Conn> = InUse::new();

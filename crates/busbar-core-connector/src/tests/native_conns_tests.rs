@@ -691,7 +691,12 @@ fn members_sharing_an_origin_each_answer_their_own_binding_and_never_a_neighbour
         "a member bound nowhere borrows no neighbour's binding at the origin"
     );
     assert_eq!(
-        bound(&connector, NEED, "alpha", "https://api.example:9443/v1/chat"),
+        bound(
+            &connector,
+            NEED,
+            "alpha",
+            "https://api.example:9443/v1/chat"
+        ),
         None,
         "a member's binding is its origin's alone"
     );
@@ -773,10 +778,34 @@ async fn a_pooled_line_is_never_lent_to_another_need_or_instance() {
     };
     let lined = pools.keyed(base.clone());
     let others = [
-        ("another need", PoolKey { need: NeedId(4), ..base.clone() }),
-        ("another instance", PoolKey { owner: InstanceId(8), ..base.clone() }),
-        ("another trust", PoolKey { trust: trusted(config()), ..base.clone() }),
-        ("another seal", PoolKey { sealed: sealed(), ..base.clone() }),
+        (
+            "another need",
+            PoolKey {
+                need: NeedId(4),
+                ..base.clone()
+            },
+        ),
+        (
+            "another instance",
+            PoolKey {
+                owner: InstanceId(8),
+                ..base.clone()
+            },
+        ),
+        (
+            "another trust",
+            PoolKey {
+                trust: trusted(config()),
+                ..base.clone()
+            },
+        ),
+        (
+            "another seal",
+            PoolKey {
+                sealed: sealed(),
+                ..base.clone()
+            },
+        ),
     ];
     let mut far_ends = Vec::new();
     for (what, other) in others {
@@ -1003,7 +1032,9 @@ async fn a_framed_operator_infrastructure_need_without_a_declared_target_is_refu
     }
     for need in [NEED, NeedId(4)] {
         assert!(connector.native_need(OWNER, need).is_none());
-        assert!(connector.open(OWNER, need, &desc(&format!("http://{addr}/v1"))).is_err());
+        assert!(connector
+            .open(OWNER, need, &desc(&format!("http://{addr}/v1")))
+            .is_err());
     }
     assert_eq!(accepted(&listener, Duration::from_millis(200)), 0);
 }
@@ -1019,7 +1050,10 @@ async fn program_constraint_fields_never_reach_a_network_open() {
     DeclaredConns::declare(&connector, OWNER, NEED, &need(), None, None).unwrap();
     let target = format!("http://{addr}/v1");
     let instance = busbar_contract::conn::PROGRAM_EXPECT_INSTANCE_FIELD.to_ascii_uppercase();
-    let generation = format!(" {} ", busbar_contract::conn::PROGRAM_EXPECT_GENERATION_FIELD);
+    let generation = format!(
+        " {} ",
+        busbar_contract::conn::PROGRAM_EXPECT_GENERATION_FIELD
+    );
     for field in [instance.as_str(), generation.as_str()] {
         let fields = [("accept", b"*/*".as_slice()), (field, b"7".as_slice())];
         assert_eq!(
@@ -1068,7 +1102,11 @@ async fn a_target_the_guard_refuses_never_reaches_the_proxy() {
     // Refused at once (a metadata host): the proxy is neither judged nor dialled.
     assert_eq!(
         connector
-            .open(OWNER, NEED, &desc("http://169.254.169.254/latest/meta-data"))
+            .open(
+                OWNER,
+                NEED,
+                &desc("http://169.254.169.254/latest/meta-data")
+            )
             .map(|_| ()),
         Err(ConnError::Refused)
     );

@@ -2685,6 +2685,64 @@ async fn a_far_request_on_a_spelled_need_dials_that_needs_base_url() {
 }
 
 #[tokio::test]
+async fn a_member_bound_over_an_upgrade_need_dials_its_spelled_base() {
+    use busbar_contract::json::JsonContainerTrait as _;
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    // The member's route as the seat composes it from its configured upstream, holding the rig's binding.
+    let section = busbar_contract::json::json!({"m0": {"url": "https://a.test/v1/"}});
+    let upstreams = crate::upstreams::ConfiguredUpstreams::from_config(
+        section.as_object().expect("a map"),
+        &std::collections::BTreeMap::new(),
+        &crate::plugin_config::upstream_anchor,
+    )
+    .expect("the upstream types");
+    let composed = crate::plane_driver::port_egress::SeatPool::of(POOL, &upstreams)
+        .expect("the seat composes");
+    let mut composed = composed.routes.into_values().next().expect("its route");
+    let destination = DestinationId::new(1);
+    let held = r.egress.routes.remove(&destination).expect("the rig's route");
+    composed.auth = held.auth;
+    let own = composed.need;
+    r.egress.routes.insert(destination, composed);
+    let t = token();
+    let websocket = OutboundRequest {
+        need: RIDE_WEBSOCKET,
+        verb: b"GET".to_vec(),
+        body: Vec::new(),
+        ..request()
+    };
+    for (sent, dialled) in [
+        (websocket, "wss://a.test/v1/chat"),
+        (request(), "https://a.test/v1/chat"),
+    ] {
+        let far = r.egress.unit(route());
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        let before = r.table.opened.lock().unwrap().len();
+        assert!(far.send(&t, sent).await, "{dialled} is sent");
+        let opened = r.table.opened.lock().unwrap().clone();
+        assert_eq!(opened.len(), before + 1, "one open");
+        assert_eq!(opened[before].0, dialled);
+        assert!(
+            opened[before]
+                .1
+                .iter()
+                .any(|(name, value)| name == "authorization" && value == b"Bearer sk-test"),
+            "the member's binding leads {dialled}: {:?}",
+            opened[before].1
+        );
+        drop(far);
+    }
+    let needs = r.table.needs.lock().unwrap().clone();
+    assert_eq!(needs.len(), 2);
+    assert_ne!(needs[0], own.0, "the WebSocket request opens on the ride's own need");
+    assert_eq!(needs[1], own.0, "the HTTP request on the member's need");
+}
+
+#[tokio::test]
 async fn a_held_far_ends_frame_goes_into_the_answered_connection() {
     let r = rig(
         &[("a.test", Script::Answer(200, None, vec![b"hel", b"lo"]))],

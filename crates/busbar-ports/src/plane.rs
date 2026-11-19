@@ -10,7 +10,7 @@ use busbar_plugin_abi::types::Pair;
 
 use crate::{CallCx, FactRef, PortError};
 
-pub type PlaneSession = crate::KindSession<busbar_ffi::kind::Plane>;
+pub type PlaneSession = crate::KindSession<busbar_plugin_abi::host_side::boundary::kind::Plane>;
 
 /// Borrowed output, decoded from the call's OutBuf; valid until the sink returns.
 pub enum PlaneOut<'o> {

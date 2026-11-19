@@ -14,6 +14,14 @@ pub mod proxy;
 pub mod scrub;
 pub mod watch;
 
+/// The boundary crate's kind markers and live session, for core's host-side crates (busbar-ports):
+/// only this crate, the loader and plugin-test may depend on busbar-ffi (unsafe.yaml `dependents`, E12),
+/// so the others name these through here.
+pub mod boundary {
+    pub use busbar_ffi::host::Session;
+    pub use busbar_ffi::{Kind, kind};
+}
+
 pub use answer::*;
 pub use caller::*;
 pub use driver::*;
