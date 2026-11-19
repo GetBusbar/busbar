@@ -46,3 +46,83 @@ X01	GET	/nope	-	none	-	401	401	404	404	BETTER	gap G4: a good key on an unknown p
 X02	DELETE	/v1/chat/completions	-	wrong-method	-	401	401	405+Allow	405+Allow	BETTER	
 X03	POST	/v1/chat/completions	llm	walk:pool	oversized	401	401	413	413	RIGHT	answered, connection kept (gap G10)
 X04	POST	/v1/chat/completions	llm	walk:pool	trailers	401	401	400	400	BETTER	answered, connection kept (gap G10)
+
+v155_row	v155_route	listener	probe	body	outcome	reason
+V01	GET /api/v1/admin/admin-auth	admin	GET /api/v1/admin/admin-auth	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V02	PUT /api/v1/admin/admin-auth	admin	PUT /api/v1/admin/admin-auth	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V03	GET /api/v1/admin/audit	admin	GET /api/v1/admin/audit	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V04	GET /api/v1/admin/auth	admin	GET /api/v1/admin/auth	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V05	POST /api/v1/admin/auth/cache/flush	admin	POST /api/v1/admin/auth/cache/flush	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V06	GET /api/v1/admin/config	admin	GET /api/v1/admin/config	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V07	POST /api/v1/admin/config/apply	admin	POST /api/v1/admin/config/apply	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V08	GET /api/v1/admin/config/diff	admin	GET /api/v1/admin/config/diff	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V09	POST /api/v1/admin/config/reload	admin	POST /api/v1/admin/config/reload	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V10	POST /api/v1/admin/config/rollback	admin	POST /api/v1/admin/config/rollback	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V11	GET /api/v1/admin/config/settings	admin	GET /api/v1/admin/config/settings	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V12	PUT /api/v1/admin/config/settings	admin	PUT /api/v1/admin/config/settings	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V13	POST /api/v1/admin/config/validate	admin	POST /api/v1/admin/config/validate	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V14	GET /api/v1/admin/config/versions	admin	GET /api/v1/admin/config/versions	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V15	GET /api/v1/admin/config/versions/{v}	admin	GET /api/v1/admin/config/versions/1	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V16	GET /api/v1/admin/export	admin	GET /api/v1/admin/export	-	refused	`/export`, `/export/{name}`
+V17	DELETE /api/v1/admin/export/{name}	admin	DELETE /api/v1/admin/export/x	-	refused	`/export`, `/export/{name}`
+V18	GET /api/v1/admin/export/{name}	admin	GET /api/v1/admin/export/x	-	refused	`/export`, `/export/{name}`
+V19	PUT /api/v1/admin/export/{name}	admin	PUT /api/v1/admin/export/x	json-empty	refused	`/export`, `/export/{name}`
+V20	PATCH /api/v1/admin/export/{name}/settings	admin	PATCH /api/v1/admin/export/x/settings	json-empty	refused	`/export`, `/export/{name}`
+V21	GET /api/v1/admin/groups	admin	GET /api/v1/admin/groups	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V22	POST /api/v1/admin/groups	admin	POST /api/v1/admin/groups	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V23	DELETE /api/v1/admin/groups/{name}	admin	DELETE /api/v1/admin/groups/x	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V24	GET /api/v1/admin/groups/{name}	admin	GET /api/v1/admin/groups/x	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V25	PATCH /api/v1/admin/groups/{name}	admin	PATCH /api/v1/admin/groups/x	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V26	PUT /api/v1/admin/groups/{name}	admin	PUT /api/v1/admin/groups/x	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V27	GET /api/v1/admin/groups/{name}/usage	admin	GET /api/v1/admin/groups/x/usage	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V28	GET /api/v1/admin/hooks	admin	GET /api/v1/admin/hooks	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V29	POST /api/v1/admin/hooks	admin	POST /api/v1/admin/hooks	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V30	DELETE /api/v1/admin/hooks/{name}	admin	DELETE /api/v1/admin/hooks/x	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V31	GET /api/v1/admin/hooks/{name}	admin	GET /api/v1/admin/hooks/x	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V32	PUT /api/v1/admin/hooks/{name}	admin	PUT /api/v1/admin/hooks/x	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V33	GET /api/v1/admin/hooks/{name}/health	admin	GET /api/v1/admin/hooks/x/health	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V34	GET /api/v1/admin/hooks/{name}/schema	admin	GET /api/v1/admin/hooks/x/schema	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V35	PATCH /api/v1/admin/hooks/{name}/settings	admin	PATCH /api/v1/admin/hooks/x/settings	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V36	GET /api/v1/admin/hooks/{name}/status	admin	GET /api/v1/admin/hooks/x/status	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V37	GET /api/v1/admin/identity-providers	admin	GET /api/v1/admin/identity-providers	-	refused	`/identity-providers`, `/identity-providers/{name}`
+V38	DELETE /api/v1/admin/identity-providers/{name}	admin	DELETE /api/v1/admin/identity-providers/x	-	refused	`/identity-providers`, `/identity-providers/{name}`
+V39	GET /api/v1/admin/identity-providers/{name}	admin	GET /api/v1/admin/identity-providers/x	-	refused	`/identity-providers`, `/identity-providers/{name}`
+V40	PUT /api/v1/admin/identity-providers/{name}	admin	PUT /api/v1/admin/identity-providers/x	json-empty	refused	`/identity-providers`, `/identity-providers/{name}`
+V41	PATCH /api/v1/admin/identity-providers/{name}/settings	admin	PATCH /api/v1/admin/identity-providers/x/settings	json-empty	refused	`/identity-providers`, `/identity-providers/{name}`
+V42	GET /api/v1/admin/info	admin	GET /api/v1/admin/info	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V43	GET /api/v1/admin/keys	admin	GET /api/v1/admin/keys	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V44	POST /api/v1/admin/keys	admin	POST /api/v1/admin/keys	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V45	DELETE /api/v1/admin/keys/{id}	admin	DELETE /api/v1/admin/keys/x	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V46	GET /api/v1/admin/keys/{id}	admin	GET /api/v1/admin/keys/x	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V47	PATCH /api/v1/admin/keys/{id}	admin	PATCH /api/v1/admin/keys/x	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V48	POST /api/v1/admin/keys/{id}/revoke	admin	POST /api/v1/admin/keys/x/revoke	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V49	POST /api/v1/admin/keys/{id}/rotate	admin	POST /api/v1/admin/keys/x/rotate	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V50	GET /api/v1/admin/keys/{id}/usage	admin	GET /api/v1/admin/keys/x/usage	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V51	GET /api/v1/admin/models	admin	GET /api/v1/admin/models	-	refused	`/models`, `/providers`
+V52	GET /api/v1/admin/openapi.json	admin	GET /api/v1/admin/openapi.json	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V53	DELETE /api/v1/admin/overlay/{section}	admin	DELETE /api/v1/admin/overlay/groups	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V54	GET /api/v1/admin/plugins	admin	GET /api/v1/admin/plugins	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V55	POST /api/v1/admin/plugins	admin	POST /api/v1/admin/plugins	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V56	POST /api/v1/admin/plugins/inspect	admin	POST /api/v1/admin/plugins/inspect	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V57	POST /api/v1/admin/plugins/reload	admin	POST /api/v1/admin/plugins/reload	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V58	POST /api/v1/admin/plugins/rollback	admin	POST /api/v1/admin/plugins/rollback	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V59	DELETE /api/v1/admin/plugins/{file}	admin	DELETE /api/v1/admin/plugins/x.so	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V60	GET /api/v1/admin/plugins/{file}/schema	admin	GET /api/v1/admin/plugins/x.so/schema	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V61	GET /api/v1/admin/pools	admin	GET /api/v1/admin/pools	-	refused	`/pools`, `/pools/{name}`
+V62	GET /api/v1/admin/pools/{name}	admin	GET /api/v1/admin/pools/x	-	refused	`/pools`, `/pools/{name}`
+V63	GET /api/v1/admin/providers	admin	GET /api/v1/admin/providers	-	refused	`/models`, `/providers`
+V64	POST /api/v1/admin/restart	admin	POST /api/v1/admin/restart	json-empty	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V65	POST /api/v1/admin/signing-key/rotate	admin	POST /api/v1/admin/signing-key/rotate	json-empty	refused	`POST /signing-key/rotate`
+V66	GET /api/v1/admin/usage	admin	GET /api/v1/admin/usage	-	answers	admin route kept in 1.6.0 (core-admin v1/json/mod.rs)
+V67	GET /stats	data	GET /stats	-	answers	data-plane route
+V68	GET /healthz	data	GET /healthz	-	answers	data-plane route
+V69	GET /metrics	data	GET /metrics	-	answers	data-plane route
+V70	GET /metrics/hooks	admin	GET /metrics/hooks	-	answers	moved to the admin listener (core-admin lib.rs, kernel plugin_routes.rs CORE_ADMIN_PATHS)
+V71	GET /auth/token	data	GET /auth/token	-	answers	data-plane route
+V72	POST /auth/token	data	POST /auth/token	form	answers	data-plane route
+V73	GET /v1/models	data	GET /v1/models	-	answers	data-plane route
+V74	GET /v1beta/models	data	GET /v1beta/models	-	answers	data-plane route
+V75	POST /{name}/v1/messages	data	POST /pool-a/v1/messages	anthropic-chat	answers	named pool path
+V76	POST /{provider}/{model}/v1/messages	data	POST /prov/model-a/v1/messages	anthropic-chat	answers	ad-hoc path
+V77	ANY catch-all	data	POST /v1/chat/completions	openai-chat	answers	the protocol dispatch fallback serves every protocol path
+V78	PLUGIN-DECLARED routes	data	GET /metrics	-	answers	the exporter plugin route

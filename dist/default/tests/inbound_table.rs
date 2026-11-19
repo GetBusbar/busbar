@@ -85,7 +85,7 @@ const CALLERS: [&str; 4] = [
 ];
 
 fn rows() -> Vec<Row> {
-    let mut lines = ROUTES.lines();
+    let mut lines = ROUTES.split("\n\n").next().expect("the first table").lines();
     let header: Vec<&str> = lines.next().expect("a header").split('\t').collect();
     let at = |name: &str| {
         header
@@ -131,6 +131,7 @@ fn body_of(word: &str, cap: usize) -> (Option<&'static str>, Vec<u8>, bool) {
     let text = |s: &str| s.as_bytes().to_vec();
     match word {
         "-" => (None, Vec::new(), false),
+        "json-empty" => (JSON, text("{}"), false),
         "form" => (
             Some("application/x-www-form-urlencoded"),
             text("grant_type=client_credentials"),
@@ -558,6 +559,142 @@ fn every_route_answers_every_caller_as_the_table_says() {
         rows.len() * 4,
         failures.join("\n")
     );
+}
+
+/// One row of the second table: a route v1.5.5 served and what 1.6.0 does with it.
+#[derive(Debug, Clone)]
+struct V155 {
+    id: String,
+    route: String,
+    admin: bool,
+    method: String,
+    path: String,
+    body: String,
+    /// `answers` (served) or `refused` (removed on purpose, with `reason` naming the doc line).
+    outcome: String,
+    reason: String,
+}
+
+/// The second table of `routes.tsv` (after the blank line): one row per v1.5.5 route.
+fn v155_rows() -> Vec<V155> {
+    let second = ROUTES.split("\n\n").nth(1).expect("the v1.5.5 table");
+    let mut lines = second.lines().filter(|line| !line.trim().is_empty());
+    let header: Vec<&str> = lines.next().expect("a header").split('\t').collect();
+    assert_eq!(
+        header,
+        [
+            "v155_row",
+            "v155_route",
+            "listener",
+            "probe",
+            "body",
+            "outcome",
+            "reason"
+        ]
+    );
+    lines
+        .map(|line| {
+            let f: Vec<&str> = line.split('\t').collect();
+            assert_eq!(f.len(), header.len(), "routes.tsv: `{line}`");
+            let (method, path) = f[3].split_once(' ').expect("probe is `METHOD path`");
+            V155 {
+                id: f[0].to_owned(),
+                route: f[1].to_owned(),
+                admin: f[2] == "admin",
+                method: method.to_owned(),
+                path: path.to_owned(),
+                body: f[4].to_owned(),
+                outcome: f[5].to_owned(),
+                reason: f[6].to_owned(),
+            }
+        })
+        .collect()
+}
+
+/// The migration guide that states which admin paths 1.6.0 removed on purpose and why.
+const MIGRATION_DOC: &str = include_str!("../../../docs/migration-1.6.md");
+
+/// Every route v1.5.5 served is served by 1.6.0, or refused with a reason the migration guide states.
+/// A served route is answered by its own handler: not by admission (401/403), not 405, not the
+/// router's not-found, and not a 5xx. A refused route is the router's not-found, byte for byte.
+#[test]
+fn every_v155_route_is_served_or_refused_with_a_stated_reason() {
+    let upstream = common::upstream::Responder::start(BTreeMap::new());
+    let booted = boot(&upstream.url());
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let good = mint(&rt, &booted, "v155-good", false, None);
+    let not_found = send(
+        &rt,
+        &booted.admin,
+        "GET",
+        "/api/v1/admin/a-path-no-release-served",
+        Some(ADMIN_TOKEN),
+        (None, Vec::new(), false),
+    );
+    assert_eq!(not_found.status, 404, "the admin router's not-found");
+    let mut rows = v155_rows();
+    assert_eq!(rows.len(), 78, "routes.tsv lost a v1.5.5 route");
+    // The restart route ends the process it is asked of; it goes last.
+    rows.sort_by_key(|row| row.path.ends_with("/restart"));
+    let (mut answered, mut refused) = (0, 0);
+    let mut failures: Vec<String> = Vec::new();
+    for row in &rows {
+        let (addr, token) = if row.admin {
+            (&booted.admin, ADMIN_TOKEN)
+        } else {
+            (&booted.data, good.as_str())
+        };
+        let got = send(
+            &rt,
+            addr,
+            &row.method,
+            &row.path,
+            Some(token),
+            body_of(&row.body, BODY_CAP),
+        );
+        let label = format!("{} {} ({} {})", row.id, row.route, row.method, row.path);
+        match row.outcome.as_str() {
+            "answers" if row.admin => {
+                if matches!(got.status, 401 | 403 | 405 | 500 | 501)
+                    || (got.status == 404 && got.body == not_found.body)
+                {
+                    failures.push(format!("{label}: not served, answered {}", got.status));
+                } else {
+                    answered += 1;
+                }
+            }
+            "answers" => {
+                if ADMISSION_STATUSES.contains(&got.status) || got.status >= 500 {
+                    failures.push(format!("{label}: not served, answered {}", got.status));
+                } else {
+                    answered += 1;
+                }
+            }
+            "refused" => {
+                if !MIGRATION_DOC.contains(row.reason.as_str()) {
+                    failures.push(format!(
+                        "{label}: the reason `{}` is not in docs/migration-1.6.md",
+                        row.reason
+                    ));
+                } else if got.status != 404 || got.body != not_found.body {
+                    failures.push(format!(
+                        "{label}: refused on purpose but answered {}",
+                        got.status
+                    ));
+                } else {
+                    refused += 1;
+                }
+            }
+            other => failures.push(format!("{label}: unknown outcome `{other}`")),
+        }
+    }
+    eprintln!(
+        "v1.5.5 routes: {} answer, {} refused with a stated reason, {} findings",
+        answered,
+        refused,
+        failures.len()
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 /// The table itself is well formed without a binary: every row parses, ids are unique, every
