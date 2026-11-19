@@ -441,6 +441,65 @@ fn configured_auth_uses_the_named_instance_and_only_its_plugin_settings() {
     );
 }
 
+/// E5: the operator credential's row is an ordinary native auth instance, opened with its own
+/// settings before the admin chain installs. A definition that carries settings enters the boot
+/// plan; a bare operator definition has nothing to judge and stays out, as the built-in `keys`
+/// does.
+#[test]
+fn the_operator_row_with_settings_enters_the_boot_plan_as_a_native_auth_instance() {
+    busbar_kernel_identity::operator::install_test_words(
+        busbar_kernel_identity::operator::OperatorWords {
+            provider: "admin-tokens",
+            principal_id: "admin",
+            canonical: "busbar-auth-admin-tokens",
+            first_party: true,
+        },
+    );
+    assert_eq!(busbar_kernel::config::operator_provider(), "admin-tokens");
+    let grammar =
+        busbar_kernel::config::Grammar::new(Default::default(), Default::default(), Vec::new());
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: fixture-store, settings: {}}\nproviders: {}\nmodels: {}\n",
+        &grammar,
+    )
+    .unwrap();
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    cfg.grammar = busbar_kernel::config::grammar::GrammarField::bound(grammar);
+    let digest = busbar_contract::redacted::sha256_hex(b"e5-operator-token");
+    cfg.identity_providers.insert(
+        "admin-tokens".into(),
+        busbar_contract::json::parse_str(&format!(
+            r#"{{"module":"admin-tokens","settings":{{"sha256":"{digest}"}}}}"#
+        ))
+        .unwrap(),
+    );
+    cfg.identity_providers.insert(
+        "bare-operator".into(),
+        busbar_contract::json::parse_str(r#"{"module":"admin-tokens"}"#).unwrap(),
+    );
+    cfg.identity_providers.insert(
+        "signed-keys".into(),
+        busbar_contract::json::parse_str(r#"{"module":"keys"}"#).unwrap(),
+    );
+    let instances = configured(&cfg, &[]).unwrap();
+    let auth: Vec<_> = instances
+        .iter()
+        .filter(|one| one.kind == KindCode::Auth)
+        .collect();
+    assert_eq!(
+        auth.len(),
+        1,
+        "only the operator row with settings is opened: {:?}",
+        auth.iter().map(|one| &one.name).collect::<Vec<_>>()
+    );
+    assert_eq!(auth[0].name, "admin-tokens");
+    assert_eq!(auth[0].identity, "admin-tokens");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&auth[0].config).unwrap(),
+        serde_json::json!({ "sha256": digest })
+    );
+}
+
 #[test]
 fn every_named_export_enters_the_reserved_instance_plan_with_authoring_settings() {
     let grammar =
