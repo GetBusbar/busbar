@@ -1807,7 +1807,7 @@ impl<'k, K: Calls + ?Sized> Task<'k, K> {
                     !matches!(
                         intent,
                         Intent::Lookup { .. } | Intent::Entitle { .. } | Intent::Judge { .. }
-                    ) && super::port_intents::caller_scoped_write(intent, &answer.lent) != Some(true)
+                    ) && super::port_intents::caller_scoped_write(intent, &answer.lent).is_none()
                 }))
         {
             self.session = None;
