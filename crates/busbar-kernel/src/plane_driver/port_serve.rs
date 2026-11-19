@@ -17,8 +17,10 @@
 //!
 //! Every USAGE the session accepts reaches the books as it is accepted ([`Books::running`], driven by
 //! [`Metered`]), and a session bills exactly the usage it accepted, once, whatever its ending (P087B). A
-//! running checkpoint's `Cut` is not acted on mid-stream: the port path has no mid-stream cancel, and the
-//! stream runs to its end as before (the ceiling never rewrites what the provider stated).
+//! running checkpoint's `Cut` (the unit reached its spend ceiling) ends the session at the next point it
+//! would go on (BUDGET-CUT: [`super::port_session::within_budget`], refused `R_BUDGET`): the crossing
+//! report is billed as stated (the ceiling never rewrites what the provider stated), nothing after it is
+//! served or billed. A session whose crossing report is its last (its END piece) simply ends.
 //!
 //! Not done here (PLANE-DRIVER.md): intents a plane states in a `FROM_UPSTREAM` piece answer are not resolved (the
 //! feed in `port_upstream` takes no resolver).
@@ -749,6 +751,9 @@ struct Metered<'e> {
     books: &'e dyn Books,
     /// The usage revision the books last took, with the money's answer to it.
     taken: std::sync::Mutex<Option<(u64, Option<super::Checkpoint>)>>,
+    /// The money answered `Cut` to one of the session's running checkpoints: the unit reached its spend
+    /// ceiling and the session ends ([`super::port_session::within_budget`]). Once set it stays set.
+    cut: std::sync::atomic::AtomicBool,
 }
 
 impl Metered<'_> {
@@ -795,7 +800,14 @@ impl Effects for Metered<'_> {
         if taken.is_some_and(|(revision, _)| revision == usage.revision()) {
             return;
         }
-        *taken = Some((usage.revision(), self.books.running(usage)));
+        let verdict = self.books.running(usage);
+        if verdict == Some(super::Checkpoint::Cut) {
+            self.cut.store(true, std::sync::atomic::Ordering::Release);
+        }
+        *taken = Some((usage.revision(), verdict));
+    }
+    fn budget_cut(&self) -> bool {
+        self.cut.load(std::sync::atomic::Ordering::Acquire)
     }
     fn dialled(&self) {
         self.inner.dialled();
