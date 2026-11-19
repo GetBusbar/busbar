@@ -1303,7 +1303,7 @@ fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
         );
         // SAFETY: all Statement backing is static or leaked above.
         let own = unsafe { render(st) }.unwrap();
-        let facts = busbar_contract::abi::mechanism::rendering::read(&own).unwrap();
+        let facts = busbar_artifact_metadata::rendering::read(&own).unwrap();
         let mut m = manifest(&facts.name, "retention", "busbar");
         m.kind = crate::dispatch_test_plugin::KIND.word().into();
         m.version = facts.version;
