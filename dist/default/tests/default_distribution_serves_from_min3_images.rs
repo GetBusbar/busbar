@@ -463,11 +463,12 @@ fn a_provider_call_dials_out_through_the_linked_http_image_and_the_memory_store_
     let (upstream, calls) = spawn_upstream();
     let node = Node::boot(Some(upstream), true);
     assert_instance(&node, "store", "busbar-store-memory");
+    let key = node.mint("min3-provider-call", None);
     let (status, body) = exchange(
         node.data,
         "POST",
         "/v1/chat/completions",
-        "",
+        &format!("Authorization: Bearer {key}\r\n"),
         format!(r#"{{"model":"{MODEL}","messages":[{{"role":"user","content":"ping"}}]}}"#)
             .as_bytes(),
     );
@@ -499,7 +500,15 @@ fn a_provider_call_dials_out_through_the_linked_http_image_and_the_memory_store_
 fn an_operator_credential_that_cannot_open_stops_the_boot_before_any_listener_accepts() {
     let dir = workdir();
     let (data, admin) = (boot::free_port(), boot::free_port());
-    write_configs(&dir, data, admin, Some("{ token: \"\" }"), None);
+    write_configs(
+        &dir,
+        data,
+        admin,
+        Some("{ token: \"\" }"),
+        None,
+        Chain::Keys,
+        "",
+    );
     let log = std::fs::File::create(dir.join("out.log")).expect("the boot log");
     let mut process = boot::Reap(
         Command::new(boot::exe())
@@ -540,5 +549,126 @@ fn an_operator_credential_that_cannot_open_stops_the_boot_before_any_listener_ac
     assert!(
         log.contains("serving auth"),
         "the boot stops at the operator instance's open, before listener assembly; log:\n{log}"
+    );
+}
+
+/// `auth.chain: []` names no verifier, so nobody could be admitted: the engine refuses the boot (BUSBAR-9007,
+/// 2723c6e305) and no listener ever accepts. The boot test's own configuration therefore carries the key verifier.
+#[test]
+fn an_empty_data_chain_is_refused_at_boot_before_any_listener_accepts() {
+    let dir = workdir();
+    let (data, admin) = (boot::free_port(), boot::free_port());
+    write_configs(&dir, data, admin, None, None, Chain::Empty, "");
+    let log = std::fs::File::create(dir.join("out.log")).expect("the boot log");
+    let mut process = boot::Reap(
+        Command::new(boot::exe())
+            .current_dir(&dir)
+            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+            .stdout(log.try_clone().expect("the boot log"))
+            .stderr(log)
+            .spawn()
+            .expect("boot the default binary"),
+    );
+    let read_log = || std::fs::read_to_string(dir.join("out.log")).unwrap_or_default();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        for (port, which) in [(admin, "admin"), (data, "data")] {
+            assert!(
+                TcpStream::connect(("127.0.0.1", port)).is_err(),
+                "the {which} listener accepted with an empty data chain; log:\n{}",
+                read_log()
+            );
+        }
+        if let Some(status) = process.try_wait().expect("try_wait") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the boot neither served nor stopped; log:\n{}",
+            read_log()
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let log = read_log();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!status.success(), "the boot is refused; log:\n{log}");
+    assert!(
+        log.contains("BUSBAR-9007"),
+        "the refusal names the empty chain; log:\n{log}"
+    );
+    assert!(
+        !log.contains("busbar listening"),
+        "no listener came up; log:\n{log}"
+    );
+}
+
+/// The first boot reaches every linked plane: one request per plane (llm, mcp, a2a, decisions, streaming) carrying the
+/// operator-minted key. Each is admitted and answered by its plane, or its route is refused at boot with a stated
+/// reason (an "is not served" line naming the route in the boot log). A refused plane answer carries its reason.
+#[test]
+fn each_linked_plane_answers_one_keyed_request_or_states_its_refusal() {
+    let (upstream, _calls) = spawn_upstream();
+    let node = Node::boot_with_planes(Some(upstream), true, true);
+    let key = node.mint("min3-planes", None);
+    let mcp_key = node.mint(
+        "min3-planes-mcp",
+        Some(&format!("http://127.0.0.1:{}/mcp", node.data)),
+    );
+    let chat = format!(r#"{{"model":"{MODEL}","messages":[{{"role":"user","content":"ping"}}]}}"#);
+    let decide = format!(r#"{{"model":"{MODEL}","state":{{"amount":7}}}}"#);
+    let mint_session = format!(r#"{{"session":{{"type":"realtime","model":"{MODEL}"}}}}"#);
+    let (key, mcp_key) = (key.as_str(), mcp_key.as_str());
+    let planes: [(&str, &str, &str, &str, String); 5] = [
+        ("llm", "/v1/chat/completions", key, "", chat),
+        (
+            "mcp",
+            "/mcp",
+            mcp_key,
+            "Accept: application/json, text/event-stream\r\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"min3-planes","version":"1"}}}"#.to_owned(),
+        ),
+        (
+            "a2a",
+            "/a2a",
+            key,
+            "",
+            r#"{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"role":"user","parts":[{"kind":"text","text":"hi"}],"messageId":"m1"}}}"#.to_owned(),
+        ),
+        ("decisions", "/v1/systemone", key, "", decide),
+        ("streaming", "/v1/realtime/client_secrets", key, "", mint_session),
+    ];
+    // The statuses admission answers: an admitted request is none of them.
+    const ADMISSION: [u16; 5] = [401, 403, 404, 405, 413];
+    let mut answers = Vec::new();
+    let mut failures = Vec::new();
+    for (plane, path, token, headers, body) in &planes {
+        let (status, text) = exchange(
+            node.data,
+            "POST",
+            path,
+            &format!("Authorization: Bearer {token}\r\n{headers}"),
+            body.as_bytes(),
+        );
+        let log = node.log();
+        let refused_at_boot = log
+            .lines()
+            .find(|line| line.contains("is not served") && line.contains(path))
+            .map(str::to_owned);
+        let short: String = text.chars().take(300).collect();
+        answers.push(format!("{plane} POST {path}: {status} {short}"));
+        let admitted = status != 0 && !ADMISSION.contains(&status);
+        let stated = admitted && ((200..300).contains(&status) || !text.trim().is_empty());
+        if !(stated || refused_at_boot.is_some()) {
+            failures.push(format!(
+                "{plane} POST {path}: {status} is neither a plane's answer nor a stated refusal: {short}"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{}\nanswers:\n{}\nlog:\n{}",
+        failures.join("\n"),
+        answers.join("\n"),
+        node.log()
     );
 }
