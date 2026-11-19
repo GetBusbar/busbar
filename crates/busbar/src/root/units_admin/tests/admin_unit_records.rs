@@ -124,6 +124,56 @@ async fn a_refused_admin_unit_seals_a_refused_record() {
     );
 }
 
+/// An administrative action is answered only after its record is committed: while the store
+/// holds the commit the answer is not given, and it is given once the commit lands.
+#[tokio::test]
+async fn an_admin_action_is_answered_only_after_its_record_is_committed() {
+    use busbar_kernel::persistence::journal::{BufferBudget, RuntimeJournal};
+    let budget = BufferBudget {
+        records: 64,
+        bytes: 1024 * 1024,
+    };
+    let faults = crate::root::store_double::NativeFaults::open().await;
+    let backend: Arc<dyn busbar_contract::persistence::PersistenceBackend> = faults.clone();
+    let core = crate::root::real_store::core_over(backend).await;
+    let journal = RuntimeJournal::open(core, 1, budget).await.unwrap();
+    let book = crate::root::durability::node_book(journal.clone(), budget)
+        .await
+        .unwrap();
+    let units = crate::root::kernel::ProductionUnits::admin_only_sharing(
+        Arc::new(Answers),
+        operator_door(),
+        Arc::clone(&book.durability),
+        None,
+    );
+    let committed_before = journal.read_records(budget).await.unwrap().len();
+    faults.pause(true);
+    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+    let answering = node.answer(request("POST", "/api/v1/admin/keys"));
+    tokio::pin!(answering);
+    tokio::time::timeout(std::time::Duration::from_millis(200), &mut answering)
+        .await
+        .expect_err("no answer while the record's commit is held");
+    assert!(
+        faults.waiting() > 0,
+        "the store's commit is what it waits on"
+    );
+    assert!(
+        journal.pending_records() > 0,
+        "its record is staged, not committed"
+    );
+    faults.pause(false);
+    let answer = tokio::time::timeout(std::time::Duration::from_secs(5), answering)
+        .await
+        .expect("answered once the commit lands");
+    assert_eq!(answer.status, 200);
+    assert_eq!(
+        journal.read_records(budget).await.unwrap().len(),
+        committed_before + 1,
+        "the answer followed its committed record"
+    );
+}
+
 #[tokio::test]
 async fn the_live_record_sink_writes_through_the_canonical_core_store() {
     use busbar_contract::records::{PlaneDisposition, PlaneRecord};
