@@ -271,6 +271,7 @@ fn a_native_child_does_not_take_a_second_concurrency_hold() {
 #[test]
 fn a_native_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing() {
     use crate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    // The group's whole budget is one flat fee: the first ordinary admission spends it exactly.
     const FEE_CENTS: i64 = 5;
     let groups = BTreeMap::from([(
         "g".to_string(),
@@ -278,7 +279,7 @@ fn a_native_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothin
             limits: vec![LimitCfg {
                 selected: None,
                 metric: LimitMetric::Budget,
-                amount: 1,
+                amount: 5,
                 per: Some(LimitWindow::Month),
                 scope: None,
                 on_exhaust: None,
@@ -293,7 +294,7 @@ fn a_native_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothin
     let money = Arc::new(PlaneMoney::new(Arc::clone(&gov), Arc::new(Posted)));
     let billing = PortBilling::new(
         Arc::clone(&money),
-        gov,
+        Arc::clone(&gov),
         Arc::new(UnitKeyMint::default()),
         Arc::new(crate::plane_driver::CoreAudit),
     );
@@ -303,7 +304,13 @@ fn a_native_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothin
         cost,
     };
 
+    // The parent is admitted while the group still has budget (a plane request charges its fee
+    // on the plane's own fee lane, which this card prices at nothing).
     let parent = r.billing.open(admit(&r, Some("g"))).unwrap();
+    // One ordinary request of the same key then spends the whole budget with its flat fee.
+    let _spent = gov
+        .try_admit(&r.cost, &key(Some("g")), "", NOW)
+        .expect("the budget covers exactly one flat fee");
     assert!(
         matches!(
             r.billing.open(admit(&r, Some("g"))),
@@ -312,8 +319,8 @@ fn a_native_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothin
                 ..
             })
         ),
-        "precondition: the parent's own fee spent the group's one-cent budget, so a new request \
-         of this key is refused on budget"
+        "precondition: the group's budget is spent, so a new request of this key is refused on \
+         budget"
     );
     assert_eq!(r.money.open_units(), 1, "only the parent is open");
 
