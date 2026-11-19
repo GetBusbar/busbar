@@ -29,9 +29,9 @@
 //! [`INBOX_HELD_MAX`] are the same figures `compose` holds a framed connection to).
 
 use std::collections::VecDeque;
+use std::future::Future as _;
 use std::io::{self, Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
-use std::future::Future as _;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -43,7 +43,8 @@ use busbar_contract::ids::StreamId;
 use busbar_contract::secure::SecureVec;
 use busbar_contract::storage::StorageSource;
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
-use busbar_plugin_abi::plane::{CARRIER_HTTP, CARRIER_WEBSOCKET};
+use busbar_kernel::config_validate::schemes::{dial_scheme_of_url, DialScheme};
+use busbar_plugin_abi::plane::CARRIER_DEFAULT;
 use busbar_plugin_abi::records::{
     record_size, tag, Fixed, PairRec, Records, U32Rec, U64Rec, Writer,
 };
@@ -132,28 +133,23 @@ pub struct Located {
     pub secure: bool,
     /// The carrier the scheme means when the plane says `CARRIER_DEFAULT`.
     pub carrier: u32,
+    /// The scheme's row: `scheme.carrier(named)` checks a carrier a plane names explicitly.
+    pub scheme: DialScheme,
 }
 
-/// Read `target` by core's scheme table (dial decision v2, section 3.2). The scheme is matched without regard to
-/// case; userinfo is refused (it is never a destination's, and configuration validation refuses it first).
+/// Read `target` by core's one scheme table (`busbar_kernel::config_validate::schemes`, dial decision v2 section
+/// 3.2), which configuration validation reads too. Userinfo is refused (it is never a destination's, and
+/// configuration validation refuses it first).
 ///
 /// # Errors
 /// The refusal, in words naming the scheme or the part that is wrong.
 pub fn locate(target: &str) -> Result<Located, String> {
-    let (scheme, rest) = target
-        .split_once("://")
-        .ok_or_else(|| format!("the destination `{target}` names no scheme"))?;
-    let (secure, port, carrier) = match scheme.to_ascii_lowercase().as_str() {
-        "http" => (false, 80_u16, CARRIER_HTTP),
-        "https" => (true, 443, CARRIER_HTTP),
-        "ws" => (false, 80, CARRIER_WEBSOCKET),
-        "wss" => (true, 443, CARRIER_WEBSOCKET),
-        other => {
-            return Err(format!(
-                "the destination scheme `{other}` is not one core dials (http, https, ws, wss)"
-            ))
-        }
-    };
+    let row = dial_scheme_of_url(target).map_err(|refused| refused.to_string())?;
+    let (secure, port) = (row.secured, row.default_port);
+    let carrier = row
+        .carrier(CARRIER_DEFAULT)
+        .map_err(|refused| refused.to_string())?;
+    let rest = target.split_once("://").map_or("", |(_, rest)| rest);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     if authority.is_empty() {
         return Err("the destination names no host".to_owned());
@@ -172,6 +168,7 @@ pub fn locate(target: &str) -> Result<Located, String> {
         name: secure.then(|| bare.to_owned()),
         secure,
         carrier,
+        scheme: row,
     })
 }
 

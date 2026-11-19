@@ -6,6 +6,7 @@
 //! image (`dist/default/tests/default_distribution_serves_from_min3_images.rs`).
 
 use super::*;
+use busbar_plugin_abi::plane::{CARRIER_HTTP, CARRIER_WEBSOCKET};
 
 #[test]
 fn every_row_of_the_scheme_table_and_its_default_port() {
