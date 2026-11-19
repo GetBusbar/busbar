@@ -29,7 +29,7 @@ use busbar_plugin_abi::host_side::HOST;
 use busbar_plugin_abi::need::ChainBytes;
 use busbar_plugin_abi::plane::{self, PlaneReq, Target};
 use busbar_plugin_abi::plugin::{Endpoints, Open};
-use busbar_plugin_abi::records::{tag, Out, Records, TokenRec, Writer};
+use busbar_plugin_abi::records::{tag, Out, Records, Reply, TokenRec, Writer};
 use busbar_plugin_abi::types::{Bytes, KindCode, Slice, Status, Str};
 use busbar_plugin_abi::Plane;
 
@@ -44,8 +44,8 @@ const FORGE: u32 = 1;
 /// The context the image forges: a session token (bit 63) of a slot and generation the host never handed it.
 const FORGED: u64 = busbar_ffi::TOKEN_SESSION | (1 << 32) | 7;
 
-/// The plane image: `request` opens a session; `upstream` and `render` answer OK, and on [`FORGE`] lead that
-/// answer with the forged session TOKEN.
+/// The plane image: `request` opens a session; `upstream`, `render` and the async `admin` answer OK, and on
+/// [`FORGE`] lead that answer with the forged session TOKEN.
 mod forger {
     use super::*;
 
@@ -103,6 +103,13 @@ mod forger {
             out: &mut Out<'_>,
         ) -> Result<(), Fail> {
             answer(what, out)
+        }
+        async fn admin(&self, _h: &'static Host, op: u32, _arg: ChainBytes) -> Result<Reply, Fail> {
+            let mut reply = Reply::new();
+            if op == FORGE {
+                reply.put_pod(tag::TOKEN, &TokenRec { token: FORGED })?;
+            }
+            Ok(reply)
         }
     }
 
