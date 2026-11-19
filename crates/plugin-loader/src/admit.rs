@@ -99,6 +99,19 @@ impl Admitted {
         self.plugin
     }
 
+    /// What was agreed at load: the second numbers of the core and of the kind this image was built
+    /// for. An admitted stamp passed `agree`, so these are the numbers the engine holds the image to:
+    /// it is never sent a record, field, position or call introduced after them, and a use that needs
+    /// a later element is refused for it, never served more weakly.
+    #[must_use]
+    pub fn agreed(&self) -> Agreed {
+        Agreed {
+            kind: self.kind(),
+            core_second: self.stamp.core_minor,
+            kind_second: self.stamp.kind_minor,
+        }
+    }
+
     /// Who vouched for this image in this admission.
     #[must_use]
     pub fn signer(&self) -> &Signer {
@@ -441,8 +454,8 @@ fn manifest_matches(
 
 /// Dropped-in plugin: read once, verify, load those bytes.
 /// 1 fstat (regular, ≤ 256 MiB) + read all; 2 sha256 + signature (Integrity, Signature); 3 scan::stamp
-/// (loader `scan.rs`); 4 exact: kind known, kind_abi, mechanism, layout, mechanism_layout, semantic,
-/// mechanism_semantic, target; 5 engine_min <= ENGINE <= engine_max; 6 stamp.crypto, decided only from the
+/// (loader `scan.rs`); 4 agreement (`agree`): kind known; core then kind: first number equal, second not above
+/// this engine's, fingerprint of exactly that version; target; 5 a stated engine range holds ENGINE; 6 stamp.crypto, decided only from the
 /// facade (no host-side table): "host" => accepted; "external" => accepted only if
 /// `busbar_crypto::EXTERNAL_PLUGINS` (round 13: a required compile-time backend const, §5.2; a FIPS backend
 /// states false, CRYPTO-SEAM §9 "no external"; round 12: the facade's answer is the whole gate, as ABI-1.6.0 step 4: there is **no**
@@ -735,7 +748,7 @@ fn printable_names(names: &str) -> String {
     }
 }
 
-/// The 272 little-endian bytes of a stamp (IF §7.4 offsets), to compare with the header's own.
+/// The 272 little-endian bytes of a stamp (format 3 offsets), to compare with the header's own.
 #[cfg(unix)]
 fn stamp_bytes(s: &Stamp) -> [u8; scan::STAMP_SIZE] {
     let mut b = [0u8; scan::STAMP_SIZE];
@@ -745,12 +758,13 @@ fn stamp_bytes(s: &Stamp) -> [u8; scan::STAMP_SIZE] {
     put(20, &s.size.to_le_bytes());
     put(24, &s.kind.to_le_bytes());
     put(28, &s.kind_abi.to_le_bytes());
-    put(32, &s.mechanism.to_le_bytes());
+    put(32, &s.core_abi.to_le_bytes());
     put(36, &s.flags.to_le_bytes());
     put(40, &s.layout.to_le_bytes());
-    put(48, &s.mechanism_layout.to_le_bytes());
-    put(56, &s.semantic.to_le_bytes());
-    put(64, &s.mechanism_semantic.to_le_bytes());
+    put(48, &s.core_layout.to_le_bytes());
+    put(56, &s.kind_minor.to_le_bytes());
+    put(60, &s.core_minor.to_le_bytes());
+    put(64, &s._reserved2);
     for (at, v) in [(72, s.engine_min), (80, s.engine_max)] {
         put(at, &v.major.to_le_bytes());
         put(at + 2, &v.minor.to_le_bytes());

@@ -83,7 +83,13 @@ fn a_compiled_in_image_is_admitted_on_its_static() {
     assert!(matches!(&*admitted.image, Image::Linked));
     assert_eq!(admitted.sha256(), None);
     assert_eq!(admitted.stamp.layout, busbar_plugin_abi::secret::FP);
-    assert_eq!(admitted.stamp.mechanism_layout, CORE_FP);
+    assert_eq!(admitted.stamp.core_layout, CORE_CONTRACT.wire);
+    let agreed = admitted.agreed();
+    assert_eq!(agreed.kind, KindCode::Secret);
+    assert_eq!(
+        (agreed.core_second, agreed.kind_second),
+        (CORE_CONTRACT.speaks.second, secret_contract().speaks.second)
+    );
     assert_eq!(admitted.plugin().kind(), Some(KindCode::Secret));
     // Step 6 never looks past "host" for a Rust plugin: a backend that loads no external plugin admits it.
     assert!(admit_linked_with(&REGISTERED, &STUB).is_ok());
@@ -95,9 +101,10 @@ fn a_mismatched_sdk_build_is_refused_layout() {
         admit_linked(&PLUGIN).expect_err("this test kind's FP is not the engine's secret FP");
     assert_eq!(refusal.code, RefusalCode::Layout);
     assert_eq!(refusal.field, "layout");
-    assert_eq!(
-        refusal.want,
-        format!("{:#018x}", busbar_plugin_abi::secret::FP)
+    assert!(
+        refusal.want.ends_with("unreleased or altered contract"),
+        "{}",
+        refusal.want
     );
     assert_eq!(refusal.plugin.as_deref(), Some(env!("CARGO_PKG_NAME")));
     assert!(refusal.to_string().contains("a mismatched SDK build"));
@@ -416,4 +423,153 @@ mod signer {
             second.signer()
         );
     }
+}
+
+// ---- agreement at load: the outcomes of DESIGN-interface-revision C.4, on a real stamp ----
+
+/// What this engine speaks of the secret kind.
+fn secret_contract() -> busbar_plugin_abi::versions::Contract {
+    contract_of(KindCode::Secret, busbar_plugin_abi::secret::FP)
+}
+
+/// The stamp of the compiled-in fixture as admitted: the engine's own versions and fingerprints.
+fn own_stamp() -> Stamp {
+    admit_linked(&REGISTERED)
+        .expect("the engine's own fingerprints admit")
+        .stamp
+}
+
+fn refused(change: impl FnOnce(&mut Stamp)) -> Refusal {
+    let mut stamp = own_stamp();
+    change(&mut stamp);
+    agreed(&stamp, &CryptoFacts::FACADE).expect_err("the changed stamp does not agree")
+}
+
+#[test]
+fn the_engines_own_versions_agree_and_are_remembered() {
+    let agreed = agreed(&own_stamp(), &CryptoFacts::FACADE).expect("agrees");
+    assert_eq!(agreed.kind, KindCode::Secret);
+    assert!(agreed.knows(secret_contract().speaks.second));
+    assert!(!agreed.knows(secret_contract().speaks.second + 1));
+    assert!(!agreed.knows_core(CORE_CONTRACT.speaks.second + 1));
+}
+
+#[test]
+fn a_kind_second_number_above_the_engines_is_refused_naming_both() {
+    let speaks = secret_contract().speaks;
+    let refusal = refused(|s| s.kind_minor += 1);
+    assert_eq!(refusal.code, RefusalCode::KindAbi);
+    assert_eq!(refusal.field, "kind_abi");
+    assert_eq!(
+        refusal.have,
+        format!("built for secret {}.{}", speaks.first, speaks.second + 1)
+    );
+    assert_eq!(
+        refusal.want,
+        format!(
+            "this engine speaks secret {speaks}: upgrade the engine or use the plugin's build for secret {speaks}"
+        )
+    );
+    assert_eq!(refusal.plugin.as_deref(), Some(NAME));
+}
+
+#[test]
+fn a_core_second_number_above_the_engines_is_refused_naming_both() {
+    let speaks = CORE_CONTRACT.speaks;
+    let refusal = refused(|s| s.core_minor += 1);
+    assert_eq!(refusal.code, RefusalCode::Mechanism);
+    assert_eq!(refusal.field, "core_abi");
+    assert_eq!(
+        refusal.have,
+        format!("built for core {}.{}", speaks.first, speaks.second + 1)
+    );
+    assert!(refusal.want.starts_with(&format!(
+        "this engine speaks core {speaks}: upgrade the engine"
+    )));
+}
+
+#[test]
+fn another_kind_first_number_is_refused_naming_both() {
+    let speaks = secret_contract().speaks;
+    for other in [speaks.first - 1, speaks.first + 1] {
+        let refusal = refused(|s| s.kind_abi = other);
+        assert_eq!(refusal.code, RefusalCode::KindAbi);
+        assert_eq!(
+            refusal.have,
+            format!("built for secret {other}.{}", speaks.second)
+        );
+        assert_eq!(
+            refusal.want,
+            format!(
+                "this engine speaks secret {speaks}: use the plugin's build for secret {}",
+                speaks.first
+            )
+        );
+    }
+}
+
+#[test]
+fn another_core_first_number_is_refused_before_the_kind_is_read() {
+    let refusal = refused(|s| {
+        s.core_abi += 1;
+        // A kind disagreement too: the core's is the one reported.
+        s.kind_abi += 1;
+    });
+    assert_eq!(refusal.code, RefusalCode::Mechanism);
+    assert!(refusal.have.starts_with("built for core "));
+}
+
+#[test]
+fn an_altered_fingerprint_is_refused_for_the_kind_and_for_the_core() {
+    let refusal = refused(|s| s.layout ^= 1);
+    assert_eq!(
+        (refusal.code, refusal.field),
+        (RefusalCode::Layout, "layout")
+    );
+    assert!(refusal.have.starts_with("secret "));
+    assert!(refusal.want.ends_with("unreleased or altered contract"));
+    let refusal = refused(|s| s.core_layout ^= 1);
+    assert_eq!(
+        (refusal.code, refusal.field),
+        (RefusalCode::Layout, "core_layout")
+    );
+    assert!(refusal.have.starts_with("core "));
+}
+
+/// The dev form of a stamp: this build's own stamp names the unreleased version at the label (no
+/// contract has a released line in dev). A dev engine loads it; an engine built for release does not.
+#[test]
+fn an_engine_built_for_release_refuses_this_dev_stamp() {
+    use busbar_plugin_abi::versions::{Build, Disagree};
+    let stamp = own_stamp();
+    let claims = claims(&stamp, KindCode::Secret);
+    assert!(crate::agree::agree(Build::Dev, &claims, &CORE_CONTRACT, &secret_contract()).is_ok());
+    let no = crate::agree::agree(Build::Release, &claims, &CORE_CONTRACT, &secret_contract())
+        .expect_err("a release engine has no released line for an unreleased version");
+    assert!(no.is_core, "the core is judged first");
+    assert_eq!(
+        no.why,
+        Disagree::Unreleased {
+            version: CORE_CONTRACT.speaks
+        }
+    );
+    assert_eq!(no.refusal().code, RefusalCode::Mechanism);
+    assert!(no.want_text().contains("loads released builds only"));
+}
+
+#[test]
+fn a_stated_engine_range_that_excludes_this_engine_is_refused_and_the_default_is_any() {
+    let own = own_stamp();
+    assert_eq!(
+        (own.engine_min, own.engine_max),
+        (
+            busbar_plugin_abi::versions::ENGINE_ANY_MIN,
+            busbar_plugin_abi::versions::ENGINE_ANY_MAX
+        ),
+        "a plugin that states no range is stamped with every engine"
+    );
+    let refusal = refused(|s| {
+        s.engine_min = busbar_plugin_abi::versions::ENGINE_ANY_MAX;
+    });
+    assert_eq!(refusal.code, RefusalCode::EngineRange);
 }
