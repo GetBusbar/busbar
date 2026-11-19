@@ -12,5 +12,4 @@ pub(crate) mod guard;
 pub(crate) mod lines;
 pub(crate) mod process;
 pub(crate) mod proxy;
-pub(crate) mod seal;
 pub(crate) mod tls;

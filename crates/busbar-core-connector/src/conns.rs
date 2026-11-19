@@ -26,7 +26,6 @@ pub mod process;
 pub mod proxy;
 pub mod proxy_route;
 pub mod raw_progress;
-pub(crate) mod seal;
 pub mod secure_vec;
 pub mod socket;
 pub mod spawn_env;
