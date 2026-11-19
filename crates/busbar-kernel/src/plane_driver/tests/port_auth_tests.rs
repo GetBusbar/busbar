@@ -530,7 +530,7 @@ mod carriers {
         admit, subject_identity, Credentials, NoTickets, Presented, Principal, Subject,
     };
     use crate::plane_driver::port_intents::{IntentHost, Looked, Namespace, Resolver};
-    use crate::plane_driver::port_money::{AuditRow, PortMoney};
+    use crate::plane_driver::port_money::PortMoney;
     use crate::plane_driver::port_serve::{run_session, AuditOnly, Books, Drive, UnitBooks};
     use crate::plane_driver::port_session::{finish, Calls, Effects, ToClient};
     use crate::plane_driver::AuditSink;
@@ -1437,7 +1437,7 @@ mod carriers {
         let planes = [crate::plane_driver::provider_catalog::ProviderPlane {
             instance: "chat".into(),
             image: "image-chat".into(),
-            dialects: vec!["wire-a".to_owned()],
+            dialects: ["wire-a".to_owned()].into(),
             schema: SCHEMA.into(),
         }];
         let resolved = crate::config::resolve_with_provider_planes(&deploy, &definitions, &planes)
