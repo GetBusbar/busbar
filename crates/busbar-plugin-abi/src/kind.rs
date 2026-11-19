@@ -585,8 +585,9 @@ macro_rules! kind {
         /// is the host's one clock reading for the operation. The session of a session method is not an
         /// argument: the host's session handle puts its own token in the call.
         pub mod pack {
-            #[allow(unused_imports)]
             use super::*;
+            /// Ties this import to the kind's own table size, so it is used even when no method names a kind type.
+            const _: usize = ENTRIES;
             $(
                 #[allow(clippy::too_many_arguments)]
                 pub fn $name<R>(

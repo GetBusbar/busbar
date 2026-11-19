@@ -28,7 +28,7 @@ use crate::host_services::{
     ServingGeneration,
 };
 use crate::plane_driver::port_admission::Pending;
-use crate::plane_driver::port_intents::subject_scope;
+use crate::plane_driver::port_intents::{handle_scope, subject_scope};
 use crate::plane_driver::port_serve::Ran;
 use crate::plane_driver::request_admission::{RequestAllocation, RequestRoutes, RequestWalk};
 use crate::refusal::ClientRefusal;
@@ -68,6 +68,9 @@ struct Interactions {
     dropped: Arc<AtomicUsize>,
     ended: AtomicUsize,
     upstreams: AtomicUsize,
+    /// The server-issued handle the request presents (an `Mcp-Session-Id`), stated as HANDLE
+    /// before the lookup.
+    handle: Option<&'static str>,
 }
 
 impl Calls for Interactions {
@@ -79,6 +82,9 @@ impl Calls for Interactions {
         _: &[u8],
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<Held, PortError> {
+        if let Some(handle) = self.handle {
+            sink(PlaneOut::Handle(handle));
+        }
         sink(PlaneOut::Lookup {
             flags: LK_CALLER,
             limit: 1,
