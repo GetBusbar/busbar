@@ -84,6 +84,22 @@ mod tests {
         }
     }
 
+    /// The owner's rule: an old setting is converted, never refused. The three launch variables
+    /// whose settings are now the engine's own norm start the engine (each is said once instead).
+    #[test]
+    fn the_worker_and_upstream_launch_variables_never_refuse_a_start() {
+        for name in [
+            "BUSBAR_WORKER_THREADS",
+            "BUSBAR_UPSTREAM_HTTP1_ONLY",
+            "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE",
+        ] {
+            assert!(
+                check_launch_env(env_of(&[(name, "1")])).is_ok(),
+                "{name} set must not refuse a start"
+            );
+        }
+    }
+
     #[test]
     fn retired_launch_check_preserves_the_empty_provider_and_presence_rules() {
         assert!(check_launch_env(env_of(&[])).is_ok());

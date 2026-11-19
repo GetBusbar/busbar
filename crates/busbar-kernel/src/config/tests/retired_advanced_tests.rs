@@ -12,7 +12,7 @@ use super::tests::base_deploy;
 use super::*;
 
 /// Every removed `advanced` key, with a value an old configuration carried.
-const REMOVED: [(&str, &str); 1] = [("rate_sweep_interval", "64")];
+const REMOVED: [(&str, &str); 2] = [("rate_sweep_interval", "64"), ("worker_threads", "3")];
 
 /// The `advanced` block as a 1.5.5 configuration wrote it (1.5.5's own keys beside the removed one).
 fn v1_5_5(key: &str, value: &str) -> String {
@@ -96,5 +96,17 @@ fn an_admin_document_edit_setting_a_removed_advanced_key_applies_and_drops_it() 
             let written = busbar_contract::yaml::to_string(&deploy.advanced).expect("serializes");
             assert!(!written.contains(key), "{key} is dropped: {written}");
         }
+    }
+}
+
+/// Each removed key an old configuration carries is named, so `config::resolve` says its one line.
+#[test]
+fn every_removed_key_carried_is_named_with_its_line() {
+    for (key, value) in REMOVED {
+        let deploy = boots(&v1_5_5(key, value));
+        let named: Vec<&str> = deploy.advanced.removed().collect();
+        assert_eq!(named, [key], "{key} is named once");
+        let line = sections::removed_advanced_line(key).expect("a line for every removed key");
+        assert!(line.starts_with(&format!("advanced.{key} ")), "{line}");
     }
 }
