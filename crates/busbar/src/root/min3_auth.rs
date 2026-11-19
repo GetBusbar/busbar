@@ -11,6 +11,7 @@ pub(crate) use busbar_kernel::auth::native_chain::{
     AuthInstance, AuthOwners, NativeChain, OpenedAuth,
 };
 use busbar_kernel::auth::native_policy::{BindingsPolicy, ChainPolicy};
+use busbar_kernel::config::IdentityProviderCfg;
 use busbar_kernel::directory::Holds;
 use busbar_kernel::plane_grants::KeyRefresh;
 use busbar_kernel::state::App;
@@ -28,9 +29,24 @@ use busbar_ports::{
     CallCx,
 };
 
+/// Whether one `identity-providers:` definition is opened as a native auth instance before the
+/// admin chain installs (`min3_admin_auth::install`). Every module but the built-in `keys` is.
+/// The operator credential's row is an ordinary auth instance opened with its own settings, so it
+/// is opened whenever its definition carries settings (older settings shapes are the plugin's to
+/// convert at open); with none it has nothing to judge, opens nothing and stays unset.
+pub(crate) fn opens_instance(provider: &IdentityProviderCfg) -> bool {
+    let module = provider.module.trim();
+    if busbar_kernel::config::names_operator(module) {
+        return !provider.settings.is_empty();
+    }
+    !busbar_kernel::config::is_builtin_identity_module(module)
+}
+
 /// One complete candidate's auth handles and per-instance refresh/hold owners.
 pub(crate) struct AuthSet {
     instances: BTreeMap<Arc<str>, Arc<AuthInstance>>,
+    /// The instances' names in the order they were opened (the configuration's order).
+    opened: Vec<Arc<str>>,
     pub(crate) owners: Arc<AuthOwners>,
 }
 
@@ -42,6 +58,7 @@ impl AuthSet {
         refresh_interval: Duration,
     ) -> Result<Self, String> {
         let mut instances = BTreeMap::new();
+        let mut order = Vec::with_capacity(opened.len());
         let mut ids = BTreeSet::new();
         for opened in opened {
             let id = opened.who.instance;
@@ -52,6 +69,7 @@ impl AuthSet {
                 ));
             }
             let held = holds.for_inbound(id).unwrap_or_default().into();
+            order.push(Arc::clone(&name));
             instances.insert(
                 name,
                 Arc::new(AuthInstance {
@@ -63,12 +81,20 @@ impl AuthSet {
         }
         Ok(Self {
             instances,
+            opened: order,
             owners: Arc::new(owners),
         })
     }
 
     pub(crate) fn get(&self, name: &str) -> Option<&Arc<AuthInstance>> {
         self.instances.get(name)
+    }
+
+    /// Every opened instance with its name, in the order they were opened.
+    pub(crate) fn in_opened_order(&self) -> impl Iterator<Item = (&str, &Arc<AuthInstance>)> {
+        self.opened
+            .iter()
+            .filter_map(|name| Some((&**name, self.instances.get(name)?)))
     }
 
     /// Names have already been resolved by the selected route's effective_chain rule.

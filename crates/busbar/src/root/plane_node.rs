@@ -241,6 +241,16 @@ impl Node {
         Ok(())
     }
 
+    /// The account a native dial's framer session is charged to: the bound boot admission's Data class, the account
+    /// inbound connections are charged to. `None` before the boot binds it.
+    pub(crate) fn dial_storage(&self) -> Option<busbar_contract::storage::StorageSource> {
+        self.lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(TerminalBook::data_source)
+    }
+
     /// Production binds the actual boot ProcessAdmission in main; nothing is bound by default.
     #[cfg(not(test))]
     fn fixture_terminal_book() -> Option<TerminalBook> {

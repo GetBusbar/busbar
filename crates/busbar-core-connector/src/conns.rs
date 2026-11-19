@@ -26,6 +26,8 @@ pub mod hostio;
 pub mod io;
 pub(crate) mod line;
 pub mod listen;
+pub(crate) mod native_conns;
+pub mod native_dial;
 pub mod pool;
 pub mod process;
 pub(crate) mod program;
@@ -340,6 +342,13 @@ mod refusal_text {
     pub(crate) const PLAINTEXT: &str = "plaintext is not admitted to this destination";
     /// None of the above.
     pub(crate) const CHECKS: &str = "the connector's own checks refused the target";
+    /// The build assigns no transport image the destination's carrier.
+    pub(crate) const NO_CARRIER: &str =
+        "no transport image carries this destination's protocol in this build";
+    /// The operator's egress proxy selects the destination, and a natively carried dial does not go through a
+    /// proxy: it is refused, never dialled around the proxy.
+    pub(crate) const NATIVE_PROXY: &str =
+        "the egress proxy selects this destination and its dial cannot go through a proxy yet";
 }
 
 /// A guard verdict in words (never `guard::Refusal`'s Display: its catch-all and the operator's
@@ -889,6 +898,8 @@ pub(crate) struct Held {
     leads: AtomicBool,
     /// It follows another open's claimed dial (rule 7).
     following: Mutex<Option<Following>>,
+    /// THE SECOND KIND OF ENTRY: an exchange dialled natively ([`native_conns`]); `None` on every framed entry.
+    native: Option<native_conns::NativeHeld>,
 }
 
 /// The instant a request's `timeout_ms` (the plugin's own number, unclamped: `RequestPiece` and
@@ -1073,6 +1084,7 @@ impl Held {
             token: Mutex::new(None),
             leads: AtomicBool::new(false),
             following: Mutex::new(None),
+            native: None,
         }
     }
 
@@ -1274,6 +1286,13 @@ pub struct Connector {
     /// address; `proxy` (`false`): a name that does not resolve here is CONNECTed by name and its
     /// address check is the proxy's (BUSBAR-3149 at boot).
     proxy_by_address: std::sync::atomic::AtomicBool,
+    /// THE NATIVE CARRIERS ([`Connector::carry_natively`]): the transport instance the build assigned each
+    /// outbound carrier, and the account their sessions are charged to; set once at boot, held for the process.
+    pub(crate) native: std::sync::OnceLock<native_conns::Natives>,
+    /// The needs served natively ([`native_conns::NativeNeed`]), beside `over` (the framed ones).
+    pub(crate) native_needs: Mutex<HashMap<(InstanceId, NeedId), Arc<native_conns::NativeNeed>>>,
+    /// The idle native connections, per core ([`native_conns::Idle`]).
+    pub(crate) native_idle: native_conns::Idle,
 }
 
 impl std::fmt::Debug for Connector {
@@ -1308,6 +1327,9 @@ impl Default for Connector {
             spawn_secrets: None,
             trust: arc_swap::ArcSwapOption::empty(),
             proxy_by_address: std::sync::atomic::AtomicBool::new(true),
+            native: std::sync::OnceLock::new(),
+            native_needs: Mutex::new(HashMap::new()),
+            native_idle: native_conns::Idle::default(),
         }
     }
 }
@@ -1586,6 +1608,9 @@ impl Connector {
         target: &str,
         timeout_ms: u64,
     ) -> Result<(HeadDefaults, Option<Arc<LocatedTarget>>), ConnError> {
+        if let Some(native) = self.native_need(owner, need) {
+            return self.native_head(&native, target).map(|head| (head, None));
+        }
         let (door, declared, members) = self
             .over
             .lock()
@@ -1674,6 +1699,45 @@ impl Connector {
         Ok(served.entry.clone())
     }
 
+    /// Where `target` goes per the entry serving `owner`'s `need`, framed or native: `None` = no such need;
+    /// `Some(None)` = its entry does not locate the target; else the place and whether a carrier (carried as
+    /// itself) serves it.
+    fn place_of(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+    ) -> Option<Option<(native_conns::Placed, bool)>> {
+        let door = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|n| Arc::clone(&n.door));
+        if let Some(door) = door {
+            let carried = door.facts().role == ROLE_CARRIER;
+            return Some(self.located(&door, target).map(|located| {
+                (
+                    native_conns::Placed {
+                        authority: located.authority,
+                        secure: located.secure,
+                    },
+                    carried,
+                )
+            }));
+        }
+        self.native_need(owner, need)?;
+        Some(native_dial::locate(target).ok().map(|located| {
+            (
+                native_conns::Placed {
+                    authority: located.authority,
+                    secure: located.secure,
+                },
+                false,
+            )
+        }))
+    }
+
     /// Where `target` goes, per the entry `door` serves: its authority, security and name.
     fn located(&self, door: &Arc<dyn FramerDoor>, target: &str) -> Option<framer::Located> {
         if door.facts().role == ROLE_CARRIER {
@@ -1699,6 +1763,7 @@ impl Connector {
     ) {
         self.judge.own_ports_applied(own_ports);
         self.pools.reconfigure(posture);
+        crate::off_path::conns::flush_native_idle(&self.native_idle, None);
         let previous = std::mem::replace(
             &mut *self.transports.write().expect("transports"),
             transports,
@@ -1782,11 +1847,16 @@ impl Connector {
     /// Whether `transport` is served by a FRAMER (`http`, `grpc`, ...), not a carrier (`tcp`,
     /// `unix`, ...) carried as itself.
     fn framed_transport(&self, transport: &str) -> bool {
-        self.transports
+        match self
+            .transports
             .read()
             .expect("transports")
             .dialing(transport)
-            .is_some_and(|served| served.entry.door.facts().role != ROLE_CARRIER)
+        {
+            Some(served) => served.entry.door.facts().role != ROLE_CARRIER,
+            // No old entry: a scheme core dials natively is framed by its carrier's transport.
+            None => Self::dials_natively(transport),
+        }
     }
 
     /// Flag `diag` for `owner` once: the first time an instance meets an ABI rule, one coded line
@@ -1895,13 +1965,31 @@ impl Connector {
                 )
             })
         };
-        let Some((door, alpn)) = served else {
-            self.set_need(owner, need, None);
-            return Err(ConnError::Refused);
-        };
-        self.slab.declare(owner, need);
         // Made once at declaration and shared by every open (an `Arc` clone, not a copy).
         let declared_target: Option<Arc<str>> = declared_target.map(Arc::from);
+        let Some((door, alpn)) = served else {
+            self.set_need(owner, need, None);
+            // No old entry serves the scheme: core's scheme table dials it natively, through the transport the
+            // build assigns its carrier (looked up at each open: a carrier no image carries is refused there).
+            if !Self::dials_natively(transport) {
+                self.set_native_need(owner, need, None);
+                return Err(ConnError::Refused);
+            }
+            self.slab.declare(owner, need);
+            self.set_native_need(
+                owner,
+                need,
+                Some(native_conns::NativeNeed {
+                    egress_class,
+                    declared_target,
+                    tls,
+                    tls_policy,
+                }),
+            );
+            return Ok(());
+        };
+        self.set_native_need(owner, need, None);
+        self.slab.declare(owner, need);
         self.set_need(
             owner,
             need,
@@ -1929,17 +2017,11 @@ impl Connector {
         target: &str,
         egress_class: u32,
     ) -> Result<(), NeedRefusal> {
-        let door = self
-            .over
-            .lock()
-            .expect("needs")
-            .get(&(owner, need))
-            .map(|n| Arc::clone(&n.door))
-            .ok_or(NeedRefusal::Policy(refusal_text::CHECKS))?;
         let unlocated = |_| NeedRefusal::Policy(refusal_text::UNLOCATED);
         endpoint::named(target).map_err(unlocated)?;
-        let located = self
-            .located(&door, target)
+        let (located, carried) = self
+            .place_of(owner, need, target)
+            .ok_or(NeedRefusal::Policy(refusal_text::CHECKS))?
             .ok_or(NeedRefusal::Policy(refusal_text::UNLOCATED))?;
         endpoint::named(&located.authority).map_err(unlocated)?;
         if !scheme_admits(egress_class, located.secure) {
@@ -1972,7 +2054,7 @@ impl Connector {
                     if class_admits(
                         egress_class,
                         located.secure,
-                        (door.facts().role == ROLE_CARRIER && carrier_window_admits(egress_class))
+                        (carried && carrier_window_admits(egress_class))
                             || self.plaintext_admitted(&located.authority)
                             || self.owner_accepts_plaintext(owner),
                         &[],
@@ -2006,6 +2088,7 @@ impl Connector {
 
     /// Record (or, with `None`, drop) what the connector holds for `owner`'s `need`: a member of an
     pub(crate) fn set_need(&self, owner: InstanceId, need: NeedId, record: Option<DeclaredNeed>) {
+        let dropped = record.is_none();
         let before = {
             let mut over = self.over.lock().expect("needs");
             match record {
@@ -2014,6 +2097,27 @@ impl Connector {
             }
         };
 
+        drop(before);
+        // A need dropped is dropped whichever kind of entry served it.
+        if dropped {
+            self.set_native_need(owner, need, None);
+        }
+    }
+
+    /// Record (or, with `None`, drop) the native need `owner` declared as `need`.
+    pub(crate) fn set_native_need(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        record: Option<native_conns::NativeNeed>,
+    ) {
+        let before = {
+            let mut needs = self.native_needs.lock().expect("native needs");
+            match record {
+                Some(r) => needs.insert((owner, need), Arc::new(r)),
+                None => needs.remove(&(owner, need)),
+            }
+        };
         drop(before);
     }
 
@@ -2994,6 +3098,13 @@ impl Connector {
             self.settle(&held, Some(waker))?;
             return Err(ConnError::Pending);
         }
+        if let Some(native) = &held.native {
+            let read = self.read_native(native, waker, buf);
+            if read.is_ok() {
+                held.answered();
+            }
+            return read;
+        }
         let mut read = match &held.dialled {
             Some(d) => self.read_dialled(&held, d, waker, buf),
             None => self.read_held(&held, waker, buf),
@@ -3635,6 +3746,10 @@ impl DeclaredConns for Connector {
             return Ok(());
         }
         let waker = self.waker(caller, ticket);
+        if let Some(native) = &held.native {
+            held.watch_deadlines(DeadlineInterest::Ticket(ticket), &waker);
+            return self.landed_native(native, &waker);
+        }
         held.watch_deadlines(DeadlineInterest::Ticket(ticket), &waker);
         if !self.settle(&held, Some(&waker))? {
             return Err(ConnError::Pending);
@@ -3677,6 +3792,7 @@ impl DeclaredConns for Connector {
             .expect("needs")
             .get(&(owner, need))
             .is_some_and(|d| d.door.facts().role == ROLE_FRAMER)
+            || self.native_need(owner, need).is_some()
     }
 
     fn serves_scheme(&self, transport: &str) -> bool {
@@ -3701,6 +3817,9 @@ impl DeclaredConns for Connector {
 
     fn cause(&self, owner: InstanceId, conn: ConnId) -> Option<ConnCause> {
         let (_, held) = self.slab.get(owner, conn).ok()?;
+        if let Some(native) = &held.native {
+            return Self::native_cause(native);
+        }
         let (line, _) = held.line()?;
         line.cause()
     }
@@ -4045,53 +4164,13 @@ impl Connector {
             return Err(ConnError::AuthRefused);
         }
 
-        let authority = crate::off_path::conns::lowered(planned.authority());
-        let own = (!desc.member.is_empty())
-            .then(|| {
-                self.member_anchored
-                    .lock()
-                    .expect("anchors")
-                    .get(caller, need, desc.member)
-                    .filter(|(at, _)| *at == authority)
-                    .map(|(_, sealed)| sealed.clone())
-            })
-            .flatten();
-
-        let anchored_as = own
-            .is_some()
-            .then(|| crate::off_path::conns::owned(desc.member));
-
-        // The lowered authority keys the anchor books here and the pool below: it is made once,
-        // lent to the books' key and taken back.
-        let (anchors, authority) = match own {
-            Some(sealed) => (sealed, authority),
-            None => {
-                let at = (caller, need, authority);
-                let anchored = self.anchored.lock().expect("anchors");
-                let own = anchored.get(&at);
-                let anchors = match self.registered.lock().expect("anchors").get(&at) {
-                    Some(registered) => registered.held(own)?,
-                    None => own.cloned(),
-                };
-                (anchors, at.2)
-            }
-        };
-
-        let anchors = if let Some(sealed) = anchors.as_ref().filter(|s| !s.extra_anchors.is_empty())
-        {
-            let current = if record.tls.is_some() {
-                record.tls_policy.as_ref()
-            } else {
-                self.tls_policy.as_ref()
-            };
-            if sealed.policy.as_ref() != current {
-                Some(tls::client::rebase(sealed, current).map_err(|_| ConnError::Refused)?)
-            } else {
-                anchors
-            }
-        } else {
-            anchors
-        };
+        let (anchors, authority, anchored_as) = self.anchors_for(
+            caller,
+            need,
+            desc.member,
+            crate::off_path::conns::lowered(planned.authority()),
+            (record.tls.is_some(), record.tls_policy.as_ref()),
+        )?;
 
         let sealed = anchors.clone().map(Same::of);
         if anchors.as_ref().is_some_and(|a| {
@@ -4331,6 +4410,30 @@ impl Connector {
         let read = viewed.as_ref().unwrap_or(desc);
         if request_head_is_refused(caller, need, read, authority_held) {
             return Err(ConnError::Refused);
+        }
+
+        if let Some(native) = self.native_need(caller, need) {
+            // A natively served need has no member programs: a field only a program reads is refused, as below.
+            if prepare
+                || read
+                    .fields
+                    .iter()
+                    .any(|(name, _)| program::is_expected_field(name))
+            {
+                return Err(ConnError::Refused);
+            }
+            drop(viewed);
+            drop(lent);
+            let held = self.open_native(
+                (caller, need),
+                desc,
+                &native,
+                (started, open_timeout),
+                require_secure,
+                owned,
+                why,
+            )?;
+            return self.slab.insert(caller, need, held);
         }
 
         let declared = self
@@ -4599,6 +4702,9 @@ impl Conns for Connector {
         if let Some(d) = held.dialled.as_ref() {
             return d.write(bytes, end, text);
         }
+        if let Some(native) = &held.native {
+            return self.write_native(native, bytes);
+        }
         if !self.settle(&held, None)? {
             let mut judging = held.judging.lock().expect("judging");
 
@@ -4680,6 +4786,11 @@ impl Conns for Connector {
                 }
                 continue;
             }
+            // A native entry has no look-ahead of its answer: it is named ready, and its read answers Pending (with
+            // the ticket's waker kept) when nothing has arrived.
+            if held.native.is_some() {
+                return Ok(at);
+            }
             if held.rest.lock().expect("rest").piece.is_some() {
                 return Ok(at);
             }
@@ -4711,6 +4822,9 @@ impl Conns for Connector {
         held.within_due()?;
         if let Some((member, lease)) = &held.lease {
             return member.facts(*lease);
+        }
+        if let Some(native) = &held.native {
+            return Self::native_facts(native);
         }
         if !self.settle(&held, None)? {
             return Err(ConnError::Pending);
@@ -4763,6 +4877,9 @@ impl Conns for Connector {
         }
         if let Some(d) = &held.dialled {
             d.close();
+        }
+        if let Some(native) = &held.native {
+            self.close_native(native);
         }
         if let Some((line, stream)) = line {
             if held.uncommitted.load(Ordering::Acquire) {
@@ -4829,16 +4946,28 @@ impl PollConns for Connector {
             .expect("needs")
             .get(&(owner, need))
             .map(Arc::clone);
-        let door = declared.as_ref().map(|d| Arc::clone(&d.door));
-        let base = declared
+        let native = declared
+            .is_none()
+            .then(|| self.native_need(owner, need))
+            .flatten();
+        // The need's own client config and its policy, framed or native; else the connector's.
+        let own = declared
             .as_ref()
-            .and_then(|d| d.tls.as_deref())
-            .or(self.tls.as_deref());
-        let policy = match declared.as_ref() {
-            Some(d) if d.tls.is_some() => d.tls_policy.as_ref(),
+            .map(|d| (d.tls.as_deref(), d.tls_policy.as_ref()))
+            .or_else(|| {
+                native
+                    .as_ref()
+                    .map(|n| (n.tls.as_deref(), n.tls_policy.as_ref()))
+            });
+        let base = own.and_then(|(tls, _)| tls).or(self.tls.as_deref());
+        let policy = match own {
+            Some((Some(_), policy)) => policy,
             _ => self.tls_policy.as_ref(),
         };
-        let located = door.as_ref().and_then(|door| self.located(door, target));
+        let located = self
+            .place_of(owner, need, target)
+            .flatten()
+            .map(|(placed, _)| placed);
         if anchors.private_reach && (member.is_empty() || located.is_none()) {
             return Err(ConnError::Refused);
         }
@@ -4927,14 +5056,10 @@ impl PollConns for Connector {
                 .remove(owner, need, member);
             return Ok(());
         }
-        let door = self
-            .over
-            .lock()
-            .expect("needs")
-            .get(&(owner, need))
-            .map(|d| Arc::clone(&d.door))
+        let (mut located, _) = self
+            .place_of(owner, need, target)
+            .flatten()
             .ok_or(ConnError::Refused)?;
-        let mut located = self.located(&door, target).ok_or(ConnError::Refused)?;
         if member.is_empty() {
             return Err(ConnError::Refused);
         }
@@ -4956,6 +5081,10 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "tests/real_tcp_tests.rs"]
 mod real_tcp_tests;
+
+#[cfg(test)]
+#[path = "tests/native_conns_tests.rs"]
+mod native_conns_tests;
 
 #[cfg(test)]
 #[path = "tests/callback_waker.rs"]

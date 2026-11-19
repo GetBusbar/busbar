@@ -597,7 +597,7 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
     let mut providers = cfg.identity_providers.iter().collect::<Vec<_>>();
     providers.sort_by_key(|(name, _)| *name);
     for (name, provider) in providers {
-        if busbar_kernel::config::is_builtin_identity_module(&provider.module) {
+        if !super::min3_auth::opens_instance(provider) {
             continue;
         }
         out.push(Configured {
@@ -2368,6 +2368,16 @@ pub(super) async fn finish_with_store(
             )?)
             .carrying(&super::min3_framers::assigned(crate::LINKED_CARRIERS)?)?;
             tracing::info!("{}", framers.carrier_line());
+            // The hand-over: the connector dials each assigned carrier through its instance, its sessions charged
+            // to the boot's process admission (Data class), once for the process. (A process boots once; only a
+            // test process composes a second time, and it keeps the first hand-over, as the connector does.)
+            let connector = super::connector::the();
+            if !connector.carries_natively() {
+                let storage = super::plane_node::node().dial_storage().ok_or(
+                    "the native dial has no process account: the boot admission is not bound",
+                )?;
+                connector.carry_natively(framers.native_carriers(), storage)?;
+            }
             framers
         }
     };

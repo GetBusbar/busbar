@@ -521,7 +521,7 @@ impl Pools {
     }
 
     /// The applied posture, copied before any connection or plugin is driven.
-    fn posture(&self) -> PoolPosture {
+    pub(crate) fn posture(&self) -> PoolPosture {
         *self.posture.read().expect("pool posture")
     }
 

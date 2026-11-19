@@ -176,11 +176,16 @@ impl crate::Connector {
             let _ = self.close(owner, conn);
         }
         self.pools.forget(owner);
+        flush_native_idle(&self.native_idle, Some(owner));
 
         let needs = needs_of(&*self.over.lock().expect("needs"), owner);
         for need in needs {
             self.set_need(owner, need, None);
         }
+        forget_owned(
+            &mut *self.native_needs.lock().expect("native needs"),
+            |(o, _)| *o == owner,
+        );
         forget_owned(
             &mut *self.declared.lock().expect("declared needs"),
             |(o, _)| *o == owner,
@@ -261,4 +266,127 @@ pub(crate) fn copied_fields(fields: &[(&str, &[u8])]) -> Vec<(String, Vec<u8>)> 
 /// dialled or opened.
 pub(crate) fn owned_bytes(bytes: &[u8]) -> Vec<u8> {
     bytes.to_vec()
+}
+
+impl crate::conns::Connector {
+    /// BOOT: the transport instances the build assigns the outbound carriers (HTTP today), and the account their
+    /// framer sessions are charged to (the boot's process admission, Data class: the account inbound
+    /// connections are charged to). Set once, before the connector serves a native dial; a second call is
+    /// refused. Held for the process (a reload that changes transports is refused by the root).
+    ///
+    /// # Errors
+    /// A second call.
+    pub fn carry_natively(
+        &self,
+        carriers: Vec<crate::native_dial::NativeCarrier>,
+        storage: busbar_contract::storage::StorageSource,
+    ) -> Result<(), String> {
+        self.native
+            .set(crate::conns::native_conns::Natives { carriers, storage })
+            .map_err(|_| "the native carriers are set once, at boot".to_owned())
+    }
+
+    /// Whether [`Self::carry_natively`] was called.
+    #[must_use]
+    pub fn carries_natively(&self) -> bool {
+        self.native.get().is_some()
+    }
+}
+
+/// The client head lines a carrier's transport states, as the head's defaults: made per head completion, as a
+/// framer's located lines were.
+pub(crate) fn native_defaults(lines: &[(Box<str>, Box<str>)]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    lines
+        .iter()
+        .map(|(name, value)| (name.as_bytes().to_vec(), value.as_bytes().to_vec()))
+        .collect()
+}
+
+/// A native connection's facts, as a caller asks for them (off the request path: no proxied request asks).
+pub(crate) fn native_facts(
+    conn: &crate::native_dial::NativeConnection,
+) -> busbar_contract::transport::ConnFacts {
+    busbar_contract::transport::ConnFacts {
+        sni: conn.located().name.clone(),
+        alpn: conn
+            .agreed_alpn()
+            .map(|p| String::from_utf8_lossy(p).into_owned()),
+        peer_cert: None,
+        claim: None,
+        peer_key_pin: conn.peer_key_pin().map(str::to_owned),
+        client_identity: conn.client_identity(),
+    }
+}
+
+/// The per-core idle sets, made at the first native connection kept.
+pub(crate) fn idle_cores(count: usize) -> Box<[crate::conns::native_conns::CoreIdle]> {
+    (0..count.max(1))
+        .map(|_| crate::conns::native_conns::CoreIdle::default())
+        .collect()
+}
+
+/// One core's sweep: every idle connection past the posture's timeout is closed (with no lock held), and the next
+/// sweep is due when the oldest one left lapses.
+pub(crate) fn sweep_native_idle(
+    core: &crate::conns::native_conns::CoreIdle,
+    epoch: std::time::Instant,
+    now: std::time::Instant,
+    posture: crate::pool::PoolPosture,
+) {
+    let mut spent = Vec::new();
+    let mut oldest = None::<std::time::Instant>;
+    {
+        let mut map = core.map.lock().expect("idle native connections");
+        map.retain(|_, list| {
+            let mut at = 0;
+            while at < list.len() {
+                if now.saturating_duration_since(list[at].1) >= posture.idle_timeout {
+                    spent.push(list.swap_remove(at).0);
+                } else {
+                    oldest = Some(oldest.map_or(list[at].1, |o| o.min(list[at].1)));
+                    at += 1;
+                }
+            }
+            !list.is_empty()
+        });
+    }
+    let due = oldest.map_or(u64::MAX, |oldest| {
+        u64::try_from(
+            oldest
+                .saturating_duration_since(epoch)
+                .saturating_add(posture.idle_timeout)
+                .as_nanos(),
+        )
+        .unwrap_or(u64::MAX)
+    });
+    core.sweep_due
+        .store(due, std::sync::atomic::Ordering::Release);
+    for conn in spent {
+        conn.close();
+    }
+}
+
+/// Every idle native connection (of `owner` only, when named) closed, with no lock held: a posture change or an
+/// instance's retirement.
+pub(crate) fn flush_native_idle(
+    idle: &crate::conns::native_conns::Idle,
+    owner: Option<InstanceId>,
+) {
+    let Some(cores) = idle.cores.get() else {
+        return;
+    };
+    let mut spent = Vec::new();
+    for core in cores.iter() {
+        let mut map = core.map.lock().expect("idle native connections");
+        map.retain(|key, list| {
+            if owner.is_some_and(|o| key.owner != o) {
+                return true;
+            }
+            spent.extend(list.drain(..).map(|(conn, _)| conn));
+            false
+        });
+    }
+    for conn in spent {
+        conn.close();
+    }
 }

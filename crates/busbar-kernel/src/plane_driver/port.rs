@@ -347,6 +347,8 @@ impl PortDriver {
             ));
         }
         input.http.body = snapshot.body_bytes();
+        // The carriers the route's chain judged never reach the plane, whoever built the input.
+        input.http.withhold(Arc::clone(data.withheld()));
         input.invocation = Some(data.context().clone());
         input.admission = Some(Arc::clone(data.pending()));
         let served = self.serve_inner(input, Some(data.clone())).await?;
@@ -965,6 +967,10 @@ pub struct HttpIn {
     /// Shared inbound backing; clones retain its process byte credit without copying payload.
     pub body: bytes::Bytes,
     pub request_id: u64,
+    /// The credential carriers core judged this request on (lowercase header names): never lent to the plane
+    /// ([`Self::each_header`]), so neither the plane nor anything it forwards upstream sees them (`D_CRED_HEADER`:
+    /// "core strips it upstream"). Shared with the route that owns the list; nothing is copied per request.
+    withheld: Option<Arc<[Box<str>]>>,
 }
 
 /// Where a request's method, target and header fields live (see [`HttpIn`]).
@@ -993,7 +999,21 @@ impl HttpIn {
             head,
             body,
             request_id,
+            withheld: None,
         }
+    }
+
+    /// Withhold these credential carriers (lowercase names) from every header the plane is lent.
+    pub fn withhold(&mut self, carriers: Arc<[Box<str>]>) {
+        self.withheld = Some(carriers);
+    }
+
+    fn is_withheld(&self, name: &str) -> bool {
+        self.withheld.as_deref().is_some_and(|carriers| {
+            carriers
+                .iter()
+                .any(|carrier| carrier.eq_ignore_ascii_case(name))
+        })
     }
 
     #[must_use]
@@ -1024,8 +1044,18 @@ impl HttpIn {
         }
     }
 
-    /// Each header field (name, value) in the order the head holds them.
+    /// Each header field (name, value) the plane may see, in the order the head holds them: every field but the
+    /// withheld credential carriers.
     pub fn each_header<'a>(&'a self, mut field: impl FnMut(&'a str, &'a [u8])) {
+        self.each_field(|name, value| {
+            if !self.is_withheld(name) {
+                field(name, value);
+            }
+        });
+    }
+
+    /// Every header field as it arrived, carriers included: core's own reads, never lent to a plane.
+    fn each_field<'a>(&'a self, mut field: impl FnMut(&'a str, &'a [u8])) {
         match &self.head {
             HttpHead::Parts { headers, .. } => {
                 for (name, value) in headers {
@@ -1063,7 +1093,7 @@ impl HttpIn {
         }
         let mut theirs = snapshot.headers();
         let mut same = true;
-        self.each_header(|name, value| same &= theirs.next() == Some((name, value)));
+        self.each_field(|name, value| same &= theirs.next() == Some((name, value)));
         same && theirs.next().is_none()
     }
 }

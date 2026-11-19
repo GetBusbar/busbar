@@ -1930,13 +1930,22 @@ pub(crate) fn door_mounts(
     upgrades: &[&str],
     offers: &[TransportOffer],
 ) -> Result<DoorMounts, String> {
-    door_mounts_planned(served, pin, data_chain, core, upgrades, offers)
+    door_mounts_planned(
+        served,
+        pin,
+        data_chain,
+        &crate::root::port_mount::RouteChains::new(),
+        core,
+        upgrades,
+        offers,
+    )
 }
 
 pub(crate) fn door_mounts_planned(
     served: Served,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
     data_chain: &[ChainAuth],
+    route_chains: &crate::root::port_mount::RouteChains,
     core: &[(String, RouteMethod, RouteAuth)],
     upgrades: &[&str],
     offers: &[TransportOffer],
@@ -1970,6 +1979,7 @@ pub(crate) fn door_mounts_planned(
     lines.extend(crate::root::port_mount::guest_lines(
         &served.ports,
         data_chain,
+        route_chains,
     ));
     for (rung, (path, method, auth)) in (0u32..).zip(core) {
         lines.push(busbar_kernel::guest::Line {

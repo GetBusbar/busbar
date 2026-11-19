@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use busbar_contract::secure::SecureVec;
-use busbar_contract::storage::{StorageCredit, StorageSource};
 use busbar_contract::transport::wire::{ConnectionIo, ConnectionSecurity, SecuredIo};
 use busbar_core_connector::framed_stream::session::{Inbound, TransportConn};
 use busbar_core_connector::response_delivery::DeliveryLedger;
@@ -192,10 +191,10 @@ impl NativeListener {
             self.physical.connect(facts),
             self.budget.clone(),
             self.class,
-            &io.storage,
             self.limits.body_bytes,
-        )?;
-        let delivery = delivery_ledger(&io.storage)?;
+        );
+        // Empty: its arrays and its wake cell are made with the first response (allocation ruling).
+        let delivery = DeliveryLedger::default();
         let conn = TransportConn::begin(
             self.port.clone(),
             &ConnIn {
@@ -260,9 +259,6 @@ impl std::fmt::Write for Address {
     }
 }
 
-// Root-adopted finite shape; exact private allocation quotes are charged separately.
-const PENDING_SPANS: usize = 4096;
-const LIVE_RESPONSES: usize = 200;
 const PLAINTEXT_WINDOW: usize = 256 * 1024;
 
 #[derive(Debug)]
@@ -301,15 +297,27 @@ impl From<ArrivalRefusal> for InputError {
     }
 }
 
-/// Root's finite response shape is funded by the accepted connection's original account.
-pub(crate) fn delivery_ledger(source: &StorageSource) -> Result<DeliveryLedger, InputError> {
-    use std::num::NonZeroUsize;
-    DeliveryLedger::new(
-        source,
-        NonZeroUsize::new(PENDING_SPANS).expect("nonzero root policy"),
-        NonZeroUsize::new(LIVE_RESPONSES).expect("nonzero root policy"),
+/// The listener's one answer to a request that did not authenticate: a denial by its route's chain,
+/// and a head no route matched. The same status and bytes whatever the route, so a caller that has
+/// not authenticated learns nothing about which routes exist (1.5.5 ran its auth layer before
+/// routing, with the same effect). `carriers`: the route's credential carriers; one present makes the
+/// refusal's code R_BAD_CREDENTIAL, none R_AUTH_REQUIRED (§14 C-ROUTE-CRED-HEADER (b)); the code is
+/// core's record of the decision and does not change the bytes.
+pub(super) fn unauthenticated_response(
+    binding: &busbar_kernel::inbound::native::RequestBinding,
+    carriers: &[Box<str>],
+) -> Result<axum::response::Response, InputError> {
+    let presented = binding.head().fields.iter().any(|(name, _)| {
+        carriers
+            .iter()
+            .any(|carrier| carrier.eq_ignore_ascii_case(name))
+    });
+    let refusal = super::port_mount::unauthenticated(presented);
+    tracing::debug!(code = refusal.code, "native request not authenticated");
+    data::refusal_response(
+        busbar_kernel::plane_driver::port_auth::plain_refusal(&refusal),
+        &binding.request().storage(),
     )
-    .map_err(|_| InputError::Capacity)
 }
 
 struct InputSlot {
@@ -349,12 +357,14 @@ pub(crate) struct ReadyInput {
 
 /// The actual native stream event consumer. EOF completes input only; the physical owner stays
 /// in this connection until the response lifecycle retires, or the real connection is dropped.
+///
+/// Its input slots start empty and grow with the requests (allocation ruling): no fixed capacity
+/// and no refusal of its own. What bounds them is each head's own admission (`try_enter`).
 pub(crate) struct NativeIngress {
     connection: PhysicalConnection,
     budget: Arc<ProcessAdmission>,
     class: AdmissionClass,
     slots: Vec<InputSlot>,
-    _slots_credit: StorageCredit,
     last_head: u64,
     body_limit: usize,
 }
@@ -364,31 +374,16 @@ impl NativeIngress {
         connection: PhysicalConnection,
         budget: Arc<ProcessAdmission>,
         class: AdmissionClass,
-        source: &StorageSource,
         body_limit: usize,
-    ) -> Result<Self, InputError> {
-        let extent = LIVE_RESPONSES
-            .checked_mul(std::mem::size_of::<InputSlot>())
-            .ok_or(InputError::Capacity)?;
-        let credit = source
-            .try_reserve(extent)
-            .map_err(|_| InputError::Capacity)?;
-        let mut slots = Vec::new();
-        slots
-            .try_reserve_exact(LIVE_RESPONSES)
-            .map_err(|_| InputError::Capacity)?;
-        if slots.capacity() > LIVE_RESPONSES {
-            return Err(InputError::Capacity);
-        }
-        Ok(Self {
+    ) -> Self {
+        Self {
             connection,
             budget,
             class,
-            slots,
-            _slots_credit: credit,
+            slots: Vec::new(),
             last_head: 0,
             body_limit,
-        })
+        }
     }
 
     pub(crate) fn accept(
@@ -411,9 +406,6 @@ impl NativeIngress {
                     return Err(InputError::Invalid);
                 }
                 self.last_head = stream;
-                if self.slots.len() == LIVE_RESPONSES {
-                    return Err(InputError::Capacity);
-                }
                 let request = self
                     .budget
                     .try_enter(self.class)

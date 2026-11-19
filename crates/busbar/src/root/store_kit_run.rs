@@ -425,8 +425,12 @@ fn prepare(args: Args) -> Result<Prepared, String> {
     builder
         .admit(image)
         .map_err(|error| format!("the image: {error}"))?;
-    // The store reaches its own backend (a local service in CI) as an operator's deployment with
-    // `advanced.block_private_addresses: false` lets it; metadata stays refused.
+    // `block_private_addresses: false` is fixed here on purpose, not read from a configuration:
+    // `busbar --store-kit` loads no deployment configuration (its inputs are a pack and a fixture),
+    // it is a harness build's conformance run, and the store under test reaches its own backend, a
+    // local service in CI, which is a private address. The command exists only with the
+    // `test-harness` feature, so a shipped build has no such guard, and no client request reaches
+    // it. Cloud metadata stays refused.
     let guard = busbar_core_connector::guard::Guard::from_config(
         &busbar_kernel::config::sections::Destinations {
             block_private_addresses: false,
