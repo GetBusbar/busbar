@@ -195,7 +195,6 @@ impl NativeSignedRoute {
             record,
             Offered {
                 verifier_reads_header: covered.is_ok(),
-                chain_yields_shared: false,
                 upgrade_transport: false,
                 ticket_store: false,
                 signature_verifier: covered.is_ok(),

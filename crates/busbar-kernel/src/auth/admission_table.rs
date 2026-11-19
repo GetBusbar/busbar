@@ -15,7 +15,7 @@ use busbar_plugin_abi::fail::refused::{
     R_RATE_LIMITED, R_REPLAYED, R_UNSUPPORTED,
 };
 
-use super::route_record::{CallerState, Money, RouteClass, RouteRecord, Who};
+use super::route_record::{Money, RouteClass, RouteRecord, Who};
 
 /// The admission a record names (design C4). `Internal` routes are never on a listener.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -292,7 +292,9 @@ pub enum Gate {
 /// Step 2's answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Verified {
-    /// A principal. `shared`: the subject is one every such caller shares (`anonymous`).
+    /// A principal. `shared`: the subject is one every such caller shares (`anonymous`). It gates no
+    /// route: a route that keeps state per caller keys an anonymous caller's state by the handle its
+    /// session states (`plane_driver::port_intents::handle_scope`), never by the shared subject.
     Identity {
         shared: bool,
     },
