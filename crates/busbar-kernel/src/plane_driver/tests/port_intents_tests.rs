@@ -32,7 +32,9 @@ use super::{
 };
 use crate::plane_driver::port_channels::Held;
 use crate::plane_driver::port_services::ObservationIn;
-use crate::plane_driver::port_session::{Calls, Effects, SessionError, Task, ToClient, Violation};
+use crate::plane_driver::port_session::{
+    finish, Calls, Effects, SessionError, Task, ToClient, Violation,
+};
 use crate::plane_grants::{SignedJws, TicketMint};
 use crate::plugin_records::{CommitOp, CommitOutcome, RecordsDenied, Scope};
 
@@ -43,21 +45,21 @@ struct Bridge {
 }
 
 impl Held for Bridge {
-    fn send(&mut self, _: &[u8], _: bool) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Invalid)
+    fn send<'a>(&'a mut self, _: &'a [u8], _: bool) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Invalid)))
     }
     fn ready(&mut self, _: &[u8]) -> Result<(), RecordsDenied> {
         Ok(())
     }
-    fn remote(&mut self, description: &str) -> Result<(), RecordsDenied> {
+    fn remote<'a>(&'a mut self, description: &'a str) -> BoxFut<'a, Result<(), RecordsDenied>> {
         self.log
             .lock()
             .unwrap()
             .push(format!("remote {description}"));
-        match self.mirrored {
+        Box::pin(std::future::ready(match self.mirrored {
             Some(_) => Err(RecordsDenied::Invalid),
             None => Ok(()),
-        }
+        }))
     }
     fn refusal(&self) -> Option<String> {
         self.mirrored.map(str::to_owned)
@@ -433,7 +435,139 @@ impl Host {
 }
 
 impl IntentHost for Host {
-    fn lookup(
+    fn lookup<'a>(
+        &'a self,
+        scope: Scope,
+        flags: u32,
+        limit: u32,
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(async move { self.lookup_now(scope, flags, limit, key, looked) })
+    }
+
+    fn store<'a>(
+        &'a self,
+        scope: Scope,
+        flags: u32,
+        ttl_s: u64,
+        key: &'a [u8],
+        value: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(async move { self.store_now(scope, flags, ttl_s, key, value) })
+    }
+
+    fn delete<'a>(&'a self, scope: Scope, key: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(async move { self.delete_now(scope, key) })
+    }
+
+    fn commit<'a>(
+        &'a self,
+        scope: Scope,
+        ops: &'a [CommitOp<'a>],
+    ) -> BoxFut<'a, Result<CommitOutcome, RecordsDenied>> {
+        Box::pin(async move { self.commit_now(scope, ops) })
+    }
+
+    fn work<'a>(&'a self, w: &'a WorkIntent<'a>) -> BoxFut<'a, WorkOutcome<'a>> {
+        Box::pin(async move { self.work_now(w) })
+    }
+
+    fn push<'a>(&'a self, ttl_s: u64, recs: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(async move { self.push_now(ttl_s, recs) })
+    }
+
+    fn signal(&self, key: &[u8], subject: Option<[u8; 32]>) {
+        self.signal_now(key, subject);
+    }
+
+    fn signal_command(&self, authority: &crate::channels::authority::ChannelAuthority, key: &[u8]) {
+        self.signal_command_now(authority, key);
+    }
+
+    fn entitle(&self, identity: &[u8], grant: &str) -> bool {
+        self.entitle_now(identity, grant)
+    }
+
+    fn judge<'a>(&'a self, dest: &'a str, class: u32, flags: u32) -> BoxFut<'a, u32> {
+        Box::pin(async move { self.judge_now(dest, class, flags) })
+    }
+
+    fn mint<'a>(&'a self, m: TicketMint<'a>) -> BoxFut<'a, Result<(Box<str>, u64), u32>> {
+        Box::pin(async move { self.mint_now(m) })
+    }
+
+    fn sign<'a>(&'a self, payload: &'a [u8], detached: bool) -> BoxFut<'a, Result<SignedJws, u32>> {
+        Box::pin(async move { self.sign_now(payload, detached) })
+    }
+
+    fn sight<'a>(
+        &'a self,
+        party: &'a str,
+        catalog: Option<[u8; 32]>,
+        items: &'a [(&'a str, [u8; 32])],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(async move { self.sight_now(party, catalog, items) })
+    }
+
+    fn trust_serves(&self, party: &str, item: Option<(&str, Option<[u8; 32]>)>) -> u32 {
+        self.trust_serves_now(party, item)
+    }
+
+    fn trust_state(&self, party: &str, items: &mut TrustItems) -> (u32, Option<[u8; 32]>) {
+        self.trust_state_now(party, items)
+    }
+
+    fn trust_verify(
+        &self,
+        party: &str,
+        payload: &[u8],
+        signatures: &[u8],
+        named: &mut String,
+    ) -> u32 {
+        self.trust_verify_now(party, payload, signatures, named)
+    }
+
+    fn rendezvous_accept<'a>(
+        &'a self,
+        route: u32,
+        offer: &'a str,
+    ) -> BoxFut<'a, Result<(Box<str>, Box<dyn Held>), RecordsDenied>> {
+        Box::pin(async move { self.rendezvous_accept_now(route, offer) })
+    }
+
+    fn obs_scope<'a>(
+        &'a self,
+        identity: &'a [u8],
+        op: u32,
+        scope: Option<[u8; 32]>,
+        require: &'a [&'a str],
+    ) -> BoxFut<'a, (u32, Option<[u8; 32]>)> {
+        Box::pin(async move { self.obs_scope_now(identity, op, scope, require) })
+    }
+
+    fn observe<'a>(
+        &'a self,
+        identity: &'a [u8],
+        o: &'a ObservationIn<'a>,
+    ) -> BoxFut<'a, (u32, Vec<u8>)> {
+        Box::pin(async move { self.observe_now(identity, o) })
+    }
+
+    fn connect<'a>(
+        &'a self,
+        op: u32,
+        subject: &'a str,
+        upstream: &'a str,
+        return_to: Option<&'a str>,
+    ) -> BoxFut<'a, (u32, Option<Box<str>>)> {
+        Box::pin(async move { self.connect_now(op, subject, upstream, return_to) })
+    }
+}
+
+/// The host's answers, worked out at once (the seam awaits them).
+impl Host {
+    fn lookup_now(
         &self,
         scope: Scope,
         flags: u32,
@@ -463,7 +597,7 @@ impl IntentHost for Host {
         Ok(())
     }
 
-    fn store(
+    fn store_now(
         &self,
         scope: Scope,
         _: u32,
@@ -482,12 +616,12 @@ impl IntentHost for Host {
         Ok(())
     }
 
-    fn delete(&self, _: Scope, key: &[u8]) -> Result<(), RecordsDenied> {
+    fn delete_now(&self, _: Scope, key: &[u8]) -> Result<(), RecordsDenied> {
         self.note(format!("delete {}", String::from_utf8_lossy(key)));
         Ok(())
     }
 
-    fn commit(&self, _: Scope, ops: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied> {
+    fn commit_now(&self, _: Scope, ops: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied> {
         self.note(format!("commit {}", ops.len()));
         if self.commit_denied {
             return Err(RecordsDenied::TooLarge);
@@ -498,18 +632,18 @@ impl IntentHost for Host {
         })
     }
 
-    fn work<'a>(&self, w: &WorkIntent<'a>) -> WorkOutcome<'a> {
+    fn work_now<'a>(&self, w: &WorkIntent<'a>) -> WorkOutcome<'a> {
         *self.work_identity.lock().unwrap() = w.identity.to_vec();
         self.note(format!("work op={} target={:?}", w.op, w.target));
         self.work.clone().unwrap_or_else(WorkOutcome::unsupported)
     }
 
-    fn push(&self, ttl_s: u64, recs: &[u8]) -> Result<(), RecordsDenied> {
+    fn push_now(&self, ttl_s: u64, recs: &[u8]) -> Result<(), RecordsDenied> {
         self.note(format!("push ttl={ttl_s} bytes={}", recs.len()));
         Ok(())
     }
 
-    fn signal(&self, key: &[u8], subject: Option<[u8; 32]>) {
+    fn signal_now(&self, key: &[u8], subject: Option<[u8; 32]>) {
         self.note(format!(
             "signal {} subject={}",
             String::from_utf8_lossy(key),
@@ -517,12 +651,16 @@ impl IntentHost for Host {
         ));
     }
 
-    fn signal_command(&self, authority: &crate::channels::authority::ChannelAuthority, key: &[u8]) {
+    fn signal_command_now(
+        &self,
+        authority: &crate::channels::authority::ChannelAuthority,
+        key: &[u8],
+    ) {
         assert!(authority.is_live());
         self.note(format!("command signal {}", String::from_utf8_lossy(key)));
     }
 
-    fn entitle(&self, identity: &[u8], grant: &str) -> bool {
+    fn entitle_now(&self, identity: &[u8], grant: &str) -> bool {
         self.note(format!(
             "entitle {grant} identity={}",
             String::from_utf8_lossy(identity)
@@ -530,12 +668,12 @@ impl IntentHost for Host {
         self.granted.contains(&grant)
     }
 
-    fn judge(&self, dest: &str, class: u32, flags: u32) -> u32 {
+    fn judge_now(&self, dest: &str, class: u32, flags: u32) -> u32 {
         self.note(format!("judge {dest} class={class} flags={flags}"));
         self.verdict
     }
 
-    fn mint(&self, m: TicketMint<'_>) -> Result<(Box<str>, u64), u32> {
+    fn mint_now(&self, m: TicketMint<'_>) -> Result<(Box<str>, u64), u32> {
         self.note(format!(
             "mint subject={} scope={} aud={} ttl={} once={} prefix={} record={}",
             m.subject,
@@ -552,7 +690,7 @@ impl IntentHost for Host {
         }
     }
 
-    fn sign(&self, payload: &[u8], detached: bool) -> Result<SignedJws, u32> {
+    fn sign_now(&self, payload: &[u8], detached: bool) -> Result<SignedJws, u32> {
         self.note(format!(
             "sign {} detached={detached}",
             String::from_utf8_lossy(payload)
@@ -567,7 +705,7 @@ impl IntentHost for Host {
         }
     }
 
-    fn sight(
+    fn sight_now(
         &self,
         party: &str,
         catalog: Option<[u8; 32]>,
@@ -584,7 +722,7 @@ impl IntentHost for Host {
         Ok(())
     }
 
-    fn trust_serves(&self, party: &str, item: Option<(&str, Option<[u8; 32]>)>) -> u32 {
+    fn trust_serves_now(&self, party: &str, item: Option<(&str, Option<[u8; 32]>)>) -> u32 {
         self.note(format!(
             "trust_serves {party} item={:?}",
             item.map(|(name, digest)| (name, digest.is_some()))
@@ -592,7 +730,7 @@ impl IntentHost for Host {
         self.distrust
     }
 
-    fn trust_state(&self, party: &str, items: &mut TrustItems) -> (u32, Option<[u8; 32]>) {
+    fn trust_state_now(&self, party: &str, items: &mut TrustItems) -> (u32, Option<[u8; 32]>) {
         self.note(format!("trust_state {party}"));
         for item in &self.state_items {
             items.push(item);
@@ -600,7 +738,7 @@ impl IntentHost for Host {
         (self.distrust, None)
     }
 
-    fn trust_verify(
+    fn trust_verify_now(
         &self,
         party: &str,
         payload: &[u8],
@@ -616,7 +754,7 @@ impl IntentHost for Host {
         self.signed.0
     }
 
-    fn rendezvous_accept(
+    fn rendezvous_accept_now(
         &self,
         route: u32,
         offer: &str,
@@ -634,7 +772,7 @@ impl IntentHost for Host {
         }
     }
 
-    fn obs_scope(
+    fn obs_scope_now(
         &self,
         identity: &[u8],
         op: u32,
@@ -649,7 +787,7 @@ impl IntentHost for Host {
         (self.obs_status, Some([6; 32]))
     }
 
-    fn observe(&self, identity: &[u8], o: &ObservationIn<'_>) -> (u32, Vec<u8>) {
+    fn observe_now(&self, identity: &[u8], o: &ObservationIn<'_>) -> (u32, Vec<u8>) {
         self.note(format!(
             "observe identity={} scope={} event={} component={} revision={:?} state={} counts={:?} evidence={}",
             String::from_utf8_lossy(identity),
@@ -664,7 +802,7 @@ impl IntentHost for Host {
         (self.obs_status, b"receipt".to_vec())
     }
 
-    fn connect(
+    fn connect_now(
         &self,
         op: u32,
         subject: &str,
@@ -714,7 +852,7 @@ fn run(
     subject: Option<[u8; 32]>,
 ) -> Result<Vec<crate::plane_driver::port_session::Answer>, SessionError> {
     let (mut task, first) = Task::begin(script, &req(), b"", &Quiet)?;
-    task.resolve(first, &Resolver::new(host, subject), &Quiet)
+    finish(task.resolve(first, &Resolver::new(host, subject), &Quiet))
 }
 
 fn hits_of(bytes: &[u8]) -> Vec<(u32, Vec<u8>, Vec<u8>)> {
@@ -999,9 +1137,8 @@ fn an_enforcing_hook_holds_a_mutation_before_a_local_response() {
     };
     let host = Host::default();
     let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
-    let held = task
-        .resolve_before_hooks(first, &Resolver::new(&host, None), &Quiet)
-        .unwrap();
+    let held =
+        finish(task.resolve_before_hooks(first, &Resolver::new(&host, None), &Quiet)).unwrap();
     assert!(
         host.seen().is_empty(),
         "a hook refusal must leave the Store untouched"
@@ -1029,9 +1166,7 @@ fn a_hook_prerequisite_never_reads_before_its_held_mutation() {
     };
     let host = Host::default();
     let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
-    assert!(task
-        .resolve_before_hooks(first, &Resolver::new(&host, None), &Quiet)
-        .is_err());
+    assert!(finish(task.resolve_before_hooks(first, &Resolver::new(&host, None), &Quiet)).is_err());
     assert!(
         host.seen().is_empty(),
         "neither mutation nor stale read may escape the barrier"
@@ -1349,7 +1484,7 @@ fn run_as(
 ) -> Result<Vec<crate::plane_driver::port_session::Answer>, SessionError> {
     let (mut task, first) = Task::begin(script, &req(), b"", &Quiet)?;
     let resolver = Resolver::new(host, None).with_principal("alice", identity);
-    task.resolve(first, &resolver, &Quiet)
+    finish(task.resolve(first, &resolver, &Quiet))
 }
 
 fn entitle_answers(bytes: &[u8]) -> Vec<(u32, u32)> {
@@ -1809,27 +1944,38 @@ fn trust_serves_state_and_verify_answer_one_trust_ans_each_in_intent_order() {
 struct Bare;
 
 impl IntentHost for Bare {
-    fn lookup(
-        &self,
+    fn lookup<'a>(
+        &'a self,
         _: Scope,
         _: u32,
         _: u32,
-        _: &[u8],
-        _: &mut Looked,
-    ) -> Result<(), RecordsDenied> {
-        Ok(())
+        _: &'a [u8],
+        _: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn store(&self, _: Scope, _: u32, _: u64, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {
-        Ok(())
+    fn store<'a>(
+        &'a self,
+        _: Scope,
+        _: u32,
+        _: u64,
+        _: &'a [u8],
+        _: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn delete(&self, _: Scope, _: &[u8]) -> Result<(), RecordsDenied> {
-        Ok(())
+    fn delete<'a>(&'a self, _: Scope, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn commit(&self, _: Scope, _: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied> {
-        Ok(CommitOutcome::Applied)
+    fn commit<'a>(
+        &'a self,
+        _: Scope,
+        _: &'a [CommitOp<'a>],
+    ) -> BoxFut<'a, Result<CommitOutcome, RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(CommitOutcome::Applied)))
     }
-    fn push(&self, _: u64, _: &[u8]) -> Result<(), RecordsDenied> {
-        Ok(())
+    fn push<'a>(&'a self, _: u64, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
     fn signal(&self, _: &[u8], _: Option<[u8; 32]>) {}
 }
@@ -1838,21 +1984,20 @@ impl IntentHost for Bare {
 fn a_host_with_no_service_installed_answers_fail_closed() {
     let host = Bare;
     assert!(!host.entitle(b"ID", "g"));
-    assert_ne!(host.judge("example.com", 0, 0), DEST_ALLOWED);
-    assert!(host
-        .mint(TicketMint {
-            subject: "alice",
-            scope: "",
-            audience: "ticket",
-            ttl_s: 60,
-            once: false,
-            prefix: "",
-            record: &[],
-        })
-        .is_err());
-    assert!(host.sign(b"x", false).is_err());
+    assert_ne!(finish(host.judge("example.com", 0, 0)), DEST_ALLOWED);
+    assert!(finish(host.mint(TicketMint {
+        subject: "alice",
+        scope: "",
+        audience: "ticket",
+        ttl_s: 60,
+        once: false,
+        prefix: "",
+        record: &[],
+    }))
+    .is_err());
+    assert!(finish(host.sign(b"x", false)).is_err());
     assert_eq!(
-        host.connect(CONNECT_STATUS, "alice", "github", None).0,
+        finish(host.connect(CONNECT_STATUS, "alice", "github", None)).0,
         CONN_REFUSED
     );
     assert_ne!(host.trust_serves("github", None), DISTRUST_NONE);
@@ -1868,7 +2013,7 @@ fn a_host_with_no_service_installed_answers_fail_closed() {
         host.trust_verify("github", b"d", b"[]", &mut String::new()),
         SIGNED_VERIFIED
     );
-    assert!(host.sight("github", None, &[]).is_err());
+    assert!(finish(host.sight("github", None, &[])).is_err());
 }
 
 fn refusal_of_piece(bytes: &[u8]) -> (u32, u32, String) {
@@ -1896,7 +2041,7 @@ fn a_client_offer_is_accepted_on_the_requests_route_and_the_local_answer_comes_b
     let host = Host::default();
     let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
     let resolver = Resolver::new(&host, None).with_route(7);
-    task.resolve(first, &resolver, &Quiet).unwrap();
+    finish(task.resolve(first, &resolver, &Quiet)).unwrap();
     assert_eq!(host.seen(), ["accept route=7 offer=v=0 offer"]);
     assert_eq!(
         script.got(),
@@ -1923,8 +2068,7 @@ fn an_offer_that_cannot_be_accepted_is_p_rv_failed_with_a_refusal_on_that_exchan
         ..Host::default()
     };
     let (mut task, first) = Task::begin(&script, &req(), b"", &Quiet).unwrap();
-    task.resolve(first, &Resolver::new(&host, None), &Quiet)
-        .unwrap();
+    finish(task.resolve(first, &Resolver::new(&host, None), &Quiet)).unwrap();
     let got = script.got();
     assert_eq!((got[0].0, got[0].1), (FROM_CORE, P_RV_FAILED));
     let (status, code, text) = refusal_of_piece(&got[0].2);
@@ -2137,8 +2281,11 @@ fn p_observed_comes_after_p_committed_and_before_p_work() {
 #[test]
 fn a_host_with_no_media_or_observation_service_answers_fail_closed() {
     let host = Bare;
-    assert!(host.rendezvous_accept(1, "offer").is_err());
-    assert_eq!(host.obs_scope(b"ID", OBS_CREATE, None, &[]).0, OBS_REFUSED);
+    assert!(finish(host.rendezvous_accept(1, "offer")).is_err());
+    assert_eq!(
+        finish(host.obs_scope(b"ID", OBS_CREATE, None, &[])).0,
+        OBS_REFUSED
+    );
     let o = ObservationIn {
         scope: [0; 32],
         event: b"e",
@@ -2149,7 +2296,7 @@ fn a_host_with_no_media_or_observation_service_answers_fail_closed() {
         rated_subject: 0,
         evidence: b"",
     };
-    assert_eq!(host.observe(b"ID", &o).0, OBS_REFUSED);
+    assert_eq!(finish(host.observe(b"ID", &o)).0, OBS_REFUSED);
 }
 
 /// A scripted `DurableWork`: what it was asked, and its canned answers.
@@ -2230,27 +2377,27 @@ fn namespace() -> Namespace {
 }
 
 /// Runs `decide` for `intent` as the principal `ID` against `ledger`; recovery routes match `/poll...`.
-fn decide<'a>(
+fn decide(
     ledger: Arc<Ledger>,
     op: u32,
-    target: Option<&'a str>,
-    reference: Option<&'a str>,
-) -> WorkOutcome<'a> {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let decider = DurableDecider::new(
-        ledger,
-        Box::new(|target: &str| target.starts_with("/poll")),
-        rt.handle().clone(),
-    );
-    decider.decide(
-        &namespace(),
-        &WorkIntent {
-            op,
-            target,
-            reference,
-            identity: b"ID",
-        },
-    )
+    target: Option<&str>,
+    reference: Option<&str>,
+) -> WorkOutcome<'static> {
+    let decider = DurableDecider::new(ledger, Box::new(|target: &str| target.starts_with("/poll")));
+    let who = namespace();
+    let intent = WorkIntent {
+        op,
+        target,
+        reference,
+        identity: b"ID",
+    };
+    let out = finish(decider.decide(&who, &intent));
+    WorkOutcome {
+        status: out.status,
+        state: out.state,
+        reference: std::borrow::Cow::Owned(out.reference.into_owned()),
+        target: std::borrow::Cow::Owned(out.target.into_owned()),
+    }
 }
 
 #[test]

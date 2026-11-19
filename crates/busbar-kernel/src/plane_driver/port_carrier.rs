@@ -34,7 +34,6 @@ use busbar_plugin_abi::plane::{
 };
 use busbar_plugin_abi::records::Reply;
 use busbar_ports::codec::plane::encode_refusal;
-use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
 use super::port_channels::{Channels, UpstreamHost};
@@ -113,19 +112,19 @@ impl ExchangeUpstreams {
 }
 
 /// A [`Members`] that records every pick in an [`ExchangeUpstreams`] (exchange 0 goes to the picked member).
-pub struct Mapped<'a> {
-    inner: &'a mut dyn Members,
+pub struct Mapped<'a, M: Members + ?Sized> {
+    inner: &'a mut M,
     map: &'a ExchangeUpstreams,
 }
 
-impl<'a> Mapped<'a> {
+impl<'a, M: Members + ?Sized> Mapped<'a, M> {
     #[must_use]
-    pub fn new(inner: &'a mut dyn Members, map: &'a ExchangeUpstreams) -> Self {
+    pub fn new(inner: &'a mut M, map: &'a ExchangeUpstreams) -> Self {
         Self { inner, map }
     }
 }
 
-impl Members for Mapped<'_> {
+impl<M: Members + ?Sized> Members for Mapped<'_, M> {
     fn hook_remaining(&self) -> Option<usize> {
         self.inner.hook_remaining()
     }
@@ -133,8 +132,8 @@ impl Members for Mapped<'_> {
         self.inner.hook_failure()
     }
 
-    fn next(&mut self, wants: &Wants) -> Option<Candidate> {
-        let picked = self.inner.next(wants)?;
+    async fn next(&mut self, wants: &Wants) -> Option<Candidate> {
+        let picked = self.inner.next(wants).await?;
         self.map.point(&picked.upstream);
         self.map.bind(0, &picked.upstream);
         Some(picked)
@@ -165,7 +164,6 @@ pub struct PortCarrier {
     registry: Arc<SignalRegistry>,
     who: Namespace,
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
-    rt: Handle,
 }
 
 impl PortCarrier {
@@ -176,7 +174,6 @@ impl PortCarrier {
         registry: Arc<SignalRegistry>,
         who: Namespace,
         clock: Arc<dyn Fn() -> u64 + Send + Sync>,
-        rt: Handle,
     ) -> Self {
         Self {
             channels,
@@ -184,7 +181,6 @@ impl PortCarrier {
             registry,
             who,
             clock,
-            rt,
         }
     }
 
@@ -204,7 +200,6 @@ impl PortCarrier {
             Arc::clone(&self.channels),
             self.who.clone(),
             Box::new(move |exchange| of.of(exchange)),
-            self.rt.clone(),
         )
         .with_budget(budget);
         CarrierSession {
@@ -213,7 +208,6 @@ impl PortCarrier {
             registry: Arc::clone(&self.registry),
             instance: self.who.instance,
             clock: Arc::clone(&self.clock),
-            rt: self.rt.clone(),
         }
     }
 }
@@ -226,7 +220,6 @@ pub struct CarrierSession {
     registry: Arc<SignalRegistry>,
     instance: u64,
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
-    rt: Handle,
 }
 
 /// What a held session woke for.
@@ -251,7 +244,7 @@ fn unavailable() -> Reply {
 ///
 /// # Errors
 /// The plane failed or broke a once rule answering a `P_ERROR`.
-pub(super) fn write_channels<K: Calls + ?Sized>(
+pub(super) async fn write_channels<K: Calls + ?Sized>(
     task: &mut Task<'_, K>,
     answers: &[Answer],
     resolver: &Resolver<'_>,
@@ -260,11 +253,14 @@ pub(super) fn write_channels<K: Calls + ?Sized>(
     let mut more = Vec::new();
     for answer in answers {
         for message in &answer.ex_msgs {
-            match task.send_channel(
-                message.exchange,
-                &message.bytes,
-                message.flags & MSG_ASK != 0,
-            ) {
+            match task
+                .send_channel(
+                    message.exchange,
+                    &message.bytes,
+                    message.flags & MSG_ASK != 0,
+                )
+                .await
+            {
                 Ok(true) => {}
                 Ok(false) => {
                     tracing::debug!(
@@ -286,7 +282,7 @@ pub(super) fn write_channels<K: Calls + ?Sized>(
                         unavailable().as_bytes(),
                         effects,
                     )?;
-                    more.extend(task.resolve(piece, resolver, effects)?);
+                    more.extend(task.resolve(piece, resolver, effects).await?);
                 }
             }
         }
@@ -320,8 +316,8 @@ impl CarrierSession {
         Ok((registered, rx))
     }
 
-    /// The next event of a held session, blocking on the runtime.
-    fn wait(
+    /// The next event of a held session, awaited on the session's task.
+    async fn wait(
         &self,
         held: &mut Channels,
         signals: Option<&mut mpsc::Receiver<Signalled>>,
@@ -329,7 +325,7 @@ impl CarrierSession {
         expires: Instant,
     ) -> Event {
         let now = (self.clock)();
-        self.rt.block_on(async move {
+        {
             let channels = async {
                 if held.is_empty() {
                     return std::future::pending::<Event>().await;
@@ -368,10 +364,10 @@ impl CarrierSession {
                 event = timer => event,
                 event = expiry => event,
             }
-        })
+        }
     }
 
-    fn apply<K: Calls + ?Sized>(
+    async fn apply<K: Calls + ?Sized>(
         task: &mut Task<'_, K>,
         answer: Answer,
         ran: &mut Ran,
@@ -379,18 +375,18 @@ impl CarrierSession {
         effects: &dyn Effects,
         books: &dyn Books,
     ) -> Result<(), SessionError> {
-        let answers = task.resolve(answer, resolver, effects)?;
-        let written = write_channels(task, &answers, resolver, effects)?;
+        let answers = task.resolve(answer, resolver, effects).await?;
+        let written = write_channels(task, &answers, resolver, effects).await?;
         absorb(ran, &mut None, answers, books);
         absorb(ran, &mut None, written, books);
         Ok(())
     }
 
-    /// The session loop of a held session (see the module docs). Runs on the blocking thread the session runs on.
+    /// The session loop of a held session (see the module docs), on the session's own task.
     ///
     /// # Errors
     /// The plane refused, failed or faulted, or broke a once rule, answering a delivery.
-    pub fn pump<K: Calls + ?Sized>(
+    pub async fn pump<K: Calls + ?Sized>(
         &self,
         task: &mut Task<'_, K>,
         ran: &mut Ran,
@@ -415,12 +411,14 @@ impl CarrierSession {
             if task.held.is_empty() && ran.wake_at.is_none() && signals.is_none() {
                 return Ok(());
             }
-            let event = self.wait(
-                &mut task.held,
-                signals.as_mut().map(|(_, rx)| rx),
-                ran.wake_at,
-                expires,
-            );
+            let event = self
+                .wait(
+                    &mut task.held,
+                    signals.as_mut().map(|(_, rx)| rx),
+                    ran.wake_at,
+                    expires,
+                )
+                .await;
             let answer = match event {
                 Event::Expired => return Ok(()),
                 Event::Channel(exchange, Some(ChannelMsg::Message(bytes))) => {
@@ -448,16 +446,16 @@ impl CarrierSession {
                     task.piece(FROM_CORE, 0, P_TIMER, &[], effects)?
                 }
             };
-            Self::apply(task, answer, ran, resolver, effects, books)?;
+            Self::apply(task, answer, ran, resolver, effects, books).await?;
             effects.observed_usage(task.usage());
-            if !hand_out(effects, &mut ran.client) {
+            if !hand_out(effects, &mut ran.client).await {
                 if ran.detach.is_none() {
                     return Ok(());
                 }
                 if !gone {
                     gone = true;
                     let answer = task.piece(FROM_CORE, 0, P_CLIENT_GONE, &[], effects)?;
-                    Self::apply(task, answer, ran, resolver, effects, books)?;
+                    Self::apply(task, answer, ran, resolver, effects, books).await?;
                 }
             }
         }

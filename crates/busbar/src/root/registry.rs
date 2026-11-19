@@ -145,13 +145,13 @@ pub(crate) fn check(
 /// assigns a MIN-3 transport image the carrier its word means. An installed old-interface door still serves the
 /// words it claims until the old interface is cut. A carrier table the build cannot read is an explained exit 2.
 pub(crate) fn check_or_exit(planes: &[LinkedClaims]) {
-    let carriers = crate::root::min3_framers::assigned(crate::LINKED_CARRIERS).unwrap_or_else(|why| {
-        eprintln!("busbar: the composition root did not seal: {why}");
-        crate::root::exit::exit(2);
-    });
+    let carriers =
+        crate::root::min3_framers::assigned(crate::LINKED_CARRIERS).unwrap_or_else(|why| {
+            eprintln!("busbar: the composition root did not seal: {why}");
+            crate::root::exit::exit(2);
+        });
     let connector = crate::root::connector::the();
-    let served =
-        |word: &str| carriers.serves_claim(word) || connector.framer_for(word).is_some();
+    let served = |word: &str| carriers.serves_claim(word) || connector.framer_for(word).is_some();
     check(planes, &served).unwrap_or_else(|refusal| {
         match refusal {
             // The deployment's installed plugins, not the build: the coded line says what to install.

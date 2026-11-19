@@ -140,6 +140,16 @@ impl std::ops::Deref for TestBook {
     }
 }
 async fn opened(core: Arc<CoreStore>, host: &str) -> TestBook {
+    opened_as(core, host, true).await
+}
+
+/// A book as production builds it: its chain holds no key, so its lines carry no signature of
+/// their own (SEALING-FIX §3.2); the notary's signed head covers them.
+async fn opened_production(core: Arc<CoreStore>, host: &str) -> TestBook {
+    opened_as(core, host, false).await
+}
+
+async fn opened_as(core: Arc<CoreStore>, host: &str, legacy_signing: bool) -> TestBook {
     let digest = busbar_contract::digest::sha256(host.as_bytes());
     let node = u64::from_le_bytes(digest[..8].try_into().unwrap()).max(1);
     let journal = RuntimeJournal::open(
@@ -164,10 +174,29 @@ async fn opened(core: Arc<CoreStore>, host: &str) -> TestBook {
     )
     .await
     .unwrap();
-    book.record = std::mem::take(&mut book.record)
-        .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[0x53; 32]));
+    let key = busbar_kernel_audit::AuditSigningKey::from_seed(&[0x53; 32]);
+    let checkpoint_signer = if legacy_signing {
+        book.record = std::mem::take(&mut book.record).signing_with(key);
+        None
+    } else {
+        // As boot binds it: the chain holds only the public half; checkpoints are signed on the
+        // Bootstrap signer thread.
+        book.record = std::mem::take(&mut book.record).bound_to(
+            busbar_kernel_audit::AuditVerifyingKey::from_hex(&key.public_key_hex()).unwrap(),
+        );
+        let (notary, boot) = key
+            .into_grants(busbar_kernel_audit::LiveSigner::SameAsBootstrap)
+            .unwrap();
+        let signers = super::super::signer::spawn(
+            busbar_kernel_audit::Notary::new(notary),
+            busbar_kernel_audit::BootstrapSigner::new(boot),
+            Arc::new(OnceLock::new()),
+        )
+        .unwrap();
+        Some(signers.checkpoint)
+    };
     let book = Arc::new(Mutex::new(book));
-    let sink = super::unit_checkpoint_sink(&book, journal.clone(), None).unwrap();
+    let sink = super::unit_checkpoint_sink(&book, journal.clone(), checkpoint_signer).unwrap();
     let evidence = Arc::new(UnitCheckpointEvidence::new(
         journal.clone(),
         busbar_kernel::teller::Kernel::new().durability_token(),
@@ -391,12 +420,25 @@ async fn assert_recovered_audit(book: &TestBook, report: &UnitCheckpoint) {
     assert_eq!(audit.usage.fee_count, 0);
     assert_eq!(audit.mono, 91);
     assert_eq!(audit.wall, report.arrived);
-    let keys = super::super::keyset_of(&book.lock().unwrap().record);
-    busbar_kernel_audit::AuditChain::verify_signature(
-        audit,
-        keys.get(audit.key_id.as_deref().unwrap()).unwrap(),
-    )
-    .unwrap();
+    // Proved by its record version's rule: a recovered line is re-appended chained and unsigned
+    // (version 2), proved by its digest; one signed singly (version 1) by its signature.
+    match audit.record_version() {
+        Some(busbar_kernel_audit::RecordVersion::SignedLine) => {
+            let keys = super::super::keyset_of(&book.lock().unwrap().record);
+            busbar_kernel_audit::AuditChain::verify_signature(
+                audit,
+                keys.get(audit.key_id.as_deref().unwrap()).unwrap(),
+            )
+            .unwrap();
+        }
+        Some(busbar_kernel_audit::RecordVersion::SignedHead) => {
+            assert_eq!(
+                busbar_kernel_audit::AuditChain::digest_of(audit),
+                audit.hash
+            );
+        }
+        None => panic!("a recovered line carries half a signature"),
+    }
 }
 
 #[tokio::test]
@@ -796,6 +838,128 @@ async fn actual_store_live_terminal_keeps_custody_until_fixed_audit_is_durable()
     );
     assert_recovered_audit(&book, &report).await;
     stop(&book);
+}
+
+/// AUDIT-PATH money defect: production lines carry no signature of their own (the chain is
+/// covered by the notary's signed head), so a terminal checkpoint that demands a per-line signature
+/// can never retire its money head. Through the real book, sink and flush tick: the charge must
+/// complete, the checkpoint must not pile up, and a restart over a piled-up unit must settle it
+/// exactly once.
+#[tokio::test]
+async fn production_unsigned_line_lets_the_terminal_charge_complete_once() {
+    let fixture = ActualStore::new();
+    let store = fixture.open().await;
+    let host = format!(
+        "unit-checkpoint-production-{}",
+        hex::encode(busbar_kernel::door::op_id().0)
+    );
+    let book = opened_production(store.clone(), &host).await;
+    assert!(
+        book.lock().unwrap().record.public_key_hex().is_some()
+            && !book.lock().unwrap().record.signs_lines(),
+        "a production chain binds the key's public half and signs no line"
+    );
+    let gov = governor(store.clone(), &book).await;
+    let report = unit();
+    let charged = Count::parse("0.125").unwrap();
+    assert!(gov.finish_unit_checkpoint(report.clone()));
+    // The unit's own line is not written yet: custody is kept, the charge is applied once.
+    assert!(gov.flush_unit_checkpoints().await.is_err());
+    let pending = unit_checkpoint_sink(&book)
+        .replay()
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    unit_checkpoint_sink(&book)
+        .recover_audit(&pending)
+        .await
+        .unwrap();
+    let (_, line) = book
+        .evidence
+        .find_audit(report.unit, 7)
+        .await
+        .unwrap()
+        .expect("the unit's line is in the journal");
+    assert!(line.key_id.is_none(), "a production line is unsigned");
+    // Every later tick: the line is durable and chained, so the terminal must retire.
+    for _ in 0..3 {
+        let _ = gov.flush_unit_checkpoints().await;
+    }
+    let held = unit_checkpoint_sink(&book).replay().await.unwrap().len();
+    assert_eq!(total(store.as_ref(), &report).await, charged);
+    assert_eq!(
+        held, 0,
+        "the terminal checkpoint is still held after three flush ticks: the charge never completes"
+    );
+    stop(&book);
+    drop(gov);
+    drop(book);
+    drop(store);
+
+    // A unit that piled up before a restart: recovery settles it once, never twice.
+    let store = fixture.open().await;
+    let resumed = opened_production(store.clone(), &host).await;
+    let gov = governor(store.clone(), &resumed).await;
+    gov.flush_unit_checkpoints().await.unwrap();
+    assert_eq!(total(store.as_ref(), &report).await, charged);
+    assert!(unit_checkpoint_sink(&resumed)
+        .replay()
+        .await
+        .unwrap()
+        .is_empty());
+    stop(&resumed);
+}
+
+/// The same defect after a restart: a unit whose checkpoint piled up behind the per-line signature
+/// check (persisted, its line durable, never retired) must be settled once by recovery, and
+/// attaching the sink at boot must not fail over it.
+#[tokio::test]
+async fn production_piled_up_unit_recovers_and_settles_once_after_restart() {
+    let fixture = ActualStore::new();
+    let store = fixture.open().await;
+    let host = format!(
+        "unit-checkpoint-piled-{}",
+        hex::encode(busbar_kernel::door::op_id().0)
+    );
+    let book = opened_production(store.clone(), &host).await;
+    let report = unit();
+    unit_checkpoint_sink(&book).persist(&report).await.unwrap();
+    unit_checkpoint_sink(&book)
+        .recover_audit(&report)
+        .await
+        .unwrap();
+    stop(&book);
+    drop(book);
+    drop(store);
+
+    let store = fixture.open().await;
+    let resumed = opened_production(store.clone(), &host).await;
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
+    gov.attach_recovery_sink(recovery_sink(&resumed))
+        .await
+        .unwrap();
+    let attached = gov
+        .attach_unit_checkpoint_sink(unit_checkpoint_sink(&resumed))
+        .await;
+    assert!(
+        attached.is_ok(),
+        "recovery refuses the piled-up unit: {attached:?}"
+    );
+    gov.flush_unit_checkpoints().await.unwrap();
+    gov.flush_unit_checkpoints().await.unwrap();
+    assert_eq!(
+        total(store.as_ref(), &report).await,
+        Count::parse("0.125").unwrap()
+    );
+    assert!(unit_checkpoint_sink(&resumed)
+        .replay()
+        .await
+        .unwrap()
+        .is_empty());
+    stop(&resumed);
 }
 
 #[async_trait::async_trait]

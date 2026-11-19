@@ -249,6 +249,11 @@ struct Answered {
 
 impl Fixture {
     fn open(&self, target: &str) -> Result<ConnId, ConnError> {
+        self.open_with(target, true)
+    }
+
+    /// An open whose own plaintext acceptance is `plaintext_accepted`.
+    fn open_with(&self, target: &str, plaintext_accepted: bool) -> Result<ConnId, ConnError> {
         // The request is opened from the core that runs the exchange, as the far end opens it.
         self.runtime.block_on(async {
             self.connector.open(
@@ -261,7 +266,7 @@ impl Fixture {
                     timeout_ms: 20_000,
                     method: b"POST",
                     head_target: b"/v1/chat",
-                    plaintext_accepted: true,
+                    plaintext_accepted,
                     ..OpenDesc::default()
                 },
             )
@@ -429,4 +434,21 @@ fn an_idle_dialled_connection_holds_no_read_buffer() {
         idle_small <= 4096,
         "an idle connection's charge is the session's small fixed state ({idle_small} bytes)"
     );
+}
+
+#[test]
+fn an_idle_plaintext_connection_is_never_lent_to_an_open_without_plaintext_acceptance() {
+    let fixture = fixture();
+    let up = upstream(Answer::KeepAlive);
+    let target = format!("http://{}/v1/chat", up.addr);
+    // Dialled in the clear under the opener's own acceptance, then idle.
+    served(&fixture.exchange(&target));
+    // An open of the same need and destination that does not accept plaintext: the plaintext rule refuses it, so it
+    // is never handed the idle plaintext connection.
+    assert_eq!(
+        fixture.open_with(&target, false),
+        Err(ConnError::Refused),
+        "an open without plaintext acceptance is refused, not lent a plaintext connection"
+    );
+    assert_eq!(up.answered.load(Ordering::SeqCst), 1);
 }

@@ -885,3 +885,68 @@ the backup point can be presented again until it expires. Before admitting traff
 again, use the exported audit stream to re-apply every revocation, demotion and principal
 transition made after the backup point, and load packages and a keys document no older than
 the ones the deployment ran before the restore.
+
+### Restoring from a backup: what it undoes and what to do next
+
+The engine keeps its administrative state in the Store, and a restore replaces the whole Store
+with the backup. Everything an administrator did after the backup point is gone. The engine
+does not notice this. At start it reads what the Store holds and serves it. It does not compare
+the Store with what it served before, and it does not refuse a Store that is older. Nothing
+tells you that a restore went back further than you meant, so record the backup time yourself
+and treat every change after it as lost.
+
+**What a restore from a backup undoes.** Each of these returns to its state at the backup point:
+
+- **Key changes.** A key revoked after the backup is active again. A key rotated after the
+  backup has its earlier credential again. A key deleted after the backup returns. A key
+  minted after the backup does not exist.
+- **Configuration.** Configuration changes made through the admin API after the backup are
+  gone. The configuration generation (the number in the config ETag and in `GET /info`
+  `config_generation`) comes from the Store. At start the engine raises it by one from the
+  Store's value, so after a restore it can be lower than the last value your tooling saw, and
+  an ETag you held before the restore can name a different configuration afterwards. Do not
+  trust a saved ETag across a restore.
+- **Usage, ledger and budgets.** Spend and usage posted after the backup, and the budget
+  totals that go with it, are gone. A budget that was exhausted after the backup point can
+  show room again. Rate-card history entries added or amended after the backup are gone too.
+- **Trust and floors.** Trust demotions and trust decisions, the plugin version floors and the
+  release-keys document floor recorded after the backup are gone, as are consumed replay
+  claims and redeemed single-use tickets (see the paragraph above).
+- **The admin audit history.** The engine reads its admin audit history back from the Store at
+  start and continues the same chain from the last record it finds. The history therefore ends
+  at the backup point, and the changes made after it have no record in the restored Store. New
+  records take the sequence numbers that follow the last restored record, so a sequence number
+  the engine issued after the backup can be issued again for a different record. Keep the
+  audit export from before the restore apart from the one after it, and do not merge them by
+  sequence number. The engine holds at most 1,000 admin records in memory at a time (the
+  most recent 1,000 records); the exported stream is the complete record.
+
+**What to do after a restore.** Do this before the engine admits traffic:
+
+1. Note the backup time and the time you stopped the old engine. Every admin change between
+   the two is lost.
+2. List the admin changes made in that window from a record outside the Store. If the engine
+   is connected to a Console, use the Console's audit log. Otherwise use the exported audit
+   stream (item 4 of the [backup set](#backup-set-and-order)) and your own change records.
+3. Re-apply every key revocation first, then deletions, then rotations, then the rest. A key
+   revoked for cause is active again until you do.
+4. Rotate every credential that was revoked for cause, even after you re-revoke the key. It
+   was usable between the restore and the re-revocation, so treat it as exposed.
+5. Compare the configuration generation (`GET /info`, `config_generation`) and the effective
+   configuration (`GET /config`) with what was last applied. Re-apply the missing changes
+   using a fresh ETag read after the restore.
+6. Check budgets and usage for the lost window against your upstream invoices, and re-apply
+   any budget or rate-card change you made in it.
+7. Load plugin packages and a keys document no older than the ones the deployment ran before
+   the restore.
+
+**What the Console tells you.** For an engine connected through the engine agent, the Console
+compares the engine's admin history with its own record of it, and raises a finding that names
+each key change that was lost. Use those findings as the list for step 3. For a directly
+connected engine the Console does not do this yet. Work through the checklist by hand from
+your own change records and the exported audit stream.
+
+**What a restore cannot undo.** Requests the engine already served stay served, and charges
+already made by upstream providers stay charged. The restored ledger does not contain them
+unless they fell before the backup point. A key that was active again after the restore may
+also have served requests that no record shows.

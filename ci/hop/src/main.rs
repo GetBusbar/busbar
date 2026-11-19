@@ -17,6 +17,12 @@
 //! dispatch beside the MIN-3 files (plugin-loader `dispatch/**` and the doors) hops by design until W3-D-LOADER
 //! deletes it; that task widens `SCOPE` to the whole crate.
 //!
+//! The data path (`DATA_PATH`: the kernel's plane driver and the root) is scanned for the other way a request
+//! leaves its thread: core wrapping a plugin crossing, or what a session waits on, in a hand-off. There a call of
+//! `spawn_blocking`, `block_in_place`, `block_on`, `blocking_send` or `blocking_recv` is refused unless its
+//! (file, fn) is in `DATA_ALLOW`, each entry with the reason it is not on a request's path. A request is a task on
+//! one core from accept to its last byte; a plane session awaits its seams and calls the plugin inline.
+//!
 //! Usage: `busbar-ci-hop` from anywhere in the checkout. Each finding prints as one line and fails the run.
 
 #![forbid(unsafe_code)]
@@ -52,6 +58,121 @@ const STAGE_HOPS: [&str; 5] = [
 ];
 const ADMIT: &str = "crates/plugin-loader/src/admit.rs";
 const STORE_ADAPTER: &str = "crates/plugin-loader/src/adapters/store.rs";
+
+/// Where a request runs: the kernel's plane driver and the root.
+const DATA_PATH: [&str; 2] = [
+    "crates/busbar-kernel/src/plane_driver",
+    "crates/busbar/src/root",
+];
+
+/// The calls that hand work to another thread or block a thread on a runtime.
+const BLOCKING: [&str; 5] = [
+    "spawn_blocking",
+    "block_in_place",
+    "block_on",
+    "blocking_send",
+    "blocking_recv",
+];
+
+/// (file, fn, why) of every data-path hand-off that is not on a request's path. Nothing else may hand off.
+const DATA_ALLOW: [(&str, &str, &str); 20] = [
+    (
+        "crates/busbar-kernel/src/plane_driver/port_hooks/call.rs",
+        "prepare",
+        "a hook call on a hook-enabled route runs on its generation's bounded hook pool; never a plain request",
+    ),
+    (
+        "crates/busbar/src/root/serve.rs",
+        "drain_records",
+        "shutdown drain",
+    ),
+    ("crates/busbar/src/root/shutdown.rs", "finish", "shutdown"),
+    (
+        "crates/busbar/src/root/migrate_records.rs",
+        "native",
+        "offline migration",
+    ),
+    (
+        "crates/busbar/src/root/migrate_records.rs",
+        "scan",
+        "offline migration",
+    ),
+    (
+        "crates/busbar/src/root/migrate_records.rs",
+        "read",
+        "offline migration",
+    ),
+    (
+        "crates/busbar/src/root/migrate_records.rs",
+        "commit",
+        "offline migration",
+    ),
+    (
+        "crates/busbar/src/root/migrate_records.rs",
+        "finalize",
+        "offline migration",
+    ),
+    (
+        "crates/busbar/src/root/migrate_records.rs",
+        "evolve",
+        "offline migration",
+    ),
+    (
+        "crates/busbar/src/root/migrate_records.rs",
+        "step4_with_keys",
+        "offline migration",
+    ),
+    (
+        "crates/busbar/src/root/migrate.rs",
+        "finish_settled_checked",
+        "offline migration",
+    ),
+    (
+        "crates/busbar/src/root/migrate.rs",
+        "convert_and_finish_checked",
+        "offline migration",
+    ),
+    (
+        "crates/busbar/src/root/migrate.rs",
+        "normalize_settled",
+        "offline migration",
+    ),
+    (
+        "crates/busbar/src/root/store_kit_run.rs",
+        "run_kit",
+        "the store kit's own process",
+    ),
+    (
+        "crates/busbar/src/root/exit.rs",
+        "retire_on_exit",
+        "process exit",
+    ),
+    (
+        "crates/busbar/src/root/min3_boot.rs",
+        "guard_legacy_marks",
+        "boot",
+    ),
+    (
+        "crates/busbar/src/root/inbound.rs",
+        "host",
+        "only where no runtime exists to spawn on (a serving core always has one)",
+    ),
+    (
+        "crates/busbar/src/root/durability/predecessor.rs",
+        "walk",
+        "boot: sealing a predecessor's journal",
+    ),
+    (
+        "crates/busbar/src/root/boot/process.rs",
+        "new",
+        "boot: the control runtime's own thread",
+    ),
+    (
+        "crates/busbar/src/root/off_path/serve.rs",
+        "compose_planes_over",
+        "boot: composing planes",
+    ),
+];
 
 fn main() -> ExitCode {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -89,7 +210,104 @@ fn scan_tree(root: &Path) -> Result<Vec<String>, String> {
         let text = std::fs::read_to_string(&file).map_err(|e| format!("{rel}: {e}"))?;
         findings.extend(scan_source(&rel, &text));
     }
+    let mut data = Vec::new();
+    for scope in DATA_PATH {
+        collect(&root.join(scope), &mut data)?;
+    }
+    data.sort();
+    for file in data {
+        let rel = file
+            .strip_prefix(root)
+            .map_err(|_| format!("{} is outside the checkout", file.display()))?;
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        let text = std::fs::read_to_string(&file).map_err(|e| format!("{rel}: {e}"))?;
+        findings.extend(scan_data_source(&rel, &text));
+    }
     Ok(findings)
+}
+
+/// The data-path findings in one source file: every blocking hand-off not in `DATA_ALLOW`.
+fn scan_data_source(rel: &str, text: &str) -> Vec<String> {
+    let file = match syn::parse_file(text) {
+        Ok(file) => file,
+        Err(error) => return vec![format!("{rel}: cannot parse: {error}")],
+    };
+    let mut scan = DataScan {
+        rel,
+        function: String::new(),
+        findings: Vec::new(),
+    };
+    scan.visit_file(&file);
+    scan.findings
+}
+
+struct DataScan<'a> {
+    rel: &'a str,
+    /// The fn being read (empty at item level).
+    function: String,
+    findings: Vec<String>,
+}
+
+impl DataScan<'_> {
+    fn check(&mut self, name: &str, at: &impl Spanned) {
+        if !BLOCKING.contains(&name) {
+            return;
+        }
+        let allowed = DATA_ALLOW
+            .iter()
+            .any(|(file, function, _)| *file == self.rel && *function == self.function);
+        if !allowed {
+            let line = at.span().start().line;
+            self.findings.push(format!(
+                "{}:{line}: `{name}` on the data path: a request is one task on one core (await it, call the plugin inline)",
+                self.rel
+            ));
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for DataScan<'_> {
+    fn visit_item_mod(&mut self, node: &'ast ItemMod) {
+        if !is_test(&node.attrs) {
+            visit::visit_item_mod(self, node);
+        }
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast ItemFn) {
+        if is_test(&node.attrs) {
+            return;
+        }
+        let outer = std::mem::replace(&mut self.function, node.sig.ident.to_string());
+        visit::visit_item_fn(self, node);
+        self.function = outer;
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
+        if !is_test(&node.attrs) {
+            visit::visit_item_impl(self, node);
+        }
+    }
+
+    fn visit_impl_item_fn(&mut self, node: &'ast ImplItemFn) {
+        if is_test(&node.attrs) {
+            return;
+        }
+        let outer = std::mem::replace(&mut self.function, node.sig.ident.to_string());
+        visit::visit_impl_item_fn(self, node);
+        self.function = outer;
+    }
+
+    fn visit_expr_call(&mut self, node: &'ast ExprCall) {
+        if let Some((name, _)) = callee(&node.func) {
+            self.check(&name, node);
+        }
+        visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
+        self.check(&node.method.to_string(), node);
+        visit::visit_expr_method_call(self, node);
+    }
 }
 
 /// The `.rs` files under `path` (a file or a directory), `tests` directories and `*_tests.rs` files left out.
@@ -400,6 +618,40 @@ mod tests {
     #[test]
     fn an_unparsable_file_is_a_finding() {
         assert_eq!(scan_source(HOST, "fn (").len(), 1);
+    }
+
+    #[test]
+    fn a_data_path_hand_off_is_refused_outside_the_allow_list() {
+        const PORT: &str = "crates/busbar-kernel/src/plane_driver/port.rs";
+        for hop in [
+            "async fn serve() { tokio::task::spawn_blocking(move || 1).await; }",
+            "fn walk(h: &Handle) { h.block_on(far.next()); }",
+            "fn items(s: &S) { s.body.blocking_send(1); }",
+            "fn f() { tokio::task::block_in_place(|| 1); }",
+            "fn f(r: &mut R) { r.blocking_recv(); }",
+        ] {
+            let found = scan_data_source(PORT, hop);
+            assert_eq!(found.len(), 1, "{hop}: {found:?}");
+            assert!(found[0].contains("on the data path"), "{found:?}");
+        }
+        assert!(scan_data_source(PORT, "async fn f() { far.next().await; }").is_empty());
+        let shutdown = "fn finish() { tokio::task::spawn_blocking(|| 1); }";
+        assert!(scan_data_source("crates/busbar/src/root/shutdown.rs", shutdown).is_empty());
+        assert_eq!(
+            scan_data_source(
+                "crates/busbar/src/root/shutdown.rs",
+                "fn other() { spawn_blocking(|| 1); }"
+            )
+            .len(),
+            1
+        );
+        assert!(
+            scan_data_source(
+                PORT,
+                "#[cfg(test)] mod tests { fn f() { spawn_blocking(|| 1); } }"
+            )
+            .is_empty()
+        );
     }
 
     #[test]

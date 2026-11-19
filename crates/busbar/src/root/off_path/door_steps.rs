@@ -424,6 +424,8 @@ pub(crate) struct DoorConfig {
     pub(crate) listeners: Result<crate::root::boot::ListenerNeeds, String>,
     /// The ordered configured data auth positions, resolved against this candidate's opened auths.
     pub(crate) data_chain: Vec<String>,
+    /// `<plane>.routes.<id>.auth_instances` as the operator wrote them (IF §12.11, arm 1).
+    pub(crate) route_auth_instances: busbar_kernel::config::min3::RouteAuthInstances,
     /// The kernel-owned sections, and beside them every plane section the configuration carries RAW
     /// (a door plane's other owned sections among them: a config apply hands a plane its owned
     /// sections from here, as boot hands them from the document's sections).
@@ -456,6 +458,7 @@ pub(crate) fn door_config(
             .as_ref()
             .map(|auth| auth.chain.iter().map(|entry| entry.name.clone()).collect())
             .unwrap_or_default(),
+        route_auth_instances: cfg.min3.route_auth_instances.clone(),
         sections,
         providers: provider_routes(
             &cfg.providers,

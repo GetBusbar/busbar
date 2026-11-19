@@ -14,11 +14,69 @@
 //! charges the image as the loader does for a break its own decode finds (the instance quarantined, `plugin_fault`
 //! audited).
 //!
-//! The calls are synchronous (a port's methods run the plugin on its worker); a driver runs a task inside
-//! `spawn_blocking`. The [`Calls`] trait is the seam the tests fake: `PlaneSession` is an ffi handle, so a core
-//! test cannot build one.
+//! The calls are synchronous: each is one direct entry through the busbar-ffi door on the thread that drives the
+//! session, which is the request's own task. What a session waits for between calls (the far end, the store, the
+//! client) is awaited, never blocked on. The [`Calls`] trait is the seam the tests fake: `PlaneSession` is an ffi
+//! handle, so a core test cannot build one.
 
 use std::sync::Arc;
+use std::task::{Context, Poll};
+
+/// Test support: runs a session future to its end on a current-thread runtime of its own, as a plain `#[test]`
+/// drives one (the runtime is built through `crate::rt`, the one place a core runtime is built).
+#[cfg(test)]
+pub(crate) fn finish<F: std::future::Future>(future: F) -> F::Output {
+    crate::rt::current_thread()
+        .enable_all()
+        .build()
+        .expect("a test runtime")
+        .block_on(future)
+}
+
+/// State that one session's task alone reads and writes, kept behind this one type so the choice of how it is
+/// shared is made here and nowhere else. Today the session future is `Send` (the listener spawns it with
+/// `tokio::spawn`), so this is an uncontended `Mutex`: one compare-exchange, no system call. A `!Send` future on a
+/// per-core local task set would make it a plain cell, with no change to any user. The guard never leaves
+/// [`Owned::with`], so it is never held across an await and never nested.
+#[derive(Debug, Default)]
+pub(crate) struct Owned<T>(std::sync::Mutex<T>);
+
+impl<T> Owned<T> {
+    pub(crate) const fn new(value: T) -> Self {
+        Self(std::sync::Mutex::new(value))
+    }
+
+    /// Runs `f` on the value.
+    pub(crate) fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        f(&mut self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
+    pub(crate) fn get(&self) -> T
+    where
+        T: Copy,
+    {
+        self.with(|value| *value)
+    }
+
+    /// Stores `value`; the value it replaces is dropped after the guard is released.
+    pub(crate) fn set(&self, value: T) {
+        drop(self.replace(value));
+    }
+
+    pub(crate) fn take(&self) -> T
+    where
+        T: Default,
+    {
+        self.with(std::mem::take)
+    }
+
+    pub(crate) fn replace(&self, value: T) -> T {
+        self.with(|held| std::mem::replace(held, value))
+    }
+}
 
 use busbar_plugin_abi::plane::{
     UsageRec, ATT_DECLINE, ATT_OK, ATT_RELAY, ATT_RETRY, AUDIT_APPLIED, AUDIT_DEGRADED,
@@ -119,7 +177,9 @@ pub trait Calls {
     }
 }
 
-impl Calls for dyn PlanePort {
+/// For a plane port of any lifetime, so a session future borrowing one stays `Send` for every borrow (a spawned
+/// request's future is checked for all of them).
+impl<'p> Calls for dyn PlanePort + 'p {
     type Session = PlaneSession;
 
     fn channel(
@@ -444,8 +504,9 @@ impl AttemptUsageItem {
     }
 }
 
-/// Effects the plane's answer has outside the client, applied at once, in sink order.
-pub trait Effects {
+/// Effects the plane's answer has outside the client, applied at once, in sink order. `Sync`: a session's effects
+/// are borrowed across the awaits of its task.
+pub trait Effects: Sync {
     fn admission_owner(&self) -> Option<&Arc<super::port_admission::Pending>> {
         None
     }
@@ -488,7 +549,7 @@ pub trait Effects {
 /// Hold sink-time effects until the whole answer has passed the host's checks.
 pub(crate) struct Buffered<'a> {
     inner: &'a dyn Effects,
-    emits: std::cell::RefCell<Vec<(u64, busbar_contract::secure::SecureVec)>>,
+    emits: Owned<Vec<(u64, busbar_contract::secure::SecureVec)>>,
 }
 
 fn expected_resource_echo(
@@ -512,12 +573,12 @@ impl<'a> Buffered<'a> {
     pub(crate) fn new(inner: &'a dyn Effects) -> Self {
         Self {
             inner,
-            emits: std::cell::RefCell::new(Vec::new()),
+            emits: Owned::new(Vec::new()),
         }
     }
 
     pub(crate) fn release(&self) {
-        for (carrier, bytes) in self.emits.borrow_mut().drain(..) {
+        for (carrier, bytes) in self.emits.take() {
             self.inner.emit(carrier, &bytes);
         }
     }
@@ -538,27 +599,34 @@ impl Effects for Buffered<'_> {
     }
 
     fn emit(&self, carrier: u64, bytes: &[u8]) {
-        self.emits.borrow_mut().push((carrier, bytes.into()));
+        self.emits.with(|emits| emits.push((carrier, bytes.into())));
     }
 }
 
 /// The client side of a streamed reply: items are handed over as they are decided, in the order the plane wrote
 /// them, instead of being joined into one answer.
 pub trait ClientSink: Send + Sync {
-    /// Takes `items`. `false` = the client went away: nothing more is wanted, and the far end is let go.
-    fn items(&self, items: Vec<ToClient>) -> bool;
+    /// Takes `items` from the front, in order, as the client side has room for them. `Pending` (with `cx`'s waker
+    /// kept) while it has none: the session task waits there, which is the back-pressure; the items not yet taken
+    /// stay in `items`. `Ready(true)` once every item was taken; `Ready(false)` = the client went away: nothing
+    /// more is wanted, and the far end is let go.
+    fn poll_items(&self, cx: &mut Context<'_>, items: &mut Vec<ToClient>) -> Poll<bool>;
 }
 
 /// Hands `items` to the effects' [`ClientSink`] when it has one (leaving `items` empty), else keeps them.
 /// `false` = the client went away.
-pub fn hand_out(effects: &dyn Effects, items: &mut Vec<ToClient>) -> bool {
+pub async fn hand_out(effects: &dyn Effects, items: &mut Vec<ToClient>) -> bool {
     for item in items.iter() {
         if let ToClient::Head { status, .. } = item {
             effects.response(*status);
         }
     }
     match effects.client() {
-        Some(sink) if !items.is_empty() => sink.items(std::mem::take(items)),
+        Some(sink) if !items.is_empty() => {
+            let taken = std::future::poll_fn(|cx| sink.poll_items(cx, items)).await;
+            items.clear();
+            taken
+        }
         _ => true,
     }
 }

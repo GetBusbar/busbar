@@ -10,7 +10,6 @@
 use std::sync::Arc;
 
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
-use tokio::runtime::Handle;
 
 use super::plane_judge::PlaneJudge;
 use super::port_channels::Held;
@@ -85,27 +84,30 @@ pub trait UsageObservations: Send + Sync + 'static {
 /// holder's: a message sent through it is refused.
 pub struct MediaHeld {
     bridge: MediaBridge,
-    rt: Handle,
 }
 
 impl MediaHeld {
     #[must_use]
-    pub fn new(bridge: MediaBridge, rt: Handle) -> Self {
-        Self { bridge, rt }
+    pub fn new(bridge: MediaBridge) -> Self {
+        Self { bridge }
     }
 }
 
 impl Held for MediaHeld {
-    fn send(&mut self, _message: &[u8], _ask: bool) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Invalid)
+    fn send<'a>(
+        &'a mut self,
+        _message: &'a [u8],
+        _ask: bool,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Invalid)))
     }
 
     fn ready(&mut self, _tail: &[u8]) -> Result<(), RecordsDenied> {
         Ok(())
     }
 
-    fn remote(&mut self, description: &str) -> Result<(), RecordsDenied> {
-        self.rt.block_on(self.bridge.remote(description))
+    fn remote<'a>(&'a mut self, description: &'a str) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(self.bridge.remote(description))
     }
 
     fn refusal(&self) -> Option<String> {

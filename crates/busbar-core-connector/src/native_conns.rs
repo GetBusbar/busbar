@@ -808,10 +808,15 @@ impl super::Connector {
             held.native = Some(NativeHeld::new(exchange, core));
             held
         };
+        let plain =
+            self.plaintext_accepted(caller, desc) || self.plaintext_admitted(&located.authority);
         // HTTP keep-alive: an idle connection this core dialled to the same key carries the exchange (it was judged
-        // when it was dialled, under this very key).
+        // when it was dialled, under this very key). A plaintext one is lent only to an open whose own plaintext
+        // admission holds: the key does not carry the opener's acceptance, so an open without it dials and is held
+        // to the plaintext rule.
         if let Some(conn) = key
             .as_ref()
+            .filter(|_| located.secure || plain)
             .and_then(|key| self.native_idle.take(core, key, started, posture))
         {
             return Ok(held(State::Dialled(conn), key));
@@ -826,8 +831,7 @@ impl super::Connector {
         );
         let dial = PendingDial {
             carrier: carrier.clone(),
-            plain: self.plaintext_accepted(caller, desc)
-                || self.plaintext_admitted(&located.authority),
+            plain,
             located,
             tls,
             anchors,
