@@ -641,11 +641,10 @@ dependencies = [
 [[package]]
 name = "busbar-hook-webrequest"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-webrequest?rev=2f32a79871f4ffc24e7f92d7232ccc370cfc4fa7#2f32a79871f4ffc24e7f92d7232ccc370cfc4fa7"
+source = "git+https://github.com/GetBusbar/busbar-hook-webrequest?rev=1ed384ad0b6edfff63f91a75584a28b5706b6ae5#1ed384ad0b6edfff63f91a75584a28b5706b6ae5"
 dependencies = [
  "base64 0.22.1",
  "busbar-plugin-abi",
- "http",
  "percent-encoding",
  "ryu",
  "sonic-rs",
@@ -770,7 +769,7 @@ dependencies = [
 [[package]]
 name = "busbar-kind-transport-hyper"
 version = "0.1.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=6860ddb93dc09a5b109686c20ad361d37f4cb834#6860ddb93dc09a5b109686c20ad361d37f4cb834"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=56fd5fb4bac8f119b2d76e2e7a2cf075eada985f#56fd5fb4bac8f119b2d76e2e7a2cf075eada985f"
 dependencies = [
  "busbar-plugin-abi",
  "hyper",
@@ -790,7 +789,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=33053b658f28661a525d888e272f3a388d5f1227#33053b658f28661a525d888e272f3a388d5f1227"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=b8f2bb68ab87faf8300e3a2eb261ede3ca6e6df4#b8f2bb68ab87faf8300e3a2eb261ede3ca6e6df4"
 dependencies = [
  "busbar-crypto",
  "busbar-plugin-abi",
@@ -806,7 +805,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=d00c2aaecc0f57baa930340624ad03b8f0d41305#d00c2aaecc0f57baa930340624ad03b8f0d41305"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=b7ffc3fde9305f93985025445c8941237a43307d#b7ffc3fde9305f93985025445c8941237a43307d"
 dependencies = [
  "base64 0.22.1",
  "busbar-plugin-abi",
@@ -838,7 +837,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=03a0711712d91f16ad8868258543432aa577802a#03a0711712d91f16ad8868258543432aa577802a"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=3164da79cd0fb8ab9f272f4d2c6adc47aef34144#3164da79cd0fb8ab9f272f4d2c6adc47aef34144"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -850,6 +849,7 @@ dependencies = [
  "serde",
  "tracing",
  "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -947,7 +947,7 @@ version = "1.6.0"
 [[package]]
 name = "busbar-secret-env"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=5339132f5f01570130d68b4bf346573b5c6452c3#5339132f5f01570130d68b4bf346573b5c6452c3"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=327d2c01546d065c4c33559caf78f015e453ae76#327d2c01546d065c4c33559caf78f015e453ae76"
 dependencies = [
  "busbar-plugin-abi",
  "sonic-rs",
@@ -956,7 +956,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-file"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=510e283690f6e48524a6561c50551c6b8acdc3d4#510e283690f6e48524a6561c50551c6b8acdc3d4"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=08e5b00ed8e935713e191526118b7e2ee8df6055#08e5b00ed8e935713e191526118b7e2ee8df6055"
 dependencies = [
  "busbar-plugin-abi",
  "libc",
@@ -1012,7 +1012,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=6860ddb93dc09a5b109686c20ad361d37f4cb834#6860ddb93dc09a5b109686c20ad361d37f4cb834"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=56fd5fb4bac8f119b2d76e2e7a2cf075eada985f#56fd5fb4bac8f119b2d76e2e7a2cf075eada985f"
 dependencies = [
  "busbar-kind-transport-hyper",
  "busbar-plugin-abi",
