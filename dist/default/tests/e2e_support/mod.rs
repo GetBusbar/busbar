@@ -524,6 +524,11 @@ impl Node {
         std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
+    /// The `config.yaml` this node booted from: a test rewrites it before a `/config/reload`.
+    pub fn config_path(&self) -> PathBuf {
+        self.dir.join("config.yaml")
+    }
+
     /// One operator request on the admin listener.
     pub fn operator(&self, method: &str, path: &str, body: Option<&Value>) -> Reply {
         let body = body.map(Value::to_string).unwrap_or_default();
