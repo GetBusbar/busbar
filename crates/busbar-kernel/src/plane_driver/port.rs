@@ -492,23 +492,6 @@ impl PortDriver {
         ))
     }
 
-    pub async fn render_refusal(
-        &self,
-        route: u32,
-        request: crate::limits::process_admission::RequestLease,
-        http: HttpIn,
-        refusal: ClientRefusal,
-    ) -> Result<Vec<ToClient>, ServeError> {
-        let auth = self.refusal_auth(route)?;
-        let port = Arc::clone(&self.port);
-        tokio::task::spawn_blocking(move || {
-            let _request = request;
-            render_native_refusal(&*port, route, auth, &http, &refusal)
-        })
-        .await
-        .map_err(|_| ServeError::Cancelled)
-    }
-
     fn refusal_auth(&self, route: u32) -> Result<u32, ServeError> {
         let mounted = self.mounted.get(&route).ok_or(ServeError::NoRoute)?;
         Ok(mounted.effective & mounted.effective.wrapping_neg())

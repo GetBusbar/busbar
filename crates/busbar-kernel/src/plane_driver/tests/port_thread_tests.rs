@@ -22,7 +22,6 @@ use busbar_ports::{CallCx, PortError};
 
 use super::{HttpHead, HttpIn, PortDriver};
 use crate::host_services::KernelServices;
-use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
 use crate::refusal::{ClientRefusal, CoreRefusals};
 use crate::resource_admission::{select_resources, FrozenRequest};
 use crate::state::InvocationId;
@@ -195,8 +194,8 @@ fn http() -> HttpIn {
 }
 
 /// The DATA listener's RESOURCE_SELECT crossing runs on the request's own thread.
-#[tokio::test(flavor = "current_thread")]
-async fn the_resource_select_crossing_is_not_handed_to_another_thread() {
+#[test]
+fn the_resource_select_crossing_is_not_handed_to_another_thread() {
     let plane = Recording::new();
     let frozen = FrozenRequest::new(
         InvocationId::from_request_id(NonZeroU64::new(1).unwrap()),
@@ -207,7 +206,7 @@ async fn the_resource_select_crossing_is_not_handed_to_another_thread() {
         Vec::new(),
         b"body".to_vec(),
     );
-    let (_frozen, selection) = select_resources(plane.clone(), frozen).await.unwrap();
+    let selection = select_resources(&*plane, &frozen);
     assert_eq!(selection.unwrap().unwrap(), Vec::<u8>::new());
     assert_eq!(
         plane.counts(std::thread::current().id()),
@@ -217,8 +216,8 @@ async fn the_resource_select_crossing_is_not_handed_to_another_thread() {
 }
 
 /// An upgrade refusal rendered by the plane runs on the request's own thread.
-#[tokio::test(flavor = "current_thread")]
-async fn the_refusal_render_crossing_is_not_handed_to_another_thread() {
+#[test]
+fn the_refusal_render_crossing_is_not_handed_to_another_thread() {
     let plane = Recording::new();
     let driver = PortDriver::new(
         plane.clone(),
@@ -228,14 +227,12 @@ async fn the_refusal_render_crossing_is_not_handed_to_another_thread() {
         &|_| None,
     )
     .unwrap();
-    let budget = ProcessAdmission::with_limits(2, 64, 8);
-    let request = budget.try_enter(AdmissionClass::Data).unwrap();
     let refusal = ClientRefusal {
         status: 400,
         code: 1,
         text: "no".into(),
     };
-    let rendered = driver.render_refusal(1, request, http(), refusal).await;
+    let rendered = driver.render_refusal_now(1, &http(), &refusal);
     assert!(rendered.is_ok());
     assert_eq!(
         plane.counts(std::thread::current().id()),

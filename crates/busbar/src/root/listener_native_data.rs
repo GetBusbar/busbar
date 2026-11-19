@@ -486,10 +486,8 @@ pub(super) async fn prepare(
     let data_route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
     let original = binding.snapshot().map_err(|_| InputError::Capacity)?;
     let frozen = FrozenRequest::from_snapshot(binding.invocation(), route, original);
-    let (frozen, selection) =
-        busbar_kernel::resource_admission::select_resources(seat.driver.port(), frozen)
-            .await
-            .map_err(|_| InputError::Invalid)?;
+    let selection =
+        busbar_kernel::resource_admission::select_resources(&*seat.driver.port(), &frozen);
     let selection = selection
         .map_err(|_| InputError::Invalid)?
         .map_err(|_| InputError::Invalid)?;

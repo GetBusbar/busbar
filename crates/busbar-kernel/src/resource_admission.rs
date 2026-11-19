@@ -826,23 +826,21 @@ impl ValidatedForward {
 /// input's, the inner one the plane's.
 pub type Selection = Result<Result<Vec<u8>, busbar_ports::PortError>, ResourceError>;
 
-/// The plane's RESOURCE_SELECT crossing over `frozen`, returned with it.
-pub async fn select_resources(
-    port: Arc<dyn busbar_ports::plane::PlanePort>,
-    frozen: FrozenRequest,
-) -> Result<(FrozenRequest, Selection), tokio::task::JoinError> {
-    tokio::task::spawn_blocking(move || {
-        let selection = frozen.with_selection_input(|input, body| {
-            port.resource_facts(
-                busbar_plugin_abi::plane::RESOURCE_SELECT,
-                input,
-                body,
-                busbar_plugin_abi::resource_admission::MAX_SELECTION_BYTES,
-            )
-        });
-        (frozen, selection)
+/// The plane's RESOURCE_SELECT crossing over `frozen`, a direct call on the caller's thread. A plugin
+/// that panics answers FAULT through busbar-ffi; one that blocks is seen by the watchdog word the
+/// entry sets, and quarantined at its ceiling.
+pub fn select_resources(
+    port: &dyn busbar_ports::plane::PlanePort,
+    frozen: &FrozenRequest,
+) -> Selection {
+    frozen.with_selection_input(|input, body| {
+        port.resource_facts(
+            busbar_plugin_abi::plane::RESOURCE_SELECT,
+            input,
+            body,
+            busbar_plugin_abi::resource_admission::MAX_SELECTION_BYTES,
+        )
     })
-    .await
 }
 
 #[cfg(test)]

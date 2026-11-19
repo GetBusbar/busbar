@@ -846,7 +846,7 @@ pub(crate) fn upgrade_step(
 
 /// The client items of core's refusal on an upgrade route: the plane's rendering of it on that
 /// route (the plane is lent the head, never called with `request`), else core's plain refusal.
-pub(crate) async fn upgrade_refusal_items(
+pub(crate) fn upgrade_refusal_items(
     seat: &PortSeat,
     route: u32,
     head: &Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
@@ -858,15 +858,11 @@ pub(crate) async fn upgrade_refusal_items(
         Bytes::new(),
         request_id,
     );
-    // Core's words are lent for the life of the process: keeping them for the fallback copies nothing.
-    let fallback = refusal.clone();
-    match seat
-        .driver
-        .render_refusal(route, head.request().clone(), http, refusal)
-        .await
-    {
+    // The plane's render is a direct call on this thread; the snapshot `head` keeps the request's
+    // charged input for the call.
+    match seat.driver.render_refusal_now(route, &http, &refusal) {
         Ok(items) => items,
-        Err(_) => port_auth::plain_refusal(&fallback),
+        Err(_) => port_auth::plain_refusal(&refusal),
     }
 }
 
