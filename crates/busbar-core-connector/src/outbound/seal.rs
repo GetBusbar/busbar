@@ -546,6 +546,35 @@ mod tests {
         }
     }
 
+    /// A sealed query pair is one `name=value` and nothing else: a value carrying a pair separator
+    /// (an injected second pair) or a second `=` is refused [`SEAL_UNREADABLE`] before anything is
+    /// sent, every value of the head is wiped, and the refusal names none of them.
+    #[test]
+    fn query_sealing_refuses_cleartext_or_malformed_metadata_without_exposing_values() {
+        for bad in [&b"k=v&injected=1"[..], b"k=v=w", b"k=sk-live&k2=v"] {
+            let mut fields = vec![
+                ("x-api-key".to_owned(), KEY.to_vec()),
+                ("busbar-sealed-fields".to_owned(), b"x-api-key".to_vec()),
+                ("busbar-sealed-query".to_owned(), bad.to_vec()),
+            ];
+            let refused = Slots::take_from(&mut fields).err();
+            assert_eq!(
+                refused,
+                Some(SEAL_UNREADABLE),
+                "{}",
+                String::from_utf8_lossy(bad)
+            );
+            assert!(fields.is_empty(), "every value is wiped with the refusal");
+            assert!(!SEAL_UNREADABLE.contains("injected"));
+            assert!(!SEAL_UNREADABLE.contains("sk-live"));
+        }
+        // A well-formed sealed query is still never written in the clear without acceptance.
+        let mut fields = vec![("busbar-sealed-query".to_owned(), b"key=sk-live".to_vec())];
+        let slots = Slots::take_from(&mut fields).unwrap();
+        assert_eq!(slots.admit(false, false), Err(SEALED_IN_CLEAR));
+        assert!(!SEALED_IN_CLEAR.contains("sk-live"));
+    }
+
     #[test]
     fn plaintext_needs_the_destinations_own_acceptance() {
         let mut fields = head();

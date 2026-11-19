@@ -296,7 +296,9 @@ fn load_reason<S>(what: &str, outcome: Result<(busbar_ffi::image::Opened, S), Un
             drop(staged);
             panic!("{what}: a file that is not a library opened");
         }
-        Err(Unopened::Stage(why)) => panic!("{what}: refused while staging, not by the dynamic loader: {why}"),
+        Err(Unopened::Stage(why)) => {
+            panic!("{what}: refused while staging, not by the dynamic loader: {why}")
+        }
         Err(Unopened::Image(e)) => panic!("{what}: refused, but not by the dynamic loader: {e:?}"),
         Err(Unopened::Panicked) => panic!("{what}: the open panicked"),
     }
@@ -402,7 +404,11 @@ fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
     }
     let a = crate::test_host::cdylib_bytes("native_pack_fixture");
     let b = crate::test_host::cdylib_bytes("native_schema_bomb");
-    assert_ne!(stamp_in(&a), stamp_in(&b), "the two images must differ in stamp");
+    assert_ne!(
+        stamp_in(&a),
+        stamp_in(&b),
+        "the two images must differ in stamp"
+    );
 
     let staged_name = |s: &Staged| match s {
         Staged::Memfd { fd: Some(fd) } => memfd_name(fd),
@@ -411,7 +417,11 @@ fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
 
     let first = open_image(&a, "image-a");
     let (opened_a, staged_a) = first.unwrap_or_else(|e| panic!("image A opens: {}", said(&Err(e))));
-    assert_eq!(opened_a.stamp().0.as_slice(), stamp_in(&a), "image A answers with A's stamp");
+    assert_eq!(
+        opened_a.stamp().0.as_slice(),
+        stamp_in(&a),
+        "image A answers with A's stamp"
+    );
     let name_a = staged_name(&staged_a);
     release((opened_a, staged_a));
 
@@ -429,7 +439,11 @@ fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
         stamp_in(&a),
         "image B was opened but image A's resident image answered: B's verified bytes never ran"
     );
-    assert_eq!(stamp_b.as_slice(), stamp_in(&b), "image B answers with B's own stamp");
+    assert_eq!(
+        stamp_b.as_slice(),
+        stamp_in(&b),
+        "image B answers with B's own stamp"
+    );
     release((opened_b, staged_b));
 }
 
@@ -562,7 +576,8 @@ mod staged_file_pin {
         let opened = open_staged_file(verified, &mut |path| {
             seen = Some(std::fs::read(path).expect("read the staged file"));
         });
-        let opened = opened.unwrap_or_else(|e| panic!("the verified bytes open: {}", said(&Err(e))));
+        let opened =
+            opened.unwrap_or_else(|e| panic!("the verified bytes open: {}", said(&Err(e))));
         assert!(
             seen.as_deref() == Some(verified),
             "the staged file must hold exactly the verified bytes"
@@ -672,7 +687,8 @@ mod on_linux_memfd {
     fn the_staged_bytes_are_the_verified_bytes() {
         let (verified, other) = super::staged_file_pin::two_libraries();
         let opened = open_image(&verified, "memfd");
-        let loaded = opened.unwrap_or_else(|e| panic!("the verified bytes open: {}", said(&Err(e))));
+        let loaded =
+            opened.unwrap_or_else(|e| panic!("the verified bytes open: {}", said(&Err(e))));
         let Staged::Memfd { fd: Some(fd) } = &loaded.1 else {
             panic!("Linux stages a verified image into a memfd");
         };
@@ -684,7 +700,11 @@ mod on_linux_memfd {
         // SAFETY: plain fcntl on an fd the staging owns; no pointers.
         let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
         let want = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
-        assert_eq!(seals & want, want, "the memfd must be sealed (got {seals:#x})");
+        assert_eq!(
+            seals & want,
+            want,
+            "the memfd must be sealed (got {seals:#x})"
+        );
 
         let rewrite = std::fs::OpenOptions::new()
             .write(true)
@@ -698,4 +718,3 @@ mod on_linux_memfd {
         release(loaded);
     }
 }
-
