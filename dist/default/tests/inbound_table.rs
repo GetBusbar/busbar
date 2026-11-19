@@ -247,7 +247,7 @@ impl Drop for Booted {
 /// The body cap the fixture configures (`limits.request_body_max_bytes`).
 const BODY_CAP: usize = 64 * 1024;
 
-fn boot(upstream: &str) -> Booted {
+fn boot(upstream: &str, with_planes: bool) -> Booted {
     let dir = std::env::temp_dir().join(format!(
         "busbar-inbound-table-{}-{}",
         std::process::id(),
@@ -263,7 +263,7 @@ fn boot(upstream: &str) -> Booted {
         .expect("generate a signing key");
     assert!(key.status.success(), "--generate-signing-key");
     std::fs::write(dir.join("signing.key"), &key.stdout).unwrap();
-    let planes = PLANE_SECTIONS
+    let planes = if with_planes { PLANE_SECTIONS } else { "" }
         .replace("{data_port}", &data_port.to_string())
         .replace("{admin_port}", &admin_port.to_string());
     // A resolved provider entry needs `error_map` (the llm plane's provider schema).
