@@ -231,23 +231,23 @@ fn an_unkeyed_unit_on_a_credential_claim_is_refused() {
             .build()
             .unwrap()
             .block_on(driver.serve(unkeyed(&budget)));
-        let Ok(Served::Refused(refused)) = served else {
+        let Ok(Served::Refused(refusal)) = served else {
             panic!("auth={auth:#x}: an unkeyed request on a credential claim was not refused");
         };
         assert_eq!(
-            (refused.decision.status, refused.decision.code),
+            (refusal.decision.status, refusal.decision.code),
             (401, R_AUTH_REQUIRED),
             "auth={auth:#x}: refused as unauthenticated"
         );
         assert!(
             matches!(
-                refused.items.first(),
+                refusal.items.first(),
                 Some(ToClient::Head { status: 401, .. })
             ),
             "auth={auth:#x}: the client is answered 401"
         );
         assert!(
-            matches!(refused.items.last(), Some(ToClient::End)),
+            matches!(refusal.items.last(), Some(ToClient::End)),
             "auth={auth:#x}: the refusal is the whole answer"
         );
         assert_eq!(
@@ -281,7 +281,7 @@ impl NestRoute for NestsAgain {
         self.seen.lock().unwrap().push((
             nest.parent,
             nest.depth,
-            nest.principal.as_ref().map(|key| key.id.clone()),
+            nest.principal.as_ref().map(|key| key.id.to_string()),
         ));
         let child = self.next_unit.fetch_add(1, Ordering::Relaxed);
         context.generation().core().units().admitted_for(
@@ -292,8 +292,9 @@ impl NestRoute for NestsAgain {
                 depth: nest.depth,
             },
         );
-        let child = InvocationContext::new(Arc::clone(context.generation()), self.caller.clone(), child)
-            .expect("the admitted child unit is in flight");
+        let child =
+            InvocationContext::new(Arc::clone(context.generation()), self.caller.clone(), child)
+                .expect("the admitted child unit is in flight");
         child
             .nest(
                 &self.caller,
@@ -361,8 +362,11 @@ fn a_nest_past_the_depth_cap_is_refused() {
         NestReply::Answered {
             status: 200,
             fields: Vec::new(),
-            body: format!("{}nest-refused:{NEST_TOO_DEEP}", "nested:200:".repeat(deep - 1))
-                .into_bytes(),
+            body: format!(
+                "{}nest-refused:{NEST_TOO_DEEP}",
+                "nested:200:".repeat(deep - 1)
+            )
+            .into_bytes(),
         },
         "every level up to the cap ran; the one past it was refused"
     );

@@ -1723,3 +1723,7 @@ mod thread_tests;
 #[cfg(test)]
 #[path = "tests/session_ceiling_tests.rs"]
 mod session_ceiling_tests;
+
+#[cfg(test)]
+#[path = "tests/unkeyed_unit_and_nest_cap.rs"]
+mod unkeyed_unit_and_nest_cap;
