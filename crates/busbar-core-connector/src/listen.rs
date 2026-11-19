@@ -133,6 +133,16 @@ impl Admits for Listening {
     }
 }
 
+/// A LISTENER'S STOP, held off its worker: [`ListenStop::stop`] takes the listener out of service from any thread.
+pub struct ListenStop {
+    _held: (),
+}
+
+impl ListenStop {
+    /// Stop the listener.
+    pub fn stop(&self) {}
+}
+
 /// What a listener's connections become.
 enum Mode {
     /// Framed through this entry, over the carrier.
@@ -273,6 +283,12 @@ impl Listening {
     #[must_use]
     pub fn live(&self) -> usize {
         self.live.load(Ordering::Acquire)
+    }
+
+    /// This listener's stop, to be held off its worker.
+    #[must_use]
+    pub fn stopper(&self) -> ListenStop {
+        ListenStop { _held: () }
     }
 
     /// The next admitted connection: `Pending` with `cx`'s waker on the carrier's accept (or on

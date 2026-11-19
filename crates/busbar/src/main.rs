@@ -2137,8 +2137,17 @@ fn serve_thread_per_core(
             .into_iter()
             .map(Some)
             .collect();
+    // The core watch runs on this (control) runtime: a core whose plugin entry hung has its listener stopped.
+    let watch = root::core_watch::CoreWatch::new();
+    let process = root::boot::images::process().ok();
+    tokio::spawn(Arc::clone(&watch).run(move || {
+        process
+            .as_ref()
+            .map_or(0, |process| process.slots().hung_total())
+    }));
     let mut handles = Vec::with_capacity(cores.len());
     for (i, core_id) in cores.into_iter().enumerate() {
+        let watch = Arc::clone(&watch);
         let native = Arc::clone(&native);
         let alpn = alpn.clone();
         let tls = tls_cfg.clone();
@@ -2181,6 +2190,8 @@ fn serve_thread_per_core(
                         carrier = %crate::root::connector::carrier_name(via.as_ref()),
                         "data door listening through the connector"
                     );
+                    let beat = watch.enrol(listener.stopper());
+                    tokio::spawn(root::core_watch::beat(beat));
                     serve_listener(
                         listener,
                         native,
