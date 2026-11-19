@@ -15,9 +15,12 @@
 //! - **E3 and the owner's pins.** busbar-ffi's files are exactly the pinned list; each file's count
 //!   (`unsafe` tokens, doc code included, plus `allow`/`expect(unsafe_code)`) equals its pin; the total
 //!   equals the sum and never rises against the merge base or the target tip (`origin/dev`, never
-//!   `BUSBAR_LOC_BASE`); a net-zero move between files passes. Its dependencies and its dependents are
-//!   pinned. No fail-open: an unresolvable base, a missing register at a base that should have one, an
-//!   unparseable register, a missing or moved `ffi` row, or a tracked file that does not lex all fail.
+//!   `BUSBAR_LOC_BASE`); a net-zero move between files passes. The one exception is an owner-approved
+//!   rise (`ffi.approved_rises`), honoured only exactly: from that base total to that total, all of it in
+//!   the named file behind its feature, the rest of busbar-ffi at or below the base. Its dependencies
+//!   and its dependents are pinned. No fail-open: an unresolvable base, a missing register at a base
+//!   that should have one, an unparseable register, a missing or moved `ffi` row, or a tracked file that
+//!   does not lex all fail.
 //! - **E4-E6, E10.** One exported macro, `export!`, whose `#[unsafe(no_mangle)]` is the only `unsafe` token
 //!   in any macro body; no `$`-metavariable inside an `unsafe` construct; a `// SAFETY:` comment above every
 //!   `unsafe` block and impl; the root denies its four lints and no file lowers them.
@@ -58,6 +61,23 @@ struct Ffi {
     files: BTreeMap<String, FileRow>,
     dependencies: BTreeMap<String, String>,
     dependents: BTreeMap<String, String>,
+    /// The owner's approved rises of `total`, each exact (see [`approved_rise_holds`]).
+    #[serde(default)]
+    approved_rises: Vec<ApprovedRise>,
+}
+
+/// One rise of busbar-ffi's total the owner approved: from `from` to `to`, all of it in `file` (`tokens` =
+/// `to - from`), a module behind `feature`.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+struct ApprovedRise {
+    from: usize,
+    to: usize,
+    file: String,
+    tokens: usize,
+    feature: String,
+    ruling: String,
+    reason: String,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -108,6 +128,49 @@ type AtBase = (String, Option<Register>);
 fn in_ffi(path: &str) -> bool {
     path.strip_prefix(FFI_PATH)
         .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Whether `rise` covers a rise of busbar-ffi's total from `before` to `now.ffi.total`, exactly as the owner
+/// approved it: the base total is `from`; the register's and the measured totals are both `to`; `tokens` is
+/// `to - from`; the named file is pinned and measures exactly `tokens`; every other busbar-ffi file together
+/// measures at most `from`, so shipped `unsafe` cannot rise under cover of it; the file is a module the root
+/// declares only behind `feature`; and the ruling and reason are stated. Anything else is not covered.
+fn approved_rise_holds(
+    rise: &ApprovedRise,
+    before: usize,
+    now: &Register,
+    measured_ffi: &BTreeMap<String, usize>,
+    tree: &Tree,
+) -> bool {
+    let measured_total: usize = measured_ffi.values().sum();
+    let in_file = measured_ffi.get(&rise.file).copied();
+    let stem = rise
+        .file
+        .strip_prefix("src/")
+        .and_then(|name| name.strip_suffix(".rs"));
+    let gated = stem.is_some_and(|stem| {
+        tree.files
+            .get(&format!("{FFI_PATH}/src/lib.rs"))
+            .is_some_and(|root| {
+                root.contains(&format!(
+                    "#[cfg(feature = \"{}\")]\npub mod {stem};",
+                    rise.feature
+                ))
+            })
+    });
+    rise.from == before
+        && rise.to == now.ffi.total
+        && measured_total == rise.to
+        && rise.from.checked_add(rise.tokens) == Some(rise.to)
+        && now.ffi.files.get(&rise.file).map(|row| row.tokens) == Some(rise.tokens)
+        && in_file == Some(rise.tokens)
+        && measured_total
+            .checked_sub(rise.tokens)
+            .is_some_and(|outside| outside <= rise.from)
+        && gated
+        && !rise.feature.trim().is_empty()
+        && !rise.ruling.trim().is_empty()
+        && !rise.reason.trim().is_empty()
 }
 
 /// The judge: every failure, worded for the person who has to fix it.
@@ -343,7 +406,13 @@ fn judge(tree: &Tree, now: &Register, bases: &[AtBase]) -> Vec<String> {
         let Some(before) = at else {
             continue;
         };
-        if now.ffi.total > before.ffi.total {
+        if now.ffi.total > before.ffi.total
+            && !now
+                .ffi
+                .approved_rises
+                .iter()
+                .any(|rise| approved_rise_holds(rise, before.ffi.total, now, &measured_ffi, tree))
+        {
             failures.push(format!(
                 "busbar-ffi: total {} rose above {} at {revision}; no package adds a busbar-ffi token",
                 now.ffi.total, before.ffi.total
