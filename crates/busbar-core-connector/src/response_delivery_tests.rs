@@ -4,21 +4,15 @@
 use super::*;
 use busbar_contract::response_delivery::CarrierFault;
 use busbar_contract::storage::StorageSource;
-use busbar_kernel::limits::process_admission::{
-    AdmissionClass, ProcessAdmission, BODY_BYTES, OPERATOR_BODY_BYTES,
-};
+use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn source() -> StorageSource {
     ProcessAdmission::new(0).connection_storage(AdmissionClass::Data)
 }
 
-fn ledger(spans: usize, responses: usize) -> DeliveryLedger {
-    DeliveryLedger::new(
-        &source(),
-        NonZeroUsize::new(spans).unwrap(),
-        NonZeroUsize::new(responses).unwrap(),
-    )
-    .unwrap()
+fn ledger() -> DeliveryLedger {
+    DeliveryLedger::default()
 }
 
 fn key(stream: u64) -> ResponseKey {
@@ -55,7 +49,7 @@ fn release(ledger: &mut DeliveryLedger, response: &ResponseHandles, stream: u64)
 
 #[test]
 fn real_partial_prefix_is_attributed_once_before_later_io_failure() {
-    let mut ledger = ledger(8, 2);
+    let mut ledger = ledger();
     let first = ledger.admit(key(1)).unwrap();
     let second = ledger.admit(key(2)).unwrap();
     ledger
@@ -88,7 +82,7 @@ fn real_partial_prefix_is_attributed_once_before_later_io_failure() {
 
 #[test]
 fn wire_ready_waits_for_ordered_producer_end_and_reader_eof() {
-    let mut ledger = ledger(3, 1);
+    let mut ledger = ledger();
     let response = ledger.admit(key(1)).unwrap();
     release(&mut ledger, &response, 1);
     ledger
@@ -124,7 +118,7 @@ fn wire_ready_waits_for_ordered_producer_end_and_reader_eof() {
 
 #[test]
 fn pending_cancel_dominates_release_without_inventing_a_terminal() {
-    let mut ledger = ledger(2, 1);
+    let mut ledger = ledger();
     let response = ledger.admit(key(1)).unwrap();
     response.release.freeze(key(1), 1).unwrap();
     assert!(response.release.publish(key(1), 2).is_err());
@@ -150,7 +144,7 @@ fn pending_cancel_dominates_release_without_inventing_a_terminal() {
 
 #[test]
 fn invalid_answer_does_not_adopt_even_its_valid_prefix() {
-    let mut ledger = ledger(3, 1);
+    let mut ledger = ledger();
     ledger.admit(key(1)).unwrap();
     assert!(ledger
         .adopt_batch(&[
@@ -164,7 +158,7 @@ fn invalid_answer_does_not_adopt_even_its_valid_prefix() {
 
 #[test]
 fn response_retirement_requires_protocol_input_and_settlement_ack() {
-    let mut ledger = ledger(2, 1);
+    let mut ledger = ledger();
     let response = ledger.admit(key(1)).unwrap();
     release(&mut ledger, &response, 1);
     ledger
@@ -187,18 +181,14 @@ fn response_retirement_requires_protocol_input_and_settlement_ack() {
     assert!(ledger.retire_response(1).is_err());
     ledger.quiescent(1).unwrap();
     ledger.retire_response(1).unwrap();
-    assert!(ledger.admit(key(1)).is_err());
-    assert!(
-        ledger.admit(key(2)).is_err(),
-        "retained handles still own cell capacity"
-    );
+    assert!(ledger.admit(key(1)).is_err(), "an id is never reused");
     drop(response);
     ledger.admit(key(2)).unwrap();
 }
 
 #[test]
 fn failed_response_retires_after_cancelled_input_is_joined_without_faking_eof() {
-    let mut ledger = ledger(2, 1);
+    let mut ledger = ledger();
     let response = ledger.admit(key(1)).unwrap();
     ledger.stop(1, ResponseStop::Cancelled).unwrap();
     ledger.quiescent(1).unwrap();
@@ -219,7 +209,7 @@ fn failed_response_retires_after_cancelled_input_is_joined_without_faking_eof() 
 
 #[test]
 fn idle_wait_retains_binding_until_actual_failed_input_retirement() {
-    let mut ledger = ledger(2, 1);
+    let mut ledger = ledger();
     let response = ledger.admit(key(1)).unwrap();
     ledger.stop(1, ResponseStop::Cancelled).unwrap();
     ledger.quiescent(1).unwrap();
@@ -240,17 +230,13 @@ fn idle_wait_retains_binding_until_actual_failed_input_retirement() {
         response.watch.snapshot().terminal,
         Some(DeliveryTerminal::Failed(ResponseStop::Cancelled))
     );
-    assert!(
-        ledger.admit(key(2)).is_err(),
-        "external handles still retain real slot debt"
-    );
     drop(response);
     ledger.admit(key(2)).unwrap();
 }
 
 #[test]
-fn dropped_prepared_answer_does_not_consume_offset_or_capacity() {
-    let mut ledger = ledger(1, 1);
+fn dropped_prepared_answer_does_not_consume_offset() {
+    let mut ledger = ledger();
     ledger.admit(key(1)).unwrap();
     let events = [part(1, WireClass::Payload, 1)];
     let _ = ledger.prepare_batch(&events).unwrap();
@@ -260,25 +246,8 @@ fn dropped_prepared_answer_does_not_consume_offset_or_capacity() {
 }
 
 #[test]
-fn span_capacity_is_returned_by_actual_write_not_plaintext_acceptance() {
-    let mut ledger = ledger(1, 1);
-    ledger.admit(key(1)).unwrap();
-    ledger
-        .adopt_batch(&[part(1, WireClass::Payload, 2)])
-        .unwrap();
-    ledger.observe(progress(2, 0, 0)).unwrap();
-    assert!(ledger
-        .adopt_batch(&[part(1, WireClass::Control, 1)])
-        .is_err());
-    ledger.observe(progress(2, 2, 0)).unwrap();
-    ledger
-        .adopt_batch(&[part(1, WireClass::Control, 1)])
-        .unwrap();
-}
-
-#[test]
 fn later_carrier_failure_does_not_rewrite_a_completed_sibling() {
-    let mut ledger = ledger(4, 2);
+    let mut ledger = ledger();
     let first = ledger.admit(key(1)).unwrap();
     let second = ledger.admit(key(2)).unwrap();
     release(&mut ledger, &first, 1);
@@ -316,7 +285,7 @@ fn later_carrier_failure_does_not_rewrite_a_completed_sibling() {
 
 #[test]
 fn shutdown_does_not_stand_in_for_a_checked_flush() {
-    let mut ledger = ledger(1, 1);
+    let mut ledger = ledger();
     let response = ledger.admit(key(1)).unwrap();
     release(&mut ledger, &response, 1);
     ledger
@@ -340,7 +309,7 @@ fn shutdown_does_not_stand_in_for_a_checked_flush() {
 
 #[test]
 fn abort_and_quiescence_keep_queued_spans_until_actual_retirement() {
-    let mut ledger = ledger(2, 1);
+    let mut ledger = ledger();
     let response = ledger.admit(key(1)).unwrap();
     ledger
         .adopt_batch(&[
@@ -368,7 +337,7 @@ fn input_observers_wake_the_owner_but_cannot_publish_terminal_receipts() {
             arc_self.0.fetch_add(1, Ordering::AcqRel);
         }
     }
-    let mut ledger = ledger(1, 1);
+    let mut ledger = ledger();
     let response = ledger.admit(key(1)).unwrap();
     release(&mut ledger, &response, 1);
     ledger
@@ -398,7 +367,7 @@ fn input_observers_wake_the_owner_but_cannot_publish_terminal_receipts() {
 
 #[test]
 fn carrier_fault_prevents_new_admission_and_pending_release_before_retirement() {
-    let mut ledger = ledger(2, 2);
+    let mut ledger = ledger();
     let response = ledger.admit(key(1)).unwrap();
     response.release.freeze(key(1), 1).unwrap();
     response.release.publish(key(1), 1).unwrap();
@@ -416,63 +385,27 @@ fn carrier_fault_prevents_new_admission_and_pending_release_before_retirement() 
 }
 
 #[test]
-fn metadata_quote_refuses_overflow_before_any_allocation() {
-    let one = NonZeroUsize::new(1).unwrap();
-    let huge = NonZeroUsize::new(usize::MAX).unwrap();
-    assert_eq!(
-        DeliveryLedger::required_storage(huge, one),
-        Err(ResponseStop::Capacity)
-    );
-    assert_eq!(
-        DeliveryLedger::required_storage(one, huge),
-        Err(ResponseStop::Capacity)
-    );
-}
-
-#[test]
-fn ledger_backing_competes_in_the_real_process_account_until_storage_drop() {
-    let source = source();
-    let spans = NonZeroUsize::new(2).unwrap();
-    let responses = NonZeroUsize::new(1).unwrap();
-    let quote = DeliveryLedger::required_storage(spans, responses).unwrap();
-    let data_capacity = (BODY_BYTES - OPERATOR_BODY_BYTES) as usize;
-    let mut ledger = DeliveryLedger::new(&source, spans, responses).unwrap();
-    let response = ledger.admit(key(1)).unwrap();
-    ledger
-        .adopt_batch(&[part(1, WireClass::Payload, 1)])
-        .unwrap();
-    ledger.observe(progress(1, 1, 1)).unwrap();
-    let rest = source.try_reserve(data_capacity - quote).unwrap();
-    assert!(
-        source.try_reserve(1).is_err(),
-        "consuming spans retains array capacity"
-    );
-    drop(ledger);
-    let reclaimed = source.try_reserve(quote).unwrap();
-    assert!(response.watch.snapshot().first_payload_written);
-    assert!(
-        response.watch.snapshot().terminal.is_none(),
-        "owner drop is not a receipt"
-    );
-    // Fixed read/control cells use the named control-layout exclusion, not array-byte credit.
-    drop((reclaimed, rest, response));
-    source.try_reserve(data_capacity).unwrap();
-}
-
-#[test]
-fn unfunded_ledger_refuses_atomically_before_request_exposure() {
-    let source = source();
-    let one = NonZeroUsize::new(1).unwrap();
-    let data_capacity = (BODY_BYTES - OPERATOR_BODY_BYTES) as usize;
-    let occupied = source.try_reserve(data_capacity).unwrap();
-    assert!(matches!(
-        DeliveryLedger::new(&source, one, one),
-        Err(ResponseStop::Capacity)
-    ));
-    drop(occupied);
-    let ledger = DeliveryLedger::new(&source, one, one).unwrap();
-    drop(ledger);
-    source.try_reserve(data_capacity).unwrap();
+fn a_ledger_makes_nothing_until_its_first_response_and_has_no_fixed_capacity() {
+    let (mut ledger, calls) = crate::support::allocations_during(DeliveryLedger::default);
+    assert_eq!(calls, 0, "an empty ledger is no allocation");
+    let waker = futures::task::noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    assert!(ledger.poll_control(&mut cx).is_pending());
+    assert!(ledger.poll_idle(&mut cx).is_ready());
+    // Far past the old fixed shape (200 responses, 4,096 spans): nothing is refused for room.
+    let mut held = Vec::new();
+    for stream in 1..=300 {
+        held.push(ledger.admit(key(stream)).unwrap());
+    }
+    let events: Vec<WireEvent> = (0..5_000)
+        .map(|at| part(1 + at % 300, WireClass::Payload, 1))
+        .collect();
+    ledger.adopt_batch(&events).unwrap();
+    assert_eq!(ledger.adopted_prefix(), 5_000);
+    ledger.observe(progress(5_000, 5_000, 5_000)).unwrap();
+    assert!(held
+        .iter()
+        .all(|h| h.watch.snapshot().first_payload_written));
 }
 
 #[test]

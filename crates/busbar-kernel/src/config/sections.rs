@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use busbar_kernel_ledger::cost::UnitRate;
 
-use super::limits::{DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS};
+use super::limits::{default_rate_sweep_interval, default_usage_flush_interval_ms};
 
 pub use busbar_contract::conn::inbound::TlsCfg;
 
@@ -238,8 +238,8 @@ pub struct AdvancedCfg {
     /// Operator deregistration allowance, captured at boot; edit through the config document.
     #[serde(default)]
     pub shutdown: super::shutdown::AdvancedShutdownCfg,
-    /// Amortization interval for the rate-limiter stale-entry sweep: every Nth `check_rate` pays
-    /// the full retain (default 256).
+    /// Amortization interval for the budget-table sweep: every Nth admission on a budget shard
+    /// also drops that shard's entries no longer needed (default 256).
     #[serde(default = "default_rate_sweep_interval")]
     pub rate_sweep_interval: u32,
     /// Write-behind flush cadence (ms) for the in-memory usage/budget counters. On an UNGRACEFUL
@@ -257,13 +257,16 @@ pub struct AdvancedCfg {
     /// Pin the shared upstream client to HTTP/1.1 (`advanced.upstream_http1_only`, migrated from
     /// `BUSBAR_UPSTREAM_HTTP1_ONLY`). BOOT-TIME (client-build) knob; default `false` (ALPN default:
     /// h2 where the backend accepts it, h1 otherwise). The `BUSBAR_UPSTREAM_HTTP1_ONLY` env var was
-    /// deprecated in 1.5.3 and removed in 1.6.0.
+    /// deprecated in 1.5.3 and removed in 1.6.0. Read by the HTTP transport (it declares this key
+    /// in its settings). If `upstream_h2_prior_knowledge` is also true, this one wins: the transport
+    /// offers `http/1.1` on TLS and no h2c on cleartext; the engine passes both through unchanged.
     #[serde(default)]
     pub upstream_http1_only: bool,
     /// Force HTTP/2 prior-knowledge to cleartext upstreams (`advanced.upstream_h2_prior_knowledge`,
     /// migrated from `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`). BOOT-TIME (client-build) knob; default
     /// `false` — prior-knowledge h2c measurably HURT throughput in perf testing. The
     /// `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` env var was deprecated in 1.5.3 and removed in 1.6.0.
+    /// Read by the HTTP transport. Ignored when `upstream_http1_only` is also true (that one wins).
     #[serde(default)]
     pub upstream_h2_prior_knowledge: bool,
     /// The `advanced.response_headers:` block — opt-in toggles for every busbar-INJECTED response
@@ -302,6 +305,11 @@ pub struct AdvancedCfg {
     /// does not resolve here is the proxy's to check). BOOT-TIME.
     #[serde(default, skip_serializing_if = "is_local_resolution")]
     pub proxy_resolution: super::tls::ProxyResolution,
+    /// RETIRED: the global destination allowlist was removed (private reach is a registration's own
+    /// `allow_private`). A configuration written while it existed still loads: the value is
+    /// ignored, never written back, and `config::resolve` logs one line when it is present.
+    #[serde(default, skip_serializing)]
+    pub allow_destinations: Option<serde::de::IgnoredAny>,
 }
 
 fn is_local_resolution(r: &super::tls::ProxyResolution) -> bool {
@@ -365,15 +373,47 @@ impl Default for AdvancedCfg {
             proxy_resolution: super::tls::ProxyResolution::Local,
             trusted_proxies: Vec::new(),
             forwarded_header: None,
+            allow_destinations: None,
         }
     }
 }
 
-pub fn default_rate_sweep_interval() -> u32 {
-    DEFAULT_RATE_SWEEP_INTERVAL
-}
-pub fn default_usage_flush_interval_ms() -> u64 {
-    DEFAULT_USAGE_FLUSH_INTERVAL_MS
+/// The most worker threads the engine will start: the most the Tokio multi-thread scheduler can
+/// run. It keeps its count of searching workers in the low 16 bits of one atomic word
+/// (`UNPARK_SHIFT = 16` in `runtime/scheduler/multi_thread/idle.rs`), so 65,535 is its limit.
+/// The engine's own earlier ceiling of 128 protected an audit write-through reserve that no longer
+/// exists, so nothing the engine owns bounds the count any lower.
+pub const MAX_WORKER_THREADS: usize = u16::MAX as usize;
+
+/// The one rule for `advanced.worker_threads`, used wherever the value is read (boot, the
+/// post-recovery runtime, the admin document edit). The value is converted, never refused:
+///
+/// * absent: the default (one worker per core), no log line;
+/// * `0`: not a worker count, so the default, with the returned line;
+/// * above [`MAX_WORKER_THREADS`]: the ceiling, with the returned line.
+///
+/// Returns the count to use (`None` is the default) and the one log line when a conversion was
+/// made. The caller logs the line; it is the same text everywhere.
+#[must_use]
+pub fn effective_worker_threads(configured: Option<usize>) -> (Option<usize>, Option<String>) {
+    match configured {
+        Some(0) => (
+            None,
+            Some(
+                "advanced.worker_threads: 0 is not a worker count (it must be >= 1); using the \
+                 default of one per core"
+                    .to_owned(),
+            ),
+        ),
+        Some(n) if n > MAX_WORKER_THREADS => (
+            Some(MAX_WORKER_THREADS),
+            Some(format!(
+                "advanced.worker_threads: {n} is above the most the runtime can run \
+                 ({MAX_WORKER_THREADS}); using {MAX_WORKER_THREADS}"
+            )),
+        ),
+        other => (other, None),
+    }
 }
 
 /// The `advanced.response_headers:` block: opt-in toggles for every busbar-INJECTED

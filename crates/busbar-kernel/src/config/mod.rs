@@ -801,6 +801,11 @@ pub type PlaneFeesMap = std::collections::BTreeMap<String, busbar_kernel_ledger:
 /// the pre-pass and judged by [`min3::parse_min3`] with every other kind's.
 pub type PlaneInsecureTransport = std::collections::BTreeMap<String, busbar_contract::yaml::Value>;
 
+/// Each plane section's `routes` as written, by instance name: core's per-route operator keys
+/// (IF §12.11 `routes.<id>.auth_instances`), lifted off the section by the pre-pass so the plane never
+/// sees them, and judged by [`min3::parse_min3`].
+pub type PlaneRoutes = std::collections::BTreeMap<String, busbar_contract::yaml::Value>;
+
 /// A plane section's reserved `fees:` (#44: `{ per_request | per_session }`), in minor units; an
 /// absent key is a fee of 0. Never rounded, never divided — each is one flat fee per unit.
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -970,6 +975,10 @@ pub struct DeployCfg {
     /// [`RootCfg::min3`] keyed (instance name, instance name).
     #[serde(skip)]
     pub plane_insecure_transport: PlaneInsecureTransport,
+    /// Every plane section's `routes` (IF §12.11): core's key, lifted off that section like its
+    /// `insecure_transport`. [`min3::parse_min3`] judges it into [`RootCfg::min3`].
+    #[serde(skip)]
+    pub plane_routes: PlaneRoutes,
     /// THE RECOGNIZER MAP: each admitted plane instance's section by instance name
     /// ([`recognizer`], WP1-GAP-plane-sections r3), with its core-owned `rate_card`, `fees` and
     /// `insecure_transport` lifted off into [`DeployCfg::plane_rate_cards`],
@@ -1651,6 +1660,18 @@ pub fn resolve_with_provider_planes(
     planes: &[crate::plane_driver::provider_catalog::ProviderPlane],
 ) -> Result<ResolvedConfig, Vec<String>> {
     let mut errors = Vec::new();
+    // Boot and every configuration apply resolve here, so this is where a converted value is said.
+    if let (_, Some(note)) =
+        limits::effective_usage_flush_interval_ms(deploy.advanced.usage_flush_interval_ms)
+    {
+        diag_warn!(crate::diagnostics::CONFIG_SETTING_OUT_OF_RANGE, "{note}");
+    }
+    if deploy.advanced.allow_destinations.is_some() {
+        tracing::warn!(
+            "advanced.allow_destinations was removed and is ignored: a private address is reached \
+             only by a registration that sets its own allow_private, or by a provider's own origin"
+        );
+    }
     for name in deploy
         .rate_card
         .iter()
@@ -1980,6 +2001,29 @@ pub fn resolve_with_provider_planes(
             }
         }
     }
+    // A provider a model reaches names a protocol some admitted plane declares (step E7). Judged
+    // here, against the planes this read admitted, because this is the one place every serving
+    // configuration is resolved with them; core keeps no list of its own.
+    let supported = supported_provider_dialects(planes);
+    let mut reached: Vec<&str> = deploy
+        .models
+        .values()
+        .map(|m| m.provider.as_str())
+        .collect();
+    reached.sort_unstable();
+    reached.dedup();
+    for name in reached {
+        let Some(provider) = resolved_providers.get(name) else {
+            continue;
+        };
+        // An absent protocol is refused by the catalog as a missing core field.
+        if provider.dialect().is_empty() {
+            continue;
+        }
+        if let Some(refusal) = provider_protocol_refusal(&supported, name, provider.dialect()) {
+            errors.push(coded::config_provider_protocol_unknown(refusal).into());
+        }
+    }
     let catalogs = match crate::plane_driver::provider_catalog::resolve(
         deploy,
         &resolved_providers,
@@ -2095,13 +2139,71 @@ fn resolve_min3(deploy: &DeployCfg, errors: &mut Vec<String>) -> min3::Min3Confi
     parsed
 }
 
+/// The dialects a provider's `protocol` may name under one read, from what the admitted planes
+/// declare and never from a list of core's own: each new-interface plane image the read admitted
+/// with a provider schema states its dialects in its description (D_DIALECT), and a registered
+/// old-interface plane lists its provider dialects on its row. Old-interface rows first, in
+/// registration order; then each admitted plane's, in the order given; each dialect once. Built
+/// once per resolve and dropped with it.
+fn supported_provider_dialects(
+    planes: &[crate::plane_driver::provider_catalog::ProviderPlane],
+) -> Vec<&str> {
+    let mut supported: Vec<&str> = crate::plane_driver::dispatch::provider_dialects();
+    for dialect in planes
+        .iter()
+        .flat_map(|plane| plane.dialects.iter().map(String::as_str))
+    {
+        if !supported.contains(&dialect) {
+            supported.push(dialect);
+        }
+    }
+    supported
+}
+
+/// A provider naming a protocol outside `supported` is refused, naming the supported ones.
+fn provider_protocol_refusal(supported: &[&str], provider: &str, protocol: &str) -> Option<String> {
+    if supported.contains(&protocol) {
+        return None;
+    }
+    if supported.is_empty() {
+        return Some(format!(
+            "provider '{provider}' uses unknown protocol '{protocol}' (supported: none; no \
+             admitted plane declares a provider protocol)"
+        ));
+    }
+    Some(format!(
+        "provider '{provider}' uses unknown protocol '{protocol}' (supported: {})",
+        supported.join(", ")
+    ))
+}
+
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
 
 #[cfg(test)]
+#[path = "tests/provider_protocol_tests.rs"]
+mod provider_protocol_tests;
+
+#[cfg(test)]
 #[path = "tests/advanced_destinations_tests.rs"]
 mod advanced_destinations_tests;
+
+#[cfg(test)]
+#[path = "tests/worker_threads_tests.rs"]
+mod worker_threads_tests;
+
+#[cfg(test)]
+#[path = "tests/usage_flush_tests.rs"]
+mod usage_flush_tests;
+
+#[cfg(test)]
+#[path = "tests/schema_snapshot_tests.rs"]
+mod schema_snapshot_tests;
+
+#[cfg(test)]
+#[path = "tests/upstream_protocol_tests.rs"]
+mod upstream_protocol_tests;
 
 #[cfg(test)]
 #[path = "tests/config_backcompat_corpus.rs"]
@@ -2239,6 +2341,7 @@ impl std::fmt::Debug for DeployCfg {
             .field("plane_rate_cards", &self.plane_rate_cards)
             .field("plane_fees", &self.plane_fees)
             .field("plane_insecure_transport", &self.plane_insecure_transport)
+            .field("plane_routes", &self.plane_routes)
             .field("instance_sections", &self.instance_sections)
             .field("store", &self.store)
             .field("secrets", &self.secrets)

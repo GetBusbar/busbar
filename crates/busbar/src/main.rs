@@ -108,7 +108,11 @@ fn line_serve_requested(argv: &root::cli::Argv) -> bool {
     argv.stdio
 }
 
-const MAX_WORKER_THREADS: usize = 128;
+/// The value rule for `advanced.worker_threads` is one function in the kernel's configuration
+/// ([`config::sections::effective_worker_threads`]); this is the line a boot prints for it.
+fn worker_threads_warning(note: &str) -> String {
+    format!("[warn] {}", diagnostics::WORKER_THREADS_INVALID.coded(note))
+}
 
 #[cfg(test)]
 fn worker_threads_from_env(name: &str) -> Option<usize> {
@@ -121,7 +125,13 @@ fn worker_threads_from_env(name: &str) -> Option<usize> {
 fn worker_threads_from_env_noting(name: &str, warnings: &mut Vec<String>) -> Option<usize> {
     match std::env::var(name) {
         Ok(v) => match v.trim().parse::<usize>() {
-            Ok(n) if n >= 1 => Some(n),
+            Ok(n) if n >= 1 => {
+                let (workers, note) = config::sections::effective_worker_threads(Some(n));
+                if let Some(note) = note {
+                    warnings.push(worker_threads_warning(&format!("{note} (from {name})")));
+                }
+                workers
+            }
             _ => {
                 warnings.push(format!(
                     "[warn] {}",
@@ -146,6 +156,16 @@ fn worker_threads_from_config() -> Option<usize> {
 }
 
 fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize> {
+    let (workers, note) =
+        config::sections::effective_worker_threads(worker_threads_in_config_file());
+    if let Some(note) = note {
+        warnings.push(worker_threads_warning(&note));
+    }
+    workers
+}
+
+/// `advanced.worker_threads` as config.yaml states it, before the rule is applied.
+fn worker_threads_in_config_file() -> Option<usize> {
     let config_path = root::cli::resolve_config_path(root::cli::argv().config.as_deref());
     let raw = std::fs::read_to_string(&config_path).ok()?;
     let mut unset = Vec::new();
@@ -154,19 +174,9 @@ fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize
 
     use busbar_contract::yaml::ValueExt;
     let doc: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&interpolated).ok()?;
-    let worker_threads = match doc.get("advanced").and_then(|a| a.get("worker_threads")) {
+    match doc.get("advanced").and_then(|a| a.get("worker_threads")) {
         None | Some(busbar_contract::yaml::Value::Null) => None,
         Some(v) => Some(usize::try_from(v.as_u64()?).ok()?),
-    };
-    match validate_worker_threads_config(worker_threads) {
-        Ok(v) => v,
-        Err(msg) => {
-            warnings.push(format!(
-                "[warn] {}",
-                diagnostics::WORKER_THREADS_INVALID.coded(msg)
-            ));
-            None
-        }
     }
 }
 
@@ -178,22 +188,18 @@ fn resolve_worker_threads() -> (usize, Vec<String>) {
             std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1)
-        })
-        .min(MAX_WORKER_THREADS);
+        });
     (n, warnings)
 }
 
-/// Resolve the effective recovered config, then the supported Tokio fallback.
+/// Resolve the effective recovered config, then the supported Tokio fallback. `configured` has
+/// been through [`config::sections::effective_worker_threads`] already.
 fn recovered_data_workers(
     configured: Option<usize>,
     fallback_env: Option<usize>,
     available: usize,
 ) -> usize {
-    configured
-        .filter(|n| *n != 0)
-        .or(fallback_env)
-        .unwrap_or(available)
-        .clamp(1, MAX_WORKER_THREADS)
+    configured.or(fallback_env).unwrap_or(available).max(1)
 }
 
 #[cfg(test)]
@@ -205,10 +211,13 @@ mod recovered_worker_tests {
         assert_eq!(recovered_data_workers(Some(7), Some(3), 2), 7);
         assert_eq!(recovered_data_workers(None, Some(3), 2), 3);
         assert_eq!(recovered_data_workers(None, None, 2), 2);
-        assert_eq!(recovered_data_workers(Some(0), None, 2), 2);
+        // The recovered value goes through the one rule first: 0 is the default, a count above
+        // the ceiling is the ceiling.
+        let ruled = |n| config::sections::effective_worker_threads(Some(n)).0;
+        assert_eq!(recovered_data_workers(ruled(0), None, 2), 2);
         assert_eq!(
-            recovered_data_workers(Some(usize::MAX), None, 2),
-            MAX_WORKER_THREADS
+            recovered_data_workers(ruled(usize::MAX), None, 2),
+            config::sections::MAX_WORKER_THREADS
         );
     }
 
@@ -280,17 +289,6 @@ mod recovered_worker_tests {
             assert!(finished.load(std::sync::atomic::Ordering::Acquire));
             assert_eq!(tokio::spawn(async { 42 }).await.unwrap(), 42);
         });
-    }
-}
-
-fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, String> {
-    match wt {
-        Some(0) => Err(
-            "advanced.worker_threads: 0 in config.yaml is not a positive integer (it must be >= 1); \
-             ignoring it and using the default worker-thread count"
-                .to_string(),
-        ),
-        other => Ok(other),
     }
 }
 
@@ -964,8 +962,17 @@ async fn run(
     // control runtime and bootstrap plugin dispatcher already exist and keep their own budgets.
     let data_workers = {
         let mut ignored_warnings = Vec::new();
+        let (configured, note) =
+            config::sections::effective_worker_threads(deploy.advanced.worker_threads);
+        // A value config.yaml also carries was reported by the bootstrap read; one only the
+        // recovered document carries (an admin edit) is reported here.
+        if let Some(note) =
+            note.filter(|_| deploy.advanced.worker_threads != worker_threads_in_config_file())
+        {
+            tracing::warn!("{}", diagnostics::WORKER_THREADS_INVALID.coded(note));
+        }
         let selected = recovered_data_workers(
-            deploy.advanced.worker_threads,
+            configured,
             worker_threads_from_env_noting("TOKIO_WORKER_THREADS", &mut ignored_warnings),
             std::thread::available_parallelism()
                 .map(|n| n.get())

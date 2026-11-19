@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Host-owned response write attribution and bounded lifecycle controls.
+//! Host-owned response write attribution and lifecycle controls.
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
 
@@ -14,7 +12,6 @@ use busbar_contract::response_delivery::{
     CarrierProgress, CompletionRequirement, DeliverySnapshot, DeliveryTerminal, ResponseKey,
     ResponseStop, WireClass,
 };
-use busbar_contract::storage::{StorageCredit, StorageSource};
 use futures::task::AtomicWaker;
 
 #[cfg(test)]
@@ -30,13 +27,6 @@ struct Cell {
     state: Mutex<State>,
     changed: tokio::sync::Notify,
     owner_wake: Arc<AtomicWaker>,
-    slots: Arc<AtomicUsize>,
-}
-
-impl Drop for Cell {
-    fn drop(&mut self) {
-        self.slots.fetch_sub(1, Ordering::AcqRel);
-    }
 }
 
 struct State {
@@ -58,7 +48,7 @@ struct State {
     settled_ack: bool,
 }
 
-/// Read/watch access only; retaining a clone retains its admitted response-cell capacity.
+/// Read/watch access only; a clone keeps the response's cell alive until it is dropped.
 #[derive(Clone)]
 pub struct DeliveryWatch(Arc<Cell>);
 
@@ -179,7 +169,7 @@ impl ReleasePublisher {
 
 /// Separately scoped handles installed before exposing the admitted request.
 pub struct ResponseHandles {
-    /// Read-only delivery observation; clones retain capacity until dropped.
+    /// Read-only delivery observation; clones keep the cell alive until dropped.
     pub watch: DeliveryWatch,
     /// Only the root's actual intent finalizer receives this publication right.
     pub release: ReleasePublisher,
@@ -245,22 +235,21 @@ struct Shadow {
     quiescent: bool,
 }
 
-/// The sole connection output owner's bounded, non-Clone provenance ledger.
+/// The sole connection output owner's non-Clone provenance ledger.
 ///
 /// Runtime supervision retains this owner until the actual carrier operation is settled. Dropping
 /// it while a writer may remain live deliberately creates no synthetic terminal receipt.
+///
+/// NOTHING IS MADE AHEAD (owner's allocation ruling): the three arrays start empty and grow as
+/// entries arrive, with no fixed capacity and no refusal of their own; the owner's wake cell is
+/// made with the first response. A connection that never carries a response makes none of it.
+/// What bounds them is upstream: a response exists only for a request the process admitted, and
+/// the spans of an answer are written before the next answer is taken.
 pub struct DeliveryLedger {
     spans: VecDeque<Span>,
     entries: Vec<Entry>,
     scratch: Vec<Shadow>,
-    // Declaration order is intentional: all three backing arrays drop before their byte credit.
-    // Fixed self-owning control/Arc layouts retain the explicitly named storage-contract exclusion.
-    storage: StorageCredit,
-    slots: Arc<AtomicUsize>,
-    wake: Arc<AtomicWaker>,
-    max_spans: usize,
-    max_responses: usize,
-    max_events: usize,
+    wake: Option<Arc<AtomicWaker>>,
     last_stream: u64,
     identity: Option<(u64, u64, u64)>,
     adopted: u64,
@@ -274,7 +263,6 @@ impl fmt::Debug for DeliveryLedger {
         f.debug_struct("DeliveryLedger")
             .field("pending_spans", &self.spans.len())
             .field("live_responses", &self.entries.len())
-            .field("reserved_storage_bytes", &self.storage.len())
             .field("retired", &self.retired)
             .finish_non_exhaustive()
     }
@@ -293,71 +281,14 @@ impl PreparedBatch<'_> {
     }
 }
 
-impl DeliveryLedger {
-    /// Quote requested separately allocated backing using the actual private element layouts.
-    ///
-    /// This covers the retained span deque and entry/scratch vectors, including spare capacity.
-    /// The admitted fixed control-cell count is separate. Self-owning Arc/control layouts and
-    /// allocator overhead are outside the shared storage contract; this is not an RSS estimate.
-    /// A quote alone reserves nothing: the actual StorageSource must fund it before allocation.
-    pub fn required_storage(
-        max_pending_spans: NonZeroUsize,
-        max_live_responses: NonZeroUsize,
-    ) -> Result<usize, ResponseStop> {
-        let spans = max_pending_spans
-            .get()
-            .checked_mul(std::mem::size_of::<Span>());
-        let responses = std::mem::size_of::<Entry>()
-            .checked_add(std::mem::size_of::<Shadow>())
-            .and_then(|bytes| bytes.checked_mul(max_live_responses.get()));
-        spans
-            .and_then(|bytes| responses.and_then(|other| bytes.checked_add(other)))
-            .ok_or(ResponseStop::Capacity)
-    }
-
-    /// Allocate finite metadata storage from real admission allowances, without a default cap.
-    ///
-    /// The runtime separately reserves callback staging bytes/descriptors before copying callback
-    /// output. Both staging and this ledger's simultaneous debt must fit its admitted allowance.
-    pub fn new(
-        source: &StorageSource,
-        max_pending_spans: NonZeroUsize,
-        max_live_responses: NonZeroUsize,
-    ) -> Result<Self, ResponseStop> {
-        let bytes = Self::required_storage(max_pending_spans, max_live_responses)?;
-        let max_spans = max_pending_spans.get();
-        let max_responses = max_live_responses.get();
-        let max_events = max_responses
-            .checked_mul(4)
-            .and_then(|count| count.checked_add(max_spans))
-            .ok_or(ResponseStop::Capacity)?;
-        // This binding precedes every array: on any allocation error the allocated locals drop
-        // first, then credit. Moving into Self preserves the same backing-before-credit order.
-        let storage = source
-            .try_reserve(bytes)
-            .map_err(|_| ResponseStop::Capacity)?;
-        let mut spans = VecDeque::new();
-        spans
-            .try_reserve_exact(max_spans)
-            .map_err(|_| ResponseStop::Capacity)?;
-        let mut entries = Vec::new();
-        entries
-            .try_reserve_exact(max_responses)
-            .map_err(|_| ResponseStop::Capacity)?;
-        let mut scratch = Vec::new();
-        scratch
-            .try_reserve_exact(max_responses)
-            .map_err(|_| ResponseStop::Capacity)?;
-        Ok(Self {
-            spans,
-            entries,
-            scratch,
-            storage,
-            slots: Arc::new(AtomicUsize::new(0)),
-            wake: Arc::new(AtomicWaker::new()),
-            max_spans,
-            max_responses,
-            max_events,
+/// An empty ledger: no array, no cell, nothing allocated.
+impl Default for DeliveryLedger {
+    fn default() -> Self {
+        Self {
+            spans: VecDeque::new(),
+            entries: Vec::new(),
+            scratch: Vec::new(),
+            wake: None,
             last_stream: 0,
             identity: None,
             adopted: 0,
@@ -369,10 +300,12 @@ impl DeliveryLedger {
             },
             retired: false,
             poisoned: false,
-        })
+        }
     }
+}
 
-    /// Reserve the fixed lifecycle cell before request exposure. IDs never get reused.
+impl DeliveryLedger {
+    /// Make the response's lifecycle cell before request exposure. IDs never get reused.
     pub fn admit(&mut self, key: ResponseKey) -> Result<ResponseHandles, ResponseStop> {
         let identity = (key.node, key.incarnation, key.connection_generation);
         if self.retired
@@ -384,10 +317,11 @@ impl DeliveryLedger {
         {
             return Err(ResponseStop::Integrity);
         }
-        if self.slots.load(Ordering::Acquire) >= self.max_responses {
-            return Err(ResponseStop::Capacity);
-        }
-        self.slots.fetch_add(1, Ordering::AcqRel);
+        // The owner's wake cell is made with the first response: before it no cell can publish.
+        let owner_wake = Arc::clone(
+            self.wake
+                .get_or_insert_with(|| Arc::new(AtomicWaker::new())),
+        );
         let cell = Arc::new(Cell {
             key,
             state: Mutex::new(State {
@@ -412,8 +346,7 @@ impl DeliveryLedger {
                 settled_ack: false,
             }),
             changed: tokio::sync::Notify::new(),
-            owner_wake: Arc::clone(&self.wake),
-            slots: Arc::clone(&self.slots),
+            owner_wake,
         });
         self.last_stream = key.stream;
         self.identity = Some(identity);
@@ -438,9 +371,12 @@ impl DeliveryLedger {
             .ok_or(ResponseStop::Integrity)
     }
 
-    /// Register before checking the reserved control cells, so concurrent publications wake the owner.
+    /// Register before checking the control cells, so concurrent publications wake the owner. With
+    /// no response yet there is no cell to publish, so nothing to register with.
     pub(crate) fn register_control_waker(&self, waker: &Waker) {
-        self.wake.register(waker);
+        if let Some(wake) = &self.wake {
+            wake.register(waker);
+        }
     }
 
     /// Park the single connection owner without losing a concurrent reserved-cell publication.
@@ -535,16 +471,9 @@ impl DeliveryLedger {
         if self.retired || self.poisoned || self.observed.fault.is_some() {
             return Err(ResponseStop::Integrity);
         }
-        if events.len() > self.max_events {
-            return Err(ResponseStop::Capacity);
-        }
         self.scratch.clear();
-        let mut descriptors = self.spans.len();
         for entry in &self.entries {
             let state = lock(&entry.cell.state);
-            if entry.fence.as_ref().is_some_and(|fence| !fence.ready) {
-                descriptors += 1;
-            }
             self.scratch.push(Shadow {
                 stream: entry.cell.key.stream,
                 ended: entry.fence.is_some(),
@@ -574,7 +503,6 @@ impl DeliveryLedger {
                     end = end
                         .checked_add(u64::try_from(len).map_err(|_| ResponseStop::Capacity)?)
                         .ok_or(ResponseStop::Capacity)?;
-                    descriptors = descriptors.checked_add(1).ok_or(ResponseStop::Capacity)?;
                 }
                 WireEvent::End { stream, .. } => {
                     let index = self.index(stream)?;
@@ -591,7 +519,6 @@ impl DeliveryLedger {
                         return Err(ResponseStop::Integrity);
                     }
                     state.ended = true;
-                    descriptors = descriptors.checked_add(1).ok_or(ResponseStop::Capacity)?;
                 }
                 WireEvent::Abort { stream } => {
                     let state = self
@@ -612,9 +539,6 @@ impl DeliveryLedger {
                     }
                     state.quiescent = true;
                 }
-            }
-            if descriptors > self.max_spans {
-                return Err(ResponseStop::Capacity);
             }
         }
         Ok(PreparedBatch {

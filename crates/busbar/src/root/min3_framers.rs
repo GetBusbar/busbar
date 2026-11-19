@@ -288,6 +288,25 @@ impl NativeFramers {
             .ok_or(CarrierRefused::NoSupplier(carrier))
     }
 
+    /// The connector's view of the assignment: each assigned carrier's instance and port (two reference counts
+    /// each, once at boot). `limits.stream_stall_ms` has no transport section to come from, so the kind's default
+    /// holds (`None`), as for the listeners.
+    pub(crate) fn native_carriers(&self) -> Vec<busbar_core_connector::native_dial::NativeCarrier> {
+        CARRIERS
+            .iter()
+            .filter_map(|(carrier, _)| {
+                self.for_carrier(*carrier).ok().map(|one| {
+                    busbar_core_connector::native_dial::NativeCarrier {
+                        instance: Arc::clone(&one.instance),
+                        port: Arc::clone(&one.port),
+                        carrier: *carrier,
+                        stall_ms: None,
+                    }
+                })
+            })
+            .collect()
+    }
+
     /// The boot's one line stating the assignment: each carrier's instance, or `none`.
     pub(crate) fn carrier_line(&self) -> String {
         let each: Vec<String> = CARRIERS

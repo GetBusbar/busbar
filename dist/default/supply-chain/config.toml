@@ -1024,6 +1024,11 @@ version = "0.3.1"
 criteria = "safe-to-deploy"
 notes = "DEP-5 coordinator exemption: server-sent-events parsing in busbar-contract; no imported audit covers 0.3.1. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
+[[exemptions.stats_alloc]]
+version = "0.1.10"
+criteria = "safe-to-run"
+notes = "Test-only allocation counter: a dev-dependency of the root tests the distribution builds (a68e05861e). The workspace root already exempts the same version. No self-audit is claimed."
+
 [[exemptions.str0m]]
 version = "0.24.1@git:36833da71bb86b5dfc9a88e3f56afa3353bb70db"
 criteria = "safe-to-deploy"

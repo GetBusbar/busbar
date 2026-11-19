@@ -328,6 +328,28 @@ fn the_data_listener_is_served_by_the_linked_http_image_over_http1_and_http2() {
     );
 }
 
+/// A default configuration (no `identity-providers`, no `auth.admin_auth`) boots with no operator credential: the
+/// default admin chain's operator position is unset, the boot log says so, and the admin plane fails closed, as 1.5.5
+/// did with no admin token: every admin request is 401, whatever token it presents.
+#[test]
+fn with_no_operator_credential_the_default_boots_and_the_admin_plane_refuses_every_request() {
+    let node = Node::boot(None, false);
+    assert!(
+        node.log().contains("has no admin credential configured"),
+        "the boot log tells the operator the admin plane is closed; log:\n{}",
+        node.log()
+    );
+    for headers in ["", "Authorization: Bearer any-token-at-all\r\n"] {
+        let (status, body) = exchange(node.admin, "GET", "/api/v1/admin/info", headers, b"");
+        assert_eq!(
+            status,
+            401,
+            "no admin credential configured: refused ({headers:?}): {body}; log:\n{}",
+            node.log()
+        );
+    }
+}
+
 #[test]
 fn the_admin_listener_is_served_by_the_linked_http_image_and_lists_it_as_a_transport_instance() {
     let node = Node::boot(None, true);

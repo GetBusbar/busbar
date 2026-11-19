@@ -345,12 +345,13 @@ impl std::fmt::Debug for DataMounts {
 pub(crate) fn data_mounts(
     served: Served,
     data_chain: &[ChainAuth],
+    route_chains: &crate::root::port_mount::RouteChains,
     core: &[(String, RouteMethod, RouteAuth)],
 ) -> Result<DataMounts, String> {
     use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
     use busbar_kernel::guest::{Claimant, GuestList, LineAuth, Matched};
 
-    let mut lines = crate::root::port_mount::guest_lines(&served.ports, data_chain);
+    let mut lines = crate::root::port_mount::guest_lines(&served.ports, data_chain, route_chains);
     for (rung, (path, method, auth)) in (0u32..).zip(core) {
         lines.push(busbar_kernel::guest::Line {
             route: busbar_kernel::guest::Route {
@@ -430,7 +431,8 @@ pub(crate) fn data_mounts(
                 return None;
             }
             // The kernel lends its words for this call only; the refusal keeps its own copy.
-            let refusal = crate::root::native_refusals::client(r.reason, r.status, r.text.to_owned());
+            let refusal =
+                crate::root::native_refusals::client(r.reason, r.status, r.text.to_owned());
             Some(crate::root::port_mount::render_kernel_refusal(
                 seat,
                 line.route.rung,

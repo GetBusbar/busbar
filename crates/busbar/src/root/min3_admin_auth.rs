@@ -21,9 +21,13 @@ use super::min3_auth::{AuthOwners, OpenedAuth};
 /// Assemble every configured native admin position before this candidate is published.
 ///
 /// A position is left unset (it answers "not mine") only when it is the operator credential with
-/// nothing to judge: no opened instance and a definition carrying neither settings nor a token. A
-/// position whose definition carries a credential and has no opened instance refuses the
-/// candidate, so no admin request is ever judged while its configured instance is unopened.
+/// nothing to judge: no opened instance and no definition, or one carrying neither settings nor a
+/// token. That is the default configuration (`[<operator>, keys]`, no definition): it boots, and as
+/// in 1.5.5 with no admin token, a chain that identifies no one denies every admin request. Whether
+/// the position is the operator's is read from the configured chain alone, never from whether a
+/// door-era row answered it. A position whose definition carries a credential and has no opened
+/// instance refuses the candidate, so no admin request is ever judged while its configured
+/// instance is unopened.
 pub(crate) fn install(app: &mut App, auth: Arc<AuthSet>, epoch: u64) -> Result<(), String> {
     let mut chains = BTreeMap::new();
     let mut unset = BTreeSet::new();
@@ -32,12 +36,17 @@ pub(crate) fn install(app: &mut App, auth: Arc<AuthSet>, epoch: u64) -> Result<(
             continue;
         }
         if auth.get(name).is_none()
-            && app.admin_modules.operator.unset(name)
+            && app.admin_modules.operator.is(name)
             && app
                 .identity_providers
                 .get(name)
                 .is_none_or(|cfg| cfg.token.is_none() && cfg.settings.is_empty())
         {
+            tracing::warn!(
+                "auth.admin_auth: '{name}' has no admin credential configured: every admin API \
+                 request is refused (401) until identity-providers.{name} is defined with \
+                 `settings: {{sha256: \"<SHA-256 of the admin token, 64 lower-case hex>\"}}`"
+            );
             unset.insert(name.clone());
             continue;
         }

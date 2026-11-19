@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::num::NonZeroUsize;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use busbar_contract::response_delivery::{ResponseDisposition, ResponseStop};
 use busbar_core_connector::response_delivery::DeliveryLedger;
-use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
 use busbar_kernel_audit::response_intent::ResponseIntentStamp;
 use busbar_kernel_audit::{
     AuditKeySet, AuditSigningKey, AuditVerifyingKey, BootstrapSigner, LiveSigner, Notary,
@@ -45,13 +43,7 @@ pub(crate) async fn rig() -> (NativeFixture, Arc<ResponseIntentService>, Deliver
         signers.response_intent,
     )
     .unwrap();
-    let source = ProcessAdmission::new(0).connection_storage(AdmissionClass::Data);
-    let ledger = DeliveryLedger::new(
-        &source,
-        NonZeroUsize::new(8).unwrap(),
-        NonZeroUsize::new(4).unwrap(),
-    )
-    .unwrap();
+    let ledger = DeliveryLedger::default();
     (fixture, service, ledger)
 }
 

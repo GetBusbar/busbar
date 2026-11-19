@@ -20,13 +20,12 @@ pub mod suites;
 #[path = "host_target/test_rt.rs"]
 pub(crate) mod test_rt;
 
-/// The allocation watch (SDK-SAFE-TEST-HOST §3.4), a plugin test's `#[global_allocator]`. It is
-/// still housed in the old interface tree; it moves out before that tree is cut, under these names.
-pub use busbar_contract::abi::sdk::test_support::watch::{Block, Freed, Watch};
 pub use busbar_contract::abi_scan;
 /// The completed growth and drop wipe counts on this thread (`(growth, drop)`), so a plugin test can
 /// prove an owner wiped without naming `busbar_secure` (DES-store-zeroizing-residual §5.0).
 pub use busbar_contract::secure::wipe_counts;
+/// The allocation watch (SDK-SAFE-TEST-HOST §3.4), a plugin test's `#[global_allocator]`.
+pub use busbar_ffi::test_watch::{Block, Freed, Watch};
 /// The existing login vocabulary used with [`suites::harness::Harness::open_auth`].
 pub use busbar_ports::auth::{LoginAnswer, LoginIn};
 /// The existing upstream target and output vocabulary used with [`suites::harness::Harness::open_plane`].

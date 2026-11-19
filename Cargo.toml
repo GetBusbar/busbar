@@ -15,6 +15,8 @@ members = [
     "crates/busbar-artifact-metadata",
     "crates/busbar-artifact-verifier",
     "crates/busbar-secure",
+    # The capability mint; only busbar-kernel and busbar-contract may list it (deny.toml).
+    "crates/busbar-seal",
     "crates/busbar-crypto",
     "crates/busbar-kernel",
     "crates/busbar-migrate",
@@ -184,7 +186,8 @@ url = "2"
 # Pinned exactly: the version selects the small unicode-rs IDNA backend over ICU4X.
 idna_adapter = "=1.1.0"
 idna = { version = "1.1.0", default-features = false, features = ["alloc", "compiled_data"] }
-zeroize = "1"
+# 1.9: `optimization_barrier`, the barrier after every block-store wipe (busbar-secure, the connector).
+zeroize = "1.9"
 unicode-normalization = "0.1.25"
 # The shared fast-hash aliases (foldhash::HashMap / HashSet, per-process seeded) the bad-pattern rules
 # point at instead of std's SipHash HashMap/HashSet. Already in Cargo.lock.

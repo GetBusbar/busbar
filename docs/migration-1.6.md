@@ -123,7 +123,8 @@ Stop every 1.6.0 process. Restore the complete pre-upgrade Store backup and conf
 snapshot together, including the providers catalog, credential files, overlay and old launch
 settings. Then start 1.5.5. Changes made after the upgrade are not carried back; this
 includes key revocations and trust demotions made under 1.6.0, which must be re-applied (see
-[backup set and order](operations.md#backup-set-and-order)).
+[backup set and order](operations.md#backup-set-and-order) and
+[restoring from a backup](operations.md#restoring-from-a-backup-what-it-undoes-and-what-to-do-next)).
 
 Restoring only `config.yaml.1.5.5` does **not** undo Store migrations. Restore the old overlay
 path too: the upgrader may have replaced it with a directory containing `busbar-1.6-folded`.
@@ -496,7 +497,7 @@ infrastructure. Plugins must use the Need API and its core-held
 
 ### Declared upstream registrations
 
-The core `upstreams:` and `advanced.allow_destinations` keys are removed. Keep each upstream's `url` or `command`, `tls`, `auth`, `upstream_credentials`, and optional boolean `allow_private` within the registration declared by its plane. Private reach applies to that registration only; it does not bypass metadata, own-listener, or TLS checks. A pre-release flat `upstreams:` document is refused with guidance rather than assigned to a plane by guesswork.
+The core `upstreams:` and `advanced.allow_destinations` keys are removed (a configuration that still carries `advanced.allow_destinations` loads: the key is ignored and one warning line says so). Keep each upstream's `url` or `command`, `tls`, `auth`, `upstream_credentials`, and optional boolean `allow_private` within the registration declared by its plane. Private reach applies to that registration only; it does not bypass metadata, own-listener, or TLS checks. A pre-release flat `upstreams:` document is refused with guidance rather than assigned to a plane by guesswork.
 
 A legacy A2A `client_identity: {cert: ..., key: ...}` is refused without modifying the source config. Combine the certificate chain and private key into one PEM secret and use `tls: {client_identity: {module: file, settings: {path: /run/secrets/client.pem}}}` in the canonical registration. The plane cannot combine opaque references, and neither part is silently discarded.
 

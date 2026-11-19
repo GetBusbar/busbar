@@ -128,6 +128,13 @@ pub(crate) struct Source {
     workers: Option<usize>,
     headers: super::ResponseHeadersCfg,
     admin_mtls: bool,
+    /// The boot-bound security settings: the destination guard, the login-limit source reader
+    /// and the outbound trust store read them once at boot.
+    trusted_proxies: Vec<String>,
+    forwarded_header: Option<String>,
+    block_private_addresses: bool,
+    proxy_resolution: super::tls::ProxyResolution,
+    tls: super::tls::OutboundTlsCfg,
 }
 
 impl Source {
@@ -137,6 +144,11 @@ impl Source {
             workers: cfg.advanced.worker_threads,
             headers: cfg.advanced.response_headers.clone(),
             admin_mtls: cfg.admin_require_mtls,
+            trusted_proxies: cfg.advanced.trusted_proxies.clone(),
+            forwarded_header: cfg.advanced.forwarded_header.clone(),
+            block_private_addresses: cfg.advanced.block_private_addresses,
+            proxy_resolution: cfg.advanced.proxy_resolution,
+            tls: cfg.advanced.tls.clone(),
         }
     }
 
@@ -153,6 +165,21 @@ impl Source {
         }
         if self.admin_mtls != boot.admin_mtls {
             paths.push("/admin_require_mtls".to_owned());
+        }
+        if self.trusted_proxies != boot.trusted_proxies {
+            paths.push("/advanced/trusted_proxies".to_owned());
+        }
+        if self.forwarded_header != boot.forwarded_header {
+            paths.push("/advanced/forwarded_header".to_owned());
+        }
+        if self.block_private_addresses != boot.block_private_addresses {
+            paths.push("/advanced/block_private_addresses".to_owned());
+        }
+        if self.proxy_resolution != boot.proxy_resolution {
+            paths.push("/advanced/proxy_resolution".to_owned());
+        }
+        if self.tls != boot.tls {
+            paths.push("/advanced/tls".to_owned());
         }
         paths
     }
@@ -254,6 +281,31 @@ mod tests {
                 "/advanced/worker_threads",
                 "/advanced/response_headers",
                 "/admin_require_mtls"
+            ]
+        );
+        assert!(next.changed(&next).is_empty());
+    }
+
+    /// These five are read once at boot (the destination guard, the login-limit source reader, the
+    /// outbound trust store), so a changed value is stored but not in force until a restart.
+    #[test]
+    fn boot_bound_security_settings_report_a_pending_restart() {
+        let mut deploy: DeployCfg = busbar_contract::yaml::from_str("{}").unwrap();
+        let boot = Source::capture(&deploy);
+        deploy.advanced.trusted_proxies = vec!["10.0.0.0/8".to_owned()];
+        deploy.advanced.forwarded_header = Some("forwarded".to_owned());
+        deploy.advanced.block_private_addresses = !deploy.advanced.block_private_addresses;
+        deploy.advanced.proxy_resolution = crate::config::tls::ProxyResolution::Proxy;
+        deploy.advanced.tls = busbar_contract::yaml::from_str("roots: none\n").unwrap();
+        let next = Source::capture(&deploy);
+        assert_eq!(
+            next.changed(&boot),
+            [
+                "/advanced/trusted_proxies",
+                "/advanced/forwarded_header",
+                "/advanced/block_private_addresses",
+                "/advanced/proxy_resolution",
+                "/advanced/tls"
             ]
         );
         assert!(next.changed(&next).is_empty());

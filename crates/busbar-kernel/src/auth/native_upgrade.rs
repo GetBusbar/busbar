@@ -20,7 +20,7 @@ use busbar_plugin_abi::plane::{AUTH_PRINCIPAL, ROUTE_UPGRADE};
 use busbar_ports::CallCx;
 
 use super::native_chain::{NativeChain, NativePreparedAnswer, PreparedNativeIdentity};
-use super::native_data::{refuse_bound_carriers, DataRefused};
+use super::native_data::{refuse_bound_carriers, withheld_carriers, DataRefused};
 use crate::inbound::native::{
     DataPreparation, DataPreparationDenied, DataPreparationSuccess, RequestBinding, RouteBinding,
     RouteTarget,
@@ -33,12 +33,15 @@ pub struct NativeUpgradeRoute {
     binding: Arc<RouteBinding>,
     caller: Caller,
     chain: Arc<NativeChain>,
+    /// The carriers every request on this route withholds from the plane.
+    withheld: Arc<[Box<str>]>,
 }
 
 impl NativeUpgradeRoute {
     /// Only what the native path can honour: the plane's own declared ROUTE_UPGRADE route,
-    /// methods exactly GET (§8.6), auth exactly AUTH_PRINCIPAL, no route credential header (its
-    /// chain selection is not retained by a native candidate) and the candidate's data chain.
+    /// methods exactly GET (§8.6), auth exactly AUTH_PRINCIPAL, and the route's effective chain
+    /// (§12.11: the instances reading its D_ROUTE_CRED_HEADER when it declares one, else the data
+    /// chain), which root resolved into the route token's auth instances.
     pub fn bind(
         app: &App,
         seat: &PortSeat,
@@ -56,7 +59,6 @@ impl NativeUpgradeRoute {
             || mounted.catalog
             || mounted.auth != AUTH_PRINCIPAL
             || mounted.effective != AUTH_PRINCIPAL
-            || mounted.cred_header.is_some()
             || seat.driver.has_hooks(mounted.route)
             || !chain.is_data()
         {
@@ -73,16 +75,31 @@ impl NativeUpgradeRoute {
         {
             return Err(DataRefused::Binding);
         }
+        let withheld = withheld_carriers(&chain, mounted.cred_header.as_deref());
         Ok(Arc::new(Self {
             caller: target.caller().clone(),
             binding,
             chain,
+            withheld,
         }))
     }
 
     /// The route token this completion was bound to.
     pub fn binding(&self) -> &Arc<RouteBinding> {
         &self.binding
+    }
+
+    /// The carriers every request on this route withholds from the plane (a refusal render
+    /// included, and the hand-over's `request`).
+    pub fn withheld(&self) -> &Arc<[Box<str>]> {
+        &self.withheld
+    }
+
+    fn cred_header(&self) -> Option<&str> {
+        match self.binding.target() {
+            RouteTarget::Plane(target) => target.mounted().cred_header.as_deref(),
+            _ => None,
+        }
     }
 
     /// Consumes the original physical preparation latch before verification. A credential,
@@ -100,7 +117,7 @@ impl NativeUpgradeRoute {
             Err(reason @ (DataRefused::Credential | DataRefused::Policy | DataRefused::Replay)) => {
                 return Err(match preparation.deny() {
                     Ok(denied) => UpgradeRefused::Denied {
-                        _preparation: denied,
+                        preparation: denied,
                         reason,
                     },
                     Err(_) => UpgradeRefused::Failed(DataRefused::Cancelled),
@@ -142,7 +159,7 @@ impl NativeUpgradeRoute {
         if !snapshot.request().same_request(binding.request()) {
             return Err(DataRefused::Binding);
         }
-        refuse_bound_carriers(&snapshot, &self.chain, None)?;
+        refuse_bound_carriers(&snapshot, &self.chain, self.cred_header())?;
         let prepared = self
             .chain
             .prepare_snapshot(cx, snapshot)
@@ -215,7 +232,7 @@ impl NativeUpgradeRoute {
 pub enum UpgradeRefused {
     /// Credential, policy or replay: the original preparation was spent as denied.
     Denied {
-        _preparation: DataPreparationDenied,
+        preparation: DataPreparationDenied,
         reason: DataRefused,
     },
     /// Anything else (cancelled, deadline, binding, unavailable verifier): the request is cancelled.
@@ -277,6 +294,10 @@ impl UpgradeAuthorization {
     /// The charged request snapshot the identity was verified on: the head the plane is handed.
     pub fn snapshot(&self) -> &Arc<crate::inbound::request_snapshot::ChargedRequestSnapshot> {
         self.prepared.snapshot()
+    }
+    /// The carriers the route's chain judged: withheld from the plane.
+    pub fn withheld(&self) -> &Arc<[Box<str>]> {
+        self.route.withheld()
     }
     /// The governed key the identity resolved to.
     pub fn principal(&self) -> &Arc<VirtualKey> {

@@ -38,6 +38,65 @@ pub struct Min3Config {
     /// `<kind>.<name>.insecure_transport`, by (kind section, configured instance name) (TRANSPORT-SECURITY-POLICY
     /// §4); absent = verified TLS only. Read into `InstanceLimits.accept` by `appbuild::instance_limits`.
     pub insecure_transport: InsecureTransportMap,
+    /// `<plane instance>.routes.<id>.auth_instances` (IF §12.11 "Route credential header", arm 1): the
+    /// operator's explicit effective chain of one plane route, by (plane instance, route id), in the
+    /// order written. Checked against the opened auth instances where routes are assembled.
+    pub route_auth_instances: RouteAuthInstances,
+}
+
+/// `routes.<id>.auth_instances` by (plane instance name, route id).
+pub type RouteAuthInstances = BTreeMap<(Box<str>, u32), Vec<Box<str>>>;
+
+/// One `routes.<id>` entry as written: only `auth_instances` is core's today.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RouteKeys {
+    auth_instances: Vec<String>,
+}
+
+/// Parses every plane section's lifted `routes` ([`super::DeployCfg::plane_routes`]): a map of route id
+/// (a decimal route number) to `{ auth_instances: [<auth instance name>, ...] }`, at least one name, no
+/// repeats. Whether each name is an opened auth instance that reads the route's credential header is
+/// judged where the routes are assembled, against the instances actually opened.
+fn parse_route_auth_instances(deploy: &DeployCfg) -> Result<RouteAuthInstances, Vec<String>> {
+    let mut out = RouteAuthInstances::new();
+    let mut refused = Vec::new();
+    for (plane, written) in &deploy.plane_routes {
+        let routes: BTreeMap<String, RouteKeys> =
+            match busbar_contract::yaml::from_value(written.clone()) {
+                Ok(routes) => routes,
+                Err(error) => {
+                    refused.push(format!("{plane}.routes: {error}"));
+                    continue;
+                }
+            };
+        for (id, keys) in routes {
+            let Ok(route) = id.parse::<u32>() else {
+                refused.push(format!("{plane}.routes.{id}: a route id is a route number"));
+                continue;
+            };
+            let mut names: Vec<Box<str>> = Vec::with_capacity(keys.auth_instances.len());
+            for name in keys.auth_instances {
+                if names.iter().any(|known| **known == *name) {
+                    refused.push(format!(
+                        "{plane}.routes.{id}.auth_instances names '{name}' twice"
+                    ));
+                }
+                names.push(name.into_boxed_str());
+            }
+            if names.is_empty() {
+                refused.push(format!(
+                    "{plane}.routes.{id}.auth_instances must name at least one auth instance"
+                ));
+            }
+            out.insert((plane.as_str().into(), route), names);
+        }
+    }
+    if refused.is_empty() {
+        Ok(out)
+    } else {
+        Err(refused)
+    }
 }
 
 impl Default for Min3Config {
@@ -49,6 +108,7 @@ impl Default for Min3Config {
             verdict_cache: Default::default(),
             provisioning: BTreeMap::new(),
             insecure_transport: BTreeMap::new(),
+            route_auth_instances: BTreeMap::new(),
         }
     }
 }
@@ -152,6 +212,7 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
     let insecure_transport = kept(parse_insecure_transport(deploy), &mut refused);
     let provisioning = kept(parse_provisioning(deploy), &mut refused);
     let issued_kinds = kept(parse_issued_kinds(deploy), &mut refused);
+    let route_auth_instances = kept(parse_route_auth_instances(deploy), &mut refused);
     let outbound = kept(
         deploy
             .auth
@@ -184,6 +245,7 @@ pub fn parse_min3(deploy: &DeployCfg) -> Result<Min3Config, Vec<String>> {
         verdict_cache,
         provisioning,
         insecure_transport,
+        route_auth_instances,
     })
 }
 

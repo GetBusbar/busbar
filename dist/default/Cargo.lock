@@ -388,6 +388,7 @@ dependencies = [
  "busbar-count",
  "busbar-crypto",
  "busbar-json",
+ "busbar-seal",
  "busbar-secure",
  "bytes",
  "ciborium",
@@ -689,6 +690,7 @@ dependencies = [
  "busbar-kernel-wal",
  "busbar-plugin-abi",
  "busbar-ports",
+ "busbar-seal",
  "bytes",
  "foldhash 0.2.0",
  "futures",
@@ -914,6 +916,7 @@ name = "busbar-plugin-test"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-ffi",
  "busbar-plugin-abi",
  "busbar-plugin-loader",
  "busbar-ports",
@@ -930,6 +933,10 @@ dependencies = [
  "busbar-plugin-abi",
  "zeroize",
 ]
+
+[[package]]
+name = "busbar-seal"
+version = "1.6.0"
 
 [[package]]
 name = "busbar-secret-env"

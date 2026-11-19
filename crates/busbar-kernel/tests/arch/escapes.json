@@ -86,6 +86,7 @@
     "crates/busbar-plugin-test/tests/fixtures/carrier_target.rs",
     "crates/busbar-plugin-test/tests/fixtures/framer_target.rs",
     "crates/busbar-ports/src/lib.rs",
+    "crates/busbar-seal/src/lib.rs",
     "crates/busbar-secure/src/lib.rs",
     "crates/busbar/src/main.rs",
     "tools/ci-checks/src/main.rs",

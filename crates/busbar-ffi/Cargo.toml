@@ -16,6 +16,8 @@ default = []
 # The loader's side: instances, sessions, chains, the out lease, the crypto arena and dlopen with its
 # bounds check. busbar-plugin-abi forwards it from its own `host`; plugin crates never enable it.
 host = ["dep:libloading", "dep:object"]
+# Test code only: the allocation watch (`test_watch`) a plugin's tests reach through busbar-plugin-test.
+test-support = []
 
 # Pinned (unsafe.yaml `ffi.dependencies`): no other dependency, no build-dependency, no proc macro of ours.
 [dependencies]
