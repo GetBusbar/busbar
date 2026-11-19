@@ -108,6 +108,8 @@ pub(crate) enum State {
         via: Option<route::Via>,
     },
     Dialled(NativeConnection),
+    /// A stream on a connection other exchanges on this core ride too (its session multiplexes).
+    Shared(Arc<shared::Shared>),
     /// Failed or handed back.
     Gone,
 }
@@ -324,6 +326,9 @@ impl Exchange {
         }
         match (&mut self.state, self.stream) {
             (State::Dialled(conn), Some(stream)) => conn.poll_ready(cx, stream),
+            (State::Shared(shared), Some(stream)) => {
+                shared.with(|conn| conn.poll_ready(cx, stream))
+            }
             _ => true,
         }
     }
@@ -340,7 +345,7 @@ impl Exchange {
         // The target's judgement and, where the operator's proxy carries the dial, the judgement of the
         // proxy's own host: the dial begins when every one asked for has answered.
         let got = match &self.state {
-            State::Dialled(_) => return Poll::Ready(Ok(())),
+            State::Dialled(_) | State::Shared(_) => return Poll::Ready(Ok(())),
             State::Gone => return Poll::Ready(Err(ConnError::Closed)),
             State::Judging {
                 answer,
@@ -425,7 +430,7 @@ impl Exchange {
             return Poll::Pending;
         }
         std::task::ready!(self.connected(cx, storage))?;
-        let State::Dialled(conn) = &mut self.state else {
+        let Some(mut conn) = shared::riding(&mut self.state) else {
             return Poll::Ready(Err(ConnError::Closed));
         };
         let Some(sending) = self.sending.as_mut() else {
@@ -476,7 +481,7 @@ impl Exchange {
             Ok(stream) => stream,
             Err(error) => return Poll::Ready(Err(error)),
         };
-        let State::Dialled(conn) = &mut self.state else {
+        let Some(mut conn) = shared::riding(&mut self.state) else {
             return Poll::Ready(Err(ConnError::Closed));
         };
         match conn.poll_read(cx, stream, buf) {
@@ -490,7 +495,7 @@ impl Exchange {
                 self.message_read(&piece);
                 if piece.kind == PieceKind::Completion {
                     self.ended = true;
-                    if let State::Dialled(conn) = &mut self.state {
+                    if let Some(mut conn) = shared::riding(&mut self.state) {
                         conn.finish(stream);
                     }
                 }
@@ -526,7 +531,8 @@ impl Exchange {
     pub(crate) fn connection(&self) -> Option<&NativeConnection> {
         match &self.state {
             State::Dialled(conn) => Some(conn),
-            State::Judging { .. } | State::Gone => None,
+            // A shared connection is not this exchange's alone to describe.
+            State::Shared(_) | State::Judging { .. } | State::Gone => None,
         }
     }
 
@@ -541,6 +547,14 @@ impl Exchange {
             key,
             ..
         } = self;
+        // A stream on a shared connection: only the stream is given up (reset when its answer was not read
+        // to its end; the others finish). The connection stays in its core's set for the opens that follow.
+        if let State::Shared(shared) = &state {
+            if let Some(stream) = stream {
+                shared.leave(stream, !ended);
+            }
+            return Err(None);
+        }
         let State::Dialled(mut conn) = state else {
             return Err(None);
         };
@@ -557,6 +571,10 @@ impl Exchange {
 
 /// One core's idle connections, by key, and when its next sweep of expired ones is due.
 pub(crate) struct CoreIdle {
+    /// The core's connections in use that other opens to the same key may ride, with what is known of
+    /// each key. Empty until a session states that it multiplexes; a key's entry goes with its last
+    /// connection.
+    pub(crate) in_use: Mutex<shared::InUse<PoolKey, Arc<shared::Shared>>>,
     pub(crate) map: Mutex<HashMap<PoolKey, Vec<(NativeConnection, Instant)>>>,
     /// In nanoseconds since [`Idle::epoch`]; `u64::MAX` = none due.
     pub(crate) sweep_due: AtomicU64,
@@ -565,6 +583,7 @@ pub(crate) struct CoreIdle {
 impl Default for CoreIdle {
     fn default() -> Self {
         Self {
+            in_use: Mutex::new(shared::InUse::new()),
             map: Mutex::new(HashMap::new()),
             sweep_due: AtomicU64::new(u64::MAX),
         }
@@ -595,6 +614,26 @@ impl Default for Idle {
 }
 
 impl Idle {
+    /// A connection in use on `core` to `key` that takes another stream now.
+    pub(crate) fn lend_stream(&self, core: usize, key: &PoolKey) -> Option<Arc<shared::Shared>> {
+        let held = self.core(core)?;
+        let mut set = held.in_use.lock().expect("native connections in use");
+        shared::lend_stream(&mut set, key, false)
+    }
+
+    /// Share `exchange`'s connection on `core` once its session states that it multiplexes.
+    pub(crate) fn share(&self, core: usize, exchange: &mut Exchange) {
+        if !matches!(&exchange.state, State::Dialled(conn) if conn.multiplexes()) {
+            return;
+        }
+        let cores = self
+            .cores
+            .get_or_init(|| crate::off_path::conns::idle_cores(super::pool::shard_count()));
+        if let Some(held) = cores.get(core) {
+            exchange.share(&mut held.in_use.lock().expect("native connections in use"));
+        }
+    }
+
     /// `core`'s set, where any connection was ever kept.
     fn core(&self, core: usize) -> Option<&CoreIdle> {
         self.cores.get().and_then(|cores| cores.get(core))
@@ -654,7 +693,11 @@ impl Idle {
         let refused = {
             let mut map = held.map.lock().expect("idle native connections");
             let list = map.entry(key).or_default();
-            if list.len() >= posture.max_idle_per_host {
+            // The stated figure is the deployment's, divided across the cores (at least one per core), as
+            // v1.5.5 divided it across its worker threads: not the whole figure on every core.
+            if list.len()
+                >= crate::outbound::lend::idle_bound(posture.max_idle_per_host, cores.len())
+            {
                 Some(conn)
             } else {
                 list.push((conn, now));
@@ -947,6 +990,17 @@ impl super::Connector {
             held.native = Some(NativeHeld::new(exchange, core));
             held
         };
+        // Many requests on one connection: a connection in use on this core to the same key, whose session
+        // multiplexes and takes another stream now, carries this exchange as one more stream. No dial, no
+        // handshake, no socket. The key separates owner, need, trust, seal and reach, so a stream is never
+        // opened on a connection another registration's trust made; the plaintext rule is the idle set's.
+        if let Some(shared) = key
+            .as_ref()
+            .filter(|_| secure || plain)
+            .and_then(|key| self.native_idle.lend_stream(core, key))
+        {
+            return Ok(held(State::Shared(shared), None, true));
+        }
         // HTTP keep-alive: an idle connection this core dialled to the same key carries the exchange (it was judged
         // when it was dialled, under this very key, and tunnelled then where the operator's proxy carries it:
         // nothing about the proxy is done again). A plaintext one is lent only to an open whose own plaintext
@@ -1021,6 +1075,9 @@ impl super::Connector {
         // nothing sent, a stream the far end refused unprocessed, a busy connection) is judged and dialled
         // afresh here; the caller's read pends and its ticket is woken to drive the new dial.
         let again = self.redial_native(&mut exchange, waker);
+        // A connection whose session states that it multiplexes is shared from here on: later opens to the
+        // same key on this core ride it.
+        self.native_idle.share(native.core, &mut exchange);
         native.end(exchange);
         again?;
         match read {
@@ -1067,6 +1124,9 @@ impl super::Connector {
         let wrote =
             exchange.write_message(&mut Context::from_waker(waker), bytes, (text, end), storage);
         let again = self.redial_native(&mut exchange, waker);
+        // A connection whose session states that it multiplexes is shared from here on: later opens to the
+        // same key on this core ride it.
+        self.native_idle.share(native.core, &mut exchange);
         native.end(exchange);
         again?;
         wrote
@@ -1094,10 +1154,15 @@ impl super::Connector {
                     Poll::Ready(Ok(())) => Ok(()),
                     Poll::Ready(Err(failure)) => Err(exchange.attempt_failed(&failure)),
                 },
+                // A shared connection landed when the exchange that dialled it did.
+                State::Shared(_) => Ok(()),
                 State::Judging { .. } | State::Gone => Err(ConnError::Closed),
             },
         };
         let again = self.redial_native(&mut exchange, waker);
+        // A connection whose session states that it multiplexes is shared from here on: later opens to the
+        // same key on this core ride it.
+        self.native_idle.share(native.core, &mut exchange);
         native.end(exchange);
         again?;
         landed

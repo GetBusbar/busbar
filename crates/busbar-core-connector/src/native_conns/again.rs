@@ -44,7 +44,7 @@ use std::task::Waker;
 
 use busbar_contract::conn::ConnError;
 
-use super::{error_of, Exchange, PendingDial, State};
+use super::{error_of, shared, Exchange, PendingDial, State};
 use crate::conns::native_dial::NativeFailure;
 use crate::conns::Answer;
 use crate::outbound::delivery;
@@ -69,18 +69,18 @@ impl Exchange {
     pub(super) fn attempt_failed(&mut self, failure: &NativeFailure) -> ConnError {
         // What was sent of this attempt, how the far end itself ended it where it said so, whether a
         // session had begun, and whether any of its answer was handed up.
-        let (sent, far_end, began, answered) = match (&self.state, self.stream) {
-            (State::Dialled(conn), Some(stream)) => (
-                conn.sent_state(stream),
-                conn.far_end_ended(stream),
-                true,
-                conn.answered(stream),
-            ),
-            (State::Dialled(conn), None) => {
-                (delivery::State::None, None, conn.session_began(), false)
-            }
-            (State::Judging { .. } | State::Gone, _) => (delivery::State::None, None, false, false),
-        };
+        let stream = self.stream;
+        let (sent, far_end, began, answered) =
+            shared::with_conn(&mut self.state, |conn| match stream {
+                Some(stream) => (
+                    conn.sent_state(stream),
+                    conn.far_end_ended(stream),
+                    true,
+                    conn.answered(stream),
+                ),
+                None => (delivery::State::None, None, conn.session_began(), false),
+            })
+            .unwrap_or((delivery::State::None, None, false, false));
         let ended = crate::conns::native_dial::drive::ended_of(failure, far_end, began);
         // A busy connection is a lent one by its nature: the request goes elsewhere, nobody is charged.
         let kept = self.kept || failure.is_busy();
@@ -96,11 +96,11 @@ impl Exchange {
             // The sealed values come back from the failed connection, rewound: from the stream's slots, or
             // (a busy connection, no stream opened) as the transport's answer handed them back. A head
             // whose values were already wiped is not sent again: it would go without them.
-            let sealed = match (&mut self.state, self.stream) {
-                (State::Dialled(conn), Some(stream)) => conn.stream_over(stream, true),
-                (State::Dialled(conn), None) => Some(conn.take_handed_back().unwrap_or_default()),
-                (State::Judging { .. } | State::Gone, _) => Some(Slots::default()),
-            };
+            let sealed = shared::with_conn(&mut self.state, |conn| match stream {
+                Some(stream) => conn.stream_over(stream, true),
+                None => Some(conn.take_handed_back().unwrap_or_default()),
+            })
+            .unwrap_or_else(|| Some(Slots::default()));
             if let Some(sealed) = sealed {
                 self.sealed = Some(sealed);
                 // The failed connection is dropped here: closed, its buffers wiped. A busy one is live and
@@ -128,17 +128,20 @@ impl Exchange {
     /// and in `read` after each piece): the head, the body's share and the sealed values are let
     /// go of as soon as the request can no longer be sent again. `force` = the exchange is over.
     pub(super) fn let_go_of_head(&mut self, force: bool) {
+        let (stream, redialled) = (self.stream, self.redialled);
+        // Not sent at all yet (no connection, or no stream): the head is still to go.
         let keeps = !force
-            && match (&self.state, self.stream) {
-                (State::Dialled(conn), Some(stream)) => redial::keeps_head(
-                    conn.sent_state(stream),
-                    conn.session_multiplexes(),
-                    conn.answered(stream),
-                    self.redialled,
-                ),
-                // Not sent at all yet: the head is still to go.
-                _ => true,
-            };
+            && shared::with_conn(&mut self.state, |conn| {
+                stream.is_none_or(|stream| {
+                    redial::keeps_head(
+                        conn.sent_state(stream),
+                        conn.session_multiplexes(),
+                        conn.answered(stream),
+                        redialled,
+                    )
+                })
+            })
+            .unwrap_or(true);
         if keeps {
             return;
         }
@@ -152,8 +155,8 @@ impl Exchange {
             self.reopen = None;
             self.sealed = None;
         }
-        if let (State::Dialled(conn), Some(stream)) = (&mut self.state, self.stream) {
-            conn.release_head(stream);
+        if let Some(stream) = self.stream {
+            let _ = shared::with_conn(&mut self.state, |conn| conn.release_head(stream));
         }
     }
 

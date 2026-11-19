@@ -599,7 +599,7 @@ impl NativeConnection {
     }
 
     /// REPLACES `multiplexes()`: the session's own statement, never the protocol's name.
-    pub(super) fn session_multiplexes(&self) -> bool {
+    pub(crate) fn session_multiplexes(&self) -> bool {
         self.wire.in_use().shares()
     }
 

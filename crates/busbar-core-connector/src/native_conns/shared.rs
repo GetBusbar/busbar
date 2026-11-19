@@ -17,10 +17,10 @@
 //!   (`crate::outbound::lend`). An entry lives while its key has a connection or a dial, and is
 //!   removed with the last of them: no table that grows.
 //!
-//! NOT YET DECLARED: `native_conns.rs` gains `#[path = "native_conns/shared.rs"] mod shared;` in
-//! the change that makes `State::Dialled` hold `Arc<Shared>` (an exchange that owns its
-//! connection alone holds the only reference) and gives each core's set (`CoreIdle`) an
-//! `in_use: InUse<PoolKey, Arc<Shared>>` beside its idle connections.
+//! DECLARED by `native_conns.rs`: `State::Shared` is a stream on a shared connection, each core's
+//! set (`CoreIdle::in_use`) holds the connections in use, `open_native` asks `lend_stream` before
+//! the idle set, and the read wrapper calls `Exchange::share` once a session states that it
+//! multiplexes.
 
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
@@ -29,7 +29,9 @@ use std::task::{Context, Poll, Waker};
 use busbar_contract::conn::Piece;
 use foldhash::{HashMap, HashMapExt as _};
 
+use super::{Exchange, State};
 use crate::conns::native_dial::{NativeConnection, NativeFailure, NativeHead};
+use crate::conns::pool::PoolKey;
 use crate::outbound::lend::{self, KeyEntry, Lend};
 use crate::outbound::records::Session;
 
@@ -194,6 +196,138 @@ impl Shared {
     }
 }
 
+/// Run `with` on the exchange's connection, owned alone or shared. `None` = it has none (still
+/// judging, or gone).
+pub(super) fn with_conn<T>(
+    state: &mut State,
+    with: impl FnOnce(&mut NativeConnection) -> T,
+) -> Option<T> {
+    match state {
+        State::Dialled(conn) => Some(with(conn)),
+        State::Shared(shared) => Some(shared.with(with)),
+        State::Judging { .. } | State::Gone => None,
+    }
+}
+
+/// THE EXCHANGE'S CONNECTION, owned alone or shared: the calls an exchange makes on it, with the
+/// same names and answers either way. Shared, each call also wakes the other streams' readers
+/// whose pieces it parked.
+pub(super) enum Riding<'a> {
+    /// The exchange owns the connection.
+    Alone(&'a mut NativeConnection),
+    /// The exchange has a stream on a connection others ride.
+    Shared(&'a Shared),
+}
+
+/// The connection `state` rides, if it has one.
+pub(super) fn riding(state: &mut State) -> Option<Riding<'_>> {
+    match state {
+        State::Dialled(conn) => Some(Riding::Alone(conn)),
+        State::Shared(shared) => Some(Riding::Shared(shared)),
+        State::Judging { .. } | State::Gone => None,
+    }
+}
+
+impl Riding<'_> {
+    /// `NativeConnection::offer_sealed`.
+    pub(super) fn offer_sealed(&mut self, slots: crate::outbound::seal::Slots) {
+        match self {
+            Self::Alone(conn) => conn.offer_sealed(slots),
+            Self::Shared(shared) => shared.with(|conn| conn.offer_sealed(slots)),
+        }
+    }
+
+    /// `NativeConnection::poll_send_head`.
+    pub(super) fn poll_send_head(
+        &mut self,
+        cx: &mut Context<'_>,
+        head: &mut Option<NativeHead>,
+        body_follows: bool,
+    ) -> Poll<Result<u64, NativeFailure>> {
+        match self {
+            Self::Alone(conn) => conn.poll_send_head(cx, head, body_follows),
+            Self::Shared(shared) => shared.poll_send_head(cx, head, body_follows),
+        }
+    }
+
+    /// `NativeConnection::poll_send_body`.
+    pub(super) fn poll_send_body(
+        &mut self,
+        cx: &mut Context<'_>,
+        stream: u64,
+        bytes: &[u8],
+        end: bool,
+    ) -> Poll<Result<usize, NativeFailure>> {
+        match self {
+            Self::Alone(conn) => conn.poll_send_body(cx, stream, bytes, end),
+            Self::Shared(shared) => shared.poll_send_body(cx, stream, bytes, end),
+        }
+    }
+
+    /// `NativeConnection::poll_read`.
+    pub(super) fn poll_read(
+        &mut self,
+        cx: &mut Context<'_>,
+        stream: u64,
+        buf: &mut [u8],
+    ) -> Poll<Result<Piece, NativeFailure>> {
+        match self {
+            Self::Alone(conn) => conn.poll_read(cx, stream, buf),
+            Self::Shared(shared) => shared.poll_read(cx, stream, buf),
+        }
+    }
+
+    /// The exchange's answer was read to its end: its stream is forgotten. Shared, the connection
+    /// stays for the others and one waiting reader takes over the driving.
+    pub(super) fn finish(&mut self, stream: u64) {
+        match self {
+            Self::Alone(conn) => conn.finish(stream),
+            Self::Shared(shared) => shared.leave(stream, false),
+        }
+    }
+}
+
+impl Exchange {
+    /// CALLED by the connector's native wrappers after a poll (`read_native`, `landed_native`): an
+    /// exchange that owns a connection whose session multiplexes shares it from now on, so later
+    /// opens to the same key on this core ride it instead of dialling. A WebSocket connection, a
+    /// connection that is never kept (no key) and one with no stream yet are not shared.
+    pub(super) fn share(&mut self, set: &mut InUse<PoolKey, Arc<Shared>>) {
+        let shares = self.ws.is_none()
+            && self.key.is_some()
+            && self.stream.is_some()
+            && matches!(&self.state, State::Dialled(conn) if conn.multiplexes());
+        if !shares {
+            return;
+        }
+        let (State::Dialled(conn), Some(key)) = (
+            std::mem::replace(&mut self.state, State::Gone),
+            self.key.as_ref(),
+        ) else {
+            return;
+        };
+        let shared = Shared::new(conn);
+        set.insert(key, &shared);
+        self.state = State::Shared(shared);
+    }
+}
+
+/// CALLED in `open_native` before the idle set is asked: a connection in use on this core to
+/// `key` that takes another stream now. Connections of the key that can carry nothing more (failed,
+/// or draining with no stream left) are dropped from the set first; a key left with none is
+/// forgotten.
+pub(super) fn lend_stream(
+    set: &mut InUse<PoolKey, Arc<Shared>>,
+    key: &PoolKey,
+    pinned: bool,
+) -> Option<Arc<Shared>> {
+    set.retain(key, |conn| !conn.in_use().finished());
+    match set.lend(key, |conn| conn.in_use(), false, pinned) {
+        Lent::Stream(conn) | Lent::Join(conn) => Some(conn),
+        Lent::Idle | Lent::Dial => None,
+    }
+}
+
 /// What a key has on one core.
 struct Keyed<C> {
     entry: KeyEntry,
@@ -292,6 +426,34 @@ impl<K: Eq + Hash + Clone, C: Clone> InUse<K, C> {
             // `dial_opened` counts the connection; `dial_began` already holds its handle.
             keyed.entry.dial_opened(session);
             keyed.joining = None;
+        }
+    }
+
+    /// A connection already open comes into shared use for `key` (its session stated that it
+    /// multiplexes).
+    pub(crate) fn insert(&mut self, key: &K, conn: &C) {
+        let keyed = self.keys.entry(key.clone()).or_default();
+        keyed.entry.dial_began();
+        keyed.entry.dial_opened(&Session {
+            flags: crate::outbound::records::S_MULTIPLEX,
+            ..Session::default()
+        });
+        keyed.conns.push(conn.clone());
+    }
+
+    /// Keep only the connections of `key` that `keep` admits; a key left with none, and no dial in
+    /// flight, is forgotten.
+    pub(crate) fn retain(&mut self, key: &K, keep: impl Fn(&C) -> bool) {
+        let Some(keyed) = self.keys.get_mut(key) else {
+            return;
+        };
+        let before = keyed.conns.len();
+        keyed.conns.retain(&keep);
+        for _ in keyed.conns.len()..before {
+            keyed.entry.conn_gone();
+        }
+        if keyed.conns.is_empty() && keyed.entry.empty() {
+            self.keys.remove(key);
         }
     }
 
