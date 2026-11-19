@@ -275,9 +275,11 @@ impl Wire {
                     self.ledger.end(end).map_err(Fault::Output)?;
                 }
                 Out::Body { stream, len } => {
-                    let at = self
-                        .at(stream)
-                        .ok_or(Fault::Order("STREAM_BODY for a stream that is not open"))?;
+                    // A late body piece of a stream the engine has left is not a breach: the stream
+                    // was open once. It is not held, so it is not counted.
+                    let Some(at) = self.at(stream) else {
+                        continue;
+                    };
                     let credit = self
                         .credit
                         .as_mut()
@@ -921,6 +923,49 @@ mod tests {
         assert!(
             conn.wire.over(1, true).0.is_none(),
             "it would go without its credential"
+        );
+    }
+
+    #[test]
+    fn a_late_body_piece_of_a_stream_the_engine_left_faults_nobody() {
+        let mut conn = Conn::new();
+        conn.answer(&begin(true)).unwrap();
+        conn.wire.offer(Slots::default());
+        conn.answer(&head(1, 0)).unwrap();
+        conn.wire.offer(Slots::default());
+        conn.answer(&head(3, 0)).unwrap();
+        // The caller of stream 1 left; the far end's data for it was already on its way.
+        conn.wire.stopping(1, Reason::Cancelled);
+        let _ = conn.wire.over(1, false);
+        let late = Script::default().item(Out::Body {
+            stream: 1,
+            len: 4096,
+        });
+        conn.answer(&late).unwrap();
+        // Stream 3 is untouched and still takes its own body.
+        conn.answer(&Script::default().item(Out::Body {
+            stream: 3,
+            len: 4096,
+        }))
+        .unwrap();
+        assert_eq!(
+            conn.wire.credit().map(|credit| credit.outstanding()),
+            Some(4096)
+        );
+    }
+
+    #[test]
+    fn a_part_for_a_stream_the_engine_left_is_still_a_breach() {
+        let mut conn = Conn::new();
+        conn.answer(&begin(true)).unwrap();
+        conn.wire.offer(Slots::default());
+        conn.answer(&head(1, 0)).unwrap();
+        conn.wire.emitting_end(1);
+        conn.answer(&end(1)).unwrap();
+        assert_eq!(
+            conn.answer(&Script::default().part(1, WIRE_CONTROL, b"x"))
+                .unwrap_err(),
+            Fault::Output(crate::outbound::delivery::Breach::L4)
         );
     }
 }

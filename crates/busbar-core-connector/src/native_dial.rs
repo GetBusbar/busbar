@@ -1246,7 +1246,9 @@ impl NativeConnection {
                     end_stream,
                     head,
                 } => {
-                    let one = stream_of(streams, *stream)?;
+                    let Some(one) = stream_of(streams, *stream) else {
+                        continue;
+                    };
                     let inbound = head_of(head.as_slice(), one.answered)?;
                     one.answered = true;
                     one.inbox.push_back(inbound);
@@ -1259,7 +1261,9 @@ impl NativeConnection {
                     bytes,
                     flags,
                 } => {
-                    let one = stream_of(streams, *stream)?;
+                    let Some(one) = stream_of(streams, *stream) else {
+                        continue;
+                    };
                     one.inbox.push_back(Inbound::Body {
                         bytes: SecureVec::from(bytes.as_slice()),
                         taken: 0,
@@ -1267,15 +1271,21 @@ impl NativeConnection {
                     });
                 }
                 Act::Trailers { stream, pairs } => {
-                    let one = stream_of(streams, *stream)?;
+                    let Some(one) = stream_of(streams, *stream) else {
+                        continue;
+                    };
                     one.inbox
                         .push_back(Inbound::Trailers(field_block(pairs.as_slice())?));
                 }
-                Act::End(stream) => stream_of(streams, *stream)?.inbox.push_back(Inbound::End),
+                Act::End(stream) => {
+                    if let Some(one) = stream_of(streams, *stream) {
+                        one.inbox.push_back(Inbound::End);
+                    }
+                }
                 Act::Reset { stream, code, .. } => {
-                    stream_of(streams, *stream)?
-                        .inbox
-                        .push_back(Inbound::Reset(*code));
+                    if let Some(one) = stream_of(streams, *stream) {
+                        one.inbox.push_back(Inbound::Reset(*code));
+                    }
                 }
             }
         }
@@ -1509,13 +1519,13 @@ impl Drop for NativeConnection {
     }
 }
 
-fn stream_of(streams: &mut [Stream], id: u64) -> Result<&mut Stream, NativeFailure> {
-    streams.iter_mut().find(|one| one.id == id).ok_or_else(|| {
-        NativeFailure::at(
-            stage::FRAMER,
-            "the transport answered on a stream core did not open",
-        )
-    })
+/// The open stream `id`. `None` = the engine has left it (its reader went away, or it was sent again
+/// elsewhere) and the far end's last facts about it are arriving late: on a connection other requests
+/// share, a fact about a stream that was once open never faults the connection for arriving late. The
+/// output model's own breaches (a part, a sealed mark or an end mark for a stream that is not open) are
+/// the driver's and do.
+fn stream_of(streams: &mut [Stream], id: u64) -> Option<&mut Stream> {
+    streams.iter_mut().find(|one| one.id == id)
 }
 
 /// A STREAM_HEAD's records as the piece handed up: H_STATUS, then PAIR* as the field block (hop-by-hop fields
