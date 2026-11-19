@@ -2028,6 +2028,11 @@ mod dist_root_install;
 #[path = "tests/distribution.rs"]
 mod distribution;
 
+/// The shared native-listener fixture (the application Store, its money book, the real listener).
+#[cfg(all(test, distribution_root, unix))]
+#[path = "tests/native_listener_fixture.rs"]
+pub(crate) mod native_listener_fixture;
+
 #[cfg(all(test, unix))]
 #[test]
 fn root_listeners_keep_the_connector_connection_bound() {
