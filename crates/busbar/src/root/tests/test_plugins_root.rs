@@ -161,7 +161,7 @@ pub(crate) async fn provision_fresh_application_store_with_backend(
             .open(&database)
             .expect("the fixture exclusively creates its database file before opening the Store"),
     );
-    let evidence = serde_json::to_vec(&serde_json::json!({
+    let evidence = busbar_contract::json::to_vec(&busbar_contract::json::json!({
         "database": database, "creation": "exclusive create_new before Store open",
         "fixture": directory, "sender_quiesced": true, "backend_quiesced": true,
     }))
