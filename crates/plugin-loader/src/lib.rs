@@ -268,6 +268,11 @@ pub fn list_plugin_files(dir: &std::path::Path) -> Vec<String> {
 mod tests;
 
 #[cfg(test)]
+#[path = "tests/both_ways.rs"]
+#[deny(unsafe_code)]
+mod both_ways;
+
+#[cfg(test)]
 #[path = "tests/ordinary_plane_registry.rs"]
 mod ordinary_plane_registry;
 
