@@ -1449,7 +1449,11 @@ impl Registry {
                 s.config_json,
                 &paths(tag::D_SECRET_PATH),
                 &paths(tag::D_TRUST_PATH),
-                &paths(tag::D_DEST_PATH),
+                &if instances[at].0 == KindCode::Export {
+                    paths(busbar_plugin_abi::export::tag::D_DEST_PATH)
+                } else {
+                    Vec::new()
+                },
                 &paths(tag::D_REF_PATH),
             )
             .map_err(|e| OpenError::Config {
