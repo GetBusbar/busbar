@@ -521,14 +521,16 @@ fn signed_ingress_reads_a_bounded_body_then_verifies() {
     }
 }
 
-/// Field 4: a route that keeps state per caller is never served to the shared subject.
+/// Field 4 gates no caller (owner directive, auth is plane-agnostic): a route that keeps state per
+/// caller serves the shared anonymous subject exactly as it serves a distinct one; its state is
+/// keyed by the session's handle (`port_intents::handle_scope`), never by the subject.
 #[test]
-fn distinct_routes_are_not_served_to_a_shared_subject() {
+fn distinct_routes_serve_a_shared_subject_like_any_other() {
     let route = reference(Admission::Selected);
     assert_eq!(route.record.caller_state, CallerState::Distinct);
     assert_eq!(
         decide(Target::Route(&route.record), &passing(SHARED)),
-        refused(Refusal::NoRoute, true)
+        Decision::Serve(Authority::Billed)
     );
     assert_eq!(
         decide(Target::Route(&route.record), &passing(DISTINCT)),
@@ -974,7 +976,6 @@ fn a_scope_kind_has_one_owner() {
 fn what_is_not_mounted_and_why() {
     let everything = Offered {
         verifier_reads_header: true,
-        chain_yields_shared: false,
         upgrade_transport: true,
         signature_verifier: true,
         ticket_store: true,
@@ -990,7 +991,6 @@ fn what_is_not_mounted_and_why() {
     }
     let nothing = Offered {
         verifier_reads_header: false,
-        chain_yields_shared: false,
         upgrade_transport: false,
         signature_verifier: false,
         ticket_store: false,
@@ -1020,18 +1020,6 @@ fn what_is_not_mounted_and_why() {
             "{admission:?}"
         );
     }
-    let open = Offered {
-        chain_yields_shared: true,
-        ..everything
-    };
-    assert_eq!(
-        mounted(&reference(Admission::Selected).record, open),
-        Err(NotMounted::DistinctCallersUnderAnOpenChain)
-    );
-    assert_eq!(
-        mounted(&reference(Admission::Walk).record, open),
-        Ok(Admission::Walk)
-    );
     let no_socket = Offered {
         upgrade_transport: false,
         ..everything

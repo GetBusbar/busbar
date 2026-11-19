@@ -60,7 +60,6 @@ fn metadata_record() -> RouteRecord {
 /// store, no signature verifier, no upgrade transport, no public URL.
 const NOTHING_OFFERED: Offered = Offered {
     verifier_reads_header: false,
-    chain_yields_shared: false,
     upgrade_transport: false,
     ticket_store: false,
     signature_verifier: false,
