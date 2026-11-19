@@ -389,8 +389,10 @@ impl Deployment {
         let mut catalog = String::new();
         let mut keyed = String::new();
         for (name, protocol, base_url) in &self.providers {
+            // `error_map` is required on a resolved entry (the llm plane's D_PROVIDER_SCHEMA); the
+            // shipped catalog supplies it for its own providers, a written entry states it.
             catalog.push_str(&format!(
-                "{name}:\n  protocol: {protocol}\n  base_url: \"{base_url}\"\n"
+                "{name}:\n  protocol: {protocol}\n  base_url: \"{base_url}\"\n  error_map: {{}}\n"
             ));
             keyed.push_str(&format!("  {name}:\n    api_key: {{ env: MOCK_KEY }}\n"));
         }
