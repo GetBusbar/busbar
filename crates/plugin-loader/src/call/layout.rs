@@ -66,8 +66,8 @@ const fn row(
 use KindCode::{Auth, Export, Hook, Plane, Secret, Store, Transport};
 use Role::{Ends, OnSession, Opens, Plain, Start};
 
-/// The 35 methods, in the contract's order.
-pub const TABLE: [Method; 35] = [
+/// The 34 methods, in the contract's order.
+pub const TABLE: [Method; 34] = [
     row(Store, 0, "read", Start, 0, 0, (1, 1)),
     row(Store, 1, "scan", Start, 0, 0, (1, 1)),
     row(Store, 2, "commit", Start, 0, 0, (1, 1)),
@@ -75,11 +75,10 @@ pub const TABLE: [Method; 35] = [
     row(Store, 4, "info", Plain, 0, 0, (0, 0)),
     row(Secret, 0, "resolve", Start, 0, 0, (1, 1)),
     row(Auth, 0, "verify", Plain, 16, 5, (4, 4)),
-    row(Auth, 1, "verify_io", Start, 0, 0, (1, 1)),
-    row(Auth, 2, "login", Start, 4, 0, (1, 1)),
-    row(Auth, 3, "outbound", Start, 0, 0, (1, 1)),
-    row(Auth, 4, "refresh", Start, 0, 0, (0, 0)),
-    row(Auth, 5, "serve", Start, 0, 0, (1, 1)),
+    row(Auth, 1, "login", Start, 4, 0, (1, 1)),
+    row(Auth, 2, "outbound", Start, 0, 0, (1, 1)),
+    row(Auth, 3, "refresh", Start, 0, 0, (0, 0)),
+    row(Auth, 4, "serve", Start, 0, 0, (1, 1)),
     row(Hook, 0, "on", Plain, 4, 0, (1, 1)),
     row(Hook, 1, "on_io", Start, 4, 0, (1, 1)),
     row(Export, 0, "deliver", Start, 24, 0, (1, 1)),
@@ -228,7 +227,7 @@ mod tests {
                 count(Plane),
                 count(Transport)
             ],
-            [5, 1, 6, 2, 3, 11, 7]
+            [5, 1, 5, 2, 3, 11, 7]
         );
     }
 

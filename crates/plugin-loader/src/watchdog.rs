@@ -56,14 +56,7 @@ impl<'a> Holder<'a> {
 pub fn entry_name(kind: KindCode, entry: u8) -> &'static str {
     const STORE: [&str; 5] = ["read", "scan", "commit", "clock", "info"];
     const SECRET: [&str; 1] = ["resolve"];
-    const AUTH: [&str; 6] = [
-        "verify",
-        "verify_io",
-        "login",
-        "outbound",
-        "refresh",
-        "serve",
-    ];
+    const AUTH: [&str; 5] = ["verify", "login", "outbound", "refresh", "serve"];
     const HOOK: [&str; 2] = ["on", "on_io"];
     const EXPORT: [&str; 3] = ["deliver", "render", "confirm"];
     const PLANE: [&str; 11] = [

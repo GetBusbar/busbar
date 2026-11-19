@@ -166,13 +166,12 @@ mod layout_tests {
         assert_eq!(
             [
                 auth::VERIFY,
-                auth::VERIFY_IO,
                 auth::LOGIN,
                 auth::OUTBOUND,
                 auth::REFRESH,
                 auth::SERVE
             ],
-            [0, 1, 2, 3, 4, 5]
+            [0, 1, 2, 3, 4]
         );
         assert_eq!([hook::ON, hook::ON_IO], [0, 1]);
         assert_eq!(
@@ -217,7 +216,6 @@ mod layout_tests {
         use busbar_plugin_abi::plane as p;
         use busbar_plugin_abi::transport as t;
         assert_eq!(1u64 << auth::SERVE, a::M_SERVE);
-        assert_eq!(1u64 << auth::VERIFY_IO, a::M_VERIFY_IO);
         assert_eq!(1u64 << plane::CHANNEL, p::M_CHANNEL);
         assert_eq!(1u64 << plane::DEMUX, p::M_DEMUX);
         assert_eq!(1u64 << transport::EMIT, t::M_EMIT);

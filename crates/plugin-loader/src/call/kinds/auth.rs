@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Auth: `verify` (plain, the request view by position), and five async methods.
+//! Auth: `verify` (plain, the request view by position), and four async methods. `verify_io` is not in
+//! auth 4.0 (no image implemented it): a verifier that must do I/O does it in `login` or `outbound`.
 
 use busbar_plugin_abi::auth::AuthReq;
 use busbar_plugin_abi::fail::CallError;
@@ -16,11 +17,11 @@ use crate::call::frame::pairs;
 use crate::call::{self, Frame, Mono};
 
 pub const VERIFY: u8 = 0;
-pub const VERIFY_IO: u8 = 1;
-pub const LOGIN: u8 = 2;
-pub const OUTBOUND: u8 = 3;
-pub const REFRESH: u8 = 4;
-pub const SERVE: u8 = 5;
+
+pub const LOGIN: u8 = 1;
+pub const OUTBOUND: u8 = 2;
+pub const REFRESH: u8 = 3;
+pub const SERVE: u8 = 4;
 
 /// The head of `verify`: `flags:u32, _r:u32, now_s:u64`.
 #[repr(C)]
@@ -60,16 +61,6 @@ impl Proxy {
             [pairs(headers), req.tls_peer_cert, req.body, req.issued],
         );
         call::plain(&self.to, VERIFY, at, &frame, headers, buf)
-    }
-
-    /// `blobs[0]` = `req`.
-    pub fn verify_io<'a, N: Needs>(
-        &'a self,
-        drv: &'a mut Driver<'a, N>,
-        at: Mono,
-        req: PooledOut,
-    ) -> impl Chained<'a> {
-        call::chain(&self.to, drv, VERIFY_IO, at, (), req, true)
     }
 
     /// `blobs[0]` = `input`.

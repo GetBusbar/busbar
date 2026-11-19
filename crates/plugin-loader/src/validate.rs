@@ -79,12 +79,12 @@ pub mod secret {
     }
 }
 
-/// Auth: `verify`, `verify_io`, `login`, `outbound`, `refresh`, `serve`.
+/// Auth: `verify`, `login`, `outbound`, `refresh`, `serve`.
 pub mod auth {
     use super::{judged, Answer, FaultReason};
     use crate::adapters::auth as grammar;
 
-    /// `verify` and `verify_io` share one answer grammar.
+    /// `verify`.
     pub fn verify(a: &Answer<'_>) -> Result<(), FaultReason> {
         judged(a, || busbar_ports::auth::decode_verify_ok(a.records()))
     }
