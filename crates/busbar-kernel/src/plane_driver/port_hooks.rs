@@ -27,9 +27,9 @@ use super::port_session::{Answer, ExpectItem, SessionError};
 use busbar_contract::secure::SecureVec;
 use busbar_ports::{plane::UsageClass, FactVal};
 
-/// Per-unit service inputs. Its context belongs to the selected generation, never to Binder.
+/// Per-unit service inputs. Its context belongs to the selected generation, never to the bindings.
 pub struct Invocation {
-    pub binder: Arc<dyn Binder>,
+    pub binder: Arc<super::native_hook_bindings::Bindings>,
     /// Who the request is served as, shared by count.
     pub principal: Option<super::port_auth::Subject>,
     /// What the plane was handed as its identity, shared by count (step 2 hands it to the stage).
@@ -319,16 +319,6 @@ pub struct Selection<'a> {
     pub key: Option<&'a busbar_contract::records::VirtualKey>,
     pub request_id: u64,
     pub now_s: u64,
-}
-
-/// Built by S9 from admitted metadata and the exact S8 hook ports before seats are published.
-/// Implementations may retain concrete governance readers; they must not retain App or a generation.
-pub trait Binder: Send + Sync {
-    /// Includes possible pool/container attachments, not merely the currently known section hooks.
-    fn active(&self, route: u32) -> bool;
-    /// True when a gate, rewrite or routing policy can enforce this route.
-    fn enforcing(&self, route: u32) -> bool;
-    fn select(&self, input: &Selection<'_>) -> Result<Selected, &'static str>;
 }
 
 #[cfg(test)]

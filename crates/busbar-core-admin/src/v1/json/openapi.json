@@ -6794,9 +6794,9 @@
       "OperationState": {
         "description": "Where an idempotent operation stands.",
         "enum": [
-          "__applied",
-          "__rejected",
-          "__in_flight"
+          "applied",
+          "rejected",
+          "in_flight"
         ],
         "type": "string",
         "x-busbar-extensible-enum": true

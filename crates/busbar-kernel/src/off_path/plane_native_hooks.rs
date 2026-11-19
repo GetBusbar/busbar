@@ -4,7 +4,7 @@
 //! `plane_driver::native_hook_bindings`' off-path code: a native seat's hook attachment tables,
 //! resolved and frozen once per candidate configuration (the root's hook plan, before the seat's
 //! driver is published), and their configuration refusals. A request only selects from the frozen
-//! tables (`Binder for Bindings`).
+//! tables (`Bindings::select`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

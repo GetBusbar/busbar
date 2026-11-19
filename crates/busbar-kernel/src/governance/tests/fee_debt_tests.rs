@@ -132,6 +132,34 @@ async fn a_deferred_residual_waits_for_the_next_original_capture_once() {
     assert!(matches!(observer.status(), FeeDebtStatus::Complete(_)));
 }
 
+/// The observer owner is part of the GovState from construction (§3.1: no late binding), so there
+/// is no window in which a capture is offered to nobody: the very first capture reaches it.
+#[tokio::test]
+async fn the_first_capture_reaches_the_owner_given_at_construction() {
+    struct Counting(std::sync::atomic::AtomicUsize);
+    impl FeeDebtAssociate for Counting {
+        fn associate(&self, _: &Arc<FeeCapture>, _: FeeCursor) -> FeeAssociation {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            FeeAssociation::Complete
+        }
+    }
+    let counting = Arc::new(Counting(std::sync::atomic::AtomicUsize::new(0)));
+    let owner: Arc<dyn FeeDebtAssociate> = counting.clone();
+    let gov = Arc::new(
+        super::super::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap()
+            .with_fee_debt_owner(Arc::downgrade(&owner)),
+    );
+    let capture = FeeCapture::frozen(&gov.fee_debt, &"k".into(), 5, 0, 1, false);
+    gov.fee_debt.associate(&capture);
+    assert_eq!(
+        counting.0.load(Ordering::SeqCst),
+        1,
+        "the first capture was offered to nobody"
+    );
+}
+
 #[tokio::test]
 async fn unassociated_or_unproven_captures_are_unresolved() {
     let gov = governance().await;

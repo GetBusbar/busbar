@@ -261,6 +261,30 @@ impl Reader<'_> {
     }
 }
 
+/// The opened auth instances, in opening order, that a plane route's chain may be chosen from.
+/// SECURITY: an instance opened only for the admin chain (named in `auth.admin_auth`, not in the
+/// data chain, not named by any route's `auth_instances`) is never one: an operator credential is
+/// never verified on a data or plane route.
+pub(crate) fn route_readers<'a>(
+    opened: impl IntoIterator<Item = (&'a str, &'a [Box<str>])>,
+    data_chain: &[String],
+    admin_chain: &[String],
+    explicit: &busbar_kernel::config::min3::RouteAuthInstances,
+) -> Vec<Reader<'a>> {
+    let named = |name: &str, list: &[String]| list.iter().any(|entry| entry == name);
+    opened
+        .into_iter()
+        .filter(|(name, _)| {
+            !named(name, admin_chain)
+                || named(name, data_chain)
+                || explicit
+                    .values()
+                    .any(|names| names.iter().any(|entry| &**entry == *name))
+        })
+        .map(|(name, cred_headers)| Reader { name, cred_headers })
+        .collect()
+}
+
 /// The routes whose effective chain is not the data chain: by plane instance and route id, the
 /// chain's instance names (`Some`), or `None` for a route that is not served.
 pub(crate) type RouteNames = BTreeMap<String, BTreeMap<u32, Option<Vec<String>>>>;
@@ -368,14 +392,15 @@ fn route_chains(
         .as_ref()
         .and_then(|value| value.downcast_ref::<super::door_steps::DoorConfig>())
         .ok_or("native listener has no actual root configuration projection")?;
-    let readers: Vec<Reader<'_>> = owners
-        .auth
-        .in_opened_order()
-        .map(|(name, instance)| Reader {
-            name,
-            cred_headers: instance.opened.port.cred_headers(),
-        })
-        .collect();
+    let readers = route_readers(
+        owners
+            .auth
+            .in_opened_order()
+            .map(|(name, instance)| (name, instance.opened.port.cred_headers())),
+        &config.data_chain,
+        &app.admin_chain,
+        &config.route_auth_instances,
+    );
     let names = plan_route_names(
         served
             .ports
