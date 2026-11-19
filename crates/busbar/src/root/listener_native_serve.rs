@@ -172,6 +172,11 @@ fn next_ready(waiting: &mut VecDeque<Waiting>) -> Option<ReadyInput> {
     }
 }
 
+/// The CR_* reason core states when it ends the connection over `error`.
+fn closed_for(_error: &InputError) -> u32 {
+    CR_NORMAL
+}
+
 fn stop_connection(
     ingress: &super::NativeIngress,
     waiting: &mut VecDeque<Waiting>,
@@ -293,9 +298,12 @@ async fn supervise(
                     None => std::future::pending().await,
                 }
             }, if close.is_some() => {
-                failure.get_or_insert(InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Deadline));
+                // A deadline passed: the connection ends for it, whatever failed before.
+                let passed = InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Deadline);
+                let reason = closed_for(&passed);
+                failure.get_or_insert(passed);
                 input_open = false;
-                stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                stop_connection(&ingress, &mut waiting, &mut close, reason);
             },
             changed = stopped.changed(), if close.is_some() => {
                 if changed.is_err() || *stopped.borrow() {
@@ -377,9 +385,10 @@ async fn supervise(
                         let slot = ingress.slots.iter_mut().find(|slot| Arc::ptr_eq(&slot.owner, &owner))
                             .expect("preparing request retains its original input slot");
                         slot.node = handle;
+                        let reason = closed_for(&error);
                         failure.get_or_insert(error);
                         input_open = false;
-                        stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                        stop_connection(&ingress, &mut waiting, &mut close, reason);
                     },
                     Some(Err(error)) => {
                         failure.get_or_insert(InputError::Io(std::io::Error::other(error)));
@@ -393,9 +402,10 @@ async fn supervise(
                 match completed {
                     Some(Ok(ResponseFinished::Delivered(completed))) => {
                         if let Err(error) = ingress.retire(&completed.owner) {
+                            let reason = closed_for(&error);
                             failure.get_or_insert(error);
                             input_open = false;
-                            stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                            stop_connection(&ingress, &mut waiting, &mut close, reason);
                         }
                         if let Err(error) = completed.result { failure.get_or_insert(error); }
                     },
@@ -456,9 +466,10 @@ async fn supervise(
                     },
                     Ok(None) => {},
                     Err(error) => {
+                        let reason = closed_for(&error);
                         failure.get_or_insert(error);
                         input_open = false;
-                        stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                        stop_connection(&ingress, &mut waiting, &mut close, reason);
                     },
                 }
                 if let Some(stream) = reset {
@@ -466,9 +477,10 @@ async fn supervise(
                         waiting.remove(index);
                         if let Some(owner) = ingress.slots.iter().find(|slot| slot.stream == stream).map(|slot| slot.owner.clone()) {
                             if let Err(error) = ingress.retire(&owner) {
+                                let reason = closed_for(&error);
                                 failure.get_or_insert(error);
                                 input_open = false;
-                                stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                                stop_connection(&ingress, &mut waiting, &mut close, reason);
                             }
                         }
                     }
@@ -485,6 +497,31 @@ async fn supervise(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use busbar_contract::response_delivery::ResponseStop;
+    use busbar_kernel::inbound::native::ArrivalRefusal;
+    use busbar_plugin_abi::transport::CR_TIMEOUT;
+
+    /// A connection core ends because a deadline passed says so (CR_TIMEOUT, transport-ws 1013);
+    /// every other failure keeps CR_NORMAL.
+    #[test]
+    fn a_connection_ended_by_a_passed_deadline_reports_cr_timeout() {
+        assert_eq!(
+            closed_for(&InputError::Delivery(ResponseStop::Deadline)),
+            CR_TIMEOUT
+        );
+        assert_eq!(
+            closed_for(&InputError::Arrival(ArrivalRefusal::Deadline)),
+            CR_TIMEOUT
+        );
+        for other in [
+            InputError::Invalid,
+            InputError::Capacity,
+            InputError::Delivery(ResponseStop::Cancelled),
+            InputError::Arrival(ArrivalRefusal::Cancelled),
+        ] {
+            assert_eq!(closed_for(&other), CR_NORMAL, "{other}");
+        }
+    }
 
     #[tokio::test]
     async fn later_input_eof_cannot_overtake_original_head_registration() {
