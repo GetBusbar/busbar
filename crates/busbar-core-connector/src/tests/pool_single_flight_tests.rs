@@ -125,6 +125,17 @@ fn far_end(
     tls: Option<Arc<rustls::ServerConfig>>,
     first_answers: Option<usize>,
 ) -> FarEnd {
+    far_end_held(rt, tls, first_answers, None)
+}
+
+/// [`far_end`] whose TLS accepts wait for `held` to close: until then a client's handshake is
+/// owed by construction, however fast the far end would answer.
+fn far_end_held(
+    rt: &tokio::runtime::Runtime,
+    tls: Option<Arc<rustls::ServerConfig>>,
+    first_answers: Option<usize>,
+    held: Option<Arc<tokio::sync::Semaphore>>,
+) -> FarEnd {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     l.set_nonblocking(true).unwrap();
     let addr = l.local_addr().unwrap().to_string();
@@ -141,7 +152,12 @@ fn far_end(
             };
             let answers = first_answers.filter(|_| first);
             let tls = tls.clone();
+            let held = held.clone();
             tokio::spawn(async move {
+                if let Some(held) = held {
+                    // Closed is the release: the semaphore never hands out a permit.
+                    let _ = held.acquire().await;
+                }
                 match tls {
                     Some(tls) => {
                         if let Ok(s) = tokio_rustls::TlsAcceptor::from(tls).accept(s).await {
@@ -741,7 +757,14 @@ fn slot_survives_expiry_during_opening() {
     let rt = runtime();
     let _in = rt.enter();
     let cert = cert();
-    let far = far_end(&rt, Some(server(&cert, &[b"h2"])), None);
+    // The far end answers no handshake until the drop below: the leader's dial stays in flight.
+    let handshakes = Arc::new(tokio::sync::Semaphore::new(0));
+    let far = far_end_held(
+        &rt,
+        Some(server(&cert, &[b"h2"])),
+        None,
+        Some(Arc::clone(&handshakes)),
+    );
     let judge = HeldJudge::new(1);
     let c = connector(door(true, Some(H2)), judge.judge(), vec![cert.ca.clone()]);
 
@@ -775,6 +798,7 @@ fn slot_survives_expiry_during_opening() {
     );
     let dropped = owned(&c, &desc);
     assert!(follows(&c, dropped), "a later open still joins it");
+    handshakes.close();
     read_whole(&c, &[leader, swept, dropped]);
 }
 
