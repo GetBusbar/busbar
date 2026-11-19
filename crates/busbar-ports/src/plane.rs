@@ -388,6 +388,12 @@ pub trait PlanePort: Send + Sync + 'static {
     }
     /// D_TICK_S, if declared.
     fn tick_s(&self) -> Option<u64>;
+    /// D_SESSION_CEILING_S: the session ceiling the plane states in whole seconds (its protocol's
+    /// specification, or its own documented default). `None`: it states none, and core puts no
+    /// number of its own in its place. Additive: a port that predates the item states none.
+    fn session_ceiling_s(&self) -> Option<u64> {
+        None
+    }
     /// D_ADMIN_OPENAPI: the OpenAPI fragment of the plane's ROUTE_ADMIN routes (round 8), for the admin document.
     fn admin_openapi(&self) -> Option<&str>;
     /// Charges this plane's image for a once rule core found one of its answers to break (IF §8.6: handled
