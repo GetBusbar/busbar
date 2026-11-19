@@ -638,7 +638,8 @@ address is derived only from a loopback `admin_listen` (`http(s)://127.0.0.1:808
   `transport: stdio` child-process servers, so the two plugins had no work left and are not in
   the 1.6.0 distribution. A copy of either left in the plugins directory is accepted and ignored,
   with one notice per plugin at boot; it is never loaded and never stops the boot. Remove it at
-  your convenience. One difference you may notice: a line from a `transport: stdio` server may be
+  your convenience. A `transport:` entry in an older configuration that names the module
+  `tcp` or `stdio` is removed by the upgrade, with one line in its report. One difference you may notice: a line from a `transport: stdio` server may be
   at most 4 MiB. The stdio plugin's line limit was a setting; that setting is no longer read.
 
 ### Requests and callers
