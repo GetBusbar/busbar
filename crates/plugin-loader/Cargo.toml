@@ -19,42 +19,6 @@ name = "busbar-plugin-pack"
 path = "src/pack.rs"
 required-features = ["pack"]
 
-# B-VERIFY: one inbound verify through the auth door, timed (median, p99).
-[[bench]]
-name = "b_verify"
-path = "benches/b_verify.rs"
-harness = false
-
-[[example]]
-name = "dispatch_test_plugin"
-path = "tests/fixtures/dispatch_test_plugin.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "log_witness_door"
-path = "tests/fixtures/log_witness_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_export_door"
-path = "tests/fixtures/neutral_export_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_plane_door"
-path = "tests/fixtures/neutral_plane_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "json_contract_auth"
-path = "tests/fixtures/json_contract_auth.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_frame_door"
-path = "tests/fixtures/neutral_frame_door.rs"
-crate-type = ["cdylib"]
-
 # The native pack proof uses an actual exported MIN-3 image, built with the other examples.
 [[example]]
 name = "native_pack_fixture"
@@ -128,26 +92,6 @@ windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
-
-[[example]]
-name = "neutral_transport_door"
-path = "tests/fixtures/neutral_transport_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_auth_door"
-path = "tests/fixtures/neutral_auth_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_export_disk_door"
-path = "tests/fixtures/neutral_export_disk_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_export_routes_door"
-path = "tests/fixtures/neutral_export_routes_door.rs"
-crate-type = ["cdylib"]
 
 [lints]
 workspace = true

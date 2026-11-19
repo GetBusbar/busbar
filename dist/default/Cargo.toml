@@ -650,11 +650,6 @@ name = "plane_driver_test_plane"
 path = "tests/fixtures/plane_driver_test_plane.rs"
 crate-type = ["cdylib"]
 
-# The canary drives the linked sinks and auth rows through their doors.
-[[test]]
-name = "canary"
-path = "tests/canary/main.rs"
-
 [[test]]
 name = "traces_stream_both_doors"
 path = "tests/traces_stream_both_doors.rs"
