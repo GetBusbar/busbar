@@ -508,3 +508,9 @@ pub(crate) mod guard {
         }
     }
 }
+
+// The download's refusals before any dial. Its exchange with a far end needs a transport image as
+// the HTTP carrier: `dist/default/tests/plugins_fetch_download.rs`.
+#[cfg(test)]
+#[path = "../tests/fetch_download_tests.rs"]
+mod fetch_download_tests;
