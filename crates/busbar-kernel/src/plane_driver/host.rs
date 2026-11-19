@@ -91,20 +91,8 @@ pub fn engine_host(app: &Arc<App>) -> Arc<dyn EngineHost> {
 }
 
 #[must_use]
-pub fn engine_host_value(app: &Arc<App>) -> impl EngineHost + 'static {
-    EngineHostImpl::new(Arc::clone(app))
-}
-
-#[must_use]
 pub fn engine_host_from_handle(handle: &Arc<crate::state::AppHandle>) -> Arc<dyn EngineHost> {
     Arc::new(EngineHostImpl::from_handle(handle))
-}
-
-pub type LiveHostFactory = Arc<dyn Fn() -> Arc<dyn EngineHost> + Send + Sync>;
-
-#[must_use]
-pub fn live_host_factory(handle: Arc<crate::state::AppHandle>) -> LiveHostFactory {
-    Arc::new(move || Arc::new(EngineHostImpl::from_handle(&handle)) as Arc<dyn EngineHost>)
 }
 
 #[must_use]

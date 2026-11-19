@@ -271,7 +271,7 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
         req.extensions_mut().insert(original);
     }
     if !is_read {
-        use busbar_kernel::audit::auditlog::{note_generation_source, note_idempotency_key};
+        use busbar_kernel::audit::auditlog::{note_config_generation_of, note_idempotency_key};
         if let Some(key) = req
             .headers()
             .get("idempotency-key")
@@ -280,8 +280,7 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
             note_idempotency_key(key);
         }
         if config {
-            let source = handle.clone();
-            note_generation_source(Arc::new(move || source.load().config_version));
+            note_config_generation_of(handle.clone());
         }
     }
     if !is_read {
@@ -449,7 +448,7 @@ async fn idempotent(
         );
         framed.extend_from_slice(component);
     }
-    let fingerprint = busbar_contract::abi::sdk::digest::sha256(&framed);
+    let fingerprint = busbar_contract::digest::sha256(&framed);
     let now = busbar_kernel::store::now();
     let claim_key = (principal, format!("op:{key}"));
     // Replay is not a new mutation: its original precondition can be stale precisely because
@@ -777,11 +776,33 @@ pub(crate) async fn get_operation(
             );
         }
     };
-    let operation_id = operation_id(&actor, &key);
-    let body = match looked {
+    let body = match operation_body(&key, &actor, looked) {
+        Ok(body) => body,
+        Err(refused) => return refused,
+    };
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            busbar_contract::protocol::APPLICATION_JSON,
+        )],
+        body.to_string(),
+    )
+        .into_response()
+}
+
+/// The `GET /operations/{key}` record for what the idempotency store holds under `key`, or the
+/// refusal when the stored bytes cannot be read.
+fn operation_body(
+    key: &str,
+    actor: &str,
+    looked: Looked,
+) -> Result<busbar_contract::json::Value, Response> {
+    let operation_id = operation_id(actor, key);
+    Ok(match looked {
         Looked::Retained { receipt } => {
             let Some(intent) = decode_intent(&receipt) else {
-                return unreadable_replay();
+                return Err(unreadable_replay());
             };
             busbar_contract::json::json!({
                 "idempotency_key": key, "principal": actor, "operation_id": operation_id,
@@ -806,11 +827,11 @@ pub(crate) async fn get_operation(
             completed_at,
         } => {
             let Some(done) = decode_answer(&answer) else {
-                return gate::admin_error_envelope(
+                return Err(gate::admin_error_envelope(
                     500,
                     "internal",
                     "the stored answer is unreadable",
-                );
+                ));
             };
             busbar_contract::json::json!({
                 "idempotency_key": key, "principal": actor, "operation_id": operation_id,
@@ -823,16 +844,7 @@ pub(crate) async fn get_operation(
                     .unwrap_or_default(),
             })
         }
-    };
-    (
-        StatusCode::OK,
-        [(
-            header::CONTENT_TYPE,
-            busbar_contract::protocol::APPLICATION_JSON,
-        )],
-        body.to_string(),
-    )
-        .into_response()
+    })
 }
 
 #[cfg(test)]

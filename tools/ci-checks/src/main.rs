@@ -27,19 +27,14 @@
 //!   overlay's separation, key and upgrade-page checks (`migrate_overlay.rs`).
 //! - `migrate-size`: the migrator's separation and anchor gates, with its sizes printed
 //!   (`migrate_size.rs`).
-//! - `fleet-manifest`: `fleet/deps.toml`'s `[min3-closure]` and `plugins.yaml`'s 33 ported and 2 archived
-//!   repos (IF §15 rules 1a, 1b).
+//! - `fleet-manifest`: `fleet/deps.toml`'s `[min3-closure]` and `plugins.yaml`'s 33 ported repos
+//!   (IF §15 rules 1a, 1b).
 //! - `c-transport`, `export-streams`, `no-licence`, `core-scan`: source checks over core (C-TRANSPORT
 //!   test 11, C-EXPORT-STREAMS, C-NO-LICENCE (a), the §15.8 core scan). `loc-report` prints per-file
 //!   production and test lines (a report, no gate).
 //! - `no-known-red`: no known-red, baseline or allow-failure list of failing tests (TST-8, busbar#280;
 //!   `known_red.rs`).
 //! - `rule-13`: a dlopened library leaves the loader only by IF §11.1's two exits (IF §15 rule 13, I13).
-//! - `oracle <sub> ...`: the data logic `bin/oracle` launches (`oracle.rs`): premise widening, the
-//!   shard split and its proofs, and the readers its ci-run and replay sections need (BLD-6).
-//!   `oracle run <sub> ...` is `bin/oracle` itself (`oracle_run.rs`, `oracle_judge.rs`,
-//!   `oracle_selftest.rs`): the judge fetched and held to its digest, `ci-run`, `record`, `replay`,
-//!   `diff`, the shard commands and the selftests; the shell file only builds this and calls it.
 //! - With arguments, the first one naming the check: `template-drift`, `patch-drift`, `no-host-link`,
 //!   `plugin-rules` and `c-alias`, run from a plugin repo's CI against the repo or its files.
 //!
@@ -64,10 +59,6 @@ mod migrate;
 mod migrate_overlay;
 mod migrate_size;
 mod no_serde_json;
-mod oracle;
-mod oracle_judge;
-mod oracle_run;
-mod oracle_selftest;
 mod record_op_source;
 mod spdx;
 
@@ -138,14 +129,6 @@ const BACKEND_ONLY: [&str; 1] = ["curve25519-dalek"];
 fn main() -> ExitCode {
     let root = repo_root();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // `oracle <sub> ...`: bin/oracle's data logic (oracle.rs), answering with its own stdout, stderr
-    // and exit status rather than as a check.
-    if let Some(("oracle", rest)) = args
-        .split_first()
-        .map(|(first, rest)| (first.as_str(), rest))
-    {
-        return oracle::run(rest);
-    }
     // A check that takes arguments is named first and owns the rest of the command line.
     let (names, rest): (Vec<&str>, &[String]) = match args.split_first() {
         None => (CHECKS.to_vec(), &[]),
@@ -784,6 +767,10 @@ fn reached(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "corpus_tests.rs"]
+mod corpus_tests;
 
 #[cfg(test)]
 #[path = "migrate_size_tests.rs"]

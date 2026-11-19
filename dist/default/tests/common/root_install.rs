@@ -21,23 +21,19 @@ pub fn install() {
             hex::encode(release_key().verifying_key().as_bytes()),
         );
         let destinations = busbar_kernel::config::Destinations {
-            block_private_addresses: busbar_kernel::config::AdvancedCfg::default()
+            block_private_addresses: busbar_kernel::config::sections::OutboundCfg::default()
                 .block_private_addresses,
-            ..Default::default()
+            blocked: Vec::new(),
+            // The deployment below states no listen addresses: the engine's own are the defaults.
+            listens: vec![
+                busbar_kernel::config::DEFAULT_LISTEN_ADDR.to_owned(),
+                busbar_kernel::config::DEFAULT_ADMIN_LISTEN_ADDR.to_owned(),
+            ],
         };
         let judge = crate::root::connector::guard_for(&destinations)
             .expect("the fixture's default destination policy");
-        let services = crate::root::serve::Services::serving(std::sync::Arc::new(
-            crate::root::serve::kernel_services(judge.clone()).with_credentials(
-                std::sync::Arc::new(crate::root::credentials::AppCredentials::new(None)),
-            ),
-        ));
-        let dispatcher = crate::root::dispatch::boot(1, &services);
-        crate::root::doors::install_dispatcher(dispatcher);
         crate::root::linked::register_stores();
         crate::register_protocols();
-        crate::register_planes();
-        crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
         crate::register_diagnostics();
         let deploy = busbar_kernel::config::deploy_from_yaml_str(
             "providers: {}\nmodels: {}\n",
@@ -46,10 +42,13 @@ pub fn install() {
         .expect("the loopback IdP deployment");
         let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the loopback IdP deployment resolves");
+        // The deployment's own listeners join its destinations as addresses never dialled; the
+        // fixture serves no listener, so its guard matches the deployment's dialling policy.
+        let deployed = cfg.destinations();
         assert_eq!(
-            cfg.destinations(),
-            destinations,
-            "the fixture guard matches its deployment"
+            (deployed.block_private_addresses, &deployed.blocked),
+            (destinations.block_private_addresses, &destinations.blocked),
+            "the fixture guard matches its deployment's dialling policy"
         );
         static IO: std::sync::OnceLock<crate::root::boot::process::ProcessIo> =
             std::sync::OnceLock::new();
@@ -58,28 +57,9 @@ pub fn install() {
         });
         crate::root::connector::boot(
             io.handle(),
-            crate::LINKED_TRANSPORT_DOORS,
             &crate::root::policy::client_settings(&cfg.limits),
             judge,
             &[],
         );
     });
-}
-
-pub type ExportDoor = (
-    &'static str,
-    &'static str,
-    busbar_contract::abi::mechanism::door::DoorFn,
-);
-
-pub fn link_exports(exports: &'static [ExportDoor]) {
-    use busbar_contract::export_calls::ExportAxis as _;
-    install();
-    for &(name, alias, _) in exports {
-        assert!(
-            crate::root::exports::EXPORTS.linked(name, None)
-                || crate::root::exports::EXPORTS.linked(alias, None),
-            "the distribution must link the export plugin {name} ({alias})",
-        );
-    }
 }

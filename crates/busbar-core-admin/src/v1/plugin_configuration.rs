@@ -47,7 +47,7 @@ pub(crate) fn configuration(
     source: &'static str,
     available: bool,
 ) -> PluginConfiguration {
-    use busbar_contract::abi::mechanism::door::{
+    use busbar_contract::plugin_settings::sugar_words::{
         SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
     };
     let kind = Kind::ALL.into_iter().find(|k| k.to_string() == kind);
@@ -114,8 +114,8 @@ pub(crate) fn configuration(
                 "/limits/pool_idle_timeout_secs",
                 "/limits/request_body_max_bytes",
                 "/limits/upstream_request_timeout_secs",
-                "/advanced/upstream_http1_only",
-                "/advanced/upstream_h2_prior_knowledge",
+                "/outbound/http1_only",
+                "/outbound/h2_prior_knowledge",
             ]
         } else {
             Vec::new()
@@ -126,7 +126,7 @@ pub(crate) fn configuration(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use busbar_contract::abi::mechanism::door::{
+    use busbar_contract::plugin_settings::sugar_words::{
         SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
     };
 
@@ -184,9 +184,7 @@ mod tests {
         assert_eq!(view.root_keys, [Kind::Transport.root()]);
         assert_eq!(view.claims, ["fixture-wire"]);
         assert_eq!(view.configuration_shape, "provider_catalog_and_deployment");
-        assert!(view
-            .host_policy_paths
-            .contains(&"/advanced/upstream_http1_only"));
+        assert!(view.host_policy_paths.contains(&"/outbound/http1_only"));
         assert!(!view
             .host_policy_paths
             .contains(&"/limits/upstream_http1_only"));

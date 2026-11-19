@@ -99,8 +99,13 @@ pub(crate) fn probe_teardown(host: &'static Host) {
     };
     let raw = Arc::new(open());
     let conn = crate::c_opener_refuse::fixture::conn(0);
-    let (status, session) =
-        raw.open_session1(|vt| &vt.begin, busbar_ffi::Arg::view(&conn), &mut lease());
+    let (status, session) = busbar_plugin_abi::transport::pack::begin(0, &conn, |call| {
+        raw.open_session(
+            busbar_plugin_abi::transport::slot::begin,
+            call,
+            &mut lease(),
+        )
+    });
     assert_eq!(status, Status::OK);
     drop(session.expect("session token"));
     drop(raw);
@@ -567,7 +572,7 @@ fn native_migrated_settings_validation_checks_without_open_or_settlement() {
 
 busbar_plugin_abi::kind! {
     /// A secret-shaped kind for this case.
-    pub trait Source: kind = 2, abi = 2 {
+    pub trait Source: kind = 2, abi = 3 {
         views {}
         pods {}
         tags { VALUE = 0x0100; }
@@ -631,7 +636,7 @@ static HOST: Host = Host::new(
         log_level: None,
         grow: None,
         deployment: None,
-        migrate_admit: None,
+        service: None,
     },
 );
 

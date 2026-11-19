@@ -4,13 +4,19 @@
 //! ROUTE_ADMIN on the admin listener: which of a plane's admin routes a request names, and the answer the client
 //! items make. The plane itself is an ffi handle, so the session runs in the image suite (W2-SW-PLANE e2e).
 
-use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_POST};
+use busbar_contract::route::{METHOD_GET, METHOD_POST};
 use busbar_plugin_abi::plane::{AUTH_OPERATOR, ROUTE_ADMIN};
 
 use super::*;
 
 fn admin(route: u32, methods: u32, pattern: &str) -> Mounted {
     Mounted {
+        record: crate::auth::route_record::RouteRecord::stated(
+            crate::auth::route_record::RouteClass::Admin,
+            crate::auth::route_record::Who::OPERATOR,
+            crate::auth::route_record::Scope::none(),
+            crate::auth::route_record::Money::None,
+        ),
         route,
         methods,
         flags: ROUTE_ADMIN,
@@ -94,5 +100,48 @@ async fn with_no_plane_installed_no_admin_route_is_answered() {
         request_id: 1,
         now_s: 1,
     };
-    assert!(answer(&[], request).await.is_none());
+    assert!(Box::pin(answer(&[], request)).await.is_none());
+}
+
+/// ci/owed/cut/SECURITY-OWED.tsv `a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_the_actor`,
+/// the credential half. The admin listener copies the request's head fields into the request it
+/// hands a native plane's admin route. The credential the operator chain judged must not be among
+/// them, in any case and however many times it was sent; neither may a session cookie or a proxy
+/// credential. Everything else, the plane's own fields included, is handed on untouched and in
+/// order. (On the data path the same rule is `auth::native_data::withheld_carriers`.)
+#[test]
+fn a_planes_admin_route_is_handed_no_credential_the_admin_gate_read() {
+    const SECRET: &[u8] = b"Bearer operator-secret-do-not-forward";
+    let field = |name: &str, value: &[u8]| (name.to_owned(), value.to_vec());
+    let handed = plane_headers(vec![
+        field("content-type", b"application/json"),
+        field("authorization", SECRET),
+        field("Authorization", SECRET),
+        field("AUTHORIZATION", SECRET),
+        field("proxy-authorization", SECRET),
+        field(
+            "cookie",
+            b"busbar_admin_session=operator-secret-do-not-forward",
+        ),
+        field("x-admin-token", b"operator-secret-do-not-forward"),
+        field("x-plane-own-field", b"kept"),
+        field("accept", b"*/*"),
+    ]);
+    for (name, value) in &handed {
+        assert!(
+            !value
+                .windows(b"operator-secret-do-not-forward".len())
+                .any(|window| window == b"operator-secret-do-not-forward"),
+            "the plane was handed the operator's credential in `{name}`"
+        );
+    }
+    assert_eq!(
+        handed,
+        vec![
+            field("content-type", b"application/json"),
+            field("x-plane-own-field", b"kept"),
+            field("accept", b"*/*"),
+        ],
+        "every other field is handed on untouched and in order"
+    );
 }

@@ -54,28 +54,9 @@ pub fn generate() -> String {
     layout!("bb_status" = Status {});
     layout!("bb_token" = Token {});
     layout!("bb_pair" = abi::types::Pair<'static> { name=name, value=value });
-    layout!("bb_pairs" = abi::types::Slice<'static,abi::types::Pair<'static>> {});
-    layout!("bb_plane_req" = abi::plane::PlaneReq<'static> {
-        route=route, flags=flags, auth=auth, _r=_r, method=method, path=path, query=query,
-        headers=headers, identity=identity, request_id=request_id, carrier=carrier, work=work,
-        ticket_record=ticket_record
-    });
-    layout!("bb_target" = abi::plane::Target<'static> {
-        attempt=attempt, flags=flags, dialect=dialect, model=model, base_path=base_path,
-        upstream=upstream, provider=provider, params=params, admission=admission
-    });
     layout!("bb_resource_echo_rec" = abi::plane::ResourceEchoRec {
         invocation=invocation, generation=generation, route=route, descriptor=descriptor
     });
-    layout!("bb_plane_vt" = busbar_ffi::vt::plane::Vt {
-        request=request, upstream=upstream, piece=piece, end=end, rewrite=rewrite,
-        render=render, admin=admin, probe=probe, demux=demux, select_resources=select_resources,
-        channel=channel
-    });
-    eq(
-        "BB_PLANE_FB_RESOURCE_ADMISSION",
-        abi::plane::FB_RESOURCE_ADMISSION,
-    );
     eq(
         "BB_PLANE_M_SELECT_RESOURCES",
         abi::plane::M_SELECT_RESOURCES,
@@ -132,19 +113,43 @@ pub fn generate() -> String {
     });
     layout!("bb_stamp" = Stamp {
         magic = magic, format = format, size = size, kind = kind, kind_abi = kind_abi,
-        mechanism = mechanism, flags = flags, layout = layout, mechanism_layout = mechanism_layout,
-        semantic = semantic, mechanism_semantic = mechanism_semantic, engine_min = engine_min,
+        core_abi = core_abi, flags = flags, layout = layout, core_layout = core_layout,
+        kind_minor = kind_minor, core_minor = core_minor, _reserved2 = _reserved2, engine_min = engine_min,
         engine_max = engine_max, name = name, version = version, target = target, build_id = build_id,
         crypto = crypto, _reserved = _reserved
     });
+    eq(
+        "offsetof(bb_plugin, size)",
+        abi::plugin::PLUGIN_SIZE_AT as u64,
+    );
+    eq(
+        "offsetof(bb_plugin, entries)",
+        abi::plugin::PLUGIN_ENTRIES_AT as u64,
+    );
     eq(
         "offsetof(bb_plugin, stamp)",
         abi::plugin::PLUGIN_STAMP_AT as u64,
     );
     eq(
-        "offsetof(bb_plugin, kind_vt)",
-        abi::plugin::PLUGIN_KIND_VT_AT as u64,
+        "offsetof(bb_plugin, table)",
+        abi::plugin::PLUGIN_TABLE_AT as u64,
     );
+    eq(
+        "offsetof(bb_call, session)",
+        abi::types::CALL_SESSION_AT as u64,
+    );
+    eq(
+        "offsetof(bb_call, mono_ns)",
+        abi::types::CALL_MONO_NS_AT as u64,
+    );
+    eq("offsetof(bb_call, head)", abi::types::CALL_HEAD_AT as u64);
+    eq("offsetof(bb_call, texts)", abi::types::CALL_TEXTS_AT as u64);
+    eq("offsetof(bb_call, blobs)", abi::types::CALL_BLOBS_AT as u64);
+    eq(
+        "sizeof(bb_call)",
+        size_of::<abi::types::Call<'static>>() as u64,
+    );
+    eq("sizeof(bb_entry)", size_of::<abi::types::Entry>() as u64);
     eq(
         "offsetof(bb_plugin, describe)",
         abi::plugin::PLUGIN_DESCRIBE_AT as u64,
@@ -179,22 +184,21 @@ pub fn generate() -> String {
             );)*
         };
     }
-    host_fns!(
-        now,
-        mono,
-        random,
-        crypto,
-        log,
-        log_level,
-        grow,
-        deployment,
-        migrate_admit
-    );
+    host_fns!(now, mono, random, crypto, log, log_level, grow, deployment, service);
     eq("sizeof(bb_host)", size_of::<abi::host::Host>() as u64);
-    layout!("bb_secret_vt" = busbar_ffi::vt::secret::Vt { resolve = resolve });
+    eq("BB_SECRET_ENTRIES", abi::secret::ENTRIES as u64);
+    eq("BB_RAW_OUT_MIN", busbar_ffi::RawOut::MIN as u64);
+    eq("BB_SERVICE_HMAC_PARTS", abi::host::core_service::HMAC_PARTS);
+    eq(
+        "BB_HMAC_PARTS_MAX",
+        abi::host::core_service::HMAC_PARTS_MAX as u64,
+    );
+    eq("BB_STAMP_FORMAT", abi::stamp::STAMP_FORMAT.into());
 
     // Constants.
-    eq("BB_MECHANISM", versions::MECHANISM.into());
+    eq("BB_CORE", versions::CORE.into());
+    eq("BB_CORE_MINOR", versions::CORE_MINOR.into());
+    eq("BB_SECRET_MINOR", abi::secret::MINOR.into());
     eq("BB_SECRET_ABI", versions::SECRET.into());
     eq("BB_SECRET_ABI", abi::secret::ABI.into());
     eq("BB_KIND_SECRET", KindCode::Secret as u64);

@@ -98,17 +98,36 @@ async fn a_process_with_no_destination_judge_answers_internal_for_every_destinat
 #[test]
 fn tickets_are_shut_without_a_signing_key_and_open_with_one() {
     let records = BootstrapRecords;
-    let shut = ticket_store(&records, None);
+    let issuers = Issuers::new();
+    let standing = || -> Option<Standing> {
+        Some(Arc::new(
+            |key: &Arc<busbar_contract::records::VirtualKey>, _now: u64| Some(Arc::clone(key)),
+        ))
+    };
+    let shut = ticket_store(&records, None, &issuers, standing());
     assert!(
-        !shut.is_ticket("bbt1.abc"),
+        !shut.tickets.is_ticket("bbt1.abc"),
         "no host key: nothing is a ticket"
     );
-    let signing = SecureVec::from(&[7u8; 32][..]);
-    let keyed = ticket_store(&records, Some(&signing));
     assert!(
-        !keyed.is_ticket("Bearer-token"),
+        shut.door.is_none(),
+        "no host key: no desk, so no ticket route is mounted"
+    );
+    let signing = SecureVec::from(&[7u8; 32][..]);
+    let keyed = ticket_store(&records, Some(&signing), &issuers, standing());
+    assert!(
+        !keyed.tickets.is_ticket("Bearer-token"),
         "a credential that is not a ticket is never one"
     );
+    // One bound store behind the MINT and the native door: what one seals the other opens.
+    let door = keyed
+        .door
+        .expect("a signing key opens the native ticket door");
+    assert!(!door.is_ticket("Bearer-token"));
+    // A ticket must die with its issuer key: with no standing re-check the store stays shut.
+    let unchecked = ticket_store(&records, Some(&signing), &issuers, None);
+    assert!(unchecked.door.is_none());
+    assert!(!unchecked.tickets.is_ticket("bbt1.abc"));
     let services = plane_services(&observations(), Arc::new(Open), None);
     let tickets = services.tickets.unwrap();
     assert!(tickets.is_ticket("bbt1.abc"));
@@ -192,9 +211,16 @@ fn each_admitted_plane_image_is_one_instance_named_by_its_alias_with_its_section
         ("busbar-plane-mcp", "mcp")
     );
     assert_eq!(
-        audience_of(&planes[0].config).as_deref(),
+        planes[0].config, b"{}",
+        "the audience is core's word: lifted off the section, never handed to the plane's reader"
+    );
+    assert_eq!(
+        plane_audiences(&sections)
+            .unwrap()
+            .get("mcp")
+            .map(String::as_str),
         Some("https://tools.example"),
-        "the plane's section reaches it, so its line session binds the audience it states"
+        "the section's canonical_uri is the audience the plane's seat is bound to"
     );
     assert_eq!(
         (planes[1].identity.as_str(), planes[1].name.as_str()),
@@ -202,6 +228,30 @@ fn each_admitted_plane_image_is_one_instance_named_by_its_alias_with_its_section
         "an image with no alias is named by its identity"
     );
     assert_eq!(planes[1].config, b"{}");
+}
+
+/// RFC 8707 §2: a written audience that no token could name refuses the boot; the plane is never
+/// served silently unbound.
+#[test]
+fn an_audience_that_is_not_an_absolute_http_uri_without_fragment_is_refused() {
+    for written in [
+        "\"\"",
+        "tools.example/mcp",
+        "https:///mcp",
+        "https://tools.example/mcp#frag",
+        "[a, b]",
+    ] {
+        let mut sections = std::collections::BTreeMap::new();
+        sections.insert(
+            "mcp",
+            busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(&format!(
+                "canonical_uri: {written}\n"
+            ))
+            .unwrap(),
+        );
+        let refused = plane_audiences(&sections).expect_err(written);
+        assert!(refused.contains("mcp.canonical_uri"), "{refused}");
+    }
 }
 
 #[test]
@@ -301,7 +351,15 @@ fn the_boot_types_only_the_declared_registration_table() {
 /// the process's.
 #[tokio::test]
 async fn the_recoverable_gate_sees_the_walks_at_rest_key_while_the_store_opens() {
-    use crate::root::migrate::admit_for_host;
+    // The gate's answer over the verdict the walk published (what the deleted
+    // migrate::admit_for_host answered; the store open passes the same verdict to admit_answer).
+    let admit_for_host = |n: u64| {
+        crate::root::migrate::admit_answer(
+            n,
+            busbar_kernel::appbuild::bootstrap_at_rest(),
+            &std::env::current_dir().expect("the test's directory"),
+        )
+    };
     let configured = SecretRef::None;
     let hex = "ab".repeat(32);
     let verdict = publish_at_rest(Some(&configured), |_, _| {
@@ -339,7 +397,7 @@ async fn the_recoverable_gate_sees_the_walks_at_rest_key_while_the_store_opens()
 
 #[test]
 fn configured_secret_instances_use_bound_image_and_implicit_empty_settings() {
-    use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
+    use busbar_contract::plugin_settings::sugar_words::REWRITE_SUGAR;
     use busbar_kernel::config::grammar::SecretSource;
     use std::collections::BTreeMap;
     let mut sugars = busbar_contract::secret_ref::Sugars::default();
@@ -441,6 +499,65 @@ fn configured_auth_uses_the_named_instance_and_only_its_plugin_settings() {
     );
 }
 
+/// E5: the operator credential's row is an ordinary native auth instance, opened with its own
+/// settings before the admin chain installs. A definition that carries settings enters the boot
+/// plan; a bare operator definition has nothing to judge and stays out, as the built-in `keys`
+/// does.
+#[test]
+fn the_operator_row_with_settings_enters_the_boot_plan_as_a_native_auth_instance() {
+    busbar_kernel_identity::operator::install_test_words(
+        busbar_kernel_identity::operator::OperatorWords {
+            provider: "admin-tokens",
+            principal_id: "admin",
+            canonical: "busbar-auth-admin-tokens",
+            first_party: true,
+        },
+    );
+    assert_eq!(busbar_kernel::config::operator_provider(), "admin-tokens");
+    let grammar =
+        busbar_kernel::config::Grammar::new(Default::default(), Default::default(), Vec::new());
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: fixture-store, settings: {}}\nproviders: {}\nmodels: {}\n",
+        &grammar,
+    )
+    .unwrap();
+    let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
+    cfg.grammar = busbar_kernel::config::grammar::GrammarField::bound(grammar);
+    let digest = busbar_contract::redacted::sha256_hex(b"e5-operator-token");
+    cfg.identity_providers.insert(
+        "admin-tokens".into(),
+        busbar_contract::json::parse_str(&format!(
+            r#"{{"module":"admin-tokens","settings":{{"sha256":"{digest}"}}}}"#
+        ))
+        .unwrap(),
+    );
+    cfg.identity_providers.insert(
+        "bare-operator".into(),
+        busbar_contract::json::parse_str(r#"{"module":"admin-tokens"}"#).unwrap(),
+    );
+    cfg.identity_providers.insert(
+        "signed-keys".into(),
+        busbar_contract::json::parse_str(r#"{"module":"keys"}"#).unwrap(),
+    );
+    let instances = configured(&cfg, &[]).unwrap();
+    let auth: Vec<_> = instances
+        .iter()
+        .filter(|one| one.kind == KindCode::Auth)
+        .collect();
+    assert_eq!(
+        auth.len(),
+        1,
+        "only the operator row with settings is opened: {:?}",
+        auth.iter().map(|one| &one.name).collect::<Vec<_>>()
+    );
+    assert_eq!(auth[0].name, "admin-tokens");
+    assert_eq!(auth[0].identity, "admin-tokens");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&auth[0].config).unwrap(),
+        serde_json::json!({ "sha256": digest })
+    );
+}
+
 #[test]
 fn every_named_export_enters_the_reserved_instance_plan_with_authoring_settings() {
     let grammar =
@@ -533,7 +650,7 @@ fn plugin_secret_paths_cannot_authorize_consumed_core_nonsecret_fields() {
         facts: 0,
         items: vec![
             (
-                busbar_plugin_abi::records::tag::D_UPSTREAM_PATH,
+                busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH,
                 b"/members/*".to_vec(),
             ),
             (

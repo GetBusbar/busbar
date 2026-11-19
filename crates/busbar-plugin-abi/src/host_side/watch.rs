@@ -40,6 +40,37 @@ pub fn init() {
     let _ = table();
 }
 
+/// The thread behind one watch word, recorded when the thread claims the word and handed to the scan's
+/// report with the word it found stuck.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Held {
+    /// The thread's name; None for a thread started without one.
+    pub thread_name: Option<Box<str>>,
+    /// The thread's id as the standard library numbers it (0 when it cannot be read).
+    pub thread_id: u64,
+    /// The index of the thread's watch word.
+    pub word: u32,
+}
+
+/// Records the claiming thread. Cold: a thread claims its word once.
+fn record_holder(table: &Table, idx: u32) {
+    let thread = std::thread::current();
+    // The id has no stable numeric reader; its debug form is `ThreadId(n)`.
+    let shown = format!("{:?}", thread.id());
+    let thread_id = shown
+        .trim_start_matches("ThreadId(")
+        .trim_end_matches(')')
+        .parse()
+        .unwrap_or(0);
+    if let Some(holder) = table.holders.get(idx as usize) {
+        *holder.lock().unwrap_or_else(PoisonError::into_inner) = Some(Held {
+            thread_name: thread.name().map(Box::from),
+            thread_id,
+            word: idx,
+        });
+    }
+}
+
 /// The table and the scanner's state, allocated once.
 struct Table {
     words: Box<[WatchWord]>,
@@ -51,6 +82,9 @@ struct Table {
     scan: Mutex<Scanner>,
     /// Entries that ran unwatched because no word was free (`plugin_watch_full_total`).
     full: AtomicU64,
+    /// Who claimed each word: written at claim and cleared at release (both cold, once per thread);
+    /// read by the scanner when it reports a hung entry.
+    holders: Box<[Mutex<Option<Held>>]>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -80,6 +114,7 @@ fn table() -> &'static Table {
                 seen: vec![Seen::default(); cap].into_boxed_slice(),
             }),
             full: AtomicU64::new(0),
+            holders: (0..cap).map(|_| Mutex::new(None)).collect(),
         }
     })
 }
@@ -112,6 +147,11 @@ impl Drop for Claim {
         }
         if let Some(last) = table.last_seq.get(i) {
             last.store(self.seq.get(), Ordering::Relaxed);
+        }
+        // The holder is cleared before the word is released, so the next claimant's record is never
+        // overwritten by this exit.
+        if let Some(holder) = table.holders.get(i) {
+            *holder.lock().unwrap_or_else(PoisonError::into_inner) = None;
         }
         if let Some(bits) = table.bitmap.get(i / 64) {
             bits.fetch_and(!(1u64 << (i % 64)), Ordering::Release);
@@ -153,6 +193,7 @@ fn claim(table: &Table, claim: &Claim) -> Option<u32> {
                     let last = table.last_seq.get(idx as usize)?.load(Ordering::Relaxed);
                     claim.seq.set(last);
                     claim.idx.set(idx);
+                    record_holder(table, idx);
                     return Some(idx);
                 }
                 Err(now) => cur = now,
@@ -171,15 +212,22 @@ pub(crate) struct Entry {
 }
 
 impl Entry {
+    /// The enclosing state is read and the entry's word stored in one visit to the thread's claim.
     pub(crate) fn enter(slot: u32, entry: u8) -> Self {
-        let scope = Self {
-            saved: CLAIM
-                .try_with(|claim| (claim.word.get(), claim.depth.get()))
-                .ok(),
+        let table = TABLE.get();
+        let saved = CLAIM
+            .try_with(|claim| {
+                let saved = (claim.word.get(), claim.depth.get());
+                if let Some(table) = table {
+                    store_entry(table, claim, slot, entry);
+                }
+                saved
+            })
+            .ok();
+        Self {
+            saved,
             _thread: core::marker::PhantomData,
-        };
-        enter(slot, entry);
-        scope
+        }
     }
 }
 
@@ -206,31 +254,34 @@ pub fn enter(slot: u32, entry: u8) {
     let Some(table) = TABLE.get() else {
         return;
     };
-    let _ = CLAIM.try_with(|c| {
-        let depth = c.depth.get();
-        if let Some(saved) = c.saved.get(depth) {
-            saved.set(c.word.get());
+    let _ = CLAIM.try_with(|c| store_entry(table, c, slot, entry));
+}
+
+/// `enter`'s body on the thread's claim: save the enclosing word, claim a word on the thread's first entry, and
+/// store this entry's word with a fresh sequence (one Relaxed store).
+fn store_entry(table: &Table, c: &Claim, slot: u32, entry: u8) {
+    let depth = c.depth.get();
+    if let Some(saved) = c.saved.get(depth) {
+        saved.set(c.word.get());
+    }
+    c.depth.set(depth + 1);
+    let mut idx = c.idx.get();
+    if idx == u32::MAX {
+        match claim(table, c) {
+            Some(claimed) => idx = claimed,
+            None => return,
         }
-        c.depth.set(depth + 1);
-        let mut idx = c.idx.get();
-        if idx == u32::MAX {
-            match claim(table, c) {
-                Some(claimed) => idx = claimed,
-                None => return,
-            }
-        }
-        let mut seq = c.seq.get().wrapping_add(1);
-        if seq == 0 {
-            seq = 1;
-        }
-        c.seq.set(seq);
-        let word =
-            u64::from(slot & 0x00FF_FFFF) | (u64::from(entry) << 24) | (u64::from(seq) << 32);
-        c.word.set(word);
-        if let Some(w) = table.words.get(idx as usize) {
-            w.0.store(word, Ordering::Relaxed);
-        }
-    });
+    }
+    let mut seq = c.seq.get().wrapping_add(1);
+    if seq == 0 {
+        seq = 1;
+    }
+    c.seq.set(seq);
+    let word = u64::from(slot & 0x00FF_FFFF) | (u64::from(entry) << 24) | (u64::from(seq) << 32);
+    c.word.set(word);
+    if let Some(w) = table.words.get(idx as usize) {
+        w.0.store(word, Ordering::Relaxed);
+    }
 }
 pub fn leave() {
     let Some(table) = TABLE.get() else {
@@ -290,6 +341,23 @@ pub fn scan(
         u64, /*busy_ms*/
     ),
 ) {
+    scan_held(ceiling, |slot, epoch, entry, busy_ms, _held| {
+        report(slot, epoch, entry, busy_ms)
+    });
+}
+
+/// `scan`, with the thread that holds each hung entry: the report names who is stuck, so a plugin that
+/// never returns can be told from a worker that is itself parked (the hang report of the core watch).
+pub fn scan_held(
+    ceiling: impl Fn(u32 /*slot*/, u8 /*entry*/) -> (u32 /*ceiling µs*/, u32 /*epoch*/),
+    mut report: impl FnMut(
+        u32, /*slot*/
+        u32, /*epoch*/
+        u8,  /*entry*/
+        u64, /*busy_ms*/
+        &Held,
+    ),
+) {
     let Some(table) = TABLE.get() else {
         return;
     };
@@ -329,7 +397,22 @@ pub fn scan(
             let (ceiling_us, _) = ceiling(slot, entry);
             if ceiling_us != 0 && busy_ms.saturating_mul(1_000) >= u64::from(ceiling_us) {
                 seen.reported = true;
-                report(slot, seen.epoch, entry, busy_ms);
+                let unknown = Held {
+                    thread_name: None,
+                    thread_id: 0,
+                    word: i as u32,
+                };
+                let held = table
+                    .holders
+                    .get(i)
+                    .and_then(|holder| {
+                        holder
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .clone()
+                    })
+                    .unwrap_or(unknown);
+                report(slot, seen.epoch, entry, busy_ms, &held);
             }
         }
     }

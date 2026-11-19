@@ -22,14 +22,103 @@ fn client(id: &str) -> Client {
     }
 }
 
+/// The racers of one `take_*` race in the storage contract.
+const RACERS: usize = 8;
+
+/// The waker a racer leaves at the harness's rendezvous gate while it is held there.
+///
+/// The gate holds the only clone of it, so once the racer's first poll has returned, the next
+/// wake of it is the gate opening (the gate wakes every waker left with it, from inside the poll
+/// of the racer that arrives last).
+struct LeftAtTheGate {
+    wakes: std::sync::atomic::AtomicUsize,
+    woken: tokio::sync::Notify,
+}
+
+impl std::task::Wake for LeftAtTheGate {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.wakes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.woken.notify_one();
+    }
+}
+
+/// A spawner under which no racer of a race can run out of the harness's gate budget, and the
+/// racers still meet in the store at the same moment.
+///
+/// The harness's gate (`oauth-as` 1.1.0, `storage_conformance::GateWait`) does not wait for the
+/// others to arrive: a racer that is not the last to arrive wakes itself and is polled again, and
+/// gives up after a fixed number of polls (`GATE_POLL_BUDGET`), after which the run reports
+/// `harness/race_setup` ("the racers never overlapped"). A spawned racer spends that budget as
+/// fast as its worker thread polls it, well inside one scheduler time slice, so it runs out
+/// whenever the host leaves the last racer unpolled for that long. On a small, loaded runner that
+/// is common, and no pause on the test thread prevents it.
+///
+/// So the racers are polled by hand, in two steps, and the gate's budget is never counted down:
+///
+/// 1. Every racer of a race but the last handed over is polled exactly once, with a waker of its
+///    own. The gate is each racer's first await, so that poll counts the racer in at the gate and
+///    leaves that waker with the gate. It cannot open the gate: the last racer has not been
+///    polled. The racer is then held, unpolled, having spent one poll of its budget whatever the
+///    core count, the load or the order the runtime runs the tasks in.
+/// 2. When all of those are counted in (a barrier of `racers` tasks), the last racer is polled
+///    for the first time. It is the last to arrive, so that poll opens the gate, and the gate
+///    wakes every waker left with it before the last racer goes on into the store. Each held
+///    racer goes on, as an ordinary task of the multi-threaded runtime, when the gate wakes it:
+///    its second poll finds the gate open. So every racer is released by the gate itself, at the
+///    moment it opens, and the race in the store is a parallel one.
+///
+/// The harness runs one race at a time and hands exactly `racers` tasks over for each, so every
+/// `racers` hand-overs are one race and each barrier generation is one race.
+fn counted_in_then_released_by_the_gate(
+    racers: usize,
+) -> impl Fn(oauth_as::storage_conformance::Task) + Send + Sync + 'static {
+    use std::sync::atomic::Ordering;
+
+    let counted_in = Arc::new(tokio::sync::Barrier::new(racers));
+    let handed = std::sync::atomic::AtomicUsize::new(0);
+    move |mut task| {
+        let counted_in = Arc::clone(&counted_in);
+        let arrives_last = (handed.fetch_add(1, Ordering::SeqCst) + 1) % racers == 0;
+        tokio::spawn(async move {
+            if arrives_last {
+                counted_in.wait().await;
+                task.await;
+                return;
+            }
+            let left = Arc::new(LeftAtTheGate {
+                wakes: std::sync::atomic::AtomicUsize::new(0),
+                woken: tokio::sync::Notify::new(),
+            });
+            let waker = std::task::Waker::from(Arc::clone(&left));
+            let first = std::future::Future::poll(
+                task.as_mut(),
+                &mut std::task::Context::from_waker(&waker),
+            );
+            // The gate's wake of the racer itself, made inside that poll: not the gate opening.
+            let own_wakes = left.wakes.load(Ordering::SeqCst);
+            counted_in.wait().await;
+            if first.is_ready() {
+                return;
+            }
+            while left.wakes.load(Ordering::SeqCst) == own_wakes {
+                left.woken.notified().await;
+            }
+            task.await;
+        });
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_store_backed_server_holds_the_storage_contract() {
     let violations = oauth_as::storage_conformance::StorageConformance::new(|| async {
         SharedStorage::new(shared(crate::testkit::memory_store().await))
     })
-    .with_spawn(|task| {
-        tokio::spawn(task);
-    })
+    .racers(RACERS)
+    .with_spawn(counted_in_then_released_by_the_gate(RACERS))
     .run()
     .await;
     assert!(violations.is_empty(), "{violations:#?}");

@@ -6,18 +6,19 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
-use busbar_contract::abi::auth::AuthPoint;
-#[cfg(test)]
-use busbar_contract::abi::auth::POINT_HEAD_BODY;
-use busbar_contract::abi::host::service::{
-    UnitRef, FLOW_CONTINUE, FLOW_STOP, REFUSE_CHECK_FAILED, REFUSE_METHOD_MISS, REFUSE_NO_ROUTE,
-    REFUSE_OVER_GATE, REFUSE_STOPPED,
-};
+use busbar_contract::abi::host::service::UnitRef;
 use busbar_contract::auth_calls::{
     AuthCalls, Decision, Strip, StripPlace, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest,
 };
 use busbar_contract::kept::Text;
 use busbar_contract::redacted::Secret;
+use busbar_contract::route::AuthPoint;
+#[cfg(test)]
+use busbar_contract::route::POINT_HEAD_BODY;
+use busbar_contract::services::codes::{
+    FLOW_CONTINUE, FLOW_STOP, REFUSE_CHECK_FAILED, REFUSE_METHOD_MISS, REFUSE_NO_ROUTE,
+    REFUSE_OVER_GATE, REFUSE_STOPPED,
+};
 
 use crate::guest::{GuestList, Line, LineAuth, Matched};
 use crate::state::App;
@@ -635,27 +636,6 @@ impl RequestAdmission {
                 std::sync::atomic::Ordering::Acquire,
             )
             .is_ok()
-    }
-
-    /// The teller could not install the unit; return its terminal ownership to ingress.
-    pub fn execution_unavailable(&self) {
-        if self
-            .inner
-            .pending
-            .state
-            .compare_exchange(
-                1,
-                0,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .is_ok()
-        {
-            self.refuse(
-                busbar_contract::caps::StepName::Arrival,
-                busbar_contract::caps::ReasonCode::InFlightCap,
-            );
-        }
     }
 
     pub(crate) fn principal(&self, principal: &str) {
@@ -1696,16 +1676,6 @@ impl Inbound {
             }
             Some(_) => Err(UNIT_FOREIGN),
         }
-    }
-
-    pub fn framing_ready(&self, owner: u64, framing: u64) {
-        let opening = self
-            .framing_listeners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get_mut(owner, framing)
-            .and_then(|binding| binding.opening.take());
-        drop(opening);
     }
 
     pub fn framing_detached(&self, owner: u64, framing: u64) -> Result<(), &'static str> {

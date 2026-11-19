@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::hooks::default_policy_timeout_ms;
-use super::sections::AdvancedCfg;
+use super::sections::{AdvancedCfg, OutboundCfg};
 
 pub const DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS: u64 = 300;
 
@@ -44,21 +44,39 @@ pub const DEFAULT_DEFAULT_MAX_TOKENS: u32 = DEFAULT_MAX_TOKENS;
 
 pub const DEFAULT_KEY_GAUGE_LIMIT: usize = 2000;
 
-pub const DEFAULT_RATE_SWEEP_INTERVAL: u32 = 256;
-
 pub const DEFAULT_USAGE_FLUSH_INTERVAL_MS: u64 = 100;
+
+/// The least `advanced.usage_flush_interval_ms` the writer can honour. The writer loop
+/// (`governance::run_budget_flusher`) waits `tokio::time::sleep(interval)` between passes, and
+/// Tokio's timer has a resolution of one millisecond (`runtime/time/mod.rs`: "The driver has a
+/// resolution of one millisecond"). A wait of 0 completes at once, so the loop would run its store
+/// passes back to back, and the same tick is the engine's housekeeping tick and the bound on what a
+/// crash can lose. The interval is written in whole milliseconds, so 1 is the shortest wait there
+/// is. The store has no commit period of its own that would set a higher floor.
+pub const MIN_USAGE_FLUSH_INTERVAL_MS: u64 = 1;
+
+/// The interval the writer uses for the configured `advanced.usage_flush_interval_ms`, and the one
+/// log line when it was converted (a value below [`MIN_USAGE_FLUSH_INTERVAL_MS`] becomes it). The
+/// caller logs the line; boot and every configuration apply say the same thing.
+#[must_use]
+pub fn effective_usage_flush_interval_ms(configured: u64) -> (u64, Option<String>) {
+    if configured < MIN_USAGE_FLUSH_INTERVAL_MS {
+        (
+            MIN_USAGE_FLUSH_INTERVAL_MS,
+            Some(format!(
+                "advanced.usage_flush_interval_ms: {configured} is below the shortest wait the \
+                 flush loop can make ({MIN_USAGE_FLUSH_INTERVAL_MS} ms); using \
+                 {MIN_USAGE_FLUSH_INTERVAL_MS} ms"
+            )),
+        )
+    } else {
+        (configured, None)
+    }
+}
 
 /// How often the budget flush walks every shard whatever its "may be dirty" flag, as a backstop
 /// (seconds, within [10 s, 10 min]).
 pub const DEFAULT_BUDGET_FLUSH_BACKSTOP_SECS: u64 = 60;
-
-/// Ticket custody sweep: a held ticket is read once it is within this many seconds of its expiry
-/// by the local clock (a scheduling hint; the store's clock decides expiry). Within [0, 60].
-pub const DEFAULT_TICKET_SKEW_SECS: u64 = 2;
-
-/// Ticket custody sweep backstop: every held ticket is re-read at least this often (seconds), so a
-/// ticket spent or deleted by another node leaves custody.
-pub const DEFAULT_TICKET_BACKSTOP_SECS: u64 = 30;
 
 /// Longest rest of a claim retention scope after a complete sweep pass. It
 /// bounds how long a lapsed claim's row may linger; redeem refuses a lapsed
@@ -112,9 +130,6 @@ pub fn default_default_max_tokens() -> u32 {
 }
 pub fn default_key_gauge_limit() -> usize {
     DEFAULT_KEY_GAUGE_LIMIT
-}
-pub fn default_rate_sweep_interval() -> u32 {
-    DEFAULT_RATE_SWEEP_INTERVAL
 }
 pub fn default_usage_flush_interval_ms() -> u64 {
     DEFAULT_USAGE_FLUSH_INTERVAL_MS
@@ -297,6 +312,10 @@ pub struct TelemetryCfg {
     pub retention_seconds: u64,
     #[serde(default = "default_telemetry_max_lane_series")]
     pub max_lane_series: usize,
+    /// Opt-in busbar-injected response headers (`telemetry.response_headers`; 1.6 development
+    /// builds read it as `advanced.response_headers`). Boot-time: restart to apply.
+    #[serde(default)]
+    pub response_headers: super::sections::ResponseHeadersCfg,
 }
 
 impl Default for TelemetryCfg {
@@ -305,6 +324,7 @@ impl Default for TelemetryCfg {
             enabled: default_telemetry_enabled(),
             retention_seconds: default_telemetry_retention_seconds(),
             max_lane_series: default_telemetry_max_lane_series(),
+            response_headers: super::sections::ResponseHeadersCfg::default(),
         }
     }
 }
@@ -370,15 +390,13 @@ pub struct LimitsResolved {
     pub default_max_tokens: u32,
     pub reasoning_effort_budgets: ReasoningEffortBudgets,
     pub key_gauge_limit: usize,
-    pub rate_sweep_interval: u32,
     pub usage_flush_interval_ms: u64,
-    /// Pin the shared upstream client to HTTP/1.1 (`advanced.upstream_http1_only`). BOOT-TIME knob
-    /// read once at client build. Carried here (like `rate_sweep_interval`) so the client-build wiring
-    /// reads a flat struct. (The `BUSBAR_UPSTREAM_HTTP1_ONLY` env var was removed in 1.6.0.)
+    /// `advanced.wait_for_commit`: answer only after the request's records are committed.
+    pub wait_for_commit: bool,
+    /// `outbound.http1_only`: speak only HTTP/1.1 upstream. BOOT-TIME knob read once at client
+    /// build. Carried here so the client-build wiring reads a flat struct.
     pub upstream_http1_only: bool,
-    /// Force HTTP/2 prior-knowledge to cleartext upstreams (`advanced.upstream_h2_prior_knowledge`).
-    /// BOOT-TIME knob; default off. (The `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` env var was removed in
-    /// 1.6.0.)
+    /// `outbound.h2_prior_knowledge`: HTTP/2 without negotiation upstream. BOOT-TIME, default off.
     pub upstream_h2_prior_knowledge: bool,
     pub default_probe_interval_secs: u64,
     pub default_probe_timeout_secs: u64,
@@ -390,6 +408,7 @@ impl Default for LimitsResolved {
         Self::from_sections(
             &LimitsCfg::default(),
             &AdvancedCfg::default(),
+            &OutboundCfg::default(),
             ExportLimits::default(),
             &HealthDefaultsCfg::default(),
             &RoutingCfg::default(),
@@ -401,6 +420,7 @@ impl LimitsResolved {
     pub fn from_sections(
         limits: &LimitsCfg,
         advanced: &AdvancedCfg,
+        outbound: &OutboundCfg,
         export: impl Into<ExportLimits>,
         health: &HealthDefaultsCfg,
         routing: &RoutingCfg,
@@ -422,10 +442,13 @@ impl LimitsResolved {
             default_max_tokens: limits.default_max_tokens,
             reasoning_effort_budgets: limits.reasoning_effort_budgets,
             key_gauge_limit,
-            rate_sweep_interval: advanced.rate_sweep_interval,
-            usage_flush_interval_ms: advanced.usage_flush_interval_ms,
-            upstream_http1_only: advanced.upstream_http1_only,
-            upstream_h2_prior_knowledge: advanced.upstream_h2_prior_knowledge,
+            usage_flush_interval_ms: effective_usage_flush_interval_ms(
+                advanced.usage_flush_interval_ms,
+            )
+            .0,
+            wait_for_commit: advanced.wait_for_commit,
+            upstream_http1_only: outbound.http1_only,
+            upstream_h2_prior_knowledge: outbound.h2_prior_knowledge,
             default_probe_interval_secs: health.default_probe_interval_secs,
             default_probe_timeout_secs: health.default_probe_timeout_secs,
             default_policy_timeout_ms: routing.default_policy_timeout_ms,

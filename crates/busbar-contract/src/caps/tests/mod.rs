@@ -191,11 +191,6 @@ fn admitted_cell_authority_requires_its_call_principal_and_live_admission() {
     drop((arrival, admitted));
 }
 
-/// The lint rule data. It is a proof, not surface: no plugin, unit or kernel path names it, so it
-mod lint {
-    include!("../fixtures/lint_rules.rs");
-}
-
 /// The renderings every one of these types hand-rolls, read back — including the two that carry
 mod what_the_record_reads;
 
@@ -320,33 +315,6 @@ fn every_abort_names_a_reason_of_its_own() {
 
     for &code in ReasonCode::ALL {
         assert_eq!(Abort::Kernel { reason: code }.reason(), code);
-    }
-}
-
-#[test]
-fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
-    let symbols: Vec<_> = lint::all().map(|r| r.symbol).collect();
-
-    let expected = lint::expected();
-    assert_eq!(
-        expected.len(),
-        9,
-        "the escapes the scan must keep: {expected:?}"
-    );
-    assert_eq!(lint::hold_escapes().len(), 9, "the hold-escape list");
-    assert_eq!(lint::seal_sites().len(), 2, "the seal-site list");
-    for expected in expected {
-        assert!(
-            symbols.contains(&expected),
-            "the source scan must still look for {expected}"
-        );
-    }
-    assert!(lint::all().all(|r| !r.because.is_empty()));
-
-    for rule in lint::all() {
-        if let lint::LintScope::ConfinedTo(path) = rule.scope {
-            assert!(!path.is_empty(), "{} confines to nowhere", rule.symbol);
-        }
     }
 }
 

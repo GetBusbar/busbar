@@ -8,13 +8,13 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use arc_swap::ArcSwap;
 
-use busbar_contract::abi::host::conn::connector;
-use busbar_contract::abi::host::service::{
-    DEST_INTERNAL, DEST_METADATA, DEST_NO_ADDRESSES, DEST_NO_HOST, DEST_OBFUSCATED,
-};
+use busbar_contract::conn::codes::connector;
 use busbar_contract::net::{
     embedded_ipv4, host_ip, ip_is_cloud_metadata, ip_is_internal, is_alternate_ipv4_encoding,
     is_link_local_v6, judged_host, IpNet, METADATA_HOSTS,
+};
+use busbar_contract::services::codes::{
+    DEST_INTERNAL, DEST_METADATA, DEST_NO_ADDRESSES, DEST_NO_HOST, DEST_OBFUSCATED,
 };
 
 /// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
@@ -66,7 +66,7 @@ pub fn judged_class(class: u32, configured: bool) -> u32 {
 /// when an answered (or literal) address decided it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal<'h> {
-    /// The `DEST_*` verdict (`busbar_contract::abi::host::service`).
+    /// The `DEST_*` verdict (`busbar_contract::services::codes::service`).
     pub verdict: u64,
     /// The target as judged: the caller's own name, lent (a refusal copies no name).
     pub host: Refused<'h>,
@@ -467,8 +467,11 @@ pub trait Resolve: Send + Sync {
     fn resolve(&self, host: &str, done: Resolved);
 }
 
+/// The most name lookups the host keeps in flight at once.
+pub const MAX_PENDING_LOOKUPS: usize = 64;
+
 /// The system resolver, one short-lived thread per resolution, so a slow name never holds a
-/// worker. Its threads are CAPPED: at most [`crate::compose::MAX_PENDING_LOOKUPS`] resolutions are
+/// worker. Its threads are CAPPED: at most [`MAX_PENDING_LOOKUPS`] resolutions are
 /// in flight at once, and one more is answered at once as a resolution failure, no thread started.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemResolver;
@@ -478,7 +481,7 @@ impl Resolve for SystemResolver {
         resolve_capped(
             host,
             done,
-            crate::compose::MAX_PENDING_LOOKUPS,
+            MAX_PENDING_LOOKUPS,
             &RESOLVING,
             crate::off_path::guard::system_lookup,
         );

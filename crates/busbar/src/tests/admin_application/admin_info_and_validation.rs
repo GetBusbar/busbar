@@ -263,9 +263,10 @@ async fn admin_read(
     (status, body)
 }
 
-/// ADMIN-API-1.6-ONE-MODEL r2 §10.1 (#317, review B N1): `/info` is node identity and nothing
-/// else (no topology, no compiled-in plugin names, no process-local counters), and the Store's
-/// node lease rows are the `core/process` view `nodes`, read with `kinds:read`.
+/// ADMIN-API-1.6-ONE-MODEL r2 §10.1 (#317, review B N1): `/info` is node identity (no topology,
+/// no process-local counters) plus the admin API revision and the compiled-in `build` proof
+/// restored beside it, and the Store's node lease rows are the `core/process` view `nodes`, read
+/// with `kinds:read`.
 #[tokio::test]
 async fn info_is_node_identity_and_nodes_are_a_process_view() {
     const CHILD: &str = "BUSBAR_ADMIN_BOOT_3F17A0C2D9B4";
@@ -312,6 +313,8 @@ async fn info_is_node_identity_and_nodes_are_a_process_view() {
     assert_eq!(
         members,
         [
+            "api_revision",
+            "build",
             "config_generation",
             "crypto",
             "deployment_id",
@@ -321,8 +324,31 @@ async fn info_is_node_identity_and_nodes_are_a_process_view() {
             "version",
             "warnings",
         ],
-        "/info is node identity only: {info:?}"
+        "/info is node identity, the API revision and the build proof: {info:?}"
     );
+    assert_eq!(
+        info["api_revision"].as_u64(),
+        Some(u64::from(
+            busbar_core_admin::v1::contract::ADMIN_API_REVISION
+        )),
+        "/info states the admin API revision this engine serves: {info:?}"
+    );
+    let auth_modules: Vec<&str> = info["build"]["auth_modules"]
+        .as_array()
+        .expect("build.auth_modules is an array")
+        .iter()
+        .filter_map(|module| module.as_str())
+        .collect();
+    assert_eq!(
+        auth_modules.first().copied(),
+        Some(busbar_kernel::config::KEYS_MODULE),
+        "the built-in keys module is always compiled in: {info:?}"
+    );
+    assert!(
+        info["build"]["hook_plugins"].is_array(),
+        "build.hook_plugins is the linked hook rows: {info:?}"
+    );
+    assert_eq!(info["build"]["weighted_floor"], true, "{info:?}");
     assert_eq!(
         info["warnings"],
         json::json!([]),

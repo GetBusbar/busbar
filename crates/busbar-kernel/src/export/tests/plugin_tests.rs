@@ -56,7 +56,7 @@ impl ExportCalls for ListenerSentinel {
 
 #[test]
 fn an_opened_instance_mounts_only_its_non_public_paths_and_the_scrape_sink_its_public_ones() {
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_contract::route::{RouteAuth, RouteMethod};
     let run = |paths: &[&str], public: &[&str], persistent: &[&str], scrape: bool, opened: bool| {
         let cfg = ExportCfg {
             read: Default::default(),
@@ -142,7 +142,7 @@ fn an_opened_instance_mounts_only_its_non_public_paths_and_the_scrape_sink_its_p
 
 #[test]
 fn replacement_export_cannot_lend_its_grant_to_the_old_named_instance() {
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_contract::route::{RouteAuth, RouteMethod};
     for old_module in ["third-party", "trusted-observer"] {
         let called = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = |name: &str, module: &str, scrape, label| PluginSink {
@@ -250,7 +250,7 @@ impl ExportCalls for ListenerPolicySink {
 
 #[test]
 fn declared_listener_policy_preserves_boot_routes_but_removes_config_routes() {
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_contract::route::{RouteAuth, RouteMethod};
     for paths in [
         ["/metrics", "/metrics/hooks"],
         ["/observations", "/observations/process"],
@@ -377,8 +377,7 @@ fn a_module_on_the_axis_resolves_and_an_unregistered_one_is_refused_as_before() 
     assert_eq!(
         errors,
         vec![
-            // Catalog words are declaration data for this diagnostic policy. The actual
-            // distribution catalog is covered by export_unknown_module_lists_what_links.rs.
+            // Catalog words are declaration data for this diagnostic policy.
             crate::diagnostics::coded::config_export_invalid(
                 "export.audit-tail.module: unknown exporter 'k9-never-registered'; the built-in \
                  export modules are prometheus"
@@ -464,7 +463,7 @@ impl ExportCalls for AnsweringSink {
     fn streams(&self) -> &[u8] {
         &[]
     }
-    fn routes(&self) -> &[busbar_contract::abi::mechanism::route::Route] {
+    fn routes(&self) -> &[busbar_contract::route::Route] {
         &[]
     }
     fn deliver(&self, _: u8, _: Vec<u8>, _: Box<dyn Send>) -> Delivered {

@@ -18,15 +18,35 @@ use busbar_plugin_abi::plane::{
 use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn};
 use busbar_ports::{FactRef, PortError};
 
-use super::{run_session, Books, Drive, TicketGate, UnitBooks};
+use super::{Books, Drive, TicketGate, UnitBooks};
 use crate::plane_driver::cancel::{CancelBill, Checkpoint, MoneySeam};
 use crate::plane_driver::port_auth::TicketDoor;
 use crate::plane_driver::port_intents::{IntentHost, Looked, Namespace, Resolver, WorkOutcome};
 use crate::plane_driver::port_money::{AuditRow, PortMoney};
-use crate::plane_driver::port_session::{Calls, Effects, SessionError, ToClient};
+use crate::plane_driver::port_session::{finish, Calls, Effects, SessionError, ToClient};
 use crate::plane_driver::port_upstream::{
-    Candidate, Failure, Members, SendFailed, UpReply, UpSend,
+    Candidate, Failure, Members, SendFailed, UpOpen, UpReply, UpSend, Whole,
 };
+
+/// A session with no walk, driven to its end on a test runtime.
+fn run_session<K: Calls + ?Sized>(
+    calls: &K,
+    req: &PlaneIn<'_>,
+    body: &[u8],
+    drive: Drive<'_>,
+) -> Result<super::Ran, SessionError> {
+    finish(super::run_session(calls, req, body, drive))
+}
+
+/// A session over a walk and a carrier, driven to its end on a test runtime.
+fn run_walked<K: Calls + ?Sized, M: Members, S: UpSend>(
+    calls: &K,
+    req: &PlaneIn<'_>,
+    body: &[u8],
+    drive: Drive<'_, M, S>,
+) -> Result<super::Ran, SessionError> {
+    finish(super::run_session(calls, req, body, drive))
+}
 use crate::plane_driver::usage::{Ending, SessionUsage};
 use crate::plane_driver::AuditSink;
 use crate::plane_grants::{TicketAdmitted, TicketDenied, TicketMint, Tickets};
@@ -103,6 +123,8 @@ struct Plane {
     end: Vec<It>,
     fault_pieces: bool,
     piece_log: PieceLog,
+    /// The conversations the plane was asked to rewrite its request to, one entry per call.
+    rewrites: Mutex<Vec<Vec<u8>>>,
 }
 
 fn nope() -> PortError {
@@ -162,9 +184,10 @@ impl Calls for Plane {
     fn rewrite(
         &self,
         _: &mut Live,
-        _: &[u8],
+        conversation: &[u8],
         _: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError> {
+        self.rewrites.lock().unwrap().push(conversation.to_vec());
         Ok(())
     }
 
@@ -251,31 +274,45 @@ impl Books for Log {
 struct Store;
 
 impl IntentHost for Store {
-    fn lookup(
-        &self,
+    fn lookup<'a>(
+        &'a self,
         _: Scope,
         _: u32,
         _: u32,
-        key: &[u8],
-        looked: &mut Looked,
-    ) -> Result<(), RecordsDenied> {
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
         looked.push(&[key], b"v");
-        Ok(())
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn store(&self, _: Scope, _: u32, _: u64, _: &[u8], _: &[u8]) -> Result<(), RecordsDenied> {
-        Ok(())
+    fn store<'a>(
+        &'a self,
+        _: Scope,
+        _: u32,
+        _: u64,
+        _: &'a [u8],
+        _: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn delete(&self, _: Scope, _: &[u8]) -> Result<(), RecordsDenied> {
-        Ok(())
+    fn delete<'a>(&'a self, _: Scope, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
-    fn commit(&self, _: Scope, _: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied> {
-        Ok(CommitOutcome::Applied)
+    fn commit<'a>(
+        &'a self,
+        _: Scope,
+        _: &'a [CommitOp<'a>],
+    ) -> BoxFut<'a, Result<CommitOutcome, RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(CommitOutcome::Applied)))
     }
-    fn work<'a>(&self, _: &crate::plane_driver::port_intents::WorkIntent<'a>) -> WorkOutcome<'a> {
-        WorkOutcome::unsupported()
+    fn work<'a>(
+        &'a self,
+        _: &'a crate::plane_driver::port_intents::WorkIntent<'a>,
+    ) -> BoxFut<'a, WorkOutcome<'a>> {
+        Box::pin(std::future::ready(WorkOutcome::unsupported()))
     }
-    fn push(&self, _: u64, _: &[u8]) -> Result<(), RecordsDenied> {
-        Ok(())
+    fn push<'a>(&'a self, _: u64, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Ok(())))
     }
     fn signal(&self, _: &[u8], _: Option<[u8; 32]>) {}
 }
@@ -304,7 +341,7 @@ struct Walk {
 }
 
 impl Members for Walk {
-    fn next(&mut self, _: &crate::plane_driver::port_upstream::Wants) -> Option<Candidate> {
+    async fn next(&mut self, _: &crate::plane_driver::port_upstream::Wants) -> Option<Candidate> {
         self.queue.pop_front()
     }
     fn declined(&mut self, _: &Candidate) {}
@@ -322,16 +359,19 @@ impl Members for Walk {
 struct Far;
 
 impl UpSend for Far {
-    fn send(
-        &mut self,
-        _: &Candidate,
+    type Rest<'a> = Whole;
+
+    async fn open<'a>(
+        &'a mut self,
+        _: &'a Candidate,
         _: crate::plane_driver::port_session::UpExchange,
-    ) -> Result<UpReply, SendFailed> {
+    ) -> Result<UpOpen<Whole>, SendFailed> {
         Ok(UpReply {
             status: 200,
             headers: Vec::new(),
             body: b"ok".to_vec(),
-        })
+        }
+        .opened())
     }
 }
 
@@ -340,11 +380,11 @@ fn run(plane: &Plane, walk: Option<&mut Walk>, books: &Log) -> Result<super::Ran
     let resolver = Resolver::new(&store, Some([1; 32]));
     let refusals = CoreRefusals::new();
     let mut far = Far;
-    let (members, send): (Option<&mut dyn Members>, Option<&mut dyn UpSend>) = match walk {
+    let (members, send): (Option<&mut Walk>, Option<&mut Far>) = match walk {
         Some(w) => (Some(w), Some(&mut far)),
         None => (None, None),
     };
-    run_session(
+    run_walked(
         plane,
         &req(),
         b"{}",
@@ -415,7 +455,7 @@ fn pending_money_refusal(usage_facts: u64) {
     let core = Arc::new(KernelServices::new());
     let caller = busbar_contract::services::Caller::for_test(
         Arc::from("seat"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     let _lease = core.admit_native_invocation(&caller).unwrap();
     assert!(core.units().pre_admitted_for(
@@ -897,21 +937,62 @@ fn a_retry_after_the_plane_stated_is_never_overwritten() {
     assert_eq!(fields.len(), 1);
 }
 
+/// A GovState over the real store, for a seat's bindings, built on its own runtime so a
+/// synchronous test can hold one.
+fn governance() -> Arc<crate::governance::GovState> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(gov_state())
+}
+
+/// [`governance`] inside a test's own runtime.
+async fn gov_state() -> Arc<crate::governance::GovState> {
+    Arc::new(
+        crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    )
+}
+
+/// The seat's actual bindings, active and enforcing on [`req`]'s route and walking `pool`, every
+/// caller selecting `chosen`.
+fn bindings(
+    chosen: &crate::plane_driver::port_hooks::Selected,
+    governance: Arc<crate::governance::GovState>,
+) -> Arc<crate::plane_driver::native_hook_bindings::Bindings> {
+    Arc::new(
+        crate::plane_driver::native_hook_bindings::Bindings::selecting(
+            vec![req().route],
+            "pool",
+            chosen,
+            governance,
+        ),
+    )
+}
+
 #[test]
 fn a_native_hook_cannot_run_without_its_admitted_invocation() {
-    use crate::plane_driver::port_hooks::{Binder, Invocation, Selected, Selection};
-    struct Required;
-    impl Binder for Required {
-        fn active(&self, _: u32) -> bool {
-            true
-        }
-        fn enforcing(&self, _: u32) -> bool {
-            true
-        }
-        fn select(&self, _: &Selection<'_>) -> Result<Selected, &'static str> {
-            panic!("unadmitted hook selection must never run")
-        }
-    }
+    use crate::plane_driver::port_hooks::{Invocation, Selected, Taps};
+    // Active and enforcing; the invocation carries no admitted context, so selection is never
+    // reached.
+    let chosen = Selected {
+        rewrites: Arc::default(),
+        gates: Arc::default(),
+        policy: None,
+        taps: Taps::default(),
+        key: None,
+        budget: Vec::new(),
+        rate_headroom: None,
+        cost: Arc::new(crate::cost::CostModel::resolve_parts(
+            None,
+            0,
+            &Default::default(),
+        )),
+        reads: Arc::new(|_, _, _, _| Box::pin(async { Ok(()) })),
+        counters: None,
+    };
     struct Hooked(Invocation);
     impl Effects for Hooked {
         fn hooks(&self) -> Option<&Invocation> {
@@ -922,13 +1003,13 @@ fn a_native_hook_cannot_run_without_its_admitted_invocation() {
         }
     }
     let effects = Hooked(Invocation {
-        binder: Arc::new(Required),
+        binder: bindings(&chosen, governance()),
         principal: None,
-        identity: None,
         now_s: 1,
         classes: Arc::default(),
         journal: None,
         unit: UnitKey::new(1),
+        records: None,
     });
     let plane = Plane {
         request: vec![It::Respond(200), It::End],
@@ -963,7 +1044,7 @@ fn a_native_hook_cannot_run_without_its_admitted_invocation() {
 async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
     use crate::config::{PromptAccess, UserAccess};
     use crate::plane_driver::port_hooks::tests::{configured, Fixture};
-    use crate::plane_driver::port_hooks::{Binder, Invocation, Selected, Selection};
+    use crate::plane_driver::port_hooks::Invocation;
     use busbar_plugin_abi::kinds::hook::hook as abi;
     use busbar_ports::hook::{HookAnswer, HookCall, HookPort, HookView};
     use busbar_ports::CallCx;
@@ -1006,18 +1087,6 @@ async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
             }))
         }
     }
-    struct Bound(Selected);
-    impl Binder for Bound {
-        fn active(&self, _: u32) -> bool {
-            true
-        }
-        fn enforcing(&self, _: u32) -> bool {
-            true
-        }
-        fn select(&self, _: &Selection<'_>) -> Result<Selected, &'static str> {
-            Ok(self.0.clone())
-        }
-    }
     struct Hooked {
         invocation: Invocation,
         context: crate::host_services::InvocationContext,
@@ -1042,17 +1111,18 @@ async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
     selected.taps.response = Arc::from([call]);
     let effects = Hooked {
         invocation: Invocation {
-            binder: Arc::new(Bound(selected)),
+            binder: bindings(&selected, gov_state().await),
             principal: None,
-            identity: None,
             now_s: 1,
             classes: Arc::default(),
             journal: None,
             unit: UnitKey::new(7),
+            records: None,
         },
         context: fixture.context.clone(),
     };
-    tokio::task::spawn_blocking(move || {
+    // The session runs on this test's own task, as a request's session does.
+    {
         let plane = Plane {
             request: vec![It::Emit, It::Respond(200), It::End],
             ..Plane::default()
@@ -1061,21 +1131,17 @@ async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
         let resolver = Resolver::new(&store, None);
         let refusals = CoreRefusals::new();
         let books = Log::default();
-        let result = run_session(
-            &plane,
-            &req(),
-            b"{}",
-            Drive {
-                resolver: &resolver,
-                members: None,
-                send: None,
-                dialect: "test",
-                refusals: &refusals,
-                effects: &effects,
-                books: &books,
-                carrier: None,
-            },
-        );
+        let drive: Drive<'_> = Drive {
+            resolver: &resolver,
+            members: None,
+            send: None,
+            dialect: "test",
+            refusals: &refusals,
+            effects: &effects,
+            books: &books,
+            carrier: None,
+        };
+        let result = super::run_session(&plane, &req(), b"{}", drive).await;
         match result {
             Err(SessionError::HookRefused(refusal)) => {
                 assert_eq!(refusal.status, 409);
@@ -1088,9 +1154,7 @@ async fn a_native_gate_holds_emits_and_tells_response_taps_why_it_refused() {
             1,
             "the refused unit is booked once"
         );
-    })
-    .await
-    .unwrap();
+    }
     let signals = tokio::time::timeout(std::time::Duration::from_secs(1), received.recv())
         .await
         .expect("a gate refusal fires its response tap")
@@ -1179,9 +1243,7 @@ async fn route_policy_selections_and_rejections_counters_move() {
     use crate::config::{PromptAccess, UserAccess};
     use crate::plane_driver::hooks::{CandidateFacts, Candidates, Constraint};
     use crate::plane_driver::port_hooks::tests::{configured, Fixture};
-    use crate::plane_driver::port_hooks::{
-        Binder, Call, Invocation, RouteCounters, Selected, Selection,
-    };
+    use crate::plane_driver::port_hooks::{Call, Invocation, RouteCounters};
     use crate::plane_driver::port_upstream::Wants;
     use busbar_plugin_abi::kinds::hook::hook as abi;
     use busbar_ports::hook::{HookAnswer, HookCall, HookPort, HookView};
@@ -1207,18 +1269,6 @@ async fn route_policy_selections_and_rejections_counters_move() {
             restrict: Vec::new(),
             message: None,
             rewrite: None,
-        }
-    }
-    struct Bound(Selected);
-    impl Binder for Bound {
-        fn active(&self, _: u32) -> bool {
-            true
-        }
-        fn enforcing(&self, _: u32) -> bool {
-            true
-        }
-        fn select(&self, _: &Selection<'_>) -> Result<Selected, &'static str> {
-            Ok(self.0.clone())
         }
     }
     struct Hooked {
@@ -1265,7 +1315,7 @@ async fn route_policy_selections_and_rejections_counters_move() {
             self.constrained = Some(constraint);
             true
         }
-        fn next(&mut self, _: &Wants) -> Option<Candidate> {
+        async fn next(&mut self, _: &Wants) -> Option<Candidate> {
             self.queue.pop_front()
         }
         fn declined(&mut self, _: &Candidate) {}
@@ -1299,6 +1349,7 @@ async fn route_policy_selections_and_rejections_counters_move() {
     });
     let base = fixture.selected.clone();
     let context = fixture.context.clone();
+    let governance = gov_state().await;
     let counted = tokio::task::spawn_blocking(move || {
         let counted = Counted::default();
         metrics::with_local_recorder(&counted, || {
@@ -1313,13 +1364,13 @@ async fn route_policy_selections_and_rejections_counters_move() {
                 selected.counters = Some(Arc::clone(&counters));
                 let effects = Hooked {
                     invocation: Invocation {
-                        binder: Arc::new(Bound(selected)),
+                        binder: bindings(&selected, Arc::clone(&governance)),
                         principal: None,
-                        identity: None,
                         now_s: 1,
                         classes: Arc::default(),
                         journal: None,
                         unit: UnitKey::new(7),
+                        records: None,
                     },
                     context: context.clone(),
                 };
@@ -1333,7 +1384,7 @@ async fn route_policy_selections_and_rejections_counters_move() {
                     ..Ranked::default()
                 };
                 let mut far = Far;
-                let result = run_session(
+                let result = run_walked(
                     &plane,
                     &req(),
                     b"{}",
@@ -1400,3 +1451,174 @@ async fn route_policy_selections_and_rejections_counters_move() {
         "a strategy is never counted under its instance name"
     );
 }
+
+/// Owner decision 18, money on the head of an upgrade: the unit's money is admitted before the walk, as for
+/// any forwarded request. A key the money callback refuses is answered as any refused request is: no member
+/// is dialled, the caller's side is never read for a message, and no 101 is written. (The setup is
+/// `pending_money_refusal`'s, with a client side that takes messages and a walk that could dial.)
+#[test]
+fn an_upgrade_whose_money_is_refused_is_answered_before_any_dial_and_any_101() {
+    use crate::host_services::{
+        InvocationContext, KernelServices, Nest, NestDone, NestRoute, ServingGeneration,
+    };
+    use crate::plane_driver::port_admission::Pending;
+    use crate::plane_driver::port_duplex::{ClientEvent, ClientMessages};
+    use crate::plane_driver::port_session::ClientSink;
+    use crate::plane_driver::request_admission::{RequestAllocation, RequestRoutes};
+    use crate::refusal::RefusalMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::task::{Context, Poll};
+    struct NoChildren;
+    impl NestRoute for NoChildren {
+        fn nest(&self, _: InvocationContext, _: Nest, _: NestDone) {
+            panic!("no child before admission");
+        }
+    }
+    let core = Arc::new(KernelServices::new());
+    let caller = busbar_contract::services::Caller::for_test(
+        Arc::from("seat"),
+        busbar_contract::kinds::codes::KindCode::Plane,
+    );
+    let _lease = core.admit_native_invocation(&caller).unwrap();
+    assert!(core.units().pre_admitted_for(
+        41,
+        &caller,
+        crate::host_units::UnitRecord {
+            principal: Some(Arc::new(busbar_contract::records::VirtualKey {
+                id: "over-budget".into(),
+                enabled: true,
+                ..Default::default()
+            })),
+            depth: 0,
+        }
+    ));
+    let context = InvocationContext::new(
+        Arc::new(ServingGeneration::new(core, Arc::new(NoChildren))),
+        caller,
+        41,
+    )
+    .unwrap();
+    let allocation = RequestAllocation::new(
+        context,
+        Arc::new(crate::cost::CostModel::resolve_parts(
+            None,
+            0,
+            &Default::default(),
+        )),
+        100,
+    )
+    .unwrap();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let count = asked.clone();
+    let pending = Pending::new(
+        allocation,
+        Arc::new(RequestRoutes::new("seat", None, None, None).unwrap()),
+        None,
+        move |_receipt| {
+            count.fetch_add(1, Ordering::SeqCst);
+            // The key's budget is spent.
+            Err(CoreRefusals::new().for_core(0, busbar_plugin_abi::fail::refused::R_RATE_LIMITED))
+        },
+    );
+    /// The caller's side of an upgrade: it takes messages, and counts what it was asked and given.
+    #[derive(Default)]
+    struct Side {
+        read: AtomicUsize,
+        items: Mutex<Vec<ToClient>>,
+    }
+    impl ClientMessages for Side {
+        fn poll_message(&self, _: &mut Context<'_>) -> Poll<ClientEvent> {
+            self.read.fetch_add(1, Ordering::SeqCst);
+            Poll::Pending
+        }
+    }
+    impl ClientSink for Side {
+        fn poll_items(&self, _: &mut Context<'_>, items: &mut Vec<ToClient>) -> Poll<bool> {
+            self.items.lock().unwrap().append(items);
+            Poll::Ready(true)
+        }
+        fn messages(&self) -> Option<&dyn ClientMessages> {
+            Some(self)
+        }
+    }
+    struct Upgrading<'a>(&'a Pending, &'a Side);
+    impl Effects for Upgrading<'_> {
+        fn admission(&self) -> Option<&Pending> {
+            Some(self.0)
+        }
+        fn invocation(&self) -> Option<&InvocationContext> {
+            Some(self.0.context())
+        }
+        fn emit(&self, _: u64, _: &[u8]) {}
+        fn client(&self) -> Option<&dyn ClientSink> {
+            Some(self.1)
+        }
+    }
+    /// A carrier that counts its dials.
+    struct Dialled(usize);
+    impl UpSend for Dialled {
+        type Rest<'a> = Whole;
+
+        async fn open<'a>(
+            &'a mut self,
+            _: &'a Candidate,
+            _: crate::plane_driver::port_session::UpExchange,
+        ) -> Result<UpOpen<Whole>, SendFailed> {
+            self.0 += 1;
+            Err(SendFailed)
+        }
+    }
+    let plane = Plane {
+        request: vec![It::Forward, It::Want(W_MODEL, "m")],
+        ..Plane::default()
+    };
+    let store = Store;
+    let resolver = Resolver::new(&store, None);
+    let refusals = CoreRefusals::new();
+    let side = Side::default();
+    let effects = Upgrading(&pending, &side);
+    let mut walk = Walk {
+        queue: [candidate()].into(),
+        ..Walk::default()
+    };
+    let mut far = Dialled(0);
+    let result = run_walked(
+        &plane,
+        &req(),
+        b"{}",
+        Drive {
+            resolver: &resolver,
+            members: Some(&mut walk),
+            send: Some(&mut far),
+            dialect: "test",
+            refusals: &refusals,
+            effects: &effects,
+            books: &pending,
+            carrier: None,
+        },
+    );
+    assert!(
+        matches!(result, Err(SessionError::AdmissionRefused(_))),
+        "{result:?}"
+    );
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "money is asked once, on the head"
+    );
+    assert_eq!(far.0, 0, "no member is dialled for a refused unit");
+    assert_eq!(
+        side.read.load(Ordering::SeqCst),
+        0,
+        "the caller's side is not read for a message"
+    );
+    assert!(
+        side.items.lock().unwrap().is_empty(),
+        "no 101 and nothing else is written by the session: the refusal is the listener's HTTP answer"
+    );
+    assert_eq!(walk.failed, 0);
+    assert!(walk.served.is_empty());
+}
+
+#[path = "port_serve_money_hooks.rs"]
+mod money_hooks;

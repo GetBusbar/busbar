@@ -366,6 +366,7 @@ pub(crate) mod fixture {
             _stream: u32,
             _delivery: u64,
             _attempt: u32,
+            _lines: u32,
             batch: ChainBytes,
         ) -> Result<Reply, Fail> {
             let accepted = batch.with(|bytes| {

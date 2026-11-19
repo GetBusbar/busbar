@@ -126,7 +126,7 @@ impl Request {
         self.validate()?;
         let bytes = crate::json::to_vec(self).map_err(|_| "invalid usage correction encoding")?;
         if crate::abi::mechanism::extensions::entry_len(INTENT, &bytes) as u64
-            > crate::abi::mechanism::check::HARD_MAX_BYTES
+            > crate::records::size_limits::HARD_MAX_BYTES
         {
             return Err("usage correction exceeds ABI byte bound");
         }
@@ -135,7 +135,7 @@ impl Request {
 
     /// Decode one complete bounded request; quantity mantissas remain exact `i128` values.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
-        if bytes.len() as u64 > crate::abi::mechanism::check::HARD_MAX_BYTES {
+        if bytes.len() as u64 > crate::records::size_limits::HARD_MAX_BYTES {
             return Err("usage correction exceeds ABI byte bound");
         }
         let request: Self =

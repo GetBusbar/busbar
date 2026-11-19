@@ -1007,7 +1007,7 @@ async fn create_key_owned(
     let idem_ckey: Option<(String, String)> = idem_key
         .as_ref()
         .map(|k| (actor.clone(), crate::idempotency::create_replay_key(k)));
-    let fingerprint = busbar_contract::abi::sdk::digest::sha256(&body);
+    let fingerprint = busbar_contract::digest::sha256(&body);
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, SecureVec>> = None;
     if let Some(ref ck) = idem_ckey {
         match replays.probe_bound(ck.clone(), fingerprint, busbar_kernel::store::now()) {
@@ -1900,7 +1900,7 @@ async fn rotate_key_owned(
         .and_then(|v| v.to_str().ok())
         .filter(|v| !v.is_empty())
         .map(|k| (actor.clone(), crate::idempotency::rotate_replay_key(&id, k)));
-    let fingerprint = busbar_contract::abi::sdk::digest::sha256(&body);
+    let fingerprint = busbar_contract::digest::sha256(&body);
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, SecureVec>> = None;
     if let Some(ref ck) = idem_ckey {
         match replays.probe_bound(ck.clone(), fingerprint, busbar_kernel::store::now()) {

@@ -1,0 +1,16 @@
+[package]
+name = "busbar-seal"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "The two capability seals and their mint: a key, named only by busbar-kernel and busbar-contract."
+license = "Apache-2.0"
+
+[features]
+# Test-only; named only in [dev-dependencies] (busbar-contract's own `test-seal` forwards it), absent from
+# release builds: `KernelSeal::acquire_for_kernel` and `SlotSeal::acquire_for_tests`.
+test-seal = []
+
+[lints]
+workspace = true

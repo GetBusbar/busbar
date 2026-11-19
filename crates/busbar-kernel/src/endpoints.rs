@@ -225,16 +225,9 @@ impl ProbeState {
     }
 }
 
-fn dispatch_halted() -> bool {
-    crate::preflight::root_rows()
-        .dispatch_latched
-        .is_some_and(|latched| latched())
-}
-
 /// Process liveness is independent of downstream readiness and shutdown deregistration.
 pub async fn livez() -> Response {
-    plugin_dispatch_halted(dispatch_halted())
-        .unwrap_or_else(|| (StatusCode::OK, "ok").into_response())
+    (StatusCode::OK, "ok").into_response()
 }
 
 /// A side-effect-free snapshot of this process's current admission eligibility.
@@ -243,7 +236,6 @@ pub async fn readyz(
     probes: Option<axum::Extension<std::sync::Arc<ProbeState>>>,
 ) -> Response {
     let ready = probes.is_some_and(|axum::Extension(probes)| probes.permits(&app))
-        && !dispatch_halted()
         && crate::plane_driver::registry::plane_decls()
             .iter()
             .filter(|decl| !decl.fallback && app.plane_configured(decl))
@@ -264,12 +256,6 @@ pub async fn readyz(
 }
 
 pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {
-    let latched = crate::preflight::root_rows()
-        .dispatch_latched
-        .is_some_and(|latched| latched());
-    if let Some(halted) = plugin_dispatch_halted(latched) {
-        return halted;
-    }
     let t = now();
 
     let view = app.engine_tables_view();
@@ -296,16 +282,6 @@ pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) ->
     }
 }
 
-fn plugin_dispatch_halted(latched: bool) -> Option<Response> {
-    latched.then(|| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "plugin dispatch halted; restart required",
-        )
-            .into_response()
-    })
-}
-
 fn first_unopened_plane(app: &crate::state::App) -> Option<String> {
     crate::plane_driver::registry::plane_decls()
         .iter()
@@ -328,7 +304,3 @@ fn a_plane_opened(app: &crate::state::App) -> bool {
 #[cfg(test)]
 #[path = "tests/endpoints_doc_tests.rs"]
 mod endpoints_doc_tests;
-
-#[cfg(test)]
-#[path = "tests/plugin_dispatch_halted_tests.rs"]
-mod plugin_dispatch_halted_tests;

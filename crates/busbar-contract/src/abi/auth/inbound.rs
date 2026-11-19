@@ -3,38 +3,7 @@
 
 //! THE INBOUND FAMILY: `verify` and the `begin_login`/`complete_login` pair, plus the shapes the
 
-use crate::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Span};
-
-/// A named value the host hands in: an inbound carrier field, or a submitted login field. A
-/// credential-bearing value carries [`BLOB_SECRET`](crate::abi::mechanism::call::BLOB_SECRET).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct NamedValue {
-    /// The name.
-    pub name: AbiStr,
-    /// The value.
-    pub value: Blob,
-}
-
-/// The request's fixed facts, shared by `verify` (an inbound signature check) and `fields` (an
-/// outbound signature).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct RequestFacts {
-    /// The method.
-    pub method: AbiStr,
-    /// The authority (host\[:port\]).
-    pub authority: AbiStr,
-    /// For `fields`: the path exactly as the framer will send it (already percent-encoded); a
-    /// signing style derives its own canonical form from it. For `verify`: the raw RECEIVED bytes,
-    /// never normalized.
-    pub canonical_path: AbiStr,
-    /// The query without `?`; absent = none. For `fields`: as it will be sent (a signing style
-    /// sorts and encodes it). For `verify`: the raw RECEIVED bytes, never normalized.
-    pub query: AbiStr,
-    /// Wall-clock seconds since the Unix epoch, read once by the host for this call.
-    pub timestamp: u64,
-}
+use crate::abi::mechanism::call::{AbiStr, OutHead, Span};
 
 /// The HOST buffer an identity is written into (request-path results live in host memory).
 #[repr(C)]
@@ -97,64 +66,6 @@ pub struct IdentityOut {
     pub credential: Span,
 }
 
-/// One credential line or query key an auth names for the transport to strip: a NAME, never a
-/// value, so the plane never sees a credential (THE DESIGN, "Auth points and guest lists",
-/// step 4). The name is a [`Span`] into the host's [`IdentityBuf`] bytes.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StripName {
-    /// The name.
-    pub name: Span,
-    /// [`super::STRIP_FIELD`] (a field line, ASCII case-insensitive) | [`super::STRIP_QUERY`] (a
-    /// query key, case-sensitive).
-    pub place: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-}
-
-/// `verify`'s `in`: the request at one AUTH POINT (THE DESIGN, "Auth points and guest lists").
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct VerifyIn {
-    /// The head.
-    pub head: InHead,
-    /// The candidate credential (secret); absent = none presented.
-    pub credential: Blob,
-    /// The request's neutral field lines, as presented: the lines the Statement's carrier word
-    /// marks name, or every line when the tail states [`super::FACT_INBOUND_ALL_HEADERS`]. At
-    /// [`super::POINT_PEER`] there are none.
-    pub lines: *const NamedValue,
-    /// How many.
-    pub lines_len: usize,
-    /// The request's fixed facts (an inbound signature check reads them).
-    pub request: RequestFacts,
-    /// Where the identity and the strip names' bytes go.
-    pub out_buf: IdentityBuf,
-    /// The [`AuthPoint`](super::AuthPoint) this call is made at: exactly one of
-    /// [`super::POINT_PEER`] | [`super::POINT_HEAD`] | [`super::POINT_HEAD_BODY`], one the tail's
-    /// [`AuthTail::inbound_points`](super::AuthTail) holds.
-    pub point: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// The connection the request arrived on, so an auth needing several points correlates them.
-    pub conn: u64,
-    /// The unit the kernel minted for the request; `0` at [`super::POINT_PEER`] (no request yet).
-    pub unit: u64,
-    /// The peer facts (the TLS peer certificate from the connector, a spawn environment); present
-    /// only at [`super::POINT_PEER`], else absent.
-    pub peer: Blob,
-    /// The whole request body; present only at [`super::POINT_HEAD_BODY`], else absent. Bounded
-    /// by the size gate: over its limit the request is refused (413) before any verdict.
-    pub body: Blob,
-    /// The host array the plugin names its credential lines and query keys in
-    /// ([`StripName`]), whatever its verdict.
-    pub strip: *mut StripName,
-    /// Its capacity ([`super::FIELDS_MAX`] to start).
-    pub strip_cap: u32,
-    /// Alignment padding.
-    pub _reserved2: u32,
-}
-
 /// `verify`'s and `complete_login`'s `out`.
 ///
 /// SHORT BUFFER: when the identity or the strip names do not fit, the plugin answers `FAILED`
@@ -165,7 +76,7 @@ pub struct VerifyIn {
 /// and serves the retry from it, never repeating the work (an authorization code redeems once).
 /// `FAILED` with both at `0` is a real failure. A buffer is at most `u32::MAX` bytes ([`Span`]).
 ///
-/// THE ANSWER RULES, enforced by [`super::check_identify`] and [`super::check_complete_login`]
+/// THE ANSWER RULES, enforced by `super::check_identify` and `super::check_complete_login`
 /// in `u64` math (any violation is FAULT). On REFUSED or PENDING, every `needed_*` is `0`. On
 /// READY, every `needed_*` is `0`; the verdict is in the op's vocabulary; for `verify` the
 /// decision is in its vocabulary, `strip_len <= strip_cap`, every strip name is present and in
@@ -193,8 +104,8 @@ pub struct VerifyIn {
 pub struct IdentifyOut {
     /// The head.
     pub head: OutHead,
-    /// `verify`: [`super::VERDICT_IDENTITY`] | [`super::VERDICT_REJECT`] | [`super::VERDICT_PASS`].
-    /// `complete_login`: [`super::LOGIN_IDENTITY`] | [`super::LOGIN_BAD_CREDENTIAL`] |
+    /// `verify`: [`super::VERDICT_IDENTITY`] | [`super::VERDICT_REJECT`] | `super::VERDICT_PASS`.
+    /// `complete_login`: [`super::LOGIN_IDENTITY`] | `super::LOGIN_BAD_CREDENTIAL` |
     /// [`super::LOGIN_OUTAGE`] | [`super::LOGIN_SECURITY_CHECK_FAILED`]. `0` is FAULT.
     pub verdict: u32,
     /// Short buffer: the group spans needed.
@@ -203,36 +114,16 @@ pub struct IdentifyOut {
     pub needed_bytes: u64,
     /// Who, for an identity verdict.
     pub identity: IdentityOut,
-    /// `verify` on READY: [`super::DECISION_CONTINUE`] | [`super::DECISION_STOP`], what the
+    /// `verify` on READY: [`super::DECISION_CONTINUE`] | `super::DECISION_STOP`, what the
     /// transport does with the request. `complete_login`: `0`.
     pub decision: u32,
-    /// `verify` on READY: how many [`StripName`]s the plugin wrote into [`VerifyIn::strip`],
+    /// `verify` on READY: how many `StripName`s the plugin wrote into [`VerifyIn::strip`],
     /// whatever the verdict. `complete_login`: `0`.
     pub strip_len: u32,
     /// Short buffer: the strip names needed.
     pub needed_strip: u32,
     /// Alignment padding.
     pub _reserved: u32,
-}
-
-/// `begin_login`'s `in`. Every field is core-minted or public; there is no secret.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct BeginLoginIn {
-    /// The head.
-    pub head: InHead,
-    /// The callback URL.
-    pub redirect_uri: AbiStr,
-    /// The core's anti-CSRF state.
-    pub state: AbiStr,
-    /// The core's nonce; absent = none.
-    pub nonce: AbiStr,
-    /// The core's PKCE challenge.
-    pub code_challenge: AbiStr,
-    /// The requested scopes.
-    pub scopes: *const AbiStr,
-    /// How many.
-    pub scopes_len: usize,
 }
 
 /// One declared credential field of a login form.
@@ -243,55 +134,8 @@ pub struct LoginField {
     pub name: AbiStr,
     /// Its label.
     pub label: AbiStr,
-    /// [`super::FORM_TEXT`] | [`super::FORM_PASSWORD`].
+    /// `super::FORM_TEXT` | `super::FORM_PASSWORD`.
     pub kind: u32,
     /// `1` = required.
     pub required: u32,
-}
-
-/// `begin_login`'s `out`: the URL and form are plugin memory held under `OutHead.lease`.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct BeginLoginOut {
-    /// The head.
-    pub head: OutHead,
-    /// EXACTLY ONE of [`super::BEGIN_AUTHORIZE`] | [`super::BEGIN_FORM`]; no bit, two bits or an
-    /// unknown bit is FAULT ([`super::check_begin_login`]). The one named must be present: a
-    /// non-empty URL, or `form_len > 0`. Any `len > 0` with a NULL pointer is FAULT.
-    pub shape: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
-    /// The IdP authorize URL ([`super::BEGIN_AUTHORIZE`]).
-    pub authorize_url: AbiStr,
-    /// The form ([`super::BEGIN_FORM`]).
-    pub form: *const LoginField,
-    /// How many.
-    pub form_len: usize,
-}
-
-/// `complete_login`'s `in`. Its `out` is [`IdentifyOut`].
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CompleteLoginIn {
-    /// The head.
-    pub head: InHead,
-    /// The authorization code (redirect flow), a
-    /// [`BLOB_SECRET`](crate::abi::mechanism::call::BLOB_SECRET) blob; absent = none.
-    pub code: Blob,
-    /// The callback's state.
-    pub state: AbiStr,
-    /// The callback URL; absent = none.
-    pub redirect_uri: AbiStr,
-    /// The PKCE verifier, a [`BLOB_SECRET`](crate::abi::mechanism::call::BLOB_SECRET) blob;
-    /// absent = none.
-    pub code_verifier: Blob,
-    /// The submitted form fields (credential flow); a password value is a secret blob.
-    pub submitted: *const NamedValue,
-    /// How many.
-    pub submitted_len: usize,
-    /// Where the identity goes.
-    pub out_buf: IdentityBuf,
-    /// The nonce the login's `begin_login` was handed (the core's, carried in its login cookie),
-    /// so the plugin binds the IdP's identity token to it; absent = none. Appended.
-    pub nonce: AbiStr,
 }

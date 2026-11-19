@@ -1,0 +1,214 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! MESSAGES ON A WEBSOCKET UPSTREAM: the write after the open, and the read's message ends.
+//!
+//! An HTTP exchange hands the connection its whole request at the open, so `Exchange::write`
+//! refuses any later bytes. A WebSocket exchange is the opposite: its open is the handshake, and
+//! everything after the 101 is messages, both ways, until one side closes. The states are
+//! `crate::outbound::ws::Upstream`; this file is where the exchange and the connection use them.
+//!
+//! DECLARED by `native_conns.rs`: `Exchange::ws` is set by `open_native` for a WebSocket carrier,
+//! `Exchange::write` and `Exchange::read` call the two functions below.
+
+use std::task::{Context, Poll};
+
+use busbar_contract::conn::{ConnError, Piece, PieceKind};
+use busbar_contract::storage::StorageSource;
+
+use super::{Exchange, State};
+
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+
+use crate::outbound::ws::{Kind, Message, Refusal, Upstream};
+
+/// WHAT THE READS OF A WEBSOCKET ENTRY STATED, for the connection table's reader
+/// (`PollConns::message_text`, `PollConns::close_code`): the kind of the message the body piece last read
+/// belongs to, and the code the far end closed with. Kept in the entry beside its exchange (which is out
+/// of the entry while any call has it, a write included), so the reader's question never waits and never
+/// reads as "not stated" because a write is in flight. One reader writes it (the read of the entry); the
+/// same reader asks.
+#[derive(Default)]
+pub(crate) struct Said {
+    /// 0 = no kind stated; 1 = text; 2 = binary.
+    text: AtomicU8,
+    /// 0 = no code; else the code plus one (every `u32` code is a code, 0 included).
+    code: AtomicU64,
+}
+
+impl Said {
+    /// A body piece was read: `text` is the kind the stream stated for it (`None` = it stated none).
+    pub(crate) fn read_piece(&self, text: Option<bool>) {
+        let kind = match text {
+            None => 0,
+            Some(true) => 1,
+            Some(false) => 2,
+        };
+        self.text.store(kind, Ordering::Release);
+    }
+
+    /// The kind of the message the body piece last read belongs to.
+    pub(crate) fn text(&self) -> Option<bool> {
+        match self.text.load(Ordering::Acquire) {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
+    }
+
+    /// A read failed; `code` is what the far end reset the stream with, where it stated a code. A failure
+    /// that states none leaves an earlier code as it is.
+    pub(crate) fn closed(&self, code: Option<u32>) {
+        if let Some(code) = code {
+            self.code.store(u64::from(code) + 1, Ordering::Release);
+        }
+    }
+
+    /// The code the far end closed with.
+    pub(crate) fn close_code(&self) -> Option<u32> {
+        let kept = self.code.load(Ordering::Acquire);
+        kept.checked_sub(1)
+            .and_then(|code| u32::try_from(code).ok())
+    }
+}
+
+impl Exchange {
+    /// CALLED by `Exchange::write` in place of its refusal of a non-empty write, when `self.ws`
+    /// is set. `text` and `end` are the connection table's own write arguments: the message's
+    /// kind (on its first piece) and whether this piece ends it. An empty write with `end` after
+    /// a finished message is the engine's close.
+    ///
+    /// # Errors
+    /// `Pending` until the 101 arrived or while the socket queue is full (the caller's ticket is
+    /// woken); `Closed` after either side closed or when the handshake was refused; `Refused`
+    /// for pieces out of order.
+    pub(crate) fn write_message(
+        &mut self,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+        (text, end): (bool, bool),
+        storage: &StorageSource,
+    ) -> Result<usize, ConnError> {
+        // The handshake request goes first, exactly as an HTTP request does.
+        let stream = match self.send(cx, storage) {
+            Poll::Pending => return Err(ConnError::Pending),
+            Poll::Ready(Err(error)) => return Err(error),
+            Poll::Ready(Ok(stream)) => stream,
+        };
+        let Some(upstream) = self.ws.as_mut() else {
+            return Err(ConnError::Closed);
+        };
+        if matches!(upstream, Upstream::Handshaking) {
+            // No message before the 101: the read that hands up the answer's head opens the
+            // session and wakes this caller's ticket.
+            return Err(ConnError::Pending);
+        }
+        let State::Dialled(conn) = &mut self.state else {
+            return Err(ConnError::Closed);
+        };
+        if bytes.is_empty() && end && matches!(upstream, Upstream::Open { sending: false, .. }) {
+            return match conn.poll_close_stream(cx, stream) {
+                Poll::Pending => Err(ConnError::Pending),
+                Poll::Ready(Err(failure)) => Err(self.attempt_failed(&failure)),
+                Poll::Ready(Ok(())) => {
+                    if let Some(upstream) = self.ws.as_mut() {
+                        upstream.closing();
+                    }
+                    Ok(0)
+                }
+            };
+        }
+        let continuing = matches!(upstream, Upstream::Open { sending: true, .. });
+        let message = Message {
+            kind: match (continuing, text) {
+                (true, _) => Kind::Continuation,
+                (false, true) => Kind::Text,
+                (false, false) => Kind::Binary,
+            },
+            fin: end,
+        };
+        // The state moves only when the piece is taken: a pended piece is offered again as it was.
+        let mut next = *upstream;
+        let flags = match next.send(message) {
+            Ok(flags) => flags,
+            Err(Refusal::NotOpen) => return Err(ConnError::Closed),
+            Err(Refusal::Sequence | Refusal::Transport) => return Err(ConnError::Refused),
+        };
+        match conn.poll_send_message(cx, stream, bytes, flags) {
+            Poll::Pending | Poll::Ready(Ok(0)) if !bytes.is_empty() => Err(ConnError::Pending),
+            Poll::Pending => Err(ConnError::Pending),
+            Poll::Ready(Err(failure)) => Err(self.attempt_failed(&failure)),
+            Poll::Ready(Ok(taken)) => {
+                if let Some(upstream) = self.ws.as_mut() {
+                    *upstream = next;
+                }
+                Ok(taken)
+            }
+        }
+    }
+
+    /// CALLED by `Exchange::read` on every piece it is about to hand up, when `self.ws` is set:
+    /// the answer's head opens (or refuses) the session, and the end closes it. A body piece's
+    /// `end` already says whether it ends its message (the transport's `MSG_FIN`).
+    pub(super) fn message_read(&mut self, piece: &Piece) {
+        let Some(upstream) = self.ws.as_mut() else {
+            return;
+        };
+        match piece.kind {
+            PieceKind::Fields if matches!(upstream, Upstream::Handshaking) => {
+                upstream.answered(piece.status_code.unwrap_or_default());
+            }
+            PieceKind::Completion => upstream.ended(),
+            PieceKind::Fields | PieceKind::Body | PieceKind::HookReply => {}
+        }
+    }
+
+    /// A WebSocket connection is never kept for another exchange: `release` answers `Err` for it.
+    pub(super) fn never_kept(&self) -> bool {
+        self.ws.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Said;
+
+    #[test]
+    fn an_entry_states_the_kind_of_the_piece_last_read_and_nothing_before_one() {
+        let said = Said::default();
+        assert_eq!(said.text(), None, "no piece was read");
+        said.read_piece(Some(true));
+        assert_eq!(said.text(), Some(true));
+        said.read_piece(Some(false));
+        assert_eq!(said.text(), Some(false));
+        // A piece whose kind the transport did not state is not the kind of the one before it.
+        said.read_piece(None);
+        assert_eq!(said.text(), None);
+    }
+
+    #[test]
+    fn an_entry_keeps_the_code_its_far_end_closed_with_zero_included() {
+        let said = Said::default();
+        assert_eq!(said.close_code(), None, "the far end has not closed");
+        said.closed(None);
+        assert_eq!(
+            said.close_code(),
+            None,
+            "a failure with no code states none"
+        );
+        said.closed(Some(0));
+        assert_eq!(
+            said.close_code(),
+            Some(0),
+            "code 0 is a code, not its absence"
+        );
+        let said = Said::default();
+        said.closed(Some(1001));
+        assert_eq!(said.close_code(), Some(1001));
+        said.closed(Some(u32::MAX));
+        assert_eq!(said.close_code(), Some(u32::MAX));
+        // The first code stays through a later failure of the same entry that states none.
+        said.closed(None);
+        assert_eq!(said.close_code(), Some(u32::MAX));
+    }
+}

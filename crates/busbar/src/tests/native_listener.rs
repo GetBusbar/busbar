@@ -35,7 +35,7 @@ impl RealServer {
         &self,
         shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-        let listener = Listening::bind_stream(None, "127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
+        let listener = Listening::bind_stream("127.0.0.1:0", ROOT_BIND_LIMITS).unwrap();
         let addr = listener.local_addr();
         let serving = tokio::spawn(serve_listener(
             listener,
@@ -155,7 +155,7 @@ where
     let node = Arc::new(root::plane_node::Node::new());
     node.bind_book(Arc::clone(&book.durability));
     node.bind_response_intents(
-        Arc::clone(&core),
+        &core,
         book.response_intents
             .as_ref()
             .expect("actual response-intent signer")
@@ -187,10 +187,7 @@ where
         .load(std::sync::atomic::Ordering::Acquire);
     root::min3_admin_auth::install(&mut app, Arc::clone(&auth), epoch)
         .expect("install this candidate's actual native admin authority");
-    let served = root::serve::Served {
-        tables: app.serve_tables.clone(),
-        ..Default::default()
-    };
+    let served = root::serve::Served::default();
     let owners = root::min3_physical::SlotOwners {
         auth,
         epoch,
@@ -232,8 +229,8 @@ where
     assert!(
         slot.prepared().core_lines().any(|(path, method, auth)| {
             path == busbar_kernel::auth::LIVEZ_PATH
-                && method == busbar_contract::abi::mechanism::route::RouteMethod::Get
-                && auth == busbar_contract::abi::mechanism::route::RouteAuth::None
+                && method == busbar_contract::route::RouteMethod::Get
+                && auth == busbar_contract::route::RouteAuth::None
         }),
         "the prepared listener must retain the canonical declared public liveness route"
     );

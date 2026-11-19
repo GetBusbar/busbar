@@ -11,6 +11,15 @@ license = "Apache-2.0"
 # Dev-only conformance retirement barrier and the standalone test harness (path loaders,
 # probes, door helpers); never enabled by shipped defaults.
 test-support = ["busbar-artifact-verifier/test-support"]
+# The crossing witness: a build of the engine that arms the crossing recorder from two environment
+# variables and writes its verdict to a file, so the `abi_crossings` security test can judge the real
+# default binary from outside the process. Never enabled by shipped defaults: a release binary holds
+# no recorder and no code that reads those variables.
+crossing-witness = []
+# An engine built for release: at load it accepts released contract lines only, so a plugin stamped with
+# the unreleased version at the label (a dev build) is refused. The release distribution enables it;
+# every other build is a dev engine.
+release-engine = []
 # Tooling only: `jsonschema` must never reach the engine's graph. Build the CLI with `--features pack`.
 pack = ["dep:jsonschema"]
 
@@ -18,42 +27,6 @@ pack = ["dep:jsonschema"]
 name = "busbar-plugin-pack"
 path = "src/pack.rs"
 required-features = ["pack"]
-
-# B-VERIFY: one inbound verify through the auth door, timed (median, p99).
-[[bench]]
-name = "b_verify"
-path = "benches/b_verify.rs"
-harness = false
-
-[[example]]
-name = "dispatch_test_plugin"
-path = "tests/fixtures/dispatch_test_plugin.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "log_witness_door"
-path = "tests/fixtures/log_witness_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_export_door"
-path = "tests/fixtures/neutral_export_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_plane_door"
-path = "tests/fixtures/neutral_plane_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "json_contract_auth"
-path = "tests/fixtures/json_contract_auth.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_frame_door"
-path = "tests/fixtures/neutral_frame_door.rs"
-crate-type = ["cdylib"]
 
 # The native pack proof uses an actual exported MIN-3 image, built with the other examples.
 [[example]]
@@ -81,13 +54,16 @@ busbar-ports = { path = "../busbar-ports" }
 arc-swap = { workspace = true }
 foldhash = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
-busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 hex = { workspace = true }
 # The MIN-3 plugin interface, core side (ABI-MIN3-INTERFACE §10, §11).
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
 # The plugin boundary (UNSAFE-MIN r3.1): admit opens, bounds-checks and admits images through its `image` module
 # (the `host` dependent role in unsafe.yaml).
 busbar-ffi = { path = "../busbar-ffi", features = ["host"] }
+# The call builder lends a method's numbers as the bytes of a plain record (`call::frame`): zerocopy
+# proves at compile time that the record has no padding and no pointer. Already in the lock (the
+# contract crate's).
+zerocopy = { version = "0.8", features = ["derive"] }
 libloading = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
 futures = { workspace = true }
@@ -128,26 +104,6 @@ windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
-
-[[example]]
-name = "neutral_transport_door"
-path = "tests/fixtures/neutral_transport_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_auth_door"
-path = "tests/fixtures/neutral_auth_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_export_disk_door"
-path = "tests/fixtures/neutral_export_disk_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "neutral_export_routes_door"
-path = "tests/fixtures/neutral_export_routes_door.rs"
-crate-type = ["cdylib"]
 
 [lints]
 workspace = true

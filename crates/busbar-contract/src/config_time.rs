@@ -18,8 +18,3 @@ impl ConfigScope {
         Self { _proof: () }
     }
 }
-
-/// A secret source that reads the disk, asked to resolve without a [`ConfigScope`] (a request path
-pub const RESOLVE_OFF_CONFIG_TIME: &str =
-    "this secret source reads the disk, which the host allows \
-     only at config time (boot, a config apply, a refresh), never on a request path";

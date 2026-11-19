@@ -1867,51 +1867,11 @@ fn validate_refuses_the_planes_protocol_when_its_section_is_not_configured() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[cfg(all(linked_section_pools, linked_axis_export_doors))]
-#[test]
-fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
-    let probe = fixture_dir("webhook-order-probe");
-    write_configs(
-        &probe,
-        "export:\n  hook: { module: request-log-webhook, settings: { url: \"https://siem.example/in\" } }\n",
-    );
-    let (_, _, probed) = run_busbar(&probe, &["--validate"]);
-    assert!(
-        !probed.contains("unknown exporter 'request-log-webhook'"),
-        "{probed}"
-    );
-    let dir = fixture_dir("webhook-order");
-    write_configs(
-        &dir,
-        "limits:\n  upstream_request_timeout_secs: 0\n  max_honored_retry_after_secs: 0\n\
-         export:\n  hook: { module: request-log-webhook, settings: { url: \"https://siem.example/in\", \
-         max_inflight_deliveries: 0, delivery_timeout_secs: 0 } }\n",
-    );
-    let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
-    assert_ne!(code, 0, "{stderr}");
-    let refusal: Vec<&str> = stderr
-        .lines()
-        .skip_while(|l| !l.contains("config validation failed:"))
-        .skip(1)
-        .take_while(|l| l.starts_with("  - "))
-        .collect();
-    assert_eq!(
-        refusal,
-        [
-            "  - limits.upstream_request_timeout_secs must be >= 1 (0 would time out every upstream call instantly)",
-            "  - export.hook: settings.max_inflight_deliveries must be >= 1",
-            "  - limits.max_honored_retry_after_secs must be >= 1 (a 0 ceiling would clamp every honored Retry-After to 0)",
-            "  - export.hook: the `module: request-log-webhook` export instance targeting 'https://siem.example/***' (#0) sets settings.delivery_timeout_secs: 0 — it must be >= 1",
-        ],
-        "{stderr}"
-    );
-}
-
 #[cfg(linked_section_pools)]
 fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &[u8]) {
     use busbar_contract::abi::mechanism::door::Statement;
     use busbar_contract::abi::mechanism::rendering::render;
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     let st = Statement {
         size: std::mem::size_of::<Statement>() as u32,
         kind: KindCode::Store as u32,
@@ -1933,7 +1893,7 @@ fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &
 #[cfg(linked_section_pools)]
 #[test]
 fn validate_selects_a_dropped_plugin_without_opening_it_and_reports_in_1_5_5s_words() {
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     let dir = fixture_dir("stated");
     let abi = KindCode::Store.abi_version();
     write_stated_store(&dir, "busbar-store-stated", "stated", abi, b"not a library");
@@ -1966,7 +1926,7 @@ fn validate_selects_a_dropped_plugin_without_opening_it_and_reports_in_1_5_5s_wo
 #[cfg(linked_section_pools)]
 #[test]
 fn validate_refuses_a_selected_plugin_built_for_another_host() {
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     let dir = fixture_dir("stated-abi");
     let abi = KindCode::Store.abi_version() + 1;
     write_stated_store(&dir, "busbar-store-stated", "stated", abi, b"not a library");
@@ -2037,90 +1997,6 @@ models:
     assert!(
         refused(&stdout, &stderr),
         "an http token_url on loopback is refused at --validate: stdout={stdout} stderr={stderr}"
-    );
-}
-
-#[cfg(all(linked_section_pools, linked_every_auth))]
-fn validate_lane(tag: &str, api_key: &str, style: &str, extra: &str) -> (i32, String) {
-    let dir = fixture_dir(tag);
-    write_configs(&dir, "");
-    let api_key = api_key.replace("{dir}", &dir.display().to_string());
-    std::fs::write(
-        dir.join("sa.json"),
-        r#"{"client_email":"a@b","private_key":"not a key"}"#,
-    )
-    .unwrap();
-    std::fs::write(dir.join("pair.txt"), "client-id:client-secret").unwrap();
-    std::fs::write(
-        dir.join("config.yaml"),
-        format!(
-            "listen: \"127.0.0.1:0\"\nstore: {{module: memory}}\nproviders:\n  mock:\n    \
-             api_key: {api_key}\n    auth: {style}\n{extra}models:\n  test-model:\n    \
-             provider: mock\n"
-        ),
-    )
-    .unwrap();
-    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
-    let _ = std::fs::remove_dir_all(&dir);
-    (code, format!("stdout={stdout} stderr={stderr}"))
-}
-
-#[cfg(all(linked_section_pools, linked_every_auth))]
-#[test]
-fn validate_refuses_a_malformed_oauth_client_credential_as_boot_does() {
-    let (code, out) = validate_lane(
-        "cred-shape",
-        "{ env: MOCK_KEY }",
-        "oauth-client-credentials",
-        "    token_url: \"https://127.0.0.1/token\"\n    scope: oracle\n",
-    );
-    assert_eq!(code, 1, "{out}");
-    assert!(
-        out.contains("oauth-client-credentials credential")
-            && out.contains("client_id:client_secret"),
-        "the credential refusal is named: {out}"
-    );
-}
-
-#[cfg(all(linked_section_pools, linked_every_auth))]
-#[test]
-fn validate_accepts_a_well_formed_oauth_client_credential() {
-    let (code, out) = validate_lane(
-        "cred-pair",
-        "{ file: \"{dir}/pair.txt\" }",
-        "oauth-client-credentials",
-        "    token_url: \"https://127.0.0.1/token\"\n    scope: oracle\n",
-    );
-    assert_eq!(code, 0, "{out}");
-    assert!(!out.contains("credential"), "no credential refusal: {out}");
-}
-
-#[cfg(all(linked_section_pools, linked_every_auth))]
-#[test]
-fn validate_refuses_a_malformed_jwt_bearer_service_account_as_boot_does() {
-    let (code, out) = validate_lane("bad-key", "{ file: \"{dir}/sa.json\" }", "jwt-bearer", "");
-    assert_eq!(code, 1, "{out}");
-    assert!(
-        out.contains("jwt-bearer credential (from ") && out.contains(") is invalid: "),
-        "the credential refusal is named: {out}"
-    );
-}
-
-#[cfg(all(linked_section_pools, linked_every_auth))]
-#[test]
-fn validate_refuses_an_unmigrated_jwt_bearer_filename_credential() {
-    let (code, out) = validate_lane(
-        "unreadable-key",
-        "{ file: \"{dir}/pair.txt\" }",
-        "jwt-bearer",
-        "",
-    );
-    assert_eq!(code, 1, "{out}");
-    assert!(
-        out.contains("provider 'mock' jwt-bearer credential (from file:")
-            && out.contains(") is invalid: service-account JSON is invalid:")
-            && out.contains("api_key: {file: <path>}"),
-        "the historical filename credential requires an explicit JSON file reference: {out}"
     );
 }
 

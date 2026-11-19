@@ -15,7 +15,7 @@ const FIXTURE: &str = include_str!("fixtures/operator_token_after_normalize.yaml
 /// Core declares no source shorthand itself: an admitted secret module does. This read admits one
 /// that declares both words.
 fn fixture_grammar() -> busbar_kernel::config::Grammar {
-    use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
+    use busbar_contract::plugin_settings::sugar_words::REWRITE_SUGAR;
     let mut sugars = busbar_contract::secret_ref::Sugars::default();
     sugars
         .declare(
@@ -59,7 +59,6 @@ static FALLBACK_PLANE: PlaneDecl = PlaneDecl {
     admission: |_| None,
     build: |_, _| None,
     routes: None,
-    admin_routes: None,
     openapi: None,
     hydrate: None,
     start: None,

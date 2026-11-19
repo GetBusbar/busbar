@@ -85,7 +85,6 @@ pub fn check_with(
         &cfg.export,
     )
     .map_err(Refusal::Plugins)?;
-    operator_unchanged(&registry).map_err(Refusal::Plugins)?;
     super::validate_provider_destinations(cfg, c.unset_env_vars, &|target| {
         crate::preflight::root_rows()
             .endpoint_locate
@@ -107,23 +106,4 @@ pub fn check_with(
 
 pub fn no_root_rules(_: &RootCfg) -> Result<(), String> {
     Ok(())
-}
-
-/// THE RESTART CHECK (OPERATOR-FROM-ADMITTED-AUTH §3.8): the operator this configuration's
-/// admitted plugins give, judged as process start judged it, against the one bound for the process
-/// lifetime. Any difference refuses before an instance opens, so the running generation keeps
-/// serving. With no auth axis there are no claims to judge.
-fn operator_unchanged(registry: &Arc<dyn PluginRows>) -> Result<(), String> {
-    let Some(axis) = crate::preflight::auth_axis(Arc::clone(registry)) else {
-        return Ok(());
-    };
-    let bound = busbar_kernel_identity::operator::judged()?;
-    let now = busbar_kernel_identity::operator::choose(&axis.operator_claims());
-    busbar_kernel_identity::operator::compare(bound, &now).inspect_err(|refusal| {
-        crate::audit::auditlog::record_operator(
-            crate::audit::auditlog::OperatorAudit::RefusedChanged,
-            "operator",
-            refusal,
-        );
-    })
 }

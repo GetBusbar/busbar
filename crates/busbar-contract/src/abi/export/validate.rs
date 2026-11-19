@@ -5,50 +5,9 @@
 
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
-use super::{CheckOut, Route, ScrapeOut, ServeOut, StatusOut, Tail};
-use super::{ROUTE_AUTH_ADMIN, ROUTE_AUTH_NONE};
-use crate::abi::mechanism::call::OutHead;
-use crate::abi::mechanism::check::{
-    code, failed_error, fault, leased_blob, listed, result, served, text, HARD_MAX_BYTES,
-};
+use super::Tail;
+use crate::abi::mechanism::check::{fault, listed};
 use crate::export_stream::ExportStream;
-
-/// The most entries `serve`'s `headers_out` may carry: 64 headers, as (name, value) pairs.
-pub const HARD_MAX_HEADERS_OUT_LEN: u64 = 128;
-
-/// Validates `deliver`'s `out` (the shared [`OutHead`]; `deliver` reads nothing back beyond it).
-pub fn check_deliver(out: &OutHead) -> Result<(), Fault> {
-    failed_error(out, "deliver.error")
-}
-
-/// Validates `scrape`'s `out` against the capacity [`super::ScrapeIn::cap`] gave the plugin.
-pub fn check_scrape(out: &ScrapeOut, cap: usize) -> Result<(), Fault> {
-    result(
-        out.head.outcome.outcome(),
-        out.written as u64,
-        out.needed as u64,
-        cap as u64,
-        HARD_MAX_BYTES,
-        "scrape.bytes",
-    )?;
-    Ok(())
-}
-
-/// Validates `status`'s `out`.
-pub fn check_status(out: &StatusOut) -> Result<(), Fault> {
-    leased_blob!(out, "status", status)
-}
-
-/// Validates `check`'s `out`.
-pub fn check_check(out: &CheckOut) -> Result<(), Fault> {
-    leased_blob!(out, "check", findings)
-}
-
-/// Validates `serve`'s `out`.
-pub fn check_serve(out: &ServeOut) -> Result<(), Fault> {
-    let (h, n) = (out.headers_out, out.headers_out_len);
-    served(&out.head, h, n, HARD_MAX_HEADERS_OUT_LEN, &out.body)
-}
 
 /// The most routes one export instance may declare.
 pub const HARD_MAX_ROUTES: u64 = 64;
@@ -65,55 +24,3 @@ pub fn check_tail(t: &Tail) -> Result<(), Fault> {
     }
     Ok(())
 }
-
-/// Validates the export tail's ENTRIES, once [`check_tail`] passed: every stream byte is an
-/// [`ExportStream`] and none repeats; every route names a path starting with `/`, a method, and a
-/// `ROUTE_AUTH_*` code.
-///
-/// # Errors
-/// The rule an entry breaks.
-/// # Safety
-/// Every non-NULL, nonempty route path must name live initialized bytes of its stated length
-/// throughout this call. The validator checks pointer shape, not pointer liveness.
-///
-/// ```compile_fail,E0133
-/// use busbar_contract::abi::export::{Route, validate::check_tail_entries};
-/// fn without_ownership_proof(routes: &[Route]) {
-///     let _ = check_tail_entries(&[], routes);
-/// }
-/// ```
-pub unsafe fn check_tail_entries(streams: &[u8], routes: &[Route]) -> Result<(), Fault> {
-    for (i, s) in streams.iter().enumerate() {
-        code(
-            u64::from(*s),
-            0,
-            ExportStream::ALL.len() as u64 - 1,
-            "tail.streams.code",
-        )?;
-        if streams[..i].contains(s) {
-            return Err(fault(Rule::Contradiction, "tail.streams.repeat"));
-        }
-    }
-    for r in routes {
-        text(r.path, "tail.routes.path")?;
-        text(r.method, "tail.routes.method")?;
-        // SAFETY: `text` checked non-NULL shape; the caller guarantees this path byte is live.
-        if r.path.len == 0 || unsafe { *r.path.ptr } != b'/' {
-            return Err(fault(Rule::Missing, "tail.routes.path.root"));
-        }
-        if r.method.len == 0 {
-            return Err(fault(Rule::Missing, "tail.routes.method.empty"));
-        }
-        code(
-            u64::from(r.auth),
-            u64::from(ROUTE_AUTH_NONE),
-            u64::from(ROUTE_AUTH_ADMIN),
-            "tail.routes.auth",
-        )?;
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-#[path = "../tests/export_validate_tests.rs"]
-mod tests;

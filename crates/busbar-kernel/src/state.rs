@@ -39,11 +39,6 @@ pub struct App {
     /// An ABSENT slot — the featureless binary boots with no fallback plane configured, so none was
     /// inserted — reads as the substrate-resident empty view, never a panic. Neutral: names no dialect.
     pub fallback_runtime_key: &'static str,
-    /// THE PUBLISHED INSTANCES' ADMIN TABLE ([`crate::plane_driver::serve::ServeTables`]): the one
-    /// the composition root publishes its door planes into, created with the boot generation and
-    /// carried onto every generation built after it (a clone shares the one table). The admin
-    /// router's fallback and every stated admin route answer off it.
-    pub serve_tables: crate::plane_driver::serve::ServeTables,
     /// Native admin routes retained with this complete application generation.
     pub port_seats: Arc<[crate::plane_driver::port::PortSeat]>,
     pub exports: Arc<crate::export::plugin::Exports>,
@@ -178,10 +173,6 @@ pub struct App {
     /// Rebuilt on boot AND reload (`build_app_from_config`), Arc-shared so `App::clone` is cheap.
     pub admin_modules: Arc<crate::auth::AdminAuthChain>,
     pub native_admin: Option<Arc<crate::auth::native_admin::NativeAdmin>>,
-    /// The build's auth instances by provider (WASTE-AUTH-SECRETS W1/W2): what the chain,
-    /// `admin_modules` and the login methods hold, kept so the next build can carry an unchanged,
-    /// healthy instance instead of opening it again.
-    pub auth_instances: Arc<crate::auth::instances::AuthInstances>,
     /// The RESOLVED hosted-login methods (`auth.methods:`, 1.5.2) — each opened as a login
     /// capable `kind: auth` plugin over ABI v2, keyed by the config method/module name (insertion
     /// order = login-page button order). Carries the CORE-only confidential-client secret and the
@@ -373,7 +364,6 @@ pub struct App {
 pub struct AppParts {
     pub fallback_runtime_key: &'static str,
 
-    pub serve_tables: crate::plane_driver::serve::ServeTables,
     /// Native admin routes retained with this complete application generation.
     pub port_seats: Arc<[crate::plane_driver::port::PortSeat]>,
     pub exports: Arc<crate::export::plugin::Exports>,
@@ -420,10 +410,6 @@ pub struct AppParts {
     pub admin_chain: Vec<String>,
 
     pub admin_modules: Arc<crate::auth::AdminAuthChain>,
-    /// The build's auth instances by provider (WASTE-AUTH-SECRETS W1/W2): what the chain,
-    /// `admin_modules` and the login methods hold, kept so the next build can carry an unchanged,
-    /// healthy instance instead of opening it again.
-    pub auth_instances: Arc<crate::auth::instances::AuthInstances>,
 
     pub public_url: Option<String>,
 
@@ -527,6 +513,18 @@ fn snapshot_fields(
 }
 
 impl App {
+    /// `advanced.wait_for_commit` as this generation went live with it: a field of the generation
+    /// the request was admitted under (no lock, no lookup, no clone), so a request never sees it
+    /// change mid-flight; a new value arrives with the next generation. Off for a generation with
+    /// no resolved limits.
+    #[must_use]
+    #[inline]
+    pub fn wait_for_commit(&self) -> bool {
+        self.limits
+            .as_ref()
+            .is_some_and(|limits| limits.wait_for_commit)
+    }
+
     /// Actual predecessor captured by appbuild; never an earlier App or policy history.
     pub fn selected_predecessor(
         &self,
@@ -605,7 +603,6 @@ impl App {
     ) -> Self {
         let AppParts {
             fallback_runtime_key,
-            serve_tables,
             port_seats,
             exports,
             root_rules,
@@ -628,7 +625,6 @@ impl App {
             admin,
             admin_chain,
             admin_modules,
-            auth_instances,
             public_url,
             oauth_as,
             demotion_record,
@@ -677,7 +673,6 @@ impl App {
         Self {
             tslots,
             fallback_runtime_key,
-            serve_tables,
             port_seats,
             exports,
             root_rules,
@@ -715,7 +710,6 @@ impl App {
             admin_chain,
             admin_modules,
             native_admin: None,
-            auth_instances,
             login_methods,
             public_url,
             oauth_as,
@@ -1436,3 +1430,7 @@ mod state_tests;
 #[cfg(test)]
 #[path = "tests/app_parts_tests.rs"]
 mod app_parts_tests;
+
+#[cfg(test)]
+#[path = "tests/wait_for_commit_flag.rs"]
+mod wait_for_commit_flag;

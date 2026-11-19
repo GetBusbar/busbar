@@ -17,7 +17,9 @@ pub(super) fn answer(
 ) -> Result<busbar_migrate::Settled, String> {
     let config = json::parse_value(settled.config_json.as_slice())
         .map_err(|_| format!("CONFIG: instance {index} returned invalid CONFIG"))?;
-    let registrations: Vec<_> = described.paths(tag::D_UPSTREAM_PATH).collect();
+    let registrations: Vec<_> = described
+        .paths(busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH)
+        .collect();
     let core = busbar_kernel::upstreams::core_secret_paths(&config, &registrations)
         .map_err(|errors| format!("CONFIG: instance {index}: {}", errors.join("; ")))?;
     let consumed = busbar_kernel::upstreams::core_field_paths(&config, &registrations)

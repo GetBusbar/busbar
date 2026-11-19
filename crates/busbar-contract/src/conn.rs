@@ -3,12 +3,13 @@
 
 //! THE CONNECTION TABLE (the design's connections: "every plugin that needs an external connection
 
+pub mod codes;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use crate::abi::mechanism::rendering::ReadNeed;
 use crate::ids::StreamId;
+use crate::rendering::ReadNeed;
 use crate::secure::SecureString;
 use crate::transport::wire::{WireFault, WireStatusClass};
 use crate::transport::ConnFacts;
@@ -102,7 +103,7 @@ pub enum PieceKind {
     /// Payload bytes.
     Body,
     /// A head: the far end's fields, as the field block
-    /// ([`crate::abi::transport::fields`]) renders them, hop-by-hop fields dropped. The far end's
+    /// ([`crate::transport::codes::fields`]) renders them, hop-by-hop fields dropped. The far end's
     /// HEAD is ONE fields frame, the answer's FIRST, carrying the status; it comes even when empty
     /// (a `len` of `0`), so it always precedes the first [`PieceKind::Body`]. A fields frame after
     /// the body is the far end's trailers.
@@ -146,6 +147,54 @@ pub struct Piece {
     /// none. The host hands it on as the framer stated it, never reading or checking it: a
     /// statement, not a count of the body pieces to come.
     pub declared_len: Option<u64>,
+}
+
+/// How much of a request to a far end the operating system accepted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Sent {
+    /// Not one byte of it: the far end received nothing. Another attempt cannot cost twice.
+    None,
+    /// Some of it: the far end received an incomplete request.
+    Part,
+    /// All of it, through its end mark, flushed: the far end may have acted and may charge.
+    Whole,
+}
+
+impl Sent {
+    /// The word the record carries.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Part => "part",
+            Self::Whole => "whole",
+        }
+    }
+}
+
+/// What the engine did about one attempt's end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AttemptEnd {
+    /// A kept connection turned out closed with nothing sent: the request was sent again on a fresh
+    /// connection. The far end is not charged and the walk is not told.
+    Redialled,
+    /// The far end stated it did not act on the request: it was sent again once.
+    RefusedUnprocessed,
+    /// The operator's proxy failed: no far end was reached and none is charged.
+    AtProxy,
+    /// The attempt failed and was left to the walk.
+    Failed,
+    /// The engine's own fault: nobody is charged.
+    Local,
+}
+
+/// The evidence of one attempt at a far end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AttemptEvidence {
+    /// What the operating system accepted of the request.
+    pub sent: Sent,
+    /// What the engine did about the attempt's end.
+    pub end: AttemptEnd,
 }
 
 /// Why a connection operation did not answer with what was asked. The refusals carry the text an
@@ -906,7 +955,7 @@ pub struct ConnAuth {
     /// `abi::auth::STYLE_NEEDS_HEADERS`.
     pub style_flags: u32,
     /// The style's `StyleDecl::points`.
-    pub points: crate::abi::auth::AuthPoints,
+    pub points: crate::route::AuthPoints,
     /// The member relays its caller's own verified credential: a request made inside a unit is
     /// lent that unit's ([`ConnAuth::lender`]); one made inside no unit has no caller, and opens
     /// nothing.
@@ -946,15 +995,6 @@ pub fn is_sealed_query_field(name: &[u8]) -> bool {
 pub fn is_sealed_fields_field(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(SEALED_FIELDS_FIELD.as_bytes())
 }
-
-/// The field a member-program connection's HEAD carries (the first piece every open on it reads,
-pub const PROGRAM_GENERATION_FIELD: &str = "generation";
-
-/// The host member incarnation. A replacement launch configuration receives a distinct value,
-pub const PROGRAM_INSTANCE_FIELD: &str = "program-instance";
-
-/// Standard-base64 UTF-8 absolute command path from the host-admitted program. This identifies
-pub const PROGRAM_IDENTITY_FIELD: &str = "program-identity";
 
 /// Host-only open constraint: the member incarnation previously observed in its first HEAD.
 pub const PROGRAM_EXPECT_INSTANCE_FIELD: &str = "program-expect-instance";
@@ -1163,6 +1203,51 @@ pub trait PollConns: Conns {
     /// far-end failure (fail-over, breaker charge), never as a local refusal.
     fn failure_cause(&self, _caller: InstanceId, _conn: ConnId) -> Option<ConnCause> {
         None
+    }
+
+    /// On a connection whose wire carries messages (a WebSocket upstream after its 101): the kind of the
+    /// message the body piece last read from `conn` belongs to: `Some(true)` text, `Some(false)` binary.
+    /// It is the transport's own statement (`MSG_TEXT`, `MSG_BINARY` on the piece), kept from the read
+    /// that handed the piece up to the next read of `conn`; every piece of a message in fragments answers
+    /// the message's kind. `None` = the wire has no messages, no body piece was read yet, the transport
+    /// stated no kind, or this table does not keep the kind: the reader then hands the piece on as bytes,
+    /// never as text it did not see stated.
+    ///
+    /// ONE READER: the answer is of the last read, so it is asked by the task that made that read, before
+    /// its next one. It takes no lock a write on `conn` holds.
+    ///
+    /// The `Connector` answers from its entry's own read state; any wrapper that forwards
+    /// [`PollConns::failure_cause`] forwards this the same way. The body is here for the tables that carry
+    /// no message wire (and the fakes built against this trait).
+    fn message_text(&self, _caller: InstanceId, _conn: ConnId) -> Option<bool> {
+        None
+    }
+
+    /// On a connection whose wire carries messages: the code the far end's side of `conn` ended with when
+    /// it did not end in order, exactly as the transport stated it (a WebSocket transport's `STREAM_RESET`
+    /// code: a close code, RFC 6455 section 7.4). Asked after a read of `conn` answered an error. `None` =
+    /// the far end ended in order or has not ended, the failure carried no code (the connection dropped,
+    /// a deadline), the wire has no messages, or this table does not keep it.
+    ///
+    /// THE NUMBER IS THE FAR END'S AND IS NOT JUDGED HERE: it may be a code no endpoint is allowed to send
+    /// (1005, 1006, 1015, anything outside 1000..=4999). Whoever writes a close from it decides what may
+    /// be written; the relay's rule is `port_duplex::caller_close_code`.
+    fn close_code(&self, _caller: InstanceId, _conn: ConnId) -> Option<u32> {
+        None
+    }
+
+    /// THE EVIDENCE OF EACH ATTEMPT `conn` made, in order, told to `each`: what the operating system
+    /// accepted of the request the engine sent (`none` is proof the far end received nothing of it;
+    /// `whole` means it may have acted and may charge), and what the engine did about the attempt's
+    /// end. A request sent again after its first connection failed has two entries. The usage record
+    /// carries them, so a request a provider may have worked on before a failover is visible.
+    /// Default: none known.
+    fn attempt_evidence(
+        &self,
+        _caller: InstanceId,
+        _conn: ConnId,
+        _each: &mut dyn FnMut(AttemptEvidence),
+    ) {
     }
 
     /// SEAL THE TRUST ANCHORS of one destination `owner`'s declared `need` reaches at `target` (a

@@ -113,6 +113,7 @@ mod fixture {
             _stream: u32,
             _delivery: u64,
             attempt: u32,
+            _lines: u32,
             batch: ChainBytes,
         ) -> Result<Reply, Fail> {
             if attempt == ATTEMPT_START_PANIC {
@@ -200,6 +201,7 @@ fn cx() -> CallCx {
         deadline: Instant::now() + Duration::from_secs(30),
         request_id: 1,
         stack: CallStack::default(),
+        mono_ns: 0,
     }
 }
 

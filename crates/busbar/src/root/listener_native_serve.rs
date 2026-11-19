@@ -9,11 +9,12 @@ use std::sync::Arc;
 use busbar_core_connector::framed_stream::session::{self, Inbound, Wiring};
 use busbar_core_connector::listen::{Admits, Admitted};
 use busbar_kernel::inbound::native::StreamOwner;
-use busbar_plugin_abi::transport::{CR_DRAIN, CR_NORMAL};
+use busbar_plugin_abi::transport::{CR_DRAIN, CR_NORMAL, CR_TIMEOUT};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 
-use super::{InputError, NativeListener, OpenedConnection, ReadyInput, LIVE_RESPONSES};
+use super::{InputError, NativeListener, OpenedConnection, ReadyInput};
+use crate::root::durability::core_audit::CoreAudit;
 use crate::root::listener::{ConnBalancer, ConnCountGuard};
 use crate::root::plane_node::Node;
 
@@ -40,6 +41,9 @@ pub(crate) async fn serve_admitted(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     mut balancer: Option<ConnBalancer>,
 ) -> std::io::Result<()> {
+    // This core's audit state: made when its listener loop starts, handed to each connection on
+    // it, released by the flusher's first pull after the loop and its connections let it go.
+    let core = node.core_audit();
     let (stop, stopped) = watch::channel(false);
     let mut connections = JoinSet::new();
     let mut task_failure = None;
@@ -75,6 +79,7 @@ pub(crate) async fn serve_admitted(
             native.clone(),
             security.clone(),
             node.clone(),
+            Arc::clone(&core),
             stopped.clone(),
         ));
     }
@@ -87,6 +92,7 @@ pub(crate) async fn serve_admitted(
                 native.clone(),
                 security.clone(),
                 node.clone(),
+                Arc::clone(&core),
                 stopped.clone(),
             ));
         }
@@ -109,13 +115,48 @@ async fn accepted(
     native: Arc<NativeListener>,
     security: Option<Arc<dyn busbar_contract::transport::wire::ConnectionSecurity>>,
     node: Arc<Node>,
+    core: Arc<CoreAudit>,
     stopped: watch::Receiver<bool>,
 ) -> Result<(), InputError> {
     // The original connector connection permit lives through every terminal join.
     let _hold = admitted.hold;
-    let stream = tokio::net::TcpStream::from_std(admitted.stream).map_err(InputError::Io)?;
-    let opened = native.accepted(stream, security.as_deref()).await?;
-    supervise(opened, native, node, stopped).await
+    let listener = Arc::clone(&native);
+    let ended = async {
+        let stream = tokio::net::TcpStream::from_std(admitted.stream).map_err(InputError::Io)?;
+        let opened = native.accepted(stream, security.as_deref()).await?;
+        Box::pin(supervise(opened, native, node, core, stopped)).await
+    }
+    .await;
+    if let Err(stop) = &ended {
+        ended_with(&listener, stop);
+    }
+    ended
+}
+
+/// A connection that ends with a failure used to end in silence: the listener loop joins its task
+/// and reads only a panic, so the failure itself was dropped. Say which listener it was on and
+/// what stopped it, so a request closed with nothing written names its layer: an arrival refusal,
+/// the transport's grammar, the response intent, or a delivery stop (`Integrity` is an answer that
+/// carried no output authority). A caller that went away is not a failure of this side.
+fn ended_with(native: &NativeListener, stop: &InputError) {
+    use busbar_contract::response_delivery::ResponseStop;
+    if matches!(stop, InputError::Delivery(ResponseStop::Cancelled)) {
+        return;
+    }
+    tracing::warn!(
+        listener = %native.slot,
+        admin = native.admin.is_some(),
+        stop = %stop,
+        "a native connection ended with a failure"
+    );
+}
+
+/// The caller's side of an adopted connection, as the supervisor holds it.
+struct AdoptedSide {
+    /// Where the caller's events go: the plane session's side of the upgraded request.
+    to_plane: mpsc::Sender<busbar_kernel::plane_driver::port_duplex::ClientEvent>,
+    /// The one event read from the adopted session and not yet taken by the plane session.
+    held: Option<busbar_kernel::plane_driver::port_duplex::ClientEvent>,
 }
 
 struct Waiting {
@@ -128,6 +169,18 @@ fn next_ready(waiting: &mut VecDeque<Waiting>) -> Option<ReadyInput> {
         waiting.pop_front().and_then(|entry| entry.ready)
     } else {
         None
+    }
+}
+
+/// The CR_* reason core states when it ends the connection over `error`: CR_TIMEOUT when a
+/// deadline core holds passed (transport-ws closes 1013, RFC 6455 §7.4.1), else CR_NORMAL.
+fn closed_for(error: &InputError) -> u32 {
+    match error {
+        InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Deadline)
+        | InputError::Arrival(busbar_kernel::inbound::native::ArrivalRefusal::Deadline) => {
+            CR_TIMEOUT
+        }
+        _ => CR_NORMAL,
     }
 }
 
@@ -150,6 +203,7 @@ async fn supervise(
     opened: OpenedConnection,
     native: Arc<NativeListener>,
     node: Arc<Node>,
+    core: Arc<CoreAudit>,
     mut stopped: watch::Receiver<bool>,
 ) -> Result<(), InputError> {
     let OpenedConnection {
@@ -159,29 +213,17 @@ async fn supervise(
         progress,
         delivery,
     } = opened;
-    let source = conn.storage().clone();
-    let _queue_credit = source
-        .try_reserve(
-            LIVE_RESPONSES
-                .checked_mul(std::mem::size_of::<Waiting>())
-                .ok_or(InputError::Capacity)?,
-        )
-        .map_err(|_| InputError::Capacity)?;
+    // Heads waiting their turn, in order: empty until the first head (allocation ruling); each head
+    // is bounded by its own admission, not by a fixed queue.
     let mut waiting = VecDeque::new();
-    waiting
-        .try_reserve_exact(LIVE_RESPONSES)
-        .map_err(|_| InputError::Capacity)?;
-    if waiting.capacity() > LIVE_RESPONSES {
-        return Err(InputError::Capacity);
-    }
     let connection = Arc::new(
         node.response_intents()
             .ok_or(InputError::Invalid)?
-            .connection()
+            .connection(core)
             .map_err(InputError::FinalIntent)?,
     );
-    let (registrations, registered) = mpsc::channel(1);
-    let (feeds, fed) = mpsc::channel(1);
+    let (mut registrations, registered) = mpsc::channel(1);
+    let (mut feeds, fed) = mpsc::channel(1);
     let (inbound, mut inputs) = mpsc::channel(1);
     let (close, closed) = oneshot::channel();
     let mut close = Some(close);
@@ -198,6 +240,10 @@ async fn supervise(
             write_timeout: native.limits.write_timeout,
             drain_grace: native.limits.drain_grace,
             counters: Arc::default(),
+            // No housekeeping tick walks a listener's read blocks yet (the usage flush tick runs
+            // in the kernel's budget flusher, started in main.rs): until it does, a read block,
+            // once made, is kept until its connection ends.
+            read_holders: None,
         },
     );
     let mut driver = std::pin::pin!(driver);
@@ -206,6 +252,14 @@ async fn supervise(
     let mut preparing = JoinSet::new();
     let mut responses = JoinSet::new();
     let mut failure = None;
+    // The connection after a committed upgrade's hand-over (`listener_native_handover.rs`): the
+    // websocket transport's session is driven in the HTTP session's place, and what it hands up is
+    // the caller's side of the one upgraded session, not a new request.
+    let mut adopted: Option<AdoptedSide> = None;
+    // What the connection was asked and what it answered, and how its session ended: a request
+    // head that was read and never answered is said (`unanswered`), whatever ended it.
+    let (mut heads, mut answered) = (0_usize, 0_usize);
+    let mut ended = "the supervisor stopped";
     loop {
         if driver_done {
             for slot in &mut ingress.slots {
@@ -255,9 +309,12 @@ async fn supervise(
                     None => std::future::pending().await,
                 }
             }, if close.is_some() => {
-                failure.get_or_insert(InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Deadline));
+                // A deadline passed: the connection ends for it, whatever failed before.
+                let passed = InputError::Delivery(busbar_contract::response_delivery::ResponseStop::Deadline);
+                let reason = closed_for(&passed);
+                failure.get_or_insert(passed);
                 input_open = false;
-                stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                stop_connection(&ingress, &mut waiting, &mut close, reason);
             },
             changed = stopped.changed(), if close.is_some() => {
                 if changed.is_err() || *stopped.borrow() {
@@ -266,15 +323,59 @@ async fn supervise(
                 }
             },
             outcome = &mut driver, if !driver_done => {
+                // §12.27 step 3: the HTTP transport answered UPGRADE to a committed upgrade's 101.
+                // The connection, its counters, its progress reader and the upgraded answer go to
+                // the websocket transport; this supervisor goes on with them.
+                let outcome = match outcome {
+                    session::Outcome::Upgraded(upgrade) => {
+                        let owners: Vec<Arc<StreamOwner>> =
+                            ingress.slots.iter().map(|slot| slot.owner.clone()).collect();
+                        match super::handover::adopt(
+                            upgrade,
+                            &owners,
+                            ingress.connection.facts(),
+                            &native.limits,
+                        ) {
+                            Ok(next) => {
+                                driver.set(session::drive(next.conn, next.io, next.progress, next.wiring));
+                                inputs = next.inputs;
+                                close = Some(next.close);
+                                registrations = next.registrations;
+                                feeds = next.feeds;
+                                adopted = Some(AdoptedSide { to_plane: next.to_plane, held: None });
+                                // No further request arrives on an adopted connection.
+                                waiting.clear();
+                                continue;
+                            }
+                            // Not adopted: nothing was written for the 101, the writer is retired,
+                            // and the request ends cancelled (its unit settles as a cut answer).
+                            Err(error) => {
+                                failure.get_or_insert(error);
+                                None
+                            }
+                        }
+                    }
+                    outcome => Some(outcome),
+                };
+                ended = outcome.as_ref().map_or("the upgrade was not adopted", session_ended);
+                // The caller's side of an adopted session is over with its connection.
+                adopted = None;
                 driver_done = true;
                 input_open = false;
                 inputs.close();
                 waiting.clear();
-                for slot in &ingress.slots { ingress.connection.cancel(&slot.owner); }
-                if !matches!(outcome, session::Outcome::Closed | session::Outcome::PeerClosed | session::Outcome::CoreClosed(_)) {
+                for slot in &ingress.slots {
+                    ingress.connection.cancel(&slot.owner);
+                    // A committed upgrade whose connection ended before its hand-over is let go:
+                    // its plane session is told the caller is gone.
+                    super::handover::forget(&slot.owner);
+                }
+                if outcome.as_ref().is_some_and(|outcome| !matches!(outcome, session::Outcome::Closed | session::Outcome::PeerClosed | session::Outcome::CoreClosed(_))) {
                     failure.get_or_insert(InputError::Invalid);
                 }
-                outcome.retire();
+                if let Some(outcome) = outcome {
+                    outcome.retire();
+                }
             },
             prepared = preparing.join_next(), if !preparing.is_empty() => {
                 match prepared {
@@ -282,9 +383,9 @@ async fn supervise(
                         if let Some(slot) = ingress.slots.iter_mut().find(|slot| Arc::ptr_eq(&slot.owner, &owner)) {
                             slot.node = prepared.native_node_handle();
                         }
-                        let (feeds, node) = (feeds.clone(), node.clone());
+                        let feeds = feeds.clone();
                         responses.spawn(async move {
-                            ResponseFinished::Delivered(prepared.send(&feeds, &node).await)
+                            ResponseFinished::Delivered(prepared.send(&feeds).await)
                         });
                     },
                     Some(Ok((owner, Err(error)))) => {
@@ -296,9 +397,10 @@ async fn supervise(
                         let slot = ingress.slots.iter_mut().find(|slot| Arc::ptr_eq(&slot.owner, &owner))
                             .expect("preparing request retains its original input slot");
                         slot.node = handle;
+                        let reason = closed_for(&error);
                         failure.get_or_insert(error);
                         input_open = false;
-                        stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                        stop_connection(&ingress, &mut waiting, &mut close, reason);
                     },
                     Some(Err(error)) => {
                         failure.get_or_insert(InputError::Io(std::io::Error::other(error)));
@@ -312,11 +414,15 @@ async fn supervise(
                 match completed {
                     Some(Ok(ResponseFinished::Delivered(completed))) => {
                         if let Err(error) = ingress.retire(&completed.owner) {
+                            let reason = closed_for(&error);
                             failure.get_or_insert(error);
                             input_open = false;
-                            stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                            stop_connection(&ingress, &mut waiting, &mut close, reason);
                         }
-                        if let Err(error) = completed.result { failure.get_or_insert(error); }
+                        match completed.result {
+                            Ok(_) => answered += 1,
+                            Err(error) => { failure.get_or_insert(error); },
+                        }
                     },
                     Some(Err(error)) => {
                         failure.get_or_insert(InputError::Io(std::io::Error::other(error)));
@@ -326,28 +432,44 @@ async fn supervise(
                     None => {},
                 }
             },
-            input = inputs.recv(), if input_open => {
+            // One event of the caller is held for the plane session at a time: the adopted session
+            // is not read further until the plane has taken it (that is the back-pressure).
+            permit = async {
+                adopted.as_ref().expect("guarded").to_plane.clone().reserve_owned().await
+            }, if adopted.as_ref().is_some_and(|side| side.held.is_some()) => {
+                match (permit, adopted.as_mut().and_then(|side| side.held.take())) {
+                    (Ok(permit), Some(event)) => { permit.send(event); },
+                    // The plane session is over: nothing more of the caller is wanted.
+                    _ => {},
+                }
+            },
+            input = inputs.recv(), if input_open && adopted.as_ref().is_none_or(|side| side.held.is_none()) => {
                 let Some(input) = input else { input_open = false; continue };
+                if let Some(side) = adopted.as_mut() {
+                    // After the hand-over: a message of the caller, its close, or its loss.
+                    side.held = Some(super::handover::event_of(input));
+                    continue;
+                }
                 if let Inbound::Head { stream, .. } = &input {
-                    if waiting.len() == LIVE_RESPONSES {
-                        failure.get_or_insert(InputError::Capacity);
-                        input_open = false;
-                        stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
-                        continue;
-                    }
+                    heads += 1;
                     waiting.push_back(Waiting { stream: *stream, ready: None });
                 }
                 let reset = match &input {
                     Inbound::Reset { stream, .. } | Inbound::Stalled(stream) => Some(*stream),
                     _ => None,
                 };
-                let Some(deadline) = std::time::Instant::now().checked_add(native.limits.request_timeout) else {
+                // The arrival's one monotonic reading: its deadline is derived from it and every
+                // call made for the request is handed it.
+                let Some(arrival) = busbar_kernel::inbound::native::Arrival::at(
+                    busbar_kernel::store::monotonic_ns(),
+                    native.limits.request_timeout,
+                ) else {
                     failure.get_or_insert(InputError::Capacity);
                     input_open = false;
                     stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
                     continue;
                 };
-                match ingress.accept(input, Some(deadline)) {
+                match ingress.accept(input, Some(arrival)) {
                     Ok(Some(ready)) => {
                         let stream = ready.request.binding().stream();
                         if let Some(entry) = waiting.iter_mut().find(|entry| entry.stream == stream) {
@@ -360,9 +482,10 @@ async fn supervise(
                     },
                     Ok(None) => {},
                     Err(error) => {
+                        let reason = closed_for(&error);
                         failure.get_or_insert(error);
                         input_open = false;
-                        stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                        stop_connection(&ingress, &mut waiting, &mut close, reason);
                     },
                 }
                 if let Some(stream) = reset {
@@ -370,9 +493,10 @@ async fn supervise(
                         waiting.remove(index);
                         if let Some(owner) = ingress.slots.iter().find(|slot| slot.stream == stream).map(|slot| slot.owner.clone()) {
                             if let Err(error) = ingress.retire(&owner) {
+                                let reason = closed_for(&error);
                                 failure.get_or_insert(error);
                                 input_open = false;
-                                stop_connection(&ingress, &mut waiting, &mut close, CR_NORMAL);
+                                stop_connection(&ingress, &mut waiting, &mut close, reason);
                             }
                         }
                     }
@@ -380,15 +504,64 @@ async fn supervise(
             },
         }
     }
+    if heads > answered {
+        // A request closed with nothing written used to leave no line: a cancelled preparation
+        // and a session the transport closed are not failures `ended_with` reports.
+        tracing::warn!(
+            listener = %native.slot,
+            admin = native.admin.is_some(),
+            requests = heads,
+            answered,
+            session = ended,
+            failure = %failure.as_ref().map_or_else(|| "none".to_owned(), ToString::to_string),
+            "a native connection closed with a request unanswered"
+        );
+    }
     match failure {
         Some(error) => Err(error),
         None => Ok(()),
     }
 }
 
+/// How the connection's session ended, in words for the unanswered-request line.
+fn session_ended<S>(outcome: &session::Outcome<S>) -> &'static str {
+    match outcome {
+        session::Outcome::Closed => "the transport closed the session",
+        session::Outcome::PeerClosed => "the peer closed the connection",
+        session::Outcome::CoreClosed(_) => "core closed the session",
+        session::Outcome::Lost(_) => "the socket failed",
+        session::Outcome::Ended(_) => "a transport call failed or broke the answer grammar",
+        session::Outcome::Upgraded(_) => "the connection was upgraded",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use busbar_contract::response_delivery::ResponseStop;
+    use busbar_kernel::inbound::native::ArrivalRefusal;
+
+    /// A connection core ends because a deadline passed says so (CR_TIMEOUT, transport-ws 1013);
+    /// every other failure keeps CR_NORMAL.
+    #[test]
+    fn a_connection_ended_by_a_passed_deadline_reports_cr_timeout() {
+        assert_eq!(
+            closed_for(&InputError::Delivery(ResponseStop::Deadline)),
+            CR_TIMEOUT
+        );
+        assert_eq!(
+            closed_for(&InputError::Arrival(ArrivalRefusal::Deadline)),
+            CR_TIMEOUT
+        );
+        for other in [
+            InputError::Invalid,
+            InputError::Capacity,
+            InputError::Delivery(ResponseStop::Cancelled),
+            InputError::Arrival(ArrivalRefusal::Cancelled),
+        ] {
+            assert_eq!(closed_for(&other), CR_NORMAL, "{other}");
+        }
+    }
 
     #[tokio::test]
     async fn later_input_eof_cannot_overtake_original_head_registration() {

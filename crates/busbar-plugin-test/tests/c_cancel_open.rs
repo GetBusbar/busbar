@@ -160,6 +160,7 @@ fn an_open_parked_mid_need_is_cancelled_three_ways_once_inline() {
         deadline: Instant::now() + Duration::from_secs(10),
         request_id: 1,
         stack: CallStack::default(),
+        mono_ns: 0,
     };
     let answer = rt.block_on(port.resolve(cx, br#"{"name":"db"}"#)).ok();
     assert_eq!(

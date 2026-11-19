@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A plane's routes, and where core mounts them (IF §8.6 RouteRec, §12.11, §12.24, §12.27; PLANE-DRIVER.md
-//! slice 8). [`plan`] reads `PlanePort::routes()` once, at open, and sorts them:
+//! slice 8). [`plan`] reads `PlanePort::routes()` once, at open, with the admission and challenge each
+//! route states (`PlanePort::route_admission`, `PlanePort::route_challenge`), and sorts them:
 //!
 //! * `data`: mounted on the data listeners (a `ROUTE_CATALOG` route is answered with `render(RENDER_CATALOG)`);
 //! * `admin`: `ROUTE_ADMIN`, mounted on the admin router under the instance's admin mount, behind the admin scope
@@ -18,7 +19,7 @@
 //! when the mask holds both `AUTH_PRINCIPAL` and `AUTH_TICKET`.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use busbar_plugin_abi::plane::{
     ADMIN_HYDRATE, AUTH_OPERATOR, AUTH_PRINCIPAL, ROUTE_ADMIN, ROUTE_CATALOG, ROUTE_LINE,
@@ -28,6 +29,7 @@ use busbar_ports::plane::{PlaneIn, PlanePort, RouteInfo};
 use busbar_ports::{CallCx, PortError};
 
 use super::port_auth::effective_classes;
+use crate::auth::route_record::{wire, PlaneMethods, RecordRefused, RouteRecord, KIND_POOL};
 
 /// How long the plane has to answer one admin call.
 const ADMIN_GRACE: Duration = Duration::from_secs(30);
@@ -48,6 +50,10 @@ pub struct Mounted {
     pub resource_kinds: Arc<[Box<str>]>,
     /// A `ROUTE_CATALOG` route.
     pub catalog: bool,
+    /// The route's record as its plane stated it (D_ROUTE_ADMISSION, D_ROUTE_CHALLENGE), built and
+    /// validated when the route was mounted ([`plan`]). It is the one source of the route's
+    /// admission: a route that states none is not mounted, it refuses its plane.
+    pub record: RouteRecord,
 }
 
 /// The route table of one plane instance.
@@ -63,8 +69,12 @@ pub struct PortRoutes {
 }
 
 /// Why a plane's routes cannot be mounted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteRefused {
+    /// The route states no admission (plane 2.0: one D_ROUTE_ADMISSION per route, no default).
+    NoAdmission { route: u32 },
+    /// The route's stated record is incomplete or contradicts itself.
+    Record { route: u32, why: RecordRefused },
     /// The route's mask names no usable class, or the operator's choice lies outside it.
     Classes { route: u32 },
     /// ROUTE_ADMIN, ROUTE_LINE, ROUTE_RECOVERY or ROUTE_UPGRADE beside another ROUTE_* bit (CATALOG included).
@@ -84,6 +94,8 @@ pub enum RouteRefused {
 impl std::fmt::Display for RouteRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NoAdmission { route } => write!(f, "route {route} states no admission"),
+            Self::Record { route, why } => write!(f, "route {route}: {why}"),
             Self::Classes { route } => write!(f, "route {route} names no usable auth class"),
             Self::Flags { route } => {
                 write!(f, "route {route} combines route flags that do not combine")
@@ -103,23 +115,67 @@ impl std::fmt::Display for RouteRefused {
 
 impl std::error::Error for RouteRefused {}
 
-/// Sorts `routes` into the mount table. `configured` is the operator's `routes.<id>.auth` class set, if any.
+/// The record `r` states through its port: the admission and challenge its plane declared
+/// (`PlanePort::route_admission`, `PlanePort::route_challenge`), read once, here.
+///
+/// The loader already judged the admission by the contract's load rules against the image's own
+/// methods (`vocab::route1::check`); the mount table sees a port, not a method table, so the three
+/// rules that ask what the image implements are the loader's alone and are not asked again here.
+fn stated_record(port: &dyn PlanePort, r: &RouteInfo) -> Result<RouteRecord, RouteRefused> {
+    let (scope, money, callers, walk_kind) = port
+        .route_admission(r.route)
+        .ok_or(RouteRefused::NoAdmission { route: r.route })?;
+    let refused = |why| RouteRefused::Record {
+        route: r.route,
+        why,
+    };
+    let item = wire::AdmissionItem {
+        route: r.route,
+        scope,
+        money,
+        callers,
+        walk_kind,
+    };
+    let record = RouteRecord::from_wire(
+        r.flags,
+        r.auth,
+        r.cred_header.as_deref(),
+        &r.resource_kinds,
+        &item,
+        port.route_challenge(r.route),
+    )
+    .ok_or_else(|| refused(RecordRefused::Admission))?;
+    record
+        .validate(
+            r.methods,
+            PlaneMethods {
+                render: true,
+                select_resources: true,
+                upstream: true,
+            },
+        )
+        .map_err(refused)?;
+    Ok(record)
+}
+
+/// Sorts `port`'s routes into the mount table, each with the record it states. `configured` is the
+/// operator's `routes.<id>.auth` class set, if any.
 ///
 /// # Errors
 /// A [`RouteRefused`] naming the first route that cannot be mounted.
 pub fn plan(
-    routes: &[RouteInfo],
-    admin_openapi: Option<&str>,
+    port: &dyn PlanePort,
     configured: &dyn Fn(u32) -> Option<u32>,
 ) -> Result<PortRoutes, RouteRefused> {
     const SPECIAL: u32 = ROUTE_ADMIN | ROUTE_LINE | ROUTE_RECOVERY | ROUTE_UPGRADE;
     const ALL: u32 = SPECIAL | ROUTE_CATALOG;
+    let admin_openapi = port.admin_openapi();
     let mut table = PortRoutes {
         admin_openapi: admin_openapi.map(str::to_owned),
         ..PortRoutes::default()
     };
     let mut any_admin = false;
-    for r in routes {
+    for r in port.routes() {
         if !r.resource_kinds.is_empty() {
             let mut kinds = std::collections::BTreeSet::new();
             if r.flags != 0
@@ -139,7 +195,14 @@ pub fn plan(
         }
         let effective = effective_classes(r.auth, configured(r.route))
             .map_err(|_| RouteRefused::Classes { route: r.route })?;
+        if special == ROUTE_ADMIN && r.auth != AUTH_OPERATOR {
+            return Err(RouteRefused::AdminAuth { route: r.route });
+        }
+        if special == ROUTE_RECOVERY && r.auth != AUTH_PRINCIPAL {
+            return Err(RouteRefused::RecoveryAuth { route: r.route });
+        }
         let mounted = Mounted {
+            record: stated_record(port, r)?,
             route: r.route,
             methods: r.methods,
             flags: r.flags,
@@ -152,9 +215,6 @@ pub fn plan(
         };
         match special {
             ROUTE_ADMIN => {
-                if r.auth != AUTH_OPERATOR {
-                    return Err(RouteRefused::AdminAuth { route: r.route });
-                }
                 any_admin = true;
                 table.admin.push(mounted);
             }
@@ -164,19 +224,51 @@ pub fn plan(
                     return Err(RouteRefused::TwoLines);
                 }
             }
-            ROUTE_RECOVERY => {
-                if r.auth != AUTH_PRINCIPAL {
-                    return Err(RouteRefused::RecoveryAuth { route: r.route });
-                }
-                table.recovery.push(mounted);
-            }
+            ROUTE_RECOVERY => table.recovery.push(mounted),
             _ => table.data.push(mounted),
         }
     }
     if any_admin && admin_openapi.is_none() {
         return Err(RouteRefused::AdminWithoutOpenapi);
     }
+    declare_stated_kinds(&table);
     Ok(table)
+}
+
+/// The scope kinds the records of every plane mounted in this process state (their walk kind and
+/// their selected kinds), core's `pool` aside. A MIN-3 plane declares its kinds here and nowhere
+/// else, so these are the kinds a key may be granted beside the declared planes' own
+/// (`governance::plane_declares_kind`). Additive for the process: a kind is never withdrawn, and
+/// a grant of a kind no mounted route states matches no route.
+static STATED_KINDS: std::sync::RwLock<std::collections::BTreeSet<Box<str>>> =
+    std::sync::RwLock::new(std::collections::BTreeSet::new());
+
+/// Add the kinds of a plane whose every route was accepted. A refused plane declares nothing.
+fn declare_stated_kinds(table: &PortRoutes) {
+    let records = table
+        .data
+        .iter()
+        .chain(&table.admin)
+        .chain(&table.upgrade)
+        .chain(&table.line)
+        .chain(&table.recovery)
+        .map(|mounted| &mounted.record);
+    let mut kinds = STATED_KINDS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for kind in records.flat_map(|record| record.scope.kinds()) {
+        if kind != KIND_POOL && !kinds.contains(kind) {
+            kinds.insert(kind.into());
+        }
+    }
+}
+
+/// Whether a mounted route's record states `kind`.
+pub fn kind_stated(kind: &str) -> bool {
+    STATED_KINDS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(kind)
 }
 
 /// The request core originates to deliver a durable-work poll (§12.24 step 3): a GET on the recovery route the
@@ -218,7 +310,7 @@ fn target_parts(target: &str) -> (&str, &str) {
 /// The recovery route a WORK target's path lies on (the same match WORK_OPEN was admitted under), if any.
 #[must_use]
 pub fn recovery_route<'r>(routes: &'r PortRoutes, target: &str) -> Option<&'r Mounted> {
-    use busbar_contract::abi::transport::route::{path_matches, PATH_PATTERN};
+    use busbar_contract::route::{path_matches, PATH_PATTERN};
     let (path, _) = target_parts(target);
     routes
         .recovery
@@ -227,10 +319,14 @@ pub fn recovery_route<'r>(routes: &'r PortRoutes, target: &str) -> Option<&'r Mo
 }
 
 fn admin_cx() -> CallCx {
+    // The node's monotonic clock, read once for this call: the deadline is set from it and the
+    // plane is handed it.
+    let mono_ns = crate::store::monotonic_ns();
     CallCx {
-        deadline: Instant::now() + ADMIN_GRACE,
+        deadline: busbar_contract::mono_instant::instant_at(mono_ns) + ADMIN_GRACE,
         request_id: 0,
         stack: Default::default(),
+        mono_ns,
     }
 }
 

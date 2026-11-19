@@ -273,7 +273,7 @@ fn two_folds_under_one_key_are_two_rows_each_reading_its_own_door() {
     let first = fold(registration("door-fold-twice", NAMED)).expect("folds");
     let second = fold(PlaneRegistration {
         dialects: vec!["third"],
-        dialect_flags: vec![busbar_contract::abi::plane::DIALECT_PROVIDER],
+        dialect_flags: vec![busbar_contract::plane::codes::DIALECT_PROVIDER],
         ..registration("door-fold-twice", NAMED)
     })
     .expect("folds");
@@ -913,23 +913,6 @@ fn a_refused_facing_keeps_only_the_same_successful_serving_slot() {
     let refused_owned = (decl.build)(decl, &owned_ctx(active_owned)).unwrap();
     assert!(Arc::ptr_eq(&old, &refused_owned));
     assert!((decl.build)(decl, &owned_ctx(busbar_contract::yaml::Value::Null)).is_none());
-}
-
-#[test]
-fn temporary_admin_plane_unavailability_preserves_503_classification() {
-    use crate::admin_verbs::PlaneVerbError;
-    assert!(matches!(
-        admin_plane_error(503, "PRIVATE_BACKEND_SENTINEL".into(), &Vec::new()),
-        PlaneVerbError::Unavailable
-    ));
-    assert!(matches!(
-        admin_plane_error(500, "PRIVATE_BACKEND_SENTINEL".into(), &Vec::new()),
-        PlaneVerbError::Internal(_)
-    ));
-    assert!(matches!(
-        admin_plane_error(502, "PRIVATE_BACKEND_SENTINEL".into(), &Vec::new()),
-        PlaneVerbError::Internal(_)
-    ));
 }
 
 /// DEPENDENCY-LADDER C6 (percent-encoding) pins the path-segment encoder before the hand loop

@@ -49,6 +49,10 @@ notes = "Exact-revision adopted native HTTP fork; its explicit exemption is not 
 audit-as-crates-io = true
 notes = "Exact-revision adopted native HTTP fork; its explicit exemption is not an imported or self-authored audit."
 
+[policy.is]
+audit-as-crates-io = true
+notes = "Unchanged is 0.11.1 from the MattJackson/str0m fork repository; see the str0m exemption."
+
 [policy.jobserver]
 audit-as-crates-io = true
 notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
@@ -77,16 +81,20 @@ notes = "Exact-revision Git fork of sonic-rs 0.5.11; see its exemption."
 audit-as-crates-io = true
 notes = "Unchanged sonic-simd 0.1.4 from the sonic-rs fork repository; see the sonic-rs exemption."
 
+[policy.str0m]
+audit-as-crates-io = true
+notes = "MattJackson/str0m fork at 36833da (str0m 0.24.1 plus `set_fill`, the Host random source for ICE credentials); not yet proposed upstream. See the str0m exemption."
+
+[policy.str0m-proto]
+audit-as-crates-io = true
+notes = "str0m-proto 0.7.0 from the MattJackson/str0m fork at 36833da, the crate that gains `set_fill`; see the str0m exemption."
+
 [policy.stringprep]
 audit-as-crates-io = true
 notes = "DEP-5: this exact Git revision requires imported coverage or a separately justified exemption. Superseded local reviews are historical evidence only; they do not attest the Git revision or its registry base. See supply-chain/history/README.md at the repository root."
 
 [policy.tungstenite]
 audit-as-crates-io = true
-
-[[exemptions.aes]]
-version = "0.8.4"
-criteria = "safe-to-deploy"
 
 [[exemptions.ahash]]
 version = "0.8.12"
@@ -387,12 +395,12 @@ version = "0.3.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.granit-parser]]
-version = "2.1.0@git:d31e9292a0be49de7d3a85ee07555bb9d0afce20"
+version = "2.2.0@git:6597ae7f5622872c6e242af590342de05300d601"
 criteria = "safe-to-deploy"
 notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/granit-parser fork revision under serde-saphyr (the settled YAML stack, DEP-3), carrying the opt-in serde_yaml-compatibility patches offered upstream. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
 [[exemptions.h2]]
-version = "0.4.18@git:6bdbf046878247aebe9138f37f32d2665b54bdd9"
+version = "0.4.20@git:45b907798147b992b03334e500fdedc8d7e29a40"
 criteria = "safe-to-deploy"
 notes = "DEP-5 coordinator exemption for this exact adopted fork revision: HTTP/2 serializer attribution and release barriers retain the adopted native delivery contract. Trusted imported audits do not cover these local deltas. Source selection and approval are recorded in house-recovery-execution/w07/SOURCE.md; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
@@ -417,7 +425,7 @@ version = "0.13.0"
 criteria = "safe-to-run"
 
 [[exemptions.http]]
-version = "1.4.1@git:904f4519b5f27a0424b121a4828640c741efcd95"
+version = "1.5.0@git:7e71322105371bae475f8e68d86324e73f4a11c9"
 criteria = "safe-to-deploy"
 notes = "DEP-5 coordinator exemption for this exact adopted fork revision: HTTP-PROJECTION-PRODUCER r2 requires library-owned allocation quotation and shared method/header backing; full-map replacement regressions are included. Trusted imported audits do not cover these local deltas. Source selection and approval are recorded in house-recovery-execution/w07/SOURCE.md; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
@@ -439,16 +447,16 @@ criteria = "safe-to-deploy"
 notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.hyper]]
-version = "1.11.1@git:c140435f43477ca3ffbdb2078a5994e9dfb11969"
+version = "1.12.0@git:96fc11745ef61f4b7a37a51f5484836a7807e8eb"
 criteria = "safe-to-deploy"
-notes = "DEP-5 coordinator exemption for the adopted fork successor c140435f: exactly 5b1c5189 plus one compile-only commit in src/proto/h1/encode.rs (chunked serialization spans read through the bytes Chain accessors); hyper manifest unchanged. Same source record as 5b1c5189 (house-recovery-execution/w07/SOURCE.md); remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
+notes = "DEP-5 coordinator exemption for the adopted fork rebased onto hyper v1.12.0 (96fc1174), the same three commits as the earlier c140435f: 5b1c5189 plus one compile-only commit in src/proto/h1/encode.rs (chunked serialization spans read through the bytes Chain accessors); hyper manifest unchanged. Same source record as 5b1c5189 (house-recovery-execution/w07/SOURCE.md); remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
 [[exemptions.hyper-rustls]]
 version = "0.27.9"
 criteria = "safe-to-run"
 
 [[exemptions.hyper-util]]
-version = "0.1.20@git:b4c554c133c7fc83ee55a9ce0271849f7387994d"
+version = "0.1.21@git:2abd71badaf5aefcfaf6118a87656e849fbfca64"
 criteria = "safe-to-deploy"
 notes = "DEP-5 coordinator exemption for this exact adopted fork revision: Carries the same adopted serializer provenance through the connection builder. Trusted imported audits do not cover these local deltas. Source selection and approval are recorded in house-recovery-execution/w07/SOURCE.md; remote qualification and owner-reviewed upstream publication remain required. No self-audit is claimed."
 
@@ -473,8 +481,9 @@ version = "2.12.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.is]]
-version = "0.11.1"
+version = "0.11.1@git:36833da71bb86b5dfc9a88e3f56afa3353bb70db"
 criteria = "safe-to-deploy"
+notes = "Unchanged is 0.11.1 from the allow-listed MattJackson/str0m fork revision (str0m 0.24.1 plus `set_fill`), required by the linked webrtc image. No self-audit is claimed."
 
 [[exemptions.itertools]]
 version = "0.14.0"
@@ -910,15 +919,16 @@ version = "1.2.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.sctp-proto]]
-version = "0.10.5"
+version = "0.10.8"
 criteria = "safe-to-deploy"
+notes = "The version the webrtc image's own lock and CI run (transport-webrtc a9d7912), aligned from 0.10.5."
 
 [[exemptions.serde]]
 version = "1.0.229"
 criteria = "safe-to-deploy"
 
 [[exemptions.serde-saphyr]]
-version = "2.1.1@git:a94d2da01a448d348b5d14945e29192e511b8452"
+version = "2.2.0@git:34461cdf00e17aea91654dc744aa6ae585458411"
 criteria = "safe-to-deploy"
 notes = "DEP-5 coordinator exemption for the allow-listed MattJackson/serde-saphyr fork revision used by busbar-contract (the settled YAML stack, DEP-3), with the opt-in serde_yaml-compatibility patches offered upstream. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
@@ -1014,13 +1024,20 @@ version = "0.3.1"
 criteria = "safe-to-deploy"
 notes = "DEP-5 coordinator exemption: server-sent-events parsing in busbar-contract; no imported audit covers 0.3.1. Tracking: GetBusbar/busbar#429. No self-audit is claimed."
 
+[[exemptions.stats_alloc]]
+version = "0.1.10"
+criteria = "safe-to-run"
+notes = "Test-only allocation counter: a dev-dependency of the root tests the distribution builds (a68e05861e). The workspace root already exempts the same version. No self-audit is claimed."
+
 [[exemptions.str0m]]
-version = "0.24.1"
+version = "0.24.1@git:36833da71bb86b5dfc9a88e3f56afa3353bb70db"
 criteria = "safe-to-deploy"
+notes = "Allow-listed MattJackson/str0m fork revision: str0m 0.24.1 plus one commit adding `str0m_proto::set_fill` (the media stack's random source points at the host, so every ICE credential is Host-random). Not yet proposed upstream. Required by the linked webrtc image. No self-audit is claimed."
 
 [[exemptions.str0m-proto]]
-version = "0.7.0"
+version = "0.7.0@git:36833da71bb86b5dfc9a88e3f56afa3353bb70db"
 criteria = "safe-to-deploy"
+notes = "str0m-proto 0.7.0 at the allow-listed MattJackson/str0m fork revision, the crate that gains `set_fill`; see the str0m exemption. No self-audit is claimed."
 
 [[exemptions.stringprep]]
 version = "0.1.5@git:e81fc4b8a718e5a80bbdf87e5d183565dd5e66cf"

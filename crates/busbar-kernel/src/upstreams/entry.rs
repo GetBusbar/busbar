@@ -251,10 +251,18 @@ fn url_path(url: &str) -> Box<str> {
     }
 }
 
+/// Whether `url` names an endpoint reached without TLS: `http://`, or `ws://` (a WebSocket far end, the upgrade
+/// of an `http://` connection).
 fn is_plain_http(url: &str) -> bool {
-    url.split_once("://")
-        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("http"))
+    url.split_once("://").is_some_and(|(scheme, _)| {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("ws")
+    })
 }
+
+/// The schemes an upstream's `url:` may name: HTTP, and the WebSocket far end of an upgraded session (a
+/// Realtime provider), each plain or over TLS. Which transport carries each is core's scheme table
+/// (`native_dial::locate`), and a scheme whose carrier the deployment does not supply is refused there.
+const URL_SCHEMES: [&str; 4] = ["https", "http", "wss", "ws"];
 
 fn url(at: &str, value: &Value, refused: &mut Vec<String>) -> Option<Box<str>> {
     let Some(url) = value.as_str() else {
@@ -278,13 +286,16 @@ fn url(at: &str, value: &Value, refused: &mut Vec<String>) -> Option<Box<str>> {
     }
     let Some((scheme, rest)) = url.split_once("://") else {
         refused.push(format!(
-            "{at}: `url: {shown}` must be an `http://` or `https://` endpoint"
+            "{at}: `url: {shown}` must be an `http://`, `https://`, `ws://` or `wss://` endpoint"
         ));
         return None;
     };
-    if !(scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")) {
+    if !URL_SCHEMES
+        .iter()
+        .any(|known| scheme.eq_ignore_ascii_case(known))
+    {
         refused.push(format!(
-            "{at}: `url: {shown}` must be an `http://` or `https://` endpoint"
+            "{at}: `url: {shown}` must be an `http://`, `https://`, `ws://` or `wss://` endpoint"
         ));
         return None;
     }

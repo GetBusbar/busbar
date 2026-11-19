@@ -103,12 +103,22 @@ impl Drop for ThreadArena {
 
 std::thread_local! {
     static ARENA: RefCell<ThreadArena> = RefCell::new(ThreadArena(Arena::new(ARENA_CAP)));
+    /// Set before the arena lends anything; cleared by the reset that zeroes it. An entry that lent nothing
+    /// (every transport, plane and auth call that asks no `random`/`crypto`) skips the reset (IF §0 I5, §10.7).
+    static ARENA_LENT: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
 
 /// The outermost entry guard's exit: zero everything lent in the entry and start the arena over (I11).
 /// Contract (W1-H1): call it only at the outermost exit of this thread's entries, never while a `Host::scoped`
-/// call is live, since every `RawLent` handed out in the entry ends here.
+/// call is live, since every `RawLent` handed out in the entry ends here. Untouched since the last reset: nothing
+/// to zero, and the arena is not even reached.
 pub fn reset_arena() {
+    if !ARENA_LENT
+        .try_with(|lent| lent.replace(false))
+        .unwrap_or(true)
+    {
+        return;
+    }
     let _ = ARENA.try_with(|cell| {
         if let Ok(mut arena) = cell.try_borrow_mut() {
             arena.0.drain().zeroize();
@@ -520,6 +530,7 @@ fn lend<'e>(ctx: Ctx<'e>, out: &CryptoOut) -> CryptoRet<'e> {
     if out.status != status::OK {
         return CryptoRet::empty(ctx, out.status);
     }
+    ARENA_LENT.with(|lent| lent.set(true));
     match ARENA.with_borrow_mut(|arena| arena.0.lend(ctx, &out.bytes)) {
         Some(lent) => CryptoRet {
             status: status::OK,
@@ -645,13 +656,102 @@ extern "C" fn host_deployment(_ctx: Ctx<'_>) -> DeploymentId {
     vt::deployment()
 }
 
-extern "C" fn host_migrate_admit(_ctx: Ctx<'_>, recoverable: u64) -> busbar_ffi::Status {
-    contain(busbar_ffi::Status::REFUSED, || {
-        if entry::migration_admitted(recoverable) {
-            busbar_ffi::Status::OK
-        } else {
-            busbar_ffi::Status::REFUSED
+/// HMAC over parts (`core_service::HMAC_PARTS`, interface revision E.1): `call`'s first blob is the key,
+/// every further blob one part of the message, in order. Each part is read where the plugin lent it and
+/// fed to the backend's incremental HMAC: no part is copied, and nothing here allocates (the views and
+/// the tag live on this frame; the tag goes straight into the plugin's answer block and is wiped here).
+///
+/// The answer is a `crypto_status` and, only when it is OK, the tag. A request this cannot read (a head
+/// shorter than the alg, no key blob, a block with no room for a status) is the entry's FAULT with
+/// nothing written. Like `crypto`, it answers RNG outside an entry and under a pure selection (where the
+/// attempt is also recorded). SHA-256 is the one hash the facade MACs parts with; the other HMACs are
+/// UNAVAILABLE, never served over a joined copy.
+fn hmac_parts_body(call: &busbar_ffi::Call<'_>, out: &mut RawOut) -> busbar_ffi::Status {
+    use crate::host::core_service::HMAC_PARTS_MAX;
+    const STATUS_LEN: usize = 4;
+    const TAG_LEN: usize = 32;
+    let denied = entry::deny_service() || entry::owner().is_none();
+    let Some(alg) = call
+        .head()
+        .first_chunk::<STATUS_LEN>()
+        .map(|head| u32::from_le_bytes(*head))
+    else {
+        return busbar_ffi::Status::FAULT;
+    };
+    let Some((key, lent)) = call.blobs().split_first() else {
+        return busbar_ffi::Status::FAULT;
+    };
+    let room = out.cap().saturating_sub(out.len());
+    if room < STATUS_LEN {
+        return busbar_ffi::Status::FAULT;
+    }
+    let mut answer = [0_u8; STATUS_LEN + TAG_LEN];
+    let mut written = STATUS_LEN;
+    let outcome = if denied {
+        status::RNG
+    } else if lent.len() > HMAC_PARTS_MAX {
+        status::INVALID
+    } else {
+        match alg {
+            alg::HMAC_SHA256 if room < STATUS_LEN + TAG_LEN => status::LIMIT,
+            alg::HMAC_SHA256 => {
+                let mut parts: [&[u8]; HMAC_PARTS_MAX] = [&[]; HMAC_PARTS_MAX];
+                for (slot, part) in parts.iter_mut().zip(lent) {
+                    *slot = part.get();
+                }
+                let parts = parts.get(..lent.len()).unwrap_or(&[]);
+                match crypto::hmac_sha256_parts(key.get(), parts) {
+                    Ok(mut mac) => {
+                        if let Some(tag) = answer.get_mut(STATUS_LEN..) {
+                            tag.copy_from_slice(&mac);
+                        }
+                        mac.zeroize();
+                        written = STATUS_LEN + TAG_LEN;
+                        status::OK
+                    }
+                    Err(error) => status_of(error),
+                }
+            }
+            alg::HMAC_SHA384 | alg::HMAC_SHA512 | alg::HMAC_SHA1 => status::UNAVAILABLE,
+            _ => status::INVALID,
         }
+    };
+    if let Some(head) = answer.get_mut(..STATUS_LEN) {
+        head.copy_from_slice(&outcome.to_le_bytes());
+    }
+    let lent_out = ffi_host::answer(out, answer.get(..written).unwrap_or(&[]));
+    answer.zeroize();
+    if lent_out {
+        busbar_ffi::Status::OK
+    } else {
+        busbar_ffi::Status::FAULT
+    }
+}
+
+/// The one entry for every kind's own host services (core 3.0). The host states which ids it serves; an
+/// unknown id is FAULT. Store service 1 is the store-open recoverable gate: head = the count (`u64`), no
+/// answer records, OK or REFUSED. Core service 1 (`core_service::HMAC_PARTS`) is the HMAC over parts.
+extern "C" fn host_service(
+    _ctx: Ctx<'_>,
+    id: u64,
+    call: &busbar_ffi::Call<'_>,
+    out: &mut RawOut,
+) -> busbar_ffi::Status {
+    contain(busbar_ffi::Status::FAULT, || match id {
+        crate::host::SERVICE_STORE_MIGRATE_ADMIT => {
+            let recoverable = call
+                .head()
+                .get(..8)
+                .and_then(|head| head.try_into().ok())
+                .map(u64::from_le_bytes);
+            match recoverable {
+                Some(count) if entry::migration_admitted(count) => busbar_ffi::Status::OK,
+                Some(_) => busbar_ffi::Status::REFUSED,
+                None => busbar_ffi::Status::FAULT,
+            }
+        }
+        crate::host::core_service::HMAC_PARTS => hmac_parts_body(call, out),
+        _ => busbar_ffi::Status::FAULT,
     })
 }
 
@@ -667,7 +767,7 @@ pub static HOST: Host = Host::new(
         log_level: Some(host_log_level),
         grow: Some(host_grow),
         deployment: Some(host_deployment),
-        migrate_admit: Some(host_migrate_admit),
+        service: Some(host_service),
     },
 );
 
@@ -712,7 +812,7 @@ mod tests {
             log_level: None,
             grow: None,
             deployment: None,
-            migrate_admit: None,
+            service: None,
         },
     );
 
@@ -928,7 +1028,7 @@ mod tests {
             assert!(fns.now.is_some() && fns.mono.is_some() && fns.log.is_some());
             assert!(fns.log_level.is_some() && fns.grow.is_some() && fns.deployment.is_some());
             assert!(
-                fns.migrate_admit.is_some(),
+                fns.service.is_some(),
                 "the native gate is wired and denies outside a Store open"
             );
             let random = fns.random.expect("random");
@@ -1131,6 +1231,213 @@ mod tests {
                 &signature,
             ));
             assert_eq!(no, CryptoOut::status(status::BAD));
+        });
+    }
+
+    /// One HMAC_PARTS service call through the entry `HOST` carries: the entry status and what was written
+    /// into an answer block of `room` bytes.
+    fn hmac_parts(
+        alg: u32,
+        key: &[u8],
+        parts: &[&[u8]],
+        room: usize,
+    ) -> (busbar_ffi::Status, Vec<u8>) {
+        let head = alg.to_le_bytes();
+        let mut blobs = vec![Bytes::new(key)];
+        blobs.extend(parts.iter().map(|part| Bytes::new(part)));
+        let call = busbar_ffi::Call::new(0, &head, &[], &blobs);
+        let mut block = vec![0xa5_u8; room];
+        let mut out = RawOut::over(&mut block);
+        let status = NO_HOST.scoped(|ctx| {
+            host_service(ctx, crate::host::core_service::HMAC_PARTS, &call, &mut out)
+        });
+        let written = out.len();
+        (status, block[..written].to_vec())
+    }
+
+    /// An OK answer: the OK `crypto_status`, then `tag`.
+    fn ok_tag(tag: &[u8]) -> (busbar_ffi::Status, Vec<u8>) {
+        let mut block = status::OK.to_le_bytes().to_vec();
+        block.extend_from_slice(tag);
+        (busbar_ffi::Status::OK, block)
+    }
+
+    /// An answer that is a `crypto_status` and no tag.
+    fn no_tag(crypto: u32) -> (busbar_ffi::Status, Vec<u8>) {
+        (busbar_ffi::Status::OK, crypto.to_le_bytes().to_vec())
+    }
+
+    /// E.1: the service's MAC of the parts is the one-shot MAC of their concatenation, wherever the message
+    /// is cut, by the published answers of RFC 4231 (test cases 1, 2, 3 and 7).
+    #[test]
+    fn hmac_parts_is_the_one_shot_mac_of_the_concatenation_at_every_cut() {
+        fresh(|| {
+            let long_key = [0xaa_u8; 131];
+            let vectors: [(&[u8], Vec<u8>, &str); 4] = [
+                (
+                    &[0x0b; 20],
+                    b"Hi There".to_vec(),
+                    "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+                ),
+                (
+                    b"Jefe",
+                    b"what do ya want for nothing?".to_vec(),
+                    "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
+                ),
+                (
+                    &[0xaa; 20],
+                    vec![0xdd; 50],
+                    "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe",
+                ),
+                (
+                    &long_key,
+                    b"This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.".to_vec(),
+                    "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2",
+                ),
+            ];
+            entry::within(7, || {
+                for (key, msg, tag) in &vectors {
+                    let (key, msg): (&[u8], &[u8]) = (key, msg);
+                    let want = ok_tag(&unhex(tag));
+                    let one_shot =
+                        crypto_body(&req(alg::HMAC_SHA256, key_form::RAW, key, msg, b""));
+                    assert_eq!(ok_tag(&bytes(one_shot)), want);
+                    assert_eq!(hmac_parts(alg::HMAC_SHA256, key, &[msg], 80), want);
+                    for i in 0..=msg.len() {
+                        let (head, tail) = msg.split_at(i);
+                        assert_eq!(
+                            hmac_parts(alg::HMAC_SHA256, key, &[head, tail], 80),
+                            want,
+                            "cut at {i}"
+                        );
+                        for j in 0..=tail.len() {
+                            let (mid, end) = tail.split_at(j);
+                            assert_eq!(
+                                hmac_parts(alg::HMAC_SHA256, key, &[head, b"", mid, end], 80),
+                                want,
+                                "cut at {i} and {}",
+                                i + j
+                            );
+                        }
+                    }
+                    // The most parts one call takes: seven single bytes and the rest (the vectors are longer).
+                    let (singles, rest) =
+                        msg.split_at(crate::host::core_service::HMAC_PARTS_MAX - 1);
+                    let mut most: Vec<&[u8]> = singles.chunks(1).collect();
+                    most.push(rest);
+                    assert_eq!(hmac_parts(alg::HMAC_SHA256, key, &most, 80), want);
+                }
+            });
+        });
+    }
+
+    #[test]
+    fn hmac_parts_of_no_parts_and_of_empty_parts_is_the_mac_of_the_empty_message() {
+        fresh(|| {
+            entry::within(7, || {
+                let key = [0x0b_u8; 20];
+                let want = ok_tag(&unhex(
+                    "999a901219f032cd497cadb5e6051e97b6a29ab297bd6ae722bd6062a2f59542",
+                ));
+                assert_eq!(hmac_parts(alg::HMAC_SHA256, &key, &[], 80), want);
+                assert_eq!(hmac_parts(alg::HMAC_SHA256, &key, &[b""], 80), want);
+                assert_eq!(
+                    hmac_parts(alg::HMAC_SHA256, &key, &[b"", b"", b""], 80),
+                    want
+                );
+                // The smallest block that holds the answer: the status and the 32-byte tag, exactly.
+                assert_eq!(hmac_parts(alg::HMAC_SHA256, &key, &[], 36), want);
+            });
+        });
+    }
+
+    /// What the service refuses, and how: a request it cannot read is the entry's FAULT with nothing
+    /// written; one it reads and will not serve is a `crypto_status` with no tag after it.
+    #[test]
+    fn hmac_parts_refuses_what_it_does_not_serve_and_never_answers_a_partial_tag() {
+        fresh(|| {
+            let key = [0x0b_u8; 20];
+            let fault = (busbar_ffi::Status::FAULT, Vec::new());
+            entry::within(7, || {
+                // More parts than the contract's most: INVALID, never the MAC of the first eight.
+                let over = [&b"p"[..]; crate::host::core_service::HMAC_PARTS_MAX + 1];
+                assert_eq!(
+                    hmac_parts(alg::HMAC_SHA256, &key, &over, 80),
+                    no_tag(status::INVALID)
+                );
+                // An alg that is no HMAC, or no alg at all.
+                for not_hmac in [alg::SHA256, alg::PBKDF2_HMAC_SHA256, alg::AEAD_SEAL, 0, 7] {
+                    assert_eq!(
+                        hmac_parts(not_hmac, &key, &[b"m"], 80),
+                        no_tag(status::INVALID),
+                        "alg {not_hmac}"
+                    );
+                }
+                // The facade MACs parts with SHA-256 only: the other HMACs are told so, never served
+                // over a copy and never answered with another hash's tag.
+                for unserved in [alg::HMAC_SHA384, alg::HMAC_SHA512, alg::HMAC_SHA1] {
+                    assert_eq!(
+                        hmac_parts(unserved, &key, &[b"m"], 80),
+                        no_tag(status::UNAVAILABLE),
+                        "alg {unserved}"
+                    );
+                }
+                // A block with room for the status but not for the tag: LIMIT, and no part of the tag.
+                for room in [4, 5, 35] {
+                    assert_eq!(
+                        hmac_parts(alg::HMAC_SHA256, &key, &[b"m"], room),
+                        no_tag(status::LIMIT),
+                        "room {room}"
+                    );
+                }
+                // No room for a status at all: FAULT, nothing written.
+                for room in [0, 3] {
+                    assert_eq!(hmac_parts(alg::HMAC_SHA256, &key, &[b"m"], room), fault);
+                }
+                // A head shorter than the alg, and a call with no key blob.
+                let mut block = [0_u8; 80];
+                let mut out = RawOut::over(&mut block);
+                let (short_head, head) = ([16_u8, 0, 0], alg::HMAC_SHA256.to_le_bytes());
+                let no_key = [Bytes::EMPTY];
+                let short = busbar_ffi::Call::new(0, &short_head, &[], &no_key);
+                let keyless = busbar_ffi::Call::new(0, &head, &[], &[]);
+                let id = crate::host::core_service::HMAC_PARTS;
+                NO_HOST.scoped(|ctx| {
+                    assert_eq!(
+                        host_service(ctx, id, &short, &mut out),
+                        busbar_ffi::Status::FAULT
+                    );
+                    assert_eq!(
+                        host_service(ctx, id, &keyless, &mut out),
+                        busbar_ffi::Status::FAULT
+                    );
+                    // An id no contract allots.
+                    assert_eq!(
+                        host_service(ctx, id + 1, &keyless, &mut out),
+                        busbar_ffi::Status::FAULT
+                    );
+                });
+                assert_eq!(out.len(), 0, "a FAULT writes nothing");
+            });
+            // Outside an entry the service answers like `crypto`: the module's failure, no tag.
+            assert_eq!(
+                hmac_parts(alg::HMAC_SHA256, &key, &[b"m"], 80),
+                no_tag(status::RNG)
+            );
+        });
+    }
+
+    /// I10: a panic inside the service is the entry's FAULT and one HOST_PANIC, never an unwind into the plugin.
+    #[test]
+    fn hmac_parts_contains_a_panic_as_fault() {
+        fresh(|| {
+            entry::within(7, || {
+                let before = faults(HOST_PANIC);
+                injection::arm_panic();
+                let (status, _) = hmac_parts(alg::HMAC_SHA256, &[0x0b; 20], &[b"m"], 80);
+                assert_eq!(status, busbar_ffi::Status::FAULT);
+                assert!(faults(HOST_PANIC) > before);
+            });
         });
     }
 

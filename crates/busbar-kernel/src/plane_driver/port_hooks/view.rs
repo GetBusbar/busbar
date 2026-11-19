@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_plugin_abi::fail::fact::{PJ_END_USER, PJ_TEXT_COMPLETE};
-use busbar_plugin_abi::kinds::hook::hook as abi;
 use busbar_ports::{FactRef, FactVal};
 
 use super::Call;
@@ -13,7 +12,7 @@ pub(super) type Signals<'a> = smallvec::SmallVec<[(u32, FactRef<'a>); 32]>;
 /// Borrow the exact typed plane projection for one configured hook call: PJ_END_USER only when the
 /// call receives the identity, PJ_TEXT_COMPLETE only when it receives the content.
 pub(super) fn signals<'a>(facts: &'a [(u32, FactVal)], call: &Call, content: bool) -> Signals<'a> {
-    let identity = call.user.sends_user() && call.port.facts() & abi::FB_WANTS_IDENTITY != 0;
+    let identity = super::call::lends_caller(call);
     let mut out = Signals::new();
     out.extend(
         facts
@@ -47,7 +46,8 @@ mod tests {
             1 << abi::POINT_ROUTE
         }
         fn facts(&self) -> u64 {
-            abi::FB_WANTS_IDENTITY
+            // Every bit an image could declare, the retired identity bit (4) among them.
+            u64::MAX
         }
         fn on<'a>(&'a self, _: CallCx, _: u32, _: &'a HookView<'a>) -> HookCall<'a> {
             unreachable!("projection construction makes no plugin call")

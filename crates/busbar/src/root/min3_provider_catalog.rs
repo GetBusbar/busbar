@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use busbar_contract::abi::host::conn::connector::KEEP_ALL_EXCEPT_DENIED;
+use busbar_contract::conn::codes::KEEP_ALL_EXCEPT_DENIED;
 use busbar_contract::conn::NeedId;
 use busbar_contract::dest::DestinationId;
 use busbar_contract::json;
@@ -278,7 +278,12 @@ pub(crate) fn prepare(
             },
             &busbar_kernel::plugin_config::upstream_anchor,
         )
-        .map_err(|_| "configured provider destination or allocated upstream name is invalid")?;
+        .map_err(|why| {
+            format!(
+                "configured provider destination or allocated upstream name is invalid: {}",
+                why.join("; ")
+            )
+        })?;
         definition.auth = upstream_auth;
         let definition = Arc::new(definition);
         let member_target = MemberTarget {

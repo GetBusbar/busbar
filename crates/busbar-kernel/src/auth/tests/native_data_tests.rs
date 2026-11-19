@@ -15,18 +15,20 @@ use crate::issued::IssuedCredentials;
 use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
 use crate::plane_driver::port_intents::Namespace;
 use crate::plane_driver::port_routes::Mounted;
+use crate::plane_driver::port_session::SessionError;
 use crate::plane_driver::{EndPost, FeeRefund, PlaneMoney};
 use crate::plane_grants::{KeyRefresh, ReplayGuard};
 use crate::plugin_records::RecordsDenied;
 use crate::resource_admission::{ForwardFact, FrozenRequest, ResourceFact};
 use crate::router::PreparedListener;
 use crate::state::AppHandle;
-use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
+use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::records::ScopeRef;
+use busbar_contract::route::{METHOD_POST, PATH_EXACT};
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::Caller as AbiCaller;
 use busbar_plugin_abi::host_side::caller::{BoxFut, InstanceLimits};
+use busbar_plugin_abi::plane::AUTH_PRINCIPAL;
 use busbar_plugin_abi::records::{tag, Records, Reply, U64Rec, Writer};
 use busbar_ports::auth::{
     decode_verify_ok, AuthIn, AuthPort, LoginAnswer, LoginIn, OutboundAnswer, ServeIn, ServeOut,
@@ -42,7 +44,7 @@ trait PreparePhysicalFixture {
     async fn prepare_test(
         &self,
         physical: crate::inbound::native::CompletingPhysicalRequest,
-        selected: SelectedResources,
+        selection: Vec<u8>,
         cx: CallCx,
     ) -> Result<PreparedPhysicalFixture, DataRefused>;
 }
@@ -66,16 +68,23 @@ impl PreparePhysicalFixture for Arc<NativeDataRoute> {
     async fn prepare_test(
         &self,
         mut physical: crate::inbound::native::CompletingPhysicalRequest,
-        selected: SelectedResources,
+        selection: Vec<u8>,
         cx: CallCx,
     ) -> Result<PreparedPhysicalFixture, DataRefused> {
         let preparation = physical
             .begin_data_preparation()
             .map_err(|_| DataRefused::Cancelled)?;
         let pending = self
-            .prepare(preparation, selected, cx)
+            .prepare(preparation, cx)
             .await
             .map_err(|error| error.reason())?;
+        let pending = if self.selects() {
+            pending
+                .select(|_, _| Ok(Ok(selection)))
+                .map_err(|error| error.reason())?
+        } else {
+            pending
+        };
         Ok(PreparedPhysicalFixture { physical, pending })
     }
 }
@@ -256,6 +265,26 @@ struct Fixture {
     _native: NativeInvocationAdmission,
 }
 fn fixture(allowed: bool) -> Fixture {
+    fixture_with(allowed, true, Vec::new())
+}
+
+fn fixture_with(
+    allowed: bool,
+    selects: bool,
+    limits: Vec<crate::config::groups::LimitCfg>,
+) -> Fixture {
+    fixture_of(allowed, selects, limits, false)
+}
+
+/// `selects`: the route declares a resource kind (its plane selects); otherwise it selects none
+/// and is admitted through the plane's `request`. `limits`: the key's group's limits. `open`: the
+/// data chain is the operator's explicitly empty `auth.chain: []`.
+fn fixture_of(
+    allowed: bool,
+    selects: bool,
+    limits: Vec<crate::config::groups::LimitCfg>,
+    open: bool,
+) -> Fixture {
     let caller = Caller::for_test(Arc::from("plane/test"), KindCode::Plane);
     let core = Arc::new(KernelServices::new());
     let native = core.admit_native_invocation(&caller).unwrap();
@@ -275,6 +304,21 @@ fn fixture(allowed: bool) -> Fixture {
             },
         )]),
     )]);
+    // The open relay's principal earns its key like any other identity: from its binding
+    // (decision 11). This one keeps 1.5.5's reach: every pool, no group.
+    app.role_bindings.insert(
+        crate::auth::native_chain::ANONYMOUS.into(),
+        BTreeMap::from([(
+            crate::config::auth::UNGOVERNED_ROLE.into(),
+            crate::config::RoleBindingCfg {
+                allowed_pools: None,
+                group: None,
+                admin_scope: None,
+                verbs: None,
+                plane_grants: BTreeMap::new(),
+            },
+        )]),
+    );
     app.cost = Arc::new(crate::cost::CostModel::resolve_parts(
         None,
         1,
@@ -282,12 +326,30 @@ fn fixture(allowed: bool) -> Fixture {
             "g".into(),
             GroupCfg {
                 enabled: true,
+                limits,
                 ..Default::default()
             },
         )]),
     ));
     let app = Arc::new(app);
+    // The fixture's route as its plane states it: a principal data route that opens a unit, and
+    // selects `pool` when the fixture has an inventory. The mounted route and the bound route
+    // below carry this one record.
+    let record = {
+        use crate::auth::route_record::{Money, RouteClass, RouteRecord, Scope, Who};
+        RouteRecord::stated(
+            RouteClass::Data,
+            Who::PRINCIPAL,
+            if selects {
+                Scope::selected(&["pool"])
+            } else {
+                Scope::none()
+            },
+            Money::Unit,
+        )
+    };
     let mounted = Mounted {
+        record: record.clone(),
         route: 3,
         methods: METHOD_POST,
         flags: 0,
@@ -296,7 +358,11 @@ fn fixture(allowed: bool) -> Fixture {
         pattern: "/resource".into(),
         cred_header: None,
         catalog: false,
-        resource_kinds: vec![Box::<str>::from("pool")].into(),
+        resource_kinds: if selects {
+            vec![Box::<str>::from("pool")].into()
+        } else {
+            Vec::<Box<str>>::new().into()
+        },
     };
     let line = Line {
         route: Route {
@@ -310,10 +376,10 @@ fn fixture(allowed: bool) -> Fixture {
         dialect: 0,
         auth: LineAuth::Chain(
             vec!["provider-42".into()],
-            busbar_contract::abi::auth::AuthPoints::EMPTY,
+            busbar_contract::route::AuthPoints::EMPTY,
         ),
         upgrade: None,
-        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        offered: busbar_contract::route::AuthPoints::EMPTY,
     };
     let port: Arc<dyn busbar_ports::transport::TransportPort> = Arc::new(Transport);
     let plan = PhysicalPlan::new(
@@ -402,27 +468,33 @@ fn fixture(allowed: bool) -> Fixture {
         not_mine: false,
         native: true,
     });
-    let chain = Arc::new(
-        NativeChain::data(
-            7,
-            vec![instance(42, calls.clone())],
-            Arc::new(AuthOwners {
-                issued: replay.clone(),
-                replay: replay.clone(),
-                cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
-            }),
-        )
-        .unwrap(),
-    );
+    let owners = Arc::new(AuthOwners {
+        issued: replay.clone(),
+        replay: replay.clone(),
+        cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+    });
+    let chain = Arc::new(if open {
+        NativeChain::data_admitting_anonymous(7, Vec::new(), owners).unwrap()
+    } else {
+        NativeChain::data(7, vec![instance(42, calls.clone())], owners).unwrap()
+    });
     // Assemble only candidate configuration here. Every request proof below uses the public
     // physical factory, real charged selection, concrete verifier, publication and replay.
+    let admission = crate::auth::admission_table::admission_of(&record);
     let route = Arc::new(NativeDataRoute {
+        ticket: None,
+        withheld: withheld_carriers(&chain, None),
+        audience: None,
+        public_url: None,
+        challenge: None,
+        record,
+        admission,
         binding,
         caller,
         cost: app.cost.clone(),
         owners: DataRouteOwners {
             generation,
-            inventory,
+            inventory: selects.then_some(inventory),
             chain,
             keys: Arc::default(),
             routes: Arc::new(RequestRoutes::new("plane/test", None, None, None).unwrap()),
@@ -437,15 +509,10 @@ fn fixture(allowed: bool) -> Fixture {
         _native: native,
     }
 }
-fn arrival(
-    f: &Fixture,
-    stream: u64,
-) -> (
-    CompletingPhysicalRequest,
-    SelectedResources,
-    CallCx,
-    StreamOwner,
-) {
+/// The plane's RESOURCE_SELECT answer a selecting route's test selector returns.
+type Wire = Vec<u8>;
+
+fn arrival(f: &Fixture, stream: u64) -> (CompletingPhysicalRequest, Wire, CallCx, StreamOwner) {
     arrival_with_fields(f, stream, Vec::new())
 }
 
@@ -453,13 +520,21 @@ fn arrival_with_fields(
     f: &Fixture,
     stream: u64,
     fields: Vec<(String, Vec<u8>)>,
-) -> (
-    CompletingPhysicalRequest,
-    SelectedResources,
-    CallCx,
-    StreamOwner,
-) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+) -> (CompletingPhysicalRequest, Wire, CallCx, StreamOwner) {
+    arrival_with(f, stream, fields, b"admin-body")
+}
+
+/// `body`: the fixture's verifier accepts exactly `admin-body`; any other body is unauthenticated.
+fn arrival_with(
+    f: &Fixture,
+    stream: u64,
+    fields: Vec<(String, Vec<u8>)>,
+    body: &[u8],
+) -> (CompletingPhysicalRequest, Wire, CallCx, StreamOwner) {
+    let arrival =
+        crate::inbound::native::Arrival::at(crate::store::monotonic_ns(), Duration::from_secs(30))
+            .unwrap();
+    let deadline = arrival.deadline();
     let (request, owner) = f
         .connection
         .head(
@@ -472,25 +547,16 @@ fn arrival_with_fields(
                 head
             },
             f.budget.try_enter(AdmissionClass::Data).unwrap(),
-            Some(deadline),
+            Some(arrival),
         )
         .unwrap();
-    let credit = request
-        .binding()
-        .request()
-        .try_reserve(b"admin-body".len())
-        .unwrap();
+    let credit = request.binding().request().try_reserve(body.len()).unwrap();
     let request = request
-        .finish_input(SecureVec::from(b"admin-body".as_slice()), credit)
+        .finish_input(SecureVec::from(body), credit)
         .unwrap()
         .begin_completion()
         .unwrap();
     let binding = request.binding();
-    let snapshot = binding.snapshot().unwrap();
-    let frozen = FrozenRequest::from_snapshot(binding.invocation(), 3, snapshot);
-    let RouteTarget::Plane(target) = binding.route().target() else {
-        panic!("plane")
-    };
     let mut wire = Reply::new();
     busbar_plugin_abi::resource_admission::write_selection(
         &mut wire,
@@ -500,18 +566,13 @@ fn arrival_with_fields(
         }],
     )
     .unwrap();
-    let selected = f
-        .route
-        .owners
-        .inventory
-        .select_wire(frozen, target.mounted(), wire.as_bytes())
-        .unwrap();
     let cx = CallCx {
         deadline,
         request_id: binding.invocation().request_id().get(),
         stack: Default::default(),
+        mono_ns: 0,
     };
-    (request, selected, cx, owner)
+    (request, wire.as_bytes().to_vec(), cx, owner)
 }
 
 #[tokio::test]
@@ -545,7 +606,13 @@ async fn native_data_policy_denial_retains_original_physical_completion() {
     let (mut request, selected, cx, _owner) = arrival(&f, 1);
     let binding = request.binding().clone();
     let preparation = request.begin_data_preparation().unwrap();
-    let pending = f.route.prepare(preparation, selected, cx).await.unwrap();
+    let pending = f
+        .route
+        .prepare(preparation, cx)
+        .await
+        .unwrap()
+        .select(|_, _| Ok(Ok(selected)))
+        .unwrap();
     let Err(DataPreparationFailed::Denied(denied)) = pending.complete().await else {
         panic!("expected actual policy denial");
     };
@@ -596,11 +663,14 @@ async fn native_data_without_node_audit_custody_refuses_before_money_or_effects(
             .unwrap();
         Ok(ordinary_unit(&book, admitted, None))
     }));
-    let calls = PlaneCalls(AtomicUsize::new(0));
+    let calls = PlaneCalls(AtomicUsize::new(0), true);
     let task = begin_task(&calls, &pending);
     let declaration = task.request_declaration().unwrap();
     assert!(
-        pending.pending().admit(None, None, declaration).is_err(),
+        pending
+            .pending()
+            .admit::<crate::plane_driver::port_serve::NoWalk>(None, None, declaration)
+            .is_err(),
         "original physical and money owners cannot replace Node audit custody"
     );
     assert_eq!(commits.load(Ordering::SeqCst), 0);
@@ -687,10 +757,13 @@ async fn native_data_keeps_gate_closed_until_actual_money_and_physical_join() {
         Ok(ordinary_unit(&book, admitted, Some(&audit_context)))
     });
     let pending = Arc::new(pending);
-    let calls = PlaneCalls(AtomicUsize::new(0));
+    let calls = PlaneCalls(AtomicUsize::new(0), true);
     let mut task = begin_task(&calls, &pending);
     let declaration = task.request_declaration().unwrap();
-    pending.pending().admit(None, None, declaration).unwrap();
+    pending
+        .pending()
+        .admit::<crate::plane_driver::port_serve::NoWalk>(None, None, declaration)
+        .unwrap();
     task.bind_admission(pending.pending()).unwrap();
     assert_eq!(calls.0.load(Ordering::SeqCst), 1);
     task.end(&DataEffects(&pending)).unwrap();
@@ -799,17 +872,73 @@ async fn native_data_cancellation_between_verification_and_replay_grants_nothing
     assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
 }
 
+/// What a selector double was lent: the request's path, body and header names.
+#[derive(Default)]
+struct Lent {
+    calls: usize,
+    path: String,
+    body: Vec<u8>,
+    headers: Vec<String>,
+}
+
+fn lend(
+    lent: &Mutex<Lent>,
+    frozen: &FrozenRequest,
+    withheld: &[Box<str>],
+    wire: Vec<u8>,
+) -> crate::resource_admission::Selection {
+    frozen.with_selection_input(withheld, |input, body| {
+        let mut lent = lent.lock().unwrap();
+        lent.calls += 1;
+        lent.path = input.path.to_owned();
+        lent.body = body.to_vec();
+        lent.headers = input
+            .headers
+            .iter()
+            .map(|field| field.name.get().to_ascii_lowercase())
+            .collect();
+        Ok(wire)
+    })
+}
+
 #[tokio::test]
-async fn native_data_selection_from_another_physical_request_is_refused() {
+async fn native_data_unauthenticated_request_is_lent_nothing_and_a_verified_one_no_carrier() {
     let f = fixture(true);
-    let (first, _selected, cx, _owner) = arrival(&f, 1);
-    let (_second, foreign, _, _other_owner) = arrival(&f, 2);
-    assert!(matches!(
-        f.route.prepare_test(first, foreign, cx).await,
-        Err(DataRefused::Binding)
-    ));
-    assert_eq!(f.calls.calls.load(Ordering::SeqCst), 0);
-    assert_eq!(f.replay.0.load(Ordering::SeqCst), 0);
+    let fields = vec![
+        ("authorization".to_owned(), b"Bearer secret".to_vec()),
+        ("x-trace".to_owned(), b"1".to_vec()),
+    ];
+    // Unauthenticated: the credential is refused, and a refused request has no `PendingData`, so
+    // its selector can never be reached; the double records nothing.
+    let lent = Mutex::new(Lent::default());
+    let (mut request, wire, cx, _owner) = arrival_with(&f, 1, fields.clone(), b"forged-body");
+    let preparation = request.begin_data_preparation().unwrap();
+    let refused = f.route.prepare(preparation, cx).await;
+    let Err(failed) = refused else {
+        panic!("an unauthenticated request verified")
+    };
+    assert_eq!(failed.reason(), DataRefused::Credential);
+    assert_eq!(lent.lock().unwrap().calls, 0);
+    drop(wire);
+    // Verified: lent once, after verification, its path and body, never a carrier.
+    let (mut request, wire, cx, _owner) = arrival_with(&f, 2, fields, b"admin-body");
+    let preparation = request.begin_data_preparation().unwrap();
+    let pending = f.route.prepare(preparation, cx).await.unwrap();
+    assert_eq!(
+        f.calls.calls.load(Ordering::SeqCst),
+        2,
+        "verified before any lending"
+    );
+    assert_eq!(lent.lock().unwrap().calls, 0);
+    let pending = pending
+        .select(|frozen, withheld| lend(&lent, frozen, withheld, wire))
+        .unwrap();
+    let lent = lent.into_inner().unwrap();
+    assert_eq!(lent.calls, 1);
+    assert_eq!(lent.path, "/resource");
+    assert_eq!(lent.body, b"admin-body");
+    assert_eq!(lent.headers, vec!["x-trace".to_owned()]);
+    assert!(pending.complete().await.is_ok());
 }
 
 #[tokio::test]
@@ -859,11 +988,14 @@ async fn native_data_reset_after_registration_closes_the_exact_context() {
     let context = allocation.context().clone();
     let pending =
         Arc::new(allocation.into_pending(|_| panic!("reset request must not acquire money")));
-    let calls = PlaneCalls(AtomicUsize::new(0));
+    let calls = PlaneCalls(AtomicUsize::new(0), true);
     let task = begin_task(&calls, &pending);
     let declaration = task.request_declaration().unwrap();
     assert!(f.connection.cancel(&owner));
-    assert!(pending.pending().admit(None, None, declaration).is_err());
+    assert!(pending
+        .pending()
+        .admit::<crate::plane_driver::port_serve::NoWalk>(None, None, declaration)
+        .is_err());
     drop(task);
     assert!(pending.execution().is_none());
     assert!(!context.effects_allowed());
@@ -956,6 +1088,23 @@ async fn native_data_scans_later_duplicate_bound_carrier_before_verification() {
     }
 }
 
+/// RFC 9449 s4.3 (9): a DPoP proof names the URL the request was received at. On an
+/// audience-bound plane (MCP's `canonical_uri`, RFC 8707) the audience is the resource's name, and
+/// its origin can differ from core's public URL, where the request actually arrives: the proof's
+/// origin is the public URL. With no public URL configured the plane's own canonical URI is the
+/// only URL the route can state.
+#[tokio::test]
+async fn audience_bound_route_names_the_public_url_in_its_dpop_proof() {
+    let mut f = fixture(true);
+    let route = Arc::get_mut(&mut f.route).unwrap();
+    route.audience = Some(Arc::from("https://mcp.example.com/mcp"));
+    route.public_url = Some(Arc::from("https://gw.example.com"));
+    assert_eq!(f.route.proof_url(), Some("https://gw.example.com"));
+    let route = Arc::get_mut(&mut f.route).unwrap();
+    route.public_url = None;
+    assert_eq!(f.route.proof_url(), Some("https://mcp.example.com/mcp"));
+}
+
 #[tokio::test]
 async fn native_data_pending_liveness_tracks_physical_reset_before_task() {
     let f = fixture(true);
@@ -975,11 +1124,12 @@ async fn native_data_pending_liveness_tracks_physical_reset_before_task() {
     assert!(!pending.is_live());
 }
 
-struct PlaneCalls(AtomicUsize);
+/// A plane double: its `request` calls, and whether its route declares resource kinds.
+struct PlaneCalls(AtomicUsize, bool);
 impl crate::plane_driver::port_session::Calls for PlaneCalls {
     type Session = ();
     fn resource_scoped(&self, _: u32) -> bool {
-        true
+        self.1
     }
     fn request(
         &self,
@@ -1064,19 +1214,32 @@ fn begin_task<'a>(
     data: &Arc<NativeDataPending>,
 ) -> crate::plane_driver::port_session::Task<'a, PlaneCalls> {
     let effects = DataEffects(data);
+    let withheld = data.withheld();
     let (task, _) = data
         .snapshot()
         .with_auth_input(|request| {
+            // The plane is lent the request's fields minus the route's withheld carriers, as
+            // `PortDriver::serve_admitted` lends them.
+            let lent: Vec<_> = request
+                .headers
+                .iter()
+                .filter(|field| {
+                    !withheld
+                        .iter()
+                        .any(|carrier| carrier.eq_ignore_ascii_case(field.name.get()))
+                })
+                .copied()
+                .collect();
             crate::plane_driver::port_session::Task::begin(
                 calls,
                 &busbar_ports::plane::PlaneIn {
-                    route: data.selected().request().route(),
+                    route: data.route(),
                     flags: 0,
                     auth: AUTH_PRINCIPAL,
                     method: request.method,
                     path: request.path,
                     query: request.query,
-                    headers: request.headers,
+                    headers: &lent,
                     identity: data.identity().identity_records(),
                     request_id: data.binding().invocation().request_id().get(),
                     carrier: 0,
@@ -1093,8 +1256,8 @@ fn begin_task<'a>(
 }
 
 fn assert_generic_effects_refused(f: &Fixture, context: &InvocationContext) {
-    use busbar_contract::abi::host::service::{OUTBOUND_BIND, OUTBOUND_PUBLISH, OUTBOUND_REVOKE};
     use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::services::codes::{OUTBOUND_BIND, OUTBOUND_PUBLISH, OUTBOUND_REVOKE};
     use busbar_contract::services::{HostServices, OutboundAuthorization, Ran};
     assert!(context
         .nest(
@@ -1181,7 +1344,7 @@ async fn native_data_task_refuses_substituted_physical_request_id() {
             .unwrap()
             .into_pending(|_| panic!("foreign request id cannot acquire money")),
     );
-    let calls = PlaneCalls(AtomicUsize::new(0));
+    let calls = PlaneCalls(AtomicUsize::new(0), true);
     let effects = DataEffects(&pending);
     let answer = pending
         .snapshot()
@@ -1189,7 +1352,7 @@ async fn native_data_task_refuses_substituted_physical_request_id() {
             crate::plane_driver::port_session::Task::begin(
                 &calls,
                 &busbar_ports::plane::PlaneIn {
-                    route: pending.selected().request().route(),
+                    route: pending.route(),
                     flags: 0,
                     auth: AUTH_PRINCIPAL,
                     method: request.method,
@@ -1320,10 +1483,13 @@ async fn native_data_reset_after_money_rolls_back_exact_open_without_starting() 
         drop(owner); // Actual physical reset wins after the grant and before DATA starts.
         Ok(admitted)
     }));
-    let calls = PlaneCalls(AtomicUsize::new(0));
+    let calls = PlaneCalls(AtomicUsize::new(0), true);
     let task = begin_task(&calls, &pending);
     let declaration = task.request_declaration().unwrap();
-    assert!(pending.pending().admit(None, None, declaration).is_err());
+    assert!(pending
+        .pending()
+        .admit::<crate::plane_driver::port_serve::NoWalk>(None, None, declaration)
+        .is_err());
     assert_eq!(calls.0.load(Ordering::SeqCst), 1);
     assert!(pending.execution().is_none());
     assert!(binding.check_executing().is_err());
@@ -1338,3 +1504,430 @@ async fn native_data_reset_after_money_rolls_back_exact_open_without_starting() 
     drop(task);
     drop(pending);
 }
+
+fn limit(metric: crate::config::groups::LimitMetric) -> crate::config::groups::LimitCfg {
+    crate::config::groups::LimitCfg {
+        selected: None,
+        metric,
+        amount: 0,
+        per: Some(crate::config::groups::LimitWindow::Month),
+        scope: None,
+        on_exhaust: None,
+        downgrade_to: None,
+    }
+}
+
+/// What one request on a route that selects no resource came to: how often money was asked,
+/// what it answered, and the books after it.
+struct NoSelection {
+    commits: usize,
+    admitted: Result<(), SessionError>,
+    open_units: usize,
+    effects: bool,
+    executing: bool,
+    refusal: Option<ClientRefusal>,
+    pending: Arc<NativeDataPending>,
+}
+
+/// One authenticated request on an llm-shaped route (no resource kinds) under the key's group
+/// `limits`, through verification, its unit, the plane's `request` and core's money admission.
+async fn no_selection_request(
+    limits: Vec<crate::config::groups::LimitCfg>,
+) -> (NoSelection, StreamOwner) {
+    request_on(fixture_with(true, false, limits)).await
+}
+
+async fn request_on(f: Fixture) -> (NoSelection, StreamOwner) {
+    let open = f.route.owners.chain.is_open();
+    assert!(!f.route.selects());
+    let (request, wire, cx, owner) = arrival(&f, 1);
+    let binding = request.binding().clone();
+    let authorized = f
+        .route
+        .prepare_test(request, wire, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let mut allocation = NativeDataAllocation::register(authorized).unwrap();
+    let audit = audit_custody(&mut allocation);
+    let audit_context = audit.owner.context().clone();
+    let context = allocation.context().clone();
+    let gov = Arc::new(
+        crate::governance::GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .unwrap(),
+    );
+    let money = Arc::new(PlaneMoney::new(gov, Arc::new(Post)));
+    let book = money.clone();
+    let commits = Arc::new(AtomicUsize::new(0));
+    let counted = commits.clone();
+    let pending = Arc::new(allocation.into_pending(move |receipt| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        let admitted = book
+            .admit_existing(
+                receipt.begin().unwrap(),
+                Arc::from(Vec::<String>::new()),
+                FeeRefund::CallerStatus,
+                ExhaustionMode::FinishUnit,
+            )
+            .map_err(|_| ClientRefusal {
+                status: 429,
+                code: busbar_plugin_abi::fail::refused::R_RATE_LIMITED,
+                text: "rate limit exceeded".into(),
+            })?;
+        Ok(ordinary_unit(&book, admitted, Some(&audit_context)))
+    }));
+    assert!(pending.selected().is_none());
+    let calls = PlaneCalls(AtomicUsize::new(0), false);
+    let mut task = begin_task(&calls, &pending);
+    assert_eq!(
+        calls.0.load(Ordering::SeqCst),
+        1,
+        "the plane's `request` ran"
+    );
+    let declaration = task.request_declaration().unwrap();
+    let admitted = pending
+        .pending()
+        .admit::<crate::plane_driver::port_serve::NoWalk>(None, None, declaration)
+        .map(|_| ());
+    let refusal = match &admitted {
+        Err(SessionError::AdmissionRefused(refusal)) => Some(refusal.clone()),
+        _ => None,
+    };
+    if admitted.is_ok() {
+        task.bind_admission(pending.pending()).unwrap();
+        task.end(&DataEffects(&pending)).unwrap();
+    }
+    drop(task);
+    let result = NoSelection {
+        commits: commits.load(Ordering::SeqCst),
+        admitted,
+        open_units: money.open_units(),
+        effects: context.effects_allowed(),
+        executing: binding.check_executing().is_ok(),
+        refusal,
+        pending,
+    };
+    // An open chain verifies nothing and claims no replay key.
+    let verified = usize::from(!open);
+    assert_eq!(f.replay.0.load(Ordering::SeqCst), verified);
+    assert_eq!(f.calls.calls.load(Ordering::SeqCst), verified);
+    drop(audit);
+    (result, owner)
+}
+
+#[tokio::test]
+async fn native_data_route_that_selects_nothing_is_admitted_with_one_unit_and_its_money() {
+    let (served, _owner) = no_selection_request(Vec::new()).await;
+    assert!(served.admitted.is_ok());
+    assert_eq!(served.commits, 1, "money is asked exactly once");
+    assert_eq!(served.open_units, 1, "the unit's money is open");
+    assert!(served.effects);
+    assert!(served.executing);
+    let execution = served.pending.execution().unwrap();
+    assert!(execution.selected().is_none());
+}
+
+#[tokio::test]
+async fn native_data_route_that_selects_nothing_is_refused_by_its_budget_and_its_rate_limit() {
+    for metric in [
+        crate::config::groups::LimitMetric::Budget,
+        crate::config::groups::LimitMetric::Requests,
+    ] {
+        let (refused, _owner) = no_selection_request(vec![limit(metric)]).await;
+        assert!(
+            matches!(refused.admitted, Err(SessionError::AdmissionRefused(_))),
+            "a zero {metric:?} limit refuses before any effect"
+        );
+        assert_eq!(refused.commits, 1);
+        assert_eq!(refused.open_units, 0, "nothing is charged");
+        assert!(!refused.effects);
+        assert!(!refused.executing);
+        assert!(refused.pending.execution().is_none());
+        // The refusal keeps its custody: it is answered under the original physical request.
+        let decision = refused.refusal.unwrap();
+        assert!(refused.pending.take_refusal(&decision).is_ok());
+    }
+}
+
+#[tokio::test]
+async fn native_data_refusal_decided_before_money_keeps_its_custody_and_money_never_runs() {
+    let f = fixture_with(true, false, Vec::new());
+    let (request, wire, cx, _owner) = arrival(&f, 1);
+    let authorized = f
+        .route
+        .prepare_test(request, wire, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let mut allocation = NativeDataAllocation::register(authorized).unwrap();
+    let audit = audit_custody(&mut allocation);
+    let commits = Arc::new(AtomicUsize::new(0));
+    let counted = commits.clone();
+    let pending = Arc::new(allocation.into_pending(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        Err(ClientRefusal {
+            status: 503,
+            code: busbar_plugin_abi::fail::refused::R_NO_ROUTE,
+            text: "unreachable".into(),
+        })
+    }));
+    let calls = PlaneCalls(AtomicUsize::new(0), false);
+    let task = begin_task(&calls, &pending);
+    let declaration = task.request_declaration().unwrap();
+    // The session refused before asking money (the key's grant, the plane's own refusal).
+    let decision = crate::plane_driver::port_admission::scope_refusal();
+    assert_eq!(decision.status, 403);
+    assert!(pending.take_refusal(&decision).is_ok());
+    assert!(
+        pending.take_refusal(&decision).is_err(),
+        "the custody leaves once"
+    );
+    // Money can no longer run for it.
+    assert!(pending
+        .pending()
+        .admit::<crate::plane_driver::port_serve::NoWalk>(None, None, declaration)
+        .is_err());
+    assert_eq!(commits.load(Ordering::SeqCst), 0);
+    assert!(pending.execution().is_none());
+    drop(task);
+    drop(audit);
+}
+
+/// A DATA request that carries its credential in `Authorization` reaches the plane's `request`:
+/// the plane is lent the fields minus that carrier, and the session accepts exactly that lent set.
+#[tokio::test]
+async fn native_data_request_with_a_withheld_carrier_reaches_the_planes_request() {
+    let f = fixture_with(true, false, Vec::new());
+    let fields = vec![
+        ("authorization".to_owned(), b"Bearer plain".to_vec()),
+        ("x-trace".to_owned(), b"1".to_vec()),
+    ];
+    let (request, wire, cx, _owner) = arrival_with_fields(&f, 1, fields);
+    let authorized = f
+        .route
+        .prepare_test(request, wire, cx)
+        .await
+        .unwrap()
+        .complete()
+        .await
+        .unwrap();
+    let mut allocation = NativeDataAllocation::register(authorized).unwrap();
+    let audit = audit_custody(&mut allocation);
+    let pending = Arc::new(allocation.into_pending(|_| {
+        Err(ClientRefusal {
+            status: 503,
+            code: busbar_plugin_abi::fail::refused::R_NO_ROUTE,
+            text: "unused".into(),
+        })
+    }));
+    let calls = PlaneCalls(AtomicUsize::new(0), false);
+    let task = begin_task(&calls, &pending);
+    assert_eq!(
+        calls.0.load(Ordering::SeqCst),
+        1,
+        "the plane's `request` ran"
+    );
+    drop(task);
+    drop(audit);
+}
+
+#[tokio::test]
+async fn native_data_open_chain_serves_the_anonymous_principal_through_admission() {
+    // `auth.chain: []`: no credential is read and no verifier runs, as 1.5.5's open relay; the
+    // request is still admitted with its unit and money, as the anonymous key.
+    let (served, _owner) = request_on(fixture_of(true, false, Vec::new(), true)).await;
+    assert!(served.admitted.is_ok());
+    assert_eq!(served.commits, 1);
+    assert_eq!(served.open_units, 1);
+    assert!(served.effects);
+    assert!(served.executing);
+    let execution = served.pending.execution().unwrap();
+    assert_eq!(
+        execution.principal().id,
+        crate::auth::native_chain::ANONYMOUS
+    );
+    assert!(execution.principal().allowed_scopes.is_none());
+    assert_eq!(execution.principal().group, None);
+    assert_eq!(
+        execution.identity().subject(),
+        crate::auth::native_chain::ANONYMOUS
+    );
+    assert_eq!(
+        served
+            .pending
+            .context()
+            .principal()
+            .map(|key| key.id.as_str()),
+        Some(crate::auth::native_chain::ANONYMOUS),
+        "the unit is recorded under the anonymous key"
+    );
+}
+
+#[tokio::test]
+async fn native_data_open_chain_charges_no_group_as_v155_did() {
+    // The anonymous key belongs to no group, so a group's limits do not apply to it (1.5.5 charged
+    // no group for a keyless request); the process admission at the head still bounds it.
+    let (refused, _owner) = request_on(fixture_of(
+        true,
+        false,
+        vec![limit(crate::config::groups::LimitMetric::Requests)],
+        true,
+    ))
+    .await;
+    assert!(
+        refused.admitted.is_ok(),
+        "1.5.5 charged no group for a keyless request"
+    );
+}
+
+#[test]
+fn a_key_without_a_grant_of_the_named_pool_or_model_is_answered_v155s_403() {
+    use crate::plane_driver::port_admission::forward_refused;
+    use crate::plane_driver::request_admission::AdmissionError;
+    let SessionError::AdmissionRefused(refusal) = forward_refused(AdmissionError::Scope) else {
+        panic!("a scope refusal is answered")
+    };
+    assert_eq!(refusal.status, 403);
+    assert_eq!(refusal.code, busbar_plugin_abi::fail::refused::R_DENIED);
+    assert_eq!(
+        refusal.text,
+        "Your API key does not have permission to access this resource."
+    );
+    assert!(matches!(
+        forward_refused(AdmissionError::Route),
+        SessionError::NotDriven
+    ));
+}
+
+#[tokio::test]
+async fn native_data_selecting_route_is_never_completed_without_its_selection() {
+    let f = fixture(true);
+    let (mut request, _wire, cx, _owner) = arrival(&f, 1);
+    let preparation = request.begin_data_preparation().unwrap();
+    let pending = f.route.prepare(preparation, cx).await.unwrap();
+    assert!(matches!(
+        pending.complete().await.map_err(|failed| failed.reason()),
+        Err(DataRefused::Binding)
+    ));
+    assert_eq!(
+        f.replay.0.load(Ordering::SeqCst),
+        0,
+        "no replay key is spent"
+    );
+}
+
+#[tokio::test]
+async fn native_data_route_that_selects_nothing_lends_no_selection() {
+    let f = fixture_with(true, false, Vec::new());
+    let (mut request, wire, cx, _owner) = arrival(&f, 1);
+    let preparation = request.begin_data_preparation().unwrap();
+    let pending = f.route.prepare(preparation, cx).await.unwrap();
+    let lent = Mutex::new(Lent::default());
+    assert!(pending
+        .select(|frozen, withheld| lend(&lent, frozen, withheld, wire))
+        .is_err());
+    assert_eq!(lent.into_inner().unwrap().calls, 0);
+}
+
+fn chain_owners() -> Arc<AuthOwners> {
+    let replay = Arc::new(Owners(AtomicUsize::new(0), AtomicBool::new(false)));
+    Arc::new(AuthOwners {
+        issued: replay.clone(),
+        replay,
+        cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+    })
+}
+
+fn names(names: &[&str]) -> Vec<Box<str>> {
+    names.iter().map(|name| Box::<str>::from(*name)).collect()
+}
+
+/// The built-in member `keys` (core's own token verifier) is a member only of a data chain that
+/// names it: the operator chain never has it, so a core-minted token is never judged on the
+/// admin listener.
+#[test]
+fn the_keys_member_exists_only_on_a_data_chain_that_names_it() {
+    use crate::auth::native_chain::BuiltIn;
+    let keys_only = NativeChain::data_with(
+        7,
+        Vec::new(),
+        chain_owners(),
+        BuiltIn {
+            anonymous: false,
+            keys: true,
+        },
+    )
+    .expect("`chain: [keys]` is a closed chain, not an empty one");
+    assert!(keys_only.admits_keys());
+    assert!(!keys_only.admits_anonymous());
+    assert!(
+        !keys_only.is_open(),
+        "a chain with a verifier reads its credential"
+    );
+    assert!(keys_only.matches_names(&names(&["keys"])));
+    assert!(!keys_only.matches_names(&names(&[])));
+    assert!(!keys_only.matches_names(&names(&["keys", "anonymous"])));
+
+    let port = Arc::new(Port {
+        calls: AtomicUsize::new(0),
+        not_mine: false,
+        native: true,
+    });
+    let plain = NativeChain::data(7, vec![instance(42, port.clone())], chain_owners()).unwrap();
+    assert!(!plain.admits_keys());
+    assert!(plain.matches_names(&names(&["provider-42"])));
+    assert!(
+        !plain.matches_names(&names(&["provider-42", "keys"])),
+        "a route that names `keys` is never bound to a chain without the member"
+    );
+
+    let both = NativeChain::data_with(
+        7,
+        vec![instance(42, port.clone())],
+        chain_owners(),
+        BuiltIn {
+            anonymous: true,
+            keys: true,
+        },
+    )
+    .unwrap();
+    assert!(both.matches_names(&names(&["provider-42", "keys", "anonymous"])));
+    assert!(!both.is_open());
+    let relay = NativeChain::data_with(
+        7,
+        Vec::new(),
+        chain_owners(),
+        BuiltIn {
+            anonymous: true,
+            keys: true,
+        },
+    )
+    .unwrap();
+    assert!(
+        !relay.is_open(),
+        "`[keys, anonymous]` still reads a credential: a core token presented is judged"
+    );
+    assert!(
+        NativeChain::data_with(7, Vec::new(), chain_owners(), BuiltIn::default()).is_err(),
+        "an empty chain is still refused"
+    );
+
+    let operator = NativeChain::operator(
+        vec![instance(42, port)],
+        crate::auth::native_policy::ChainPolicy::new(7, Vec::new()),
+        chain_owners(),
+    );
+    assert!(
+        !operator.admits_keys(),
+        "the admin listener's chain has no `keys` member"
+    );
+}
+
+/// A ticket route at its own preparation, end to end.
+#[path = "native_data_ticket_tests.rs"]
+mod ticket;

@@ -1065,3 +1065,60 @@ async fn guard_error_falls_back_to_scan() {
         "a failed probe never assumes unchanged; it runs the full scan"
     );
 }
+
+/// Every entry author as the store holds it, read back through the store's own JSON reader. A
+/// migrated entry (written by the first boot after an upgrade from a journal-kept card history)
+/// carries numbers inside the `kind`-tagged author; the next read must take them.
+#[test]
+fn stored_entry_authors_decode_byte_for_byte() {
+    let cases = [
+        (r#"{"kind":"opening"}"#, EntryAuthor::Opening {}),
+        (r#"{"kind":"change"}"#, EntryAuthor::Change),
+        (
+            r#"{"kind":"amend","reason":"ab"}"#,
+            EntryAuthor::Amend {
+                reason: "ab".into(),
+            },
+        ),
+        (
+            r#"{"kind":"migrated","node":7,"node_seq":3,"opening":true}"#,
+            EntryAuthor::Migrated {
+                node: 7,
+                node_seq: 3,
+                opening: true,
+                reason: None,
+            },
+        ),
+        (
+            r#"{"kind":"migrated","node":7,"node_seq":4,"opening":false,"reason":"cd"}"#,
+            EntryAuthor::Migrated {
+                node: 7,
+                node_seq: 4,
+                opening: false,
+                reason: Some("cd".into()),
+            },
+        ),
+    ];
+    for (stored, author) in cases {
+        let read: EntryAuthor = busbar_contract::json::parse(stored.as_bytes())
+            .unwrap_or_else(|error| panic!("{stored}: {error}"));
+        assert_eq!(read, author);
+        assert_eq!(
+            busbar_contract::json::to_vec(&read).unwrap(),
+            stored.as_bytes()
+        );
+    }
+    for refused in [
+        r#"{"kind":"change","node":1}"#,
+        r#"{"kind":"opening","reason":"ab"}"#,
+        r#"{"kind":"amend"}"#,
+        r#"{"kind":"migrated","node":7,"opening":true}"#,
+        r#"{"kind":"migrated","node":7,"node_seq":3,"opening":true,"extra":0}"#,
+        r#"{"kind":"other"}"#,
+    ] {
+        assert!(
+            busbar_contract::json::parse::<EntryAuthor>(refused.as_bytes()).is_err(),
+            "{refused}"
+        );
+    }
+}

@@ -19,7 +19,12 @@
 //!   route's webhook secret has no configured source yet, so a signed route admits nothing until one is stated.
 //! - ROUTE_ADMIN is served on the admin listener, not here (`port_admin`, installed at boot).
 //!
-//! Not mounted, owned by a later step: ROUTE_UPGRADE (the §12.27 upgrade sequence adopts the connection's stream).
+//! - ROUTE_UPGRADE (§12.27) is sealed as a line of its plane ([`guest_lines`]) and served by the native listener:
+//!   the route's auth chain first, then [`upgrade_step`]: 400 for a request that does not ask for websocket, 501
+//!   when no admitted instance declares D_PROTOCOL `websocket`, else the hand-over seam
+//!   ([`UpgradeStep::HandOver`]), whose adopter is linked with the websocket transport (E9b). Core's refusal comes before the plane's `request`, which
+//!   is never called for it; the plane only renders it.
+//!
 //! A request is not a billed unit on this path yet (`unit: None`: audit rows only), and a FORWARD walks only when
 //! the seat carries a `PortEgress` (`PortSeat::upstream`).
 
@@ -28,10 +33,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::body::Body;
 use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_contract::abi::transport::route::{
-    METHOD_DELETE, METHOD_GET, METHOD_PATCH, METHOD_POST, METHOD_PUT,
-};
+use busbar_contract::route::{RouteAuth, RouteMethod};
+use busbar_contract::route::{METHOD_DELETE, METHOD_GET, METHOD_PATCH, METHOD_POST, METHOD_PUT};
 use busbar_contract::secret_ref::SecretRef;
 use busbar_kernel::auth::{AuthPrincipal, ChainHead, IdentityRefusal};
 use busbar_kernel::governance::{GovCtx, LimitBlocked};
@@ -88,44 +91,80 @@ pub(crate) fn auth_of(effective: u32) -> RouteAuth {
     }
 }
 
+/// The auth points a native line offers: the head, and the head with its body (what a transport
+/// that states no offer of its own has always offered).
+pub(crate) const LINE_OFFERED: busbar_contract::route::AuthPoints =
+    busbar_contract::route::AuthPoints(
+        busbar_contract::route::POINT_HEAD | busbar_contract::route::POINT_HEAD_BODY,
+    );
+
+/// The routes whose effective chain is not the data chain (§12.11), by plane instance and route id:
+/// `Some(chain)`, or `None` for a route that is not served (not mounted at all). Resolved once per
+/// candidate, kept by the listener plan's assembly only.
+pub(crate) type RouteChains = std::collections::BTreeMap<
+    String,
+    std::collections::BTreeMap<u32, Option<Vec<super::serve::ChainAuth>>>,
+>;
+
 /// The same native route table admitted by the driver seals physical listener claims. The
 /// route id is the renderer's native selector; native render has no legacy dialect number.
+/// A route in `route_chains` runs its own effective chain; every other one runs `chain`.
 pub(crate) fn guest_lines(
     seats: &[PortSeat],
-    chain: &[(String, busbar_contract::abi::auth::AuthPoints)],
+    chain: &[super::serve::ChainAuth],
+    route_chains: &RouteChains,
 ) -> Vec<busbar_kernel::guest::Line> {
-    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    use busbar_contract::route::{method_bit, PATH_EXACT, PATH_PATTERN};
     use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
     seats
         .iter()
         .flat_map(|seat| {
-            seat.driver.routes().data.iter().filter_map(|route| {
-                let methods = methods_of(route.methods)
-                    .into_iter()
-                    .fold(0, |mask, method| mask | method_bit(method.as_str()));
-                (methods != 0).then(|| Line {
-                    route: Route {
-                        methods,
-                        path_form: if route.pattern.contains('{') {
-                            PATH_PATTERN
-                        } else {
-                            PATH_EXACT
+            let routes = seat.driver.routes();
+            let own = route_chains.get(&seat.instance);
+            // A ROUTE_UPGRADE route (§12.27) is sealed like a data route: its head is matched,
+            // authenticated and answered by the native listener (`listener_native_upgrade.rs`).
+            routes
+                .data
+                .iter()
+                .chain(&routes.upgrade)
+                .filter_map(move |route| {
+                    // A route that is not served is not mounted (§12.11 as ruled).
+                    let (chain, own_chain) = match own.and_then(|own| own.get(&route.route)) {
+                        Some(None) => return None,
+                        Some(Some(own)) => (own.as_slice(), true),
+                        None => (chain, false),
+                    };
+                    // A signed route's line names its own chain (the readers of its signature
+                    // header): that chain is its signature verifier, bound by the listener plan
+                    // as a `NativeSignedRoute`. It never names the data chain: a signed route
+                    // with no chain of its own is not mounted at all.
+                    let signed = own_chain && route.effective == AUTH_SIGNED_INGRESS;
+                    let methods = methods_of(route.methods)
+                        .into_iter()
+                        .fold(0, |mask, method| mask | method_bit(method.as_str()));
+                    (methods != 0).then(|| Line {
+                        route: Route {
+                            methods,
+                            path_form: if route.pattern.contains('{') {
+                                PATH_PATTERN
+                            } else {
+                                PATH_EXACT
+                            },
+                            path: route.pattern.to_string(),
+                            fields: Vec::new(),
+                            rung: route.route,
                         },
-                        path: route.pattern.to_string(),
-                        fields: Vec::new(),
-                        rung: route.route,
-                    },
-                    claimant: Claimant::Plane(seat.instance.clone()),
-                    dialect: 0,
-                    auth: if auth_of(route.effective) == RouteAuth::Key {
-                        super::serve::chain_auth(chain)
-                    } else {
-                        LineAuth::None
-                    },
-                    upgrade: None,
-                    offered: crate::root::doors::offers_unstated(),
+                        claimant: Claimant::Plane(seat.instance.clone()),
+                        dialect: 0,
+                        auth: if auth_of(route.effective) == RouteAuth::Key || signed {
+                            super::serve::chain_auth(chain)
+                        } else {
+                            LineAuth::None
+                        },
+                        upgrade: None,
+                        offered: LINE_OFFERED,
+                    })
                 })
-            })
         })
         .collect()
 }
@@ -255,6 +294,17 @@ struct Pipe {
 }
 
 impl ClientSink for Pipe {
+    /// The body channel has no bound here, so items are taken at once and nothing waits.
+    fn poll_items(
+        &self,
+        _cx: &mut std::task::Context<'_>,
+        items: &mut Vec<ToClient>,
+    ) -> std::task::Poll<bool> {
+        std::task::Poll::Ready(self.items(std::mem::take(items)))
+    }
+}
+
+impl Pipe {
     fn items(&self, items: Vec<ToClient>) -> bool {
         for item in items {
             match item {
@@ -535,6 +585,16 @@ struct Counted {
 }
 
 impl ClientSink for Counted {
+    fn poll_items(
+        &self,
+        _cx: &mut std::task::Context<'_>,
+        items: &mut Vec<ToClient>,
+    ) -> std::task::Poll<bool> {
+        std::task::Poll::Ready(self.items(std::mem::take(items)))
+    }
+}
+
+impl Counted {
     fn items(&self, items: Vec<ToClient>) -> bool {
         for item in &items {
             if let ToClient::Head { status, .. } = item {
@@ -591,6 +651,17 @@ async fn answer(
         }
     }
     let mut unit = allocate_unit(seat, billing, &ctx);
+    // A billable unit opens only while its node's journal can record its money.
+    if unit.is_some() {
+        let gate = generation.and_then(|routes| routes.post.node());
+        if let Some(Err(refusal)) = gate.map(|node| node.money_gate()) {
+            let target = ctx
+                .uri
+                .path_and_query()
+                .map_or(ctx.path.as_str(), |pq| pq.as_str());
+            return render_kernel_refusal(seat, route.route, ctx.method.as_str(), target, refusal);
+        }
+    }
 
     let settle = match (&unit, billing) {
         (Some(unit), Some(billing)) => Some(Settle {
@@ -763,6 +834,97 @@ async fn answer(
     let wait = *retry_after.lock().unwrap_or_else(PoisonError::into_inner);
     retry_header(&mut response, wait);
     response
+}
+
+/// §12.27 step 1's header test: the request asks to switch protocols to websocket
+/// (`connection` lists the `upgrade` token and `upgrade` lists `websocket`, both case-insensitive).
+pub(crate) fn asks_websocket<'a>(headers: impl Iterator<Item = (&'a str, &'a [u8])>) -> bool {
+    fn lists(value: &[u8], token: &str) -> bool {
+        std::str::from_utf8(value).is_ok_and(|value| {
+            value
+                .split(',')
+                .any(|item| item.trim().eq_ignore_ascii_case(token))
+        })
+    }
+    let (mut connection, mut upgrade) = (false, false);
+    for (name, value) in headers {
+        if name.eq_ignore_ascii_case("connection") {
+            connection |= lists(value, "upgrade");
+        } else if name.eq_ignore_ascii_case("upgrade") {
+            upgrade |= lists(value, "websocket");
+        }
+    }
+    connection && upgrade
+}
+
+/// What core does with an authorized ROUTE_UPGRADE request (§12.27 steps 1-2). The header and
+/// instance tests run after the route's auth, not before as step 1 lists them: on the native
+/// listener an anonymous request to a missing route and to a gated one look the same, and a pre-auth
+/// 400 or 501 would tell an anonymous caller that the route exists, that it upgrades and what the
+/// listener lacks. A refusal is written before any 101 as a plain status
+/// response the plane renders (`render(RENDER_REFUSAL)`), and the plane's `request` is never called.
+pub(crate) enum UpgradeStep<'a> {
+    /// The request does not ask to switch to websocket (400 R_INVALID), or no admitted instance on
+    /// this listener declares D_PROTOCOL `websocket` (501 R_UNSUPPORTED).
+    Refuse(busbar_kernel::refusal::ClientRefusal),
+    /// Hand the request to this instance (§12.27 steps 2-5). THE HAND-OVER SEAM for the step that
+    /// links the websocket transport (E9b): the request is consumed once with the kernel's
+    /// `CompletingPhysicalRequest::complete_upgrade(authorization)`, whose `PhysicalUpgrade` carries
+    /// the charged head, the verified identity, the governed key and the plane route. The carrier
+    /// then calls the plane's `request` on that head with an empty body, commits on its
+    /// RESPOND(101) and `begin`s this instance with CONN_UPGRADED and the head + H_STATUS(101) + the
+    /// plane's PAIR*. Until that adopter is linked, listener-plan assembly refuses a candidate
+    /// whose upgrade routes could reach this arm.
+    HandOver(&'a super::min3_boot::transports::ServedTransport),
+}
+
+/// The words of core's two refusals before any 101.
+pub(crate) const NOT_AN_UPGRADE: &str = "this route accepts only a websocket upgrade request";
+pub(crate) const NO_WEBSOCKET: &str = "no transport on this listener can carry a websocket upgrade";
+
+pub(crate) fn upgrade_step(
+    asks: bool,
+    websocket: Option<&super::min3_boot::transports::ServedTransport>,
+) -> UpgradeStep<'_> {
+    use busbar_kernel::refusal::ClientRefusal;
+    use busbar_plugin_abi::fail::refused::{R_INVALID, R_UNSUPPORTED};
+    match (asks, websocket) {
+        (false, _) => UpgradeStep::Refuse(ClientRefusal {
+            status: 400,
+            code: R_INVALID,
+            text: NOT_AN_UPGRADE.into(),
+        }),
+        (true, None) => UpgradeStep::Refuse(ClientRefusal {
+            status: 501,
+            code: R_UNSUPPORTED,
+            text: NO_WEBSOCKET.into(),
+        }),
+        (true, Some(websocket)) => UpgradeStep::HandOver(websocket),
+    }
+}
+
+/// The client items of core's refusal on an upgrade route: the plane's rendering of it on that
+/// route (the plane is lent the head, never called with `request`), else core's plain refusal.
+pub(crate) fn upgrade_refusal_items(
+    seat: &PortSeat,
+    route: u32,
+    head: &Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
+    withheld: &Arc<[Box<str>]>,
+    request_id: u64,
+    refusal: busbar_kernel::refusal::ClientRefusal,
+) -> Vec<ToClient> {
+    let mut http = HttpIn::new(
+        HttpHead::Snapshot(Arc::clone(head)),
+        Bytes::new(),
+        request_id,
+    );
+    // The plane renders the refusal on the head it is lent: never the route's credential carriers.
+    http.withhold(Arc::clone(withheld));
+    // A direct call on this thread; the snapshot `head` keeps the request's charged input for it.
+    match seat.driver.render_refusal_now(route, &http, &refusal) {
+        Ok(items) => items,
+        Err(_) => port_auth::plain_refusal(&refusal),
+    }
 }
 
 /// One spec per (data route, verb) of every seat, catalog routes included. `ingress` is what an

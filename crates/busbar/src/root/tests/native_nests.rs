@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_HEAD, METHOD_POST, PATH_EXACT};
+use busbar_contract::route::{METHOD_GET, METHOD_HEAD, METHOD_POST, PATH_EXACT};
 use busbar_kernel::guest::{Line, LineAuth, Route};
 use busbar_kernel::plane_driver::port_routes::Mounted;
 use busbar_kernel::plane_driver::port_routes::PortRoutes;
@@ -13,6 +13,12 @@ fn routes(entries: &[(u32, &str, u32)]) -> PortRoutes {
         data: entries
             .iter()
             .map(|(route, pattern, methods)| Mounted {
+                record: busbar_kernel::auth::route_record::RouteRecord::stated(
+                    busbar_kernel::auth::route_record::RouteClass::Data,
+                    busbar_kernel::auth::route_record::Who::PRINCIPAL,
+                    busbar_kernel::auth::route_record::Scope::walk("pool"),
+                    busbar_kernel::auth::route_record::Money::Unit,
+                ),
                 route: *route,
                 methods: *methods,
                 flags: 0,
@@ -32,8 +38,12 @@ fn routes(entries: &[(u32, &str, u32)]) -> PortRoutes {
 fn native_selection_uses_guest_precedence_and_the_data_mounts_verbs() {
     let generic = routes(&[(9, "/jobs/{id}", METHOD_GET)]);
     let exact = routes(&[(4, "/jobs/current", METHOD_GET), (5, "/head", METHOD_HEAD)]);
-    let selected =
-        NativeNests::seal(Vec::new(), &[("generic", &generic), ("exact", &exact)]).unwrap();
+    let selected = NativeNests::seal(
+        Vec::new(),
+        &[("generic", &generic), ("exact", &exact)],
+        |_, _| true,
+    )
+    .unwrap();
     assert_eq!(
         selected.selected("GET", "/jobs/current?cursor=2"),
         Some((1, 4))
@@ -47,7 +57,41 @@ fn native_selection_uses_guest_precedence_and_the_data_mounts_verbs() {
 fn equal_precedence_native_destinations_refuse_before_publication() {
     let one = routes(&[(1, "/jobs/{id}", METHOD_GET)]);
     let other = routes(&[(7, "/jobs/{name}", METHOD_GET)]);
-    assert!(NativeNests::seal(Vec::new(), &[("one", &one), ("two", &other)]).is_err());
+    assert!(NativeNests::seal(Vec::new(), &[("one", &one), ("two", &other)], |_, _| true).is_err());
+}
+
+/// A port's own data line, as the native listener seals it into the generation's guest list.
+fn port_line(instance: &str, rung: u32, path: &str) -> Line {
+    Line {
+        route: Route {
+            methods: METHOD_POST,
+            path_form: PATH_EXACT,
+            path: path.into(),
+            fields: Vec::new(),
+            rung,
+        },
+        claimant: Claimant::Plane(instance.into()),
+        dialect: 0,
+        auth: LineAuth::None,
+        upgrade: None,
+        offered: busbar_contract::route::AuthPoints::EMPTY,
+    }
+}
+
+/// The native listener's guest list holds each served port route's own line; the generation's nest
+/// table is built from that same list, so a port line is not a repeat of the nest's line for the same
+/// route, and a port route the listener left unmounted (no line) is no nest destination.
+#[test]
+fn the_nest_table_is_built_over_a_guest_list_holding_the_ports_own_lines() {
+    let llm = routes(&[
+        (2, "/v1/chat/completions", METHOD_POST),
+        (7, "/model/x", METHOD_POST),
+    ]);
+    let guests = vec![port_line("llm", 2, "/v1/chat/completions")];
+    let nests = NativeNests::from_guests(&guests, &[("llm", &llm)]).unwrap();
+    assert_eq!(nests.selected("POST", "/v1/chat/completions"), Some((0, 2)));
+    assert_eq!(nests.selected("POST", "/model/x"), None);
+    assert!(!nests.destinations.contains_key(&("llm".to_owned(), 7)));
 }
 
 #[test]
@@ -64,10 +108,10 @@ fn a_core_claim_cannot_fall_through_to_a_broader_native_destination() {
         dialect: 0,
         auth: LineAuth::None,
         upgrade: None,
-        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        offered: busbar_contract::route::AuthPoints::EMPTY,
     };
     let native = routes(&[(1, "/jobs/{id}", METHOD_GET | METHOD_POST)]);
-    let selected = NativeNests::seal(vec![core], &[("native", &native)]).unwrap();
+    let selected = NativeNests::seal(vec![core], &[("native", &native)], |_, _| true).unwrap();
     assert_eq!(selected.selected("GET", "/jobs/core"), None);
     assert_eq!(selected.selected("POST", "/jobs/core"), Some((0, 1)));
 }

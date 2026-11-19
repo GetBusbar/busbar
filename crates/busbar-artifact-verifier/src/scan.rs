@@ -15,7 +15,7 @@ use crate::refusal::{Refusal, RefusalCode};
 /// The stamp's size (IF §7.4).
 pub const STAMP_SIZE: usize = 272;
 /// The stamp format this busbar reads (round 28).
-pub const STAMP_FORMAT: u32 = 2;
+pub const STAMP_FORMAT: u32 = 3;
 
 /// Why `stamp` found no usable stamp (r10 step 3). W1-L1: the IF names this type and never defines it; it is the
 /// three stamp refusals with what each prints.
@@ -88,7 +88,7 @@ pub fn check(bytes: &[u8; STAMP_SIZE]) -> Result<Stamp, StampScanErr> {
         return Err(malformed(0, "magic"));
     }
     if stamp.format != STAMP_FORMAT {
-        return Err(malformed(16, "format is not 2"));
+        return Err(malformed(16, "format is not 3"));
     }
     if stamp.size as usize != STAMP_SIZE {
         return Err(malformed(20, "size is not 272"));
@@ -138,6 +138,9 @@ pub fn check(bytes: &[u8; STAMP_SIZE]) -> Result<Stamp, StampScanErr> {
     {
         return Err(malformed(248, "crypto is not 1 to 8 bytes of [a-z0-9-]"));
     }
+    if let Some(i) = stamp._reserved2.iter().position(|&b| b != 0) {
+        return Err(malformed(64 + i as u32, "a reserved byte is not zero"));
+    }
     if let Some(i) = stamp._reserved.iter().position(|&b| b != 0) {
         return Err(malformed(256 + i as u32, "a reserved byte is not zero"));
     }
@@ -172,12 +175,13 @@ fn decode(b: &[u8; STAMP_SIZE]) -> Stamp {
         size: u32_at(20),
         kind: u32_at(24),
         kind_abi: u32_at(28),
-        mechanism: u32_at(32),
+        core_abi: u32_at(32),
         flags: u32_at(36),
         layout: u64_at(40),
-        mechanism_layout: u64_at(48),
-        semantic: u64_at(56),
-        mechanism_semantic: u64_at(64),
+        core_layout: u64_at(48),
+        kind_minor: u32_at(56),
+        core_minor: u32_at(60),
+        _reserved2: array(b, 64),
         engine_min: engine(72),
         engine_max: engine(80),
         name: array(b, 88),

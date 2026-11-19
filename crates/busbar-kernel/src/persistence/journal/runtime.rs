@@ -189,6 +189,42 @@ struct State {
     seq_map: Vec<(u64, u64)>,
     /// The Ephemeral journal cut's state (SEALING-FIX §3.9); unused on a journal never cut.
     cut: cut::CutState,
+    /// The root's audit flusher has not committed for longer than its stall limit (design 2,
+    /// A8). Set and cleared only by that flusher ([`RuntimeJournal::set_flusher_stalled`]).
+    flusher_stalled: bool,
+}
+
+/// Why a journal cannot record money now.
+enum Refusal {
+    Closed,
+    Failed(RuntimeError),
+    Conditional,
+    Full,
+    /// Judged last: the flusher's own staging check ([`RuntimeJournal::refuses_staging`]) skips
+    /// it, so the flusher's report never stops its own recovery.
+    Stalled,
+}
+
+impl State {
+    /// The one place every cause of a money refusal lives. The locked report
+    /// ([`RuntimeJournal::refuses_money`]) and the request path's flag
+    /// ([`RuntimeJournal::admits_money`], mirrored by [`RuntimeJournal::mark`]) both read it,
+    /// so a new cause (a stalled flusher) is one more field of `State` and one more arm here.
+    fn refusal(&self, budget: &BufferBudget) -> Option<Refusal> {
+        if !self.accepting {
+            return Some(Refusal::Closed);
+        }
+        if let Some(error) = self.failed {
+            return Some(Refusal::Failed(error));
+        }
+        if self.conditional.is_some() {
+            return Some(Refusal::Conditional);
+        }
+        if self.records >= budget.records || self.bytes >= budget.bytes {
+            return Some(Refusal::Full);
+        }
+        self.flusher_stalled.then_some(Refusal::Stalled)
+    }
 }
 
 /// Publication progress mirrored from `State` for confirm waiters, so a
@@ -206,6 +242,9 @@ pub struct RuntimeJournal {
     node: u64,
     budget: BufferBudget,
     state: Mutex<State>,
+    /// `state.refusal(..).is_some()`, stored under the `state` lock by every change that can
+    /// move it ([`Self::mark`]), so the request path reads it with one load and no lock.
+    refusing: AtomicBool,
     driving: tokio::sync::Mutex<()>,
     progress: tokio::sync::watch::Sender<Progress>,
     /// Confirmations that fell back to the publication driver (SHUTDOWN-HANG F1, counted).
@@ -290,7 +329,11 @@ impl RuntimeJournal {
                 conditional: None,
                 seq_map,
                 cut,
+                flusher_stalled: false,
             }),
+            // A fresh state accepts, has not failed, holds no conditional slot and no record
+            // (the budget is nonzero above): it admits money.
+            refusing: AtomicBool::new(false),
             driving: tokio::sync::Mutex::new(()),
             progress: tokio::sync::watch::Sender::new(Progress::default()),
             lane_fallbacks: std::sync::atomic::AtomicU64::new(0),
@@ -302,14 +345,40 @@ impl RuntimeJournal {
         }))
     }
 
+    /// The root's audit flusher reports whether its last good commit is older than its stall
+    /// limit (design 2, A8). While set, [`RuntimeJournal::admits_money`] is false: a billable open
+    /// is answered with the "cannot record" refusal instead of growing what cannot be committed.
+    /// Set under the state lock and mirrored into the one flag by [`Self::mark`].
+    pub fn set_flusher_stalled(&self, stalled: bool) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if state.flusher_stalled != stalled {
+            state.flusher_stalled = stalled;
+            self.mark(&state);
+        }
+    }
+
     /// Mirror `completed` and `failed` to confirm waiters. Called with `state`
     /// still locked, so the watch is never behind `state` by more than one publish.
     fn publish(&self, state: &State) {
+        self.mark(state);
         let (completed, failed) = (state.completed, state.failed);
         self.progress.send_modify(|progress| {
             progress.completed = completed;
             progress.failed = failed;
         });
+    }
+
+    /// Mirror whether `state` refuses money into `refusing`. Called with `state` still locked
+    /// after every change to `accepting`, `failed`, `conditional`, `records` or `bytes` (directly,
+    /// or through [`Self::publish`]), so the last store always describes the last change.
+    fn mark(&self, state: &State) {
+        self.refusing.store(
+            state.refusal(&self.budget).is_some(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// Record a sticky failure and publish it to every confirm waiter.
@@ -359,10 +428,9 @@ impl RuntimeJournal {
     /// Permanently stop new memory reservations before the final shutdown
     /// drain. Existing originals and exact native attempts remain confirmable.
     pub fn stop_staging(&self) -> std::result::Result<(), RuntimeError> {
-        self.state
-            .lock()
-            .map_err(|_| RuntimeError::Corrupt)?
-            .accepting = false;
+        let mut state = self.state.lock().map_err(|_| RuntimeError::Corrupt)?;
+        state.accepting = false;
+        self.mark(&state);
         Ok(())
     }
     /// Inspect this owner's cached Applied confirmation for an opaque run.
@@ -398,6 +466,16 @@ impl RuntimeJournal {
     }
 
     pub fn refuses_money(&self) -> Option<String> {
+        self.refusal_reason(true)
+    }
+
+    /// Whether this journal refuses to stage now, judged without the flusher's own stall report:
+    /// the flusher asks this before it stages, so its report never stops its own recovery.
+    pub fn refuses_staging(&self) -> Option<String> {
+        self.refusal_reason(false)
+    }
+
+    fn refusal_reason(&self, stalled_counts: bool) -> Option<String> {
         // One relaxed load: the store's slot queue is full (STORE_INFLIGHT_EXHAUSTED).
         if self.store.exhausted() {
             return Some("store in-flight queue exhausted".into());
@@ -406,17 +484,26 @@ impl RuntimeJournal {
             .state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if !state.accepting {
-            return Some("native journal staging is closed".into());
-        }
-        if let Some(error) = state.failed {
-            return Some(format!("native journal custody failed: {error:?}"));
-        }
-        if state.conditional.is_some() {
-            return Some("native journal conditional publication is pending".into());
-        }
-        (state.records >= self.budget.records || state.bytes >= self.budget.bytes)
-            .then(|| "native journal custody buffer is full".into())
+        Some(match state.refusal(&self.budget)? {
+            Refusal::Closed => "native journal staging is closed".into(),
+            Refusal::Failed(error) => format!("native journal custody failed: {error:?}"),
+            Refusal::Conditional => "native journal conditional publication is pending".into(),
+            Refusal::Full => "native journal custody buffer is full".into(),
+            Refusal::Stalled if stalled_counts => {
+                "audit records have not been committed within the stall limit".into()
+            }
+            Refusal::Stalled => return None,
+        })
+    }
+
+    /// The request path's money check: whether this journal can record money now. Two relaxed
+    /// loads and nothing else (no lock, no reference count, no allocation): the flag
+    /// [`Self::mark`] keeps equal to [`Self::refuses_money`]'s locked answer, and the store's
+    /// own exhaustion flag. A momentarily stale `true` admits a request whose staging still
+    /// re-checks every cause under the lock.
+    #[inline]
+    pub fn admits_money(&self) -> bool {
+        !self.refusing.load(std::sync::atomic::Ordering::Relaxed) && !self.store.exhausted()
     }
 
     /// Read a whole verified native selected history within an explicit host
@@ -616,6 +703,7 @@ impl RuntimeJournal {
         state.next_ticket = next_ticket;
         state.records = next_records;
         state.bytes = next_bytes;
+        self.mark(&state);
         Ok(run)
     }
 

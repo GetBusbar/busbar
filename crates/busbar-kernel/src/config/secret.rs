@@ -78,7 +78,7 @@ impl SecretResolver {
                       settings: &busbar_contract::plugin_settings::Settings,
                       _: Option<&busbar_contract::config_time::ConfigScope>| {
                     plugin(module, settings).map_err(|text| {
-                        refusal(busbar_contract::abi::secret::ERROR_KIND_INTERNAL, text)
+                        refusal(busbar_contract::secret::codes::ERROR_KIND_INTERNAL, text)
                     })
                 },
             )),
@@ -118,7 +118,7 @@ impl SecretResolver {
         secret: &SecretRef,
         scope: Option<&busbar_contract::config_time::ConfigScope>,
     ) -> Result<Held, SecretRefused> {
-        use busbar_contract::abi::secret::{ERROR_KIND_INTERNAL, ERROR_KIND_INVALID};
+        use busbar_contract::secret::codes::{ERROR_KIND_INTERNAL, ERROR_KIND_INVALID};
         if secret.is_none() {
             return Err(refusal(ERROR_KIND_INVALID, NONE_HAS_NO_VALUE.to_string()));
         }
@@ -343,26 +343,6 @@ pub(crate) fn is_linked_secret(module: &str) -> bool {
     axis().is_some_and(|a| a.linked(module))
 }
 
-/// THE ONE TEXT-AND-BYTES RULE for a credential the host re-resolves on a lease: resolve with the
-/// typed refusal kind, apply the text rule ([`SecretResolver::resolve_string`]'s: UTF-8, trailing
-/// `\r`/`\n` trimmed, an empty value refused as `INVALID`) and hand back the text's bytes. A build
-/// and every later refresh of the same reference go through this one function, so a value read
-/// twice unchanged is the same bytes twice (a file ending in a newline never looks rotated).
-pub fn resolve_text_refusing(
-    resolver: &dyn busbar_contract::secret::SecretResolve,
-    secret: &SecretRef,
-    scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Held, SecretRefused> {
-    let bytes = resolver.resolve_refusing(secret, Some(scope))?;
-    SecretResolver::text_of(secret, bytes)
-        .map(busbar_contract::redacted::Secret::into_bytes)
-        .map_err(|text| refusal(busbar_contract::abi::secret::ERROR_KIND_INVALID, text))
-}
-
-pub fn resolve_linked_string(secret: &SecretRef) -> Result<HeldText, String> {
-    SecretResolver::builtins_only().resolve_string(secret)
-}
-
 pub fn resolve_linked_string_at_config(
     secret: &SecretRef,
     scope: &busbar_contract::config_time::ConfigScope,
@@ -437,7 +417,7 @@ pub(crate) fn fixed_resolver(
             .map(|(_, answer)| answer.clone())
             .unwrap_or_else(|| {
                 Err(SecretRefused {
-                    error_kind: busbar_contract::abi::secret::ERROR_KIND_NOT_FOUND,
+                    error_kind: busbar_contract::secret::codes::ERROR_KIND_NOT_FOUND,
                     text: "fixed source has no bound answer (fail-closed)".into(),
                 })
             })
@@ -465,7 +445,7 @@ pub(crate) fn descriptor_reference(value: &str) -> SecretRef {
 
 #[cfg(test)]
 pub(crate) fn fixture_sources() -> busbar_contract::secret_ref::Sugars {
-    use busbar_contract::abi::mechanism::door::{
+    use busbar_contract::plugin_settings::sugar_words::{
         REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
     };
     let mut sources = busbar_contract::secret_ref::Sugars::default();

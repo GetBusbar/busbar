@@ -12,8 +12,12 @@
 //! adapter's REFUSED BAD_CREDENTIAL mapping to `Verdict::Rejected` (`adapters::auth::rejected`, the exact
 //! function the adapter's `verify` runs on that answer). It prints the median and p99 per call and the clock's
 //! own cost per timed call, for the IF §14 gate: median ≤ the OK arm plus `text` alone plus 22 ns, p99 ≤ 2 µs
-//! with the rebuild thread running. The OK arm (a no-op `verify` through `entry::guard`), the fixture-driven
-//! REFUSED call and the RMW counts join this file with the guard and the pool (W1-H1).
+//! with the rebuild thread running. The fixture-driven REFUSED call and the RMW counts join this file later.
+//!
+//! **The OK arm** (`ok_arm`, run first): a no-op transport `ingest` of 1 KiB through the port core calls (the
+//! loader's adapter, the thread's answer loan, the entry guard, the answer's validation and decode), against a
+//! mark derived in the same run: the same call straight through busbar-ffi, plus each kept protection timed alone,
+//! plus the measured noise (`ok_arm/mod.rs`). The figure is recorded; C-ALLOC is the hard gate.
 //!
 //! `B_SYNC_CALLS` sets the calls per thread (default 1,000,000).
 
@@ -24,14 +28,44 @@ use std::time::Instant;
 
 use busbar_plugin_abi::auth::BAD_CREDENTIAL;
 use busbar_plugin_abi::host_side::scrub::{Scrub, fail_text};
+use busbar_plugin_abi::transport::{pack, slot};
+use busbar_plugin_abi::types::Bytes;
 use busbar_plugin_loader::adapters::auth::rejected;
+use busbar_ports::transport::TransportOut;
+
+mod ok_arm;
 
 const BINDINGS: u32 = 1_024;
 const READERS: usize = 16;
 /// A REFUSED BAD_CREDENTIAL text, 60 bytes, with no secret in it (the shape of a credential-stuffing flood).
 const REFUSED: &str = "credential rejected: the signature does not verify (kid k7).";
 
+/// B-SYNC's OK arm: one no-op `ingest` through the port, set against the interface floor and the kept protections.
+fn ok_arm() {
+    let kib = vec![7u8; 1024];
+    let mut raw = ok_arm::Raw::open();
+    let floor = ok_arm::time(|| {
+        raw.with(|_inst, session, lease| {
+            black_box(pack::ingest(1, Bytes::new(black_box(&kib)), |call| {
+                session.call(slot::ingest, call, lease)
+            }));
+        });
+    });
+    let port = ok_arm::Port::open();
+    let mut session = port.begin();
+    let ok = ok_arm::time(|| {
+        port.port
+            .ingest(&mut session, black_box(&kib), &mut |_o: TransportOut<
+                '_,
+            >| {})
+            .expect("a no-op ingest answers OK");
+    });
+    let kept = ok_arm::protections();
+    ok_arm::verdict("B-SYNC OK arm, transport ingest 1 KiB", ok, floor, &kept);
+}
+
 fn main() {
+    ok_arm();
     let calls = std::env::var("B_SYNC_CALLS")
         .ok()
         .and_then(|v| v.parse().ok())

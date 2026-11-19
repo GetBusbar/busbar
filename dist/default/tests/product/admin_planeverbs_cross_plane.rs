@@ -5,76 +5,48 @@ fn register_planes() {
     crate::dist_root_install::install();
 }
 
+/// THE ADMIN TRUST VERBS (method, path under the admin prefix, the scope they are admitted at),
+/// frozen. The planes declare them natively (`ROUTE_ADMIN`, answered by `port_admin` through
+/// core-admin's fallback); the door-era `PlaneDecl::admin_routes` hook that listed them is gone
+/// (695b0f9cb6), so the frozen table itself is what the admission gate is held to.
+const ADMIN_VERBS: [(&str, &str, &str); 5] = [
+    ("GET", "/tools/{name}/changes", "ReadOnly"),
+    ("GET", "/tools/{name}/health", "ReadOnly"),
+    ("POST", "/agents/{name}/approve", "Full"),
+    ("POST", "/agents/{name}/connect", "Full"),
+    ("POST", "/tools/{name}/connect", "Full"),
+];
+
 #[test]
 fn the_admin_route_table_method_path_scope_is_byte_identical() {
-    use busbar_contract::abi::mechanism::route::RouteMethod;
-    use busbar_contract::authz::Scope;
     use busbar_kernel::admin::gate::required_scope;
-    use busbar_kernel::admin_verbs::AdminScope;
 
     register_planes();
 
-    let expected: Vec<(&str, &str, &str)> = vec![
-        ("GET", "/api/v1/admin/tools/{name}/changes", "ReadOnly"),
-        ("GET", "/api/v1/admin/tools/{name}/health", "ReadOnly"),
-        ("POST", "/api/v1/admin/agents/{name}/approve", "Full"),
-        ("POST", "/api/v1/admin/agents/{name}/connect", "Full"),
-        ("POST", "/api/v1/admin/tools/{name}/connect", "Full"),
-    ];
-
-    let mut actual: Vec<(String, String, String)> = Vec::new();
-    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
-        let Some(admin_routes) = decl.admin_routes else {
-            continue;
-        };
-
-        for spec in admin_routes(decl, &() as &dyn std::any::Any) {
-            let abs = format!("{}{}", busbar_kernel::api::ADMIN_PREFIX, spec.path);
-            let method = match spec.method {
-                RouteMethod::Get => axum::http::Method::GET,
-                RouteMethod::Post => axum::http::Method::POST,
-                RouteMethod::Put => axum::http::Method::PUT,
-                RouteMethod::Patch => axum::http::Method::PATCH,
-                RouteMethod::Delete => axum::http::Method::DELETE,
-            };
-
-            let enforced = required_scope(&method, &abs);
-            let declared = match spec.scope {
-                AdminScope::ReadOnly => Scope::ReadOnly,
-                AdminScope::Full => Scope::Full,
-            };
-            assert_eq!(
-                enforced,
-                declared,
-                "{} {abs}: the spec DECLARES {declared:?} but the auth middleware ENFORCES \
-                 {enforced:?} — a route cannot declare a scope it is not admitted at",
-                spec.method.as_str()
-            );
-            actual.push((
-                spec.method.as_str().to_string(),
-                abs,
-                format!("{enforced:?}"),
-            ));
-        }
+    for (method, path, scope) in ADMIN_VERBS {
+        let abs = format!("{}{}", busbar_kernel::api::ADMIN_PREFIX, path);
+        let method = axum::http::Method::from_bytes(method.as_bytes()).expect("a method");
+        let enforced = required_scope(&method, &abs);
+        assert_eq!(
+            format!("{enforced:?}"),
+            scope,
+            "{method} {abs}: the auth middleware ENFORCES {enforced:?}, not the frozen {scope} — \
+             an admin trust verb is admitted at a scope other than its own"
+        );
     }
-    actual.sort();
-    let actual_ref: Vec<(&str, &str, &str)> = actual
-        .iter()
-        .map(|(m, p, s)| (m.as_str(), p.as_str(), s.as_str()))
-        .collect();
-    assert_eq!(
-        actual_ref, expected,
-        "the admin trust-verb route table (method, path, required_scope) drifted from the frozen \
-         set — a mounted verb changed method/path or a plane's spec list changed"
-    );
 }
 
-fn verb_planes() -> Vec<&'static busbar_kernel::plane_driver::registry::PlaneDecl> {
+/// The planes whose section the frozen admin trust verbs are mounted under.
+pub(super) fn verb_planes() -> Vec<&'static busbar_kernel::plane_driver::registry::PlaneDecl> {
     register_planes();
     let planes: Vec<_> = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .copied()
-        .filter(|d| d.admin_routes.is_some())
+        .filter(|d| {
+            ADMIN_VERBS.iter().any(|(_, path, _)| {
+                path.trim_start_matches('/').split('/').next() == Some(d.config_section)
+            })
+        })
         .collect();
     assert!(
         planes.len() >= 2,

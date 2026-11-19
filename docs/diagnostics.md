@@ -580,9 +580,9 @@ A plugin declares billable classes for a configured lane, but that lane lacks on
 - **Since:** 1.6.0
 - **Slug:** `config-private-reach-retired`
 
-A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`) sets `allow_private`. 1.6.0 has one private-address policy for every outbound connection, `advanced.block_private_addresses` with `advanced.allow_destinations`; a per-registration switch that lifted it for one plugin is retired. The configuration is refused, naming the registration, rather than read with the switch ignored or applied.
+RETIRED. Nothing emits this code. A plane registration (an MCP server, an A2A agent) may set `allow_private`: core reads it as a boolean at the registration its plane declares and grants private reach to that registration's selected route alone, never to another registration, a provider, a request-supplied URL or a callback. A value that is not a boolean, or `allow_private` on a stdio registration, is refused naming the registration. `advanced.allow_destinations` was removed; a configuration that still carries it loads, the key is ignored and one warning line says so.
 
-**What to do:** Run the first-boot migration: it removes the key and lists exactly that registration's host in `advanced.allow_destinations`. Or do the same by hand: delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed.
+**What to do:** Nothing emits this code. Set `allow_private: true` only on the registration that must reach a private target; cloud metadata and the gateway's own listeners stay refused whatever is written.
 
 <a id="config-legacy-overlay-not-read"></a>
 ### BUSBAR-3028 — A 1.5.5 overlay selector, variable or file is not read (nothing to import)
@@ -596,15 +596,15 @@ The deployment still carries a 1.5.5 file-overlay input that 1.6 serving does no
 **What to do:** Remove the leftover input: delete the imported or empty overlay file, and remove BUSBAR_CONFIG_OVERLAY from the launcher. the first-boot migration removes config.overlay from config.yaml. See docs/migration-1.6.md.
 
 <a id="retired-env-var-ignored"></a>
-### BUSBAR-3029 — A retired launch environment variable is set and IGNORED
+### BUSBAR-3029 — A retired launch environment variable is set (converted or ignored)
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `retired-env-var-ignored`
 
-busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY or BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. A set one has NO effect: the config key (or its default) is in force. Emitted pre-tracing, to stderr, at boot and by --validate.
+busbar 1.6 retired the launch variables BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, TOKIO_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY and BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. None refuses a start: each one set is said once, never echoing its value. BUSBAR_PROVIDERS is read as the providers catalog path, as 1.5.5 read it, unless --providers names one; the two upstream variables are applied over their configuration keys, as 1.5.5 applied them; the two worker variables are ignored, because the worker count is one per CPU core the process may use. Emitted pre-tracing, to stderr, at boot and by --validate.
 
-**What to do:** Write the value into config.yaml, validate, then remove the variable from the launcher.
+**What to do:** Move the value into config.yaml where a key exists (`providers_file:`, the upstream keys), validate, then remove the variable from the launcher.
 
 <a id="config-operator-inert"></a>
 ### BUSBAR-3030 — An auth plugin states the operator credential but is not first-party (ignored)
@@ -2610,15 +2610,15 @@ The binary hit a fatal startup condition — a misconfiguration or other boot-ti
 **What to do:** Read the printed reason, fix the underlying config/environment problem, and restart. `busbar --validate` reproduces most boot refusals without binding a listener.
 
 <a id="worker-threads-invalid"></a>
-### BUSBAR-9008 — Configured worker-thread count is invalid (ignored; default used)
+### BUSBAR-9008 — Configured worker-thread count is invalid — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `worker-threads-invalid`
 
-An explicitly-set data-plane worker count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` — is not a positive integer (e.g. `0`, or non-numeric), so busbar IGNORES it and boots on the default worker count (one per core). The operator's intended worker count is NOT in effect. Emitted pre-tracing, to stderr, at boot.
+RETIRED. Nothing emits this code. The data-plane worker count is no longer a setting: the engine runs one worker per CPU core the process may use (its CPU affinity and container CPU limit). A configuration carrying `advanced.worker_threads`, or a launcher setting TOKIO_WORKER_THREADS, starts as before and says once that the value is ignored.
 
-**What to do:** Set the data-plane worker count to a positive integer (at least 1) or remove it to accept the default. The gateway runs, but on the default worker count, not the value provided.
+**What to do:** Nothing to do. To run fewer workers, lower the container's CPU limit or the process's CPU affinity.
 
 <a id="shutdown-signal-handler-install-failed"></a>
 ### BUSBAR-9009 — Shutdown-signal handler not installed (that signal won't trigger graceful drain)

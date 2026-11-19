@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim};
 
@@ -83,37 +82,6 @@ pub(crate) fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
         .collect()
 }
 
-/// A transport DOOR dropped into `plugins.dir`: a memory-ABI entry admitted through the one
-/// dispatcher's door validation and served over the host's sockets (`crate::root::doors`).
-#[derive(Clone)]
-pub(crate) struct DroppedDoor {
-    /// Its registry key: its own claim.
-    #[cfg(test)]
-    pub key: &'static str,
-    /// The claims it opens at an UPGRADE (their row's `unit0_trigger`), read off its Statement at
-    /// load by the same reader a linked door's are: its upgrade lines, beside the linked rows'
-    /// (`crate::root::serve::upgrade_carriers`; compiled-in = dropped-in).
-    pub upgrades: Vec<&'static str>,
-    /// The opened door the wire serves: the entry the connector serves for it, after the linked
-    /// rows (`crate::root::connector::boot`).
-    pub door: Arc<dyn busbar_core_connector::framer::FramerDoor>,
-}
-
-/// The transports a plugins directory contributes.
-#[derive(Clone)]
-pub(crate) struct Dropped {
-    /// A snapshot of the memory-ABI transport doors. An owned inventory may be replaced after
-    /// Store recovery without invalidating a reader or permanently retaining obsolete doors.
-    pub doors: std::borrow::Cow<'static, [DroppedDoor]>,
-}
-
-impl Dropped {
-    #[cfg(test)]
-    pub(crate) const NONE: Self = Self {
-        doors: std::borrow::Cow::Borrowed(&[]),
-    };
-}
-
 /// The composition facts the connector's boot does not already refuse: planes declaring one key
 /// twice within their kind, plane claims that overlap, and claims on a transport `served` does not
 /// answer. Transport keys and claims are refused at the connector's boot (`Transports::new`), and a
@@ -141,10 +109,16 @@ pub(crate) fn check(
     check_claim_transports(&claims, served)
 }
 
-/// [`check`] against the installed connector, or an explained exit 2.
+/// [`check`] against the build's carrier table (deletion plan E4): a claim's transport is served when the build
+/// assigns a MIN-3 transport image the carrier its word means. A carrier table the build cannot read is an explained exit 2.
 pub(crate) fn check_or_exit(planes: &[LinkedClaims]) {
-    let connector = crate::root::connector::the();
-    check(planes, &|scheme| connector.framer_for(scheme).is_some()).unwrap_or_else(|refusal| {
+    let carriers =
+        crate::root::min3_framers::assigned(crate::LINKED_CARRIERS).unwrap_or_else(|why| {
+            eprintln!("busbar: the composition root did not seal: {why}");
+            crate::root::exit::exit(2);
+        });
+    let served = |word: &str| carriers.serves_claim(word);
+    check(planes, &served).unwrap_or_else(|refusal| {
         match refusal {
             // The deployment's installed plugins, not the build: the coded line says what to install.
             BootRefusal::UnregisteredClaimTransport { .. } => eprintln!("[error] {refusal}"),

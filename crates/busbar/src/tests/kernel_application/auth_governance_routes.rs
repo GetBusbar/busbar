@@ -546,12 +546,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([7u8; 32])).expect("normal configured signing key");
     let oidc_path = common::plugins::token_verifier_cdylib_path().expect("actual OIDC library");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .unwrap()
-        .expect("actual OIDC statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .unwrap()
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "ordinary-oidc", true);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
@@ -669,12 +664,7 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([7u8; 32])).expect("normal configured signing key");
     let oidc_path = common::plugins::token_verifier_cdylib_path().expect("actual OIDC library");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .unwrap()
-        .expect("actual OIDC statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .unwrap()
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "ordinary-oidc", true);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},

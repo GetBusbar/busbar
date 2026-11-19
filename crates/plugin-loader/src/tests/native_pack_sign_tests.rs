@@ -9,6 +9,7 @@ fn artifact() -> Vec<u8> {
     emit(&Spec {
         kind: KindCode::Plane,
         kind_abi: busbar_plugin_abi::versions::PLANE,
+        kind_minor: busbar_plugin_abi::versions::PLANE_MINOR,
         layout: busbar_plugin_abi::plane::FP,
         out_of_process: false,
         engine_min: None,

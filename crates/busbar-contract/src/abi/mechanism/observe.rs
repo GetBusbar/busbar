@@ -51,11 +51,6 @@ impl<R> Envelope<R> {
             diagnostics: Vec::new(),
         }
     }
-
-    /// Whether this envelope carries anything on the back-channel at all.
-    pub fn is_bare(&self) -> bool {
-        self.metrics.is_empty() && self.diagnostics.is_empty()
-    }
 }
 
 /// One plugin-reported metric sample — the PUBLISHED SHAPE of an entry in [`Envelope::metrics`].
@@ -238,24 +233,6 @@ pub struct PluginDiagnostic {
     pub order: Vec<String>,
 }
 
-/// The level an entry that omits `level` is read at. A free function because `#[serde(default = …)]`
-fn default_level() -> DiagLevel {
-    DiagLevel::Warn
-}
-
-/// Reads a level token; one this build does not know reads as the default, so a newer plugin's
-/// entry is clamped by the host instead of dropped.
-fn level_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<DiagLevel, D::Error> {
-    let token = String::deserialize(d)?;
-    Ok(match token.as_str() {
-        "error" => DiagLevel::Error,
-        "warn" => DiagLevel::Warn,
-        "info" => DiagLevel::Info,
-        "debug" => DiagLevel::Debug,
-        _ => default_level(),
-    })
-}
-
 impl PluginDiagnostic {
     /// Raise a diagnostic at [`DiagLevel::Warn`] — the catalogue's ordinary level.
     pub fn warn(code: impl Into<String>, message: impl Into<String>) -> PluginDiagnostic {
@@ -350,6 +327,20 @@ impl Observations {
 
 pub use busbar_artifact_metadata::observe::{DiagnosticDecl, SeriesDecl};
 
-#[cfg(test)]
-#[path = "../tests/observe_tests.rs"]
-mod tests;
+/// The level an entry that omits `level` is read at. A free function because `#[serde(default = …)]`
+fn default_level() -> DiagLevel {
+    DiagLevel::Warn
+}
+
+/// Reads a level token; one this build does not know reads as the default, so a newer plugin's
+/// entry is clamped by the host instead of dropped.
+fn level_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<DiagLevel, D::Error> {
+    let token = String::deserialize(d)?;
+    Ok(match token.as_str() {
+        "error" => DiagLevel::Error,
+        "warn" => DiagLevel::Warn,
+        "info" => DiagLevel::Info,
+        "debug" => DiagLevel::Debug,
+        _ => default_level(),
+    })
+}

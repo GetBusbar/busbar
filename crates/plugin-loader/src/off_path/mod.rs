@@ -12,32 +12,6 @@
 //! primitives its request-path module keeps, or is declared at its own path (`#[path]`). Every
 //! submodule but the path-pinned `durable_documents` denies unsafe code.
 
-#[deny(unsafe_code)]
-pub(crate) mod auth_door;
-#[deny(unsafe_code)]
-pub(crate) mod conn_services;
 // Kept at its path (the unsafe register, unsafe.yaml, pins its count per file).
 #[path = "../durable_documents.rs"]
 pub(crate) mod durable_documents;
-#[deny(unsafe_code)]
-pub(crate) mod export_bindings;
-#[deny(unsafe_code)]
-pub(crate) mod held;
-#[deny(unsafe_code)]
-pub(crate) mod kinds_export;
-#[deny(unsafe_code)]
-pub(crate) mod kinds_hook;
-#[deny(unsafe_code)]
-pub(crate) mod kinds_plane;
-#[deny(unsafe_code)]
-pub(crate) mod kinds_transport;
-#[deny(unsafe_code)]
-pub(crate) mod log_file;
-#[deny(unsafe_code)]
-pub(crate) mod plane_calls;
-#[deny(unsafe_code)]
-pub(crate) mod watchdog;
-#[deny(unsafe_code)]
-pub(crate) mod worker;
-#[deny(unsafe_code)]
-pub(crate) mod worker_unit_cancel;

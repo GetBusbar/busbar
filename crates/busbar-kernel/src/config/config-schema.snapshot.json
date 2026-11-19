@@ -9,17 +9,41 @@
     "AdvancedCfg": {
       "deny_unknown_fields": true,
       "fields": {
+        "allow_destinations": {
+          "optional": true,
+          "type": "IgnoredAny"
+        },
         "block_private_addresses": {
           "optional": true,
           "type": "bool"
         },
+        "forwarded_header": {
+          "optional": true,
+          "type": "String"
+        },
+        "proxy_resolution": {
+          "optional": true,
+          "type": "ProxyResolution"
+        },
         "rate_sweep_interval": {
           "optional": true,
-          "type": "u32"
+          "type": "IgnoredAny"
         },
         "response_headers": {
           "optional": true,
           "type": "ResponseHeadersCfg"
+        },
+        "shutdown": {
+          "optional": true,
+          "type": "ShutdownCfg"
+        },
+        "tls": {
+          "optional": true,
+          "type": "OutboundTlsCfg"
+        },
+        "trusted_proxies": {
+          "optional": true,
+          "type": "Vec<String>"
         },
         "upstream_h2_prior_knowledge": {
           "optional": true,
@@ -33,9 +57,13 @@
           "optional": true,
           "type": "u64"
         },
+        "wait_for_commit": {
+          "optional": true,
+          "type": "bool"
+        },
         "worker_threads": {
           "optional": true,
-          "type": "usize"
+          "type": "IgnoredAny"
         }
       },
       "kind": "struct",
@@ -412,6 +440,10 @@
           "optional": true,
           "type": "AuthDeployCfg"
         },
+        "client_address": {
+          "optional": true,
+          "type": "ClientAddressCfg"
+        },
         "config": {
           "optional": true,
           "type": "ConfigMgmtCfg"
@@ -464,6 +496,10 @@
           "optional": true,
           "type": "serde_yaml::Value"
         },
+        "outbound": {
+          "optional": true,
+          "type": "OutboundCfg"
+        },
         "per_request_fee": {
           "optional": true,
           "type": "i64"
@@ -503,6 +539,10 @@
         "security": {
           "optional": true,
           "type": "SecurityCfg"
+        },
+        "shutdown": {
+          "optional": true,
+          "type": "ShutdownCfg"
         },
         "store": {
           "optional": true,

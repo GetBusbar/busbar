@@ -9,8 +9,8 @@
 
 use std::sync::{Arc, PoisonError};
 
-use busbar_contract::abi::auth::{AuthPoint, POINT_HEAD_BODY};
 use busbar_contract::kept::Text;
+use busbar_contract::route::{AuthPoint, POINT_HEAD_BODY};
 use foldhash::HashMap;
 
 use crate::guest::LineAuth;
@@ -94,23 +94,6 @@ impl Inbound {
         drop(tables);
         drop(retired);
         Ok(())
-    }
-
-    /// Retire every listener generation older than the one before `generation` (a config
-    /// publish).
-    pub fn retire_before(&self, generation: u64) {
-        let mut tables = self.tables.write().unwrap_or_else(PoisonError::into_inner);
-        let mut retired = Vec::new();
-        tables.retain(|(_, _, old), table| {
-            if old.saturating_add(1) < generation {
-                retired.push(Arc::clone(table));
-                false
-            } else {
-                true
-            }
-        });
-        drop(tables);
-        drop(retired);
     }
 }
 

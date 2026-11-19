@@ -62,6 +62,11 @@ impl RootRules for ConfigRules {
     fn held_document(&self, path: &Path) -> Option<SecureString> {
         crate::root::migrate::held(path)
     }
+    fn fee_debt_owner(
+        &self,
+    ) -> Option<std::sync::Weak<dyn busbar_kernel::governance::fee_debt::FeeDebtAssociate>> {
+        Some(crate::root::plane_node::fee_debt_owner())
+    }
 }
 
 /// Reads after the bootstrap Store opens must preserve the images and inputs that opened it.
@@ -141,6 +146,12 @@ impl RootRules for ProtectedRules {
     fn held_document(&self, path: &Path) -> Option<SecureString> {
         self.reader.held_document(path)
     }
+
+    fn fee_debt_owner(
+        &self,
+    ) -> Option<std::sync::Weak<dyn busbar_kernel::governance::fee_debt::FeeDebtAssociate>> {
+        self.reader.fee_debt_owner()
+    }
 }
 
 /// THE STORE BOOTSTRAP: the non-serving projection of the deployment the store opens under, before the
@@ -180,7 +191,6 @@ pub(crate) struct ReadyCandidate {
     pub book: NodeBook,
     pub limits: ConfirmedLimits,
     pub node_lease_task: Option<JoinHandle<Result<(), String>>>,
-    pub deploy: DeployCfg,
     pub overlay: Option<Arc<OverlayStore>>,
     pub configuration_fingerprint: [u8; 32],
 }
@@ -241,9 +251,7 @@ impl std::error::Error for PreparationFailure {}
 /// The one application-building segment of the boot.
 /// Call through [`BootApp`] so cancellation retains this future.
 pub(crate) async fn prepare(input: Preparation) -> Result<ReadyCandidate, Box<PreparationFailure>> {
-    // The retained future may be polled by a task other than its creator. Scope its execution,
-    // including appbuild's Secret/Store work before BookPreparation installs measurement custody.
-    Box::pin(crate::root::measurements::maintenance(prepare_inner(input))).await
+    Box::pin(prepare_inner(input)).await
 }
 
 async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<PreparationFailure>> {
@@ -368,7 +376,6 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
         book: failed.book.take().expect("retained native book"),
         limits,
         node_lease_task: failed.node_lease_task.take(),
-        deploy,
         overlay,
         configuration_fingerprint,
     })
@@ -504,11 +511,7 @@ impl BootApp {
             state.validating = Some(Box::pin(async move {
                 let mut candidate = candidate.lock().await;
                 loop {
-                    match Box::pin(crate::root::measurements::maintenance(validate(
-                        &mut candidate,
-                    )))
-                    .await
-                    {
+                    match Box::pin(validate(&mut candidate)).await {
                         Err(ValidationError::Retryable(_)) => {
                             // The same validator and serving candidate retain custody while
                             // their typed native owners resolve the original operations.

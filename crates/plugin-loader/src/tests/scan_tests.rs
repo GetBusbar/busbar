@@ -11,7 +11,8 @@ use busbar_plugin_abi::types::KindCode;
 fn good() -> [u8; STAMP_SIZE] {
     emit(&Spec {
         kind: KindCode::Secret,
-        kind_abi: 2,
+        kind_abi: busbar_plugin_abi::versions::SECRET,
+        kind_minor: busbar_plugin_abi::versions::SECRET_MINOR,
         layout: busbar_plugin_abi::secret::FP,
         out_of_process: false,
         engine_min: None,

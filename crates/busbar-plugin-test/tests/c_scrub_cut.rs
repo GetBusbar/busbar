@@ -296,6 +296,7 @@ fn the_export_adapters_port_error_log_line_and_audit_row_hold() {
                 deadline: Instant::now() + Duration::from_secs(30),
                 request_id: 1,
                 stack: CallStack::default(),
+                mono_ns: 0,
             };
             let e = h
                 .block_on(port.deliver(cx, STREAM_LOGS, 1, 1, &lines))

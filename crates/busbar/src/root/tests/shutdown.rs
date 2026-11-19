@@ -560,7 +560,7 @@ impl Fixture {
             node_lease: None,
             flusher,
             governance: governed.then(|| seen.gov.clone()),
-            late: Services::bootstrap(),
+            late: Services::idle(),
             book: Some(book),
             startup,
             predecessor: None,
@@ -575,13 +575,12 @@ pub(super) fn money_driver(
     clock: &Arc<DrainClock>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
 ) -> JoinHandle<()> {
-    tokio::spawn(crate::root::measurements::maintenance(
-        busbar_kernel::governance::run_budget_flusher(
-            gov.clone(),
-            shutdown_tx.subscribe(),
-            None,
-            Some(Arc::clone(clock)),
-        ),
+    tokio::spawn(busbar_kernel::governance::run_budget_flusher(
+        gov.clone(),
+        shutdown_tx.subscribe(),
+        None,
+        Some(Arc::clone(clock)),
+        None,
     ))
 }
 
@@ -638,6 +637,36 @@ async fn the_drain_flushes_the_journal_lane_before_it_retires() {
         4
     );
     assert_eq!(drain.detached(), 0, "nothing was cut");
+}
+
+/// A line a request handed to its core just before shutdown, with no flusher tick after it, is
+/// staged by [5] while staging is still open and committed by the journal's final flush.
+#[tokio::test(flavor = "current_thread")]
+async fn a_line_handed_to_a_core_just_before_shutdown_is_committed() {
+    let fixture = Fixture::new(16).await;
+    let node = crate::root::plane_node::node();
+    node.bind_book(Arc::clone(&fixture.book.durability));
+    let core = node.core_audit();
+    let ticket = core
+        .records()
+        .append(crate::root::durability::tests::audit_inputs(1));
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
+    let (post, seen) = fixture.post(false, None, &shutdown_tx, None);
+    let drain = ShutdownDrain::new(DrainClock::new(ROOMY));
+    coordinate_test(&drain, &shutdown_tx);
+    let code = tokio::time::timeout(WAIT, finish(post, &drain))
+        .await
+        .expect("the drain returns");
+    assert_eq!(code, 0, "a drained writer retires");
+    assert!(
+        core.records().is_committed(ticket),
+        "the core's last line was committed before staging closed"
+    );
+    assert_eq!(core.records().held(), 0);
+    assert_eq!(
+        seen.journal.read_records(seen.budget).await.unwrap().len(),
+        1
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

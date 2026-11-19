@@ -2297,7 +2297,7 @@ pub(crate) async fn restart(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = ok_or_respond!(if_match_version(&headers));
+    let expected = ok_or_respond!(boxed RestartIfMatch::read(&headers));
     let req: RestartReq = if body.is_empty() {
         RestartReq::default()
     } else {
@@ -2314,7 +2314,7 @@ pub(crate) async fn restart(
     };
 
     let out = busbar_kernel::config::transaction::config_reload_transaction(&handle, |txn| {
-        if let Some(error) = stale_if_match(expected, txn.app().config_version) {
+        if let Some(error) = expected.as_ref().and_then(|guard| guard.stale(txn.app())) {
             return Err(error);
         }
         let supervised = crate::restart::supervisor_detected();
@@ -2744,7 +2744,9 @@ fn reload_to_apply_fields(req: &busbar_kernel::config::overlay::RootSettings) ->
             response_headers,
 
             rate_sweep_interval: _,
+            worker_threads: _,
             usage_flush_interval_ms: _,
+            wait_for_commit: _,
         } = advanced;
         push(response_headers.is_some(), "advanced.response_headers");
     }
@@ -3454,7 +3456,7 @@ pub(crate) async fn hook_status(
 pub(crate) const V1_GET_PATHS: &[(&str, &str)] = &[
     (
         "/info",
-        "Node identity: version, deployment, node, incarnation, warnings",
+        "Node identity: version, API revision, build, deployment, node, incarnation, warnings",
     ),
     (PATH_HOOKS, "Hook registry (definitions)"),
     (

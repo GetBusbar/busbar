@@ -4,9 +4,9 @@
 //! Exercise the actual inbound host's two-point dispatch, not its decision helpers.
 use super::*;
 use crate::guest::{Claimant, Route};
-use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
-use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_contract::auth_calls::Verifying;
+use busbar_contract::route::{AuthPoints, POINT_HEAD};
+use busbar_contract::route::{METHOD_POST, PATH_EXACT};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "inbound_single_path.rs"]
@@ -216,7 +216,6 @@ fn mixed_bound(
     );
     let app = Arc::new(crate::state::App::from_test_parts(crate::state::AppParts {
         fallback_runtime_key: "",
-        serve_tables: Default::default(),
         port_seats: Default::default(),
         exports: Default::default(),
         root_rules: Arc::new(crate::appbuild::AcceptAll),
@@ -242,7 +241,6 @@ fn mixed_bound(
         admin: Default::default(),
         admin_chain: Default::default(),
         admin_modules,
-        auth_instances: Default::default(),
         public_url: Default::default(),
         oauth_as: Default::default(),
         demotion_record: Default::default(),

@@ -3,15 +3,12 @@
 
 use std::sync::Arc;
 
-use super::linked::{linked_exports, Linked};
-use super::loader::{
-    boot::*, dispatch::LoadError, dispatch::ManifestFacts, LinkedPlugin, PluginRegistry,
-};
-use busbar_contract::abi::mechanism::KindCode;
+use super::loader::{boot::*, PluginRegistry};
+use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::plugin_rows::PluginRows;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
-use busbar_kernel::config_validate::deal::{Document, Seat};
-use busbar_kernel::preflight::{BuildNote, CopyLine, Fetched, LinkedRow, RegistryIn};
+use busbar_kernel::config_validate::deal::Document;
+use busbar_kernel::preflight::{BuildNote, Fetched, RegistryIn};
 
 /// A host-owned pairing of the admitted archive and the exact retained library allocation.
 /// Weak ownership follows the caller's generation without keeping retired images alive forever.
@@ -32,7 +29,6 @@ fn remember_native_images(registry: &PluginRegistry, plugins: &PluginsCfg) {
     let fresh: Vec<_> = registry
         .loadable()
         .iter()
-        .filter(|image| !image.linked())
         .filter_map(|image| {
             Some(NativeImage {
                 bytes: Arc::downgrade(&image.lib_bytes),
@@ -180,13 +176,6 @@ pub(crate) async fn admit_format_with(
     }
 }
 
-// The stall window's per-plane step must cover one READY as the host bounds it.
-const _: () = assert!(
-    busbar_kernel::persistence::startup::READY_STEP.as_secs()
-        >= busbar_plugin_loader::dispatch::ready::READY_DEADLINE.as_secs()
-            + busbar_plugin_loader::dispatch::ready::CANCEL_GRACE.as_secs()
-);
-
 /// The wait line (FIRST-START-TAKEOVER §2.2; #319 r4 §8 for a record-format conversion): on the
 /// first wait and every 10 s after.
 fn log_first_start_wait(waiting: busbar_kernel::persistence::startup::Waiting) {
@@ -273,7 +262,7 @@ async fn hold_plugin_floor(rows: &dyn PluginRows, plugins: &PluginsCfg) -> Resul
         // The synchronous dlopen guard checks this proof; it performs no Store I/O.
         if let Some(registry) = super::loader::rows::registry_of(rows) {
             let mut prepared = Vec::new();
-            for image in registry.loadable().iter().filter(|image| !image.linked()) {
+            for image in registry.loadable() {
                 let row = PluginRows::resolve(registry, &image.manifest.name)
                     .ok_or("admitted native image lost its registry row")?;
                 let archive = image
@@ -315,17 +304,7 @@ pub(crate) async fn admit_recovered_plugins(plugins: &PluginsCfg) -> Result<(), 
     Ok(())
 }
 
-pub fn registry(
-    linked: Vec<LinkedPlugin>,
-    plugins: Option<&PluginsCfg>,
-    _data_dir: Option<&std::path::Path>,
-    note: &mut dyn FnMut(Note<'_>),
-) -> Result<PluginRegistry, String> {
-    registry_with_floor(linked, plugins, true, note)
-}
-
 fn registry_with_floor(
-    linked: Vec<LinkedPlugin>,
     plugins: Option<&PluginsCfg>,
     _check_floor: bool,
     note: &mut dyn FnMut(Note<'_>),
@@ -340,7 +319,7 @@ fn registry_with_floor(
             dir: p.enabled.then_some(std::path::Path::new(&p.dir)),
         }),
     };
-    let registry = super::loader::boot::registry(Build { linked, scan }, note)?;
+    let registry = super::loader::boot::registry(Build { scan }, note)?;
     if let Some(plugins) = plugins {
         remember_native_images(&registry, plugins);
     }
@@ -352,56 +331,20 @@ pub(crate) fn registry_rows(
     i: RegistryIn<'_>,
     note: &mut dyn FnMut(BuildNote<'_>),
 ) -> Result<Arc<dyn PluginRows>, String> {
-    let mut linked: Vec<_> = i.linked.iter().map(linked_row).collect();
-    linked.extend(linked_exports(crate::LINKED.export_doors)?);
-    let registry = registry_with_floor(linked, i.plugins, !i.inventory_only, &mut |n| match n {
+    // The kernel's linked rows are the old interface's linked auth doors: no registry row reads them.
+    let registry = registry_with_floor(i.plugins, !i.inventory_only, &mut |n| match n {
         Note::FloorUnreadable(detail) => note(BuildNote::FloorUnreadable(detail)),
         Note::Off => note(BuildNote::Off),
+        // No linked row is copied by a dropped-in image: the old interface's linked rows are gone.
         Note::Scanned(scanned) => {
-            let copies: Vec<CopyLine> = scanned
-                .linked_copies()
-                .iter()
-                .map(|c| CopyLine {
-                    name: c.name.clone(),
-                    version: c.version.clone(),
-                    file: c.file.clone(),
-                    line: c.line(),
-                })
-                .collect();
             note(BuildNote::Scanned {
                 rows: scanned,
-                copies: &copies,
+                copies: &[],
             });
         }
         Note::FloorUnwritable(e) => note(BuildNote::FloorUnwritable(e)),
     })?;
     Ok(Arc::new(registry))
-}
-
-#[must_use]
-pub(crate) fn linked_row(row: &LinkedRow) -> LinkedPlugin {
-    let former = crate::LINKED.former;
-    match *row {
-        LinkedRow::Auth((key, canonical, door)) => {
-            LinkedPlugin::auth_door_named(canonical, key, door)
-                .with_former_names(super::linked::words_of(former, "auth", key))
-        }
-    }
-}
-
-#[must_use]
-pub(crate) fn linked_registry() -> PluginRegistry {
-    let mut linked: Vec<_> = busbar_kernel::preflight::linked_rows()
-        .iter()
-        .map(linked_row)
-        .collect();
-    linked.extend(
-        linked_exports(crate::LINKED.export_doors)
-            .expect("the build's linked export declarations must be valid"),
-    );
-    PluginRegistry::empty()
-        .link(linked)
-        .expect("the build's linked plugin declarations must not conflict")
 }
 
 pub fn trust_policy(
@@ -472,18 +415,6 @@ pub(crate) fn plugins_fetch(
         .collect())
 }
 
-fn config_path() -> std::path::PathBuf {
-    std::path::PathBuf::from(crate::root::cli::resolve_config_path(
-        crate::root::cli::argv().config.as_deref(),
-    ))
-}
-
-pub fn plan(path: &std::path::Path) -> Uses {
-    document(path)
-        .map(|doc| Uses::of(doc.value()))
-        .unwrap_or_default()
-}
-
 pub fn document(path: &std::path::Path) -> Option<Document> {
     let raw = std::fs::read_to_string(path).ok()?;
     let text = busbar_kernel::config::interpolate_env_with(
@@ -495,82 +426,17 @@ pub fn document(path: &std::path::Path) -> Option<Document> {
     Document::parse(text).ok()
 }
 
-pub(crate) fn validate_dealt<'s>(
-    doc: &Document,
-    seats: impl IntoIterator<Item = (&'s str, Seat<'s>)>,
-    mut validate: impl FnMut(&'s str, &[u8]) -> Result<(), String>,
-) -> Result<(), String> {
-    for (instance, seat) in seats {
-        let Some(section) = doc.deal(seat)? else {
-            continue;
-        };
-        let seal = busbar_kernel::seal::lend();
-        validate(instance, section.settings.expose(&seal)).map_err(|reason| {
-            format!(
-                "config.yaml: invalid YAML: {}",
-                doc.refuse(&section, &reason)
-            )
-        })?;
-    }
-    Ok(())
-}
-
-fn validate_door(door: &DoorPlane, settings: &[u8]) -> Result<(), String> {
-    use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_JSON};
-    use busbar_contract::abi::mechanism::lifecycle::{slot as life, ValidateIn};
-    use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-    let mut err = [0_u8; 1024];
-    let mut i: ValidateIn = blank_in();
-    i.settings = Blob {
-        ptr: settings.as_ptr(),
-        len: settings.len(),
-        fmt: BLOB_JSON,
-        flags: 0,
-    };
-    i.err_buf = err.as_mut_ptr();
-    i.err_cap = err.len();
-    let mut f = super::loader::dispatch::Frame::new(i, blank_out::<OutHead>());
-    let called = door.answer(life::VALIDATE, &mut f);
-    if called.outcome == Outcome::Ready {
-        return Ok(());
-    }
-    Err(called.error.map_or_else(
-        || format!("{:?}", called.outcome),
-        |e| String::from_utf8_lossy(&e).into_owned(),
-    ))
-}
-
 pub fn discover(registry: &PluginRegistry) -> Result<Vec<Candidate>, String> {
     discovered(registry, |_| true)
 }
 
-pub(crate) fn listener_candidates(linked: &Linked) -> Result<Vec<Candidate>, String> {
-    listener_candidates_from(linked, dropped_registry())
-}
-
-fn listener_candidates_from(
-    linked: &Linked,
-    registry: Option<&PluginRegistry>,
-) -> Result<Vec<Candidate>, String> {
-    let mut candidates = registry.map(discover).transpose()?.unwrap_or_default();
-
-    candidates.retain(|candidate| !matches!(candidate.kind, KindCode::Plane | KindCode::Export));
-    candidates.extend(
-        dropped_registry()
-            .map(|registry| discovered(registry, |kind| matches!(kind, "plane" | "export")))
-            .transpose()?
-            .unwrap_or_default(),
-    );
-    for door in linked.plane_doors {
-        let candidate = Candidate::linked(*door)?;
-        if !candidates
-            .iter()
-            .any(|c| c.kind == candidate.kind && c.name == candidate.name)
-        {
-            candidates.push(candidate);
-        }
-    }
-    Ok(candidates)
+/// The dropped-in candidates whose declared inbound needs the listener plan reads. No linked row
+/// is a door any more: every linked plugin is a MIN-3 image.
+pub(crate) fn listener_candidates() -> Result<Vec<Candidate>, String> {
+    dropped_registry()
+        .map(discover)
+        .transpose()
+        .map(Option::unwrap_or_default)
 }
 
 /// A declared inbound need and the physical listener on which it is served.
@@ -608,7 +474,7 @@ pub fn configured_listener_needs(
     sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
 ) -> Result<ListenerNeeds, String> {
     let mut listeners = listener_projection(
-        listener_candidates(&crate::LINKED)?,
+        listener_candidates()?,
         &cfg.hooks,
         &cfg.export_defs,
         sections,
@@ -875,17 +741,12 @@ impl Stages {
                     .filter(|s| s.candidate == i)
                     .map(|s| s.instance.as_str())
                     .collect();
-                let abi = ManifestFacts::read(&c.stated).map_or(0, |f| f.kind_abi);
                 let status = if used.is_empty() {
                     "not used by this config".to_string()
                 } else {
                     format!("selected as {}", used.join(", "))
                 };
-                format!(
-                    "    plugin: {} ({}, ABI {abi}) — {status}",
-                    c.name,
-                    kind_word(c.kind)
-                )
+                format!("    plugin: {} ({}) — {status}", c.name, kind_word(c.kind))
             })
             .chain(
                 self.inbound
@@ -929,99 +790,18 @@ pub fn validate(
         }
     }
     let mut stages = stages(&doc, discover(registry)?, binds)?;
-    resolve_validation_listeners(
-        &mut stages,
-        registry,
-        &transport_uses_for(path, &[]),
-        root_required,
-    )?;
-    Ok(stages)
-}
-
-/// Resolve validation's physical binds from declarations without calling lifecycle OPEN.
-fn resolve_validation_listeners(
-    stages: &mut Stages,
-    registry: &PluginRegistry,
-    uses: &Uses,
-    root_required: bool,
-) -> Result<(), String> {
-    use super::loader::dispatch::{
-        kinds::transport::{self, TransportFacts},
-        Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
-    };
-    let mut facts = crate::LINKED_TRANSPORT_DOORS
-        .iter()
-        .map(|(_, door)| transport::linked_facts(*door))
-        .collect::<Result<Vec<_>, _>>()?;
-    let dispatcher = Dispatcher::new(
-        DispatchConfig::default(),
-        busbar_kernel::host_services::caller_binding(),
-    );
-    let bind = Bind {
-        accept: Default::default(),
-        instance: Arc::from("configuration-listeners"),
-        max_inflight_cap: 1,
-        sink: Arc::new(NoSink),
-        dispatcher: dispatcher.adopter(),
-        conns: ConnTable::NoNeeds,
-    };
-    let declared = registry.open_transport_entries(&bind, uses, plugin_logs())?;
-    for plugin in &declared.doors {
-        facts.push(
-            plugin
-                .context::<TransportFacts>()
-                .cloned()
-                .ok_or("listener transport has no validated declaration")?,
-        );
-    }
-    let accepting: Vec<_> = facts
-        .iter()
-        .filter(|facts| facts.role == busbar_contract::abi::transport::ROLE_FRAMER && facts.accepts)
-        .collect();
+    // Validation calls no lifecycle OPEN: the data listener is kept when the configuration states
+    // it or a selected plugin needs an inbound connection.
     let data_required = stages.selected.iter().any(|selection| {
         stages.candidates[selection.candidate]
             .needs
             .iter()
-            .any(|need| {
-                need.direction == busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND
-            })
+            .any(|need| need.direction == busbar_contract::conn::codes::DIRECTION_INBOUND)
     });
-    if !root_required && !data_required && accepting.is_empty() {
+    if !root_required && !data_required {
         stages.inbound.retain(|bind| bind.at != "listen");
-    } else {
-        let claim = busbar_contract::abi::transport::listener_bindings::resolve(
-            "listen",
-            accepting.iter().flat_map(|facts| &facts.listener_bindings),
-        )?;
-        if !accepting
-            .iter()
-            .any(|facts| facts.claims.contains(&claim.as_str()) && !facts.datagram)
-        {
-            return Err("listen: its declared claim requires an accepting stream framer".into());
-        }
-        for bind in &mut stages.inbound {
-            if bind.owner == BindOwner::Root && bind.at == "listen" {
-                bind.transport.clone_from(&claim);
-            }
-        }
     }
-    for bind in stages
-        .inbound
-        .iter()
-        .filter(|bind| bind.at != "admin_listen")
-    {
-        let count = accepting
-            .iter()
-            .filter(|facts| facts.claims.contains(&bind.transport.as_str()))
-            .count();
-        if count != 1 {
-            return Err(format!(
-                "{}: expected one accepting framer for {}, found {count}",
-                bind.at, bind.transport
-            ));
-        }
-    }
-    Ok(())
+    Ok(stages)
 }
 
 /// The addresses the host's own listeners take, as the resolved configuration states them.
@@ -1074,29 +854,6 @@ pub fn stages(
     let uses = Uses::of(doc);
     let selected = select(&uses, &candidates);
     let inbound = listener_needs(doc, &candidates, &selected, root)?.binds;
-    for s in &selected {
-        let c = &candidates[s.candidate];
-        let facts =
-            ManifestFacts::read(&c.stated).map_err(|e| format!("plugin '{}': {e}", c.name))?;
-        let host = facts.kind.abi_version();
-        let refusal =
-            if facts.mechanism_version != busbar_contract::abi::mechanism::MECHANISM_VERSION {
-                Some(LoadError::ManifestMechanism {
-                    stated: facts.mechanism_version,
-                    host: busbar_contract::abi::mechanism::MECHANISM_VERSION,
-                })
-            } else if facts.kind_abi != host {
-                Some(LoadError::ManifestKindAbi {
-                    stated: facts.kind_abi,
-                    host,
-                })
-            } else {
-                None
-            };
-        if let Some(r) = refusal {
-            return Err(format!("plugin '{}' ({}): {r}", c.name, s.instance));
-        }
-    }
     Ok(Stages {
         candidates,
         selected,
@@ -1124,7 +881,7 @@ pub(crate) struct Judged {
 pub(crate) fn start_scan() -> StartScan {
     let plugins = configured_block();
     let scanned = match &plugins {
-        Some(p) => judge(Vec::new(), p).map(Some),
+        Some(p) => judge(p).map(Some),
         None => Ok(None),
     };
     StartScan { plugins, scanned }
@@ -1135,16 +892,11 @@ pub(crate) fn start_scan() -> StartScan {
 /// admission puts the set on the axis).
 pub(crate) fn install_start(
     scan: StartScan,
-    linked: &Linked,
 ) -> Option<&'static crate::root::loader::PluginRegistry> {
     let StartScan { plugins, scanned } = scan;
     if let Some(plugins) = &plugins {
         plugins.warn_invalid_floors();
     }
-    let rows = linked_exports(linked.export_doors).unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        crate::root::exit::exit(2);
-    });
     let judged = scanned.unwrap_or_else(|refusal| {
         let _ = START_REFUSAL.set(refusal);
         None
@@ -1170,15 +922,7 @@ pub(crate) fn install_start(
         (None, None) => linked_grammar().map_err(busbar_kernel::config::GrammarRefusal),
     };
     let _ = START_JUDGED.set(StartJudged { grammar });
-    if registry.is_none() && rows.is_empty() {
-        return None;
-    }
-    let registry = registry.unwrap_or_else(crate::root::loader::PluginRegistry::empty);
-    let registry = registry.link(rows).unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        crate::root::exit::exit(2);
-    });
-
+    let registry = registry?;
     Some(REGISTRY.get_or_init(|| registry))
 }
 
@@ -1239,8 +983,8 @@ pub(crate) fn phase_one(
 
 /// The scan of `plugins`' directory under its trust policy, with `linked`, and the secret modules
 /// it admits judged together with the linked secret rows: one owner per word, name and alias.
-fn judge(linked: Vec<LinkedPlugin>, plugins: &PluginsCfg) -> Result<Judged, String> {
-    let registry = scanned_registry(linked, plugins)?;
+fn judge(plugins: &PluginsCfg) -> Result<Judged, String> {
+    let registry = scanned_registry(plugins)?;
     // WP3 step 2: the secret words are the native images' (published by the start-stage images prepare).
     let sugars = crate::root::native_secrets::NATIVE.sugars();
     Ok(Judged { registry, sugars })
@@ -1248,10 +992,7 @@ fn judge(linked: Vec<LinkedPlugin>, plugins: &PluginsCfg) -> Result<Judged, Stri
 
 /// The registry build's scan, alone: no data dir (the high-water marks are neither read nor
 /// written), no native-image record, no admission.
-fn scanned_registry(
-    linked: Vec<LinkedPlugin>,
-    plugins: &PluginsCfg,
-) -> Result<PluginRegistry, String> {
+fn scanned_registry(plugins: &PluginsCfg) -> Result<PluginRegistry, String> {
     let scan = Scan {
         policy: trust_policy(plugins, env!("CARGO_PKG_VERSION"))
             .map_err(|e| format!("plugins.trust is invalid: {e}"))?,
@@ -1260,13 +1001,7 @@ fn scanned_registry(
             .enabled
             .then_some(std::path::Path::new(&plugins.dir)),
     };
-    super::loader::boot::registry(
-        Build {
-            linked,
-            scan: Some(scan),
-        },
-        &mut |_| {},
-    )
+    super::loader::boot::registry(Build { scan: Some(scan) }, &mut |_| {})
 }
 
 /// Test fixtures that read a document outside any read path: the words the live secret axis
@@ -1309,11 +1044,7 @@ fn owners_of(
                 row.manifest.name.clone(),
                 busbar_kernel::config::grammar::Owner {
                     version: row.manifest.version.clone(),
-                    origin: if row.linked() {
-                        "linked".to_owned()
-                    } else {
-                        row.file.clone()
-                    },
+                    origin: row.file.clone(),
                     trust: trust.to_owned(),
                 },
             )
@@ -1335,55 +1066,26 @@ fn not_admitted(registry: &PluginRegistry, plugins: Option<&PluginsCfg>, file: &
         .unwrap_or_else(|| format!("\"{}\" is no longer in plugins.dir", file.escape_debug()))
 }
 
-/// The outbound auth styles a dropped-in auth row's signed statement declares.
-fn row_styles(row: &crate::root::loader::LoadablePlugin) -> Vec<String> {
-    row.manifest
-        .stated_rendering()
-        .ok()
-        .flatten()
-        .and_then(|stated| crate::root::loader::dispatch::kinds::auth::rendered_facts(&stated).ok())
-        .map(|facts| facts.styles.into_iter().map(|style| style.name).collect())
-        .unwrap_or_default()
-}
-
-/// What this process registered at start (SECRET-SHORTHAND-BOOT §3.6): its plane doors (name,
-/// declaring sections, and the dropped-in file, `None` for a linked one), its linked auth rows'
-/// outbound styles, and the start registry the dropped-in images and auth rows are read from.
+/// What this process registered at start (SECRET-SHORTHAND-BOOT §3.6): its plane images (name and
+/// the dropped-in file, `None` for a linked one), and the start registry the dropped-in images are
+/// read from.
 pub(crate) struct Registered<'a> {
     pub(crate) planes: Vec<(String, Option<String>)>,
-    pub(crate) linked_styles: Vec<(String, Vec<String>)>,
     pub(crate) start: Option<&'a PluginRegistry>,
 }
 
-/// This process's start registration, once process start registered its planes.
+/// This process's start registration, once process start admitted its registry.
 fn registered() -> Option<Registered<'static>> {
-    let candidates = DOOR_CANDIDATES.get()?;
-    let planes = candidates
+    let start = REGISTRY.get()?;
+    let planes = start
+        .loadable()
         .iter()
-        .filter(|c| c.kind == KindCode::Plane)
-        .map(|c| {
-            let file = match &c.origin {
-                Origin::Linked(_) => None,
-                Origin::Dropped { file, .. } => Some(file.clone()),
-            };
-            (c.name.clone(), file)
-        })
-        .collect();
-    let linked_styles = crate::LINKED
-        .auths
-        .iter()
-        .filter_map(|(_, canonical, door)| {
-            let facts = crate::root::loader::dispatch::kinds::auth::stated_facts(*door).ok()?;
-            Some((
-                (*canonical).to_string(),
-                facts.styles.into_iter().map(|style| style.name).collect(),
-            ))
-        })
+        .filter(|row| row.manifest.kind == "plane")
+        .map(|row| (row.manifest.name.clone(), Some(row.file.clone())))
         .collect();
     Some(Registered {
         planes,
-        linked_styles,
-        start: REGISTRY.get(),
+        start: Some(start),
     })
 }
 
@@ -1467,47 +1169,13 @@ pub(crate) fn classify_against(
         };
         push(ItemKind::Section, vec![instance], name, &image, &standing);
     }
-    for (module, styles) in &registered.linked_styles {
-        push(
-            ItemKind::Style,
-            styles.clone(),
-            module,
-            "linked",
-            &Standing::Counts,
-        );
-    }
-    for row in registered
-        .start
-        .map_or(&[][..], PluginRegistry::loadable)
+    for row in registry
+        .loadable()
         .iter()
-        .filter(|row| !row.linked() && row.manifest.kind == "auth")
+        .filter(|row| row.manifest.kind == "plane" && !known.iter().any(|name| row.is_module(name)))
     {
-        known.insert(row.manifest.name.clone());
-        let (image, standing) = judged("auth", &row.manifest.name, &row.file);
-        push(
-            ItemKind::Style,
-            row_styles(row),
-            &row.manifest.name,
-            &image,
-            &standing,
-        );
-    }
-    for row in registry.loadable().iter().filter(|row| {
-        !row.linked()
-            && (row.manifest.kind == "plane" || row.manifest.kind == "auth")
-            && !known.iter().any(|name| row.is_module(name))
-    }) {
         let image = row.archive_sha256.clone().unwrap_or_default();
-        if row.manifest.kind == "auth" {
-            let styles = row_styles(row);
-            push(
-                ItemKind::Style,
-                styles,
-                &row.manifest.name,
-                &image,
-                &Standing::Unregistered,
-            );
-        } else if let Ok(Some(_)) = row.candidate() {
+        if let Ok(Some(_)) = row.candidate() {
             let instance = match row.manifest.alias.as_str() {
                 "" => row.manifest.name.clone(),
                 alias => alias.to_owned(),
@@ -1547,20 +1215,6 @@ pub(crate) static REGISTRY: std::sync::OnceLock<crate::root::loader::PluginRegis
     std::sync::OnceLock::new();
 
 static BASE_BOOTSTRAP_PLUGINS: std::sync::OnceLock<PluginsCfg> = std::sync::OnceLock::new();
-
-pub(crate) fn authorize_early_plugin(name: &str) -> Result<(), String> {
-    let registry = REGISTRY
-        .get()
-        .ok_or("the early plugin inventory is not initialized")?;
-    let base = BASE_BOOTSTRAP_PLUGINS
-        .get()
-        .ok_or("the operator's base bootstrap archive pins are not initialized")?;
-    busbar_kernel::appbuild::validate_bootstrap_artifacts(
-        registry,
-        &std::collections::BTreeSet::from([name.to_string()]),
-        base,
-    )
-}
 
 pub(crate) fn dropped_registry() -> Option<&'static crate::root::loader::PluginRegistry> {
     REGISTRY.get()
@@ -1650,245 +1304,6 @@ fn configured_block() -> Option<PluginsCfg> {
         return None;
     };
     plugins.enabled.then_some(plugins)
-}
-
-pub(crate) fn discover_planes(
-    linked: &Linked,
-    dropped: Option<&crate::root::loader::PluginRegistry>,
-) {
-    let set = match dropped {
-        Some(registry) => registry.open_planes(linked.plane_doors),
-        None => crate::root::loader::PluginRegistry::empty().open_planes(linked.plane_doors),
-    };
-    let set = set.and_then(|mut set| {
-        let mut named = false;
-        for door in set.doors.iter_mut().take(linked.plane_doors.len()) {
-            let words = super::linked::words_of(linked.former, "plane", &door.name);
-            named |= !words.is_empty();
-            *door = door.clone().answering(words);
-        }
-        if named {
-            crate::root::loader::boot::one_owner(&set.doors)?;
-        }
-        Ok(set)
-    });
-    let set = set.unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        crate::root::exit::exit(2);
-    });
-    let _ = DOOR_CANDIDATES.set(set.doors);
-}
-
-#[must_use]
-pub(crate) fn unbound_sections() -> Vec<&'static str> {
-    let bound = door_planes();
-    DOOR_CANDIDATES
-        .get()
-        .map_or(&[][..], Vec::as_slice)
-        .iter()
-        .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
-        .filter_map(|c| c.verbs.first())
-        .filter_map(|section| {
-            busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
-        })
-        .filter(|decl| !decl.fallback)
-        .map(|decl| decl.config_section)
-        .collect()
-}
-
-static PROVIDER_URLS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
-
-pub(crate) fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
-    let next = urls.into_iter().collect();
-    let previous = std::mem::replace(
-        &mut *PROVIDER_URLS.write().unwrap_or_else(|p| p.into_inner()),
-        next,
-    );
-    drop(previous);
-}
-
-fn transport_uses() -> Uses {
-    let urls = PROVIDER_URLS
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone();
-    transport_uses_for(&config_path(), &urls)
-}
-
-pub(crate) fn transport_uses_for(path: &std::path::Path, urls: &[String]) -> Uses {
-    let mut uses = plan(path).reaching(urls.iter().map(String::as_str));
-    uses.schemes.extend(
-        crate::LINKED_TRANSPORT_DOORS
-            .iter()
-            .filter_map(|(_, door)| Candidate::linked(*door).ok())
-            .flat_map(|c| c.schemes),
-    );
-    uses
-}
-
-pub(crate) fn check_bootstrap_transports(plugins: &PluginsCfg) -> Result<(), String> {
-    let Some(registry) = REGISTRY.get() else {
-        return Ok(());
-    };
-    let uses = transport_uses();
-    let mut selected = std::collections::BTreeSet::new();
-    for row in registry
-        .loadable()
-        .iter()
-        .filter(|row| row.manifest.kind == "transport")
-    {
-        if row
-            .candidate()?
-            .is_some_and(|candidate| candidate.serves(&uses))
-        {
-            selected.insert(row.manifest.name.clone());
-        }
-    }
-    busbar_kernel::appbuild::validate_bootstrap_artifacts(registry, &selected, plugins)
-}
-
-pub(crate) static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
-    std::sync::OnceLock::new();
-
-static DOOR_PLANES: std::sync::OnceLock<Vec<(String, DoorPlane)>> = std::sync::OnceLock::new();
-
-pub(crate) type DoorPlane = std::sync::Arc<
-    crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>,
->;
-
-pub(crate) fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
-    let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
-    let uses = Uses {
-        roots: sections.into_iter().map(str::to_string).collect(),
-        ..Uses::default()
-    };
-    let used = crate::root::loader::boot::used_planes(&uses, doors);
-
-    let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
-        crate::root::connector::the().clone();
-    let bound = crate::root::loader::boot::load_planes(
-        &used,
-        plugin_logs(),
-        std::sync::Arc::new(crate::root::loader::dispatch::NoSink),
-        crate::root::dispatch::dispatcher().adopter(),
-        u32::MAX,
-        crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(conns)),
-    )
-    .unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        crate::root::exit::exit(2);
-    })
-    .into_iter()
-    .map(|(instance, plane)| (instance, std::sync::Arc::new(plane)))
-    .collect::<Vec<(String, DoorPlane)>>();
-
-    let path = crate::root::cli::resolve_config_path(crate::root::cli::argv().config.as_deref());
-    if let Some(doc) = document(std::path::Path::new(&path)) {
-        let seats = doors.iter().map(|c| {
-            (
-                c.name.as_str(),
-                Seat::of(kind_of(c.kind), &c.verbs, &c.name),
-            )
-        });
-        let refused = validate_dealt(&doc, seats, |instance, settings| {
-            bound
-                .iter()
-                .find(|(name, _)| name == instance)
-                .map_or(Ok(()), |(_, door)| validate_door(door, settings))
-        });
-        if let Err(refusal) = refused {
-            eprintln!("busbar: {refusal}");
-            crate::root::exit::exit(2);
-        }
-    }
-    let _ = DOOR_PLANES.set(bound);
-}
-
-static LOGS: std::sync::OnceLock<crate::root::loader::dispatch::PluginLogConfig> =
-    std::sync::OnceLock::new();
-
-pub(crate) fn plugin_logs() -> &'static crate::root::loader::dispatch::PluginLogConfig {
-    LOGS.get_or_init(|| {
-        let none = Default::default();
-        crate::root::loader::dispatch::PluginLogConfig::from_words(None, None, &none, None, None)
-            .expect("the plugins.logs defaults resolve")
-    })
-}
-
-pub(crate) fn door_planes() -> &'static [(String, DoorPlane)] {
-    DOOR_PLANES.get().map_or(&[], Vec::as_slice)
-}
-
-pub(crate) fn dropped_transports(
-    settings: &busbar_contract::transport::TransportSettings,
-) -> crate::root::registry::Dropped {
-    if let Some(opened) = WIRES.lock().unwrap_or_else(|p| p.into_inner()).clone() {
-        return opened;
-    }
-    let opened = open_dropped_transports(settings).unwrap_or_else(|refusal| {
-        eprintln!("busbar: {refusal}");
-        crate::root::exit::exit(2);
-    });
-    let retained = {
-        let mut wires = WIRES.lock().unwrap_or_else(|p| p.into_inner());
-        wires.get_or_insert_with(|| opened.clone()).clone()
-    };
-
-    drop(opened);
-    retained
-}
-
-static WIRES: std::sync::Mutex<Option<crate::root::registry::Dropped>> =
-    std::sync::Mutex::new(None);
-
-pub(crate) fn open_dropped_transports(
-    settings: &busbar_contract::transport::TransportSettings,
-) -> Result<crate::root::registry::Dropped, String> {
-    let doors = match REGISTRY.get() {
-        None => Vec::new(),
-        Some(registry) => registry
-            .open_transport_entries(&crate::root::doors::bind(), &transport_uses(), plugin_logs())
-            .and_then(|entries| {
-                entries
-                    .doors
-                    .into_iter()
-                    .map(|plugin| {
-                        let facts = plugin
-                            .context::<crate::root::loader::dispatch::kinds::transport::TransportFacts>()
-                            .cloned()
-                            .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
-                        #[cfg(test)]
-                        let key = facts.claims.first().copied().unwrap_or_default();
-                        let upgrades = facts.upgrades;
-                        let door = crate::root::doors::served(plugin, settings)?;
-                        Ok(crate::root::registry::DroppedDoor {
-                            #[cfg(test)]
-                            key,
-                            upgrades,
-                            door,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()
-            })?,
-    };
-    Ok(crate::root::registry::Dropped {
-        doors: std::borrow::Cow::Owned(doors),
-    })
-}
-
-pub(crate) fn publish_dropped_transports(dropped: crate::root::registry::Dropped) {
-    publish_transport_inventory(&WIRES, dropped);
-}
-
-fn publish_transport_inventory(
-    wires: &std::sync::Mutex<Option<crate::root::registry::Dropped>>,
-    dropped: crate::root::registry::Dropped,
-) {
-    let previous = wires
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .replace(dropped);
-    drop(previous);
 }
 
 #[cfg(test)]
@@ -2050,10 +1465,10 @@ impl BookPreparation {
             tokio::select! {
                 biased;
                 _ = stop.wait_for(|stopping| *stopping) => Err("startup stopped during boot book preparation".to_owned()),
-                result = Box::pin(super::measurements::maintenance(self.run(app, store))) => result,
+                result = Box::pin(self.run(app, store)) => result,
             }
         } else {
-            Box::pin(super::measurements::maintenance(self.run(app, store))).await
+            Box::pin(self.run(app, store)).await
         };
         match result {
             Ok(book) => Ok((book, self.node_lease_task.take())),
@@ -2086,12 +1501,10 @@ impl BookPreparation {
         // shutdown signal: a drain may outlast the lease TTL (SHUTDOWN-HANG F4 "Lease").
         // A preparation that fails still aborts the task on its way out.
         if let (Some(watch), Some(lease)) = (&self.lease_watch, self.node_lease.clone()) {
-            self.node_lease_task = Some(tokio::spawn(super::measurements::maintenance(
-                crate::refresh_node_lease(
-                    lease,
-                    super::shutdown::retire_rx(),
-                    watch.failure.clone(),
-                ),
+            self.node_lease_task = Some(tokio::spawn(crate::refresh_node_lease(
+                lease,
+                super::shutdown::retire_rx(),
+                watch.failure.clone(),
             )));
         }
         let node = self.taken.as_ref().expect("retained node result").id;
@@ -2177,10 +1590,9 @@ impl BookPreparation {
             .ok_or("the live Notary has no verified Bootstrap public key")?;
         // Signer threads may serve boot recovery; the live notary baseline is bound only
         // after all recovery appends below and before NodeBook can be published.
-        let audit_verification_keys = Arc::new(bound.verification_keys);
         super::durability::response_intent::verify_history(
             self.durability.as_ref().unwrap(),
-            audit_verification_keys.as_ref(),
+            &bound.verification_keys,
         )
         .map_err(|error| format!("response intent history: {error}"))?;
         let (audit, checkpoint) = {
@@ -2269,7 +1681,6 @@ impl BookPreparation {
             tracing::warn!(%error,"usage correction remains retained for continuation");
         }
         super::durability::bind_amendments(shared, &app.amendments).await?;
-        super::measurements::install(app)?;
         {
             let recovered = shared.lock().unwrap_or_else(|poison| poison.into_inner());
             audit
@@ -2279,7 +1690,6 @@ impl BookPreparation {
         let token = self.token.take().unwrap();
         let verb_store = super::durability::node_verb_store(shared.clone(), token, store);
         let mut book = super::durability::NodeBook {
-            audit_verification_keys,
             response_intents: None,
             durability: self.shared.take().unwrap(),
             runtime_journal: self.journal.take().unwrap(),
@@ -2299,12 +1709,7 @@ impl BookPreparation {
             super::durability::response_intent::ResponseIntentService::new(
                 Arc::clone(&book.runtime_journal),
                 incarnation,
-                book.audit_verification_keys.as_ref().clone(),
-                audit
-                    .take_response_intent_handle()
-                    .ok_or("response intent signer was already transferred")?,
-            )
-            .map_err(|error| error.to_string())?,
+            ),
         );
         self.phase = BookPhase::Ready;
         Ok(book)
@@ -2369,105 +1774,35 @@ mod tests;
 #[path = "tests/start_scan_tests.rs"]
 mod start_scan_tests;
 
-#[cfg(all(test, unix, linked_every_plane_door, feature = "test-harness"))]
-#[path = "tests/bootstrap_pins.rs"]
-mod bootstrap_pin_tests;
-
-/// Select the exact admitted transport claim and run its pre-open, pure LOCATE operation.
-/// This path uses an isolated dispatcher with no connection needs and never opens an instance.
+/// A provider destination by core's one scheme table (deletion plan E6; dial decision v2 section 3): the URL's
+/// scheme gives its security, its default port and the carrier it rides, and the build must assign that carrier
+/// to a transport image. No plugin is asked what a URL means and nothing is opened. `rows` is the configuration's
+/// admitted plugins; the build's carrier assignment is read from its own generated tables, a separately installed
+/// carrier's image counting only when `rows` admits it (so a ws:// provider with no websocket image installed is
+/// refused here, at configuration, never at request time).
 pub(crate) fn locate_provider_destination(
     rows: &Arc<dyn PluginRows>,
     target: &str,
 ) -> Result<busbar_kernel::config_validate::ProviderDestination, String> {
-    locate_provider_destination_with(rows, target, crate::LINKED_TRANSPORT_DOORS)
+    locate_provider_destination_with(
+        target,
+        crate::LINKED_CARRIERS,
+        crate::INSTALLED_CARRIERS,
+        &|identity| rows.resolve(identity).is_some(),
+    )
 }
 
 fn locate_provider_destination_with(
-    rows: &Arc<dyn PluginRows>,
     target: &str,
-    linked: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)],
+    assigned: &[crate::root::min3_framers::LinkedCarrier],
+    installed: &[crate::root::min3_framers::InstalledCarrier],
+    present: &dyn Fn(&str) -> bool,
 ) -> Result<busbar_kernel::config_validate::ProviderDestination, String> {
-    use crate::root::loader::dispatch::{
-        kinds::transport::{Transport, TransportFacts},
-        load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
-    };
-    let claim = target
-        .split_once("://")
-        .map(|(s, _)| s)
-        .filter(|s| {
-            s.starts_with(|c: char| c.is_ascii_alphabetic())
-                && s.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
-        })
-        .ok_or("endpoint must name an absolute registered transport claim")?
-        .to_ascii_lowercase();
-    let on = Dispatcher::new(
-        DispatchConfig::default(),
-        busbar_kernel::host_services::caller_binding(),
-    );
-    let bind = Bind {
-        accept: Default::default(),
-        instance: Arc::from("configuration-locate"),
-        max_inflight_cap: 1,
-        sink: Arc::new(NoSink),
-        dispatcher: on.adopter(),
-        conns: ConnTable::NoNeeds,
-    };
-    let mut selected = Vec::new();
-    for (_, door) in linked {
-        let facts = crate::root::loader::dispatch::kinds::transport::linked_facts(*door)?;
-        if facts.claims.iter().any(|c| *c == claim) {
-            let row = LinkedRow::of(*door).map_err(|e| e.to_string())?;
-            selected.push(load_linked::<Transport>(&row, bind.clone()).map_err(|e| e.to_string())?);
-        }
-    }
-    let registry = rows
-        .as_any()
-        .downcast_ref::<PluginRegistry>()
-        .ok_or("configuration registry cannot supply transport declarations")?;
-    let uses = Uses::default().reaching([target]);
-    // Loading/binding checks the signed declaration; it does not call lifecycle OPEN or READY.
-    let logs = crate::root::loader::dispatch::PluginLogConfig::from_words(
-        None,
-        None,
-        &std::collections::BTreeMap::new(),
-        None,
-        None,
-    )?;
-    selected.extend(
-        registry
-            .open_transport_entries(&bind, &uses, &logs)?
-            .doors
-            .into_iter()
-            .filter(|p| {
-                p.context::<TransportFacts>()
-                    .is_some_and(|f| f.claims.iter().any(|c| *c == claim))
-            }),
-    );
-    let plugin = match selected.as_slice() {
-        [] => return Err(format!("no admitted transport claims '{claim}'")),
-        [plugin] => plugin,
-        _ => {
-            return Err(format!(
-                "multiple admitted transports claim '{claim}': {}",
-                selected
-                    .iter()
-                    .map(|p| p.name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-    };
-    let facts = plugin
-        .context::<TransportFacts>()
-        .ok_or("transport declaration disappeared")?;
-    let located = if facts.role == busbar_contract::abi::transport::ROLE_CARRIER && facts.ported {
-        // A network carrier is carried as itself at runtime too: its declared claim names an
-        // authority, and the connector never invents connection security for that authority.
-        busbar_core_connector::compose::carried_at(&claim, target).map_err(|e| e.to_string())?
-    } else {
-        crate::root::doors::locate_bound(plugin, target)?
-    };
+    let located = busbar_core_connector::native_dial::locate(target)?;
+    let carriers = crate::root::min3_framers::assignment(assigned, installed, present)?;
+    carriers
+        .get(located.carrier)
+        .map_err(|refused| format!("the destination's carrier: {refused}"))?;
     Ok(busbar_kernel::config_validate::ProviderDestination {
         authority: located.authority,
         secure: located.secure,

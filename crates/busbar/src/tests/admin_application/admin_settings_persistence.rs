@@ -41,12 +41,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the actual built OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC states its door");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .expect("the OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let audit_token = common::credentials::token_for(
         "audit-settings-roundtrip",

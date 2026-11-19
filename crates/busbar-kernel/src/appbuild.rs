@@ -1190,6 +1190,15 @@ pub trait RootRules: Send + Sync {
     fn unloaded_plane_refusal(&self, _keys: &[&str]) -> Option<String> {
         None
     }
+
+    /// The native fee-debt observer owner (the composition root's Node book), given to the
+    /// GovState while it is built ([`governance::GovState::with_fee_debt_owner`]). A build with
+    /// no root (a tool, a fixture) has none: its captures are offered to no owner.
+    fn fee_debt_owner(
+        &self,
+    ) -> Option<std::sync::Weak<dyn governance::fee_debt::FeeDebtAssociate>> {
+        None
+    }
 }
 
 /// The rules of a build with no composition root's rules to judge by (a tool, a test fixture): it
@@ -1725,6 +1734,14 @@ async fn build_app_native(
         read.check_plugins(&plugins_cfg)?;
     }
     config::security_policy::check_candidate(prior, &cfg, &plugins_cfg)?;
+    // The operator credential is bound at process start: a rebuild that changes it is refused here,
+    // before any of its instances open (only a restart changes it, and boot audits it).
+    if let Some(running) = prior {
+        config::operator_file::operator_credential_unchanged(
+            &cfg.identity_providers,
+            &running.identity_providers,
+        )?;
+    }
     // The operator file-policy reference (§3.6.1): a disk read sets it on the candidate; every
     // other build carries the running generation's unchanged.
     let operator_file_defs = cfg
@@ -1972,19 +1989,11 @@ async fn build_app_native(
 
     resolve_model_context_max(&cfg.pools)?;
 
+    // Each lane's provider protocol was judged against the admitted planes when the
+    // configuration was resolved (`config::resolve_with_provider_planes`).
     let mut lane_inputs: Vec<LaneInput> = Vec::new();
     for (idx, ld) in lanes_data.iter().enumerate() {
         let provider_cfg = lane_provider_cfgs[idx];
-
-        let providers = crate::plane_driver::dispatch::provider_dialects();
-        if !providers.iter().any(|d| *d == provider_cfg.dialect()) {
-            return Err(format!(
-                "provider '{}' uses unknown protocol '{}' (supported: {})",
-                ld.route,
-                provider_cfg.dialect(),
-                providers.join(", ")
-            ));
-        }
 
         let base_url = busbar_kernel_egress::trust::net::strip_userinfo(
             provider_cfg.base_url.trim_end_matches('/'),
@@ -2168,6 +2177,10 @@ async fn build_app_native(
         // §3.8): core holds no operator token digest.
         match governance::GovState::new_with_core(core, None, signer).await {
             Ok(gs) => {
+                let gs = match rules.fee_debt_owner() {
+                    Some(owner) => gs.with_fee_debt_owner(owner),
+                    None => gs,
+                };
                 gs.install_transition_self_holds(transition_holds);
                 let gs = Arc::new(gs);
 
@@ -2225,31 +2238,15 @@ async fn build_app_native(
     };
 
     // Construct serving consumers only after the complete Store governance owner exists.
-    // One instance per identity provider for this build, shared by every role that names it
-    // (WASTE-AUTH-SECRETS W1): the chain, admin_auth and the hosted login methods look it up.
-    // Carried across builds (W2): an instance whose inputs are unchanged and that reports
-    // `reusable()` is handed over from the prior App, not opened again.
-    let mut auth_instances = crate::auth::instances::AuthInstances::carrying(
-        prior.map(|p| Arc::clone(&p.auth_instances)),
-    );
-    let open_auth_axis = || crate::preflight::auth_axis(plugin_registry.clone());
     let auth_mw = Arc::new(
-        AuthMiddleware::build_on(
-            &auth_cfg,
-            plugin_registry.as_ref(),
-            &secret_resolver,
-            &mut auth_instances,
-            &open_auth_axis,
-        )
-        .map_err(|e| format!("auth chain construction failed: {e}"))?,
+        AuthMiddleware::build_on(&auth_cfg, plugin_registry.as_ref(), &secret_resolver)
+            .map_err(|e| format!("auth chain construction failed: {e}"))?,
     );
 
     let admin_modules = crate::auth::AdminAuthChain::build_on(
         &auth_cfg,
         plugin_registry.as_ref(),
         &secret_resolver,
-        &mut auth_instances,
-        &open_auth_axis,
     )
     .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
 
@@ -2258,12 +2255,9 @@ async fn build_app_native(
             &auth_cfg,
             plugin_registry.as_ref(),
             &secret_resolver,
-            &mut auth_instances,
-            &open_auth_axis,
         )
         .map_err(|e| format!("auth.methods (hosted login) construction failed: {e}"))?,
     );
-    let auth_instances = auth_instances.sealed();
 
     if prior.is_none() {
         accepted_operator(&auth_cfg, &admin_modules.operator);
@@ -2397,9 +2391,6 @@ async fn build_app_native(
 
     let limits = Some(limits_resolved.clone());
 
-    let serve_tables = prior.map_or_else(crate::plane_driver::serve::ServeTables::default, |p| {
-        p.serve_tables.clone()
-    });
     let root_rules = std::sync::Arc::clone(rules);
     let plane_sections = Some(cfg.plane_sections.clone());
 
@@ -2535,7 +2526,6 @@ async fn build_app_native(
     let mut app = App::assemble(
         crate::state::AppParts {
             limits,
-            serve_tables,
             port_seats: prior.map(|app| app.port_seats.clone()).unwrap_or_default(),
             exports: prior
                 .map(|app| Arc::clone(&app.exports))
@@ -2561,7 +2551,6 @@ async fn build_app_native(
             base_hook_names,
             admin_chain,
             admin_modules,
-            auth_instances,
             public_url,
             planes,
             plane_slots,

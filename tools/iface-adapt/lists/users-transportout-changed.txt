@@ -1,0 +1,6 @@
+crates/busbar-core-connector/src/framed_stream/session.rs
+crates/busbar-core-connector/src/tests/transport_session_tests.rs
+crates/busbar-plugin-test/src/host_target/native_stream.rs
+crates/busbar-plugin-test/src/host_target/native_stream_tests.rs
+crates/busbar-plugin-test/src/suites/transport.rs
+crates/plugin-loader/src/adapters/transport.rs

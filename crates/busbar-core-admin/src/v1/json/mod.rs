@@ -73,7 +73,6 @@ impl AdminTransport for JsonV1 {
             )
             .merge(named_map::routes());
 
-        let router = mount_plane_admin_routes(router);
         let router = router
             .route(PATH_GROUPS, get(list_groups).post(register_group))
             .route(
@@ -253,17 +252,6 @@ pub(crate) use busbar_kernel::config::transaction::{config_transaction, Outcome}
 
 pub(crate) mod named_map;
 
-fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<AppHandle>> {
-    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
-        if let Some(admin_routes) = decl.admin_routes {
-            for spec in admin_routes(decl, &() as &dyn std::any::Any) {
-                router = mount_one_admin_spec(router, decl, spec);
-            }
-        }
-    }
-    router
-}
-
 async fn plane_serve_or_not_found(
     State(handle): State<Arc<AppHandle>>,
     req: axum::extract::Request,
@@ -277,12 +265,7 @@ async fn plane_serve_or_not_found(
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return port_admin_response(&app.port_seats, request_id, parts, body).await;
     }
-    let req = axum::extract::Request::from_parts(parts, body);
-    let tables = handle.load().serve_tables.clone();
-    tables
-        .answer(req)
-        .await
-        .unwrap_or_else(|| err_json(&AdminError::not_found("resource")))
+    err_json(&AdminError::not_found("resource"))
 }
 
 /// The most body bytes a plane admin request may carry.
@@ -292,11 +275,21 @@ const PLANE_ADMIN_BODY_MAX: usize = 1 << 20;
 async fn port_admin_response(
     seats: &[busbar_kernel::plane_driver::port::PortSeat],
     request_id: u64,
-    parts: axum::http::request::Parts,
+    mut parts: axum::http::request::Parts,
     body: axum::body::Body,
 ) -> Response {
     use busbar_kernel::limits::input_body::{gather, GatherError};
     use busbar_kernel::limits::process_admission::RequestLease;
+
+    // The carriers the admin gate consumed are stripped before the head is copied for the plane,
+    // as the data router strips them: the plane's admin route never sees the operator credential.
+    if let Some(consumed) = parts
+        .extensions
+        .get::<busbar_kernel::auth::ConsumedCredentials>()
+        .cloned()
+    {
+        consumed.strip(&mut parts.headers);
+    }
 
     let Some(request) = parts.extensions.get::<RequestLease>().cloned() else {
         return err_json(&AdminError::Unavailable(
@@ -369,101 +362,6 @@ fn untagged(mut resp: Response) -> Response {
 #[cfg(not(test))]
 fn untagged(resp: Response) -> Response {
     resp
-}
-
-fn mount_one_admin_spec(
-    router: Router<Arc<AppHandle>>,
-    decl: &'static busbar_kernel::plane_driver::registry::PlaneDecl,
-    spec: busbar_kernel::admin_verbs::AdminRouteSpec,
-) -> Router<Arc<AppHandle>> {
-    let plane = decl.key;
-    use busbar_kernel::admin_verbs::{AdminReqCtx, AdminRouteSpec};
-    let AdminRouteSpec {
-        method,
-        path,
-        scope: _,
-        kind,
-        handler,
-    } = spec;
-    let method_filter = busbar_kernel::plugin_routes::method_filter_of(method);
-    let shim =
-        move |State(handle): State<Arc<AppHandle>>,
-              Path(name): Path<String>,
-              principal: Option<axum::Extension<busbar_kernel::auth::AuthPrincipal>>,
-              consumed: Option<axum::Extension<busbar_kernel::auth::ConsumedCredentials>>,
-              // Inserted only by the admin gate, from its own admission verdict (r3 condition B-C1).
-              trust_authority: Option<
-            axum::Extension<busbar_kernel::host_services::TrustDecisionAuthority>,
-        >,
-              axum::extract::RawQuery(query): axum::extract::RawQuery,
-              headers: busbar_kernel::inbound::http_projection::AdminHeaders,
-              body: axum::body::Bytes| {
-            let handler = handler.clone();
-            async move {
-                if let Some(resp) = unconfigured_plane(&handle, Some(decl)) {
-                    return resp;
-                }
-                let principal = principal.map(|axum::Extension(p)| p);
-
-                let host = busbar_kernel::plane_driver::engine_host_from_handle(&handle);
-                let ctx = AdminReqCtx {
-                    host,
-                    name: name.clone(),
-                    body,
-                    headers,
-                    principal: principal.clone(),
-
-                    consumed: consumed.map(|axum::Extension(c)| c),
-                    query,
-                    serve: handle.load().serve_tables.clone(),
-                    trust_authority: trust_authority.map(|axum::Extension(granted)| granted),
-                };
-                finish_admin_reply(plane, &name, kind, principal, handler(ctx).await)
-            }
-        };
-
-    let wrong_method = move |State(handle): State<Arc<AppHandle>>| async move {
-        unconfigured_plane(&handle, Some(decl))
-            .unwrap_or_else(|| err_json(&AdminError::MethodNotAllowed))
-    };
-    router.route(
-        &path,
-        axum::routing::on(method_filter, shim).fallback(wrong_method),
-    )
-}
-
-fn finish_admin_reply(
-    plane: &'static str,
-    name: &str,
-    kind: busbar_kernel::admin_verbs::AdminVerbKind,
-    principal: Option<busbar_kernel::auth::AuthPrincipal>,
-    reply: busbar_kernel::admin_verbs::AdminReply,
-) -> Response {
-    use busbar_kernel::admin_verbs::{AdminReply, AdminVerbKind};
-    let record_audit = |outcome: &'static str| {
-        if let AdminVerbKind::Audited { verb } = kind {
-            let anon = busbar_kernel::auth::AuthPrincipal(None);
-            let p = principal.as_ref().unwrap_or(&anon);
-            crate::planeverbs::audit(plane, verb, name, outcome, p);
-        }
-    };
-    match reply {
-        AdminReply::Refused(e) => crate::planeverbs::refusal_response(plane, name, e),
-        AdminReply::Applied(body) => {
-            record_audit(audit::OUTCOME_APPLIED);
-
-            (
-                StatusCode::OK,
-                [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
-                body,
-            )
-                .into_response()
-        }
-        AdminReply::Rejected(e) => {
-            record_audit(audit::OUTCOME_REJECTED);
-            crate::planeverbs::refusal_response(plane, name, e)
-        }
-    }
 }
 
 mod envelope;
@@ -666,14 +564,73 @@ fn if_match_version(headers: &axum::http::HeaderMap) -> Result<Option<u64>, Resp
     let bare = bare.trim_matches('"');
     bare.parse::<u64>().map(Some).map_err(|_| {
         err_json_cond(
-            &AdminError::Validation(
-                "malformed If-Match: expected the config-plane ETag (a quoted config version, e.g. \
-                 \"42\") or *"
-                    .into(),
-            ),
+            &AdminError::Validation(MALFORMED_CONFIG_IF_MATCH.into()),
             Cond::MalformedIfMatch,
         )
     })
+}
+
+/// The refusal text of a malformed config-plane `If-Match`: it names the form every config write
+/// takes, the generation ETag.
+const MALFORMED_CONFIG_IF_MATCH: &str = "malformed If-Match: expected the quoted config ETag \
+     \"<deployment_id>.<config_generation>\" from a config read or write, or *";
+
+/// `POST /restart`'s `If-Match`. The config-plane ETag every config write takes is accepted, and
+/// so is the bare quoted `config_version` the route took first, so no current client breaks.
+#[derive(Debug, PartialEq, Eq)]
+enum RestartIfMatch {
+    /// `"<deployment_id>.<config_generation>"`, as sent: compared to the live config ETag.
+    Generation(String),
+    /// A bare quoted `config_version` (`"7"`): compared to the process's `config_version`.
+    Version(u64),
+}
+
+impl RestartIfMatch {
+    /// `None` (no guard) when absent or `*`; a malformed value is the 400 every config write gives.
+    fn read(headers: &axum::http::HeaderMap) -> Result<Option<Self>, Box<Response>> {
+        let Some(raw) = headers.get(axum::http::header::IF_MATCH) else {
+            return Ok(None);
+        };
+        let value = raw.to_str().unwrap_or("").trim();
+        if value == "*" {
+            return Ok(None);
+        }
+        let tag = value.strip_prefix("W/").unwrap_or(value);
+        match tag
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+        {
+            Some(inner) if !inner.is_empty() => Ok(Some(match inner.parse::<u64>() {
+                Ok(version) => Self::Version(version),
+                Err(_) => Self::Generation(tag.to_string()),
+            })),
+            _ => Err(Box::new(err_json_cond(
+                &AdminError::Validation(
+                    "malformed If-Match: expected the quoted config ETag \
+                     \"<deployment_id>.<config_generation>\" from a config read or write (a \
+                     quoted config_version is still accepted), or *"
+                        .into(),
+                ),
+                Cond::MalformedIfMatch,
+            ))),
+        }
+    }
+
+    /// The 409 when the guard no longer matches `app`, the configuration the restart is admitted
+    /// against.
+    fn stale(&self, app: &busbar_kernel::state::App) -> Option<AdminError> {
+        match self {
+            Self::Version(version) => stale_if_match(Some(*version), app.config_version),
+            Self::Generation(tag) => {
+                let current = generation::config_etag(app);
+                (*tag != current).then(|| {
+                    AdminError::VersionConflict(format!(
+                        "If-Match {tag} is stale (current is {current})"
+                    ))
+                })
+            }
+        }
+    }
 }
 
 fn stale_if_match(expected: Option<u64>, current: u64) -> Option<AdminError> {
@@ -693,15 +650,9 @@ fn with_config_etag(mut resp: Response, version: u64) -> Response {
 }
 
 mod config_document;
-mod config_tree;
-mod instance_settings;
-pub(crate) mod kinds;
-mod plane_input_schemas;
-pub mod trust_inventory;
-mod views;
-pub use plane_input_schemas::install_plane_input_schemas;
 #[cfg(feature = "openapi-schema")]
 mod config_forms;
+mod config_tree;
 #[cfg(feature = "openapi-schema")]
 mod contract_metadata;
 pub mod cursor;
@@ -709,6 +660,11 @@ pub mod cursor;
 mod evolution;
 pub(crate) mod generation;
 mod hook_attachments;
+mod instance_settings;
+pub(crate) mod kinds;
+mod plane_input_schemas;
+pub mod trust_inventory;
+mod views;
 pub(crate) use hook_attachments::attachments_of;
 mod handlers;
 pub(crate) mod metrics;
@@ -725,9 +681,6 @@ mod kernel_verbs;
 pub fn openapi_document() -> String {
     handlers::openapi_json()
 }
-
-#[cfg(feature = "openapi-schema")]
-pub use busbar_kernel::api::set_response_schema;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

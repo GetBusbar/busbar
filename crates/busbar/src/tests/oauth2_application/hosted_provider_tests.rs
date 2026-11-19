@@ -38,12 +38,7 @@ async fn hosted_with_secret(
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let library =
         plugins::token_verifier_cdylib_path().expect("build the actual pinned OIDC plugin");
-    let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library)
-        .expect("read OIDC Statement")
-        .expect("OIDC states itself");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("valid Statement")
-        .name;
+    let module = crate::root::test_plugins::native_image(&library).name;
     let secrets = plugins::scratch(&format!(
         "oauth-hosted-provider-{}",
         busbar_kernel::door::op_id().counter()

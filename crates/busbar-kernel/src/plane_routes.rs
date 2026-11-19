@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+use busbar_contract::route::{RouteAuth, RouteMethod};
 
 pub type PlaneResponse = axum::response::Response;
 

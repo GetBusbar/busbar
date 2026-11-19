@@ -84,7 +84,7 @@ fn defs_for(deploy: &DeployCfg) -> HashMap<String, ProviderDef> {
 /// it. Read the corpus as a deployment whose admitted source declares that word (the snapshot
 /// excludes providers, so the credential spelling never reaches the golden).
 fn corpus_sources() -> busbar_contract::secret_ref::Sugars {
-    use busbar_contract::abi::mechanism::door::{
+    use busbar_contract::plugin_settings::sugar_words::{
         REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL,
     };
     let mut sources = busbar_contract::secret_ref::Sugars::default();

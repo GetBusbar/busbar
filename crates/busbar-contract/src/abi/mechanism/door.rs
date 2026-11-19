@@ -13,12 +13,12 @@ use crate::abi::host::conn::connector::Need;
 /// exists, then `magic == DOOR_MAGIC`, `mechanism_version == MECHANISM_VERSION` and `kind_abi ==`
 /// the host's version for `kind`. Older and newer are both refused. Once the Statement is read,
 /// `layout` must be the host's layout fingerprint for `kind`
-/// ([`super::KindCode::layout_fingerprint`]), or the door is refused naming the kind and both
+/// (`super::KindCode::layout_fingerprint`), or the door is refused naming the kind and both
 /// numbers.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Door {
-    /// [`super::DOOR_MAGIC`].
+    /// `super::DOOR_MAGIC`.
     pub(crate) magic: u64,
     /// [`super::MECHANISM_VERSION`].
     pub(crate) mechanism_version: u32,
@@ -32,18 +32,18 @@ pub struct Door {
     pub(crate) statement: *const Statement,
     /// The kind's ops table; every kind's table begins with [`OpsHead`].
     pub(crate) ops: *const OpsHead,
-    /// APPEND-ONLY TAIL: `ready` (`abi::mechanism::lifecycle`, READY), in [`super::lifecycle::ReadyIn`],
+    /// APPEND-ONLY TAIL: `ready` (`abi::mechanism::lifecycle`, READY), in `super::lifecycle::ReadyIn`,
     /// out [`super::call::OutHead`]; `None` = the plugin has none and is opened exactly as before.
     /// A door whose `size` ends before this field has none: the host reads it only when `size`
     /// covers it.
     pub(crate) ready: Option<Op>,
     /// APPEND-ONLY TAIL: `migrate` (`abi::mechanism::lifecycle`, MIGRATE), in
-    /// [`super::lifecycle::ValidateIn`], out [`super::call::OutHead`]; `None` = the plugin has none,
+    /// `super::lifecycle::ValidateIn`, out [`super::call::OutHead`]; `None` = the plugin has none,
     /// and the boot's migration passes its settings section through unchanged. A door whose
     /// `size` ends before this field has none: the host reads it only when `size` covers it.
     pub(crate) migrate: Option<Op>,
     /// APPEND-ONLY TAIL: the kind's layout fingerprint as the plugin was built
-    /// ([`super::KindCode::layout_fingerprint`]). A door whose `size` ends before this field states
+    /// (`super::KindCode::layout_fingerprint`). A door whose `size` ends before this field states
     /// none (`0`) and is refused.
     pub(crate) layout: u64,
 }
@@ -51,11 +51,11 @@ pub struct Door {
 /// The door function: the ONE symbol a plugin exports. `extern "C"`: a panic escaping it aborts.
 pub type DoorFn = extern "C" fn() -> &'static Door;
 
-/// A door's fields, plain: what [`Door::__from_parts`] takes and [`Door::read_parts`] answers. A
+/// A door's fields, plain: what [`Door::__from_parts`] takes and `Door::read_parts` answers. A
 /// `DoorParts` is no door: nothing admits one, so building one is safe.
 #[derive(Debug, Clone, Copy)]
 pub struct DoorParts {
-    /// [`super::DOOR_MAGIC`].
+    /// `super::DOOR_MAGIC`.
     pub magic: u64,
     /// [`super::MECHANISM_VERSION`].
     pub mechanism_version: u32,
@@ -72,7 +72,7 @@ pub struct DoorParts {
     /// The optional `ready` op.
     pub ready: Option<Op>,
     /// APPEND-ONLY TAIL: the kind's layout fingerprint as the plugin was built
-    /// ([`super::KindCode::layout_fingerprint`], `abi/<kind>/`'s `LAYOUT_FINGERPRINT`). The loader
+    /// (`super::KindCode::layout_fingerprint`, `abi/<kind>/`'s `LAYOUT_FINGERPRINT`). The loader
     /// refuses a door whose number is not the host's: it was built against other shapes of its
     /// kind and would read and write them at the wrong offsets. A door whose `size` ends before
     /// this field predates it, states `0` and is refused the same.
@@ -81,7 +81,7 @@ pub struct DoorParts {
 
 impl Door {
     /// THE ONE CONSTRUCTOR, `unsafe` and `#[doc(hidden)]`: the contract's door macro reaches it
-    /// through [`crate::abi::sdk::door::door`]; a loader's or a test's hand-laid door names it.
+    /// by hand; a loader's or a test's hand-laid door names it.
     ///
     /// # Safety
     ///
@@ -108,7 +108,7 @@ impl Door {
     }
 
     /// The same door stating `migrate` (its optional tail op, [`Door::migrate`]). The door macro's
-    /// plumbing states it through [`crate::abi::sdk::door::door`].
+    /// plumbing stated it.
     ///
     /// # Safety
     ///
@@ -136,7 +136,7 @@ impl Door {
         }
     }
 
-    /// [`super::DOOR_MAGIC`].
+    /// `super::DOOR_MAGIC`.
     #[must_use]
     pub const fn magic(&self) -> u64 {
         self.magic
@@ -196,44 +196,6 @@ impl Door {
         self.layout
     }
 
-    /// Where the layout fingerprint starts: a door whose `size` ends before it states none.
-    #[must_use]
-    pub const fn layout_at() -> usize {
-        core::mem::offset_of!(Door, layout)
-    }
-
-    /// Where the append-only `ready` tail starts: the least size a door states.
-    #[must_use]
-    pub const fn ready_at() -> usize {
-        core::mem::offset_of!(Door, ready)
-    }
-
-    /// Where the append-only `migrate` tail starts.
-    #[must_use]
-    pub const fn migrate_at() -> usize {
-        core::mem::offset_of!(Door, migrate)
-    }
-
-    /// A door's `migrate`, read unaligned, and only when the `size` it states covers it (an absent
-    /// tail reads as `None`).
-    ///
-    /// # Safety
-    ///
-    /// `p` is non-NULL and readable through its leading `(magic, mechanism_version, size)`, and
-    /// through `migrate` when the `size` it states covers it.
-    #[must_use]
-    pub unsafe fn read_migrate(p: *const Self) -> Option<Op> {
-        use core::ptr::addr_of;
-        // SAFETY: the caller's contract; `migrate` is read only when the stated size covers it.
-        unsafe {
-            let (_, _, size) = Self::read_head(p);
-            if (size as usize) < Self::migrate_at() + size_of::<Option<Op>>() {
-                return None;
-            }
-            addr_of!((*p).migrate).read_unaligned()
-        }
-    }
-
     /// Each field's name and offset, in order: the layout golden's record of the sealed door.
     #[doc(hidden)]
     #[must_use]
@@ -269,44 +231,6 @@ impl Door {
                 addr_of!((*p).mechanism_version).read_unaligned(),
                 addr_of!((*p).size).read_unaligned(),
             )
-        }
-    }
-
-    /// A door's fields, read one at a time and unaligned; `ready` only when the `size` it states
-    /// covers it (an absent tail reads as `None`).
-    ///
-    /// # Safety
-    ///
-    /// `p` is non-NULL and readable up to `ready` ([`Door::ready_at`]), and through `ready` and
-    /// `layout` when the `size` it states covers each.
-    #[must_use]
-    pub unsafe fn read_parts(p: *const Self) -> DoorParts {
-        use core::ptr::addr_of;
-        // SAFETY: the caller's contract; each field is read unaligned, `ready` only when covered.
-        unsafe {
-            let (magic, mechanism_version, size) = Self::read_head(p);
-            let has_ready = size as usize >= Self::ready_at() + size_of::<Option<Op>>();
-            let has_layout = size as usize >= Self::layout_at() + size_of::<u64>();
-            DoorParts {
-                magic,
-                mechanism_version,
-                size,
-                kind: addr_of!((*p).kind).read_unaligned(),
-                kind_abi: addr_of!((*p).kind_abi).read_unaligned(),
-                statement: addr_of!((*p).statement).read_unaligned(),
-                ops: addr_of!((*p).ops).read_unaligned(),
-                ready: if has_ready {
-                    addr_of!((*p).ready).read_unaligned()
-                } else {
-                    None
-                },
-
-                layout: if has_layout {
-                    addr_of!((*p).layout).read_unaligned()
-                } else {
-                    0
-                },
-            }
         }
     }
 }
@@ -458,17 +382,6 @@ pub struct Statement {
 }
 
 impl Statement {
-    /// Declare common units using immutable storage retained for the program lifetime.
-    pub const fn with_measurement_classes(
-        mut self,
-        classes: &'static [crate::abi::measurement::BillableClass],
-    ) -> Self {
-        assert!(classes.len() <= crate::abi::measurement::MAX_MEASUREMENT_CLASSES);
-        self.measurement_classes = classes.as_ptr();
-        self.measurement_classes_len = classes.len();
-        self
-    }
-
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
     pub const ZERO: Self = Self {
         size: 0,
@@ -509,7 +422,7 @@ impl Statement {
 /// HOW A `Statement` IS MADE: from
 /// [`statement`](crate::abi::sdk::door::statement) (its name, version and in-flight bound, every
 /// list empty), each list set by its setter to items that live for the program, the kind tail by
-/// [`Statement::with_kind_tail`]. Its other fields are plain and set directly.
+/// `Statement::with_kind_tail`. Its other fields are plain and set directly.
 ///
 /// ```
 /// use busbar_contract::abi::mechanism::call::AbiStr;
@@ -534,50 +447,12 @@ impl Statement {
         claims, claims_len: AbiStr => claims_ptr, with_claims, with_raw_claims;
     }
 
-    /// Point the kind tail at `tail`, which lives for the program: one of the kinds' tails, each
-    #[must_use]
-    pub const fn with_kind_tail<T: KindTail>(mut self, tail: &'static T) -> Self {
-        self.kind_tail = std::ptr::from_ref(tail).cast::<KindTailHead>();
-        self
-    }
-
-    /// Point the kind tail at `tail`, unchecked: a host's own test stating a tail as a foreign
-    /// plugin could (a short one, a NULL one), for the host's checks to judge.
-    ///
-    /// # Safety
-    ///
-    /// A non-NULL `tail` points at a kind tail leading with a [`KindTailHead`] whose `size` bytes
-    /// stay readable and unwritten for as long as the Statement is read.
-    #[must_use]
-    pub const unsafe fn with_raw_kind_tail(mut self, tail: *const KindTailHead) -> Self {
-        self.kind_tail = tail;
-        self
-    }
-
     /// The kind tail's raw pointer (NULL = none): the host reads it under its own checks
     #[must_use]
     pub const fn kind_tail(&self) -> *const KindTailHead {
         self.kind_tail
     }
 }
-
-mod sealed {
-    /// The private supertrait that closes [`super::KindTail`].
-    pub trait Sealed {}
-    impl Sealed for crate::abi::auth::AuthTail {}
-    impl Sealed for crate::abi::hook::Tail {}
-    impl Sealed for crate::abi::export::Tail {}
-    impl Sealed for crate::abi::plane::PlaneTail {}
-    impl Sealed for crate::abi::transport::TransportTail {}
-}
-
-/// A KIND'S STATEMENT TAIL: a `#[repr(C)]` struct leading with a [`KindTailHead`], one per kind
-pub trait KindTail: sealed::Sealed + 'static {}
-impl KindTail for crate::abi::auth::AuthTail {}
-impl KindTail for crate::abi::hook::Tail {}
-impl KindTail for crate::abi::export::Tail {}
-impl KindTail for crate::abi::plane::PlaneTail {}
-impl KindTail for crate::abi::transport::TransportTail {}
 
 /// [`Statement::marks`]: at most one instance of the plugin may be configured.
 pub const MARK_ONE_INSTANCE: u64 = 1;
@@ -592,16 +467,6 @@ pub const MARKS_KNOWN: u64 = MARK_ONE_INSTANCE | MARK_EPHEMERAL | MARK_CATALOG |
 
 /// [`MarkWord::class`]: a hook word (a strategy word such as a ranking order). EXCLUSIVE: two
 pub const MARK_WORD_HOOK: u32 = 1;
-/// [`MarkWord::class`]: a carrier class the plugin consumes (an inbound credential carrier an auth
-pub const MARK_WORD_CARRIER: u32 = 2;
-/// [`MarkWord::class`]: the literal prefix of the public id the host issues for the row's
-pub const MARK_WORD_ISSUED_ID_PREFIX: u32 = 3;
-/// [`MarkWord::class`]: the issued public id's total length in characters, prefix included, as a
-pub const MARK_WORD_ISSUED_ID_LENGTH: u32 = 4;
-/// [`MarkWord::class`]: the issued public id's alphabet after its prefix: distinct ASCII graphic
-pub const MARK_WORD_ISSUED_ID_ALPHABET: u32 = 5;
-/// [`MarkWord::class`]: the issued secret's length in characters, as a decimal word. SHARED.
-pub const MARK_WORD_ISSUED_SECRET_LENGTH: u32 = 6;
 /// [`MarkWord::class`]: the issued secret's alphabet: distinct ASCII graphic characters, each drawn
 pub const MARK_WORD_ISSUED_SECRET_ALPHABET: u32 = 7;
 
@@ -630,8 +495,6 @@ impl MarkWord {
 pub const REWRITE_ALIAS: u32 = 1;
 /// [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`, a secret
 pub const REWRITE_SUGAR: u32 = 2;
-/// [`Rewrite::class`]: the setting key `from` is rewritten to the path `to` before the plugin's
-pub const REWRITE_KEY: u32 = 3;
 /// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the placeholder
 pub const REWRITE_SUGAR_SHOWN: u32 = 4;
 /// [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is what its value
@@ -654,7 +517,7 @@ pub struct Rewrite {
     pub _reserved: u32,
     /// What config says.
     pub from: AbiStr,
-    /// What it becomes: named for [`REWRITE_KEY`] and the sugar classes after it, optional for
+    /// What it becomes: named for `REWRITE_KEY` and the sugar classes after it, optional for
     /// [`REWRITE_SUGAR`], absent for [`REWRITE_ALIAS`].
     pub to: AbiStr,
 }
@@ -715,14 +578,4 @@ impl KindTailHead {
         size: 0,
         _reserved: 0,
     };
-}
-
-/// THE KIND TAIL GROWTH RULE: a kind tail grows only by APPENDING fields, and its head's `size`
-#[must_use]
-pub const fn tail_read_len(size: u32, frozen: usize, host: usize) -> Option<usize> {
-    let size = size as usize;
-    if size < frozen {
-        return None;
-    }
-    Some(if size < host { size } else { host })
 }

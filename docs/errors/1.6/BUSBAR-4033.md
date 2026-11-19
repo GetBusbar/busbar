@@ -12,7 +12,7 @@ One client source (an IPv4 address, or an IPv6 /64 with /48 and /32 aggregates) 
 
 ## How to fix it
 
-None for a single client. If every user arrives from one address (an ingress or load balancer), configure `advanced.trusted_proxies` so busbar sees the real client address.
+None for a single client. If every user arrives from one address (an ingress or load balancer), configure `client_address.trusted_proxies` so busbar sees the real client address.
 
 ---
 

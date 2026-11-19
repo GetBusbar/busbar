@@ -40,29 +40,9 @@ pub(crate) fn grammar(plugins: &PluginsCfg) -> Result<busbar_kernel::config::Gra
     super::super::boot::images::fixture(&process()?.resources, plugins).map(|images| images.grammar)
 }
 
-/// Describe an actual admitted image before typing its deployment. Tests use these same
-/// signed-image facts for rate vocabulary and settings; no legacy declaration substitutes.
-pub(crate) fn described(
-    plugins: &PluginsCfg,
-    module: &str,
-) -> Result<busbar_plugin_loader::instance::Described, String> {
-    let admitted = super::super::boot::images::fixture(&process()?.resources, plugins)?;
-    let identity = admitted
-        .images
-        .identity_of(module)
-        .ok_or_else(|| format!("fixture image `{module}` was not admitted"))?;
-    admitted
-        .images
-        .described(&identity)
-        .ok_or_else(|| format!("fixture image `{identity}` has no admitted describe"))
-}
-
 pub(crate) struct Owners {
-    admitted_images: Arc<crate::root::boot::images::FileImages>,
-    channel_accounts: ChannelAccounts,
     built: Built,
     prefix: Arc<BootSecrets>,
-    planes: Vec<PlaneImage>,
     resolver: Arc<SecretResolver>,
     instances: crate::root::boot::inputs::BootInstances,
     images: crate::root::boot::images::BootImages,
@@ -108,285 +88,6 @@ pub(crate) struct ServingFixture {
     core: Arc<busbar_kernel::persistence::facade::CoreStore>,
 }
 
-pub(crate) struct PlaneFixture {
-    pub(crate) seat: PortSeat,
-    /// Held behind a lock: the fixture is retained in `Served` (shared across threads) while its
-    /// dormant workers, `Send` but not `Sync`, wait to be taken by [`PlaneFixture::served`].
-    pub(crate) workers: std::sync::Mutex<crate::root::boot::workers::PreparedWorkers>,
-    _owners: Arc<Owners>,
-    _prefix: Arc<BootSecrets>,
-    hooks: std::collections::BTreeMap<String, HookFixture>,
-    _invocations: Vec<busbar_kernel::host_services::NativeInvocationAdmission>,
-}
-
-impl std::fmt::Debug for PlaneFixture {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PlaneFixture")
-            .field("seat", &self.seat)
-            .finish_non_exhaustive()
-    }
-}
-
-pub(crate) type HookFixture = hooks::Opened;
-
-impl PlaneFixture {
-    /// The ports already opened and frozen before the driver and every dormant worker.
-    pub(crate) async fn hooks(
-        &self,
-    ) -> Result<std::collections::BTreeMap<String, HookFixture>, String> {
-        Ok(self.hooks.clone())
-    }
-
-    /// The production dispatcher shape, retaining the fixture's actual opened instance leases.
-    /// Its workers remain dormant until the caller has published the complete listener plan.
-    pub(crate) fn served(
-        mut self,
-        app: &Arc<busbar_kernel::state::App>,
-        post: Arc<crate::root::plane_node::NodeEndPost>,
-        billing: busbar_kernel::plane_driver::port_billing::PortBilling,
-    ) -> (
-        crate::root::serve::Served,
-        crate::root::boot::workers::PreparedWorkers,
-    ) {
-        let workers = std::mem::replace(
-            self.workers
-                .get_mut()
-                .unwrap_or_else(PoisonError::into_inner),
-            crate::root::boot::workers::PreparedWorkers::new(),
-        );
-        let owner = Arc::new(self);
-        let served = crate::root::serve::Served {
-            ports: vec![owner.seat.clone()],
-            native_fixture: Some(owner),
-            billing: Some(billing),
-            post: Some(post),
-            tables: app.serve_tables.clone(),
-            ..Default::default()
-        };
-        (served, workers)
-    }
-
-    /// Publish the actual native HTTP mounts and their checked generation before starting any
-    /// prepared instance worker. Callers retain this owner while either router can serve.
-    pub(crate) fn publish(
-        self,
-        app: Arc<busbar_kernel::state::App>,
-        post: Arc<crate::root::plane_node::NodeEndPost>,
-        billing: busbar_kernel::plane_driver::port_billing::PortBilling,
-        body_limit: usize,
-    ) -> Result<PublishedFixture, String> {
-        let (served, workers) = self.served(&app, post, billing);
-        let mounts = crate::root::serve::door_mounts(
-            served,
-            || crate::root::kernel::ROOT_CARD.pin(),
-            &[],
-            &[],
-            &[],
-            &[],
-        )?;
-        let (data, admin, handle) = busbar_kernel::build_split_routers_serving_doors(
-            app,
-            mounts.routes,
-            mounts.refusals,
-            body_limit,
-            0,
-            false,
-        );
-        let guests = mounts.data.guests.clone();
-        let refuse_by_path = mounts.refuse_by_path;
-        if let Some(refuse) = &refuse_by_path {
-            handle.bind_door_refuser(Arc::clone(refuse));
-        }
-        let workers = workers.start();
-        Ok(PublishedFixture {
-            data,
-            admin,
-            handle,
-            guests,
-            refuse_by_path,
-            routes: mounts.data,
-            workers,
-        })
-    }
-}
-
-pub(crate) struct PublishedFixture {
-    pub(crate) data: axum::Router,
-    pub(crate) admin: axum::Router,
-    pub(crate) handle: Arc<busbar_kernel::state::AppHandle>,
-    pub(crate) guests: busbar_kernel::guest::GuestList,
-    pub(crate) refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
-    pub(crate) routes: Arc<crate::root::serve::DataRoutes>,
-    workers: crate::root::boot::workers::RunningWorkers,
-}
-
-impl PublishedFixture {
-    pub(crate) async fn stop(self) -> Result<(), String> {
-        self.workers.stop().await
-    }
-}
-
-impl ServingFixture {
-    /// Open one actual admitted plane through the production S8 composer. The caller must build
-    /// its App over `admit_serving`'s core and pass complete services from root::serve::compose.
-    /// Workers remain dormant until the caller has published its routes and AppHandle.
-    pub(crate) async fn plane(
-        &self,
-        cfg: &RootCfg,
-        instance: &str,
-        app: &busbar_kernel::state::App,
-        services: Arc<KernelServices>,
-    ) -> Result<PlaneFixture, String> {
-        let store = app
-            .governance
-            .as_ref()
-            .ok_or("native fixture needs actual governance")?
-            .core_store_handle()
-            .map_err(|why| why.to_string())?;
-        if !Arc::ptr_eq(&store, &self.core) {
-            return Err("native fixture App uses a different Store attachment".into());
-        }
-        self.owners.instances.check(cfg)?;
-        if !cfg.min3.provisioning.is_empty() {
-            return Err("native plane fixture needs the complete Auth provisioning plan".into());
-        }
-        let image = self
-            .owners
-            .planes
-            .iter()
-            .find(|image| {
-                (if image.alias.is_empty() {
-                    image.identity.as_str()
-                } else {
-                    image.alias.as_str()
-                }) == instance
-            })
-            .ok_or_else(|| format!("native fixture has no admitted plane {instance}"))?;
-        let built = &self.owners.built;
-        let prefix = Arc::clone(&self.owners.prefix);
-        let core = Arc::new(core_secrets_of(cfg, &prefix).await?);
-        let mut instances = plane_instances(
-            std::slice::from_ref(image),
-            &cfg.instance_sections(),
-            &cfg.min3.insecure_transport,
-        )?;
-        let declared = declared_planes(&built.registry, &mut instances)?;
-        let specs = specifications(&instances, cfg.public_url.as_deref(), false);
-        let records = Arc::new(StoreRecords::new(Arc::clone(&store)));
-        let provisioning = super::super::provisioning::prepare(
-            Arc::clone(&store),
-            Arc::new(LogEvents),
-            Vec::new(),
-        )
-        .await?;
-        let directory = Arc::clone(&provisioning.directory);
-        let shared = Arc::new(Shared::new(
-            Arc::clone(&records),
-            Arc::new(StorePushQueue::new(
-                Arc::clone(&store),
-                Arc::new(RetryPolicyImpl::default()),
-            )),
-            store,
-            busbar_kernel::plane_driver::port_work::governed_binder(
-                app.governance.clone(),
-                app.role_bindings.clone(),
-            ),
-        ));
-        let hook_specs = hooks::configured(cfg)?;
-        let mut opened_hooks = std::collections::BTreeMap::new();
-        for (_, spec) in specifications(&hook_specs, cfg.public_url.as_deref(), false) {
-            let prepared = built
-                .registry
-                .reserve(&spec)
-                .map_err(|why| format!("{why:?}"))?;
-            let hook = hooks::open(
-                built,
-                prepared,
-                Arc::clone(&prefix),
-                Arc::clone(&records),
-                Arc::clone(&directory),
-            )
-            .await
-            .map_err(|why| format!("{why:?}"))?;
-            opened_hooks.insert(spec.name.to_owned(), hook);
-        }
-        let hook_plan = hooks::Plan::capture(cfg, &instances)?;
-        let hook_inputs = hooks::Environment::new(hook_plan, app)?;
-        hook_inputs.check_pools(&instances)?;
-        let steps = Steps {
-            images: &self.owners.admitted_images,
-            registry: &built.registry,
-            instances: &specs,
-            services: Some(services),
-            seats: Mutex::default(),
-            inventory_inputs: Mutex::default(),
-            invocations: Mutex::default(),
-            shared: Arc::clone(&shared),
-            directory: provisioning.directory,
-            core,
-            secrets: Arc::clone(&prefix),
-            built,
-            seat: SeatShared {
-                upstreams: declared
-                    .into_iter()
-                    .map(|(name, split)| (name, Arc::new(split.definitions)))
-                    .collect(),
-                catalogs: Default::default(),
-                channel_budgets: self
-                    .owners
-                    .channel_accounts
-                    .for_instances(&built.registry, &instances)?,
-                signals: Arc::clone(&shared.signals),
-                secrets: Arc::new(SpawnCustody(Arc::clone(&prefix))),
-                kernel: Arc::new(Kernel::new()),
-                table: ConnTable::installed(),
-                section_pools: super::super::plane_seats::section_pools(&cfg.instance_sections())?,
-            },
-            probes: Mutex::default(),
-        };
-        let (_, spec) = specs
-            .first()
-            .ok_or("native fixture lost its plane specification")?;
-        let prepared = built
-            .registry
-            .reserve(spec)
-            .map_err(|why| format!("{why:?}"))?;
-        steps
-            .open_plane(spec, prepared, &hook_inputs, &opened_hooks)
-            .await
-            .map_err(|why| format!("{why:?}"))?;
-        let seat = steps
-            .seats
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop()
-            .ok_or("native fixture opened no plane seat")?;
-        let mut workers = super::super::boot::workers::PreparedWorkers::new();
-        workers.push(provisioning.refresh.run());
-        for probe in steps
-            .probes
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner)
-        {
-            workers.push(probe);
-        }
-        let ticking = seat.clone();
-        let invocations = steps
-            .invocations
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner);
-        workers.push(async move { ticking.tick_task(shared.push.clone()).await });
-        Ok(PlaneFixture {
-            seat,
-            workers: std::sync::Mutex::new(workers),
-            _owners: Arc::clone(&self.owners),
-            _prefix: prefix,
-            hooks: opened_hooks,
-            _invocations: invocations,
-        })
-    }
-}
-
 /// Open the real configured Store over the exact admitted S5 prefix used by its App reader.
 pub(crate) async fn open(
     cfg: &RootCfg,
@@ -394,25 +95,8 @@ pub(crate) async fn open(
     policy: Arc<dyn RootRules>,
 ) -> Result<Fixture, String> {
     let process = process()?;
-    let images = Arc::new(super::super::boot::images::fixture(
-        &process.resources,
-        plugins,
-    )?);
+    let images = super::super::boot::images::fixture(&process.resources, plugins)?;
     let protected = images.protect(cfg)?;
-    let planes = images
-        .aliases
-        .iter()
-        .filter(|(identity, _)| {
-            images
-                .images
-                .described(identity)
-                .is_some_and(|facts| facts.kind == KindCode::Plane)
-        })
-        .map(|(identity, alias)| PlaneImage {
-            identity: identity.clone(),
-            alias: alias.clone(),
-        })
-        .collect();
     let built = build(
         &process.resources,
         Guard::from_config(&cfg.destinations())?,
@@ -466,11 +150,8 @@ pub(crate) async fn open(
         super::super::boot::store::bootstrap_config_store(cfg, plugins, &opener, &resolver).await?;
     drop(steps);
     let owners = Arc::new(Owners {
-        admitted_images: images,
-        channel_accounts: ChannelAccounts::new(),
         built,
         prefix,
-        planes,
         resolver,
         instances: crate::root::boot::inputs::BootInstances::capture(cfg),
         images: protected,
@@ -650,19 +331,13 @@ async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_
     #[cfg(distribution_root)]
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
-    let statement = crate::root::loader::dispatch::rendering_of_library(&library_path)
-        .expect("actual Store rendering reads")
-        .expect("actual Store exports its declaration");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-        .expect("actual Store declaration is valid")
-        .name;
     let directory = crate::root::test_plugins::scratch("initial-runtime-candidate-boundary");
-    let mut manifest = crate::root::test_plugins::manifest(
+    let manifest = crate::root::test_plugins::native_manifest(
         "store",
-        &module,
+        &library_path,
         crate::root::test_plugins::FIXTURE_PUBLISHER,
     );
-    manifest.statement = Some(hex::encode(statement));
+    let module = manifest.name.clone();
     let library = std::fs::read(library_path).expect("actual Store image reads");
     std::fs::write(
         directory.join("store.tar.gz"),
@@ -674,8 +349,7 @@ async fn admitted_initial_store_build_retains_its_resolver_and_runtime_requires_
     )
     .expect("stage signed actual Store");
     crate::root::linked::register_stores();
-    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {}, "models": {}, "auth": {"chain": []},

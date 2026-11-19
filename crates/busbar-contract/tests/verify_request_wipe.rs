@@ -11,8 +11,8 @@
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
-use busbar_contract::abi::auth::AuthPoint;
 use busbar_contract::auth_calls::VerifyRequest;
+use busbar_contract::route::AuthPoint;
 
 use busbar_contract::canary_scan::WipeProof;
 

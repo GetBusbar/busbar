@@ -12,35 +12,14 @@ pub use scrape::{
 pub mod traces;
 
 use crate::export::projection::{ProjectedRecord, Rendered};
-use busbar_contract::abi::export::ExportField;
-use busbar_contract::export_stream::ExportStream;
 #[cfg(any(test, feature = "test-support"))]
-use std::sync::Arc;
-
-/// Read the real host snapshot service from a test-support crossing. The existing snapshot grant
-/// still decides whether this caller may read; an ungranted caller receives its normal refusal.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub fn read_test_snapshot(
-    scope: u32,
-) -> impl std::future::Future<Output = busbar_contract::services::Snapshot> + Send + 'static {
-    scrape::read(scope)
-}
-
-/// Dispatch a test-support sink through the real served-sink adapter and snapshot grant. The grant
-/// is lent only for each HTTP crossing and restored by the same guard used for live scrape routes.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub fn serve_test_sink(
-    sink: Arc<dyn busbar_contract::export_calls::ExportCalls>,
-) -> Arc<dyn crate::plugin_routes::PluginHttpDispatch> {
-    Arc::new(scrape::Granted(plugin::served(sink)))
-}
 
 /// Host-owned user configuration capabilities (the admin configuration schema), built off the
 /// request path.
 #[cfg(feature = "openapi-schema")]
 pub use crate::off_path::export::configuration_capabilities;
+use busbar_contract::export_calls::codes::ExportField;
+use busbar_contract::export_stream::ExportStream;
 
 /// Exercise the owning projection resolver without loading an exporter in focused schema tests.
 #[cfg(all(feature = "openapi-schema", any(test, feature = "test-support")))]
@@ -85,7 +64,3 @@ pub(crate) fn deliver_request_log(exports: &plugin::Exports, facts: &RequestLogF
         |projection| build_request_log(projection, facts),
     );
 }
-
-#[cfg(test)]
-#[path = "tests/snapshot_crossings.rs"]
-mod snapshot_crossings;

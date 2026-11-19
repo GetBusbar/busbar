@@ -39,8 +39,6 @@ mod c_admit_unload;
 mod c_affinity;
 #[path = "c_alias.rs"]
 mod c_alias;
-#[path = "c_alloc.rs"]
-mod c_alloc;
 #[path = "c_alloc_load.rs"]
 mod c_alloc_load;
 #[path = "c_allow_dest.rs"]
@@ -61,6 +59,8 @@ mod c_auto_traits;
 mod c_blind;
 #[path = "c_boot_order.rs"]
 mod c_boot_order;
+#[path = "c_boundary_fleet.rs"]
+mod c_boundary_fleet;
 #[path = "c_cancel.rs"]
 mod c_cancel;
 #[path = "c_cancel_bill.rs"]
@@ -119,6 +119,8 @@ mod c_export_streams;
 mod c_fail_facts;
 #[path = "c_fail_reset.rs"]
 mod c_fail_reset;
+#[path = "c_fetch_status.rs"]
+mod c_fetch_status;
 #[path = "c_gen_wrap.rs"]
 mod c_gen_wrap;
 #[path = "c_grpc_deadline.rs"]
@@ -137,6 +139,8 @@ mod c_key_carriers;
 mod c_keys_stale;
 #[path = "c_leak.rs"]
 mod c_leak;
+#[path = "c_lend_custody.rs"]
+mod c_lend_custody;
 #[path = "c_lift.rs"]
 mod c_lift;
 #[path = "c_limits.rs"]
@@ -380,6 +384,18 @@ mod min3_secret;
 mod min3_store;
 #[path = "fixtures/min3_transport.rs"]
 mod min3_transport;
+#[path = "fixtures/native_store.rs"]
+mod native_store;
+#[path = "fixtures/ref_auth.rs"]
+mod ref_auth;
+#[path = "fixtures/ref_export.rs"]
+mod ref_export;
+#[path = "fixtures/ref_hook.rs"]
+mod ref_hook;
+#[path = "fixtures/ref_secret.rs"]
+mod ref_secret;
+#[path = "fixtures/ref_status_fetch.rs"]
+mod ref_status_fetch;
 
 /// Every `tests/*.rs` is wired: a module of this binary or a `[[test]]` target of the manifest
 /// (`autotests = false`, so an unwired file would never run).

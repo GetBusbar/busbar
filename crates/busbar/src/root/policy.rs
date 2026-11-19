@@ -6,11 +6,18 @@ use busbar_kernel::config::limits::LimitsResolved;
 
 #[must_use]
 pub fn client_settings(limits: &LimitsResolved) -> TransportSettings {
+    let (upstream_http1_only, upstream_h2_prior_knowledge) = super::retired_env::upstream_flags(
+        (
+            limits.upstream_http1_only,
+            limits.upstream_h2_prior_knowledge,
+        ),
+        |n| std::env::var_os(n),
+    );
     TransportSettings {
         pool_max_idle_per_host: limits.pool_max_idle_per_host,
         pool_idle_timeout_secs: limits.pool_idle_timeout_secs,
-        upstream_http1_only: limits.upstream_http1_only,
-        upstream_h2_prior_knowledge: limits.upstream_h2_prior_knowledge,
+        upstream_http1_only,
+        upstream_h2_prior_knowledge,
         request_body_max_bytes: limits.request_body_max_bytes,
 
         response_body_max_bytes: limits.request_body_max_bytes,

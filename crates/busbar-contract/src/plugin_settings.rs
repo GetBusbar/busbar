@@ -6,6 +6,7 @@
 //! have no serialization or readable-value interface.
 
 mod owned;
+pub mod sugar_words;
 
 use crate::secure::{SecureString, SecureVec};
 use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
@@ -251,23 +252,6 @@ impl Settings {
             self.0 .0.as_object().expect("settings object"),
             public,
         ))
-    }
-
-    /// Resolve declared reference slots into sealed credential arguments for a kind boundary.
-    pub fn lend_references(
-        &self,
-        declared: &[String],
-        sources: &crate::secret_ref::Sugars,
-        owner: &str,
-        resolve: &ReferenceResolver<'_>,
-    ) -> Result<LentSettings, String> {
-        self.prepare().lend_references_with(
-            declared,
-            sources,
-            owner,
-            resolve,
-            ReferenceDelivery::Retain,
-        )
     }
 
     /// Public generation snapshot, additionally excluding credential-like keys and references.
@@ -1124,7 +1108,7 @@ pub(crate) mod guarded_reader {
 
     /// A settings JSON value whose strings and object keys wipe on drop, including partially parsed
     /// trees and replaced duplicate values. This is for readable configuration, not extracted secret
-    /// responses (those use [`crate::abi::sdk::cred::SelectedJson`]). Numeric scratch in serde_json is not zeroized.
+    /// responses. Numeric scratch in serde_json is not zeroized.
     #[derive(Clone)]
     pub struct SettingsValue(pub(crate) Value);
 
@@ -1384,7 +1368,7 @@ mod tests {
             .declare(
                 "source-owner",
                 &[(
-                    crate::abi::mechanism::door::REWRITE_SUGAR,
+                    crate::plugin_settings::sugar_words::REWRITE_SUGAR,
                     "cabinet".into(),
                     "entry".into(),
                 )],
@@ -1575,7 +1559,9 @@ mod template_admission_tests {
     }
     #[test]
     fn forged_template_source_refuses_before_resolution_or_dependency_selection() {
-        use crate::abi::mechanism::door::{REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL};
+        use crate::plugin_settings::sugar_words::{
+            REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL,
+        };
         let mut sources = crate::secret_ref::Sugars::default();
         sources
             .declare(

@@ -13,38 +13,15 @@ use busbar_plugin_test::abi_scan::r131;
 const CRATE: &str = "crates/busbar-core-connector";
 
 const DOOR_DOUBLE: &str = "hand-written transport door double over the host's raw loans: needs the HostView row and the FramerSink writers (design 3.3, not built)";
-const DOOR_DOUBLE_Q24: &str = "hand-written transport door double over the host's raw loans (HostView and FramerSink writers, not built); also drives the allocator wipe probe, which Q24 replaces with the /proc/self/mem canary scan (row not built)";
-const COUNTING_WAKER: &str = "RawWaker vtable that counts clone, wake and drop of the handle: needs a CountingWaker row (std::task::Wake cannot see clones or drops; not built)";
 
 /// Files not in R131's path list, relative to the repository root, each with why.
 const LEFT_OUT: &[(&str, &str)] = &[
-    ("crates/busbar-core-connector/src/tests/callback_waker.rs", COUNTING_WAKER),
-    ("crates/busbar-core-connector/src/tests/fanout_wake_tests.rs", COUNTING_WAKER),
-    ("crates/busbar-core-connector/src/tests/support.rs", DOOR_DOUBLE),
     (
         "crates/busbar-core-connector/src/tests/support_lib.rs",
         "owns the unsafe GlobalAlloc wipe and allocation probes (Q24: the /proc/self/mem canary scan replaces them; row not built) and the FramerSink writers pieces_on_lanes and writable_on_lane (FramerSink writer row, not built)",
     ),
-    ("crates/busbar-core-connector/src/tests/compose_absorb_fail_tests.rs", DOOR_DOUBLE),
-    ("crates/busbar-core-connector/src/tests/compose_receive_tests.rs", DOOR_DOUBLE),
-    ("crates/busbar-core-connector/src/tests/compose_sensitive_tests.rs", DOOR_DOUBLE),
-    ("crates/busbar-core-connector/src/tests/compose_tls_accept_tests.rs", DOOR_DOUBLE),
-    ("crates/busbar-core-connector/src/tests/datagram_finish_tests.rs", DOOR_DOUBLE),
-    ("crates/busbar-core-connector/src/tests/datagram_tests.rs", DOOR_DOUBLE),
-    ("crates/busbar-core-connector/src/tests/datagram_turn_tests.rs", DOOR_DOUBLE),
-    ("crates/busbar-core-connector/src/tests/dialled_read_wake_tests.rs", DOOR_DOUBLE),
-    ("crates/busbar-core-connector/src/tests/dialled_tests.rs", DOOR_DOUBLE),
     ("crates/busbar-core-connector/src/tests/framed_stream_tests.rs", DOOR_DOUBLE),
-    ("crates/busbar-core-connector/src/tests/framer_loan_tests.rs", DOOR_DOUBLE),
-    ("crates/busbar-core-connector/src/tests/framer_more_tests.rs", DOOR_DOUBLE),
-    ("crates/busbar-core-connector/src/tests/framer_tests.rs", DOOR_DOUBLE_Q24),
-    ("crates/busbar-core-connector/src/tests/framer_wire_tests.rs", DOOR_DOUBLE_Q24),
     ("crates/busbar-core-connector/src/tests/listen_tests.rs", DOOR_DOUBLE),
-    (
-        "crates/busbar-core-connector/src/tests/name_dial_tests.rs",
-        "builds the plugin's HostConns view from the host's raw slot table and context (HostConns::new is unsafe): needs a safe host-side HostConns row (not built)",
-    ),
-    ("crates/busbar-core-connector/src/tests/pool_prepared_seal_tests.rs", DOOR_DOUBLE),
 ];
 
 fn repository() -> std::path::PathBuf {

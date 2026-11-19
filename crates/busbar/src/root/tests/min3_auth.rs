@@ -200,6 +200,7 @@ async fn retained_native_chain_snapshots_request_and_rejects_before_replay() {
         deadline: std::time::Instant::now() + Duration::from_secs(30),
         request_id: 1,
         stack: Default::default(),
+        mono_ns: 0,
     };
     let future = {
         let body = b"body".to_vec();
@@ -259,6 +260,7 @@ async fn prepared_native_chain_retains_original_request_without_spending_replay(
         deadline: std::time::Instant::now() + Duration::from_secs(30),
         request_id: 9,
         stack: Default::default(),
+        mono_ns: 0,
     };
     let busbar_kernel::auth::native_admin::PreparedAnswer::Identity(prepared) =
         chain.prepare(cx, request).await.unwrap()
@@ -285,13 +287,72 @@ async fn prepared_native_chain_retains_original_request_without_spending_replay(
     assert_eq!(owners.0.load(Ordering::SeqCst), 0);
 }
 
+/// An App over the actual application Store (a MIN-3 image) with the keys chain and the operator
+/// as its admin chain: the part of the deleted root inbound fixture these admin cases stood on.
+async fn store_app() -> Arc<busbar_kernel::state::App> {
+    use crate::root::test_plugins as plugins;
+    crate::dist_root_install::install();
+    let library_path = plugins::application_store_library();
+    let manifest = plugins::native_manifest("store", &library_path, plugins::FIXTURE_PUBLISHER);
+    let module = manifest.name.clone();
+    let library = std::fs::read(&library_path).expect("the actual store library reads");
+    let directory = plugins::scratch(&format!(
+        "min3-auth-app-{}",
+        busbar_kernel::door::op_id().counter()
+    ));
+    let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+    std::fs::write(directory.join("store.tar.gz"), archive)
+        .expect("stage the actual store archive");
+    let signing = directory.join("signing-key");
+    std::fs::write(&signing, hex::encode([7u8; 32])).expect("write the configured signing key");
+    let operator_token = directory.join("operator-token");
+    std::fs::write(&operator_token, "actual-min3-auth-operator")
+        .expect("write the operator credential");
+    let operator = busbar_kernel::config::operator_provider();
+    let mut document = serde_json::json!({
+        "public_url": "https://gw.example",
+        "providers": {},
+        "models": {},
+        "auth": { "chain": ["keys"], "admin_auth": [operator], "signing_key": {"file": signing} },
+        "identity-providers": {},
+        "store": { "module": module, "settings": plugins::application_store_settings(&directory) },
+        "advanced": {},
+    });
+    document["identity-providers"][operator] = serde_json::json!({
+        "module": operator, "settings": { "sha256": plugins::operator_sha256_of(&operator_token) },
+    });
+    let deploy = busbar_kernel::config::deploy_from_deserializer(
+        document,
+        &crate::root::boot::axis_test_grammar(),
+    )
+    .expect("the deployment parses");
+    let config = busbar_kernel::config::resolve(&deploy, &Default::default())
+        .expect("the deployment resolves");
+    let rules = Arc::new(crate::root::door_steps::Rules::default())
+        as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let (app, _rotate, limits) = crate::root::real_store::build_app(
+        config,
+        plugins::trusted_config(&directory),
+        None,
+        Default::default(),
+        Default::default(),
+        (None, None),
+        None,
+        &rules,
+    )
+    .await
+    .expect("the actual product builds the deployment");
+    limits.stage_boot();
+    Arc::new(app)
+}
+
 async fn admin_fixture() -> (
     Arc<busbar_kernel::state::AppHandle>,
     Arc<busbar_kernel::state::App>,
     Arc<Owners>,
     Arc<Port>,
 ) {
-    let original = crate::root::inbound_tests::app(false).await.0;
+    let original = store_app().await;
     let mut app = (*original).clone();
     app.admin_chain = vec!["provider-42".into()];
     app.auth_scope_caps
@@ -317,6 +378,7 @@ async fn admin_fixture() -> (
     });
     let set = Arc::new(AuthSet {
         instances: BTreeMap::from([("provider-42".into(), instance(42, port.clone()))]),
+        opened: vec!["provider-42".into()],
         owners: Arc::new(AuthOwners {
             issued: owners.clone(),
             replay: owners.clone(),
@@ -692,6 +754,7 @@ async fn native_identity_without_grants_stays_identified_and_cannot_claim() {
     app.role_bindings.clear();
     let set = Arc::new(AuthSet {
         instances: BTreeMap::from([("provider-42".into(), instance(42, port))]),
+        opened: vec!["provider-42".into()],
         owners: Arc::new(AuthOwners {
             issued: owners.clone(),
             replay: owners.clone(),
@@ -726,6 +789,7 @@ async fn missing_native_admin_coverage_refuses_candidate_construction() {
     let mut app = (*prior).clone();
     let empty = Arc::new(AuthSet {
         instances: BTreeMap::new(),
+        opened: Vec::new(),
         owners: Arc::new(AuthOwners {
             issued: owners.clone(),
             replay: owners,
@@ -734,6 +798,125 @@ async fn missing_native_admin_coverage_refuses_candidate_construction() {
     });
     let epoch = app.config_generation.load(Ordering::Acquire);
     assert!(crate::root::min3_admin_auth::install(&mut app, empty, epoch).is_err());
+}
+
+/// E5: the admin chain never judges a request while a configured credential's instance is
+/// unopened. The operator credential's position may be left unset ("not mine") only when its
+/// definition carries nothing to judge; one that carries settings must have its native instance
+/// opened, or the candidate is refused before any listener can serve it.
+#[tokio::test]
+async fn an_operator_credential_with_settings_and_no_opened_instance_refuses_the_admin_chain() {
+    let (_, prior, owners, _) = admin_fixture().await;
+    let operator = |settings: &str| {
+        let mut app = (*prior).clone();
+        app.admin_chain = vec!["admin-tokens".into()];
+        app.identity_providers.insert(
+            "admin-tokens".into(),
+            busbar_contract::json::parse_str(&format!(
+                r#"{{"module":"admin-tokens","settings":{settings}}}"#
+            ))
+            .unwrap(),
+        );
+        // The door-era operator credential the kernel built: answered, nothing opened on its axis.
+        app.admin_modules = Arc::new(busbar_kernel::auth::AdminAuthChain {
+            modules: Default::default(),
+            operator: busbar_kernel::auth::Operator::open(
+                "admin-tokens",
+                std::iter::empty(),
+                &|module: &str| module == "admin-tokens",
+                true,
+                Default::default(),
+            ),
+        });
+        assert!(app.admin_modules.operator.unset("admin-tokens"));
+        app
+    };
+    let empty = || {
+        Arc::new(AuthSet {
+            instances: BTreeMap::new(),
+            opened: Vec::new(),
+            owners: Arc::new(AuthOwners {
+                issued: owners.clone(),
+                replay: owners.clone(),
+                cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+            }),
+        })
+    };
+
+    let digest = busbar_contract::redacted::sha256_hex(b"e5-operator-token");
+    let mut configured = operator(&format!(r#"{{"sha256":"{digest}"}}"#));
+    let epoch = configured.config_generation.load(Ordering::Acquire);
+    let refused = crate::root::min3_admin_auth::install(&mut configured, empty(), epoch)
+        .expect_err("a configured operator credential with no opened instance is refused");
+    assert_eq!(
+        refused,
+        "auth.admin_auth: 'admin-tokens' has no opened native auth instance"
+    );
+    assert!(
+        !refused.contains(&digest),
+        "the refusal never echoes the credential"
+    );
+
+    let mut bare = operator("{}");
+    let epoch = bare.config_generation.load(Ordering::Acquire);
+    crate::root::min3_admin_auth::install(&mut bare, empty(), epoch)
+        .expect("a bare operator position has nothing to judge and stays unset");
+    assert!(bare.native_admin.is_some());
+}
+
+/// A default configuration boots: the default `auth.admin_auth` is `[<operator>, keys]` with no
+/// `identity-providers` definition, so the operator position has no credential and nothing to
+/// open. It is left unset whatever the door-era operator says (here: no row answered it), and
+/// the admin plane fails closed: a request presenting a token is denied, as 1.5.5 denied every
+/// admin request when no admin token was configured.
+#[tokio::test]
+async fn the_default_admin_chain_with_no_operator_credential_installs_and_denies_every_request() {
+    let (_, prior, owners, _) = admin_fixture().await;
+    let mut app = (*prior).clone();
+    app.admin_chain = vec![
+        "admin-tokens".into(),
+        busbar_kernel::config::KEYS_MODULE.into(),
+    ];
+    app.identity_providers.clear();
+    app.admin_modules = Arc::new(busbar_kernel::auth::AdminAuthChain {
+        modules: Default::default(),
+        operator: busbar_kernel::auth::Operator::open(
+            "admin-tokens",
+            std::iter::empty(),
+            &|module: &str| module == "admin-tokens",
+            false,
+            Default::default(),
+        ),
+    });
+    assert!(!app.admin_modules.operator.unset("admin-tokens"));
+    let empty = Arc::new(AuthSet {
+        instances: BTreeMap::new(),
+        opened: Vec::new(),
+        owners: Arc::new(AuthOwners {
+            issued: owners.clone(),
+            replay: owners,
+            cache: Arc::new(Verdicts::new(VerdictPolicy::DEFAULT)),
+        }),
+    });
+    let epoch = app.config_generation.load(Ordering::Acquire);
+    crate::root::min3_admin_auth::install(&mut app, empty, epoch)
+        .expect("the default admin chain installs with no operator credential configured");
+    let app = Arc::new(app);
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app.clone()));
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::AUTHORIZATION,
+        axum::http::HeaderValue::from_static("Bearer any-token-at-all"),
+    );
+    let verdict = busbar_kernel::auth::admin_verdict_for(
+        admin_invocation(&handle, &app, busbar_kernel::store::now()),
+        &headers,
+    )
+    .await;
+    assert!(
+        matches!(verdict.door, busbar_kernel::auth::AdminDoor::Denied),
+        "no admin credential configured: every admin request is denied"
+    );
 }
 
 #[tokio::test]
@@ -769,6 +952,7 @@ async fn shared_kernel_chain_preserves_admin_preparation_and_single_claim() {
         deadline: std::time::Instant::now() + Duration::from_secs(30),
         request_id: 11,
         stack: Default::default(),
+        mono_ns: 0,
     };
     let PreparedAnswer::Identity(prepared) = chain.prepare(cx, request).await.unwrap() else {
         panic!("prepared identity")
@@ -869,8 +1053,8 @@ async fn admin_physical_fixture_with_body(
     fields: Vec<(String, Vec<u8>)>,
     input_body: &[u8],
 ) -> AdminPhysicalFixture {
-    use busbar_contract::abi::mechanism::route::RouteAuth;
-    use busbar_contract::abi::transport::route::{METHOD_GET, PATH_EXACT};
+    use busbar_contract::route::RouteAuth;
+    use busbar_contract::route::{METHOD_GET, PATH_EXACT};
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
     use busbar_kernel::inbound::native::{
         AcceptedConnection, PhysicalListener, PhysicalPlan, RouteBinding,
@@ -902,7 +1086,7 @@ async fn admin_physical_fixture_with_body(
         dialect: 0,
         auth: LineAuth::None,
         upgrade: None,
-        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        offered: busbar_contract::route::AuthPoints::EMPTY,
     };
     let guests = GuestList::seal(vec![line.clone()]).unwrap();
     let plan = PhysicalPlan::new(

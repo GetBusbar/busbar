@@ -3,7 +3,7 @@
 
 use super::*;
 use busbar_contract::abi::mechanism::endpoint::{EndpointRequest, EndpointResponse};
-use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
+use busbar_contract::route::{Route, RouteAuth, RouteMethod};
 use std::sync::Arc;
 
 struct FakeDispatch {

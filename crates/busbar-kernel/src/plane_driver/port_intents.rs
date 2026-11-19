@@ -43,7 +43,6 @@ use busbar_ports::codec::plane::{
     encode_refusal, encode_signed, encode_trust_answers, encode_work_answers, SignedAnswer,
 };
 use busbar_ports::plane::{ObservedAnswer, TrustAnswer, TrustItem, WorkAnswer};
-use tokio::runtime::Handle;
 
 use super::plane_judge::PlaneJudge;
 use super::port_channels::{ChannelAttach, ChannelHost, Channels, Held};
@@ -442,36 +441,41 @@ impl WorkOutcome<'_> {
     }
 }
 
-/// What resolving an intent needs from core. The calls are synchronous: a driver runs a task inside
-/// `spawn_blocking`, and a production host blocks on the runtime for the store.
+/// What resolving an intent needs from core. A call that reaches the store, the push queue or a kernel service is
+/// awaited on the session's task (`BoxFut`: the host is a trait object the seat holds, so its future is boxed, one
+/// allocation per intent the plane states; a session that states none pays none). The pure reads stay synchronous.
 pub trait IntentHost: Send + Sync {
     /// LOOKUP in the scope the resolver chose. `flags` carries `LK_PREFIX` and `LK_CHAIN` (for `LK_CHAIN` the key
     /// is the chain key followed by the 8-byte `after`). The hits, and a chain's state, are read into `looked`,
     /// which the caller hands in cleared; on an error the caller discards whatever was read.
-    fn lookup(
-        &self,
+    fn lookup<'a>(
+        &'a self,
         scope: Scope,
         flags: u32,
         limit: u32,
-        key: &[u8],
-        looked: &mut Looked,
-    ) -> Result<(), RecordsDenied>;
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>>;
     /// STORE. `flags & LK_CHAIN` appends `value` to the host chain `key`.
-    fn store(
-        &self,
+    fn store<'a>(
+        &'a self,
         scope: Scope,
         flags: u32,
         ttl_s: u64,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<(), RecordsDenied>;
-    fn delete(&self, scope: Scope, key: &[u8]) -> Result<(), RecordsDenied>;
-    fn commit(&self, scope: Scope, ops: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied>;
+        key: &'a [u8],
+        value: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>>;
+    fn delete<'a>(&'a self, scope: Scope, key: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>>;
+    fn commit<'a>(
+        &'a self,
+        scope: Scope,
+        ops: &'a [CommitOp<'a>],
+    ) -> BoxFut<'a, Result<CommitOutcome, RecordsDenied>>;
     /// WORK under the request's verified principal. The default is the fail-closed answer.
-    fn work<'a>(&self, _intent: &WorkIntent<'a>) -> WorkOutcome<'a> {
-        WorkOutcome::unsupported()
+    fn work<'a>(&'a self, _intent: &'a WorkIntent<'a>) -> BoxFut<'a, WorkOutcome<'a>> {
+        Box::pin(std::future::ready(WorkOutcome::unsupported()))
     }
-    fn push(&self, ttl_s: u64, recs: &[u8]) -> Result<(), RecordsDenied>;
+    fn push<'a>(&'a self, ttl_s: u64, recs: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>>;
     /// SIGNAL: every session of this instance detached under `key` (only `subject`'s when it is Some).
     fn signal(&self, key: &[u8], subject: Option<[u8; 32]>);
     /// A command signal cannot fall back to instance or subject-wide delivery.
@@ -487,27 +491,31 @@ pub trait IntentHost: Send + Sync {
     }
     /// JUDGE: the `DEST_*` verdict for `dest` (the answer the plane renders in its own protocol). The default is
     /// the fail-closed `DEST_INTERNAL`.
-    fn judge(&self, _dest: &str, _class: u32, _flags: u32) -> u32 {
-        DEST_INTERNAL
+    fn judge<'a>(&'a self, _dest: &'a str, _class: u32, _flags: u32) -> BoxFut<'a, u32> {
+        Box::pin(std::future::ready(DEST_INTERNAL))
     }
     /// MINT for the verified `m.subject`: the client-facing ticket text and its expiry (epoch seconds), or the
     /// generic REFUSED code. The default is `R_UNSUPPORTED`.
-    fn mint(&self, _m: TicketMint<'_>) -> Result<(Box<str>, u64), u32> {
-        Err(R_UNSUPPORTED)
+    fn mint<'a>(&'a self, _m: TicketMint<'a>) -> BoxFut<'a, Result<(Box<str>, u64), u32>> {
+        Box::pin(std::future::ready(Err(R_UNSUPPORTED)))
     }
     /// SIGN `payload` with the host key as a JWS, or the generic REFUSED code. The default is `R_UNSUPPORTED`.
-    fn sign(&self, _payload: &[u8], _detached: bool) -> Result<SignedJws, u32> {
-        Err(R_UNSUPPORTED)
+    fn sign<'a>(
+        &'a self,
+        _payload: &'a [u8],
+        _detached: bool,
+    ) -> BoxFut<'a, Result<SignedJws, u32>> {
+        Box::pin(std::future::ready(Err(R_UNSUPPORTED)))
     }
     /// SIGHT: record that `party` offered `items` (name, digest), under the listing's `catalog` hash. A sighting
     /// the book cannot record is logged; the plane is not told (SIGHT has no answer). The default records nothing.
-    fn sight(
-        &self,
-        _party: &str,
+    fn sight<'a>(
+        &'a self,
+        _party: &'a str,
         _catalog: Option<[u8; 32]>,
-        _items: &[(&str, [u8; 32])],
-    ) -> Result<(), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+        _items: &'a [(&'a str, [u8; 32])],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
     /// TRUST_SERVES: `DISTRUST_NONE` or the `DISTRUST_*` that refuses (digest `None` = the last sighting). The
     /// default refuses as unknown.
@@ -533,39 +541,43 @@ pub trait IntentHost: Send + Sync {
     }
     /// RENDEZVOUS(RV_ACCEPT) on `route`: the local session description and the bridge the session holds under the
     /// exchange. The default is unavailable.
-    fn rendezvous_accept(
-        &self,
+    fn rendezvous_accept<'a>(
+        &'a self,
         _route: u32,
-        _offer: &str,
-    ) -> Result<(Box<str>, Box<dyn Held>), RecordsDenied> {
-        Err(RecordsDenied::Unavailable)
+        _offer: &'a str,
+    ) -> BoxFut<'a, Result<(Box<str>, Box<dyn Held>), RecordsDenied>> {
+        Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
     }
     /// OBS_SCOPE as the principal whose identity records are `identity`: (OBS_READY | OBS_CLOSED | OBS_PENDING |
     /// OBS_REFUSED, the scope id for READY and CLOSED). Durable before it returns. The default is `OBS_REFUSED`.
-    fn obs_scope(
-        &self,
-        _identity: &[u8],
+    fn obs_scope<'a>(
+        &'a self,
+        _identity: &'a [u8],
         _op: u32,
         _scope: Option<[u8; 32]>,
-        _require: &[&str],
-    ) -> (u32, Option<[u8; 32]>) {
-        (OBS_REFUSED, None)
+        _require: &'a [&'a str],
+    ) -> BoxFut<'a, (u32, Option<[u8; 32]>)> {
+        Box::pin(std::future::ready((OBS_REFUSED, None)))
     }
     /// OBSERVE as the principal whose identity records are `identity`: (OBS_ACCEPTED | OBS_PENDING |
     /// OBS_REFUSED, the receipt bytes). Durable before it returns. The default is `OBS_REFUSED`.
-    fn observe(&self, _identity: &[u8], _o: &ObservationIn<'_>) -> (u32, Vec<u8>) {
-        (OBS_REFUSED, Vec::new())
+    fn observe<'a>(
+        &'a self,
+        _identity: &'a [u8],
+        _o: &'a ObservationIn<'a>,
+    ) -> BoxFut<'a, (u32, Vec<u8>)> {
+        Box::pin(std::future::ready((OBS_REFUSED, Vec::new())))
     }
     /// CONNECT as the verified `subject`: the `CONN_*` state and, for a BEGIN, the URL to send the caller to.
     /// The default is `CONN_REFUSED`.
-    fn connect(
-        &self,
+    fn connect<'a>(
+        &'a self,
         _op: u32,
-        _subject: &str,
-        _upstream: &str,
-        _return_to: Option<&str>,
-    ) -> (u32, Option<Box<str>>) {
-        (CONN_REFUSED, None)
+        _subject: &'a str,
+        _upstream: &'a str,
+        _return_to: Option<&'a str>,
+    ) -> BoxFut<'a, (u32, Option<Box<str>>)> {
+        Box::pin(std::future::ready((CONN_REFUSED, None)))
     }
 }
 
@@ -713,8 +725,7 @@ impl<'h> Resolver<'h> {
     /// Applies `intents` in answer order and returns the pieces to deliver, in the IF order. `reads` is the
     /// task's read buffer: what a LOOKUP, a TRUST_STATE or a TRUST_VERIFY reads from the host lies there until
     /// it is encoded.
-    #[must_use]
-    pub fn resolve<'i>(
+    pub async fn resolve<'i>(
         &self,
         intents: &[Intent],
         lent: &'i Lent,
@@ -736,34 +747,32 @@ impl<'h> Resolver<'h> {
                     value,
                 } => {
                     let (key, value) = (lent.bytes(*key), lent.bytes(*value));
-                    let done = self
-                        .scope(flags & LK_CALLER != 0)
-                        .ok_or(RecordsDenied::Invalid)
-                        .and_then(|scope| self.host.store(scope, *flags, *ttl_s, key, value));
+                    let done = match self.scope(flags & LK_CALLER != 0) {
+                        Some(scope) => self.host.store(scope, *flags, *ttl_s, key, value).await,
+                        None => Err(RecordsDenied::Invalid),
+                    };
                     if done.is_err() {
                         pieces.push(store_failed(key));
                     }
                 }
                 Intent::Delete { flags, key } => {
                     let key = lent.bytes(*key);
-                    let done = self
-                        .scope(flags & LK_CALLER != 0)
-                        .ok_or(RecordsDenied::Invalid)
-                        .and_then(|scope| self.host.delete(scope, key));
+                    let done = match self.scope(flags & LK_CALLER != 0) {
+                        Some(scope) => self.host.delete(scope, key).await,
+                        None => Err(RecordsDenied::Invalid),
+                    };
                     if done.is_err() {
                         pieces.push(store_failed(key));
                     }
                 }
                 Intent::Commit { check, ops } => {
+                    let answer = self.commit(*check, lent.bytes(*ops)).await;
                     // A Reply refuses only past its cap; a commit answer is a few words.
-                    let put = encode_committed(
-                        committed.get_or_insert_with(Reply::new),
-                        &[self.commit(*check, lent.bytes(*ops))],
-                    );
+                    let put = encode_committed(committed.get_or_insert_with(Reply::new), &[answer]);
                     debug_assert!(put.is_ok(), "COMMITTED answers fit a Reply");
                 }
                 Intent::Push { ttl_s, recs } => {
-                    if let Err(denied) = self.host.push(*ttl_s, lent.bytes(*recs)) {
+                    if let Err(denied) = self.host.push(*ttl_s, lent.bytes(*recs)).await {
                         tracing::warn!(?denied, "a plane push was not queued");
                     }
                 }
@@ -792,18 +801,21 @@ impl<'h> Resolver<'h> {
                     framing,
                     key,
                     head,
-                } => channel_pieces.push(self.channel(
-                    held,
-                    &ChannelAttach {
-                        exchange: *exchange,
-                        carrier: *carrier,
-                        flags: *flags,
-                        framing: *framing,
-                        key: lent.text(*key),
-                        subject: self.subject,
-                        head: lent.bytes(*head),
-                    },
-                )),
+                } => channel_pieces.push(
+                    self.channel(
+                        held,
+                        &ChannelAttach {
+                            exchange: *exchange,
+                            carrier: *carrier,
+                            flags: *flags,
+                            framing: *framing,
+                            key: lent.text(*key),
+                            subject: self.subject,
+                            head: lent.bytes(*head),
+                        },
+                    )
+                    .await,
+                ),
                 Intent::ChReady { exchange, tail } => {
                     if let Some(channel) = held.get_mut(exchange) {
                         if let Err(denied) = channel.ready(lent.bytes(*tail)) {
@@ -815,12 +827,10 @@ impl<'h> Resolver<'h> {
                     exchange,
                     flags,
                     description,
-                } => rendezvous_pieces.extend(self.rendezvous(
-                    held,
-                    *exchange,
-                    *flags,
-                    lent.text(*description),
-                )),
+                } => rendezvous_pieces.extend(
+                    self.rendezvous(held, *exchange, *flags, lent.text(*description))
+                        .await,
+                ),
                 Intent::Sight {
                     party,
                     catalog,
@@ -830,7 +840,7 @@ impl<'h> Resolver<'h> {
                     let mut seen: smallvec::SmallVec<[(&str, [u8; 32]); 16]> =
                         smallvec::SmallVec::new();
                     seen.extend(sighted_items(lent, *items));
-                    if let Err(denied) = self.host.sight(party, *catalog, &seen) {
+                    if let Err(denied) = self.host.sight(party, *catalog, &seen).await {
                         tracing::warn!(?denied, party, "a plane sighting was not recorded");
                     }
                 }
@@ -848,19 +858,22 @@ impl<'h> Resolver<'h> {
             }
         }
         let kinds = [
-            records_piece(P_LOOKUP, self.lookups(intents, lent, &mut reads.looked)),
+            records_piece(
+                P_LOOKUP,
+                self.lookups(intents, lent, &mut reads.looked).await,
+            ),
             records_piece(P_COMMITTED, committed),
-            records_piece(P_OBSERVED, self.observeds(intents, lent)),
-            records_piece(P_WORK, self.works(intents, lent)),
+            records_piece(P_OBSERVED, self.observeds(intents, lent).await),
+            records_piece(P_WORK, self.works(intents, lent).await),
             records_piece(P_ENTITLE, self.entitles(intents, lent)),
-            records_piece(P_JUDGED, self.judges(intents, lent)),
+            records_piece(P_JUDGED, self.judges(intents, lent).await),
             records_piece(
                 P_TRUST,
                 self.trusts(intents, lent, &mut reads.trust_items, &mut reads.named),
             ),
-            records_piece(P_MINTED, self.mints(intents, lent)),
-            records_piece(P_SIGNED, self.signs(intents, lent)),
-            records_piece(P_CONNECT, self.connects(intents, lent)),
+            records_piece(P_MINTED, self.mints(intents, lent).await),
+            records_piece(P_SIGNED, self.signs(intents, lent).await),
+            records_piece(P_CONNECT, self.connects(intents, lent).await),
         ];
         pieces.extend(kinds.into_iter().flatten());
         pieces.extend(channel_pieces);
@@ -869,11 +882,11 @@ impl<'h> Resolver<'h> {
     }
 
     /// One CHANNEL: the attachment as P_CHANNEL, or the P_ERROR the exchange ends with.
-    fn channel<'i>(&self, held: &mut Channels, attach: &ChannelAttach<'_>) -> Piece<'i> {
-        let attached = self
-            .channels
-            .ok_or(RecordsDenied::Unavailable)
-            .and_then(|host| host.attach(attach));
+    async fn channel<'i>(&self, held: &mut Channels, attach: &ChannelAttach<'_>) -> Piece<'i> {
+        let attached = match self.channels {
+            Some(host) => host.attach(attach).await,
+            None => Err(RecordsDenied::Unavailable),
+        };
         let mut reply = Reply::new();
         match attached {
             Ok(a) => {
@@ -906,7 +919,7 @@ impl<'h> Resolver<'h> {
     }
 
     /// One COMMIT: (check, outcome, failed, status).
-    fn commit(&self, check: u32, raw: &[u8]) -> (u32, u32, u32, u32) {
+    async fn commit(&self, check: u32, raw: &[u8]) -> (u32, u32, u32, u32) {
         let refused = |status| (check, 0, 0, status);
         // At most `commit::MAX_OPS`; the common commit is a few ops, held on the stack.
         let mut ops: smallvec::SmallVec<[CommitOp<'_>; 16]> = smallvec::SmallVec::new();
@@ -971,7 +984,7 @@ impl<'h> Resolver<'h> {
         let Some(scope) = self.scope(caller_bound) else {
             return refused(R_DENIED);
         };
-        match self.host.commit(scope, &ops) {
+        match self.host.commit(scope, &ops).await {
             Ok(CommitOutcome::Applied) => (check, commit::APPLIED, 0, 0),
             Ok(CommitOutcome::Conflict { failed }) => (check, commit::CONFLICT, failed, 0),
             Err(denied) => refused(denied_status(&denied)),
@@ -982,7 +995,7 @@ impl<'h> Resolver<'h> {
     /// record is encoded as its hit is read (the encoders write one record per element, in order). Each LOOKUP
     /// is read whole into `looked` (the task's read buffer) first: a read that fails part way is a miss, with
     /// none of its hits.
-    fn lookups(&self, intents: &[Intent], lent: &Lent, looked: &mut Looked) -> Option<Reply> {
+    async fn lookups(&self, intents: &[Intent], lent: &Lent, looked: &mut Looked) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         let mut index = 0u32;
         for intent in intents {
@@ -994,9 +1007,10 @@ impl<'h> Resolver<'h> {
             index += 1;
             looked.clear();
             if let Some(scope) = self.scope(flags & LK_CALLER != 0) {
-                if let Err(denied) =
-                    self.host
-                        .lookup(scope, *flags, *limit, lent.bytes(*key), looked)
+                if let Err(denied) = self
+                    .host
+                    .lookup(scope, *flags, *limit, lent.bytes(*key), looked)
+                    .await
                 {
                     tracing::warn!(?denied, "a plane lookup was refused; it reads as a miss");
                     looked.clear();
@@ -1034,7 +1048,7 @@ impl<'h> Resolver<'h> {
     }
 
     /// The JUDGE_ANS of every JUDGE of the answer, in intent order; `None` when it has none.
-    fn judges(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+    async fn judges(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Judge {
@@ -1046,7 +1060,7 @@ impl<'h> Resolver<'h> {
             else {
                 continue;
             };
-            let verdict = self.host.judge(lent.text(*dest), *class, *flags);
+            let verdict = self.host.judge(lent.text(*dest), *class, *flags).await;
             let put = encode_judged(reply.get_or_insert_with(Reply::new), &[(*check, verdict)]);
             debug_assert!(put.is_ok(), "JUDGE_ANS records fit a Reply");
         }
@@ -1055,7 +1069,7 @@ impl<'h> Resolver<'h> {
 
     /// One RENDEZVOUS: RV_ACCEPT answers P_RENDEZVOUS (the local description, the bridge now held under
     /// `exchange`) or P_RV_FAILED; RV_REMOTE goes to the bridge held there and answers only a failure.
-    fn rendezvous<'i>(
+    async fn rendezvous<'i>(
         &self,
         held: &mut Channels,
         exchange: u32,
@@ -1063,7 +1077,7 @@ impl<'h> Resolver<'h> {
         description: &str,
     ) -> Option<Piece<'i>> {
         match flags {
-            RV_ACCEPT => match self.host.rendezvous_accept(self.route, description) {
+            RV_ACCEPT => match self.host.rendezvous_accept(self.route, description).await {
                 Ok((local, bridge)) => {
                     held.insert(exchange, bridge);
                     Some(Piece {
@@ -1075,7 +1089,7 @@ impl<'h> Resolver<'h> {
                 Err(denied) => Some(rv_failed(exchange, &denied, None)),
             },
             RV_REMOTE => match held.get_mut(&exchange) {
-                Some(bridge) => match bridge.remote(description) {
+                Some(bridge) => match bridge.remote(description).await {
                     Ok(()) => None,
                     Err(denied) => Some(rv_failed(exchange, &denied, bridge.refusal().as_deref())),
                 },
@@ -1088,7 +1102,7 @@ impl<'h> Resolver<'h> {
     /// The OBS_SCOPE_ANS and OBS_RECEIPT of the answer's OBS_SCOPE and OBSERVE, in intent order; `None` when it
     /// has none. Custody is the verified principal's: without one every answer is OBS_REFUSED and the host is
     /// not asked. The host's calls are durable before they return, so the piece is delivered after the commit.
-    fn observeds(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+    async fn observeds(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             match intent {
@@ -1104,7 +1118,7 @@ impl<'h> Resolver<'h> {
                             let mut classes: smallvec::SmallVec<[&str; 16]> =
                                 smallvec::SmallVec::new();
                             classes.extend(required_classes(lent, *require));
-                            self.host.obs_scope(p.identity, *op, *scope, &classes)
+                            self.host.obs_scope(p.identity, *op, *scope, &classes).await
                         }
                     };
                     let answer = ObservedAnswer::Scope {
@@ -1133,19 +1147,17 @@ impl<'h> Resolver<'h> {
                             let mut counted: smallvec::SmallVec<[(&str, u64, u32); 16]> =
                                 smallvec::SmallVec::new();
                             counted.extend(observed_counts(lent, *counts));
-                            self.host.observe(
-                                p.identity,
-                                &ObservationIn {
-                                    scope: *scope,
-                                    event: lent.bytes(*event),
-                                    component: lent.bytes(*component),
-                                    revision: revision.map(|r| (lent.bytes(r), *revision_order)),
-                                    state: *state,
-                                    counts: &counted,
-                                    rated_subject: *rated_subject,
-                                    evidence: evidence.map_or(&[][..], |e| lent.bytes(e)),
-                                },
-                            )
+                            let observation = ObservationIn {
+                                scope: *scope,
+                                event: lent.bytes(*event),
+                                component: lent.bytes(*component),
+                                revision: revision.map(|r| (lent.bytes(r), *revision_order)),
+                                state: *state,
+                                counts: &counted,
+                                rated_subject: *rated_subject,
+                                evidence: evidence.map_or(&[][..], |e| lent.bytes(e)),
+                            };
+                            self.host.observe(p.identity, &observation).await
                         }
                     };
                     let answer = ObservedAnswer::Receipt {
@@ -1231,7 +1243,7 @@ impl<'h> Resolver<'h> {
 
     /// The MINTED of every MINT of the answer, in intent order; `None` when it has none. A ticket binds the
     /// verified subject: without one the answer is `R_DENIED` and the host is not asked.
-    fn mints(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+    async fn mints(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Mint {
@@ -1248,15 +1260,21 @@ impl<'h> Resolver<'h> {
             };
             let minted = match self.principal {
                 None => Err(R_DENIED),
-                Some(p) => self.host.mint(TicketMint {
-                    subject: p.subject,
-                    scope: scope.map_or("", |s| lent.text(s)),
-                    audience: audience.map_or("ticket", |s| lent.text(s)),
-                    ttl_s: *ttl_s,
-                    once: flags & MINT_ONCE != 0,
-                    prefix: prefix.map_or("", |s| lent.text(s)),
-                    record: record.map_or(&[][..], |r| lent.bytes(r)),
-                }),
+                Some(p) => {
+                    self.host
+                        .mint(TicketMint {
+                            subject: p.subject,
+                            scope: scope.map_or("", |s| lent.text(s)),
+                            // Stated by the plane, else the door every ticket route redeems at.
+                            audience: audience
+                                .map_or(crate::auth::native_ticket::TICKET_DOOR, |s| lent.text(s)),
+                            ttl_s: *ttl_s,
+                            once: flags & MINT_ONCE != 0,
+                            prefix: prefix.map_or("", |s| lent.text(s)),
+                            record: record.map_or(&[][..], |r| lent.bytes(r)),
+                        })
+                        .await
+                }
             };
             let reply = reply.get_or_insert_with(Reply::new);
             let put = match &minted {
@@ -1271,7 +1289,7 @@ impl<'h> Resolver<'h> {
     }
 
     /// The SIGNED of every SIGN of the answer, in intent order; `None` when it has none.
-    fn signs(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+    async fn signs(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Sign {
@@ -1283,7 +1301,7 @@ impl<'h> Resolver<'h> {
                 continue;
             };
             let detached = *flags == SIGN_JWS_DETACHED;
-            let jws = self.host.sign(lent.bytes(*payload), detached);
+            let jws = self.host.sign(lent.bytes(*payload), detached).await;
             let answer = match &jws {
                 Ok(SignedJws::Compact(jws)) if !detached => {
                     SignedAnswer::Compact { check: *check, jws }
@@ -1314,7 +1332,7 @@ impl<'h> Resolver<'h> {
 
     /// The CONNECT_ANS of every CONNECT of the answer, in intent order; `None` when it has none. A connection
     /// is the verified subject's: without one the state is `CONN_REFUSED` and the host is not asked.
-    fn connects(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+    async fn connects(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Connect {
@@ -1328,12 +1346,16 @@ impl<'h> Resolver<'h> {
             };
             let (state, url) = match self.principal {
                 None => (CONN_REFUSED, None),
-                Some(p) => self.host.connect(
-                    *op,
-                    p.subject,
-                    lent.text(*upstream),
-                    return_to.map(|r| lent.text(r)),
-                ),
+                Some(p) => {
+                    self.host
+                        .connect(
+                            *op,
+                            p.subject,
+                            lent.text(*upstream),
+                            return_to.map(|r| lent.text(r)),
+                        )
+                        .await
+                }
             };
             // Only a BEGIN carries a URL.
             let url = url.filter(|_| *op == CONNECT_BEGIN);
@@ -1347,7 +1369,7 @@ impl<'h> Resolver<'h> {
     }
 
     /// The WORK_ANS of every WORK of the answer, in intent order; `None` when it has none.
-    fn works(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
+    async fn works(&self, intents: &[Intent], lent: &Lent) -> Option<Reply> {
         let mut reply: Option<Reply> = None;
         for intent in intents {
             let Intent::Work {
@@ -1359,16 +1381,17 @@ impl<'h> Resolver<'h> {
             else {
                 continue;
             };
+            let asked = WorkIntent {
+                op: *op,
+                target: target.map(|t| lent.text(t)),
+                reference: reference.map(|r| lent.text(r)),
+                identity: self.principal.map_or(&[], |p| p.identity),
+            };
             let outcome = if self.subject.is_none() {
                 // §12.24: no verified principal, no row to bind.
                 WorkOutcome::refused(R_DENIED)
             } else {
-                self.host.work(&WorkIntent {
-                    op: *op,
-                    target: target.map(|t| lent.text(t)),
-                    reference: reference.map(|r| lent.text(r)),
-                    identity: self.principal.map_or(&[], |p| p.identity),
-                })
+                self.host.work(&asked).await
             };
             let answer = WorkAnswer {
                 check: *check,
@@ -1432,28 +1455,28 @@ fn denied_status(denied: &RecordsDenied) -> u32 {
 
 impl<K: Calls + ?Sized> Task<'_, K> {
     /// Resolve only prerequisites whose results are needed to bind the enforcement stage.
-    pub fn resolve_before_hooks(
+    pub async fn resolve_before_hooks(
         &mut self,
         first: Answer,
         resolver: &Resolver<'_>,
         effects: &dyn Effects,
     ) -> Result<Vec<Answer>, SessionError> {
-        self.resolve_stage(first, resolver, effects, true)
+        self.resolve_stage(first, resolver, effects, true).await
     }
 
     /// Resolves the intents of `first` and of every answer their results provoke. Answers come back in delivery
     /// order, `first` first, each with its intents taken (resolved), so the caller applies their client items,
     /// forward and facts as it would any answer.
-    pub fn resolve(
+    pub async fn resolve(
         &mut self,
         first: Answer,
         resolver: &Resolver<'_>,
         effects: &dyn Effects,
     ) -> Result<Vec<Answer>, SessionError> {
-        self.resolve_stage(first, resolver, effects, false)
+        self.resolve_stage(first, resolver, effects, false).await
     }
 
-    fn resolve_stage(
+    async fn resolve_stage(
         &mut self,
         first: Answer,
         resolver: &Resolver<'_>,
@@ -1504,7 +1527,10 @@ impl<K: Calls + ?Sized> Task<'_, K> {
             if rounds > MAX_ROUNDS {
                 return Err(SessionError::Violation(Violation::IntentStorm));
             }
-            for piece in resolver.resolve(&intents, &lent, &mut self.held, &mut self.reads) {
+            let pieces = resolver
+                .resolve(&intents, &lent, &mut self.held, &mut self.reads)
+                .await;
+            for piece in pieces {
                 let next = self.piece(
                     FROM_CORE,
                     piece.exchange,
@@ -1564,8 +1590,8 @@ impl Namespace {
 }
 
 /// The production [`IntentHost`]: records through [`PluginRecords`], pushes through the [`StorePushQueue`], signals
-/// through the [`SessionSignals`] registry, WORK through the decider (default [`NoWork`]). Its calls block on `rt`,
-/// so they run from `spawn_blocking`, never on a runtime worker.
+/// through the [`SessionSignals`] registry, WORK through the decider (default [`NoWork`]). Its calls are awaited on
+/// the session's own task; it holds no runtime handle.
 pub struct KernelIntents<R: PluginRecords> {
     records: Arc<R>,
     push: Arc<StorePushQueue>,
@@ -1573,12 +1599,15 @@ pub struct KernelIntents<R: PluginRecords> {
     work: Arc<dyn WorkDecider>,
     services: Services,
     who: Namespace,
-    rt: Handle,
 }
 
 /// Decides WORK intents (§12.24).
 pub trait WorkDecider: Send + Sync + 'static {
-    fn decide<'a>(&self, who: &Namespace, intent: &WorkIntent<'a>) -> WorkOutcome<'a>;
+    fn decide<'a>(
+        &'a self,
+        who: &'a Namespace,
+        intent: &'a WorkIntent<'a>,
+    ) -> BoxFut<'a, WorkOutcome<'a>>;
 }
 
 /// Durable paid work (IF §12.24): the store-backed rows over `host_work/` and the recovery runtime over
@@ -1622,7 +1651,6 @@ pub trait DurableWork: Send + Sync + 'static {
 pub struct DurableDecider {
     work: Arc<dyn DurableWork>,
     recovers: Box<dyn Fn(&str) -> bool + Send + Sync>,
-    rt: Handle,
 }
 
 impl DurableDecider {
@@ -1631,24 +1659,34 @@ impl DurableDecider {
     pub fn new(
         work: Arc<dyn DurableWork>,
         recovers: Box<dyn Fn(&str) -> bool + Send + Sync>,
-        rt: Handle,
     ) -> Self {
-        Self { work, recovers, rt }
+        Self { work, recovers }
     }
 }
 
 impl WorkDecider for DurableDecider {
-    fn decide<'a>(&self, who: &Namespace, intent: &WorkIntent<'a>) -> WorkOutcome<'a> {
+    fn decide<'a>(
+        &'a self,
+        who: &'a Namespace,
+        intent: &'a WorkIntent<'a>,
+    ) -> BoxFut<'a, WorkOutcome<'a>> {
+        Box::pin(self.decided(who, intent))
+    }
+}
+
+impl DurableDecider {
+    async fn decided<'a>(
+        &'a self,
+        who: &'a Namespace,
+        intent: &'a WorkIntent<'a>,
+    ) -> WorkOutcome<'a> {
         let plane = who.caller();
         match intent.op {
             WORK_OPEN => {
                 let Some(target) = intent.target.filter(|t| (self.recovers)(t)) else {
                     return WorkOutcome::refused(R_INVALID);
                 };
-                match self
-                    .rt
-                    .block_on(self.work.open(&plane, intent.identity, target))
-                {
+                match self.work.open(&plane, intent.identity, target).await {
                     Ok(reference) => WorkOutcome {
                         status: 0,
                         state: WORK_LIVE,
@@ -1662,10 +1700,7 @@ impl WorkDecider for DurableDecider {
                 let Some(reference) = intent.reference else {
                     return WorkOutcome::refused(R_INVALID);
                 };
-                match self
-                    .rt
-                    .block_on(self.work.find(&plane, intent.identity, reference))
-                {
+                match self.work.find(&plane, intent.identity, reference).await {
                     Ok((state, target)) => WorkOutcome {
                         status: 0,
                         state,
@@ -1679,10 +1714,7 @@ impl WorkDecider for DurableDecider {
                 let Some(reference) = intent.reference else {
                     return WorkOutcome::refused(R_INVALID);
                 };
-                match self
-                    .rt
-                    .block_on(self.work.settle(&plane, intent.identity, reference))
-                {
+                match self.work.settle(&plane, intent.identity, reference).await {
                     Ok(()) => WorkOutcome {
                         status: 0,
                         state: WORK_SETTLED,
@@ -1701,8 +1733,12 @@ impl WorkDecider for DurableDecider {
 pub struct NoWork;
 
 impl WorkDecider for NoWork {
-    fn decide<'a>(&self, _: &Namespace, _: &WorkIntent<'a>) -> WorkOutcome<'a> {
-        WorkOutcome::unsupported()
+    fn decide<'a>(
+        &'a self,
+        _: &'a Namespace,
+        _: &'a WorkIntent<'a>,
+    ) -> BoxFut<'a, WorkOutcome<'a>> {
+        Box::pin(std::future::ready(WorkOutcome::unsupported()))
     }
 }
 
@@ -1713,7 +1749,6 @@ impl<R: PluginRecords> KernelIntents<R> {
         push: Arc<StorePushQueue>,
         signals: Arc<dyn SessionSignals>,
         who: Namespace,
-        rt: Handle,
     ) -> Self {
         Self {
             records,
@@ -1722,7 +1757,6 @@ impl<R: PluginRecords> KernelIntents<R> {
             work: Arc::new(NoWork),
             services: Services::default(),
             who,
-            rt,
         }
     }
 
@@ -1742,92 +1776,107 @@ impl<R: PluginRecords> KernelIntents<R> {
 }
 
 impl<R: PluginRecords> IntentHost for KernelIntents<R> {
-    fn lookup(
-        &self,
+    fn lookup<'a>(
+        &'a self,
         scope: Scope,
         flags: u32,
         limit: u32,
-        key: &[u8],
-        looked: &mut Looked,
-    ) -> Result<(), RecordsDenied> {
-        let who = self.who.caller();
-        if flags & LK_CHAIN != 0 {
-            let split = key.len().checked_sub(8).ok_or(RecordsDenied::Invalid)?;
-            let (chain, after) = key.split_at(split);
-            let after = u64::from_le_bytes(after.try_into().map_err(|_| RecordsDenied::Invalid)?);
-            // A chain hit's key is the chain key then the entry's sequence number, big-endian.
-            let read = self.rt.block_on(self.records.chain(
-                &who,
-                scope,
-                chain,
-                after,
-                limit,
-                &mut |seq, entry| looked.push(&[chain, &seq.to_be_bytes()], entry),
-            ))?;
-            looked.chain = Some((read.len, read.broken_at));
-        } else if flags & LK_PREFIX != 0 {
-            self.rt
-                .block_on(self.records.list(&who, scope, key, limit, &mut |k, v| {
-                    looked.push(&[k], v);
-                }))?;
-        } else {
-            // One hit, and only when the store says found: the value the store handed last.
-            let mark = looked.mark();
-            let found = self
-                .rt
-                .block_on(self.records.get(&who, scope, key, &mut |v| {
+        key: &'a [u8],
+        looked: &'a mut Looked,
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(async move {
+            let who = self.who.caller();
+            if flags & LK_CHAIN != 0 {
+                let split = key.len().checked_sub(8).ok_or(RecordsDenied::Invalid)?;
+                let (chain, after) = key.split_at(split);
+                let after =
+                    u64::from_le_bytes(after.try_into().map_err(|_| RecordsDenied::Invalid)?);
+                // A chain hit's key is the chain key then the entry's sequence number, big-endian.
+                let read = self
+                    .records
+                    .chain(&who, scope, chain, after, limit, &mut |seq, entry| {
+                        looked.push(&[chain, &seq.to_be_bytes()], entry);
+                    })
+                    .await?;
+                looked.chain = Some((read.len, read.broken_at));
+            } else if flags & LK_PREFIX != 0 {
+                self.records
+                    .list(&who, scope, key, limit, &mut |k, v| {
+                        looked.push(&[k], v);
+                    })
+                    .await?;
+            } else {
+                // One hit, and only when the store says found: the value the store handed last.
+                let mark = looked.mark();
+                let found = self
+                    .records
+                    .get(&who, scope, key, &mut |v| {
+                        looked.rewind(mark);
+                        looked.push(&[key], v);
+                    })
+                    .await?;
+                if !found {
                     looked.rewind(mark);
-                    looked.push(&[key], v);
-                }))?;
-            if !found {
-                looked.rewind(mark);
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
-    fn store(
-        &self,
+    fn store<'a>(
+        &'a self,
         scope: Scope,
         flags: u32,
         ttl_s: u64,
-        key: &[u8],
-        value: &[u8],
-    ) -> Result<(), RecordsDenied> {
-        if key.len() > MAX_KEY || value.len() > MAX_VALUE {
-            return Err(RecordsDenied::TooLarge);
-        }
-        let who = self.who.caller();
-        if flags & LK_CHAIN != 0 {
-            if ttl_s != 0 {
-                return Err(RecordsDenied::Invalid);
+        key: &'a [u8],
+        value: &'a [u8],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(async move {
+            if key.len() > MAX_KEY || value.len() > MAX_VALUE {
+                return Err(RecordsDenied::TooLarge);
             }
-            return self
-                .rt
-                .block_on(self.records.append(&who, scope, key, value))
-                .map(|_| ());
-        }
-        self.rt
-            .block_on(self.records.put(&who, scope, key, value, ttl_s))
+            let who = self.who.caller();
+            if flags & LK_CHAIN != 0 {
+                if ttl_s != 0 {
+                    return Err(RecordsDenied::Invalid);
+                }
+                return self
+                    .records
+                    .append(&who, scope, key, value)
+                    .await
+                    .map(|_| ());
+            }
+            self.records.put(&who, scope, key, value, ttl_s).await
+        })
     }
 
-    fn delete(&self, scope: Scope, key: &[u8]) -> Result<(), RecordsDenied> {
-        let who = self.who.caller();
-        self.rt.block_on(self.records.del(&who, scope, key))
+    fn delete<'a>(&'a self, scope: Scope, key: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(async move {
+            let who = self.who.caller();
+            self.records.del(&who, scope, key).await
+        })
     }
 
-    fn commit(&self, scope: Scope, ops: &[CommitOp<'_>]) -> Result<CommitOutcome, RecordsDenied> {
-        let who = self.who.caller();
-        self.rt.block_on(self.records.commit(&who, scope, ops))
+    fn commit<'a>(
+        &'a self,
+        scope: Scope,
+        ops: &'a [CommitOp<'a>],
+    ) -> BoxFut<'a, Result<CommitOutcome, RecordsDenied>> {
+        Box::pin(async move {
+            let who = self.who.caller();
+            self.records.commit(&who, scope, ops).await
+        })
     }
 
-    fn work<'a>(&self, intent: &WorkIntent<'a>) -> WorkOutcome<'a> {
+    fn work<'a>(&'a self, intent: &'a WorkIntent<'a>) -> BoxFut<'a, WorkOutcome<'a>> {
         self.work.decide(&self.who, intent)
     }
 
-    fn push(&self, ttl_s: u64, recs: &[u8]) -> Result<(), RecordsDenied> {
-        let who = self.who.caller();
-        self.rt.block_on(self.push.enqueue(&who, ttl_s, recs))
+    fn push<'a>(&'a self, ttl_s: u64, recs: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(async move {
+            let who = self.who.caller();
+            self.push.enqueue(&who, ttl_s, recs).await
+        })
     }
 
     fn signal(&self, key: &[u8], subject: Option<[u8; 32]>) {
@@ -1847,46 +1896,55 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
             .is_some_and(|e| e.check(&self.who.caller(), identity, grant))
     }
 
-    fn judge(&self, dest: &str, class: u32, flags: u32) -> u32 {
-        let who = self.who.caller();
-        let judge = self
-            .services
-            .judge
-            .clone()
-            .unwrap_or_else(PlaneJudge::unavailable);
-        self.rt
-            .block_on(judge.judge(dest, class, flags, who.deadline))
+    fn judge<'a>(&'a self, dest: &'a str, class: u32, flags: u32) -> BoxFut<'a, u32> {
+        Box::pin(async move {
+            let who = self.who.caller();
+            let judge = self
+                .services
+                .judge
+                .clone()
+                .unwrap_or_else(PlaneJudge::unavailable);
+            judge.judge(dest, class, flags, who.deadline).await
+        })
     }
 
-    fn mint(&self, m: TicketMint<'_>) -> Result<(Box<str>, u64), u32> {
-        let tickets = self.services.tickets.as_ref().ok_or(R_UNSUPPORTED)?;
-        let who = self.who.caller();
-        self.rt
-            .block_on(tickets.mint(&who, m))
-            .map_err(|denied| denied_status(&denied))
+    fn mint<'a>(&'a self, m: TicketMint<'a>) -> BoxFut<'a, Result<(Box<str>, u64), u32>> {
+        Box::pin(async move {
+            let tickets = self.services.tickets.as_ref().ok_or(R_UNSUPPORTED)?;
+            let who = self.who.caller();
+            tickets
+                .mint(&who, m)
+                .await
+                .map_err(|denied| denied_status(&denied))
+        })
     }
 
-    fn sign(&self, payload: &[u8], detached: bool) -> Result<SignedJws, u32> {
-        let signer = self.services.signer.as_ref().ok_or(R_UNSUPPORTED)?;
-        let who = self.who.caller();
-        self.rt
-            .block_on(signer.sign_jws(&who, payload, detached))
-            .map_err(|denied| denied_status(&denied))
+    fn sign<'a>(&'a self, payload: &'a [u8], detached: bool) -> BoxFut<'a, Result<SignedJws, u32>> {
+        Box::pin(async move {
+            let signer = self.services.signer.as_ref().ok_or(R_UNSUPPORTED)?;
+            let who = self.who.caller();
+            signer
+                .sign_jws(&who, payload, detached)
+                .await
+                .map_err(|denied| denied_status(&denied))
+        })
     }
 
-    fn sight(
-        &self,
-        party: &str,
+    fn sight<'a>(
+        &'a self,
+        party: &'a str,
         catalog: Option<[u8; 32]>,
-        items: &[(&str, [u8; 32])],
-    ) -> Result<(), RecordsDenied> {
-        let book = self
-            .services
-            .trust
-            .as_ref()
-            .ok_or(RecordsDenied::Unavailable)?;
-        let who = self.who.caller();
-        self.rt.block_on(book.sight(&who, party, catalog, items))
+        items: &'a [(&'a str, [u8; 32])],
+    ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+        Box::pin(async move {
+            let book = self
+                .services
+                .trust
+                .as_ref()
+                .ok_or(RecordsDenied::Unavailable)?;
+            let who = self.who.caller();
+            book.sight(&who, party, catalog, items).await
+        })
     }
 
     fn trust_serves(&self, party: &str, item: Option<(&str, Option<[u8; 32]>)>) -> u32 {
@@ -1916,78 +1974,81 @@ impl<R: PluginRecords> IntentHost for KernelIntents<R> {
         book.verify(&self.who.caller(), party, payload, signatures, named)
     }
 
-    fn rendezvous_accept(
-        &self,
+    fn rendezvous_accept<'a>(
+        &'a self,
         route: u32,
-        offer: &str,
-    ) -> Result<(Box<str>, Box<dyn Held>), RecordsDenied> {
-        let media = self
-            .services
-            .media
-            .as_ref()
-            .ok_or(RecordsDenied::Unavailable)?;
-        let (local, bridge) = self.rt.block_on(media.accept(route, offer))?;
-        Ok((local, Box::new(MediaHeld::new(bridge, self.rt.clone()))))
+        offer: &'a str,
+    ) -> BoxFut<'a, Result<(Box<str>, Box<dyn Held>), RecordsDenied>> {
+        Box::pin(async move {
+            let media = self
+                .services
+                .media
+                .as_ref()
+                .ok_or(RecordsDenied::Unavailable)?;
+            let (local, bridge) = media.accept(route, offer).await?;
+            Ok((local, Box::new(MediaHeld::new(bridge)) as Box<dyn Held>))
+        })
     }
 
-    fn obs_scope(
-        &self,
-        identity: &[u8],
+    fn obs_scope<'a>(
+        &'a self,
+        identity: &'a [u8],
         op: u32,
         scope: Option<[u8; 32]>,
-        require: &[&str],
-    ) -> (u32, Option<[u8; 32]>) {
-        let Some(custody) = self.services.observations.as_ref() else {
-            return (OBS_REFUSED, None);
-        };
-        let who = self.who.caller();
-        self.rt
-            .block_on(custody.scope(&who, identity, op, scope, require))
+        require: &'a [&'a str],
+    ) -> BoxFut<'a, (u32, Option<[u8; 32]>)> {
+        Box::pin(async move {
+            let Some(custody) = self.services.observations.as_ref() else {
+                return (OBS_REFUSED, None);
+            };
+            let who = self.who.caller();
+            custody.scope(&who, identity, op, scope, require).await
+        })
     }
 
-    fn observe(&self, identity: &[u8], o: &ObservationIn<'_>) -> (u32, Vec<u8>) {
-        let Some(custody) = self.services.observations.as_ref() else {
-            return (OBS_REFUSED, Vec::new());
-        };
-        let who = self.who.caller();
-        let (status, receipt) = self.rt.block_on(custody.observe(&who, identity, o));
-        (status, receipt.into_vec())
+    fn observe<'a>(
+        &'a self,
+        identity: &'a [u8],
+        o: &'a ObservationIn<'a>,
+    ) -> BoxFut<'a, (u32, Vec<u8>)> {
+        Box::pin(async move {
+            let Some(custody) = self.services.observations.as_ref() else {
+                return (OBS_REFUSED, Vec::new());
+            };
+            let who = self.who.caller();
+            let (status, receipt) = custody.observe(&who, identity, o).await;
+            (status, receipt.into_vec())
+        })
     }
 
-    fn connect(
-        &self,
+    fn connect<'a>(
+        &'a self,
         op: u32,
-        subject: &str,
-        upstream: &str,
-        return_to: Option<&str>,
-    ) -> (u32, Option<Box<str>>) {
-        let Some(connections) = self.services.connections.as_ref() else {
-            return (CONN_REFUSED, None);
-        };
-        let who = self.who.caller();
-        match op {
-            // The caller is sent to the URL to consent: pending until the callback stores the grant.
-            CONNECT_BEGIN => match self
-                .rt
-                .block_on(connections.begin(&who, subject, upstream, return_to))
-            {
-                Ok(url) => (CONN_PENDING, Some(url)),
-                Err(_) => (CONN_REFUSED, None),
-            },
-            CONNECT_STATUS => (
-                self.rt
-                    .block_on(connections.status(&who, subject, upstream)),
-                None,
-            ),
-            CONNECT_REVOKE => match self
-                .rt
-                .block_on(connections.revoke(&who, subject, upstream))
-            {
-                Ok(()) => (CONN_NONE, None),
-                Err(_) => (CONN_REFUSED, None),
-            },
-            _ => (CONN_REFUSED, None),
-        }
+        subject: &'a str,
+        upstream: &'a str,
+        return_to: Option<&'a str>,
+    ) -> BoxFut<'a, (u32, Option<Box<str>>)> {
+        Box::pin(async move {
+            let Some(connections) = self.services.connections.as_ref() else {
+                return (CONN_REFUSED, None);
+            };
+            let who = self.who.caller();
+            match op {
+                // The caller is sent to the URL to consent: pending until the callback stores the grant.
+                CONNECT_BEGIN => {
+                    match connections.begin(&who, subject, upstream, return_to).await {
+                        Ok(url) => (CONN_PENDING, Some(url)),
+                        Err(_) => (CONN_REFUSED, None),
+                    }
+                }
+                CONNECT_STATUS => (connections.status(&who, subject, upstream).await, None),
+                CONNECT_REVOKE => match connections.revoke(&who, subject, upstream).await {
+                    Ok(()) => (CONN_NONE, None),
+                    Err(_) => (CONN_REFUSED, None),
+                },
+                _ => (CONN_REFUSED, None),
+            }
+        })
     }
 }
 

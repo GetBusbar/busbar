@@ -66,12 +66,12 @@ pub struct UnitTarget {
 /// they always were, so the stored bytes do not change. The last checkpoint holding them
 /// releases them.
 #[derive(Clone, PartialEq, Eq)]
-pub struct AuditFacts(Arc<Vec<u8>>);
+pub struct AuditFacts(Arc<[u8]>);
 
 impl From<Vec<u8>> for AuditFacts {
-    /// Takes the capture's own buffer: nothing is copied.
+    /// Moves the capture into the one shared allocation; every later copy of a checkpoint shares it.
     fn from(bytes: Vec<u8>) -> Self {
-        Self(Arc::new(bytes))
+        Self(Arc::from(bytes))
     }
 }
 
@@ -95,14 +95,14 @@ impl std::fmt::Debug for AuditFacts {
 }
 
 impl Serialize for AuditFacts {
-    /// The held `Vec<u8>`'s own encoding.
+    /// The byte array encoding (a sequence of bytes), as `Vec<u8>` writes it.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        Vec::<u8>::serialize(&self.0, serializer)
+        <[u8]>::serialize(&self.0, serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for AuditFacts {
-    /// Read as `Vec<u8>` reads it; the decoded buffer is kept, not copied.
+    /// Read as `Vec<u8>` reads it; the decoded bytes move into the shared allocation.
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Vec::<u8>::deserialize(deserializer).map(Self::from)
     }

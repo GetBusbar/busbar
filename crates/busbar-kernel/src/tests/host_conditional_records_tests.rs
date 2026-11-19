@@ -20,7 +20,8 @@ impl ReadyAdmission for crate::host_services::KernelServices {
 }
 use super::*;
 use crate::host_chains::{ChainFraming, ConditionalChain, CHAIN_LIFE_SCHEMA};
-use busbar_contract::abi::plane::{RecordChain, CHAIN_DIGESTS_SCOPE, CHAIN_PIPE_SEPARATED};
+use busbar_contract::abi::plane::RecordChain;
+use busbar_contract::plane::codes::{CHAIN_DIGESTS_SCOPE, CHAIN_PIPE_SEPARATED};
 use conditional::{Decision, Expected, Mutation, Predicate, Request, VERSION};
 
 const STATE: RecordSchemaId = RecordSchemaId::new("state");
@@ -572,7 +573,7 @@ impl crate::host_services::Offload for Inline {
 fn caller() -> busbar_contract::services::Caller {
     busbar_contract::services::Caller::for_test(
         Arc::from(INSTANCE),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     )
 }
 

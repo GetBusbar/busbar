@@ -166,30 +166,6 @@ pub enum Grant<'a> {
     },
 }
 
-/// THE GENERATION PAIR: what the request was admitted under, and what is live now.
-///
-/// A pair rather than one number so the no-op case has to be SAID. A caller admitting for the first
-/// time has nothing older to compare against, and [`Generations::at_admission`] is that statement —
-/// visible at the call site, greppable, and impossible to reach by leaving an argument out.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Generations {
-    admitted: u64,
-    live: u64,
-}
-
-impl Generations {
-    pub fn at_admission(live: u64) -> Self {
-        Self {
-            admitted: live,
-            live,
-        }
-    }
-
-    pub fn since(admitted: u64, live: u64) -> Self {
-        Self { admitted, live }
-    }
-}
-
 pub fn validate_visibility(
     principal: Option<&VirtualKey>,
     now: u64,

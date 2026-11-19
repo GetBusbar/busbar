@@ -58,6 +58,7 @@ pub(crate) use audit::{AuditWindowAt, FrozenNativeAudit, LineIdentity, NativeSta
 mod audit_page;
 
 pub(crate) mod audit_services;
+pub(crate) mod core_audit;
 pub(crate) mod notary;
 pub(crate) mod predecessor;
 pub(crate) mod response_intent;
@@ -103,8 +104,6 @@ pub struct Durability {
     audit_ring: AuditRing,
 
     pub audit_findings: Vec<String>,
-
-    pub audit_signed_from: Option<u64>,
 
     pub incarnation: u64,
 
@@ -479,8 +478,6 @@ pub(crate) fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>
 }
 
 pub struct NodeBook {
-    /// Verified persisted deployment public keys, retained with journal/export history.
-    pub audit_verification_keys: Arc<AuditKeySet>,
     pub(crate) response_intents: Option<Arc<response_intent::ResponseIntentService>>,
     pub durability: Arc<std::sync::Mutex<Durability>>,
     pub runtime_journal: Arc<RuntimeJournal>,
@@ -516,7 +513,6 @@ pub(crate) async fn node_book(
     )
     .await?;
     Ok(NodeBook {
-        audit_verification_keys: Arc::new(AuditKeySet::new()),
         response_intents: None,
         durability: Arc::new(std::sync::Mutex::new(durability)),
         runtime_journal: journal,
@@ -545,7 +541,6 @@ pub(crate) async fn build_on_store(
         record: AuditChain::new().sealing_as(node),
         audit_ring: AuditRing::new(),
         audit_findings: Vec::new(),
-        audit_signed_from: None,
         incarnation: 0,
         restart_findings: Vec::new(),
         voided_claims: Vec::new(),

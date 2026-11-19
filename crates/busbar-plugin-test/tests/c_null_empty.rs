@@ -38,7 +38,7 @@ fn a_c_fixture_sends_null_zero_in_every_crypto_req_field() {
 #[test]
 fn raw_null_zero_results_and_config_reach_a_rust_shim_as_empty() {
     use busbar_plugin_abi::plugin::__rt::host::{ChainBufs, OpenAnswer, Started};
-    use busbar_plugin_abi::plugin::__rt::{kind as marker, Arg};
+    use busbar_plugin_abi::plugin::__rt::kind as marker;
     use busbar_plugin_abi::plugin::OPEN_DRY_RUN;
     use busbar_plugin_abi::types::Status;
     use empty_arm::{admitted, lease, seen, Saw, HOST};
@@ -61,20 +61,20 @@ fn raw_null_zero_results_and_config_reach_a_rust_shim_as_empty() {
     let mut out = lease();
     let mut bufs = ChainBufs::new();
     let at = bufs.push(Vec::new());
-    let started = inst.start1(
-        |vt| &vt.resolve,
+    let started = inst.start(
+        busbar_plugin_abi::secret::slot::resolve,
         bufs,
-        |bufs| Arg::bytes(bufs.get(at)),
+        |bufs, cross| busbar_plugin_abi::secret::pack::resolve(0, bufs.get(at), cross),
         &mut out,
     );
     assert!(matches!(started, Started::Done(Status::OK)));
     drop(started);
     drop(out);
     let mut out = lease();
-    let started = inst.start1(
-        |vt| &vt.resolve,
+    let started = inst.start(
+        busbar_plugin_abi::secret::slot::resolve,
         ChainBufs::new(),
-        |_| Arg::bytes(Bytes::EMPTY),
+        |_, cross| busbar_plugin_abi::secret::pack::resolve(0, Bytes::EMPTY, cross),
         &mut out,
     );
     assert!(matches!(started, Started::Done(Status::OK)));
@@ -103,7 +103,7 @@ mod empty_arm {
 
     busbar_plugin_abi::kind! {
         /// A secret-shaped kind for this case.
-        pub trait Empties: kind = 2, abi = 2 {
+        pub trait Empties: kind = 2, abi = 3 {
             views {}
             pods {}
             tags {}
@@ -161,7 +161,7 @@ mod empty_arm {
             log_level: None,
             grow: None,
             deployment: None,
-            migrate_admit: None,
+            service: None,
         },
     );
 

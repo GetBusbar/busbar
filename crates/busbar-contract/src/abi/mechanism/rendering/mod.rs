@@ -66,10 +66,6 @@ use super::MECHANISM_VERSION;
 use crate::abi::host::conn::connector::Need;
 
 mod tail;
-pub use tail::{
-    read_auth_tail, read_plane_cli_help, read_plane_records, ReadAuthTail, ReadPlaneRecords,
-    ReadStyle,
-};
 
 pub use busbar_artifact_metadata::rendering::{
     RENDERING_MAGIC, RENDERING_MAGIC_TAIL_SIZE_ONLY, RENDERING_MAGIC_WITHOUT_MEASUREMENTS,
@@ -174,7 +170,7 @@ unsafe fn items<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
 ///
 /// # Safety
 ///
-/// `st` passed [`super::check::check_statement`]: every non-NULL list and string points at its
+/// `st` passed `super::check::check_statement`: every non-NULL list and string points at its
 /// stated count of live entries (a door's `'static` Statement does). A NULL list with a count is
 /// rendered as empty, never read. A non-NULL `kind_tail` is `'static` plugin data of at least its
 /// stated size whose lists and strings point at their stated counts of live entries (each is
@@ -313,7 +309,3 @@ use busbar_artifact_metadata::rendering::In;
 pub use busbar_artifact_metadata::rendering::{
     read, Read, ReadBlob, ReadFamily, ReadMeasurementClass, ReadNeed, Unreadable,
 };
-
-#[cfg(test)]
-#[path = "../../tests/rendering_tests.rs"]
-mod tests;

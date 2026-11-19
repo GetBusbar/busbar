@@ -5,9 +5,9 @@ use super::*;
 
 #[tokio::test]
 async fn abandoned_delivered_registration_ack_cancels_original_cell_without_eof() {
-    let (_fixture, service, mut ledger) =
+    let (_fixture, service, mut ledger, cores) =
         crate::root::durability::response_intent_tests::rig().await;
-    let connection = service.connection().unwrap();
+    let connection = service.connection(cores.core()).unwrap();
     let key = connection.key(1, None).unwrap();
     let handles = ledger.admit(key).unwrap();
     let watch = handles.watch.clone();

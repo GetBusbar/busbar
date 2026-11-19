@@ -18,10 +18,11 @@ use busbar_plugin_abi::host_side::HOST;
 use busbar_plugin_abi::plugin::__rt::LinkedPlugin;
 use busbar_plugin_abi::records::{tag, Reply, U32Rec, Writer};
 use busbar_plugin_abi::transport::{
-    CONN_UPGRADED, CR_DRAIN, E_BODY, E_CLOSE, MSG_BINARY, MSG_FIN, MSG_TEXT, ROLE_SERVER,
+    CONN_UPGRADED, CR_DRAIN, END_SHUTDOWN, E_BODY, E_CLOSE, E_CONSUMED, MSG_BINARY, MSG_FIN,
+    MSG_TEXT, ROLE_SERVER,
 };
 use busbar_plugin_loader::admit::{self, Admitted};
-use busbar_ports::transport::{ConnIn, TransportOut, TransportPort, TransportSession};
+use busbar_ports::transport::{ConnIn, EmitParts, TransportOut, TransportPort, TransportSession};
 
 // Plain producer vocabulary: callers supply their authenticated trust facts. No test key is inferred.
 pub use busbar_plugin_loader::admit::TrustConfig;
@@ -542,6 +543,9 @@ struct Stream {
     kind: Option<u32>,
     bytes: Vec<u8>,
     held: bool,
+    /// The session ended this stream's output (WIRE_END): nothing more is emitted on it, and what the
+    /// far end still sends for it is read and dropped.
+    ended: bool,
 }
 struct EchoState {
     streams: HashMap<u64, Stream>,
@@ -585,6 +589,9 @@ impl EchoState {
         if !matches!(kind, MSG_TEXT | MSG_BINARY) || flags & !(MSG_TEXT | MSG_BINARY | MSG_FIN) != 0
         {
             return Err(Failure::Shape);
+        }
+        if self.streams.get(&stream).is_some_and(|s| s.ended) {
+            return Ok(());
         }
         let existing = self.streams.get(&stream).map_or(0, |s| s.bytes.len());
         let total = existing.checked_add(bytes.len()).ok_or(Failure::Limit)?;
@@ -634,6 +641,25 @@ impl EchoState {
             s.held = false;
         }
     }
+    /// The session ended `stream`'s output: its queued and half-assembled messages can no longer be
+    /// echoed, so they go; the stream stays known until the far end's side of it ends too. A stream this
+    /// host has seen nothing of yet (an adopted upgrade's stream before its first message) is noted the
+    /// same way, within the stream bound: past it the next body for the stream is refused as over the limit.
+    fn output_ended(&mut self, stream: u64) {
+        if stream == 0
+            || (!self.streams.contains_key(&stream) && self.streams.len() >= self.max_streams)
+        {
+            return;
+        }
+        self.end(stream);
+        self.streams.insert(
+            stream,
+            Stream {
+                ended: true,
+                ..Stream::default()
+            },
+        );
+    }
     fn next(&mut self) -> Option<Message> {
         let i = self
             .queue
@@ -659,14 +685,18 @@ impl EchoState {
 }
 
 enum Output {
+    /// A WIRE_PART's bytes, in wire order. The stream and class it states were judged by the session's
+    /// validator before the sink saw the record (rules L1 to L7).
     Write(Vec<u8>),
     Wake(u64),
     Close,
     Head(u64, bool),
     Body(u64, u32, Vec<u8>),
     End(u64),
-    Pause,
-    Resume,
+    /// WIRE_END: nothing more will name the stream; `true` = END_SHUTDOWN (the connection ends with it).
+    WireEnd(u64, bool),
+    /// `begin`'s SESSION statement; `true` = the session multiplexes and is owed credit.
+    Session(bool),
     Full(u64),
     Writable(u64),
 }
@@ -682,7 +712,9 @@ impl Batch {
             return;
         }
         let size = match &out {
-            TransportOut::Write(b) | TransportOut::StreamBody { bytes: b, .. } => b.len(),
+            TransportOut::WirePart { bytes: b, .. } | TransportOut::StreamBody { bytes: b, .. } => {
+                b.len()
+            }
             TransportOut::StreamHead { head, .. } => head.rest().len(),
             _ => 0,
         };
@@ -695,7 +727,11 @@ impl Batch {
             return;
         }
         let owned = match out {
-            TransportOut::Write(b) => Output::Write(b.to_vec()),
+            TransportOut::WirePart { bytes, .. } => Output::Write(bytes.to_vec()),
+            TransportOut::WireEnd { stream, how, .. } => {
+                Output::WireEnd(stream, how == END_SHUTDOWN)
+            }
+            TransportOut::Session { multiplex, .. } => Output::Session(multiplex),
             TransportOut::Close { .. } => Output::Close,
             TransportOut::WakeAt(t) => Output::Wake(t),
             TransportOut::StreamHead {
@@ -709,10 +745,9 @@ impl Batch {
             TransportOut::StreamEnd(s) | TransportOut::StreamReset { stream: s, .. } => {
                 Output::End(s)
             }
-            TransportOut::Pause => Output::Pause,
-            TransportOut::Resume => Output::Resume,
             TransportOut::StreamFull(s) => Output::Full(s),
             TransportOut::StreamWritable(s) => Output::Writable(s),
+            // WIRE_SEALED included: this host gives no sealed value, so no part can name one.
             _ => {
                 self.failure = Some(Failure::Shape);
                 return;
@@ -729,6 +764,8 @@ enum Call {
     Ingest,
     Timer,
     Emit(u64),
+    /// `emit(E_CONSUMED)`: the host took this many body bytes of the stream.
+    Consumed(u64, u64),
     Close,
 }
 struct Wire {
@@ -741,8 +778,15 @@ struct Driver {
     wire: VecDeque<Wire>,
     wire_bytes: usize,
     wake: Option<u64>,
-    paused: bool,
     closed: bool,
+    /// A stream ended END_SHUTDOWN: what is queued is flushed, then the connection ends. No part follows.
+    shutdown: bool,
+    /// `begin` stated its SESSION.
+    stated: bool,
+    /// The session multiplexes: it reopens a window only by the credit this host gives.
+    multiplex: bool,
+    /// Body bytes taken per stream and not yet given back as credit.
+    owed: VecDeque<(u64, u64)>,
     progress: u64,
 }
 impl Driver {
@@ -755,8 +799,11 @@ impl Driver {
             wire: VecDeque::new(),
             wire_bytes: 0,
             wake: None,
-            paused: false,
             closed: false,
+            shutdown: false,
+            stated: false,
+            multiplex: false,
+            owed: VecDeque::new(),
             progress: 0,
         }
     }
@@ -774,11 +821,19 @@ impl Driver {
             if self.closed {
                 return Err(Failure::Shape);
             }
-            if matches!(call, Call::Close) && !matches!(out, Output::Write(_) | Output::Close) {
+            // The E_CLOSE answer: parts, the end marks of the streams the close ends, then at most one
+            // CLOSE.
+            if matches!(call, Call::Close)
+                && !matches!(out, Output::Write(_) | Output::WireEnd(..) | Output::Close)
+            {
                 return Err(Failure::Shape);
             }
             match out {
                 Output::Write(bytes) => {
+                    // Rule L7: after END_SHUTDOWN no part follows in the session.
+                    if self.shutdown {
+                        return Err(Failure::Shape);
+                    }
                     let total = self
                         .wire_bytes
                         .checked_add(bytes.len())
@@ -808,6 +863,15 @@ impl Driver {
                 Output::Body(s, flags, bytes) => {
                     self.echoes.body(s, flags, &bytes)?;
                     self.progress = self.progress.saturating_add(bytes.len() as u64);
+                    // The bytes are taken (held for the echo within this host's own bounds, or dropped):
+                    // a multiplexing session is owed that much credit, an ended stream's tail included.
+                    if self.multiplex && !bytes.is_empty() {
+                        let taken = bytes.len() as u64;
+                        match self.owed.iter_mut().find(|(id, _)| *id == s) {
+                            Some((_, credit)) => *credit = credit.saturating_add(taken),
+                            None => self.owed.push_back((s, taken)),
+                        }
+                    }
                 }
                 Output::End(s) => {
                     if self.echoes.streams.contains_key(&s) {
@@ -815,8 +879,19 @@ impl Driver {
                     }
                     self.echoes.end(s);
                 }
-                Output::Pause => self.paused = true,
-                Output::Resume => self.paused = false,
+                Output::WireEnd(s, shutdown) => {
+                    self.echoes.output_ended(s);
+                    self.shutdown |= shutdown;
+                    self.progress = self.progress.saturating_add(1);
+                }
+                Output::Session(multiplex) => {
+                    // Exactly one, in `begin`'s answer.
+                    if !matches!(call, Call::Begin) || self.stated {
+                        return Err(Failure::Shape);
+                    }
+                    self.stated = true;
+                    self.multiplex = multiplex;
+                }
                 Output::Full(s) => {
                     if !matches!(call, Call::Emit(id) if id == s) {
                         return Err(Failure::Shape);
@@ -918,8 +993,36 @@ fn invoke(
     let result = match call {
         Call::Ingest => port.ingest(session, bytes, &mut sink),
         Call::Timer => port.timer(session, &mut sink),
-        Call::Emit(stream) => port.emit(session, stream, E_BODY, flags, bytes, &mut sink),
-        Call::Close => port.emit(session, 0, E_CLOSE, CR_DRAIN, &[], &mut sink),
+        Call::Emit(stream) => port.emit(
+            session,
+            stream,
+            E_BODY,
+            flags,
+            0,
+            EmitParts {
+                body: Some(bytes),
+                ..EmitParts::default()
+            },
+            &mut sink,
+        ),
+        Call::Consumed(stream, credit) => port.emit(
+            session,
+            stream,
+            E_CONSUMED,
+            0,
+            credit,
+            EmitParts::default(),
+            &mut sink,
+        ),
+        Call::Close => port.emit(
+            session,
+            0,
+            E_CLOSE,
+            CR_DRAIN,
+            0,
+            EmitParts::default(),
+            &mut sink,
+        ),
         Call::Begin => return Err(Failure::Shape),
     };
     result.map_err(|_| Failure::Port)?;
@@ -1017,7 +1120,8 @@ fn connection(
     let mut no_progress = 0;
     loop {
         due(end)?;
-        if driver.closed {
+        // CLOSE, or a stream ended END_SHUTDOWN: flush what is queued, then the connection ends.
+        if driver.closed || driver.shutdown {
             while !driver.wire.is_empty() {
                 if !write_step(socket, &mut driver, end, false)? {
                     break;
@@ -1067,14 +1171,24 @@ fn connection(
             if no_progress >= TIMER_TURN {
                 return Err(Failure::TimerNoProgress);
             }
-            if driver.closed {
+            if driver.closed || driver.shutdown {
                 break;
             }
             if !write_step(socket, &mut driver, end, true)? {
                 return Ok(());
             }
         }
-        if driver.closed || shared.stop.load(Ordering::Acquire) {
+        if driver.closed || driver.shutdown || shared.stop.load(Ordering::Acquire) {
+            continue;
+        }
+        // Credit before anything more is read or echoed: a multiplexing session reopens its far end's
+        // window only by what it is given here (PAUSE and RESUME are retired; a session with one stream is
+        // bounded by this host not reading the socket while it has work).
+        if let Some((stream, credit)) = driver.owed.pop_front() {
+            let call = Call::Consumed(stream, credit);
+            let batch = invoke(port, &mut session, call, &[], 0, limits)?;
+            due(end)?;
+            driver.batch(batch, call, limits, end)?;
             continue;
         }
         // One message per turn; STREAM_FULL consumes it whole, and only subsequent messages remain queued.
@@ -1098,10 +1212,6 @@ fn connection(
                 driver.batch(batch, call, limits, end)?;
                 continue;
             }
-        }
-        if driver.paused && driver.wire.is_empty() {
-            std::thread::sleep(wait_for(end, end, driver.wake)?);
-            continue;
         }
         if !driver.wire.is_empty() {
             // write_step performs the bounded socket wait; keep its pending offset in order.

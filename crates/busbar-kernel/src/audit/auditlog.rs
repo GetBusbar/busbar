@@ -966,6 +966,16 @@ pub fn note_generation_source(source: Arc<dyn Fn() -> u64 + Send + Sync>) {
     with_context(|ctx| ctx.generation = Some(source));
 }
 
+/// The request in flight changes the configuration `handle` serves: its applied rows carry the
+/// durable configuration generation `handle` holds when each row is written, after the change
+/// committed: the value `GET /info` and the config ETag report, never the per-process
+/// `config_version`.
+pub fn note_config_generation_of(handle: Arc<crate::state::AppHandle>) {
+    note_generation_source(Arc::new(move || {
+        handle.load().config_generation.load(Ordering::Acquire)
+    }));
+}
+
 /// The config sections the request in flight changed; its applied rows carry them.
 pub fn note_sections_changed(sections: Vec<String>) {
     with_context(|ctx| ctx.sections = sections);
@@ -1442,7 +1452,7 @@ fn project_audit_event(
     projection: crate::export::projection::Projection,
     entry: &AuditEntry,
 ) -> crate::export::projection::Rendered {
-    use busbar_contract::abi::export::ExportField as F;
+    use busbar_contract::export_calls::codes::ExportField as F;
     use busbar_contract::export_stream::ExportStream;
 
     let mut record =
@@ -1548,25 +1558,6 @@ pub(crate) fn try_emit_admin_hostless_now(
     PENDING_AUDIT.try_enqueue(pending)?;
     drain_pending_audit();
     Ok(())
-}
-
-/// Return success only after this event was accepted and its native append confirmed.
-pub(crate) async fn emit_admin_hostless_confirmed(
-    action: &str,
-    resource: &str,
-    outcome: &str,
-    principal: &str,
-) -> RecordStoreResult<()> {
-    let (suffix, _) = admin_suffix(
-        busbar_kernel::store::now(),
-        action,
-        resource,
-        outcome,
-        principal,
-    );
-    let pending = pending_audit(ADMIN_LOG, suffix, EventOrigin::Mutation)?;
-    PENDING_AUDIT.try_enqueue(pending)?;
-    flush_pending().await
 }
 
 /// What the host refused, or flagged, while a plugin started, bound or served.

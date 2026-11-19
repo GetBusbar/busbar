@@ -28,6 +28,7 @@ pub(crate) struct Lifted {
     plane_rate_cards: super::PlaneRateCards,
     plane_fees: super::PlaneFeesMap,
     plane_insecure_transport: super::PlaneInsecureTransport,
+    plane_routes: super::PlaneRoutes,
     /// Each recognized plane section, by instance name, minus the core words lifted off it.
     instance_sections: std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
     /// The plane sections the document wrote, in document order: what the read used (§3.8).
@@ -40,6 +41,7 @@ impl Lifted {
         deploy.plane_rate_cards = self.plane_rate_cards;
         deploy.plane_fees = self.plane_fees;
         deploy.plane_insecure_transport = self.plane_insecure_transport;
+        deploy.plane_routes = self.plane_routes;
         deploy.instance_sections = self.instance_sections;
     }
 }
@@ -67,6 +69,10 @@ pub(crate) const PLANE_CARD_KEYS: [&str; 2] = ["rate_card", "fees"];
 /// 2026-11-16: a plane instance takes `insecure_transport` from its own section). Lifted raw here,
 /// judged by [`super::min3::parse_min3`] with every other kind's, and never part of the plane's bag.
 pub(crate) const PLANE_INSECURE_TRANSPORT_KEY: &str = "insecure_transport";
+
+/// A plane section's core-owned per-route keys (IF §12.11 `routes.<id>.auth_instances`): lifted raw
+/// here, judged by [`super::min3::parse_min3`], never part of the plane's bag.
+pub(crate) const PLANE_ROUTES_KEY: &str = "routes";
 
 fn plane_remainder_in<'de, D: Deserializer<'de>>(
     section_key: &'static str,
@@ -103,6 +109,9 @@ fn plane_remainder_in<'de, D: Deserializer<'de>>(
         lifted
             .plane_insecure_transport
             .insert(plane.to_string(), accept);
+    }
+    if let Some(routes) = take(PLANE_ROUTES_KEY) {
+        lifted.plane_routes.insert(plane.to_string(), routes);
     }
     Ok(section)
 }
@@ -239,7 +248,12 @@ struct Body(DeployCfg);
 
 impl<'de> Deserialize<'de> for Body {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        DeployCfg::deserialize(de).map(Body)
+        // Every reader of a document comes here: an old `advanced` key that moved lands at its
+        // own section before anything reads the document.
+        DeployCfg::deserialize(de).map(|mut deploy| {
+            deploy.carry_moved();
+            Body(deploy)
+        })
     }
 }
 
@@ -397,7 +411,7 @@ pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(
     if !used.sections.is_empty() {
         // A plane section's `${VAR}` fills read through the fill role (`filled::plane_bound`).
         used.roles
-            .insert(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL.to_owned());
+            .insert(busbar_contract::plugin_settings::sugar_words::SUGAR_ROLE_FILL.to_owned());
     }
     deploy.grammar = super::grammar::GrammarField::bound_used(grammar.clone(), used);
     Ok(deploy)

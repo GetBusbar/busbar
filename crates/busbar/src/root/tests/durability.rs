@@ -308,11 +308,13 @@ async fn retained_tamper_and_unsigned_post_bootstrap_are_findings() {
     let mut reopened = fixture.reopen().await;
     bind(&mut reopened, &fixture).await;
     assert!(reopened.retained_audit_findings().is_empty());
-    reopened.audit_records_mut_for_tamper_test()[0].signature = None;
+    // Record version rule: a resumed line with neither signature nor key id is version 2, proved
+    // by its digest and links (no finding above); half a signature is a malformed record.
+    reopened.audit_records_mut_for_tamper_test()[0].signature = Some("0".repeat(128));
     reopened.audit_records_mut_for_tamper_test()[0].key_id = None;
     assert_eq!(
         reopened.retained_audit_findings(),
-        vec!["record 1 is unsigned, sealed after the keyset was bound"]
+        vec!["record 1 carries a signature without its key or a key without its signature"]
     );
 }
 
@@ -329,11 +331,11 @@ async fn records_before_bootstrap_remain_valid_and_signed_records_verify_after_r
     let mut reopened = fixture.reopen().await;
     bind(&mut reopened, &fixture).await;
     assert!(reopened.retained_audit_findings().is_empty());
-    reopened.audit_records_mut_for_tamper_test()[1].signature = None;
+    reopened.audit_records_mut_for_tamper_test()[1].signature = Some("0".repeat(128));
     reopened.audit_records_mut_for_tamper_test()[1].key_id = None;
     assert_eq!(
         reopened.retained_audit_findings(),
-        vec!["record 2 is unsigned, sealed after the keyset was bound"]
+        vec!["record 2 carries a signature without its key or a key without its signature"]
     );
 }
 
@@ -512,7 +514,7 @@ async fn registered_peers_keep_separate_records_and_walk_checks_every_original()
 }
 
 #[tokio::test]
-async fn stored_walk_preserves_unsigned_prebootstrap_and_reports_unsigned_postbootstrap() {
+async fn stored_walk_proves_unsigned_lines_by_their_record_version() {
     let fixture = NativeFixture::new(7).await;
     let book = Arc::new(Mutex::new(fixture.book().await));
     seal(&book, 1).await;
@@ -531,11 +533,10 @@ async fn stored_walk_preserves_unsigned_prebootstrap_and_reports_unsigned_postbo
     }
     let unsigned = seal(&book, 3).await;
     assert!(unsigned.key_id.is_none() && unsigned.signature.is_none());
+    // A keyless chain seals record version 2 (chained, unsigned), as production does after the
+    // keyset is bound: proved by its links, not a finding.
     let walk = walk_stored_chains(&lane, own, &keys, budget).await;
-    assert_eq!(
-        walk.findings,
-        vec!["node 7: audit record 3 is unsigned, sealed after the keyset was bound"]
-    );
+    assert!(walk.findings.is_empty(), "{:?}", walk.findings);
 }
 
 #[tokio::test]
@@ -551,8 +552,7 @@ async fn unreadable_or_malformed_registry_cannot_report_complete_verification() 
         .findings
         .is_empty());
     fixture.faults.unreadable.store(false, Ordering::Release);
-    let rows =
-        ScopedStore::host_private(fixture.core.clone(), INSTANCE, [NODE_SCHEMA]).unwrap();
+    let rows = ScopedStore::host_private(fixture.core.clone(), INSTANCE, [NODE_SCHEMA]).unwrap();
     assert!(matches!(
         rows.put(
             NODE_SCHEMA,

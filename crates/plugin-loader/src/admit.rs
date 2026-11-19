@@ -18,14 +18,15 @@ use std::sync::{Mutex, OnceLock};
 
 use busbar_ffi::image::{Admitted as Header, ImageError};
 use busbar_ffi::{LinkedPlugin, Plugin};
-use busbar_plugin_abi::fp::CORE_FP;
+
 use busbar_plugin_abi::host_side::driver::Image;
 #[cfg(unix)]
 use busbar_plugin_abi::host_side::driver::LoadedImage;
 use busbar_plugin_abi::stamp::{Stamp, STAMP_OUT_OF_PROCESS};
 use busbar_plugin_abi::types::KindCode;
-use busbar_plugin_abi::versions::{abi_of, EngineVersion, ENGINE, MECHANISM};
+use busbar_plugin_abi::versions::{contract_of, EngineVersion, Version, CORE_CONTRACT, ENGINE};
 
+use crate::agree::{Agreed, Claim, Claims};
 use crate::refusal::{Refusal, RefusalCode};
 use crate::scan;
 
@@ -96,6 +97,19 @@ impl Admitted {
     /// The header, for the registry's describe/open and every instance built over this image.
     pub fn plugin(&self) -> Header {
         self.plugin
+    }
+
+    /// What was agreed at load: the second numbers of the core and of the kind this image was built
+    /// for. An admitted stamp passed `agree`, so these are the numbers the engine holds the image to:
+    /// it is never sent a record, field, position or call introduced after them, and a use that needs
+    /// a later element is refused for it, never served more weakly.
+    #[must_use]
+    pub fn agreed(&self) -> Agreed {
+        Agreed {
+            kind: self.kind(),
+            core_second: self.stamp.core_minor,
+            kind_second: self.stamp.kind_minor,
+        }
     }
 
     /// Who vouched for this image in this admission.
@@ -200,7 +214,7 @@ pub fn crypto_gate(crypto: &str, out_of_process: bool, facts: &CryptoFacts) -> R
 
 pub use busbar_artifact_verifier::kind_word;
 
-/// The fingerprint this engine was built with for a kind (`<kind>::FP`, §7.5).
+/// The fingerprint this engine's source computes for a kind's contract (`<kind>::FP`).
 fn kind_fp(kind: KindCode) -> u64 {
     match kind {
         KindCode::Store => busbar_plugin_abi::store::FP,
@@ -213,6 +227,28 @@ fn kind_fp(kind: KindCode) -> u64 {
     }
 }
 
+/// What a format-3 stamp states about the interface: for the core and for the image's kind, the
+/// version it was built for and that version's wire fingerprint.
+fn claims(stamp: &Stamp, kind: KindCode) -> Claims {
+    Claims {
+        core: Claim {
+            version: Version {
+                first: stamp.core_abi,
+                second: stamp.core_minor,
+            },
+            wire: stamp.core_layout,
+        },
+        kind,
+        of_kind: Claim {
+            version: Version {
+                first: stamp.kind_abi,
+                second: stamp.kind_minor,
+            },
+            wire: stamp.layout,
+        },
+    }
+}
+
 fn engine_text(v: EngineVersion) -> String {
     format!("{}.{}.{}", v.major, v.minor, v.patch)
 }
@@ -220,12 +256,18 @@ fn engine_text(v: EngineVersion) -> String {
 /// Steps 4 to 6 on a stamp `scan::check` passed; shared by admission and the native packer's
 /// pre-open inspection. The refusal names the structurally validated stamp's name.
 pub(crate) fn compatible(stamp: &Stamp, facts: &CryptoFacts) -> Result<KindCode, Refusal> {
+    agreed(stamp, facts).map(|agreed| agreed.kind)
+}
+
+/// `compatible`, keeping what was agreed: the second numbers the image was built for, which the
+/// instance carries so nothing introduced later is ever sent to it.
+pub(crate) fn agreed(stamp: &Stamp, facts: &CryptoFacts) -> Result<Agreed, Refusal> {
     let name = scan::text(&stamp.name);
     let refuse = |code: RefusalCode,
                   field: &'static str,
                   have: String,
                   want: String|
-     -> Result<KindCode, Refusal> {
+     -> Result<Agreed, Refusal> {
         Err(Refusal::new(code, field, have, want).named(name))
     };
     let Some(kind) = KindCode::from_raw(stamp.kind) else {
@@ -236,49 +278,15 @@ pub(crate) fn compatible(stamp: &Stamp, facts: &CryptoFacts) -> Result<KindCode,
             "1 to 7".into(),
         );
     };
-    let word = kind_word(kind);
-    if stamp.kind_abi != abi_of(kind) {
-        return refuse(
-            RefusalCode::KindAbi,
-            "kind_abi",
-            format!("{word} ABI {}", stamp.kind_abi),
-            format!("{word} ABI {}", abi_of(kind)),
-        );
-    }
-    if stamp.mechanism != MECHANISM {
-        return refuse(
-            RefusalCode::Mechanism,
-            "mechanism",
-            stamp.mechanism.to_string(),
-            MECHANISM.to_string(),
-        );
-    }
-    let fp = kind_fp(kind);
-    for (code, field, have, want) in [
-        (RefusalCode::Layout, "layout", stamp.layout, fp),
-        (
-            RefusalCode::Layout,
-            "mechanism_layout",
-            stamp.mechanism_layout,
-            CORE_FP,
-        ),
-        (RefusalCode::Semantic, "semantic", stamp.semantic, fp),
-        (
-            RefusalCode::Semantic,
-            "mechanism_semantic",
-            stamp.mechanism_semantic,
-            CORE_FP,
-        ),
-    ] {
-        if have != want {
-            return refuse(
-                code,
-                field,
-                format!("{have:#018x}"),
-                format!("{want:#018x}"),
-            );
-        }
-    }
+    // Core first, then the kind: first number equal, second number not above this engine's,
+    // fingerprint equal to this engine's record of exactly that version (`agree`).
+    let agreed = crate::agree::agree(
+        crate::agree::build(),
+        &claims(stamp, kind),
+        &CORE_CONTRACT,
+        &contract_of(kind, kind_fp(kind)),
+    )
+    .map_err(|no| no.refusal().named(name))?;
     let target = busbar_plugin_abi::stamp::target_now();
     if stamp.target != target {
         return refuse(
@@ -288,6 +296,8 @@ pub(crate) fn compatible(stamp: &Stamp, facts: &CryptoFacts) -> Result<KindCode,
             scan::text(&target).to_string(),
         );
     }
+    // The engine range is a statement a plugin author makes about a known bad engine; a stamp that
+    // states none carries the whole range (the default is "any"), so this refuses only a stated range.
     if !(stamp.engine_min <= ENGINE && ENGINE <= stamp.engine_max) {
         return refuse(
             RefusalCode::EngineRange,
@@ -306,7 +316,7 @@ pub(crate) fn compatible(stamp: &Stamp, facts: &CryptoFacts) -> Result<KindCode,
         facts,
     )
     .map_err(|r| r.named(name))?;
-    Ok(kind)
+    Ok(agreed)
 }
 
 /// Why busbar-ffi refused an image, as a refusal.
@@ -345,6 +355,14 @@ fn image_refusal(e: &ImageError) -> Refusal {
         ImageError::Null(what) => {
             Refusal::new(RefusalCode::DoorStampMismatch, what, "null", "an entry")
         }
+        // The header states its own size and how many table entries it has; a header smaller than this
+        // host reads, or a count past what a kind may have, is not a header this engine can call through.
+        ImageError::Header(what) => Refusal::new(
+            RefusalCode::ImageBounds,
+            what,
+            "a header size or entry count this engine cannot read",
+            "a header at least as large as core 3.0's, with at most 56 table entries",
+        ),
     }
 }
 
@@ -444,8 +462,8 @@ fn manifest_matches(
 
 /// Dropped-in plugin: read once, verify, load those bytes.
 /// 1 fstat (regular, ≤ 256 MiB) + read all; 2 sha256 + signature (Integrity, Signature); 3 scan::stamp
-/// (loader `scan.rs`); 4 exact: kind known, kind_abi, mechanism, layout, mechanism_layout, semantic,
-/// mechanism_semantic, target; 5 engine_min <= ENGINE <= engine_max; 6 stamp.crypto, decided only from the
+/// (loader `scan.rs`); 4 agreement (`agree`): kind known; core then kind: first number equal, second not above
+/// this engine's, fingerprint of exactly that version; target; 5 a stated engine range holds ENGINE; 6 stamp.crypto, decided only from the
 /// facade (no host-side table): "host" => accepted; "external" => accepted only if
 /// `busbar_crypto::EXTERNAL_PLUGINS` (round 13: a required compile-time backend const, §5.2; a FIPS backend
 /// states false, CRYPTO-SEAM §9 "no external"; round 12: the facade's answer is the whole gate, as ABI-1.6.0 step 4: there is **no**
@@ -738,7 +756,7 @@ fn printable_names(names: &str) -> String {
     }
 }
 
-/// The 272 little-endian bytes of a stamp (IF §7.4 offsets), to compare with the header's own.
+/// The 272 little-endian bytes of a stamp (format 3 offsets), to compare with the header's own.
 #[cfg(unix)]
 fn stamp_bytes(s: &Stamp) -> [u8; scan::STAMP_SIZE] {
     let mut b = [0u8; scan::STAMP_SIZE];
@@ -748,12 +766,13 @@ fn stamp_bytes(s: &Stamp) -> [u8; scan::STAMP_SIZE] {
     put(20, &s.size.to_le_bytes());
     put(24, &s.kind.to_le_bytes());
     put(28, &s.kind_abi.to_le_bytes());
-    put(32, &s.mechanism.to_le_bytes());
+    put(32, &s.core_abi.to_le_bytes());
     put(36, &s.flags.to_le_bytes());
     put(40, &s.layout.to_le_bytes());
-    put(48, &s.mechanism_layout.to_le_bytes());
-    put(56, &s.semantic.to_le_bytes());
-    put(64, &s.mechanism_semantic.to_le_bytes());
+    put(48, &s.core_layout.to_le_bytes());
+    put(56, &s.kind_minor.to_le_bytes());
+    put(60, &s.core_minor.to_le_bytes());
+    put(64, &s._reserved2);
     for (at, v) in [(72, s.engine_min), (80, s.engine_max)] {
         put(at, &v.major.to_le_bytes());
         put(at + 2, &v.minor.to_le_bytes());

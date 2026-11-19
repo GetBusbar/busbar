@@ -70,7 +70,7 @@ impl TicketRefusal {
     /// The refusal's `ticket.mint` code, as the plane reads it from the answer's value.
     #[must_use]
     pub const fn code(self) -> u32 {
-        use busbar_contract::abi::host::service as svc;
+        use busbar_contract::services::codes::service as svc;
         match self {
             Self::NoSigner
             | Self::NoStanding
@@ -456,37 +456,6 @@ async fn native_record(
     let spent = values.pop().expect("validated count");
     let active = values.pop().expect("validated count");
     judge_ticket(expires_at, active, spent.as_ref(), index.as_ref())
-}
-
-/// A truthful native reservation observation for host custody maintenance.
-/// Read failure is distinct from expiry/absence/consumption and retains custody.
-pub async fn ticket_record_live(
-    core: Arc<CoreStore>,
-    id: &str,
-    expected_expiry: u64,
-) -> RecordStoreResult<bool> {
-    native_record(&core, id, expected_expiry)
-        .await
-        .map(|record| record.is_some())
-}
-
-/// Tickets observed per batched `Read` (three addresses each), bounded by the store's page budget.
-pub(crate) fn tickets_per_read(core: &CoreStore) -> usize {
-    (core.limits().scan_items / 3).max(1)
-}
-
-/// [`ticket_record_live`] for many tickets of one store, with one `Read` per chunk instead of one
-/// per ticket (WASTE-CORE-LIFECYCLE W4). The `Read` carries no `TimeGuard` (one guard cannot fit
-/// distinct expiries); each ticket is judged by the store's own observation instead:
-/// `observed_at > expires_at` is expired, exactly where the single-ticket guard
-/// `before: expires_at + 1` fails. A chunk is accepted only as well-formed `Values` with this
-/// store's clock authority and three values per ticket; anything else is the outer `Err`, which
-/// releases nothing. Inside an accepted chunk a malformed ticket is an `Err` for that ticket only.
-pub async fn ticket_records_live(
-    core: Arc<CoreStore>,
-    items: &[(String, u64)],
-) -> RecordStoreResult<Vec<RecordStoreResult<bool>>> {
-    crate::off_path::governance::state::tickets_records_live(core, items).await
 }
 
 impl GovState {

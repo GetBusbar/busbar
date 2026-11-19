@@ -37,9 +37,10 @@ pub struct Slice<'a, T: View> { ptr: Shared<T>, len: usize, _l: PhantomData<&'a 
 #[derive(Clone, Copy)]
 pub struct Pair<'a> { pub name: Str<'a>, pub value: Bytes<'a> }
 
-/// The plugin-visible output channel. Built only by the host's out lease, over a zero-filled buffer of
-/// `cap` bytes; `grow` rewrites `ptr`/`cap` through the `&mut RawOut` it is handed. No `Default`, no
-/// `Clone`, private fields.
+/// The answer block (core 3.0). It is the caller's: any storage of at least `RawOut::MIN` bytes, not
+/// pre-filled; `grow` (on demand, through the host) rewrites `ptr`/`cap` through the `&mut RawOut` it is
+/// handed. The callee writes only `[len, cap)` and states what it wrote in `len`; the caller reads only
+/// `[0, len)`. No `Default`, no `Clone`, private fields.
 #[repr(C)]
 pub struct RawOut { ptr: *mut u8, len: usize, cap: usize }
 
@@ -90,7 +91,7 @@ pub struct CryptoReq<'a> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct DeploymentId(pub [u8; 16]);
 
-/// The host vtable's nine entries (IF §5), as safe higher-ranked fn pointers; every one is nullable in
+/// The host table's nine entries (IF §5; core 3.0: the ninth is `service`), as safe higher-ranked fn pointers; every one is nullable in
 /// C, and a `None` reads as the entry's panic fallback.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -111,14 +112,18 @@ pub struct HostFns {
     pub grow: Option<for<'e, 'o> extern "C" fn(Ctx<'e>, &'o mut RawOut, usize) -> bool>,
     /// The 16-byte install identity, all zero until known.
     pub deployment: Option<for<'e> extern "C" fn(Ctx<'e>) -> DeploymentId>,
-    /// The store-open recoverable gate.
-    pub migrate_admit: Option<for<'e> extern "C" fn(Ctx<'e>, u64) -> Status>,
+    /// A kind's own host service (core 3.0): `id` is allotted by that kind's contract (kind code in the
+    /// high 32 bits, the kind's service number in the low 32), so a kind gains a service without a new
+    /// table entry. The answer is records in the caller-owned `out`; an unknown id is FAULT.
+    pub service: Option<for<'e, 'a, 'o> extern "C" fn(Ctx<'e>, u64, &'a crate::vt::Call<'a>, &'o mut RawOut) -> Status>,
 }
 
-/// The host table (`bb_host`). One process-wide static; plugins get `&'static Host`. It holds only a
-/// context word and safe fn pointers, so it is `Sync` without an `unsafe impl`.
+/// The host table (`bb_host`). One process-wide static; plugins get `&'static Host`. It begins with its own
+/// size in bytes and its number of entries (core 3.0): entries are only ever appended, and an image reads
+/// the prefix it was built for (an image newer than its host is never loaded). It holds only numbers and
+/// safe fn pointers, so it is `Sync` without an `unsafe impl`.
 #[repr(C)]
-pub struct Host { ctx: usize, fns: HostFns }
+pub struct Host { size: u32, count: u32, ctx: usize, fns: HostFns }
 }
 
 /// A read-only, non-owning pointer inside a lifetime-branded view (`Bytes<'a>`, `Slice<'a, T>`, the
@@ -155,14 +160,9 @@ unsafe impl<T: Sync> Sync for Shared<T> {}
 /// the fresh one `Host::scoped` hands its closure.
 pub struct EntryScope<'e>(PhantomData<*mut &'e ()>);
 
-/// Seals `View` and the argument traits: busbar-ffi implements them for its own types only.
+/// Seals `View`: busbar-ffi implements them for its own types only.
 pub(crate) mod seal {
     pub trait Sealed {}
-    /// The async conversion of one raw argument into what a chain keeps.
-    pub trait ToChain: Sized {
-        type Chained: Send + 'static;
-        fn chain(arg: super::Arg<'_, Self>, id: &super::ChainId) -> Self::Chained;
-    }
 }
 
 /// Byte offset of `RawOut::ptr` (a private field), for busbar-plugin-abi's C-HEADER static asserts (IF §7.8).
@@ -214,6 +214,40 @@ impl<'a> Bytes<'a> {
         // SAFETY: a non-empty `Bytes<'a>` is built only by `new` from a `&'a [u8]` (or by the trusted
         // foreign caller under the same contract), so `ptr` is valid for `len` bytes for `'a`.
         unsafe { core::slice::from_raw_parts(self.ptr.get(), self.len) }
+    }
+    /// A pair list as one blob of a call: the borrowed array itself (its length is `32 * n`). The read
+    /// side is `Args::pairs`, inside an entry whose layout names this blob a pair list.
+    pub const fn of_pairs(pairs: &'a [Pair<'a>]) -> Bytes<'a> {
+        Bytes {
+            ptr: Shared::new(pairs.as_ptr().cast()),
+            len: size_of_val(pairs),
+            _l: PhantomData,
+        }
+    }
+    /// This blob as the pair array it was built from. None: not a whole number of pairs, or misaligned.
+    ///
+    /// # Safety
+    /// The blob is empty or was built by `of_pairs` from a `&'a [Pair<'a>]` (or by the trusted foreign
+    /// caller under the same contract: an aligned array of pairs valid for `'a`, every name UTF-8).
+    pub(crate) unsafe fn as_pairs(self) -> Option<Slice<'a, Pair<'a>>> {
+        let each = size_of::<Pair<'static>>();
+        if self.len == 0 {
+            return Some(Slice::EMPTY);
+        }
+        if !self.len.is_multiple_of(each)
+            || !self
+                .ptr
+                .get()
+                .addr()
+                .is_multiple_of(align_of::<Pair<'static>>())
+        {
+            return None;
+        }
+        Some(Slice {
+            ptr: Shared::new(self.ptr.get().cast()),
+            len: self.len / each,
+            _l: PhantomData,
+        })
     }
     /// Host side: the address and length, for the image bounds check (never dereferenced).
     #[cfg(feature = "host")]
@@ -333,9 +367,12 @@ impl KindCode {
 }
 
 impl RawOut {
-    /// Host side: a channel over `buf` (the lease's zero-filled buffer), nothing written yet.
-    #[cfg(feature = "host")]
-    pub(crate) fn over(buf: &mut [u8]) -> RawOut {
+    /// The smallest answer block a caller may hand: the largest fixed answer (a failure with its error
+    /// number and two facts). Anything larger is reached through `grow`.
+    pub const MIN: usize = 80;
+    /// A channel over caller storage `buf` (any content: it is not read), nothing written yet. The
+    /// channel must not outlive `buf`, which the caller leaves untouched while an entry holds the channel.
+    pub fn over(buf: &mut [u8]) -> RawOut {
         RawOut {
             ptr: buf.as_mut_ptr(),
             len: 0,
@@ -409,13 +446,23 @@ impl<'call> Out<'call> {
         if !self.room(bytes.len()) {
             return false;
         }
-        let at = self.raw.len;
-        let end = at + bytes.len();
-        match self.view().get_mut(at..end) {
-            Some(dst) => dst.copy_from_slice(bytes),
-            None => return false,
+        if bytes.is_empty() {
+            return true;
         }
-        self.raw.len = end;
+        let at = self.raw.len;
+        // SAFETY: `room` just proved `cap - len >= bytes.len()`, and a `RawOut` is built only over caller
+        // storage of `cap` bytes that the caller keeps alive and does not touch while the entry runs
+        // (`grow` repoints it only to another such block), so `[len, len + n)` is inside it and `ptr` is
+        // non-null; `bytes` is a separate borrow. The spare part is written, never read: it need not be
+        // initialised (core 3.0: the answer block is not pre-filled).
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                self.raw.ptr.wrapping_add(at),
+                bytes.len(),
+            )
+        };
+        self.raw.len = at + bytes.len();
         true
     }
     /// Overwrite already-written bytes at `at`. False: outside what was written.
@@ -446,16 +493,16 @@ impl<'call> Out<'call> {
         }
         self.raw.len = len;
     }
-    /// The whole buffer, `[0, cap)`.
+    /// What was written, `[0, len)`: the only part of the block ever read here.
     fn view(&mut self) -> &mut [u8] {
-        if self.raw.cap == 0 || self.raw.ptr.is_null() {
+        if self.raw.len == 0 || self.raw.ptr.is_null() || self.raw.len > self.raw.cap {
             return &mut [];
         }
-        // SAFETY: a `RawOut` is built only by the host's out lease over a zero-filled, initialised buffer
-        // of `cap` bytes that it keeps alive and does not touch while the entry runs, and `grow` repoints
-        // it only to another such buffer. `&mut self` holds the channel exclusively, and the view lives
-        // only for this call.
-        unsafe { core::slice::from_raw_parts_mut(self.raw.ptr, self.raw.cap) }
+        // SAFETY: a `RawOut` is built only over caller storage of `cap` bytes that the caller keeps alive
+        // and does not touch while the entry runs, and `grow` repoints it only to another such block with
+        // `[0, len)` copied. `[0, len)` was written through this channel (`append`), so it is initialised.
+        // `&mut self` holds the channel exclusively, and the view lives only for this call.
+        unsafe { core::slice::from_raw_parts_mut(self.raw.ptr, self.raw.len) }
     }
 }
 
@@ -511,9 +558,25 @@ impl<'e> CryptoRet<'e> {
     }
 }
 
+/// The number of entries in this build's host table.
+pub const HOST_ENTRIES: u32 = 9;
+
 impl Host {
+    /// The table's size in bytes as its builder stated it.
+    pub const fn size(&self) -> u32 {
+        self.size
+    }
+    /// The number of entries its builder stated.
+    pub const fn count(&self) -> u32 {
+        self.count
+    }
     pub const fn new(ctx: usize, fns: HostFns) -> Host {
-        Host { ctx, fns }
+        Host {
+            size: size_of::<Host>() as u32,
+            count: HOST_ENTRIES,
+            ctx,
+            fns,
+        }
     }
     /// The nine entries, for the plugin-abi safe API.
     pub const fn fns(&self) -> &HostFns {
@@ -526,140 +589,6 @@ impl Host {
             word: self.ctx,
             _e: PhantomData,
         })
-    }
-}
-
-/// One raw argument of a kind entry: `R` lifetime-erased, branded back with the call's `'a`. Built from
-/// a `'a` value by the constructors below and read back as the same `'a` value; `#[repr(transparent)]`,
-/// so the C ABI sees `R`.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct Arg<'a, R> {
-    raw: R,
-    _l: PhantomData<&'a ()>,
-}
-
-/// The raw argument types (sealed): `u32`, `u64` (also a session token), `Bytes`, `Str` and a view
-/// reference.
-pub trait RawArg: Copy + 'static + seal::Sealed {}
-/// The raw argument types an async entry takes (`u32`, `u64`, `Bytes` as `ChainBytes`).
-pub trait AsyncArg: RawArg + seal::ToChain {}
-
-impl RawArg for u32 {}
-impl RawArg for u64 {}
-impl RawArg for Bytes<'static> {}
-impl RawArg for Str<'static> {}
-impl AsyncArg for u32 {}
-impl AsyncArg for u64 {}
-impl AsyncArg for Bytes<'static> {}
-
-impl seal::ToChain for u32 {
-    type Chained = u32;
-    fn chain(arg: Arg<'_, u32>, _id: &ChainId) -> u32 {
-        arg.raw
-    }
-}
-impl seal::ToChain for u64 {
-    type Chained = u64;
-    fn chain(arg: Arg<'_, u64>, _id: &ChainId) -> u64 {
-        arg.raw
-    }
-}
-impl seal::ToChain for Bytes<'static> {
-    type Chained = ChainBytes;
-    fn chain(arg: Arg<'_, Bytes<'static>>, id: &ChainId) -> ChainBytes {
-        ChainBytes {
-            ptr: arg.raw.ptr,
-            len: arg.raw.len,
-            id: *id,
-            _ns: PhantomData,
-        }
-    }
-}
-
-/// A view argument: a pointer to `F` (the view at `'static`), read back as `&'a F::Of<'a>`.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct ViewRef<F>(*const F);
-
-/// A view type as a family over its lifetime (implemented by busbar-ffi for its four views).
-pub trait Family: View + 'static {
-    type Of<'a>: View;
-}
-impl<F: Family> seal::Sealed for ViewRef<F> {}
-impl<F: Family> RawArg for ViewRef<F> {}
-
-impl<'a> Arg<'a, u32> {
-    pub const fn u32(v: u32) -> Self {
-        Arg {
-            raw: v,
-            _l: PhantomData,
-        }
-    }
-    pub const fn get(self) -> u32 {
-        self.raw
-    }
-}
-impl<'a> Arg<'a, u64> {
-    pub const fn u64(v: u64) -> Self {
-        Arg {
-            raw: v,
-            _l: PhantomData,
-        }
-    }
-    pub const fn get(self) -> u64 {
-        self.raw
-    }
-}
-impl<'a> Arg<'a, Bytes<'static>> {
-    pub const fn bytes(b: Bytes<'a>) -> Self {
-        Arg {
-            raw: Bytes {
-                ptr: b.ptr,
-                len: b.len,
-                _l: PhantomData,
-            },
-            _l: PhantomData,
-        }
-    }
-    pub const fn get(self) -> Bytes<'a> {
-        Bytes {
-            ptr: self.raw.ptr,
-            len: self.raw.len,
-            _l: PhantomData,
-        }
-    }
-}
-impl<'a> Arg<'a, Str<'static>> {
-    pub const fn str(s: Str<'a>) -> Self {
-        Arg {
-            raw: Str(Bytes {
-                ptr: s.0.ptr,
-                len: s.0.len,
-                _l: PhantomData,
-            }),
-            _l: PhantomData,
-        }
-    }
-    pub const fn get(self) -> Str<'a> {
-        Str(Bytes {
-            ptr: self.raw.0.ptr,
-            len: self.raw.0.len,
-            _l: PhantomData,
-        })
-    }
-}
-impl<'a, F: Family> Arg<'a, ViewRef<F>> {
-    pub fn view(v: &'a F::Of<'a>) -> Self {
-        Arg {
-            raw: ViewRef(core::ptr::from_ref(v).cast::<F>()),
-            _l: PhantomData,
-        }
-    }
-    pub fn get(self) -> &'a F::Of<'a> {
-        // SAFETY: an `Arg<'a, ViewRef<F>>` is built only by `view` from a `&'a F::Of<'a>` (or by the trusted
-        // foreign caller under the same contract), so the pointer is aligned and valid for `'a`.
-        unsafe { &*self.raw.0.cast::<F::Of<'a>>() }
     }
 }
 
@@ -735,6 +664,15 @@ pub struct ChainBytes {
 // moving the handle to another thread (the future migrating between resumes) cannot make a read unsound.
 
 impl ChainBytes {
+    /// A blob of an async call or a resume's results, as chain `id` keeps it (the shims only).
+    pub(crate) fn of(bytes: Bytes<'_>, id: &ChainId) -> ChainBytes {
+        ChainBytes {
+            ptr: bytes.ptr,
+            len: bytes.len,
+            id: *id,
+            _ns: PhantomData,
+        }
+    }
     /// Checks `CURRENT == self.id`, then calls `f`. Any other thread or chain: panic (FAULT StaleHandle).
     pub fn with<R>(&self, f: impl for<'a> FnOnce(&'a [u8]) -> R) -> R {
         if CURRENT.get() != Some(self.id) {
@@ -743,7 +681,7 @@ impl ChainBytes {
         if self.len == 0 {
             return f(&[]);
         }
-        // SAFETY: `ChainBytes` is made only by `ToChain::chain` inside busbar-ffi's shims, from a host
+        // SAFETY: `ChainBytes` is made only by `ChainBytes::of` inside busbar-ffi's shims, from a host
         // argument or result buffer that the host keeps alive and unchanged until this chain's token
         // retires; `CURRENT == id` proves this chain is being polled on this thread now, so it is alive.
         // The slice is higher-ranked in `f` and cannot escape the call.
@@ -833,13 +771,11 @@ mod tests {
         let read = Slice::new(&pairs[..]).get();
         assert_eq!(read[0].name.get(), "accept");
         assert_eq!(read[0].value.get(), b"*/*");
-        let arg = Arg::bytes(Bytes::new(b"xyz"));
-        assert_eq!(arg.get().get(), b"xyz");
-        assert_eq!(Arg::str(Str::new("s")).get().get(), "s");
         assert!(!Bytes::new(&[]).ptr.get().is_null());
     }
 
     extern "C" fn grow_to_64(_ctx: Ctx<'_>, raw: &mut RawOut, need: usize) -> bool {
+        // The test host keeps its own record of what was written: mirror it before the block moves.
         GROWN.with(|g| {
             let mut next = vec![0u8; 64];
             if raw.len + need > next.len() {
@@ -874,7 +810,7 @@ mod tests {
             log_level: None,
             grow: Some(grow_to_64),
             deployment: None,
-            migrate_admit: None,
+            service: None,
         },
     );
 
@@ -912,7 +848,7 @@ mod tests {
         let Some(id) = ChainId::mint(7) else {
             panic!("mint");
         };
-        let handle = <Bytes<'static> as seal::ToChain>::chain(Arg::bytes(Bytes::new(&data)), &id);
+        let handle = ChainBytes::of(Bytes::new(&data), &id);
         {
             let _current = CurrentGuard::enter(id);
             assert_eq!(handle.to_vec(), b"chain");

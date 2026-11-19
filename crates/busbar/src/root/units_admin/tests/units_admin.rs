@@ -1913,8 +1913,7 @@ async fn real_admin_dispatch() -> RouterDispatch {
     crate::dist_root_install::install();
     // The linked operator credential is bound and opened by the app build from its settings: the
     // SHA-256 digest of the fixture admin token (governance holds no operator digest, MR-D).
-    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths);
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
     let operator = busbar_kernel::config::operator_provider();
     let digest = busbar_contract::redacted::sha256_hex(b"admin-token");
     let library_path = crate::root::test_plugins::application_store_library();
@@ -3097,7 +3096,7 @@ fn the_canonical_amend_payload_keeps_the_reason_hash_not_its_text() {
         !text.contains(reason),
         "the signed payload carries the reason text: {text}"
     );
-    let hash = hex::encode(busbar_contract::abi::sdk::digest::sha256(reason.as_bytes()));
+    let hash = hex::encode(busbar_contract::digest::sha256(reason.as_bytes()));
     assert!(
         text.contains(&format!("reason_sha256=\"{hash}\"\n")),
         "the signed payload names the reason by its SHA-256: {text}"

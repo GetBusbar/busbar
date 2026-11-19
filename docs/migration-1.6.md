@@ -123,7 +123,8 @@ Stop every 1.6.0 process. Restore the complete pre-upgrade Store backup and conf
 snapshot together, including the providers catalog, credential files, overlay and old launch
 settings. Then start 1.5.5. Changes made after the upgrade are not carried back; this
 includes key revocations and trust demotions made under 1.6.0, which must be re-applied (see
-[backup set and order](operations.md#backup-set-and-order)).
+[backup set and order](operations.md#backup-set-and-order) and
+[restoring from a backup](operations.md#restoring-from-a-backup-what-it-undoes-and-what-to-do-next)).
 
 Restoring only `config.yaml.1.5.5` does **not** undo Store migrations. Restore the old overlay
 path too: the upgrader may have replaced it with a directory containing `busbar-1.6-folded`.
@@ -188,26 +189,24 @@ backup or recovery procedure.
 
 ### Environment inputs
 
-Serving no longer uses these launch overrides. Boot and `--validate` refuse them with
-`BUSBAR-3029` before configuration migration or validation, naming each replacement without
-echoing its value. Write their intended values into configuration, then remove the variables
-from the launcher and validate. No automatic environment capture or separate conversion command
-is provided. An empty `BUSBAR_PROVIDERS` counts as unset; all other retired variables refuse
-even when empty. This refusal prevents an HTTP/1-only or worker setting from silently changing
-on upgrade; exact-artifact upgrade qualification remains required.
+A 1.5.5 launcher still starts. Boot and `--validate` say one `BUSBAR-3029` line for each retired
+variable that is set, before configuration migration or validation, never echoing its value, and
+go on as the table says. Move the values into configuration and remove the variables from the
+launcher when convenient. An empty `BUSBAR_PROVIDERS` counts as unset.
 
-| Retired variable | Current configuration |
-|---|---|
-| `BUSBAR_PROVIDERS` | `providers_file:` |
-| `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
-| `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
-| `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
-| `BUSBAR_CONFIG_OVERLAY` | One-time old-overlay selection only; no serving equivalent |
+| Retired variable | What 1.6 does with it | Current configuration |
+|---|---|---|
+| `BUSBAR_PROVIDERS` | read as the catalog path, as 1.5.5 did, unless `--providers` names one | `providers_file:` or `--providers` |
+| `BUSBAR_WORKER_THREADS` | ignored: one data worker per CPU core the process may use | none (set the CPU limit) |
+| `TOKIO_WORKER_THREADS` | ignored, as above | none (set the CPU limit) |
+| `BUSBAR_UPSTREAM_HTTP1_ONLY` | applied over the key, as 1.5.5 did (`0` or empty off) | `outbound.http1_only` |
+| `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | applied over the key, as 1.5.5 did (`0` or empty off) | `outbound.h2_prior_knowledge` |
+| `BUSBAR_CONFIG_OVERLAY` | one-time old-overlay selection only | no serving equivalent |
 
 The 1.6.0 container no longer sets `BUSBAR_PROVIDERS`. Put `providers.yaml` beside the selected
 config or name it with `providers_file:`. `BUSBAR_CONFIG` and `-c`/`--config` still select the
 config; explicit `{ env: NAME }` secret references still resolve environment values.
-`RUST_LOG` and the `TOKIO_WORKER_THREADS` fallback remain available. `BUSBAR_DATA_DIR` is still
+`RUST_LOG` remains available. `BUSBAR_DATA_DIR` is still
 used for registry data; it does not restore the retired journal.
 
 ### A configuration with no `auth:` block
@@ -496,7 +495,7 @@ infrastructure. Plugins must use the Need API and its core-held
 
 ### Declared upstream registrations
 
-The core `upstreams:` and `advanced.allow_destinations` keys are removed. Keep each upstream's `url` or `command`, `tls`, `auth`, `upstream_credentials`, and optional boolean `allow_private` within the registration declared by its plane. Private reach applies to that registration only; it does not bypass metadata, own-listener, or TLS checks. A pre-release flat `upstreams:` document is refused with guidance rather than assigned to a plane by guesswork.
+The core `upstreams:` and `advanced.allow_destinations` keys are removed (a configuration that still carries `advanced.allow_destinations` loads: the key is ignored and one warning line says so). Keep each upstream's `url` or `command`, `tls`, `auth`, `upstream_credentials`, and optional boolean `allow_private` within the registration declared by its plane. Private reach applies to that registration only; it does not bypass metadata, own-listener, or TLS checks. A pre-release flat `upstreams:` document is refused with guidance rather than assigned to a plane by guesswork.
 
 A legacy A2A `client_identity: {cert: ..., key: ...}` is refused without modifying the source config. Combine the certificate chain and private key into one PEM secret and use `tls: {client_identity: {module: file, settings: {path: /run/secrets/client.pem}}}` in the canonical registration. The plane cannot combine opaque references, and neither part is silently discarded.
 
@@ -558,6 +557,12 @@ address is derived only from a loopback `admin_listen` (`http(s)://127.0.0.1:808
   There is no opt-out and the boot warns. The digest is never logged; the audit label is
   `sha256[<index>]` plus the generation. Rotate the token through the admin API, not by editing
   the file. Keep the plaintext token wherever your clients read it from: Busbar no longer holds it.
+- **A reload no longer changes the admin credential.** In 1.5.5 a reload or apply that changed
+  the admin token (its `token:` reference, or the secret behind it) took effect at once. In 1.6.0
+  the operator credential is bound at process start: a reload whose operator credential differs
+  from the running one, removes it, or adds one where the process started with none is refused
+  as a whole and the running credential keeps serving. Edit `config.yaml` and restart to change
+  it.
 - **`keys` is still core's.** Virtual keys are minted only by `POST /api/v1/admin/keys` for a
   principal holding `full` admin scope. No authentication plugin mints keys.
 - **Operator plugins are first-party only.** `plugins.trust.operator` is reserved; a
@@ -604,6 +609,23 @@ address is derived only from a loopback `admin_listen` (`http(s)://127.0.0.1:808
   config.yaml or the settings overlay) and reports it; `route_policy: true` refuses the upgrade until
   you delete the key. The deciding policy and the answering member are on the unit record
   (`GET /api/v1/admin/records`).
+- `advanced.rate_sweep_interval` is no longer a setting. The budget tables are swept on every tick
+  of the usage writer, not on every 256th admission, so a quiet table is released too. A 1.5.5
+  configuration (or settings overlay, or settings `PUT`) that carries the key still loads and
+  applies: the value is ignored, never written back, and one warning line names the key at boot
+  and on every apply. A value of `0`, which 1.5.5 refused, is ignored the same way.
+- `advanced.worker_threads` is no longer a setting: one data worker per CPU core the process may
+  use (its CPU affinity and container CPU limit). An old key is ignored with one warning line.
+- Operator settings left `advanced` for their own sections: `advanced.upstream_http1_only` and
+  `advanced.upstream_h2_prior_knowledge` (1.5.5 keys) are `outbound.http1_only` and
+  `outbound.h2_prior_knowledge`; `advanced.response_headers.server_timing` (1.5.5) is
+  `telemetry.response_headers.server_timing`; the 1.6 development keys `advanced.tls`,
+  `advanced.proxy_resolution` and `advanced.block_private_addresses` are under `outbound`,
+  `advanced.trusted_proxies` and `advanced.forwarded_header` are `client_address.trusted_proxies`
+  and `client_address.header`, and `advanced.shutdown.deregister_delay` is
+  `shutdown.deregister_delay`, whose default is now none (v1.5.5 had no interval). A configuration
+  carrying an old key loads and behaves the same: the value is carried to the new home (a new key
+  also written wins), one warning line names the move, and the old key is never written back.
 
 ### Plugins and diagnostics
 
@@ -617,6 +639,14 @@ address is derived only from a loopback `admin_listen` (`http(s)://127.0.0.1:808
   in that form. Update log matching.
 - A URL-userinfo credential is sent only over a secured connection; http userinfo to a private
   host is refused at dial time and audited.
+- **The `busbar-transport-tcp` and `busbar-transport-stdio` plugins are gone; nothing you configured
+  changes.** Busbar itself now listens on and dials every TCP socket and runs and frames
+  `transport: stdio` child-process servers, so the two plugins had no work left and are not in
+  the 1.6.0 distribution. A copy of either left in the plugins directory is accepted and ignored,
+  with one notice per plugin at boot; it is never loaded and never stops the boot. Remove it at
+  your convenience. A `transport:` entry in an older configuration that names the module
+  `tcp` or `stdio` is removed by the upgrade, with one line in its report. One difference you may notice: a line from a `transport: stdio` server may be
+  at most 4 MiB. The stdio plugin's line limit was a setting; that setting is no longer read.
 
 ### Requests and callers
 

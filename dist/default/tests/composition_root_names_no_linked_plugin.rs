@@ -112,6 +112,31 @@ fn the_generator_emits_one_carrier_pair_per_assigned_enabled_row() {
     assert!(none.contains(&format!("{table}];\n")), "{none}");
 }
 
+/// A carrier may name its row by package (`busbar-...`), the spelling a build that excludes the plugin drops with its
+/// other rows (the FIPS repository's `ci/exclude-plugins.sh`); the generator reads it as the row it names.
+#[test]
+fn a_carrier_may_name_its_row_by_package_and_the_two_spellings_are_one_row() {
+    let by_package = CARRIER_MANIFEST
+        .replace("http = \"wire-a\"", "http = \"busbar-wire-a\"")
+        .replace("rtc = \"wire-b\"", "rtc = \"busbar-wire-b\"");
+    assert_eq!(
+        generator::carrier_rows(&by_package),
+        generator::carrier_rows(CARRIER_MANIFEST),
+        "a package names the same rows as their keys"
+    );
+    let (by_key, _) = linked_source(CARRIER_MANIFEST, &|_| true);
+    let (by_name, _) = linked_source(&by_package, &|_| true);
+    assert_eq!(
+        by_name, by_key,
+        "the generated source does not depend on the spelling"
+    );
+    let twice = CARRIER_MANIFEST.replace("rtc = \"wire-b\"", "rtc = \"busbar-wire-a\"");
+    assert!(
+        std::panic::catch_unwind(|| generator::carrier_rows(&twice)).is_err(),
+        "one row under two carriers is refused whichever spelling names it"
+    );
+}
+
 #[test]
 fn the_generator_refuses_a_bad_carrier_table() {
     for (why, broken) in [
@@ -515,8 +540,12 @@ one = "busbar-first"
 two = "busbar-second"
 
 [package.metadata.busbar.linked-axes]
-one = "plane-door egress"
-two = "plane-door"
+one = "min3-images egress"
+two = "min3-images"
+
+[package.metadata.busbar.linked-section]
+one = "pools"
+two = "tools"
 "#;
     let on = |enabled: &dyn Fn(&str) -> bool, name: &str| {
         generator::build_cfgs(manifest, enabled)
@@ -524,12 +553,13 @@ two = "plane-door"
             .find(|(cfg, _)| cfg == name)
             .map(|(_, on)| on)
     };
-    assert_eq!(on(&|f| f == "one", "linked_axis_plane_door"), Some(true));
-    assert_eq!(on(&|_| false, "linked_axis_plane_door"), Some(false));
-    assert_eq!(on(&|f| f == "one", "linked_every_plane_door"), Some(false));
-    assert_eq!(on(&|_| true, "linked_every_plane_door"), Some(true));
+    assert_eq!(on(&|f| f == "one", "linked_axis_min3_images"), Some(true));
+    assert_eq!(on(&|_| false, "linked_axis_min3_images"), Some(false));
+    assert_eq!(on(&|f| f == "one", "linked_section_pools"), Some(true));
+    assert_eq!(on(&|f| f == "one", "linked_section_tools"), Some(false));
+    assert_eq!(on(&|_| true, "linked_section_tools"), Some(true));
     assert_eq!(on(&|f| f == "one", "linked_egress"), Some(true));
-    let unseamed = manifest.replace("plane-door egress", "plane-door");
+    let unseamed = manifest.replace("min3-images egress", "min3-images");
     assert!(
         !generator::build_cfgs(&unseamed, &|_| true)
             .iter()

@@ -176,19 +176,6 @@ pub fn install_auth_plugin(plugins_dir: &Path, module: &str, alias: &str, first_
     };
     let mut m = super::plugins::manifest("auth", module, publisher);
     m.alias = alias.into();
-
-    static STAGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "busbar-auth-module-{}-{}{}",
-        std::process::id(),
-        STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        std::env::consts::DLL_SUFFIX
-    ));
-    std::fs::write(&path, &lib).expect("stage the library");
-    m.statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
-        .expect("the token-verifying cdylib states its door")
-        .map(hex::encode);
-    let _ = std::fs::remove_file(&path);
     let bytes = if first_party {
         super::plugins::signed(&harness_release_key(), m, &lib)
     } else {

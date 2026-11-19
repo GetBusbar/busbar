@@ -10,9 +10,9 @@
 // linked crates' own docs and the README for what a running deployment answers on the wire, and
 // `root::cli` (what `busbar --help` renders) for the CLI surface this binary exposes.
 //
-// See `register_protocols`/`register_planes`/`register_diagnostics` below
-// for the composition root's one write into each axis: each linked crate contributes its own
-// declarations here, under its own Cargo feature, and nowhere else.
+// See `register_protocols`/`register_root`/`register_diagnostics` below for the composition root's
+// one write into each axis. Every plugin is a MIN-3 image (`busbar-plugin-abi`): the linked images
+// are admitted through the loader's one checked path and opened by the boot in `root::min3_boot`.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(dead_code, unused_imports, unused_macros))]
@@ -108,109 +108,9 @@ fn line_serve_requested(argv: &root::cli::Argv) -> bool {
     argv.stdio
 }
 
-const MAX_WORKER_THREADS: usize = 128;
-
-#[cfg(test)]
-fn worker_threads_from_env(name: &str) -> Option<usize> {
-    let mut warnings = Vec::new();
-    let n = worker_threads_from_env_noting(name, &mut warnings);
-    warnings.iter().for_each(|w| eprintln!("{w}"));
-    n
-}
-
-fn worker_threads_from_env_noting(name: &str, warnings: &mut Vec<String>) -> Option<usize> {
-    match std::env::var(name) {
-        Ok(v) => match v.trim().parse::<usize>() {
-            Ok(n) if n >= 1 => Some(n),
-            _ => {
-                warnings.push(format!(
-                    "[warn] {}",
-                    diagnostics::WORKER_THREADS_INVALID.coded(format_args!(
-                        "{name}={v:?} is not a positive integer; ignoring it and using the \
-                         default worker-thread count"
-                    ))
-                ));
-                None
-            }
-        },
-        Err(_) => None,
-    }
-}
-
-#[cfg(test)]
-fn worker_threads_from_config() -> Option<usize> {
-    let mut warnings = Vec::new();
-    let n = worker_threads_from_config_noting(&mut warnings);
-    warnings.iter().for_each(|w| eprintln!("{w}"));
-    n
-}
-
-fn worker_threads_from_config_noting(warnings: &mut Vec<String>) -> Option<usize> {
-    let config_path = root::cli::resolve_config_path(root::cli::argv().config.as_deref());
-    let raw = std::fs::read_to_string(&config_path).ok()?;
-    let mut unset = Vec::new();
-    let interpolated =
-        config::interpolate_env_with(&raw, config::EnvSubst::Lenient, &mut unset).ok()?;
-
-    use busbar_contract::yaml::ValueExt;
-    let doc: busbar_contract::yaml::Value = busbar_contract::yaml::from_str(&interpolated).ok()?;
-    let worker_threads = match doc.get("advanced").and_then(|a| a.get("worker_threads")) {
-        None | Some(busbar_contract::yaml::Value::Null) => None,
-        Some(v) => Some(usize::try_from(v.as_u64()?).ok()?),
-    };
-    match validate_worker_threads_config(worker_threads) {
-        Ok(v) => v,
-        Err(msg) => {
-            warnings.push(format!(
-                "[warn] {}",
-                diagnostics::WORKER_THREADS_INVALID.coded(msg)
-            ));
-            None
-        }
-    }
-}
-
-fn resolve_worker_threads() -> (usize, Vec<String>) {
-    let mut warnings = Vec::new();
-    let n = worker_threads_from_config_noting(&mut warnings)
-        .or_else(|| worker_threads_from_env_noting("TOKIO_WORKER_THREADS", &mut warnings))
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1)
-        })
-        .min(MAX_WORKER_THREADS);
-    (n, warnings)
-}
-
-/// Resolve the effective recovered config, then the supported Tokio fallback.
-fn recovered_data_workers(
-    configured: Option<usize>,
-    fallback_env: Option<usize>,
-    available: usize,
-) -> usize {
-    configured
-        .filter(|n| *n != 0)
-        .or(fallback_env)
-        .unwrap_or(available)
-        .clamp(1, MAX_WORKER_THREADS)
-}
-
 #[cfg(test)]
 mod recovered_worker_tests {
     use super::*;
-
-    #[test]
-    fn recovered_worker_count_honors_effective_config_and_tokio_fallback() {
-        assert_eq!(recovered_data_workers(Some(7), Some(3), 2), 7);
-        assert_eq!(recovered_data_workers(None, Some(3), 2), 3);
-        assert_eq!(recovered_data_workers(None, None, 2), 2);
-        assert_eq!(recovered_data_workers(Some(0), None, 2), 2);
-        assert_eq!(
-            recovered_data_workers(Some(usize::MAX), None, 2),
-            MAX_WORKER_THREADS
-        );
-    }
 
     #[test]
     fn recovered_data_runtime_keeps_control_alive_and_drains_registered_work() {
@@ -226,8 +126,8 @@ mod recovered_worker_tests {
             let (release_tx, release_rx) = tokio::sync::oneshot::channel();
             let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let finished_work = finished.clone();
-            // The effective Store value replaces the bootstrap budget, on the actual scheduler.
-            let workers = recovered_data_workers(Some(3), None, 1);
+            // The data runtime runs the count it is given, on the actual scheduler.
+            let workers = 3;
             let data = spawn_multithread_data(workers, shutdown_rx, async move {
                 assert_eq!(tokio::runtime::Handle::current().metrics().num_workers(), 3);
                 let tracker = busbar_kernel::detached::worker_detached().unwrap();
@@ -283,26 +183,17 @@ mod recovered_worker_tests {
     }
 }
 
-fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, String> {
-    match wt {
-        Some(0) => Err(
-            "advanced.worker_threads: 0 in config.yaml is not a positive integer (it must be >= 1); \
-             ignoring it and using the default worker-thread count"
-                .to_string(),
-        ),
-        other => Ok(other),
-    }
-}
-
 include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 
 fn register_protocols() {
     root::linked::register_protocols(&LINKED);
 }
 
-fn register_planes() {
+/// The root's one write into the kernel's install seams, before any configuration is read: the
+/// root's install record, the native images' start prepare, the start scan of `plugins.dir`, the
+/// operator binding, the public settings table and the start grammar.
+fn register_root() {
     root::linked::register_stores();
-    busbar_kernel::preflight::install_linked_auth(LINKED.auths);
 
     // WP3 step 2: the native image prepare (verify, manifest read, describe; no instance opens) runs before
     // the start scan, so --validate, --list-plugins and the start grammar read the native secret words.
@@ -311,15 +202,11 @@ fn register_planes() {
         root::exit::exit(2);
     }
     let scan = root::boot::start_scan();
-    let dropped = root::boot::install_start(scan, &LINKED);
-    busbar_kernel::preflight::install_operator(root::auth_bindings::operator_binding(dropped));
+    let dropped = root::boot::install_start(scan);
+    busbar_kernel::preflight::install_operator(root::auth_bindings::operator_binding());
+    root::linked::register_dropped(dropped);
 
-    busbar_kernel::preflight::install_declared_styles(root::door_steps::declared_styles());
-    root::boot::discover_planes(&LINKED, dropped);
-    root::linked::register_planes();
-    root::linked::register_exports(dropped);
-
-    root::settings_public::install(&LINKED, dropped);
+    root::settings_public::install();
     root::boot::bind_start_grammar();
 
     busbar_core_oauth2::install::<root::connector::AuthServerConns>();
@@ -329,12 +216,15 @@ fn register_planes() {
     root::linked::seal(ROOT_UNITS);
 }
 
-fn register_diagnostics() -> busbar_kernel::diagnostics::Catalogue {
-    root::linked::register_diagnostics(&LINKED)
+fn register_diagnostics() {
+    root::linked::register_diagnostics(&LINKED);
 }
 
-static WORKERS: std::sync::LazyLock<(usize, Vec<String>)> =
-    std::sync::LazyLock::new(resolve_worker_threads);
+/// The data-plane worker count, read once from what the operating system allows this process
+/// ([`config::sections::data_workers`]), so the bootstrap dispatcher, the control runtime and
+/// the data runtime agree on one number.
+static WORKERS: std::sync::LazyLock<usize> =
+    std::sync::LazyLock::new(config::sections::data_workers);
 
 fn main() {
     // First, before anything touches crypto: the backend's power-on self-test gates boot (#172).
@@ -350,25 +240,16 @@ fn main() {
         root::exit::exit(code);
     }
 
-    let bootstrap_services = root::serve::Services::bootstrap();
     root::boot::install_native_load_guard().unwrap_or_else(|error| die(error));
 
-    if let Err(e) = root::loader::dispatch::handle::arm() {
-        eprintln!("busbar: {e}");
-        root::exit::exit(1);
-    }
     // Force this boot's node now, so its one OS draw never lands on a request worker.
     let _ = busbar_kernel::door::node();
-    let dispatcher = root::dispatch::boot(WORKERS.0, &bootstrap_services);
-    root::doors::install_dispatcher(dispatcher);
 
     register_protocols();
 
-    register_planes();
+    register_root();
 
-    root::doors::install_plugin_logs(root::boot::plugin_logs());
-
-    let catalogue = register_diagnostics();
+    register_diagnostics();
 
     match root::cli::handle_cli_flags() {
         root::cli::Parsed::Exit(code) => root::exit::exit(code),
@@ -388,12 +269,11 @@ fn main() {
         }
     };
 
-    let (_, warnings) = &*WORKERS;
-    for w in warnings {
-        eprintln!("{w}");
+    // Retired launch inputs, before migration or any configuration is read: each one set is said
+    // once and converted (read as 1.5.5 read it, or ignored); none refuses the start.
+    for note in root::retired_env::check_launch_env(|n| std::env::var_os(n)) {
+        eprintln!("[warn] {note}");
     }
-    // Refuse retired launch inputs before migration or any configuration is read.
-    root::retired_env::check_launch_env(|n| std::env::var_os(n)).unwrap_or_else(|error| die(error));
     // Migrate-on-boot step 1 (MIGRATE-ON-BOOT r42 §3): config.yaml's one field, before anything else
     // reads it. An unstamped config is planned in memory here and written at step 5.
     {
@@ -404,7 +284,7 @@ fn main() {
             .unwrap_or_else(|error| die(error));
     }
     #[cfg(not(unix))]
-    let worker_threads = WORKERS.0;
+    let worker_threads = *WORKERS;
 
     let control_work = ControlWork::new();
     control_work.register();
@@ -414,7 +294,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(catalogue, control_work, trace_publisher));
+            .block_on(run(control_work, trace_publisher));
     }
     #[cfg(not(unix))]
     {
@@ -425,7 +305,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(catalogue, control_work, trace_publisher));
+            .block_on(run(control_work, trace_publisher));
     }
     // Every return from `run` (a one-shot command, a serve-and-shutdown) leaves here, so an
     // unpublished first start is handed over on a normal return too (FIRST-START-TAKEOVER §2.7).
@@ -555,7 +435,7 @@ mod bootstrap_destination_tests {
         };
         let holder = BootstrapDestJudge::new(root::connector::guard_for(&policy(false)).unwrap());
         let installed: Arc<dyn busbar_kernel::host_services::DestJudge> = holder.clone();
-        let class = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+        let class = busbar_contract::conn::codes::EGRESS_PROVIDER;
         let target = busbar_kernel::host_services::Destination {
             authority: "\x310.2.3.4:443",
             secure: true,
@@ -577,7 +457,6 @@ mod bootstrap_destination_tests {
 }
 
 async fn run(
-    catalogue: busbar_kernel::diagnostics::Catalogue,
     control_work: ControlWork,
     trace_publisher: Option<busbar_kernel::export::traces::TracePublisher>,
 ) {
@@ -586,7 +465,6 @@ async fn run(
     let plugin_process = root::boot::images::process().unwrap_or_else(|error| die(error));
     root::admission::install_process(&plugin_process);
     let export_observers = root::export_observer::ExportObservers::new();
-    root::observe::install(catalogue);
     // Until the listener's own handler owns signals, SIGTERM/SIGINT exit through `root::exit`, so
     // an armed first-start owner hands over (FIRST-START-TAKEOVER §2.7).
     let signal_handoff = root::exit::exit_on_signal();
@@ -727,32 +605,16 @@ async fn run(
     let boot_guard = guard_judge.guard().clone();
     let dest = BootstrapDestJudge::new(guard_judge);
     let commit_guard: Arc<dyn busbar_kernel::host_services::DestJudge> = dest.clone();
-    root::boot::note_provider_urls(
-        base_cfg
-            .providers
-            .values()
-            .map(|provider| provider.base_url.clone()),
-    );
-    root::boot::check_bootstrap_transports(&deploy.plugins).unwrap_or_else(|error| {
-        die(boot_error(
-            "principal transition bootstrap transport admission refused",
-            format!("bootstrap transport archive admission: {error}"),
-        ))
-    });
-    // Cold configuration, migration and recovery explicitly run without billable measurements.
-    // Keep the scope on the actual future: synchronous Secret resolution and every resumed
-    // native Store/Transport call inherit it before the durable measurement runtime exists.
-    let bootstrap = Box::pin(root::measurements::maintenance(async {
+    let bootstrap = Box::pin(async {
         let _connector = root::connector::boot(
             process_io.handle(),
-            LINKED_TRANSPORT_DOORS,
             &root::policy::client_settings(&base_cfg.limits),
             dest.clone(),
             &base_cfg.own_listens(),
         );
         root::connector::install_trust_store(&base_cfg, false);
         // The MIN-3 registry boots here, before the Store opens and before any listener serves: images, the
-        // kernel's sides, then 2a, 2b, the deployment point, 2c. Without a MIN-3 store image the old path boots.
+        // kernel's sides, then 2a, 2b, the deployment point, 2c. A Store with no admitted MIN-3 image stops the boot.
         let conversion_images = file_images.clone();
         let (bootstrap_ready, store_admission) = root::min3_boot::prepare_bootstrap(
             process_io.handle(), &plugin_process, file_images, &base_cfg, boot_guard.clone(), root::cli::argv().stdio,
@@ -967,7 +829,7 @@ async fn run(
             effective_images,
             bootstrap_ready,
         ))
-    }))
+    })
     .await;
     let Some((
         store_admission,
@@ -991,21 +853,23 @@ async fn run(
 
     // Data workers are created after Store recovery, on their own runtimes. The
     // control runtime and bootstrap plugin dispatcher already exist and keep their own budgets.
-    let data_workers = {
-        let mut ignored_warnings = Vec::new();
-        let selected = recovered_data_workers(
-            deploy.advanced.worker_threads,
-            worker_threads_from_env_noting("TOKIO_WORKER_THREADS", &mut ignored_warnings),
-            std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1),
-        );
-        busbar_kernel::topology::set_data_workers(selected);
-        selected
-    };
+    let data_workers = *WORKERS;
+    busbar_kernel::topology::set_data_workers(data_workers);
 
-    let deregister_delay = deploy.advanced.shutdown.deregister_delay;
-    let response_headers_cfg = deploy.advanced.response_headers.clone();
+    let deregister_delay = deploy.shutdown.delay();
+    // The default is no deregistration interval (v1.5.5 had none). A stamped (1.6) document
+    // that states none may have relied on the 5 s that 1.6 development builds assumed: say so
+    // once at boot, with how to set it.
+    if deploy.shutdown.deregister_delay.is_none() && deploy.config_version.is_some() {
+        tracing::warn!(
+            "shutdown.deregister_delay is not set: the engine begins draining as soon as a \
+             shutdown starts (no deregistration interval; 1.6 development builds assumed 5s). \
+             Behind a load balancer, set it to the balancer's health-check period times its \
+             failure threshold (for example 5s period x 2 failures = `shutdown: \
+             {{ deregister_delay: 10s }}`)"
+        );
+    }
+    let response_headers_cfg = deploy.telemetry.response_headers.clone();
     // `audit.seal_every` (SEALING-FIX §3.4): the notary's stamp cadence, validated 1-1000 ms.
     let audit_seal_every = deploy.audit.seal_every;
 
@@ -1028,7 +892,7 @@ async fn run(
     root::records_capture::configure(&deploy.records);
 
     let plugins_cfg = deploy.plugins.clone();
-    root::measurements::maintenance(root::boot::admit_recovered_plugins(&plugins_cfg))
+    root::boot::admit_recovered_plugins(&plugins_cfg)
         .await
         .unwrap_or_else(|error| die(format!("Store plugin-floor admission: {error}")));
 
@@ -1085,16 +949,8 @@ async fn run(
         .check(&cfg)
         .unwrap_or_else(|error| die(error));
 
-    let door_kernel_sections = root::door_steps::kernel_sections(&cfg)
-        .unwrap_or_else(|error| die_list("config errors", [error]));
-
     dest.replace(root::connector::dest_judge(&cfg));
     root::connector::install_trust_store(&cfg, true);
-    root::boot::note_provider_urls(
-        cfg.providers
-            .values()
-            .map(|provider| provider.base_url.clone()),
-    );
     root::connector::finalize_boot(
         &root::policy::client_settings(&cfg.limits),
         &cfg.own_listens(),
@@ -1143,34 +999,13 @@ async fn run(
 
     root::registry::check_or_exit(LINKED.claims);
 
-    let dropped_doors =
-        root::boot::dropped_transports(&root::policy::client_settings(&cfg.limits)).doors;
-
-    root::boot::load_door_planes(
-        deploy
-            .door_sections()
-            .keys()
-            .chain(door_kernel_sections.keys())
-            .copied(),
-    );
-
     let export_config = cfg.export.clone();
-
-    let door_providers = root::door_steps::provider_routes(
-        &cfg.providers,
-        &config_validate::MetadataPosture::global(&cfg),
-    );
-
-    let door_model_pools = root::model_egress::ModelPools::of(&cfg);
-
-    let door_pools = root::serve::door_pools(&cfg.plane_pools);
 
     let root_rules = Arc::new(root::door_steps::Rules::with_reader(
         Some(commit_guard),
         Arc::new(config_rules),
     ));
 
-    root_rules.hold_unloaded(root::door_steps::unloaded_doors());
     let listener_needs = root::door_steps::listener_needs(&cfg).unwrap_or_else(|error| die(error));
     let native_request_timeout = Duration::from_secs(cfg.limits.request_body_read_timeout_secs);
     let native_handshake_timeout = Duration::from_secs(cfg.limits.tls_handshake_timeout_secs);
@@ -1217,9 +1052,6 @@ async fn run(
     )
     .await
     .unwrap_or_else(|error| die(error));
-    // Each plane section's core-held acceptance (#297), kept for the door planes composed after
-    // the configuration moves into the boot App.
-    let plane_acceptance = cfg.min3.insecure_transport.clone();
     let preparation = root::boot_app::Preparation {
         secret_resolver: serving_ready.resolver(),
         startup: store_admission,
@@ -1290,7 +1122,6 @@ async fn run(
         book,
         limits: boot_limits,
         node_lease_task,
-        deploy,
         ..
     } = ready;
     root::plane_node::node().bind_book(Arc::clone(&book.durability));
@@ -1301,7 +1132,7 @@ async fn run(
         .unwrap_or_else(|error| die(format!("native DATA audit custody: {error}")));
     root::plane_node::node()
         .bind_response_intents(
-            store_admission
+            &store_admission
                 .store()
                 .unwrap_or_else(|| die("response intent has no admitted Store")),
             book.response_intents
@@ -1310,23 +1141,20 @@ async fn run(
                 .unwrap_or_else(|| die("response intent service was not constructed")),
         )
         .unwrap_or_else(|error| die(error));
+    // The one flusher of every core's audit state (design 2, A3): it starts with the bound journal
+    // and before any listener loop makes a core.
+    tokio::spawn(root::plane_node::node().run_core_flusher());
     let book = Some(book);
     // The same durably confirmed generation becomes live before any producer starts.
     boot_limits.keep().notify();
 
-    let planes: Vec<_> = busbar_kernel::plane_driver::registry::plane_decls()
-        .iter()
-        .map(|d| &d.declaration)
-        .collect();
     let services = root::serve::compose(
         dest.clone(),
         &app,
         store_admission
             .store()
             .unwrap_or_else(|| die("S7 has no admitted Store")),
-        &planes,
     );
-    let serving_dispatcher = Arc::new(root::dispatch::build(WORKERS.0, &services));
 
     // Explicit same-open ephemeral initialization uses its newly committed principal baseline
     // as a real Store witness. It follows exactly the ordinary receipt consumer before admission.
@@ -1427,40 +1255,8 @@ async fn run(
             .unwrap_or_else(|error| die_list("config errors", [error])),
     );
 
-    let door_live_handle = Arc::default();
-    let door_models = model_serving(door_model_pools, &app, &door_live_handle);
-    let door_reach = door_reach_of(
-        &app,
-        &door_providers,
-        &door_models,
-        Some(&deploy.models),
-        app.limits.as_ref(),
-        root::serve::upgrade_carriers(LINKED.transports, &dropped_doors),
-    );
-    let served = root::serve::compose_served_checked(
-        Some(Arc::clone(&native)),
-        app.governance.clone(),
-        root::boot::door_planes(),
-        &serving_dispatcher,
-        &services,
-        &root::serve::with_pools(
-            {
-                let mut sections = deploy.door_sections();
-                for (key, value) in door_kernel_sections {
-                    sections.entry(key).or_insert(value);
-                }
-                sections
-            },
-            &door_pools,
-        ),
-        &plane_acceptance,
-        deploy.public_url.as_deref(),
-        &door_reach,
-        &app.serve_tables,
-        &|_| Ok(listener_plan.binds().to_vec()),
-    )
-    .await
-    .unwrap_or_else(|error| die(error));
+    // The native seats this generation serves, their billing and the node's posting site.
+    let served = root::serve::compose_native(Arc::clone(&native), app.governance.clone());
     let native_candidates = root::min3_candidate::Factory::new(
         Arc::clone(&plugin_process),
         native_bootstrap_sources,
@@ -1486,6 +1282,9 @@ async fn run(
         keys: root::plane_node::node().kernel_and_keys().1,
         core: root::min3_listener_plan::core_lines(&app, &served).into(),
     };
+    // THE ADMIN PLANE'S ORDER (deletion plan E5): the auth instances opened in `min3_boot::finish`
+    // (admin-tokens among them), the admin chain installed above (`min3_admin_auth::install`), and
+    // only now the listener slots assembled over that chain. Nothing binds until the end of `run`.
     let slots = listener_plan
         .assemble(&app, &served, &owners)
         .unwrap_or_else(|error| die(error));
@@ -1493,17 +1292,6 @@ async fn run(
     root::min3_candidate::install_initial(&mut app, Arc::clone(&native), Arc::clone(&services))
         .unwrap_or_else(|error| die(error));
     let app = Arc::new(app);
-    root_rules.hold_owned_anchors(&served.need_trust());
-    root_rules.hold_member_tls_sections(&served.member_tls_sections());
-
-    if app.governance.is_some() {
-        root_rules.hold_unopened(
-            served
-                .unopened(root::boot::door_planes())
-                .into_iter()
-                .chain(root::boot::unbound_sections()),
-        );
-    }
 
     tracing::info!(
         "reliability state (breakers, cooldowns, latency, hard-down) starts fresh on boot and is \
@@ -1512,8 +1300,6 @@ async fn run(
 
     let tls_secret_resolver = app.secret_resolver.clone();
 
-    let door_appliers = served.appliers();
-    let door_post = served.post.clone();
     let recovery_served = served.clone();
 
     let mut served = served;
@@ -1539,11 +1325,6 @@ async fn run(
         root::listener::deferred_dispatch_layer,
     )
     .layer(axum::Extension(probes.clone()));
-    let _ = door_live_handle.set(std::sync::Arc::downgrade(&app_handle));
-
-    let _ = root::inbound::install(root::doors::dispatcher());
-    stage_native_inbound(&app_handle.load());
-    let _ = root::inbound::publish(&app_handle.load());
     export::plugin::publish_observers(&app_handle.load()).unwrap_or_else(|e| die(e));
     if let Some(publisher) = trace_publisher {
         publisher
@@ -1568,64 +1349,6 @@ async fn run(
         root::min3_candidate::Workers::start(&app_handle.load(), generation_workers)
             .unwrap_or_else(|error| die(error));
     generation_workers.bind(&app_handle);
-    app_handle.on_apply(Box::new(|app| {
-        stage_native_inbound(app);
-        let _ = root::inbound::publish(app);
-    }));
-    app_handle.on_apply_async(Box::new({
-        let door_appliers = door_appliers.clone();
-        move |app| {
-            let appliers = door_appliers.clone();
-            Box::pin(async move { appliers.apply(&app).await })
-        }
-    }));
-
-    if let Some(post) = door_post {
-        let live = std::sync::Arc::clone(&door_live_handle);
-        let upgrades = root::serve::upgrade_carriers(LINKED.transports, &dropped_doors);
-        app_handle.on_apply(Box::new(move |next| {
-            let Some(cfg) = next
-                .config_projection
-                .as_ref()
-                .and_then(|p| p.downcast_ref::<root::door_steps::DoorConfig>())
-            else {
-                return;
-            };
-            let sections = match &cfg.sections {
-                Ok(sections) => sections,
-                Err(error) => {
-                    tracing::error!(%error, "refusing invalid model configuration projection");
-                    return;
-                }
-            };
-            let models = model_serving(cfg.model_pools.clone(), next, &live);
-            let reach = door_reach_of(
-                next,
-                &cfg.providers,
-                &models,
-                None,
-                busbar_kernel::config::limits::installed().as_ref(),
-                upgrades.clone(),
-            );
-            door_appliers.refresh_models(
-                sections,
-                &root::serve::DoorEgress {
-                    reach: &reach,
-                    journal: std::sync::Arc::clone(&post)
-                        as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
-                },
-            );
-        }));
-    }
-
-    app_handle.on_apply(Box::new(|_| {
-        let refused = root::doors::refresh_live(&root::policy::client_settings(
-            &busbar_kernel::config::limits::installed().unwrap_or_default(),
-        ));
-        for why in refused {
-            tracing::warn!(error = %why, "a transport kept its settings across a config apply");
-        }
-    }));
 
     #[cfg(distribution_root)]
     if let Some(book) = &book {
@@ -1705,21 +1428,28 @@ async fn run(
     // Governed admission keeps its fixed terminal-backlog cap
     // (`governance::drain::MAX_PENDING_CHECKPOINTS`), set when the gate is built.
     let governance = app_handle.load().governance.clone();
+    // The core watch rides the housekeeping tick (the budget flusher's loop); with no governance there is no
+    // such tick and the watch wakes on the same configured interval itself.
+    let process = root::boot::images::process().ok();
+    let core_watch = root::core_watch::CoreWatch::new(move || {
+        process
+            .as_ref()
+            .map_or(0, |process| process.slots().hung_total())
+    });
+    if governance.is_none() {
+        tokio::spawn(Arc::clone(&core_watch).run_alone());
+    }
     let budget_flusher = governance.clone().map(|gov| {
-        tokio::spawn(root::measurements::maintenance(
-            busbar_kernel::governance::run_budget_flusher(
-                gov,
-                shutdown_tx.subscribe(),
-                Some(app_handle.clone()),
-                Some(Arc::clone(&drain_clock)),
-            ),
+        tokio::spawn(busbar_kernel::governance::run_budget_flusher(
+            gov,
+            shutdown_tx.subscribe(),
+            Some(app_handle.clone()),
+            Some(Arc::clone(&drain_clock)),
+            Some(core_watch.tick()),
         ))
     });
-    let work_recovery = recovery_served.spawn_work_recovery(
-        app_handle.clone(),
-        Arc::clone(&request_admission),
-        shutdown_tx.subscribe(),
-    );
+    let work_recovery =
+        recovery_served.spawn_work_recovery(app_handle.clone(), shutdown_tx.subscribe());
     drop(recovery_served);
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
@@ -1811,12 +1541,8 @@ async fn run(
             let limits = native_bind_limits(bind.max_conns, native_handshake_timeout);
             if bind.at == "admin_listen" {
                 #[cfg(unix)]
-                let listener = Listening::bind_stream(
-                    root::connector::the().address_via().as_ref(),
-                    &addr,
-                    limits,
-                )
-                .unwrap_or_else(|error| die(format!("cannot bind {addr}: {error}")));
+                let listener = Listening::bind_stream(&addr, limits)
+                    .unwrap_or_else(|error| die(format!("cannot bind {addr}: {error}")));
                 #[cfg(not(unix))]
                 let listener = root::listener::SocketAdmits::new(bind_listener(&addr).await);
                 admin = Some(Box::pin(serve_listener(
@@ -1844,6 +1570,7 @@ async fn run(
                     Arc::clone(&tls_secret_resolver),
                     &shutdown_tx,
                     worker_shutdown_rx.clone(),
+                    &core_watch,
                 ));
                 #[cfg(not(unix))]
                 {
@@ -1927,53 +1654,10 @@ fn spawn_predecessor_task(
         .and_then(|audit| audit.take_predecessor());
     let book = book.map(|book| Arc::clone(&book.durability));
     let task = Arc::clone(&fence);
-    let handle = tokio::spawn(root::measurements::maintenance(async move {
+    let handle = tokio::spawn(async move {
         root::durability::predecessor::run(task, sealing, book, stop).await;
-    }));
+    });
     Some((handle, fence))
-}
-
-/// A door egress's model serving over `app`'s lanes; boot and every apply build it here.
-fn model_serving(
-    pools: root::model_egress::ModelPools,
-    app: &Arc<busbar_kernel::state::App>,
-    live: &Arc<std::sync::OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>>,
-) -> root::model_egress::ModelServing {
-    root::model_egress::ModelServing {
-        pools,
-        lanes: app
-            .engine_tables_view()
-            .model_indices()
-            .into_iter()
-            .map(|(model, lane)| (model.to_string(), lane))
-            .collect(),
-        app: root::model_egress::LiveApp::new(Arc::clone(live), app),
-    }
-}
-
-/// The one construction of a door's reach, for boot and every apply.
-fn door_reach_of<'a>(
-    app: &busbar_kernel::state::App,
-    providers: &'a std::collections::BTreeMap<String, root::door_steps::ProviderRoute>,
-    models: &'a root::model_egress::ModelServing,
-    catalog: Option<&'a std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
-    limits: Option<&busbar_kernel::config::LimitsResolved>,
-    upgrades: Vec<&'static str>,
-) -> root::door_steps::DoorReach<'a> {
-    root::door_steps::DoorReach {
-        providers,
-        secrets: Arc::clone(&app.secret_resolver)
-            as Arc<dyn busbar_contract::secret::SecretResolve>,
-        auths: root::door_steps::process_auths(),
-        conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
-        stream_ceiling_secs: limits.map_or(
-            busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
-            |l| l.upstream_request_timeout_secs,
-        ),
-        catalog,
-        models: Some(models),
-        upgrades,
-    }
 }
 
 async fn refresh_node_lease(
@@ -2027,18 +1711,6 @@ async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
     tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| die(format!("cannot bind listen address '{addr}': {e}")))
-}
-
-fn stage_native_inbound(app: &busbar_kernel::state::App) {
-    let Some(slot) = root::serve::native_slot(app, "listen") else {
-        return;
-    };
-    let routes = slot
-        .prepared()
-        .data()
-        .and_then(|data| data.downcast::<root::serve::DataRoutes>().ok())
-        .unwrap_or_else(|| die("native data slot has no retained route owner"));
-    root::inbound::stage(routes.guests.clone(), slot.prepared().refusals.clone());
 }
 
 async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {
@@ -2101,6 +1773,7 @@ fn serve_thread_per_core(
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
+    watch: &Arc<root::core_watch::CoreWatch>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     if tls_cfg.is_some() {
         let protocols: Vec<_> = alpn.iter().map(|value| value.as_bytes()).collect();
@@ -2132,6 +1805,7 @@ fn serve_thread_per_core(
             .collect();
     let mut handles = Vec::with_capacity(cores.len());
     for (i, core_id) in cores.into_iter().enumerate() {
+        let watch = Arc::clone(&watch);
         let native = Arc::clone(&native);
         let alpn = alpn.clone();
         let tls = tls_cfg.clone();
@@ -2161,19 +1835,14 @@ fn serve_thread_per_core(
                         die(format!("failed to build per-core data runtime {i}: {e}"))
                     });
                 rt.block_on(async move {
-                    let via = crate::root::connector::the().address_via();
-                    let listener = Listening::bind_stream(via.as_ref(), &bind_at, limits)
-                        .unwrap_or_else(|e| {
-                            die(format!(
-                                "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core \
+                    let listener = Listening::bind_stream(&bind_at, limits).unwrap_or_else(|e| {
+                        die(format!(
+                            "cannot bind SO_REUSEPORT data listener on '{listen}' (per-core \
                              runtime {i}): {e}"
-                            ))
-                        });
-                    tracing::debug!(
-                        listen = %listen,
-                        carrier = %crate::root::connector::carrier_name(via.as_ref()),
-                        "data door listening through the connector"
-                    );
+                        ))
+                    });
+                    watch.enrol(listener.stopper());
+                    tracing::debug!(listen = %listen, "data listener bound through the connector");
                     serve_listener(
                         listener,
                         native,

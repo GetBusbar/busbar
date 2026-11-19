@@ -545,7 +545,7 @@ fn a_reference_capable_field_fails_closed_and_leaves_the_secret_rules_whole() {
 
 #[test]
 fn a_refusal_carries_its_error_kind_through_the_resolver() {
-    use busbar_contract::abi::secret::{ERROR_KIND_DENIED, ERROR_KIND_NOT_FOUND};
+    use busbar_contract::secret::codes::{ERROR_KIND_DENIED, ERROR_KIND_NOT_FOUND};
     use busbar_contract::secret::{SecretRefused, SecretResolve as _};
     let var = format!("BUSBAR_KIND_CARRIED_UNSET_{}", std::process::id());
     let unset: SecretRef = serde_json::from_value(

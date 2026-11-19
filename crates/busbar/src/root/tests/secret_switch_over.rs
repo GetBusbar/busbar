@@ -76,7 +76,13 @@ fn deadline() -> Instant {
 }
 
 async fn resolved(secrets: &BootSecrets, reference: &SecretRef) -> Result<String, CustodyDenied> {
-    let value = secrets.resolve_ref(deadline(), reference).await?;
+    let value = secrets
+        .resolve_ref(
+            busbar_kernel::store::monotonic_ns(),
+            Duration::from_secs(30),
+            reference,
+        )
+        .await?;
     Ok(String::from_utf8(value.as_slice().to_vec()).expect("utf-8"))
 }
 
@@ -257,6 +263,7 @@ async fn an_immutable_prefix_keeps_cycle_refusal_and_releases_its_ports_on_drop(
         deadline: deadline(),
         request_id: 0,
         stack: CallStack::default().push(31).unwrap(),
+        mono_ns: 0,
     };
     let custody = super::BootCustody(Arc::clone(&after));
     assert!(matches!(

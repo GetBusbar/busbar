@@ -4,7 +4,6 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use busbar_contract::secure::SecureVec;
 use busbar_kernel_audit::record::{HookApplied, HookHead};
 use busbar_plugin_abi::kinds::hook::hook as abi;
 use busbar_ports::hook::{BudgetIn, CandidateIn, CostTermIn, HookAnswer, HookCall, HookView};
@@ -27,8 +26,9 @@ pub(super) struct Input<'a> {
     pub dialect: &'a Arc<str>,
     pub principal: Option<&'a Subject>,
     pub request_id: u64,
-    /// The admitted identity; `None` only in the worker of a call not granted it.
-    pub identity: Option<&'a Arc<SecureVec>>,
+    /// The authority of a notification fired earlier ([`crate::host_services::HookGrant`]); `None`
+    /// for a call made while the request itself allows its hooks.
+    pub grant: Option<&'a crate::host_services::HookGrant>,
     pub candidates: &'a Candidates,
     pub quantities: &'a Arc<[(Box<str>, f64)]>,
     /// A stage tap's facts; `None` on a request-stage call.
@@ -66,8 +66,8 @@ impl std::ops::DerefMut for Reply {
 }
 impl Drop for Reply {
     fn drop(&mut self) {
-        if let Some(bytes) = self.0.rewrite.as_mut() {
-            busbar_contract::abi::sdk::wipe::wipe_bytes(bytes);
+        if let Some(bytes) = self.0.rewrite.take() {
+            drop(busbar_contract::secure::SecureVec::from(bytes));
         }
     }
 }
@@ -85,20 +85,33 @@ fn ppm(value: f64) -> u32 {
     (value.clamp(0.0, 1.0) * 1_000_000.0).round() as u32
 }
 
+/// Whether one call is shown the caller (the subject, the key's id and name, the end user the
+/// plane projected): the operator's `user` grant for that hook, and nothing else. This is
+/// v1.5.5's rule. Hook 3.0 has no fact bit by which an image asks for the caller
+/// (`FB_WANTS_IDENTITY` is retired: no shipped hook declared it, and `hook-webrequest`, which
+/// forwards the caller, never did), so an image's declaration can neither widen nor narrow the
+/// operator's grant.
+pub(super) fn lends_caller(call: &Call) -> bool {
+    call.user.sends_user()
+}
+
 /// Each actual call has its own grants and confirmed content read, including fallbacks.
 pub(super) async fn one(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Reply, Failed> {
     prepare(call, point, input).await
 }
 
 async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Reply, Failed> {
-    let deadline = Instant::now() + call.timeout;
+    // The node's monotonic clock, read once for this call: the deadline is set from it and the
+    // hook is handed it.
+    let mono_ns = crate::store::monotonic_ns();
+    let deadline = busbar_contract::mono_instant::instant_at(mono_ns) + call.timeout;
     if call.port.points() & (1 << point) == 0 {
         return Err(Failed::Port);
     }
     let facts = call.port.facts();
     let content =
         input.stage.is_none() && call.prompt.sends_prompt() && facts & abi::FB_WANTS_PROMPT != 0;
-    let identity = call.user.sends_user() && facts & abi::FB_WANTS_IDENTITY != 0;
+    let identity = lends_caller(call);
     if content && input.projection.conversation.is_none() {
         return Err(Failed::Unprojected);
     }
@@ -119,7 +132,7 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
     // Both synchronous and I/O hooks run off the calling executor. The worker's input shares
     // what the request holds (a count of each, no copy) and retains it, with its wiping content
     // and its exact generation, until a timed-out worker actually returns. A call is lent the
-    // conversation and the identity only when it is granted them.
+    // conversation and the caller only when it is granted them.
     let projection = Projection {
         facts: input
             .projection
@@ -140,11 +153,6 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
     let dialect = Arc::clone(input.dialect);
     let principal = input.principal.cloned();
     let request_id = input.request_id;
-    let identity = if identity {
-        input.identity.cloned()
-    } else {
-        None
-    };
     let candidates = input.candidates.clone();
     let quantities = Arc::clone(input.quantities);
     let stage = input.stage.cloned();
@@ -153,37 +161,46 @@ async fn prepare(call: &Arc<Call>, point: u32, input: &Input<'_>) -> Result<Repl
     let handle = tokio::runtime::Handle::current();
     let (sent, worker) = tokio::sync::oneshot::channel();
     let owner = context.clone();
-    owner
-        .offload_hook(Box::new(move || {
-            let result = {
-                let input = Input {
-                    projection: &projection,
-                    selected: &selected,
-                    scope: &scope,
-                    dialect: &dialect,
-                    principal: principal.as_ref(),
-                    request_id,
-                    identity: identity.as_ref(),
-                    candidates: &candidates,
-                    quantities: &quantities,
-                    stage: stage.as_ref(),
-                    context: &context,
-                };
-                handle.block_on(async {
-                    tokio::time::timeout_at(deadline.into(), invoke(&call, point, &input, deadline))
-                        .await
-                        .map_err(|_| Failed::Port)?
-                })
+    let job: Box<dyn FnOnce() + Send> = Box::new(move || {
+        let result = {
+            let input = Input {
+                projection: &projection,
+                selected: &selected,
+                scope: &scope,
+                dialect: &dialect,
+                principal: principal.as_ref(),
+                request_id,
+                // The worker hands nothing over: it is the handed-over work.
+                grant: None,
+                candidates: &candidates,
+                quantities: &quantities,
+                stage: stage.as_ref(),
+                context: &context,
             };
-            // What the worker shared is let go before its answer is handed back, so a caller
-            // still waiting for the answer is again the only holder of what it lent.
-            drop((
-                projection, selected, scope, dialect, principal, identity, candidates, quantities,
-                stage, context, call,
-            ));
-            let _ = sent.send(result);
-        }))
-        .map_err(|_| Failed::Port)?;
+            handle.block_on(async {
+                tokio::time::timeout_at(
+                    deadline.into(),
+                    invoke(&call, point, &input, deadline, mono_ns),
+                )
+                .await
+                .map_err(|_| Failed::Port)?
+            })
+        };
+        // What the worker shared is let go before its answer is handed back, so a caller
+        // still waiting for the answer is again the only holder of what it lent.
+        drop((
+            projection, selected, scope, dialect, principal, candidates, quantities, stage,
+            context, call,
+        ));
+        let _ = sent.send(result);
+    });
+    // A notification fired earlier is handed over under the authority taken when it was fired;
+    // any other call is handed over only while the request itself allows its hooks.
+    let handed_over = match input.grant {
+        Some(grant) => owner.offload_granted_hook(grant, job),
+        None => owner.offload_hook(job),
+    };
+    handed_over.map_err(|_| Failed::Port)?;
     tokio::time::timeout_at(deadline.into(), worker)
         .await
         .map_err(|_| Failed::Port)?
@@ -195,11 +212,12 @@ async fn invoke(
     point: u32,
     input: &Input<'_>,
     deadline: Instant,
+    mono_ns: u64,
 ) -> Result<Reply, Failed> {
     let facts = call.port.facts();
     let content =
         input.stage.is_none() && call.prompt.sends_prompt() && facts & abi::FB_WANTS_PROMPT != 0;
-    let identity = call.user.sends_user() && facts & abi::FB_WANTS_IDENTITY != 0;
+    let identity = lends_caller(call);
     let mut signals = super::view::signals(&input.projection.facts, call, content);
     signals.push((abi::S_POOL, FactRef::Text(&input.scope.pool)));
     signals.push((abi::S_INGRESS_PROTOCOL, FactRef::Text(&**input.dialect)));
@@ -216,13 +234,6 @@ async fn invoke(
         }
     }
     for (key, value) in input.stage() {
-        if *key == abi::S_RESPONSE_TOKENS_OUT
-            && !call
-                .signals
-                .wants(busbar_contract::signal::Signal::ResponseTokensOut)
-        {
-            continue;
-        }
         signals.push((
             *key,
             match value {
@@ -291,14 +302,8 @@ async fn invoke(
                 rec.flags |= abi::C_HAS_BUDGET;
                 rec.budget_remaining_micros = value;
             }
-            // Opt-in: encoded only when this Call requested it (DES-NATIVE-HOOKS-PARITY r3 §E).
-            if let Some(value) = facts.error_rate.filter(|_| {
-                call.signals
-                    .wants(busbar_contract::signal::Signal::CandidateErrorRate)
-            }) {
-                rec.flags |= abi::C_HAS_ERROR_RATE;
-                rec.error_rate_ppm = ppm(value);
-            }
+            // Hook 3.0 retired the error-rate presence bit (no shipped hook read it and v1.5.5
+            // never sent it): `error_rate_ppm` stays in the record's layout and is always 0.
             if let Some(value) = input.selected.rate_headroom {
                 rec.flags |= abi::C_HAS_RATE_HEADROOM;
                 rec.rate_headroom_ppm = ppm(value);
@@ -343,13 +348,17 @@ async fn invoke(
         } else {
             None
         },
+        // Hook 3.0: neither the client's raw body nor the verified identity records are part of
+        // the view. A hook granted `user` is shown the caller as S_USER_SUBJECT, S_KEY_ID and
+        // S_KEY_NAME above, as v1.5.5 showed it.
         body: None,
-        identity: input.identity.filter(|_| identity).map(|bytes| &***bytes),
+        identity: None,
     };
     let cx = CallCx {
         deadline,
         request_id: input.request_id,
         stack: Default::default(),
+        mono_ns,
     };
     let answer = match call.port.on(cx, point, &view) {
         HookCall::Done(result) => result,

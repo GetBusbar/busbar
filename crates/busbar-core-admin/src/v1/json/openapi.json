@@ -1008,7 +1008,7 @@
           },
           "config_generation": {
             "default": null,
-            "description": "The config generation after the change, as a decimal string: on every applied row of a\nconfig-changing request, null otherwise.",
+            "description": "The durable config generation after the change (the `config_generation` `GET /info` and\nthe config ETag report, never the per-process `config_version`), as a decimal string: on\nevery applied row of a config-changing request, null otherwise.",
             "type": [
               "string",
               "null"
@@ -1805,6 +1805,35 @@
         "required": [
           "count",
           "source"
+        ],
+        "type": "object"
+      },
+      "BuildInfo": {
+        "description": "The compiled-in feature proof (`InfoView.build`): what this binary links, read from the binary,\nnever from configuration, so a smaller build provably shows a smaller surface. No LLM content.",
+        "properties": {
+          "auth_modules": {
+            "description": "Auth modules baked into this binary: the built-in `keys` module, then every linked auth\nrow that declares itself an inbound auth-chain module.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "hook_plugins": {
+            "description": "Hook plugins baked into this binary: the name of every linked plugin row of kind `hook`.\nHooks ship as native images loaded from the plugins directory, not linked rows, so a\ndefault build links none and this is empty.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "weighted_floor": {
+            "description": "The inline smooth weighted round-robin floor: always `true` (compiled in unconditionally,\nnot removable).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "auth_modules",
+          "hook_plugins",
+          "weighted_floor"
         ],
         "type": "object"
       },
@@ -2792,7 +2821,7 @@
         ]
       },
       "ConfigSettingsView": {
-        "description": "`GET`/`PUT /config/settings` (1.5.0 full-config coverage): the API-settable single-value config\noverlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective\nroot override (the merge of prior overlay + this request). It is overlay-persisted so it survives\na restart. 1.5.3: a MUTABLE config always has a writable `config.overlay` backend (the boot\ninvariant), so a successful PUT is ALWAYS durable; a LOCKED config (`config.locked: true`) refuses\nthe PUT (`400`) instead of applying it in memory only; the silent-loss outcome is gone.\n`reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE: the\nprocess-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, and the\n`admin_require_mtls` boot-guard) are read once at process start, and the durable `store` backend\nis reused across a hot reload; none can hot-swap, so they take effect on the next RESTART (or a\nsupervisor restart), NEVER on a\n`POST /config/reload`: a reload re-reads disk and rebuilds the `App` but does not rebind sockets,\nrebuild the TLS acceptor, or re-open the store. It is always EMPTY when nothing was durably stored\n(no overlay); `note` names the affected fields instead. Everything else\n(`rate_card`/`per_request_fee`/`security`/`health`/`routing`) is LIVE on the swap;\n`limits` is live EXCEPT four boot-scoped fields (see `reload_to_apply_fields`):\n`upstream_request_timeout_secs`/`pool_max_idle_per_host`/`pool_idle_timeout_secs`, which the\nreused `UpstreamClients` only reads once at boot, and `max_inbound_concurrent`, which is baked\nonce into the data router's `GlobalConcurrencyLimitLayer` at process start (a config apply swaps\nonly `Arc<App>`, never the router): two independent freezing mechanisms.\nThere is NO\n`observability` section here, and no `metrics` one either: 1.5.3 DELETED both from the config\ngrammar, and `RootSettings` (what this endpoint projects) carries neither field: a PUT naming\n`observability` is a loud `400` (`deny_unknown_fields`), never a silent no-op. All telemetry\negress uses the named `export:` map. Export definitions and explicit supported field projections\nare authored through the named exporter routes or source-fenced configuration document edits.\nModule-carried streams, produced fields and required pinned fields are published in the export\nform schema; lifecycle and restart requirements remain explicit in mutation responses.\nThe settings endpoint exposes only the patchable advanced fields. The document-only\n`advanced.shutdown.deregister_delay` is captured at boot and requires restart.\nWithin these settings, `advanced` is live EXCEPT `response_headers`: `response_headers.server_timing` is\nbaked into router middleware state at boot (same \"config apply swaps `Arc<App>`, never the\nrouter\" freezing as `max_inbound_concurrent`) and is not rebuilt by an apply.",
+        "description": "`GET`/`PUT /config/settings` (1.5.0 full-config coverage): the API-settable single-value config\noverlay (`root` section) and, on a PUT, the apply metadata. `settings` is the CURRENT effective\nroot override (the merge of prior overlay + this request). It is overlay-persisted so it survives\na restart. 1.5.3: a MUTABLE config always has a writable `config.overlay` backend (the boot\ninvariant), so a successful PUT is ALWAYS durable; a LOCKED config (`config.locked: true`) refuses\nthe PUT (`400`) instead of applying it in memory only; the silent-loss outcome is gone.\n`reload_to_apply` names the fields whose new value is DURABLY STORED but not yet LIVE: the\nprocess-level binds (`listen`/`admin_listen` socket, `tls`/`admin_tls` bind, and the\n`admin_require_mtls` boot-guard) are read once at process start, and the durable `store` backend\nis reused across a hot reload; none can hot-swap, so they take effect on the next RESTART (or a\nsupervisor restart), NEVER on a\n`POST /config/reload`: a reload re-reads disk and rebuilds the `App` but does not rebind sockets,\nrebuild the TLS acceptor, or re-open the store. It is always EMPTY when nothing was durably stored\n(no overlay); `note` names the affected fields instead. Everything else\n(`rate_card`/`per_request_fee`/`security`/`health`/`routing`) is LIVE on the swap;\n`limits` is live EXCEPT four boot-scoped fields (see `reload_to_apply_fields`):\n`upstream_request_timeout_secs`/`pool_max_idle_per_host`/`pool_idle_timeout_secs`, which the\nreused `UpstreamClients` only reads once at boot, and `max_inbound_concurrent`, which is baked\nonce into the data router's `GlobalConcurrencyLimitLayer` at process start (a config apply swaps\nonly `Arc<App>`, never the router): two independent freezing mechanisms.\nThere is NO\n`observability` section here, and no `metrics` one either: 1.5.3 DELETED both from the config\ngrammar, and `RootSettings` (what this endpoint projects) carries neither field: a PUT naming\n`observability` is a loud `400` (`deny_unknown_fields`), never a silent no-op. All telemetry\negress uses the named `export:` map. Export definitions and explicit supported field projections\nare authored through the named exporter routes or source-fenced configuration document edits.\nModule-carried streams, produced fields and required pinned fields are published in the export\nform schema; lifecycle and restart requirements remain explicit in mutation responses.\nThe settings endpoint exposes only the patchable advanced fields. The document-only\n`shutdown.deregister_delay` is captured at boot and requires restart.\nWithin these settings, `advanced` is live EXCEPT `response_headers` (an old key whose home is\n`telemetry.response_headers`; a PUT naming it is carried there): `response_headers.server_timing` is\nbaked into router middleware state at boot (same \"config apply swaps `Arc<App>`, never the\nrouter\" freezing as `max_inbound_concurrent`) and is not rebuilt by an apply.",
         "properties": {
           "applied": {
             "description": "`true` on a PUT that stored + swapped; `false` on a GET (a pure read).",
@@ -4881,8 +4910,18 @@
         "type": "object"
       },
       "InfoView": {
-        "description": "`GET /api/v1/admin/info`: this node's identity and nothing else (ADMIN-API-1.6-ONE-MODEL §10.1).\nEvery admin credential reads it, so it names no topology, no compiled-in plugin and no\nprocess-local counter: node lease rows are the `core/process` view `nodes`, counts come from\n`/kinds`, and the `/kinds` ETag is the discovery revision.",
+        "description": "`GET /api/v1/admin/info`: this node's identity (ADMIN-API-1.6-ONE-MODEL §10.1), the admin API\nrevision it serves and the compiled-in build proof. Every admin credential reads it, so it names\nno topology and no process-local counter: node lease rows are the `core/process` view `nodes`,\ncounts come from `/kinds`, and the `/kinds` ETag is the discovery revision.",
         "properties": {
+          "api_revision": {
+            "description": "The revision of the admin API document this engine serves: a small integer raised by one\nwhenever the document changes shape (an operation, parameter, header, schema member, type\nor enum value is added; the API is frozen against removals and renames). A client that\nneeds something added at revision N checks `api_revision >= N`; an engine that omits this\nmember predates revision 1. Description-only changes do not move it.",
+            "format": "uint32",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "build": {
+            "$ref": "#/components/schemas/BuildInfo",
+            "description": "What this binary was compiled with: the proof that the plugin surface is the binary's, not\nconfiguration's."
+          },
           "config_generation": {
             "description": "The durable config generation (ADMIN-API-1.6 6.1): advanced in the Store before every\npublication, so it never repeats across restarts. The ETag of every config resource is\n`\"<deployment_id>.<config_generation>\"`. This is not the per-process `config_version`\ncounter that mutation responses carry; compare this one to learn whether the configuration\nchanged.",
             "format": "uint64",
@@ -4950,6 +4989,8 @@
         },
         "required": [
           "version",
+          "api_revision",
+          "build",
           "incarnation",
           "started_at_ms",
           "config_generation",
@@ -6753,9 +6794,9 @@
       "OperationState": {
         "description": "Where an idempotent operation stands.",
         "enum": [
-          "__applied",
-          "__rejected",
-          "__in_flight"
+          "applied",
+          "rejected",
+          "in_flight"
         ],
         "type": "string",
         "x-busbar-extensible-enum": true
@@ -28539,7 +28580,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Node identity: version, deployment, node, incarnation, warnings",
+        "summary": "Node identity: version, API revision, build, deployment, node, incarnation, warnings",
         "x-busbar-required-scope": "read-only",
         "x-busbar-verb": "get_info"
       }
@@ -41630,6 +41671,20 @@
       "post": {
         "description": "A counterparty is approved at the catalogue hash it last reported, which clears its quarantine; an item at the digest it was last sighted at. Both members of the body are required: `expected_digest` is the digest reviewed from `GET /trust` (omitted: 428 `reviewed_digest_required`; not current: 409 `reviewed_digest_stale`, nothing changes). Approve is strict: `expected_digest` must equal the current `seen`, and `null` is valid only while the key was never sighted. The decision is kept durably before the answer and outlives a restart; every attempt is audited as `trust_approve` or `trust_revoke`, naming the key. `Idempotency-Key` (1..128 of `A-Z a-z 0-9 . _ : -`; it is echoed as the kept decision's `operation`) makes the request replayable: the same key and bytes answer the original outcome with `idempotent-replayed: true` and never decide again; other bytes are 409 `idempotency_mismatch`, a request still running 409 `idempotency_in_flight`. A durable write whose outcome is unknown answers 503 `service_unavailable` with `details` naming the attempt: replay the same key and bytes to resolve it, to 200 when it is in force or to 409 `outcome_not_applied` when the store proves it never applied; until then it stays the same 503 (read the key's state and decide again under a new key). `x-busbar-trust-effect` classifies every answer: `applied`, `not_applied` or `unknown`.",
         "operationId": "PostTrustApprove",
+        "parameters": [
+          {
+            "description": "Optional. 1..128 of `A-Z a-z 0-9 . _ : -`; any other value is 400 `invalid_request`. Scoped to the authenticated principal and kept durably with the decision (echoed as its `operation`): the same key and request bytes answer the original outcome with `idempotent-replayed: true` and never decide again; other bytes are 409 `idempotency_mismatch`, a request still running 409 `idempotency_in_flight`. After a 503 whose outcome is unknown, replay the same key and bytes to resolve it; never retry under a new key.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -42166,6 +42221,20 @@
       "post": {
         "description": "Refused until approved again: a counterparty revoked refuses everything at it, an item revoked refuses it over its configured approval. Both members of the body are required: `expected_digest` is the digest reviewed from `GET /trust` (omitted: 428 `reviewed_digest_required`; not current: 409 `reviewed_digest_stale`, nothing changes). Revoke accepts the current `seen` or the current `approved` digest; `null` matches a null one of them. The decision is kept durably before the answer and outlives a restart; every attempt is audited as `trust_approve` or `trust_revoke`, naming the key. `Idempotency-Key` (1..128 of `A-Z a-z 0-9 . _ : -`; it is echoed as the kept decision's `operation`) makes the request replayable: the same key and bytes answer the original outcome with `idempotent-replayed: true` and never decide again; other bytes are 409 `idempotency_mismatch`, a request still running 409 `idempotency_in_flight`. A durable write whose outcome is unknown answers 503 `service_unavailable` with `details` naming the attempt: replay the same key and bytes to resolve it, to 200 when it is in force or to 409 `outcome_not_applied` when the store proves it never applied; until then it stays the same 503 (read the key's state and decide again under a new key). `x-busbar-trust-effect` classifies every answer: `applied`, `not_applied` or `unknown`.",
         "operationId": "PostTrustRevoke",
+        "parameters": [
+          {
+            "description": "Optional. 1..128 of `A-Z a-z 0-9 . _ : -`; any other value is 400 `invalid_request`. Scoped to the authenticated principal and kept durably with the decision (echoed as its `operation`): the same key and request bytes answer the original outcome with `idempotent-replayed: true` and never decide again; other bytes are 409 `idempotency_mismatch`, a request still running 409 `idempotency_in_flight`. After a 503 whose outcome is unknown, replay the same key and bytes to resolve it; never retry under a new key.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9._:-]+$",
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {

@@ -35,7 +35,7 @@ fn env_or(name: &str, default: usize) -> usize {
 }
 
 fn median(values: &mut [u64]) -> u64 {
-    values.sort_unstable();
+    values.sort();
     values[values.len() / 2]
 }
 

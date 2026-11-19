@@ -37,7 +37,14 @@ extern "C" fn grow(_: Ctx<'_>, _: &mut RawOut, _: usize) -> bool {
 extern "C" fn deployment(_: Ctx<'_>) -> DeploymentId {
     busbar_plugin_abi::host_side::host_vt::vt::deployment()
 }
-extern "C" fn migrate(_: Ctx<'_>, _: u64) -> Status {
+/// The config-only CHECK offers no kind service either (the store's recoverable gate was one): every
+/// service id is refused and the attempt remembered.
+extern "C" fn service(
+    _: Ctx<'_>,
+    _id: u64,
+    _call: &busbar_ffi::vt::Call<'_>,
+    _out: &mut RawOut,
+) -> Status {
     attempted();
     Status::REFUSED
 }
@@ -52,7 +59,7 @@ static CHECK_HOST: Host = Host::new(
         log_level: Some(level),
         grow: Some(grow),
         deployment: Some(deployment),
-        migrate_admit: Some(migrate),
+        service: Some(service),
     },
 );
 
@@ -77,6 +84,19 @@ mod tests {
             !run(|_| ()).1,
             "a fresh pure parser does not inherit another check's attempt"
         );
+    }
+
+    /// Core 3.0: the HMAC over parts is a host service like any other. A config-only CHECK gets no MAC
+    /// (the safe layer reads the refusal as its failure, never as a tag) and the attempt is remembered.
+    #[test]
+    fn a_check_cannot_mac_over_parts_and_the_attempt_is_remembered() {
+        use busbar_plugin_abi::host::{CryptoErr, Hash, HostExt};
+        let (mac, attempted) = run(|host| {
+            host.hmac_parts(Hash::Sha256, &[0x0b; 20], &[b"id", b"body"])
+                .map(|digest| digest.as_slice().to_vec())
+        });
+        assert_eq!(mac, Err(CryptoErr::Rng));
+        assert!(attempted);
     }
 
     #[test]

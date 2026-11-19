@@ -122,6 +122,61 @@ impl Signal {
             .position(|s| *s == self)
             .expect("Signal::ALL must list every variant") as u32
     }
+
+    /// Whether hook 3.0 retired this signal: the kernel sends it to no hook, whatever a hook's
+    /// `signals:` asks for. The entry keeps its name and its bit (the catalog is append-only), so
+    /// an old config that names it still parses; config load then drops it ([`configured`]).
+    pub fn retired(self) -> bool {
+        matches!(self, Signal::CandidateErrorRate | Signal::ResponseTokensOut)
+    }
+}
+
+/// A hook's `signals:` as config load keeps it: `stated` less the retired signals
+/// ([`Signal::retired`]), in the stated order. `dropped` is told each retired signal that was
+/// stated, once per statement.
+pub fn keep_live(stated: Vec<Signal>, mut dropped: impl FnMut(Signal)) -> Vec<Signal> {
+    if !stated.iter().any(|signal| signal.retired()) {
+        return stated;
+    }
+    stated
+        .into_iter()
+        .filter(|signal| {
+            if signal.retired() {
+                dropped(*signal);
+            }
+            !signal.retired()
+        })
+        .collect()
+}
+
+/// The line config load logs for a retired signal a hook's `signals:` still names.
+pub fn retired_warning(signal: Signal) -> String {
+    format!(
+        "hook setting `signals`: `{}` is retired (hook 3.0 sends it to no hook) and was dropped at load; remove it from the hook's `signals:`",
+        signal.name()
+    )
+}
+
+/// `#[serde(deserialize_with)]` for a hook's `signals:` in a config document. A name that is no
+/// signal is refused, as before. A retired signal ([`Signal::retired`]) is accepted, DROPPED,
+/// and a warning naming the setting and the signal is logged ([`retired_warning`]): an old
+/// config is migrated, never refused, and a setting is never kept that silently does nothing.
+///
+/// # Errors
+/// The document's `signals` is not a list of signal names.
+pub fn configured<'de, D>(deserializer: D) -> Result<Vec<Signal>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let stated = Vec::<Signal>::deserialize(deserializer)?;
+    Ok(keep_live(stated, |signal| {
+        tracing::warn!(
+            setting = "signals",
+            signal = signal.name(),
+            "{}",
+            retired_warning(signal)
+        );
+    }))
 }
 
 /// The typed, plane-neutral routing-cost signal carried by a candidate.

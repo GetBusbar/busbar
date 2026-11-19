@@ -27,12 +27,16 @@ pub mod effect;
 pub mod native_admin;
 pub mod native_chain;
 pub mod native_data;
+pub(crate) mod native_dpop;
+pub mod native_keys;
 pub mod native_policy;
-pub mod relend;
+pub mod native_signed;
+pub mod native_signed_route;
+pub mod native_ticket;
+pub mod native_upgrade;
 pub mod verdicts;
 #[cfg(test)]
 use crate::off_path::auth::chain::admin_head;
-pub(crate) use crate::off_path::auth::chain::auth_refusal;
 use crate::off_path::auth::chain::{
     admin_door_of_key, admin_head_with, admin_keys_arm, admin_verbs_named, module_scope_cap,
 };
@@ -108,8 +112,6 @@ pub(crate) struct CredentialReader {
     pub(crate) name: std::sync::Arc<str>,
     pub(crate) calls: std::sync::Arc<dyn AuthCalls>,
     pub(crate) kinds: std::sync::Arc<[String]>,
-
-    pub(crate) issued: Option<busbar_contract::auth_calls::IssuedShape>,
 }
 
 pub(crate) struct ChainEntry {
@@ -481,10 +483,14 @@ const ADMIN_ADMISSION_MAX_INFLIGHT: usize = 16;
 const ADMIN_ADMISSION_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub fn admin_call_context(id: crate::state::InvocationId) -> busbar_ports::CallCx {
+    // The operation's one reading of the node's monotonic clock: the deadline is set from it and
+    // the plane is handed it.
+    let mono_ns = crate::store::monotonic_ns();
     busbar_ports::CallCx {
-        deadline: std::time::Instant::now() + ADMIN_ADMISSION_WAIT,
+        deadline: busbar_contract::mono_instant::instant_at(mono_ns) + ADMIN_ADMISSION_WAIT,
         request_id: id.request_id().get(),
         stack: Default::default(),
+        mono_ns,
     }
 }
 
@@ -721,7 +727,7 @@ impl<'a> ChainHead<'a> {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
         VerifyRequest {
-            point: busbar_contract::abi::auth::AuthPoint::Head,
+            point: busbar_contract::route::AuthPoint::Head,
             credential: candidate
                 .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec())),
             lines: self
@@ -1293,10 +1299,16 @@ async fn run_admin_chain(
         let operator = app.admin_modules.operator.is(name);
         if let Some(native) = app.native_admin.as_ref() {
             let cx = invocation.map_or_else(
-                || busbar_ports::CallCx {
-                    deadline: std::time::Instant::now() + ADMIN_ADMISSION_WAIT,
-                    request_id: app.next_request_id(),
-                    stack: Default::default(),
+                || {
+                    // One reading of the node's monotonic clock for this call.
+                    let mono_ns = crate::store::monotonic_ns();
+                    busbar_ports::CallCx {
+                        deadline: busbar_contract::mono_instant::instant_at(mono_ns)
+                            + ADMIN_ADMISSION_WAIT,
+                        request_id: app.next_request_id(),
+                        stack: Default::default(),
+                        mono_ns,
+                    }
                 },
                 |invocation| invocation.cx,
             );
@@ -2310,7 +2322,7 @@ async fn claimed_ticket_verdict(
     reason = "axum middleware answers a response on either side"
 )]
 pub(crate) async fn auth_middleware(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    current: crate::state::CurrentApp,
     handle: std::sync::Arc<crate::state::AppHandle>,
     body_limit: usize,
     core_routes: &crate::core_routes::CoreRouteTable,
@@ -2318,12 +2330,46 @@ pub(crate) async fn auth_middleware(
     next: Next,
 ) -> Result<Response, Response> {
     // Remove the one-shot capability before any body, auth or handler suspension.
-    let mut physical_pending = req
+    let carrier = req
         .extensions_mut()
-        .remove::<crate::inbound::native::AdminPhysicalRequest>()
-        .map(|carrier| carrier.take())
-        .transpose()
+        .remove::<crate::inbound::native::AdminPhysicalRequest>();
+    let (physical_pending, returned) = crate::inbound::native::HeldAdminPending::take_from(carrier)
         .map_err(|_| admin_unauthorized_response())?;
+    let mut answered = auth_middleware_held(
+        current,
+        handle,
+        body_limit,
+        core_routes,
+        req,
+        next,
+        physical_pending,
+    )
+    .await;
+    // A native request refused here still holds its pending physical owner: it rides the refusing
+    // answer back to root, which records the refusal and only then makes it the answer's output
+    // authority. Without it the native listener holds an answer with no authority and writes
+    // nothing to the caller. Only a native admin request has a return cell.
+    if let Some(returned) = &returned {
+        match &mut answered {
+            Ok(response) | Err(response) => returned.ride(response),
+        }
+    }
+    answered
+}
+
+#[expect(
+    clippy::result_large_err,
+    reason = "axum middleware answers a response on either side"
+)]
+async fn auth_middleware_held(
+    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    handle: std::sync::Arc<crate::state::AppHandle>,
+    body_limit: usize,
+    core_routes: &crate::core_routes::CoreRouteTable,
+    mut req: Request<Body>,
+    next: Next,
+    mut physical_pending: crate::inbound::native::HeldAdminPending,
+) -> Result<Response, Response> {
     let mut physical_execution = req
         .extensions()
         .get::<std::sync::Arc<crate::inbound::native::PhysicalAdminExecution>>()
@@ -2440,17 +2486,17 @@ pub(crate) async fn auth_middleware(
     let mut claimed_at_key = false;
     if let Some(auth) = core_routes.declared_auth(path, req.method()) {
         match auth {
-            busbar_contract::abi::mechanism::route::RouteAuth::None => {
+            busbar_contract::route::RouteAuth::None => {
                 if physical_binding.is_some() {
                     return Err(admin_unauthorized_response());
                 }
                 return Ok(next.run(req).await);
             }
-            busbar_contract::abi::mechanism::route::RouteAuth::Admin => {
+            busbar_contract::route::RouteAuth::Admin => {
                 declared_admin = true;
                 declared_core_admin = true;
             }
-            busbar_contract::abi::mechanism::route::RouteAuth::Key => claimed_at_key = true,
+            busbar_contract::route::RouteAuth::Key => claimed_at_key = true,
         }
     }
 
@@ -2459,14 +2505,14 @@ pub(crate) async fn auth_middleware(
         .flatten()
     {
         match auth {
-            busbar_contract::abi::mechanism::route::RouteAuth::None => {
+            busbar_contract::route::RouteAuth::None => {
                 if physical_binding.is_some() {
                     return Err(admin_unauthorized_response());
                 }
                 return Ok(next.run(req).await);
             }
-            busbar_contract::abi::mechanism::route::RouteAuth::Admin => declared_admin = true,
-            busbar_contract::abi::mechanism::route::RouteAuth::Key => {}
+            busbar_contract::route::RouteAuth::Admin => declared_admin = true,
+            busbar_contract::route::RouteAuth::Key => {}
         }
     }
 
@@ -3207,7 +3253,7 @@ fn admits_ungoverned_under(
 fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequest {
     use busbar_contract::redacted::Secret;
     VerifyRequest {
-        point: busbar_contract::abi::auth::AuthPoint::HeadBody,
+        point: busbar_contract::route::AuthPoint::HeadBody,
         lines: parts
             .headers
             .iter()
@@ -3282,8 +3328,8 @@ mod plugin_chain_tests;
 mod chain_walk_tests;
 
 #[cfg(test)]
-#[path = "tests/instances_tests.rs"]
-mod instances_tests;
+#[path = "tests/no_axis_tests.rs"]
+mod no_axis_tests;
 
 #[cfg(test)]
 #[path = "tests/acceptance_1_5_5_tests.rs"]
@@ -3320,7 +3366,6 @@ impl AuthMiddleware {
                 name: "reader".into(),
                 calls,
                 kinds: std::sync::Arc::from([]),
-                issued: None,
             }],
             reader_by_carrier: std::iter::once((carrier.clone(), 0)).collect(),
             carriers: vec![carrier],
@@ -3336,3 +3381,16 @@ mod admin_grant_tests;
 #[cfg(test)]
 #[path = "tests/trust_authority_tests.rs"]
 mod trust_authority_tests;
+
+pub mod admission_table;
+pub mod core_answer;
+pub mod reference_plane;
+pub mod route_record;
+
+#[cfg(test)]
+#[path = "tests/inbound_table.rs"]
+mod inbound_table;
+
+#[cfg(test)]
+#[path = "tests/public_metadata_tests.rs"]
+mod public_metadata_tests;

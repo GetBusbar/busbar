@@ -9,17 +9,9 @@
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::CertificateDer;
 
-#[path = "test_support_adoption.rs"]
-mod adoption;
-pub use adoption::observe_adoption;
-
 // A small HTTP(S) test client over hyper and tokio-rustls, its TLS config from the crypto seam.
 #[path = "test_support_https.rs"]
 pub mod https;
-
-/// The refusal of a far end whose key is not the pinned one, for a dependent's pin tests (the root's
-/// registration_pin): the connector's own text, kept crate-private outside the test kit (BP14).
-pub const PIN_REFUSED: &str = crate::compose::PIN_REFUSED;
 
 /// A private test CA and a `localhost` leaf it signed: the CA's certificate as PEM (what a suite's
 /// test trust anchors are), the leaf's certificate and its private key, DER (what a test far

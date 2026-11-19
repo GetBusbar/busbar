@@ -474,15 +474,6 @@ pub fn decode_source_chunk_owned<O: OwnerSeal>(
     decode(bytes, bounds, Secret::held)
 }
 
-/// Encode a chunk while retaining the originating plugin owner's protected custody.
-pub fn encode_source_chunk_owned<O: OwnerSeal>(
-    chunk: &SourceChunk<O>,
-    bounds: Bounds,
-) -> Result<Secret<Vec<u8>, O>, Error> {
-    let mut encoded = encode_source_chunk(chunk, bounds)?;
-    Ok(Secret::held(std::mem::take(&mut encoded.0)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

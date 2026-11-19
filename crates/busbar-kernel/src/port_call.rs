@@ -159,10 +159,12 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     fn cx(within: Duration) -> CallCx {
+        let mono_ns = crate::store::monotonic_ns();
         CallCx {
-            deadline: Instant::now() + within,
+            deadline: busbar_contract::mono_instant::instant_at(mono_ns) + within,
             request_id: 1,
             stack: CallStack::default(),
+            mono_ns,
         }
     }
 

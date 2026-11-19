@@ -94,30 +94,6 @@ unsafe impl Send for DeclStr {}
 // SAFETY: see the `Send` impl above.
 unsafe impl Sync for DeclStr {}
 
-/// What connection security established ([`crate::transport::ConnFacts`]), borrowed for the call —
-/// facts only; each string NULL when absent, and the certificate's three facts present together.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct WireConnFacts {
-    /// `size_of::<WireConnFacts>()` at construction.
-    pub size: u32,
-    /// Schema version.
-    pub version: u32,
-    /// The server name offered.
-    pub sni: DeclStr,
-    /// The protocol agreed.
-    pub alpn: DeclStr,
-    /// The far end's certificate subject.
-    pub cert_subject: DeclStr,
-    /// The far end's certificate issuer.
-    pub cert_issuer: DeclStr,
-    /// The far end's certificate fingerprint (NULL = no certificate).
-    pub cert_fingerprint: DeclStr,
-    /// The claim the host resolved the connection to (appended at minor 33; NULL = the entry's
-    /// first claim).
-    pub claim: DeclStr,
-}
-
 /// One envelope field: a name and its value.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

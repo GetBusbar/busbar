@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::caps::KernelSeal;
+use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::records::{ScopeRef, VirtualKey};
 use busbar_contract::services::Caller;
 use busbar_kernel::plane_driver::port_egress::{MemberTarget, Targets};
@@ -96,6 +96,12 @@ fn select(
     scopes: &[ScopeRef],
 ) -> Result<busbar_kernel::resource_admission::SelectedResources, ResourceError> {
     let mounted = busbar_kernel::plane_driver::port_routes::Mounted {
+        record: busbar_kernel::auth::route_record::RouteRecord::stated(
+            busbar_kernel::auth::route_record::RouteClass::Data,
+            busbar_kernel::auth::route_record::Who::PRINCIPAL,
+            busbar_kernel::auth::route_record::Scope::selected(&["pool"]),
+            busbar_kernel::auth::route_record::Money::Unit,
+        ),
         route: 3,
         methods: 4,
         flags: 0,
@@ -200,6 +206,12 @@ fn selection_is_bound_to_actual_mounted_route_kinds_and_frozen_body() {
     )
     .unwrap();
     let mut mounted = Mounted {
+        record: busbar_kernel::auth::route_record::RouteRecord::stated(
+            busbar_kernel::auth::route_record::RouteClass::Data,
+            busbar_kernel::auth::route_record::Who::PRINCIPAL,
+            busbar_kernel::auth::route_record::Scope::selected(&["agent"]),
+            busbar_kernel::auth::route_record::Money::Unit,
+        ),
         route: 3,
         methods: 4,
         flags: 0,
@@ -224,7 +236,7 @@ fn selection_is_bound_to_actual_mounted_route_kinds_and_frozen_body() {
         .unwrap();
     selected
         .request()
-        .with_selection_input(|input, body| {
+        .with_selection_input(&[], |input, body| {
             assert_eq!(input.route, 3);
             assert_eq!(input.request_id, 1);
             assert_eq!(input.auth, 0);

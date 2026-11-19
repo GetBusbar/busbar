@@ -15,7 +15,7 @@
 //!
 //! The cross-boundary discipline, hoisted here so there is one definition:
 //!
-//! 1. **The airlock preamble** ([`AbiPreamble`]) — a `#[repr(C)]` header FROZEN
+//! 1. **The airlock preamble** (`AbiPreamble`) — a `#[repr(C)]` header FROZEN
 //!    FOR ALL TIME. Its three fields (`magic`, `abi_major`, `abi_minor`) may NEVER be reordered,
 //!    resized, or removed. A major mismatch or a magic mismatch is fail-closed (the seam refuses),
 //!    so an incompatible peer can never be reached across the boundary.
@@ -25,58 +25,6 @@
 //!    predates a field simply never reads it. Reorder/resize/insert = a MAJOR airlock bump.
 
 #![deny(unsafe_op_in_unsafe_fn)]
-
-/// ONE DECLARATIVE LIST PER TABLE: each slot's fn-pointer type and the `#[repr(C)]` table holding
-/// one `Option` of each — the table's size header first, then the slots in the order listed, each
-/// named for the trait method it lowers, each answering the outcome byte the list states (`->
-/// Outcome`). The coverage witness (`tests/conn_slot_coverage.rs`) reads the list and holds it to
-/// the trait.
-///
-/// Every slot is `unsafe extern "C"`: its raw ranges need a caller's ownership proof. The C ABI
-/// (THE DESIGN, the signed kind-ABI design's finding M3: unwinding across
-/// a foreign cdylib is undefined behaviour, so a slot catches its own panic and answers its fault
-/// byte, and a panic that escapes it aborts).
-macro_rules! slot_table {
-    (
-        extern "C";
-        $(#[$doc:meta])*
-        pub struct $table:ident lowers $trait:ident -> $ret:ty {
-            $(
-                $(#[$sdoc:meta])*
-                $slot:ident: $alias:ident = fn($($arg:ident: $ty:ty),* $(,)?);
-            )*
-        }
-    ) => {
-        $(
-            $(#[$sdoc])*
-            ///
-            /// # Safety
-            /// The context is this table's live host-minted context. Numeric handles are checked
-            /// by the host as the slot specifies; they do not authorize pointer dereferences. Input
-            /// pointers name initialized, live, immutable ranges of their stated lengths;
-            /// output pointers name live, exclusive writable ranges of their stated capacities.
-            /// Nested ranges and returned borrows obey this slot's documented lifetime. The
-            /// caller keeps these owners alive and upholds the method's concurrency contract.
-            pub type $alias = unsafe extern "C" fn($($arg: $ty),*) -> $ret;
-        )*
-        slot_table!(@table $(#[$doc])* $table { $($slot: $alias),* });
-    };
-    (@table $(#[$doc:meta])* $table:ident { $($slot:ident: $alias:ident),* }) => {
-        $(#[$doc])*
-        #[repr(C)]
-        #[derive(Debug, Clone, Copy)]
-        pub struct $table {
-            #[doc = concat!("`size_of::<", stringify!($table), ">()` at construction.")]
-            pub size: u32,
-            /// Alignment padding.
-            pub _reserved: u32,
-            $(
-                #[doc = concat!("`", stringify!($slot), "`.")]
-                pub $slot: Option<$alias>,
-            )*
-        }
-    };
-}
 
 /// THE LIST FIELDS OF ONE ABI STRUCT, written and read through methods: a list
 /// is a pointer and a length, which these set together,
@@ -189,73 +137,6 @@ pub mod transport;
 pub mod versions;
 
 pub use crate::read_sized_field;
-
-extern "Rust" {
-    fn __busbar_kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::Any + Send + Sync>;
-    fn __busbar_persistence_root(
-        seal: crate::caps::SlotSeal,
-    ) -> Box<dyn std::any::Any + Send + Sync>;
-}
-
-/// Hand `seal` to the kernel's root symbol; [`crate::caps::KernelSeal::deliver`] is the only
-#[inline]
-pub(crate) fn kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::Any + Send + Sync> {
-    // SAFETY: `__busbar_kernel_root` is defined exactly once, by `busbar-kernel`
-    // (`crates/busbar-kernel/src/seal.rs`), with this exact signature, and both crates are built
-    // together by one compiler in one workspace, so the Rust ABI of the declaration and the
-    // definition agree. The definition takes the seal by value and returns an owned box; it
-    // touches no other state.
-    unsafe { __busbar_kernel_root(seal) }
-}
-
-#[inline]
-pub(crate) fn persistence_root(
-    seal: crate::caps::SlotSeal,
-) -> Box<dyn std::any::Any + Send + Sync> {
-    // SAFETY: busbar-kernel::persistence defines this Rust-ABI symbol exactly once with
-    // this signature and a private return holder, just like the kernel root above.
-    unsafe { __busbar_persistence_root(seal) }
-}
-
-/// The magic value every plugin-ABI peer stamps into [`AbiPreamble::magic`]. A wrong magic means the
-pub const ABI_MAGIC: u64 = u64::from_le_bytes(*b"BUSPLANE");
-
-/// The MAJOR airlock version. Bumping this is a no-turning-back linker event: a reorder/resize/
-pub const ABI_MAJOR: u32 = 1;
-
-/// The MINOR airlock version. Bumped for every APPEND-ONLY addition (a new trailing struct field, a
-pub const ABI_MINOR: u32 = 0;
-
-/// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
-/// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or
-/// removed, because it is the one struct read BEFORE version negotiation, so it cannot itself be
-/// versioned. Every subsequent struct carries its own `size`/`version`; this one cannot, so it is
-/// frozen. The layout golden pins these three offsets and a change here is a deliberate MAJOR event.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AbiPreamble {
-    /// Must equal [`ABI_MAGIC`]. A mismatch is fail-closed (not a plugin-ABI peer).
-    pub magic: u64,
-    /// The peer's [`ABI_MAJOR`]. A mismatch is fail-closed (incompatible airlock).
-    pub abi_major: u32,
-    /// The peer's [`ABI_MINOR`]. Never a refusal reason on its own (append-only compatibility).
-    pub abi_minor: u32,
-}
-
-impl AbiPreamble {
-    /// This build's preamble — what a local peer stamps for the other side to check.
-    pub const CURRENT: AbiPreamble = AbiPreamble {
-        magic: ABI_MAGIC,
-        abi_major: ABI_MAJOR,
-        abi_minor: ABI_MINOR,
-    };
-}
-
-impl Default for AbiPreamble {
-    fn default() -> Self {
-        AbiPreamble::CURRENT
-    }
-}
 
 /// True iff a sender who advertised `advertised_size` bytes definitely WROTE the field that ends at
 #[inline]
@@ -377,10 +258,6 @@ macro_rules! read_sized_field {
         }
     }};
 }
-
-#[cfg(test)]
-#[path = "tests/lib_tests.rs"]
-mod tests;
 
 /// Kind-neutral immutable units and exact factual reports.
 pub mod measurement;

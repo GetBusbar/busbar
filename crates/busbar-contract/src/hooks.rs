@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The HOOK contract: the transport-agnostic [`RoutingPolicy`] trait and the read-only projections
+//! The HOOK contract: the request view a hook reads and the answer shapes it writes
 
 /// A read-only, cheaply-constructed projection of the request for routing decisions. Built ONCE per
 /// request from the NORMALIZED IR — the same representation the request that goes upstream is built
@@ -82,9 +82,6 @@ pub struct PromptProjection<'a> {
     /// Every message as `(role, flattened text)`, in request order.
     pub messages: Vec<(std::borrow::Cow<'a, str>, std::borrow::Cow<'a, str>)>,
 }
-
-/// A hook's self-described settings schema (`GET /admin/v1/hooks/{name}/schema`), proxied verbatim.
-pub type HookSchema = serde_json::Value;
 
 /// Debug REDACTS the content: this struct exists precisely because the operator opted prompt text
 impl std::fmt::Debug for PromptProjection<'_> {
@@ -211,12 +208,6 @@ pub struct RoutingContext<'a> {
     pub budget: &'a [BudgetBucketState],
 }
 
-/// A boxed, thread-safe policy error. Kept dependency-free (no `anyhow`/`thiserror`) so the routing
-pub type PolicyError = Box<dyn std::error::Error + Send + Sync>;
-
-/// The result of a policy decision. `Ok(Abstain)` is the clean "no opinion" path; `Err` is coerced
-pub type PolicyResult = Result<RoutingDecision, PolicyError>;
-
 /// The decision: an ordered preference, or an explicit abstention.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingDecision {
@@ -275,180 +266,4 @@ impl RoutingDecision {
 pub struct RewriteReply {
     pub messages: Vec<serde_json::Value>,
     pub tools: Vec<serde_json::Value>,
-}
-
-/// The outcome of a REWRITE-phase (`transform`) call. A `prompt: rw` gate's reply may carry ANY
-/// gate verb — in particular `reject` (a compressor that also screens for PII returns
-/// `{"reject": ...}`). Dropping that reject silently (the pre-1.3 behavior) was a fail-OPEN from
-/// the hook author's view: the request the hook tried to stop got routed. Precedence on the
-/// transform path: Reject > Rewrite > Abstain. (`restrict`/`order` remain decide-path verbs and
-/// are still ignored on transform — documented in the wire contract.)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TransformOutcome {
-    /// Replace the request body (the rewrite arm; fail-closed parsed).
-    Rewrite(RewriteReply),
-    /// Reject the request outright — same clamped/sanitized semantics as a decide-path reject.
-    Reject { status: u16, message: String },
-    /// No opinion / unsupported (proceed with the ORIGINAL body). A genuine "nothing to say".
-    Abstain,
-    /// The hook COULD NOT ANSWER: its own dependency failed, timed out, or it refuses to act on what
-    /// it got. The rewrite-path twin of `HookReply::Failed` on the decide path.
-    ///
-    /// This arm did not exist, so a `prompt: rw` gate's transport failure collapsed into `Abstain` —
-    /// indistinguishable from a compressor that looked at the body and had no changes to make. The
-    /// request then proceeded with its original body and the operator's `on_error` chain, whose
-    /// terminal can be `reject`, never fired. A gate deliberately configured to fail CLOSED failed
-    /// OPEN, silently. `decide` has had this distinction since `HookReply::Failed` landed; the
-    /// rewrite pass simply had no arm to carry it into.
-    ///
-    /// The message is for the operator's log. It must not carry request content.
-    Failed { message: String },
-}
-
-/// A hook's self-reported OBSERVED state — the `status` management reply (control plane): the
-/// settings it is actually running (vs busbar's desired-state registry copy), their version, and
-/// its own operational metrics (e.g. a compressor's `tokens_compressed_total`). Every field
-/// optional; a hook that doesn't implement `status` simply never produces one.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct HookStatus {
-    pub settings_version: Option<u64>,
-
-    pub settings: Option<crate::plugin_settings::Settings>,
-    /// Raw metrics ARRAY (each entry `{name, type, value, labels?, quantiles?, ...}`); the engine
-    /// validates + bounds entries before exposing them.
-    pub metrics: Option<Vec<serde_json::Value>>,
-}
-
-/// Puts a hook's read of the request's content on record before the hook is sent that content:
-/// the audit step every content-reading hook call passes first. The rewrite pass hands one to
-/// [`RoutingPolicy::transform_recording`] so a failed rewrite's `on_error` fallback is recorded
-/// exactly as the gate path's fallback is.
-#[async_trait::async_trait]
-pub trait ReadRecorder: Send + Sync {
-    /// Record that `hook` reads the request (and, with `identity`, the caller identity). `true`
-    /// once the read is on record; `false` when it could not be recorded, and the hook must then
-    /// not be sent the content.
-    async fn record(&self, hook: &str, identity: bool) -> bool;
-}
-
-/// THE transport-agnostic contract. webhook / socket / native all implement this.
-#[async_trait::async_trait]
-pub trait RoutingPolicy: Send + Sync + 'static {
-    /// Rank candidates for this request. MUST be cancel-safe and SHOULD respect `budget` (a
-    /// wall-clock deadline; the caller also wraps the call in a hard `timeout`). Returning `Err` or
-    /// exceeding the deadline is handled by the caller per `on_error`; an impl SHOULD prefer
-    /// `Ok(Abstain)` over erroring when it simply has no opinion.
-    async fn decide(
-        &self,
-        req: &RoutingRequest<'_>,
-        candidates: &[Candidate<'_>],
-        ctx: &RoutingContext<'_>,
-        budget: std::time::Duration,
-    ) -> PolicyResult;
-
-    /// Stable transport/policy name for metrics + the `x-busbar-route` header
-    /// (e.g. `"socket"`, `"weighted"`, `"cheapest"`).
-    fn name(&self) -> &str;
-
-    /// The same name as an owned, shareable handle: an implementation that already holds its name in
-    /// an `Arc<str>` hands out a clone, any other copies the borrow once.
-    fn name_arc(&self) -> std::sync::Arc<str> {
-        std::sync::Arc::from(self.name())
-    }
-
-    /// REWRITE phase (`prompt: rw` gate): send the request projection and return the hook's `rewrite`
-    /// reply — the replacement message body (+ optional injected tools), FAIL-CLOSED (`None` = proceed
-    /// with the ORIGINAL body). Distinct from `decide` (which ranks): this is the transform-pass call.
-    /// DEFAULT `None`: in-process ranking hooks never rewrite; only the out-of-process socket/webhook
-    /// transports override it. The caller enforces the `rw` grant (only a `rw` hook reaches here) and
-    /// applies the returned body; a malformed/oversize/timed-out rewrite yields `None`.
-    async fn transform(
-        &self,
-        _req: &RoutingRequest<'_>,
-        _budget: std::time::Duration,
-    ) -> TransformOutcome {
-        TransformOutcome::Abstain
-    }
-
-    /// [`Self::transform`] as the rewrite pass calls it, with the unit's [`ReadRecorder`]. A
-    /// rewrite whose failure hands the request on to another hook (the host's `on_error`
-    /// decorator naming a fallback) records that hook's read through `reads` before sending it the
-    /// request. DEFAULT: [`Self::transform`]; only that decorator overrides it.
-    async fn transform_recording(
-        &self,
-        req: &RoutingRequest<'_>,
-        budget: std::time::Duration,
-        _reads: &dyn ReadRecorder,
-    ) -> TransformOutcome {
-        self.transform(req, budget).await
-    }
-
-    /// Apply a named fallback when the plane cannot apply this hook's rewrite. The request
-    /// is the unchanged pre-rewrite projection. `None` leaves the ordinary refusal in force.
-    async fn fallback_rewrite_recording(
-        &self,
-        _req: &RoutingRequest<'_>,
-        _reads: &dyn ReadRecorder,
-    ) -> Option<TransformOutcome> {
-        None
-    }
-
-    /// Whether a REWRITE this hook answered that the plane then refuses to apply (one naming a
-    /// model other than the routed one, say) refuses the unit: the hook's own failure, answered by
-    /// its own `on_error`, as a failed `transform` call of the same hook is. `true` = the operator
-    /// declared the hook load-bearing (`on_error: reject`) and the unit is refused with the shared
-    /// required-hook answer; `false` = the request proceeds as it stood before that rewrite.
-    /// DEFAULT `false`: only the host's `on_error` decorator over a resolved rewrite knows the
-    /// disposition, and it overrides this.
-    fn refuses_failed_rewrite(&self) -> bool {
-        false
-    }
-
-    /// Whether this policy only ranks on the request's shape (the facts core states, never its
-    /// content) and so cannot stop, change or screen the request on what it says. `true` only for
-    /// a policy whose constructor was built for that; DEFAULT `false`, so a policy that does not
-    /// say otherwise is taken to read the request.
-    fn content_blind(&self) -> bool {
-        false
-    }
-
-    /// PUSH a settings map to the hook (`PATCH /admin/v1/hooks/{name}/settings`): send the
-    /// `configure` message and wait for the ack, bounded by `budget`. `Ok(())` = the hook
-    /// acknowledged (the caller commits); any error/nack/timeout = NOT committed. Default: this
-    /// transport cannot be configured (in-process natives have no settings).
-    async fn configure(
-        &self,
-        _hook_name: &str,
-        _settings: &crate::plugin_settings::ResolvedSettings,
-        _settings_version: u64,
-        _budget: std::time::Duration,
-    ) -> Result<(), PolicyError> {
-        Err("this hook transport does not support configure".into())
-    }
-
-    /// Ask the hook to DESCRIBE its settings schema (`GET /admin/v1/hooks/{name}/schema`).
-    /// `None` = the transport/hook doesn't answer describe. Proxied verbatim.
-    async fn describe(&self, _budget: std::time::Duration) -> Option<HookSchema> {
-        None
-    }
-
-    /// Ask the hook for its STATUS (observed settings + self-reported metrics — the control-plane
-    /// read behind `GET /api/v1/admin/hooks/{name}/status`). `None` = the transport/hook doesn't
-    /// answer (fail-open: never affects any request). Default: in-process natives have no status.
-    async fn status(&self, _budget: std::time::Duration) -> Option<HookStatus> {
-        None
-    }
-
-    /// TAP (fire-and-forget): hand the hook the tap's fixed view (`tap`, built once per firing by
-    /// [`NotifyFrame::build`](crate::abi::host::hook::NotifyFrame::build) and shared by every tap it
-    /// fires) and return. A tap is write-only in steady state, so NO reply is read. Best-effort and
-    /// bounded by `budget`; ANY error is swallowed, because a tap can NEVER delay or fail the served
-    /// request (the caller SPAWNS this off the request path, which is why it takes an owned frame,
-    /// not a borrowed projection). DEFAULT no-op: in-process ranking policies are not taps.
-    async fn notify(
-        &self,
-        _tap: std::sync::Arc<crate::abi::host::hook::NotifyFrame>,
-        _budget: std::time::Duration,
-    ) {
-    }
 }

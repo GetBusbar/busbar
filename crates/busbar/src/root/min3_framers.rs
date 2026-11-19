@@ -35,6 +35,15 @@ pub(crate) struct LinkedCarrier {
     >,
 }
 
+/// One carrier the build assigns to a SEPARATELY INSTALLED transport image, generated from
+/// `[package.metadata.busbar.installed-carriers]` into `$OUT_DIR/linked.rs` (`INSTALLED_CARRIERS`): the carrier number
+/// and the identity of the image that carries it. The carrier has a supplier exactly when an admitted image of that
+/// identity is installed (owner ruling: a former built-in such as the websocket transport is a separate plugin).
+pub(crate) struct InstalledCarrier {
+    pub(crate) carrier: u32,
+    pub(crate) identity: &'static str,
+}
+
 /// Why a carrier number has no supplier. The number arrives in a plane's own record, so every value is checked
 /// before it indexes anything; no value panics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,30 +198,83 @@ impl Carriers<Arc<str>> {
     }
 }
 
+/// The carrier a plane claim's transport word means (the words planes claimed on with the old transports' scheme
+/// claims, dial decision v2 section 3.1): `http`, `https` and `sse` ride HTTP; `grpc` gRPC; `ws`, `wss` and
+/// `websocket` WebSocket; `webrtc` and `rtc` WebRTC. Any other word names no carrier.
+pub(crate) fn carrier_of_claim(word: &str) -> Option<u32> {
+    match word.to_ascii_lowercase().as_str() {
+        "http" | "https" | "sse" => Some(CARRIER_HTTP),
+        "grpc" => Some(CARRIER_GRPC),
+        "ws" | "wss" | "websocket" => Some(CARRIER_WEBSOCKET),
+        "webrtc" | "rtc" => Some(CARRIER_RTC),
+        _ => None,
+    }
+}
+
+impl<T> Carriers<T> {
+    /// Whether this table has a supplier for the carrier a claim's transport `word` means.
+    pub(crate) fn serves_claim(&self, word: &str) -> bool {
+        carrier_of_claim(word).is_some_and(|carrier| self.get(carrier).is_ok())
+    }
+}
+
 /// The build's assignment: each generated row admitted (a read of its static header) for its identity.
 pub(crate) fn assigned(rows: &[LinkedCarrier]) -> Result<Carriers<Arc<str>>, String> {
-    Carriers::of(rows.iter().map(|row| {
-        (row.admit)()
-            .map(|image| (row.carrier, Arc::from(image.identity())))
-            .map_err(|refusal| format!("an assigned carrier's image: {refusal}"))
-    }))
+    assignment(rows, &[], |_| false)
+}
+
+/// The build's whole assignment for one deployment: each linked row admitted for its identity, and each separately
+/// installed carrier whose image `installed` says the deployment has. An installed carrier whose image is absent has
+/// no supplier (it is not a fault of the deployment until a route needs it). The refusals are [`Carriers::of`]'s.
+pub(crate) fn assignment(
+    linked: &[LinkedCarrier],
+    installed: &[InstalledCarrier],
+    present: impl Fn(&str) -> bool,
+) -> Result<Carriers<Arc<str>>, String> {
+    Carriers::of(
+        linked
+            .iter()
+            .map(|row| {
+                (row.admit)()
+                    .map(|image| (row.carrier, Arc::from(image.identity())))
+                    .map_err(|refusal| format!("an assigned carrier's image: {refusal}"))
+            })
+            .chain(
+                installed
+                    .iter()
+                    .filter(|row| present(row.identity))
+                    .map(|row| Ok((row.carrier, Arc::from(row.identity)))),
+            ),
+    )
 }
 
 /// Configuration validation (every config read: boot, reload, admin apply, `--validate`): the build's
-/// assignment holds against these admitted images' described facts.
+/// assignment holds against these admitted images' described facts. An installed carrier's image, when admitted,
+/// holds to the carrier's role as a linked one does.
 pub(crate) fn validate(images: &busbar_plugin_loader::instance::Images) -> Result<(), String> {
-    assigned(crate::LINKED_CARRIERS)?
-        .check(|identity| images.described(identity).map(|one| (one.kind, one.facts)))
+    assignment(
+        crate::LINKED_CARRIERS,
+        crate::INSTALLED_CARRIERS,
+        |identity| images.described(identity).is_some(),
+    )?
+    .check(|identity| images.described(identity).map(|one| (one.kind, one.facts)))
 }
 
-/// `busbar --list-plugins`: each carrier and the image the build assigns it, or `none`.
+/// `busbar --list-plugins`: each carrier and the image the build assigns it, the separately installed image that
+/// carries it when installed, or `none`.
 pub(crate) fn listing() -> Result<Vec<String>, String> {
     let carriers = assigned(crate::LINKED_CARRIERS)?;
     Ok(CARRIERS
         .iter()
         .map(|(carrier, word)| match carriers.get(*carrier) {
             Ok(identity) => format!("  {word:<10} {identity} (assigned by the build)"),
-            Err(_) => format!("  {word:<10} none"),
+            Err(_) => match crate::INSTALLED_CARRIERS
+                .iter()
+                .find(|row| row.carrier == *carrier)
+            {
+                Some(row) => format!("  {word:<10} {} (when installed)", row.identity),
+                None => format!("  {word:<10} none"),
+            },
         })
         .collect())
 }
@@ -260,12 +322,42 @@ impl NativeFramers {
         Ok(self)
     }
 
+    /// [`Self::carrying`] the build's whole assignment: the linked rows, and each separately installed carrier whose
+    /// image this generation opened.
+    pub(crate) fn carrying_assigned(self) -> Result<Self, String> {
+        let assigned = assignment(
+            crate::LINKED_CARRIERS,
+            crate::INSTALLED_CARRIERS,
+            |identity| self.served.iter().any(|one| &*one.instance == identity),
+        )?;
+        self.carrying(&assigned)
+    }
+
     /// The instance that carries `carrier`, borrowed from this generation. The number is untrusted (it comes from
     /// a plane's record): 0, the child-process carrier, a number out of range and an unassigned carrier are refused.
     pub(crate) fn for_carrier(&self, carrier: u32) -> Result<&ServedTransport, CarrierRefused> {
         self.served
             .get(*self.carriers.get(carrier)?)
             .ok_or(CarrierRefused::NoSupplier(carrier))
+    }
+
+    /// The connector's view of the assignment: each assigned carrier's instance and port (two reference counts
+    /// each, once at boot). `limits.stream_stall_ms` has no transport section to come from, so the kind's default
+    /// holds (`None`), as for the listeners.
+    pub(crate) fn native_carriers(&self) -> Vec<busbar_core_connector::native_dial::NativeCarrier> {
+        CARRIERS
+            .iter()
+            .filter_map(|(carrier, _)| {
+                self.for_carrier(*carrier).ok().map(|one| {
+                    busbar_core_connector::native_dial::NativeCarrier {
+                        instance: Arc::clone(&one.instance),
+                        port: Arc::clone(&one.port),
+                        carrier: *carrier,
+                        stall_ms: None,
+                    }
+                })
+            })
+            .collect()
     }
 
     /// The boot's one line stating the assignment: each carrier's instance, or `none`.
@@ -283,6 +375,11 @@ impl NativeFramers {
             "outbound carriers (assigned by the build): {}",
             each.join(" ")
         )
+    }
+
+    /// The instance declaring D_PROTOCOL `protocol` (an upgrade target), if one is admitted.
+    pub(crate) fn for_protocol(&self, protocol: &str) -> Option<ServedTransport> {
+        super::min3_boot::transports::declaring(&self.served, protocol).cloned()
     }
 
     /// Exactly one instance explicitly declares this configuration slot. Image names, ALPN and

@@ -15,7 +15,7 @@ impl NestRoute for HeldRoute {
 fn caller(name: &str) -> Caller {
     Caller::for_test(
         Arc::from(name),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     )
 }
 

@@ -15,14 +15,13 @@ use busbar_contract::storage::{StorageCredit, StorageSource};
 use busbar_kernel::auth::native_data::{NativeDataAllocation, NativeDataPending};
 use busbar_kernel::inbound::native::{CompletingPhysicalRequest, RouteTarget, StreamOwner};
 use busbar_kernel::plane_driver::port::{
-    HttpHead, HttpIn, NativeServed, NativeTaskRetirement, ServeError, ServeIn, Served,
+    HttpHead, HttpIn, NativeServed, NativeTaskRetirement, PortSeat, ServeError, ServeIn, Served,
 };
 use busbar_kernel::plane_driver::port_admission::AdmittedUnit;
 use busbar_kernel::plane_driver::port_auth::{Credentials, Principal};
 use busbar_kernel::plane_driver::port_billing::{end_of, NativeOrdinaryTerminalSlot, PortBilling};
 use busbar_kernel::plane_driver::port_session::{ClientSink, ToClient};
 use busbar_kernel::plane_driver::{FeeRefund, HeadFields, NativeAdmissionError};
-use busbar_kernel::resource_admission::FrozenRequest;
 use bytes::Bytes;
 use http_body::Frame;
 use tokio::sync::{mpsc, oneshot};
@@ -240,7 +239,10 @@ impl http_body::Body for RefusalBody {
     }
 }
 
-fn refusal_response(items: Vec<ToClient>, source: &StorageSource) -> Result<Response, InputError> {
+pub(super) fn refusal_response(
+    items: Vec<ToClient>,
+    source: &StorageSource,
+) -> Result<Response, InputError> {
     let mut extent = items
         .capacity()
         .checked_mul(std::mem::size_of::<ToClient>())
@@ -336,7 +338,9 @@ impl http_body::Body for DataBody {
 type Head = (u16, HeaderMap, Arc<StorageCredit>);
 struct SinkState {
     head: Option<oneshot::Sender<Head>>,
-    body: Option<mpsc::Sender<BodyItem>>,
+    /// The bounded `mpsc(1)` to the response body, polled for room by the session's own task: at most one body
+    /// item in flight, and the session waits (it is not a thread that blocks) until the body has taken it.
+    body: Option<tokio_util::sync::PollSender<BodyItem>>,
     trailers: bool,
 }
 struct Sink {
@@ -378,84 +382,260 @@ fn fields(source: &StorageSource, fields: HeadFields) -> Result<(HeaderMap, Stor
     Ok((map, credit))
 }
 
+impl Sink {
+    /// One item, whose body room (if it needs any) is already reserved.
+    fn put(&self, state: &mut SinkState, item: ToClient) -> Result<(), ()> {
+        match item {
+            ToClient::Head {
+                status,
+                fields: values,
+            } => {
+                let (headers, credit) = fields(&self.source, values)?;
+                state
+                    .head
+                    .take()
+                    .ok_or(())?
+                    .send((status, headers, Arc::new(credit)))
+                    .map_err(|_| ())?;
+            }
+            ToClient::Body(bytes) => {
+                let credit = self.source.try_reserve(bytes.capacity()).map_err(|_| ())?;
+                let bytes = Bytes::from_owner(ChargedBytes {
+                    bytes,
+                    _credit: credit,
+                });
+                state
+                    .body
+                    .as_mut()
+                    .ok_or(())?
+                    .send_item(BodyItem {
+                        frame: Frame::data(bytes),
+                        trailers: None,
+                    })
+                    .map_err(|_| ())?;
+            }
+            ToClient::Trailers(values) => {
+                let (headers, credit) = fields(&self.source, values)?;
+                state.trailers = true;
+                state
+                    .body
+                    .as_mut()
+                    .ok_or(())?
+                    .send_item(BodyItem {
+                        frame: Frame::trailers(headers),
+                        trailers: Some(credit),
+                    })
+                    .map_err(|_| ())?;
+            }
+            ToClient::End => {
+                self.ended.store(true, std::sync::atomic::Ordering::Release);
+                state.body.take();
+            }
+            ToClient::Msg { .. } => return Err(()),
+        }
+        Ok(())
+    }
+}
+
 impl ClientSink for Sink {
-    fn items(&self, items: Vec<ToClient>) -> bool {
+    fn poll_items(&self, cx: &mut Context<'_>, items: &mut Vec<ToClient>) -> Poll<bool> {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for item in items {
-            let result = (|| -> Result<(), ()> {
-                match item {
-                    ToClient::Head {
-                        status,
-                        fields: values,
-                    } => {
-                        let (headers, credit) = fields(&self.source, values)?;
-                        state
-                            .head
-                            .take()
-                            .ok_or(())?
-                            .send((status, headers, Arc::new(credit)))
-                            .map_err(|_| ())?;
-                    }
-                    ToClient::Body(bytes) => {
-                        if state.head.is_some() || state.trailers {
-                            return Err(());
-                        }
-                        let credit = self.source.try_reserve(bytes.capacity()).map_err(|_| ())?;
-                        let bytes = Bytes::from_owner(ChargedBytes {
-                            bytes,
-                            _credit: credit,
-                        });
-                        state
-                            .body
-                            .as_ref()
-                            .ok_or(())?
-                            .blocking_send(BodyItem {
-                                frame: Frame::data(bytes),
-                                trailers: None,
-                            })
-                            .map_err(|_| ())?;
-                    }
-                    ToClient::Trailers(values) => {
-                        if state.head.is_some() || state.trailers {
-                            return Err(());
-                        }
-                        let (headers, credit) = fields(&self.source, values)?;
-                        state.trailers = true;
-                        state
-                            .body
-                            .as_ref()
-                            .ok_or(())?
-                            .blocking_send(BodyItem {
-                                frame: Frame::trailers(headers),
-                                trailers: Some(credit),
-                            })
-                            .map_err(|_| ())?;
-                    }
-                    ToClient::End => {
-                        self.ended.store(true, std::sync::atomic::Ordering::Release);
-                        state.body.take();
-                    }
-                    ToClient::Msg { .. } => return Err(()),
+        while let Some(next) = items.first() {
+            if matches!(next, ToClient::Body(_) | ToClient::Trailers(_)) {
+                if state.head.is_some() || state.trailers {
+                    state.body.take();
+                    return Poll::Ready(false);
                 }
-                Ok(())
-            })();
-            if result.is_err() {
+                // The body's one slot: wait (this task's waker is kept) until the response body took the last item.
+                let Some(body) = state.body.as_mut() else {
+                    return Poll::Ready(false);
+                };
+                match body.poll_reserve(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Err(_)) => {
+                        state.body.take();
+                        return Poll::Ready(false);
+                    }
+                    Poll::Ready(Ok(())) => {}
+                }
+            }
+            let item = items.remove(0);
+            if self.put(&mut state, item).is_err() {
                 state.body.take();
-                return false;
+                return Poll::Ready(false);
             }
         }
-        true
+        Poll::Ready(true)
+    }
+}
+
+/// A DATA request its route's chain denied (credential, policy or replay) is answered with the
+/// listener's one unauthenticated refusal under the denial's own custody. Any other failure (an
+/// unavailable verifier, a deadline, a foreign input) grants no answer: the request is cancelled.
+fn denied(
+    request: CompletingPhysicalRequest,
+    failed: busbar_kernel::auth::native_data::DataPreparationFailed,
+    route: &busbar_kernel::auth::native_data::NativeDataRoute,
+    seat: &PortSeat,
+) -> Result<DataResponse, DataPrepareError> {
+    let (response, refusal) = refuse_prepared(request, failed, route, seat)?;
+    Ok(DataResponse {
+        response,
+        authority: DataAuthority::Refused(refusal),
+        settlement: None,
+    })
+}
+
+/// The answer to a preparation the route's chain or key policy refused, by the refusal table: the
+/// one 401 for a caller that is not verified (with the route's declared challenge), 503 when the
+/// verifier could not answer, 409 for a replay; and for a verified caller 403, rendered by the
+/// route's plane in its dialect. A failure that is no row of the table (the request ended, a
+/// foreign input) has no answer: the request is cancelled.
+pub(super) fn refuse_prepared(
+    request: CompletingPhysicalRequest,
+    failed: busbar_kernel::auth::native_data::DataPreparationFailed,
+    route: &busbar_kernel::auth::native_data::NativeDataRoute,
+    seat: &PortSeat,
+) -> Result<(Response, busbar_kernel::inbound::native::PhysicalRefusal), InputError> {
+    // A failure with no row ends the request unanswered: its reason is said here, or the close
+    // names no layer at all.
+    let reason = failed.reason();
+    let busbar_kernel::auth::native_data::DataPreparationFailed::Denied(denial) = failed else {
+        tracing::warn!(
+            ?reason,
+            "a data preparation ended with no answer (not a denial)"
+        );
+        return Err(InputError::Invalid);
+    };
+    let binding = request.binding().clone();
+    let Some(refusal) = reason.refusal(super::answer::presented(&binding, route.withheld())) else {
+        tracing::warn!(
+            ?reason,
+            "a data preparation denial has no refusal row: no answer"
+        );
+        return Err(InputError::Invalid);
+    };
+    let response = if reason.after_verification() {
+        let RouteTarget::Plane(target) = binding.route().target() else {
+            return Err(InputError::Invalid);
+        };
+        let head = binding.snapshot().map_err(|_| InputError::Capacity)?;
+        super::answer::route(
+            &binding,
+            refusal,
+            true,
+            "",
+            route.challenge(),
+            Some(super::answer::Renderer {
+                seat,
+                route: target.mounted().route,
+                head: &head,
+                withheld: route.withheld(),
+                request_id: binding.invocation().request_id().get(),
+            }),
+        )?
+    } else {
+        super::answer::core(&binding, refusal, false, "", route.challenge())?
+    };
+    let physical = request.refuse_data(denial)?;
+    Ok((response, physical))
+}
+
+/// The client side of one plane session: the sink the session writes to and what the listener
+/// reads from it. The data path and the unbilled path both serve through it.
+pub(super) struct ClientPipe {
+    sink: Arc<Sink>,
+    pub(super) head: oneshot::Receiver<Head>,
+    body: mpsc::Receiver<BodyItem>,
+    ended: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The producer's end of a [`ClientPipe`], moved into the session's task.
+pub(super) struct ClientProducer(Arc<Sink>);
+
+impl ClientProducer {
+    pub(super) fn sink(&self) -> Arc<dyn ClientSink> {
+        self.0.clone()
+    }
+
+    /// Closing an unfinished producer reports a body error; it never manufactures END.
+    pub(super) fn close(self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.head.take();
+        state.body.take();
+    }
+}
+
+impl ClientPipe {
+    pub(super) fn open(source: StorageSource) -> (Self, ClientProducer) {
+        let (head_tx, head) = oneshot::channel();
+        let (body_tx, body) = mpsc::channel(1);
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sink = Arc::new(Sink {
+            source,
+            state: Mutex::new(SinkState {
+                head: Some(head_tx),
+                body: Some(tokio_util::sync::PollSender::new(body_tx)),
+                trailers: false,
+            }),
+            ended: ended.clone(),
+        });
+        (
+            Self {
+                sink: sink.clone(),
+                head,
+                body,
+                ended,
+            },
+            ClientProducer(sink),
+        )
+    }
+
+    /// The response of a session that wrote its head: the body is read from the session as the
+    /// client takes it.
+    pub(super) fn response(self, head: Head) -> Response {
+        let (status, headers, credit) = head;
+        let mut response = Response::new(Body::new(DataBody {
+            receiver: self.body,
+            ended: self.ended,
+            trailer_credit: None,
+            failed: false,
+        }));
+        *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+        *response.headers_mut() = headers;
+        response.extensions_mut().insert(credit);
+        drop(self.sink);
+        response
     }
 }
 
 pub(super) async fn prepare(
+    request: CompletingPhysicalRequest,
+    slot: Arc<NativeSlot>,
+    node: Arc<Node>,
+    stream_owner: Arc<StreamOwner>,
+) -> Result<DataResponse, DataPrepareError> {
+    prepare_for(request, slot, node, stream_owner, None).await
+}
+
+/// [`prepare`], and for an upgrade request (`upgrade`, `listener_native_upgrade.rs`) the two things
+/// it adds: core's own refusal before any 101, answered once the caller is verified and before the
+/// request's admission completes; and the caller's side of the session, which is HTTP's until the
+/// plane commits with RESPOND(101) and the session's messages after it. The admission, the unit,
+/// its money and its settlement are this one path's for both.
+pub(super) async fn prepare_for(
     mut request: CompletingPhysicalRequest,
     slot: Arc<NativeSlot>,
     node: Arc<Node>,
     stream_owner: Arc<StreamOwner>,
+    upgrade: Option<super::upgrade::UpgradeRequest>,
 ) -> Result<DataResponse, DataPrepareError> {
     let binding = request.binding().clone();
     let routes = binding
@@ -481,48 +661,65 @@ pub(super) async fn prepare(
         .ok_or(InputError::Invalid)?;
     let billing = routes.served.billing.clone().ok_or(InputError::Invalid)?;
     let data_route = slot.data_for(&binding).map_err(|_| InputError::Invalid)?;
-    let original = binding.snapshot().map_err(|_| InputError::Capacity)?;
-    let frozen = FrozenRequest::from_snapshot(binding.invocation(), route, original);
-    let port = seat.driver.port();
-    let (frozen, selection) = tokio::task::spawn_blocking(move || {
-        let selection = frozen.with_selection_input(|input, body| {
-            port.resource_facts(
-                busbar_plugin_abi::plane::RESOURCE_SELECT,
-                input,
-                body,
-                busbar_plugin_abi::resource_admission::MAX_SELECTION_BYTES,
-            )
-        });
-        (frozen, selection)
-    })
-    .await
-    .map_err(|_| InputError::Invalid)?;
-    let selection = selection
-        .map_err(|_| InputError::Invalid)?
-        .map_err(|_| InputError::Invalid)?;
-    let selected = data_route
-        .inventory()
-        .select_wire(frozen, target.mounted(), &selection)
-        .map_err(|_| InputError::Invalid)?;
     let deadline = binding.deadline().ok_or(InputError::Invalid)?;
+    let mono_ns = binding.mono_ns().ok_or(InputError::Invalid)?;
     let preparation = request
         .begin_data_preparation()
         .map_err(|_| InputError::Invalid)?;
-    let authorization = data_route
+    // Auth first: the route's chain verifies the credential before anything of the request is
+    // lent to the plane.
+    let pending = match data_route
         .prepare(
             preparation,
-            selected,
             busbar_ports::CallCx {
                 deadline,
                 request_id: binding.invocation().request_id().get(),
                 stack: Default::default(),
+                mono_ns,
             },
         )
         .await
-        .map_err(|_| InputError::Invalid)?
-        .complete()
-        .await
-        .map_err(|_| InputError::Invalid)?;
+    {
+        Ok(pending) => pending,
+        Err(failed) => return denied(request, failed, &data_route, &seat),
+    };
+    // An upgrade request: core's own refusal before any 101 (it does not ask to switch, or the
+    // listener cannot carry it) is answered now, to a caller the chain has just verified and
+    // before anything is counted against its key. Otherwise the connection's carrier is known.
+    let carrier = match &upgrade {
+        None => None,
+        Some(asked) => {
+            let head = binding.snapshot().map_err(|_| InputError::Capacity)?;
+            let terms = super::upgrade::judge(
+                crate::root::port_mount::asks_websocket(head.headers()),
+                asked.websocket.as_ref(),
+                binding.stream(),
+            );
+            if let Some(refusal) = terms.refused {
+                return denied(request, pending.refuse_input(refusal), &data_route, &seat);
+            }
+            terms.carrier
+        }
+    };
+    let upgrade_owner = carrier.as_ref().map(|_| stream_owner.clone());
+    // Only a verified request is lent to a selecting route's plane (a direct call on this
+    // request's thread, its credential carriers withheld). A route that selects nothing is
+    // admitted through the plane's own `request`.
+    let pending = if data_route.selects() {
+        let port = seat.driver.port();
+        match pending.select(|frozen, withheld| {
+            busbar_kernel::resource_admission::select_resources(&*port, frozen, withheld)
+        }) {
+            Ok(pending) => pending,
+            Err(failed) => return denied(request, failed, &data_route, &seat),
+        }
+    } else {
+        pending
+    };
+    let authorization = match pending.complete().await {
+        Ok(authorization) => authorization,
+        Err(failed) => return denied(request, failed, &data_route, &seat),
+    };
     let authorized = request
         .complete(authorization)
         .map_err(|_| InputError::Invalid)?;
@@ -544,11 +741,13 @@ pub(super) async fn prepare(
     let result: Result<DataResponse, InputError> = async {
         let callback_billing = billing.clone();
         let callback_slot = ordinary.clone();
+        let callback_node = node.clone();
         let journal = unit.journal.clone();
         let pending = Arc::new(
             allocation
                 .into_pending_runtime(&seat, journal, move |receipt| {
                     use busbar_kernel::refusal::RefusalMap;
+                    callback_node.money_gate()?;
                     let unavailable = || {
                         busbar_kernel::refusal::CoreRefusals::new()
                             .for_core(route, busbar_plugin_abi::fail::refused::R_NO_ROUTE)
@@ -604,11 +803,28 @@ pub(super) async fn prepare(
             source: lease.storage().clone(),
             state: Mutex::new(SinkState {
                 head: Some(head_tx),
-                body: Some(body_tx),
+                body: Some(tokio_util::sync::PollSender::new(body_tx)),
                 trailers: false,
             }),
             ended: ended.clone(),
         });
+        // An upgrade request's caller side: this same sink until the plane commits with a 101, the
+        // session's messages after it (`listener_native_handover.rs`).
+        let pipe = carrier.zip(upgrade_owner).map(|(carrier, owner)| {
+            super::handover::UpgradePipe::new(
+                sink.clone(),
+                Some(super::handover::HandTo {
+                    carrier,
+                    request: Arc::clone(snapshot),
+                    withheld: Arc::clone(pending.withheld()),
+                    owner,
+                }),
+            )
+        });
+        let client: Arc<dyn ClientSink> = match &pipe {
+            Some(pipe) => pipe.clone(),
+            None => sink.clone(),
+        };
         let authority = pending.clone();
         let response_source = lease.storage().clone();
         let mut work = tokio::spawn(async move {
@@ -632,7 +848,7 @@ pub(super) async fn prepare(
                         now_s,
                         unit: None,
                         upstream: seat.upstream.clone(),
-                        client: Some(sink.clone()),
+                        client: Some(client),
                         carrier: seat.carrier.clone(),
                         intents: seat.intents.clone(),
                         models: Vec::new(),
@@ -650,7 +866,7 @@ pub(super) async fn prepare(
             served
         });
         // The listener retains this future until completion. On cancellation we close the
-        // unpublished response receivers, then join the actual blocking Task before settling.
+        // unpublished response receivers, then join the session's task before settling.
         // Dropping a JoinHandle cannot establish that an upstream effect stopped.
         let head = tokio::select! {
             biased;
@@ -690,6 +906,11 @@ pub(super) async fn prepare(
                 *response.status_mut() = status;
                 *response.headers_mut() = headers;
                 response.extensions_mut().insert(credit);
+                // A committed upgrade: each data frame of this answer's body is a message piece,
+                // and what it is of its message is stated beside it.
+                if let Some(pipe) = pipe.as_ref().filter(|pipe| pipe.switched()) {
+                    response.extensions_mut().insert(pipe.kinds());
+                }
                 (response, status.as_u16(), false, Some(work), None)
             }
             Err(_) => {
@@ -765,13 +986,14 @@ mod tests {
             source: source(),
             state: Mutex::new(SinkState {
                 head: Some(head_tx),
-                body: Some(body_tx),
+                body: Some(tokio_util::sync::PollSender::new(body_tx)),
                 trailers: false,
             }),
             ended: ended.clone(),
         };
-        let producer = tokio::task::spawn_blocking(move || {
-            sink.items(vec![
+        // The producer is a task on this same runtime: it waits for the body's one slot, it does not block.
+        let producer = tokio::spawn(async move {
+            let mut items = vec![
                 ToClient::Head {
                     status: 200,
                     fields: Vec::new(),
@@ -779,7 +1001,8 @@ mod tests {
                 ToClient::Body(b"payload".to_vec()),
                 ToClient::Trailers(vec![(b"x-checksum".to_vec(), b"value".to_vec())]),
                 ToClient::End,
-            ])
+            ];
+            std::future::poll_fn(|cx| sink.poll_items(cx, &mut items)).await
         });
         assert_eq!(head_rx.await.unwrap().0, 200);
         let mut body = DataBody {

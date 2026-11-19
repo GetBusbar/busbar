@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (C) 2026 Busbar Inc and contributors */
-/* busbar_plugin.h: MIN-3 plugin surface for C (mechanism 2, secret kind abi 2). Little-endian, LP64/LLP64-safe
+/* busbar_plugin.h: plugin surface for C (core contract 3.0, secret kind 3.0). Little-endian, LP64/LLP64-safe
  * (every field is fixed-width or a pointer/size_t, as the Rust #[repr(C)] side). Frozen: ABI-MIN3-INTERFACE §7.8.
  * Hand-written (§16.103); C-HEADER (§14, tests/c_header) asserts every size, offset and constant below against
  * the Rust items, so a change on either side fails CI until both move in one MR (owner W1-A13). */
@@ -11,25 +11,59 @@
 #include <stdint.h>
 #include <string.h>
 
-#define BB_MECHANISM 2u
-#define BB_SECRET_ABI 2u
+/* A version is first.second per contract: the first number moves when something is changed or removed, the
+ * second when something is added. An image carries the core's and its kind's (interface revision C.4). */
+#define BB_CORE 3u
+#define BB_CORE_MINOR 0u
+#define BB_SECRET_ABI 3u
+#define BB_SECRET_MINOR 0u
 #define BB_KIND_SECRET 2u
-#define BB_CORE_FP   0x6ee412921500eb10ull /* A13 fills from ci/abi.pin; C-HEADER asserts == CORE_FP */
-#define BB_SECRET_FP 0x0e394099f69dffb0ull /* A13 fills from ci/abi.pin; C-HEADER asserts == secret::FP */
+#define BB_CORE_FP   0x3b0e1903e87c9e9cull /* versions::CORE_CONTRACT.wire; C-HEADER asserts == CORE_FP */
+#define BB_SECRET_FP 0x35486c566edc8f6eull /* C-HEADER asserts == secret::FP */
 
 /* §2 */
 typedef struct { const uint8_t *ptr; size_t len; } bb_bytes;  /* ptr may be NULL only when len == 0; {NULL,0} is empty everywhere (round 17, C-NULL-EMPTY) */
 typedef bb_bytes bb_str;                                       /* UTF-8 */
+/* The answer block. It is the caller's: at least BB_RAW_OUT_MIN bytes, NOT pre-filled. Write only [len, cap),
+ * state what you wrote in len, ask h->grow for more. Never read bytes you did not write. */
 typedef struct { uint8_t *ptr; size_t len; size_t cap; } bb_raw_out;
+#define BB_RAW_OUT_MIN 80u
 typedef uint32_t bb_status;
 enum { BB_OK = 0, BB_REFUSED = 1, BB_FAILED = 2, BB_NEED = 3, BB_FAULT = 4 };
 typedef uint64_t bb_token;
+
+/* The one call record (core 3.0). Every method of every kind, and describe, open and resume, cross as
+ * entry(inst, host, &call, &out). Read by prefix and by position: a field added later goes at the end of head,
+ * texts or blobs, where an older image never looks. A pair list crosses as ONE blob lending a bb_pair array
+ * (len = n * sizeof(bb_pair)). */
+typedef struct { const bb_str *ptr; size_t len; } bb_strs;
+typedef struct { const bb_bytes *ptr; size_t len; } bb_blobs;
+typedef struct {
+    uint64_t session;                          /* the session or chain token; 0 for a plain call */
+    uint64_t mono_ns;                          /* the host's one clock reading for this operation; 0 = not given */
+    bb_bytes head;                             /* the method's numbers: little-endian, natural alignment */
+    bb_strs texts;                             /* borrowed UTF-8 fields, by position */
+    bb_blobs blobs;                            /* borrowed byte fields, by position */
+} bb_call;
+struct bb_host;
+/* The only entry type. Every kind table is an array of these. */
+typedef bb_status (*bb_entry)(const void *inst, const struct bb_host *h, const bb_call *call, bb_raw_out *out);
+static inline bb_bytes bb_call_blob(const bb_call *c, size_t i) {
+    bb_bytes none = { NULL, 0 };
+    return i < c->blobs.len ? c->blobs.ptr[i] : none;
+}
+static inline bool bb_call_u32(const bb_call *c, size_t at, uint32_t *v) {
+    if (at + 4 > c->head.len) return false;
+    memcpy(v, c->head.ptr + at, 4);
+    return true;
+}
 
 /* §5 */
 typedef struct { uint32_t alg, key_form; uint64_t param; bb_bytes key, data, aux, aad; } bb_crypto_req;
 typedef struct { uint32_t status, _r; bb_bytes out; } bb_crypto_ret;
 typedef struct { uint8_t bytes[16]; } bb_deployment_id;            /* round 28, §5 DeploymentId */
 typedef struct bb_host {
+    uint32_t size, count;                      /* core 3.0: this table's size in bytes and its number of entries (9); entries are only appended */
     const void *ctx;
     uint64_t      (*now)(const void *ctx);
     uint64_t      (*mono)(const void *ctx);
@@ -39,12 +73,21 @@ typedef struct bb_host {
     uint32_t      (*log_level)(const void *ctx);
     bool          (*grow)(const void *ctx, bb_raw_out *out, size_t need);
     bb_deployment_id (*deployment)(const void *ctx);                  /* round 28: all zero until boot has the row */
-    bb_status (*migrate_admit)(const void *ctx, uint64_t recoverable); /* round 31: store open only (§5) */
+    bb_status (*service)(const void *ctx, uint64_t id, const bb_call *call, bb_raw_out *out); /* core 3.0: a kind's own host service; id = kind code << 32 | n (store service 1 = the recoverable gate, head = count u64) */
 } bb_host;
 enum { BB_LOG_ERROR = 1, BB_LOG_WARN = 2, BB_LOG_INFO = 3, BB_LOG_DEBUG = 4, BB_LOG_TRACE = 5 };
 
+/* Core host services (core 3.0): ids with no kind code in the high 32 bits, served through bb_host.service.
+ * BB_SERVICE_HMAC_PARTS: HMAC over parts (E.1). call.head = alg (uint32, a BB_ALG HMAC number: 16 SHA-256);
+ * call.blobs[0] = the key, call.blobs[1..] = the message parts in order (0 to BB_HMAC_PARTS_MAX of them); the
+ * message is their concatenation and the host copies none. out (at least BB_RAW_OUT_MIN bytes) receives a
+ * uint32 crypto status (little-endian; 0 OK, 2 INVALID, 3 UNAVAILABLE, 4 LIMIT, 5 RNG) and, only when it is 0,
+ * the tag. BB_FAULT: the call could not be read; nothing was written. */
+#define BB_SERVICE_HMAC_PARTS 1ull
+#define BB_HMAC_PARTS_MAX 8u
+
 /* #408: native plane resource facts. These records grant no execution authority. */
-#define BB_PLANE_FB_RESOURCE_ADMISSION (1ull << 3)
+/* Plane 2.0: fact bit 3 (FB_RESOURCE_ADMISSION) is retired. */
 #define BB_PLANE_FB_CHANNEL_OPEN (1ull << 4)
 #define BB_PLANE_M_SELECT_RESOURCES (1ull << 9)
 #define BB_PLANE_M_CHANNEL (1ull << 10)
@@ -65,36 +108,11 @@ enum { BB_LOG_ERROR = 1, BB_LOG_WARN = 2, BB_LOG_INFO = 3, BB_LOG_DEBUG = 4, BB_
 #define BB_TAG_D_ROUTE_RESOURCES 0x0199u
 
 typedef struct { bb_str name; bb_bytes value; } bb_pair;
-typedef struct { const bb_pair *ptr; size_t len; } bb_pairs;
-typedef struct {
-    uint32_t route, flags, auth, _r;
-    bb_str method, path, query;
-    bb_pairs headers;
-    bb_bytes identity;
-    uint64_t request_id, carrier;
-    bb_str work;
-    bb_bytes ticket_record;
-} bb_plane_req;
-typedef struct {
-    uint32_t attempt, flags;
-    bb_str dialect, model, base_path, upstream, provider;
-    bb_pairs params;
-    bb_bytes admission;
-} bb_target;
+/* Core 3.0: there are no per-kind view structs and no per-kind table types. A kind's table is an array of
+ * bb_entry in the kind's method order, and each method's head / texts / blobs layout is the kind contract's
+ * (the interface revision's LAYOUT table). The plane's table has 11 entries: request, upstream, piece, end,
+ * rewrite, render, admin, probe, demux, select_resources, channel. */
 typedef struct { uint64_t invocation, generation; uint32_t route, descriptor; } bb_resource_echo_rec;
-typedef struct {
-    bb_status (*request)(const void *, const bb_host *, const bb_plane_req *, bb_bytes, bb_raw_out *);
-    bb_status (*upstream)(const void *, const bb_host *, uint64_t, const bb_target *, bb_raw_out *);
-    bb_status (*piece)(const void *, const bb_host *, uint64_t, uint32_t, uint32_t, uint32_t, bb_bytes, bb_raw_out *);
-    bb_status (*end)(const void *, const bb_host *, uint64_t, bb_raw_out *);
-    bb_status (*rewrite)(const void *, const bb_host *, uint64_t, bb_bytes, bb_raw_out *);
-    bb_status (*render)(const void *, const bb_host *, const bb_plane_req *, uint32_t, bb_bytes, bb_raw_out *);
-    bb_status (*admin)(const void *, const bb_host *, uint32_t, bb_bytes, bb_raw_out *);
-    bb_status (*probe)(const void *, const bb_host *, const bb_target *, bb_raw_out *);
-    bb_status (*demux)(const void *, const bb_host *, bb_str, bb_bytes, bb_raw_out *);
-    bb_status (*select_resources)(const void *, const bb_host *, uint32_t, const bb_plane_req *, bb_bytes, bb_raw_out *);
-    bb_status (*channel)(const void *, const bb_host *, uint64_t, const bb_target *, bb_raw_out *); /* slot 10, BB_PLANE_M_CHANNEL */
-} bb_plane_vt;
 
 /* §3: records. [bb_rec_head][body][zero pad to 8]. */
 typedef struct { uint16_t tag; uint16_t _r; uint32_t len; } bb_rec_head;
@@ -120,24 +138,27 @@ enum { BB_R_UNSUPPORTED = 1, BB_R_INVALID = 2, BB_R_NOT_FOUND = 3, BB_R_DENIED =
 /* §7.3/§7.4 */
 typedef struct { uint16_t major, minor, patch, _reserved; } bb_engine_version;
 typedef struct {
-    uint8_t magic[16]; uint32_t format, size, kind, kind_abi, mechanism, flags;
-    uint64_t layout, mechanism_layout, semantic, mechanism_semantic;
-    bb_engine_version engine_min, engine_max;
+    uint8_t magic[16]; uint32_t format, size, kind, kind_abi, core_abi, flags;
+    uint64_t layout, core_layout;              /* the kind's and the core's wire fingerprints at exactly these versions */
+    uint32_t kind_minor, core_minor;           /* the second numbers */
+    uint8_t _reserved2[8];                     /* 0 */
+    bb_engine_version engine_min, engine_max;  /* any engine: {0,0,0,0} and {65535,65535,65535,0} */
     uint8_t name[64], version[32], target[32], build_id[32], crypto[8], _reserved[16];
-} bb_stamp;                                    /* 272 bytes, format 2 (round 28); crypto = "external" */
+} bb_stamp;                                    /* 272 bytes, format 3; crypto = "external" */
+#define BB_STAMP_FORMAT 3u
 
-/* §8.2: the secret Vt (one entry). The C plugin answers synchronously and never NEEDs. */
-typedef struct {
-    bb_status (*resolve)(const void *inst, const bb_host *h, bb_bytes reference, bb_raw_out *out);
-} bb_secret_vt;
+/* The secret table: one entry, `resolve`. Its call: no head, no texts, blob 0 = the reference
+ * (bb_call_blob(call, 0)). The C plugin answers synchronously and never NEEDs. */
+#define BB_SECRET_ENTRIES 1u
 
-/* §7.1 */
+/* The header `busbar_plugin` returns. It begins with its own size and the number of table entries. */
 typedef struct {
+    uint32_t size, entries;                    /* sizeof(bb_plugin); BB_SECRET_ENTRIES */
     const bb_stamp *stamp;
-    const void *kind_vt;                       /* const bb_secret_vt * */
-    bb_status (*describe)(const bb_host *h, bb_raw_out *out);
-    bb_status (*open)(const bb_host *h, bb_bytes config, uint32_t flags, bb_raw_out *out);
-    bb_status (*resume)(const void *inst, const bb_host *h, bb_token tok, bb_bytes results, bb_raw_out *out);
+    const bb_entry *table;                     /* `entries` entries, the kind's method order */
+    bb_entry describe;                         /* inst NULL; the call's fields are empty */
+    bb_entry open;                             /* inst NULL; head = flags (u32); blob 0 = the bound config */
+    bb_entry resume;                           /* call->session = the chain token; blob 0 = the results */
     bb_status (*cancel)(const void *inst, bb_token tok);
     bb_status (*close)(const void *inst);
     bb_str former_names;                       /* "secret-c" for busbar-secret-c (§12.10 item 2) */
@@ -171,7 +192,7 @@ static inline bb_status bb_fail(const bb_host *h, bb_raw_out *o, bb_status statu
     bb_fail_rec f = { status, code };
     size_t n = text ? strlen(text) : 0;
     if (n > BB_FAIL_TEXT_WIRE_MAX) { n = BB_FAIL_TEXT_WIRE_MAX; while (n && (((const uint8_t *)text)[n] & 0xC0u) == 0x80u) n--; }
-    (void)bb_put2(h, o, BB_TAG_FAIL, &f, sizeof f, text, (uint32_t)n); /* always fits in the first buffer */
+    (void)bb_put2(h, o, BB_TAG_FAIL, &f, sizeof f, text, (uint32_t)n); /* a short text fits BB_RAW_OUT_MIN; a long one grows */
     return status;
 }
 /* Round 34 (PLUGIN-ERROR-CODES): a numbered Fail = bb_fail, then one ERROR record when number != 0 (16 bytes; FAIL +

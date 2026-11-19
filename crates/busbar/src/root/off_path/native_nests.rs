@@ -9,12 +9,12 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+use busbar_contract::route::{method_bit, PATH_EXACT, PATH_PATTERN};
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::plane_driver::port_routes::PortRoutes;
 
 use crate::root::serve::native_nests::NativeNests;
-use crate::root::serve::{DataRoutes, DispatchSnapshot, DoorNests};
+use crate::root::serve::{DataRoutes, DispatchSnapshot, GenerationNests};
 
 impl DataRoutes {
     pub(crate) fn new(snapshot: DispatchSnapshot) -> Result<Arc<Self>, String> {
@@ -22,45 +22,25 @@ impl DataRoutes {
         let native = Arc::new(NativeNests::new(&snapshot)?);
         let kernel = snapshot
             .served
-            .planes
+            .ports
             .first()
-            .map(|plane| Arc::clone(&plane.kernel))
-            .or_else(|| {
-                snapshot
-                    .served
-                    .ports
-                    .first()
-                    .map(|seat| Arc::clone(seat.driver.core()))
-            });
+            .map(|seat| Arc::clone(seat.driver.core()));
         let generation = match kernel {
             Some(kernel) => {
                 if snapshot
                     .served
-                    .planes
+                    .ports
                     .iter()
-                    .any(|other| !Arc::ptr_eq(&kernel, &other.kernel))
-                    || snapshot
-                        .served
-                        .ports
-                        .iter()
-                        .any(|seat| !Arc::ptr_eq(&kernel, seat.driver.core()))
+                    .any(|seat| !Arc::ptr_eq(&kernel, seat.driver.core()))
                 {
                     return Err("listener planes do not share the same core services".into());
-                }
-                if snapshot
-                    .served
-                    .planes
-                    .iter()
-                    .any(|plane| plane.driver.invocation_caller().is_none())
-                {
-                    return Err("listener plane has no admitted invocation owner".into());
                 }
                 let runtime =
                     tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?;
                 Some(Arc::new(
                     busbar_kernel::host_services::ServingGeneration::try_new(
                         kernel,
-                        Arc::new(DoorNests {
+                        Arc::new(GenerationNests {
                             routes: Arc::clone(&snapshot),
                             native,
                             runtime,
@@ -87,16 +67,40 @@ impl NativeNests {
             .iter()
             .map(|seat| (seat.instance.as_str(), seat.driver.routes()))
             .collect();
-        Self::seal(snapshot.guests.lines().to_vec(), &ports)
+        Self::from_guests(snapshot.guests.lines(), &ports)
     }
 
+    /// The nest table of a generation whose sealed guest list already holds the ports' own data
+    /// lines (the native listener mounts them, each with its effective chain): those lines give way
+    /// to the nest's own line for the same route, and a port data route with no line there (a route
+    /// the listener left unmounted) is no nest destination either.
+    pub(in crate::root) fn from_guests(
+        guests: &[Line],
+        ports: &[(&str, &PortRoutes)],
+    ) -> Result<Self, String> {
+        let mounted: Vec<(&str, u32)> = guests
+            .iter()
+            .filter_map(|line| port_data(line, ports))
+            .collect();
+        let others = guests
+            .iter()
+            .filter(|line| port_data(line, ports).is_none())
+            .cloned()
+            .collect();
+        Self::seal(others, ports, |instance, route| {
+            mounted.iter().any(|(i, r)| *i == instance && *r == route)
+        })
+    }
+
+    /// `mounted`: whether a port's data route (instance, route id) is served at all.
     pub(in crate::root) fn seal(
         mut lines: Vec<Line>,
         ports: &[(&str, &PortRoutes)],
+        mounted: impl Fn(&str, u32) -> bool,
     ) -> Result<Self, String> {
         let mut destinations = BTreeMap::new();
         for (seat, (instance, routes)) in ports.iter().enumerate() {
-            for route in &routes.data {
+            for route in routes.data.iter().filter(|r| mounted(instance, r.route)) {
                 // Match exactly the verbs exposed by the native HTTP data mount.
                 let methods = crate::root::port_mount::methods_of(route.methods)
                     .iter()
@@ -129,7 +133,7 @@ impl NativeNests {
                     dialect: 0,
                     auth: LineAuth::None,
                     upgrade: None,
-                    offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+                    offered: busbar_contract::route::AuthPoints::EMPTY,
                 });
             }
         }
@@ -140,4 +144,17 @@ impl NativeNests {
             destinations,
         })
     }
+}
+
+/// The (instance, route id) of a port's own data line; None for every other line.
+fn port_data<'l>(line: &'l Line, ports: &[(&str, &PortRoutes)]) -> Option<(&'l str, u32)> {
+    let Claimant::Plane(instance) = &line.claimant else {
+        return None;
+    };
+    ports
+        .iter()
+        .any(|(name, routes)| {
+            *name == instance.as_str() && routes.data.iter().any(|r| r.route == line.route.rung)
+        })
+        .then_some((instance.as_str(), line.route.rung))
 }

@@ -29,9 +29,6 @@ pub const REASON_CALLER_ASK_PENDING: &str = "caller_ask_pending";
 /// The request was answered with a TASK rather than a result. Also `refused`, for the same reason:
 pub const REASON_TASK_CREATED: &str = "task_created";
 
-/// The reason token for a call an operator's HOOK GATE refused (`tools.hooks:` /
-pub const REASON_HOOK_REJECTED: &str = "hook_rejected";
-
 /// The request's parameters were missing or malformed. RECORDED rather than dropped: the caller is
 pub const REASON_MALFORMED: &str = "malformed_params";
 
@@ -46,24 +43,3 @@ pub const REASON_ARTIFACT_DRIFTED: &str = "artifact_drifted";
 
 /// THE LIFECYCLE RACE. The registry moved between admission and dispatch, so the request is refused
 pub const REASON_GENERATION_MOVED: &str = "generation_moved";
-
-/// Accepted, not yet started.
-pub const EV_SUBMITTED: &str = "task.submitted";
-/// Running (a fresh start, not a resume).
-pub const EV_WORKING: &str = "task.working";
-/// Paused awaiting the caller (input- or auth-required).
-pub const EV_INTERRUPTED: &str = "task.interrupted";
-/// An interrupted task resumed to working — distinct from a fresh `working`.
-pub const EV_RESUMED: &str = "task.resumed";
-/// Dispatched to the chosen/fronted agent.
-pub const EV_DELEGATED: &str = "task.delegated";
-/// An artifact chunk was durably relayed (the resume cursor advanced).
-pub const EV_ARTIFACT: &str = "task.artifact";
-/// Reached a terminal state (completed/failed/canceled/rejected).
-pub const EV_TERMINAL: &str = "task.terminal";
-/// The push receiver answered 2xx: the notification is delivered.
-pub const EV_PUSH_DELIVERED: &str = "task.push_delivered";
-/// busbar declined to connect: the delivery-time SSRF guard refused the fresh resolution. Nothing
-pub const EV_PUSH_REFUSED: &str = "task.push_refused";
-/// The delivery went out and the receiver failed it (socket error or non-2xx) — a statement about
-pub const EV_PUSH_FAILED: &str = "task.push_failed";

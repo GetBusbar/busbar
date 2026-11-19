@@ -6,6 +6,7 @@
 //! name it resolves and the list of addresses it answers.
 
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::guard::Resolved;
@@ -26,13 +27,13 @@ pub(crate) fn resolve_capped<F>(
     host: &str,
     done: Resolved,
     cap: usize,
-    in_flight: &'static std::sync::atomic::AtomicUsize,
+    in_flight: &'static AtomicUsize,
     lookup: F,
 ) where
     F: FnOnce(&str) -> Result<Vec<IpAddr>, String> + Send + 'static,
 {
     use std::sync::Mutex;
-    let Some(place) = crate::hostio::LookupPlace::take(cap, in_flight) else {
+    let Some(place) = LookupPlace::take(cap, in_flight) else {
         done(Err(crate::cold::egress::lookups_in_flight(cap)));
         return;
     };
@@ -53,5 +54,26 @@ pub(crate) fn resolve_capped<F>(
         if let Some(done) = take(&cell) {
             done(Err("no resolver thread".into()));
         }
+    }
+}
+
+/// One taken place among the lookups in flight; dropping it gives the place back.
+pub(crate) struct LookupPlace(&'static AtomicUsize);
+
+impl LookupPlace {
+    /// Takes a place if fewer than `cap` are taken.
+    pub(crate) fn take(cap: usize, in_flight: &'static AtomicUsize) -> Option<Self> {
+        in_flight
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < cap).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Self(in_flight))
+    }
+}
+
+impl Drop for LookupPlace {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }

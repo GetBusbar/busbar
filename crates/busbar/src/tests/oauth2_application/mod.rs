@@ -275,15 +275,12 @@ async fn build_application(
         })
     });
     let auth_name = auth_library.map(|path| {
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
-            .expect("the actual auth statement reads")
-            .expect("the actual auth library states itself");
-        let name = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual auth statement is valid")
-            .name;
-        let mut manifest =
-            plugins::manifest("auth", &name, crate::root::test_plugins::FIXTURE_PUBLISHER);
-        manifest.statement = Some(hex::encode(statement));
+        let manifest = crate::root::test_plugins::native_manifest(
+            "auth",
+            &path,
+            crate::root::test_plugins::FIXTURE_PUBLISHER,
+        );
+        let name = manifest.name.clone();
         let library = std::fs::read(&path).expect("the actual auth library reads");
         let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
         std::fs::write(directory.join("auth-product.tar.gz"), archive)

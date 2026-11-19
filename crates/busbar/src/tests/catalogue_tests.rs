@@ -1,25 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::*;
 use busbar_contract::diagnostic::Diagnostic;
 
 fn installed() -> Vec<&'static Diagnostic> {
-    register_diagnostics().all()
-}
-
-#[cfg(linked_axis_export_doors)]
-fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
-    use crate::root::linked::{declared_diagnostics, linked_declared_diagnostics, linked_exports};
-    use crate::root::loader::PluginRegistry;
-
-    let mut out = linked_declared_diagnostics(&LINKED, &[]).expect("linked declarations read");
-    let exports = PluginRegistry::empty()
-        .link(linked_exports(LINKED.export_doors).expect("linked export declarations read"))
-        .expect("linked exports register");
-    let export_codes = declared_diagnostics(&exports, &out).expect("linked export codes join");
-    out.extend(export_codes);
-    out
+    crate::root::linked::register_diagnostics(&crate::LINKED).all()
 }
 
 #[test]
@@ -50,22 +35,6 @@ fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
     );
 }
 
-#[cfg(linked_axis_export_doors)]
-#[test]
-fn declared_codes_do_not_collide_with_the_registry() {
-    let declared = declared_by_linked_plugins();
-    assert!(!declared.is_empty(), "the linked plugins declare codes");
-    let installed = busbar_kernel::diagnostics::REGISTRY;
-    for d in declared {
-        assert!(
-            installed.iter().all(|r| r.code != d.code),
-            "{} collides",
-            d.code
-        );
-    }
-}
-
-#[cfg(all(linked_every_plane_door, linked_axis_export_doors))]
 mod page {
     use super::*;
     use busbar_contract::json;
@@ -91,13 +60,11 @@ mod page {
         let published = published_numbers();
         let in_registry = |d: &Diagnostic| REGISTRY.iter().any(|r| r.code == d.code);
         let mut page: Vec<&'static Diagnostic> = REGISTRY.to_vec();
-        page.extend(declared_by_linked_plugins());
-        let declared_codes: std::collections::HashSet<_> = page.iter().map(|d| d.code).collect();
-        page.extend(installed().into_iter().filter(|d| {
-            !in_registry(d)
-                && !declared_codes.contains(&d.code)
-                && published.contains(&u64::from(d.code))
-        }));
+        page.extend(
+            installed()
+                .into_iter()
+                .filter(|d| !in_registry(d) && published.contains(&u64::from(d.code))),
+        );
         page
     }
 
@@ -122,39 +89,6 @@ mod page {
     #[test]
     fn committed_json_matches_registry() {
         committed_matches(COMMITTED_JSON, &render_json_for(&host_page()));
-    }
-}
-
-/// DES-337 C3: a first-party plugin declaring a host family the plugin series reservation used to
-/// miss (login, card-history alarms, request phases, request telemetry) is refused with the
-/// existing host-series text. A third-party plugin's declarations are never granted at all.
-#[test]
-fn a_plugin_declaring_a_catalogued_host_family_is_refused() {
-    use busbar_contract::abi::mechanism::observe::SeriesDecl;
-    let observing = busbar_plugin_loader::observe::Observing::default();
-    assert!(observing.install_host_series(crate::root::linked::host_series));
-    for series in [
-        "busbar_login_attempts_total",
-        "busbar_login_throttled_total",
-        "busbar_card_history_alarms_total",
-        "busbar_request_phase_duration_seconds",
-        "busbar_request_phase_duration_count_total",
-        "busbar_telemetry_request_cells",
-    ] {
-        let Err(refused) = busbar_plugin_loader::observe::grant_series(
-            &observing,
-            "c3-plugin",
-            true,
-            &[SeriesDecl::new(series, "counter")],
-        ) else {
-            panic!("a first-party claim on the host family {series} is refused");
-        };
-        assert_eq!(
-            refused,
-            format!(
-                "plugin 'c3-plugin' declares the series '{series}', which the host itself emits"
-            )
-        );
     }
 }
 

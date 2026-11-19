@@ -11,9 +11,9 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::task::{Context, Poll};
 
-use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::conn::{ConnError, ConnId, Conns, Piece, PollConns, Ticket};
-use busbar_contract::json::{json, JsonValueTrait as _};
+use busbar_contract::json::json;
+use busbar_contract::rendering::ReadNeed;
 use busbar_contract::services::Caller;
 use busbar_contract::transport::trust::Anchors;
 use busbar_contract::transport::ConnFacts;
@@ -26,6 +26,7 @@ use busbar_plugin_abi::plane::CARRIER_STDIO;
 use busbar_plugin_abi::records::Records;
 use busbar_ports::plane::{PlaneIn, PlaneOut, PlaneSession, RouteInfo, TargetIn, UsageClass};
 use busbar_ports::{CallCx, PortError};
+use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use super::*;
@@ -39,10 +40,7 @@ fn refused() -> PortError {
 }
 
 fn caller() -> Caller {
-    Caller::for_test(
-        "mcp".into(),
-        busbar_contract::abi::mechanism::KindCode::Plane,
-    )
+    Caller::for_test("mcp".into(), busbar_contract::kinds::codes::KindCode::Plane)
 }
 
 /// A plane that states nothing and answers nothing (no FB_PROBES).
@@ -438,6 +436,7 @@ async fn catalog_seat_uses_sealed_routes_policies_targets_and_shared_capacity() 
         },
         &pool,
         Some(&catalog),
+        0,
     )
     .unwrap();
     let held = egress
@@ -494,7 +493,7 @@ async fn catalog_composition_keeps_model_definitions_out_of_channel_registration
         &who(7),
         caller(),
         Arc::new(Quiet),
-        Handle::current(),
+        &PortRoutes::default(),
     )
     .unwrap();
     let registrations: Arc<dyn Upstreams> = shared.upstreams["mcp"].clone();
@@ -533,7 +532,7 @@ async fn seat_request_inventory_retains_the_actual_candidate_catalog() {
         &who(7),
         caller(),
         Arc::new(Quiet),
-        Handle::current(),
+        &PortRoutes::default(),
     )
     .unwrap();
     drop(shared);
@@ -564,7 +563,7 @@ async fn catalog_selector_cannot_alias_the_registration_request_domain() {
         &who(7),
         caller(),
         Arc::new(Quiet),
-        Handle::current()
+        &PortRoutes::default()
     )
     .is_err());
     assert!(
@@ -648,7 +647,7 @@ async fn a_seat_with_configured_upstreams_is_composed_with_its_walk_and_its_carr
         &who(7),
         caller(),
         Arc::new(Quiet),
-        Handle::current(),
+        &PortRoutes::default(),
     )
     .expect("the seat composes");
     assert!(wiring.upstream.is_some(), "a FORWARD has a walk to run");
@@ -715,7 +714,7 @@ async fn a_seat_with_no_connection_table_still_gets_its_carrier_and_walks_nothin
         &who(3),
         caller(),
         Arc::new(Quiet),
-        Handle::current(),
+        &PortRoutes::default(),
     )
     .expect("the seat composes");
     assert!(wiring.upstream.is_none());
@@ -892,7 +891,7 @@ async fn a_seat_without_its_retained_channel_account_refuses_before_declaring_ro
         &who(7),
         caller(),
         Arc::new(Quiet),
-        Handle::current()
+        &PortRoutes::default()
     )
     .is_err());
     assert!(table.declared.lock().unwrap().is_empty());
@@ -908,7 +907,7 @@ async fn the_seat_exposes_the_same_instance_account_to_original_unit_admission()
         &who(7),
         caller(),
         Arc::new(Quiet),
-        Handle::current(),
+        &PortRoutes::default(),
     )
     .unwrap();
     let budget = &shared.channel_budgets["mcp"];

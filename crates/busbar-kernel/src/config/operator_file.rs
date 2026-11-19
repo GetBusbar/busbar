@@ -80,6 +80,41 @@ pub fn operator_file_difference<'a>(
         .find(|name| backed(name) != reference.get(name))
 }
 
+/// THE RELOAD CHECK: the operator credential is bound at process start, and a candidate that
+/// changes it is refused as a whole. `candidate`'s operator-backed definitions are compared with
+/// `running`'s (the generation the candidate would replace, whose definitions are the ones start
+/// bound, since every build that would change them is refused here) by name and by the whole
+/// definition, as [`operator_file_policy`] compares them: changed, removed (deleted or re-pointed
+/// away) and added (including a name re-pointed to the operator module) all refuse. Judged before
+/// anything of the candidate opens, so the running generation and its credential keep serving.
+/// The refusal and its `auth.operator.refused` row name the definition, never its settings.
+pub fn operator_credential_unchanged(
+    candidate: &IdentityProviders,
+    running: &IdentityProviders,
+) -> Result<(), String> {
+    let reference = OperatorFileDefs::of(running);
+    let Some(name) = operator_file_difference(candidate, &reference) else {
+        return Ok(());
+    };
+    let backed = |providers: &IdentityProviders| providers.get(name).is_some_and(operator_backed);
+    let what = match (backed(running), backed(candidate)) {
+        (true, true) => "changes it",
+        (true, false) => "removes it",
+        _ => "adds it",
+    };
+    crate::audit::auditlog::record_operator(
+        crate::audit::auditlog::OperatorAudit::RefusedChanged,
+        name,
+        "reload",
+    );
+    Err(format!(
+        "identity-providers.{name} is the operator credential, which is bound at process start: \
+         this configuration {what}, so the change was refused and nothing was changed; the running \
+         configuration keeps serving with the operator credential it started with. Restart the \
+         process to change the operator credential."
+    ))
+}
+
 /// THE PROVENANCE RULE (§3.5 "File policy"): the first operator-backed definition `cfg` holds from
 /// the admin overlay rather than the base file.
 pub fn overlay_operator_definition(cfg: &RootCfg) -> Option<&str> {

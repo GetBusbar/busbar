@@ -125,11 +125,17 @@ deny = [
     { crate = "hyper-rustls", wrappers = ["reqwest"], reason = "TLS configs come from crypto::tls" },
     { crate = "quinn", wrappers = ["reqwest"], reason = "no HTTP/3" },
     { crate = "quinn-proto", wrappers = ["quinn"], reason = "no HTTP/3" },
-    { crate = "dimpl", wrappers = ["busbar-crypto", "busbar-crypto-backend", "busbar-core-connector", "str0m", "str0m-proto"], reason = "the DTLS provider is the crypto backend's" },
+    { crate = "dimpl", wrappers = ["busbar-crypto", "busbar-crypto-backend", "str0m", "str0m-proto"], reason = "the DTLS provider is the crypto backend's" },
     { crate = "busbar-crypto-backend", wrappers = ["busbar-crypto"], reason = "the backend is reached only through the facade" },
     { crate = "busbar-crypto-backend", deny-multiple-versions = true, reason = "one backend per graph" },
     { crate = "busbar-crypto", wrappers = ["busbar-artifact-verifier", "busbar-contract", "busbar-plugin-abi"], reason = "every crate reaches the facade as busbar_contract::crypto; busbar-plugin-abi[host] sits below busbar-contract and names it directly (ABI-MIN3-INTERFACE §1, §16.23), and so does busbar-artifact-verifier, the standalone YAML-free verifier that does not depend on busbar-contract (7ba7137edc; named in busbar-crypto/Cargo.toml)" },
     { crate = "busbar-crypto", deny-multiple-versions = true, reason = "one facade per graph" },
+    # WHO CAN MINT A CAPABILITY. busbar-seal's two free functions mint every capability seal: a crate that does
+    # not list it cannot name the mint (the compiler refuses it). busbar-kernel mints and hands seals on through
+    # its public `seal` module, so the crates that list the kernel are the rest of who can. Both lists are held
+    # to every manifest by tools/ci-checks `only_the_named_crates_may_depend_on_the_seal_and_the_kernel`.
+    { crate = "busbar-seal", wrappers = ["busbar-contract", "busbar-kernel"], reason = "the capability mint: the kernel mints; the contract re-exports the two seal types only" },
+    { crate = "busbar-kernel", wrappers = ["busbar", "busbar-core-admin", "busbar-core-connector", "busbar-core-oauth2", "busbar-default", "busbar-migrate", "busbar-plugin-test"], reason = "a crate that depends on the kernel can obtain a capability seal (busbar_kernel::seal); only the composition roots, core's own crates and the test harnesses may" },
     # Never in any graph: C-backed crypto, other Ed25519s, other RustCrypto algorithms, other str0m providers.
     { crate = "openssl", reason = "TLS is rustls; no OpenSSL" },
     { crate = "openssl-sys", reason = "TLS is rustls; no OpenSSL (C)" },
@@ -175,7 +181,6 @@ skip = [
     { crate = "crypto-common@0.2", reason = "follows digest 0.11 (ed25519-dalek 3, postgres-types)" },
     { crate = "cpufeatures@0.3", reason = "sha2 0.11 and curve25519-dalek 5 (ed25519-dalek 3), chacha20 0.10 in dist/default" },
     { crate = "base64@0.23", reason = "pem 4 via rcgen's `pem` feature, which only the tests enable" },
-    { crate = "windows-link@0.100", reason = "windows-core/windows-result/windows-strings in testing/oracle only; windows targets only, never built on linux/macOS (busbar#429)" },
 ]
 
 [sources]
@@ -201,8 +206,6 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-transport-ws",
     "https://github.com/GetBusbar/busbar-secret-env",
     "https://github.com/GetBusbar/busbar-secret-file",
-    "https://github.com/GetBusbar/busbar-transport-tcp",
-    "https://github.com/GetBusbar/busbar-transport-stdio",
     "https://github.com/GetBusbar/busbar-transport-webrtc",
     "https://github.com/GetBusbar/busbar-transport-http",
     "https://github.com/GetBusbar/busbar-hook-ranking",
@@ -243,6 +246,9 @@ allow-git = [
     # root/dist [patch.crates-io] rows and locks.
     "https://github.com/MattJackson/sonic-rs",
     "https://github.com/MattJackson/olpc-cjson",
+    # The webrtc image's media stack: str0m 0.24.1 plus `set_fill` (Host-random ICE credentials), not yet
+    # proposed upstream; exact revision in dist/default's [patch.crates-io] rows and lock.
+    "https://github.com/MattJackson/str0m",
     # dist/default resolves these first-party plane plugins from the canonical GitLab host at their pinned revs
     # (the github.com rows above are the mirror URLs); busbar#429.
     "https://github.com/GetBusbar/busbar-plane-a2a",
@@ -274,7 +280,6 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-store-sqlite",
     "https://github.com/GetBusbar/busbar-transport-grpc",
     "https://github.com/GetBusbar/busbar-transport-http",
-    "https://github.com/GetBusbar/busbar-transport-stdio",
     "https://github.com/GetBusbar/busbar-transport-webrtc",
     "https://github.com/GetBusbar/busbar-transport-ws",
     # postgres-protocol fork at its exact rev, via busbar-store-postgres in dist/default (busbar#429).

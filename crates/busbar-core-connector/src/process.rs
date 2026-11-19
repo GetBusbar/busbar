@@ -8,14 +8,14 @@ use std::cell::Cell;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
 
-use busbar_contract::abi::host::conn::connector::{
+use busbar_contract::conn::codes::{
     EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
     EGRESS_PROVIDER,
 };
-use busbar_contract::abi::host::service::{
+use busbar_contract::net::url_host_to_ascii;
+use busbar_contract::services::codes::{
     DEST_INTERNAL, DEST_NO_HOST, DEST_PLAINTEXT, DEST_SCHEME, DEST_UNRESOLVABLE,
 };
-use busbar_contract::net::url_host_to_ascii;
 use busbar_kernel::config::Destinations;
 use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Destination, Refused};
 
@@ -27,7 +27,7 @@ pub use crate::off_path::process::build_with_secrets;
 
 /// THE PROXY POSTURE, said once at boot (BUSBAR-3149) and audited: the proxy endpoints (never their
 /// credentials), `NO_PROXY`, and whether the guard judges a proxied target by address
-/// (`advanced.proxy_resolution: local`) or delegates the address check of a name that does not
+/// (`outbound.proxy_resolution: local`) or delegates the address check of a name that does not
 /// resolve here to the proxy (`proxy`). Nothing when no proxy is configured.
 pub fn note_proxy_posture(by_address: bool) {
     crate::off_path::lines::note_proxy_posture(by_address);

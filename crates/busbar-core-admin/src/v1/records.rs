@@ -6,8 +6,8 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::abi::plane::{class_of, RefusalClass};
 use busbar_contract::caps::{ReasonCode, StepName};
+use busbar_contract::plane::codes::{class_of, RefusalClass};
 use serde::Serialize;
 
 /// The `schema` every [`UnitRecord`] carries.

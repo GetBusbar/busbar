@@ -5,10 +5,10 @@
 //! entropy, and an adoption re-mint still refuses the pre-adoption ref under the same owner.
 use super::*;
 use crate::guest::{Claimant, Route};
-use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
-use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_contract::auth_calls::Verifying;
 use busbar_contract::framing_scope::AdoptionSource;
+use busbar_contract::route::{AuthPoints, POINT_HEAD};
+use busbar_contract::route::{METHOD_POST, PATH_EXACT};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
@@ -147,7 +147,6 @@ fn host(mac: UnitMac) -> Arc<Inbound> {
     let (_, reader) = probe("reader", AuthPoints::HEAD_BODY, Verified::Pass);
     let app = Arc::new(crate::state::App::from_test_parts(crate::state::AppParts {
         fallback_runtime_key: "",
-        serve_tables: Default::default(),
         port_seats: Default::default(),
         exports: Default::default(),
         root_rules: Arc::new(crate::appbuild::AcceptAll),
@@ -172,7 +171,6 @@ fn host(mac: UnitMac) -> Arc<Inbound> {
         export_defs: Default::default(),
         admin: Default::default(),
         admin_chain: Default::default(),
-        auth_instances: Default::default(),
         admin_modules,
         public_url: Default::default(),
         oauth_as: Default::default(),

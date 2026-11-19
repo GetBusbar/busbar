@@ -16,7 +16,7 @@ use busbar_ports::plane::{
 };
 use busbar_ports::{CallCx, PortError};
 
-use super::{admin_hydrate, plan, recovery_request, RouteRefused};
+use super::{admin_hydrate, recovery_request, PortRoutes, RouteRefused};
 
 fn route(id: u32, flags: u32, auth: u32, pattern: &str) -> RouteInfo {
     RouteInfo {
@@ -32,6 +32,130 @@ fn route(id: u32, flags: u32, auth: u32, pattern: &str) -> RouteInfo {
 
 fn none(_: u32) -> Option<u32> {
     None
+}
+
+/// The admission the test port states for `r`: a catalog walks core's pools, a route that names
+/// resource kinds selects them, every other route states scope none; no money, shared callers.
+/// (The rows below test where a route mounts; the record's own rules are in `auth::inbound_table`.)
+fn stated(r: &RouteInfo) -> (u32, u32, u32, &'static str) {
+    use busbar_plugin_abi::plane::{
+        CALLERS_SHARED, MONEY_NONE, SCOPE_NONE, SCOPE_SELECTED, SCOPE_WALK,
+    };
+    let (scope, walk) = if r.flags == ROUTE_CATALOG {
+        (SCOPE_WALK, "pool")
+    } else if !r.resource_kinds.is_empty() {
+        (SCOPE_SELECTED, "")
+    } else {
+        (SCOPE_NONE, "")
+    };
+    (scope, MONEY_NONE, CALLERS_SHARED, walk)
+}
+
+/// The mount table of a port that declares `routes`, each with the admission [`stated`] gives it.
+fn plan(
+    routes: &[RouteInfo],
+    admin_openapi: Option<&str>,
+    configured: &dyn Fn(u32) -> Option<u32>,
+) -> Result<PortRoutes, RouteRefused> {
+    super::plan(&port(routes, admin_openapi, true), configured)
+}
+
+/// A port that declares `routes`; `states`: whether it states their admissions.
+fn port(routes: &[RouteInfo], admin_openapi: Option<&str>, states: bool) -> Admin {
+    Admin {
+        seen: Mutex::default(),
+        routes: routes.to_vec(),
+        openapi: admin_openapi.map(str::to_owned),
+        states,
+        answer: Err(()),
+    }
+}
+
+/// The record's one path: what the port states for a route is the record its `Mounted` carries.
+#[test]
+fn a_mounted_route_carries_the_record_its_plane_stated() {
+    use crate::auth::route_record::{Money, RecordRefused, RouteClass, Scope, Who};
+    let table = plan(
+        &[
+            route(1, 0, AUTH_PRINCIPAL, "/v1/chat"),
+            route(2, ROUTE_CATALOG, AUTH_PRINCIPAL, "/v1/models"),
+        ],
+        None,
+        &none,
+    )
+    .unwrap();
+    let chat = &table.data[0].record;
+    assert_eq!(chat.class, RouteClass::Data);
+    assert!(chat.who.is(Who::PRINCIPAL));
+    assert!(chat.scope.is_none() && chat.scope_stated);
+    assert_eq!(chat.money, Money::None);
+    assert_eq!(table.data[1].record.scope, Scope::walk("pool"));
+
+    // A port that states no admission for a route mounts nothing: the plane is refused.
+    let silent = port(&[route(7, 0, AUTH_PRINCIPAL, "/x")], None, false);
+    assert_eq!(
+        super::plan(&silent, &none).unwrap_err(),
+        RouteRefused::NoAdmission { route: 7 }
+    );
+
+    // A record that contradicts itself refuses the plane, naming the route and the field: a
+    // catalog a public caller could list has no key to walk a scope for.
+    assert_eq!(
+        plan(
+            &[route(2, ROUTE_CATALOG, AUTH_PUBLIC, "/v1/models")],
+            None,
+            &none
+        )
+        .unwrap_err(),
+        RouteRefused::Record {
+            route: 2,
+            why: RecordRefused::OpenRouteCarriesScopeOrMoney
+        }
+    );
+}
+
+/// COMPLIANCE X4: a restricted key of a plane's own kind (MCP `mcp_tool`, A2A `agent`) can be
+/// granted only once a kind is declared, and a MIN-3 plane declares its kinds in its route
+/// records, nowhere else. A kind a mounted route states is a declared kind, added for the process;
+/// a plane refused at mount declares nothing, and core's `pool` is never a plane's.
+#[test]
+fn restricted_key_kinds_are_the_kinds_mounted_route_records_state() {
+    use crate::governance::plane_declares_kind;
+    let mut selects = route(1, 0, AUTH_PRINCIPAL, "/mcp");
+    selects.resource_kinds = vec![Box::<str>::from("x4_mounted_tool")].into();
+    assert!(!plane_declares_kind("x4_mounted_tool"));
+    plan(&[selects], None, &none).unwrap();
+    assert!(
+        plane_declares_kind("x4_mounted_tool"),
+        "a kind a mounted route's record states can be granted to a key"
+    );
+
+    // A plane whose routes cannot all be mounted declares none of its kinds.
+    let mut refused_selects = route(1, 0, AUTH_PRINCIPAL, "/a2a");
+    refused_selects.resource_kinds = vec![Box::<str>::from("x4_refused_agent")].into();
+    assert_eq!(
+        plan(
+            &[
+                refused_selects,
+                route(2, ROUTE_LINE, AUTH_PRINCIPAL, "/l1"),
+                route(3, ROUTE_LINE, AUTH_PRINCIPAL, "/l2"),
+            ],
+            None,
+            &none
+        )
+        .unwrap_err(),
+        RouteRefused::TwoLines
+    );
+    assert!(!plane_declares_kind("x4_refused_agent"));
+
+    // A catalog walks core's `pool`: mounting it never makes `pool` a plane's kind.
+    plan(
+        &[route(2, ROUTE_CATALOG, AUTH_PRINCIPAL, "/v1/models")],
+        None,
+        &none,
+    )
+    .unwrap();
+    assert!(!plane_declares_kind("pool"));
 }
 
 #[test]
@@ -62,7 +186,7 @@ fn resource_metadata_cannot_activate_unsupported_or_ambiguous_mounts() {
 fn routes_are_mounted_where_their_flags_say_and_line_and_recovery_are_never_mounted() {
     let routes = [
         route(1, 0, AUTH_PRINCIPAL, "/v1/chat"),
-        route(2, ROUTE_CATALOG, AUTH_PUBLIC, "/v1/models"),
+        route(2, ROUTE_CATALOG, AUTH_PRINCIPAL, "/v1/models"),
         route(3, ROUTE_ADMIN, AUTH_OPERATOR, "/stats"),
         route(4, ROUTE_UPGRADE, AUTH_PRINCIPAL, "/v1/realtime"),
         route(5, ROUTE_LINE, AUTH_PRINCIPAL, "/line"),
@@ -85,16 +209,21 @@ fn routes_are_mounted_where_their_flags_say_and_line_and_recovery_are_never_moun
 
 #[test]
 fn a_mounted_route_carries_its_effective_classes_and_the_operators_choice_wins_inside_the_mask() {
-    let routes = [route(
-        1,
-        0,
-        AUTH_PRINCIPAL | AUTH_TICKET | AUTH_OPTIONAL,
-        "/x",
-    )];
+    // A key or a ticket: the one pair of callers the route record lets share a route.
+    let routes = [route(1, 0, AUTH_PRINCIPAL | AUTH_TICKET, "/x")];
     let by_default = plan(&routes, None, &none).unwrap();
     assert_eq!(by_default.data[0].effective, AUTH_PRINCIPAL | AUTH_TICKET);
-    let chosen = plan(&routes, None, &|r| (r == 1).then_some(AUTH_OPTIONAL)).unwrap();
-    assert_eq!(chosen.data[0].effective, AUTH_OPTIONAL);
+    let chosen = plan(&routes, None, &|r| (r == 1).then_some(AUTH_PRINCIPAL)).unwrap();
+    assert_eq!(chosen.data[0].effective, AUTH_PRINCIPAL);
+    // A mask that mixes an optional caller with a key is not a record: the plane is refused.
+    let mixed = [route(1, 0, AUTH_PRINCIPAL | AUTH_OPTIONAL, "/x")];
+    assert_eq!(
+        plan(&mixed, None, &none).unwrap_err(),
+        RouteRefused::Record {
+            route: 1,
+            why: crate::auth::route_record::RecordRefused::Who
+        }
+    );
 }
 
 #[test]
@@ -194,6 +323,11 @@ fn the_recovery_request_carries_the_path_and_query_of_the_work_target() {
 /// A plane that answers `admin` with the op it was called with, recorded.
 struct Admin {
     seen: Mutex<Vec<(u32, Vec<u8>)>>,
+    /// The route table this port declares, and its admin OpenAPI fragment.
+    routes: Vec<RouteInfo>,
+    openapi: Option<String>,
+    /// Whether the port states its routes' admissions (a port that does not mounts nothing).
+    states: bool,
     answer: Result<Vec<u8>, ()>,
 }
 
@@ -207,7 +341,13 @@ fn refused() -> PortError {
 
 impl PlanePort for Admin {
     fn routes(&self) -> &[RouteInfo] {
-        &[]
+        &self.routes
+    }
+    fn route_admission(&self, route: u32) -> Option<(u32, u32, u32, &str)> {
+        if !self.states {
+            return None;
+        }
+        self.routes.iter().find(|r| r.route == route).map(stated)
     }
     fn dialects(&self) -> &[Box<str>] {
         &[]
@@ -225,7 +365,7 @@ impl PlanePort for Admin {
         None
     }
     fn admin_openapi(&self) -> Option<&str> {
-        None
+        self.openapi.as_deref()
     }
     fn charge(&self, _: busbar_plugin_abi::fail::FaultReason) {}
     fn request(
@@ -300,6 +440,9 @@ impl PlanePort for Admin {
 async fn hydrate_is_an_admin_op_and_its_answer_goes_to_core_as_it_is() {
     let port = Admin {
         seen: Mutex::default(),
+        routes: Vec::new(),
+        openapi: None,
+        states: true,
         answer: Ok(b"answer".to_vec()),
     };
     assert_eq!(admin_hydrate(&port, b"stored").await.unwrap(), b"answer");
@@ -309,6 +452,9 @@ async fn hydrate_is_an_admin_op_and_its_answer_goes_to_core_as_it_is() {
     );
     let failing = Admin {
         seen: Mutex::default(),
+        routes: Vec::new(),
+        openapi: None,
+        states: true,
         answer: Err(()),
     };
     assert!(admin_hydrate(&failing, b"stored").await.is_err());

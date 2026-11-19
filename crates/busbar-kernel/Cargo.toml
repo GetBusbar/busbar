@@ -18,6 +18,9 @@ foldhash = { workspace = true }
 backon = { workspace = true }
 # `schema`: the binder compiles each secret instance's D_REF_SCHEMA once (IF §12.7, plugin_config).
 busbar-contract = { path = "../busbar-contract", features = ["schema"] }
+# The capability mint (`seal`, `persistence::slot_seal`). Only this crate and busbar-contract may list it
+# (deny.toml, tools/ci-checks).
+busbar-seal = { path = "../busbar-seal" }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 busbar-kernel-wal = { path = "../busbar-kernel-wal" }
@@ -27,9 +30,6 @@ busbar-kernel-identity = { path = "../busbar-kernel-identity" }
 # The MIN-3 plugin interface, core side: `Caller`, `BoxFut`, the Need types the §12 kernel contracts name
 # (ABI-MIN3-INTERFACE §10, §12). A leaf crate.
 busbar-plugin-abi = { path = "../busbar-plugin-abi", features = ["host"] }
-# The port types custody, the credential cache and the verdict cache name (`CallCx`, `PortError`, `SecretPort`,
-# `OutboundAnswer`, `Identity`, `Verdict`; IF §11.3, §12.2, §12.28). The loader never names the kernel.
-busbar-plugin-loader = { path = "../plugin-loader" }
 # Only under the non-default `timing` feature.
 libc = { workspace = true, optional = true }
 axum = { workspace = true }

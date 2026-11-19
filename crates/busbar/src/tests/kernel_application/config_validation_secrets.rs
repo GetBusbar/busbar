@@ -11,7 +11,7 @@ use crate::root::test_plugins as plugins;
 fn a_1_5_token_is_refused_with_the_settings_remedy_by_actual_validate() {
     crate::dist_root_install::install();
     // Bind the linked operator: the config takes the closed default admin chain.
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
     let path = crate::root::test_plugins::application_store_library();
     let module = crate::root::test_plugins::native_image(&path).name;
     let manifest = crate::root::test_plugins::native_manifest(

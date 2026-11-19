@@ -1,0 +1,35 @@
+wt/crates/plugin-loader/src/cold/host.rs	archive	helper
+wt/crates/plugin-loader/src/cold/host.rs	rotate	helper
+wt/crates/plugin-loader/src/host.rs	rotate	helper
+wt/crates/plugin-loader/src/stage.rs	dlopen_on_worker	helper
+wt/crates/plugin-loader/src/stage.rs	dlclose_on_worker	helper
+wt/crates/plugin-loader/src/stage.rs	load_library_from_bytes	helper
+wt/crates/plugin-loader/src/stage.rs	load_via_staged_file	helper
+wt/crates/plugin-loader/src/stage.rs	load_via_memfd	helper
+wt/crates/busbar-core-connector/src/seal.rs (+ off_path/seal.rs, cold/seal.rs)	seal.rs: kept for native sealing (native-seal); SEALED_IN_CLEAR and filler/SEAL_BROKEN to be restated on the native dial	kept
+wt/crates/busbar-core-connector/src/cold/conns.rs	proxy_unreached	helper
+wt/crates/busbar-core-connector/src/cold/conns.rs	offered_name_refused	helper
+wt/crates/busbar-core-connector/src/cold/conns.rs	lossy	helper
+wt/crates/busbar-core-connector/src/cold/framing.rs	display	helper
+wt/crates/busbar-core-connector/src/cold/framing.rs	lossy	helper
+wt/crates/busbar-core-connector/src/cold/lines.rs	composes_over	helper
+wt/crates/busbar-core-connector/src/cold/lines.rs	crossing_text	helper
+wt/crates/busbar-core-connector/src/cold/lines.rs	io_error_text	helper
+wt/crates/busbar-core-connector/src/cold/lines.rs	no_socket_listens	helper
+wt/crates/busbar-core-connector/src/cold/lines.rs	not_dialable	helper
+wt/crates/busbar-core-connector/src/cold/lines.rs	channel_publication_failed	helper
+wt/crates/busbar-core-connector/src/conns.rs	refused	helper
+wt/crates/busbar-core-connector/src/conns.rs	class	helper
+wt/crates/busbar-core-connector/src/conns.rs	proxy_delegated	helper
+wt/crates/busbar-core-connector/src/conns.rs	offered_name_admitted	helper
+wt/crates/busbar-core-connector/src/conns.rs	as_str	helper
+wt/crates/busbar-core-connector/src/conns.rs	completion	helper
+wt/crates/busbar-core-connector/src/off_path/conns.rs	needs_of	helper
+wt/crates/busbar-core-connector/src/off_path/conns.rs	copied	helper
+wt/crates/busbar-core-connector/src/off_path/framing.rs	unix_ns	helper
+wt/crates/busbar-core-connector/src/off_path/framing.rs	owned_field	helper
+wt/crates/busbar-core-connector/src/off_path/framing.rs	owned_opening	helper
+wt/crates/busbar-core-connector/src/secure_vec.rs	take	helper
+wt/crates/busbar-core-connector/src/secure_vec.rs	scratch_missed	helper
+wt/crates/busbar-core-connector/src/tls/client.rs	digest	helper
+wt/crates/busbar-core-connector/src/seal.rs (+ off_path/seal.rs, cold/seal.rs, tests/seal_tests.rs)	deleted (owner decision): last commit with them 0b4cba6f85	deleted

@@ -120,7 +120,7 @@ pub trait KindMarker: sealed::KindSeal + Copy + Send + Sync + core::fmt::Debug +
     /// Which kind this marker stands for.
     const KIND: Kind;
     /// The same closed kind on the memory ABI.
-    const CODE: crate::abi::mechanism::KindCode;
+    const CODE: crate::kinds::codes::KindCode;
 }
 
 /// The compile-time markers, one per kind.
@@ -135,7 +135,7 @@ pub mod markers {
             impl KindSeal for $name {}
             impl KindMarker for $name {
                 const KIND: Kind = Kind::$kind;
-                const CODE: crate::abi::mechanism::KindCode = crate::abi::mechanism::KindCode::$kind;
+                const CODE: crate::kinds::codes::KindCode = crate::kinds::codes::KindCode::$kind;
             }
         };
     }
@@ -199,11 +199,10 @@ pub trait Plugin: Send + Sync + 'static {
 ///
 /// - No crate outside this one can implement this trait AT ALL — in-tree or out-of-tree, test code
 ///   or production. The compiler refuses it; see the `compile_fail` fixture below. A fixture that
-///   needs a seal mints a real token instead, and a real token needs the kernel's seal, which
-///   reaches only the kernel ([`KernelSeal::deliver`](crate::caps::KernelSeal::deliver), #65);
-///   a test mints with the test-only `acquire_for_kernel`, which CI's `seal-witness` scan watches.
-/// - The `kernel-seal-impls` source scan in the construction gate still runs, but it is now a
-///   belt-and-braces check behind a compiler guarantee rather than the only thing standing there.
+///   needs a seal mints a real token instead, and a real token needs a
+///   [`caps::KernelSeal`](crate::caps::KernelSeal), whose only constructor is
+///   `busbar_seal::mint_kernel`, nameable only by a crate that lists `busbar-seal` (#65); a test
+///   mints with the test-only `acquire_for_kernel`, behind the dev-only `test-seal` feature.
 ///
 /// The trait is also absent from this crate's ROOT surface: it is reachable only as
 /// `busbar_contract::plugin::KernelSeal`, so it is not in the list of names a plugin author reads
@@ -264,8 +263,7 @@ pub trait KernelSeal: sealed::KernelSealed {
 ///
 /// The TYPE is declared here so a plane can NAME it (`busbar_contract::plugin::TestKernelSeal`);
 /// its two `impl` blocks live in [`crate::caps::token`] with every other implementor of this
-/// trait, which is both where `qa/construction.toml`'s `kernel-seal-impls` rule requires them and
-/// the point of that rule — one directory holds every type that can present a seal.
+/// trait, so one file holds every type that can present a seal.
 #[cfg(any(test, feature = "test-seal"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TestKernelSeal;

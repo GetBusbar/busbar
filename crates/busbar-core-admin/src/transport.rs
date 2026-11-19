@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 use axum::Router;
 
+use busbar_contract::route::{RouteAuth, RouteMethod};
+use busbar_kernel::core_routes::CoreRouter;
 use busbar_kernel::state::AppHandle;
 
 pub(crate) trait AdminTransport {
@@ -17,10 +19,17 @@ pub(crate) trait AdminTransport {
     fn router(&self) -> Router<Arc<AppHandle>>;
 }
 
-pub(crate) fn mount<T: AdminTransport>(
-    router: Router<Arc<AppHandle>>,
-    transport: &T,
-) -> Router<Arc<AppHandle>> {
+/// Every method an admin surface's routes take: the surface is declared at its prefix for each,
+/// under the operator chain (`RouteAuth::Admin`).
+const SURFACE_METHODS: [RouteMethod; 5] = [
+    RouteMethod::Get,
+    RouteMethod::Post,
+    RouteMethod::Put,
+    RouteMethod::Patch,
+    RouteMethod::Delete,
+];
+
+pub(crate) fn mount<T: AdminTransport>(router: CoreRouter, transport: &T) -> CoreRouter {
     let prefix = format!(
         "{}/{}/{}",
         crate::v1::contract::API_ROOT,
@@ -32,7 +41,12 @@ pub(crate) fn mount<T: AdminTransport>(
         prefix = %prefix,
         "native API surface mounted"
     );
-    router.nest(&prefix, transport.router())
+    router.nest(
+        &prefix,
+        transport.router(),
+        &SURFACE_METHODS,
+        RouteAuth::Admin,
+    )
 }
 
 #[cfg(test)]

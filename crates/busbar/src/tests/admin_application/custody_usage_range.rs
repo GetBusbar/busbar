@@ -87,7 +87,7 @@ impl Fixture {
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         let crate::root::min3_boot::fixture::Fixture {
-            backend: backend,
+            backend,
             rules,
             owners: _owners,
         } = crate::root::min3_boot::fixture::open(&config, &plugin_config, rules.clone())

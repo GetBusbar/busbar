@@ -6,9 +6,9 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
-use busbar_contract::abi::mechanism::rendering::ReadNeed;
+use busbar_contract::conn::codes::DIRECTION_OUTBOUND;
 use busbar_contract::conn::NeedId;
+use busbar_contract::rendering::ReadNeed;
 
 use crate::plane_driver::needs::{MemberAuth, NeedRefusal};
 

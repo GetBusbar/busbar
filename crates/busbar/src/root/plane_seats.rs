@@ -29,7 +29,7 @@ use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use busbar_contract::abi::host::conn::connector::{
     DIRECTION_OUTBOUND, EGRESS_DEFAULT, KEEP_ALL_EXCEPT_DENIED,
@@ -56,6 +56,7 @@ use busbar_kernel::plane_driver::port_egress::{
 };
 use busbar_kernel::plane_driver::port_intents::Namespace;
 use busbar_kernel::plane_driver::port_probes::PortProbes;
+use busbar_kernel::plane_driver::port_routes::PortRoutes;
 use busbar_kernel::plane_driver::port_session::Effects;
 use busbar_kernel::plane_driver::provider_catalog::{CatalogPlan, CatalogPool, RouteKind};
 use busbar_kernel::plane_driver::request_admission::{RequestRoutes, SectionPool};
@@ -70,7 +71,6 @@ use busbar_plugin_abi::need::need_flag::{TLS_NONE, TLS_REQUIRED};
 use busbar_ports::plane::PlanePort;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::process::Command;
-use tokio::runtime::Handle;
 
 use super::secret_custody::BootSecrets;
 
@@ -315,7 +315,11 @@ impl SpawnSecrets for SpawnCustody {
         Box::pin(async move {
             let value = self
                 .0
-                .resolve_ref(Instant::now() + SPAWN_SECRET_DEADLINE, secret)
+                .resolve_ref(
+                    busbar_kernel::store::monotonic_ns(),
+                    SPAWN_SECRET_DEADLINE,
+                    secret,
+                )
                 .await
                 .ok()?;
             String::from_utf8(value[..].to_vec()).ok()
@@ -523,34 +527,102 @@ impl Drop for HeldBody {
 /// Each plane instance's section pools, by instance name.
 pub(crate) type SectionPoolsByInstance = BTreeMap<String, Arc<BTreeMap<String, SectionPool>>>;
 
-/// Read each plane section's `pools:` exactly as the 1.5.5 door did (`DoorPools::of`): members,
+/// Read each plane section's `pools:` exactly as the 1.5.5 door did: members,
 /// `on_exhausted.fallback_pool` and `member_granted`. These become native walks (#108).
 ///
 /// # Errors
-/// A section's pool is malformed (the door's own refusal).
+/// A section's pool is malformed (the 1.5.5 refusal).
 pub(crate) fn section_pools(
     sections: &BTreeMap<&'static str, busbar_contract::yaml::Value>,
 ) -> Result<SectionPoolsByInstance, String> {
     sections
         .iter()
         .map(|(instance, section)| {
-            let door = super::door_steps::DoorPools::of(section, instance)
-                .map_err(|why| format!("{instance}: {why}"))?;
-            let pools = door
-                .pools
-                .iter()
-                .map(|(name, members)| {
-                    let pool = SectionPool {
-                        members: members.clone(),
-                        fallback: door.fallbacks.get(name).cloned(),
-                        member_granted: door.member_granted.contains(name),
-                    };
-                    (name.clone(), pool)
-                })
-                .collect();
+            let pools = pools_of(section).map_err(|why| format!("{instance}: {why}"))?;
             Ok(((*instance).to_owned(), Arc::new(pools)))
         })
         .collect()
+}
+
+/// One section's reserved `pools:` sub-key: each named pool's members, its
+/// `on_exhausted.fallback_pool` and whether it is `member_granted`. A section that is no mapping
+/// states no pool.
+fn pools_of(
+    section: &busbar_contract::yaml::Value,
+) -> Result<BTreeMap<String, SectionPool>, String> {
+    use busbar_contract::yaml::{MappingExt, Value, ValueExt as _};
+    let Some(declared) = section
+        .as_mapping()
+        .and_then(|map| map.get_key(busbar_contract::section::RESERVED_POOLS_KEY))
+        .and_then(Value::as_mapping)
+    else {
+        return Ok(BTreeMap::new());
+    };
+    let mut pools = BTreeMap::new();
+    for (name, pool) in declared {
+        let Some(name) = name.as_str() else {
+            continue;
+        };
+        let members = pool_members(pool).map_err(|e| format!("pool '{name}': {e}"))?;
+        let fallback = pool
+            .get(super::door_steps::ON_EXHAUSTED_KEY)
+            .and_then(|on| on.get(super::door_steps::FALLBACK_POOL_KEY))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let member_granted = pool
+            .get(busbar_contract::section::POOL_MEMBER_GRANTED_KEY)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        pools.insert(
+            name.to_owned(),
+            SectionPool {
+                members,
+                fallback,
+                member_granted,
+            },
+        );
+    }
+    Ok(pools)
+}
+
+/// A pool's member names, in order. A member is a name, `{name, tier}` or an llm pool's
+/// `{model, ..}`; a member naming neither, or a tier that is no `u32`, refuses the load: skipping
+/// it would load a pool whose walk reaches no member.
+fn pool_members(pool: &busbar_contract::yaml::Value) -> Result<Vec<String>, String> {
+    use busbar_contract::section::{POOL_MEMBERS_KEY, POOL_MEMBER_MODEL_KEY, POOL_MEMBER_NAME_KEY};
+    use busbar_contract::yaml::{Value, ValueExt as _};
+    let Some(list) = pool.get(POOL_MEMBERS_KEY).and_then(Value::as_sequence) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(list.len());
+    for (i, m) in list.iter().enumerate() {
+        if let Some(name) = m.as_str() {
+            out.push(name.to_owned());
+            continue;
+        }
+        let Some(name) = m
+            .get(POOL_MEMBER_NAME_KEY)
+            .or_else(|| m.get(POOL_MEMBER_MODEL_KEY))
+            .and_then(Value::as_str)
+        else {
+            return Err(format!(
+                "member {i} names no entry (expected `{POOL_MEMBER_NAME_KEY}` or `{POOL_MEMBER_MODEL_KEY}`)"
+            ));
+        };
+        if let Some(written) = m.get(busbar_contract::section::POOL_MEMBER_TIER_KEY) {
+            if written
+                .as_u64()
+                .and_then(|t| u32::try_from(t).ok())
+                .is_none()
+            {
+                return Err(format!(
+                    "member '{name}' has tier {written:?}, which is no unsigned integer that fits u32"
+                ));
+            }
+        }
+        out.push(name.to_owned());
+    }
+    Ok(out)
 }
 
 /// The section pools this seat walks: each pool keeps only its members that are walked URL
@@ -761,12 +833,15 @@ fn probe_targets(pool: &SeatPool) -> Vec<ProbeTarget> {
 }
 
 /// The seat's egress walk over `table`: its members' needs declared and their anchors sealed, then the walk.
+/// `stated_ceiling_secs`: the session ceiling the seat's plane states (D_SESSION_CEILING_S, `0` = none),
+/// the same value the listener bounds the seat's upgraded sessions by.
 fn egress_of(
     instance: &str,
     owner: InstanceId,
     table: &ConnTable,
     pool: &SeatPool,
     catalog: Option<&CatalogSeat>,
+    stated_ceiling_secs: u64,
 ) -> Result<busbar_kernel::plane_driver::Egress, String> {
     for member in &pool.members {
         table
@@ -848,7 +923,7 @@ fn egress_of(
             busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
             |l| l.upstream_request_timeout_secs,
         ),
-        stated_ceiling_secs: 0,
+        stated_ceiling_secs,
         error_body_max: limits
             .as_ref()
             .map_or(busbar_kernel::plane_driver::DEFAULT_ERROR_BODY_MAX, |l| {
@@ -941,7 +1016,7 @@ pub(crate) fn compose(
     who: &Namespace,
     caller: Caller,
     port: Arc<dyn PlanePort>,
-    rt: Handle,
+    routes: &PortRoutes,
 ) -> Result<SeatWiring, String> {
     let channel_budget = shared
         .channel_budgets
@@ -968,11 +1043,28 @@ pub(crate) fn compose(
             .get(instance)
             .map_or(&BTreeMap::new(), |pools| pools.as_ref()),
     )?);
-    // No kind is inferred from instance/image vocabulary.
+    // No kind is inferred, from the instance, the image or the seat carrying a catalog: the plane
+    // states it. The kind this seat's walk judges a key under is the walk kind its routes' records
+    // state (llm `pool`: a key's `allowed_pools` is judged as 1.5.5 judged it, a restricted key
+    // reaches its pools only; MCP `mcp_server`; A2A `agent`). A seat none of whose routes walks
+    // states no kind, and only an unrestricted key passes a walk it should never start.
+    let stated = routes
+        .data
+        .iter()
+        .chain(&routes.upgrade)
+        .map(|mounted| &mounted.record);
+    let scope_kind = match busbar_kernel::auth::route_record::seat_walk_kind(stated) {
+        Ok(kind) => kind.map(Arc::<str>::from),
+        Err((first, second)) => {
+            return Err(format!(
+                "plane {instance}: its routes walk two scope kinds, `{first}` and `{second}`"
+            ))
+        }
+    };
     let request_routes = Arc::new(
         RequestRoutes::new(
             instance,
-            None,
+            scope_kind,
             catalog.map(|catalog| Arc::clone(&catalog.plan)),
             Some(Arc::clone(&registration)),
         )
@@ -1010,11 +1102,17 @@ pub(crate) fn compose(
     let inventory_targets = Arc::clone(&targets);
     let (upstream, held, probes) = match &shared.table {
         Some(table) => {
-            let egress = egress_of(instance, owner, table, &pool, catalog.map(Arc::as_ref))?;
+            let egress = egress_of(
+                instance,
+                owner,
+                table,
+                &pool,
+                catalog.map(Arc::as_ref),
+                busbar_kernel::plane_driver::port::session_ceiling_secs(port.as_ref()),
+            )?;
             let walk = PortEgress::new(
                 Arc::new(egress),
                 Arc::clone(&shared.kernel),
-                rt.clone(),
                 pool.pool.clone(),
                 accept,
                 targets,
@@ -1041,7 +1139,6 @@ pub(crate) fn compose(
         Arc::clone(&shared.signals),
         who.clone(),
         clock,
-        rt,
     );
     Ok(SeatWiring {
         request_routes,

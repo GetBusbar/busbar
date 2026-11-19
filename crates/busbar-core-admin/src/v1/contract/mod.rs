@@ -221,16 +221,34 @@ impl From<busbar_kernel::config::transaction::TxnError> for AdminError {
     }
 }
 
-/// `GET /api/v1/admin/info`: this node's identity and nothing else (ADMIN-API-1.6-ONE-MODEL §10.1).
-/// Every admin credential reads it, so it names no topology, no compiled-in plugin and no
-/// process-local counter: node lease rows are the `core/process` view `nodes`, counts come from
-/// `/kinds`, and the `/kinds` ETag is the discovery revision.
+/// The revision of the admin API document this engine serves (`GET /info` `api_revision`). It is
+/// raised by one whenever the committed `openapi.json` changes shape (an operation, parameter,
+/// header, schema member, type or enum value added): a client that needs a member or operation added
+/// at revision N reads `api_revision >= N`, and an engine that reports no `api_revision` predates
+/// revision 1. Prose changes (descriptions, summaries, examples, titles) do not move it. The test
+/// `api_revision_moves_with_the_document_shape` pins it to a digest of the document's structure.
+pub const ADMIN_API_REVISION: u32 = 2;
+
+/// `GET /api/v1/admin/info`: this node's identity (ADMIN-API-1.6-ONE-MODEL §10.1), the admin API
+/// revision it serves and the compiled-in build proof. Every admin credential reads it, so it names
+/// no topology and no process-local counter: node lease rows are the `core/process` view `nodes`,
+/// counts come from `/kinds`, and the `/kinds` ETag is the discovery revision.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct InfoView {
     /// busbar semantic version (`CARGO_PKG_VERSION`). Informational: clients negotiate on
     /// `/whoami.features` and discovery, never on this.
     pub version: &'static str,
+    /// The revision of the admin API document this engine serves: a small integer raised by one
+    /// whenever the document changes shape (an operation, parameter, header, schema member, type
+    /// or enum value is added; the API is frozen against removals and renames). A client that
+    /// needs something added at revision N checks `api_revision >= N`; an engine that omits this
+    /// member predates revision 1. Description-only changes do not move it.
+    #[cfg_attr(feature = "openapi-schema", schemars(range(min = 1)))]
+    pub api_revision: u32,
+    /// What this binary was compiled with: the proof that the plugin surface is the binary's, not
+    /// configuration's.
+    pub build: BuildInfo,
     /// This deployment's identity (`dep_` + 32 hex, opaque): kept once in the Store, the same
     /// for every node and every restart. Absent only before the process has booted its Store.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -269,6 +287,23 @@ pub struct InfoView {
     /// Whether this binary runs a validated crypto module, and the linked backend's validation
     /// statement (E-17). The backend's name and module version are `core/process` `state.crypto`.
     pub crypto: InfoCrypto,
+}
+
+/// The compiled-in feature proof (`InfoView.build`): what this binary links, read from the binary,
+/// never from configuration, so a smaller build provably shows a smaller surface. No LLM content.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct BuildInfo {
+    /// Auth modules baked into this binary: the built-in `keys` module, then every linked auth
+    /// row that declares itself an inbound auth-chain module.
+    pub auth_modules: Vec<&'static str>,
+    /// Hook plugins baked into this binary: the name of every linked plugin row of kind `hook`.
+    /// Hooks ship as native images loaded from the plugins directory, not linked rows, so a
+    /// default build links none and this is empty.
+    pub hook_plugins: Vec<String>,
+    /// The inline smooth weighted round-robin floor: always `true` (compiled in unconditionally,
+    /// not removable).
+    pub weighted_floor: bool,
 }
 
 /// `InfoView.crypto` (ADMIN-API-1.6-ONE-MODEL §10.1, E-17): the one validated-mode answer, the same
@@ -333,6 +368,9 @@ pub struct PoolDetailView {
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct PoolMemberStatusView {
     pub model: String,
+    /// The provider the member's model lane routes through, read from the same running lane as
+    /// `model`. Empty only when the lane is absent from the running tables (as `model` is then).
+    pub provider: String,
     pub weight: u32,
     /// Whether the lane can currently take dispatch (breaker closed / recovered). `false` while a
     /// tripped breaker cools down or the lane is dead.
@@ -1245,6 +1283,10 @@ pub struct ConfigValidateView {
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/api_revision.rs"]
+mod api_revision;
 
 impl std::fmt::Debug for PluginView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -3,6 +3,7 @@
 
 //! Shared host-record conditions, decisions and retention vocabulary for every plugin kind.
 
+pub mod shapes;
 use zeroize::Zeroize;
 
 /// The exact state a predicate requires.
@@ -31,15 +32,11 @@ pub enum Decision {
     ConditionConflict,
 }
 
-/// Retain records by age: every row older than the declared cutoff is eligible for removal.
-pub const RETENTION_AGE: u32 = 0;
 /// Retain active records: only terminal rows older than the cutoff are eligible for removal.
 pub const RETENTION_TERMINAL_ONLY: u32 = 1;
 
 /// Shared conditional host-record codec.
 pub mod conditional;
-/// Historical exact accounting correction codec.
-pub mod correction;
 /// Shared logical operation fingerprints and replay results.
 pub mod dedupe;
 

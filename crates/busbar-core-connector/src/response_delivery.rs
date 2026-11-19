@@ -1,21 +1,46 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Host-owned response write attribution and bounded lifecycle controls.
+//! THE ANSWERS OF ONE ACCEPTED CONNECTION, AND WHO READS EACH VERDICT.
+//!
+//! An accepted connection is driven by the same driver as a dialled one
+//! ([`crate::outbound::wire::Wire`], here with [`Role::Answer`]): every answer of the transport is
+//! checked against the output model (L1 to L7, L9), queued for the connection as one run, and the
+//! delivery state machine ([`crate::outbound::delivery`]) says, per answer, how much of it the
+//! operating system accepted. [`DeliveryLedger`] is that driver for one accepted connection, with the
+//! one thing the dial does not have: each answer's OWNER, the request's side in the root, which reads
+//! the verdict through the handles it was given at admission ([`ResponseHandles`]).
+//!
+//! "Delivered" is the owner's definition and nothing else: every byte the transport made for the
+//! answer, through its end mark, was accepted by the operating system on the caller's connection (under
+//! TLS as whole encrypted records), the flush after it succeeded, and where the protocol ends an answer
+//! by closing, the close succeeded. The record is `whole`, `part` or `none`, the reason when it is not
+//! whole, and the count of body bytes ([`DeliveryRecord`]).
+//!
+//! THE HOLD IS THE ENGINE'S. Nothing here releases anything: an answer that must wait for its record
+//! is held by its owner, which does not give the transport the piece that completes it
+//! ([`crate::hold::Hold`]). The transport is never called about delivery.
+//!
+//! NOTHING IS MADE AHEAD (owner's allocation ruling): an empty ledger holds no array and no cell; an
+//! entry is made when the transport announces a stream, a cell when its request is admitted, the wake
+//! cell with the first of those.
 
-use std::collections::VecDeque;
 use std::fmt;
-use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
+use std::time::{Duration, Instant};
 
 use busbar_contract::response_delivery::{
-    CarrierProgress, CompletionRequirement, DeliverySnapshot, DeliveryTerminal, ResponseKey,
-    ResponseStop, WireClass,
+    CarrierProgress, DeliverySnapshot, DeliveryTerminal, ResponseKey, ResponseStop,
 };
-use busbar_contract::storage::{StorageCredit, StorageSource};
+use busbar_contract::secure::SecureVec;
+use busbar_plugin_abi::transport as abi;
 use futures::task::AtomicWaker;
+
+use crate::outbound::delivery::{Delivery as Verdict, Reason, Role, State as Sent};
+use crate::outbound::records::Out;
+use crate::outbound::tunnel::Dialling;
+use crate::outbound::wire::{Fault, Outcome, Wire};
 
 #[cfg(test)]
 #[path = "response_delivery_tests.rs"]
@@ -25,59 +50,81 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// THE DELIVERY RECORD OF ONE ANSWER, in the words its audit record carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeliveryRecord {
+    /// `whole`, `part` or `none`.
+    pub state: &'static str,
+    /// Only when not `whole`: `caller_gone`, `deadline`, `cancelled`, `protocol`, `transport_fault` or
+    /// `shutdown`.
+    pub reason: Option<&'static str>,
+    /// Bytes of class payload the transport made for the answer. When `state` is `whole` all of them
+    /// were accepted.
+    pub body_bytes: u64,
+}
+
+impl DeliveryRecord {
+    fn of(verdict: Verdict) -> Self {
+        Self {
+            state: verdict.state.as_str(),
+            reason: verdict.reason.map(Reason::as_str),
+            body_bytes: verdict.body_bytes,
+        }
+    }
+}
+
 struct Cell {
     key: ResponseKey,
     state: Mutex<State>,
     changed: tokio::sync::Notify,
     owner_wake: Arc<AtomicWaker>,
-    slots: Arc<AtomicUsize>,
-}
-
-impl Drop for Cell {
-    fn drop(&mut self) {
-        self.slots.fetch_sub(1, Ordering::AcqRel);
-    }
 }
 
 struct State {
     snapshot: DeliverySnapshot,
+    record: Option<DeliveryRecord>,
     ordinal: Option<u64>,
-    release_pending: bool,
-    released: bool,
+    published: bool,
     cancel: Option<ResponseStop>,
     cancel_taken: bool,
     producer_ended: bool,
     reader_eof: bool,
     input_retired: bool,
-    pending_producer_end: bool,
-    pending_reader_eof: bool,
-    pending_input_retired: bool,
-    quiescent: bool,
-    settled_pending: bool,
-    settled_sent: bool,
-    settled_ack: bool,
 }
 
-/// Read/watch access only; retaining a clone retains its admitted response-cell capacity.
+/// Read/watch access only; a clone keeps the answer's cell alive until it is dropped.
 #[derive(Clone)]
 pub struct DeliveryWatch(Arc<Cell>);
 
 impl DeliveryWatch {
-    /// Borrow the immutable admitted identity from this watch's actual private cell.
+    /// The immutable admitted identity of this answer.
     pub fn key(&self) -> ResponseKey {
         self.0.key
     }
-    /// Read the monotone facts without acquiring write authority.
+
+    /// The facts as the root's settlement reads them today: whether a body byte was accepted, and the
+    /// terminal once the verdict is final (`whole` is Complete; `part` and `none` are Failed).
     pub fn snapshot(&self) -> DeliverySnapshot {
         lock(&self.0.state).snapshot
     }
 
-    /// Read the actual cancellation latch before the output owner has settled delivery.
+    /// THE DELIVERY RECORD, once the verdict is final: `whole` / `part` / `none`, the reason, the body
+    /// bytes. `None` while a byte of the answer can still be written.
+    pub fn record(&self) -> Option<DeliveryRecord> {
+        lock(&self.0.state).record
+    }
+
+    /// The root's finalizer stated that this answer's record is in.
+    pub fn published(&self) -> bool {
+        lock(&self.0.state).published
+    }
+
+    /// The owner's stop request, as it was asked (before the connection has settled the answer).
     pub fn cancellation(&self) -> Option<ResponseStop> {
         lock(&self.0.state).cancel
     }
 
-    /// Await the single frozen terminal; cancellation of this waiter changes no delivery fact.
+    /// Await the one frozen verdict; cancelling this waiter changes no delivery fact.
     pub async fn terminal(&self) -> DeliverySnapshot {
         loop {
             let changed = self.0.changed.notified();
@@ -92,52 +139,54 @@ impl DeliveryWatch {
     }
 }
 
-/// The admission-bound cancellation endpoint; this requests stop, never manufactures a receipt.
+/// The admission-bound stop request. It asks the connection to stop the answer (`emit(E_RESET)`); it
+/// never makes a verdict: that is still what the socket took.
 #[derive(Clone)]
 pub struct DeliveryCancel(Arc<Cell>);
 
 impl DeliveryCancel {
-    /// Coalesce a cancellation request into the reserved cell; the first reason wins.
+    /// Ask once; the first reason wins. Nothing after the verdict is final.
     pub fn cancel(&self, reason: ResponseStop) {
         let mut state = lock(&self.0.state);
         if state.snapshot.terminal.is_none() {
             state.cancel.get_or_insert(reason);
-            state.release_pending = false;
         }
         drop(state);
         self.0.owner_wake.wake();
     }
 }
 
-/// The actual root input observers' scoped endpoint; it cannot publish a delivery receipt.
+/// What the root's own producer and reader observed. Recorded beside the verdict; none of them is
+/// delivery, and none of them can make an answer `whole`: only the socket's progress does.
 #[derive(Clone)]
 pub struct DeliveryInput(Arc<Cell>);
 
 impl DeliveryInput {
-    /// Record the real ordered response-producing end, independently of transport feed disposal.
+    /// The owner gave the connection its last piece.
     pub fn producer_ended(&self) {
-        lock(&self.0.state).pending_producer_end = true;
-        self.0.owner_wake.wake();
+        lock(&self.0.state).producer_ended = true;
     }
 
-    /// Record EOF actually observed by the registered reader, never inferred from Body Drop.
+    /// The answer's reader observed its end.
     pub fn reader_eof(&self) {
-        lock(&self.0.state).pending_reader_eof = true;
-        self.0.owner_wake.wake();
+        lock(&self.0.state).reader_eof = true;
     }
 
-    /// Record that cancelled input producers/readers have been joined; this is not successful EOF.
+    /// The answer's producer and reader were stopped and joined; not a successful end.
     pub fn retired(&self) {
-        lock(&self.0.state).pending_input_retired = true;
-        self.0.owner_wake.wake();
+        lock(&self.0.state).input_retired = true;
+    }
+
+    /// What was observed so far: (producer ended, reader saw its end, input retired).
+    pub fn observed(&self) -> (bool, bool, bool) {
+        let state = lock(&self.0.state);
+        (state.producer_ended, state.reader_eof, state.input_retired)
     }
 }
 
-/// A non-Clone publication right given only to the root's actual confirmed-intent finalizer.
-///
-/// This endpoint does not confirm persistence or verify a signature. Production root retains it
-/// privately and calls publish only after consuming its confirmed, response-bound ReleasePermit.
-/// Historical decoders, request bodies and plugins must never receive this endpoint.
+/// The root's confirmed-intent finalizer binds its final publication ordinal here and states when the
+/// record is in. THE HOLD IS THE ENGINE'S: publishing releases nothing in the connection, because the
+/// connection holds nothing: the owner withholds the completing piece itself until this returns.
 pub struct ReleasePublisher(Arc<Cell>);
 
 impl ReleasePublisher {
@@ -156,7 +205,7 @@ impl ReleasePublisher {
         }
     }
 
-    /// Submit the exact confirmed ordinal without waiting on data credit or E_END acceptance.
+    /// State that the record of exactly this ordinal is in.
     pub fn publish(&self, key: ResponseKey, ordinal: u64) -> Result<(), ResponseStop> {
         let mut state = lock(&self.0.state);
         if key != self.0.key || state.ordinal != Some(ordinal) {
@@ -168,226 +217,212 @@ impl ReleasePublisher {
         if state.snapshot.terminal.is_some() {
             return Err(ResponseStop::Integrity);
         }
-        if !state.released {
-            state.release_pending = true;
-        }
-        drop(state);
-        self.0.owner_wake.wake();
+        state.published = true;
         Ok(())
     }
 }
 
 /// Separately scoped handles installed before exposing the admitted request.
 pub struct ResponseHandles {
-    /// Read-only delivery observation; clones retain capacity until dropped.
+    /// Read-only: the verdict and its record; clones keep the cell alive until dropped.
     pub watch: DeliveryWatch,
-    /// Only the root's actual intent finalizer receives this publication right.
+    /// Only the root's intent finalizer receives this.
     pub release: ReleasePublisher,
-    /// A request to stop, independent of output-owner settlement.
+    /// A request to stop the answer.
     pub cancel: DeliveryCancel,
-    /// Only actual root producer/reader observers publish these local input facts.
+    /// Only the root's producer and reader observers publish these.
     pub input: DeliveryInput,
 }
 
-/// Native controls taken from reserved cells before normal feeds and timers.
+/// What an owner asks of the connection, taken before feeds and timers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeliveryControl {
-    Release { stream: u64 },
+    /// Stop the answer on `stream` for `reason`.
     Cancel { stream: u64, reason: ResponseStop },
-    Settled { stream: u64 },
 }
 
-/// Validated protocol metadata; the actual bytes remain in the runtime's charged SecureVec.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum WireEvent {
-    Part {
-        stream: u64,
-        class: WireClass,
-        len: usize,
-    },
-    End {
-        stream: u64,
-        requirement: CompletionRequirement,
-    },
-    Abort {
-        stream: u64,
-    },
-    Quiescent {
-        stream: u64,
-    },
+/// The reason a stopped answer's record carries, from the owner's stop request.
+const fn reason_of(stop: ResponseStop) -> Reason {
+    match stop {
+        ResponseStop::Deadline => Reason::Deadline,
+        ResponseStop::Protocol => Reason::Protocol,
+        ResponseStop::Carrier(_) | ResponseStop::CarrierRetired => Reason::CallerGone,
+        // The owner's own stops (cancelled, an integrity or capacity refusal of the engine's): the
+        // transport did nothing wrong, so the word is never `transport_fault`.
+        ResponseStop::Cancelled | ResponseStop::Integrity | ResponseStop::Capacity => {
+            Reason::Cancelled
+        }
+    }
 }
 
-struct Span {
-    start: u64,
-    end: u64,
-    stream: u64,
-    class: WireClass,
-}
-
-struct Fence {
-    end: u64,
-    requirement: CompletionRequirement,
-    flushed: bool,
-    ready: bool,
-}
-
-struct Entry {
-    cell: Arc<Cell>,
-    last_end: u64,
-    fence: Option<Fence>,
-    stop: Option<ResponseStop>,
-}
-
-struct Shadow {
-    stream: u64,
+/// One stream the transport announced whose verdict has not been read yet.
+struct Answer {
+    /// The transport's stream (1 after the hand-over of an upgrade).
+    on: u64,
+    /// Its owner, once the request is admitted.
+    cell: Option<Arc<Cell>>,
+    /// A dialled session's stream (`STREAM_OPENED`): it never has an owner here.
+    opened: bool,
+    /// The transport sent the stream's end mark.
     ended: bool,
-    stopped: bool,
-    quiescent: bool,
+    /// The engine cut the owner's answer short itself (its feed went away): how much of it the socket
+    /// had taken then.
+    cut: Option<Sent>,
+    /// `emit(E_RESET)` went at this time: the transport owes the stream's end mark.
+    reset_at: Option<Instant>,
+    /// The owner was told a body byte of the answer is out.
+    body_told: bool,
 }
 
-/// The sole connection output owner's bounded, non-Clone provenance ledger.
+/// THE ACCEPTED CONNECTION'S OUTPUT, DRIVEN: the delivery driver in the answering role, the
+/// connection's queue of bytes the transport made, and each answer's owner.
 ///
-/// Runtime supervision retains this owner until the actual carrier operation is settled. Dropping
-/// it while a writer may remain live deliberately creates no synthetic terminal receipt.
+/// It moves whole across the hand-over of an UPGRADE, counters and all ([`Self::adopt`]). However it
+/// goes, every answer still open has its verdict frozen as the socket's progress stands and handed to
+/// its owner, which then holds only that small value.
 pub struct DeliveryLedger {
-    spans: VecDeque<Span>,
-    entries: Vec<Entry>,
-    scratch: Vec<Shadow>,
-    // Declaration order is intentional: all three backing arrays drop before their byte credit.
-    // Fixed self-owning control/Arc layouts retain the explicitly named storage-contract exclusion.
-    storage: StorageCredit,
-    slots: Arc<AtomicUsize>,
-    wake: Arc<AtomicWaker>,
-    max_spans: usize,
-    max_responses: usize,
-    max_events: usize,
+    wire: Wire,
+    /// An accepted connection has no layer below its session here (its TLS is the connection's own,
+    /// beneath the writer the session is given): the driver's run goes straight into `queue`.
+    below: Dialling,
+    /// Bytes the transport made that the connection has not taken yet.
+    queue: SecureVec,
+    /// Bytes of the queue the connection has ever taken.
+    written: u64,
+    /// Bytes ever queued for the connection.
+    queued: u64,
+    /// A write failed: what was queued and not taken was wiped, and nothing more is queued.
+    lost: bool,
+    answers: Vec<Answer>,
+    /// CREDIT OWED to the transport, one entry a stream: (stream, bytes). Two things put a credit
+    /// here and nothing else does: a stream that is over still held or owed bytes ([`Wire::over`]),
+    /// and the transport handed up body of a stream the engine has left ([`Outcome::left`], every
+    /// byte owed at once). The session gives each as `emit(stream, E_CONSUMED)` and it is taken
+    /// from here as it is given: no credit is given twice.
+    owed: Vec<(u64, u64)>,
+    wake: Option<Arc<AtomicWaker>>,
     last_stream: u64,
     identity: Option<(u64, u64, u64)>,
-    adopted: u64,
-    observed: CarrierProgress,
     retired: bool,
-    poisoned: bool,
 }
 
 impl fmt::Debug for DeliveryLedger {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DeliveryLedger")
-            .field("pending_spans", &self.spans.len())
-            .field("live_responses", &self.entries.len())
-            .field("reserved_storage_bytes", &self.storage.len())
+            .field("answers", &self.answers.len())
+            .field("queued", &self.queue.len())
+            .field("written", &self.written)
             .field("retired", &self.retired)
             .finish_non_exhaustive()
     }
 }
 
-/// A linear reservation after whole-batch validation; no byte I/O may precede commit.
-pub(crate) struct PreparedBatch<'a> {
-    owner: &'a mut DeliveryLedger,
-    events: &'a [WireEvent],
+/// An empty ledger: no array, no cell, nothing allocated.
+impl Default for DeliveryLedger {
+    fn default() -> Self {
+        Self {
+            wire: Wire::new(Role::Answer),
+            below: Dialling::direct(false),
+            queue: SecureVec::new(),
+            written: 0,
+            queued: 0,
+            lost: false,
+            answers: Vec::new(),
+            owed: Vec::new(),
+            wake: None,
+            last_stream: 0,
+            identity: None,
+            retired: false,
+        }
+    }
 }
 
-impl PreparedBatch<'_> {
-    /// Adopt only the already validated descriptors. Dropping the reservation changes no state.
-    pub(crate) fn commit(self) {
-        self.owner.commit_batch(self.events);
+/// The connection's task ended, however it ended: nothing can be written any more, so every answer
+/// still open has its verdict now.
+impl Drop for DeliveryLedger {
+    fn drop(&mut self) {
+        self.gone(Reason::CallerGone);
     }
 }
 
 impl DeliveryLedger {
-    /// Quote requested separately allocated backing using the actual private element layouts.
-    ///
-    /// This covers the retained span deque and entry/scratch vectors, including spare capacity.
-    /// The admitted fixed control-cell count is separate. Self-owning Arc/control layouts and
-    /// allocator overhead are outside the shared storage contract; this is not an RSS estimate.
-    /// A quote alone reserves nothing: the actual StorageSource must fund it before allocation.
-    pub fn required_storage(
-        max_pending_spans: NonZeroUsize,
-        max_live_responses: NonZeroUsize,
-    ) -> Result<usize, ResponseStop> {
-        let spans = max_pending_spans
-            .get()
-            .checked_mul(std::mem::size_of::<Span>());
-        let responses = std::mem::size_of::<Entry>()
-            .checked_add(std::mem::size_of::<Shadow>())
-            .and_then(|bytes| bytes.checked_mul(max_live_responses.get()));
-        spans
-            .and_then(|bytes| responses.and_then(|other| bytes.checked_add(other)))
-            .ok_or(ResponseStop::Capacity)
+    fn at(&self, stream: u64) -> Option<usize> {
+        self.answers.iter().position(|answer| answer.on == stream)
     }
 
-    /// Allocate finite metadata storage from real admission allowances, without a default cap.
+    /// The transport announced `stream` (`STREAM_HEAD`): its delivery entry is made now, before the
+    /// request is admitted, so an end mark that arrives first is valid and is remembered.
     ///
-    /// The runtime separately reserves callback staging bytes/descriptors before copying callback
-    /// output. Both staging and this ledger's simultaneous debt must fit its admitted allowance.
-    pub fn new(
-        source: &StorageSource,
-        max_pending_spans: NonZeroUsize,
-        max_live_responses: NonZeroUsize,
-    ) -> Result<Self, ResponseStop> {
-        let bytes = Self::required_storage(max_pending_spans, max_live_responses)?;
-        let max_spans = max_pending_spans.get();
-        let max_responses = max_live_responses.get();
-        let max_events = max_responses
-            .checked_mul(4)
-            .and_then(|count| count.checked_add(max_spans))
-            .ok_or(ResponseStop::Capacity)?;
-        // This binding precedes every array: on any allocation error the allocated locals drop
-        // first, then credit. Moving into Self preserves the same backing-before-credit order.
-        let storage = source
-            .try_reserve(bytes)
-            .map_err(|_| ResponseStop::Capacity)?;
-        let mut spans = VecDeque::new();
-        spans
-            .try_reserve_exact(max_spans)
-            .map_err(|_| ResponseStop::Capacity)?;
-        let mut entries = Vec::new();
-        entries
-            .try_reserve_exact(max_responses)
-            .map_err(|_| ResponseStop::Capacity)?;
-        let mut scratch = Vec::new();
-        scratch
-            .try_reserve_exact(max_responses)
-            .map_err(|_| ResponseStop::Capacity)?;
-        Ok(Self {
-            spans,
-            entries,
-            scratch,
-            storage,
-            slots: Arc::new(AtomicUsize::new(0)),
-            wake: Arc::new(AtomicWaker::new()),
-            max_spans,
-            max_responses,
-            max_events,
-            last_stream: 0,
-            identity: None,
-            adopted: 0,
-            observed: CarrierProgress {
-                accepted_plaintext: 0,
-                written_plaintext: 0,
-                complete_records_plaintext: 0,
-                fault: None,
-            },
-            retired: false,
-            poisoned: false,
-        })
+    /// # Errors
+    /// L2 for stream 0 or a stream already open.
+    pub(crate) fn announced(&mut self, stream: u64) -> Result<(), Fault> {
+        self.wire.announced(stream)?;
+        self.answers.push(Answer {
+            on: stream,
+            cell: None,
+            opened: false,
+            ended: false,
+            cut: None,
+            reset_at: None,
+            body_told: false,
+        });
+        Ok(())
     }
 
-    /// Reserve the fixed lifecycle cell before request exposure. IDs never get reused.
+    /// `count` bytes of credit are owed to the transport for `stream`: one entry a stream.
+    fn owe(&mut self, stream: u64, count: u64) {
+        if count == 0 {
+            return;
+        }
+        match self.owed.iter_mut().find(|(owed, _)| *owed == stream) {
+            Some((_, owed)) => *owed = owed.saturating_add(count),
+            None => self.owed.push((stream, count)),
+        }
+    }
+
+    /// Make the answer's cell before its request is exposed. Ids are never reused. For a ledger no
+    /// session drives yet: a stream nobody announced is entered here.
     pub fn admit(&mut self, key: ResponseKey) -> Result<ResponseHandles, ResponseStop> {
+        self.admit_on(key, false)
+    }
+
+    /// As [`Self::admit`], on a driven connection: the request must be one the transport announced
+    /// and nobody answers yet. An answer on a stream the transport never opened is refused.
+    pub(crate) fn admit_announced(
+        &mut self,
+        key: ResponseKey,
+    ) -> Result<ResponseHandles, ResponseStop> {
+        self.admit_on(key, true)
+    }
+
+    fn admit_on(
+        &mut self,
+        key: ResponseKey,
+        announced_only: bool,
+    ) -> Result<ResponseHandles, ResponseStop> {
         let identity = (key.node, key.incarnation, key.connection_generation);
         if self.retired
-            || self.poisoned
-            || self.observed.fault.is_some()
             || key.stream <= self.last_stream
             || key.connection_generation == 0
             || self.identity.is_some_and(|old| old != identity)
         {
             return Err(ResponseStop::Integrity);
         }
-        if self.slots.load(Ordering::Acquire) >= self.max_responses {
-            return Err(ResponseStop::Capacity);
-        }
-        self.slots.fetch_add(1, Ordering::AcqRel);
+        let at = match self.at(key.stream) {
+            Some(at) if self.answers[at].cell.is_none() && !self.answers[at].opened => at,
+            Some(_) => return Err(ResponseStop::Integrity),
+            None if announced_only => return Err(ResponseStop::Integrity),
+            None => {
+                self.announced(key.stream)
+                    .map_err(|_| ResponseStop::Integrity)?;
+                self.answers.len() - 1
+            }
+        };
+        // The owner's wake cell is made with the first answer: before it no cell can ask anything.
+        let owner_wake = Arc::clone(
+            self.wake
+                .get_or_insert_with(|| Arc::new(AtomicWaker::new())),
+        );
         let cell = Arc::new(Cell {
             key,
             state: Mutex::new(State {
@@ -395,34 +430,25 @@ impl DeliveryLedger {
                     first_payload_written: false,
                     terminal: None,
                 },
+                record: None,
                 ordinal: None,
-                release_pending: false,
-                released: false,
+                published: false,
                 cancel: None,
                 cancel_taken: false,
                 producer_ended: false,
                 reader_eof: false,
                 input_retired: false,
-                pending_producer_end: false,
-                pending_reader_eof: false,
-                pending_input_retired: false,
-                quiescent: false,
-                settled_pending: false,
-                settled_sent: false,
-                settled_ack: false,
             }),
             changed: tokio::sync::Notify::new(),
-            owner_wake: Arc::clone(&self.wake),
-            slots: Arc::clone(&self.slots),
+            owner_wake,
         });
         self.last_stream = key.stream;
         self.identity = Some(identity);
-        self.entries.push(Entry {
-            cell: Arc::clone(&cell),
-            last_end: 0,
-            fence: None,
-            stop: None,
-        });
+        self.answers[at].cell = Some(Arc::clone(&cell));
+        // A stream that ended before its request was admitted (the caller reset it at once) has its
+        // verdict already: admission finds it ended. Streams below this one can no longer be
+        // admitted: theirs are let go.
+        self.settle();
         Ok(ResponseHandles {
             watch: DeliveryWatch(Arc::clone(&cell)),
             release: ReleasePublisher(Arc::clone(&cell)),
@@ -431,504 +457,369 @@ impl DeliveryLedger {
         })
     }
 
-    fn index(&self, stream: u64) -> Result<usize, ResponseStop> {
-        self.entries
-            .iter()
-            .position(|entry| entry.cell.key.stream == stream)
-            .ok_or(ResponseStop::Integrity)
+    /// Hand-over on UPGRADE: the upgraded request's answer becomes stream 1 of the adopting session.
+    /// The connection's counters are not reset and the owner keeps its handles.
+    pub fn adopt(&mut self, stream: u64) {
+        self.wire.adopt(stream);
+        if let Some(at) = self.at(stream) {
+            self.answers[at].on = 1;
+        }
     }
 
-    /// Register before checking the reserved control cells, so concurrent publications wake the owner.
+    /// Register before checking the cells, so a concurrent request wakes the connection's task. With
+    /// no answer admitted yet there is no cell to ask, so nothing to register with.
     pub(crate) fn register_control_waker(&self, waker: &Waker) {
-        self.wake.register(waker);
+        if let Some(wake) = &self.wake {
+            wake.register(waker);
+        }
     }
 
-    /// Park the single connection owner without losing a concurrent reserved-cell publication.
+    /// Park the connection's one task without losing a concurrent stop request.
     pub(crate) fn poll_control(&mut self, cx: &mut Context<'_>) -> Poll<DeliveryControl> {
         self.register_control_waker(cx.waker());
         self.next_control().map_or(Poll::Pending, Poll::Ready)
     }
 
-    /// Whether a response binding still needs an input/protocol/settlement join.
-    pub(crate) fn has_responses(&self) -> bool {
-        !self.entries.is_empty()
-    }
-
-    /// Retry only the existing complete retirement predicate after actual input publications.
-    /// Registration precedes the scan so a concurrent EOF or cancellation join cannot be lost.
-    pub(crate) fn poll_idle(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        self.register_control_waker(cx.waker());
-        self.drain_input();
-        for index in (0..self.entries.len()).rev() {
-            let stream = self.entries[index].cell.key.stream;
-            let _ = self.retire_response(stream);
-        }
-        if self.entries.is_empty() {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
-    }
-
-    /// Take one coalesced control; cancellation wins over an unconsumed release.
+    /// One stop request not yet acted on.
     pub(crate) fn next_control(&mut self) -> Option<DeliveryControl> {
-        self.drain_input();
-        for entry in &mut self.entries {
-            let mut state = lock(&entry.cell.state);
-            let stream = entry.cell.key.stream;
+        for answer in &self.answers {
+            let Some(cell) = &answer.cell else {
+                continue;
+            };
+            let mut state = lock(&cell.state);
             if let Some(reason) = state.cancel {
-                state.release_pending = false;
                 if !state.cancel_taken && state.snapshot.terminal.is_none() {
                     state.cancel_taken = true;
-                    entry.stop.get_or_insert(reason);
-                    return Some(DeliveryControl::Cancel { stream, reason });
+                    return Some(DeliveryControl::Cancel {
+                        stream: answer.on,
+                        reason,
+                    });
                 }
-            }
-            if state.release_pending
-                && state.snapshot.terminal.is_none()
-                && !self.retired
-                && !self.poisoned
-                && self.observed.fault.is_none()
-            {
-                state.release_pending = false;
-                state.released = true;
-                return Some(DeliveryControl::Release { stream });
-            }
-            if state.settled_pending {
-                state.settled_pending = false;
-                state.settled_sent = true;
-                return Some(DeliveryControl::Settled { stream });
             }
         }
         None
     }
 
-    fn drain_input(&mut self) {
-        for index in 0..self.entries.len() {
-            let cell = &self.entries[index].cell;
-            let stream = cell.key.stream;
-            let mut state = lock(&cell.state);
-            let ended = std::mem::take(&mut state.pending_producer_end);
-            let eof = std::mem::take(&mut state.pending_reader_eof);
-            let retired = std::mem::take(&mut state.pending_input_retired);
-            drop(state);
-            if ended {
-                let _ = self.producer_ended(stream);
-            }
-            if eof {
-                let _ = self.reader_eof(stream);
-            }
-            if retired {
-                let _ = self.input_retired(stream);
-            }
-        }
+    /// Whether an admitted answer's verdict is still open.
+    pub(crate) fn has_responses(&self) -> bool {
+        self.answers.iter().any(|answer| answer.cell.is_some())
     }
 
-    /// Validate an entire bounded answer before adopting metadata or permitting any of its I/O.
-    ///
-    /// Callback staging must already own its separate admitted copy allowance. This reservation
-    /// covers the ledger, not callback buffers; no borrowed callback slice is retained here.
-    pub(crate) fn prepare_batch<'a>(
-        &'a mut self,
-        events: &'a [WireEvent],
-    ) -> Result<PreparedBatch<'a>, ResponseStop> {
-        if self.retired || self.poisoned || self.observed.fault.is_some() {
-            return Err(ResponseStop::Integrity);
-        }
-        if events.len() > self.max_events {
-            return Err(ResponseStop::Capacity);
-        }
-        self.scratch.clear();
-        let mut descriptors = self.spans.len();
-        for entry in &self.entries {
-            let state = lock(&entry.cell.state);
-            if entry.fence.as_ref().is_some_and(|fence| !fence.ready) {
-                descriptors += 1;
-            }
-            self.scratch.push(Shadow {
-                stream: entry.cell.key.stream,
-                ended: entry.fence.is_some(),
-                stopped: entry.stop.is_some()
-                    || state.cancel.is_some()
-                    || state.snapshot.terminal.is_some(),
-                quiescent: state.quiescent,
-            });
-        }
-        let mut end = self.adopted;
-        for event in events {
-            match *event {
-                WireEvent::Part { stream, class, len } => {
-                    if len == 0 || (stream == 0 && class != WireClass::Control) {
-                        return Err(ResponseStop::Integrity);
-                    }
-                    if stream != 0 {
-                        let state = self
-                            .scratch
-                            .iter()
-                            .find(|state| state.stream == stream)
-                            .ok_or(ResponseStop::Integrity)?;
-                        if state.ended || state.stopped || state.quiescent {
-                            return Err(ResponseStop::Integrity);
-                        }
-                    }
-                    end = end
-                        .checked_add(u64::try_from(len).map_err(|_| ResponseStop::Capacity)?)
-                        .ok_or(ResponseStop::Capacity)?;
-                    descriptors = descriptors.checked_add(1).ok_or(ResponseStop::Capacity)?;
-                }
-                WireEvent::End { stream, .. } => {
-                    let index = self.index(stream)?;
-                    let state = self
-                        .scratch
-                        .iter_mut()
-                        .find(|state| state.stream == stream)
-                        .ok_or(ResponseStop::Integrity)?;
-                    if state.ended
-                        || state.stopped
-                        || state.quiescent
-                        || !lock(&self.entries[index].cell.state).released
-                    {
-                        return Err(ResponseStop::Integrity);
-                    }
-                    state.ended = true;
-                    descriptors = descriptors.checked_add(1).ok_or(ResponseStop::Capacity)?;
-                }
-                WireEvent::Abort { stream } => {
-                    let state = self
-                        .scratch
-                        .iter_mut()
-                        .find(|state| state.stream == stream)
-                        .ok_or(ResponseStop::Integrity)?;
-                    state.stopped = true;
-                }
-                WireEvent::Quiescent { stream } => {
-                    let state = self
-                        .scratch
-                        .iter_mut()
-                        .find(|state| state.stream == stream)
-                        .ok_or(ResponseStop::Integrity)?;
-                    if state.quiescent {
-                        return Err(ResponseStop::Integrity);
-                    }
-                    state.quiescent = true;
-                }
-            }
-            if descriptors > self.max_spans {
-                return Err(ResponseStop::Capacity);
-            }
-        }
-        Ok(PreparedBatch {
-            owner: self,
-            events,
+    /// Whether the engine may still emit a piece on `stream`: the transport announced (or opened) it,
+    /// has not ended it, and the engine has not reset it.
+    pub(crate) fn takes_pieces(&self, stream: u64) -> bool {
+        self.at(stream).is_some_and(|at| {
+            let answer = &self.answers[at];
+            !answer.ended && answer.reset_at.is_none()
         })
     }
 
-    #[cfg(test)]
-    fn adopt_batch(&mut self, events: &[WireEvent]) -> Result<(), ResponseStop> {
-        self.prepare_batch(events)?.commit();
-        Ok(())
+    /// The engine is about to `emit` `piece` on `stream` (`len` = the bytes of an `E_BODY`): the
+    /// driver learns what the engine asked, which is what L5 and L6 are judged against.
+    pub(crate) fn emitting(&mut self, stream: u64, piece: u32, len: u64) {
+        match piece {
+            abi::E_BODY => self.wire.emitting_body(stream, len),
+            abi::E_END => self.wire.emitting_end(stream),
+            abi::E_REFUSE => self.wire.emitting_refuse(stream),
+            abi::E_RESET => self.wire.stopping(stream, Reason::Cancelled),
+            _ => {}
+        }
     }
 
-    fn commit_batch(&mut self, events: &[WireEvent]) {
-        for event in events {
-            match *event {
-                WireEvent::Part { stream, class, len } => {
-                    let end = self.adopted + len as u64;
-                    self.spans.push_back(Span {
-                        start: self.adopted,
-                        end,
-                        stream,
-                        class,
-                    });
-                    self.adopted = end;
-                    if stream != 0 {
-                        if let Some(entry) = self
-                            .entries
-                            .iter_mut()
-                            .find(|entry| entry.cell.key.stream == stream)
-                        {
-                            entry.last_end = end;
-                        }
-                    }
-                }
-                WireEvent::End {
-                    stream,
-                    requirement,
-                } => {
-                    if let Some(entry) = self
-                        .entries
-                        .iter_mut()
-                        .find(|entry| entry.cell.key.stream == stream)
-                    {
-                        entry.fence = Some(Fence {
-                            end: self.adopted,
-                            requirement,
-                            flushed: false,
-                            ready: false,
-                        });
-                    }
-                }
-                WireEvent::Abort { stream } => {
-                    let _ = self.stop(stream, ResponseStop::Protocol);
-                }
-                WireEvent::Quiescent { stream } => {
-                    let _ = self.quiescent(stream);
-                }
+    /// The owner asked to stop the answer on `stream`. `true` = the engine emits `E_RESET` now (the
+    /// transport then owes the stream's end mark); `false` = the transport already ended the stream,
+    /// or was already told: nothing is emitted on it again.
+    pub(crate) fn stop(&mut self, stream: u64, reason: ResponseStop, now: Instant) -> bool {
+        let Some(at) = self.at(stream) else {
+            return false;
+        };
+        self.wire.stopping(stream, reason_of(reason));
+        let answer = &mut self.answers[at];
+        if answer.ended || answer.reset_at.is_some() {
+            return false;
+        }
+        answer.reset_at = Some(now);
+        true
+    }
+
+    /// The engine reset `stream` itself at its stall deadline (`emit(E_RESET, RESET_STALLED)`).
+    pub(crate) fn stalled(&mut self, stream: u64, now: Instant) {
+        self.wire.stopping(stream, Reason::Deadline);
+        if let Some(at) = self.at(stream) {
+            let answer = &mut self.answers[at];
+            if !answer.ended {
+                answer.reset_at.get_or_insert(now);
             }
         }
     }
 
-    /// The end of all attributed protocol output adopted so far.
-    pub(crate) fn adopted_prefix(&self) -> u64 {
-        self.adopted
+    /// The caller reset `stream` (`STREAM_RESET`): whatever of its answer is not out is not whole, and
+    /// the reason is the caller's.
+    pub(crate) fn caller_reset(&mut self, stream: u64) {
+        self.wire.stopping(stream, Reason::CallerGone);
     }
 
-    /// The earliest unresolved finite-prefix fence; later wire output must wait for its operation.
-    #[cfg(test)]
-    pub(crate) fn next_fence(&self) -> Option<(u64, CompletionRequirement)> {
-        self.entries
+    /// The engine is ending the owner's answer itself with its own refusal (the answer's feed went
+    /// away before its end). What the transport then completes is the engine's refusal, not the
+    /// owner's answer: the answer's record is what stood when it was cut, never `whole`.
+    pub(crate) fn cut(&mut self, stream: u64) {
+        if let Some(at) = self.at(stream) {
+            let stood = self.wire.state_of(stream);
+            self.answers[at].cut.get_or_insert(stood);
+        }
+    }
+
+    /// The soonest time a stream the engine reset is overdue: the transport has `limit` to end it.
+    pub(crate) fn next_overdue(&self, limit: Duration) -> Option<Instant> {
+        self.answers
             .iter()
-            .filter_map(|entry| entry.fence.as_ref())
-            .filter(|fence| !fence.ready)
-            .min_by_key(|fence| fence.end)
-            .map(|fence| (fence.end, fence.requirement))
+            .filter(|answer| !answer.ended)
+            .filter_map(|answer| answer.reset_at)
+            .min()
+            .map(|at| at + limit)
     }
 
-    /// Consume real carrier progress before interpreting every outer poll result, even errors.
-    pub(crate) fn observe(&mut self, next: CarrierProgress) -> Result<(), ResponseStop> {
-        let old = self.observed;
-        if self.retired
-            || self.poisoned
-            || next.complete_records_plaintext > next.written_plaintext
-            || next.written_plaintext > next.accepted_plaintext
-            || next.accepted_plaintext > self.adopted
-            || next.accepted_plaintext < old.accepted_plaintext
-            || next.written_plaintext < old.written_plaintext
-            || next.complete_records_plaintext < old.complete_records_plaintext
-            || (old.fault.is_some() && next != old)
-        {
-            self.poisoned = true;
-            return Err(ResponseStop::Integrity);
-        }
-        self.observed = next;
-        while let Some(span) = self.spans.front_mut() {
-            if span.start >= next.written_plaintext {
-                break;
-            }
-            if span.class == WireClass::Payload {
-                let entry = self
-                    .entries
-                    .iter()
-                    .find(|entry| entry.cell.key.stream == span.stream)
-                    .ok_or(ResponseStop::Integrity)?;
-                let mut state = lock(&entry.cell.state);
-                if state.snapshot.terminal.is_some() {
-                    return Err(ResponseStop::Integrity);
-                }
-                state.snapshot.first_payload_written = true;
-            }
-            if span.end <= next.written_plaintext {
-                self.spans.pop_front();
-            } else {
-                span.start = next.written_plaintext;
-                break;
-            }
-        }
-        next.fault
-            .map_or(Ok(()), |fault| Err(ResponseStop::Carrier(fault)))
+    /// Whether a stream the engine reset `limit` ago still has no end mark: the engine then closes the
+    /// connection, which is the one way left to make its verdict final.
+    pub(crate) fn overdue(&self, now: Instant, limit: Duration) -> bool {
+        self.next_overdue(limit).is_some_and(|due| due <= now)
     }
 
-    fn join(entry: &mut Entry) {
-        let mut state = lock(&entry.cell.state);
-        if state.snapshot.terminal.is_none()
-            && state.cancel.is_none()
-            && entry.stop.is_none()
-            && state.released
-            && state.producer_ended
-            && state.reader_eof
-            && entry.fence.as_ref().is_some_and(|fence| fence.ready)
-        {
-            state.snapshot.terminal = Some(DeliveryTerminal::Complete);
-            state.settled_pending = true;
-            drop(state);
-            entry.cell.changed.notify_waiters();
-            entry.cell.owner_wake.wake();
+    /// ONE ANSWER of the transport, as the driver reads it: checked whole, then its parts queued for
+    /// the connection as one run. `tail(i)` = the bytes of the `WIRE_PART` at index `i`.
+    ///
+    /// # Errors
+    /// The [`Fault`]: nothing of the answer was queued. The caller ends the session and calls
+    /// [`Self::faulted`] (or [`Self::gone`] for [`Fault::Queue`]).
+    pub(crate) fn answer<'a>(
+        &mut self,
+        items: &[Out],
+        tail: impl Fn(usize) -> &'a [u8],
+    ) -> Result<Outcome, Fault> {
+        if self.retired || self.lost {
+            return Err(Fault::Queue);
         }
-    }
-
-    fn completion(&mut self, prefix: u64, shutdown: bool) -> Result<(), ResponseStop> {
-        if self.retired
-            || self.poisoned
-            || self.observed.fault.is_some()
-            || prefix > self.observed.complete_records_plaintext
-        {
-            return Err(ResponseStop::Integrity);
-        }
-        for entry in &mut self.entries {
-            if let Some(fence) = &mut entry.fence {
-                if fence.end <= prefix {
-                    if !shutdown {
-                        fence.flushed = true;
-                    }
-                    if fence.flushed
-                        && (fence.requirement == CompletionRequirement::Flush || shutdown)
-                    {
-                        fence.ready = true;
-                    }
+        let mut outcome = self.wire.answer(
+            items,
+            tail,
+            None,
+            &mut self.below,
+            &mut self.queue,
+            self.written,
+        )?;
+        self.queued = self.written + self.queue.len() as u64;
+        for item in items {
+            if let Out::End(end) = *item {
+                if let Some(at) = self.at(end.stream) {
+                    self.answers[at].ended = true;
                 }
             }
-            Self::join(entry);
         }
-        Ok(())
-    }
-
-    /// Record an actual successful flush for this finite prefix, after sampling its progress.
-    pub(crate) fn complete_flush(&mut self, prefix: u64) -> Result<(), ResponseStop> {
-        self.completion(prefix, false)
-    }
-
-    /// Record an actual successful carrier shutdown, never MemIo shutdown or queued close_notify.
-    pub(crate) fn complete_shutdown(&mut self, prefix: u64) -> Result<(), ResponseStop> {
-        self.completion(prefix, true)
-    }
-
-    /// Retain ordered producer end independently of the runtime feed slot's lifetime.
-    pub(crate) fn producer_ended(&mut self, stream: u64) -> Result<(), ResponseStop> {
-        let index = self.index(stream)?;
-        lock(&self.entries[index].cell.state).producer_ended = true;
-        if !self.poisoned && self.observed.fault.is_none() {
-            Self::join(&mut self.entries[index]);
+        // ONE MECHANISM, BOTH ROLES: the answer carried body of streams the engine has left (the
+        // caller's upload for an answer that was reset, refused or already complete). Nobody will
+        // hold those bytes against a window, and a session that multiplexes reopens a window by
+        // the engine's credit alone: every such byte is owed now, exactly as the dial gives it
+        // (`native_dial` `credit_left`). The entries are TAKEN from the outcome into the one list
+        // the session gives credit from, so the outcome's reader finds none and cannot give them a
+        // second time.
+        for (stream, count) in outcome.left.drain(..) {
+            self.owe(stream, count);
         }
-        Ok(())
-    }
-
-    /// Retain actual reader EOF; dropping a body or its Bytes clones does not supply this fact.
-    pub(crate) fn reader_eof(&mut self, stream: u64) -> Result<(), ResponseStop> {
-        let index = self.index(stream)?;
-        lock(&self.entries[index].cell.state).reader_eof = true;
-        if !self.poisoned && self.observed.fault.is_none() {
-            Self::join(&mut self.entries[index]);
+        if let Some(stream) = outcome.opened {
+            self.answers.push(Answer {
+                on: stream,
+                cell: None,
+                opened: true,
+                ended: false,
+                cut: None,
+                reset_at: None,
+                body_told: false,
+            });
         }
-        Ok(())
+        // An end mark whose bytes were all out already is final now.
+        self.settle();
+        Ok(outcome)
     }
 
-    /// Record that failed-response input producers/readers were actually cancelled and joined.
-    /// This permits retirement after failure, but can never satisfy successful producer end/EOF.
-    pub(crate) fn input_retired(&mut self, stream: u64) -> Result<(), ResponseStop> {
-        let index = self.index(stream)?;
-        lock(&self.entries[index].cell.state).input_retired = true;
-        Ok(())
+    /// The bytes the connection has still to take, in order.
+    pub(crate) fn unwritten(&self) -> &[u8] {
+        self.queue.as_slice()
     }
 
-    /// Record protocol quiescence, which forbids future serialized spans but proves no writes.
-    pub(crate) fn quiescent(&mut self, stream: u64) -> Result<(), ResponseStop> {
-        let index = self.index(stream)?;
-        lock(&self.entries[index].cell.state).quiescent = true;
-        Ok(())
+    /// The connection's writer took the first `count` bytes of the queue (they are wiped).
+    pub(crate) fn took(&mut self, count: usize) {
+        let count = count.min(self.queue.len());
+        self.queue.consume(count);
+        self.written += count as u64;
+        // Nothing is kept between runs: an idle connection holds no block for its output here (the
+        // dial's rule for its own queue).
+        self.queue.shrink_when_empty(0);
     }
 
-    /// Suppress future publication while retaining every pending interval until actual settlement.
-    pub(crate) fn stop(&mut self, stream: u64, reason: ResponseStop) -> Result<(), ResponseStop> {
-        let index = self.index(stream)?;
-        let entry = &mut self.entries[index];
-        let mut state = lock(&entry.cell.state);
-        if state.snapshot.terminal.is_none() {
-            entry.stop.get_or_insert(reason);
-            state.cancel.get_or_insert(reason);
-            state.release_pending = false;
-        }
-        drop(state);
-        entry.cell.owner_wake.wake();
-        Ok(())
+    /// A write to the connection failed (or ran out of time): what was queued and not taken is wiped
+    /// now, not when the connection is dropped. Nothing more is queued; the verdicts come with
+    /// [`Self::retire`].
+    pub(crate) fn discard(&mut self) {
+        self.queue.clear();
+        self.queue.shrink_when_empty(0);
+        self.lost = true;
     }
 
-    fn fail(entry: &mut Entry, reason: ResponseStop) {
-        let mut state = lock(&entry.cell.state);
-        if state.snapshot.terminal.is_none() {
-            state.snapshot.terminal = Some(DeliveryTerminal::Failed(reason));
-            state.release_pending = false;
-            state.settled_pending = true;
-            entry.fence = None;
-            drop(state);
-            entry.cell.changed.notify_waiters();
-            entry.cell.owner_wake.wake();
-        }
-    }
-
-    /// Freeze a stopped response only after the owner has settled its active carrier operation.
+    /// The flush after the last write succeeded, and `progress` is what the connection's own carrier
+    /// then reports: the driver learns how far the operating system accepted the queue, as whole
+    /// encrypted records under TLS. Answers whose bytes are all out get their verdicts.
     ///
-    /// Remaining serialized bytes must have actually written through complete records. Otherwise
-    /// the owner must finish the indivisible frame/record under its bound or retire the carrier.
-    pub(crate) fn settle_stopped(&mut self, stream: u64) -> Result<(), ResponseStop> {
-        let index = self.index(stream)?;
-        let entry = &mut self.entries[index];
-        let state = lock(&entry.cell.state);
-        if state.snapshot.terminal.is_some() {
-            return Ok(());
+    /// # Errors
+    /// The carrier's own sticky fault, or a reading that is not this connection's (it claims more than
+    /// was ever written): nothing is counted, and the caller fails the connection.
+    pub(crate) fn flushed(&mut self, progress: CarrierProgress) -> Result<(), ResponseStop> {
+        if let Some(fault) = progress.fault {
+            return Err(ResponseStop::Carrier(fault));
         }
-        let reason = entry.stop.or(state.cancel).ok_or(ResponseStop::Integrity)?;
-        if !state.quiescent
-            || self.spans.iter().any(|span| span.stream == stream)
-            || self.observed.complete_records_plaintext < entry.last_end
+        if progress.accepted_plaintext > self.queued
+            || progress.complete_records_plaintext > progress.accepted_plaintext
         {
             return Err(ResponseStop::Integrity);
         }
-        drop(state);
-        Self::fail(entry, reason);
+        self.wire.accepted(progress.complete_records_plaintext);
+        // A body byte of an answer is out (the delivery ledger knows where each answer's first one
+        // stands): its owner may read that fact before the verdict. `whole` is told by the verdict
+        // itself, which knows whether the answer had a body.
+        for answer in &mut self.answers {
+            if answer.body_told || self.wire.state_of(answer.on) != Sent::Part {
+                continue;
+            }
+            answer.body_told = true;
+            if let Some(cell) = &answer.cell {
+                lock(&cell.state).snapshot.first_payload_written = true;
+            }
+        }
+        self.settle();
         Ok(())
     }
 
-    /// Sample after actual carrier retirement, then fail all unfinished responses exactly once.
-    ///
-    /// The runtime must already have cancelled/joined every operation capable of a later write.
-    pub(crate) fn retire_carrier(&mut self, last: CarrierProgress, reason: ResponseStop) {
+    /// The shutdown an `END_SHUTDOWN` (or a graceful `CLOSE`) asked for succeeded.
+    pub(crate) fn shut_down(&mut self) {
+        self.wire.shut_down();
+        self.settle();
+    }
+
+    /// The reader of `stream` took `len` inbound body bytes. `Some(n)` = `emit(stream, E_CONSUMED)`
+    /// with `n` in `credit` (a session that multiplexes reopens a window by nothing else).
+    pub(crate) fn taken(&mut self, stream: u64, len: u64) -> Option<u64> {
+        self.wire.taken(stream, len)
+    }
+
+    /// Whether the engine reads the connection now, by what the session stated.
+    pub(crate) fn reads_socket(&self) -> bool {
+        self.wire.reads_socket()
+    }
+
+    /// Credit owed for a stream that is over, to give the transport: (stream, bytes).
+    pub(crate) fn take_owed(&mut self) -> Option<(u64, u64)> {
+        self.owed.pop()
+    }
+
+    /// How much of `stream`'s answer the operating system accepted, as it stands.
+    pub(crate) fn state_of(&self, stream: u64) -> Sent {
+        self.wire.state_of(stream)
+    }
+
+    /// The connection is gone (failed, closed, dropped): every answer still open has its verdict
+    /// frozen as the socket's progress stands and handed to its owner; nothing is held after it.
+    pub(crate) fn gone(&mut self, reason: Reason) {
         if self.retired {
             return;
         }
-        let observed = self.observe(last);
-        let reason = match observed {
-            Err(ResponseStop::Integrity) => ResponseStop::Integrity,
-            _ => reason,
-        };
         self.retired = true;
-        self.spans.clear();
-        for entry in &mut self.entries {
-            let reason = entry.stop.unwrap_or(reason);
-            Self::fail(entry, reason);
-        }
+        self.wire.gone(reason);
+        self.queue.clear();
+        self.settle();
+        self.owed.clear();
     }
 
-    /// Acknowledge actual successful E_DELIVERY_SETTLED consumption by the protocol owner.
-    pub(crate) fn settled_ack(&mut self, stream: u64) -> Result<(), ResponseStop> {
-        let index = self.index(stream)?;
-        let mut state = lock(&self.entries[index].cell.state);
-        if !state.settled_sent || state.snapshot.terminal.is_none() {
-            return Err(ResponseStop::Integrity);
+    /// The connection's writer is gone and `last` is its carrier's final reading: as [`Self::gone`].
+    /// A write that failed part-way is not a flush, so nothing becomes `whole` by this reading; it
+    /// only tells an answer whose first body byte did leave (`part`) from one of which none did.
+    pub(crate) fn retire(&mut self, last: CarrierProgress, reason: Reason) {
+        // A write that failed may have put bytes on the carrier that the writer never reported back.
+        let sound = last.accepted_plaintext <= self.queued
+            && last.complete_records_plaintext <= last.accepted_plaintext;
+        if sound && !self.retired {
+            // The delivery ledger's own second count: it tells `part` from `none` per answer, by
+            // where each answer's first body byte stands, and makes nothing `whole`.
+            self.wire.reached(last.complete_records_plaintext);
         }
-        state.settled_ack = true;
-        Ok(())
+        self.gone(reason);
     }
 
-    /// Remove live binding only after protocol, input and settlement joins; handles retain debt.
-    pub(crate) fn retire_response(&mut self, stream: u64) -> Result<(), ResponseStop> {
-        let index = self.index(stream)?;
-        let state = lock(&self.entries[index].cell.state);
-        let input_done = match state.snapshot.terminal {
-            Some(DeliveryTerminal::Complete) => state.producer_ended && state.reader_eof,
-            Some(DeliveryTerminal::Failed(_)) => {
-                state.input_retired || (state.producer_ended && state.reader_eof)
+    /// The transport broke a rule of its output: as [`Self::gone`], every open answer recorded
+    /// `transport_fault`.
+    pub(crate) fn faulted(&mut self) {
+        if self.retired {
+            return;
+        }
+        self.retired = true;
+        self.wire.faulted();
+        self.queue.clear();
+        self.settle();
+        self.owed.clear();
+    }
+
+    /// Hand every final verdict to its owner and release its entry. An announced stream nobody was
+    /// admitted for is kept only while its request can still be admitted.
+    fn settle(&mut self) {
+        let mut at = 0;
+        while at < self.answers.len() {
+            let answer = &self.answers[at];
+            let waits_for_admission = answer.cell.is_none()
+                && !answer.opened
+                && answer.on > self.last_stream
+                && !self.retired;
+            if waits_for_admission {
+                at += 1;
+                continue;
             }
-            None => false,
-        };
-        if !input_done
-            || !state.quiescent
-            || !state.settled_ack
-            || self.spans.iter().any(|span| span.stream == stream)
-        {
-            return Err(ResponseStop::Integrity);
+            let on = answer.on;
+            let Some(verdict) = self.wire.take_verdict(on) else {
+                at += 1;
+                continue;
+            };
+            let answer = self.answers.swap_remove(at);
+            let (_, credit) = self.wire.over(on, false);
+            if let Some(count) = credit {
+                self.owe(on, count);
+            }
+            if let Some(cell) = answer.cell {
+                freeze(&cell, verdict, answer.cut);
+            }
         }
-        drop(state);
-        self.entries.swap_remove(index);
-        Ok(())
     }
+}
+
+/// The verdict is final: the owner's cell is frozen with it, once.
+fn freeze(cell: &Cell, verdict: Verdict, cut: Option<Sent>) {
+    let mut state = lock(&cell.state);
+    if state.snapshot.terminal.is_some() {
+        return;
+    }
+    let verdict = match cut {
+        Some(stood) if verdict.state == Sent::Whole => Verdict {
+            state: stood,
+            reason: Some(Reason::Cancelled),
+            body_bytes: verdict.body_bytes,
+        },
+        _ => verdict,
+    };
+    let mut snapshot = verdict.snapshot();
+    // What the owner was already told stays told.
+    snapshot.first_payload_written |= state.snapshot.first_payload_written;
+    // The owner's own stop keeps the word the owner gave it (its settlement matches on it).
+    if let (Some(DeliveryTerminal::Failed(_)), Some(asked)) = (snapshot.terminal, state.cancel) {
+        snapshot.terminal = Some(DeliveryTerminal::Failed(asked));
+    }
+    state.snapshot = snapshot;
+    state.record = Some(DeliveryRecord::of(verdict));
+    drop(state);
+    cell.changed.notify_waiters();
 }

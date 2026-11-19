@@ -65,6 +65,13 @@ pub trait Subject {
     fn backend(&self) -> &dyn PersistenceBackend;
     /// Slot rows the store holds for `writer`, read natively.
     fn slot_rows(&self, writer: [u8; 16]) -> usize;
+    /// Whether this subject can read the store's rows natively. A store driven through the plugin boundary
+    /// keeps its rows to itself and answers `false`: a case then proves a deletion by what the contract shows
+    /// (the row reads absent, the retry is fenced) and leaves the native count to the store's own native
+    /// subject, which answers `true` (the default) and runs every count.
+    fn counts_slot_rows(&self) -> bool {
+        true
+    }
     /// Move the store's authoritative clock forward. `false` when the store's clock
     /// is an external server's that a test cannot move; the case still runs.
     fn jump_clock(&self, seconds: u64) -> bool;
@@ -492,11 +499,13 @@ pub async fn zombie_fenced_in_doubt(subject: &impl Subject) {
         commit(b, &close, self_key(&close)).await,
         Decision::Applied(_)
     ));
-    assert_eq!(
-        subject.slot_rows(REGISTRAR),
-        0,
-        "closure deletes the writer's rows"
-    );
+    if subject.counts_slot_rows() {
+        assert_eq!(
+            subject.slot_rows(REGISTRAR),
+            0,
+            "closure deletes the writer's rows"
+        );
+    }
     assert_eq!(value(b, control::epoch_row(REGISTRAR, 1)).await, None);
     assert_eq!(
         value(b, control::epoch_row(CLOSER, 1)).await.as_deref(),

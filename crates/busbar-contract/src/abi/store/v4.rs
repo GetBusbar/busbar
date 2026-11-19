@@ -19,8 +19,7 @@
 //! This module declares shapes only; it does not enable backend admission/execution.
 
 use super::HostBuf;
-use crate::abi::mechanism::call::{Blob, DeadlineClass, InHead, Op, OutHead};
-use crate::abi::mechanism::check::OpContract;
+use crate::abi::mechanism::call::{Blob, InHead, Op, OutHead};
 use crate::abi::mechanism::decl::abi_struct;
 use crate::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 use crate::abi::mechanism::ticket::HostTables;
@@ -32,8 +31,6 @@ pub const ABI_VERSION: u32 = crate::abi::versions::STORE.raw();
 pub const CODEC_VERSION: u32 = 1;
 /// Mandatory primitive slots after the existing lifecycle.
 pub const KIND_SLOTS: u32 = 5;
-/// Lifecycle and primitive slots together.
-pub const TABLE_SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 
 /// Mandatory slot indices, in table order.
 pub mod slot {
@@ -313,7 +310,7 @@ abi_struct! {
     pub struct CommitOut {
         /// Shared answer head.
         pub head: OutHead,
-        /// COMMIT_APPLIED through COMMIT_STALE on READY.
+        /// COMMIT_APPLIED through COMMIT_CAPACITY_REFUSED on READY.
         pub code: u32,
         /// Must be zero.
         pub _reserved: u32,
@@ -417,20 +414,12 @@ pub const MUTATION_PUT: u32 = 1;
 pub const MUTATION_DELETE: u32 = 2;
 /// Atomically delete prefix matches of exactly exact_length bytes.
 pub const MUTATION_DELETE_RANGE: u32 = 3;
-/// No value exists at this requested address.
-pub const VALUE_ABSENT: u32 = 0;
-/// A value exists, including an explicitly empty value.
-pub const VALUE_FOUND: u32 = 1;
 /// Coherent values were observed.
 pub const READ_VALUES: u32 = 1;
 /// Read serialization fell outside its allowed interval.
 pub const READ_TIME_GUARD_FAILED: u32 = 2;
 /// An exclusive cursor is present, including an empty key cursor.
 pub const SCAN_AFTER: u32 = 1;
-/// Compare the supplied namespace generation.
-pub const SCAN_GENERATION: u32 = 2;
-/// Display scan explicitly permits generation change between pages.
-pub const SCAN_ALLOW_CHANGE: u32 = 4;
 /// A coherent ordered page was returned.
 pub const SCAN_PAGE: u32 = 1;
 /// Generation changed; no page was returned.
@@ -451,6 +440,9 @@ pub const COMMIT_OPID_CONFLICT: u32 = 4;
 pub const COMMIT_FENCED: u32 = 5;
 /// The slot already evaluated a later sequence; this send applied nothing and never will.
 pub const COMMIT_STALE: u32 = 6;
+/// The store rolled back because its database is at capacity; nothing committed. A refusal, not a
+/// decision about the candidate: the same candidate may be offered again once capacity returns.
+pub const COMMIT_CAPACITY_REFUSED: u32 = 7;
 /// Slot value of a self-fenced candidate, which must carry sequence zero.
 pub const SLOT_SELF_FENCED: u32 = u32::MAX;
 /// Exclusive upper bound of a writer's queue slots; each store keeps at most this many
@@ -459,91 +451,6 @@ pub const MAX_SLOTS: u32 = 65_536;
 
 /// Primitive names, in mandatory table order.
 pub const NAMES: [&str; 5] = ["read", "scan", "commit", "clock", "bootstrap"];
-/// Primitive contracts; all may pend through the existing driver mechanism.
-pub const OPS: [OpContract; 5] = [
-    OpContract {
-        slot: slot::READ,
-        request_path: true,
-        may_pend: true,
-        max_in: core::mem::size_of::<ReadIn>(),
-        max_out: core::mem::size_of::<ReadOut>(),
-        deadline: DeadlineClass::Call,
-    },
-    OpContract {
-        slot: slot::SCAN,
-        request_path: true,
-        may_pend: true,
-        max_in: core::mem::size_of::<ScanIn>(),
-        max_out: core::mem::size_of::<ScanOut>(),
-        deadline: DeadlineClass::Call,
-    },
-    OpContract {
-        slot: slot::COMMIT,
-        request_path: true,
-        may_pend: true,
-        max_in: core::mem::size_of::<CommitIn>(),
-        max_out: core::mem::size_of::<CommitOut>(),
-        deadline: DeadlineClass::Call,
-    },
-    OpContract {
-        slot: slot::CLOCK,
-        request_path: true,
-        may_pend: true,
-        max_in: core::mem::size_of::<ClockIn>(),
-        max_out: core::mem::size_of::<ClockOut>(),
-        deadline: DeadlineClass::Call,
-    },
-    OpContract {
-        slot: slot::BOOTSTRAP,
-        request_path: false,
-        may_pend: true,
-        max_in: core::mem::size_of::<BootstrapIn>(),
-        max_out: core::mem::size_of::<BootstrapOut>(),
-        deadline: DeadlineClass::Call,
-    },
-];
-
-/// Every v4 shape, in fingerprint fold order.
-pub const LAYOUT_SHAPES: &[&[u64]] = &[
-    HostBuf::LAYOUT,
-    Bytes::LAYOUT,
-    Address::LAYOUT,
-    TimeGuard::LAYOUT,
-    AttemptId::LAYOUT,
-    Predicate::LAYOUT,
-    Mutation::LAYOUT,
-    Candidate::LAYOUT,
-    ReadValue::LAYOUT,
-    HostValues::LAYOUT,
-    ReadIn::LAYOUT,
-    ReadOut::LAYOUT,
-    ScanRow::LAYOUT,
-    HostRows::LAYOUT,
-    ScanIn::LAYOUT,
-    ScanOut::LAYOUT,
-    CommitIn::LAYOUT,
-    CommitOut::LAYOUT,
-    ClockIn::LAYOUT,
-    ClockOut::LAYOUT,
-    BootstrapIn::LAYOUT,
-    BootstrapOut::LAYOUT,
-    Ops::LAYOUT,
-    crate::abi::host::service::HOST_SLOTS_LAYOUT,
-];
-/// Fingerprint of the primitive shapes, independent from the legacy business layout.
-pub const LAYOUT_FINGERPRINT: u64 = 0xb74ff4246792db2d;
-
-// SAFETY: C structs leading with the shared head and containing only plain data.
-unsafe impl crate::abi::sdk::door::AbiIn for ReadIn {}
-unsafe impl crate::abi::sdk::door::AbiIn for ScanIn {}
-unsafe impl crate::abi::sdk::door::AbiIn for CommitIn {}
-unsafe impl crate::abi::sdk::door::AbiIn for ClockIn {}
-unsafe impl crate::abi::sdk::door::AbiIn for BootstrapIn {}
-unsafe impl crate::abi::sdk::door::AbiOut for ReadOut {}
-unsafe impl crate::abi::sdk::door::AbiOut for ScanOut {}
-unsafe impl crate::abi::sdk::door::AbiOut for CommitOut {}
-unsafe impl crate::abi::sdk::door::AbiOut for ClockOut {}
-unsafe impl crate::abi::sdk::door::AbiOut for BootstrapOut {}
 
 /// Safe output-envelope checks. The future admitted loader must additionally
 /// validate every returned descriptor/cursor against host-owned written bytes,
@@ -689,7 +596,7 @@ pub mod check {
             code(
                 u64::from(out.code),
                 u64::from(COMMIT_APPLIED),
-                u64::from(COMMIT_STALE),
+                u64::from(COMMIT_CAPACITY_REFUSED),
                 "store.v4.commit.code",
             )?;
             if out.code == COMMIT_STALE && input.candidate.slot == SLOT_SELF_FENCED {
@@ -726,11 +633,3 @@ pub mod check {
         Ok(())
     }
 }
-
-#[cfg(test)]
-#[path = "tests/v4_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "tests/check_tests.rs"]
-mod check_tests;

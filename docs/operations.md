@@ -28,7 +28,7 @@ never silent.
 | Provider key vars | n/a | Named by each provider's `api_key: { env: ... }` reference (e.g. `ANTHROPIC_KEY`). |
 | Token/secret vars | n/a | Anything referenced via `${VAR}` in either file (client tokens, admin token, …). |
 
-`TOKIO_WORKER_THREADS` is a supported fallback for `advanced.worker_threads`. Provider selection, worker count and upstream HTTP behaviour are configured in config.yaml (`providers_file:` or `--providers`, `advanced.worker_threads`, `advanced.upstream_http1_only`, `advanced.upstream_h2_prior_knowledge`), not by environment variables; see [the upgrade guide](migration-1.6.md#retired-environment-variables) for the variables an older deployment may still set.
+Provider selection and upstream HTTP behaviour are configured in config.yaml (`providers_file:` or `--providers`, `outbound.http1_only`, `outbound.h2_prior_knowledge`), not by environment variables, and the worker count is not a setting (see below); see [the upgrade guide](migration-1.6.md#retired-environment-variables) for the variables an older deployment may still set.
 `BUSBAR_CONFIG`, `RUST_LOG`, and explicit secret environment references are read. A few further
 variables are read for specific purposes and are not configuration inputs: `BUSBAR_DATA_DIR` (the
 data directory the plugin registry uses when plugins are enabled), `BUSBAR_RECORD_BOOTSTRAP_RECEIPT`
@@ -86,22 +86,38 @@ config:
   Other plugin pins are recovered before the complete application's plugin validation.
 
 **Worker threads and scaling.** Busbar's request path is CPU-bound (parse, translate, serialize), so
-throughput scales with data-plane workers. `advanced.worker_threads` is the **data-plane
-worker count**, not a tokio pool size: on unix, each worker is a **pinned single-threaded runtime with
-its own `SO_REUSEPORT` listener** on the data port, and the kernel spreads accepted connections across
-them; the admin plane and background tasks run on a separate small control-runtime thread. `N: 1` on a
-one-core box is the same design, just one worker. The default is **one worker per available core**
-(`available_parallelism`, which respects CPU affinity and the cgroup **cpuset**, but **not** the CFS
-`cpu.max` bandwidth quota, which it cannot see), capped at **128**, which gives linear scaling: ~9,750
-req/s per core, sub-millisecond, to ~156k on 16 cores in our
+throughput scales with data-plane workers. The **data-plane worker count** is not a tokio pool size:
+on unix, each worker is a **pinned single-threaded runtime with its own `SO_REUSEPORT` listener** on
+the data port, and the kernel spreads accepted connections across them; the admin plane and
+background tasks run on a separate small control-runtime thread. One worker on a one-core box is the
+same design. The count is **one worker per CPU core the process may use**, and it is not a setting:
+the operating system's answer (`available_parallelism`), which counts the process's CPU affinity and
+cpuset and, on Linux, the container's CPU limit (the cgroup v1 or v2 bandwidth quota, `cpu.max`).
+That gives linear scaling: ~9,750 req/s per core, sub-millisecond, to ~156k on 16 cores in our
 [benchmark](https://getbusbar.com/performance). Each worker carries a thread stack and, on glibc, its
-own malloc arena, so idle memory grows slowly with the count. For a **footprint-sensitive sidecar** set
-`advanced.worker_threads: 1` (or `2`). On a **CPU-quota-limited pod** (a k8s CPU *limit* on a many-core
-node) the default sizes to the node's full core count and oversubscribes the quota: **set
-`advanced.worker_threads` to your CPU limit**; likewise to cap a shared box, set it to the cores you
-want Busbar to use. Scale up by default, tune down deliberately. The topology is directly observable:
+own malloc arena, so idle memory grows slowly with the count. For a **footprint-sensitive sidecar**,
+give the container a CPU limit of 1 (or 2); on a **CPU-quota-limited pod** the count already follows
+the limit; to cap a shared box, narrow the process's CPU affinity (`taskset`, a cpuset). The topology
+is directly observable:
 the workers show up as threads named `busbar-core-0` … `busbar-core-N-1`, and `ss -tlnp` / `netstat`
 shows N listen sockets on the one data port.
+
+**A worker held by a hung plugin stops taking connections.** A plane plugin is called directly on the
+worker serving the request. If a plugin entry passes its watchdog ceiling, Busbar quarantines the
+instance (`plugin_hung` in the log), but the call still holds that worker's thread. At the next
+housekeeping tick (`advanced.usage_flush_interval_ms`) after that report, Busbar finds the worker that
+is held (it is the one that cannot run a task Busbar hands every worker) and closes its listener
+(`core_stopped` in the log, with the worker's index): it leaves the `SO_REUSEPORT` group and the kernel
+sends new connections to the other workers; `ss -tlnp` shows one listen socket fewer on the data port.
+Connections the kernel had already queued on that listener are **reset** (the client sees a connection
+reset and may retry) unless `net.ipv4.tcp_migrate_req = 1` (Linux 5.14+), which moves them to another
+worker's listener; set it on hosts where a reset at that moment is unacceptable. When the plugin call
+returns, the worker runs again and rejoins with a new listener (`core_resumed`); nothing is needed from
+the operator. A plugin call that never returns keeps that worker out until the process restarts; with
+one worker there is no other listener to take its connections, so new connections queue in the kernel
+until the call returns. This applies to the host's own data listener; a data door listening through a
+carrier plugin stops and resumes admitting, but connections the carrier accepted meanwhile wait in the
+carrier, unserved, until the worker resumes or the client gives up.
 
 Startup is fail-loud: an unset `${VAR}`, an unknown provider reference, an unknown
 protocol or auth mode, or an invalid `on_exhausted` action stops the process with a
@@ -212,7 +228,8 @@ clients.
 The first operator signal or an admin restart released by its asking unit immediately makes
 `/readyz` return 503. `/livez` remains independent of this shutdown state. Existing listeners,
 ordinary request handling and credential refresh continue for the boot-captured
-`advanced.shutdown.deregister_delay` (default `5s`, configurable `0s..300s`). At that fixed
+`shutdown.deregister_delay` (default none, configurable `0s..300s`; set it to your load balancer's
+health-check period times its failure threshold). At that fixed
 deadline listeners begin draining and the full 20-second engine drain starts. Repeated operator
 requests do not restart the allowance. Native writer renewal continues until retirement.
 
@@ -399,6 +416,32 @@ the budget must cover each of them whole, or the upgrade never completes. Only t
 import resumes: a probe that fires during it sends SIGTERM, the owner hands over on exit, and
 the next process resumes from the records left, so during the import a short budget slows the
 upgrade and loses nothing.
+
+## Audit flusher stall
+
+Each request hands its audit line to its own core's outbox. One flusher commits every core's
+lines to the store as a group, every `advanced.usage_flush_interval_ms` (see
+[configuration.md](configuration.md#advancedwait_for_commit)).
+
+**What you see when it cannot commit** (store unreachable, disk full, the journal's custody failed):
+
+- At the first failed flush, one warning: `audit flusher could not commit; retrying each tick`,
+  with the reason.
+- Once the last good commit is older than 2 seconds: one error `BUSBAR-2060`
+  (`durability-stalled`), "records have not been committed for longer than the stall limit".
+  From then on, new billable requests are refused with the "durability unavailable" refusal (HTTP
+  503) and are not run. Health checks still answer. Requests already admitted finish. Lines
+  already handed over stay in memory and are retried on every tick. None are dropped.
+- If the journal refuses to stage a line after accepting staging (its custody failed), that line is
+  lost and `BUSBAR-2060` says so, with `reason=stage` and the count. Nothing from that flush is
+  reported as committed.
+
+**How to recover:** fix the store (free disk space, restore its reachability). No restart is
+needed. At the next good commit the flusher logs `audit flusher committed again; durable service
+resumed`, the refusal stops, and the lines it held are committed in their original order. If the
+journal's custody itself failed (a `native journal custody failed` reason), restart the engine.
+The restart writes its signed after-restart notice, which marks the interval in which records
+can be missing.
 
 ## Metrics to watch
 
@@ -700,6 +743,8 @@ guarded by `auth.admin_auth` (the operator credential of the configured auth mod
 
 **No default admin credential ships.** Busbar has no built-in or fallback admin token. The `admin-tokens` module is configured with the SHA-256 digest of a token the operator generates, and refuses to open on a malformed digest or the digest of an empty token. The host only ever sees the digest, so it cannot measure the token's length: generate the token from at least 32 random bytes (see the [admin-tokens README](https://github.com/GetBusbar/busbar-auth-admin-tokens#config)) and keep it in an operator secret store.
 
+**The operator credential is bound at process start.** A configuration reload (`POST /config/reload`, and every other rebuild of the running configuration) whose operator credential differs from the running one (the operator-backed `identity-providers` definition, its `settings: {sha256: …}` included), or that removes it, or adds one where the process started with none, is refused as a whole: nothing is changed, the running configuration keeps serving with the credential it started with, the refusal names the definition and says a restart is required, and an `auth.operator.refused` audit row records it. Neither the refusal nor the row carries the credential. To change the operator credential, edit `config.yaml` and restart; the boot audits the credential it accepts (`auth.operator.accepted`).
+
 Minting, listing, rotating, and revoking keys (the routes, request/response shapes, the mint-body
 field reference, and the scope lattice) are owned by the **[Admin API reference](/docs/admin-api/)**.
 The limit/group model those keys charge through is owned by
@@ -790,7 +835,7 @@ whole-workspace qualification. Account for these platform differences:
 | **Plugin staging** (`docs/plugins.md`) | Per-process staging dir `0700`, file `0600`; boot sweep removes staging left by a crashed prior process | Directory and file inherit the `%TEMP%` ACL — per-user in a default setup, but not the `0700` guarantee. The **boot sweep is a no-op**: it decides "is the prior pid dead" with `kill(pid, 0)`, which has no Windows implementation, so an abandoned staging directory accumulates per crash under `%TEMP%`. This costs disk, not integrity — a staged file is regenerated from the verified in-memory bytes on every load and is never trusted input. |
 | **Durable write** (`fsync` of the holding directory after a rename) | The directory entry is fsynced, so a publish survives power loss | **Not performed** — a directory cannot be opened for `fsync` on Windows and `FlushFileBuffers` on a directory handle is not the same barrier. File CONTENTS are still fsynced before the rename on every platform, so a power loss can lose the *rename* (old file, or no file) but never yields a torn one. |
 | **Orderly shutdown** | `SIGINT` and `SIGTERM` both drain in-flight requests | `SIGTERM` does not exist. Busbar handles `CTRL_C`, `CTRL_CLOSE` and `CTRL_SHUTDOWN`, which covers an interactive Ctrl+C, a closing console, `docker stop` on a Windows container, and machine shutdown. A `TerminateProcess` (Task Manager "End task", `taskkill /F`) is not interceptable by any process and does **not** drain. |
-| **Data-plane topology** (1.6.0) | Thread-per-core: `worker_threads` pinned single-threaded runtimes, each with its own `SO_REUSEPORT` listener on the data port (threads `busbar-core-N`); admin + background on a control thread | **Classic single work-stealing tokio runtime** with one listener — `SO_REUSEPORT` load distribution has no Windows equivalent. This is a compile-time platform shape, not a knob; `worker_threads` sizes that one runtime's pool. Same behaviour as pre-1.6.0, so nothing to migrate. |
+| **Data-plane topology** (1.6.0) | Thread-per-core: one pinned single-threaded runtime per usable CPU core, each with its own `SO_REUSEPORT` listener on the data port (threads `busbar-core-N`); admin + background on a control thread | **Classic single work-stealing tokio runtime** with one listener — `SO_REUSEPORT` load distribution has no Windows equivalent. This is a compile-time platform shape, not a knob; `worker_threads` sizes that one runtime's pool. Same behaviour as pre-1.6.0, so nothing to migrate. |
 
 **Select an explicit config path on Windows.** The default `/etc/busbar/config.yaml` is not an
 absolute Windows path. Use `-c C:\ProgramData\busbar\config.yaml` or set `BUSBAR_CONFIG` to that
@@ -886,3 +931,68 @@ the backup point can be presented again until it expires. Before admitting traff
 again, use the exported audit stream to re-apply every revocation, demotion and principal
 transition made after the backup point, and load packages and a keys document no older than
 the ones the deployment ran before the restore.
+
+### Restoring from a backup: what it undoes and what to do next
+
+The engine keeps its administrative state in the Store, and a restore replaces the whole Store
+with the backup. Everything an administrator did after the backup point is gone. The engine
+does not notice this. At start it reads what the Store holds and serves it. It does not compare
+the Store with what it served before, and it does not refuse a Store that is older. Nothing
+tells you that a restore went back further than you meant, so record the backup time yourself
+and treat every change after it as lost.
+
+**What a restore from a backup undoes.** Each of these returns to its state at the backup point:
+
+- **Key changes.** A key revoked after the backup is active again. A key rotated after the
+  backup has its earlier credential again. A key deleted after the backup returns. A key
+  minted after the backup does not exist.
+- **Configuration.** Configuration changes made through the admin API after the backup are
+  gone. The configuration generation (the number in the config ETag and in `GET /info`
+  `config_generation`) comes from the Store. At start the engine raises it by one from the
+  Store's value, so after a restore it can be lower than the last value your tooling saw, and
+  an ETag you held before the restore can name a different configuration afterwards. Do not
+  trust a saved ETag across a restore.
+- **Usage, ledger and budgets.** Spend and usage posted after the backup, and the budget
+  totals that go with it, are gone. A budget that was exhausted after the backup point can
+  show room again. Rate-card history entries added or amended after the backup are gone too.
+- **Trust and floors.** Trust demotions and trust decisions, the plugin version floors and the
+  release-keys document floor recorded after the backup are gone, as are consumed replay
+  claims and redeemed single-use tickets (see the paragraph above).
+- **The admin audit history.** The engine reads its admin audit history back from the Store at
+  start and continues the same chain from the last record it finds. The history therefore ends
+  at the backup point, and the changes made after it have no record in the restored Store. New
+  records take the sequence numbers that follow the last restored record, so a sequence number
+  the engine issued after the backup can be issued again for a different record. Keep the
+  audit export from before the restore apart from the one after it, and do not merge them by
+  sequence number. The engine holds at most 1,000 admin records in memory at a time (the
+  most recent 1,000 records); the exported stream is the complete record.
+
+**What to do after a restore.** Do this before the engine admits traffic:
+
+1. Note the backup time and the time you stopped the old engine. Every admin change between
+   the two is lost.
+2. List the admin changes made in that window from a record outside the Store. If the engine
+   is connected to a Console, use the Console's audit log. Otherwise use the exported audit
+   stream (item 4 of the [backup set](#backup-set-and-order)) and your own change records.
+3. Re-apply every key revocation first, then deletions, then rotations, then the rest. A key
+   revoked for cause is active again until you do.
+4. Rotate every credential that was revoked for cause, even after you re-revoke the key. It
+   was usable between the restore and the re-revocation, so treat it as exposed.
+5. Compare the configuration generation (`GET /info`, `config_generation`) and the effective
+   configuration (`GET /config`) with what was last applied. Re-apply the missing changes
+   using a fresh ETag read after the restore.
+6. Check budgets and usage for the lost window against your upstream invoices, and re-apply
+   any budget or rate-card change you made in it.
+7. Load plugin packages and a keys document no older than the ones the deployment ran before
+   the restore.
+
+**What the Console tells you.** For an engine connected through the engine agent, the Console
+compares the engine's admin history with its own record of it, and raises a finding that names
+each key change that was lost. Use those findings as the list for step 3. For a directly
+connected engine the Console does not do this yet. Work through the checklist by hand from
+your own change records and the exported audit stream.
+
+**What a restore cannot undo.** Requests the engine already served stay served, and charges
+already made by upstream providers stay charged. The restored ledger does not contain them
+unless they fell before the backup point. A key that was active again after the restore may
+also have served requests that no record shows.

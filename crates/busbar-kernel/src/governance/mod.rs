@@ -952,9 +952,7 @@ pub(crate) use tickets::{
     legacy_ticket_authorizes, legacy_ticket_expiry, legacy_ticket_record, legacy_ticket_token,
     VerifiedTicket,
 };
-pub use tickets::{
-    ticket_record_live, ticket_records_live, TicketRefusal, TICKET_RECORD_KIND, TICKET_SPENT_KIND,
-};
+pub use tickets::{TicketRefusal, TICKET_RECORD_KIND, TICKET_SPENT_KIND};
 
 /// Which native asynchronous self-serve mint operation to perform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1246,7 +1244,9 @@ pub fn plane_grant_kind(field: &str) -> Option<String> {
 }
 
 pub fn plane_declares_kind(kind: &str) -> bool {
-    kind != "pool" && crate::plane_driver::registry::scope_kind_index(kind).is_some()
+    kind != "pool"
+        && (crate::plane_driver::registry::scope_kind_index(kind).is_some()
+            || crate::plane_driver::port_routes::kind_stated(kind))
 }
 
 pub(crate) fn pool_scopes(
@@ -1987,7 +1987,7 @@ pub fn spawn_budget_flusher(
     shutdown: tokio::sync::broadcast::Receiver<()>,
     app: Option<Arc<crate::state::AppHandle>>,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(run_budget_flusher(gov, shutdown, app, None))
+    tokio::spawn(run_budget_flusher(gov, shutdown, app, None, None))
 }
 
 /// The drain-mode pass's idle wait between passes (SHUTDOWN-HANG F4 [M]).
@@ -2007,8 +2007,8 @@ pub async fn run_budget_flusher(
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
     app: Option<Arc<crate::state::AppHandle>>,
     clock: Option<Arc<drain::DrainClock>>,
+    mut tick: Option<crate::core_watch::Tick>,
 ) {
-    let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
     purge_usage_windows(&gov).await;
     // The purge cadence rides the runtime's timer: its first tick completes at once (the boot
     // purge above is that tick); later ticks are checked, never awaited, on each flush tick.
@@ -2016,8 +2016,15 @@ pub async fn run_budget_flusher(
     purge_due.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     purge_due.tick().await;
     loop {
+        // Read on every wait: `advanced.usage_flush_interval_ms` is patchable on a running engine,
+        // and the wait already in progress when it is applied is the last one on the old value.
+        let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
         tokio::select! {
             _ = tokio::time::sleep(interval) => {
+                // The housekeeping tick's other riders (the core watch): synchronous, never awaited.
+                if let Some(tick) = tick.as_mut() {
+                    tick();
+                }
                 if futures::FutureExt::now_or_never(purge_due.tick()).is_some() {
                     purge_usage_windows(&gov).await;
                 }
@@ -2028,11 +2035,11 @@ pub async fn run_budget_flusher(
                 }
                 gov.flush_budgets().await;
                 gov.flush_metering().await;
+                sweep_current_budgets(&gov, app.as_ref());
             }
             _ = shutdown.recv() => {
                 if let Some(clock) = &clock {
-                    drain_money(&gov, app.as_ref(), clock, interval).await;
-                    break;
+                    drain_money(&gov, app.as_ref(), clock, interval).await;                    break;
                 }
                 resume_current_correction_verdicts(&gov, app.as_ref()).await;
                 if let Err(e) = gov.flush_unit_checkpoints().await {
@@ -2080,6 +2087,23 @@ async fn drain_money(
         resume_current_correction_verdicts(gov, app).await;
         gov.flush_budgets_final().await;
         gov.flush_metering_final().await;
+    }
+}
+
+/// The tick's budget sweep, against the cost model of the generation this ledger serves (a
+/// superseded ledger, or one with no published generation, is not swept: nothing says which
+/// buckets still enforce a cap).
+fn sweep_current_budgets(gov: &Arc<GovState>, app: Option<&Arc<crate::state::AppHandle>>) {
+    let Some(app) = app else {
+        return;
+    };
+    let snapshot = app.load();
+    if snapshot
+        .governance
+        .as_ref()
+        .is_some_and(|current| Arc::ptr_eq(current, gov))
+    {
+        gov.sweep_budgets(&snapshot.cost, crate::store::now());
     }
 }
 

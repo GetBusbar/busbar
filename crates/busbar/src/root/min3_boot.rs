@@ -9,7 +9,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::boot::restricted::{BootstrapDirectory, BootstrapRecords};
 use super::boot::walk::{deployment_bytes, BootSteps, DeploymentRead};
@@ -21,10 +21,12 @@ use busbar_core_connector::need::network::{
     BootstrapConnector, NetworkInputs, ServingConnector, SharedResolver,
 };
 use busbar_core_connector::need::{ConnectorIo, HostNeeds, NeedLimits};
+use busbar_kernel::auth::native_ticket::{IssuerBound, Issuers, Redeem, TicketDesk};
 use busbar_kernel::channels::signals::SignalRegistry;
 use busbar_kernel::channels::SessionSignals;
 use busbar_kernel::config::{PluginsCfg, RootCfg};
 use busbar_kernel::directory::{KernelDirectory, LogEvents};
+use busbar_kernel::host_services::Standing;
 use busbar_kernel::host_services::{DestJudge, KernelServices};
 use busbar_kernel::ingress::replay::StoreReplay;
 use busbar_kernel::ingress::signed_ingress::{RouteSecrets, StandardWebhooks};
@@ -74,6 +76,10 @@ pub(crate) type MinRegistry = Registry;
 
 /// How long a core-internal secret may take to resolve at boot.
 pub(crate) const CORE_SECRET_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The budget of one native call (a hook call, a provisioning call) whose instance states no
+/// `timeout_ms` of its own: the one second the old dispatcher's default call budget gave.
+pub(crate) const DEFAULT_CALL_BUDGET: Duration = Duration::from_secs(1);
 /// Core's own secrets, resolved at boot through the secret kind into owned values (IF §11.2: the admin token,
 /// the signing key). `None` = the config states no such reference.
 #[derive(Default)]
@@ -91,6 +97,9 @@ struct Shared {
     observations: ObsCustody,
     /// Durable WORK for every seat (rows are scoped by instance name).
     work: Arc<StoreWork>,
+    /// The verified principals being served on each plane instance: who a ticket minted now is for. One book
+    /// for the process, shared by every seat's ticket store and desk.
+    issuers: Arc<Issuers>,
 }
 
 /// The ticket store of a deployment with no usable `auth.signing_key`: nothing is a ticket and nothing mints
@@ -124,13 +133,26 @@ impl Tickets for ClosedTickets {
 /// The ticket store every plane seat is built with (IF §12.11): its host key is derived from core's
 /// `auth.signing_key`, which the walk resolves (the secret instances are open before any plane, step 2a) before
 /// the seat is built. Without a signing key, or when the key cannot be derived, the store is shut.
-fn ticket_store<R: PluginRecords + Clone>(
+///
+/// The sealed store is never handed out bare: it is wrapped in [`IssuerBound`], so every ticket a plane mints
+/// carries its issuer's governed key and no door redeems one around the issuer check. `issuers`: the process's
+/// one book of principals being served. `standing`: a key as it stands now (the serving generation's own
+/// re-check); without it a ticket could outlive its issuer, so the store is shut.
+fn ticket_store<R: PluginRecords + Clone + 'static>(
     records: &R,
     signing: Option<&SecureVec>,
-) -> Arc<dyn Tickets> {
+    issuers: &Arc<Issuers>,
+    standing: Option<Standing>,
+) -> TicketStore {
     let Some(signing) = signing else {
         tracing::info!("no auth.signing_key: plane tickets are not admitted");
-        return Arc::new(ClosedTickets);
+        return TicketStore::shut();
+    };
+    let Some(standing) = standing else {
+        tracing::warn!(
+            "no live standing re-check is attached: plane tickets are not admitted (a ticket must die with its issuer key)"
+        );
+        return TicketStore::shut();
     };
     let mut key = SecureVec::zeroed(32);
     if busbar_contract::crypto::hkdf_sha256(
@@ -142,13 +164,42 @@ fn ticket_store<R: PluginRecords + Clone>(
     .is_err()
     {
         tracing::warn!("the ticket host key could not be derived: plane tickets are not admitted");
-        return Arc::new(ClosedTickets);
+        return TicketStore::shut();
     }
     match SealedTickets::new(records.clone(), &key[..], busbar_kernel::store::now) {
-        Some(sealed) => Arc::new(sealed),
+        Some(sealed) => {
+            let bound = Arc::new(IssuerBound::new(
+                sealed,
+                Arc::clone(issuers),
+                standing,
+                busbar_kernel::store::now,
+            ));
+            TicketStore {
+                tickets: Arc::clone(&bound) as Arc<dyn Tickets>,
+                door: Some(bound as Arc<dyn Redeem>),
+            }
+        }
         None => {
             tracing::warn!("the ticket store refused its host key: plane tickets are not admitted");
-            Arc::new(ClosedTickets)
+            TicketStore::shut()
+        }
+    }
+}
+
+/// What a plane seat is given of core's ticket store: one bound store behind both, or neither.
+struct TicketStore {
+    /// A plane's MINT and the plane driver's own door ([`TicketGate`]).
+    tickets: Arc<dyn Tickets>,
+    /// The door the instance's native ticket routes redeem at ([`TicketDesk`]); `None`: the store is shut, and
+    /// no ticket route of the instance is mounted.
+    door: Option<Arc<dyn Redeem>>,
+}
+
+impl TicketStore {
+    fn shut() -> Self {
+        Self {
+            tickets: Arc::new(ClosedTickets),
+            door: None,
         }
     }
 }
@@ -173,7 +224,7 @@ fn plane_services(
 
 /// Whether a WORK_OPEN target (a path and query) lies on one of the instance's ROUTE_RECOVERY patterns.
 fn recovery_matcher(patterns: Vec<Box<str>>) -> Box<dyn Fn(&str) -> bool + Send + Sync> {
-    use busbar_contract::abi::transport::route::{path_matches, PATH_PATTERN};
+    use busbar_contract::route::{path_matches, PATH_PATTERN};
     Box::new(move |target| {
         let path = target.split(['?', '#']).next().unwrap_or_default();
         patterns
@@ -199,6 +250,7 @@ impl Shared {
                 binder,
                 Arc::new(busbar_kernel::store::now_ms),
             )),
+            issuers: Issuers::new(),
         }
     }
 }
@@ -339,7 +391,11 @@ impl RouteSecrets for CustodySecrets {
     fn resolve<'a>(&'a self, reference: &'a SecretRef) -> BoxFut<'a, Option<SecureVec>> {
         Box::pin(async move {
             self.0
-                .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, reference)
+                .resolve_ref(
+                    busbar_kernel::store::monotonic_ns(),
+                    CORE_SECRET_DEADLINE,
+                    reference,
+                )
                 .await
                 .ok()
         })
@@ -350,6 +406,13 @@ impl RouteSecrets for CustodySecrets {
 /// Standard Webhooks verifier over custody and the replay claim in the core store. The IF names no config key for a
 /// route's webhook secret and K7's `Min3Config` carries none yet, so no route has one: every signed route answers
 /// `R_BAD_CREDENTIAL` until the operator's `routes.<id>` block supplies it (the same answer the unwired route gave).
+///
+/// This is the OLD mount's check only (`port_mount::signed_of`), and it admits nothing. A native listener serves
+/// a signed route through the route's own auth instances instead: the opened instances that read its signature
+/// header (`busbar-auth-webhook-signature`, whose signing secret is its own settings' reference), bound as a
+/// `NativeSignedRoute` under the body bound those instances state as `D_BODY_MAX` (`AuthPort::body_max`), by
+/// the listener plan (`min3_listener_plan::signed_admits`, `min3_physical::assemble_slot`). Nothing here is on
+/// that path, and it needs no boot wiring beyond the auth instances every candidate already opens.
 pub(crate) fn signed_ingress(booted: &Booted) -> Arc<Ingress> {
     Arc::new(Ingress {
         verifier: Arc::new(StandardWebhooks::new(CustodySecrets(Arc::clone(
@@ -392,8 +455,19 @@ fn admit_dropped_images(
 ) -> Result<(), String> {
     let policy = super::boot::trust_policy(plugins, env!("CARGO_PKG_VERSION"))
         .map_err(|error| format!("plugins.trust is invalid: {error}"))?;
+    // Decision 16: an image of a retired carrier plugin (tcp, stdio) left in the plugins directory is accepted
+    // and ignored, with one notice per carrier. It is never admitted, and never a refusal of the boot.
+    let mut told = Vec::new();
     for row in scanned.loadable() {
-        if row.linked() {
+        if let Some(carrier) = super::retired_carriers::retired(&row.manifest.name) {
+            if !told.contains(&carrier) {
+                told.push(carrier);
+                tracing::warn!(
+                    plugin = %row.manifest.name,
+                    "{}",
+                    carrier.notice("an image in the plugins directory")
+                );
+            }
             continue;
         }
         match busbar_plugin_loader::admit::admit_bytes(&row.lib_bytes, &row.manifest, &policy) {
@@ -507,8 +581,16 @@ fn plane_instances(
             ));
         }
         let config = match sections.get(name.as_str()) {
-            Some(section) => serde_json::to_vec(section)
-                .map_err(|error| format!("{name}: the plane's section is not JSON ({error})"))?,
+            Some(section) => {
+                // The audience is core's word ([`plane_audiences`]): it binds the plane's routes and
+                // is never part of the plane's bag, whose reader does not know it.
+                let mut bag = section.clone();
+                if let Some(map) = busbar_contract::yaml::ValueExt::as_mapping_mut(&mut bag) {
+                    let _lifted = busbar_contract::yaml::MappingExt::remove_key(map, AUDIENCE_KEY);
+                }
+                serde_json::to_vec(&bag)
+                    .map_err(|error| format!("{name}: the plane's section is not JSON ({error})"))?
+            }
             None => b"{}".to_vec(),
         };
         out.push(Configured {
@@ -597,7 +679,7 @@ fn configured(cfg: &RootCfg, planes: &[PlaneImage]) -> Result<Vec<Configured>, S
     let mut providers = cfg.identity_providers.iter().collect::<Vec<_>>();
     providers.sort_by_key(|(name, _)| *name);
     for (name, provider) in providers {
-        if busbar_kernel::config::is_builtin_identity_module(&provider.module) {
+        if !super::min3_auth::opens_instance(provider) {
             continue;
         }
         out.push(Configured {
@@ -645,7 +727,7 @@ pub(crate) fn declared_planes(
             .described(&instance.identity)
             .ok_or_else(|| format!("{}: the plane image has not been admitted", instance.name))?;
         let pointers: Vec<_> = described
-            .paths(busbar_plugin_abi::records::tag::D_UPSTREAM_PATH)
+            .paths(busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH)
             .collect();
         let authored = busbar_contract::json::parse_value(&instance.config)
             .map_err(|e| format!("{}: its authored config is invalid: {e}", instance.name))?;
@@ -703,8 +785,8 @@ impl NetworkOwner {
 }
 
 /// The complete network inputs of one stage, read before any native instance opens: `guard` frozen,
-/// the system resolver, `advanced.tls` validated into its trust store, the process proxy choice and
-/// `advanced.proxy_resolution`.
+/// the system resolver, `outbound.tls` validated into its trust store, the process proxy choice and
+/// `outbound.proxy_resolution`.
 fn network_inputs(cfg: &RootCfg, guard: &Guard) -> Result<NetworkInputs, String> {
     Ok(NetworkInputs {
         runtime: tokio::runtime::Handle::try_current()
@@ -828,7 +910,11 @@ impl BootSteps for BootstrapSteps<'_> {
                     let secrets = Arc::clone(&secrets);
                     async move {
                         secrets
-                            .resolve_ref(Instant::now() + CORE_SECRET_DEADLINE, &reference)
+                            .resolve_ref(
+                                busbar_kernel::store::monotonic_ns(),
+                                CORE_SECRET_DEADLINE,
+                                &reference,
+                            )
                             .await
                             .map_err(|denied| format!("{what} could not be resolved ({denied:?})"))
                     }
@@ -912,6 +998,8 @@ struct Steps<'r> {
     seat: SeatShared,
     /// Dormant probes prepared while opening seats, consumed only at publication.
     probes: Mutex<Vec<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>>,
+    /// Each plane instance's audience ([`plane_audiences`]): what its seat is bound to.
+    audiences: std::collections::BTreeMap<String, String>,
 }
 
 impl Steps<'_> {
@@ -1006,7 +1094,7 @@ impl Steps<'_> {
         let caller = busbar_contract::services::Caller::issue(
             &seal,
             Arc::from(spec.name),
-            busbar_contract::abi::mechanism::KindCode::Plane,
+            busbar_contract::kinds::codes::KindCode::Plane,
         );
         let prefix = self.prefix();
         let driver = PortDriver::new(
@@ -1026,12 +1114,28 @@ impl Steps<'_> {
             .map_err(|why| OpenError::Unknown(why.into()))?;
         // Tickets: the host key is resolved here (the secret instances are open, step 2a), so the gate and the
         // MINT store are built whole, with the key, before the seat exists.
-        let tickets = ticket_store(&self.shared.records, self.core.signing_key.as_ref());
+        // The store is bound to its issuers (`IssuerBound`) and to the serving generation's standing re-check;
+        // the same bound store is the seat's MINT, its driver's door and its native ticket desk.
+        let TicketStore { tickets, door } = ticket_store(
+            &self.shared.records,
+            self.core.signing_key.as_ref(),
+            &self.shared.issuers,
+            services.standing(),
+        );
         let driver =
             driver.with_tickets(Arc::new(TicketGate::new(Arc::clone(&tickets), who.clone())));
-        let rt = tokio::runtime::Handle::current();
+        // The desk of the instance's ticket routes: the door every one of them redeems at (`TICKET_DOOR`, the
+        // audience a MINT that states none is made for) and the book its served principals are entered in.
+        let driver = match door {
+            Some(door) => driver.with_ticket_desk(TicketDesk::new(
+                door,
+                who.clone(),
+                Arc::clone(&self.shared.issuers),
+            )),
+            None => driver,
+        };
         // K9: the seat's egress walk and carrier over the boot's upstream table, under the instance's core-held
-        // `insecure_transport.accept`.
+        // `insecure_transport.accept`. Neither holds a runtime handle: a session awaits them on its own task.
         let seat = SeatShared {
             upstreams: self.seat.upstreams.clone(),
             catalogs: self.seat.catalogs.clone(),
@@ -1049,7 +1153,7 @@ impl Steps<'_> {
             &who,
             driver.caller().clone(),
             driver.port(),
-            rt.clone(),
+            driver.routes(),
         )
         .map_err(|why| OpenError::Unknown(format!("plane `{}`: {why}", spec.name)))?;
         // This cap bounds each validated configuration output, not aggregate process memory.
@@ -1097,21 +1201,21 @@ impl Steps<'_> {
             self.shared.push.clone(),
             Arc::clone(&self.shared.signals) as Arc<dyn SessionSignals>,
             who.clone(),
-            rt.clone(),
         )
-        .with_work(Arc::new(DurableDecider::new(work, recovers, rt)))
+        .with_work(Arc::new(DurableDecider::new(work, recovers)))
         .with_services(plane_services(&self.shared.observations, tickets, judge));
         self.seats
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(PortSeat {
+                public_url: spec.public_url.map(str::to_owned),
                 image: self
                     .images
                     .plane_identity(&who.plugin)
                     .map_err(OpenError::Unknown)?,
                 instance: spec.name.to_owned(),
                 driver: Arc::new(driver),
-                audience: audience_of(spec.config_json),
+                audience: self.audiences.get(spec.name).cloned(),
                 intents: Arc::new(intents),
                 who,
                 request_routes: wiring.request_routes,
@@ -1127,13 +1231,52 @@ impl Steps<'_> {
     }
 }
 
-/// The `canonical_uri` of a plane's config block: the audience its line session is bound to.
-fn audience_of(config_json: &[u8]) -> Option<String> {
-    serde_json::from_slice::<serde_json::Value>(config_json)
-        .ok()?
-        .get("canonical_uri")?
-        .as_str()
-        .map(str::to_owned)
+/// A plane section's core-owned audience word: the RFC 8707 resource indicator the plane's routes and
+/// line session are bound to (MCP's documented `mcp.canonical_uri`, docs/mcp.md). Core reads it
+/// ([`plane_audiences`]) and lifts it off the section before the bag reaches the plane
+/// ([`plane_instances`]), as the pre-pass lifts `insecure_transport`.
+const AUDIENCE_KEY: &str = "canonical_uri";
+
+/// Each plane section's audience, by instance name. A written audience that is not an absolute
+/// http(s) URI naming an authority, or that carries a fragment (RFC 8707 §2), refuses the boot: a
+/// plane is never served bound to an audience no token can name, nor silently unbound.
+fn plane_audiences(
+    sections: &std::collections::BTreeMap<&'static str, busbar_contract::yaml::Value>,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    use busbar_contract::yaml::ValueExt as _;
+    let mut audiences = std::collections::BTreeMap::new();
+    for (instance, section) in sections {
+        let Some(written) = section.get(AUDIENCE_KEY) else {
+            continue;
+        };
+        let audience = written
+            .as_str()
+            .filter(|uri| resource_indicator(uri))
+            .ok_or_else(|| {
+                format!(
+                    "`{instance}.{AUDIENCE_KEY}` must be an absolute http(s) URI naming a host, with \
+                     no fragment (RFC 8707 section 2): it is the audience every token presented to \
+                     `{instance}` must carry"
+                )
+            })?;
+        audiences.insert((*instance).to_owned(), audience.to_owned());
+    }
+    Ok(audiences)
+}
+
+/// RFC 8707 §2: a resource indicator is an absolute URI and does not include a fragment; an http(s)
+/// one names an authority.
+fn resource_indicator(uri: &str) -> bool {
+    let Some(rest) = uri
+        .strip_prefix("https://")
+        .or_else(|| uri.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let authority = rest.split(['/', '?']).next().unwrap_or_default();
+    !authority.is_empty()
+        && !uri.contains('#')
+        && !uri.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
 impl Steps<'_> {
@@ -1176,12 +1319,13 @@ fn deployment_read(startup: Arc<Mutex<Option<Startup>>>) -> Box<DeploymentRead> 
 /// Core's own secrets, through the secret kind (§12.2: by reference, an empty call stack, no source named in an
 /// error). A reference naming no open secret instance refuses the boot.
 async fn core_secrets_of(cfg: &RootCfg, secrets: &BootSecrets) -> Result<CoreSecrets, String> {
-    let deadline = Instant::now() + CORE_SECRET_DEADLINE;
+    // One reading for the whole read of core's secrets: every reference shares its deadline.
+    let mono_ns = busbar_kernel::store::monotonic_ns();
     let resolve = |what: &'static str, reference: &busbar_contract::secret_ref::SecretRef| {
         let reference = reference.clone();
         async move {
             secrets
-                .resolve_ref(deadline, &reference)
+                .resolve_ref(mono_ns, CORE_SECRET_DEADLINE, &reference)
                 .await
                 .map_err(|denied| format!("{what} could not be resolved ({denied:?})"))
         }
@@ -1378,6 +1522,8 @@ pub(crate) struct ServingReady {
     normalization_source: Option<(std::path::PathBuf, busbar_contract::secure::SecureString)>,
     /// Each plane section's `pools:`, walked natively (#108, route-classes K2 amendment).
     section_pools: super::plane_seats::SectionPoolsByInstance,
+    /// Each plane section's audience, by instance name ([`plane_audiences`]).
+    audiences: std::collections::BTreeMap<String, String>,
     _bootstrap_registry: Arc<MinRegistry>,
 }
 
@@ -1832,6 +1978,7 @@ fn prepare_serving_owned(
         converting,
         normalization_source,
         section_pools: super::plane_seats::section_pools(&cfg.instance_sections())?,
+        audiences: plane_audiences(&cfg.instance_sections())?,
         _bootstrap_registry: Arc::clone(&sources.registry),
     })
 }
@@ -1955,6 +2102,7 @@ pub(super) async fn finish_with_store(
         converting,
         normalization_source,
         section_pools,
+        audiences,
     } = ready;
     let selected_policy = match (selected_policy, environment.as_ref()) {
         (Some(policy), Some(environment)) => Some(
@@ -2016,6 +2164,7 @@ pub(super) async fn finish_with_store(
         built: &built,
         seat,
         probes: Mutex::default(),
+        audiences,
     };
     // LEGACY-KEYFILE-MARKER r2 §3: before any converting open, hand the registry the plan's side-table
     // marks; the loader checks each against the image's D_SECRET_PATH and writes `$migrated` into the
@@ -2103,6 +2252,7 @@ pub(super) async fn finish_with_store(
                 export_observers
                     .observer(&instance.name)
                     .ok_or("opened export has no reserved observation owner")?,
+                busbar_contract::clock::HostClock::system(super::egress_ports::tokio_sleep),
             );
             export_doors.push((instance.name.clone(), door));
         }
@@ -2128,7 +2278,7 @@ pub(super) async fn finish_with_store(
                 plane_checks.push((
                     instance.name.clone(),
                     described
-                        .paths(busbar_plugin_abi::records::tag::D_UPSTREAM_PATH)
+                        .paths(busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH)
                         .map(str::to_owned)
                         .collect(),
                 ));
@@ -2220,7 +2370,7 @@ pub(super) async fn finish_with_store(
             plane_checks.push((
                 instance.name.clone(),
                 described
-                    .paths(busbar_plugin_abi::records::tag::D_UPSTREAM_PATH)
+                    .paths(busbar_plugin_abi::plane::tag::D_UPSTREAM_PATH)
                     .map(str::to_owned)
                     .collect(),
             ));
@@ -2356,7 +2506,7 @@ pub(super) async fn finish_with_store(
         environment.app,
         generation,
         request_body_cap,
-        crate::root::dispatch::dispatcher().budgets().call,
+        DEFAULT_CALL_BUDGET,
         Arc::clone(&environment.app.request_id_counter),
     )?;
     let framers = match fixed_transports {
@@ -2366,8 +2516,18 @@ pub(super) async fn finish_with_store(
             let framers = super::min3_framers::NativeFramers::new(transports::table(
                 transports::opened(&walked.opened, &specs),
             )?)
-            .carrying(&super::min3_framers::assigned(crate::LINKED_CARRIERS)?)?;
+            .carrying_assigned()?;
             tracing::info!("{}", framers.carrier_line());
+            // The hand-over: the connector dials each assigned carrier through its instance, its sessions charged
+            // to the boot's process admission (Data class), once for the process. (A process boots once; only a
+            // test process composes a second time, and it keeps the first hand-over, as the connector does.)
+            let connector = super::connector::the();
+            if !connector.carries_natively() {
+                let storage = super::plane_node::node().dial_storage().ok_or(
+                    "the native dial has no process account: the boot admission is not bound",
+                )?;
+                connector.carry_natively(framers.native_carriers(), storage)?;
+            }
             framers
         }
     };

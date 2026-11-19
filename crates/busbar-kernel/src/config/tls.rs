@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE OUTBOUND TLS TRUST STORE, as a deployment states it (`advanced.tls`).
+//! THE OUTBOUND TLS TRUST STORE, as a deployment states it (`outbound.tls`).
 //!
 //! One store for every outbound TLS connection busbar makes, through the one connector:
 //!
@@ -18,7 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// `advanced.tls`.
+/// `outbound.tls`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutboundTlsCfg {
@@ -41,7 +41,7 @@ impl OutboundTlsCfg {
     }
 }
 
-/// `advanced.proxy_resolution`: who resolves a target's name when an outbound proxy
+/// `outbound.proxy_resolution`: who resolves a target's name when an outbound proxy
 /// (`HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`) carries the connection.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -57,7 +57,7 @@ pub enum ProxyResolution {
     Proxy,
 }
 
-/// `advanced.tls.roots`.
+/// `outbound.tls.roots`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TlsRoots {
@@ -158,7 +158,7 @@ impl<'de> Deserialize<'de> for TlsSource {
     }
 }
 
-/// One `advanced.tls.destinations` entry. Parsed through [`RawTlsDestinationCfg`]: a `plaintext: true` entry and a
+/// One `outbound.tls.destinations` entry. Parsed through [`RawTlsDestinationCfg`]: a `plaintext: true` entry and a
 /// `verify: pin` entry with no pins are refused at parse (TRANSPORT-SECURITY-POLICY §3, §6).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "RawTlsDestinationCfg")]
@@ -187,7 +187,7 @@ pub struct TlsDestinationCfg {
     pub client_identity: Option<TlsClientIdentityCfg>,
 }
 
-/// `advanced.tls.destinations[].verify`.
+/// `outbound.tls.destinations[].verify`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TlsVerify {
@@ -221,7 +221,7 @@ impl TryFrom<RawTlsDestinationCfg> for TlsDestinationCfg {
     fn try_from(raw: RawTlsDestinationCfg) -> Result<Self, String> {
         if raw.verify == Some(TlsVerify::Pin) && raw.pin_spki_sha256.is_empty() {
             return Err(format!(
-                "advanced.tls.destinations entry `{}` sets `verify: pin` but lists no `pin_spki_sha256` pin",
+                "outbound.tls.destinations entry `{}` sets `verify: pin` but lists no `pin_spki_sha256` pin",
                 raw.matches
             ));
         }
@@ -241,7 +241,7 @@ fn plaintext_refused<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::
     use serde::de::Error as _;
     if bool::deserialize(d)? {
         return Err(D::Error::custom(
-            "`plaintext` on an `advanced.tls.destinations` entry is refused: set `insecure_transport: { accept: plaintext, reason: \"...\" }` on the instance that needs it",
+            "`plaintext` on an `outbound.tls.destinations` entry is refused: set `insecure_transport: { accept: plaintext, reason: \"...\" }` on the instance that needs it",
         ));
     }
     Ok(false)

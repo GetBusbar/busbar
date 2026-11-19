@@ -311,7 +311,8 @@ impl Progress {
         let remaining = gov.map(|g| g.drain_remaining()).unwrap_or_default();
         let kernel = sources.and_then(|s| s.late.kernel());
         let records = kernel.as_ref().map_or(0, |k| k.pending().queued());
-        let open_units = kernel.as_ref().map_or(0, |k| k.open_unit_evidence().len());
+        // The kernel's door-era open units are deleted (cut); the native seams are the only producer.
+        let open_units = super::plane_node::node().native_open_unit_count();
         let journal = sources
             .and_then(|s| s.journal.as_ref())
             .map_or(0, |j| j.pending_records());
@@ -652,7 +653,6 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
             failures.push("work recovery did not stop by the request cut".into())
         }
     }
-    let c1 = drain.until(Cut::Requests);
     let cleanup = drain
         .wait(
             Phase::Requests,
@@ -661,15 +661,6 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
                 if let Some(cards) = crate::root::kernel::ROOT_CARD.card_store() {
                     if let Err(error) = cards.stop_background().await {
                         failed.push(format!("price publisher did not stop: {error}"));
-                    }
-                }
-                if let Some(kernel) = late.kernel() {
-                    let left = c1.map_or(RECORD_DRAIN, |at| {
-                        at.saturating_duration_since(Instant::now())
-                            .min(RECORD_DRAIN)
-                    });
-                    if !kernel.drain_plane_cleanup(left).await {
-                        failed.push("plane cancellations remain pending".to_string());
                     }
                 }
                 failed
@@ -702,15 +693,10 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
             async {
                 let mut passes = drain.clock().passes_rx();
                 loop {
-                    let idle = match late.kernel() {
-                        Some(kernel) => kernel.drain_plane_cleanup(DRAIN_PASS_IDLE).await,
-                        None => true,
-                    };
                     drain.note_open_joins(
                         detached_joins.iter().filter(|h| !h.is_finished()).count(),
                     );
-                    if idle
-                        && gov.is_none_or(|g| g.admissions().live() == 0)
+                    if gov.is_none_or(|g| g.admissions().live() == 0)
                         && detached_joins.iter().all(DrainHandle::is_finished)
                         && !gov.is_some_and(|g| g.has_unsettled_persistence())
                     {
@@ -1001,6 +987,28 @@ pub(crate) async fn finish(post: PostServe<'_>, drain: &ShutdownDrain) -> i32 {
     drain.enter(Phase::Journal);
     let runtime = book.as_ref().map(|book| book.runtime_journal.clone());
     if let Some(runtime) = &runtime {
+        // The cores' last lines are staged while staging is still open: a line handed over just
+        // before shutdown is committed by the flush below, not left in its core.
+        let node = crate::root::plane_node::node();
+        match drain
+            .bounded(
+                Phase::Journal,
+                DrainHandle::spawn(async move { node.flush_cores().await }),
+                Cut::Deadline,
+            )
+            .await
+        {
+            Joined::Done(Ok(Ok(()))) => {}
+            Joined::Done(Ok(Err(error))) => {
+                failures.push(format!("audit lines of the cores were not staged: {error}"))
+            }
+            Joined::Done(Err(error)) => {
+                failures.push(format!("final audit flush of the cores failed: {error}"))
+            }
+            Joined::Detached(_) => {
+                failures.push("final audit flush of the cores reached the deadline".into())
+            }
+        }
         if let Err(error) = runtime.stop_staging() {
             failures.push(format!("journal staging did not close: {error:?}"));
         }
@@ -1182,7 +1190,7 @@ fn incomplete(
             "completed spend is not in durable custody; listed on stderr as evidence"
         );
     }
-    for line in open_at_exit_lines(gov, late) {
+    for line in open_at_exit_lines(gov, late, &super::plane_node::node()) {
         eprintln!("busbar: shutdown {line}");
     }
     print_exit_snapshot();
@@ -1193,16 +1201,18 @@ fn incomplete(
 /// checkpoint book by checkpoint id (a unit with no checkpoint reads `none`), then the
 /// admissions alive without an open unit (SHUTDOWN-HANG F4 "Running requests at exit"). One
 /// walk, at exit; a running unit never changes the exit code.
-fn open_at_exit_lines(gov: Option<&Arc<GovState>>, late: &Services) -> Vec<String> {
+fn open_at_exit_lines(
+    gov: Option<&Arc<GovState>>,
+    _late: &Services,
+    node: &super::plane_node::Node,
+) -> Vec<String> {
     use std::fmt::Write as _;
     let Some(gov) = gov else {
         return Vec::new();
     };
-    let evidence = late
-        .kernel()
-        .map(|kernel| kernel.open_unit_evidence())
-        .unwrap_or_default();
-    let exit = gov.open_at_exit(evidence);
+    // The native path: the money seams of the serving generations are bound to the Node (the
+    // kernel's door-era open-unit evidence is deleted).
+    let exit = gov.open_at_exit(node.native_open_units());
     let revision = |n: Option<u64>| n.map_or_else(|| "none".to_string(), |n| n.to_string());
     let mut lines = Vec::with_capacity(exit.units.len() + 1);
     for unit in &exit.units {
@@ -1269,28 +1279,18 @@ async fn money_fallback(gov: Arc<GovState>, clock: Arc<DrainClock>) -> Vec<Strin
         .armed_at()
         .map_or_else(Instant::now, |at| clock.limit(at, Cut::Seal));
     let budget_owner = gov.clone();
-    match tokio::spawn(super::measurements::maintenance(async move {
-        budget_owner.flush_budgets_final().await
-    }))
-    .await
-    {
+    match tokio::spawn(async move { budget_owner.flush_budgets_final().await }).await {
         Ok(flushed) => tracing::info!(flushed, "budget shutdown flush completed"),
         Err(error) => failures.push(format!("budget final driver failed: {error}")),
     }
     let metering_owner = gov.clone();
-    match tokio::spawn(super::measurements::maintenance(async move {
-        metering_owner.flush_metering_final().await
-    }))
-    .await
-    {
+    match tokio::spawn(async move { metering_owner.flush_metering_final().await }).await {
         Ok(flushed) => tracing::info!(flushed, "metering shutdown flush completed"),
         Err(error) => failures.push(format!("metering final driver failed: {error}")),
     }
     let paced = PacedHalt::new(clock, c3);
-    match tokio::spawn(super::measurements::maintenance(async move {
-        gov.flush_unit_checkpoints_until(&|| paced.halt()).await
-    }))
-    .await
+    match tokio::spawn(async move { gov.flush_unit_checkpoints_until(&|| paced.halt()).await })
+        .await
     {
         Ok(Ok(())) => {}
         Ok(Err(error)) => failures.push(format!("unit checkpoints remain unresolved: {error}")),

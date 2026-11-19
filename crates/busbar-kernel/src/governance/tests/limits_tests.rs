@@ -1080,7 +1080,6 @@ static TOKEN_FAMILY_PLANE: crate::plane_driver::registry::PlaneDecl =
         admission: |_| None,
         build: |_, _| None,
         routes: None,
-        admin_routes: None,
         openapi: None,
         hydrate: None,
         start: None,
@@ -1690,12 +1689,9 @@ async fn a_stale_cell_still_owing_the_store_survives_the_sweep_and_is_written() 
         map.insert(owed.into(), cell);
     }
 
-    g.budget.sweep_ticker_for("vk_sweep_owed").store(
-        crate::config::DEFAULT_RATE_SWEEP_INTERVAL - 1,
-        std::sync::atomic::Ordering::Relaxed,
-    );
     g.try_admit(&minute_fee_model(), &key("vk_sweep_owed", None), "", now)
         .expect("the key admits");
+    g.sweep_budgets(&minute_fee_model(), now);
     g.flush_budgets().await;
 
     assert_eq!(
@@ -2118,7 +2114,6 @@ static CLASS_PARENT_PLANE: crate::plane_driver::registry::PlaneDecl =
         admission: |_| None,
         build: |_, _| None,
         routes: None,
-        admin_routes: None,
         openapi: None,
         hydrate: None,
         start: None,

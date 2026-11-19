@@ -9,7 +9,7 @@
 use busbar_plugin_abi as abi;
 
 use abi::fp::{CORE_FP, fp, fp_parts};
-use abi::versions::{ENGINE, MECHANISM};
+use abi::versions::{CORE, ENGINE};
 
 #[test]
 fn fp_is_fnv1a_64_over_the_non_whitespace_bytes() {
@@ -40,7 +40,7 @@ fn the_core_fingerprint_is_pinned_in_ci_abi_pin() {
         .lines()
         .find(|line| line.starts_with("mechanism "))
         .expect("ci/abi.pin has a mechanism line");
-    let want = format!("mechanism {MECHANISM} 0x{CORE_FP:016x}");
+    let want = format!("mechanism {CORE} 0x{CORE_FP:016x}");
     assert_eq!(
         line, want,
         "ci/abi.pin must pin CORE_FP; move the pin with the block"

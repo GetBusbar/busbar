@@ -18,7 +18,7 @@ use busbar_kernel::persistence::journal::runtime::RuntimeJournal;
 use busbar_kernel_audit::{BootstrapSigner, Notary};
 
 use super::notary::{self, FloorHints, HeadFeed, NotaryConfig, NotaryStart, NotaryTask};
-use super::signer::{self, Checkpoint, Live, ResponseIntent, Seal, SignerHandle, SignerThreads};
+use super::signer::{self, Checkpoint, Live, Seal, SignerHandle, SignerThreads};
 
 /// The handles and threads before their owners take them.
 struct Unstarted {
@@ -41,7 +41,6 @@ pub(crate) struct AuditServices {
     unstarted: Mutex<Option<Unstarted>>,
     boot: Mutex<Option<SignerHandle<Seal>>>,
     sealer: Mutex<Option<SignerHandle<Seal>>>,
-    response_intent: Mutex<Option<SignerHandle<ResponseIntent>>>,
     notary: Mutex<Option<NotaryTask>>,
     predecessor: Mutex<Option<super::predecessor::PredecessorInputs>>,
     stopping: Arc<AtomicBool>,
@@ -100,7 +99,6 @@ impl AuditServices {
             })),
             boot: Mutex::new(Some(signers.boot)),
             sealer: Mutex::new(Some(signers.sealer)),
-            response_intent: Mutex::new(Some(signers.response_intent)),
             notary: Mutex::new(None),
             predecessor: Mutex::new(None),
             stopping: Arc::new(AtomicBool::new(false)),
@@ -264,14 +262,6 @@ impl AuditServices {
     /// The predecessor sealer's Bootstrap handle (taken once).
     pub(crate) fn take_sealer_handle(&self) -> Option<SignerHandle<Seal>> {
         self.sealer.lock().unwrap_or_else(|p| p.into_inner()).take()
-    }
-
-    /// Take the one approved fixed-domain response handle for the bound root service.
-    pub(crate) fn take_response_intent_handle(&self) -> Option<SignerHandle<ResponseIntent>> {
-        self.response_intent
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take()
     }
 
     /// What the boot book knows that the predecessor sealer needs (this node, its take time and

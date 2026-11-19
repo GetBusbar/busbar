@@ -76,7 +76,7 @@ pub(crate) fn of_images(
 }
 
 fn sugars(decls: &[SugarDecl]) -> Result<Sugars, String> {
-    use busbar_contract::abi::mechanism::door::{
+    use busbar_contract::plugin_settings::sugar_words::{
         REWRITE_ALIAS, REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN,
         SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
     };

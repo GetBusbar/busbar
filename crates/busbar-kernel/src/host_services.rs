@@ -30,6 +30,7 @@ pub const QUEUE_FULL: &str = "the record write queue is full";
 
 #[path = "invocation.rs"]
 mod invocation;
+pub(crate) use invocation::HookGrant;
 pub use invocation::{InvocationContext, NativeInvocationAdmission, ServingGeneration};
 
 #[cfg(test)]
@@ -500,7 +501,7 @@ pub struct InstanceFacts {
     /// Its record kinds, each the schema its records are kept under.
     pub record_kinds: Vec<RecordSchemaId>,
     /// Validated collection declarations; kind and parent indices are instance-local.
-    pub record_collections: Vec<busbar_contract::abi::plane::RecordCollection>,
+    pub record_collections: Vec<busbar_contract::plane::codes::RecordCollection>,
     /// Declared kind indices requiring conditional publication, established before admission.
     /// Ordinary record writes must never share these namespaces with conditional candidates.
     pub conditional_record_kinds: Vec<u32>,
@@ -980,7 +981,6 @@ pub struct KernelServices {
     trust_decisions: Mutex<HashMap<TrustDecisionKey, GrantedCounterparty>>,
     record_bootstrap: Mutex<Option<crate::host_record_bootstrap::Bootstrap>>,
     native_record_bootstrap: Mutex<HashMap<Arc<str>, crate::host_record_bootstrap::Bootstrap>>,
-    plane_cleanup: Mutex<Vec<std::sync::Weak<crate::plane_driver::PlaneDriver>>>,
     records: Option<Records>,
     persistence: Option<Arc<crate::persistence::facade::CoreStore>>,
     native_claims: NativeClaims,
@@ -1296,7 +1296,6 @@ impl KernelServices {
             trust_decisions: Mutex::default(),
             record_bootstrap: Mutex::default(),
             native_record_bootstrap: Mutex::default(),
-            plane_cleanup: Mutex::default(),
             records: None,
             persistence: Some(inputs.persistence),
             native_claims: Arc::default(),
@@ -1344,7 +1343,6 @@ impl KernelServices {
             trust_decisions: Mutex::default(),
             record_bootstrap: Mutex::default(),
             native_record_bootstrap: Mutex::default(),
-            plane_cleanup: Mutex::default(),
             records: None,
             persistence: None,
             native_claims: Arc::default(),
@@ -1386,7 +1384,7 @@ impl KernelServices {
         counterparty: &str,
         authority: TrustDecisionAuthority,
     ) -> Option<TrustDecisionGrant<'_>> {
-        if caller.kind() != busbar_contract::abi::mechanism::KindCode::Plane || ticket.is_none() {
+        if caller.kind() != busbar_contract::kinds::codes::KindCode::Plane || ticket.is_none() {
             return None;
         }
         let facts = self.facts(caller)?;
@@ -1594,11 +1592,6 @@ impl KernelServices {
         &self.work
     }
 
-    #[must_use]
-    pub fn default_work_bounds(&self) -> WorkBounds {
-        self.work_bounds
-    }
-
     /// Set `instance`'s work bounds, keyed by the caller's own shared label. Runs as an instance
     /// is admitted (boot, reload).
     pub fn bound_work(&self, instance: &Arc<str>, bounds: WorkBounds) {
@@ -1634,12 +1627,6 @@ impl KernelServices {
     #[must_use]
     pub fn with_credentials(mut self, credentials: Arc<dyn CredentialRead>) -> Self {
         self.credentials = Some(credentials);
-        self
-    }
-
-    #[must_use]
-    pub fn with_disk_lane(mut self, lane: Arc<crate::host_disk::DiskLane>) -> Self {
-        self.disk = lane;
         self
     }
 
@@ -2007,6 +1994,13 @@ impl KernelServices {
     #[must_use]
     pub fn standing_attached(&self) -> bool {
         self.standing.is_some()
+    }
+
+    /// The live standing re-check itself (a key as it stands now, or `None` once it no longer does): what the
+    /// boot binds into the ticket store, so a ticket dies or narrows with its issuer key. `None`: not attached.
+    #[must_use]
+    pub fn standing(&self) -> Option<Standing> {
+        self.standing.clone()
     }
 
     /// THE DECISION CUSTODY (r3 §4.2 step 1): the durable decision record, only when it is present
@@ -2433,6 +2427,10 @@ impl KernelServices {
         {
             return Err("record transactions are unsupported");
         }
+        // A request that opens no unit allows no effect: no record transaction runs under it.
+        if unit.is_some_and(|id| self.units.opens_no_unit(id)) {
+            return Err("a request that opens no unit allows no record transaction");
+        }
         let unit = unit
             .map(|id| self.units.get(id).ok_or("record transaction unit ended"))
             .transpose()?;
@@ -2659,56 +2657,6 @@ impl KernelServices {
         }
     }
 
-    /// Keep a live plane eligible for idle cancellation cleanup without retaining its instance.
-    pub fn register_plane_cleanup(
-        &self,
-        driver: std::sync::Weak<crate::plane_driver::PlaneDriver>,
-    ) {
-        self.plane_cleanup
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(driver);
-    }
-
-    fn cleanup_planes(&self, cx: &mut std::task::Context<'_>) -> bool {
-        let drivers = {
-            let mut registered = self.plane_cleanup.lock().unwrap_or_else(|e| e.into_inner());
-            crate::off_path::host_services::live_planes(&mut registered)
-        };
-        let mut idle = true;
-        for driver in drivers.into_iter().filter_map(|driver| driver.upgrade()) {
-            idle &= driver.sweep_with_context(cx);
-        }
-        idle
-    }
-
-    /// Settle dropped callers before final billing flushes, retaining pending work on timeout.
-    pub async fn drain_plane_cleanup(&self, deadline: std::time::Duration) -> bool {
-        // Sweep until idle, every 2 ms, under the runtime's own timer: no clock is read here.
-        let sweep = || std::future::poll_fn(|cx| std::task::Poll::Ready(self.cleanup_planes(cx)));
-        let swept = tokio::time::timeout(deadline, async {
-            while !sweep().await {
-                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-            }
-        })
-        .await;
-        // The deadline passed: one last sweep decides, as the loop's own last pass did.
-        match swept {
-            Ok(()) => true,
-            Err(_) => sweep().await,
-        }
-    }
-
-    /// Every unit still open in the planes registered for cleanup (every composed plane), read
-    /// once at exit for the drain's `open_at_exit` lines (SHUTDOWN-HANG F4).
-    pub fn open_unit_evidence(&self) -> Vec<crate::plane_driver::OpenUnitEvidence> {
-        let drivers = {
-            let mut registered = self.plane_cleanup.lock().unwrap_or_else(|e| e.into_inner());
-            crate::off_path::host_services::live_planes(&mut registered)
-        };
-        crate::off_path::host_services::open_unit_evidence(drivers)
-    }
-
     pub async fn flushes(&self) {
         use futures::StreamExt as _;
         let every = crate::host_records::FLUSH_INTERVAL;
@@ -2721,7 +2669,6 @@ impl KernelServices {
         loop {
             tokio::select! {
                 _ = at.tick() => {
-                    std::future::poll_fn(|cx| std::task::Poll::Ready(self.cleanup_planes(cx))).await;
                     self.flush_tick();
                     self.sweep_claims_tick();
                     self.verify_tick();
@@ -2867,7 +2814,12 @@ impl KernelServices {
 
 impl KernelServices {
     fn owner_of_unit(&self, unit: Option<u64>) -> Option<Owner> {
-        let record = self.units.get(unit?)?;
+        let unit = unit?;
+        // A request that opens no unit allows no effect: nothing is written owned by it.
+        if self.units.opens_no_unit(unit) {
+            return None;
+        }
+        let record = self.units.get(unit)?;
         Some(owner_of(record.principal.as_deref().map(|k| k.id.as_str())))
     }
 
@@ -3082,7 +3034,7 @@ impl HostServices for KernelServices {
         caller: &Caller,
         ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         unit: Option<u64>,
-        observation: busbar_contract::abi::sdk::plane::observation::Observation,
+        observation: busbar_contract::observation::Observation,
         done: busbar_contract::services::ObservationDone,
     ) -> Result<(), &'static str> {
         self.observation_submit(caller, ticket, unit, observation, done)
@@ -3092,7 +3044,7 @@ impl HostServices for KernelServices {
         caller: &Caller,
         ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         unit: Option<u64>,
-        request: busbar_contract::abi::sdk::plane::observation::ScopeRequest,
+        request: busbar_contract::observation::ScopeRequest,
         done: busbar_contract::services::ObservationDone,
     ) -> Result<(), &'static str> {
         self.observation_scope_request(caller, ticket, unit, request, done)
@@ -3126,9 +3078,9 @@ impl HostServices for KernelServices {
         &self,
         caller: &Caller,
         unit: Option<u64>,
-        query: &busbar_contract::abi::mechanism::inspection::InspectionQuery,
-    ) -> busbar_contract::abi::mechanism::inspection::InspectionResult {
-        use busbar_contract::abi::mechanism::inspection::{
+        query: &busbar_contract::services::codes::InspectionQuery,
+    ) -> busbar_contract::services::codes::InspectionResult {
+        use busbar_contract::services::codes::{
             InspectionError, InspectionObservation, InspectionQuery, SessionObservation,
             WorkObservation,
         };
@@ -3186,7 +3138,7 @@ impl HostServices for KernelServices {
         let refuse_private = flags & svc::DEST_REFUSE_PRIVATE != 0;
         let explain = flags & svc::DEST_EXPLAIN != 0;
 
-        if class == busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE {
+        if class == busbar_contract::conn::codes::EGRESS_OPERATOR_INFRASTRUCTURE {
             if !DEST_JUDGE_CLASS_FLAGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 crate::diagnostics::diag_warn!(
                     crate::diagnostics::PLUGIN_CALL_REFUSED_ABI_RULE,
@@ -3661,7 +3613,7 @@ impl HostServices for KernelServices {
         _later: Later,
     ) -> Ran {
         let refused = || Ran::Now(Stored::refused(crate::host_outbound::REFUSED));
-        if caller.kind() != busbar_contract::abi::mechanism::KindCode::Plane {
+        if caller.kind() != busbar_contract::kinds::codes::KindCode::Plane {
             return refused();
         }
         let Some(unit) = unit else {
@@ -3714,7 +3666,9 @@ impl HostServices for KernelServices {
         record: &[u8],
         later: Later,
     ) -> Ran {
-        let Some(unit) = unit else {
+        // A request that opens no unit allows no effect: no ticket is minted under it here (a
+        // plane's native mint goes through its ticket desk, `auth::native_ticket`).
+        let Some(unit) = unit.filter(|unit| !self.units.opens_no_unit(*unit)) else {
             return Ran::Now(Stored::refused(TICKET_NO_PRINCIPAL));
         };
         let Some(key) = self.units.get(unit).and_then(|r| r.principal.clone()) else {
@@ -4506,7 +4460,7 @@ impl KernelServices {
 
 const fn absent_span() -> Span {
     Span {
-        offset: busbar_contract::abi::mechanism::check::SPAN_ABSENT,
+        offset: busbar_contract::records::size_limits::SPAN_ABSENT,
         len: 0,
     }
 }
@@ -4593,7 +4547,7 @@ pub fn caller_binding() -> Arc<dyn busbar_contract::services::CallerBinding> {
         fn bind(
             &self,
             namespace: Arc<str>,
-            kind: busbar_contract::abi::mechanism::KindCode,
+            kind: busbar_contract::kinds::codes::KindCode,
         ) -> Caller {
             Caller::issue(&crate::seal::acquire(), namespace, kind)
         }

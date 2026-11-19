@@ -793,8 +793,8 @@ impl Registry {
             let opened = self
                 .open_reserved_instance::<k::Store, N>(prepared, &needs, &*refs)
                 .await?;
-            let proxy =
-                busbar_plugin_abi::store::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+            let proxy = crate::call::kinds::store::Proxy::bind(opened.instance)
+                .ok_or_else(not_this_kind)?;
             let adapter = crate::adapters::store::StoreAdapter::new(
                 proxy,
                 Arc::clone(&needs),
@@ -840,7 +840,7 @@ impl Registry {
             let opened = self
                 .open_reserved_instance::<k::Secret, N>(prepared, &needs, &*refs)
                 .await?;
-            let proxy = busbar_plugin_abi::secret::Proxy::bind(opened.instance)
+            let proxy = crate::call::kinds::secret::Proxy::bind(opened.instance)
                 .ok_or_else(not_this_kind)?;
             self.remember(&spec, KindCode::Secret, &needs, &refs, None);
             let port: Arc<dyn SecretPort> = Arc::new(crate::adapters::secret::SecretAdapter::new(
@@ -889,7 +889,7 @@ impl Registry {
                 .open_reserved_instance::<k::Auth, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy =
-                busbar_plugin_abi::auth::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+                crate::call::kinds::auth::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let limits = proxy.instance().limits;
             let methods = proxy.instance().methods;
             let frame = chains::frame(&opened.described.items);
@@ -953,7 +953,7 @@ impl Registry {
                 .open_reserved_instance::<k::Hook, N>(prepared, &needs, &*refs)
                 .await?;
             let proxy =
-                busbar_plugin_abi::hook::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+                crate::call::kinds::hook::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
             let limits = proxy.instance().limits;
             let points = opened
                 .described
@@ -1003,7 +1003,7 @@ impl Registry {
             let opened = self
                 .open_reserved_instance::<k::Export, N>(prepared, &needs, &*refs)
                 .await?;
-            let proxy = busbar_plugin_abi::export::Proxy::bind(Arc::clone(&opened.instance))
+            let proxy = crate::call::kinds::export::Proxy::bind(Arc::clone(&opened.instance))
                 .ok_or_else(not_this_kind)?;
             let frame = chains::frame(&opened.described.items);
             let describe = crate::adapters::export::decode_describe(
@@ -1055,8 +1055,8 @@ impl Registry {
             let opened = self
                 .open_reserved_instance::<k::Plane, N>(prepared, &needs, &*refs)
                 .await?;
-            let proxy =
-                busbar_plugin_abi::plane::Proxy::bind(opened.instance).ok_or_else(not_this_kind)?;
+            let proxy = crate::call::kinds::plane::Proxy::bind(opened.instance)
+                .ok_or_else(not_this_kind)?;
             let frame = chains::frame(&opened.described.items);
             let describe = crate::adapters::plane::decode_describe(
                 Records::new(&frame),
@@ -1103,7 +1103,7 @@ impl Registry {
             let opened = self
                 .open_reserved_instance::<k::Transport, N>(prepared, &needs, &*refs)
                 .await?;
-            let proxy = busbar_plugin_abi::transport::Proxy::bind(opened.instance)
+            let proxy = crate::call::kinds::transport::Proxy::bind(opened.instance)
                 .ok_or_else(not_this_kind)?;
             let protocols: Box<[Box<str>]> = opened
                 .described
@@ -1449,7 +1449,11 @@ impl Registry {
                 s.config_json,
                 &paths(tag::D_SECRET_PATH),
                 &paths(tag::D_TRUST_PATH),
-                &paths(tag::D_DEST_PATH),
+                &if instances[at].0 == KindCode::Export {
+                    paths(busbar_plugin_abi::export::tag::D_DEST_PATH)
+                } else {
+                    Vec::new()
+                },
                 &paths(tag::D_REF_PATH),
             )
             .map_err(|e| OpenError::Config {
@@ -1808,8 +1812,8 @@ fn plaintext_refusal(name: &str, module: &str, dest: &str) -> String {
          busbar 1.6.0 connects only over verified TLS, and nothing is exempt: not loopback, not unix sockets.\n\
          Fix it one of two ways:\n\
          \x20 1. Turn on TLS for this connection (the plugin's docs name its TLS setting) and make the server's\n\
-         \x20    certificate verifiable: put its CA under advanced.tls.trust_anchors, or pin its key under\n\
-         \x20    advanced.tls.destinations (match: {host}, verify: pin).\n\
+         \x20    certificate verifiable: put its CA under outbound.tls.trust_anchors, or pin its key under\n\
+         \x20    outbound.tls.destinations (match: {host}, verify: pin).\n\
          \x20 2. If verified TLS is not possible here, accept the risk explicitly. Add this line to the {name}\n\
          \x20    block of your configuration, and replace the reason:\n\
          \x20      insecure_transport: {{ accept: plaintext, reason: \"<why this is acceptable>\" }}\n\
@@ -1891,6 +1895,8 @@ pub struct SlotTable {
     dir: Box<[OnceLock<Mid>; FAN]>,
     /// Free slot indices and the next never-used index.
     cold: Mutex<(Vec<u32>, u32)>,
+    /// Entries the watchdog found past their ceiling (each quarantined its instance): what the core watch reads.
+    hung: std::sync::atomic::AtomicU64,
 }
 
 impl Default for SlotTable {
@@ -1909,7 +1915,13 @@ impl SlotTable {
         SlotTable {
             dir: Box::new(core::array::from_fn(|_| OnceLock::new())),
             cold: Mutex::new((Vec::new(), 0)),
+            hung: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// How many entries the watchdog has found hung since start (one Relaxed load).
+    pub fn hung_total(&self) -> u64 {
+        self.hung.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     fn entry(&self, slot: u32) -> Option<&SlotEntry> {
@@ -1986,7 +1998,14 @@ impl SlotTable {
     /// `Refusal { code: DescribeInvalid, field: "describe.ceiling" }`; migrate → `OpenError::Call(Quarantined)`
     /// (MIGRATION_REFUSED, nothing written); open → if INSTANCE was answered the Instance is built in that poll as
     /// always (so its Drop closes it) and dropped at once, and `open_<kind>` returns `OpenError::Call(Quarantined)`.
-    pub fn hung(&self, slot: u32, epoch: u32, entry: u8, busy_ms: u64) {
+    pub fn hung(
+        &self,
+        slot: u32,
+        epoch: u32,
+        entry: u8,
+        busy_ms: u64,
+        holder: &crate::watchdog::Holder<'_>,
+    ) {
         let _cold = self.cold.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(e) = self.entry(slot) else { return };
         let Some(cell) = e.cell.load_full() else {
@@ -1995,13 +2014,18 @@ impl SlotTable {
         if !cell.quarantine(epoch) {
             return;
         }
+        self.hung.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Some(rec) = e.record.load_full() {
             tracing::error!(
                 kind = ?rec.kind,
                 instance = &*rec.name,
                 entry,
+                method = crate::watchdog::entry_name(rec.kind, entry),
                 busy_ms,
-                "plugin_hung: a plugin entry passed its watchdog ceiling; the instance is quarantined"
+                thread = holder.name.unwrap_or("unnamed"),
+                thread_id = holder.id,
+                watch_word = holder.word,
+                "plugin_hung: a plugin entry passed its watchdog ceiling on the named thread; the instance is quarantined"
             );
         }
     }
@@ -2245,7 +2269,7 @@ mod l2_tests {
         assert!(lease.is_live());
         let (slot, (us, epoch)) = (lease.slot(), table.watch_view(lease.slot(), 3));
         assert_eq!(us, 7);
-        table.hung(slot, epoch, 3, 9);
+        table.hung(slot, epoch, 3, 9, &crate::watchdog::Holder::UNKNOWN);
         assert!(!lease.is_live());
         let inert = lease.take();
         drop(lease);

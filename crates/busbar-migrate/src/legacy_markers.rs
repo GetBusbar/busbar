@@ -82,9 +82,12 @@ pub(crate) fn refuse(doc: &Value) -> Result<(), Refusal> {
             markers.join("\n  - ")
         )));
     }
+    // Decision 16: a section that names only the retired carrier modules (`tcp`, `stdio`) is accepted; 1d
+    // removes its entries with a report line (`retired_carriers::drop_retired`).
     if doc
         .as_mapping()
         .is_some_and(|root| root.contains_key("transport"))
+        && !crate::retired_carriers::only_retired(doc)
     {
         return Err(Refusal::Config(format!(
             "config.yaml has no `config_version` but holds a top-level `transport:` section, which \

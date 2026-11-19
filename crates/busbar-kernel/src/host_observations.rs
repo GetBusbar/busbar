@@ -190,25 +190,6 @@ impl KernelServices {
         Ok(())
     }
 
-    /// Ending a request releases transient exchange custody only, never durable reservation.
-    pub fn unregister_observation_unit(&self, caller: &Caller, unit: UnitKey) {
-        let mut units = self
-            .observations
-            .units
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(of) = units.by_caller.get_mut(caller.incarnation()) else {
-            return;
-        };
-        if of.remove(&unit.get()).is_none() {
-            return;
-        }
-        if of.is_empty() {
-            units.by_caller.remove(caller.incarnation());
-        }
-        units.len -= 1;
-    }
-
     fn observation_context(&self, caller: &Caller, unit: Option<u64>) -> Option<Arc<Context>> {
         if caller.kind() != KindCode::Plane {
             return None;

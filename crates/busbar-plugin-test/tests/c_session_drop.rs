@@ -20,7 +20,7 @@ use busbar_plugin_abi::host::{Host, HostFns};
 use busbar_plugin_abi::need::ChainBytes;
 use busbar_plugin_abi::plugin::__rt::host::{OpenAnswer, OutLease};
 use busbar_plugin_abi::plugin::__rt::image::Admitted;
-use busbar_plugin_abi::plugin::__rt::{kind as marker, Arg};
+use busbar_plugin_abi::plugin::__rt::kind as marker;
 use busbar_plugin_abi::plugin::{Endpoints, Open};
 use busbar_plugin_abi::records::Out;
 use busbar_plugin_abi::slots::Inst;
@@ -29,7 +29,7 @@ use transport::ConnInfo;
 
 busbar_plugin_abi::kind! {
     /// A transport-shaped kind for this case: one session per connection.
-    pub trait Conns: kind = 7, abi = 1, session {
+    pub trait Conns: kind = 7, abi = 2, session {
         views {
             pub struct ConnInfo<'a> {
                 pub role: u32,
@@ -133,7 +133,7 @@ static HOST: Host = Host::new(
         log_level: None,
         grow: None,
         deployment: None,
-        migrate_admit: None,
+        service: None,
     },
 );
 
@@ -159,7 +159,7 @@ fn cancel_and_close_drop_every_session() {
     };
     drop(out);
     let inst = Arc::new(inst);
-    let conn = ConnInfo {
+    let conn = busbar_plugin_abi::transport::ConnInfo {
         role: 0,
         flags: 0,
         alpn: Str::EMPTY,
@@ -177,14 +177,18 @@ fn cancel_and_close_drop_every_session() {
     let mut sessions = Vec::new();
     for _ in 0..8 {
         let mut out = lease();
-        let (status, session) = inst.open_session1(|vt| &vt.begin, Arg::view(&conn), &mut out);
+        let (status, session) = busbar_plugin_abi::transport::pack::begin(0, &conn, |call| {
+            inst.open_session(busbar_plugin_abi::transport::slot::begin, call, &mut out)
+        });
         assert_eq!(status, Status::OK);
         sessions.push(session.expect("an OK opener answer leads with its session TOKEN"));
     }
     let mut first = sessions.remove(0);
     let mut out = lease();
     assert_eq!(
-        first.call0(|vt| &vt.timer, &mut out),
+        busbar_plugin_abi::transport::pack::timer(0, |call| {
+            first.call(busbar_plugin_abi::transport::slot::timer, call, &mut out)
+        }),
         Status::OK,
         "a live session answers"
     );

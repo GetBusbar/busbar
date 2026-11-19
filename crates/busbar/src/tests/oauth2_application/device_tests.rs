@@ -311,7 +311,7 @@ async fn advertised_device_flow_requires_confirmation_mints_and_revokes() {
 #[tokio::test]
 async fn device_forms_refuse_missing_forged_replayed_and_cross_origin_csrf_and_allow_deny() {
     let subject = setup().await;
-    let (origin, client) = (subject.origin.clone(), subject.client.clone());
+    let client = subject.client.clone();
     for attack in ["missing", "forged", "cross-origin", "replay"] {
         let grant = start(&subject).await;
         let mut jar = Jar::new(true);

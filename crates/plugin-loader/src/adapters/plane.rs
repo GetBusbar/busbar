@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 pub mod protected_reply;
 
+use crate::call::kinds::plane::{OnSession as _, Proxy};
+use crate::call::Mono;
 use busbar_plugin_abi::fail::fact::{FACT_BACKEND_STATUS, FACT_RETRY_AFTER_S};
 use busbar_plugin_abi::fail::refused::R_INVALID;
 use busbar_plugin_abi::fail::{failed, CallError, FaultReason};
@@ -23,14 +25,15 @@ use busbar_plugin_abi::host_side::answer::Answer;
 use busbar_plugin_abi::host_side::caller::{BoxFut, Caller};
 use busbar_plugin_abi::host_side::driver::Driver;
 use busbar_plugin_abi::host_side::needs::Needs;
-use busbar_plugin_abi::host_side::pool::{sync_bufs, Pool};
+use busbar_plugin_abi::host_side::pool::{sync_out, Pool};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
-use busbar_plugin_abi::plane::{self as p, tag as t, PlaneReq, Proxy, Target};
+use busbar_plugin_abi::plane::{self as p, tag as t, PlaneReq, Target};
 use busbar_plugin_abi::records::{
     commit, tag as g, FactRec, FactTextRec, Rec, RecDelRec, RecErr, RecPredRec, RecPutRec, Records,
     Reply, U32Rec, U64Rec, Writer,
 };
 use busbar_plugin_abi::types::{Bytes, Slice, Status, Str};
+use busbar_plugin_abi::vocab::route1;
 
 use crate::instance::ErrorBook;
 use busbar_ports::codec::fallback_usage::Declaration;
@@ -57,6 +60,17 @@ const AUTH_BITS: u32 = p::AUTH_PRINCIPAL
 const MSG_BITS: u32 = p::MSG_TEXT | p::MSG_BINARY | p::MSG_FIN;
 const DX_BITS: u32 = p::DX_RESIGHT | p::DX_OUTSTANDING | p::DX_BROADCAST | p::DX_FINAL;
 
+/// One route's stated admission (the contract's `D_ROUTE_ADMISSION`: a `RouteAdmissionRec` and the walk
+/// kind as its text tail, empty when the scope has no walk), as the image wrote it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RouteAdmission {
+    pub route: u32,
+    pub scope: u32,
+    pub money: u32,
+    pub callers: u32,
+    pub walk_kind: Box<str>,
+}
+
 /// The plane-only items of one image's describe answer (§8.6), decoded once at `Registry::add`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlaneDescribe {
@@ -69,7 +83,20 @@ pub struct PlaneDescribe {
     pub tick_s: Option<u64>,
     /// D_ADMIN_OPENAPI: the OpenAPI fragment of the ROUTE_ADMIN routes, for K8's admin document merge (round 8).
     pub admin_openapi: Option<Box<str>>,
+    /// D_ROUTE_ADMISSION, exactly one per route (plane 2.0: a route without it is not declared and
+    /// the describe is refused). Each passed the contract's load rules (`vocab::route1::check`) against
+    /// this image's methods; the kernel builds the route's record from it (`RouteRecord::from_wire`).
+    pub route_admissions: Vec<RouteAdmission>,
+    /// D_ROUTE_CHALLENGE, at most one per route: the `WWW-Authenticate` text of the route's refusal.
+    pub route_challenges: Vec<(u32, Box<str>)>,
+    /// D_SESSION_CEILING_S, at most once: the plane's stated session ceiling in whole seconds, from its
+    /// protocol's specification or its own documented default. `None`: the plane states none (a
+    /// describe written before the item), and the engine puts no ceiling of its own in its place.
+    pub session_ceiling_s: Option<u64>,
 }
+
+/// The longest session ceiling the engine can enforce: whole seconds its nanosecond clock holds.
+const SESSION_CEILING_MAX_S: u64 = u64::MAX / 1_000_000_000;
 
 /// A describe the §8.6 rules refuse. The registry turns it into `Refusal { code: DescribeInvalid, field }`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +116,7 @@ pub fn decode_describe(
     let mut attempt_classes: Vec<Box<str>> = Vec::new();
     let mut headers: Vec<(u32, &str)> = Vec::new();
     let mut resource_routes: Vec<(u32, Vec<Box<str>>)> = Vec::new();
+    let (mut public_url_path, mut caller_upstreams_path) = (false, false);
     for rec in describe {
         let rec = rec.map_err(|_| DescribeInvalid("describe"))?;
         match rec.tag {
@@ -206,7 +234,68 @@ pub fn decode_describe(
                     return Err(bad);
                 }
             }
-            t::D_PROVIDER_SCHEMA | t::D_DIALECT_AUTH => {}
+            t::D_ROUTE_ADMISSION => {
+                let bad = DescribeInvalid("describe.route_admission");
+                let (a, tail) = rec.pod_tail::<p::RouteAdmissionRec>().map_err(|_| bad)?;
+                let walk_kind = core::str::from_utf8(tail).map_err(|_| bad)?;
+                if d.route_admissions.iter().any(|x| x.route == a.route) {
+                    return Err(bad);
+                }
+                d.route_admissions.push(RouteAdmission {
+                    route: a.route,
+                    scope: a.scope,
+                    money: a.money,
+                    callers: a.callers,
+                    walk_kind: walk_kind.into(),
+                });
+            }
+            t::D_ROUTE_CHALLENGE => {
+                let bad = DescribeInvalid("describe.route_challenge");
+                let (h, tail) = rec.pod_tail::<p::RouteHeaderRec>().map_err(|_| bad)?;
+                let text = core::str::from_utf8(tail).map_err(|_| bad)?;
+                if h._r != 0
+                    || !(1..=route1::CHALLENGE_MAX).contains(&text.len())
+                    || d.route_challenges
+                        .iter()
+                        .any(|(route, _)| *route == h.route)
+                {
+                    return Err(bad);
+                }
+                d.route_challenges.push((h.route, text.into()));
+            }
+            t::D_SESSION_CEILING_S => {
+                let bad = DescribeInvalid("describe.session_ceiling_s");
+                let v: U64Rec = rec.pod().map_err(|_| bad)?;
+                if !(1..=SESSION_CEILING_MAX_S).contains(&v.value)
+                    || d.session_ceiling_s.replace(v.value).is_some()
+                {
+                    return Err(bad);
+                }
+            }
+            // Plane 2.0: the positions core writes `public_url` and the caller's upstreams at
+            // (`chains::prepare_with_id`): an RFC 6901 pointer to a member, each at most once.
+            t::D_PUBLIC_URL_PATH | t::D_CALLER_UPSTREAMS_PATH => {
+                let (bad, seen) = if rec.tag == t::D_PUBLIC_URL_PATH {
+                    (
+                        DescribeInvalid("describe.public_url_path"),
+                        &mut public_url_path,
+                    )
+                } else {
+                    (
+                        DescribeInvalid("describe.caller_upstreams_path"),
+                        &mut caller_upstreams_path,
+                    )
+                };
+                let pointer = rec.text().map_err(|_| bad)?;
+                let member =
+                    crate::upstream_paths::tokens(pointer).is_some_and(|path| !path.is_empty());
+                if !member || core::mem::replace(seen, true) {
+                    return Err(bad);
+                }
+            }
+            // D_UPSTREAM_PATH is judged with every kind's describe (`upstream_paths::validate`, from
+            // `chains::decode_described`, before this decoder runs): `*`-final, at most four, disjoint.
+            t::D_UPSTREAM_PATH | t::D_PROVIDER_SCHEMA | t::D_DIALECT_AUTH => {}
             tag if tag < 0x0100 => {}
             _ => return Err(DescribeInvalid("describe")),
         }
@@ -220,9 +309,9 @@ pub fn decode_describe(
             _ => return Err(DescribeInvalid("describe.route_cred_header")),
         }
     }
-    if (!resource_routes.is_empty() && facts & p::FB_RESOURCE_ADMISSION == 0)
-        || (facts & p::FB_RESOURCE_ADMISSION != 0 && methods & p::M_SELECT_RESOURCES == 0)
-    {
+    // Plane 2.0 retired the fact bit that restated "some route selects": a route that names resource
+    // kinds needs the image's `select_resources`, and its admission must say SCOPE_SELECTED (below).
+    if !resource_routes.is_empty() && methods & p::M_SELECT_RESOURCES == 0 {
         return Err(DescribeInvalid("describe.route_resources"));
     }
     if facts & p::FB_CHANNEL_OPEN != 0
@@ -240,6 +329,13 @@ pub fn decode_describe(
             return Err(DescribeInvalid("describe.route_resources"));
         }
         route.resource_kinds = kinds.into();
+    }
+    let declared = |route: u32| d.routes.iter().any(|r| r.route == route);
+    if !d.route_admissions.iter().all(|a| declared(a.route)) {
+        return Err(DescribeInvalid("describe.route_admission"));
+    }
+    if !d.route_challenges.iter().all(|(route, _)| declared(*route)) {
+        return Err(DescribeInvalid("describe.route_challenge"));
     }
     let any = |bit: u32| d.routes.iter().any(|r| r.flags & bit != 0);
     if any(p::ROUTE_ADMIN) != d.admin_openapi.is_some() {
@@ -260,7 +356,59 @@ pub fn decode_describe(
         return Err(DescribeInvalid("describe.attempt_upstream"));
     }
     decode_provider_schema(describe).map_err(|_| DescribeInvalid("describe.provider_schema"))?;
+    route_admission_rules(&d, methods)?;
     Ok(d)
+}
+
+/// Plane 2.0: a route is one D_ROUTE and exactly one D_ROUTE_ADMISSION, every field stated, no default.
+/// The load rules are the contract's one function (`vocab::route1::check`), judged here against the
+/// image's own methods, so a route without its admission cannot be mounted because it was never
+/// declared. The refusal's field is `describe.route_admission`; the route and the rule it broke are
+/// logged once, here.
+fn route_admission_rules(d: &PlaneDescribe, methods: u64) -> Result<(), DescribeInvalid> {
+    for r in &d.routes {
+        let stated = d.route_admissions.iter().find(|a| a.route == r.route);
+        let route = p::RouteRec {
+            route: r.route,
+            methods: r.methods,
+            flags: r.flags,
+            auth: r.auth,
+        };
+        let admission = stated.map(|a| p::RouteAdmissionRec {
+            route: a.route,
+            scope: a.scope,
+            money: a.money,
+            callers: a.callers,
+        });
+        let has = route1::Has {
+            render: methods & p::M_RENDER != 0,
+            select_resources: methods & p::M_SELECT_RESOURCES != 0,
+            upstream: methods & p::M_UPSTREAM != 0,
+            selected_kinds: r.resource_kinds.len(),
+            walk_kind: stated.is_some_and(|a| !a.walk_kind.is_empty()),
+            method_get: GET,
+        };
+        if let Err(fault) = route1::check(&route, admission.as_ref(), has) {
+            tracing::error!(
+                route = r.route,
+                pattern = %r.pattern,
+                ?fault,
+                "a plane route's admission breaks a load rule: the image is refused"
+            );
+            return Err(DescribeInvalid("describe.route_admission"));
+        }
+        // The kinds of SCOPE_SELECTED are the route's D_ROUTE_RESOURCES: each states the other.
+        let selects = stated.is_some_and(|a| a.scope & p::SCOPE_SELECTED != 0);
+        if selects == r.resource_kinds.is_empty() {
+            tracing::error!(
+                route = r.route,
+                pattern = %r.pattern,
+                "a plane route names resource kinds without SCOPE_SELECTED: the image is refused"
+            );
+            return Err(DescribeInvalid("describe.route_resources"));
+        }
+    }
+    Ok(())
 }
 
 /// The RouteRec.flags and auth rules of §8.6 (rounds 8, 10 and 13).
@@ -1283,6 +1431,11 @@ pub fn port_error(
     }
 }
 
+/// The clock reading of a session call. The plane port's session methods carry none today, so none is
+/// handed in and a plane that needs the time asks the host once; when the port gains the reading (one per
+/// operation, made by the kernel), it replaces this constant at each call below and nothing else changes.
+const NOW: Mono = Mono::NONE;
+
 /// The plane port over one instance's proxy.
 pub struct PlaneAdapter<N: Needs> {
     proxy: Proxy,
@@ -1309,6 +1462,23 @@ impl<N: Needs> PlaneAdapter<N> {
             errors,
             latch: AtomicBool::new(false),
         }
+    }
+
+    /// The admission `route` states (D_ROUTE_ADMISSION), if it states one.
+    pub fn route_admission(&self, route: u32) -> Option<&RouteAdmission> {
+        self.describe
+            .route_admissions
+            .iter()
+            .find(|admission| admission.route == route)
+    }
+
+    /// The challenge text `route` states (D_ROUTE_CHALLENGE), if it states one.
+    pub fn route_challenge(&self, route: u32) -> Option<&str> {
+        self.describe
+            .route_challenges
+            .iter()
+            .find(|(declared, _)| *declared == route)
+            .map(|(_, text)| &**text)
     }
 
     pub fn proxy(&self) -> &Proxy {
@@ -1469,6 +1639,15 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         &self.describe.routes
     }
 
+    fn route_admission(&self, route: u32) -> Option<(u32, u32, u32, &str)> {
+        PlaneAdapter::route_admission(self, route)
+            .map(|a| (a.scope, a.money, a.callers, &*a.walk_kind))
+    }
+
+    fn route_challenge(&self, route: u32) -> Option<&str> {
+        PlaneAdapter::route_challenge(self, route)
+    }
+
     fn dialects(&self) -> &[Box<str>] {
         &self.describe.dialects
     }
@@ -1500,6 +1679,10 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         self.describe.tick_s
     }
 
+    fn session_ceiling_s(&self) -> Option<u64> {
+        self.describe.session_ceiling_s
+    }
+
     fn admin_openapi(&self) -> Option<&str> {
         self.describe.admin_openapi.as_deref()
     }
@@ -1517,7 +1700,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<Vec<u8>, PortError> {
         use busbar_plugin_abi::resource_admission as resources;
         let kinds = self.resource_kinds(req.route);
-        if self.facts() & p::FB_RESOURCE_ADMISSION == 0
+        if self.proxy.instance().methods & p::M_SELECT_RESOURCES == 0
             || kinds.is_empty()
             || req.auth != 0
             || !req.identity.is_empty()
@@ -1539,10 +1722,10 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             max_out
         };
         let req = plane_req(req);
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let answer = self
                 .proxy
-                .select_resources(out, mode, &req, body)
+                .select_resources(out, NOW, mode, &req, body)
                 .map_err(PortError::Call)?;
             self.failure(&answer)?;
             let bytes = answer.records().rest();
@@ -1576,10 +1759,10 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<PlaneSession, PortError> {
         let max_out = self.live()?;
         let req = plane_req(req);
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let (session, answer) = self
                 .proxy
-                .request(out, &req, body)
+                .request(out, NOW, &req, body)
                 .map_err(PortError::Call)?;
             self.finish(Call::Request, &answer, sink, None, None)?;
             session.ok_or_else(no_token)
@@ -1609,8 +1792,8 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
                 t::SELECTED_RESOURCE,
             ))));
         }
-        sync_bufs(max_out, |_, out| {
-            let answer = s.upstream(out, &view).map_err(PortError::Call)?;
+        sync_out(max_out, |out| {
+            let answer = s.upstream(out, NOW, &view).map_err(PortError::Call)?;
             self.finish(Call::Upstream, &answer, sink, selected, None)
         })
     }
@@ -1636,8 +1819,8 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             return Err(PortError::Call(CallError::Fault(FaultReason::BadInstance)));
         }
         let view = target(tgt);
-        sync_bufs(max_out, |_, out| {
-            let answer = s.channel(out, &view).map_err(PortError::Call)?;
+        sync_out(max_out, |out| {
+            let answer = s.channel(out, NOW, &view).map_err(PortError::Call)?;
             self.finish(Call::Channel, &answer, sink, None, None)
         })
     }
@@ -1652,9 +1835,9 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let answer = s
-                .piece(out, from, exchange, flags, bytes)
+                .piece(out, NOW, from, exchange, flags, bytes)
                 .map_err(PortError::Call)?;
             self.finish(Call::Piece(from), &answer, sink, None, Some(exchange))
         })
@@ -1674,7 +1857,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             return Err(PortError::Call(CallError::Fault(FaultReason::BadInstance)));
         }
         let (answer, len) = s
-            .piece_fixed(out, from, exchange, flags, bytes)
+            .piece_fixed(out, NOW, from, exchange, flags, bytes)
             .map_err(PortError::Call)?;
         // Same whole-answer validation and failure translation as pooled piece. No effect escapes
         // until the caller classifies the validated fixed backing and admits its complete answer.
@@ -1714,16 +1897,16 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
-        sync_bufs(max_out, |_, out| {
-            let answer = s.rewrite(out, conversation).map_err(PortError::Call)?;
+        sync_out(max_out, |out| {
+            let answer = s.rewrite(out, NOW, conversation).map_err(PortError::Call)?;
             self.finish(Call::Rewrite, &answer, sink, None, None)
         })
     }
 
     fn end(&self, s: PlaneSession, sink: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError> {
         let max_out = self.live()?;
-        sync_bufs(max_out, |_, out| {
-            let answer = s.end(out).map_err(PortError::Call)?;
+        sync_out(max_out, |out| {
+            let answer = s.end(out, NOW).map_err(PortError::Call)?;
             self.finish(Call::End, &answer, sink, None, None)
         })
     }
@@ -1737,10 +1920,10 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
         let req = plane_req(req);
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let answer = self
                 .proxy
-                .render(out, &req, what, arg)
+                .render(out, NOW, &req, what, arg)
                 .map_err(PortError::Call)?;
             self.finish(Call::Render, &answer, sink, None, None)
         })
@@ -1753,8 +1936,8 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
     ) -> Result<PlaneSession, PortError> {
         let max_out = self.live()?;
         let view = target(tgt);
-        sync_bufs(max_out, |_, out| {
-            let (session, answer) = self.proxy.probe(out, &view).map_err(PortError::Call)?;
+        sync_out(max_out, |out| {
+            let (session, answer) = self.proxy.probe(out, NOW, &view).map_err(PortError::Call)?;
             self.finish(Call::Probe, &answer, sink, None, None)?;
             session.ok_or_else(no_token)
         })
@@ -1767,10 +1950,10 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         sink: &mut dyn FnMut(PlaneOut<'_>),
     ) -> Result<(), PortError> {
         let max_out = self.live()?;
-        sync_bufs(max_out, |_, out| {
+        sync_out(max_out, |out| {
             let answer = self
                 .proxy
-                .demux(out, key, message)
+                .demux(out, NOW, key, message)
                 .map_err(PortError::Call)?;
             self.finish(Call::Demux, &answer, sink, None, None)
         })
@@ -1789,7 +1972,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
             let mut drv = Driver::new(&*self.needs, self.caller(&cx));
             let owned = self
                 .proxy
-                .admin(&mut drv, req, op)
+                .admin(&mut drv, crate::call::at(&cx), req, op)
                 .await
                 .map_err(PortError::Call)?;
             let answer = owned.answer();
@@ -1915,6 +2098,21 @@ mod tests {
             auth,
         };
         r.put_pod_tail(t::D_ROUTE, &rec, pattern.as_bytes())
+            .unwrap();
+        // Plane 2.0: every route states its admission. A catalog route walks core's pools and moves
+        // no money; every other route of these tests states scope none, money none, shared callers.
+        let (scope, walk) = if flags == p::ROUTE_CATALOG {
+            (p::SCOPE_WALK, "pool")
+        } else {
+            (p::SCOPE_NONE, "")
+        };
+        let admission = p::RouteAdmissionRec {
+            route,
+            scope,
+            money: p::MONEY_NONE,
+            callers: p::CALLERS_SHARED,
+        };
+        r.put_pod_tail(t::D_ROUTE_ADMISSION, &admission, walk.as_bytes())
             .unwrap();
     }
 
@@ -2045,6 +2243,48 @@ mod tests {
         assert_eq!(d.admin_openapi, None);
     }
 
+    /// Plane 2.0: the plane-only path items (0x4000-0x4002) load; the two core-written positions are
+    /// RFC 6901 pointers to a member, each at most once (D_UPSTREAM_PATH is judged by
+    /// `upstream_paths::validate` before this decoder runs).
+    #[test]
+    fn a_plane_stating_its_path_items_loads_and_a_bad_or_second_position_refuses() {
+        let stated = |items: &[(u16, &str)]| {
+            let mut r = Reply::new();
+            route(&mut r, 1, POST, 0, p::AUTH_PRINCIPAL, "/v1/realtime");
+            for (tag, text) in items {
+                r.put_text(*tag, text).unwrap();
+            }
+            describe(&r, p::ALL, 0)
+        };
+        assert!(stated(&[
+            (t::D_PUBLIC_URL_PATH, "/public_url"),
+            (t::D_CALLER_UPSTREAMS_PATH, "/caller_upstreams"),
+            (t::D_UPSTREAM_PATH, "/upstreams/*"),
+        ])
+        .is_ok());
+        let url = DescribeInvalid("describe.public_url_path");
+        let callers = DescribeInvalid("describe.caller_upstreams_path");
+        for bad in ["", "public_url", "/a~2b"] {
+            assert_eq!(stated(&[(t::D_PUBLIC_URL_PATH, bad)]).err(), Some(url));
+            assert_eq!(
+                stated(&[(t::D_CALLER_UPSTREAMS_PATH, bad)]).err(),
+                Some(callers)
+            );
+        }
+        assert_eq!(
+            stated(&[(t::D_PUBLIC_URL_PATH, "/a"), (t::D_PUBLIC_URL_PATH, "/b")]).err(),
+            Some(url)
+        );
+        assert_eq!(
+            stated(&[
+                (t::D_CALLER_UPSTREAMS_PATH, "/a"),
+                (t::D_CALLER_UPSTREAMS_PATH, "/b")
+            ])
+            .err(),
+            Some(callers)
+        );
+    }
+
     #[test]
     fn admin_routes_need_the_openapi_fragment_and_operator_auth() {
         let mut r = Reply::new();
@@ -2081,7 +2321,8 @@ mod tests {
             1,
             GET,
             p::ROUTE_CATALOG,
-            p::AUTH_PUBLIC,
+            // A catalog is listed for a verified key (plane 2.0: a public caller has no scope to walk).
+            p::AUTH_PRINCIPAL,
             "/v1/models",
         );
         let no_render = p::ALL & !p::M_RENDER;
@@ -2499,3 +2740,187 @@ mod tests {
 #[cfg(test)]
 #[path = "plane_fallback_tests.rs"]
 mod fallback_tests;
+
+/// The two per-route describe items of plane 2.0: the admission is required and judged by the
+/// contract's load rules, the challenge is optional; both are kept as written, refused when malformed.
+#[cfg(test)]
+mod route_item_tests {
+    use super::*;
+
+    fn chat_route(r: &mut Reply) {
+        let rec = p::RouteRec {
+            route: 1,
+            methods: POST,
+            flags: 0,
+            auth: p::AUTH_PRINCIPAL,
+        };
+        r.put_pod_tail(t::D_ROUTE, &rec, b"/v1/chat").unwrap();
+    }
+
+    fn admission(route: u32, scope: u32, money: u32, callers: u32, walk: &str) -> Vec<u8> {
+        let mut body = Vec::new();
+        for word in [route, scope, money, callers] {
+            body.extend_from_slice(&word.to_le_bytes());
+        }
+        body.extend_from_slice(walk.as_bytes());
+        body
+    }
+
+    fn challenge(route: u32, zero: u32, text: &str) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&route.to_le_bytes());
+        body.extend_from_slice(&zero.to_le_bytes());
+        body.extend_from_slice(text.as_bytes());
+        body
+    }
+
+    fn describe(r: &Reply) -> Result<PlaneDescribe, DescribeInvalid> {
+        decode_describe(Records::new(r.as_bytes()), p::ALL, 0)
+    }
+
+    #[test]
+    fn a_routes_admission_and_challenge_are_kept_as_the_image_wrote_them() {
+        let mut r = Reply::new();
+        // The items may come before the route they name.
+        r.put(t::D_ROUTE_ADMISSION, &admission(1, 2, 2, 1, "pool"))
+            .unwrap();
+        chat_route(&mut r);
+        r.put(
+            t::D_ROUTE_CHALLENGE,
+            &challenge(1, 0, "Bearer realm=\"{public_url}\""),
+        )
+        .unwrap();
+        let d = describe(&r).unwrap();
+        assert_eq!(
+            d.route_admissions,
+            [RouteAdmission {
+                route: 1,
+                scope: 2,
+                money: 2,
+                callers: 1,
+                walk_kind: "pool".into(),
+            }]
+        );
+        assert_eq!(
+            d.route_challenges,
+            [(1, Box::from("Bearer realm=\"{public_url}\""))]
+        );
+    }
+
+    /// The contract's rule: a route without its admission item is not declared, so it cannot be mounted.
+    #[test]
+    fn a_route_without_its_admission_refuses_the_image() {
+        let bad = Err(DescribeInvalid("describe.route_admission"));
+        let mut r = Reply::new();
+        chat_route(&mut r);
+        assert_eq!(describe(&r), bad);
+        // The challenge stays optional.
+        r.put(t::D_ROUTE_ADMISSION, &admission(1, 2, 2, 1, "pool"))
+            .unwrap();
+        let d = describe(&r).unwrap();
+        assert_eq!(d.route_admissions.len(), 1);
+        assert!(d.route_challenges.is_empty());
+    }
+
+    /// The load rules are the contract's (`vocab::route1::check`), against this image's methods.
+    #[test]
+    fn an_admission_that_breaks_a_load_rule_refuses_the_image() {
+        let bad = Err(DescribeInvalid("describe.route_admission"));
+        for body in [
+            // A field not stated (zero), and a word outside the vocabulary.
+            admission(1, 0, 2, 1, ""),
+            admission(1, 2, 3, 1, "pool"),
+            admission(1, 2, 2, 9, "pool"),
+            // "None" said together with a walk; a walk without its kind; a kind without the walk.
+            admission(1, 1 | 2, 2, 1, "pool"),
+            admission(1, 2, 2, 1, ""),
+            admission(1, 1, 2, 1, "pool"),
+            // Selected kinds the route does not name.
+            admission(1, 4, 2, 1, ""),
+        ] {
+            let mut r = Reply::new();
+            chat_route(&mut r);
+            r.put(t::D_ROUTE_ADMISSION, &body).unwrap();
+            assert_eq!(describe(&r), bad, "{body:?}");
+        }
+        // A walk needs the image's `upstream`.
+        let mut r = Reply::new();
+        chat_route(&mut r);
+        r.put(t::D_ROUTE_ADMISSION, &admission(1, 2, 2, 1, "pool"))
+            .unwrap();
+        assert_eq!(
+            decode_describe(Records::new(r.as_bytes()), p::ALL & !p::M_UPSTREAM, 0),
+            bad
+        );
+        // Money on a route a public caller may reach is refused: there is nobody to charge.
+        let mut open = Reply::new();
+        let rec = p::RouteRec {
+            route: 1,
+            methods: POST,
+            flags: 0,
+            auth: p::AUTH_PUBLIC,
+        };
+        open.put_pod_tail(t::D_ROUTE, &rec, b"/open").unwrap();
+        open.put(t::D_ROUTE_ADMISSION, &admission(1, 1, 2, 1, ""))
+            .unwrap();
+        assert_eq!(describe(&open), bad);
+    }
+
+    #[test]
+    fn a_short_repeated_or_unrouted_admission_is_refused() {
+        let bad = Err(DescribeInvalid("describe.route_admission"));
+        let mut short = Reply::new();
+        chat_route(&mut short);
+        short.put(t::D_ROUTE_ADMISSION, &[0u8; 15]).unwrap();
+        assert_eq!(describe(&short), bad);
+
+        let mut twice = Reply::new();
+        chat_route(&mut twice);
+        twice
+            .put(t::D_ROUTE_ADMISSION, &admission(1, 1, 1, 1, ""))
+            .unwrap();
+        twice
+            .put(t::D_ROUTE_ADMISSION, &admission(1, 1, 1, 1, ""))
+            .unwrap();
+        assert_eq!(describe(&twice), bad);
+
+        let mut unrouted = Reply::new();
+        chat_route(&mut unrouted);
+        unrouted
+            .put(t::D_ROUTE_ADMISSION, &admission(9, 1, 1, 1, ""))
+            .unwrap();
+        assert_eq!(describe(&unrouted), bad);
+
+        let mut not_text = Reply::new();
+        chat_route(&mut not_text);
+        let mut body = admission(1, 2, 1, 1, "");
+        body.extend_from_slice(&[0xFF, 0xFE]);
+        not_text.put(t::D_ROUTE_ADMISSION, &body).unwrap();
+        assert_eq!(describe(&not_text), bad);
+    }
+
+    #[test]
+    fn a_challenge_with_a_nonzero_word_no_text_or_no_route_is_refused() {
+        let bad = Err(DescribeInvalid("describe.route_challenge"));
+        for body in [
+            challenge(1, 1, "Bearer"),
+            challenge(1, 0, ""),
+            challenge(9, 0, "Bearer"),
+            vec![1, 0, 0, 0],
+        ] {
+            let mut r = Reply::new();
+            chat_route(&mut r);
+            r.put(t::D_ROUTE_CHALLENGE, &body).unwrap();
+            assert_eq!(describe(&r), bad);
+        }
+        let mut twice = Reply::new();
+        chat_route(&mut twice);
+        twice
+            .put(t::D_ROUTE_CHALLENGE, &challenge(1, 0, "Bearer"))
+            .unwrap();
+        twice
+            .put(t::D_ROUTE_CHALLENGE, &challenge(1, 0, "Basic"))
+            .unwrap();
+        assert_eq!(describe(&twice), bad);
+    }
+}

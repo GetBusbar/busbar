@@ -9,7 +9,7 @@ use busbar_kernel::config_validate::validate;
 fn a_config_without_a_store_block_is_refused() {
     crate::dist_root_install::install();
     // Bind the linked operator: the config takes the closed default admin chain.
-    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding(None));
+    busbar_kernel::preflight::install_operator(crate::root::auth_bindings::operator_binding());
 
     let deploy: config::DeployCfg = yaml::from_str(
         "providers: {}\nmodels: {}\nstore: {module: inert-store-metadata}\nauth: {chain: []}\n",

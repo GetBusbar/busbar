@@ -80,7 +80,7 @@ The thousands digit is the area.
 | [BUSBAR-3026](/docs/1.6/errors/BUSBAR-3026/) | Declared billable classes have no configured rate | 1.6.0 |
 | [BUSBAR-3027](/docs/1.6/errors/BUSBAR-3027/) | A 1.5.5 file overlay held settings this Store had not imported — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3028](/docs/1.6/errors/BUSBAR-3028/) | A 1.5.5 overlay input was not read — RETIRED *(retired)* | 1.6.0 |
-| [BUSBAR-3029](/docs/1.6/errors/BUSBAR-3029/) | A retired launch environment variable is set and IGNORED | 1.6.0 |
+| [BUSBAR-3029](/docs/1.6/errors/BUSBAR-3029/) | A retired launch environment variable is set (converted or ignored) | 1.6.0 |
 | [BUSBAR-3030](/docs/1.6/errors/BUSBAR-3030/) | An auth plugin states the operator credential but is not first-party (ignored) | 1.6.0 |
 | [BUSBAR-3101](/docs/1.6/errors/BUSBAR-3101/) | A registration is named with a reserved word | 1.6.0 |
 | [BUSBAR-3102](/docs/1.6/errors/BUSBAR-3102/) | A model definition is invalid | 1.6.0 |
@@ -118,15 +118,15 @@ The thousands digit is the area.
 | [BUSBAR-3134](/docs/1.6/errors/BUSBAR-3134/) | An allowlist entry names a cloud-metadata destination *(retired)* | 1.6.0 |
 | [BUSBAR-3135](/docs/1.6/errors/BUSBAR-3135/) | A registration still carries the retired per-registration private-address switch *(retired)* | 1.6.0 |
 | [BUSBAR-3136](/docs/1.6/errors/BUSBAR-3136/) | A retired cloud-metadata carve-out key is set | 1.6.0 |
-| [BUSBAR-3137](/docs/1.6/errors/BUSBAR-3137/) | An advanced.tls trust anchor is not a usable CA | 1.6.0 |
-| [BUSBAR-3138](/docs/1.6/errors/BUSBAR-3138/) | An advanced.tls trust anchor was accepted | 1.6.0 |
-| [BUSBAR-3139](/docs/1.6/errors/BUSBAR-3139/) | An advanced.tls trust anchor expires within 30 days | 1.6.0 |
+| [BUSBAR-3137](/docs/1.6/errors/BUSBAR-3137/) | An outbound.tls trust anchor is not a usable CA | 1.6.0 |
+| [BUSBAR-3138](/docs/1.6/errors/BUSBAR-3138/) | An outbound.tls trust anchor was accepted | 1.6.0 |
+| [BUSBAR-3139](/docs/1.6/errors/BUSBAR-3139/) | An outbound.tls trust anchor expires within 30 days | 1.6.0 |
 | [BUSBAR-3140](/docs/1.6/errors/BUSBAR-3140/) | No trust anchor applies to a TLS destination | 1.6.0 |
 | [BUSBAR-3141](/docs/1.6/errors/BUSBAR-3141/) | Plaintext is not admitted to this destination | 1.6.0 |
 | [BUSBAR-3144](/docs/1.6/errors/BUSBAR-3144/) | A plaintext destination entry is not an exact host or IP | 1.6.0 |
 | [BUSBAR-3145](/docs/1.6/errors/BUSBAR-3145/) | A destination wildcard is too wide | 1.6.0 |
 | [BUSBAR-3147](/docs/1.6/errors/BUSBAR-3147/) | System CA bundle entries were not used | 1.6.0 |
-| [BUSBAR-3148](/docs/1.6/errors/BUSBAR-3148/) | An advanced.tls destination entry is invalid | 1.6.0 |
+| [BUSBAR-3148](/docs/1.6/errors/BUSBAR-3148/) | An outbound.tls destination entry is invalid | 1.6.0 |
 | [BUSBAR-3149](/docs/1.6/errors/BUSBAR-3149/) | Outbound connections go through a proxy | 1.6.0 |
 | [BUSBAR-3160](/docs/1.6/errors/BUSBAR-3160/) | A plugin instance would connect without TLS | 1.6.0 |
 | [BUSBAR-3162](/docs/1.6/errors/BUSBAR-3162/) | A plugin instance runs with insecure_transport accepted | 1.6.0 |
@@ -142,7 +142,7 @@ The thousands digit is the area.
 | [BUSBAR-3406](/docs/1.6/errors/BUSBAR-3406/) | Migration widened a retired delegated admin scope to full | 1.6.0 |
 | [BUSBAR-3407](/docs/1.6/errors/BUSBAR-3407/) | An empty allowed_pools list now means no pools | 1.6.0 |
 | [BUSBAR-3408](/docs/1.6/errors/BUSBAR-3408/) | Migration added a binding that keeps 1.5.5's ungoverned access | 1.6.0 |
-| [BUSBAR-3409](/docs/1.6/errors/BUSBAR-3409/) | BUSBAR_WORKER_THREADS was not a positive integer and was not captured | 1.6.0 |
+| [BUSBAR-3409](/docs/1.6/errors/BUSBAR-3409/) | BUSBAR_WORKER_THREADS was not a positive integer and was not captured — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-3410](/docs/1.6/errors/BUSBAR-3410/) | A registration's allow_private was replaced by exact advanced.allow_destinations entries *(retired)* | 1.6.0 |
 | [BUSBAR-3411](/docs/1.6/errors/BUSBAR-3411/) | A retired cloud-metadata carve-out key was removed | 1.6.0 |
 
@@ -336,7 +336,7 @@ The thousands digit is the area.
 | [BUSBAR-9002](/docs/1.6/errors/BUSBAR-9002/) | TLS accept loop failing persistently (backing off) | 1.6.0 |
 | [BUSBAR-9003](/docs/1.6/errors/BUSBAR-9003/) | Telemetry slot table full (further label sets fall back to the metrics macros) | 1.6.0 |
 | [BUSBAR-9007](/docs/1.6/errors/BUSBAR-9007/) | Boot refused (fatal misconfiguration or startup error; process exits non-zero) | 1.6.0 |
-| [BUSBAR-9008](/docs/1.6/errors/BUSBAR-9008/) | Configured worker-thread count is invalid (ignored; default used) | 1.6.0 |
+| [BUSBAR-9008](/docs/1.6/errors/BUSBAR-9008/) | Configured worker-thread count is invalid — RETIRED *(retired)* | 1.6.0 |
 | [BUSBAR-9009](/docs/1.6/errors/BUSBAR-9009/) | Shutdown-signal handler not installed (that signal won't trigger graceful drain) | 1.6.0 |
 | [BUSBAR-9010](/docs/1.6/errors/BUSBAR-9010/) | jemalloc idle-purge fallback unavailable (idle RSS may not return to the OS) | 1.6.0 |
 | [BUSBAR-9011](/docs/1.6/errors/BUSBAR-9011/) | --generate-signing-key could not mint a key (OS entropy source unavailable) | 1.6.0 |

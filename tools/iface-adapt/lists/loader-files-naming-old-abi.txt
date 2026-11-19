@@ -1,0 +1,6 @@
+crates/plugin-loader/src/boot.rs
+crates/plugin-loader/src/tests/boot_tests.rs
+crates/plugin-loader/src/tests/public_settings_tests.rs
+crates/plugin-loader/src/tests/registry_tests.rs
+crates/plugin-loader/src/tests/rows_tests.rs
+crates/plugin-loader/src/tests/sign_tests.rs

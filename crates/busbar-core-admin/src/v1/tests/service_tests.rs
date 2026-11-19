@@ -1521,7 +1521,7 @@ fn plugin_configuration_inspection_suppresses_refused_declarations() {
             valid: true,
             sections: vec![(
                 "fixture-root".into(),
-                busbar_contract::abi::mechanism::door::SECTION_DECLARING,
+                busbar_contract::plugin_settings::sugar_words::SECTION_DECLARING,
             )],
             claims: Vec::new(),
         }),
@@ -1737,7 +1737,6 @@ static CLASS_PARENT_PLANE: busbar_kernel::plane_driver::registry::PlaneDecl =
         admission: |_| None,
         build: |_, _| None,
         routes: None,
-        admin_routes: None,
         openapi: None,
         hydrate: None,
         start: None,

@@ -22,7 +22,7 @@ pub(crate) fn base_data_router_scoped(
     doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
     root_surface: bool,
 ) -> crate::core_routes::CoreRouter {
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_contract::route::{RouteAuth, RouteMethod};
 
     let router = if root_surface {
         let router = crate::core_routes::CoreRouter::new()
@@ -221,7 +221,7 @@ pub(crate) fn admin_routes(
     axum::Router<std::sync::Arc<state::AppHandle>>,
     crate::core_routes::CoreRouteTable,
 ) {
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_contract::route::{RouteAuth, RouteMethod};
     let admin = crate::core_routes::CoreRouter::new()
         .route(
             crate::auth::HEALTHZ_PATH,

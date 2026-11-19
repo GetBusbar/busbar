@@ -100,22 +100,6 @@ impl Refresher {
             .filter(|k| k.item.strong_count() > 0)
             .count()
     }
-
-    /// Refresh every live item NOW on the calling thread, whatever its due time (a test's lever).
-    pub fn refresh_all_now(&self) {
-        let live: Vec<Arc<dyn Refreshable>> = self
-            .inner
-            .book
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .kept
-            .iter()
-            .filter_map(|k| k.item.upgrade())
-            .collect();
-        for item in live {
-            item.refresh(Instant::now());
-        }
-    }
 }
 
 fn work(inner: &Inner) {
@@ -275,7 +259,7 @@ impl Throttle {
 }
 
 /// WHERE A REFRESH REPORTS: the operator's log (a coded diagnostic, or an uncoded INFO) and the
-/// audit trail. The host's is [`HostReport`]; a test captures instead.
+/// audit trail. The host's is `HostReport`; a test captures instead.
 pub trait Report: Send + Sync {
     /// A coded diagnostic at `level`.
     fn diag(
@@ -289,45 +273,6 @@ pub trait Report: Send + Sync {
     fn info(&self, message: &str, fields: &[(&'static str, String)]);
     /// An audit record by `busbar` itself.
     fn audit(&self, action: &str, resource: &str, outcome: &'static str);
-}
-
-/// The host's report: `diagnostics::emit` and the admin audit ring, as `busbar`.
-pub struct HostReport;
-
-/// The one host report.
-pub static HOST_REPORT: HostReport = HostReport;
-
-impl Report for HostReport {
-    fn diag(
-        &self,
-        diag: &'static crate::diagnostics::Diagnostic,
-        level: tracing::Level,
-        message: &str,
-        fields: &[(&'static str, String)],
-    ) {
-        let level = if stopping() {
-            tracing::Level::DEBUG
-        } else {
-            level
-        };
-        let fields: Vec<(String, String)> = fields
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), v.clone()))
-            .collect();
-        crate::diagnostics::emit(diag, level, message, &fields);
-    }
-
-    fn info(&self, message: &str, fields: &[(&'static str, String)]) {
-        let shown: Vec<String> = fields.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        tracing::info!(fields = %shown.join(" "), "{message}");
-    }
-
-    fn audit(&self, action: &str, resource: &str, outcome: &'static str) {
-        if stopping() {
-            return;
-        }
-        crate::audit_ring::AUDIT.record_by(action, resource, outcome, "busbar");
-    }
 }
 
 #[cfg(test)]

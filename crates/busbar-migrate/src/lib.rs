@@ -31,16 +31,19 @@ mod catalog;
 #[cfg(any(test, feature = "counted"))]
 pub mod counted;
 mod files;
+mod former_builtins;
 mod legacy_credentials;
 pub use legacy_credentials::{Mark, MIGRATED};
 mod legacy_markers;
 mod listen;
 mod lock;
 mod migrate_1_6;
+mod outbound_1_6;
 mod overlay;
 mod overlay_hooks;
 pub mod patch;
 pub mod records;
+mod retired_carriers;
 mod secret_instances;
 mod settle;
 mod steps;
@@ -479,6 +482,12 @@ pub fn plan(inputs: &Inputs<'_>) -> Result<Plan, Refusal> {
     )?;
     judge(&chained, inputs.facts, inputs.check)?;
     warnings.extend(plaintext_listener_lines(&chained.text));
+    // The outbound conversion (one logic for every install): what the 1.6.0 standard asks of this
+    // deployment that a settings file cannot give, read from the planned document. Only an
+    // upgrade from 1.5.5 is told: a 1.6.0 file was written to the standard.
+    if from == 0 {
+        warnings.extend(outbound_lines(&chained.text, inputs.facts));
+    }
     if let Some(catalog) = &chained.catalog {
         catalog::check_destination(catalog)?;
     }
@@ -819,6 +828,19 @@ fn where_plans_differ(
     )
 }
 
+/// The outbound settings conversion's lines for an install upgraded from 1.5.5
+/// ([`outbound_1_6::TABLE`]): the name look-up behind a proxy, and each provider reached in
+/// plaintext. Read from the planned document as written (a templated `base_url` is judged by the
+/// boot, which sees its value); writes nothing.
+fn outbound_lines(planned: &str, facts: &Facts) -> Vec<String> {
+    let Ok(doc) = busbar_contract::yaml::from_str::<busbar_contract::yaml::Value>(planned) else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    outbound_1_6::run(&doc, facts, &mut lines);
+    lines
+}
+
 /// #359 SEC-L1 (owner ruling L1): the upgrade writes no plaintext acceptance. For each root listener the
 /// planned document leaves with neither TLS nor its acceptance, the plan warns with the one-line remedy (a
 /// change the chain did not make); the stamped boot then refuses it with BUSBAR-3172. The planned text
@@ -872,3 +894,7 @@ mod scratch;
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/former_builtins_tests.rs"]
+mod former_builtins_tests;

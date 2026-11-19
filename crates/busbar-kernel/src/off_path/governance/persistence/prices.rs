@@ -30,9 +30,13 @@ use std::{collections::BTreeMap, sync::Arc};
 
 pub const PRICES: NamespaceId = NamespaceId(*b"busbar.prices1\0\0");
 
-/// Why an entry exists.
+/// Why an entry exists. Written internally tagged by `kind`. Read through [`EntryAuthorWire`],
+/// never through serde's internally tagged reader: that one buffers the object and replays every
+/// number through `deserialize_any`, where the exact-number JSON facade hands it as a token map,
+/// so a migrated entry's `node` and `node_seq` were refused as "a map, expected u64".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(try_from = "EntryAuthorWire")]
 pub enum EntryAuthor {
     /// The opening entry, written only when the history is empty: the booting node's card,
     /// effective from instant zero.
@@ -57,6 +61,67 @@ pub enum EntryAuthor {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AuthorKind {
+    Opening,
+    Change,
+    Amend,
+    Migrated,
+}
+
+/// The same object [`EntryAuthor`] writes, read field by field. Each member is `None` when absent
+/// and `Some(None)` when written as `null`, so the conversion keeps exactly what the tagged reader
+/// accepted: a migrated entry's `reason` may be absent or `null`; an amend's may not; opening and
+/// change carry no members.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EntryAuthorWire {
+    kind: AuthorKind,
+    #[serde(default, deserialize_with = "present")]
+    reason: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    node: Option<u64>,
+    #[serde(default, deserialize_with = "present")]
+    node_seq: Option<u64>,
+    #[serde(default, deserialize_with = "present")]
+    opening: Option<bool>,
+}
+
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    decoder: D,
+) -> std::result::Result<Option<T>, D::Error> {
+    T::deserialize(decoder).map(Some)
+}
+
+impl TryFrom<EntryAuthorWire> for EntryAuthor {
+    type Error = &'static str;
+
+    fn try_from(wire: EntryAuthorWire) -> std::result::Result<Self, Self::Error> {
+        let EntryAuthorWire {
+            kind,
+            reason,
+            node,
+            node_seq,
+            opening,
+        } = wire;
+        match (kind, reason, node, node_seq, opening) {
+            (AuthorKind::Opening, None, None, None, None) => Ok(Self::Opening {}),
+            (AuthorKind::Change, None, None, None, None) => Ok(Self::Change),
+            (AuthorKind::Amend, Some(Some(reason)), None, None, None) => Ok(Self::Amend { reason }),
+            (AuthorKind::Migrated, reason, Some(node), Some(node_seq), Some(opening)) => {
+                Ok(Self::Migrated {
+                    node,
+                    node_seq,
+                    opening,
+                    reason: reason.flatten(),
+                })
+            }
+            _ => Err("entry author members do not match its kind"),
+        }
+    }
 }
 
 /// One entry of the fleet-shared history, as the store holds it.

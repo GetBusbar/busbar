@@ -36,10 +36,23 @@ mod cold;
 // process lifecycle, never per request.
 mod off_path;
 
+// The outbound parts (delivery record, sealing, credit, lending, redial, the proxy tunnel, the
+// WebSocket upstream): each owns no socket and calls no plugin. They are bolted onto the native
+// dial by the plumbing cards; the `dead_code` allowance goes with the last of those cards.
+#[allow(dead_code)]
+mod outbound;
+
 // The Need handlers (IF 13): `HostNeeds` over the guard, the transport-security gate, the pool and
 // the conn table. Core-side only; no plugin text crosses it.
 pub mod need;
 pub mod response_delivery;
+
+/// The hold on an answer's last piece (`advanced.wait_for_commit`): the engine's own. When an answer must
+/// wait for its record, the engine does not give the transport the piece that completes it until the
+/// record is in; with the setting off nothing is withheld and nothing is paid.
+pub mod hold {
+    pub use crate::outbound::delivery::{Hold, Piece};
+}
 
 #[cfg(test)]
 #[path = "tests/native_need_authority_tests.rs"]

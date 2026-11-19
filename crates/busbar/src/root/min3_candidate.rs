@@ -351,11 +351,7 @@ impl Candidate {
             let epoch = app
                 .prepared_generation()
                 .ok_or("native candidate has no durable publication reservation")?;
-            let planes: Vec<_> = busbar_kernel::plane_driver::registry::plane_decls()
-                .iter()
-                .map(|plane| &plane.declaration)
-                .collect();
-            let services = super::serve::compose(dest, app, Arc::clone(&owner.core), &planes);
+            let services = super::serve::compose(dest, app, Arc::clone(&owner.core));
             let observations = owner.observers.reserve(ready.export_names())?;
             let (_, mut workers, _exports, native, selected) = super::min3_boot::finish_with_store(
                 ready,
@@ -397,7 +393,6 @@ fn native_served(
     let mut served = super::serve::Served {
         ports: native.seats.clone(),
         native: Some(native),
-        tables: app.serve_tables.clone(),
         ..Default::default()
     };
     if let Some(governance) = &app.governance {
@@ -406,6 +401,8 @@ fn native_served(
             Arc::clone(governance),
             Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::EndPost>,
         ));
+        // The exit walk reports this generation's open units through the Node.
+        node.bind_native_money(&money);
         served.billing = Some(
             busbar_kernel::plane_driver::port_billing::PortBilling::new(
                 money,

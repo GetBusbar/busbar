@@ -5,8 +5,8 @@
 
 use busbar_contract::transport::registry::facts;
 use busbar_contract::transport::{
-    CloseReason, CompositionError, Decode, Direction, DiscardCode, Encode, Framing, StatusAt,
-    TransportError, Unit0Trigger, WireStatus, WireStatusClass,
+    CloseReason, Decode, Direction, DiscardCode, Encode, Framing, StatusAt, TransportError,
+    Unit0Trigger, WireStatus, WireStatusClass,
 };
 
 /// The six spellings, written out here rather than read off the constants.
@@ -85,36 +85,6 @@ fn a_declared_key_and_a_transports_own_key_both_pass_the_registration_check() {
     );
 
     assert_eq!(facts::undeclared(&[], &[]), None);
-}
-
-#[test]
-fn a_composition_refusal_says_which_transport_and_which_layer() {
-    let unregistered = CompositionError::UnregisteredLayer {
-        transport: "dgram",
-        layer: "udp",
-    };
-    let rendered = unregistered.to_string();
-    assert!(
-        rendered.contains("dgram") && rendered.contains("udp"),
-        "{rendered}"
-    );
-    assert!(rendered.contains("no registered transport"), "{rendered}");
-
-    let undeclared = CompositionError::UndeclaredComposition {
-        transport: "duplex",
-        used: "piped",
-    };
-    let rendered = undeclared.to_string();
-    assert!(
-        rendered.contains("duplex") && rendered.contains("piped"),
-        "{rendered}"
-    );
-    assert!(rendered.contains("does not declare"), "{rendered}");
-
-    let duplicate = CompositionError::DuplicateKey("base");
-    let rendered = duplicate.to_string();
-    assert!(rendered.contains("base"), "{rendered}");
-    assert!(rendered.contains("two transports"), "{rendered}");
 }
 
 /// Every transport failure, named one at a time.

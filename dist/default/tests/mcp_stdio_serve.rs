@@ -642,15 +642,16 @@ fn a_real_created_namespace_retains_its_baseline_and_cannot_be_initialized_as_fr
     .expect("the emitted product initialization report is JSON");
     assert_eq!(report["action"], "initialize-fresh");
     assert_eq!(report["ok"], true);
-    let creation: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(dir.join("principal-namespace-creation.json")).unwrap(),
-    )
-    .unwrap();
-    let selected = common::fresh_namespace::selection(&dir).unwrap();
+    let creation =
+        json::parse_value(&std::fs::read(dir.join("principal-namespace-creation.json")).unwrap())
+            .unwrap();
+    let selected = json::to_value(&common::fresh_namespace::selection(&dir).unwrap())
+        .expect("the fixture Store selection is JSON");
     assert_eq!(creation["database"], selected["settings"]["db_path"]);
     assert_eq!(
         selected["settings"],
-        common::plugins::application_store_settings(&dir)
+        json::to_value(&common::plugins::application_store_settings(&dir))
+            .expect("the store settings are JSON")
     );
     let _ = std::fs::remove_dir_all(dir);
 }

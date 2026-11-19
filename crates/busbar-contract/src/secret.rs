@@ -3,13 +3,11 @@
 
 //! The SECRET-MODULE contract (`kind: secret` plugins). A secret module turns a config secret
 
+pub mod codes;
 use crate::secret_ref::SecretRef;
 
 /// RESOLVED SECRET BYTES, as the host holds them: the
 pub type SecretBytes = crate::redacted::Secret<Vec<u8>>;
-
-/// The result type every secret module call returns.
-pub type SecretResult<T> = Result<T, SecretModuleError>;
 
 /// The taxonomy a [`SecretModuleError`] carries: distinguishes a
 /// configuration problem an operator must fix (`NotFound`, `Invalid`, `Denied`) from an outage they
@@ -135,7 +133,7 @@ pub trait SecretResolve: Send + Sync {
             None => self.resolve(secret),
         }
         .map_err(|text| SecretRefused {
-            error_kind: crate::abi::secret::ERROR_KIND_INTERNAL,
+            error_kind: crate::secret::codes::ERROR_KIND_INTERNAL,
             text,
         })
     }

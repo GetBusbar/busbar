@@ -104,6 +104,20 @@ fn append(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CryptoErr> {
     Ok(())
 }
 
+/// The answer block of `core_service::HMAC_PARTS` as the MAC of `len` bytes: a `crypto_status`, then, only
+/// when it is OK, exactly the tag. A block shorter than a status, and an OK status followed by a tag of
+/// any other length, are a host bug, never a short value (Err(Rng)); a non-OK status is its error whatever
+/// follows it.
+fn hmac_parts_answer(block: &[u8], len: usize) -> Result<Digest, CryptoErr> {
+    let Some((status, tag)) = block.split_first_chunk::<4>() else {
+        return Err(CryptoErr::Rng);
+    };
+    match u32::from_le_bytes(*status) {
+        crypto_status::OK => Digest::copied(tag, len),
+        status => Err(crypto_err(status)),
+    }
+}
+
 mechanism! {
 
 /// Algorithm numbers. Each is exactly one `busbar-crypto` function (§5.2 table). Whether the linked backend
@@ -175,6 +189,28 @@ pub mod crypto_status {
     /// random, AEAD_SEAL, SIGN_*) or, round 23, Error::SelfTest from any call (§5.2; round 20 had put it in
     /// UNAVAILABLE, which the safe layer turned into REFUSED R_UNSUPPORTED). Safe layer: Err(Rng) → FAILED.
     pub const RNG: u32 = 5;
+}
+/// Core host services (core 3.0): the ids `Host::service` serves for every kind. A core id has no kind
+/// code in its high 32 bits (a kind's own service has its kind code there, `service_id`), so the two
+/// spaces never meet. Each service's call follows the one call shape: numbers in `head` (little-endian,
+/// natural alignment), then `texts` and `blobs` by position. An id the host does not serve is FAULT.
+pub mod core_service {
+    /// HMAC over parts (interface revision E.1). The message is the concatenation of the parts in order;
+    /// the host MACs each part where the plugin lent it, copies none and allocates nothing.
+    ///
+    /// head: `alg: u32`, an `alg::HMAC_*`. texts: none.
+    /// blobs: `[0]` = the MAC key (RAW), `[1..]` = the parts, 0 to `HMAC_PARTS_MAX` of them.
+    /// Answer block: `crypto_status: u32` (little-endian), then, only when it is OK, the tag (the alg's
+    /// length). INVALID: an alg that is no HMAC, or more than `HMAC_PARTS_MAX` parts. UNAVAILABLE: the
+    /// backend refuses the alg or the key, or does not MAC parts with that hash. LIMIT: the block has no
+    /// room for the tag. RNG: the crypto module failed, or the call was made outside an entry.
+    /// Entry status FAULT, nothing written: a head shorter than `alg`, no key blob, or a block with no
+    /// room for the status.
+    pub const HMAC_PARTS: u64 = 1;
+    /// The most parts one HMAC_PARTS call carries. Eight covers every signed-message shape a shipped
+    /// plugin builds (Standard Webhooks: 5; the SigV4 string to sign: 7); a message of more pieces is
+    /// joined by its plugin.
+    pub const HMAC_PARTS_MAX: usize = 8;
 }
 pub mod level {
     pub const ERROR: u32 = 1;
@@ -358,6 +394,12 @@ pub trait HostExt {
     fn random_into(&self, buf: &mut [u8]) -> Result<(), CryptoErr>;
     fn digest(&self, h: Hash, data: &[u8]) -> Result<Digest, CryptoErr>;
     fn hmac(&self, h: Hash, key: &[u8], data: &[u8]) -> Result<Digest, CryptoErr>;
+    /// `hmac` of `parts[0] || parts[1] || ...` under `key` (core 3.0, `core_service::HMAC_PARTS`): the host
+    /// MACs every part where it lies, so a signed body is never copied into one buffer and nothing is
+    /// allocated on either side. `hmac_parts(Md5)` and more than `core_service::HMAC_PARTS_MAX` parts are
+    /// Err(Invalid) before any call. A hash the host does not MAC parts with is Err(Unavailable): join the
+    /// message and use `hmac`. A host without the service is Err(Rng), like a null `crypto`.
+    fn hmac_parts(&self, h: Hash, key: &[u8], parts: &[&[u8]]) -> Result<Digest, CryptoErr>;
     fn pbkdf2_sha256(
         &self,
         password: &[u8],
@@ -430,7 +472,23 @@ pub trait HostExt {
     /// Round 31: the raw `migrate_admit`. Ok(()) on OK. REFUSED → Err(`Fail::refused(R_CONFIG)`), which the store
     /// returns unchanged from `open` before its first data, DDL or marker write; core substitutes its own text.
     fn migrate_admit(&self, recoverable: u64) -> Result<(), Fail>;
+    /// Core 3.0: one of a kind's own host services, by id (`service_id(kind, n)`, allotted by that kind's
+    /// contract). `call` carries the service's numbers, texts and blobs like any method call; the answer is
+    /// records written into `answer` (caller storage, at least `RawOut::MIN` bytes for a fixed answer).
+    /// Returns the status and the bytes written. A host without the entry, or an unknown id, is FAULT.
+    fn service(&self, id: u64, call: &crate::types::Call<'_>, answer: &mut [u8])
+    -> (Status, usize);
 }
+
+/// The id of host service `n` of kind `kind` (interface revision C.5): the kind code in the high half, so
+/// a kind gains a service without touching the host table or another kind's numbers.
+pub const fn service_id(kind: crate::types::KindCode, n: u32) -> u64 {
+    ((kind as u64) << 32) | n as u64
+}
+/// Store service 1: the store-open recoverable gate (was the host table's `migrate_admit`). Head: the
+/// recoverable count, `u64`. Answer: no records; OK admits, REFUSED does not.
+/// E.1: moves to the store contract crate with `HostExt::migrate_admit` when the crates are split.
+pub const SERVICE_STORE_MIGRATE_ADMIT: u64 = service_id(crate::types::KindCode::Store, 1);
 
 impl HostExt for Host {
     fn now_ns(&self) -> u64 {
@@ -443,6 +501,12 @@ impl HostExt for Host {
         self.now_ns() / 1_000_000_000
     }
     fn mono_ns(&self) -> u64 {
+        // Core 3.0: the host hands its one clock reading for the operation in with the call; inside an
+        // entry that is the answer, with no call back. Outside one (or from a host that gave none) ask.
+        let handed = busbar_ffi::shim::mono_ns();
+        if handed != 0 {
+            return handed;
+        }
         match self.fns().mono {
             Some(mono) => self.scoped(|ctx| mono(ctx)),
             None => 0,
@@ -495,6 +559,35 @@ impl HostExt for Host {
         call(self, &req(alg, key_form::RAW, key, data), |out| {
             Digest::copied(out, len)
         })
+    }
+    fn hmac_parts(&self, h: Hash, key: &[u8], parts: &[&[u8]]) -> Result<Digest, CryptoErr> {
+        let (_, len, Some(alg)) = h.algs() else {
+            return Err(CryptoErr::Invalid);
+        };
+        if parts.len() > core_service::HMAC_PARTS_MAX {
+            return Err(CryptoErr::Invalid);
+        }
+        // The key, then each part, as borrowed views on this frame: the array holds addresses and
+        // lengths only, no byte of the message.
+        let mut lent = [Bytes::EMPTY; 1 + core_service::HMAC_PARTS_MAX];
+        let message = core::iter::once(key).chain(parts.iter().copied());
+        for (slot, bytes) in lent.iter_mut().zip(message) {
+            *slot = Bytes::new(bytes);
+        }
+        let Some(blobs) = lent.get(..=parts.len()) else {
+            return Err(CryptoErr::Invalid);
+        };
+        let head = alg.to_le_bytes();
+        let call = crate::types::Call::new(0, &head, &[], blobs);
+        let mut answer = [0u8; busbar_ffi::RawOut::MIN];
+        let (status, written) = self.service(core_service::HMAC_PARTS, &call, &mut answer);
+        let mac = if status == Status::OK {
+            hmac_parts_answer(answer.get(..written).unwrap_or(&[]), len)
+        } else {
+            Err(CryptoErr::Rng)
+        };
+        answer.zeroize();
+        mac
     }
     fn pbkdf2_sha256(
         &self,
@@ -672,15 +765,31 @@ impl HostExt for Host {
         (id.0 != [0; 16]).then_some(id)
     }
     fn migrate_admit(&self, recoverable: u64) -> Result<(), Fail> {
-        let admitted = match self.fns().migrate_admit {
-            Some(admit) => self.scoped(|ctx| admit(ctx, recoverable)) == Status::OK,
-            None => false,
-        };
-        if admitted {
+        let head = recoverable.to_le_bytes();
+        let call = crate::types::Call::new(0, &head, &[], &[]);
+        let mut answer = [0u8; busbar_ffi::RawOut::MIN];
+        if self
+            .service(SERVICE_STORE_MIGRATE_ADMIT, &call, &mut answer)
+            .0
+            == Status::OK
+        {
             Ok(())
         } else {
             Err(Fail::refused(refused::R_CONFIG))
         }
+    }
+    fn service(
+        &self,
+        id: u64,
+        call: &crate::types::Call<'_>,
+        answer: &mut [u8],
+    ) -> (Status, usize) {
+        let Some(service) = self.fns().service else {
+            return (Status::FAULT, 0);
+        };
+        let mut out = busbar_ffi::RawOut::over(answer);
+        let status = self.scoped(|ctx| service(ctx, id, call, &mut out));
+        (status, out.len())
     }
 }
 /// Constant-time compare, pure code (not a crypto primitive), for token and signature checks.
@@ -757,7 +866,7 @@ mod tests {
         log_level: None,
         grow: None,
         deployment: None,
-        migrate_admit: None,
+        service: None,
     };
     static HOST: Host = Host::new(
         0,
@@ -1128,6 +1237,200 @@ mod tests {
         let oaep = h.rsa_oaep_sha1_encrypt(Key::SpkiDer(b"k"), b"p");
         assert_eq!(oaep, Err(CryptoErr::Rng));
         assert!(out.is_empty());
+    }
+
+    /// One `service` call as the test entry saw it: the id, the head, how many texts, and each blob's
+    /// address and length (so a test can tell a lent part from a copy of it).
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    struct Served {
+        id: u64,
+        head: Vec<u8>,
+        texts: usize,
+        blobs: Vec<(usize, usize)>,
+    }
+
+    std::thread_local! {
+        static SERVICE_REPLY: RefCell<(Status, Vec<u8>)> = const { RefCell::new((Status::OK, Vec::new())) };
+        static SERVED: RefCell<Vec<Served>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// A `service` entry that records the call and writes this thread's canned answer into the block.
+    extern "C" fn serve(
+        _: Ctx<'_>,
+        id: u64,
+        call: &crate::types::Call<'_>,
+        out: &mut busbar_ffi::RawOut,
+    ) -> Status {
+        SERVED.with(|served| {
+            served.borrow_mut().push(Served {
+                id,
+                head: call.head().to_vec(),
+                texts: call.texts().len(),
+                blobs: call
+                    .blobs()
+                    .iter()
+                    .map(|blob| (blob.get().as_ptr().addr(), blob.get().len()))
+                    .collect(),
+            });
+        });
+        let (status, bytes) = SERVICE_REPLY.with(|reply| reply.borrow().clone());
+        if busbar_ffi::host::answer(out, &bytes) {
+            status
+        } else {
+            Status::FAULT
+        }
+    }
+
+    static SERVICE_HOST: Host = Host::new(
+        0,
+        HostFns {
+            service: Some(serve),
+            ..NONE
+        },
+    );
+
+    /// The service entry's next answer: its status, then the answer block (a `crypto_status`, then `tag`).
+    fn service_reply(status: Status, crypto: u32, tag: &[u8]) {
+        let mut bytes = crypto.to_le_bytes().to_vec();
+        bytes.extend_from_slice(tag);
+        SERVICE_REPLY.with(|reply| *reply.borrow_mut() = (status, bytes));
+    }
+
+    fn served() -> Vec<Served> {
+        SERVED.with(|served| core::mem::take(&mut *served.borrow_mut()))
+    }
+
+    fn tag_bytes(mac: Result<Digest, CryptoErr>) -> Result<Vec<u8>, CryptoErr> {
+        mac.map(|digest| digest.as_slice().to_vec())
+    }
+
+    /// E.1: the key and every part cross as the call's blobs, each lent where it lies (same address, same
+    /// length, in order), the alg crosses in the head, and the tag is copied out of the answer block.
+    #[test]
+    fn hmac_parts_lends_the_key_and_every_part_where_it_lies() {
+        let key = b"webhook-key".to_vec();
+        let body = vec![7u8; 4096];
+        let parts: [&[u8]; 5] = [b"msg_1", b".", b"1700000000", b".", &body];
+        for (h, hmac_alg, len) in [
+            (Hash::Sha256, alg::HMAC_SHA256, 32u8),
+            (Hash::Sha384, alg::HMAC_SHA384, 48),
+            (Hash::Sha512, alg::HMAC_SHA512, 64),
+            (Hash::Sha1, alg::HMAC_SHA1, 20),
+        ] {
+            let tag: Vec<u8> = (1..=len).collect();
+            service_reply(Status::OK, crypto_status::OK, &tag);
+            let mac = SERVICE_HOST.hmac_parts(h, &key, &parts);
+            let calls = served();
+            assert_eq!(calls.len(), 1, "{h:?}: exactly one host call");
+            assert_eq!(tag_bytes(mac), Ok(tag), "{h:?}");
+            let lent: Vec<(usize, usize)> = core::iter::once(key.as_slice())
+                .chain(parts)
+                .map(|part| (part.as_ptr().addr(), part.len()))
+                .collect();
+            assert_eq!(
+                calls.first(),
+                Some(&Served {
+                    id: core_service::HMAC_PARTS,
+                    head: hmac_alg.to_le_bytes().to_vec(),
+                    texts: 0,
+                    blobs: lent,
+                }),
+                "{h:?}: the key, then each part, each where it lies"
+            );
+        }
+    }
+
+    #[test]
+    fn hmac_parts_takes_none_to_the_most_parts_and_refuses_more_and_md5_before_any_call() {
+        service_reply(Status::OK, crypto_status::OK, &[9; 32]);
+        let none = SERVICE_HOST.hmac_parts(Hash::Sha256, b"k", &[]);
+        assert_eq!(tag_bytes(none), Ok(vec![9; 32]));
+        assert_eq!(
+            served().first().map(|call| call.blobs.len()),
+            Some(1),
+            "no parts: the key alone crosses"
+        );
+        let most = [&b"p"[..]; core_service::HMAC_PARTS_MAX];
+        service_reply(Status::OK, crypto_status::OK, &[9; 32]);
+        assert_eq!(
+            tag_bytes(SERVICE_HOST.hmac_parts(Hash::Sha256, b"k", &most)),
+            Ok(vec![9; 32])
+        );
+        assert_eq!(
+            served().first().map(|call| call.blobs.len()),
+            Some(1 + core_service::HMAC_PARTS_MAX)
+        );
+        let over = [&b"p"[..]; core_service::HMAC_PARTS_MAX + 1];
+        assert_eq!(
+            SERVICE_HOST.hmac_parts(Hash::Sha256, b"k", &over).err(),
+            Some(CryptoErr::Invalid)
+        );
+        assert_eq!(
+            SERVICE_HOST.hmac_parts(Hash::Md5, b"k", &[b"m"]).err(),
+            Some(CryptoErr::Invalid)
+        );
+        assert!(
+            served().is_empty(),
+            "a refused request never reaches the host"
+        );
+    }
+
+    /// Only an OK entry status with an OK `crypto_status` and a tag of exactly the alg's length is a MAC.
+    /// Every other answer is its error: a host that answers OK and writes nothing, or writes a short or a
+    /// long tag, is never read as a tag.
+    #[test]
+    fn hmac_parts_reads_every_other_answer_as_an_error_never_a_short_tag() {
+        let mac = || SERVICE_HOST.hmac_parts(Hash::Sha256, b"key", &[b"id", b"body"]);
+        for (crypto, want) in [
+            (crypto_status::BAD, CryptoErr::Bad),
+            (crypto_status::INVALID, CryptoErr::Invalid),
+            (crypto_status::UNAVAILABLE, CryptoErr::Unavailable),
+            (crypto_status::LIMIT, CryptoErr::Limit),
+            (crypto_status::RNG, CryptoErr::Rng),
+            (99, CryptoErr::Rng),
+        ] {
+            service_reply(Status::OK, crypto, &[]);
+            assert_eq!(mac().err(), Some(want), "{crypto}");
+            // A non-OK crypto status carries no tag, whatever follows it in the block.
+            service_reply(Status::OK, crypto, &[7; 32]);
+            assert_eq!(mac().err(), Some(want), "{crypto} with trailing bytes");
+        }
+        for len in [0, 1, 31, 33, 64] {
+            service_reply(Status::OK, crypto_status::OK, &vec![7; len]);
+            assert_eq!(mac().err(), Some(CryptoErr::Rng), "a tag of {len} bytes");
+        }
+        let short: [&[u8]; 2] = [&[], &[0, 0]];
+        for block in short {
+            SERVICE_REPLY.with(|reply| *reply.borrow_mut() = (Status::OK, block.to_vec()));
+            assert_eq!(mac().err(), Some(CryptoErr::Rng), "an answer of {block:?}");
+        }
+        for status in [Status::REFUSED, Status::FAILED, Status::NEED, Status::FAULT] {
+            service_reply(status, crypto_status::OK, &[7; 32]);
+            assert_eq!(mac().err(), Some(CryptoErr::Rng), "{status:?}");
+        }
+        served();
+        // A host without the service entry: the entry's fallback, like a null `crypto`.
+        let absent = NO_CRYPTO.hmac_parts(Hash::Sha256, b"key", &[b"id", b"body"]);
+        assert_eq!(absent.err(), Some(CryptoErr::Rng));
+    }
+
+    /// The core services are part of the core contract: the id, the most parts and the stated layout live
+    /// in the block `fp::CORE_FP` folds, so moving any of them moves the fingerprint and the pin. A core id
+    /// has no kind code, so it can never be a kind's own service; and the largest answer (a status and a
+    /// 64-byte tag) fits the smallest block a plugin may hand.
+    #[test]
+    fn the_core_service_numbers_are_fixed_and_fingerprinted() {
+        assert_eq!(core_service::HMAC_PARTS, 1);
+        assert_eq!(core_service::HMAC_PARTS_MAX, 8);
+        assert_eq!(core_service::HMAC_PARTS >> 32, 0);
+        assert_ne!(core_service::HMAC_PARTS, SERVICE_STORE_MIGRATE_ADMIT);
+        for kind in crate::types::KindCode::ALL {
+            assert_ne!(service_id(kind, 1), core_service::HMAC_PARTS, "{kind:?}");
+        }
+        for token in ["core_service", "HMAC_PARTS", "HMAC_PARTS_MAX"] {
+            assert!(MECHANISM_BLOCK.contains(token), "{token}");
+        }
+        assert!(4 + 64 <= busbar_ffi::RawOut::MIN);
     }
 
     #[test]

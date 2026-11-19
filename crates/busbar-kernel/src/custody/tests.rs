@@ -475,6 +475,7 @@ fn resolve_ref_answers_kernel_callers_and_registers_in_no_instance() {
         deadline: Instant::now() + Duration::from_secs(60),
         request_id: 0,
         stack: CallStack::default(),
+        mono_ns: 0,
     };
     let value = fx
         .custody
@@ -561,6 +562,7 @@ fn kernel_cx() -> CallCx {
         deadline: Instant::now() + Duration::from_secs(60),
         request_id: 0,
         stack: CallStack::default(),
+        mono_ns: 0,
     }
 }
 

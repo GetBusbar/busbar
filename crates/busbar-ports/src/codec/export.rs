@@ -215,7 +215,7 @@ pub fn decode_delivery(describe: Records<'_>, methods: u64) -> Result<Option<u64
                 }
                 capacity = Some(pending);
             }
-            generic::D_DEST_PATH => dest = true,
+            tag::D_DEST_PATH => dest = true,
             _ => {}
         }
     }

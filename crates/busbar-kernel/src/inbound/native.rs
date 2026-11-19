@@ -7,8 +7,8 @@
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::Instant;
 
-use busbar_contract::abi::mechanism::route::RouteAuth;
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
+use busbar_contract::route::RouteAuth;
 use busbar_contract::secure::SecureVec;
 use busbar_contract::services::Caller;
 use busbar_contract::storage::{StorageCredit, StorageDenied, StorageSource};
@@ -30,8 +30,15 @@ use crate::state::{AdmissionLease, App, AppHandle, InvocationId};
 #[path = "native_refusal.rs"]
 mod refusal;
 use refusal::PreparationState;
+#[path = "native_unbilled.rs"]
+mod unbilled;
 pub use refusal::{
     DataPreparation, DataPreparationDenied, DataPreparationSuccess, PhysicalRefusal,
+    PhysicalUpgrade,
+};
+pub use unbilled::{
+    CoreKeyAuthorization, PhysicalGateRefusal, PhysicalKeyExecution, PhysicalKeyRefusal,
+    PhysicalUnbilledExecution,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,7 +88,13 @@ impl NativeTarget {
 pub enum RouteTarget {
     Plane(NativeTarget),
     Core(RouteAuth),
+    /// No sealed line matched the head ([`PhysicalPlan::with_unrouted`]): the request is answered as
+    /// an unauthenticated one, never served.
+    Unrouted,
 }
+
+/// The claimant word of the unrouted binding's line (a line no head matches: it has no path form).
+pub const UNROUTED: &str = "core/unrouted";
 
 /// Opaque token for one sealed route. Equality of paths or wire route numbers is not
 /// equality of this binding; final completion retains this exact Arc.
@@ -125,6 +138,27 @@ impl RouteBinding {
             target: RouteTarget::Core(auth),
         })
     }
+    /// The binding of a head no sealed line matched. Its line matches nothing (no methods, no path
+    /// form); only [`PhysicalPlan::with_unrouted`] hands it out.
+    fn unrouted() -> Self {
+        Self {
+            line: Line {
+                route: crate::guest::Route {
+                    methods: 0,
+                    path_form: 0,
+                    path: String::new(),
+                    fields: Vec::new(),
+                    rung: 0,
+                },
+                claimant: Claimant::Clean(UNROUTED.into()),
+                dialect: 0,
+                auth: crate::guest::LineAuth::None,
+                upgrade: None,
+                offered: Default::default(),
+            },
+            target: RouteTarget::Unrouted,
+        }
+    }
     pub fn line(&self) -> &Line {
         &self.line
     }
@@ -140,8 +174,18 @@ pub struct PhysicalPlan {
     transport: Arc<dyn TransportPort>,
     guests: GuestList,
     routes: Box<[Arc<RouteBinding>]>,
+    /// Where a head no line matches is bound ([`Self::with_unrouted`]); `None` = refused at arrival.
+    unrouted: Option<Arc<RouteBinding>>,
 }
 impl PhysicalPlan {
+    /// Bind a head no sealed line matches (no route, or a route without that method) to one
+    /// unrouted binding, answered as an unauthenticated request is: a caller that has not
+    /// authenticated cannot tell a missing route from a gated one. The binding is kept by the plan.
+    #[must_use]
+    pub fn with_unrouted(mut self) -> Self {
+        self.unrouted = Some(Arc::new(RouteBinding::unrouted()));
+        self
+    }
     /// Candidate assembly uses these same tokens to attach its actual native data plans.
     pub fn routes(&self) -> &[Arc<RouteBinding>] {
         &self.routes
@@ -185,6 +229,7 @@ impl PhysicalPlan {
             transport,
             guests,
             routes: ordered.into_boxed_slice(),
+            unrouted: None,
         })
     }
 
@@ -197,6 +242,12 @@ impl PhysicalPlan {
         }
         let line = match self.guests.matched(&head.method, &head.target, &fields) {
             Matched::Line(line) => line,
+            Matched::MethodMiss(_) | Matched::NoRoute if self.unrouted.is_some() => {
+                return self
+                    .unrouted
+                    .clone()
+                    .ok_or(ArrivalRefusal::Binding(BindError::Routes));
+            }
             Matched::MethodMiss(_) => return Err(ArrivalRefusal::Method),
             Matched::NoRoute => return Err(ArrivalRefusal::NoRoute),
         };
@@ -393,6 +444,27 @@ fn accepted_text(text: &str) -> Result<Box<str>, StorageDenied> {
 
 type Streams = Arc<Mutex<HashMap<u64, Weak<StreamState>>>>;
 
+/// A request's arrival: the ONE monotonic clock reading its admission made, and the deadline
+/// derived from that same reading. The binding records both, so nothing on the request path reads
+/// the clock again to learn when the request arrived.
+#[derive(Clone, Copy, Debug)]
+pub struct Arrival {
+    mono_ns: u64,
+    deadline: Instant,
+}
+impl Arrival {
+    /// The arrival at `mono_ns` (one reading of `store::monotonic_ns`), due `timeout` after it.
+    /// `None` when that deadline lies beyond the clock's range.
+    pub fn at(mono_ns: u64, timeout: std::time::Duration) -> Option<Arrival> {
+        busbar_contract::mono_instant::instant_at(mono_ns)
+            .checked_add(timeout)
+            .map(|deadline| Arrival { mono_ns, deadline })
+    }
+    pub fn deadline(&self) -> Instant {
+        self.deadline
+    }
+}
+
 pub struct PhysicalConnection {
     listener: PhysicalListener,
     facts: Arc<AcceptedConnection>,
@@ -409,8 +481,9 @@ impl PhysicalConnection {
         stream: u64,
         head: Head,
         request: RequestLease,
-        deadline: Option<Instant>,
+        arrival: Option<Arrival>,
     ) -> Result<(PhysicalRequest, StreamOwner), ArrivalRefusal> {
+        let deadline = arrival.map(|arrival| arrival.deadline);
         if stream == 0 {
             return Err(ArrivalRefusal::InvalidStream);
         }
@@ -456,6 +529,7 @@ impl PhysicalConnection {
             request,
             _head_credit: credit,
             deadline,
+            mono_ns: arrival.map(|arrival| arrival.mono_ns),
             facts: self.facts.clone(),
             state: state.clone(),
             stream,
@@ -583,6 +657,8 @@ pub struct RequestBinding {
     request: RequestLease,
     _head_credit: ByteCredit,
     deadline: Option<Instant>,
+    /// The arrival's one monotonic reading (`Arrival`), the one `deadline` was derived from.
+    mono_ns: Option<u64>,
     facts: Arc<AcceptedConnection>,
     state: Arc<StreamState>,
     stream: u64,
@@ -634,6 +710,12 @@ impl RequestBinding {
     }
     pub fn deadline(&self) -> Option<Instant> {
         self.deadline
+    }
+    /// The one monotonic clock reading this request's admission made, in nanoseconds on the
+    /// node's monotonic clock (`store::monotonic_ns`); its deadline was derived from it. Every
+    /// call made for this request is handed this reading; none reads the clock again for it.
+    pub fn mono_ns(&self) -> Option<u64> {
+        self.mono_ns
     }
     pub fn connection(&self) -> &AcceptedConnection {
         &self.facts
@@ -1053,6 +1135,92 @@ impl AdminPhysicalRequest {
             *state = AdminCarrierState::Refused(refusal);
         }
         Ok(PhysicalRefusalCarrier { original: self })
+    }
+}
+
+/// A native admin request the kernel's admin middleware refused, on its way back to root.
+///
+/// The middleware takes the request's pending physical owner before it judges the credential. On
+/// a refusal it has no admin unit to record the refusal under, and a refusal is output authority
+/// only once it is recorded ([`CompletingPhysicalRequest::refuse_admin`]). So the unspent owner
+/// and its carrier ride the refusing answer's extensions in this cell; root records the refusal
+/// as the request's own unit and then makes it the answer's authority. Dropped untaken, the owner
+/// cancels its request as it always did.
+#[derive(Clone, Default)]
+pub struct AdminDenialReturn {
+    held: Arc<Mutex<Option<(CompletingPhysicalRequest, AdminPhysicalRequest)>>>,
+}
+impl AdminDenialReturn {
+    /// The unspent owner and its carrier, once.
+    pub fn take(&self) -> Option<(CompletingPhysicalRequest, AdminPhysicalRequest)> {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// Put this cell in `response`'s extensions if it holds a refused request's owner.
+    pub(crate) fn ride(&self, response: &mut axum::response::Response) {
+        let holds = self
+            .held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some();
+        if holds {
+            response.extensions_mut().insert(self.clone());
+        }
+    }
+}
+
+/// The admin middleware's hold on a native request's pending owner. It reads as the
+/// `Option<CompletingPhysicalRequest>` it holds. Dropped with the owner still unspent (every
+/// refusing return of the middleware), it moves owner and carrier into its [`AdminDenialReturn`]
+/// instead of dropping, and so cancelling, the request. A request that carries no pending owner (every
+/// request that is not a native admin one) has no return cell: nothing is allocated for it.
+pub(crate) struct HeldAdminPending {
+    pending: Option<CompletingPhysicalRequest>,
+    carrier: Option<AdminPhysicalRequest>,
+    back: Option<AdminDenialReturn>,
+}
+impl HeldAdminPending {
+    /// Take the pending owner out of `carrier`, if the request carries one, with the cell an
+    /// unspent owner returns in.
+    pub(crate) fn take_from(
+        carrier: Option<AdminPhysicalRequest>,
+    ) -> Result<(Self, Option<AdminDenialReturn>), ArrivalRefusal> {
+        let pending = carrier
+            .as_ref()
+            .map(AdminPhysicalRequest::take)
+            .transpose()?;
+        let back = pending.as_ref().map(|_| AdminDenialReturn::default());
+        Ok((
+            Self {
+                pending,
+                carrier,
+                back: back.clone(),
+            },
+            back,
+        ))
+    }
+}
+impl std::ops::Deref for HeldAdminPending {
+    type Target = Option<CompletingPhysicalRequest>;
+    fn deref(&self) -> &Self::Target {
+        &self.pending
+    }
+}
+impl std::ops::DerefMut for HeldAdminPending {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pending
+    }
+}
+impl Drop for HeldAdminPending {
+    fn drop(&mut self) {
+        if let (Some(pending), Some(carrier), Some(back)) =
+            (self.pending.take(), self.carrier.take(), self.back.as_ref())
+        {
+            *back.held.lock().unwrap_or_else(PoisonError::into_inner) = Some((pending, carrier));
+        }
     }
 }
 

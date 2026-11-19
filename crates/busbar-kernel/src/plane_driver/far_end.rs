@@ -57,6 +57,7 @@ use busbar_contract::abi::transport::{
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{CallId, Pass, ReasonCode, Route};
 use busbar_contract::clock::{Deadline, HostClock, Reading as HostReading};
+use busbar_contract::conn::codes::CAUSE_PROXY;
 use busbar_contract::conn::{
     ConnCause, ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
@@ -73,13 +74,17 @@ use busbar_kernel_egress::{
 };
 
 use super::hooks::{CandidateFacts, Candidates, Constraint};
-use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
+use super::route::{FarEnd, FarMessage, FarPiece, OutboundRequest, Pick, RIDE_WEBSOCKET};
 
 use busbar_contract::conn::CONTENT_LENGTH;
 
 const READ_BYTES: usize = 16 * 1024;
 
 const WRITE_PAUSE_MAX_MS: u64 = 64;
+
+/// How often the engine's close of a WebSocket far end is offered to a connection that is not ready for it
+/// (about two seconds of pauses) before the attempt's end closes the connection without it.
+const CLOSE_TRIES: u32 = 40;
 
 pub const DEFAULT_ERROR_BODY_MAX: usize = 256 * 1024;
 
@@ -139,6 +144,25 @@ impl MemberRoute {
             .iter()
             .find(|(id, _)| *id == need)
             .map_or(&self.anchors, |(_, anchors)| anchors)
+    }
+
+    /// The need a `CARRIER_WEBSOCKET` request rides, as a far request names it (its index plus one; `0` =
+    /// the member's own): the bound need whose transport spells the member's base URL `ws://` or `wss://`,
+    /// or the member's own when the operator spelled the provider's `base_url` that way. `None` = the
+    /// member has no WebSocket ride: such a request is not sent to it.
+    #[must_use]
+    pub fn websocket_ride(&self) -> Option<u32> {
+        fn websocket(url: &str) -> bool {
+            let scheme = |name: &str| {
+                url.get(..name.len())
+                    .is_some_and(|head| head.eq_ignore_ascii_case(name))
+            };
+            scheme("ws://") || scheme("wss://")
+        }
+        if let Some((need, _)) = self.spelled.iter().find(|(_, url)| websocket(url)) {
+            return need.0.checked_add(1);
+        }
+        websocket(&self.base_url).then_some(0)
     }
 
     #[must_use]
@@ -335,6 +359,7 @@ fn clocked(clock: &HostClock) -> Clocked {
 struct Dialing {
     secs: u64,
     millis: u128,
+    mono_ns: u64,
     at: std::time::Instant,
 }
 
@@ -343,6 +368,7 @@ fn dialing(clock: &HostClock) -> Dialing {
     Dialing {
         secs: secs_of(at),
         millis: millis_of(at),
+        mono_ns: at.mono_ns,
         at: clock.instant(Deadline::at(at.mono_ns)),
     }
 }
@@ -581,6 +607,10 @@ struct Live {
     /// The need the attempt's far request named (`OutboundRequest::need`): its keep rule is the route's, read
     /// by borrow when the head arrives. `None` until the attempt's open succeeds (keeps nothing).
     need: Option<u32>,
+
+    /// The attempt rides the member's WebSocket transport: after its 101 the body pieces are message
+    /// pieces ([`FarPiece::message`]) and the engine's close is a frame ([`FarEnd::close`]).
+    messages: bool,
 
     unjudged: Option<Unjudged>,
 
@@ -1117,6 +1147,8 @@ enum NoAnswer {
     Connect,
     /// A deadline passed first: the member's own attempt cap, or the walk's.
     Timeout,
+    /// The operator's egress proxy failed or refused the tunnel: the member was never reached.
+    Proxy,
 }
 
 impl NoAnswer {
@@ -1391,6 +1423,7 @@ impl EgressFarEnd<'_> {
             ended: false,
             error_left: None,
             need: None,
+            messages: false,
             unjudged: None,
             failing: None,
             stated: None,
@@ -1483,12 +1516,24 @@ impl EgressFarEnd<'_> {
             let mut retirement = Retirement { owner: self, live };
             let live = &mut retirement.live;
             let now = at.secs;
+            if matches!(cause, NoAnswer::Proxy) {
+                // The member was never reached: no breaker charge (and no probe verdict), no upstream
+                // failure stated against it. The failover is counted under its own reason.
+                let pool = Self::metric_pool(&live.pool, &live.member);
+                e.telemetry.failover(pool, net::PROXY);
+                live.probe = None;
+                self.lock().failed = Some(net::PROXY);
+                retirement.finish();
+                return fail_over();
+            }
             let (failure, failover) = match cause {
                 NoAnswer::Connect => (disposition::TRANSIENT, net::CONNECT),
                 NoAnswer::Timeout if live.member.attempt_timeout_ms.is_some() => {
                     (disposition::ATTEMPT_TIMEOUT, disposition::ATTEMPT_TIMEOUT)
                 }
                 NoAnswer::Timeout => (disposition::TRANSIENT, net::TIMEOUT),
+                // Answered above.
+                NoAnswer::Proxy => (disposition::TRANSIENT, net::PROXY),
             };
             let outcome = Outcome::Transient { retry_after: None };
             if let Some(destination) = self.probe_of {
@@ -1626,6 +1671,7 @@ impl EgressFarEnd<'_> {
                     deadline: now.at + Duration::from_millis(self.attempt_cap(now.millis)),
                     request_id: self.route.unit.get(),
                     stack: Default::default(),
+                    mono_ns: now.mono_ns,
                 },
                 &input,
             )
@@ -1770,7 +1816,19 @@ impl EgressFarEnd<'_> {
             return false;
         };
 
-        let Some((need, base_url)) = route.ride(request.need).map(|r| (r.need, r.base_url)) else {
+        // A request that rides the member's WebSocket transport names no need of its own: it is the member's
+        // need whose transport spells the base URL `ws://` or `wss://`. A member with none bound is not sent
+        // to (the walk moves on; the caller of an upgrade is answered before any 101).
+        let websocket = request.need == RIDE_WEBSOCKET;
+        let ride_named = if websocket {
+            route.websocket_ride()
+        } else {
+            Some(request.need)
+        };
+        let Some((need, base_url)) = ride_named
+            .and_then(|named| route.ride(named))
+            .map(|r| (r.need, r.base_url))
+        else {
             self.lock().unsent = Some(RefusalCode::UnsentNeedUnbound);
             self.settle_attempt(&record);
             return false;
@@ -2154,7 +2212,8 @@ impl EgressFarEnd<'_> {
                     }
                     w.sent = true;
                     if let Some(live) = w.live.as_mut() {
-                        live.need = Some(request.need);
+                        live.need = Some(ride_named.unwrap_or(request.need));
+                        live.messages = websocket;
                         live.conn = Some(conn);
                         live.anchor_ms = now_ms;
                         live.anchor_us = now_us;
@@ -2201,6 +2260,37 @@ impl EgressFarEnd<'_> {
             return false;
         };
         self.write_to(conn, &body, text).await
+    }
+
+    /// The engine's close of a held WebSocket far end: the connection table's empty write that ends (after
+    /// a finished message it is the close frame, `Conns::write`), offered until the connection takes it. The
+    /// reads go on to the far end's own close; the attempt is settled by them as any answer's end is.
+    async fn close_messages(&self) -> bool {
+        let conn = {
+            let w = self.lock();
+            match w.live.as_ref() {
+                Some(live) if live.messages && live.answered && !live.ended => live.conn,
+                _ => None,
+            }
+        };
+        let Some(conn) = conn else {
+            return false;
+        };
+        let e = self.egress;
+        let mut pause_ms = 1;
+        // Bounded like a frame's write: the pauses double to `WRITE_PAUSE_MAX_MS`, and a connection that
+        // never takes the close within the tries below is closed by the attempt's end instead.
+        for _ in 0..CLOSE_TRIES {
+            match e.conns.write(e.caller, conn, &[], true, false) {
+                Ok(_) => return true,
+                Err(ConnError::Pending) => {
+                    tokio::time::sleep(Duration::from_millis(pause_ms)).await;
+                    pause_ms = (pause_ms * 2).min(WRITE_PAUSE_MAX_MS);
+                }
+                Err(_) => return false,
+            }
+        }
+        false
     }
 
     async fn write_to(&self, conn: ConnId, body: &[u8], text: bool) -> bool {
@@ -2287,6 +2377,11 @@ impl EgressFarEnd<'_> {
                     Some(cause) if cause.stage == CAUSE_FRAMER && cause.outbound => {
                         self.local_fault(token, &cause)
                     }
+                    // A proxy failure is the proxy's: v1.5.5 recorded it against the provider, so a proxy
+                    // outage tripped every breaker. No member is charged; the walk moves on.
+                    Some(cause) if cause.stage == CAUSE_PROXY => {
+                        self.no_answer(token, NoAnswer::Proxy, at)
+                    }
                     _ => self.no_answer(token, NoAnswer::of(ConnError::Fault), at),
                 });
             }
@@ -2294,7 +2389,16 @@ impl EgressFarEnd<'_> {
                 return Some(self.no_answer(token, NoAnswer::of(err), at));
             }
 
-            Err(_) | Ok(Err(_)) => return Some(self.cut(token, at)),
+            Err(_) => return Some(self.cut(token, at)),
+            Ok(Err(_)) => {
+                // A far end whose wire carries messages may have closed with a code of its own: the
+                // connection table states it once the read has failed (`None` on every other wire).
+                let close_code = e.conns.close_code(e.caller, conn);
+                return Some(FarPiece {
+                    close_code,
+                    ..self.cut(token, at)
+                });
+            }
             Ok(Ok(piece)) => piece,
         };
         let buf = &scratch.buf;
@@ -2306,10 +2410,19 @@ impl EgressFarEnd<'_> {
             PieceKind::Fields | PieceKind::HookReply => {
                 self.trailers(&piece, buf[..piece.len].to_vec())
             }
-            PieceKind::Body if answered => self.capped(FarPiece {
-                bytes: buf[..piece.len].to_vec(),
-                ..FarPiece::default()
-            }),
+            PieceKind::Body if answered => {
+                // A WebSocket far end that answered 101: the piece is of a message, and says so (its end
+                // from the transport's own mark; its kind from the connection table, where it states one).
+                let messages = self.lock().live.as_ref().is_some_and(|l| l.messages);
+                self.capped(FarPiece {
+                    bytes: buf[..piece.len].to_vec(),
+                    message: messages.then(|| FarMessage {
+                        text: e.conns.message_text(e.caller, conn),
+                        fin: piece.end,
+                    }),
+                    ..FarPiece::default()
+                })
+            }
             PieceKind::Body => self.first_piece(token, &piece, buf[..piece.len].to_vec(), at),
         };
 
@@ -3113,6 +3226,10 @@ impl FarEnd for EgressFarEnd<'_> {
         request: OutboundRequest,
     ) -> impl Future<Output = bool> + Send + 'a {
         self.write_frame(request.body, request.text)
+    }
+
+    fn close<'a>(&'a self, _token: &'a Pass<Route>) -> impl Future<Output = bool> + Send + 'a {
+        self.close_messages()
     }
 }
 

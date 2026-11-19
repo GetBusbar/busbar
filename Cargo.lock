@@ -374,7 +374,6 @@ dependencies = [
  "object",
  "proc-macro2",
  "quote",
- "regex",
  "syn 2.0.117",
 ]
 
@@ -390,12 +389,13 @@ dependencies = [
 name = "busbar-contract"
 version = "1.6.0"
 dependencies = [
- "async-trait",
  "base64 0.22.1",
  "busbar-artifact-metadata",
+ "busbar-contract",
  "busbar-count",
  "busbar-crypto",
  "busbar-json",
+ "busbar-seal",
  "busbar-secure",
  "bytes",
  "ciborium",
@@ -403,7 +403,6 @@ dependencies = [
  "futures",
  "hex",
  "http",
- "hyper",
  "idna",
  "indexmap",
  "jsonschema",
@@ -426,8 +425,6 @@ dependencies = [
  "tikv-jemallocator",
  "time",
  "tracing",
- "tracing-core",
- "tracing-log",
  "windows-sys 0.61.2",
  "zeroize",
 ]
@@ -468,8 +465,6 @@ dependencies = [
  "busbar-plugin-abi",
  "busbar-plugin-loader",
  "busbar-ports",
- "crc32fast",
- "dimpl",
  "foldhash",
  "futures",
  "hex",
@@ -478,14 +473,12 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
- "mime",
  "rustls",
  "rustls-pki-types",
  "rustls-webpki",
  "serde_json",
  "smallvec",
  "socket2",
- "tikv-jemallocator",
  "time",
  "tokio",
  "tokio-rustls",
@@ -581,6 +574,7 @@ dependencies = [
  "futures",
  "http",
  "jsonschema",
+ "memchr",
  "serde",
  "sonic-rs",
 ]
@@ -604,6 +598,7 @@ dependencies = [
  "busbar-plugin-abi",
  "busbar-plugin-loader",
  "busbar-ports",
+ "busbar-seal",
  "bytes",
  "foldhash",
  "futures",
@@ -727,7 +722,6 @@ dependencies = [
  "busbar-secure",
  "crossbeam-queue",
  "hex",
- "hyper",
  "percent-encoding",
  "zerocopy",
  "zeroize",
@@ -739,6 +733,8 @@ version = "1.6.0"
 dependencies = [
  "busbar-plugin-abi",
  "busbar-plugin-loader",
+ "busbar-plugin-test",
+ "busbar-ports",
  "sharded-slab",
 ]
 
@@ -752,7 +748,6 @@ dependencies = [
  "busbar-artifact-verifier",
  "busbar-contract",
  "busbar-ffi",
- "busbar-kernel-breaker",
  "busbar-plugin-abi",
  "busbar-ports",
  "flate2",
@@ -778,6 +773,7 @@ dependencies = [
  "tracing-core",
  "tungstenite",
  "windows-sys 0.61.2",
+ "zerocopy",
  "zeroize",
 ]
 
@@ -795,12 +791,9 @@ dependencies = [
  "busbar-plugin-test",
  "busbar-ports",
  "hex",
- "http-body-util",
  "httparse",
- "hyper",
- "hyper-util",
  "rustls",
- "sonic-rs",
+ "stats_alloc",
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
@@ -814,9 +807,14 @@ name = "busbar-ports"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "busbar-ffi",
  "busbar-plugin-abi",
  "zeroize",
 ]
+
+[[package]]
+name = "busbar-seal"
+version = "1.6.0"
 
 [[package]]
 name = "busbar-secure"
@@ -1423,8 +1421,8 @@ dependencies = [
 
 [[package]]
 name = "granit-parser"
-version = "2.1.0"
-source = "git+https://github.com/MattJackson/granit-parser?rev=d31e9292a0be49de7d3a85ee07555bb9d0afce20#d31e9292a0be49de7d3a85ee07555bb9d0afce20"
+version = "2.2.0"
+source = "git+https://github.com/MattJackson/granit-parser?rev=6597ae7f5622872c6e242af590342de05300d601#6597ae7f5622872c6e242af590342de05300d601"
 dependencies = [
  "arraydeque",
  "smallvec",
@@ -1432,8 +1430,8 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.18"
-source = "git+https://github.com/MattJackson/h2?rev=6bdbf046878247aebe9138f37f32d2665b54bdd9#6bdbf046878247aebe9138f37f32d2665b54bdd9"
+version = "0.4.20"
+source = "git+https://github.com/MattJackson/h2?rev=e5609a5e5dff1cccf43ff0e11c7cd758884dbe83#e5609a5e5dff1cccf43ff0e11c7cd758884dbe83"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1499,8 +1497,8 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "http"
-version = "1.4.1"
-source = "git+https://github.com/MattJackson/http?rev=904f4519b5f27a0424b121a4828640c741efcd95#904f4519b5f27a0424b121a4828640c741efcd95"
+version = "1.5.0"
+source = "git+https://github.com/MattJackson/http?rev=7e71322105371bae475f8e68d86324e73f4a11c9#7e71322105371bae475f8e68d86324e73f4a11c9"
 dependencies = [
  "bytes",
  "itoa",
@@ -1552,8 +1550,8 @@ dependencies = [
 
 [[package]]
 name = "hyper"
-version = "1.11.1"
-source = "git+https://github.com/MattJackson/hyper?rev=c140435f43477ca3ffbdb2078a5994e9dfb11969#c140435f43477ca3ffbdb2078a5994e9dfb11969"
+version = "1.12.0"
+source = "git+https://github.com/MattJackson/hyper?rev=ebd3f6cff06032f9bcf531a5144309d8906e438b#ebd3f6cff06032f9bcf531a5144309d8906e438b"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1573,15 +1571,16 @@ dependencies = [
 
 [[package]]
 name = "hyper-util"
-version = "0.1.20"
-source = "git+https://github.com/MattJackson/hyper-util?rev=b4c554c133c7fc83ee55a9ce0271849f7387994d#b4c554c133c7fc83ee55a9ce0271849f7387994d"
+version = "0.1.21"
+source = "git+https://github.com/MattJackson/hyper-util?rev=6008c6a4a06490b18a8c057d3944739d4a51424e#6008c6a4a06490b18a8c057d3944739d4a51424e"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "futures-channel",
  "futures-util",
  "http",
  "http-body",
+ "httparse",
  "hyper",
  "ipnet",
  "libc",
@@ -2615,8 +2614,8 @@ dependencies = [
 
 [[package]]
 name = "serde-saphyr"
-version = "2.1.1"
-source = "git+https://github.com/MattJackson/serde-saphyr?rev=a94d2da01a448d348b5d14945e29192e511b8452#a94d2da01a448d348b5d14945e29192e511b8452"
+version = "2.2.0"
+source = "git+https://github.com/MattJackson/serde-saphyr?rev=34461cdf00e17aea91654dc744aa6ae585458411#34461cdf00e17aea91654dc744aa6ae585458411"
 dependencies = [
  "annotate-snippets",
  "base64 0.22.1",
@@ -3293,9 +3292,9 @@ checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
 
 [[package]]
 name = "want"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e"
+checksum = "ec4cdd0dd910afe868b7ef477227d8d538b46b3075031afee8a9f2acb0a2ed0b"
 dependencies = [
  "try-lock",
 ]

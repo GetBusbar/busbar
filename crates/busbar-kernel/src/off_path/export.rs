@@ -17,10 +17,10 @@ use crate::export::projection::{
 };
 use crate::limits::admission::AdmissionGate;
 use crate::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind};
-use busbar_contract::abi::export::{CheckPhase, ExportField};
-use busbar_contract::abi::mechanism::route::Route;
+use busbar_contract::export_calls::codes::{CheckPhase, ExportField};
 use busbar_contract::export_calls::ExportAxis;
 use busbar_contract::export_stream::ExportStream;
+use busbar_contract::route::Route;
 use std::sync::Arc;
 
 // --- export (mod.rs) ---
@@ -615,7 +615,7 @@ pub(crate) fn check_one_instance(
                 .collect();
             axis.check(
                 module,
-                busbar_contract::abi::export::CHECK_PHASE_LIMITS,
+                busbar_contract::export_calls::codes::CHECK_PHASE_LIMITS,
                 &instances,
             )
         })
@@ -653,8 +653,8 @@ pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>
         return;
     };
     let phase = match phase {
-        CheckPhase::Limits => busbar_contract::abi::export::CHECK_PHASE_LIMITS,
-        CheckPhase::Instances => busbar_contract::abi::export::CHECK_PHASE_INSTANCES,
+        CheckPhase::Limits => busbar_contract::export_calls::codes::CHECK_PHASE_LIMITS,
+        CheckPhase::Instances => busbar_contract::export_calls::codes::CHECK_PHASE_INSTANCES,
     };
     let mut modules: Vec<&str> = Vec::new();
     for p in &cfg.plugins {

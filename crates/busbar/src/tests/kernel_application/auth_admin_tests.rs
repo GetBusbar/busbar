@@ -28,12 +28,7 @@ async fn admin_plugin_full_binding_allows_mutation() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32]))
@@ -149,12 +144,7 @@ async fn admin_max_admin_scope_caps_binding() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32]))
@@ -265,12 +255,7 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32]))
@@ -417,12 +402,7 @@ async fn roleless_external_admin_principal_denied() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "ext-admin", true);
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32]))
@@ -526,12 +506,7 @@ async fn forbidden_admin_requests_audit_once_per_window() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32]))
@@ -658,12 +633,7 @@ async fn the_admin_gate_admits_only_the_listed_verbs() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32]))
@@ -955,12 +925,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let mut oidc_settings = common::credentials::settings("api://auth-admin-pending");
     // READY sees an empty (valid) key set. Only VERIFY's missing-key rotation
@@ -1278,12 +1243,7 @@ async fn external_admin_verifier_receives_bearer_and_admin_header_candidates() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32]))
@@ -1406,7 +1366,7 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
         fn issued_shape(&self) -> Option<IssuedShape> {
             self.actual.issued_shape()
         }
-        fn inbound_points(&self) -> busbar_contract::abi::auth::AuthPoints {
+        fn inbound_points(&self) -> busbar_contract::route::AuthPoints {
             self.actual.inbound_points()
         }
         fn carriers(&self) -> Arc<[String]> {
@@ -1453,12 +1413,7 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let signing = directory.join("signing-key");
     std::fs::write(&signing, hex::encode([9u8; 32]))

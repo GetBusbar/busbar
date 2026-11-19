@@ -140,6 +140,31 @@ impl PooledOut {
             held.clear();
         }
     }
+    /// The block and the bytes written, out of the handle (empty after): a chain's request, lent to busbar-ffi
+    /// until the chain's token retires (`proxy::staged`). Anything exposed past the written bytes is zeroed here,
+    /// so the block holds data only in `[0, len)`, which busbar-ffi zeroes before it hands the block to `give_back`.
+    pub(crate) fn take_block(&mut self) -> Option<(Vec<u8>, usize)> {
+        let mut held = self.buf.take()?;
+        let len = held.len.min(held.cap());
+        let end = held.high_water.min(held.cap()).max(len);
+        if let Some(tail) = held.buf.get_mut(len..end) {
+            wipe(tail);
+        }
+        Some((core::mem::take(&mut held.buf), len))
+    }
+    /// Zeroes what the block exposed and frees it, never to a queue (a sync answer that grew: the thread does
+    /// not keep it and neither does the pool). The handle is empty after.
+    fn discard(&mut self) {
+        if let Some(mut held) = self.buf.take() {
+            held.clear();
+            if let Some(observer) = OBSERVER.get() {
+                observer(PoolEvent::Released {
+                    block: held.buf.as_ptr().addr(),
+                    bytes: &held.buf,
+                });
+            }
+        }
+    }
     /// Appends `bytes` as they are, no record head: a request argument the interface states as plain bytes (a
     /// store `clock`'s 16-byte dataset, ABI-MIN3-INTERFACE §8.8). Full: nothing changed.
     pub fn put_bytes(&mut self, bytes: &[u8]) -> Result<(), Full> {
@@ -170,15 +195,23 @@ impl PooledOut {
         }
     }
 
-    /// Lends the buffer to one entry as busbar-ffi's `OutLease` (which zero-fills it and grows it within
-    /// `max_out`), runs `call`, and takes the buffer back with the plugin-stated length clamped to the
-    /// buffer's own capacity (r4 H2; round 13's mark update). None: the handle is empty, or the thread's ACTIVE
-    /// stack is full (busbar-ffi `DEPTH`); the buffer is then gone (zeroed by the lease) and the handle empty.
+    /// Lends the buffer to one entry as busbar-ffi's `OutLease` (which grows it within `max_out`), runs `call`,
+    /// and takes the buffer back with the plugin-stated length clamped to the buffer's own capacity (r4 H2;
+    /// round 13's mark update). The block is lent as it is (`OutLease::clean`): a held block is all zero,
+    /// because it was allocated zeroed and every use was wiped over its mark when it was reset or released, so
+    /// the lease does not zero it a second time. The mark is the length the plugin stated (and what `grow`
+    /// exposed): the host relies on the plugin writing only within it, which the SDK's `Out` always does; what
+    /// the host guarantees and what it relies on are set out on `OutLease::clean`. None: the handle is empty, or the thread's ACTIVE
+    /// stack is full (busbar-ffi `DEPTH`); the handle is then empty and the block freed (it holds only zeros).
     /// If `call` unwinds, the lease's Drop zeroes the buffer and the handle stays empty.
     pub(crate) fn lend<R>(&mut self, call: impl FnOnce(&mut OutLease) -> R) -> Option<R> {
         let mut held = self.buf.take()?;
+        if held.len != 0 || held.high_water != 0 {
+            // Host writes not yet reset (a request staged in this buffer): zero them before the plugin sees it.
+            held.clear();
+        }
         let block = core::mem::take(&mut held.buf);
-        let mut lease = OutLease::new(block, held.max_out)?;
+        let mut lease = OutLease::clean(block, held.max_out)?;
         let answer = call(&mut lease);
         let (block, len) = lease.into_buf();
         held.buf = block;
@@ -485,50 +518,89 @@ impl Pool {
     }
 }
 
-/// One thread's two sync buffers, and whether a sync call on this thread holds them (C-NESTED).
+/// Where busbar-ffi hands back a chain's request block (`take_block`) once the chain's token retired and it zeroed
+/// the request bytes: back to the global pool's queue of its class, as a release does (a block of no class is
+/// freed). The block is all zero when it arrives, so the release has nothing to wipe.
+pub(crate) fn give_back(block: Vec<u8>) {
+    Pool::global().release(OutBuf {
+        buf: block,
+        len: 0,
+        high_water: 0,
+        max_out: 0,
+    });
+}
+
+/// One thread's two sync buffers. A sync call borrows them in place for its length; a nested sync call on the same
+/// thread finds them borrowed (C-NESTED) and takes fresh pooled buffers instead.
 struct SyncBufs {
     args: PooledOut,
     out: PooledOut,
-    busy: bool,
 }
 
 std::thread_local! {
     /// The thread's sync buffers; their destructor zeroes and releases both at thread exit (PooledOut's Drop).
     static SYNC: RefCell<SyncBufs> = const {
-        RefCell::new(SyncBufs { args: PooledOut::empty(), out: PooledOut::empty(), busy: false })
+        RefCell::new(SyncBufs { args: PooledOut::empty(), out: PooledOut::empty() })
     };
 }
 
-/// Hands a sync call's two buffers back after the call, on return and on unwind: both reset, a buffer that grew
-/// past class 1 swapped for a class-0 one, the thread's holder marked free.
-struct SyncLoan {
-    args: PooledOut,
-    out: PooledOut,
+/// After a sync call, on return and on unwind: zero what the call wrote and empty the buffer; a buffer that grew
+/// past class 0 for a large answer is freed (zeroed first), so no thread keeps a large block, and the next call
+/// on the thread takes a class-0 block from the pool again.
+fn settle(buf: &mut PooledOut) {
+    buf.reset();
+    if buf.capacity() > CLASSES[0] {
+        buf.discard();
+    }
 }
 
-impl Drop for SyncLoan {
-    fn drop(&mut self) {
-        let mut args = core::mem::take(&mut self.args);
-        let mut out = core::mem::take(&mut self.out);
-        for buf in [&mut args, &mut out] {
-            buf.reset();
-            if buf.capacity() > CLASSES[1] {
-                *buf = PooledOut::empty();
-            }
+/// A thread buffer lent to one sync call in place: ready for `max_out` on the way in, settled on the way out (on
+/// return and on unwind).
+struct Lent<'b>(&'b mut PooledOut);
+
+impl<'b> Lent<'b> {
+    fn new(buf: &'b mut PooledOut, max_out: usize) -> Self {
+        if !buf.is_held() {
+            *buf = Pool::global().acquire(max_out);
         }
-        let _ = SYNC.try_with(|cell| {
-            let mut bufs = cell.borrow_mut();
-            bufs.args = args;
-            bufs.out = out;
-            bufs.busy = false;
-        });
+        buf.set_max_out(max_out);
+        Lent(buf)
     }
+}
+
+impl Drop for Lent<'_> {
+    fn drop(&mut self) {
+        settle(self.0);
+    }
+}
+
+/// Whether this thread's sync buffers can be reached at all (false only while the thread's locals are being
+/// torn down at its exit).
+fn reachable() -> bool {
+    SYNC.try_with(|_| ()).is_ok()
+}
+
+/// `sync_bufs` for a sync call with no records argument (transport session methods, plane steps, auth `verify`):
+/// only the thread's answer buffer is lent, in place, and settled, under the same rules (nested, or the thread
+/// exiting: a fresh pooled buffer).
+pub fn sync_out<R>(max_out: usize, f: impl FnOnce(&mut PooledOut) -> R) -> R {
+    if !reachable() {
+        return f(&mut Pool::global().acquire(max_out));
+    }
+    SYNC.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut bufs) => {
+            let out = Lent::new(&mut bufs.out, max_out);
+            f(&mut *out.0)
+        }
+        Err(_) => f(&mut Pool::global().acquire(max_out)),
+    })
 }
 
 /// Sync calls: each thread keeps two PooledOuts in a thread-local for its sync entries (a sync call never
 /// crosses a thread, I5): `args` for a records argument core encodes (hook view, render arg, transport event)
 /// and `out` for the answer. Taken from `Pool::global()` once; no queue op per sync call. A thread-local buffer
-/// that grew past class 1 is released and replaced by a class-0 buffer after the call, so no thread pins 16 MiB.
+/// that grew past class 0 for a large answer is zeroed and freed after the call (`settle`), so no thread keeps
+/// a large block and no later call on it pays for one; the next call takes a class-0 block from the pool.
 /// **Per-call zeroing (round 6, I11):** when `f` returns (so every `Answer` borrowing `out` is gone, which the
 /// borrow checker enforces), both buffers are `reset()`: zero `[0, min(max(len, high_water), own_cap))` and `len = 0`, where
 /// `high_water` is the furthest byte this call wrote or exposed through `grow` (reset to 0 by `reset`). That is
@@ -541,34 +613,24 @@ pub fn sync_bufs<R>(
     max_out: usize,
     f: impl FnOnce(&mut PooledOut /* args */, &mut PooledOut /* out */) -> R,
 ) -> R {
-    let loaned = SYNC
-        .try_with(|cell| {
-            let mut bufs = cell.borrow_mut();
-            if bufs.busy {
-                return None;
-            }
-            bufs.busy = true;
-            Some((
-                core::mem::take(&mut bufs.args),
-                core::mem::take(&mut bufs.out),
-            ))
-        })
-        .ok()
-        .flatten();
-    let Some((args, out)) = loaned else {
-        // Nested (or the thread is exiting): fresh buffers, zeroed and released on drop.
-        let mut args = Pool::global().acquire(max_out);
-        let mut out = Pool::global().acquire(max_out);
-        return f(&mut args, &mut out);
-    };
-    let mut loan = SyncLoan { args, out };
-    for buf in [&mut loan.args, &mut loan.out] {
-        if !buf.is_held() {
-            *buf = Pool::global().acquire(max_out);
-        }
-        buf.set_max_out(max_out);
+    // Nested, or the thread is exiting: fresh buffers, zeroed and released on drop.
+    if !reachable() {
+        return f(
+            &mut Pool::global().acquire(max_out),
+            &mut Pool::global().acquire(max_out),
+        );
     }
-    f(&mut loan.args, &mut loan.out)
+    SYNC.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut bufs) => {
+            let SyncBufs { args, out } = &mut *bufs;
+            let (args, out) = (Lent::new(args, max_out), Lent::new(out, max_out));
+            f(&mut *args.0, &mut *out.0)
+        }
+        Err(_) => f(
+            &mut Pool::global().acquire(max_out),
+            &mut Pool::global().acquire(max_out),
+        ),
+    })
 }
 
 /// The buffers one async chain owns, all from `Pool::global()`: `req` (the §8.8 request records), `out` (two,
@@ -887,6 +949,48 @@ mod tests {
         sync_bufs(64 << 20, |_, out| {
             assert_eq!(out.capacity(), CLASSES[0], "no thread pins a large block");
         });
+    }
+
+    #[test]
+    fn a_sync_answer_buffer_that_grew_at_all_is_freed_not_kept() {
+        sync_out(64 << 20, |out| {
+            out.put(tag::TEXT, &vec![1u8; CLASSES[0] + 1])
+                .expect("grows");
+            assert_eq!(out.capacity(), CLASSES[1]);
+        });
+        sync_out(64 << 20, |out| {
+            assert_eq!(
+                out.capacity(),
+                CLASSES[0],
+                "the thread keeps no grown block"
+            );
+            assert!(all_zero(out.whole()));
+        });
+    }
+
+    #[test]
+    fn a_lend_zeroes_host_bytes_not_yet_reset_and_no_more() {
+        let mut buf = Pool::global().acquire(1 << 20);
+        buf.put(tag::TEXT, b"a request the host staged")
+            .expect("fits");
+        assert_eq!(buf.lend(|lease| lease.len()), Some(0));
+        assert!(buf.bytes().is_empty() && all_zero(buf.whole()));
+    }
+
+    #[test]
+    fn a_taken_block_holds_only_its_written_bytes_and_comes_back_to_the_pool() {
+        let mut buf = Pool::global().acquire(1 << 20);
+        buf.put(tag::TEXT, b"request").expect("fits");
+        let written = buf.bytes().len();
+        // Written into spare room but never committed: exposed, not part of the request.
+        buf.spare(64).expect("room").fill(0xAA);
+        let (block, len) = buf.take_block().expect("a held block");
+        assert!(!buf.is_held(), "the handle is empty after");
+        assert_eq!(len, written);
+        assert!(all_zero(&block[len..]), "exposed spare bytes are zeroed");
+        let mut zeroed = block;
+        zeroed[..len].fill(0);
+        give_back(zeroed);
     }
 
     #[test]

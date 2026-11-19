@@ -51,6 +51,11 @@ pub struct NativeAuditState {
     principal: Arc<VirtualKey>,
     binding: Arc<RequestBinding>,
     state: Mutex<State>,
+    /// The records of the hooks that ran for this request before its unit opened, handed here
+    /// when the request is refused there (by a hook, or by its money after its hooks ran). The
+    /// refusal takes them ([`Self::take_hook_records`]) and its audit record names the hook
+    /// that refused from them. No unit holds them: none was opened.
+    hooks: Arc<crate::plane_driver::port_hooks::HookRecords>,
     _credit: busbar_contract::storage::StorageCredit,
 }
 
@@ -74,8 +79,21 @@ impl NativeAuditState {
                 ctx: None,
                 admitted: None,
             }),
+            hooks: Arc::default(),
             _credit: credit,
         }))
+    }
+
+    /// Where this request's hook stage puts the records of a request refused before its unit
+    /// opened.
+    pub(crate) fn hook_records(&self) -> Arc<crate::plane_driver::port_hooks::HookRecords> {
+        Arc::clone(&self.hooks)
+    }
+
+    /// The records handed over so far, taken by the refusal: a second taker finds none, so a
+    /// refusal's record names each hook once.
+    pub(crate) fn take_hook_records(&self) -> Vec<busbar_kernel_audit::record::HookApplied> {
+        self.hooks.take()
     }
 
     pub(crate) fn take_registration(

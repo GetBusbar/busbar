@@ -8,7 +8,7 @@ crate::kind! {
     /// Core owns sessions, login state custody, verdict caching (§12.28), credential caching with its single-flight,
     /// refresh-ahead and failure window (§12.2), attribution and policy. Round 23: a plugin keeps no cache of
     /// verdicts or minted credentials, no mint scheduler and no backoff of its own.
-    pub trait Auth: kind = 3, abi = 3 {
+    pub trait Auth: kind = 3, abi = 4 {
         views {
         /// One inbound request. Header names are lowercase. body is empty unless FB_NEEDS_BODY.
         /// issued = the core-issued credential core looked up after this plugin answered ISSUED_WANTED (empty
@@ -71,16 +71,13 @@ crate::kind! {
             /// Core looks it up under this plugin's D_ISSUED_KIND and calls the same method again with
             /// AuthReq.issued set (sync verify) or Q_ISSUED added (verify_io). At most once per request.
             ISSUED_WANTED = 0x0108;
-            /// verify_io request encoding of AuthReq (text/bytes, PAIR* for headers, FACT(F_NOW_S)).
+            /// `serve` request records (text/bytes, PAIR* for headers). Auth 4.0: `verify_io` is removed
+            /// (E.9: named by no image), and with it the four records only its request used: 0x0113 (Q_PEER),
+            /// 0x0114 (Q_TLS_CERT), 0x0116 (Q_ISSUED) and 0x0117 (Q_AUTHORITY) are retired.
             Q_METHOD = 0x0110;
             Q_PATH = 0x0111;
             Q_QUERY = 0x0112;
-            Q_PEER = 0x0113;
-            Q_TLS_CERT = 0x0114;
             Q_BODY = 0x0115;
-            Q_ISSUED = 0x0116;
-            /// verify_io: AuthReq.authority (text).
-            Q_AUTHORITY = 0x0117;
             /// Round 29, `serve` request: the `provisioning.clients` entry name core matched the caller to (text).
             Q_CLIENT = 0x0118;
             /// Round 29, `serve` answer: SV_STATUS (Pod U32Rec, 200..=599), SV_HEADER* (pair shape), SV_BODY? (bytes).
@@ -134,6 +131,14 @@ crate::kind! {
             /// word, which must be one of this image's D_OUTBOUND_STYLE items; at most one per style; absent = 0;
             /// else DescribeInvalid). Core alone derives from it the upstream credential mode and O_SCOPE (§12.18).
             D_STYLE_FLAGS = 0x0184;
+            /// Auth 4.0, describe, the body-coverage statement (Pod U64Rec; at most one; only with
+            /// FB_NEEDS_BODY, else DescribeInvalid): the most body bytes this image's credential covers. An
+            /// image states whether its credential covers the body and how: FB_NEEDS_BODY_HASH = a digest
+            /// carried in the head (the engine hands the digest, never the body); FB_NEEDS_BODY with this item
+            /// = the body itself, up to the stated size (a longer body is refused by the engine before
+            /// `verify`). Neither bit = head only: auth runs on the head, and the body is read only for a
+            /// verified caller.
+            D_BODY_MAX = 0x0185;
         }
         consts {
             REQUIRED: u64 = 0;
@@ -181,13 +186,19 @@ crate::kind! {
         /// Round 29 (auth v4, dev's CAP_PROVISION): the image serves `serve` under core's provisioning mount
         /// and may use the DIRECTORY Need (§6.1) from `serve` and `refresh`. Requires `serve` (DescribeInvalid
         /// otherwise, and `serve` without it).
+        /// E.9: keep, implemented by the enterprise SCIM plugin (auth-scim): FB_PROVISION, `serve`, the SV_*
+        /// answers and the DIRECTORY step. If that image does not implement them by the lock they are cut
+        /// and return as auth 4.1.
             FB_PROVISION: u64 = 64;
+        /// The identity vocabulary this version of the auth contract uses (in the auth fingerprint).
+            USES_IDENTITY: u64 = crate::vocab::identity1::FP;
             M_VERIFY: u64 = 1 << 0;
-            M_VERIFY_IO: u64 = 1 << 1;
-            M_LOGIN: u64 = 1 << 2;
-            M_OUTBOUND: u64 = 1 << 3;
-            M_REFRESH: u64 = 1 << 4;
-            M_SERVE: u64 = 1 << 5;
+            M_LOGIN: u64 = 1 << 1;
+            M_OUTBOUND: u64 = 1 << 2;
+            M_REFRESH: u64 = 1 << 3;
+            M_SERVE: u64 = 1 << 4;
+        }
+        retired { 0x0100, 0x0101, 0x0102, 0x0113, 0x0114, 0x0116, 0x0117
         }
         /// Hot, pure compute: no Need, no allocation needed. Answer: ID_SUBJECT, ID_GROUP*, ID_CLAIM*, STRIP*,
         /// FACT(F_CACHE_S)?, FACT(F_EXPIRES_AT_S)?; or ISSUED_WANTED (sigv4-style key lookup; when the second
@@ -196,9 +207,6 @@ crate::kind! {
         /// Keys it needs (JWKS, token hashes) were fetched in open or refresh; an unknown key id is REFUSED
         /// KEYS_STALE (core refreshes and asks again).
         sync fn verify(&self, h: &Host, req: &AuthReq<'_>, out: &mut Out<'_>) -> Result<(), Fail> { let _ = (h, req, out); Err(crate::fail::Fail::unsupported()) }
-        /// The same verdict when checking needs I/O (LDAP bind, provider API). req = Q_* records. Declare
-        /// exactly one of verify or verify_io.
-        async fn verify_io(&self, h: &'static Host, req: ChainBytes) -> Result<Reply, Fail> { let _ = (h, req); Err(crate::fail::Fail::unsupported()) }
         /// Interactive login. BEGIN(L_RETURN_TO, L_REDIRECT_URI, L_STATE_KEY, L_CODE_CHALLENGE, L_NONCE,
         /// L_CONNECT?, L_SCOPE?): REDIRECT + STATE. The plugin puts L_STATE_KEY in the URL's `state` parameter,
         /// L_CODE_CHALLENGE in `code_challenge` (method S256) and L_NONCE in `nonce` where its protocol has one.
@@ -267,28 +275,8 @@ crate::kind! {
                     buf: &'o mut crate::host_side::pool::PooledOut,
                     req: &AuthReq<'_>,
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_VERIFY), buf, |lease| {
-                        self.live.call1(|vt| &vt.verify, Arg::view(req), lease)
-                    })
-                }
-
-                pub fn verify_io<'a, N: crate::host_side::needs::Needs>(
-                    &'a self,
-                    drv: &'a mut crate::host_side::driver::Driver<'a, N>,
-                    req: crate::host_side::pool::PooledOut,
-                ) -> impl core::future::Future<
-                    Output = Result<crate::host_side::answer::OwnedAnswer, crate::fail::CallError>,
-                > + Send
-                + 'a {
-                    use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
-                    proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_VERIFY_IO), req, |req, lease| {
-                        let _ = req;
-                        let (bufs, at) = proxy::staged(req);
-                        self.live
-                            .start1(|vt| &vt.verify_io, bufs, |b| Arg::bytes(b.get(at)), lease)
-                            .into()
+                        pack::verify(crate::host_side::proxy::now(), req, |call| self.live.call(slot::verify, call, lease))
                     })
                 }
 
@@ -302,17 +290,11 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_LOGIN), req, move |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start2(
-                                |vt| &vt.login,
-                                bufs,
-                                |b| (Arg::u32(step), Arg::bytes(b.get(at))),
-                                lease,
-                            )
+                            .start(slot::login, bufs, |b, cross| pack::login(crate::host_side::proxy::now(), step, b.get(at), cross), lease)
                             .into()
                     })
                 }
@@ -326,12 +308,11 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_OUTBOUND), req, |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start1(|vt| &vt.outbound, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .start(slot::outbound, bufs, |b, cross| pack::outbound(crate::host_side::proxy::now(), b.get(at), cross), lease)
                             .into()
                     })
                 }
@@ -347,7 +328,7 @@ crate::kind! {
                     use crate::host_side::proxy;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_REFRESH), req, |req, lease| {
                         let _ = req;
-                        self.live.start0(|vt| &vt.refresh, lease).into()
+                        self.live.start(slot::refresh, busbar_ffi::host::ChainBufs::new(), |_, cross| pack::refresh(crate::host_side::proxy::now(), cross), lease).into()
                     })
                 }
 
@@ -360,12 +341,11 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_SERVE), req, |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start1(|vt| &vt.serve, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .start(slot::serve, bufs, |b, cross| pack::serve(crate::host_side::proxy::now(), b.get(at), cross), lease)
                             .into()
                     })
                 }

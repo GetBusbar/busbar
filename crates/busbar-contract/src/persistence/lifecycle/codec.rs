@@ -14,9 +14,7 @@ use std::mem::size_of;
 use zeroize::Zeroize;
 
 mod source;
-pub use source::{
-    decode_source_chunk, decode_source_chunk_owned, encode_source_chunk, encode_source_chunk_owned,
-};
+pub use source::{decode_source_chunk, decode_source_chunk_owned, encode_source_chunk};
 
 const MAGIC: &[u8; 8] = b"BBBOOT01";
 const COMPLETION_MAGIC: &[u8; 8] = b"BBCOMP01";

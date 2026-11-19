@@ -36,12 +36,7 @@ async fn served(tag: &str) -> Served {
     let (module, directory, settings) = crate::distribution::rig::actual_store(tag);
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let editor = common::credentials::token_for("editors", &["editors"], AUDIENCE);
     let viewer = common::credentials::token_for("viewers", &["viewers"], AUDIENCE);

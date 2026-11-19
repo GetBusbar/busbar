@@ -3,13 +3,8 @@
 
 //! THE EXPORT KIND'S CALLS, AS THE HOST'S TWO HALVES SHARE THEM (`BUSBAR-1.6.0.md` THE DESIGN, the
 
+pub mod codes;
 use zeroize::Zeroize;
-
-/// JSON list of declared route paths requesting the admitted recorder consumer's
-pub const EXT_PUBLIC_ROUTES: &str = "listener.public_routes";
-
-/// JSON list of public route paths retained by the boot instance after config removal.
-pub const EXT_PERSISTENT_ROUTES: &str = "listener.persistent_routes";
 
 /// The settings key that states an export instance's in-flight bound: how many deliveries the host
 pub const INFLIGHT_KEY: &str = "max_inflight_deliveries";
@@ -18,7 +13,7 @@ pub const INFLIGHT_KEY: &str = "max_inflight_deliveries";
 pub const DEFAULT_INFLIGHT: u32 = 64;
 
 /// One metric family of a host recorder's snapshot, in the recorder's render order. The loader
-/// lowers it to [`crate::abi::export::ScrapeFamily`] for the `scrape` op.
+/// lowers it to `crate::abi::export::ScrapeFamily` for the `scrape` op.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Family {
     /// The raw metric family name; exporters own wire identifier normalization.
@@ -27,7 +22,7 @@ pub struct Family {
     pub help: Option<String>,
     /// The unit; `None` = none.
     pub unit: Option<String>,
-    /// [`crate::abi::export::SCRAPE_KIND_COUNTER`] | `_GAUGE` | `_HISTOGRAM` | `_SUMMARY` |
+    /// [`crate::export_calls::codes::SCRAPE_KIND_COUNTER`] | `_GAUGE` | `_HISTOGRAM` | `_SUMMARY` |
     /// `_UNTYPED`.
     pub kind: u8,
     /// The samples, in order.
@@ -66,7 +61,7 @@ impl Drop for Sample {
 ///
 /// # Examples
 /// ```
-/// use busbar_contract::abi::export::SCRAPE_KIND_SUMMARY;
+/// use busbar_contract::export_calls::codes::SCRAPE_KIND_SUMMARY;
 /// assert_eq!(busbar_contract::export_calls::type_word(SCRAPE_KIND_SUMMARY), Some("summary"));
 /// assert_eq!(busbar_contract::export_calls::type_word(9), None);
 /// ```
@@ -161,7 +156,7 @@ pub trait ExportCalls: Send + Sync {
     fn streams(&self) -> &[u8];
 
     /// The routes this instance serves (its Statement tail's `routes[]`), in the route vocabulary
-    fn routes(&self) -> &[crate::abi::mechanism::route::Route];
+    fn routes(&self) -> &[crate::route::Route];
 
     /// Declared routes outside the instance namespace, granted only to the admitted recorder consumer
     fn public_routes(&self) -> &[String] {
@@ -253,7 +248,7 @@ impl RecorderRequirements {
 
 /// Validate the admitted declaration protocol version. Absence opts out.
 pub fn recorder_protocol(extensions: &[u8]) -> Result<bool, String> {
-    use crate::abi::mechanism::extensions;
+    use crate::kinds::codes::extensions;
     let mut declarations = extensions::entries(extensions)
         .filter(|(key, _)| *key == EXT_RECORDER_REQUIREMENTS.as_bytes());
     let Some((_, value)) = declarations.next() else {
@@ -303,7 +298,7 @@ pub trait ExportAxis: Send + Sync {
     }
 
     /// The routes `module`'s row declares (its Statement's `routes`), read without opening an
-    fn routes(&self, module: &str) -> Vec<crate::abi::mechanism::route::Route> {
+    fn routes(&self, module: &str) -> Vec<crate::route::Route> {
         let _ = module;
         Vec::new()
     }

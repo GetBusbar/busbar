@@ -375,7 +375,10 @@ impl<R: PluginRecords> StoreConnections<R> {
     /// A state that is unknown, spent, expired or minted for another callback path, and a plugin SECURITY_CHECK
     /// (e.g. an `iss` mismatch), are the security-check page; any other failure is the failed page.
     pub async fn callback(&self, path: &str, query: &str) -> CallbackAnswer {
-        let deadline = Instant::now() + CALLBACK_DEADLINE;
+        // The callback's one reading of the node's monotonic clock: the deadline is set from it
+        // and the plane is handed it.
+        let mono_ns = crate::store::monotonic_ns();
+        let deadline = busbar_contract::mono_instant::instant_at(mono_ns) + CALLBACK_DEADLINE;
         let Some(state_key) = url::form_urlencoded::parse(query.as_bytes())
             .find(|(k, _)| k == "state")
             .map(|(_, v)| v.into_owned())
@@ -399,6 +402,7 @@ impl<R: PluginRecords> StoreConnections<R> {
             deadline,
             request_id: 0,
             stack: CallStack::default(),
+            mono_ns,
         };
         let answer = port
             .login(
@@ -471,10 +475,13 @@ impl<R: PluginRecords> StoreConnections<R> {
             let state_key =
                 pkce::random_b64url(pkce::STATE_BYTES).ok_or(RecordsDenied::Unavailable)?;
             let nonce = pkce::random_b64url(pkce::STATE_BYTES).ok_or(RecordsDenied::Unavailable)?;
+            // The node's monotonic clock, read once for this BEGIN and handed to the auth plugin;
+            // the deadline stays the caller's own.
             let cx = CallCx {
                 deadline: who.deadline,
                 request_id: 0,
                 stack: who.stack,
+                mono_ns: crate::store::monotonic_ns(),
             };
             let answer = port
                 .login(

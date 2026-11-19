@@ -7,60 +7,22 @@ use crate::root::cli::{
     signing_key_command_output, Argv,
 };
 
+/// The boot's worker count is the kernel's one rule (the cores this process may use): a
+/// configuration's `advanced.worker_threads` and a launcher's worker variables change nothing.
 #[test]
-fn worker_threads_from_env_parses_valid_rejects_invalid() {
-    let unset_name = "BUSBAR_TEST_WORKER_THREADS_UNSET_MARKER_1";
-    std::env::remove_var(unset_name);
-    assert_eq!(
-        worker_threads_from_env(unset_name),
-        None,
-        "an unset var must return None"
-    );
-
-    let valid_name = "BUSBAR_TEST_WORKER_THREADS_VALID_MARKER_1";
-    std::env::set_var(valid_name, "7");
-    assert_eq!(
-        worker_threads_from_env(valid_name),
-        Some(7),
-        "a valid positive integer must round-trip exactly"
-    );
-    std::env::remove_var(valid_name);
-
-    for bad in ["0", "-1", "not-a-number", ""] {
-        let bad_name = "BUSBAR_TEST_WORKER_THREADS_BAD_MARKER_1";
-        std::env::set_var(bad_name, bad);
-        assert_eq!(
-            worker_threads_from_env(bad_name),
-            None,
-            "a non-positive-integer value ({bad:?}) must return None, not panic or parse partially"
-        );
-        std::env::remove_var(bad_name);
-    }
-}
-
-#[test]
-fn validate_worker_threads_config_diagnoses_zero() {
-    assert!(
-        validate_worker_threads_config(Some(0)).is_err(),
-        "worker_threads: 0 must be diagnosed, not silently dropped"
-    );
-    assert_eq!(validate_worker_threads_config(Some(4)), Ok(Some(4)));
-    assert_eq!(validate_worker_threads_config(None), Ok(None));
-}
-
-#[test]
-fn worker_threads_from_config_reads_a_real_file() {
+fn the_boot_worker_count_is_the_cores_this_process_may_use() {
     const CHILD: &str = "BUSBAR_WORKER_CONFIG_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let name = concat!(
             module_path!(),
-            "::worker_threads_from_config_reads_a_real_file"
+            "::the_boot_worker_count_is_the_cores_this_process_may_use"
         );
         let test_name = name.split_once("::").unwrap().1;
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", test_name])
             .env(CHILD, "1")
             .env("BUSBAR_WORKER_THREADS", "19")
+            .env("TOKIO_WORKER_THREADS", "17")
             .output()
             .expect("run the config environment case in a fresh process");
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -92,25 +54,9 @@ fn worker_threads_from_config_reads_a_real_file() {
     .unwrap();
     std::env::set_var(ENV_CONFIG, &config_path);
     assert_eq!(
-        worker_threads_from_config(),
-        Some(5),
-        "a positive advanced.worker_threads must be read from config.yaml"
-    );
-    assert_eq!(
-        resolve_worker_threads().0,
-        5,
-        "retired BUSBAR_WORKER_THREADS cannot override configured workers"
-    );
-
-    std::fs::write(
-        &config_path,
-        "providers: {}\nmodels: {}\nadvanced:\n  worker_threads: 0\n",
-    )
-    .unwrap();
-    assert_eq!(
-        worker_threads_from_config(),
-        None,
-        "advanced.worker_threads: 0 is invalid → None (diagnosed, not honored)"
+        *WORKERS,
+        config::sections::data_workers(),
+        "neither the configured 5, BUSBAR_WORKER_THREADS nor TOKIO_WORKER_THREADS chooses the count"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -702,8 +648,7 @@ async fn the_boot_book_binds_the_store_keyset_and_refuses_a_mismatched_store_key
     drop(restarted);
     let legacy = dir.0.join("deployment-keyset");
     std::fs::write(&legacy, seed.as_bytes()).unwrap();
-    let records =
-        ScopedStore::host_private(core.clone(), INSTANCE, [KEYSET_SCHEMA]).unwrap();
+    let records = ScopedStore::host_private(core.clone(), INSTANCE, [KEYSET_SCHEMA]).unwrap();
     let corrupt = Request {
         op: records.record_op().await.unwrap(),
         predicates: vec![Predicate {

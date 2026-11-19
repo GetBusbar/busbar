@@ -455,22 +455,20 @@ pub fn parse_err_log(bytes_len: usize) -> String {
 /// THE JSON NESTING-DEPTH GUARD: does `bytes` nest `{`/`[` deeper than `max`?
 #[must_use]
 pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
+    // Outside strings every byte is looked at; a string body is skipped to its closing quote by
+    // `past_string_body`. An unterminated string or a trailing escape ends the scan as "not too
+    // deep", as a byte-at-a-time scan does.
     let mut depth: usize = 0;
-    let mut in_string = false;
-    let mut escaped = false;
-    for &b in bytes {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if b == b'\\' {
-                escaped = true;
-            } else if b == b'"' {
-                in_string = false;
-            }
-            continue;
-        }
+    let mut i = 0;
+    while let Some(&b) = bytes.get(i) {
         match b {
-            b'"' => in_string = true,
+            b'"' => {
+                let Some(end) = past_string_body(bytes, i + 1) else {
+                    return false;
+                };
+                i = end;
+                continue;
+            }
             b'{' | b'[' => {
                 depth += 1;
                 if depth > max {
@@ -480,8 +478,37 @@ pub fn exceeds_max_depth(bytes: &[u8], max: usize) -> bool {
             b'}' | b']' => depth = depth.saturating_sub(1),
             _ => {}
         }
+        i += 1;
     }
     false
+}
+
+/// String-body bytes [`past_string_body`] looks at one by one before it searches.
+const SHORT_STRING: usize = 16;
+
+/// One past the closing quote of the JSON string whose body starts at `body` (just after its
+/// opening quote), or `None` when the input ends first. A backslash skips the byte after it.
+/// The first [`SHORT_STRING`] bytes are looked at one by one (most keys and short values end
+/// there, where a `memchr2` call costs more than it saves); past them `memchr2` finds the next
+/// quote or backslash, so a long string body is not walked a byte at a time.
+#[must_use]
+pub fn past_string_body(bytes: &[u8], body: usize) -> Option<usize> {
+    let mut i = body;
+    let short_end = body.saturating_add(SHORT_STRING);
+    while i < short_end {
+        match bytes.get(i)? {
+            b'"' => return Some(i + 1),
+            b'\\' => i += 2,
+            _ => i += 1,
+        }
+    }
+    loop {
+        i += memchr::memchr2(b'"', b'\\', bytes.get(i..)?)?;
+        if bytes.get(i) == Some(&b'"') {
+            return Some(i + 1);
+        }
+        i += 2;
+    }
 }
 
 /// Read the same exact-number, last-key-wins tree with an additional caller depth bound.

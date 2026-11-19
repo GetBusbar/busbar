@@ -1,18 +1,20 @@
 ---
-title: "BUSBAR-9008: Configured worker-thread count is invalid (ignored; default used)"
+title: "BUSBAR-9008: Configured worker-thread count is invalid — RETIRED"
 description: "What Busbar error BUSBAR-9008 means, why it happens, and how to fix it."
 slug: docs/1.6/errors/BUSBAR-9008
 ---
 
 **Area:** Boot & lifecycle (9xxx) · **Severity:** actionable · **Since:** 1.6.0
 
+> **Retired.** Busbar no longer reports this code. The page stays so an old log line still resolves; the code is never reused.
+
 ## What it means
 
-An explicitly-set data-plane worker count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` — is not a positive integer (e.g. `0`, or non-numeric), so busbar IGNORES it and boots on the default worker count (one per core). The operator's intended worker count is NOT in effect. Emitted pre-tracing, to stderr, at boot.
+RETIRED. Nothing emits this code. The data-plane worker count is no longer a setting: the engine runs one worker per CPU core the process may use (its CPU affinity and container CPU limit). A configuration carrying `advanced.worker_threads`, or a launcher setting TOKIO_WORKER_THREADS, starts as before and says once that the value is ignored.
 
 ## How to fix it
 
-Set the data-plane worker count to a positive integer (at least 1) or remove it to accept the default. The gateway runs, but on the default worker count, not the value provided.
+Nothing to do. To run fewer workers, lower the container's CPU limit or the process's CPU affinity.
 
 ---
 

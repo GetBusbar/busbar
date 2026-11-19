@@ -1,0 +1,4 @@
+mock:
+  protocol: anthropic
+  base_url: "http://127.0.0.1:@STUB_PORT@"
+  error_map: {}

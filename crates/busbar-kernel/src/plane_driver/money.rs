@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::host_services::VerifiedTicketIdentity;
 use crate::persistence::facade::CoreStore;
-use busbar_contract::abi::plane::{units_bill, UnitCount};
+use busbar_contract::abi::plane::UnitCount;
 use busbar_contract::caps::{Admittance, CallId, Grant, PrincipalId, ReasonCode};
+use busbar_contract::measurement::units_bill;
 use busbar_contract::records::VirtualKey;
 use busbar_contract::{Count, UnitKey};
 
@@ -135,6 +136,20 @@ impl ParentMoney {
     /// The frozen monetary generation a child inherits, independently of its destination route.
     pub fn cost(&self) -> &Arc<CostModel> {
         &self.money.cost
+    }
+
+    /// Whether the budget this parent was admitted on is spent, judged in the parent's own
+    /// window (its one arrival reading: a child takes no clock reading of its own).
+    pub(in crate::plane_driver) fn budget_spent(
+        &self,
+        gov: &GovState,
+    ) -> Option<crate::governance::LimitBlocked> {
+        gov.budget_spent(
+            &self.money.cost,
+            &self.money.key,
+            &self.money.pool,
+            self.money.arrived,
+        )
     }
 
     pub(in crate::plane_driver) fn matches_child_money(

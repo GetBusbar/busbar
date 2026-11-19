@@ -6,7 +6,7 @@ use crate::state::AppHandle;
 use axum::http::Method;
 use axum::routing::{on, MethodRouter};
 use axum::Router;
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+use busbar_contract::route::{RouteAuth, RouteMethod};
 use std::sync::Arc;
 
 /// One core route as DECLARED at mount time: the exact axum path pattern, the method, and the
@@ -66,7 +66,7 @@ impl CoreRouteTable {
         mut self,
         mut refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
     ) -> Self {
-        use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
+        use busbar_contract::route::{PATH_EXACT, PATH_PATTERN};
 
         refusals.sort_by_cached_key(|r| {
             std::cmp::Reverse(
@@ -118,7 +118,7 @@ impl CoreRouteTable {
     }
 
     pub(crate) fn signed_ingress(&self, path: &str) -> bool {
-        use busbar_contract::abi::plane::check::raw_affix_matches;
+        use busbar_contract::plane::codes::raw_affix_matches;
         self.door_refusals
             .iter()
             .flat_map(|r| r.signed_ingress.iter())
@@ -168,6 +168,34 @@ impl CoreRouter {
             .or_default()
             .push((method, auth));
         self.table.routes.push(CoreRoute { path, method, auth });
+        self
+    }
+
+    /// Nest a whole surface at `prefix` and declare it in the same act: one `{prefix}/{*rest}` row
+    /// per method in `methods`, under `auth`. A nested router's own routes reach no table, so a
+    /// listener that routes only declared lines (the native operator slot) would refuse every
+    /// request to the surface at arrival; declared here, the table again says what is mounted.
+    pub fn nest(
+        mut self,
+        prefix: &str,
+        surface: Router<Arc<AppHandle>>,
+        methods: &[RouteMethod],
+        auth: RouteAuth,
+    ) -> Self {
+        self.router = self.router.nest(prefix, surface);
+        let path = format!("{prefix}/{{*rest}}");
+        for &method in methods {
+            self.table
+                .by_path
+                .entry(path.clone())
+                .or_default()
+                .push((method, auth));
+            self.table.routes.push(CoreRoute {
+                path: path.clone(),
+                method,
+                auth,
+            });
+        }
         self
     }
 

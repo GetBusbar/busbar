@@ -8,7 +8,7 @@ slug: docs/1.6/errors/BUSBAR-3145
 
 ## What it means
 
-An `advanced.tls.destinations` `match` is a wildcard over a single label (for example `*.com` or `*.internal`), which would scope the entry's CAs, pins or identity to names nobody named. Public-suffix-list wildcards (for example `*.co.uk`) are not detected in 1.6.0.
+An `outbound.tls.destinations` `match` is a wildcard over a single label (for example `*.com` or `*.internal`), which would scope the entry's CAs, pins or identity to names nobody named. Public-suffix-list wildcards (for example `*.co.uk`) are not detected in 1.6.0.
 
 ## How to fix it
 

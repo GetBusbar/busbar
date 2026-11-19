@@ -35,7 +35,7 @@ pub(crate) fn row(p: &LoadablePlugin) -> Row {
             },
         },
         ephemeral: p.ephemeral,
-        linked: p.linked(),
+        linked: false,
         needs_prompt: m.needs.prompt,
         needs_user: m.needs.user,
         settings_schema: p.settings_schema.clone(),
@@ -64,12 +64,6 @@ pub(crate) fn archive_sha256(p: &LoadablePlugin) -> Option<String> {
 #[cold]
 pub(crate) fn loadable_rows(registry: &PluginRegistry) -> Vec<Row> {
     PluginRegistry::loadable(registry).iter().map(row).collect()
-}
-
-/// The registry's linked rows, listed for config validation and the admin listing.
-#[cold]
-pub(crate) fn linked_rows(registry: &PluginRegistry) -> Vec<Row> {
-    PluginRegistry::linked(registry).iter().map(row).collect()
 }
 
 /// The registry's skipped rows, listed for config validation and the admin listing.

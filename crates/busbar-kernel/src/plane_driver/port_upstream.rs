@@ -13,11 +13,14 @@
 //! it). Probes ([`probe_member`], FB_PROBES) run the same exchange once against one member; a failed probe call
 //! waits as `RetrySite::PlaneProbe` says ([`probe_wait`]).
 //!
-//! The calls are synchronous, so a driver runs this inside `spawn_blocking` with a blocking `UpSend`.
+//! The plane's calls are synchronous entries made between awaits on the request's own task; the walk, the send
+//! and the reply are awaited. Every seam here is static: the session is generic over its walk and its carrier, so
+//! no seam call boxes a future.
 
+use std::future::Future;
 use std::time::Duration;
 
-use busbar_contract::abi::transport::fields::lines;
+use busbar_contract::transport::fields::lines;
 use busbar_plugin_abi::fail::refused::R_NO_ROUTE;
 use busbar_plugin_abi::plane::{
     ATT_DECLINE, ATT_HARD, ATT_RETRY, FC_SERVER, FROM_UPSTREAM, F_PROBE_OK, P_BODY, P_END, P_ERROR,
@@ -159,7 +162,7 @@ pub struct Failure {
 
 /// The member walk: candidates in the walk's order, and what each attempt taught it. The egress walk and its
 /// breaker implement it.
-pub trait Members {
+pub trait Members: Send {
     fn request_walk(&self) -> Option<&super::request_admission::RequestWalk> {
         None
     }
@@ -194,8 +197,9 @@ pub trait Members {
     fn hook_constrain(&mut self, _wants: &Wants, _constraint: super::hooks::Constraint) -> bool {
         false
     }
-    /// The next member to try, `None` when the walk is exhausted. `wants.upstream` pins one member.
-    fn next(&mut self, wants: &Wants) -> Option<Candidate>;
+    /// The next member to try, `None` when the walk is exhausted. `wants.upstream` pins one member. The pick is
+    /// awaited on the session's task (the breaker's permit, the pool's terminal).
+    fn next(&mut self, wants: &Wants) -> impl Future<Output = Option<Candidate>> + Send;
     /// The plane will not send to this member; it was never dialled.
     fn declined(&mut self, member: &Candidate);
     fn failed(&mut self, member: &Candidate, failure: &Failure);
@@ -229,54 +233,121 @@ pub enum Chunk {
 }
 
 /// The rest of a reply being read.
-pub trait UpChunks {
+pub trait UpChunks: Send {
     /// The next piece; `Ok(None)` = the reply ended. `Err` = it was cut (a failed connection, an expired
-    /// deadline).
-    fn next(&mut self) -> Result<Option<Chunk>, SendFailed>;
+    /// deadline). Awaited on the session's task.
+    fn next(&mut self) -> impl Future<Output = Result<Option<Chunk>, SendFailed>> + Send;
+
+    /// The next message piece of a far end that answered a WebSocket handshake with 101 (the relay's read,
+    /// [`super::port_duplex`]); `Ok(None)` = the far end closed. Cancel-safe: dropped while it waits, it has
+    /// taken nothing. A carrier with no messages (the default) hands each body chunk up as one binary message.
+    fn next_message(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<super::port_duplex::UpMessage>, SendFailed>> + Send
+    {
+        async move {
+            loop {
+                match self.next().await? {
+                    Some(Chunk::Body(bytes)) => {
+                        return Ok(Some(super::port_duplex::UpMessage {
+                            flags: busbar_plugin_abi::plane::MSG_BINARY
+                                | busbar_plugin_abi::plane::MSG_FIN,
+                            bytes,
+                        }))
+                    }
+                    Some(Chunk::Trailers(_)) => {}
+                    None => return Ok(None),
+                }
+            }
+        }
+    }
+
+    /// One whole message for the far end (`flags`: `MSG_TEXT` or `MSG_BINARY`, with `MSG_FIN`), written
+    /// before this returns. `false` = it could not be written: the far end is gone. A carrier with no
+    /// messages (the default) writes none.
+    fn write_message(&mut self, flags: u32, bytes: Vec<u8>) -> impl Future<Output = bool> + Send {
+        let _ = (flags, bytes);
+        std::future::ready(false)
+    }
+
+    /// The engine closes the far end's side of a message session (its close frame goes out). Nothing is read
+    /// or written after it.
+    fn close(&mut self) -> impl Future<Output = ()> + Send {
+        std::future::ready(())
+    }
+
+    /// The code the far end closed its side of a message session with, as its transport stated it
+    /// (`PollConns::close_code`), once a read answered `Err`. `None` = it stated none (a dropped
+    /// connection, a deadline, a write that was not taken), or the carrier has no messages (the default).
+    /// The number is the far end's, not judged: the relay writes it to the caller only where
+    /// [`super::port_duplex::caller_close_code`] allows.
+    fn close_code(&self) -> Option<u32> {
+        None
+    }
+
+    /// The messages the `upstream` answer wrote for the far end before it answered (UP_MSG beside the
+    /// handshake head): the relay writes them first, after the 101.
+    fn take_queued(&mut self) -> Vec<(u32, Vec<u8>)> {
+        Vec::new()
+    }
 }
 
-/// A reply whose head has arrived and whose rest is read piece by piece, so a streamed reply reaches the plane
-/// (and through it the client) as it is produced instead of joined into one body.
-pub struct UpOpen<'a> {
+/// A reply whose head has arrived and whose rest (`R`, the carrier's own reader) is read piece by piece, so a
+/// streamed reply reaches the plane (and through it the client) as it is produced instead of joined into one body.
+pub struct UpOpen<R> {
     pub status: u16,
     pub headers: HeadFields,
-    pub rest: Box<dyn UpChunks + 'a>,
+    pub rest: R,
 }
 
-/// A whole body as a stream of at most one chunk.
-struct Whole(Option<Vec<u8>>);
+/// A whole body as a stream of at most one chunk: the reader of a carrier that answers whole replies.
+pub struct Whole(Option<Vec<u8>>);
 
 impl UpChunks for Whole {
-    fn next(&mut self) -> Result<Option<Chunk>, SendFailed> {
-        Ok(self.0.take().filter(|b| !b.is_empty()).map(Chunk::Body))
+    fn next(&mut self) -> impl Future<Output = Result<Option<Chunk>, SendFailed>> + Send {
+        std::future::ready(Ok(self.0.take().filter(|b| !b.is_empty()).map(Chunk::Body)))
+    }
+}
+
+impl UpReply {
+    /// This whole reply as an open one whose rest is its body.
+    #[must_use]
+    pub fn opened(self) -> UpOpen<Whole> {
+        UpOpen {
+            status: self.status,
+            headers: self.headers,
+            rest: Whole(Some(self.body)),
+        }
     }
 }
 
 /// The carrier: core adds the host, the carrier's defaults and the credential and sends the exchange.
-pub trait UpSend {
+pub trait UpSend: Send {
+    /// How this carrier reads the rest of a reply it opened.
+    type Rest<'a>: UpChunks + 'a
+    where
+        Self: 'a;
+
     fn open_selected<'a>(
         &'a mut self,
-        _prepared: super::port_egress::OwnedPreparation,
-    ) -> Result<super::port_egress::SelectedOpen<'a>, super::port_egress::SelectedSendError> {
-        Err(super::port_egress::SelectedSendError::backend())
+        prepared: super::port_egress::OwnedPreparation,
+    ) -> impl Future<
+        Output = Result<
+            super::port_egress::SelectedOpen<Self::Rest<'a>>,
+            super::port_egress::SelectedSendError,
+        >,
+    > + Send
+           + 'a {
+        drop(prepared);
+        std::future::ready(Err(super::port_egress::SelectedSendError::backend()))
     }
-    /// The whole reply. A carrier that streams implements [`open`](Self::open) and need not implement this one's
-    /// buffering; a carrier that does not stream implements this one and gets `open` for free.
-    fn send(&mut self, member: &Candidate, exchange: UpExchange) -> Result<UpReply, SendFailed>;
 
-    /// The reply's head and a reader for the rest. The default reads the whole reply with [`send`](Self::send).
+    /// The reply's head and a reader for the rest, awaited on the session's task.
     fn open<'a>(
         &'a mut self,
-        member: &Candidate,
+        member: &'a Candidate,
         exchange: UpExchange,
-    ) -> Result<UpOpen<'a>, SendFailed> {
-        let reply = self.send(member, exchange)?;
-        Ok(UpOpen {
-            status: reply.status,
-            headers: reply.headers,
-            rest: Box::new(Whole(Some(reply.body))),
-        })
-    }
+    ) -> impl Future<Output = Result<UpOpen<Self::Rest<'a>>, SendFailed>> + Send + 'a;
 }
 
 /// How the walk ended.
@@ -332,6 +403,8 @@ struct Fed {
     broken: bool,
     /// The client went away; the rest of the reply is let go.
     gone: bool,
+    /// What the answers asked of a message exchange (an upgrade session's; empty for every other).
+    asked: super::port_duplex::Asked,
 }
 
 fn failing(attempt: Option<&AttemptItem>) -> bool {
@@ -339,14 +412,18 @@ fn failing(attempt: Option<&AttemptItem>) -> bool {
 }
 
 /// One `piece(FROM_UPSTREAM)`. `false` = stop reading: a failing verdict, or the client went away.
-fn step<K: Calls + ?Sized>(
+async fn step<K: Calls + ?Sized>(
     task: &mut Task<'_, K>,
     fed: &mut Fed,
     flags: u32,
     bytes: &[u8],
     effects: &dyn Effects,
 ) -> Result<bool, SessionError> {
-    let answer = task.piece(FROM_UPSTREAM, 0, flags, bytes, effects)?;
+    let mut answer = task.piece(FROM_UPSTREAM, 0, flags, bytes, effects)?;
+    if task.carries_messages() {
+        // An upgrade session: what the answer asks of its message exchange is kept for the relay.
+        fed.asked.take(&mut answer);
+    }
     fed.client.extend(answer.client);
     if answer.attempt.is_some() {
         fed.attempt = answer.attempt;
@@ -358,7 +435,7 @@ fn step<K: Calls + ?Sized>(
     // attempt with nothing for the client), so it goes out at once when a sink takes it.
     fed.began |= !fed.client.is_empty();
     effects.observed_usage(task.usage());
-    if !hand_out(effects, &mut fed.client) {
+    if !hand_out(effects, &mut fed.client).await {
         fed.gone = true;
         return Ok(false);
     }
@@ -368,31 +445,45 @@ fn step<K: Calls + ?Sized>(
 /// Feeds the reply to exchange 0 as `piece(FROM_UPSTREAM)`: HEAD, then BODY and TRAILERS as they arrive, END.
 /// Stops at the first failing verdict. A reply cut after the client's response began is `P_ERROR` (one REFUSAL
 /// to render in-stream); cut before, the member fails over.
-fn feed<K: Calls + ?Sized>(
+async fn feed<K: Calls + ?Sized, R: UpChunks>(
     task: &mut Task<'_, K>,
-    mut reply: UpOpen<'_>,
+    mut reply: UpOpen<R>,
     effects: &dyn Effects,
 ) -> Result<Fed, SessionError> {
     let mut fed = Fed::default();
     let head = head_piece(reply.status, &reply.headers)?;
-    if !step(task, &mut fed, P_HEAD, head.as_bytes(), effects)? {
+    // An upgrade request's session (its client side takes messages): a 101 for the caller in the answer to
+    // the far end's handshake answer commits the session to the relay.
+    let caller = effects.client().and_then(|sink| sink.messages());
+    if !step(task, &mut fed, P_HEAD, head.as_bytes(), effects).await? {
+        // A failing verdict (the far end refused the handshake: the walk moves on), or the caller went
+        // away as its 101 was handed over. Nothing was relayed; the far end is closed by its drop.
+        return Ok(fed);
+    }
+    if let (Some(caller), true) = (caller, fed.asked.switched) {
+        // The caller has its 101 (handed out by the step above): the rest of this attempt is the session.
+        let asked = std::mem::take(&mut fed.asked);
+        let relayed =
+            super::port_duplex::relay(task, &mut reply.rest, caller, asked, effects).await?;
+        fed.began = true;
+        fed.gone = relayed.gone;
         return Ok(fed);
     }
     loop {
-        match reply.rest.next() {
+        match reply.rest.next().await {
             Ok(Some(Chunk::Body(bytes))) => {
-                if !bytes.is_empty() && !step(task, &mut fed, P_BODY, &bytes, effects)? {
+                if !bytes.is_empty() && !step(task, &mut fed, P_BODY, &bytes, effects).await? {
                     return Ok(fed);
                 }
             }
             Ok(Some(Chunk::Trailers(block))) => {
                 let bytes = trailer_piece(&block)?;
-                if !step(task, &mut fed, P_TRAILERS, bytes.as_bytes(), effects)? {
+                if !step(task, &mut fed, P_TRAILERS, bytes.as_bytes(), effects).await? {
                     return Ok(fed);
                 }
             }
             Ok(None) => {
-                step(task, &mut fed, P_END, &[], effects)?;
+                step(task, &mut fed, P_END, &[], effects).await?;
                 return Ok(fed);
             }
             Err(SendFailed) => {
@@ -405,7 +496,7 @@ fn feed<K: Calls + ?Sized>(
                         "the upstream failed before its reply ended",
                     )
                     .map_err(|_| SessionError::Encode)?;
-                    step(task, &mut fed, P_ERROR, refusal.as_bytes(), effects)?;
+                    step(task, &mut fed, P_ERROR, refusal.as_bytes(), effects).await?;
                 } else {
                     fed.broken = true;
                 }
@@ -422,25 +513,43 @@ fn exchange_zero(exchanges: Vec<UpExchange>) -> Result<UpExchange, SessionError>
         .ok_or(SessionError::Violation(Violation::MissingExchange))
 }
 
+/// Whether a session's attempt walk may run. `data` is `None` for a session with no native DATA
+/// unit, else whether that unit carries a resource selection. The borrowed sender cannot own a
+/// selected-attempt partition or its transport reservation, so a DATA unit with a selection runs
+/// only in the selected-attempt cohort. A DATA unit with no selection (its route selects nothing)
+/// runs only the ordinary walk: its money is the ordinary unit its pending admission committed,
+/// and the selected cohort has no selection to prepare from.
+pub(crate) fn attempts_driven(data: Option<bool>, selected_attempts: bool) -> bool {
+    match data {
+        None => true,
+        Some(selected) => selected == selected_attempts,
+    }
+}
+
 /// The attempt walk of one forwarded session (§8.6, §12.3).
-pub fn run_attempts<K: Calls + ?Sized>(
+pub async fn run_attempts<K: Calls + ?Sized, M: Members + ?Sized, S: UpSend>(
     task: &mut Task<'_, K>,
     wants: &Wants,
     dialect: &str,
     model: &str,
-    members: &mut dyn Members,
-    send: &mut dyn UpSend,
+    members: &mut M,
+    send: &mut S,
     effects: &dyn Effects,
 ) -> Result<Attempted, SessionError> {
-    // The borrowed legacy sender cannot own a selected-attempt partition or its transport
-    // reservation. Only the separate owned preparation/money handoff may enable that cohort.
-    if task.data().is_some() && !task.selected_attempts() {
+    let data = task.data().map(|data| data.selected().is_some());
+    if !attempts_driven(data, task.selected_attempts()) {
         return Err(SessionError::NotDriven);
+    }
+    // An upgrade request's session (its client side takes messages, §12.27): from its first attempt on the
+    // plane's answers may carry messages for the far end and, once it commits, for the caller. The unit and
+    // its money were admitted before this walk began, exactly as for any forwarded request.
+    if effects.client().and_then(|sink| sink.messages()).is_some() {
+        task.message_session();
     }
     let mut attempts = 0_u32;
     let mut local_quota = false;
     loop {
-        let Some(member) = members.next(wants) else {
+        let Some(member) = members.next(wants).await else {
             return Ok(Attempted::Exhausted {
                 attempts,
                 local_quota,
@@ -458,7 +567,7 @@ pub fn run_attempts<K: Calls + ?Sized>(
             class: FC_SERVER,
             retry_after_s: 0,
         };
-        let reply = if task.selected_attempts() {
+        let fed = if task.selected_attempts() {
             let Some(prepared) =
                 task.prepare_selected(&member, attempts, dialect, model, effects)?
             else {
@@ -466,7 +575,7 @@ pub fn run_attempts<K: Calls + ?Sized>(
                 continue;
             };
             let owned = super::port_egress::OwnedPreparation::new(prepared, task.data().cloned());
-            let opened = match send.open_selected(owned) {
+            let opened = match send.open_selected(owned).await {
                 Ok(opened) => opened,
                 Err(error) => {
                     use super::port_egress::SelectedFailure;
@@ -486,7 +595,10 @@ pub fn run_attempts<K: Calls + ?Sized>(
             };
             task.install_attempt(opened.attempt)?;
             match opened.opened {
-                Ok(reply) => reply,
+                Ok(reply) => {
+                    task.answered_attempt()?;
+                    feed(task, reply, effects).await?
+                }
                 Err(_) => {
                     task.finish_attempt()?;
                     members.failed(&member, &unsent);
@@ -505,14 +617,13 @@ pub fn run_attempts<K: Calls + ?Sized>(
                 continue;
             }
             let exchange = exchange_zero(answer.exchanges)?;
-            let Ok(reply) = send.open(&member, exchange) else {
+            let Ok(reply) = send.open(&member, exchange).await else {
                 members.failed(&member, &unsent);
                 continue;
             };
-            reply
+            task.answered_attempt()?;
+            feed(task, reply, effects).await?
         };
-        task.answered_attempt()?;
-        let fed = feed(task, reply, effects)?;
         if fed.broken {
             task.finish_attempt()?;
             members.failed(&member, &unsent);
@@ -558,12 +669,12 @@ pub enum ProbeOutcome {
 
 /// One health probe of `member` (FB_PROBES): `probe`, send what it asked, feed the reply, `end`. A probe whose
 /// send fails is cancelled and unhealthy.
-pub fn probe_member<K: Calls + ?Sized>(
+pub async fn probe_member<K: Calls + ?Sized, S: UpSend>(
     calls: &K,
     member: &Candidate,
     dialect: &str,
     model: &str,
-    send: &mut dyn UpSend,
+    send: &mut S,
     effects: &dyn Effects,
 ) -> Result<ProbeOutcome, SessionError> {
     let (mut task, answer) =
@@ -576,10 +687,10 @@ pub fn probe_member<K: Calls + ?Sized>(
         return Ok(ProbeOutcome::Declined);
     }
     let exchange = exchange_zero(answer.exchanges)?;
-    let Ok(reply) = send.open(member, exchange) else {
+    let Ok(reply) = send.open(member, exchange).await else {
         return Ok(ProbeOutcome::Unhealthy);
     };
-    feed(&mut task, reply, effects)?;
+    feed(&mut task, reply, effects).await?;
     let last = task.end(effects)?;
     let well = last
         .facts

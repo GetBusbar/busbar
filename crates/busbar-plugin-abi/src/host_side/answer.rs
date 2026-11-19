@@ -7,7 +7,7 @@
 //! keeps the validated layout beside its buffer) walks the records once and refuses anything the generic
 //! layer can already judge. OK: a framing error is FAULT BadRecords; FAIL, NEED, NEED_RES, ERROR, the retired
 //! 0x000A, a TOKEN anywhere but first, a DIRECTORY-only nested tag at top level, an undefined generic tag and
-//! any tag above the kind range are FAULT UnknownTag (kind tags 0x0100..=0x01FF pass to the kind decoder).
+//! any tag above the kind range are FAULT UnknownTag (kind tags 0x0100..=0x4FFF pass to the kind decoder; 0x5000 and up is never used).
 //! REFUSED/FAILED: exactly FAIL, at most one ERROR directly after it, then (FAILED only) at most two FACTs with
 //! distinct keys in `FAIL_FACT_KEYS`; anything else is FAULT BadRecords. NEED is not an answer
 //! (NeedOutsideAsync), FAULT is the shim's caught panic or broken contract (Panic) and any other status is
@@ -37,7 +37,7 @@ fn record_size(body: usize) -> usize {
 }
 
 /// Whether a generic tag (below the kind range) may stand at the top level of an OK answer. Kind tags
-/// (0x0100..=0x01FF) are the kind decoder's; FAIL/NEED/NEED_RES/ERROR, 0x000A and the DIRECTORY nested tags
+/// (0x0100..=0x4FFF) are the kind decoder's; FAIL/NEED/NEED_RES/ERROR, 0x000A and the DIRECTORY nested tags
 /// never stand there; TOKEN only first (a session opener's).
 fn ok_generic(t: u16) -> bool {
     matches!(
@@ -51,7 +51,7 @@ fn ok_generic(t: u16) -> bool {
             | tag::CORE_CFG
             | tag::H_METHOD..=tag::H_BODY_LEN
             | tag::CONVERSATION
-            | tag::D_METHODS..=tag::D_UPSTREAM_PATH
+            | tag::D_METHODS..=tag::D_ERRORS
             | tag::ID_SUBJECT..=tag::ID_CLAIM
             | tag::METRIC
             | tag::REC_PRED..=tag::REC_DEL
@@ -65,8 +65,10 @@ fn layout_ok(bytes: &[u8]) -> Result<Layout, FaultReason> {
         let rec = rec.map_err(FaultReason::BadRecords)?;
         match rec.tag {
             tag::TOKEN if i == 0 => layout.at = record_size(rec.body.len()),
-            0x0100..=0x01FF => {}
-            t if t < 0x0100 && ok_generic(t) => {}
+            // The kind ranges (interface revision D.2): 0x0100..=0x01FF, extended to 0x4FFF. Which of
+            // them a kind declares, and which it has retired, is the kind decoder's to judge.
+            0x0100..=0x4FFF => {}
+            t if t < 0x0100 && !tag::RETIRED.contains(&t) && ok_generic(t) => {}
             t => return Err(FaultReason::UnknownTag(t)),
         }
     }
@@ -360,11 +362,17 @@ mod tests {
 
     #[test]
     fn a_describe_answer_may_declare_plane_upstream_registration_paths() {
-        // D_UPSTREAM_PATH (0x004D) is a describe item like D_ERRORS before it: an OK describe naming one parses.
+        // D_UPSTREAM_PATH is the plane's own describe item (plane 2.0; the generic 0x004D is retired).
         let mut r = Reply::new();
-        r.put_text(tag::D_UPSTREAM_PATH, "/upstreams/*")
+        r.put_text(crate::plane::tag::D_UPSTREAM_PATH, "/upstreams/*")
             .expect("path");
         assert!(Answer::parse(Status::OK, r.as_bytes()).is_ok());
+        let mut old = Reply::new();
+        old.put_text(0x004D, "/upstreams/*").expect("path");
+        assert!(
+            Answer::parse(Status::OK, old.as_bytes()).is_err(),
+            "a retired number is a fault"
+        );
     }
 
     #[test]
@@ -378,7 +386,9 @@ mod tests {
             0x0000,
             0x0070,
             0x0099,
-            0x0200,
+            0x0048,
+            0x004D,
+            0x5000,
             0xFFFF,
         ] {
             let mut r = Reply::new();

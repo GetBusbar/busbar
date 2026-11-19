@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::root::linked::LinkedTransport;
 
 fn request() -> RequestLease {
     ProcessAdmission::new(0)
@@ -12,50 +11,6 @@ fn request() -> RequestLease {
 
 fn owned_input() -> OwnedInput {
     request().adopt_input(Vec::new()).unwrap()
-}
-
-fn row(_claims: fn() -> Vec<&'static str>, lines: fn() -> Vec<&'static str>) -> LinkedTransport {
-    LinkedTransport {
-        upgrades: Vec::new,
-        lines,
-    }
-}
-
-#[test]
-fn the_line_carrier_is_the_claim_a_row_declares_opening_on_its_first_line() {
-    let rows = [
-        row(|| vec!["framed-wire", "framed-too"], Vec::new),
-        row(|| vec!["pipe-wire"], || vec!["pipe-wire"]),
-    ];
-    assert_eq!(line_carrier(&rows), Ok(Some("pipe-wire")));
-    assert_eq!(line_carrier(&rows[..1]), Ok(None));
-    assert_eq!(line_carrier(&[]), Ok(None));
-}
-
-#[test]
-fn two_claims_opening_on_their_first_line_are_refused() {
-    let rows = [
-        row(|| vec!["pipe-wire"], || vec!["pipe-wire"]),
-        row(|| vec!["other-pipe"], || vec!["other-pipe"]),
-    ];
-    let refusal = line_carrier(&rows).expect_err("two line carriers are ambiguous");
-    assert!(refusal.contains("`pipe-wire`"), "{refusal}");
-    assert!(refusal.contains("`other-pipe`"), "{refusal}");
-}
-
-#[test]
-fn the_builds_carrier_is_read_off_its_linked_rows() {
-    // The `refusal()` accessor went with the legacy chooser (368dfb336a); it read this same value.
-    assert_eq!(
-        line_carrier(crate::LINKED.transports).err(),
-        None,
-        "the build states one line carrier at most"
-    );
-    assert_eq!(
-        carrier(),
-        line_carrier(crate::LINKED.transports).expect("one line carrier")
-    );
-    assert!(carrier().is_some(), "this build links a line carrier");
 }
 
 #[test]

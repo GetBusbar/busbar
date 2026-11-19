@@ -605,7 +605,6 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     let settings = crate::root::test_plugins::application_store_settings(&directory);
 
     crate::register_protocols();
-    crate::register_planes();
     crate::register_diagnostics();
     let deploy = busbar_kernel::config::deploy_from_deserializer(
         &json::json!({
@@ -621,16 +620,8 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
     let config = busbar_kernel::config::resolve(&deploy, &Default::default())
         .expect("the actual product deployment resolves");
     let judge = crate::root::connector::dest_judge(&config);
-    let credentials = crate::root::credentials::AppCredentials::new(None);
-    let late = crate::root::serve::Services::serving(Arc::new(
-        crate::root::serve::kernel_services(judge.clone()).with_credentials(Arc::new(credentials)),
-    ));
-    let dispatcher = crate::root::dispatch::boot(1, &late);
-    crate::root::doors::install_dispatcher(dispatcher);
-    crate::root::doors::install_plugin_logs(crate::root::boot::plugin_logs());
     crate::root::connector::boot(
         tokio::runtime::Handle::current(),
-        crate::LINKED_TRANSPORT_DOORS,
         &crate::root::policy::client_settings(&config.limits),
         judge,
         &[],
@@ -759,23 +750,6 @@ async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_comm
         BOOT_FEE
     );
     println!("{WITNESS}");
-}
-
-fn root_unit_modules(manifest: &str) -> Vec<String> {
-    let mut in_table = false;
-    let mut modules = Vec::new();
-    for line in manifest.lines() {
-        let code = line.split('#').next().unwrap_or("").trim();
-        if code.starts_with('[') {
-            in_table = code == "[package.metadata.busbar.root-units]";
-            continue;
-        }
-        if let (true, Some((_, module))) = (in_table, code.split_once('=')) {
-            modules.push(module.trim().trim_matches('"').to_string());
-        }
-    }
-    assert!(!modules.is_empty(), "the manifest lists no root unit");
-    modules
 }
 
 const FLAT_LANE: &str = "gpt";

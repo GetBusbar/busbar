@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::mechanism::route::RouteAuth;
-use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
+use busbar_contract::route::RouteAuth;
+use busbar_contract::route::{METHOD_POST, PATH_EXACT};
 use busbar_ports::transport::{ConnIn, TransportEvent, TransportOut, TransportSession};
 use busbar_ports::PortError;
 
@@ -53,7 +53,8 @@ impl TransportPort for Transport {
         _: u64,
         _: u32,
         _: u32,
-        _: &[u8],
+        _: u64,
+        _: busbar_ports::transport::EmitParts<'_>,
         _: &mut dyn FnMut(TransportOut<'_>),
     ) -> Result<(), PortError> {
         unsupported()
@@ -98,7 +99,7 @@ fn line(path: &str) -> Line {
         dialect: 0,
         auth: crate::guest::LineAuth::None,
         upgrade: None,
-        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        offered: busbar_contract::route::AuthPoints::EMPTY,
     }
 }
 
@@ -116,7 +117,6 @@ pub(crate) fn app() -> Arc<App> {
     let cfg = crate::config::AuthCfg::default_none();
     Arc::new(App::from_test_parts(crate::state::AppParts {
         fallback_runtime_key: "",
-        serve_tables: Default::default(),
         port_seats: Default::default(),
         exports: Default::default(),
         root_rules: Arc::new(crate::appbuild::AcceptAll),
@@ -138,7 +138,6 @@ pub(crate) fn app() -> Arc<App> {
         export_defs: Default::default(),
         admin: Default::default(),
         admin_chain: Default::default(),
-        auth_instances: Default::default(),
         admin_modules: Arc::new(
             crate::auth::AdminAuthChain::build(&cfg, &registry, &resolver).unwrap(),
         ),
@@ -388,13 +387,18 @@ fn native_physical_live_check_answers_the_reading_it_judged_at() {
     let f = fixture();
     let conn = f.listener.connect(accepted());
     let before = Instant::now();
-    let deadline = before + std::time::Duration::from_secs(3600);
+    let arrival = crate::inbound::native::Arrival::at(
+        crate::store::monotonic_ns(),
+        std::time::Duration::from_secs(3600),
+    )
+    .unwrap();
+    let deadline = arrival.deadline();
     let (request, owner) = conn
         .head(
             1,
             head("/one"),
             f.budget.try_enter(f.listener.class).unwrap(),
-            Some(deadline),
+            Some(arrival),
         )
         .unwrap();
     let judged = request
@@ -443,7 +447,10 @@ fn native_physical_wrong_class_and_expired_head_do_not_create_streams() {
             1,
             head("/one"),
             f.budget.try_enter(AdmissionClass::Data).unwrap(),
-            Some(Instant::now())
+            crate::inbound::native::Arrival::at(
+                crate::store::monotonic_ns(),
+                std::time::Duration::ZERO
+            )
         ),
         Err(ArrivalRefusal::Deadline)
     ));
@@ -705,6 +712,70 @@ fn native_physical_admin_carrier_clone_shares_one_pending_right() {
     assert_eq!(binding.check_live(), Err(ArrivalRefusal::Cancelled));
 }
 
+/// The admin middleware takes the pending owner before it judges the credential. A refusing
+/// return must not drop it (that cancels the request and leaves the answer with no output
+/// authority, so the listener writes nothing): owner and carrier come back together, once, and
+/// become the answer's authority only through a recorded refusal of the request's own unit.
+#[test]
+fn native_physical_admin_owner_refused_by_the_middleware_returns_unspent_with_its_carrier() {
+    let f = fixture_for(AdmissionClass::Operator, RouteAuth::Admin);
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let carrier = complete_input(request).into_admin().unwrap();
+    let binding = carrier.binding().clone();
+    let (held, returned) = HeldAdminPending::take_from(Some(carrier)).unwrap();
+    let returned = returned.expect("a native request has a return cell");
+    assert!(held.is_some());
+    assert!(
+        returned.take().is_none(),
+        "nothing returns while the middleware holds the owner"
+    );
+    drop(held);
+    assert!(
+        binding.check_live().is_ok(),
+        "a refusing return does not cancel the request"
+    );
+    let (pending, carrier) = returned
+        .take()
+        .expect("the unspent owner returns with its carrier");
+    assert!(returned.take().is_none(), "the owner returns once");
+    let unit = busbar_contract::UnitKey::new(binding.invocation().request_id().get());
+    let refused = busbar_contract::caps::Outcome::Refused(
+        busbar_contract::caps::StepName::Authenticate,
+        busbar_contract::caps::ReasonCode::Unauthenticated,
+    );
+    let refusal = pending.refuse_admin(unit, refused).unwrap();
+    let authority = carrier.retain_refusal(refusal).unwrap();
+    assert!(Arc::ptr_eq(authority.take().unwrap().binding(), &binding));
+    assert!(authority.take().is_err(), "a refusal is one output");
+}
+
+/// An owner the middleware spent (the credential was admitted and the owner became the physical
+/// execution) leaves nothing to return; one it never held leaves nothing either.
+#[test]
+fn native_physical_admin_owner_spent_by_the_middleware_returns_nothing() {
+    let f = fixture_for(AdmissionClass::Operator, RouteAuth::Admin);
+    let conn = f.listener.connect(accepted());
+    let (request, _owner) = arrive(&f, &conn, 1);
+    let carrier = complete_input(request).into_admin().unwrap();
+    let binding = carrier.binding().clone();
+    let (mut held, returned) = HeldAdminPending::take_from(Some(carrier)).unwrap();
+    let returned = returned.expect("a native request has a return cell");
+    let spent = held.take().expect("the middleware holds the owner");
+    drop(held);
+    assert!(returned.take().is_none());
+    assert!(binding.check_live().is_ok());
+    drop(spent);
+    assert_eq!(binding.check_live(), Err(ArrivalRefusal::Cancelled));
+
+    let (absent, no_cell) = HeldAdminPending::take_from(None).unwrap();
+    assert!(absent.is_none());
+    assert!(
+        no_cell.is_none(),
+        "a request with no pending owner allocates no return cell"
+    );
+}
+
 fn complete_input(request: PhysicalRequest) -> CompletingPhysicalRequest {
     let credit = request.binding().request().try_reserve(0).unwrap();
     request
@@ -791,7 +862,7 @@ fn native_operator_prepared_routes_use_the_actual_admin_mount_surface() {
     assert!(lines
         .iter()
         .any(|(path, method, auth)| *path == crate::auth::HEALTHZ_PATH
-            && *method == busbar_contract::abi::mechanism::route::RouteMethod::Get
+            && *method == busbar_contract::route::RouteMethod::Get
             && *auth == RouteAuth::None));
     assert!(!lines.iter().any(|(path, _, _)| *path == "/stats"));
 }

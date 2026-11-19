@@ -5,10 +5,10 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use busbar_contract::abi::plane::{
-    UnitCount, CANCEL_OK_PARTIAL, UNITS_ESTIMATED, UNITS_FLOOR, UNITS_REPORTED,
-};
+use busbar_contract::abi::plane::UnitCount;
 use busbar_contract::caps::{OriginKind, ReasonCode};
+use busbar_contract::measurement::{UNITS_ESTIMATED, UNITS_FLOOR, UNITS_REPORTED};
+use busbar_contract::plane::codes::CANCEL_OK_PARTIAL;
 use busbar_contract::records::VirtualKey;
 use busbar_contract::{Count, UnitKey};
 
@@ -2835,4 +2835,260 @@ async fn the_live_count_falls_only_after_the_terminal_stage() {
             "the ended entry was staged before the grant's count fell"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// OWED MONEY PROOFS (ci/owed/cut-root/MONEY-OWED.tsv). The old door fixture and the old plane
+// driver that proved these are deleted; each is proven here on the native money seam
+// (`PlaneMoney`, which `PortBilling` opens every native unit on). A test marked SUSPECT states the
+// v1.5.5 rule the deleted test held; if it is red the native path changed the rule and the owner
+// rules on it before any code changes.
+// ---------------------------------------------------------------------------------------------
+
+/// MONEY-OWED `an_estimated_local_unit_is_still_charged`. The two rules that looked opposed are
+/// about different quantities: an estimate never bills USAGE (`an_estimate_never_bills`), and the
+/// unit that reported only an estimate is still a delivered request, so its request count and
+/// its flat fee stay charged.
+#[tokio::test]
+async fn an_estimate_only_native_unit_bills_no_usage_and_keeps_its_request_charge() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit).await;
+    admit(&r);
+    let estimated = [UnitCount {
+        class: INPUT,
+        source: UNITS_ESTIMATED,
+        amount: 500,
+    }];
+    let _ = r.money.checkpoint(&ctx(1), &estimated);
+    r.money.settle_end(UnitKey::new(1), 200);
+    let (tokens, spend) = usage(&r).await;
+    assert_eq!(tokens, Count::from(0u64), "an estimate bills no usage");
+    assert_eq!(requests(&r).await, 1, "its request stays counted");
+    assert_eq!(spend, 5, "its flat fee stays charged");
+    assert_eq!(r.money.open_units(), 0, "its money facts closed at its end");
+}
+
+/// MONEY-OWED `an_uncounted_local_unit_is_charged_nothing`. On the native path a unit's end says
+/// whether anything ran under it (`port_billing::end_of(status, ran)`), and the money seam charges
+/// an uncounted unit that nothing ran under NOTHING: no usage, its fee back, and its request
+/// released from every cap, whatever its status. An uncounted unit that DID run keeps its request
+/// (it is `an_estimate_only_native_unit_bills_no_usage_and_keeps_its_request_charge`'s case).
+/// Which of the two a native plane's uncounted local answer is, is the listener's reading and is
+/// proven end to end on the listener fixture (ledger row M-3).
+#[tokio::test]
+async fn an_uncounted_native_unit_nothing_ran_under_is_charged_nothing() {
+    for status in [200u32, 204, 403] {
+        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
+        admit(&r);
+        assert_eq!(requests(&r).await, 1, "admission counted the request");
+        r.money.settle_end_as(
+            UnitKey::new(1),
+            crate::plane_driver::port_billing::end_of(status, false),
+        );
+        let (tokens, spend) = usage(&r).await;
+        assert_eq!(
+            tokens,
+            Count::from(0u64),
+            "status {status}: nothing was reported"
+        );
+        assert_eq!(
+            spend, 0,
+            "status {status}: no fee unit was reported, so no fee is kept"
+        );
+        assert_eq!(
+            requests(&r).await,
+            0,
+            "status {status}: a unit nothing ran under counts against no cap"
+        );
+        assert_eq!(r.money.open_units(), 0);
+    }
+    // The same unit, when something ran under it, keeps its request.
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
+    admit(&r);
+    r.money.settle_end_as(
+        UnitKey::new(1),
+        crate::plane_driver::port_billing::end_of(200, true),
+    );
+    assert_eq!(requests(&r).await, 1, "a unit that ran is counted");
+    assert_eq!(
+        usage(&r).await.0,
+        Count::from(0u64),
+        "and still bills no usage"
+    );
+}
+
+/// MONEY-OWED `an_ungrouped_key_is_authed_but_unlimited_and_admission_never_blocks`: a key with
+/// no group passes admission however much it has spent, while the deployment holds a group whose
+/// budget is one cent, and every admission still accrues its fee.
+#[tokio::test]
+async fn an_ungrouped_key_is_never_blocked_and_its_spend_accrues_uncapped() {
+    const ADMITS: u64 = 500;
+    const FEE_CENTS: i64 = 30;
+    let r = rig(Some(1), FEE_CENTS, ExhaustionMode::FinishUnit).await;
+    let ungrouped = Arc::new(VirtualKey {
+        id: "ungrouped".into(),
+        generation_hash: "h:ungrouped".into(),
+        name: "ungrouped".into(),
+        enabled: true,
+        group: None,
+        revision: 1,
+        ..Default::default()
+    });
+    for admitted in 0..ADMITS {
+        if let Err(blocked) = r.gov.try_admit(&r.cost, &ungrouped, "", NOW) {
+            panic!("an ungrouped key is unlimited: admission #{admitted} blocked with {blocked:?}");
+        }
+    }
+    let spend = r
+        .gov
+        .derived_bucket_usage_async(&r.cost, &ungrouped.id, WINDOW_TOTAL, true, NOW)
+        .await
+        .expect("usage")
+        .spend_cents;
+    assert_eq!(
+        spend,
+        i64::try_from(ADMITS).expect("fits") * FEE_CENTS,
+        "every admission accrued its fee and no cap ever blocked the key"
+    );
+}
+
+/// MONEY-OWED, the 12 old-driver cases of `plane_driver_unbilled_cases.rs` on the native seam:
+/// whatever ends the unit after its plane reported (the caller write failed, the far end failed,
+/// the deadline passed, a reload or the budget cut it), the last accepted report is billed, and
+/// exactly once. The unpriced and the cancel-bill arms are proven by
+/// `a_report_that_overflows_is_unpriced_and_never_kept`,
+/// `every_path_ledgers_a_unit_exactly_once_and_closes_it` and
+/// `a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never`.
+#[tokio::test]
+async fn a_unit_ended_by_any_failure_after_its_report_bills_the_last_accepted_report_once() {
+    for status in [499u32, 500, 502, 503, 504] {
+        let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
+        assert_eq!(
+            r.money.checkpoint(&ctx(1), &reported(40)),
+            Checkpoint::Continue
+        );
+        assert_eq!(
+            r.money.checkpoint(&ctx(1), &reported(70)),
+            Checkpoint::Continue
+        );
+        r.money.settle_end(UnitKey::new(1), status);
+        assert_eq!(
+            (usage(&r).await.0, r.money.open_units()),
+            (Count::from(70u64), 0),
+            "status {status}: the last accepted report is billed"
+        );
+        r.money.settle_end(UnitKey::new(1), status);
+        assert_eq!(
+            usage(&r).await.0,
+            Count::from(70u64),
+            "status {status}: and billed once"
+        );
+    }
+}
+
+/// MONEY-OWED, the buried-unit cases: a unit whose caller is gone while its plane has finished
+/// (its done piece in flight) is billed by its end, once, and a later bill for the same unit adds
+/// nothing.
+#[tokio::test]
+async fn a_unit_buried_after_its_plane_finished_bills_its_report_once() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
+    let _ = r.money.checkpoint(&ctx(1), &reported(55));
+    r.money.finished(&ctx(1));
+    r.money.abandoned(&ctx(1), Ended::AlreadySettled);
+    r.money.settle_end(UnitKey::new(1), 499);
+    assert_eq!(
+        (usage(&r).await.0, r.money.open_units()),
+        (Count::from(55u64), 0),
+        "the buried unit bills what its plane stated"
+    );
+    r.money
+        .cancelled(&ctx(1), &bill(ReasonCode::ClientGone, 55));
+    r.money.settle_end(UnitKey::new(1), 499);
+    assert_eq!(
+        usage(&r).await.0,
+        Count::from(55u64),
+        "a bill after the unit closed adds nothing"
+    );
+}
+
+/// MONEY-OWED, retirement: a dropped stream is billed once by its cancel bill without another
+/// arrival (what the idle maintenance of the old driver did), and its request stays charged.
+#[tokio::test]
+async fn a_dropped_native_stream_is_billed_once_by_its_cancel_bill() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit).await;
+    admit(&r);
+    let _ = r.money.checkpoint(&ctx(1), &reported(30));
+    r.money.abandoned(&ctx(1), Ended::AlreadySettled);
+    assert_eq!(r.money.open_units(), 1, "the unit waits for its bill");
+    r.money
+        .cancelled(&ctx(1), &bill(ReasonCode::ClientGone, 25));
+    r.money
+        .cancelled(&ctx(1), &bill(ReasonCode::ClientGone, 25));
+    let (tokens, spend) = usage(&r).await;
+    assert_eq!(tokens, Count::from(25u64), "what was streamed, once");
+    assert!(spend >= 5, "a stream that delivered keeps its fee: {spend}");
+    assert_eq!(requests(&r).await, 1, "and its request stays counted");
+    assert_eq!(r.money.open_units(), 0);
+}
+
+/// `GovState::budget_spent`, the read a native child is judged by (ledger rows M-5, F-10): it
+/// refuses only once the spend has reached the cap, by the rule admission uses with no fee added;
+/// it counts no request and charges nothing; a new window's budget is whole; a key with no group
+/// has no budget to spend.
+#[tokio::test]
+async fn the_child_budget_read_refuses_only_a_spent_budget_and_changes_nothing() {
+    let r = rig(Some(10), 5, ExhaustionMode::FinishUnit).await;
+    let spent = |at: u64| r.gov.budget_spent(&r.cost, &r.key, "", at);
+    assert!(spent(NOW).is_none(), "nothing is spent yet");
+    drop(
+        r.gov
+            .try_admit(&r.cost, &r.key, "", NOW)
+            .expect("the first fee fits the budget"),
+    );
+    assert!(spent(NOW).is_none(), "half the budget is left");
+    drop(
+        r.gov
+            .try_admit(&r.cost, &r.key, "", NOW)
+            .expect("the second fee spends the budget exactly"),
+    );
+
+    let (requests_before, spend_before) = (requests(&r).await, usage(&r).await.1);
+    assert_eq!(spend_before, 10, "two fees of five");
+    let blocked = spent(NOW);
+    assert!(
+        matches!(
+            blocked,
+            Some(crate::governance::LimitBlocked::Limit {
+                metric: "budget",
+                ..
+            })
+        ),
+        "a spent budget is named as the budget limit: {blocked:?}"
+    );
+    assert!(
+        r.gov.try_admit(&r.cost, &r.key, "", NOW).is_err(),
+        "the read agrees with admission"
+    );
+    assert_eq!(
+        (requests(&r).await, usage(&r).await.1),
+        (requests_before, spend_before),
+        "the read counted no request and charged nothing"
+    );
+
+    assert!(
+        spent(a_later_window()).is_none(),
+        "the budget of a new window is whole"
+    );
+    let ungrouped = VirtualKey {
+        id: "ungrouped".into(),
+        generation_hash: "h:ungrouped".into(),
+        name: "ungrouped".into(),
+        enabled: true,
+        group: None,
+        revision: 1,
+        ..Default::default()
+    };
+    assert!(
+        r.gov.budget_spent(&r.cost, &ungrouped, "", NOW).is_none(),
+        "a key with no group has no budget to spend"
+    );
 }

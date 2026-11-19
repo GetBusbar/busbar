@@ -241,8 +241,7 @@ allow = [
 # ── The MIN-3 closure (IF §15 rules 1a and 1b; W1-X1) ─────────────────────────────────────────────
 # What a rendered plugin repo's Cargo workspace may name of busbar. `tools/ci-checks` (`fleet-manifest`)
 # holds this table to these values; `plugin-rules` holds every plugin repo's `cargo metadata` to it.
-#   - busbar-plugin-abi is a plugin's ONLY busbar dependency (feature `memio` for its own tests, never
-#     `host`); a kind-free helper crate may be a second one if its only busbar dependency is
+#   - busbar-plugin-abi is a plugin's ONLY busbar dependency (never `host`); a kind-free helper crate may be a second one if its only busbar dependency is
 #     busbar-plugin-abi at default features (rule 1a, round 30).
 #   - busbar-plugin-test is the ONLY busbar dev-dependency (rule 1b; a repo's own crates aside).
 #   - No plugin crate, and none of the core crates below, is reachable through a normal or build edge.

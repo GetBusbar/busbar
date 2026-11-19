@@ -6,7 +6,7 @@
 //! this interface. A missing class is unobserved, never an implied zero.
 
 use crate::abi::mechanism::call::AbiStr;
-use crate::abi::mechanism::check::{fault, listed, named, Fault, Rule};
+use crate::abi::mechanism::check::{fault, named, Fault, Rule};
 
 pub use busbar_artifact_metadata::measurement::MAX_MEASUREMENT_CLASSES;
 
@@ -173,66 +173,3 @@ pub unsafe fn check_declarations(classes: &[BillableClass]) -> Result<(), Fault>
 }
 
 pub(crate) use busbar_artifact_metadata::measurement::valid_name;
-
-/// Check count bounds, exact storage range, sources and distinct declared indexes.
-pub fn check_counts(counts: &[UnitCount], declared_classes: usize) -> Result<(), Fault> {
-    if declared_classes > MAX_MEASUREMENT_CLASSES || counts.len() > MAX_MEASUREMENT_CLASSES {
-        return Err(fault(Rule::OverMax, "measurements.counts"));
-    }
-    let mut seen = 0u64;
-    for count in counts {
-        if count.class as usize >= declared_classes {
-            return Err(fault(Rule::IndexOutOfRange, "measurements.class"));
-        }
-        let mask = 1u64 << count.class;
-        if seen & mask != 0 {
-            return Err(fault(Rule::Contradiction, "measurements.class"));
-        }
-        seen |= mask;
-        if !matches!(count.source, UNITS_REPORTED | UNITS_REPORTED_MICROS) {
-            return Err(fault(Rule::UnknownCode, "measurements.source"));
-        }
-        if !count
-            .count()
-            .is_ok_and(|value| value.fits_a_64_bit_column())
-        {
-            return Err(fault(Rule::OverMax, "measurements.amount"));
-        }
-    }
-    Ok(())
-}
-
-/// Validate a report against the host cursor and signed declaration count before copying it.
-/// An all-zero report is absence, even for an active cursor. An active empty report echoes the
-/// cursor but observes no classes. Pending and short retries must echo the same cursor.
-///
-/// # Safety
-/// A non-NULL counts pointer names `counts_len` live UnitCounts, if its count is within bounds.
-pub unsafe fn check_batch(
-    batch: &MeasurementBatch,
-    declared_classes: usize,
-    expected_revision: u64,
-) -> Result<(), Fault> {
-    if batch.counts_len > MAX_MEASUREMENT_CLASSES || declared_classes > MAX_MEASUREMENT_CLASSES {
-        return Err(fault(Rule::OverMax, "measurements.counts"));
-    }
-    if batch.revision == 0 && batch.counts_len == 0 && batch.counts.is_null() {
-        return Ok(());
-    }
-    if expected_revision == 0 || batch.revision != expected_revision || declared_classes == 0 {
-        return Err(fault(Rule::Foreign, "measurements.revision"));
-    }
-    listed(batch.counts, batch.counts_len, "measurements.counts")?;
-    if batch.counts_len != 0
-        && !(batch.counts as usize).is_multiple_of(core::mem::align_of::<UnitCount>())
-    {
-        return Err(fault(Rule::Misaligned, "measurements.counts"));
-    }
-    let counts = if batch.counts_len == 0 {
-        &[]
-    } else {
-        // SAFETY: bounded and aligned above; caller supplies live storage.
-        unsafe { core::slice::from_raw_parts(batch.counts, batch.counts_len) }
-    };
-    check_counts(counts, declared_classes)
-}

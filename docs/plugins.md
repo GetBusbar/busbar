@@ -11,8 +11,9 @@ A plugin is a plugin. There are seven plugin kinds: **store, secret, auth, hook,
 transport**. They share ONE artifact format, ONE trust model, ONE loader, and ONE inventory
 (`busbar --list-plugins`). The manifest `kind` field is the only discriminator; it selects which
 kind's interface the plugin answers and which part of Busbar consumes it. (Planes are the plugins that
-bring their own config sections: the model, MCP, A2A, streaming and decisions planes. Transports carry
-bytes for a URL scheme.)
+bring their own config sections: the model, MCP, A2A, streaming and decisions planes. Transports frame
+a protocol, such as HTTP, gRPC, WebSocket or WebRTC, over bytes that core's carriers move; TCP, unix
+sockets, UDP and a started program's stdio are core's carriers, never plugins.)
 
 **Plugins speak the memory ABI only** (since 1.6.0). Every kind has one ABI, and all seven share one
 mechanism: a plugin exports ONE symbol, `busbar_plugin_door`, which answers a table of typed slots

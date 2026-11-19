@@ -306,9 +306,6 @@ pub(super) async fn apply(
             if let Some(rejection) = doc.document_patch.as_ref().and_then(|patch| document_patch_rejection(patch, Some(&loaded))) {
                 return Ok(Outcome::Value(Err(rejection)));
             }
-            if loaded.deploy.advanced.worker_threads == Some(0) {
-                return Err(AdminError::Validation("advanced.worker_threads must be positive".into()));
-            }
             loaded.resource_ownership.validate_named_maps(&doc)
                 .map_err(AdminError::Validation)?;
             busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc)
@@ -610,11 +607,21 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
         "/limits/pool_max_idle_per_host",
         "/limits/pool_idle_timeout_secs",
         "/limits/max_inbound_concurrent",
+        "/telemetry/response_headers",
+        "/shutdown/deregister_delay",
+        "/outbound",
+        "/client_address",
+        // The old homes of the keys above: an edit there is carried to the new home when the
+        // document is read, so it needs the same restart.
         "/advanced/response_headers",
-        "/advanced/worker_threads",
         "/advanced/shutdown/deregister_delay",
         "/advanced/upstream_http1_only",
         "/advanced/upstream_h2_prior_knowledge",
+        "/advanced/trusted_proxies",
+        "/advanced/forwarded_header",
+        "/advanced/block_private_addresses",
+        "/advanced/proxy_resolution",
+        "/advanced/tls",
     ];
     paths
         .iter()
@@ -828,7 +835,7 @@ mod tests {
     #[test]
     fn boot_changes_remain_explicitly_pending_and_live_limits_do_not() {
         let paths = [
-            "/advanced/worker_threads",
+            "/advanced/response_headers",
             "/store/settings",
             "/limits/request_body_max_bytes",
             "/listen",
@@ -836,7 +843,45 @@ mod tests {
         .map(str::to_owned);
         assert_eq!(
             restart_paths(&paths),
-            ["/advanced/worker_threads", "/store/settings", "/listen"]
+            ["/advanced/response_headers", "/store/settings", "/listen"]
+        );
+    }
+
+    #[test]
+    fn boot_bound_security_settings_are_pending_restart_when_edited() {
+        let homes = [
+            "/client_address/trusted_proxies",
+            "/client_address/header",
+            "/outbound/block_private_addresses",
+            "/outbound/proxy_resolution",
+            "/outbound/tls/roots",
+            "/outbound/http1_only",
+            "/shutdown/deregister_delay",
+            "/telemetry/response_headers/server_timing",
+        ]
+        .map(str::to_owned);
+        assert_eq!(restart_paths(&homes), homes);
+        assert!(restart_paths(&["/telemetry/enabled".to_owned()]).is_empty());
+        let paths = [
+            "/advanced/trusted_proxies",
+            "/advanced/forwarded_header",
+            "/advanced/block_private_addresses",
+            "/advanced/proxy_resolution",
+            "/advanced/tls",
+            "/advanced/tls/roots",
+            "/advanced/usage_flush_interval_ms",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            restart_paths(&paths),
+            [
+                "/advanced/trusted_proxies",
+                "/advanced/forwarded_header",
+                "/advanced/block_private_addresses",
+                "/advanced/proxy_resolution",
+                "/advanced/tls",
+                "/advanced/tls/roots",
+            ]
         );
     }
 
@@ -857,10 +902,10 @@ mod tests {
         for path in ["/advanced/shutdown/deregister_delay", "/advanced/shutdown"] {
             assert_eq!(restart_paths(&[path.to_owned()]), [path]);
         }
-        assert_eq!(
-            restart_paths(&["/advanced/worker_threads".to_owned()]),
-            ["/advanced/worker_threads"]
-        );
+        // Removed keys change nothing at runtime, so they are never restart state.
+        for path in ["/advanced/worker_threads", "/advanced/rate_sweep_interval"] {
+            assert!(restart_paths(&[path.to_owned()]).is_empty(), "{path}");
+        }
         assert!(restart_paths(&["/providers/example/timeout".to_owned()]).is_empty());
     }
 

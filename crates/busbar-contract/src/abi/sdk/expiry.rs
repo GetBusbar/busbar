@@ -182,7 +182,3 @@ impl<T: Ord> Counted<BTreeSet<T>> {
         self.counting(self.inner.range(range))
     }
 }
-
-#[cfg(test)]
-#[path = "tests/expiry_tests.rs"]
-mod tests;

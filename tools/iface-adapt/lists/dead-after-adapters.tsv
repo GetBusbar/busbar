@@ -1,0 +1,22 @@
+file	first_line	last_line	item	dead_because	keep
+crates/busbar-plugin-abi/src/kinds/store.rs	252	357	extras: host-side Proxy (and SessionHandle) of kind store	every call of this kind is made by crates/plugin-loader/src/call/kinds/store.rs	the trait, tags, consts, pods, views and (secret) the sugar helpers
+crates/busbar-plugin-abi/src/kinds/secret.rs	88	138	extras: host-side Proxy (and SessionHandle) of kind secret	every call of this kind is made by crates/plugin-loader/src/call/kinds/secret.rs	the trait, tags, consts, pods, views and (secret) the sugar helpers
+crates/busbar-plugin-abi/src/kinds/auth.rs	245	373	extras: host-side Proxy (and SessionHandle) of kind auth	every call of this kind is made by crates/plugin-loader/src/call/kinds/auth.rs	the trait, tags, consts, pods, views and (secret) the sugar helpers
+crates/busbar-plugin-abi/src/kinds/hook.rs	166	232	extras: host-side Proxy (and SessionHandle) of kind hook	every call of this kind is made by crates/plugin-loader/src/call/kinds/hook.rs	the trait, tags, consts, pods, views and (secret) the sugar helpers
+crates/busbar-plugin-abi/src/kinds/export.rs	169	253	extras: host-side Proxy (and SessionHandle) of kind export	every call of this kind is made by crates/plugin-loader/src/call/kinds/export.rs	the trait, tags, consts, pods, views and (secret) the sugar helpers
+crates/busbar-plugin-abi/src/kinds/plane.rs	1111	1399	extras: host-side Proxy (and SessionHandle) of kind plane	every call of this kind is made by crates/plugin-loader/src/call/kinds/plane.rs	the trait, tags, consts, pods, views and (secret) the sugar helpers
+crates/busbar-plugin-abi/src/kinds/transport.rs	387	541	extras: host-side Proxy (and SessionHandle) of kind transport	every call of this kind is made by crates/plugin-loader/src/call/kinds/transport.rs	the trait, tags, consts, pods, views and (secret) the sugar helpers
+crates/busbar-plugin-abi/src/host_side/proxy.rs	26	111	entry, sync, sync_fixed, opener, chain	replaced by the five functions of crates/plugin-loader/src/call/mod.rs	staged (made pub: the bolt calls it)
+crates/busbar-ffi/src/vt.rs	50	79	EntryFn0 to EntryFn5	one Entry type; no call names an argument count	Entry, Call, CancelFn, CloseFn, Kind and its markers
+crates/busbar-ffi/src/vt.rs	162	274	views AuthReq, PlaneReq, Target, ConnInfo and the ViewRef aliases	the view fields cross by position in texts and blobs; the kind crates keep the plain structs for their trait signatures	-
+crates/busbar-ffi/src/vt.rs	276	650	Plain, Opens, OnSession, Ends, Starts and the seven per-kind Vt modules	every table is an array of Entry called by index	-
+crates/busbar-ffi/src/shim.rs	102	220	the 16 argument-count shims (Call0..3, Opener1..2, Session0..4, End0, Start0..4)	five shims: plain, open a session, on a session, end a session, start a chain	the five
+crates/busbar-ffi/src/host.rs	580	638	invoke0 to invoke5	the loader invokes through Instance::call, open_session, start and Session::call, end only (crates/plugin-loader/src/call/ffi.rs)	cancel_raw
+crates/busbar-ffi/src/host.rs	675	833	Instance::call0..3, open_session1..2, start0, start1, start2, start4	as above	Instance::from_answer, image, opened, started, Drop
+crates/busbar-ffi/src/host.rs	861	941	Session::call0..4, end	as above	Session::token, Drop
+crates/busbar-plugin-abi/src/versions.rs	1	82	MECHANISM, the seven single kind numbers, abi_of, AbiVersion	agreement at load reads first.second and the wire fingerprint per contract (crates/plugin-loader/src/agree.rs)	ENGINE, EngineVersion
+crates/busbar-plugin-abi/src/fp.rs	33	47	CORE_FP as one fingerprint over the mechanism blocks	the loader compares the core line and the kind line it finds in pins::{CORE, of(kind)}	the hash function
+crates/busbar-plugin-abi/src/stamp.rs	21	27	Stamp fields kind_abi, mechanism, layout, mechanism_layout, semantic, mechanism_semantic	stamp format 3: core_first, core_second, core_wire, kind_first, kind_second, kind_wire (read by admit::claims)	every other field; size stays 272
+ci/abi.pin	1	9	the eight exact-match lines	pins/core.pin and pins/<kind>.pin, compiled in as pins::Pins	the rustc line moves to pins/toolchain
+crates/busbar-ports/src/plane.rs	13	13	PlaneSession = busbar_plugin_abi::kinds::plane::plane::SessionHandle	the handle is call::Sess<kind::Plane>: see ASSUMED.tsv row ports-session	-
+crates/busbar-ports/src/transport.rs	12	12	TransportSession = busbar_plugin_abi::kinds::transport::transport::SessionHandle	the handle is call::Sess<kind::Transport>: see ASSUMED.tsv row ports-session	-

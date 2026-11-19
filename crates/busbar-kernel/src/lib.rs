@@ -166,28 +166,6 @@ impl Clock for WallClock {
     }
 }
 
-/// A clock a test drives by hand.
-#[derive(Debug, Default)]
-pub struct ManualClock {
-    now: std::sync::atomic::AtomicU64,
-}
-
-impl ManualClock {
-    pub fn new() -> Self {
-        ManualClock::default()
-    }
-
-    pub fn advance(&self, by: Millis) {
-        self.now.fetch_add(by, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-impl Clock for ManualClock {
-    fn now(&self) -> Millis {
-        self.now.load(std::sync::atomic::Ordering::Relaxed)
-    }
-}
-
 pub mod admin;
 
 pub mod audit;
@@ -212,13 +190,13 @@ pub mod audit_ring;
 pub mod auth;
 
 pub mod boot;
-pub mod catalogue;
 // The one cold module (LINT-RULES LR-167): refusal text and rare first-sight paths the request-path
 // modules beside it call out of line.
 pub(crate) mod cold;
 pub mod config;
 pub mod config_validate;
 pub mod core_routes;
+pub mod core_watch;
 pub mod cost;
 pub mod diagnostics;
 // The request-path modules' code that runs off the request path: once per configuration, generation
@@ -357,23 +335,6 @@ pub mod host_work;
     )
 )]
 pub mod ingress;
-// busbar:request-path
-#[cfg_attr(
-    not(test),
-    deny(
-        clippy::disallowed_macros,
-        clippy::disallowed_methods,
-        clippy::disallowed_types,
-        clippy::redundant_clone,
-        clippy::format_push_string,
-        clippy::needless_collect,
-        clippy::or_fun_call,
-        clippy::needless_pass_by_value,
-        clippy::allow_attributes,
-        clippy::allow_attributes_without_reason
-    )
-)]
-pub mod ir;
 
 pub mod host_record_bootstrap;
 // busbar:request-path
@@ -413,6 +374,7 @@ pub mod json;
 pub mod limits;
 pub mod oauth_as;
 pub mod observability;
+pub mod outbox;
 pub mod rt;
 pub mod snapshot;
 
@@ -565,7 +527,6 @@ pub mod push;
 pub mod recorder;
 pub mod refusal;
 pub mod resource_admission;
-pub mod sessions;
 pub mod upstreams;
 
 pub use vocabulary::{Registration, MAX_VOCABULARY};
@@ -606,9 +567,9 @@ pub use appbuild::{
 };
 pub use preflight::plugins_preflight;
 pub use router::{
-    build_data_router_on, build_router, build_split_routers_serving,
-    build_split_routers_serving_doors, build_split_routers_serving_listener,
-    build_split_routers_with_limits, fallback_error_response, REQUEST_ACTIVITY_TICKS,
+    build_router, build_split_routers_serving, build_split_routers_serving_doors,
+    build_split_routers_serving_listener, build_split_routers_with_limits, fallback_error_response,
+    REQUEST_ACTIVITY_TICKS,
 };
 
 #[cfg(any(test, feature = "test-support"))]
@@ -619,8 +580,8 @@ pub fn base_data_core_lines(
     app: &state::App,
 ) -> Vec<(
     String,
-    busbar_contract::abi::mechanism::route::RouteMethod,
-    busbar_contract::abi::mechanism::route::RouteAuth,
+    busbar_contract::route::RouteMethod,
+    busbar_contract::route::RouteAuth,
 )> {
     router::base_data_router(
         &crate::plugin_routes::PluginRouteTable::default(),
@@ -641,8 +602,8 @@ pub fn base_data_core_lines(
 #[must_use]
 pub fn admin_core_lines() -> Vec<(
     String,
-    busbar_contract::abi::mechanism::route::RouteMethod,
-    busbar_contract::abi::mechanism::route::RouteAuth,
+    busbar_contract::route::RouteMethod,
+    busbar_contract::route::RouteAuth,
 )> {
     off_path::router::admin_routes(&crate::plugin_routes::PluginRouteTable::default())
         .1
@@ -650,11 +611,6 @@ pub fn admin_core_lines() -> Vec<(
         .iter()
         .map(|r| (r.path.clone(), r.method, r.auth))
         .collect()
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn boot_route_paths_of(app: &state::App) -> Vec<String> {
-    app.boot_route_paths.iter().cloned().collect()
 }
 
 #[cfg(any(test, feature = "test-support"))]

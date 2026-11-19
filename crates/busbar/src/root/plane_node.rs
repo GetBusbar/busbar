@@ -5,27 +5,16 @@ use foldhash::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
-#[cfg(test)]
-use axum::http::StatusCode;
-#[cfg(test)]
-use axum::response::Response;
-
 use busbar_contract::caps::CallId;
-#[cfg(test)]
-use busbar_contract::caps::Route;
 use busbar_contract::caps::{
     Audit, Grant, OpClassId, OriginKind, Outcome, Pass, PrincipalId, VerifiedDestination,
 };
 use busbar_contract::kept::Text;
 use busbar_contract::{LaneId, UnitKey};
-use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission, RequestLease};
+use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
 #[path = "plane_node/terminal_book.rs"]
 mod terminal_book;
-#[cfg(test)]
-use busbar_kernel::plane_driver::PlaneAnswer;
-use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, RouteAwait, UnitCtx, Units};
-#[cfg(test)]
-use busbar_kernel::teller::{RouteLeg, Screen};
+use busbar_kernel::teller::{Ended, UnitCtx};
 use busbar_kernel::Registration;
 use busbar_kernel_audit::{
     Attempt, AttemptOutcome, AuditInputs, Controls, FinishClass as RecordFinish, HookApplied,
@@ -43,24 +32,24 @@ impl RetainedBook {
     }
 }
 
+#[path = "plane_node/money_gate.rs"]
+mod money_gate;
 #[path = "plane_node/native.rs"]
 mod native;
 #[cfg(test)]
 pub(crate) use native::retained_fixture;
-pub(crate) use native::{deliver_original_page, fund_original_page, NativeNodeHandle};
+pub(crate) use native::{
+    deliver_original_page, fee_debt_owner, fund_original_page, NativeNodeHandle,
+};
 
-#[cfg(test)]
-use crate::root::linked::node::Handed;
-use crate::root::linked::node::{Late, Reported, Resolve};
+/// The op class of the one aggregate line per (listener, reason) of refused requests that had no
+/// identity, per flush interval (design 2, A5).
+pub(crate) const REFUSALS_OP_CLASS: &str = "refusals";
 
-struct LaneNames {
-    interner: Arc<Mutex<Registration>>,
-    resolved: HashMap<String, LaneId>,
-    consulted: u64,
-}
+/// The op class of the line a metered response waits for under `advanced.wait_for_commit`.
+pub(crate) const RESPONSE_OP_CLASS: &str = "response";
 
 struct ResponseIntentOwner {
-    store: Arc<busbar_kernel::persistence::facade::CoreStore>,
     service: Arc<crate::root::durability::response_intent::ResponseIntentService>,
 }
 
@@ -114,45 +103,25 @@ impl Arrived {
     }
 }
 
-impl LaneNames {
-    fn resolve(&mut self, name: &str) -> Option<LaneId> {
-        if let Some(lane) = self.resolved.get(name) {
-            return Some(*lane);
-        }
-        self.consulted += 1;
-        let lane = self
-            .interner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .lane(name)?;
-        crate::root::cold::first_resolved(&mut self.resolved, name, lane);
-        Some(lane)
-    }
-
-    #[cfg(test)]
-    fn consulted(&self) -> u64 {
-        self.consulted
-    }
-}
-
 pub(crate) struct Node {
     kernel: Arc<busbar_kernel::teller::Kernel>,
     pub(in crate::root) inflight: busbar_kernel::inflight::InFlight,
     gauge: busbar_kernel::slice::ConcurrencyGauge,
-    canary: busbar_kernel::canary::Canary,
     door: crate::root::kernel::AdmissionDoor,
 
     #[cfg(test)]
     lanes: Arc<Mutex<Registration>>,
 
-    lane_names: Arc<Mutex<LaneNames>>,
     next_key: Arc<busbar_kernel::door::UnitKeyMint>,
-
-    marked: AtomicU64,
 
     lost: Arc<RetainedBook>,
 
     mono: AtomicU64,
+
+    /// The money seams of the native serving generations, held weakly: what the exit walk reads
+    /// for its open-units report (SHUTDOWN-HANG F4). A generation that a reload replaced stays
+    /// listed while one of its units is still open and drops out when its seam is destroyed.
+    native_money: Mutex<Vec<std::sync::Weak<busbar_kernel::plane_driver::PlaneMoney>>>,
 
     /// The clock a unit's arrival is read from: once, at the door, and every window it is
     /// admitted and billed in is the one that reading names.
@@ -161,17 +130,19 @@ pub(crate) struct Node {
     book: std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>,
 
     lane: std::sync::OnceLock<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>>,
+    /// The money gate is in a refusal episode (logged once at its start and once at its end).
+    money_refusing: std::sync::atomic::AtomicBool,
+    /// Billable opens refused because the journal could not record money.
+    money_refusals: AtomicU64,
     response_intent: std::sync::OnceLock<ResponseIntentOwner>,
+
+    /// The cores' audit state and the flusher that pulls it (design 2, A3).
+    cores: crate::root::durability::core_audit::CoreFlusher,
 
     /// The node the bound book seals as: the node half of every unit id this node stamps.
     sealing: std::sync::OnceLock<crate::root::durability::LineIdentity>,
 
     durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
-
-    #[cfg(test)]
-    dispatch: Arc<dyn crate::root::transports::PlaneDispatch>,
-
-    pub(crate) ticket_custody: Arc<crate::root::serve::TicketCustody>,
 }
 
 impl std::fmt::Debug for Node {
@@ -189,36 +160,28 @@ impl Default for Node {
 impl Node {
     #[must_use]
     pub(crate) fn new() -> Self {
-        let lanes = Arc::new(Mutex::new(crate::root::kernel::new_registration()));
         let kernel = crate::root::kernel::new_kernel();
         Self {
             durability_token: kernel.durability_token(),
             book: std::sync::OnceLock::new(),
             lane: std::sync::OnceLock::new(),
+            money_refusing: std::sync::atomic::AtomicBool::new(false),
+            money_refusals: AtomicU64::new(0),
             response_intent: std::sync::OnceLock::new(),
+            cores: crate::root::durability::core_audit::CoreFlusher::default(),
             sealing: std::sync::OnceLock::new(),
             kernel: Arc::new(kernel),
 
             inflight: busbar_kernel::inflight::InFlight::new(usize::MAX),
             gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
-            canary: busbar_kernel::canary::Canary::new(),
             door: crate::root::kernel::AdmissionDoor,
             #[cfg(test)]
-            lanes: Arc::clone(&lanes),
-            lane_names: Arc::new(Mutex::new(LaneNames {
-                interner: lanes,
-                resolved: HashMap::default(),
-                consulted: 0,
-            })),
+            lanes: Arc::new(Mutex::new(crate::root::kernel::new_registration())),
             next_key: Arc::default(),
-            marked: AtomicU64::new(0),
             lost: Arc::new(RetainedBook(Mutex::new(Self::fixture_terminal_book()))),
             mono: AtomicU64::new(0),
+            native_money: Mutex::new(Vec::new()),
             clock: Arc::new(busbar_kernel::WallClock),
-
-            #[cfg(test)]
-            dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
-            ticket_custody: crate::root::serve::TicketCustody::new(),
         }
     }
 
@@ -239,6 +202,16 @@ impl Node {
             process.connection_storage(AdmissionClass::Operator),
         ));
         Ok(())
+    }
+
+    /// The account a native dial's framer session is charged to: the bound boot admission's Data class, the account
+    /// inbound connections are charged to. `None` before the boot binds it.
+    pub(crate) fn dial_storage(&self) -> Option<busbar_contract::storage::StorageSource> {
+        self.lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(TerminalBook::data_source)
     }
 
     /// Production binds the actual boot ProcessAdmission in main; nothing is bound by default.
@@ -283,6 +256,11 @@ impl Node {
             .map_or(0, TerminalBook::len)
     }
 
+    /// Reserve `key`'s terminal-book entry in `class`'s partition before any effect; `None` when
+    /// the book is unbound or that partition is full. Test-only here: the door unit entries that
+    /// reserved through it are deleted, and a native unit inserts itself (`plane_node/native.rs`).
+    /// Kept so the book's two storage refusals stay proven through the node.
+    #[cfg(test)]
     fn reserve_terminal(
         &self,
         class: AdmissionClass,
@@ -293,14 +271,24 @@ impl Node {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_mut()?
-            .insert(class, key, RetainedUnit::reserved(call))
+            .insert(
+                class,
+                key,
+                RetainedUnit {
+                    call,
+                    state: RetainedState::Original {
+                        staged: None,
+                        receipt: None,
+                        credit: None,
+                    },
+                },
+            )
             .ok()?;
         Some(TerminalReservation {
             node: self,
             class,
             key,
             call,
-            active: true,
         })
     }
 
@@ -334,43 +322,28 @@ impl Node {
         (Arc::clone(&self.kernel), Arc::clone(&self.next_key))
     }
 
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn driven(&self) -> Option<u64> {
-        self.dispatch.driven()
-    }
-
-    pub(crate) fn arrived(&self) -> Arrived {
-        self.checked_arrived()
-            .expect("node monotonic clock exhausted")
-    }
-
     /// Response finalization can refuse exhausted identity before publishing any output.
     /// All node stamps share this allocator, so an ordinary arrival cannot wrap it first.
     pub(crate) fn checked_arrived(&self) -> Result<Arrived, &'static str> {
-        let mono = self
-            .mono
+        let mono = self.checked_mono()?;
+        Ok(Arrived::at(self.clock.now(), mono))
+    }
+
+    /// The node's next monotonic reading alone, for an operation whose wall reading was already
+    /// taken once (an admin request's arrival): the pair a record stamps is that one wall reading
+    /// and this one ordering reading, never a unit key standing in for either.
+    pub(crate) fn checked_mono(&self) -> Result<u64, &'static str> {
+        self.mono
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
                 value.checked_add(1)
             })
-            .map_err(|_| "node monotonic clock exhausted")?;
-        Ok(Arrived::at(self.clock.now(), mono))
+            .map_err(|_| "node monotonic clock exhausted")
     }
 
     #[cfg(test)]
     #[must_use]
     pub(crate) fn lanes(&self) -> Arc<Mutex<Registration>> {
         Arc::clone(&self.lanes)
-    }
-
-    pub(crate) fn resolver(&self) -> Resolve {
-        let names = Arc::clone(&self.lane_names);
-        Arc::new(move |name: &str| {
-            names
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .resolve(name)
-        })
     }
 
     pub(crate) fn bind_book(&self, book: Arc<Mutex<crate::root::durability::Durability>>) {
@@ -385,7 +358,7 @@ impl Node {
 
     pub(crate) fn bind_response_intents(
         &self,
-        store: Arc<busbar_kernel::persistence::facade::CoreStore>,
+        store: &Arc<busbar_kernel::persistence::facade::CoreStore>,
         service: Arc<crate::root::durability::response_intent::ResponseIntentService>,
     ) -> Result<(), &'static str> {
         let book = self
@@ -398,14 +371,14 @@ impl Node {
             .lane
             .get()
             .is_some_and(|journal| Arc::ptr_eq(journal, service.journal()))
-            || !service.journal().is_bound_to(&store)
+            || !service.journal().is_bound_to(store)
             || book.incarnation != service.incarnation()
             || book.record.node() != service.journal().node()
         {
             return Err("response intent owner differs from the admitted node journal");
         }
         self.response_intent
-            .set(ResponseIntentOwner { store, service })
+            .set(ResponseIntentOwner { service })
             .map_err(|_| "response intent owner already installed")
     }
 
@@ -417,39 +390,6 @@ impl Node {
             .map(|owner| Arc::clone(&owner.service))
     }
 
-    pub(crate) fn response_intent_stamp(
-        &self,
-        journal: &Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
-    ) -> Result<busbar_kernel_audit::response_intent::ResponseIntentStamp, String> {
-        let owner = self
-            .response_intent
-            .get()
-            .ok_or("response intent owner unavailable")?;
-        if !Arc::ptr_eq(journal, owner.service.journal()) || !journal.is_bound_to(&owner.store) {
-            return Err("response intent journal differs from the retained attachment".into());
-        }
-        let authority = owner
-            .store
-            .authority()
-            .map_err(|error| format!("response intent writer: {error:?}"))?;
-        let history = crate::root::kernel::ROOT_CARD.pin();
-        let captured = self.checked_arrived()?;
-        Ok(busbar_kernel_audit::response_intent::ResponseIntentStamp {
-            lease_epoch: authority.writer_epoch,
-            policy_epoch: policy_in_force(history.as_ref(), captured.ms()),
-            wall: captured.secs(),
-            mono: captured.mono(),
-        })
-    }
-
-    /// THE NODE-QUALIFIED ID of `unit` (ADMIN-API-1.6 §3.4): the one string its sealed record's
-    /// `unit` and its data-plane `X-Request-Id` both carry. `None` before a book is bound, or
-    /// when the process has no boot nonce.
-    #[must_use]
-    pub(crate) fn unit_id(&self, unit: UnitKey) -> Option<busbar_kernel_audit::UnitId> {
-        let node = self.sealing.get()?.node;
-        busbar_kernel_audit::UnitId::of(node, busbar_kernel::snapshot::boot_nonce(), unit.get())
-    }
     pub(crate) async fn retry_held_journal(&self) -> Result<(), String> {
         if let Some(journal) = self.lane.get() {
             journal
@@ -459,20 +399,12 @@ impl Node {
         }
         Ok(())
     }
-    /// The journal's sticky custody failure on a finish path, in O(1). A unit
-    /// waits only for its own record; held runs of other units stay with the
-    /// lease-tick retry and the admission refusal at unit open.
-    pub(crate) fn journal_failed(&self) -> Result<(), String> {
-        match self.lane.get().and_then(|journal| journal.failed()) {
-            Some(error) => Err(crate::root::cold::native_journal_refused(&error)),
-            None => Ok(()),
-        }
-    }
     /// Settle in-doubt store attempts (≤ 64 per tick) and publish `busbar_store_slots`.
     pub(crate) async fn settle_store(&self) {
         let Some(journal) = self.lane.get() else {
             return;
         };
+        self.close_money_episode(journal);
         match journal.settle_store().await {
             Ok(states) => {
                 for (state, count) in [
@@ -489,9 +421,265 @@ impl Node {
             Err(error) => tracing::warn!(?error, "store slot settle pass failed"),
         }
     }
-    #[must_use]
-    pub(crate) fn journal_refusal(&self) -> Option<String> {
-        self.lane.get().and_then(|journal| journal.refuses_money())
+
+    /// A new core's audit state, pulled by this node's flusher (design 2, A1). The core's
+    /// listener loop owns it and hands it to each connection.
+    pub(crate) fn core_audit(&self) -> Arc<crate::root::durability::core_audit::CoreAudit> {
+        self.cores.core()
+    }
+
+    /// ONE FLUSH (design 2, A3): pull every core, link each line into the chain in monotonic
+    /// order, write one aggregate line per non-zero (listener, reason) refusal count of the
+    /// interval, and commit the group with everything else the journal holds. The notary signs the
+    /// head this publishes. What could not be staged or committed is carried to the next flush;
+    /// waiters are released only by a commit that holds their item.
+    pub(crate) async fn flush_cores(&self) -> Result<(), String> {
+        let (Some(book), Some(journal)) = (self.book.get(), self.lane.get()) else {
+            return Ok(());
+        };
+        let (from_ms, to_ms) = self.cores.interval(self.clock.now());
+        let mut pulled = self.cores.pull();
+        // Judged without this flusher's own stall report, which must never stop its recovery.
+        if let Some(why) = journal.refuses_staging() {
+            self.cores.carry(pulled);
+            return Err(why);
+        }
+        let refusals = std::mem::take(&mut pulled.refusals);
+        // A stage the journal refuses after `refuses_staging` passed (its buffer filled during
+        // this pull, say) hands its line back: it and every line after it are kept, in order, for
+        // the next flush, and nothing of this pull is settled. A line is never dropped, so a later
+        // commit can never settle the waiter of a line it does not hold.
+        let mut refused = false;
+        let mut unstaged = Vec::new();
+        {
+            let mut held = book
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let pass = busbar_kernel::teller::verb_audit_pass(&self.kernel);
+            for prepared in std::mem::take(&mut pulled.kept) {
+                if refused {
+                    pulled.kept.push(prepared);
+                    continue;
+                }
+                if let Err(back) = held.stage_kept(prepared, &pass, &self.durability_token) {
+                    refused = true;
+                    pulled.kept.push(*back);
+                }
+            }
+            for (core, inputs) in std::mem::take(&mut pulled.lines) {
+                if refused {
+                    unstaged.push((core, inputs));
+                    continue;
+                }
+                let prepared = held.prepare_line(inputs);
+                if let Err(back) = held.stage_kept(prepared, &pass, &self.durability_token) {
+                    refused = true;
+                    pulled.kept.push(*back);
+                }
+            }
+            for count in refusals {
+                let staged = !refused
+                    && self.checked_mono().is_ok_and(|mono| {
+                        let inputs = self.refusal_line(&count, from_ms, to_ms, mono);
+                        let pass = busbar_kernel::teller::verb_audit_pass(&self.kernel);
+                        held.stage_line(inputs, pass, &self.durability_token)
+                            .is_ok()
+                    });
+                if !staged {
+                    pulled.refusals.push(count);
+                }
+            }
+        }
+        let flushed = journal.flush().await;
+        if refused || !pulled.refusals.is_empty() {
+            let kept = pulled.kept.len() + unstaged.len();
+            pulled.lines = unstaged;
+            self.cores.carry(pulled);
+            return Err(format!(
+                "audit staging refused ({kept} lines kept for the next flush)"
+            ));
+        }
+        match flushed {
+            Ok(()) => {
+                for (core, through) in pulled.cores {
+                    core.records().settled(through);
+                }
+                self.cores.good(tokio::time::Instant::now());
+                Ok(())
+            }
+            Err(error) => {
+                // Staged lines stay with the journal, which retries them; their waiters are
+                // released by the next flush that commits.
+                self.cores.carry(pulled);
+                Err(crate::root::cold::native_journal_refused(&error))
+            }
+        }
+    }
+
+    /// The line a metered response hands over under `advanced.wait_for_commit` (design 2, A7):
+    /// its principal, its unit, the time its response was registered (this node's one reading for
+    /// it) and, filled at release, its status. Its unit's own line, with usage, follows after
+    /// delivery as without the setting; this one is what the release waited for.
+    pub(crate) fn response_line(
+        &self,
+        admission: &busbar_kernel::plane_driver::request_admission::AdmittedRequest,
+    ) -> Result<AuditInputs, &'static str> {
+        let registered = self.checked_arrived()?;
+        let card = crate::root::kernel::ROOT_CARD.pin();
+        Ok(AuditInputs {
+            subject: Subject::PrincipalId(Text::from(Arc::<str>::from(
+                admission.key().id.as_str(),
+            ))),
+            what: What {
+                unit_key: admission.unit(),
+                incarnation: 0,
+                op_class: RecordOpClass::new(RESPONSE_OP_CLASS),
+                destination: None,
+                parent: None,
+                pre_hook_head: None,
+                post_hook_head: None,
+            },
+            wall: registered.secs(),
+            mono: registered.mono(),
+            origin: self.kernel.origin(OriginKind::Client),
+            outcome: OutcomeFacts {
+                unit_end: Outcome::Completed,
+                step: None,
+                finish: RecordFinish::Complete,
+                hook_failed: false,
+                emission_delta: 0,
+                stale_policy: false,
+            },
+            usage: RecordUsage {
+                lines: Vec::new(),
+                tier_bp: 10_000,
+                fee_count: 0,
+                rate_card_version: card_in_force(card.as_ref(), registered.ms()),
+                bucket_chain_ref: String::new(),
+            },
+            controls: Controls {
+                policy_epoch: policy_in_force(card.as_ref(), registered.ms()),
+                ..Controls::default()
+            },
+            correlation_label: None,
+            unit: busbar_kernel_audit::UnitFacts {
+                boot_nonce: busbar_kernel::snapshot::boot_nonce(),
+                ..busbar_kernel_audit::UnitFacts::at(registered.ms())
+            },
+        })
+    }
+
+    /// The one aggregate line for `count` refusals of one (listener, reason) between `from_ms`
+    /// and `to_ms`: subject `Aggregate`, op class `refusals`, the listener in `destination`, the
+    /// count in `attempts_total`, the interval's start in `wall_ms` and its end in `wall`.
+    fn refusal_line(
+        &self,
+        count: &crate::root::durability::core_audit::RefusalCount,
+        from_ms: u64,
+        to_ms: u64,
+        mono: u64,
+    ) -> AuditInputs {
+        let card = crate::root::kernel::ROOT_CARD.pin();
+        AuditInputs {
+            subject: Subject::Aggregate,
+            what: What {
+                unit_key: self.mint(),
+                incarnation: 0,
+                op_class: RecordOpClass::new(REFUSALS_OP_CLASS),
+                destination: Some(count.listener.to_string()),
+                parent: None,
+                pre_hook_head: None,
+                post_hook_head: None,
+            },
+            wall: to_ms / 1_000,
+            mono,
+            origin: self.kernel.origin(OriginKind::Arrival),
+            outcome: OutcomeFacts {
+                unit_end: Outcome::Refused(count.step, count.reason),
+                step: Some(count.step),
+                finish: RecordFinish::Error,
+                hook_failed: false,
+                emission_delta: 0,
+                stale_policy: false,
+            },
+            usage: RecordUsage {
+                lines: Vec::new(),
+                tier_bp: 10_000,
+                fee_count: 0,
+                rate_card_version: card_in_force(card.as_ref(), to_ms),
+                bucket_chain_ref: String::new(),
+            },
+            controls: Controls {
+                policy_epoch: policy_in_force(card.as_ref(), to_ms),
+                ..Controls::default()
+            },
+            correlation_label: None,
+            unit: busbar_kernel_audit::UnitFacts {
+                status: count.status,
+                attempts_total: u32::try_from(count.count).unwrap_or(u32::MAX),
+                boot_nonce: busbar_kernel::snapshot::boot_nonce(),
+                ..busbar_kernel_audit::UnitFacts::at(from_ms)
+            },
+        }
+    }
+
+    /// THE FLUSHER (design 2, A3): pulls every core every `advanced.usage_flush_interval_ms`
+    /// (read at each tick: a live change applies at the next one), or at once when an
+    /// administrative change or a metered request under `advanced.wait_for_commit` asks. A request
+    /// never wakes it otherwise. A flush that fails is retried at the next tick; the first failure
+    /// after a good flush is logged, and the stall is reported once it passes the stall limit.
+    pub(crate) async fn run_core_flusher(self: Arc<Self>) {
+        let shutdown = busbar_kernel::detached::worker_shutdown();
+        self.cores.started(tokio::time::Instant::now());
+        let mut failing = false;
+        let mut reported = false;
+        loop {
+            let every = std::time::Duration::from_millis(
+                busbar_kernel::limits::usage_flush_interval_ms().clamp(1, 1_000),
+            );
+            let stopping = tokio::select! {
+                biased;
+                () = busbar_kernel::detached::shutdown_fired(shutdown.clone()) => true,
+                () = self.cores.wake().notified() => false,
+                () = tokio::time::sleep(every) => false,
+            };
+            match self.flush_cores().await {
+                Ok(()) => {
+                    if let Some(journal) = self.lane.get() {
+                        journal.set_flusher_stalled(false);
+                    }
+                    if failing {
+                        tracing::info!("audit flusher committed again; durable service resumed");
+                    }
+                    (failing, reported) = (false, false);
+                }
+                Err(why) => {
+                    if !failing {
+                        tracing::warn!(reason = %why, "audit flusher could not commit; retrying each tick");
+                    }
+                    failing = true;
+                    let stalled = self.cores.stalled(tokio::time::Instant::now());
+                    if stalled {
+                        // The one flag the billable open's gate reads (`refuses_money`).
+                        if let Some(journal) = self.lane.get() {
+                            journal.set_flusher_stalled(true);
+                        }
+                    }
+                    if !reported && stalled {
+                        busbar_kernel::diag_error!(
+                            busbar_kernel::diagnostics::DURABILITY_STALLED,
+                            reason = %why,
+                            "records have not been committed for longer than the stall limit; \
+                             requests that need a record are refused"
+                        );
+                        reported = true;
+                    }
+                }
+            }
+            if stopping {
+                return;
+            }
+        }
     }
 
     fn seal_end(
@@ -516,16 +704,10 @@ impl Node {
         lines: Vec<RecordLine>,
     ) -> Option<TerminalConfirmation> {
         let seal = seal.map(Into::<Sealing>::into)?;
-        let key = seal.seal.key;
-        let completed =
-            matches!(&ended, Ended::Settled { end, .. } if end.outcome().is_completed());
         let receipt = self.seal_end_ack(principal, arrived, card, ended, seal, lines);
         match receipt {
-            Ok(receipt) => receipt.confirm_terminal(self.ticket_custody.clone(), key, completed),
-            Err(error) => {
-                self.ticket_custody.terminal(key, false);
-                Some(TerminalConfirmation::failed(error))
-            }
+            Ok(receipt) => receipt.confirm_terminal(),
+            Err(error) => Some(TerminalConfirmation::failed(error)),
         }
     }
 
@@ -646,702 +828,9 @@ impl Node {
         })
     }
 
-    pub(crate) fn sweep(&self, now: Arrived) -> usize {
-        if self.marked.swap(0, Ordering::AcqRel) == 0 {
-            return 0;
-        }
-        self.sweep_marked(now)
-    }
-
-    /// One slot of the tick's sweep: a marked unit that lost its owner is settled, sealed and
-    /// forgotten (`true`); any other slot is left as it is.
-    pub(in crate::root) fn sweep_slot(
-        &self,
-        slot: &Arc<busbar_kernel::inflight::UnitSlot>,
-        now: Arrived,
-    ) -> bool {
-        if !slot.is_marked() {
-            return false;
-        }
-
-        let lost = {
-            let mut book = self
-                .lost
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Some(book) = book.as_mut() else {
-                return false;
-            };
-            let class = [AdmissionClass::Data, AdmissionClass::Operator].into_iter().find(|class| {
-                book.get(*class, slot.key()).is_some_and(|entry| {
-                    matches!(&entry.state, RetainedState::Abandoned(lost) if Arc::ptr_eq(&lost.slot, slot))
-                })
-            });
-            let Some(class) = class else {
-                return false;
-            };
-            let Some(entry) = book.remove(class, slot.key()) else {
-                return false;
-            };
-            let RetainedState::Abandoned(lost) = entry.state else {
-                unreachable!("validated original abandoned owner")
-            };
-            lost
-        };
-        let verdict = busbar_kernel::tick::sweep(
-            slot,
-            busbar_contract::caps::StepName::Route,
-            now.ms(),
-            busbar_kernel::Millis::MAX,
-            false,
-        );
-
-        let settled = busbar_kernel::tick::sweep_settle(
-            &self.kernel,
-            slot,
-            verdict,
-            &Evidence::default(),
-            &self.canary,
-            &self.gauge,
-        );
-        if let Some(busbar_kernel::tick::Swept { end, line, audit }) = settled {
-            if let Ok(posted) = end.posted() {
-                let principal = posted.principal().clone();
-
-                let entered = lost.arrived;
-
-                let lines = crate::root::cold::lost_unit_lines(line);
-                let (history, op_class, ran) = match lost.open {
-                    Some(open) => (
-                        Some(open.history),
-                        open.sealing
-                            .door
-                            .map_or(lost.op_class, |(facts, _)| facts.op_class),
-                        open.sealing.ran,
-                    ),
-                    None => (None, lost.op_class, Ran::default()),
-                };
-                let seal = Some(Sealing {
-                    seal: UnitSeal {
-                        facts: busbar_contract::caps::AuditFacts {
-                            op_class,
-                            finish: busbar_contract::FinishClass::Error,
-                        },
-                        pass: audit,
-                        key: slot.key(),
-                        origin: self.kernel.origin(slot.origin()),
-                        parent: match slot.origin() {
-                            OriginKind::Nested { parent } => Some(parent),
-                            _ => None,
-                        },
-                    },
-                    ran,
-                });
-                let card = history.unwrap_or_else(|| crate::root::kernel::ROOT_CARD.pin());
-                self.seal_end(
-                    &principal,
-                    entered,
-                    card.as_ref(),
-                    busbar_kernel::teller::Ended::Settled {
-                        end,
-
-                        requests: 0,
-                        fee: 0,
-                    },
-                    seal,
-                    lines,
-                );
-            }
-        }
-        self.inflight.remove(slot.key());
-        true
-    }
-
-    #[must_use]
-    pub(crate) fn parent(&self, key: UnitKey) -> Option<Parent> {
-        self.inflight.get(key).map(|slot| Parent { key, slot })
-    }
-
-    /// Seal a first-auth unit that never entered the teller. This uses the same signed
-    /// journal and bounded Store lane as an ordinary end, without an arrival hold or ledger.
-    pub(crate) fn refused_inbound(&self, refused: &busbar_kernel::inbound::RefusedUnit) {
-        if let Some(unit) = refused.unit {
-            let anonymous = busbar_kernel::auth::AuthPrincipal(None);
-            self.unmetered_inbound(
-                UnitKey::new(unit),
-                refused.audit_kind,
-                &PrincipalId::new(
-                    refused
-                        .principal
-                        .as_deref()
-                        .unwrap_or_else(|| anonymous.actor_id()),
-                ),
-                Outcome::Refused(refused.step, refused.reason),
-            );
-        }
-    }
-
-    pub(crate) fn unmetered_inbound(
-        &self,
-        key: UnitKey,
-        audit_kind: OpClassId,
-        principal: &PrincipalId,
-        outcome: Outcome,
-    ) {
-        let Some(book) = self.book.get() else {
-            return;
-        };
-        let seal = Sealing::from(UnitSeal {
-            facts: busbar_contract::caps::AuditFacts {
-                op_class: audit_kind,
-                finish: if outcome.is_completed() {
-                    busbar_contract::FinishClass::Complete
-                } else {
-                    busbar_contract::FinishClass::Error
-                },
-            },
-            pass: busbar_kernel::teller::verb_audit_pass(&self.kernel),
-            key,
-            origin: self.kernel.origin(OriginKind::Client),
-            parent: None,
-        });
-        let _ = seal.seal(
-            book,
-            self.sealing.get().copied(),
-            &self.durability_token,
-            principal,
-            self.arrived(),
-            None,
-            outcome,
-            Vec::new(),
-            0,
-            None,
-            String::new(),
-        );
-    }
-
     #[must_use]
     pub(crate) fn mint(&self) -> UnitKey {
         self.next_key.mint()
-    }
-
-    pub(crate) async fn drive_borrowed<U: Units + RouteAwait>(
-        &self,
-        key: UnitKey,
-        arrived: Arrived,
-        principal: &PrincipalId,
-        post: &NodeEndPost,
-        units: &U,
-        late: Late,
-        history: Option<crate::root::kernel::PinnedHistory>,
-        parent: Option<&Parent>,
-        audit_kind: OpClassId,
-        admission: Option<&busbar_kernel::inbound::RequestAdmission>,
-        timing: Option<Timing<'_>>,
-        request: &RequestLease,
-    ) -> Option<Outcome> {
-        self.sweep(arrived);
-        if self.journal_refusal().is_some() {
-            if let Some(admission) = admission {
-                admission.refuse(
-                    busbar_contract::caps::StepName::Arrival,
-                    busbar_contract::caps::ReasonCode::DurabilityUnavailable,
-                );
-            }
-            return None;
-        }
-        let call = self.kernel.next_call();
-        let reservation = self.reserve_terminal(request.class(), key, call)?;
-        if admission.is_some_and(|admission| !admission.begin_execution()) {
-            return None;
-        }
-        post.open(key, principal.clone(), arrived, history.clone());
-        post.checkpoint_identity(
-            key,
-            audit_kind,
-            parent.map_or(OriginKind::Client, |p| OriginKind::Nested { parent: p.key }),
-        );
-        let meter = Arc::new(AccrualMeter::new());
-        let origin = parent.map_or(OriginKind::Client, |p| OriginKind::Nested { parent: p.key });
-        let hold = busbar_kernel::inflight::arrival_hold(
-            &self.kernel,
-            &self.door,
-            principal.clone(),
-            call,
-        );
-        let Ok(slot) = self.inflight.insert(busbar_kernel::inflight::Enter {
-            key,
-            origin,
-            session: None,
-            admin_listener: false,
-            zero_hold_tick: false,
-            arrival: hold,
-            now: arrived.ms(),
-        }) else {
-            post.close(key);
-            if let Some(admission) = admission {
-                admission.execution_unavailable();
-            }
-            return None;
-        };
-        let mut occupied = Occupied {
-            node: self,
-            reservation,
-            post: Some(post),
-            slot: Arc::clone(&slot),
-            arrived,
-            op_class: audit_kind,
-            reached_end: false,
-        };
-        let ctx = UnitCtx {
-            call,
-            key,
-            origin,
-            session: None,
-            generation: busbar_kernel::registry::Generation::FIRST,
-            admin_listener: false,
-            kernel_verb_only: false,
-        };
-        self.ticket_custody.bind_source(&ctx, &slot);
-        let ended = busbar_kernel::teller::run_unit_async(
-            &self.kernel,
-            units,
-            &ctx,
-            busbar_kernel::teller::Run {
-                cell: slot.cell(),
-                parent: parent.map(|p| p.slot.cell()),
-                leases: slot.leases(),
-                gauge: &self.gauge,
-                canary: &self.canary,
-                meter: &meter,
-                taps: Some(post),
-            },
-            units,
-        )
-        .await;
-
-        let outcome = match &ended {
-            Ended::Settled { end, .. } => Some(end.outcome()),
-            Ended::AlreadySettled => None,
-        };
-
-        // Both readings precede the seal: the total is the unit's last frame handed over, and
-        // the first write already happened inside the unit (§9).
-        if let Some(timing) = timing {
-            post.measured(key, timing.read());
-        }
-        let seal = post.take(key).and_then(|open| {
-            open.sealing
-                .into_seal(key, self.kernel.origin(origin), parent.map(|p| p.key))
-        });
-        let confirmation = match self.late_arm(Some(late), principal, arrived, history.as_ref()) {
-            Some(mut arm) => {
-                arm.seal = seal;
-                arm.carrying(ended).post()
-            }
-            None => self.seal_end_task(
-                principal,
-                arrived,
-                history.as_ref(),
-                ended,
-                seal,
-                Vec::new(),
-            ),
-        };
-        occupied.reached_end = true;
-        let mut confirming = ConfirmingUnit {
-            route: Some(units),
-            ctx: &ctx,
-        };
-        let result = async {
-            if let Err(error) = await_terminal(confirmation).await {
-                tracing::error!(reason = error, "unit terminal audit remains unconfirmed");
-                return None;
-            }
-            if let Err(error) = self.journal_failed() {
-                tracing::error!(reason = error, "unit audit remains unconfirmed");
-                return None;
-            }
-            outcome
-        }
-        .await;
-        confirming.route = None;
-        result
-    }
-
-    pub(crate) async fn open_borrowed<'n, U: Units + RouteAwait>(
-        &'n self,
-        key: UnitKey,
-        arrived: Arrived,
-        principal: &PrincipalId,
-        post: &'n NodeEndPost,
-        units: &U,
-        history: Option<crate::root::kernel::PinnedHistory>,
-        audit_kind: OpClassId,
-        admission: Option<&busbar_kernel::inbound::RequestAdmission>,
-        request: &RequestLease,
-    ) -> Option<(busbar_kernel::teller::SessionOpen, UnitCtx, SessionSlot<'n>)> {
-        self.sweep(arrived);
-        if self.journal_refusal().is_some() {
-            if let Some(admission) = admission {
-                admission.refuse(
-                    busbar_contract::caps::StepName::Arrival,
-                    busbar_contract::caps::ReasonCode::DurabilityUnavailable,
-                );
-            }
-            return None;
-        }
-        let call = self.kernel.next_call();
-        let reservation = self.reserve_terminal(request.class(), key, call)?;
-        if admission.is_some_and(|admission| !admission.begin_execution()) {
-            return None;
-        }
-        post.open(key, principal.clone(), arrived, history);
-        post.checkpoint_identity(key, audit_kind, OriginKind::Client);
-        let meter = Arc::new(AccrualMeter::new());
-        let hold = busbar_kernel::inflight::arrival_hold(
-            &self.kernel,
-            &self.door,
-            principal.clone(),
-            call,
-        );
-        let Ok(slot) = self.inflight.insert(busbar_kernel::inflight::Enter {
-            key,
-            origin: OriginKind::Client,
-            session: None,
-            admin_listener: false,
-            zero_hold_tick: false,
-            arrival: hold,
-            now: arrived.ms(),
-        }) else {
-            post.close(key);
-            if let Some(admission) = admission {
-                admission.execution_unavailable();
-            }
-            return None;
-        };
-        let mut occupied = Occupied {
-            node: self,
-            reservation,
-            post: Some(post),
-            slot: Arc::clone(&slot),
-            arrived,
-            op_class: audit_kind,
-            reached_end: false,
-        };
-        let ctx = UnitCtx {
-            call,
-            key,
-            origin: OriginKind::Client,
-            session: None,
-            generation: busbar_kernel::registry::Generation::FIRST,
-            admin_listener: false,
-            kernel_verb_only: false,
-        };
-        self.ticket_custody.bind_source(&ctx, &slot);
-        let opened = busbar_kernel::teller::open_unit_screened(
-            &self.kernel,
-            units,
-            &ctx,
-            busbar_kernel::teller::Run {
-                cell: slot.cell(),
-                parent: None,
-                leases: slot.leases(),
-                gauge: &self.gauge,
-                canary: &self.canary,
-                meter: &meter,
-                taps: Some(post),
-            },
-            units,
-        )
-        .await;
-
-        let (opened, own) = match opened {
-            busbar_kernel::teller::SessionOpen::Admitted {
-                route,
-                destinations,
-                own,
-            } => {
-                post.routed(key, &destinations);
-                (
-                    busbar_kernel::teller::SessionOpen::Admitted {
-                        route,
-                        destinations,
-                        own: None,
-                    },
-                    own,
-                )
-            }
-            busbar_kernel::teller::SessionOpen::Settled(ended) => {
-                if let Some(open) = post.take(key) {
-                    self.seal_session(key, open, Some(ended));
-                }
-                (busbar_kernel::teller::SessionOpen::Refused, None)
-            }
-            busbar_kernel::teller::SessionOpen::Refused => {
-                (busbar_kernel::teller::SessionOpen::Refused, None)
-            }
-        };
-        if let Some(op_class) = post.door_class(key) {
-            occupied.op_class = op_class;
-        }
-        let session = SessionSlot {
-            occupied,
-            key,
-            ctx: ctx.clone(),
-            meter,
-            own,
-            money: None,
-        };
-        Some((opened, ctx, session))
-    }
-
-    fn seal_session(&self, key: UnitKey, open: OpenUnit, ended: Option<Ended>) {
-        drop(self.seal_session_task(key, open, ended));
-    }
-
-    fn seal_session_task(
-        &self,
-        key: UnitKey,
-        mut open: OpenUnit,
-        ended: Option<Ended>,
-    ) -> Option<TerminalConfirmation> {
-        if let Some(ended) = ended {
-            let Ended::Settled { end, .. } = ended else {
-                self.ticket_custody.terminal(key, false);
-                return None;
-            };
-            open.sealing.said = Some(end.outcome());
-            if end.into_posted().is_err() {
-                self.ticket_custody.terminal(key, false);
-                return None;
-            }
-        }
-        let book = self.book.get()?;
-        let OpenUnit {
-            principal,
-            arrived,
-            history,
-            mut sealing,
-            ..
-        } = open;
-        let (said, mut report) = (sealing.said.take(), sealing.report.take());
-        let outcome = said?;
-        let seal = sealing.into_seal(key, self.kernel.origin(OriginKind::Client), None)?;
-        let (lines, fee_count) = report
-            .as_ref()
-            .map_or((Vec::new(), 0), |r| (report_lines(r), r.fee_count));
-        let attribution = report
-            .as_mut()
-            .map(|r| std::mem::take(&mut r.attribution))
-            .unwrap_or_default();
-        let acknowledged = seal.seal(
-            book,
-            self.sealing.get().copied(),
-            &self.durability_token,
-            &principal,
-            arrived,
-            history.as_ref(),
-            outcome,
-            lines,
-            fee_count,
-            report.as_ref().map(|r| r.lane.as_str()),
-            attribution,
-        );
-        match acknowledged {
-            Ok(receipt) => {
-                receipt.confirm_terminal(self.ticket_custody.clone(), key, outcome.is_completed())
-            }
-            Err(error) => {
-                self.ticket_custody.terminal(key, false);
-                Some(TerminalConfirmation::failed(error))
-            }
-        }
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) async fn answer(&self, handed: Handed) -> Response {
-        self.answer_arriving_at(handed, self.arrived()).await
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) async fn answer_arriving_at(&self, handed: Handed, arrived: Arrived) -> Response {
-        self.answer_pinned(handed, arrived, || crate::root::kernel::ROOT_CARD.pin())
-            .await
-    }
-
-    #[cfg(test)]
-    async fn answer_pinned(
-        &self,
-        handed: Handed,
-        arrived: Arrived,
-        pin: impl FnOnce() -> Option<crate::root::kernel::PinnedHistory>,
-    ) -> Response {
-        self.sweep(arrived);
-
-        let (principal, op_class, proto, build) = handed;
-
-        if let Some(why) = self.journal_refusal() {
-            return journal_unavailable(proto, &why);
-        }
-        let key = self.next_key.mint();
-
-        let meter = Arc::new(AccrualMeter::new());
-
-        let history = pin();
-
-        let (units, route, finish) = build((self.resolver(), arrived.secs()));
-
-        let call = self.kernel.next_call();
-        let Some(reservation) = self.reserve_terminal(AdmissionClass::Data, key, call) else {
-            return unavailable(proto);
-        };
-        let hold = busbar_kernel::inflight::arrival_hold(
-            &self.kernel,
-            &self.door,
-            principal.clone(),
-            call,
-        );
-        let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
-            key,
-            origin: OriginKind::Client,
-            session: None,
-            admin_listener: false,
-            zero_hold_tick: false,
-            arrival: hold,
-
-            now: arrived.ms(),
-        });
-
-        match entered {
-            Err(_refused) => unavailable(proto),
-            Ok(slot) => {
-                let mut occupied = Occupied {
-                    node: self,
-                    reservation,
-                    post: None,
-                    slot: Arc::clone(&slot),
-                    arrived,
-                    op_class,
-                    reached_end: false,
-                };
-                let ctx = UnitCtx {
-                    call,
-                    key,
-                    origin: OriginKind::Client,
-                    session: None,
-                    generation: busbar_kernel::registry::Generation::FIRST,
-                    admin_listener: false,
-                    kernel_verb_only: false,
-                };
-                let driven = Driven {
-                    node: self,
-                    route: &*route,
-                    op_class,
-                    principal: &principal,
-                    arrived,
-                    history: history.as_ref(),
-                    sealing: Mutex::new(Some(Accruing::default())),
-                };
-                let ended = busbar_kernel::teller::run_unit_async(
-                    &self.kernel,
-                    &*units,
-                    &ctx,
-                    busbar_kernel::teller::Run {
-                        cell: slot.cell(),
-                        parent: None,
-                        leases: slot.leases(),
-                        gauge: &self.gauge,
-                        canary: &self.canary,
-                        meter: &meter,
-                        taps: Some(&driven),
-                    },
-                    &driven,
-                )
-                .await;
-
-                let (answer, late) = finish();
-                let response =
-                    answer.map_or_else(|| unavailable(proto), PlaneAnswer::into_response);
-                let seal = driven.take_seal(key);
-                let response = self
-                    .tail(
-                        ended,
-                        response,
-                        late,
-                        &principal,
-                        arrived,
-                        history.as_ref(),
-                        seal,
-                    )
-                    .await;
-
-                occupied.reached_end = true;
-                response
-            }
-        }
-    }
-
-    #[cfg(test)]
-    async fn tail(
-        &self,
-        ended: Ended,
-        response: Response,
-        late: Option<Late>,
-        principal: &PrincipalId,
-        arrived: Arrived,
-        history: Option<&crate::root::kernel::PinnedHistory>,
-        seal: Option<Sealing>,
-    ) -> Response {
-        match self.late_arm(late, principal, arrived, history) {
-            Some(mut arm) => {
-                arm.seal = seal;
-
-                let arm = arm.carrying(ended);
-                let (parts, body) = response.into_parts();
-                Response::from_parts(parts, axum::body::Body::new(LateBody::new(body, arm)))
-            }
-            None => {
-                let confirmation =
-                    self.seal_end_task(principal, arrived, history, ended, seal, Vec::new());
-                if let Err(error) = await_terminal(confirmation).await {
-                    return journal_unavailable("", &error);
-                }
-                match self.journal_failed() {
-                    Ok(()) => response,
-                    Err(error) => journal_unavailable("", &error),
-                }
-            }
-        }
-    }
-
-    fn late_arm(
-        &self,
-        late: Option<Late>,
-        principal: &PrincipalId,
-        arrived: Arrived,
-        history: Option<&crate::root::kernel::PinnedHistory>,
-    ) -> Option<LateAccrual> {
-        let book = self.book.get()?;
-        let history = history?.clone();
-        let late = late?;
-        Some(LateAccrual {
-            book: Arc::clone(book),
-            line: self.sealing.get().copied(),
-            custody: Arc::clone(&self.ticket_custody),
-            history,
-
-            durability_token: self.kernel.durability_token(),
-            principal: principal.clone(),
-
-            arrived,
-            late,
-            posted: false,
-            outcome: None,
-            seal: None,
-        })
     }
 }
 
@@ -1367,284 +856,39 @@ pub(crate) struct Report {
     pub attribution: String,
 }
 
-impl Report {
-    fn of((usage, fee_count, lane, attribution): crate::root::linked::node::LegacyReport) -> Self {
-        Report {
-            usage,
-            fee_count,
-            lane,
-            attribution,
-        }
-    }
-}
-
-struct LateAccrual {
-    custody: Arc<crate::root::serve::TicketCustody>,
-    book: Arc<Mutex<crate::root::durability::Durability>>,
-    /// The book's boot constants, so the late line is prepared before its lock.
-    line: Option<crate::root::durability::LineIdentity>,
-
-    history: crate::root::kernel::PinnedHistory,
-    durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
-    principal: PrincipalId,
-    arrived: Arrived,
-
-    late: Late,
-
-    posted: bool,
-
-    outcome: Option<Outcome>,
-
-    seal: Option<Sealing>,
-}
-
-impl LateAccrual {
-    fn carrying(mut self, ended: Ended) -> Self {
-        if let Ended::Settled { end, .. } = ended {
-            self.outcome = Some(end.outcome());
-            self.posted = end.into_posted().is_ok();
-        }
-        self
-    }
-
-    fn post(self) -> Option<TerminalConfirmation> {
-        let LateAccrual {
-            custody,
-            book,
-            line,
-            history,
-            durability_token,
-            principal,
-            arrived,
-            late,
-            posted,
-            outcome,
-            seal,
-        } = self;
-
-        let completed = outcome.is_some_and(Outcome::is_completed);
-        // A report that bills nothing is not sealed as usage, but its attribution still is.
-        let reported = late();
-        if matches!(reported, Some(Reported::Partitioned)) {
-            return preview_confirmation(&custody, outcome, seal);
-        }
-        let (report, attribution) = match reported.and_then(Reported::legacy).map(Report::of) {
-            Some(report)
-                if completed
-                    || report.fee_count > 0
-                    || report.usage.usage_units.values().any(|n| !n.is_zero()) =>
-            {
-                (Some(report), String::new())
-            }
-            Some(report) => (None, report.attribution),
-            None => (None, String::new()),
-        };
-        let (Some(seal), Some(outcome)) = (seal, outcome) else {
-            return None;
-        };
-        let key = seal.seal.key;
-        let acknowledged = match report {
-            Some(report) => {
-                let lines = report_lines(&report);
-                let Report {
-                    fee_count,
-                    lane,
-                    attribution,
-                    ..
-                } = report;
-                seal.seal(
-                    &book,
-                    line,
-                    &durability_token,
-                    &principal,
-                    arrived,
-                    Some(&history),
-                    outcome,
-                    lines,
-                    fee_count,
-                    Some(lane.as_str()),
-                    attribution,
-                )
-            }
-
-            None if posted => seal.seal(
-                &book,
-                line,
-                &durability_token,
-                &principal,
-                arrived,
-                Some(&history),
-                outcome,
-                Vec::new(),
-                0,
-                None,
-                attribution,
-            ),
-            None => {
-                custody.terminal(key, false);
-                return None;
-            }
-        };
-        match acknowledged {
-            Ok(receipt) => receipt.confirm_terminal(custody, key, posted && completed),
-            Err(error) => {
-                custody.terminal(key, false);
-                Some(TerminalConfirmation::failed(error))
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-type JournalConfirmation =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
-
-#[cfg(test)]
-struct LateBody {
-    inner: Option<axum::body::Body>,
-
-    arm: Option<LateAccrual>,
-    confirmation: Option<JournalConfirmation>,
-    journal: Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
-}
-
-#[cfg(test)]
-impl LateBody {
-    fn new(inner: axum::body::Body, arm: LateAccrual) -> Self {
-        let journal = arm
-            .book
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .journal
-            .clone();
-        LateBody {
-            inner: Some(inner),
-            arm: Some(arm),
-            confirmation: None,
-            journal,
-        }
-    }
-
-    fn fire(&mut self) -> Option<TerminalConfirmation> {
-        self.arm.take().and_then(LateAccrual::post)
-    }
-}
-
-#[cfg(test)]
-impl http_body::Body for LateBody {
-    type Data = axum::body::Bytes;
-    type Error = axum::Error;
-
-    fn poll_frame(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        let this = self.get_mut();
-        let polled = match this.inner.as_mut() {
-            Some(inner) => std::pin::Pin::new(inner).poll_frame(cx),
-            None if this.confirmation.is_some() => std::task::Poll::Pending,
-            None => return std::task::Poll::Ready(None),
-        };
-
-        if matches!(polled, std::task::Poll::Ready(None)) {
-            let terminal = this.fire();
-            this.inner = None;
-            let journal = this.journal.clone();
-            let confirmation: JournalConfirmation = Box::pin(async move {
-                await_terminal(terminal).await?;
-                journal
-                    .flush()
-                    .await
-                    .map_err(|error| crate::root::cold::terminal_audit_unconfirmed(&error))
-            });
-            this.confirmation = Some(confirmation);
-        }
-        if let Some(confirmation) = &mut this.confirmation {
-            match confirmation.as_mut().poll(cx) {
-                std::task::Poll::Pending => return std::task::Poll::Pending,
-                std::task::Poll::Ready(result) => {
-                    this.confirmation = None;
-                    return std::task::Poll::Ready(
-                        result
-                            .err()
-                            .map(|error| Err(axum::Error::new(std::io::Error::other(error)))),
-                    );
-                }
-            }
-        }
-        polled
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.arm.is_none()
-            && self.confirmation.is_none()
-            && self
-                .inner
-                .as_ref()
-                .is_none_or(http_body::Body::is_end_stream)
-    }
-
-    fn size_hint(&self) -> http_body::SizeHint {
-        self.inner.as_ref().map_or_else(
-            || http_body::SizeHint::with_exact(0),
-            http_body::Body::size_hint,
-        )
-    }
-}
-
-#[cfg(test)]
-impl Drop for LateBody {
-    fn drop(&mut self) {
-        drop(self.inner.take());
-        drop(self.fire());
-    }
-}
-
-struct Occupied<'n> {
-    node: &'n Node,
-    reservation: TerminalReservation<'n>,
-
-    post: Option<&'n NodeEndPost>,
-    slot: Arc<busbar_kernel::inflight::UnitSlot>,
-
-    arrived: Arrived,
-
-    op_class: OpClassId,
-
-    reached_end: bool,
-}
-
-// The teller has settled and the node has consumed its post, but the caller still owns
-// the financial end until confirmation returns. Dropping that caller must retire the
-// finished money entry even though neither the teller nor the driver is still running.
-struct ConfirmingUnit<'a, R: RouteAwait> {
-    route: Option<&'a R>,
-    ctx: &'a UnitCtx,
-}
-
-impl<R: RouteAwait> Drop for ConfirmingUnit<'_, R> {
-    fn drop(&mut self) {
-        if let Some(route) = self.route.take() {
-            route.abandoned(self.ctx, Ended::AlreadySettled);
-        }
-    }
-}
-
 pub(super) struct RetainedUnit {
     call: CallId,
     state: RetainedState,
 }
-impl RetainedUnit {
-    fn reserved(call: CallId) -> Self {
-        Self {
-            call,
-            state: RetainedState::Reserved,
+
+/// A reserved terminal-book entry: dropping it removes the entry it reserved.
+#[cfg(test)]
+struct TerminalReservation<'n> {
+    node: &'n Node,
+    class: AdmissionClass,
+    key: UnitKey,
+    call: CallId,
+}
+#[cfg(test)]
+impl Drop for TerminalReservation<'_> {
+    fn drop(&mut self) {
+        let mut book = self
+            .node
+            .lost
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(book) = book.as_mut() else {
+            return;
+        };
+        if book
+            .get(self.class, self.key)
+            .is_some_and(|unit| unit.call == self.call)
+        {
+            book.remove(self.class, self.key);
         }
     }
 }
 enum RetainedState {
-    Reserved,
-    Abandoned(Lost),
     Native(native::NativeUnit),
     /// Test fixture only: an original's notary-facing custody without its live request owners.
     #[cfg(test)]
@@ -1654,331 +898,16 @@ enum RetainedState {
         credit: Option<busbar_contract::storage::StorageCredit>,
     },
 }
-struct TerminalReservation<'n> {
-    node: &'n Node,
-    class: AdmissionClass,
-    key: UnitKey,
-    call: CallId,
-    active: bool,
-}
-impl Drop for TerminalReservation<'_> {
-    fn drop(&mut self) {
-        if !self.active {
-            return;
-        }
-        let mut book = self
-            .node
-            .lost
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(book) = book.as_mut() else {
-            return;
-        };
-        if book.get(self.class, self.key).is_some_and(|unit| {
-            unit.call == self.call && matches!(unit.state, RetainedState::Reserved)
-        }) {
-            book.remove(self.class, self.key);
+impl RetainedState {
+    /// The live native unit, where this entry holds one.
+    fn native_mut(&mut self) -> Option<&mut native::NativeUnit> {
+        match self {
+            Self::Native(native) => Some(native),
+            #[cfg(test)]
+            Self::Original { .. } => None,
         }
     }
 }
-
-struct Lost {
-    slot: Arc<busbar_kernel::inflight::UnitSlot>,
-    arrived: Arrived,
-
-    op_class: OpClassId,
-
-    open: Option<OpenUnit>,
-}
-
-#[must_use = "a session slot dropped unfinished is marked for the sweep"]
-pub(crate) struct SessionSlot<'n> {
-    occupied: Occupied<'n>,
-    key: UnitKey,
-    ctx: UnitCtx,
-    meter: Arc<AccrualMeter>,
-    own: Option<busbar_kernel::teller::SessionOwn>,
-    money: Option<(
-        std::sync::Weak<busbar_kernel::plane_driver::PlaneMoney>,
-        crate::root::door_steps::DoorFacts,
-    )>,
-}
-
-impl std::fmt::Debug for SessionSlot<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SessionSlot")
-            .field("key", &self.key)
-            .finish()
-    }
-}
-
-impl SessionSlot<'_> {
-    pub(crate) fn with_money(
-        mut self,
-        money: &Arc<busbar_kernel::plane_driver::PlaneMoney>,
-        facts: &crate::root::door_steps::DoorFacts,
-    ) -> Self {
-        self.money = Some((Arc::downgrade(money), facts.clone()));
-        self
-    }
-
-    fn money_report(&self) -> Option<crate::root::linked::node::Reported> {
-        let (money, facts) = self.money.as_ref()?;
-        let money = money.upgrade()?;
-        crate::root::serve::report_of(money.as_ref(), self.key, facts)
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn finish(mut self, post: &NodeEndPost) -> Result<(), String> {
-        let confirmation = self.finish_inner(post, None, Evidence::default());
-        await_terminal(confirmation).await?;
-        self.occupied.node.journal_failed()
-    }
-
-    pub(crate) async fn finish_with<U: Units>(
-        mut self,
-        post: &NodeEndPost,
-        units: &U,
-    ) -> Result<(), String> {
-        let evidence = units.evidence(&self.ctx);
-        let confirmation = self.finish_inner(post, None, evidence);
-        await_terminal(confirmation).await?;
-        self.occupied.node.journal_failed()
-    }
-
-    fn finish_inner(
-        &mut self,
-        post: &NodeEndPost,
-        override_outcome: Option<Outcome>,
-        evidence: Evidence,
-    ) -> Option<TerminalConfirmation> {
-        let node = self.occupied.node;
-        let mut open = post.take(self.key);
-        if let Some(open) = open.as_mut() {
-            if open.sealing.report.is_none() {
-                open.sealing.report = self
-                    .money_report()
-                    .and_then(Reported::legacy)
-                    .map(Report::of);
-            }
-        }
-        let outcome = override_outcome
-            .or_else(|| open.as_ref().and_then(|o| o.sealing.said))
-            .unwrap_or(Outcome::Aborted(busbar_contract::caps::Abort::Kernel {
-                reason: busbar_contract::caps::ReasonCode::ClientGone,
-            }));
-        if let Some(reason) = refusal_reason(outcome) {
-            let instance: &str = match self.money.as_ref() {
-                Some((_, facts)) => facts.plane.plane_key(),
-                None => busbar_kernel::plane_driver::dispatch::fallback_key(),
-            };
-            busbar_kernel::telemetry::unit_refusal_on(instance, reason.as_str());
-        }
-        let ended = self.own.take().map(|own| {
-            own.finish(
-                &node.kernel,
-                &self.ctx,
-                busbar_kernel::teller::Run {
-                    cell: self.occupied.slot.cell(),
-                    parent: None,
-                    leases: self.occupied.slot.leases(),
-                    gauge: &node.gauge,
-                    canary: &node.canary,
-                    meter: &self.meter,
-                    taps: None,
-                },
-                outcome,
-                evidence,
-            )
-        });
-        let confirmation = if let Some(open) = open {
-            node.seal_session_task(self.key, open, ended)
-        } else {
-            node.ticket_custody.terminal(self.key, false);
-            None
-        };
-        self.occupied.reached_end = true;
-        confirmation
-    }
-}
-
-/// The closed reason a unit that did not complete ended under; `None` for a completed unit.
-fn refusal_reason(outcome: Outcome) -> Option<busbar_contract::caps::ReasonCode> {
-    match outcome {
-        Outcome::Completed => None,
-        Outcome::Refused(_, reason) | Outcome::Failed(_, reason) => Some(reason),
-        Outcome::Aborted(abort) => Some(abort.reason()),
-        Outcome::TimedOut(_) => Some(busbar_contract::caps::ReasonCode::DeadlineExceeded),
-    }
-}
-
-impl Drop for SessionSlot<'_> {
-    fn drop(&mut self) {
-        if self.own.is_some() {
-            if let Some(post) = self.occupied.post {
-                let evidence = self
-                    .money_report()
-                    .and_then(Reported::legacy)
-                    .map(|(_, fee_units, _, _)| Evidence {
-                        fee_units,
-                        ..Evidence::default()
-                    })
-                    .unwrap_or_default();
-                drop(self.finish_inner(
-                    post,
-                    Some(Outcome::Aborted(busbar_contract::caps::Abort::Kernel {
-                        reason: busbar_contract::caps::ReasonCode::ClientGone,
-                    })),
-                    evidence,
-                ));
-                if let Some(money) = self.money.as_ref().and_then(|(money, _)| money.upgrade()) {
-                    busbar_kernel::plane_driver::MoneySeam::abandoned(
-                        &*money,
-                        &self.ctx,
-                        Ended::AlreadySettled,
-                    );
-                }
-            }
-        }
-    }
-}
-
-impl Drop for Occupied<'_> {
-    fn drop(&mut self) {
-        if self.reached_end {
-            self.node.inflight.remove(self.slot.key());
-        } else {
-            let mut book = self
-                .node
-                .lost
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let entry = book
-                .as_mut()
-                .and_then(|book| book.get_mut(self.reservation.class, self.reservation.key))
-                .expect("effects require an installed terminal reservation");
-            assert!(
-                entry.call == self.reservation.call
-                    && matches!(entry.state, RetainedState::Reserved)
-            );
-            let open = self.post.and_then(|post| post.take(self.slot.key()));
-            entry.state = RetainedState::Abandoned(Lost {
-                slot: Arc::clone(&self.slot),
-                arrived: self.arrived,
-                op_class: self.op_class,
-                open,
-            });
-            self.reservation.active = false;
-            self.slot.mark();
-            self.node.marked.fetch_add(1, Ordering::AcqRel);
-        }
-    }
-}
-
-#[cfg(test)]
-fn journal_unavailable(proto: &str, why: &str) -> Response {
-    busbar_kernel::ingress::ingress_error(
-        proto,
-        StatusCode::SERVICE_UNAVAILABLE,
-        busbar_contract::protocol::KIND_OVERLOADED,
-        why,
-    )
-}
-
-#[cfg(test)]
-fn unavailable(proto: &str) -> Response {
-    busbar_kernel::ingress::ingress_error(
-        proto,
-        StatusCode::SERVICE_UNAVAILABLE,
-        busbar_contract::protocol::KIND_OVERLOADED,
-        "The service is temporarily overloaded. Please retry shortly.",
-    )
-}
-
-#[cfg(test)]
-struct Driven<'n> {
-    node: &'n Node,
-    route: &'n (dyn RouteAwait + Send + Sync),
-    op_class: OpClassId,
-
-    principal: &'n PrincipalId,
-
-    arrived: Arrived,
-
-    history: Option<&'n crate::root::kernel::PinnedHistory>,
-
-    sealing: Mutex<Option<Accruing>>,
-}
-
-#[cfg(test)]
-impl Driven<'_> {
-    fn take_seal(&self, key: UnitKey) -> Option<Sealing> {
-        let accruing = self
-            .sealing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()?;
-        accruing.into_seal(key, self.node.kernel.origin(OriginKind::Client), None)
-    }
-
-    fn accruing(&self) -> std::sync::MutexGuard<'_, Option<Accruing>> {
-        self.sealing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
-#[cfg(test)]
-impl busbar_kernel::teller::UnitTaps for Driven<'_> {
-    fn audited(&self, _ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
-        self.accruing().get_or_insert_with(Accruing::default).door = Some((facts, pass));
-    }
-
-    fn ended_as(&self, _ctx: &UnitCtx, _outcome: Outcome) {}
-
-    fn routed(&self, _ctx: &UnitCtx, _destinations: &[VerifiedDestination]) {}
-}
-
-#[cfg(test)]
-impl RouteAwait for Driven<'_> {
-    fn route_leg<'a>(
-        &'a self,
-        token: &'a Pass<Route>,
-        ctx: &'a UnitCtx,
-        destinations: &'a [VerifiedDestination],
-    ) -> RouteLeg<'a> {
-        seal_lanes(
-            &mut self
-                .accruing()
-                .get_or_insert_with(Accruing::default)
-                .ran
-                .verified,
-            destinations,
-        );
-
-        self.node.dispatch.execute(
-            self.op_class,
-            self.route.route_leg(token, ctx, destinations),
-        )
-    }
-
-    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
-        self.route.screen(ctx)
-    }
-
-    fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
-        let seal = self.take_seal(ctx.key);
-        self.node.seal_end(
-            self.principal,
-            self.arrived,
-            self.history,
-            ended,
-            seal,
-            Vec::new(),
-        );
-    }
-}
-
 pub(in crate::root) type OpenUnits = HashMap<UnitKey, OpenUnit>;
 
 pub(in crate::root) struct OpenUnit {
@@ -2074,46 +1003,10 @@ impl NodeEndPost {
         }
     }
 
-    fn door_class(&self, key: UnitKey) -> Option<OpClassId> {
-        self.lock(key)
-            .get(&key)
-            .and_then(|open| open.sealing.door.as_ref().map(|(facts, _)| facts.op_class))
-    }
-
     fn ended_as(&self, key: UnitKey, outcome: Outcome) {
         if let Some(open) = self.lock(key).get_mut(&key) {
             open.sealing.said = Some(outcome);
         }
-    }
-
-    pub(crate) fn completed(&self, key: UnitKey) {
-        self.ended_as(key, Outcome::Completed);
-    }
-
-    pub(crate) fn stopped(&self, key: UnitKey, reason: busbar_contract::caps::ReasonCode) {
-        if let Some(open) = self.lock(key).get_mut(&key) {
-            open.sealing.said = Some(Outcome::Refused(
-                busbar_contract::caps::StepName::Route,
-                reason,
-            ));
-        }
-    }
-
-    /// The drive's readings of the unit, taken before it seals (§9).
-    pub(crate) fn measured(&self, key: UnitKey, measured: Measured) {
-        if let Some(open) = self.lock(key).get_mut(&key) {
-            open.sealing.ran.measured = measured;
-        }
-    }
-
-    pub(crate) fn reported(&self, key: UnitKey, report: Option<Reported>) {
-        if let Some(open) = self.lock(key).get_mut(&key) {
-            open.sealing.report = report.and_then(Reported::legacy).map(Report::of);
-        }
-    }
-
-    fn take(&self, key: UnitKey) -> Option<OpenUnit> {
-        self.lock(key).remove(&key)
     }
 
     pub(crate) fn close(&self, key: UnitKey) {
@@ -2314,30 +1207,6 @@ impl busbar_kernel::plane_driver::EndPost for NodeEndPost {
     }
 }
 
-pub(crate) struct Parent {
-    key: UnitKey,
-    slot: Arc<busbar_kernel::inflight::UnitSlot>,
-}
-
-impl Parent {
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn key(&self) -> UnitKey {
-        self.key
-    }
-
-    #[must_use]
-    pub(crate) fn cell(&self) -> &busbar_contract::caps::HoldCell {
-        self.slot.cell()
-    }
-}
-
-impl std::fmt::Debug for Parent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Parent").field("key", &self.key).finish()
-    }
-}
-
 struct UnitSeal {
     facts: busbar_contract::caps::AuditFacts,
     pass: Pass<Audit>,
@@ -2367,40 +1236,6 @@ struct Ran {
     /// What `records.user` and `records.labels` keep of the unit (ADMIN-API-1.6 §3.5): empty, with
     /// no allocation, unless the operator switched them on.
     records: busbar_kernel_audit::RecordFacts,
-}
-
-/// The drive's clock and the caller it reads the unit's first write and status from (§9).
-pub(crate) struct Timing<'a> {
-    /// When the drive began the unit.
-    pub(crate) started: std::time::Instant,
-    /// The caller the unit wrote its reply through.
-    pub(crate) caller: &'a (dyn crate::root::serve::Stated + Sync),
-}
-
-impl Timing<'_> {
-    /// Read the unit's three measurements: one monotonic read, and atomic loads.
-    fn read(&self) -> Measured {
-        let total = u64::try_from(
-            busbar_core_connector::framer::now()
-                .saturating_duration_since(self.started)
-                .as_micros(),
-        )
-        .unwrap_or(u64::MAX);
-        let first_ns = self.caller.first_write_ns();
-        Measured {
-            status: self
-                .caller
-                .stated()
-                .and_then(|s| u16::try_from(s).ok())
-                .unwrap_or(0),
-            ttft_us: if first_ns == 0 {
-                0
-            } else {
-                (first_ns / 1_000).max(1)
-            },
-            total_us: total.max(1),
-        }
-    }
 }
 
 /// The three readings the drive takes of a unit before it seals: all `0` when not measured.
@@ -2488,8 +1323,6 @@ struct Accruing {
     ran: Ran,
     /// How the unit's own steps said it ended, as its encode door was told: a session's outcome.
     said: Option<Outcome>,
-    /// What a session consumed, as its plane reported it at its end.
-    report: Option<Report>,
 }
 
 impl Accruing {
@@ -2513,25 +1346,6 @@ impl Accruing {
     }
 }
 
-// Serving waits for both native confirmation and ticket readiness. The awaiting
-// task runs the confirmation itself; a confirmation dropped unfinished (never
-// awaited, or its awaiter cancelled mid-confirm) is restarted in one detached
-// task, so cancellation never abandons its original. `confirm` is cancel-safe.
-fn preview_confirmation(
-    custody: &crate::root::serve::TicketCustody,
-    outcome: Option<Outcome>,
-    seal: Option<Sealing>,
-) -> Option<TerminalConfirmation> {
-    let (Some(seal), Some(_)) = (seal, outcome) else {
-        return None;
-    };
-    // A partitioned usage preview is never terminal custody: refuse the seal and fail the ticket.
-    custody.terminal(seal.seal.key, false);
-    Some(TerminalConfirmation {
-        inner: Err("selected audit requires final reader custody, not a usage preview".into()),
-    })
-}
-
 struct TerminalConfirmation {
     inner: Result<Option<TerminalTask>, String>,
 }
@@ -2546,19 +1360,10 @@ impl TerminalTask {
             Self::Staged(confirm) => confirm.run().await,
         }
     }
-
-    fn failed(&self) {
-        match self {
-            Self::Staged(confirm) => confirm.custody.terminal(confirm.key, false),
-        }
-    }
 }
 
 struct Confirm {
     audit: StagedAudit,
-    custody: Arc<crate::root::serve::TicketCustody>,
-    key: UnitKey,
-    completed: bool,
 }
 
 impl Confirm {
@@ -2567,8 +1372,6 @@ impl Confirm {
         if confirmed.is_ok() {
             crate::root::durability::records_pulse().notify_waiters();
         }
-        self.custody
-            .terminal(self.key, self.completed && confirmed.is_ok());
         confirmed.map_err(|error| crate::root::cold::terminal_audit_unconfirmed(&error))
     }
 }
@@ -2579,18 +1382,6 @@ impl TerminalConfirmation {
             inner: Err(crate::root::cold::terminal_audit_stage_failed(&error)),
         }
     }
-
-    async fn wait(mut self) -> Result<(), String> {
-        let Some(inner) = self.inner.as_mut().map_err(|error| error.clone())? else {
-            return Ok(());
-        };
-        let confirmed = inner.run().await;
-        if confirmed.is_err() {
-            inner.failed();
-        }
-        self.inner = Ok(None);
-        confirmed
-    }
 }
 
 impl Drop for TerminalConfirmation {
@@ -2598,21 +1389,11 @@ impl Drop for TerminalConfirmation {
         let Ok(Some(mut inner)) = std::mem::replace(&mut self.inner, Ok(None)) else {
             return;
         };
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => drop(runtime.spawn(async move {
-                if inner.run().await.is_err() {
-                    inner.failed();
-                }
-            })),
-            Err(_) => inner.failed(),
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(async move {
+                let _ = inner.run().await;
+            }));
         }
-    }
-}
-
-async fn await_terminal(confirmation: Option<TerminalConfirmation>) -> Result<(), String> {
-    match confirmation {
-        Some(confirmation) => confirmation.wait().await,
-        None => Ok(()),
     }
 }
 
@@ -2621,23 +1402,10 @@ struct StagedAudit {
     run: Arc<busbar_kernel::persistence::journal::runtime::StagedRun>,
 }
 impl StagedAudit {
-    fn confirm_terminal(
-        self,
-        custody: Arc<crate::root::serve::TicketCustody>,
-        key: UnitKey,
-        completed: bool,
-    ) -> Option<TerminalConfirmation> {
-        if tokio::runtime::Handle::try_current().is_err() {
-            custody.terminal(key, false);
-            return None;
-        }
+    fn confirm_terminal(self) -> Option<TerminalConfirmation> {
+        tokio::runtime::Handle::try_current().ok()?;
         Some(TerminalConfirmation {
-            inner: Ok(Some(TerminalTask::Staged(Confirm {
-                audit: self,
-                custody,
-                key,
-                completed,
-            }))),
+            inner: Ok(Some(TerminalTask::Staged(Confirm { audit: self }))),
         })
     }
 }

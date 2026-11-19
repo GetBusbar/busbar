@@ -9,7 +9,7 @@ crate::kind! {
     /// STORE-TRANSACTIONS §2.5 M1 with G1 and G2 (§2.4 N1-N13), which origin/dev f6e2cf05d7 already carries
     /// (contract abi/store/v4.rs:443-458, persistence.rs `Decision` with Fenced/Stale, `commit(candidate, key:
     /// CommitKey)` :625; §16.146). The store converts its own physical format in `open` (§7.2, round 31), with its own driver.
-    pub trait Store: kind = 1, abi = 3 {
+    pub trait Store: kind = 1, abi = 4 {
         views {
         }
         pods {
@@ -188,6 +188,7 @@ crate::kind! {
             COMMIT_OPID_CONFLICT: u32 = 4;
             COMMIT_FENCED: u32 = 5;
             COMMIT_STALE: u32 = 6;
+            COMMIT_CAPACITY_REFUSED: u32 = 7;
             SLOT_SELF_FENCED: u32 = u32::MAX;
             MAX_SLOTS: u32 = 65_536;
             CODEC_VERSION: u32 = 1;
@@ -233,7 +234,7 @@ crate::kind! {
         /// One ordered namespace page. Answer: SCAN_DONE, ROW* (≤ max_rows, ≤ max_bytes), NEXT if SCAN_CONTINUE.
         async fn scan(&self, h: &'static Host, req: ChainBytes) -> Result<Reply, Fail>;
         /// One atomic native transaction: STORE-TRANSACTIONS §2.5 M1 (slot record, FENCEs, guard, predicates,
-        /// mutations). Answer: COMMITTED (code COMMIT_APPLIED..=COMMIT_STALE), with no RESULT (N5). Evaluated
+        /// mutations). Answer: COMMITTED (code COMMIT_APPLIED..=COMMIT_CAPACITY_REFUSED), with no RESULT (N5). Evaluated
         /// verdicts are answers (OK + COMMITTED). FAILED means unevaluated or unknown; core resolves it by readback.
         /// G1: a DeleteRange on SLOT_NS deletes the writer's slot records. G2: the SDK decode FAULTs any other
         /// SLOT_NS mutation, any GENERATION_NS mutation, and any condition on GENERATION_NS whose key is not 16 bytes.
@@ -244,6 +245,10 @@ crate::kind! {
         /// right after `open` returns INSTANCE and before any other method; the answer is cached for the
         /// instance's life (`PersistenceBackend::info`). Answer: exactly one INFO. An instance whose facts
         /// change (a different dataset after failover) is a new instance: core reopens it.
+        /// E.9: keep, implemented by every store image (the method has no default body, so each of
+        /// store-memory, -sqlite, -postgres, -mysql and -valkey states it). The candidate head (CAND_HEAD,
+        /// `CandHead`) is kept too: it is the first record of every `commit` request, written and read
+        /// through this module's helpers, which is why a word search of the images does not find it.
         sync fn info(&self, h: &Host, out: &mut Out<'_>) -> Result<(), Fail>;
 
         extras {
@@ -278,12 +283,11 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_READ), req, |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start1(|vt| &vt.read, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .start(slot::read, bufs, |b, cross| pack::read(crate::host_side::proxy::now(), b.get(at), cross), lease)
                             .into()
                     })
                 }
@@ -297,12 +301,11 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_SCAN), req, |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start1(|vt| &vt.scan, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .start(slot::scan, bufs, |b, cross| pack::scan(crate::host_side::proxy::now(), b.get(at), cross), lease)
                             .into()
                     })
                 }
@@ -316,12 +319,11 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_COMMIT), req, |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start1(|vt| &vt.commit, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .start(slot::commit, bufs, |b, cross| pack::commit(crate::host_side::proxy::now(), b.get(at), cross), lease)
                             .into()
                     })
                 }
@@ -335,12 +337,11 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_CLOCK), req, |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start1(|vt| &vt.clock, bufs, |b| Arg::bytes(b.get(at)), lease)
+                            .start(slot::clock, bufs, |b, cross| pack::clock(crate::host_side::proxy::now(), b.get(at), cross), lease)
                             .into()
                     })
                 }
@@ -350,7 +351,7 @@ crate::kind! {
                     buf: &'o mut crate::host_side::pool::PooledOut,
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_INFO), buf, |lease| {
-                        self.live.call0(|vt| &vt.info, lease)
+                        pack::info(crate::host_side::proxy::now(), |call| self.live.call(slot::info, call, lease))
                     })
                 }
 
@@ -365,6 +366,16 @@ crate::kind! {
 /// `CommitHead` carrier, and the receipt-era refusal. A store depends on busbar-plugin-abi only, so nothing here
 /// names busbar-contract: the replay mapping yields the wire `Committed` record, not a `Decision`.
 pub mod plumbing {
+    /// Whether exact native-encoded parts exceed an admitted deterministic bound.
+    /// No default limit or allocation policy is inferred. Overflow exceeds every
+    /// representable bound; allocation/driver errors are not inputs to this check.
+    pub fn capacity_exceeded(parts: impl IntoIterator<Item = usize>, limit: usize) -> bool {
+        parts
+            .into_iter()
+            .try_fold(0usize, |sum, part| sum.checked_add(part))
+            .is_none_or(|sum| sum > limit)
+    }
+
     use super::store::{
         self as wire, AttemptId, CandHead, Committed, MutationRec, PredicateRec, TimeGuard,
     };

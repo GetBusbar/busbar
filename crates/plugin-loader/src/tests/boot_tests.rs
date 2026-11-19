@@ -4,14 +4,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::door::{SECTION_CONSUMED, SECTION_DECLARING};
 use busbar_contract::abi::mechanism::rendering::render;
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::sdk::door::{abi_str, statement};
+use busbar_contract::kinds::codes::KindCode;
+use busbar_contract::plugin_settings::sugar_words::{SECTION_CONSUMED, SECTION_DECLARING};
 
 use super::*;
-use crate::dispatch::NoSink;
-use crate::neutral_plane as plug;
 
 fn doc(json: &str) -> serde_json::Value {
     serde_json::from_str(json).unwrap()
@@ -36,10 +34,6 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
         disk: false,
         orders: true,
     }
-}
-
-fn uses_door() -> Uses {
-    Uses::of(&serde_json::json!({plug::SECTION: {}}))
 }
 
 fn picked(sel: &[Selected], cands: &[Candidate]) -> Vec<(String, String)> {
@@ -133,13 +127,13 @@ fn a_module_of_another_kind_selects_nothing_and_the_first_candidate_answers() {
 fn a_candidate_reads_its_facts_off_its_rendering() {
     const REWRITES: &[busbar_contract::abi::mechanism::door::Rewrite] = &[
         busbar_contract::abi::mechanism::door::Rewrite {
-            class: busbar_contract::abi::mechanism::door::REWRITE_ALIAS,
+            class: busbar_contract::plugin_settings::sugar_words::REWRITE_ALIAS,
             _reserved: 0,
             from: abi_str("old"),
             to: abi_str(""),
         },
         busbar_contract::abi::mechanism::door::Rewrite {
-            class: busbar_contract::abi::mechanism::door::REWRITE_SUGAR,
+            class: busbar_contract::plugin_settings::sugar_words::REWRITE_SUGAR,
             _reserved: 0,
             from: abi_str("sug"),
             to: abi_str(""),
@@ -261,261 +255,9 @@ fn red_an_absent_example_cdylib_panics_with_its_build_command() {
 }
 
 #[test]
-fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
-    let dir = std::env::temp_dir().join(format!("busbar-boot-load-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let logs = PluginLogConfig::from_words(
-        Some(dir.to_str().unwrap()),
-        Some("info"),
-        &Default::default(),
-        None,
-        None,
-    )
-    .unwrap();
-    let linked = Candidate::linked(plug::door).expect("the linked plane states itself");
-    assert_eq!(linked.verbs, vec![plug::SECTION.to_string()]);
-    let mut cands = vec![linked.clone()];
-    let mut uses = Uses::default();
-    uses.roots.insert(plug::SECTION.into());
-    let path = plug::cdylib();
-    let mut dropped = linked.clone();
-    dropped.origin = Origin::Dropped {
-        file: "plane-door.tar.gz".into(),
-        bytes: Arc::new(std::fs::read(path).unwrap()),
-    };
-
-    cands.push(dropped);
-    let mut never = cand(
-        KindCode::Plane,
-        "never-opened",
-        &[],
-        &[],
-        &["not-configured"],
-    );
-    never.stated = linked.stated.clone();
-    cands.push(never);
-    let mut selected = select(&uses, &cands);
-    assert_eq!(
-        selected,
-        vec![Selected {
-            candidate: 0,
-            instance: plug::SECTION.into()
-        }]
-    );
-    selected.push(Selected {
-        candidate: 1,
-        instance: "door-dropped".into(),
-    });
-    // Each selected plane loads under its instance name (load_planes binds a candidate by its name).
-    let planes: Vec<Candidate> = selected
-        .iter()
-        .map(|s| {
-            let mut c = cands[s.candidate].clone();
-            c.name = s.instance.clone();
-            c
-        })
-        .collect();
-    let loaded = load_planes(
-        &planes,
-        &logs,
-        Arc::new(NoSink),
-        Adopter::unwatched(),
-        8,
-        crate::dispatch::ConnTable::Probe,
-    )
-    .expect("every selected instance binds");
-    assert_eq!(loaded.len(), selected.len());
-    for s in &selected {
-        assert!(
-            dir.join(format!("{}.log", s.instance)).exists(),
-            "{} has its own log file",
-            s.instance
-        );
-    }
-    assert!(!dir.join("never-opened.log").exists());
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn red_an_instance_that_will_not_bind_is_named() {
-    let path = plug::cdylib();
-    let mut c = Candidate::linked(plug::door).unwrap();
-    c.origin = Origin::Dropped {
-        file: "plane-door.tar.gz".into(),
-        bytes: Arc::new(std::fs::read(path).unwrap()),
-    };
-    // State a different, well-formed version so admission reaches the byte-for-byte door
-    // comparison rather than refusing a malformed rendering before opening the library.
-    // SAFETY: the fixture door publishes an immutable Statement for the process's lifetime.
-    let mut stated = unsafe { *plug::door().statement() };
-    stated.version = abi_str("0.0.0-mismatched-fixture");
-    // SAFETY: the copy retains the fixture's live lists and replaces only one static string.
-    c.stated = unsafe { render(&stated) }.expect("the changed Statement renders");
-    assert!(busbar_contract::abi::mechanism::rendering::read(&c.stated).is_ok());
-    let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
-    c.name = "tools".into();
-    let err = load_planes(
-        &[c],
-        &logs,
-        Arc::new(NoSink),
-        Adopter::unwatched(),
-        8,
-        crate::dispatch::ConnTable::NoNeeds,
-    )
-    .map(|_| ())
-    .unwrap_err();
-    assert!(
-        err.starts_with("tools: ") && err.contains("repack"),
-        "{err}"
-    );
-}
-
-#[test]
-fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
-    let path = plug::cdylib();
-    let lib = std::fs::read(path).unwrap();
-    let rendering = crate::dispatch::LinkedRow::of(plug::door)
-        .unwrap()
-        .statement;
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-boot-planes-{}-{}",
-        std::process::id(),
-        crate::stage::next_seq()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let stated = busbar_contract::abi::mechanism::rendering::read(&rendering).unwrap();
-    let manifest = crate::sign::Manifest {
-        name: stated.name,
-        alias: "tools".into(),
-        kind: "plane".into(),
-        version: stated.version,
-        publisher: crate::sign::FIRST_PARTY_PUBLISHER.into(),
-        abi_version: busbar_contract::abi::plane::ABI_VERSION,
-        sha256: crate::sign::sha256_hex(&lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-        statement: Some(hex::encode(&rendering)),
-        former_names: Vec::new(),
-    };
-
-    let release = crate::sign::SigningKey::from_bytes(&[37u8; 32]);
-    let manifest = crate::sign::seal_test_artifact(&release, manifest, &lib);
-    let tarball = crate::tarball::package(&manifest, "lib.so", &lib).unwrap();
-    std::fs::write(dir.join("plane-door.tar.gz"), tarball).unwrap();
-    let policy = crate::sign::TrustPolicy {
-        first_party_key: Some(release.verifying_key()),
-        binary_version: "1.6.0".into(),
-        first_party_floors: Default::default(),
-        first_party_high_water: Default::default(),
-        publishers: Default::default(),
-        allow_untrusted: false,
-        min_versions: Default::default(),
-        ..crate::sign::TrustPolicy::default()
-    };
-    let dropped = crate::scan_and_validate(&dir.join("."), &policy).expect("the plane scans");
-    assert!(
-        dropped.skipped().is_empty(),
-        "the neutral SDK plane artifact must receive its authenticated egress grant"
-    );
-    assert_eq!(dropped.loadable().len(), 1, "the actual plane is admitted");
-    let logs = PluginLogConfig::from_words(
-        Some(dir.join("logs").to_str().unwrap()),
-        None,
-        &Default::default(),
-        None,
-        None,
-    )
-    .unwrap();
-    let bind = |set: crate::boot::PlaneSet| {
-        let stated: Vec<Vec<u8>> = set.doors.iter().map(|c| c.stated.clone()).collect();
-        let bound = load_planes(
-            &set.doors,
-            &logs,
-            Arc::new(NoSink),
-            Adopter::unwatched(),
-            8,
-            crate::dispatch::ConnTable::Probe,
-        )
-        .expect("the plane binds");
-        (stated, bound)
-    };
-    let (linked_stated, linked) = bind(
-        crate::PluginRegistry::empty()
-            .open_planes(&[plug::door])
-            .unwrap(),
-    );
-    let (dropped_stated, dropped_bound) = bind(dropped.open_planes(&[]).unwrap());
-    assert_eq!(linked_stated, vec![rendering.clone()]);
-    assert_eq!(
-        dropped_stated, linked_stated,
-        "both doors state one rendering"
-    );
-    let shape = |b: &[(String, Plugin<crate::dispatch::kinds::plane::Plane>)]| {
-        b.iter()
-            .map(|(i, p)| (i.clone(), p.name().to_string(), p.kind(), p.max_inflight()))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(shape(&linked), shape(&dropped_bound), "one load, one shape");
-    assert_eq!(shape(&linked).len(), 1);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn a_plane_config_does_not_use_is_never_opened() {
-    let rendering = crate::dispatch::LinkedRow::of(plug::door)
-        .unwrap()
-        .statement;
-    let linked = Candidate::linked(plug::door).expect("the linked plane states itself");
-    let unused = Candidate {
-        kind: KindCode::Plane,
-        name: "unused-plane".into(),
-        verbs: vec!["unused".into()],
-        stated: rendering,
-        origin: Origin::Dropped {
-            file: "unused-plane.tar.gz".into(),
-            bytes: Arc::new(b"not a library: opening this refuses the load".to_vec()),
-        },
-        ..cand(KindCode::Plane, "unused-plane", &[], &[], &["unused"])
-    };
-    let doors = vec![linked, unused];
-    let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
-    let bind = |uses: &Uses| {
-        load_planes(
-            &used_planes(uses, &doors),
-            &logs,
-            Arc::new(NoSink),
-            Adopter::unwatched(),
-            8,
-            crate::dispatch::ConnTable::Probe,
-        )
-        .map(|bound| bound.into_iter().map(|(i, _)| i).collect::<Vec<_>>())
-    };
-    assert_eq!(
-        bind(&uses_door()).expect("the unused plane is never opened"),
-        vec![doors[0].name.clone()],
-        "only the plane config uses is bound"
-    );
-    assert_eq!(
-        bind(&Uses::of(&doc(r#"{"providers": {}}"#))).expect("nothing is opened"),
-        Vec::<String>::new(),
-        "a compiled-in plane config does not use is not bound either"
-    );
-
-    let err =
-        bind(&Uses::of(&doc(r#"{"unused": {}}"#))).expect_err("an opened non-library refuses");
-    assert!(err.contains("unused-plane"), "{err}");
-}
-
-#[test]
 fn a_dropped_plane_is_selected_by_a_section_that_selects_it() {
-    use busbar_contract::abi::mechanism::door::{Section, SECTION_REQUIRED, SECTION_SELECTS};
+    use busbar_contract::abi::mechanism::door::Section;
+    use busbar_contract::plugin_settings::sugar_words::{SECTION_REQUIRED, SECTION_SELECTS};
     const SECTIONS: &[Section] = &[
         Section {
             name: abi_str("pools"),
@@ -568,81 +310,6 @@ fn a_dropped_plane_is_selected_by_a_section_that_selects_it() {
     assert!(select(&catalog_only, &cands).is_empty());
 }
 
-#[test]
-fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
-    use busbar_contract::abi::mechanism::door::{Door, DoorParts, KindTailHead, Statement};
-    use busbar_contract::abi::plane::{PlaneTail, TrustKey, TRUST_PIN};
-    use std::sync::OnceLock;
-
-    extern "C" fn bad_door() -> &'static Door {
-        static BAD: OnceLock<usize> = OnceLock::new();
-        let at = *BAD.get_or_init(|| {
-            let good = plug::door();
-            // SAFETY: `plug::door` answers the fixture's `'static` Door, Statement and tail.
-            let mut tail = unsafe {
-                (*good.statement())
-                    .kind_tail
-                    .cast::<PlaneTail>()
-                    .read_unaligned()
-            };
-            let keys: &'static [TrustKey] = Box::leak(Box::new([TrustKey {
-                key: abi_str("anchor"),
-                role: TRUST_PIN,
-                flags: 0,
-                default: abi_str(""),
-                mechanisms: std::ptr::null(),
-                mechanisms_len: 0,
-            }]));
-            tail.trust_keys = keys.as_ptr();
-            tail.trust_keys_len = keys.len();
-            let tail: &'static PlaneTail = Box::leak(Box::new(tail));
-            // SAFETY: as above.
-            let mut st: Statement = unsafe { *good.statement() };
-            st.kind_tail = std::ptr::from_ref(tail).cast::<KindTailHead>();
-            let st: &'static Statement = Box::leak(Box::new(st));
-            // SAFETY: the fixture's own door with a `'static` Statement restated over its own lists
-            // and a leaked tail.
-            let door: &'static Door = Box::leak(Box::new(unsafe {
-                Door::__from_parts(DoorParts {
-                    statement: st,
-                    ..good.parts()
-                })
-            }));
-            std::ptr::from_ref(door) as usize
-        });
-        // SAFETY: the address of the door leaked above, for the process.
-        unsafe { &*(at as *const Door) }
-    }
-
-    let logs = PluginLogConfig::from_words(None, None, &Default::default(), None, None).unwrap();
-    let set = crate::PluginRegistry::empty()
-        .open_planes(&[bad_door])
-        .expect("the plane states itself");
-    let err = load_planes(
-        &set.doors,
-        &logs,
-        Arc::new(NoSink),
-        Adopter::unwatched(),
-        8,
-        crate::dispatch::ConnTable::Probe,
-    )
-    .expect_err("a pin naming no mechanism must refuse the boot");
-    assert!(err.contains("trust_key.mechanisms"), "{err}");
-
-    let ok = crate::PluginRegistry::empty()
-        .open_planes(&[plug::door])
-        .unwrap();
-    load_planes(
-        &ok.doors,
-        &logs,
-        Arc::new(NoSink),
-        Adopter::unwatched(),
-        8,
-        crate::dispatch::ConnTable::Probe,
-    )
-    .expect("the well-formed plane binds");
-}
-
 fn need(direction: u32, transport: &str, target_from: &str) -> ReadNeed {
     ReadNeed {
         direction,
@@ -651,13 +318,13 @@ fn need(direction: u32, transport: &str, target_from: &str) -> ReadNeed {
         auth: String::new(),
         target_from: target_from.into(),
         trust_from: String::new(),
-        details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+        details: busbar_contract::rendering::ReadBlob {
             fmt: 0,
             flags: 0,
             bytes: Vec::new(),
         },
         timeout_ms: 0,
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
     }
@@ -677,7 +344,7 @@ fn sel(candidate: usize, instance: &str) -> Selected {
     }
 }
 
-use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+use busbar_contract::conn::codes::DIRECTION_OUTBOUND;
 
 #[test]
 fn inbound_needs_are_collected_with_their_binds_from_instance_settings() {
@@ -861,8 +528,9 @@ fn red_two_listeners_on_one_address_are_refused() {
 
 #[test]
 fn a_candidate_carries_its_statements_needs() {
-    use busbar_contract::abi::host::conn::connector::{Need, KEEP_NAMED};
+    use busbar_contract::abi::host::conn::connector::Need;
     use busbar_contract::abi::mechanism::call::Blob;
+    use busbar_contract::conn::codes::KEEP_NAMED;
     const NEEDS: &[Need] = &[Need {
         direction: DIRECTION_INBOUND,
         egress_class: 0,
@@ -935,106 +603,11 @@ impl busbar_contract::secret::SecretResolve for Resolver {
     }
 }
 
-fn linked_cand(name: &str, version: &str) -> Candidate {
-    Candidate {
-        version: version.into(),
-        origin: Origin::Linked(crate::dispatch::LinkedRow {
-            statement: Vec::new(),
-            door: crate::dispatch_tests::null_door,
-        }),
-        ..cand(KindCode::Hook, name, &["short"], &[], &[])
-    }
-}
-
 fn dropped_cand(name: &str, version: &str) -> Candidate {
     Candidate {
         version: version.into(),
         ..cand(KindCode::Hook, name, &["short"], &[], &[])
     }
-}
-
-#[test]
-fn one_plugin_by_both_doors_is_one_version_or_refused() {
-    let same = [
-        linked_cand("busbar-hook-x", "1.2.3"),
-        dropped_cand("busbar-hook-x", "1.2.3"),
-    ];
-    one_owner(&same).expect("one plugin at one version");
-    assert_eq!(
-        both_doors(&same),
-        vec![
-            "plugin 'busbar-hook-x' v1.2.3 is linked and also dropped in (busbar-hook-x.tar.gz); \
-             the linked build serves it"
-                .to_string()
-        ]
-    );
-    let uses = Uses {
-        modules: vec![(KindCode::Hook, "h".into(), "short".into())],
-        ..Uses::default()
-    };
-    assert_eq!(
-        select(&uses, &same),
-        vec![sel(0, "h")],
-        "the linked row serves"
-    );
-    for pair in [
-        [
-            linked_cand("busbar-hook-x", "1.2.3"),
-            dropped_cand("busbar-hook-x", "1.2.4"),
-        ],
-        [
-            dropped_cand("busbar-hook-x", "1.2.4"),
-            linked_cand("busbar-hook-x", "1.2.3"),
-        ],
-    ] {
-        let refused = one_owner(&pair).expect_err("two versions of one plugin");
-        assert_eq!(
-            refused,
-            "plugin 'busbar-hook-x' arrives by both doors at two versions: linked v1.2.3, dropped \
-             in v1.2.4 (busbar-hook-x.tar.gz) - one version per plugin: remove one"
-        );
-        assert!(both_doors(&pair).is_empty());
-    }
-
-    assert_eq!(
-        one_owner(&[
-            linked_cand("busbar-hook-x", "1.2.3"),
-            dropped_cand("busbar-hook-x", ""),
-        ]),
-        Err(
-            "plugin 'busbar-hook-x' states no version in its Statement: the one-version rule \
-             cannot compare it"
-                .to_string()
-        )
-    );
-
-    let dropped = [
-        dropped_cand("busbar-hook-x", "1.2.3"),
-        dropped_cand("busbar-hook-x", "1.2.4"),
-    ];
-    one_owner(&dropped).expect("not the one-version rule's pair");
-}
-
-#[test]
-fn a_plane_the_configuration_does_not_use_is_never_bound() {
-    let set = crate::PluginRegistry::empty()
-        .open_planes(&[plug::door])
-        .unwrap();
-    let plane = set.doors[0].clone();
-    assert!(
-        used_planes(&Uses::default(), &set.doors).is_empty(),
-        "a document that writes none of the plane's sections binds no plane"
-    );
-    let uses = Uses {
-        roots: plane.verbs.iter().cloned().collect(),
-        ..Uses::default()
-    };
-    let used = used_planes(&uses, &set.doors);
-    assert_eq!(
-        used.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
-        [plane.name.as_str()],
-        "its verb selects it"
-    );
 }
 
 #[test]
@@ -1078,10 +651,7 @@ fn a_dropped_listener_binding_selects_its_exact_declared_claim_without_a_url() {
     use busbar_contract::abi::transport::listener_bindings::EXT_LISTENER_BINDINGS;
     const CLAIMS: &[busbar_contract::abi::mechanism::call::AbiStr] = &[abi_str("foreign-wire")];
     let read_candidate = |binding: &[u8]| {
-        let extensions = busbar_contract::abi::mechanism::extensions::encode(&[(
-            EXT_LISTENER_BINDINGS,
-            binding,
-        )]);
+        let extensions = busbar_contract::extensions::encode(&[(EXT_LISTENER_BINDINGS, binding)]);
         let st = busbar_contract::abi::mechanism::door::Statement {
             kind: KindCode::Transport as u32,
             claims: CLAIMS.as_ptr(),
@@ -1113,32 +683,4 @@ fn a_dropped_listener_binding_selects_its_exact_declared_claim_without_a_url() {
     assert!(!unrelated.serves(&Uses::default()));
     assert!(read_candidate(br#"[{"slot":"listen","claim":"undeclared"}]"#).is_err());
     assert!(read_candidate(br#"[{"slot":"listen","claim":"foreign-wire","priority":0}]"#).is_err());
-}
-
-/// SECRET-SHORTHAND-BOOT §3.10 (G4): a claim conflict names where each claimant comes from, so the
-/// operator knows which archive to remove: both files when both are dropped in, `linked` for a row
-/// the build links.
-#[test]
-fn a_claim_conflict_names_both_files() {
-    let refused = one_owner(&[
-        cand(KindCode::Secret, "first-owner", &["shared-word"], &[], &[]),
-        cand(KindCode::Secret, "second-owner", &["shared-word"], &[], &[]),
-    ])
-    .expect_err("two dropped modules claim one word");
-    assert!(
-        refused.contains("first-owner.tar.gz") && refused.contains("second-owner.tar.gz"),
-        "the conflict names both archives: {refused}"
-    );
-    let refused = one_owner(&[
-        linked_cand("linked-owner", "1.0.0"),
-        Candidate {
-            aliases: vec!["linked-owner".into()],
-            ..dropped_cand("dropped-owner", "1.0.0")
-        },
-    ])
-    .expect_err("a dropped module claims a linked module's name");
-    assert!(
-        refused.contains("dropped-owner.tar.gz") && refused.contains("linked"),
-        "the conflict names the archive and the linked row: {refused}"
-    );
 }

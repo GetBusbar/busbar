@@ -72,8 +72,8 @@ impl OwnedPreparation {
 }
 
 /// The committed guard is returned even if the connector or its first response failed.
-pub struct SelectedOpen<'a> {
-    pub(crate) opened: Result<UpOpen<'a>, SendFailed>,
+pub struct SelectedOpen<R> {
+    pub(crate) opened: Result<UpOpen<R>, SendFailed>,
     pub(crate) attempt: NativeAttempt,
 }
 

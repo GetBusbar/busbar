@@ -13,7 +13,9 @@ use busbar_ports::{FactRef, PortError};
 
 use super::{PortProbes, ProbeFar};
 use crate::plane_driver::port_session::{Calls, Effects, UpExchange};
-use crate::plane_driver::port_upstream::{Candidate, ProbeOutcome, SendFailed, UpReply, UpSend};
+use crate::plane_driver::port_upstream::{
+    Candidate, ProbeOutcome, SendFailed, UpOpen, UpReply, UpSend, Whole,
+};
 use crate::probe::ProbeTarget;
 
 struct Live;
@@ -126,12 +128,19 @@ impl Effects for Quiet {
 struct Far;
 
 impl UpSend for Far {
-    fn send(&mut self, _: &Candidate, _: UpExchange) -> Result<UpReply, SendFailed> {
+    type Rest<'a> = Whole;
+
+    async fn open<'a>(
+        &'a mut self,
+        _: &'a Candidate,
+        _: UpExchange,
+    ) -> Result<UpOpen<Whole>, SendFailed> {
         Ok(UpReply {
             status: 200,
             headers: Vec::new(),
             body: Vec::new(),
-        })
+        }
+        .opened())
     }
 }
 
@@ -161,8 +170,10 @@ impl ProbeFar for Members {
         })
     }
 
-    fn sender(&self, _: usize, _: Duration) -> Option<Box<dyn UpSend + Send>> {
-        (!self.no_sender).then(|| Box::new(Far) as Box<dyn UpSend + Send>)
+    type Sender = Far;
+
+    fn sender(&self, _: usize, _: Duration) -> Option<Far> {
+        (!self.no_sender).then_some(Far)
     }
 
     fn reported(&self, member: usize, outcome: ProbeOutcome) {

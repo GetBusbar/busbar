@@ -9,12 +9,6 @@ use crate::{redacted::Kernel, Secret};
 
 /// Initial strict bootstrap request/response codec.
 pub const VERSION: u32 = 1;
-/// Opaque current-admission marker namespace; providers copy bytes, never interpret it.
-pub const ADMISSION_NAMESPACE: [u8; 16] = *b"busbar.format1\0\0";
-/// Opaque current-admission marker key.
-pub const ADMISSION_KEY: &[u8] = b"active";
-/// Exact OPEN extension carrying a verified current/recovery binding.
-pub const OPEN_BINDING: &str = "busbar.store.bootstrap.open/1";
 /// An opaque stable native identity.
 pub type Id = [u8; 16];
 /// A complete SHA256 identity.
@@ -45,15 +39,6 @@ pub struct Format {
     /// Exact encoded record format.
     pub codec: u32,
 }
-/// Current core target owner; native backends retain opaque records under this format.
-pub const CORE_FORMAT_OWNER: Id = *b"busbar.core.v1\0\0";
-/// Initial current-target format, shared with the compiled migration registry.
-pub const CORE_FORMAT: Format = Format {
-    owner: CORE_FORMAT_OWNER,
-    physical: 1,
-    logical: 1,
-    codec: 1,
-};
 /// Actual native source identity observed without schema writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceIdentity {
@@ -288,16 +273,6 @@ pub struct CompletionMarker {
     pub checkpoint_address: super::Address,
     /// Hash of the exact checkpoint bytes committed in that candidate.
     pub checkpoint_value_digest: Digest,
-}
-/// The only marker address accepted by native Finish for this retained session.
-pub fn completion_marker_address(upgrade: Id) -> super::Address {
-    let mut key = Vec::with_capacity(24);
-    key.extend_from_slice(b"upgrade/");
-    key.extend_from_slice(&upgrade);
-    super::Address {
-        namespace: ADMISSION_NAMESPACE,
-        key,
-    }
 }
 /// Native-verifiable proof of an exact confirmed core checkpoint commit.
 #[derive(Debug, Clone)]

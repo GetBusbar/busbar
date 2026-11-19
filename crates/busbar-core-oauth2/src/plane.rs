@@ -33,7 +33,7 @@ use super::signer::{Es256Key, Es256Verifier, Ps256Verifier};
 mod serve;
 pub(crate) use serve::Granted;
 
-pub(crate) use serve::seam_verify_dpop;
+pub(crate) use serve::{seam_access_standing, seam_prove_dpop, seam_verify_dpop};
 
 pub(crate) type AsStore = super::cimd::CimdStore;
 
@@ -612,3 +612,15 @@ async fn sweep_once(server: &AsServer, now: std::time::SystemTime) {
 #[cfg(test)]
 #[path = "tests/sweeper_tests.rs"]
 mod sweeper_tests;
+
+#[cfg(test)]
+#[path = "tests/access_standing_tests.rs"]
+mod access_standing_tests;
+
+#[cfg(test)]
+#[path = "tests/native_dpop_tests.rs"]
+mod native_dpop_tests;
+
+#[cfg(test)]
+#[path = "tests/native_oauth_as_tests.rs"]
+mod native_oauth_as_tests;

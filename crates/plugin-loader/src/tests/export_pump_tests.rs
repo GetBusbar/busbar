@@ -228,8 +228,17 @@ fn open(port: Arc<Double>, disk: Arc<Disk>) -> Arc<PortDoor> {
         disk,
         &InstanceLimits::default(),
         Arc::new(Observations::default()),
+        clock(),
     )
     .expect("the pump starts")
+}
+
+/// The system host clock, as the root builds it.
+fn clock() -> busbar_contract::clock::HostClock {
+    fn sleep(at: Instant) -> busbar_contract::clock::Sleep {
+        Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(at)))
+    }
+    busbar_contract::clock::HostClock::system(sleep)
 }
 
 fn send(door: &PortDoor, stream: u32, line: &str) {
@@ -252,6 +261,7 @@ fn prepared_export_does_not_start_delivery_until_publication() {
         Arc::new(Disk::default()),
         &InstanceLimits::default(),
         Arc::new(Observations::default()),
+        clock(),
     );
     assert!(door.pump.lock().unwrap().is_none());
     send(&door, x::STREAM_LOGS, "held");
@@ -974,7 +984,7 @@ fn a_later_stop_request_cannot_extend_the_first_deadline() {
 
 #[test]
 fn declared_scopes_are_get_routes_before_the_pump_starts() {
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_contract::route::{RouteAuth, RouteMethod};
     let (mut port, _) = Double::new(&[x::STREAM_METRICS]);
     Arc::get_mut(&mut port).unwrap().scopes.push(ScopeInfo {
         scope: x::SCOPE_HOOKS,
@@ -986,6 +996,7 @@ fn declared_scopes_are_get_routes_before_the_pump_starts() {
         Arc::new(Disk::default()),
         &InstanceLimits::default(),
         Arc::new(Observations::default()),
+        clock(),
     );
     let paths: Vec<_> = door
         .routes()
@@ -1021,6 +1032,7 @@ fn observed(port: Arc<Double>, disk: Arc<Disk>) -> (Arc<PortDoor>, Arc<Observati
         disk,
         &InstanceLimits::default(),
         observer.clone(),
+        clock(),
     );
     (door, observer)
 }

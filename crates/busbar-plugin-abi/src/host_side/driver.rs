@@ -217,7 +217,7 @@ impl Instance {
     }
     /// The live instance of kind `K`, shared; None when this instance is another kind. The proxies of kind `K`
     /// are the only callers.
-    pub(crate) fn live<K: Kind>(&self) -> Option<Arc<LiveInstance<K>>> {
+    pub fn live<K: Kind>(&self) -> Option<Arc<LiveInstance<K>>> {
         Arc::clone(&self.live).downcast::<LiveInstance<K>>().ok()
     }
     /// One Acquire load of the slot's state word (LIVE in this lease's epoch).
@@ -354,7 +354,7 @@ impl<'a, N: Needs> Driver<'a, N> {
     ) -> Result<Finished<K>, CallError>
     where
         K: Kind,
-        F: FnOnce(&PooledOut, &mut OutLease) -> First<'i, K> + Send,
+        F: FnOnce(&mut PooledOut, &mut OutLease) -> First<'i, K> + Send,
     {
         let caller = &self.caller;
         let mut guard: ChainGuard<'_, 'i, N, K> = ChainGuard {
@@ -426,6 +426,7 @@ impl<'a, N: Needs> Driver<'a, N> {
             let next = 1 - cur;
             let resumed = {
                 let results = guard.bufs.results.bytes().to_vec();
+                resume_tap(caller.slot, &results);
                 let Some(chain) = guard.chain.as_mut() else {
                     return Err(self.fault(FaultReason::MissingToken));
                 };
@@ -493,6 +494,22 @@ pub(crate) fn report_fault(slot: u32, image_owned: bool, reason: FaultReason) ->
 }
 
 static FAULT_SINK: OnceLock<fn(u32, bool, FaultReason)> = OnceLock::new();
+
+/// Installs the process's resume tap: `tap(slot, results)` runs just before a parked chain of `slot` is
+/// resumed with `results` (the bytes of its Needs' answers: bytes the engine hands a plugin, so the
+/// crossing recorder must see them). A second call is ignored. With none installed a resume pays one load.
+pub fn set_resume_tap(tap: fn(slot: u32, results: &[u8])) {
+    let _ = RESUME_TAP.set(tap);
+}
+
+static RESUME_TAP: OnceLock<fn(u32, &[u8])> = OnceLock::new();
+
+#[inline(always)]
+fn resume_tap(slot: u32, results: &[u8]) {
+    if let Some(tap) = RESUME_TAP.get() {
+        tap(slot, results);
+    }
+}
 
 /// What the first step of a chain came to: a final status (and, for `open`, the instance its INSTANCE named),
 /// or a parked chain on NEED. Built from busbar-ffi's `Started` (kind methods) or `OpenAnswer` (`open`).
@@ -863,8 +880,9 @@ fn pairs(arg: &[u8], max: usize) -> Result<Records<'_>, NeedErr> {
 /// The decode table of §10.3 (rounds 28, 29) and the wire table of §6.1: a NEED record's body as the value its
 /// handler gets, or INVALID. Beyond the table's rows (W1-H1, fail closed): an argument or field the op does not
 /// use must be empty or 0 (`a`/`b`, `secret`, `trust`, unused args), a TLS_NONE OPEN names no SNI, ALPN, cert or
-/// trust, a REQUIRED mode names no cert, conn ids are never 0, a READ asks for at least one byte, text arguments
-/// are UTF-8, FETCH headers are well-formed PAIRs and a COMMIT's records are well formed, predicates first, 1 to
+/// trust, a REQUIRED mode names no cert, conn ids are never 0, a READ asks for at least one byte, a status-only
+/// FETCH states no body limit, text arguments are UTF-8, FETCH headers are well-formed PAIRs and a COMMIT's
+/// records are well formed, predicates first, 1 to
 /// `commit::MAX_OPS` of them.
 pub fn decode_need(body: &[u8]) -> Result<Need<'_>, NeedErr> {
     let (rec, [a0, a1, a2, a3]) = split(body)?;
@@ -955,9 +973,16 @@ pub fn decode_need(body: &[u8]) -> Result<Need<'_>, NeedErr> {
             })
         }
         op::FETCH => {
-            ensure(rec.flags & !(need_flag::TLS_MASK | need_flag::EGRESS_MASK) == 0)?;
+            // Core 3.0: FETCH alone knows one more bit, "status only, discard the body". It selects what
+            // is done with the answer and nothing about where the request may go: every check below is
+            // the same with and without it.
+            const STATUS_ONLY: u32 = crate::vocab::net1::FETCH_STATUS_ONLY;
+            ensure(rec.flags & !(need_flag::TLS_MASK | need_flag::EGRESS_MASK | STATUS_ONLY) == 0)?;
             let egress = egress_of(rec.flags)?;
             ensure(rec.a == 0)?;
+            // A status-only FETCH reads no body: a body limit stated on it is one nothing applies, so it is
+            // refused rather than carried unread.
+            ensure(rec.flags & STATUS_ONLY == 0 || rec.b == 0)?;
             let cert = match mode {
                 need_flag::TLS_NONE if rec.secret == 0 => None,
                 need_flag::TLS_MUTUAL if rec.secret != 0 => Some(rec.secret),
@@ -974,6 +999,7 @@ pub fn decode_need(body: &[u8]) -> Result<Need<'_>, NeedErr> {
                 trust: rec.trust,
                 cert,
                 egress,
+                status_only: rec.flags & STATUS_ONLY != 0,
             }))
         }
         op::SECRET => {
@@ -1316,6 +1342,117 @@ mod tests {
             Some(NeedErr::Invalid),
             "op 10"
         );
+    }
+
+    /// Core 3.0, `net1::FETCH_STATUS_ONLY` (bit 24): on a FETCH it decodes to `status_only` and changes no
+    /// other field (the stated egress class, the TLS mode, the certificate and the trust are read exactly as
+    /// on a full FETCH); on every other op, and for every other stray bit on a FETCH, the Need is INVALID.
+    #[test]
+    fn a_status_only_fetch_decodes_and_the_bit_is_invalid_everywhere_else() {
+        const STATUS_ONLY: u32 = crate::vocab::net1::FETCH_STATUS_ONLY;
+        assert_eq!(STATUS_ONLY, 1 << 24);
+        const E: &[u8] = &[];
+        let args: [&[u8]; 4] = [b"POST", b"https://hooks.test/in", E, b"line"];
+        let class = 3 << need_flag::EGRESS_SHIFT;
+        let fetch = |flags: u32, secret: u32, trust: u32| {
+            let bytes = body(op::FETCH, flags, 0, 0, secret, trust, args);
+            match decode_need(&bytes) {
+                Ok(Need::Fetch(n)) => Ok((
+                    n.status_only,
+                    n.egress,
+                    n.cert,
+                    n.trust,
+                    n.max_body,
+                    n.method.to_owned(),
+                    n.url.to_owned(),
+                    n.body.to_vec(),
+                )),
+                Ok(_) => panic!("a FETCH decodes to a FETCH"),
+                Err(e) => Err(e),
+            }
+        };
+        let full = fetch(class, 0, 9).expect("a full FETCH");
+        let status = fetch(class | STATUS_ONLY, 0, 9).expect("a status-only FETCH");
+        assert!(!full.0 && status.0);
+        assert_eq!(
+            (
+                status.1, status.2, status.3, &status.5, &status.6, &status.7
+            ),
+            (full.1, full.2, full.3, &full.5, &full.6, &full.7),
+            "the bit changes nothing but status_only"
+        );
+        assert_eq!(status.1, 3, "the stated egress class");
+        let mutual = fetch(class | STATUS_ONLY | need_flag::TLS_MUTUAL, 4, 9).expect("mutual");
+        assert_eq!((mutual.0, mutual.2), (true, Some(4)));
+
+        // The checks a full FETCH passes still refuse a status-only one.
+        for (flags, secret) in [
+            // An egress class out of range.
+            (STATUS_ONLY | (0xF << need_flag::EGRESS_SHIFT), 0),
+            // A certificate without the mutual mode, and the mutual mode without a certificate.
+            (STATUS_ONLY | class, 4),
+            (STATUS_ONLY | class | need_flag::TLS_MUTUAL, 0),
+            // Any other stray bit.
+            (STATUS_ONLY | class | (1 << 25), 0),
+            (STATUS_ONLY | class | (1 << 20), 0),
+            (class | (1 << 25), 0),
+        ] {
+            assert_eq!(
+                fetch(flags, secret, 0).err(),
+                Some(NeedErr::Invalid),
+                "flags {flags:#x}"
+            );
+        }
+        let no_url = body(op::FETCH, STATUS_ONLY, 0, 0, 0, 0, [b"POST", E, E, E]);
+        assert_eq!(decode_need(&no_url).err(), Some(NeedErr::Invalid));
+        let with_a = body(op::FETCH, STATUS_ONLY, 1, 0, 0, 0, args);
+        assert_eq!(decode_need(&with_a).err(), Some(NeedErr::Invalid));
+
+        // The bit is FETCH's alone.
+        let open = body(
+            op::OPEN,
+            STATUS_ONLY,
+            0,
+            0,
+            0,
+            0,
+            [b"db.test:5432", E, E, E],
+        );
+        assert_eq!(decode_need(&open).err(), Some(NeedErr::Invalid));
+        let write = body(op::WRITE, STATUS_ONLY, 1, 0, 0, 0, [b"x", E, E, E]);
+        assert_eq!(decode_need(&write).err(), Some(NeedErr::Invalid));
+        let close = body(op::CLOSE, STATUS_ONLY, 1, 0, 0, 0, [E; 4]);
+        assert_eq!(decode_need(&close).err(), Some(NeedErr::Invalid));
+        let secret = body(op::SECRET, STATUS_ONLY, 0, 0, 1, 0, [E; 4]);
+        assert_eq!(decode_need(&secret).err(), Some(NeedErr::Invalid));
+    }
+
+    /// A status-only FETCH reads no body, so a body limit on it is a limit nothing applies. Stating one is
+    /// refused: INVALID, no handler run. A full FETCH states any limit, 0 included.
+    #[test]
+    fn a_status_only_fetch_that_states_a_body_limit_is_invalid() {
+        const STATUS_ONLY: u32 = crate::vocab::net1::FETCH_STATUS_ONLY;
+        const E: &[u8] = &[];
+        let args: [&[u8]; 4] = [b"POST", b"https://hooks.test/in", E, b"line"];
+        let class = 3 << need_flag::EGRESS_SHIFT;
+        let limit = |flags: u32, max_body: u64| {
+            let bytes = body(op::FETCH, flags, 0, max_body, 0, 0, args);
+            match decode_need(&bytes) {
+                Ok(Need::Fetch(n)) => Ok((n.status_only, n.max_body)),
+                Ok(_) => panic!("a FETCH decodes to a FETCH"),
+                Err(e) => Err(e),
+            }
+        };
+        assert_eq!(limit(class | STATUS_ONLY, 0), Ok((true, 0)));
+        for max_body in [1, 4096, u64::MAX] {
+            assert_eq!(
+                limit(class | STATUS_ONLY, max_body).err(),
+                Some(NeedErr::Invalid),
+                "status only with max_body {max_body}"
+            );
+            assert_eq!(limit(class, max_body), Ok((false, max_body)));
+        }
+        assert_eq!(limit(class, 0), Ok((false, 0)));
     }
 
     #[test]

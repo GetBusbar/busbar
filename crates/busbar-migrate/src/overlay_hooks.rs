@@ -15,6 +15,7 @@
 //! it); `default: true` has no 1.6.0 form and refuses only where it ordered a pool in 1.5.5.
 
 use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
+use busbar_contract::signal::{retired_warning, Signal};
 use busbar_contract::yaml::{MappingExt, Pairs, Value, ValueExt};
 
 use crate::overlay::{text, to_yaml, unparseable};
@@ -185,6 +186,9 @@ fn read<'a>(name: &str, value: &'a json::Value, o: &str) -> Result<Hook<'a>, Ref
     })
 }
 
+/// The signals a 1.5.5 overlay may still name that hook 3.0 retired; the check is `Signal::retired`.
+const RETIRED_SIGNALS: [Signal; 2] = [Signal::CandidateErrorRate, Signal::ResponseTokensOut];
+
 fn key(name: &str) -> Value {
     Value::Text(name.to_owned())
 }
@@ -194,7 +198,7 @@ fn key(name: &str) -> Value {
 /// stages in both releases); `on_error` always written (the releases' defaults differ), bare for
 /// a terminal and `{hook: <name>}` otherwise; the rest copied as held, with empty lists and maps
 /// and nulls dropped. `at`, `global`, `default` and `plugin` are never written.
-fn definition(hook: &Hook<'_>, o: &str) -> Result<Value, Refusal> {
+fn definition(hook: &Hook<'_>, o: &str, report: &mut Vec<String>) -> Result<Value, Refusal> {
     let path = |field: &str| format!("hooks.{}.{field}", hook.name);
     let strings = |items: &[String], field: &str| -> Result<Value, Refusal> {
         let mut out = Vec::new();
@@ -233,8 +237,26 @@ fn definition(hook: &Hook<'_>, o: &str) -> Result<Value, Refusal> {
     out.push((key("prompt"), key(&hook.prompt)));
     out.push((key("user"), key(&hook.user)));
     out.push((key("priority"), Value::from(hook.priority)));
-    if !hook.signals.is_empty() {
-        out.push((key("signals"), strings(&hook.signals, "signals")?));
+    let live: Vec<String> = hook
+        .signals
+        .iter()
+        .filter(|name| {
+            let retired = RETIRED_SIGNALS
+                .iter()
+                .find(|s| s.retired() && s.name() == name.as_str());
+            if let Some(signal) = retired {
+                report.push(format!(
+                    "overlay `{o}`: hook `{}`: {}",
+                    hook.name,
+                    retired_warning(*signal)
+                ));
+            }
+            retired.is_none()
+        })
+        .cloned()
+        .collect();
+    if !live.is_empty() {
+        out.push((key("signals"), strings(&live, "signals")?));
     }
     if let Some(carried) = hook.insecure_transport {
         out.push((
@@ -392,7 +414,7 @@ pub(crate) fn fold(
         }
     };
     for hook in &hooks {
-        defs.insert_key(hook.name.as_str(), definition(hook, o)?);
+        defs.insert_key(hook.name.as_str(), definition(hook, o, report)?);
         report.push(format!(
             "overlay `{o}`: hook `{}` is written to `hooks` as a 1.6.0 definition",
             hook.name

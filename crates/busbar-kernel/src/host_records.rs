@@ -244,7 +244,7 @@ pub struct Write {
     pub chain: Option<crate::host_chains::ChainFraming>,
 }
 
-pub use busbar_contract::abi::sdk::plane::conditional::{
+pub use busbar_contract::host_records::shapes::{
     ChainMutation, ConditionalCandidate, ConditionalFailure, ConditionalResult, RecordMutation,
     RecordPredicate,
 };

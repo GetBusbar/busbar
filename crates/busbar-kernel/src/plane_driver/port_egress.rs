@@ -8,10 +8,11 @@
 //! pick (breaker, permit, pool terminals, W_UPSTREAM through `allowed_member`, W_AFFINITY and the stream want
 //! through the route), `open` is the far end's own `send` and `next` (the durable dispatch record, the member's
 //! auth fields, the connector's open) with the reply read piece by piece, and the plane's verdicts are the
-//! breaker's inputs (`failed` and `served` are `judged_stating`). The walk is async and the port is not, so a
-//! session runs on a blocking thread and each step blocks on the runtime [`Handle`], the way `KernelIntents`
-//! does; the far end is built from the session's wants at the first pick, because the route it walks under
-//! (stream, affinity, pin) is only known once the plane has forwarded.
+//! breaker's inputs (`failed` and `served` are `judged_stating`). Every step is awaited on the session's own task:
+//! the egress holds no runtime handle, and the far end's I/O is woken where the session runs. The walk and its
+//! carrier are static (generic over the [`FarEnd`]), so no step boxes a future; the far end is built from the
+//! session's wants at the first pick, because the route it walks under (stream, affinity, pin) is only known once
+//! the plane has forwarded.
 //!
 //! Every dial is judged. The connector judges the destination (the egress class of the member's Need, the guard's
 //! name and address checks) as it always did; on top, core judges the transport with `transport_verdict` under the
@@ -19,13 +20,12 @@
 //! refused unless the instance's `insecure_transport.accept` holds `plaintext`. The plane never states or
 //! chooses any of it.
 //!
-//! [`PortEgress`] is the production [`PortUpstream`] (an [`Egress`], a kernel, a runtime handle, the pool the
-//! instance walks, how a member reads as a plane `Target`); [`EgressProbes`] is its [`ProbeFar`], the probe
-//! service's side of the same walk (`PortProbes`).
+//! [`PortEgress`] is the production [`PortUpstream`] (an [`Egress`], a kernel, the pool the instance walks, how a
+//! member reads as a plane `Target`); [`EgressProbes`] is its [`ProbeFar`], the probe service's side of the same
+//! walk (`PortProbes`).
 
-use std::cell::{Cell, OnceCell, RefCell};
 use std::hash::BuildHasher;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use busbar_contract::abi::transport::{FAULT_HARD, FAULT_NONE, FAULT_RATE_LIMIT, FAULT_TRANSIENT};
@@ -34,20 +34,22 @@ use busbar_contract::conn::NeedId;
 use busbar_contract::kept::Text;
 use busbar_kernel_egress::ports::{DestinationId, Outcome};
 use busbar_plugin_abi::host_side::caller::Accept;
+use busbar_plugin_abi::host_side::caller::BoxFut;
 use busbar_plugin_abi::plane::{
-    ATT_HARD, CARRIER_DEFAULT, CARRIER_HTTP, FC_RATE_LIMIT, OUTBOUND_NONE,
+    ATT_HARD, CARRIER_DEFAULT, CARRIER_HTTP, CARRIER_WEBSOCKET, FC_RATE_LIMIT, MSG_BINARY, MSG_FIN,
+    MSG_TEXT, OUTBOUND_NONE,
 };
-use tokio::runtime::Handle;
 
 use super::far_end::{Egress, UnitRoute};
 use super::port_probes::ProbeFar;
-use super::port_session::UpExchange;
+use super::port_serve::{Ran, SessionRun};
+use super::port_session::{Owned, SessionError, UpExchange};
 use super::port_upstream::{
     Candidate, Chunk, Failure, Members, ProbeOutcome, SendFailed, TargetIdentity, UpChunks, UpOpen,
-    UpReply, UpSend, Wants,
+    UpReply, UpSend, Wants, Whole,
 };
 use super::request_admission::{AdmittedRequest, RequestPoolReceipt, RequestWalk};
-use super::route::{operator_name, FarEnd, OutboundRequest, Pick};
+use super::route::{operator_name, FarEnd, OutboundRequest, Pick, RIDE_WEBSOCKET};
 use crate::teller::Kernel;
 use crate::upstreams::UpstreamDef;
 
@@ -131,38 +133,43 @@ pub struct SessionFacts {
     pub pending: Option<Arc<super::port_admission::Pending>>,
 }
 
-/// The production seam of `PortDriver::serve`: runs one session's walk. `run` gets the members and the carrier of
-/// the walk and runs on the calling (blocking) thread.
+/// The production seam of `PortDriver::serve`: runs one session's walk. The seat holds it as a trait object, so this
+/// is where a session crosses from dynamic to static dispatch, once: `walk` makes the walk's members and carrier
+/// (concrete types) and awaits `run` over them, monomorphised for them. Its future is boxed: one allocation per
+/// forwarded session, none per pick, send or reply chunk.
 pub trait PortUpstream: Send + Sync {
     /// Read the immutable current target projection; this does not select or admit a dispatch.
     fn target(&self, _pool: &str, _qualified_member: &str) -> Option<MemberTarget> {
         None
     }
-    fn walk(&self, facts: SessionFacts, run: &mut dyn FnMut(&mut dyn Members, &mut dyn UpSend));
+    fn walk<'a>(
+        &'a self,
+        facts: SessionFacts,
+        run: SessionRun<'a>,
+    ) -> BoxFut<'a, Result<Ran, SessionError>>;
 }
 
 /// The member in hand: its candidate, its preparation number, its provider and its target definition.
 type InHand = (Candidate, u32, Box<str>, Option<TargetDefinition>);
 
-/// One session's walk over a [`FarEnd`] built from the session's wants.
+/// One session's walk over a [`FarEnd`] built from the session's wants. What changes as the walk goes is kept in
+/// [`Owned`] cells: the walk's members and its carrier both read it, across the awaits of the session's task.
 struct Shared<'a, F: FarEnd> {
-    make: &'a dyn Fn(&Wants, Option<&RequestPoolReceipt>) -> F,
-    far: OnceCell<F>,
+    make: &'a (dyn Fn(&Wants, Option<&RequestPoolReceipt>) -> F + Sync),
+    far: OnceLock<F>,
     request_walk: Option<RequestWalk>,
     pending: Option<Arc<super::port_admission::Pending>>,
-    admitted: OnceCell<AdmittedRequest>,
-    selected: RefCell<Option<InHand>>,
+    admitted: OnceLock<AdmittedRequest>,
+    selected: Owned<Option<InHand>>,
     token: &'a Pass<Route>,
-    handle: &'a Handle,
     targets: &'a (dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync),
     /// Picks made so far (the walk's attempt number).
-    picks: Cell<u32>,
-    preparations: Cell<u32>,
-    /// The member (as the walk names it) and pool in hand: the pick's own shared names.
-    member: RefCell<Text>,
-    pool: RefCell<Text>,
+    picks: Owned<u32>,
+    preparations: Owned<u32>,
+    /// The member (as the walk names it) and the pool in hand: the pick's own shared names.
+    names: Owned<(Text, Text)>,
     /// The Retry-After the walk stated when it found no member left.
-    exhausted_wait: Cell<Option<u32>>,
+    exhausted_wait: Owned<Option<u32>>,
 }
 
 impl<F: FarEnd> Shared<'_, F> {
@@ -172,6 +179,26 @@ impl<F: FarEnd> Shared<'_, F> {
             return None;
         }
         Some(self.far.get_or_init(|| (self.make)(wants, None)))
+    }
+
+    /// The far end a hook stage inspects and constrains. On a request's own walk it is the one
+    /// `select_request` built from the request's resolved walk (the key's grant of it is already
+    /// judged), and it is read BEFORE the request's money is asked: a hook that refuses must
+    /// have spoken before any unit is opened. It is never built here, and nothing is picked or
+    /// sent through it: every pick and send goes through [`Self::far`], which still needs the
+    /// admitted request.
+    fn inspected(&self, wants: &Wants) -> Option<&F> {
+        if self.request_walk.is_some() {
+            return self.far.get();
+        }
+        Some(self.far.get_or_init(|| (self.make)(wants, None)))
+    }
+
+    /// The far end's request for `exchange` as the member in hand, at the walk's attempt number.
+    fn request(&self, exchange: UpExchange) -> Option<OutboundRequest> {
+        let picks = self.picks.get();
+        self.names
+            .with(|(member, pool)| request_of(member, pool, picks, exchange))
     }
 }
 
@@ -218,7 +245,12 @@ pub struct EgressWalk<'a, F: FarEnd> {
 /// Test orchestration over the real request, walk, admission and preparation producers.
 /// It does not construct any selection or money token, and returns the still-live Task.
 #[cfg(test)]
-pub(crate) fn prepare_fixture<'k, 'w, K: super::port_session::Calls + ?Sized, F: FarEnd>(
+pub(crate) async fn prepare_fixture<
+    'k,
+    'w,
+    K: super::port_session::Calls + ?Sized,
+    F: FarEnd + Send,
+>(
     calls: &'k K,
     request: &busbar_ports::plane::PlaneIn<'_>,
     body: &[u8],
@@ -252,7 +284,7 @@ pub(crate) fn prepare_fixture<'k, 'w, K: super::port_session::Calls + ?Sized, F:
     )?;
     task.bind_admission(&pending)?;
     held.release();
-    let target = members.next(&wants).ok_or(SessionError::NotDriven)?;
+    let target = members.next(&wants).await.ok_or(SessionError::NotDriven)?;
     let prepared = task
         .prepare_selected(&target, 1, "", "", effects)?
         .ok_or(SessionError::NotDriven)?;
@@ -278,27 +310,24 @@ pub(crate) fn prepare_fixture<'k, 'w, K: super::port_session::Calls + ?Sized, F:
 impl<'a, F: FarEnd> EgressWalk<'a, F> {
     /// `make` builds the far end from the session's wants, at the first pick.
     pub fn new(
-        make: &'a dyn Fn(&Wants, Option<&RequestPoolReceipt>) -> F,
+        make: &'a (dyn Fn(&Wants, Option<&RequestPoolReceipt>) -> F + Sync),
         token: &'a Pass<Route>,
-        handle: &'a Handle,
         targets: &'a (dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync),
     ) -> Self {
         Self {
             shared: Shared {
                 make,
-                far: OnceCell::new(),
+                far: OnceLock::new(),
                 request_walk: None,
                 pending: None,
-                admitted: OnceCell::new(),
-                selected: RefCell::new(None),
+                admitted: OnceLock::new(),
+                selected: Owned::new(None),
                 token,
-                handle,
                 targets,
-                picks: Cell::new(0),
-                preparations: Cell::new(0),
-                member: RefCell::new(Text::EMPTY),
-                pool: RefCell::new(Text::EMPTY),
-                exhausted_wait: Cell::new(None),
+                picks: Owned::new(0),
+                preparations: Owned::new(0),
+                names: Owned::new((Text::EMPTY, Text::EMPTY)),
+                exhausted_wait: Owned::new(None),
             },
         }
     }
@@ -348,12 +377,13 @@ impl<F: FarEnd> WalkSend<'_, '_, F> {
         if !admitted.is_live() || !admitted.accepts_walk(walk) {
             return None;
         }
-        let mut selected = shared.selected.borrow_mut();
-        let (actual, ordinal, _, _) = selected.as_ref()?;
-        if actual != target || *ordinal != preparation {
-            return None;
-        }
-        let (target, preparation, provider, definition) = selected.take()?;
+        let (target, preparation, provider, definition) = shared.selected.with(|selected| {
+            let (actual, ordinal, _, _) = selected.as_ref()?;
+            if actual != target || *ordinal != preparation {
+                return None;
+            }
+            selected.take()
+        })?;
         Some(SelectedWalkAttempt {
             walk: walk.clone(),
             target,
@@ -375,7 +405,7 @@ fn fault_of(failure: &Failure) -> u8 {
     }
 }
 
-impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
+impl<F: FarEnd + Send> Members for WalkMembers<'_, '_, F> {
     fn request_walk(&self) -> Option<&RequestWalk> {
         self.0.request_walk.as_ref()
     }
@@ -423,22 +453,22 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
     }
 
     fn hook_candidates(&mut self, wants: &Wants) -> Option<super::hooks::Candidates> {
-        let far = self.0.far(wants)?;
+        let far = self.0.inspected(wants)?;
         far.candidates(self.0.token)
     }
 
     fn hook_scope(&mut self, wants: &Wants) -> Option<super::RoutedScope> {
-        let far = self.0.far(wants)?;
+        let far = self.0.inspected(wants)?;
         far.scope(self.0.token)
     }
 
     fn hook_lane(&mut self, wants: &Wants, index: usize) -> Option<String> {
-        let far = self.0.far(wants)?;
+        let far = self.0.inspected(wants)?;
         far.candidate_lane(self.0.token, index)
     }
 
     fn hook_constrain(&mut self, wants: &Wants, constraint: super::hooks::Constraint) -> bool {
-        let Some(far) = self.0.far(wants) else {
+        let Some(far) = self.0.inspected(wants) else {
             return false;
         };
         if far.candidates(self.0.token).is_none() {
@@ -448,14 +478,14 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
         true
     }
 
-    fn next(&mut self, wants: &Wants) -> Option<Candidate> {
+    async fn next(&mut self, wants: &Wants) -> Option<Candidate> {
         let s = self.0;
-        s.selected.borrow_mut().take();
+        s.selected.set(None);
         let far = s.far(wants)?;
         loop {
             let n = s.picks.get().saturating_add(1);
             s.picks.set(n);
-            match s.handle.block_on(far.member(s.token, n)) {
+            match far.member(s.token, n).await {
                 Pick::Member {
                     name,
                     pool,
@@ -478,16 +508,15 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
                         params: target.params,
                     };
                     // The names in hand are the pick's own: moved in, nothing copied.
-                    *s.member.borrow_mut() = name;
-                    *s.pool.borrow_mut() = pool;
+                    s.names.set((name, pool));
                     let preparation = s.preparations.get().checked_add(1)?;
                     s.preparations.set(preparation);
-                    *s.selected.borrow_mut() = Some((
+                    s.selected.set(Some((
                         candidate.clone(),
                         preparation,
                         provider.as_str().into(),
                         target.definition,
-                    ));
+                    )));
                     return Some(candidate);
                 }
                 Pick::Exhausted { retry_after, .. } => {
@@ -501,7 +530,7 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
     }
 
     fn declined(&mut self, _member: &Candidate) {
-        self.0.selected.borrow_mut().take();
+        self.0.selected.set(None);
         // Never dialled and nothing to charge: the next pick settles the attempt and frees its permit.
     }
 
@@ -528,13 +557,20 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
 /// in, its header list, method, path, scope and body become the request's own with no copy, and its
 /// outbound mode is the request's `no_member_auth`. `None` = an exchange this carrier does not send
 /// (another carrier, no method or path).
+///
+/// A `CARRIER_WEBSOCKET` exchange (owner decision 18) is the handshake request of a WebSocket far end: it
+/// rides the member's WebSocket transport ([`RIDE_WEBSOCKET`]), its verb is GET when the plane stated none,
+/// and it has no body (a handshake has none: an exchange that states one is not sent). The member's
+/// credential leads its head exactly as an HTTP request's does; the handshake's own lines are the
+/// transport's and are never taken from the plane's head (the connector drops them).
 fn request_of(
     member: &Text,
     pool: &Text,
     attempt: u32,
     exchange: UpExchange,
 ) -> Option<OutboundRequest> {
-    if !matches!(exchange.carrier, CARRIER_DEFAULT | CARRIER_HTTP) {
+    let websocket = exchange.carrier == CARRIER_WEBSOCKET;
+    if !websocket && !matches!(exchange.carrier, CARRIER_DEFAULT | CARRIER_HTTP) {
         return None;
     }
     let UpExchange {
@@ -546,15 +582,23 @@ fn request_of(
         body,
         ..
     } = exchange;
+    if websocket && !body.is_empty() {
+        return None;
+    }
+    let verb = match method {
+        Some(method) => method.into_boxed_bytes().into_vec(),
+        None if websocket => b"GET".to_vec(),
+        None => return None,
+    };
     Some(OutboundRequest {
         member: member.clone(),
         pool: pool.clone(),
         attempt_no: attempt,
-        verb: method?.into_boxed_bytes().into_vec(),
+        verb,
         target: path?.into_boxed_bytes().into_vec(),
         fields,
         body,
-        need: 0,
+        need: if websocket { RIDE_WEBSOCKET } else { 0 },
         text: false,
         scope: scope.map(|scope| scope.into_boxed_bytes().into_vec()),
         no_member_auth: outbound == OUTBOUND_NONE,
@@ -587,22 +631,25 @@ pub(super) fn is_request_of(
         && request.no_member_auth == (exchange.outbound == OUTBOUND_NONE)
 }
 
-/// The rest of a reply, read from the far end as the plane takes it.
-struct Chunks<'a, F: FarEnd> {
+/// The rest of a reply, read from the far end as the plane takes it, on the session's task.
+pub struct Chunks<'a, F: FarEnd> {
     far: &'a F,
     token: &'a Pass<Route>,
-    handle: &'a Handle,
     pending: Option<Chunk>,
     done: bool,
+    /// The messages the `upstream` answer wrote beside a WebSocket handshake head: written after the 101.
+    queued: Vec<(u32, Vec<u8>)>,
+    /// The code the far end closed with, from the cut piece that ended the read (`FarPiece::close_code`).
+    closed: Option<u32>,
 }
 
 impl<F: FarEnd> UpChunks for Chunks<'_, F> {
-    fn next(&mut self) -> Result<Option<Chunk>, SendFailed> {
+    async fn next(&mut self) -> Result<Option<Chunk>, SendFailed> {
         if let Some(chunk) = self.pending.take() {
             return Ok(Some(chunk));
         }
         while !self.done {
-            let Some(piece) = self.handle.block_on(self.far.next(self.token)) else {
+            let Some(piece) = self.far.next(self.token).await else {
                 self.done = true;
                 break;
             };
@@ -623,13 +670,89 @@ impl<F: FarEnd> UpChunks for Chunks<'_, F> {
         }
         Ok(None)
     }
+
+    /// The far end's next message piece. The read is the far end's own (`FarEnd::next`): dropped while it
+    /// waits, it has taken nothing.
+    async fn next_message(&mut self) -> Result<Option<super::port_duplex::UpMessage>, SendFailed> {
+        // Bytes that came with the handshake answer's head are not a message: a 101 has no body.
+        self.pending = None;
+        while !self.done {
+            let Some(piece) = self.far.next(self.token).await else {
+                self.done = true;
+                break;
+            };
+            if piece.last {
+                self.done = true;
+                if piece.cut {
+                    self.closed = piece.close_code;
+                    return Err(SendFailed);
+                }
+            }
+            if piece.fields {
+                continue;
+            }
+            let flags = match piece.message {
+                Some(message) => {
+                    let kind = match message.text {
+                        Some(true) => MSG_TEXT,
+                        // A table that does not say what the message is hands it on as bytes.
+                        Some(false) | None => MSG_BINARY,
+                    };
+                    if message.fin {
+                        kind | MSG_FIN
+                    } else {
+                        kind
+                    }
+                }
+                // A far end that states no messages: nothing but its end is read.
+                None if piece.bytes.is_empty() => continue,
+                None => MSG_BINARY | MSG_FIN,
+            };
+            return Ok(Some(super::port_duplex::UpMessage {
+                flags,
+                bytes: piece.bytes,
+            }));
+        }
+        Ok(None)
+    }
+
+    async fn write_message(&mut self, flags: u32, bytes: Vec<u8>) -> bool {
+        if self.done {
+            return false;
+        }
+        self.far
+            .write(
+                self.token,
+                OutboundRequest {
+                    body: bytes,
+                    text: flags & MSG_TEXT != 0,
+                    ..OutboundRequest::default()
+                },
+            )
+            .await
+    }
+
+    async fn close(&mut self) {
+        if !self.done {
+            self.done = true;
+            let _ = self.far.close(self.token).await;
+        }
+    }
+
+    fn take_queued(&mut self) -> Vec<(u32, Vec<u8>)> {
+        std::mem::take(&mut self.queued)
+    }
+
+    fn close_code(&self) -> Option<u32> {
+        self.closed
+    }
 }
 
 /// The rest of a reply's body, read to its end: the first body chunk's own buffer becomes the body and a later
 /// chunk is appended to it (trailers are not body).
-fn whole_body<'a>(rest: &mut (dyn UpChunks + 'a)) -> Result<Vec<u8>, SendFailed> {
+async fn whole_body<R: UpChunks>(rest: &mut R) -> Result<Vec<u8>, SendFailed> {
     let mut body: Option<Vec<u8>> = None;
-    while let Some(chunk) = rest.next()? {
+    while let Some(chunk) = rest.next().await? {
         if let Chunk::Body(bytes) = chunk {
             match &mut body {
                 None => body = Some(bytes),
@@ -641,24 +764,22 @@ fn whole_body<'a>(rest: &mut (dyn UpChunks + 'a)) -> Result<Vec<u8>, SendFailed>
 }
 
 /// Sends `exchange` through `far` and reads the reply's head.
-fn open_on<'a, F: FarEnd>(
+async fn open_on<'a, F: FarEnd>(
     far: &'a F,
     token: &'a Pass<Route>,
-    handle: &'a Handle,
     request: OutboundRequest,
-) -> Result<UpOpen<'a>, SendFailed> {
-    if !handle.block_on(far.send(token, request)) {
+) -> Result<UpOpen<Chunks<'a, F>>, SendFailed> {
+    if !far.send(token, request).await {
         return Err(SendFailed);
     }
-    read_open(far, token, handle)
+    read_open(far, token).await
 }
 
-fn read_open<'a, F: FarEnd>(
+async fn read_open<'a, F: FarEnd>(
     far: &'a F,
     token: &'a Pass<Route>,
-    handle: &'a Handle,
-) -> Result<UpOpen<'a>, SendFailed> {
-    let first = handle.block_on(far.next(token)).ok_or(SendFailed)?;
+) -> Result<UpOpen<Chunks<'a, F>>, SendFailed> {
+    let first = far.next(token).await.ok_or(SendFailed)?;
     // The walk's own status table failed this attempt over before the plane could see it.
     if first.fail_over || (first.last && first.cut) {
         return Err(SendFailed);
@@ -679,21 +800,27 @@ fn read_open<'a, F: FarEnd>(
     Ok(UpOpen {
         status,
         headers: first.head,
-        rest: Box::new(Chunks {
+        rest: Chunks {
             far,
             token,
-            handle,
             pending,
             done: first.last,
-        }),
+            queued: Vec::new(),
+            closed: None,
+        },
     })
 }
 
-impl<F: FarEnd> UpSend for WalkSend<'_, '_, F> {
-    fn open_selected<'a>(
+impl<'s, 'w, F: FarEnd + Send> UpSend for WalkSend<'s, 'w, F> {
+    type Rest<'a>
+        = Chunks<'a, F>
+    where
+        Self: 'a;
+
+    async fn open_selected<'a>(
         &'a mut self,
         owned: OwnedPreparation,
-    ) -> Result<SelectedOpen<'a>, SelectedSendError> {
+    ) -> Result<SelectedOpen<Chunks<'a, F>>, SelectedSendError> {
         let pending = Arc::clone(
             self.0
                 .pending
@@ -720,25 +847,21 @@ impl<F: FarEnd> UpSend for WalkSend<'_, '_, F> {
         let mut handoff = SelectedHandoff::new(pending, prepared)?;
         let s = self.0;
         let far = s.far.get().ok_or_else(SelectedSendError::internal)?;
-        let request = request_of(
-            &s.member.borrow(),
-            &s.pool.borrow(),
-            s.picks.get(),
-            // The attempt's custody keeps its exchange for `commit` and `accepts_request`: the copy is
-            // written here, once, where it is made.
-            handoff
-                .exchange()
-                .ok_or_else(SelectedSendError::internal)?
-                .clone(),
-        )
-        .ok_or_else(SelectedSendError::internal)?;
-        let sent = s
-            .handle
-            .block_on(far.send_selected(s.token, request, &mut handoff));
+        let request = s
+            .request(
+                // The attempt's custody keeps its exchange for `commit` and `accepts_request`: the copy is
+                // written here, once, where it is made.
+                handoff
+                    .exchange()
+                    .ok_or_else(SelectedSendError::internal)?
+                    .clone(),
+            )
+            .ok_or_else(SelectedSendError::internal)?;
+        let sent = far.send_selected(s.token, request, &mut handoff).await;
         let attempt = handoff.take_committed()?;
         Ok(SelectedOpen {
             opened: if sent {
-                read_open(far, s.token, s.handle)
+                read_open(far, s.token).await
             } else {
                 Err(SendFailed)
             },
@@ -746,33 +869,24 @@ impl<F: FarEnd> UpSend for WalkSend<'_, '_, F> {
         })
     }
 
-    fn send(&mut self, member: &Candidate, exchange: UpExchange) -> Result<UpReply, SendFailed> {
-        let mut open = self.open(member, exchange)?;
-        Ok(UpReply {
-            status: open.status,
-            body: whole_body(&mut *open.rest)?,
-            headers: open.headers,
-        })
-    }
-
-    fn open<'a>(
+    async fn open<'a>(
         &'a mut self,
-        _member: &Candidate,
+        _member: &'a Candidate,
         exchange: UpExchange,
-    ) -> Result<UpOpen<'a>, SendFailed> {
+    ) -> Result<UpOpen<Chunks<'a, F>>, SendFailed> {
         let s = self.0;
         if s.request_walk.is_some() && !s.admitted.get().is_some_and(AdmittedRequest::is_live) {
             return Err(SendFailed);
         }
         let far = s.far.get().ok_or(SendFailed)?;
-        let request = request_of(
-            &s.member.borrow(),
-            &s.pool.borrow(),
-            s.picks.get(),
-            exchange,
-        )
-        .ok_or(SendFailed)?;
-        open_on(far, s.token, s.handle, request)
+        // Messages the plane wrote beside a WebSocket handshake head wait for the 101 (no message is sent
+        // before it): the relay writes them first. On every other carrier the list is empty.
+        let mut exchange = exchange;
+        let queued = std::mem::take(&mut exchange.msgs);
+        let request = s.request(exchange).ok_or(SendFailed)?;
+        let mut opened = open_on(far, s.token, request).await?;
+        opened.rest.queued = queued;
+        Ok(opened)
     }
 }
 
@@ -857,7 +971,6 @@ pub use crate::off_path::plane_port_egress::upstream_targets;
 pub struct PortEgress {
     egress: Arc<Egress>,
     kernel: Arc<Kernel>,
-    handle: Handle,
     pool: String,
     accept: Accept,
     targets: Targets,
@@ -870,7 +983,6 @@ impl PortEgress {
     pub fn new(
         egress: Arc<Egress>,
         kernel: Arc<Kernel>,
-        handle: Handle,
         pool: String,
         accept: Accept,
         targets: Targets,
@@ -878,11 +990,43 @@ impl PortEgress {
         Self {
             egress,
             kernel,
-            handle,
             pool,
             accept,
             targets,
         }
+    }
+
+    /// The far end one session walks: the unit's route under the wants the plane forwarded with (and, for a
+    /// selected request, its pool receipt). The walk builds it at its first pick.
+    pub(crate) fn far_end(
+        &self,
+        facts: &SessionFacts,
+        wants: &Wants,
+        receipt: Option<&RequestPoolReceipt>,
+    ) -> super::far_end::EgressFarEnd<'_> {
+        let pool = receipt
+            .and_then(RequestPoolReceipt::walk_key)
+            .unwrap_or(&self.pool);
+        // The unit routes under the pools' own shared name for its pool.
+        let mut route = route_of(self.egress.pool_name(pool), facts.unit, self.accept, wants);
+        if let Some(receipt) = receipt {
+            route.native_member_grants = Some(Arc::clone(receipt.shared_member_grants()));
+            route.authorization = facts
+                .pending
+                .as_ref()
+                .map(|pending| Arc::clone(pending.context().generation().core().units()));
+        }
+        self.egress.unit(route)
+    }
+
+    /// How a member of this walk reads as a plane `Target`.
+    pub(crate) fn targets(&self) -> &(dyn Fn(&str, &str) -> Option<MemberTarget> + Send + Sync) {
+        &*self.targets
+    }
+
+    /// A fresh route token for one session's walk.
+    pub(crate) fn token(&self) -> Pass<Route> {
+        Pass::<Route>::mint_bound(self.kernel.seal(), self.kernel.next_call())
     }
 
     /// The probe service's side of this walk over `members` (member index, its destination and configured name).
@@ -891,7 +1035,6 @@ impl PortEgress {
         EgressProbes {
             egress: Arc::clone(&self.egress),
             kernel: Arc::clone(&self.kernel),
-            handle: self.handle.clone(),
             accept: self.accept,
             members,
             targets: Arc::clone(&self.targets),
@@ -904,32 +1047,25 @@ impl PortUpstream for PortEgress {
         (self.targets)(pool, qualified_member)
     }
 
-    fn walk(&self, facts: SessionFacts, run: &mut dyn FnMut(&mut dyn Members, &mut dyn UpSend)) {
-        let token = Pass::<Route>::mint_bound(self.kernel.seal(), self.kernel.next_call());
-        let make = |wants: &Wants, receipt: Option<&RequestPoolReceipt>| {
-            let pool = receipt
-                .and_then(RequestPoolReceipt::walk_key)
-                .unwrap_or(&self.pool);
-            // The unit routes under the pools' own shared name for its pool.
-            let mut route = route_of(self.egress.pool_name(pool), facts.unit, self.accept, wants);
-            if let Some(receipt) = receipt {
-                route.native_member_grants = Some(Arc::clone(receipt.shared_member_grants()));
-                route.authorization = facts
-                    .pending
-                    .as_ref()
-                    .map(|pending| Arc::clone(pending.context().generation().core().units()));
-            }
-            self.egress.unit(route)
-        };
-        let targets = &*self.targets;
-        let mut walk = EgressWalk::new(&make, &token, &self.handle, targets);
-        if let Some(pending) = &facts.pending {
-            let Ok(pending) = walk.pending(Arc::clone(pending)) else {
-                return;
+    fn walk<'a>(
+        &'a self,
+        facts: SessionFacts,
+        run: SessionRun<'a>,
+    ) -> BoxFut<'a, Result<Ran, SessionError>> {
+        Box::pin(async move {
+            let token = self.token();
+            let make = |wants: &Wants, receipt: Option<&RequestPoolReceipt>| {
+                self.far_end(&facts, wants, receipt)
             };
-            walk = pending;
-        }
-        run(&mut walk.members(), &mut walk.sender());
+            let mut walk = EgressWalk::new(&make, &token, self.targets());
+            if let Some(pending) = &facts.pending {
+                walk = walk
+                    .pending(Arc::clone(pending))
+                    .map_err(|_| SessionError::NotDriven)?;
+            }
+            let (mut members, mut sender) = (walk.members(), walk.sender());
+            run.run(&mut members, &mut sender).await
+        })
     }
 }
 
@@ -938,24 +1074,26 @@ impl PortUpstream for PortEgress {
 pub struct EgressProbes {
     egress: Arc<Egress>,
     kernel: Arc<Kernel>,
-    handle: Handle,
     accept: Accept,
     members: Vec<ProbeTarget>,
     targets: Targets,
 }
 
-/// The probe exchange of one member: a far end built for that destination alone.
-struct ProbeSender {
+/// The probe exchange of one member: a far end built for that destination alone, its reply read whole.
+pub struct ProbeSender {
     egress: Arc<Egress>,
     kernel: Arc<Kernel>,
-    handle: Handle,
     accept: Accept,
     selected: ProbeTarget,
     timeout: Duration,
 }
 
-impl UpSend for ProbeSender {
-    fn send(&mut self, member: &Candidate, exchange: UpExchange) -> Result<UpReply, SendFailed> {
+impl ProbeSender {
+    async fn reply(
+        &mut self,
+        member: &Candidate,
+        exchange: UpExchange,
+    ) -> Result<UpReply, SendFailed> {
         if member.pool.as_ref() != self.selected.pool
             || member.qualified_member.as_ref() != self.selected.qualified_member
         {
@@ -972,16 +1110,28 @@ impl UpSend for ProbeSender {
             .ok_or(SendFailed)?
             .accepting(self.accept);
         let token = Pass::<Route>::mint_bound(self.kernel.seal(), self.kernel.next_call());
-        let Pick::Member { name, pool, .. } = self.handle.block_on(far.member(&token, 1)) else {
+        let Pick::Member { name, pool, .. } = far.member(&token, 1).await else {
             return Err(SendFailed);
         };
         let request = request_of(&name, &pool, 1, exchange).ok_or(SendFailed)?;
-        let mut open = open_on(&far, &token, &self.handle, request)?;
+        let mut open = open_on(&far, &token, request).await?;
         Ok(UpReply {
             status: open.status,
-            body: whole_body(&mut *open.rest)?,
+            body: whole_body(&mut open.rest).await?,
             headers: open.headers,
         })
+    }
+}
+
+impl UpSend for ProbeSender {
+    type Rest<'a> = Whole;
+
+    async fn open<'a>(
+        &'a mut self,
+        member: &'a Candidate,
+        exchange: UpExchange,
+    ) -> Result<UpOpen<Whole>, SendFailed> {
+        self.reply(member, exchange).await.map(UpReply::opened)
     }
 }
 
@@ -1011,7 +1161,9 @@ impl ProbeFar for EgressProbes {
         })
     }
 
-    fn sender(&self, member: usize, timeout: Duration) -> Option<Box<dyn UpSend + Send>> {
+    type Sender = ProbeSender;
+
+    fn sender(&self, member: usize, timeout: Duration) -> Option<ProbeSender> {
         let selected = self.members.get(member)?;
         // A member that relays the caller's own credential is never probed.
         self.egress.probe_selected(
@@ -1020,14 +1172,13 @@ impl ProbeFar for EgressProbes {
             selected.destination,
             timeout,
         )?;
-        Some(Box::new(ProbeSender {
+        Some(ProbeSender {
             egress: Arc::clone(&self.egress),
             kernel: Arc::clone(&self.kernel),
-            handle: self.handle.clone(),
             accept: self.accept,
             selected: selected.clone(),
             timeout,
-        }))
+        })
     }
 
     fn reported(&self, member: usize, outcome: ProbeOutcome) {

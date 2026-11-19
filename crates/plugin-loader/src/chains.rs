@@ -778,6 +778,13 @@ impl Registry {
                 .filter_map(|(_, b)| core::str::from_utf8(b).ok())
                 .collect()
         };
+        let kind_paths = |only: KindCode, wanted: u16| -> Vec<&str> {
+            if kind == only {
+                paths(wanted)
+            } else {
+                Vec::new()
+            }
+        };
         refuse_operator_marker(s)?;
         if !marks.is_empty() {
             check_marks(s, &marks, &paths(tag::D_SECRET_PATH))?;
@@ -792,7 +799,10 @@ impl Registry {
             s.config_json,
             &paths(tag::D_SECRET_PATH),
             &paths(tag::D_TRUST_PATH),
-            &paths(tag::D_DEST_PATH),
+            &kind_paths(
+                KindCode::Export,
+                busbar_plugin_abi::export::tag::D_DEST_PATH,
+            ),
             &paths(tag::D_REF_PATH),
         )
         .map_err(|e| bind_error(s.name, e))?;
@@ -806,10 +816,19 @@ impl Registry {
             .await
             .map_err(|e| bind_error(s.name, e))?;
         let (urls, ups) = (
-            paths(tag::D_PUBLIC_URL_PATH),
-            paths(tag::D_CALLER_UPSTREAMS_PATH),
+            kind_paths(
+                KindCode::Plane,
+                busbar_plugin_abi::plane::tag::D_PUBLIC_URL_PATH,
+            ),
+            kind_paths(
+                KindCode::Plane,
+                busbar_plugin_abi::plane::tag::D_CALLER_UPSTREAMS_PATH,
+            ),
         );
-        let dest_paths = paths(tag::D_DEST_PATH);
+        let dest_paths = kind_paths(
+            KindCode::Export,
+            busbar_plugin_abi::export::tag::D_DEST_PATH,
+        );
         let write_urls = s.public_url.is_some() && !urls.is_empty();
         let marked = !marks.is_empty();
         let (bound, dests) = if write_urls || !ups.is_empty() || !dest_paths.is_empty() || marked {
@@ -908,6 +927,19 @@ impl Registry {
         {
             drv = drv.with_row(NeedRow::EMPTY);
         }
+        // The open crossing is shown to the crossing recorder like any other: the bound configuration
+        // is bytes the engine lets this image read.
+        crate::call::record::toward_open(
+            &crate::call::record::Who {
+                kind: K::CODE,
+                plugin: &p.identity,
+                name: s.name,
+                instance: p.id,
+                slot: lease.slot(),
+            },
+            flags,
+            p.bound.as_slice(),
+        );
         let req = Pool::global()
             .acquire_with(max_out, p.bound.as_slice())
             .map_err(|_| {

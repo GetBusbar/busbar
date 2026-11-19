@@ -110,13 +110,6 @@ pub struct InspectionRequest {
     pub query: InspectionQuery,
 }
 
-/// The full request is repeated so neither a new query nor a reused ticket accepts an old answer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InspectionReceipt {
-    pub request: InspectionRequest,
-    pub result: InspectionResult,
-}
-
 /// Maximum carrier IDs fitting BOTH request and full correlated receipt, with the existing
 #[must_use]
 pub fn max_carrier_sessions(existing_extension_bytes: usize) -> usize {
@@ -175,16 +168,6 @@ fn valid_request(request: &InspectionRequest) -> Result<(), InspectionError> {
         return Err(InspectionError::Invalid);
     }
     valid_query(&request.query)
-}
-
-/// Encode a negotiated epoch. Epoch zero is never a usable capability.
-pub fn encode_capability(epoch: u64) -> Result<Vec<u8>, InspectionError> {
-    if epoch == 0 {
-        return Err(InspectionError::Unticketed);
-    }
-    let mut bytes = vec![VERSION];
-    bytes.extend_from_slice(&epoch.to_le_bytes());
-    Ok(bytes)
 }
 
 /// Decode exactly one supported capability, refusing trailing bytes and unknown versions.
@@ -284,93 +267,6 @@ fn matching(request: &InspectionRequest, result: &InspectionResult) -> Result<()
         }
         _ => Err(InspectionError::Correlation),
     }
-}
-
-/// Encode an immutable receipt, including the full request and exact ordered response shape.
-pub fn encode_receipt(receipt: &InspectionReceipt) -> Result<Vec<u8>, InspectionError> {
-    matching(&receipt.request, &receipt.result)?;
-    let request = encode_request(&receipt.request)?;
-    let mut out = vec![VERSION];
-    put_bytes(&mut out, &request)?;
-    match &receipt.result {
-        Ok(InspectionObservation::Work(work)) => {
-            out.push(0);
-            for n in [work.observed_ms, work.opened_ms, work.retain_ms] {
-                out.extend_from_slice(&n.to_le_bytes());
-            }
-            out.push(u8::from(work.settled_ms.is_some()));
-            if let Some(n) = work.settled_ms {
-                out.extend_from_slice(&n.to_le_bytes());
-            }
-        }
-        Ok(InspectionObservation::CarrierSessions(found)) => {
-            out.push(0);
-            put_len(&mut out, found.len())?;
-            for session in found {
-                out.extend_from_slice(&session.session.to_le_bytes());
-                out.push(u8::from(session.live));
-            }
-        }
-        Err(error) => out.push(match error {
-            InspectionError::Unsupported => 1,
-            InspectionError::NotFound => 2,
-            InspectionError::Refused => 3,
-            InspectionError::Invalid => 4,
-            _ => return Err(InspectionError::Invalid),
-        }),
-    }
-    bounded(out)
-}
-
-/// Decode a receipt, rejecting wrong result types, changed session order, and trailing bytes.
-pub fn decode_receipt(bytes: &[u8]) -> Result<InspectionReceipt, InspectionError> {
-    let mut read = Reader::new(bytes)?;
-    let request = decode_request(read.bytes()?)?;
-    let result = match read.byte()? {
-        0 => Ok(match &request.query {
-            InspectionQuery::Work { .. } => {
-                let observed_ms = read.u64()?;
-                let opened_ms = read.u64()?;
-                let retain_ms = read.u64()?;
-                let settled_ms = match read.byte()? {
-                    0 => None,
-                    1 => Some(read.u64()?),
-                    _ => return Err(InspectionError::Invalid),
-                };
-                InspectionObservation::Work(WorkObservation {
-                    observed_ms,
-                    opened_ms,
-                    retain_ms,
-                    settled_ms,
-                })
-            }
-            InspectionQuery::CarrierSessions { sessions } => {
-                let count = read.count(9)?;
-                if count != sessions.len() {
-                    return Err(InspectionError::Correlation);
-                }
-                let mut found = Vec::with_capacity(count);
-                for _ in 0..count {
-                    let session = read.u64()?;
-                    let live = match read.byte()? {
-                        0 => false,
-                        1 => true,
-                        _ => return Err(InspectionError::Invalid),
-                    };
-                    found.push(SessionObservation { session, live });
-                }
-                InspectionObservation::CarrierSessions(found)
-            }
-        }),
-        1 => Err(InspectionError::Unsupported),
-        2 => Err(InspectionError::NotFound),
-        3 => Err(InspectionError::Refused),
-        4 => Err(InspectionError::Invalid),
-        _ => return Err(InspectionError::Invalid),
-    };
-    read.end()?;
-    matching(&request, &result)?;
-    Ok(InspectionReceipt { request, result })
 }
 
 fn bounded(bytes: Vec<u8>) -> Result<Vec<u8>, InspectionError> {
@@ -493,29 +389,3 @@ pub fn read_capability(blob: &[u8]) -> Result<Option<InspectionCapability>, Insp
 pub fn read_request(blob: &[u8]) -> Result<Option<InspectionRequest>, InspectionError> {
     value(blob, EXT_REQUEST)?.map(decode_request).transpose()
 }
-/// Read and copy the unique receipt while its main input is lent.
-pub fn read_receipt(blob: &[u8]) -> Result<Option<InspectionReceipt>, InspectionError> {
-    value(blob, EXT_REPLY)?.map(decode_receipt).transpose()
-}
-/// Append a capability, preserving unrelated extension bytes exactly.
-pub fn append_capability(blob: &[u8], epoch: u64) -> Result<Vec<u8>, InspectionError> {
-    append(blob, EXT_CAPABILITY, &encode_capability(epoch)?)
-}
-/// Append a request, preserving unrelated extension bytes exactly.
-pub fn append_request(
-    blob: &[u8],
-    request: &InspectionRequest,
-) -> Result<Vec<u8>, InspectionError> {
-    append(blob, EXT_REQUEST, &encode_request(request)?)
-}
-/// Append a receipt, preserving unrelated extension bytes exactly.
-pub fn append_receipt(
-    blob: &[u8],
-    receipt: &InspectionReceipt,
-) -> Result<Vec<u8>, InspectionError> {
-    append(blob, EXT_REPLY, &encode_receipt(receipt)?)
-}
-
-#[cfg(test)]
-#[path = "../mechanism/tests/inspection_tests.rs"]
-mod tests;

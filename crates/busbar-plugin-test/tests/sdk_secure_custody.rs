@@ -317,6 +317,7 @@ fn safe_parked_fetch_checks_lifecycle_and_rejects_counterfeit_cancellation() {
         request_id: 1,
         deadline: Instant::now() + Duration::from_secs(10),
         stack: Default::default(),
+        mono_ns: 0,
     };
     let host = |url: &str, denied: bool, inspect: fn(FetchNeed<'_>)| {
         let mut needs = FakeNeeds::new();
@@ -466,6 +467,7 @@ fn safe_parked_fetch_wipes_request_and_secret_script_owners() {
                 request_id: 1,
                 deadline: Instant::now() + Duration::from_secs(10),
                 stack: Default::default(),
+                mono_ns: 0,
             },
             &input,
         ),
@@ -509,6 +511,7 @@ fn safe_host_decodes_owned_results_and_preserves_batch_partial_success() {
         request_id: 1,
         deadline: Instant::now() + Duration::from_secs(10),
         stack: Default::default(),
+        mono_ns: 0,
     };
     let answer = h
         .block_on(port.resolve(cx, b"{}"))
@@ -561,7 +564,7 @@ fn failed_read_loan_wipes_the_entire_written_extent() {
 fn cancelling_pending_fetch_drops_its_owned_request_scratch() {
     use busbar_ffi::host::{ChainBufs, OpenAnswer, OutLease, Started};
     use busbar_ffi::image::Admitted;
-    use busbar_ffi::{Arg, Status};
+    use busbar_ffi::Status;
     use busbar_plugin_abi::host_side::HOST;
     use busbar_plugin_abi::need::{op, NeedRec};
     use busbar_plugin_abi::records::{tag, Records};
@@ -578,10 +581,10 @@ fn cancelling_pending_fetch_drops_its_owned_request_scratch() {
     let mut arguments = ChainBufs::new();
     // This existing host chain owner wipes every argument on drop; no FakeNeeds script keeps a copy.
     let index = arguments.push(payload(&proof).into_vec());
-    let chain = match instance.start1(
-        |vt| &vt.resolve,
+    let chain = match instance.start(
+        busbar_plugin_abi::secret::slot::resolve,
         arguments,
-        move |arguments| Arg::bytes(arguments.get(index)),
+        |arguments, cross| busbar_plugin_abi::secret::pack::resolve(0, arguments.get(index), cross),
         &mut lease,
     ) {
         Started::Need(chain) => chain,
@@ -606,7 +609,7 @@ fn cancelling_pending_fetch_drops_its_owned_request_scratch() {
 fn malformed_later_batch_result_drops_completed_secret_owners() {
     use busbar_ffi::host::{ChainBufs, OpenAnswer, OutLease, Resumed, Started};
     use busbar_ffi::image::Admitted;
-    use busbar_ffi::{Arg, Status};
+    use busbar_ffi::Status;
     use busbar_plugin_abi::host_side::HOST;
     use busbar_plugin_abi::need::{op, NeedResRec};
     use busbar_plugin_abi::records::{tag, Reply, Writer};
@@ -622,10 +625,10 @@ fn malformed_later_batch_result_drops_completed_secret_owners() {
         };
     let mut arguments = ChainBufs::new();
     let index = arguments.push(b"batch".to_vec());
-    let mut chain = match instance.start1(
-        |vt| &vt.resolve,
+    let mut chain = match instance.start(
+        busbar_plugin_abi::secret::slot::resolve,
         arguments,
-        move |arguments| Arg::bytes(arguments.get(index)),
+        |arguments, cross| busbar_plugin_abi::secret::pack::resolve(0, arguments.get(index), cross),
         &mut lease,
     ) {
         Started::Need(chain) => chain,

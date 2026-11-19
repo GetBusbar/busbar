@@ -40,12 +40,6 @@ pub mod kind {
 /// The number is [`super::versions::MECHANISM`]: the v1.5.5 value plus one.
 pub const MECHANISM_VERSION: u32 = super::versions::MECHANISM.raw();
 
-/// ASCII `"BUSBARPL"`, little-endian: a door's first eight bytes. Deliberately not the retired
-pub const DOOR_MAGIC: u64 = u64::from_le_bytes(*b"BUSBARPL");
-
-/// The ONE symbol a plugin exports, NUL-terminated for `dlsym`.
-pub const DOOR_SYMBOL: &[u8] = b"busbar_plugin_door\0";
-
 /// The seven kinds, as the number a [`door::Door`] carries in `kind`. Read off the wire with
 /// [`KindCode::from_raw`]: an unknown number is a refused load, never a guess.
 #[repr(u32)]
@@ -119,20 +113,6 @@ impl KindCode {
             KindCode::Export => super::export::ABI_VERSION,
             KindCode::Plane => super::plane::ABI_VERSION,
             KindCode::Transport => super::transport::ABI_VERSION,
-        }
-    }
-
-    /// The ONE layout fingerprint of this kind's ABI the host accepts ([`layout`]): a door stating
-    #[must_use]
-    pub const fn layout_fingerprint(self) -> u64 {
-        match self {
-            KindCode::Store => super::store::v4::LAYOUT_FINGERPRINT,
-            KindCode::Secret => super::secret::LAYOUT_FINGERPRINT,
-            KindCode::Auth => super::auth::LAYOUT_FINGERPRINT,
-            KindCode::Hook => super::hook::LAYOUT_FINGERPRINT,
-            KindCode::Export => super::export::LAYOUT_FINGERPRINT,
-            KindCode::Plane => super::plane::LAYOUT_FINGERPRINT,
-            KindCode::Transport => super::transport::LAYOUT_FINGERPRINT,
         }
     }
 }

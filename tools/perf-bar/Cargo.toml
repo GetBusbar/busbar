@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# The measurement client of DONE statement 5 (speed and memory against v1.5.5). A standalone
+# crate with its own lock: it is run on the measurement machine against two already-built engine
+# binaries and is never linked into the product.
+
+[package]
+name = "perf-bar"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"] }
+
+[profile.release]
+opt-level = 3
+debug = false

@@ -1,36 +1,20 @@
 ---
-title: "BUSBAR-3409: BUSBAR_WORKER_THREADS was not a positive integer and was not captured"
+title: "BUSBAR-3409: BUSBAR_WORKER_THREADS was not a positive integer and was not captured — RETIRED"
 description: "What Busbar error BUSBAR-3409 means, why it happens, and how to fix it."
 slug: docs/1.6/errors/BUSBAR-3409
 ---
 
 **Area:** Config (3xxx) · **Severity:** actionable · **Since:** 1.6.0
 
-## Message
-
-```text
-BUSBAR-3409: BUSBAR_WORKER_THREADS is not a positive integer; ignored as in the old launcher; configured workers and the TOKIO_WORKER_THREADS fallback are preserved. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3409
-```
+> **Retired.** Busbar no longer reports this code. The page stays so an old log line still resolves; the code is never reused.
 
 ## What it means
 
-The migration captures the old launcher's BUSBAR_WORKER_THREADS into `advanced.worker_threads`. Its value was not a positive integer, which the old launcher also ignored, so nothing was captured and the configured worker count (or TOKIO_WORKER_THREADS) still applies.
+RETIRED. Nothing emits this code. The worker count is no longer a setting, so the migration captures nothing from BUSBAR_WORKER_THREADS: the engine runs one worker per CPU core the process may use. A launcher that still sets the variable starts and says once that it is ignored (BUSBAR-3029).
 
 ## How to fix it
 
-Set `advanced.worker_threads` in the migrated config if you meant to pin the worker count, and remove BUSBAR_WORKER_THREADS from the launcher.
-
-## Example
-
-```text
-BUSBAR_WORKER_THREADS=auto busbar
-```
-
-Busbar reports:
-
-```text
-BUSBAR-3409: BUSBAR_WORKER_THREADS is not a positive integer; ignored as in the old launcher; configured workers and the TOKIO_WORKER_THREADS fallback are preserved. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3409
-```
+Remove BUSBAR_WORKER_THREADS from the launcher when convenient.
 
 ---
 

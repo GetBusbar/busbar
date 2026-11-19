@@ -7,20 +7,21 @@ use std::sync::Arc;
 
 use busbar_contract::response_delivery::{DeliverySnapshot, ResponseKey, ResponseStop};
 use busbar_core_connector::framed_stream::session::{Feed, Payload, Piece, RegisterResponse};
+use busbar_core_connector::hold::{Hold, Piece as HoldPiece};
 use busbar_core_connector::response_delivery::{DeliveryInput, DeliveryWatch, ResponseHandles};
 use busbar_kernel::auth::native_data::NativeDataPending;
 use busbar_kernel::inbound::native::{
     PhysicalAdminExecution, PhysicalPublicExecution, PhysicalRefusal, RequestBinding, StreamOwner,
 };
 use busbar_kernel::plane_driver::request_admission::AdmittedRequest;
-use busbar_plugin_abi::transport::{E_BODY, E_END, E_HEAD, E_TRAILERS};
+use busbar_plugin_abi::transport::{E_BODY, E_END, E_HEAD, E_TRAILERS, SH_END_STREAM};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 use super::response::ResponsePieces;
 use super::InputError;
 use crate::root::durability::response_intent::{
-    ResponseConnection, ResponseDisposition, ResponseFinalizer, ResponsePlan,
+    ResponseConnection, ResponseDisposition, ResponseFinalizer, ResponsePlan, ResponseRecord,
 };
 use crate::root::plane_node::Node;
 
@@ -29,6 +30,15 @@ pub(super) enum ResponseAuthority {
     Data(Arc<NativeDataPending>),
     Admin(Arc<PhysicalAdminExecution>),
     Public(Arc<PhysicalPublicExecution>),
+    /// A plane route answered with no unit: verified and not billed, or admitted with nobody to
+    /// verify (`busbar_kernel::inbound::native::PhysicalUnbilledExecution`).
+    Unbilled(Arc<busbar_kernel::inbound::native::PhysicalUnbilledExecution>),
+    /// A core route that requires a key, served to the caller the data chain verified.
+    CoreKey(Arc<busbar_kernel::inbound::native::PhysicalKeyExecution>),
+    /// A core keyed route refused: the one unverified answer, or the verifier's 503.
+    CoreKeyRefused(busbar_kernel::inbound::native::PhysicalKeyRefusal),
+    /// Refused at the gate (the gateway is full or draining): step 0, nothing judged.
+    Gate(busbar_kernel::inbound::native::PhysicalGateRefusal),
     Refused(PhysicalRefusal),
 }
 impl ResponseAuthority {
@@ -37,16 +47,55 @@ impl ResponseAuthority {
             Self::Data(owner) => owner.binding(),
             Self::Admin(owner) => owner.binding(),
             Self::Public(owner) => owner.binding(),
+            Self::Unbilled(owner) => owner.binding(),
+            Self::CoreKey(owner) => owner.binding(),
+            Self::CoreKeyRefused(owner) => owner.binding(),
+            Self::Gate(owner) => owner.binding(),
             Self::Refused(owner) => owner.binding(),
         }
     }
+    /// WHAT THIS RESPONSE RECORDS (design 2, A5, A7): a health check or public answer nothing; an
+    /// administrative answer nothing here (its admin unit records it); a refusal with no unit one
+    /// count on its core; a metered answer nothing on its path, its unit's line following after
+    /// delivery, unless `advanced.wait_for_commit` makes it hand a line over and wait for it.
+    fn record(
+        &self,
+        node: &Node,
+        admission: Option<&AdmittedRequest>,
+    ) -> Result<ResponseRecord, InputError> {
+        Ok(match (self, admission) {
+            (Self::Refused(owner), _) => match owner.counted() {
+                Some((step, reason)) => ResponseRecord::Counted {
+                    listener: owner.binding().slot().into(),
+                    step,
+                    reason,
+                },
+                None => ResponseRecord::Nothing,
+            },
+            // The flag is a field of the generation this request was admitted under.
+            (Self::Data(owner), Some(admission)) if owner.binding().app().wait_for_commit() => {
+                ResponseRecord::Committed(Box::new(
+                    node.response_line(admission)
+                        .map_err(|_| InputError::Capacity)?,
+                ))
+            }
+            _ => ResponseRecord::Nothing,
+        })
+    }
+
     fn admission(&self) -> Result<Option<AdmittedRequest>, InputError> {
         match self {
             Self::Data(owner) => owner
                 .execution()
                 .map(|execution| Some(execution.money().clone()))
                 .ok_or(InputError::Delivery(ResponseStop::Integrity)),
-            Self::Admin(_) | Self::Public(_) | Self::Refused(_) => Ok(None),
+            Self::Admin(_)
+            | Self::Public(_)
+            | Self::Unbilled(_)
+            | Self::CoreKey(_)
+            | Self::CoreKeyRefused(_)
+            | Self::Gate(_)
+            | Self::Refused(_) => Ok(None),
         }
     }
 }
@@ -78,6 +127,12 @@ pub(super) struct RegisteredResponse {
     owner: Arc<StreamOwner>,
     deadline: Instant,
     retirement: RetireInput,
+    /// THE ONE DECISION "this answer waits for its record", made once at registration: the answer
+    /// records a line whose commit its release awaits ([`ResponseRecord::Committed`], which only
+    /// `advanced.wait_for_commit` on a metered answer produces). The finalizer waits for that
+    /// commit and the hold withholds the answer's last piece until it returns; both follow this
+    /// one fact, so neither can wait while the other does not.
+    waits_for_record: bool,
 }
 
 struct RegistrationAck {
@@ -121,12 +176,15 @@ impl RegisteredResponse {
         authority: ResponseAuthority,
         owner: Arc<StreamOwner>,
         deadline: Instant,
+        node: &Node,
     ) -> Result<Self, InputError> {
         let binding = authority.binding();
         if !binding.owns_stream(&owner) {
             return Err(InputError::Delivery(ResponseStop::Integrity));
         }
         let admission = authority.admission()?;
+        let record = authority.record(node, admission.as_ref())?;
+        let waits_for_record = matches!(record, ResponseRecord::Committed(_));
         let unit = match &authority {
             ResponseAuthority::Refused(owner) => owner.unit(),
             _ => admission.as_ref().map(AdmittedRequest::unit),
@@ -151,7 +209,7 @@ impl RegisteredResponse {
         // ResponseConnection verifies original journal node/incarnation/generation and the ACK's
         // complete private-cell key. No independent expected-key parameter is exposed to billing.
         let (plan, finalizer) = connection
-            .admit(key, handles, deadline)
+            .admit(key, handles, deadline, record)
             .map_err(InputError::FinalIntent)?;
         // The finalizer's admitted scope must be the very key this request registered.
         if finalizer.key() != key {
@@ -171,6 +229,7 @@ impl RegisteredResponse {
             owner,
             deadline,
             retirement,
+            waits_for_record,
         })
     }
 
@@ -180,7 +239,6 @@ impl RegisteredResponse {
         self,
         response: axum::response::Response,
         feeds: &mpsc::Sender<Feed>,
-        node: &Node,
     ) -> CompletedResponse {
         let Self {
             delivery,
@@ -190,11 +248,19 @@ impl RegisteredResponse {
             owner,
             deadline,
             retirement,
+            waits_for_record,
         } = self;
         let binding = authority.binding().clone();
         let input = finalizer.input();
         let source = binding.request().storage();
         let (send, pieces) = mpsc::channel(1);
+        // The body length the answer's head states exactly, if it states one: a caller knows such an answer
+        // is complete at its last byte, so that byte is what a held answer withholds.
+        let stated_len = response
+            .headers()
+            .get(axum::http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
         let run = async {
             let mut response = ResponsePieces::new(response, source.clone())?;
             if let Some(admin) = response.take_admin() {
@@ -216,14 +282,39 @@ impl RegisteredResponse {
                 .await
                 .map_err(|_| InputError::Delivery(ResponseStop::CarrierRetired))?;
             let mut plan = plan;
+            // THE HOLD IS THE ENGINE'S. When an answer must wait for its record (`advanced.wait_for_commit`
+            // on a metered answer: the decision registration made, `waits_for_record`), the piece that
+            // completes it is not given to the transport until the record is in: the end; the trailers
+            // with it; the body piece that reaches a length the head stated; a head that is the whole
+            // answer. An answer that records no line has nothing to wait for and withholds nothing,
+            // whatever the setting; with the setting off the path is exactly the unheld one. Nothing is
+            // parked in the connection's byte pipe, so other answers on it keep flowing.
+            let mut hold = Hold::new(waits_for_record);
+            let mut withheld: Vec<Piece> = Vec::new();
             while let Some(piece) = response.next().await? {
-                match piece.piece {
-                    E_HEAD => plan.record_head(Some(response.status())),
-                    E_BODY => plan.record_body(),
-                    E_TRAILERS => plan.record_trailers(),
+                let completes = match piece.piece {
+                    E_HEAD => {
+                        plan.record_head(Some(response.status()))
+                            .map_err(InputError::FinalIntent)?;
+                        hold.withholds(HoldPiece::Head {
+                            ends: piece.arg & SH_END_STREAM != 0,
+                            stated_len,
+                        })
+                    }
+                    E_BODY => {
+                        plan.record_body().map_err(InputError::FinalIntent)?;
+                        hold.withholds(HoldPiece::Body(piece.bytes.as_slice().len() as u64))
+                    }
+                    E_TRAILERS => {
+                        plan.record_trailers().map_err(InputError::FinalIntent)?;
+                        hold.withholds(HoldPiece::Trailers)
+                    }
                     _ => return Err(InputError::Delivery(ResponseStop::Integrity)),
+                };
+                if completes {
+                    withheld.push(piece);
+                    continue;
                 }
-                .map_err(InputError::FinalIntent)?;
                 send.send(piece)
                     .await
                     .map_err(|_| InputError::Delivery(ResponseStop::CarrierRetired))?;
@@ -232,19 +323,15 @@ impl RegisteredResponse {
                 return Err(InputError::Delivery(ResponseStop::Integrity));
             }
             input.reader_eof();
-            let stamp = node
-                .response_intent_stamp(finalizer.journal())
-                .map_err(|_| InputError::Delivery(ResponseStop::Integrity))?;
             let intent = plan
-                .freeze(
-                    ResponseDisposition::End {
-                        status: Some(response.status()),
-                    },
-                    stamp,
-                )
+                .freeze(ResponseDisposition::End {
+                    status: Some(response.status()),
+                })
                 .map_err(InputError::FinalIntent)?;
-            // Confirmation runs while E_END is blocked behind held output. Neither path bypasses
-            // prior body pieces, and both stay owned by this supervisor until they finish.
+            // Release waits for a commit only under `advanced.wait_for_commit`; then the completing
+            // piece is withheld until it has. Neither path bypasses prior body pieces, and both stay
+            // owned by this supervisor until they finish.
+            let waits = hold.withholds(HoldPiece::End);
             let confirm = async {
                 let result = finalizer
                     .finalize(intent)
@@ -257,6 +344,13 @@ impl RegisteredResponse {
                 result
             };
             let end = async {
+                // What was withheld goes first, in the order it was withheld, then the end.
+                for piece in withheld {
+                    if send.send(piece).await.is_err() {
+                        finalizer.cancel().cancel(ResponseStop::Cancelled);
+                        return Err(InputError::Delivery(ResponseStop::CarrierRetired));
+                    }
+                }
                 let bytes = Payload::copy(&source, &[]).map_err(|_| InputError::Capacity)?;
                 let result = send
                     .send(Piece {
@@ -273,10 +367,25 @@ impl RegisteredResponse {
                 }
                 result
             };
-            let (confirmed, ended) = tokio::join!(confirm, end);
-            confirmed?;
-            ended
+            if waits {
+                // The record first; only then does the transport get the piece that completes the answer.
+                // A record that is refused ends the answer without its end: the caller sees it cut.
+                confirm.await?;
+                hold.committed();
+                end.await
+            } else {
+                // Nothing waits: the end goes at once and the record is confirmed beside it.
+                let (confirmed, ended) = tokio::join!(confirm, end);
+                confirmed?;
+                ended
+            }
         };
+        // The request's deadline (`limits.request_timeout`) bounds the WHOLE answer, an upgraded
+        // one included: a WebSocket session is closed (1000) when it passes. The owner decided an
+        // upgraded session is bounded by its plane's ceiling, not by this; it stays until the
+        // request's effect gate (`NativeDataEffectGate`, `Phase::Executing`) follows the same
+        // bound, else a session would be relayed past the time its usage can be stated
+        // (ENGINE-OPEN-3).
         let result = tokio::select! {
             result = run => result,
             _ = binding.cancelled() => Err(InputError::Delivery(ResponseStop::Cancelled)),

@@ -21,9 +21,13 @@ use super::{DispatchSnapshot, NEST_INPUT_FULL, NEST_PARENT_GONE, NEST_REPLY_MAX,
 
 const CONSTRAINTS_UNAVAILABLE: &str = "native child target and spend constraints are not available";
 const PARENT_ADMISSION: &str = "native child has no live parent billing admission";
+/// A child nested after its parent's budget is spent: refused, nothing opened, nothing charged.
+const OVER_BUDGET: &str = "over_budget: the budget this request was admitted on is spent";
+const MONEY_UNRECORDABLE: &str =
+    "durability unavailable: the journal cannot record a child's money";
 
 /// Built once before the serving generation is published. The same guest precedence rules
-/// choose native, legacy and core claims; matching a core claim never falls through to a plane.
+/// choose native and core claims; matching a core claim never falls through to a plane.
 pub(crate) struct NativeNests {
     pub(crate) guests: GuestList,
     pub(crate) destinations: BTreeMap<(String, u32), usize>,
@@ -43,8 +47,8 @@ impl NativeNests {
             .map(|seat| (*seat, line.route.rung))
     }
 
-    /// `None` means this table selected no native destination; the existing legacy dispatcher
-    /// may resolve its own claim. Every selected native refusal is terminal, with no fallback.
+    /// `None` means this table selected no native destination: the nested unit is unserved. Every
+    /// selected native refusal is terminal, with no fallback.
     pub(crate) async fn dispatch(
         &self,
         snapshot: Arc<DispatchSnapshot>,
@@ -104,6 +108,10 @@ impl NativeNests {
         let Some(billing) = &snapshot.served.billing else {
             return NestReply::Unserved(PARENT_ADMISSION);
         };
+        // A child unit opens only while its node's journal can record its money.
+        if let Some(Err(_)) = snapshot.post.node().map(|node| node.money_gate()) {
+            return NestReply::Unserved(MONEY_UNRECORDABLE);
+        }
         let request = frame.request.clone();
         // This is an independent retained input copy. Reserve from the same admitted
         // request before allocating, and let its Bytes backing own the credit thereafter.
@@ -118,6 +126,9 @@ impl NativeNests {
             seat.driver.usage_classes(),
         ) {
             Ok(unit) => unit,
+            Err(busbar_contract::caps::ReasonCode::OverBudget) => {
+                return NestReply::Unserved(OVER_BUDGET)
+            }
             Err(_) => return NestReply::Unserved(PARENT_ADMISSION),
         };
         let id = unit.ctx.key;
@@ -242,6 +253,17 @@ struct ReplyState {
 }
 
 impl ClientSink for Reply {
+    /// A nested reply is gathered in memory under its bound: items are taken at once and nothing waits.
+    fn poll_items(
+        &self,
+        _cx: &mut std::task::Context<'_>,
+        items: &mut Vec<ToClient>,
+    ) -> std::task::Poll<bool> {
+        std::task::Poll::Ready(self.items(std::mem::take(items)))
+    }
+}
+
+impl Reply {
     fn items(&self, items: Vec<ToClient>) -> bool {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.overflow {

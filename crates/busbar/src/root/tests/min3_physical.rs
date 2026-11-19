@@ -4,8 +4,8 @@
 use super::*;
 use std::sync::Mutex;
 
-use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_POST, PATH_EXACT};
+use busbar_contract::kinds::codes::KindCode;
+use busbar_contract::route::{METHOD_GET, METHOD_POST, PATH_EXACT};
 use busbar_contract::services::Caller;
 use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
 use busbar_kernel::host_services::KernelServices;
@@ -25,6 +25,10 @@ fn refused() -> PortError {
     PortError::Call(busbar_plugin_abi::fail::CallError::NotDeclared)
 }
 impl PlanePort for InventoryPlane {
+    fn route_admission(&self, _: u32) -> Option<(u32, u32, u32, &str)> {
+        use busbar_plugin_abi::plane::{CALLERS_SHARED, MONEY_UNIT, SCOPE_SELECTED};
+        Some((SCOPE_SELECTED, MONEY_UNIT, CALLERS_SHARED, ""))
+    }
     fn routes(&self) -> &[RouteInfo] {
         &self.routes
     }
@@ -38,7 +42,7 @@ impl PlanePort for InventoryPlane {
         Default::default()
     }
     fn facts(&self) -> u64 {
-        busbar_plugin_abi::plane::FB_RESOURCE_ADMISSION
+        0
     }
     fn tick_s(&self) -> Option<u64> {
         None
@@ -253,7 +257,7 @@ fn core_line() -> Line {
         dialect: 0,
         auth: LineAuth::None,
         upgrade: None,
-        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        offered: busbar_contract::route::AuthPoints::EMPTY,
     }
 }
 #[test]
@@ -385,11 +389,98 @@ async fn operator_slot_is_built_from_actual_admin_handlers_and_preserves_head_he
     assert!(execution.check_executing().is_ok());
 }
 
+/// THE ADMIN PLANE'S BOOT ORDER (the security property of the root's boot): the operator slot, the
+/// only way `admin_listen` is served, is refused on the very App whose admin chain is not yet
+/// installed, and assembles once `min3_admin_auth::install` has set it. `main` binds a listener only
+/// from an assembled slot, so nothing serves the admin surface before the chain is installed.
 #[tokio::test]
-async fn operator_slot_refuses_missing_actual_admin_authority() {
+async fn nothing_serves_the_admin_listener_before_the_admin_chain_is_installed() {
     busbar_core_admin::install();
-    let app = crate::root::inbound_tests::app(false).await.0;
-    assert!(app.native_admin.is_none());
+    let installed = crate::root::min3_auth::tests::physical_app().await;
+    assert!(
+        installed.native_admin.is_some(),
+        "the fixture App has its admin chain installed"
+    );
+    let mut before = (*installed).clone();
+    before.native_admin = None;
     let transport = crate::root::min3_boot::transports::tests::framer(&["http"]);
-    assert!(assemble_admin_slot(&app, "admin_listen", transport).is_err());
+    let Err(refused) = assemble_admin_slot(&before, "admin_listen", transport.clone()) else {
+        panic!("an operator slot was assembled before the admin chain was installed");
+    };
+    assert_eq!(
+        refused,
+        "operator slot has no actual native admin authority"
+    );
+    assert!(crate::root::serve::native_slot(&before, "admin_listen").is_none());
+    assert!(assemble_admin_slot(&installed, "admin_listen", transport).is_ok());
+}
+
+/// v1.5.5 ran the configured data chain on every non-exempt data path, `/stats` and unknown paths
+/// included, whatever routes were mounted (`inbound-coverage.tsv` E05, E11, R02). A slot that
+/// mounts no plane route therefore still has the configured chain: a caller it verifies is told
+/// the truth, and everyone else (no credential, or an operator's, which the data chain never
+/// reads) receives the one unverified answer.
+#[test]
+fn a_slot_with_no_plane_route_still_judges_by_the_configured_data_chain() {
+    let names: Vec<Box<str>> = vec!["keys".into(), "provider-42".into()];
+    let mut built = Vec::new();
+    let chain = slot_data_chain(&names, false, |names| {
+        built.push(names.to_vec());
+        Ok::<_, String>(7_u8)
+    })
+    .unwrap();
+    assert_eq!(chain.as_deref(), Some(&7));
+    // The chain is the configured one, whole and in order: never a route's, never the operator's.
+    assert_eq!(built, vec![names.clone()]);
+
+    let mut built = 0;
+    let chain = slot_data_chain(&names, true, |_| {
+        built += 1;
+        Ok::<_, String>(7_u8)
+    })
+    .unwrap();
+    assert_eq!((chain.as_deref(), built), (Some(&7), 1));
+}
+
+/// A configured chain that cannot be built refuses the candidate on every data slot: a listener
+/// never boots judging `/stats` by less than the chain its operator configured.
+#[test]
+fn a_configured_chain_that_cannot_be_built_refuses_a_slot_with_no_plane_route() {
+    let names: Vec<Box<str>> = vec!["provider-42".into()];
+    for serves_data in [false, true] {
+        let refused = slot_data_chain(&names, serves_data, |_| {
+            Err::<u8, _>("data auth: 'provider-42' has no opened native auth instance".to_owned())
+        });
+        assert_eq!(
+            refused.unwrap_err(),
+            "data auth: 'provider-42' has no opened native auth instance"
+        );
+    }
+}
+
+/// No chain configured is never an open listener here (v1.5.5 served such a listener to anyone;
+/// 1.6 names an open relay `chain: [anonymous]`). A slot with plane routes refuses the candidate,
+/// as it did; a slot with none has no chain, so every caller receives the one unverified answer.
+#[test]
+fn no_configured_chain_is_never_an_open_slot() {
+    let mut built = 0;
+    let none = slot_data_chain(&[], false, |_| {
+        built += 1;
+        Ok::<_, String>(7_u8)
+    })
+    .unwrap();
+    assert!(none.is_none());
+    assert_eq!(
+        built, 0,
+        "an empty chain is never built for a slot with no plane route"
+    );
+
+    let refused = slot_data_chain(&[], true, |names| {
+        assert!(names.is_empty());
+        Err::<u8, _>(busbar_kernel::auth::native_chain::EMPTY_CHAIN_REFUSED.to_owned())
+    });
+    assert_eq!(
+        refused.unwrap_err(),
+        busbar_kernel::auth::native_chain::EMPTY_CHAIN_REFUSED
+    );
 }

@@ -6,7 +6,6 @@
 use std::os::raw::c_void;
 
 use super::ticket::{HostCtx, Ticket};
-use crate::abi::sdk::generation::Gen;
 
 /// What an op answered, as the byte crossing the boundary. An unknown byte reads as
 /// [`Outcome::Fault`].
@@ -26,7 +25,7 @@ pub enum Outcome {
     /// Done; `out` holds the answer.
     Ready = 1,
     /// Not ready: the plugin registered interest and will `wake` the ticket; the host re-invokes
-    /// the same op with [`FLAG_RESUME`].
+    /// the same op with `FLAG_RESUME`.
     Pending = 2,
     /// The operation failed, as the kind defines failure. Distinct from any "no opinion" answer.
     Failed = 3,
@@ -90,9 +89,6 @@ pub type Op = unsafe extern "C" fn(
     input: *const c_void,
     out: *mut c_void,
 ) -> RawOutcome;
-
-/// [`InHead::flags`]: this call RESUMES a call that answered [`Outcome::Pending`], with the same
-pub const FLAG_RESUME: u32 = 1;
 
 /// The deadline class of an op (the ABI brief's mechanics), carried in
 /// [`InHead::deadline_class`].
@@ -158,13 +154,13 @@ impl AbiStr {
 /// * [`AbiStr::of`] / [`AbiStr::of_bytes`] — memory that lives for the program (a Statement's
 ///   strings, a row's, a `'static` answer);
 /// * [`AbiStr::lent`] / [`AbiStr::lent_bytes`] — memory that lives at least until the plugin's
-///   next refresh generation, proven by the op's generation borrow ([`Gen`]);
+///   next refresh generation;
 /// * [`AbiStr::ABSENT`] — no string (NULL).
 ///
 /// The host and the loader, which lend memory for one call, make one with the `unsafe`
 /// [`AbiStr::from_raw_parts`]. A read of the bytes is `unsafe` ([`AbiStr::bytes`]): a value
 /// copied out of a call's `in` names memory the host lent for that call alone. A plugin reads the
-/// strings the host lends it through [`Lent`](crate::abi::sdk::Lent).
+/// strings the host lends it through its lent input.
 ///
 /// ```
 /// use busbar_contract::abi::mechanism::call::AbiStr;
@@ -194,22 +190,6 @@ impl AbiStr {
     /// `bytes` (any bytes: a field value, a header), which live for the program.
     #[must_use]
     pub const fn of_bytes(bytes: &'static [u8]) -> AbiStr {
-        AbiStr {
-            ptr: bytes.as_ptr(),
-            len: bytes.len(),
-        }
-    }
-
-    /// `s`, which lives at least until the plugin's next refresh generation: the borrow checker
-    #[must_use]
-    pub fn lent<'g>(s: &'g str, gen: &Gen<'g>) -> AbiStr {
-        Self::lent_bytes(s.as_bytes(), gen)
-    }
-
-    /// As [`AbiStr::lent`], for any bytes.
-    #[must_use]
-    pub fn lent_bytes<'g>(bytes: &'g [u8], gen: &Gen<'g>) -> AbiStr {
-        let _ = gen;
         AbiStr {
             ptr: bytes.as_ptr(),
             len: bytes.len(),
@@ -259,7 +239,7 @@ impl AbiStr {
     /// # Safety
     ///
     /// The string names `len` readable bytes, alive and unwritten for `'a`: one made by
-    /// [`AbiStr::of`] always does; one made by [`AbiStr::lent`] until the next refresh generation;
+    /// [`AbiStr::of`] always does; one lent by a plugin until its next refresh generation;
     /// one the host lent a call, until the call returns.
     #[must_use]
     pub unsafe fn bytes<'a>(&self) -> &'a [u8] {
@@ -314,8 +294,6 @@ pub struct Field {
 pub const BLOB_ABSENT: u32 = 0;
 /// [`Blob::fmt`]: one JSON document.
 pub use busbar_artifact_metadata::BLOB_JSON;
-/// [`Blob::fmt`]: JSON lines.
-pub const BLOB_JSONL: u32 = 2;
 /// [`Blob::fmt`]: opaque octets.
 pub const BLOB_OCTETS: u32 = 3;
 /// [`Blob::flags`]: the bytes are secret material; the owner zeroises them on release.
@@ -329,7 +307,7 @@ pub struct Blob {
     pub ptr: *const u8,
     /// Their length.
     pub len: usize,
-    /// [`BLOB_ABSENT`] | [`BLOB_JSON`] | [`BLOB_JSONL`] | [`BLOB_OCTETS`].
+    /// [`BLOB_ABSENT`] | [`BLOB_JSON`] | `BLOB_JSONL` | [`BLOB_OCTETS`].
     pub fmt: u32,
     /// [`BLOB_SECRET`].
     pub flags: u32,
@@ -381,29 +359,10 @@ impl Blob {
         Self::of(bytes).with_fmt(BLOB_JSON)
     }
 
-    /// `bytes`, which live at least until the plugin's next refresh generation, as opaque octets:
-    #[must_use]
-    pub fn lent<'g>(bytes: &'g [u8], gen: &Gen<'g>) -> Blob {
-        let s = AbiStr::lent_bytes(bytes, gen);
-        Blob {
-            ptr: s.ptr,
-            len: s.len,
-            fmt: BLOB_OCTETS,
-            flags: 0,
-        }
-    }
-
-    /// The same bytes, stated as `fmt` ([`BLOB_ABSENT`] | [`BLOB_JSON`] | [`BLOB_JSONL`] |
+    /// The same bytes, stated as `fmt` ([`BLOB_ABSENT`] | [`BLOB_JSON`] | `BLOB_JSONL` |
     #[must_use]
     pub const fn with_fmt(mut self, fmt: u32) -> Blob {
         self.fmt = fmt;
-        self
-    }
-
-    /// The same bytes, flagged `flags` ([`BLOB_SECRET`]).
-    #[must_use]
-    pub const fn with_flags(mut self, flags: u32) -> Blob {
-        self.flags = flags;
         self
     }
 
@@ -462,7 +421,7 @@ pub struct InHead {
     pub size: u32,
     /// The slot index this call is for, in the kind's table order.
     pub op: u32,
-    /// [`FLAG_RESUME`].
+    /// `FLAG_RESUME`.
     pub flags: u32,
     /// [`DeadlineClass`], as its byte.
     pub deadline_class: u8,
@@ -492,7 +451,7 @@ pub struct InHead {
 pub struct MetricEntry {
     /// Index into [`super::door::Statement::families`].
     pub family_idx: u32,
-    /// [`METRIC_ADD`] | [`METRIC_SET`] | [`METRIC_OBSERVE`]; must agree with the family's kind.
+    /// `METRIC_ADD` | `METRIC_SET` | `METRIC_OBSERVE`; must agree with the family's kind.
     pub kind: u8,
     /// Alignment padding.
     pub _reserved: [u8; 3],
@@ -504,27 +463,20 @@ pub struct MetricEntry {
     pub label_vals_len: usize,
 }
 
-/// [`MetricEntry::kind`]: add to a counter.
-pub const METRIC_ADD: u8 = 0;
-/// [`MetricEntry::kind`]: set a gauge.
-pub const METRIC_SET: u8 = 1;
-/// [`MetricEntry::kind`]: observe into a histogram.
-pub const METRIC_OBSERVE: u8 = 2;
-
 /// One diagnostic: an INDEX into the diagnostic ids the Statement declared, the same scheme as a
 /// metric — or one of the two reserved ids below, which carry what the plugin LOGGED.
 ///
 /// PLUGIN LOGGING. Whatever a plugin, or a library inside it, logs through `tracing` or `log`
 /// during a call is captured by the door macro's trampoline and rides that call's reply as
-/// [`DIAG_LOG`] entries; the host writes them to the plugin's own log file. One path, every kind,
+/// `DIAG_LOG` entries; the host writes them to the plugin's own log file. One path, every kind,
 /// compiled in or dropped in (`BUSBAR-1.6.0.md` decision #85).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Diag {
-    /// Index into [`super::door::Statement::diag_ids`], or [`DIAG_LOG`] / [`DIAG_LOG_DROPPED`].
+    /// Index into [`super::door::Statement::diag_ids`], or `DIAG_LOG` / `DIAG_LOG_DROPPED`.
     pub id_idx: u32,
-    /// [`SEVERITY_INFO`], [`SEVERITY_WARN`] or [`SEVERITY_ERROR`]; a [`DIAG_LOG`] entry may also
-    /// state [`SEVERITY_DEBUG`] or [`SEVERITY_TRACE`].
+    /// `SEVERITY_INFO`, `SEVERITY_WARN` or `SEVERITY_ERROR`; a `DIAG_LOG` entry may also
+    /// state `SEVERITY_DEBUG` or `SEVERITY_TRACE`.
     pub severity: u8,
     /// Alignment padding.
     pub _reserved: [u8; 3],
@@ -542,22 +494,6 @@ impl Diag {
     };
 }
 
-/// [`Diag::id_idx`]: a log record the plugin emitted during the call. Its text is
-pub const DIAG_LOG: u32 = u32::MAX;
-/// [`Diag::id_idx`]: how many log records the plugin's capture dropped over its bound, as decimal
-pub const DIAG_LOG_DROPPED: u32 = u32::MAX - 1;
-/// [`Diag::severity`]: info.
-pub const SEVERITY_INFO: u8 = 0;
-/// [`Diag::severity`]: warn.
-pub const SEVERITY_WARN: u8 = 1;
-/// [`Diag::severity`]: error.
-pub const SEVERITY_ERROR: u8 = 2;
-/// [`Diag::severity`]: debug ([`DIAG_LOG`] only).
-pub const SEVERITY_DEBUG: u8 = 3;
-/// [`Diag::severity`]: trace ([`DIAG_LOG`] only).
-pub const SEVERITY_TRACE: u8 = 4;
-/// The most entries one envelope array may carry; the host drops a longer array whole.
-pub const MAX_ENVELOPE_ENTRIES: usize = 256;
 /// The most bytes of error or diagnostic text an entry may carry; longer is a malformed entry.
 pub const MAX_TEXT: usize = 4096;
 

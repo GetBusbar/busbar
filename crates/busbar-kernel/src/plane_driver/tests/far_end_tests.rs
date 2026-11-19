@@ -6,9 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use busbar_contract::abi::transport::{
-    FAULT_CALLER, FAULT_HARD, FAULT_HEALTHY, FAULT_NONE, FAULT_TRANSIENT,
-};
+use busbar_contract::abi::transport::{FAULT_CALLER, FAULT_HEALTHY};
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::conn::{
@@ -16,6 +14,7 @@ use busbar_contract::conn::{
     PollConns, Ticket,
 };
 use busbar_contract::ids::StreamId;
+use busbar_contract::transport::codes::{FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
 use busbar_contract::transport::ConnFacts;
 use busbar_kernel_egress::{
@@ -192,7 +191,7 @@ impl Conns for Table {
                 self.causes.lock().unwrap().insert(
                     id,
                     busbar_contract::conn::ConnCause {
-                        stage: busbar_contract::abi::host::conn::connector::CAUSE_FRAMER,
+                        stage: busbar_contract::conn::codes::CAUSE_FRAMER,
                         text: text.into(),
                         outbound,
                     },
@@ -665,7 +664,7 @@ fn rig(
                             auth: auth.clone() as Arc<dyn OutboundAuth>,
                             handle: 1,
 
-                            style_flags: busbar_contract::abi::auth::STYLE_NEEDS_HEADERS,
+                            style_flags: busbar_contract::auth_calls::codes::STYLE_NEEDS_HEADERS,
 
                             points: if k == 1 {
                                 AuthPoints::HEAD_BODY
@@ -1962,7 +1961,7 @@ async fn trailers_are_handed_to_the_plane() {
 
 #[tokio::test]
 async fn a_status_stated_in_the_trailers_is_the_answer_never_a_cut() {
-    use busbar_contract::abi::transport::{STATUS_CALLER_FAULT, STATUS_SUCCESS};
+    use busbar_contract::transport::codes::{STATUS_CALLER_FAULT, STATUS_SUCCESS};
     let r = rig(
         &[(
             "a.test",
@@ -2047,7 +2046,7 @@ async fn a_non_success_end_stated_in_the_trailers_keeps_the_budget_unit_its_head
 
 #[tokio::test]
 async fn the_trailers_status_is_judged_plane_first_and_a_success_ends_as_it_ends() {
-    use busbar_contract::abi::transport::STATUS_SUCCESS;
+    use busbar_contract::transport::codes::STATUS_SUCCESS;
     let ended = |code, class, fault| {
         rig(
             &[("a.test", Script::Ended(code, class, fault, vec![b"msg"]))],
@@ -2114,7 +2113,7 @@ async fn the_trailers_status_is_judged_plane_first_and_a_success_ends_as_it_ends
 #[tokio::test]
 async fn a_stated_scope_reaches_the_auth_call_and_never_the_wire() {
     use busbar_contract::abi::auth::{EXT_SCOPE, SCOPE_REQUEST_FIELD};
-    use busbar_contract::abi::mechanism::extensions;
+    use busbar_contract::kinds::codes::extensions;
     let r = rig(
         &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
         OnExhausted::Status503,
@@ -2155,7 +2154,7 @@ async fn a_stated_scope_reaches_the_auth_call_and_never_the_wire() {
 #[tokio::test]
 async fn a_scope_member_reaches_the_auth_call_as_the_field_did_and_the_head_is_unchanged() {
     use busbar_contract::abi::auth::{EXT_SCOPE, SCOPE_REQUEST_FIELD};
-    use busbar_contract::abi::mechanism::extensions;
+    use busbar_contract::kinds::codes::extensions;
     let r = rig(
         &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
         OnExhausted::Status503,
@@ -2621,10 +2620,6 @@ async fn every_dispatch_is_recorded_under_its_unit() {
     assert_eq!(kept.len(), 1, "one record, before the dial");
     assert_eq!(kept[0].unit, busbar_contract::UnitKey::new(77));
 }
-
-#[allow(unsafe_code)]
-#[path = "probe_unit_tests.rs"]
-mod probe_unit;
 
 #[tokio::test]
 async fn a_far_request_opens_on_the_need_it_names() {
@@ -3884,7 +3879,7 @@ fn delegated_ask<'a>(
         connection: "public-account",
         expected_revision: revision,
         expires_at_unix: if credential.is_empty() { 0 } else { u64::MAX },
-        field_name: if action == busbar_contract::abi::host::service::OUTBOUND_PUBLISH {
+        field_name: if action == busbar_contract::services::codes::OUTBOUND_PUBLISH {
             "authorization"
         } else {
             ""
@@ -3927,7 +3922,7 @@ fn delegated_owner(services: &crate::host_services::KernelServices, unit: u64, o
 
 #[tokio::test]
 async fn delegated_users_dispatch_with_their_own_auth_and_no_shared_fallback() {
-    use busbar_contract::abi::host::service::{OUTBOUND_BIND, OUTBOUND_PUBLISH, OUTBOUND_REVOKE};
+    use busbar_contract::services::codes::{OUTBOUND_BIND, OUTBOUND_PUBLISH, OUTBOUND_REVOKE};
     let mut r = rig(
         &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
         OnExhausted::Status503,
@@ -3951,7 +3946,7 @@ async fn delegated_users_dispatch_with_their_own_auth_and_no_shared_fallback() {
     let caller = busbar_contract::services::Caller::issue(
         &crate::seal::acquire(),
         Arc::from("plane"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     let t = token();
     for (unit, owner, credential) in [
@@ -4035,7 +4030,7 @@ async fn delegated_prepared_exchange_is_secure_exact_once_and_has_no_shared_auth
     let caller = busbar_contract::services::Caller::issue(
         &crate::seal::acquire(),
         Arc::from("plane"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     delegated_owner(&services, 1, "bob");
     let secret = b"grant_type=authorization_code&code=private&code_verifier=private";
@@ -4095,9 +4090,7 @@ async fn delegated_prepared_exchange_is_secure_exact_once_and_has_no_shared_auth
 
 #[tokio::test]
 async fn delegated_stored_body_is_reusable_but_fenced_before_each_dispatch() {
-    use busbar_contract::abi::host::service::{
-        OUTBOUND_BIND, OUTBOUND_PUBLISH_BODY, OUTBOUND_REVOKE,
-    };
+    use busbar_contract::services::codes::{OUTBOUND_BIND, OUTBOUND_PUBLISH_BODY, OUTBOUND_REVOKE};
     let mut r = rig(
         &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
         OnExhausted::Status503,
@@ -4113,7 +4106,7 @@ async fn delegated_stored_body_is_reusable_but_fenced_before_each_dispatch() {
     let caller = busbar_contract::services::Caller::issue(
         &crate::seal::acquire(),
         Arc::from("plane"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     delegated_owner(&services, 1, "bob");
     let secret = b"grant_type=refresh_token&refresh_token=private";

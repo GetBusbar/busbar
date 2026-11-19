@@ -11,5 +11,5 @@ experimental = ["setup-scripts"]
 command = ["sh", "-c", "echo _RJEM_MALLOC_CONF=dirty_decay_ms:-1,muzzy_decay_ms:-1 >> \"$NEXTEST_ENV\""]
 
 [[profile.default.scripts]]
-filter = 'binary(=canary_scan) | binary(=exchange_request_wipe) | binary(=invoke_request_wipe) | binary(=verify_request_wipe) | binary(=owned_auth_and_service_wipe) | binary(=protocol_producer_custody) | binary(=sse_frames_compaction_wipe)'
+filter = 'binary(=canary_scan) | binary(=verify_request_wipe) | binary(=owned_auth_and_service_wipe) | binary(=protocol_producer_custody) | binary(=sse_frames_compaction_wipe)'
 setup = 'canary-jemalloc'

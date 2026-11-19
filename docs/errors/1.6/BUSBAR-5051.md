@@ -12,7 +12,7 @@ busbar refused an outbound connection: the destination guard refused the host or
 
 ## How to fix it
 
-For a private registration target, set allow_private on that declared registration. Configured provider reach applies only to its own selected base/token origins. Use TLS and configure its CA under advanced.tls when needed; metadata and strict OPEN_WEB checks remain enforced.
+For a private registration target, set allow_private on that declared registration. Configured provider reach applies only to its own selected base/token origins. Use TLS and configure its CA under outbound.tls when needed; metadata and strict OPEN_WEB checks remain enforced.
 
 ---
 

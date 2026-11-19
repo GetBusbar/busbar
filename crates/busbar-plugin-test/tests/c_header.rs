@@ -68,7 +68,7 @@ fn fixture_library() -> std::path::PathBuf {
 fn the_c_fixture_is_admitted_as_a_dropped_in_secret_plugin() {
     use busbar_plugin_abi::types::KindCode;
     use busbar_plugin_loader::refusal::RefusalCode;
-    use busbar_plugin_loader::test_host::{admit_bytes, test_manifest};
+    use busbar_plugin_loader::test_native::{admit_bytes, test_manifest};
 
     const {
         assert!(

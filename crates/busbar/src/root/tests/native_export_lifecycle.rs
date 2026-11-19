@@ -9,6 +9,7 @@ use busbar_contract::export_calls::{Delivered, ExportCalls, ExportDropReason, Ex
 use busbar_contract::export_stream::ExportStream;
 use busbar_plugin_loader::export_pump::{PortDoor, StopReport};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use tokio::sync::{mpsc, oneshot, Notify};
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -30,34 +31,13 @@ struct NativeExport {
 }
 
 fn stage_image(directory: &Path, kind: &str, path: &Path) -> String {
-    // A MIN-3 image (the application Store) is named by its stamp; a door image by its Statement.
-    let native = busbar_plugin_loader::pack_native::read_image(path)
-        .and_then(|bytes| busbar_plugin_loader::pack_native::is_native(&bytes))
-        .expect("the separately built actual image reads");
-    let (module, manifest) = if native {
-        (
-            crate::root::test_plugins::native_image(path).name,
-            crate::root::test_plugins::native_manifest(
-                kind,
-                path,
-                crate::root::test_plugins::FIXTURE_PUBLISHER,
-            ),
-        )
-    } else {
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(path)
-            .expect("the installed image describes itself")
-            .expect("the image has its signed statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual image statement parses")
-            .name;
-        let mut manifest = crate::root::test_plugins::manifest(
-            kind,
-            &module,
-            crate::root::test_plugins::FIXTURE_PUBLISHER,
-        );
-        manifest.statement = Some(hex::encode(statement));
-        (module, manifest)
-    };
+    // A MIN-3 image is named by its stamp; the root admits no other image.
+    let manifest = crate::root::test_plugins::native_manifest(
+        kind,
+        path,
+        crate::root::test_plugins::FIXTURE_PUBLISHER,
+    );
+    let module = manifest.name.clone();
     let bytes = std::fs::read(path).expect("read the separately built actual image");
     let archive =
         crate::root::test_plugins::signed(&crate::root::test_plugins::key(0x5a), manifest, &bytes);
@@ -171,6 +151,7 @@ impl NativeExport {
             disk,
             &spec.limits,
             reservation.observer(&name).unwrap(),
+            busbar_contract::clock::HostClock::system(crate::root::egress_ports::tokio_sleep),
         );
         let pumps =
             crate::root::exports::ports::Exports::new(vec![(name.clone(), door.clone())]).unwrap();
@@ -676,7 +657,7 @@ impl NativeExport {
             node_lease: None,
             flusher: None,
             governance: app.governance.clone(),
-            late: crate::root::serve::Services::bootstrap(),
+            late: crate::root::serve::Services::idle(),
             book: None,
             startup: self
                 .startup

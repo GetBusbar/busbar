@@ -210,8 +210,9 @@ pub(crate) fn state_hydration_buckets(
     buckets
 }
 
-/// `state`: the periodic budget shard sweep (once per `rate_sweep_interval` admissions on the
-/// shard): drops aged clean cells, then prunes dead model rows from the cells it keeps.
+/// `state`: the budget shard sweep (the usage writer's tick, `GovState::sweep_budgets`): drops
+/// aged clean cells, then prunes dead model rows from the cells it keeps. The age is the longest
+/// window a bucket has, a calendar month of at most 31 days.
 pub(crate) fn state_sweep_budget_shard(
     map: &mut foldhash::HashMap<Text, BudgetCell>,
     cost: &crate::cost::CostModel,
@@ -529,82 +530,4 @@ pub(crate) fn tickets_any_unsettled<K, T>(
     unsettled: impl Fn(&T) -> bool,
 ) -> bool {
     pending.values().any(|operation| unsettled(operation))
-}
-
-/// `tickets`: host custody maintenance's batched liveness observation of many tickets (see
-/// `governance::ticket_records_live`).
-pub(crate) async fn tickets_records_live(
-    core: Arc<crate::persistence::facade::CoreStore>,
-    items: &[(String, u64)],
-) -> RecordStoreResult<Vec<RecordStoreResult<bool>>> {
-    use crate::governance::tickets::{judge_ticket, ticket_addresses, tickets_per_read};
-    use busbar_contract::persistence::{Read, ReadResult};
-    let mut verdicts = Vec::with_capacity(items.len());
-    for chunk in items.chunks(tickets_per_read(&core)) {
-        let mut addresses = Vec::with_capacity(chunk.len() * 3);
-        let mut judged = Vec::with_capacity(chunk.len());
-        for (id, expires_at) in chunk {
-            match ticket_addresses(id, *expires_at) {
-                Ok(three) => {
-                    addresses.extend(three);
-                    judged.push(Ok(*expires_at));
-                }
-                Err(error) => judged.push(Err(error)),
-            }
-        }
-        if addresses.is_empty() {
-            verdicts.extend(judged.into_iter().map(|judged| judged.map(|_| false)));
-            continue;
-        }
-        let observed = core
-            .backend()
-            .read(Arc::new(Read {
-                dataset: core.info().dataset,
-                addresses,
-                time: None,
-            }))
-            .await
-            .map_err(|_| RecordStoreError("native ticket observation unavailable".into()))?;
-        let ReadResult::Values {
-            observed_at,
-            values,
-        } = observed
-        else {
-            return Err(RecordStoreError(
-                "invalid native ticket batch observation".into(),
-            ));
-        };
-        let readable = judged.iter().filter(|judged| judged.is_ok()).count();
-        if observed_at.authority != core.info().clock_authority || values.len() != readable * 3 {
-            return Err(RecordStoreError(
-                "invalid native ticket batch observation".into(),
-            ));
-        }
-        let mut values = values.into_iter();
-        for judged in judged {
-            let expires_at = match judged {
-                Ok(expires_at) => expires_at,
-                Err(error) => {
-                    verdicts.push(Err(error));
-                    continue;
-                }
-            };
-            let (Some(active), Some(spent), Some(index)) =
-                (values.next(), values.next(), values.next())
-            else {
-                return Err(RecordStoreError(
-                    "invalid native ticket batch observation".into(),
-                ));
-            };
-            if observed_at.unix_seconds > expires_at {
-                verdicts.push(Ok(false));
-                continue;
-            }
-            verdicts.push(
-                judge_ticket(expires_at, active, spent.as_ref(), index.as_ref())
-                    .map(|record| record.is_some()),
-            );
-        }
-    }
-    Ok(verdicts)
 }

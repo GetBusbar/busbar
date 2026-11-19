@@ -104,16 +104,6 @@ impl AppSlots {
     }
 }
 
-/// A lane's request finished in `seconds`: one push into the lane's own histogram slot. A lane
-/// outside this generation's table records nothing.
-pub fn lane_request_finished(app: &App, lane_idx: usize, seconds: f64) {
-    if let Some(slot) = app.tslots.lane_duration.get(lane_idx) {
-        if slot.is_valid() {
-            slot.record(seconds);
-        }
-    }
-}
-
 /// `telemetry.max_lane_series`: lanes beyond it fold into `target="other"`.
 static MAX_LANE_SERIES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(crate::config::limits::DEFAULT_TELEMETRY_MAX_LANE_SERIES);
@@ -195,35 +185,6 @@ fn request_finished_in(
     match fam {
         Some(fam) if fam.duration.is_valid() => fam.duration.record(seconds),
         _ => crate::snapshot::record_request_duration(ingress_protocol, pool, seconds),
-    }
-}
-
-pub fn model_request_finished(
-    app: &App,
-    ingress_protocol: &str,
-    pool: &str,
-    status: u16,
-    seconds: f64,
-    unit_id: Option<&dyn std::fmt::Display>,
-) {
-    let outcome = model_request_finished_in(&app.tslots, ingress_protocol, pool, status, seconds);
-
-    if app
-        .export_projections
-        .wants_stream(busbar_contract::export_stream::ExportStream::Logs)
-    {
-        let correlation_id = unit_id.map(ToString::to_string);
-        crate::export::deliver_request_log(
-            &app.exports,
-            &crate::export::RequestLogFacts {
-                correlation_id: correlation_id.as_deref(),
-                ts: busbar_kernel::store::now(),
-                ingress_protocol,
-                pool,
-                outcome,
-                latency_ms: (seconds * 1000.0) as u64,
-            },
-        );
     }
 }
 

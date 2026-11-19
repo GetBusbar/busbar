@@ -7,14 +7,22 @@
 //! Bytes read before or after the head open nothing. It refuses an E_HEAD that carries no H_AUTHORITY, as a
 //! dialled framer does, so the suite must hand it a real head. No `unsafe`: the glue is `plugin!`'s output only.
 
-use busbar_plugin_abi::fail::{failed, refused, Fail};
+// This file is compiled into crates of two editions (the test crate and the bench crate), whose
+// formatters order a capitalised name against a lower-case one differently. Each group below
+// holds names of one case only, so both agree on it.
+use busbar_plugin_abi::fail::Fail;
 use busbar_plugin_abi::host::Host;
 use busbar_plugin_abi::need::ChainBytes;
 use busbar_plugin_abi::plugin::{Describe, Endpoints, Open};
-use busbar_plugin_abi::records::{tag as head_tag, Out, Records, Writer};
-use busbar_plugin_abi::transport::{self as tp, tag, ConnInfo, StreamFlow};
+use busbar_plugin_abi::records::{Out, Records, Writer};
+use busbar_plugin_abi::transport::{self as tp, ConnInfo, StreamFlow};
 use busbar_plugin_abi::types::Bytes;
+
 use busbar_plugin_abi::Transport;
+
+use busbar_plugin_abi::fail::{failed, refused};
+use busbar_plugin_abi::records::tag as head_tag;
+use busbar_plugin_abi::transport::tag;
 
 /// The dial framer: no settings.
 pub struct Dial;
@@ -51,7 +59,7 @@ impl Transport for Dial {
         &self,
         _h: &Host,
         conn: &ConnInfo<'_>,
-        _out: &mut Out<'_>,
+        out: &mut Out<'_>,
     ) -> Result<DialSession, Fail> {
         if conn.role != tp::ROLE_CLIENT {
             return Err(Fail::refused_because(
@@ -59,6 +67,17 @@ impl Transport for Dial {
                 "fixture: a dial framer begins client conns only",
             ));
         }
+        // `begin` states its SESSION, first and exactly once: one stream, no multiplexing, no windows.
+        out.put_pod(
+            tag::SESSION,
+            &tp::SessionRec {
+                flags: 0,
+                stream_window: 0,
+                conn_window: 0,
+                _r: 0,
+            },
+        )
+        .map_err(full)?;
         Ok(DialSession { opened: false })
     }
 
@@ -77,14 +96,19 @@ impl Transport for Dial {
         _h: &Host,
         s: &mut DialSession,
         stream: u64,
-        piece: u32,
+        pieces: u32,
         _arg: u32,
-        bytes: Bytes<'_>,
+        _credit: u64,
+        parts: busbar_plugin_abi::types::Slice<'_, Bytes<'_>>,
         out: &mut Out<'_>,
     ) -> Result<(), Fail> {
-        if piece != tp::E_HEAD || stream != 0 {
+        // Transport 2.0: `pieces` is a set; the head, when present, is the first entry of `parts`.
+        let (true, Some(bytes)) = (
+            pieces & tp::E_HEAD != 0 && stream == 0,
+            parts.get().first().copied(),
+        ) else {
             return Ok(());
-        }
+        };
         if s.opened {
             return Err(Fail::refused_because(
                 refused::R_INVALID,
@@ -103,7 +127,14 @@ impl Transport for Dial {
         out.put_pod(tag::STREAM_OPENED, &StreamFlow { stream: 1 })
             .map_err(full)?;
         let request = format!("GET / HTTP/1.1\r\nhost: {authority}\r\n\r\n");
-        out.put(tag::WRITE, request.as_bytes()).map_err(full)
+        // The request head is control on the stream STREAM_OPENED announced (rules L1, L2).
+        let part = tp::WirePart {
+            stream: 1,
+            class: tp::WIRE_CONTROL,
+            _r: 0,
+        };
+        out.put_pod_tail(tag::WIRE_PART, &part, request.as_bytes())
+            .map_err(full)
     }
 
     fn offer(&self, _h: &Host, role: u32, out: &mut Out<'_>) -> Result<(), Fail> {

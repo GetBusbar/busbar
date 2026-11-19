@@ -26,12 +26,7 @@ async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
     );
     let oidc_path = common::plugins::token_verifier_cdylib_path()
         .expect("the freshly built actual OIDC product is required");
-    let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
-        .expect("the actual OIDC statement reads")
-        .expect("the actual OIDC exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
-        .expect("the actual OIDC statement is valid")
-        .name;
+    let oidc_module = crate::root::test_plugins::native_image(&oidc_path).name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let viewer_token = common::credentials::token_for("viewers", &["viewers"], AUDIENCE);
     let signing_key = directory.join("signing-key");

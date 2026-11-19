@@ -93,13 +93,11 @@ fn a_missing_anchor_symbol_is_named_and_a_present_one_is_not() {
         ("busbar_migrate::plan", 10),
         ("busbar::root::migrate::run", 10),
         ("busbar_kernel::persistence::startup::Manifest::decode", 10),
-        ("busbar_contract::abi::sdk::migrate::read_answer", 10),
     ]);
     assert!(anchors_missing(&all).is_empty());
     let renamed = bloat(&[
         ("busbar_migrate::planned", 10),
         ("busbar_kernel::persistence::startup::Manifest::decode", 10),
-        ("busbar_contract::abi::sdk::migrate::read_answer", 10),
     ]);
     let missing = anchors_missing(&renamed);
     assert_eq!(missing.len(), 2, "{missing:?}");

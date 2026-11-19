@@ -9,7 +9,7 @@ crate::kind! {
     /// owns sockets or keeps state across replicas: core does. Per-request protocol state lives in `Session`
     /// (owned by the shim slots, §6.5); cross-request state lives in core records via LOOKUP/STORE/DELETE.
     /// Every intent names a protocol, a grant, a configured upstream name or a key, never a plugin (236).
-    pub trait Plane: kind = 6, abi = 1, session {
+    pub trait Plane: kind = 6, abi = 2, session {
         views {
         /// One client request. route = the D_ROUTE id core matched. auth = the one AUTH_* class core applied
         /// to **this request** (from the route's mask and operator config; round 15: on a route whose
@@ -83,17 +83,16 @@ crate::kind! {
             pub flags: u32,
             pub _r: u32,
         }
-        /// Tail = path pattern text (`/v1/chat/completions`, `/mcp`, `{*rest}` wildcard). auth = mask of the
-        /// AUTH_* classes this route may run under; core picks the effective set per operator config (default:
-        /// the lowest bit, **plus AUTH_TICKET when the mask holds both AUTH_PRINCIPAL and AUTH_TICKET**: such a
-        /// route accepts a core ticket in place of a principal and core classifies each request, §12.11).
-        pub struct RouteRec {
-            pub route: u32,
-            pub methods: u32,
-            pub flags: u32,
-            pub auth: u32,
-        }
-        /// Round 23, D_ROUTE_CRED_HEADER: the D_ROUTE id it applies to. Tail = the header name.
+        /// Plane 2.0: the D_ROUTE body (`RouteRec`: route, methods, flags, auth; tail = the path pattern)
+        /// and the D_ROUTE_ADMISSION body (`RouteAdmissionRec`) are the shared route vocabulary,
+        /// `vocab::route1`, re-exported here with the ROUTE_*, SCOPE_*, MONEY_* and CALLERS_* words. A route
+        /// is one D_ROUTE and exactly one D_ROUTE_ADMISSION, every field stated, no default: a route without
+        /// its admission item cannot be mounted (DescribeInvalid, naming the route). `auth` is the mask of the
+        /// AUTH_* classes this route may run under; core picks the effective set per operator config
+        /// (default: the lowest bit, **plus AUTH_TICKET when the mask holds both AUTH_PRINCIPAL and
+        /// AUTH_TICKET**: such a route accepts a core ticket in place of a principal, §12.11).
+        /// Round 23, D_ROUTE_CRED_HEADER and (plane 2.0) D_ROUTE_CHALLENGE: the D_ROUTE id the item applies
+        /// to (`_r` = 0). Tail = the header name, or the challenge text.
         pub struct RouteHeaderRec {
             pub route: u32,
             pub _r: u32,
@@ -709,7 +708,40 @@ crate::kind! {
             /// "Route credential header").
             D_ROUTE_CRED_HEADER = 0x018E;
             /// RouteHeaderRec followed by nested TEXT resource kinds.
+            /// E.9: keep, implemented by plane-mcp (its tools): the kinds a route with SCOPE_SELECTED names,
+            /// with `select_resources` and the RESOURCE_* records below. Used by nothing else.
             D_ROUTE_RESOURCES = 0x0199;
+            /// Plane 2.0, required, exactly one per D_ROUTE id: RouteAdmissionRec (four little-endian u32:
+            /// route, scope, money, callers) + the walk-kind text. scope: 1 none | 2 walk | 4 selected (2|4
+            /// allowed; the kinds of "selected" are the route's D_ROUTE_RESOURCES). money: 1 none, 2 unit.
+            /// callers: 1 shared, 2 distinct. The load rules are `vocab::route1::check`.
+            D_ROUTE_ADMISSION = 0x019A;
+            /// Plane 2.0, optional, at most one per D_ROUTE id: RouteHeaderRec (route, 0) + the
+            /// `WWW-Authenticate` text (1..=256 bytes) of the engine's uniform 401 for this route, only where
+            /// the protocol's specification requires a parameter. `{public_url}` in the text is replaced by
+            /// the core once, at mount. The engine writes the 401; the plane is not called for an unverified
+            /// caller.
+            D_ROUTE_CHALLENGE = 0x019B;
+            /// Plane 2.0, additive, optional, at most once: the plane's session ceiling (U64Rec, whole
+            /// seconds, 1..=u64::MAX / 1e9 so the engine's nanosecond clock holds it). The longest an
+            /// upgraded session of this plane lives, counted from its request: the value its
+            /// protocol's specification states, or the plane's own documented default. The engine
+            /// enforces exactly this and borrows no number of its own; a plane that states none has
+            /// no engine ceiling on its sessions. A describe written without it still loads.
+            D_SESSION_CEILING_S = 0x019C;
+            /// Plane 2.0: the plane-only describe items that left the core contract (the generic 0x004A,
+            /// 0x004B and 0x004D are retired there). D_PUBLIC_URL_PATH: the config position where core writes
+            /// its top-level `public_url` (a JSON string or `null`) before schema validation, `check` and
+            /// `open`; at most once; the operator may not write that position. D_CALLER_UPSTREAMS_PATH: the
+            /// position where core writes, as a sorted JSON array of strings, the names of the configured
+            /// upstreams whose outbound binding resolved to the caller's own connection; same rules.
+            /// D_UPSTREAM_PATH: RFC 6901 pointer to this plane's registrations; the final decoded token is
+            /// `*` (object members), with no earlier wildcard; at most four; duplicates and ancestor overlap
+            /// refuse describe. Core consumes url, command, tls, auth, upstream_credentials and allow_private
+            /// at each member before schema, `check` and `open`.
+            D_PUBLIC_URL_PATH = 0x4000;
+            D_CALLER_UPSTREAMS_PATH = 0x4001;
+            D_UPSTREAM_PATH = 0x4002;
             RESOURCE_ENTRY = 0x0168;
             RESOURCE_DESCRIPTOR = 0x0169;
             RESOURCE_KIND = 0x016A;
@@ -797,11 +829,14 @@ crate::kind! {
         /// Round 13: ROUTE_UPGRADE = a WebSocket upgrade route: methods exactly GET, served by the upgrade
         /// sequence of §12.27 (route, auth and `request` on the HTTP head; the plane's RESPOND(101) commits;
         /// the same session continues on the adopted stream). Combines with no other ROUTE_* bit.
-            ROUTE_CATALOG: u32 = 1;
-            ROUTE_ADMIN: u32 = 2;
-            ROUTE_LINE: u32 = 4;
-            ROUTE_RECOVERY: u32 = 8;
-            ROUTE_UPGRADE: u32 = 16;
+        /// Plane 2.0: the ROUTE_* class bits (CATALOG 1, ADMIN 2, LINE 4, RECOVERY 8, UPGRADE 16; none = a
+        /// data route; at most one) are the route vocabulary's and are re-exported here under these names.
+        /// The route vocabulary this version of the plane contract uses (in the plane's fingerprint).
+            USES_ROUTE: u64 = crate::vocab::route1::FP;
+        /// The head, identity and conversation vocabularies it uses.
+            USES_HEAD: u64 = crate::vocab::head1::FP;
+            USES_IDENTITY: u64 = crate::vocab::identity1::FP;
+            USES_CONVERSATION: u64 = crate::vocab::conversation1::FP;
         /// RouteRec.auth bits and PlaneReq.auth values. PRINCIPAL: an auth plugin must verify a principal.
         /// OPTIONAL: verify if credentials are present, else identity empty. PUBLIC: core never authenticates
         /// (the plane may still check a token it minted through MINT; prefer TICKET). TICKET: the credential is
@@ -907,13 +942,21 @@ crate::kind! {
         /// 0x100 (round 3's kind code CONNECT_REQUIRED) is retired: it is the generic R_CONNECT_REQUIRED now.
         /// describe fact bits: FB_PROBES = core may call `probe` per member (today's TAIL_PROBES).
             FB_PROBES: u64 = 1;
-            FB_RESOURCE_ADMISSION: u64 = 1 << 3;
+        /// Fact bit 3 was FB_RESOURCE_ADMISSION: retired (plane 2.0). It restated "some route's scope is
+        /// selected", which the route record says itself.
+            FB_RETIRED: u64 = 1 << 3;
+        /// The image serves `channel`: the pure preparation of one admitted selected command channel on a
+        /// live session (answer: the channel's upstream exchange records, never a TOKEN). Requires `channel`
+        /// in D_METHODS and a route with SCOPE_SELECTED; else DescribeInvalid. Specified as it stands.
             FB_CHANNEL_OPEN: u64 = 1 << 4;
             RESOURCE_INVENTORY: u32 = 1;
             RESOURCE_SELECT: u32 = 2;
             /// Opt-in cumulative attempt accounting. Attempt classes cannot also use USAGE/OBS_COUNT in forwarded sessions.
+            /// A statement of how the plane reports usage and nothing else: it is not tied to selection.
+            /// E.9: keep, implemented by plane-llm (with D_ATTEMPT_CLASS and the ATTEMPT_* records).
             FB_ATTEMPT_USAGE: u64 = 1 << 1;
             /// Independent opt-in: every successful preparation returns a complete known/unknown estimate view.
+            /// E.9: keep, implemented by plane-llm.
             FB_PREPARED_ESTIMATES: u64 = 1 << 2;
         /// wants (core reads them to choose candidates; plane-local keys, never forwarded to another kind)
         /// Round 10: W_UPSTREAM (FACT_TEXT = a configured upstream name the plane saw in `Target.upstream`):
@@ -1106,6 +1149,11 @@ crate::kind! {
         sync fn channel(&self, h: &Host, s: &mut Session, target: &Target<'_>, out: &mut Out<'_>) -> Result<(), Fail> { let _ = (h, s, target, out); Err(crate::fail::Fail::unsupported()) }
 
         extras {
+            pub use crate::vocab::route1::{
+                CALLERS_DISTINCT, CALLERS_SHARED, MONEY_NONE, MONEY_UNIT, ROUTE_ADMIN, ROUTE_CATALOG,
+                ROUTE_LINE, ROUTE_RECOVERY, ROUTE_UPGRADE, RouteAdmissionRec, RouteFault, RouteRec,
+                SCOPE_NONE, SCOPE_SELECTED, SCOPE_WALK,
+            };
             /// The host side of the plane kind: a typed face over busbar-ffi's `Instance` (IF §10.4).
             /// `live` points into the plugin image and is valid because `inst` holds the image (I13).
             #[cfg(feature = "host")]
@@ -1137,19 +1185,15 @@ crate::kind! {
                     (Option<SessionHandle>, crate::host_side::answer::Answer<'o>),
                     crate::fail::CallError,
                 > {
-                    use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     let (session, answer) = crate::host_side::proxy::opener::<Marker>(
                         &self.inst,
                         crate::host_side::proxy::entry(M_REQUEST),
                         buf,
                         |lease| {
-                            self.live.open_session2(
-                                |vt| &vt.request,
-                                Arg::view(req),
-                                Arg::bytes(Bytes::new(body)),
-                                lease,
-                            )
+                            pack::request(crate::host_side::proxy::now(), req, Bytes::new(body), |call| {
+                                self.live.open_session(slot::request, call, lease)
+                            })
                         },
                     )?;
                     Ok((
@@ -1168,14 +1212,11 @@ crate::kind! {
                     what: u32,
                     arg: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_RENDER), buf, |lease| {
-                        self.live.call3(
-                            |vt| &vt.render,
-                            (Arg::view(req), Arg::u32(what), Arg::bytes(Bytes::new(arg))),
-                            lease,
-                        )
+                        pack::render(crate::host_side::proxy::now(), req, what, Bytes::new(arg), |call| {
+                            self.live.call(slot::render, call, lease)
+                        })
                     })
                 }
 
@@ -1189,17 +1230,11 @@ crate::kind! {
                 > + Send
                 + 'a {
                     use crate::host_side::proxy;
-                    use crate::plugin::__rt::Arg;
                     proxy::chain::<Marker, _, _>(&self.inst, drv, proxy::entry(M_ADMIN), req, move |req, lease| {
                         let _ = req;
                         let (bufs, at) = proxy::staged(req);
                         self.live
-                            .start2(
-                                |vt| &vt.admin,
-                                bufs,
-                                |b| (Arg::u32(op), Arg::bytes(b.get(at))),
-                                lease,
-                            )
+                            .start(slot::admin, bufs, |b, cross| pack::admin(crate::host_side::proxy::now(), op, b.get(at), cross), lease)
                             .into()
                     })
                 }
@@ -1212,13 +1247,14 @@ crate::kind! {
                     (Option<SessionHandle>, crate::host_side::answer::Answer<'o>),
                     crate::fail::CallError,
                 > {
-                    use crate::plugin::__rt::Arg;
                     let (session, answer) = crate::host_side::proxy::opener::<Marker>(
                         &self.inst,
                         crate::host_side::proxy::entry(M_PROBE),
                         buf,
                         |lease| {
-                            self.live.open_session1(|vt| &vt.probe, Arg::view(target), lease)
+                            pack::probe(crate::host_side::proxy::now(), target, |call| {
+                                self.live.open_session(slot::probe, call, lease)
+                            })
                         },
                     )?;
                     Ok((
@@ -1234,7 +1270,6 @@ crate::kind! {
                     &self, buf: &'o mut crate::host_side::pool::PooledOut,
                     mode: u32, req: &PlaneReq<'_>, body: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     use crate::fail::{CallError, FaultReason};
                     use crate::records::{Records, RecErr, tag};
@@ -1242,8 +1277,9 @@ crate::kind! {
                     let pure = crate::host_side::entry::Pure::enter();
                     let status=crate::host_side::driver::step(self.inst.slot,
                         crate::host_side::proxy::entry(M_SELECT_RESOURCES), None, buf, |lease| {
-                            self.live.call3(|vt| &vt.select_resources,
-                                (Arg::u32(mode), Arg::view(req), Arg::bytes(Bytes::new(body))), lease)
+                            pack::select_resources(crate::host_side::proxy::now(), mode, req, Bytes::new(body), |call| {
+                                self.live.call(slot::select_resources, call, lease)
+                            })
                         }).ok_or(CallError::Fault(FaultReason::BadInstance))?;
                     if pure.violated() || Records::new(buf.bytes()).any(|r| r.is_ok_and(|r|r.tag==tag::TOKEN)) {
                         return Err(self.inst.charge(FaultReason::BadRecords(RecErr::Reserved)));
@@ -1258,15 +1294,11 @@ crate::kind! {
                     key: &str,
                     message: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     use crate::types::{Bytes, Str};
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_DEMUX), buf, |lease| {
-                        self.live.call2(
-                            |vt| &vt.demux,
-                            Arg::str(Str::new(key)),
-                            Arg::bytes(Bytes::new(message)),
-                            lease,
-                        )
+                        pack::demux(crate::host_side::proxy::now(), Str::new(key), Bytes::new(message), |call| {
+                            self.live.call(slot::demux, call, lease)
+                        })
                     })
                 }
 
@@ -1292,14 +1324,15 @@ crate::kind! {
                     buf: &'o mut crate::host_side::pool::PooledOut,
                     target: &Target<'_>,
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     use crate::fail::{CallError, FaultReason};
                     use crate::records::{Records, RecErr, tag};
                     if !self.inst.is_live() { return Err(CallError::Quarantined); }
                     let pure = crate::host_side::entry::Pure::enter();
                     let status = crate::host_side::driver::step(self.inst.slot,
                         crate::host_side::proxy::entry(M_CHANNEL), None, buf, |lease| {
-                            self.session.call1(|vt| &vt.channel, Arg::view(target), lease)
+                            pack::channel(crate::host_side::proxy::now(), target, |call| {
+                                self.session.call(slot::channel, call, lease)
+                            })
                         }).ok_or(CallError::Fault(FaultReason::BadInstance))?;
                     if pure.violated() || Records::new(buf.bytes()).any(|r| r.is_ok_and(|r| r.tag == tag::TOKEN)) {
                         return Err(self.inst.charge(FaultReason::BadRecords(RecErr::Reserved)));
@@ -1313,9 +1346,10 @@ crate::kind! {
                     buf: &'o mut crate::host_side::pool::PooledOut,
                     target: &Target<'_>,
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_UPSTREAM), buf, |lease| {
-                        self.session.call1(|vt| &vt.upstream, Arg::view(target), lease)
+                        pack::upstream(crate::host_side::proxy::now(), target, |call| {
+                            self.session.call(slot::upstream, call, lease)
+                        })
                     })
                 }
 
@@ -1327,19 +1361,11 @@ crate::kind! {
                     flags: u32,
                     bytes: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_PIECE), buf, |lease| {
-                        self.session.call4(
-                            |vt| &vt.piece,
-                            (
-                                Arg::u32(from),
-                                Arg::u32(exchange),
-                                Arg::u32(flags),
-                                Arg::bytes(Bytes::new(bytes)),
-                            ),
-                            lease,
-                        )
+                        pack::piece(crate::host_side::proxy::now(), from, exchange, flags, Bytes::new(bytes), |call| {
+                            self.session.call(slot::piece, call, lease)
+                        })
                     })
                 }
 
@@ -1353,19 +1379,11 @@ crate::kind! {
                     flags: u32,
                     bytes: &[u8],
                 ) -> Result<(crate::host_side::answer::Answer<'o>, usize), crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     crate::host_side::proxy::sync_fixed(&self.inst, crate::host_side::proxy::entry(M_PIECE), buf, |lease| {
-                        self.session.call4(
-                            |vt| &vt.piece,
-                            (
-                                Arg::u32(from),
-                                Arg::u32(exchange),
-                                Arg::u32(flags),
-                                Arg::bytes(Bytes::new(bytes)),
-                            ),
-                            lease,
-                        )
+                        pack::piece(crate::host_side::proxy::now(), from, exchange, flags, Bytes::new(bytes), |call| {
+                            self.session.call(slot::piece, call, lease)
+                        })
                     })
                 }
 
@@ -1380,7 +1398,7 @@ crate::kind! {
                         &inst,
                         crate::host_side::proxy::entry(M_END),
                         buf,
-                        |lease| session.end(|vt| &vt.end, lease),
+                        |lease| pack::end(crate::host_side::proxy::now(), |call| session.end(slot::end, call, lease)),
                     )
                 }
 
@@ -1389,10 +1407,11 @@ crate::kind! {
                     buf: &'o mut crate::host_side::pool::PooledOut,
                     conversation: &[u8],
                 ) -> Result<crate::host_side::answer::Answer<'o>, crate::fail::CallError> {
-                    use crate::plugin::__rt::Arg;
                     use crate::types::Bytes;
                     crate::host_side::proxy::sync(&self.inst, crate::host_side::proxy::entry(M_REWRITE), buf, |lease| {
-                        self.session.call1(|vt| &vt.rewrite, Arg::bytes(Bytes::new(conversation)), lease)
+                        pack::rewrite(crate::host_side::proxy::now(), Bytes::new(conversation), |call| {
+                            self.session.call(slot::rewrite, call, lease)
+                        })
                     })
                 }
 

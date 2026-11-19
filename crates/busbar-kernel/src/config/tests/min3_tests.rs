@@ -795,3 +795,49 @@ fn provisioning_rejects_unknown_keys_and_missing_required_fields() {
         assert!(why.iter().all(|reason| reason.contains("identity-providers.scim.provisioning")), "{why:?}");
     }
 }
+
+/// IF §12.11 arm 1: `<plane>.routes.<id>.auth_instances`, lifted off the plane's section, parsed
+/// by (plane instance, route id) in the order written; a malformed entry refuses naming its path.
+#[test]
+fn route_auth_instances_parse_by_plane_and_route_and_refuse_naming_the_path() {
+    let with = |routes: &str| {
+        let mut cfg = deploy("providers: {}\n");
+        cfg.plane_routes.insert(
+            "streaming".into(),
+            busbar_contract::yaml::from_str(routes).expect("yaml"),
+        );
+        cfg
+    };
+    let parsed = parse_min3(&with("{\"5\": {auth_instances: [twilio, standard]}}"))
+        .unwrap()
+        .route_auth_instances;
+    assert_eq!(
+        parsed[&(Box::from("streaming"), 5)],
+        vec![Box::<str>::from("twilio"), Box::from("standard")]
+    );
+    assert!(parse_min3(&deploy("providers: {}\n"))
+        .unwrap()
+        .route_auth_instances
+        .is_empty());
+    for (routes, path) in [
+        (
+            "{five: {auth_instances: [twilio]}}",
+            "streaming.routes.five",
+        ),
+        (
+            "{\"5\": {auth_instances: []}}",
+            "streaming.routes.5.auth_instances",
+        ),
+        (
+            "{\"5\": {auth_instances: [a, a]}}",
+            "streaming.routes.5.auth_instances",
+        ),
+        ("{\"5\": {auth: principal}}", "streaming.routes"),
+    ] {
+        let why = parse_min3(&with(routes)).err().expect(routes);
+        assert!(
+            why.iter().any(|reason| reason.contains(path)),
+            "{routes}: {why:?}"
+        );
+    }
+}

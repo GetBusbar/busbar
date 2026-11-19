@@ -15,6 +15,28 @@ use super::request_admission::{
 use crate::host_services::InvocationContext;
 use crate::refusal::ClientRefusal;
 
+/// The refusal of a key that does not hold a grant of the pool or model the plane named: v1.5.5's
+/// 403 and its vendor-neutral text (ingress `pool_authorized`), which names neither the key nor
+/// the pool. Decided before any money, so nothing is charged.
+pub(crate) fn scope_refusal() -> ClientRefusal {
+    ClientRefusal {
+        status: 403,
+        code: busbar_plugin_abi::fail::refused::R_DENIED,
+        text: "Your API key does not have permission to access this resource.".into(),
+    }
+}
+
+/// A walk the key may not take is answered (403, before money); any other failure to resolve the
+/// walk is not the caller's to see.
+pub(crate) fn forward_refused(error: super::request_admission::AdmissionError) -> SessionError {
+    match error {
+        super::request_admission::AdmissionError::Scope => {
+            SessionError::AdmissionRefused(scope_refusal())
+        }
+        _ => SessionError::NotDriven,
+    }
+}
+
 pub struct AdmittedUnit {
     pub request: AdmittedRequest,
     pub unit: Unit,
@@ -68,6 +90,16 @@ enum Commit {
                 + Send,
         >,
     ),
+}
+
+/// A request whose walk is resolved and whose money has not been asked
+/// ([`Pending::resolve_walk`]): the resolved walk's receipt and the monetary callback, unrun.
+/// Only [`Pending::admit_money`] consumes it; dropped, the callback never runs and the receipt
+/// ends the request's admission.
+pub(crate) struct ResolvedWalk {
+    commit: Commit,
+    receipt: RequestPoolReceipt,
+    declaration: RequestDeclaration,
 }
 
 /// Root owns the exact allocation and callback. Neither plugin facts nor a numeric unit can construct it.
@@ -171,12 +203,31 @@ impl Pending {
         self.routes.clone()
     }
 
-    pub(crate) fn admit(
+    /// Both steps of the request's one admission with nothing between them: its walk resolved
+    /// ([`Self::resolve_walk`]), then its money asked ([`Self::admit_money`]).
+    pub(crate) fn admit<M: Members>(
         &self,
-        members: Option<&mut dyn Members>,
+        members: Option<&mut M>,
         wants: Option<&Wants>,
         declaration: RequestDeclaration,
     ) -> Result<(), SessionError> {
+        let mut members = members;
+        let resolved = self.resolve_walk(members.as_deref_mut(), wants, declaration)?;
+        self.admit_money(members, resolved)
+    }
+
+    /// The first step: the walk the request names is resolved and the key's grant of it judged
+    /// (a walk the key may not take is the 403 of [`scope_refusal`]), and the walk's members are
+    /// selected. No unit is opened and no money is asked: the callback that does both is moved
+    /// into the answer unrun. Dropping the answer ends the admission with the callback never
+    /// run, which is how a route's hook refuses a request before anything is charged
+    /// (`port_serve`: the hook stage runs between this step and [`Self::admit_money`]).
+    pub(crate) fn resolve_walk<M: Members>(
+        &self,
+        members: Option<&mut M>,
+        wants: Option<&Wants>,
+        declaration: RequestDeclaration,
+    ) -> Result<ResolvedWalk, SessionError> {
         if !declaration.context().same_unit(&self.context) || !declaration.context().is_live() {
             return Err(SessionError::NotDriven);
         }
@@ -223,7 +274,7 @@ impl Pending {
                 let walk = members.request_walk().ok_or(SessionError::NotDriven)?;
                 let receipt = allocation
                     .forward(&self.routes, walk, wants.model.as_deref())
-                    .map_err(|_| SessionError::NotDriven)?;
+                    .map_err(forward_refused)?;
                 if !members.select_request(&receipt, wants) {
                     return Err(SessionError::NotDriven);
                 }
@@ -233,6 +284,29 @@ impl Pending {
                 .local(&self.routes)
                 .map_err(|_| SessionError::NotDriven)?,
         };
+        Ok(ResolvedWalk {
+            commit,
+            receipt,
+            declaration,
+        })
+    }
+
+    /// The second step: the request's one monetary callback, run on the walk
+    /// [`Self::resolve_walk`] resolved. This is where the unit is opened and the money held.
+    pub(crate) fn admit_money<M: Members>(
+        &self,
+        members: Option<&mut M>,
+        resolved: ResolvedWalk,
+    ) -> Result<(), SessionError> {
+        let ResolvedWalk {
+            commit,
+            receipt,
+            declaration,
+        } = resolved;
+        if !declaration.context().same_unit(&self.context) || !declaration.context().is_live() {
+            return Err(SessionError::NotDriven);
+        }
+        let selected_required = declaration.selected();
         let walk_selected = receipt.walk_key().is_some();
         let admitted = match commit {
             Commit::Ordinary(commit) => commit(receipt),

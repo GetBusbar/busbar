@@ -70,19 +70,26 @@ pub(crate) mod proxy {
         };
         let parsed = url::Url::parse(&url)
             .map_err(|e| format!("proxy env value {shown:?} is not a valid URL: {e}"))?;
-        if parsed.scheme() != busbar_contract::http::uri::Scheme::HTTP.as_str() {
+        // `http://`: a plain CONNECT proxy. `https://`: the proxy itself is reached over TLS
+        // (v1.5.5's client spoke both); the engine runs a TLS session to the proxy and the
+        // CONNECT rides it (`outbound::tunnel::Outer`). Anything else (socks) is refused by name.
+        let over_tls = if parsed.scheme() == busbar_contract::http::uri::Scheme::HTTP.as_str() {
+            false
+        } else if parsed.scheme() == busbar_contract::http::uri::Scheme::HTTPS.as_str() {
+            true
+        } else {
             return Err(format!(
-                "proxy env value {shown:?} uses scheme {:?}: only plain http:// CONNECT proxies \
-                 are supported (an https:// proxy would need TLS-to-proxy, which this tunnel does \
-                 not speak)",
+                "proxy env value {shown:?} uses scheme {:?}: only http:// and https:// CONNECT \
+                 proxies are spoken",
                 parsed.scheme()
             ));
-        }
+        };
         let host = parsed
             .host_str()
             .ok_or_else(|| format!("proxy env value {shown:?} has no host"))?
             .to_owned();
-        let port = parsed.port().unwrap_or(80);
+        // A proxy address with no port takes its scheme's own (RFC 9110 section 4.2).
+        let port = parsed.port().unwrap_or(if over_tls { 443 } else { 80 });
         let auth = (!parsed.username().is_empty()).then(|| {
             use base64::Engine;
 
@@ -97,7 +104,8 @@ pub(crate) mod proxy {
                 base64::engine::general_purpose::STANDARD.encode(creds)
             )
         });
-        Ok(ProxyHop::new(host, port, auth))
+        let hop = ProxyHop::new(host, port, auth);
+        Ok(if over_tls { hop.over_tls() } else { hop })
     }
 
     /// A hop's spellings, made once with the hop: its own `host:port` (a v6 host bracketed) and
@@ -154,12 +162,12 @@ pub(crate) mod proxy {
 
 /// THE `plugins.fetch` DOWNLOAD, run once at boot stage 3c.
 pub(crate) mod fetch {
-    use busbar_contract::abi::host::conn::connector::{
+    use busbar_contract::conn::codes::{
         CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_FRAMER, CAUSE_SECURITY,
         DIRECTION_OUTBOUND, EGRESS_DEFAULT,
     };
-    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
     use busbar_contract::conn::{ConnCause, ConnError, ConnId, NeedRefusal, OpenDesc, PieceKind};
+    use busbar_contract::rendering::{ReadBlob, ReadNeed};
 
     use crate::fetch::Table;
 
@@ -202,7 +210,7 @@ pub(crate) mod fetch {
                 bytes: Vec::new(),
             },
             timeout_ms: 0,
-            keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+            keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
             keep_response_headers: Vec::new(),
             deny_response_headers: Vec::new(),
         }
@@ -502,330 +510,5 @@ pub(crate) mod guard {
                 blocked: d.blocked.iter().filter_map(|e| legacy(e)).collect(),
             }
         }
-    }
-}
-
-/// A transport door bound, opened, refreshed by a config apply, and a linked row's identity read.
-pub(crate) mod doors {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, PoisonError};
-
-    use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
-    use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, RefreshIn};
-    use busbar_contract::abi::sdk::door::{blank_in, blank_out};
-    use busbar_contract::abi::transport::slot;
-    use busbar_plugin_loader::dispatch::{
-        kinds::transport::{Transport as TransportKind, TransportFacts},
-        Bind, ConnTable, Dispatcher, Frame, NoSink, Plugin,
-    };
-
-    use crate::doors::{go, Dispatched, Live, RowFacts, LIVE};
-    use crate::framer::{Call, Crossed, DoorFacts, FramerDoor};
-
-    /// A door's binding on `on`, labelled `instance`.
-    pub(crate) fn bind_as(on: &Dispatcher, instance: &str) -> Bind {
-        Bind {
-            accept: Default::default(),
-            instance: Arc::from(instance),
-            max_inflight_cap: 1024,
-            sink: Arc::new(NoSink),
-            dispatcher: on.adopter(),
-
-            conns: ConnTable::NoNeeds,
-        }
-    }
-
-    /// What a transport door is bound to: the transport lane's own instance label, on the process's
-    /// dispatcher. Made once, when a door is bound.
-    pub fn bind() -> Bind {
-        bind_on(crate::doors::dispatcher())
-    }
-
-    /// [`bind`], adopted by `on`: a composition of its own (a root cell's rig) binds its doors on its
-    /// own dispatcher.
-    pub fn bind_on(on: &Dispatcher) -> Bind {
-        bind_as(on, "transport")
-    }
-
-    /// What a LINKED row's door is bound to: [`bind`], labelled with the row's name (its registry
-    /// name), with the row's plugin log sink.
-    ///
-    /// # Errors
-    /// The row's plugin log sink cannot be opened.
-    pub fn row_bind(row: &str) -> Result<Bind, String> {
-        let bound = bind();
-        let sink = crate::doors::plugin_logs().sink(
-            row,
-            busbar_contract::abi::mechanism::KindCode::Transport,
-            bound.sink.clone(),
-        )?;
-        Ok(Bind {
-            instance: Arc::from(row),
-            sink: Arc::new(sink),
-            ..bound
-        })
-    }
-
-    /// The settings blob a door that declares `blob` is handed (`None`: it declares none, and is handed
-    fn settings_arg(blob: Option<&[u8]>) -> Blob {
-        match blob {
-            Some(b) => Blob {
-                ptr: b.as_ptr(),
-                len: b.len(),
-                fmt: BLOB_JSON,
-                flags: 0,
-            },
-            None => Blob {
-                ptr: std::ptr::null(),
-                len: 0,
-                fmt: BLOB_ABSENT,
-                flags: 0,
-            },
-        }
-    }
-
-    impl Live {
-        /// REFRESH this instance onto the next generation with the deployment's value of every
-        pub(crate) fn refresh(
-            &self,
-            settings: &busbar_contract::transport::TransportSettings,
-        ) -> Result<(), String> {
-            let blob = (!self.settings_keys.is_empty())
-                .then(|| settings_blob(&self.settings_keys, settings));
-            let mut i: RefreshIn = blank_in();
-            i.generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
-            i.settings = settings_arg(blob.as_deref());
-            let mut f = Frame::new(i, blank_out::<OutHead>());
-            let called = self.plugin.answer(life::REFRESH, &mut f);
-            // A failed refresh may have applied part of its settings: either way, what the instance
-            // located before this point is stale now.
-            self.applied.fetch_add(1, Ordering::Release);
-            if called.outcome == Outcome::Ready {
-                return Ok(());
-            }
-            Err(format!(
-                "transport `{}` did not refresh ({:?}){}{}",
-                self.plugin.name(),
-                called.outcome,
-                if called.error.is_some() { ": " } else { "" },
-                String::from_utf8_lossy(called.error.as_deref().unwrap_or_default())
-            ))
-        }
-    }
-
-    /// A CONFIG APPLY, as every opened transport instance takes it (`BUSBAR-1.6.0.md` §11.4): each one
-    /// refreshed with `settings`; the refusals, whole.
-    pub fn refresh_live(settings: &busbar_contract::transport::TransportSettings) -> Vec<String> {
-        refresh_named(settings, |_| true)
-    }
-
-    /// [`refresh_live`] over the live instances whose name `named` keeps: the refusals, whole.
-    pub fn refresh_named(
-        settings: &busbar_contract::transport::TransportSettings,
-        named: impl Fn(&str) -> bool,
-    ) -> Vec<String> {
-        let live: Vec<Arc<Live>> = {
-            let mut book = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
-            book.retain(|w| w.strong_count() > 0);
-            book.iter()
-                .filter_map(std::sync::Weak::upgrade)
-                .filter(|l| named(l.plugin.name()))
-                .collect()
-        };
-        live.iter()
-            .filter_map(|l| l.refresh(settings).err())
-            .collect()
-    }
-
-    /// The deployment's value of the transport setting at config path `path`, as the door's settings
-    fn dealt(
-        path: &str,
-        s: &busbar_contract::transport::TransportSettings,
-        into: &mut Vec<u8>,
-    ) -> std::io::Result<()> {
-        use std::io::Write as _;
-        match path {
-            "advanced.upstream_h2_prior_knowledge" => {
-                write!(into, "{}", s.upstream_h2_prior_knowledge)
-            }
-            "advanced.upstream_http1_only" => write!(into, "{}", s.upstream_http1_only),
-            "limits.upstream_request_timeout_secs" => write!(into, "{}", s.request_timeout_secs),
-            "limits.request_body_max_bytes" => write!(into, "{}", s.request_body_max_bytes),
-            _ => Ok(()),
-        }
-    }
-
-    /// Every path [`dealt`] deals, in the blob's key order (byte order, as a JSON object's sorted keys).
-    const DEALT: [&str; 4] = [
-        "advanced.upstream_h2_prior_knowledge",
-        "advanced.upstream_http1_only",
-        "limits.request_body_max_bytes",
-        "limits.upstream_request_timeout_secs",
-    ];
-
-    /// The settings blob a door that declares `declared` is opened with: each declared path the
-    /// deployment deals, as one compact JSON object with its keys in byte order, written straight
-    /// into the blob.
-    pub(crate) fn settings_blob(
-        declared: &[&str],
-        s: &busbar_contract::transport::TransportSettings,
-    ) -> Vec<u8> {
-        let mut blob = Vec::with_capacity(160);
-        blob.push(b'{');
-        for path in DEALT.iter().filter(|p| declared.contains(p)) {
-            if blob.len() > 1 {
-                blob.push(b',');
-            }
-            blob.push(b'"');
-            blob.extend_from_slice(path.as_bytes());
-            blob.extend_from_slice(b"\":");
-            dealt(path, s, &mut blob).expect("writing into a Vec cannot fail");
-        }
-        blob.push(b'}');
-        blob
-    }
-
-    /// Open `plugin`, bound on `on`, with the deployment's value of every setting its tail declares.
-    pub(crate) fn open_on(
-        plugin: Plugin<TransportKind>,
-        settings: &busbar_contract::transport::TransportSettings,
-        on: Arc<Dispatcher>,
-    ) -> Result<Dispatched, String> {
-        let stated = plugin
-            .context::<TransportFacts>()
-            .cloned()
-            .ok_or_else(|| format!("`{}` states no transport tail", plugin.name()))?;
-        let blob = (!stated.settings_keys.is_empty())
-            .then(|| settings_blob(&stated.settings_keys, settings));
-        let mut i: OpenIn = blank_in();
-        i.settings = settings_arg(blob.as_deref());
-        let mut f = Frame::new(i, blank_out::<OpenOut>());
-        let opened = plugin.answer(life::OPEN, &mut f);
-        if opened.outcome != busbar_contract::abi::mechanism::call::Outcome::Ready {
-            return Err(format!(
-                "transport `{}` would not open ({:?})",
-                plugin.name(),
-                opened.outcome
-            ));
-        }
-
-        plugin.ready(&on, busbar_plugin_loader::dispatch::ready::READY_DEADLINE)?;
-        let accepts = stated.accepts;
-        let facts = DoorFacts {
-            name: plugin.name().to_owned(),
-            claims: stated.claims,
-            role: stated.role,
-            dials: stated.dials,
-            composes_over: stated.composes_over,
-            ported: stated.ported,
-            status_rows: stated.status_rows,
-            status_namespaces: stated.status_namespaces,
-            handoff_status: stated.handoff_status,
-            datagram: stated.datagram,
-            duplex: stated
-                .upgrades
-                .iter()
-                .chain(&stated.sessions)
-                .copied()
-                .collect(),
-        };
-
-        let _ = on.install_io(crate::hostio::process());
-        let live = Arc::new(Live {
-            plugin,
-            settings_keys: stated.settings_keys,
-            generation: AtomicU64::new(0),
-            applied: AtomicU64::new(0),
-        });
-        LIVE.lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Arc::downgrade(&live));
-        Ok(Dispatched {
-            listener_bindings: stated.listener_bindings,
-            live,
-            facts,
-            accepts,
-            detaches: stated.detaches,
-            adopts: stated.adopts,
-            seals: stated.seals,
-            adopts_session: stated.adopts_session,
-            on,
-        })
-    }
-
-    /// A linked row's [`RowFacts`] off its door's transport facts, or the refusal naming the door.
-    pub(crate) fn checked_row(facts: TransportFacts) -> Result<RowFacts, String> {
-        let Some(&key) = facts.claims.first() else {
-            return Err(format!(
-                "the transport door `{}` claims no scheme: a linked row's key is its door's own claim",
-                facts.name
-            ));
-        };
-        if key != facts.name {
-            return Err(format!(
-                "the transport door's Statement is named `{}` but its own claim (its first) is `{key}`: \
-                 a linked row's key is its door's own claim, and the two must be one",
-                facts.name
-            ));
-        }
-        Ok(RowFacts {
-            key,
-            composes_over: facts.composes_over,
-            session: !facts.sessions.is_empty(),
-        })
-    }
-
-    /// Locate an endpoint on an admitted, bound declaration without opening a transport instance
-    /// (a configuration locate, at boot).
-    pub(crate) fn locate_bound(
-        plugin: &Plugin<TransportKind>,
-        target: &str,
-    ) -> Result<crate::framer::Located, String> {
-        struct Locator<'a> {
-            plugin: &'a Plugin<TransportKind>,
-            facts: DoorFacts,
-        }
-        impl FramerDoor for Locator<'_> {
-            fn facts(&self) -> &DoorFacts {
-                &self.facts
-            }
-            fn cross(&self, call: Call<'_>) -> Crossed {
-                match call {
-                    Call::Locate(i, o) => go(self.plugin, slot::LOCATE, i, o),
-                    _ => Crossed {
-                        outcome: Outcome::Refused,
-                        error: None,
-                    },
-                }
-            }
-        }
-        if plugin.is_open() {
-            return Err("configuration locate requires an unopened declaration".into());
-        }
-        let stated = plugin
-            .context::<TransportFacts>()
-            .ok_or("the admitted transport has no declaration")?;
-        let locator = Locator {
-            plugin,
-            facts: DoorFacts {
-                name: plugin.name().to_owned(),
-                claims: stated.claims.clone(),
-                role: stated.role,
-                dials: stated.dials,
-                composes_over: stated.composes_over.clone(),
-                ported: stated.ported,
-                status_rows: stated.status_rows.clone(),
-                status_namespaces: stated.status_namespaces.clone(),
-                handoff_status: stated.handoff_status.clone(),
-                duplex: stated
-                    .upgrades
-                    .iter()
-                    .chain(&stated.sessions)
-                    .copied()
-                    .collect(),
-                datagram: stated.datagram,
-            },
-        };
-        crate::framer::locate(&locator, target).map_err(|e| e.to_string())
     }
 }

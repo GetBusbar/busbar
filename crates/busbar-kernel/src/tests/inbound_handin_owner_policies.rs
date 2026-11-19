@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::guest::{Claimant, Route};
-use busbar_contract::abi::auth::AuthPoints;
-use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_POST, PATH_EXACT};
+use busbar_contract::route::AuthPoints;
+use busbar_contract::route::{METHOD_GET, METHOD_POST, PATH_EXACT};
 
 fn head(path: &str, fields: &[(&str, &str)], query: Option<&str>) -> Head {
     let mut h = Head::default();

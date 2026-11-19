@@ -31,6 +31,7 @@ fn cx(delivery: u64) -> CallCx {
         deadline: Instant::now() + Duration::from_secs(30),
         request_id: delivery,
         stack: CallStack::default(),
+        mono_ns: 0,
     }
 }
 

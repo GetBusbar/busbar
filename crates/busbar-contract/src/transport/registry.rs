@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-
+//! The fact keys the kernel reserves for a transport, and the transport settings with their defaults.
 //! The transport kind's ABI generation, the fact keys the kernel reserves, and the boot check that
-
-use core::fmt;
-
-/// The transport kind's ABI generation, named here for the transports that reach it on this path.
-pub use crate::abi::transport::TRANSPORT_ABI;
 
 /// The transport fact keys the kernel reserves, spelled once.
 pub mod facts {
@@ -86,97 +81,4 @@ impl Default for TransportSettings {
             request_timeout_secs: DEFAULT_REQUEST_TIMEOUT_SECS,
         }
     }
-}
-
-/// One registered transport, as the registry holds it for the boot check.
-///
-/// The declarations are associated constants, which a trait object cannot read; this is them as
-/// data, recorded at registration by the composition root that named the transport. Nothing here is
-/// derived — every field is what the crate declared or what the root wired — because a check that
-/// re-derived its own inputs would agree with itself for free.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Registered {
-    /// The transport's registry key.
-    pub key: &'static str,
-    /// The layers it declares it can be built over.
-    pub composes_over: std::borrow::Cow<'static, [&'static str]>,
-    /// The layer it was ACTUALLY built over, where the root composed it over one.
-    pub composed_over: Option<&'static str>,
-}
-
-/// A composition the registry will not boot on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CompositionError {
-    /// A transport declares it composes over a layer no registered transport provides.
-    ///
-    /// A declaration nothing checks is the frame-honesty problem one layer up: the stack a node
-    /// reports is the stack its declarations describe, and a name that resolves to nothing means
-    /// the description was never true.
-    UnregisteredLayer {
-        /// The transport that declared it.
-        transport: &'static str,
-        /// The layer it named.
-        layer: &'static str,
-    },
-    /// A transport was composed over a layer it does not declare.
-    ///
-    /// The other direction of the same rule: a declared composition must be the one actually used,
-    /// or the declaration describes a node nobody is running.
-    UndeclaredComposition {
-        /// The transport that was composed.
-        transport: &'static str,
-        /// What it was actually built over.
-        used: &'static str,
-    },
-    /// Two transports registered under one key.
-    DuplicateKey(&'static str),
-}
-
-impl fmt::Display for CompositionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnregisteredLayer { transport, layer } => write!(
-                f,
-                "transport `{transport}` composes over `{layer}`, which no registered transport \
-                 provides"
-            ),
-            Self::UndeclaredComposition { transport, used } => write!(
-                f,
-                "transport `{transport}` was composed over `{used}`, which it does not declare"
-            ),
-            Self::DuplicateKey(key) => {
-                write!(f, "two transports registered under the key `{key}`")
-            }
-        }
-    }
-}
-
-impl std::error::Error for CompositionError {}
-
-/// The boot check over a registry's transports: every declared layer exists, and every composition
-pub fn check_composition(registered: &[Registered]) -> Result<(), CompositionError> {
-    for (i, r) in registered.iter().enumerate() {
-        if registered[..i].iter().any(|other| other.key == r.key) {
-            return Err(CompositionError::DuplicateKey(r.key));
-        }
-    }
-    for r in registered {
-        for layer in r.composes_over.iter() {
-            if !registered.iter().any(|other| other.key == *layer) {
-                return Err(CompositionError::UnregisteredLayer {
-                    transport: r.key,
-                    layer,
-                });
-            }
-        }
-        if let Some(used) = r.composed_over {
-            if !r.composes_over.contains(&used) {
-                return Err(CompositionError::UndeclaredComposition {
-                    transport: r.key,
-                    used,
-                });
-            }
-        }
-    }
-    Ok(())
 }

@@ -144,7 +144,7 @@ impl LoginGuard {
             if !self.unknown_warned.swap(true, Ordering::Relaxed) {
                 diag_warn!(LOGIN_CLIENT_ADDRESS_UNKNOWN, reason = ?why,
                     "the client address of a sign-in or admin request is unknown; per-source \
-                     limits are skipped for it (set advanced.trusted_proxies when an ingress \
+                     limits are skipped for it (set client_address.trusted_proxies when an ingress \
                      forwards for clients)");
             } else {
                 diag_debug!(LOGIN_CLIENT_ADDRESS_UNKNOWN, reason = ?why,
