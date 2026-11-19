@@ -147,3 +147,330 @@ fn a_planes_admin_route_is_handed_no_credential_the_admin_gate_read() {
         "every other field is handed on untouched and in order"
     );
 }
+
+/// A plane with one ROUTE_ADMIN route that notes, from inside its `request` crossing, the head
+/// fields and the identity it was handed, then refuses (a refused crossing is rendered 503).
+mod admitted {
+    use std::sync::{Arc, Mutex};
+
+    use busbar_contract::kinds::codes::KindCode;
+    use busbar_contract::route::METHOD_POST;
+    use busbar_contract::services::Caller;
+    use busbar_plugin_abi::fail::FaultReason;
+    use busbar_plugin_abi::host_side::caller::BoxFut;
+    use busbar_plugin_abi::plane::{
+        AUTH_OPERATOR, CALLERS_SHARED, MONEY_NONE, ROUTE_ADMIN, SCOPE_NONE,
+    };
+    use busbar_ports::plane::{
+        PlaneIn, PlaneOut, PlanePort, PlaneSession, RouteInfo, TargetIn, UsageClass,
+    };
+    use busbar_ports::{CallCx, PortError};
+
+    use crate::host_services::KernelServices;
+    use crate::plane_driver::port::{PortDriver, PortSeat};
+    use crate::plane_driver::port_intents::{IntentHost, Looked, Namespace};
+    use crate::plugin_records::{CommitOp, CommitOutcome, RecordsDenied, Scope};
+    use crate::refusal::CoreRefusals;
+
+    /// What the plane's `request` crossing was handed: its head fields and its identity records.
+    pub(super) type Handed = Mutex<Option<(Vec<(String, Vec<u8>)>, Vec<u8>)>>;
+
+    pub(super) struct AdminPlane {
+        routes: [RouteInfo; 1],
+        pub(super) handed: Handed,
+    }
+
+    fn refused() -> PortError {
+        PortError::Refused {
+            code: 1,
+            text: "refused".into(),
+            error: None,
+        }
+    }
+
+    impl PlanePort for AdminPlane {
+        fn route_admission(&self, _: u32) -> Option<(u32, u32, u32, &str)> {
+            Some((SCOPE_NONE, MONEY_NONE, CALLERS_SHARED, ""))
+        }
+        fn routes(&self) -> &[RouteInfo] {
+            &self.routes
+        }
+        fn dialects(&self) -> &[Box<str>] {
+            &[]
+        }
+        fn usage_classes(&self) -> &[UsageClass] {
+            &[]
+        }
+        fn usage_shared(&self) -> (Arc<[UsageClass]>, Arc<[Box<str>]>) {
+            Default::default()
+        }
+        fn facts(&self) -> u64 {
+            0
+        }
+        fn tick_s(&self) -> Option<u64> {
+            None
+        }
+        fn admin_openapi(&self) -> Option<&str> {
+            Some("{}")
+        }
+        fn charge(&self, _: FaultReason) {}
+        fn request(
+            &self,
+            req: &PlaneIn<'_>,
+            _: &[u8],
+            _: &mut dyn FnMut(PlaneOut<'_>),
+        ) -> Result<PlaneSession, PortError> {
+            let headers = req
+                .headers
+                .iter()
+                .map(|pair| (pair.name.get().to_owned(), pair.value.get().to_vec()))
+                .collect();
+            *self.handed.lock().unwrap() = Some((headers, req.identity.to_vec()));
+            Err(refused())
+        }
+        fn upstream(
+            &self,
+            _: &mut PlaneSession,
+            _: &TargetIn<'_>,
+            _: &mut dyn FnMut(PlaneOut<'_>),
+        ) -> Result<(), PortError> {
+            Err(refused())
+        }
+        fn piece(
+            &self,
+            _: &mut PlaneSession,
+            _: u32,
+            _: u32,
+            _: u32,
+            _: &[u8],
+            _: &mut dyn FnMut(PlaneOut<'_>),
+        ) -> Result<(), PortError> {
+            Err(refused())
+        }
+        fn rewrite(
+            &self,
+            _: &mut PlaneSession,
+            _: &[u8],
+            _: &mut dyn FnMut(PlaneOut<'_>),
+        ) -> Result<(), PortError> {
+            Err(refused())
+        }
+        fn end(&self, _: PlaneSession, _: &mut dyn FnMut(PlaneOut<'_>)) -> Result<(), PortError> {
+            Err(refused())
+        }
+        fn render(
+            &self,
+            _: &PlaneIn<'_>,
+            _: u32,
+            _: &[u8],
+            sink: &mut dyn FnMut(PlaneOut<'_>),
+        ) -> Result<(), PortError> {
+            sink(PlaneOut::Respond { status: 503 });
+            sink(PlaneOut::End);
+            Ok(())
+        }
+        fn probe(
+            &self,
+            _: &TargetIn<'_>,
+            _: &mut dyn FnMut(PlaneOut<'_>),
+        ) -> Result<PlaneSession, PortError> {
+            Err(refused())
+        }
+        fn demux(
+            &self,
+            _: &str,
+            _: &[u8],
+            _: &mut dyn FnMut(PlaneOut<'_>),
+        ) -> Result<(), PortError> {
+            Err(refused())
+        }
+        fn admin<'a>(
+            &'a self,
+            _: CallCx,
+            _: u32,
+            _: &'a [u8],
+        ) -> BoxFut<'a, Result<Vec<u8>, PortError>> {
+            Box::pin(async { Err(refused()) })
+        }
+    }
+
+    /// A host with no store: an admin route here states no intent.
+    struct NoIntents;
+
+    impl IntentHost for NoIntents {
+        fn lookup<'a>(
+            &'a self,
+            _: Scope,
+            _: u32,
+            _: u32,
+            _: &'a [u8],
+            _: &'a mut Looked,
+        ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+            Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
+        }
+        fn store<'a>(
+            &'a self,
+            _: Scope,
+            _: u32,
+            _: u64,
+            _: &'a [u8],
+            _: &'a [u8],
+        ) -> BoxFut<'a, Result<(), RecordsDenied>> {
+            Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
+        }
+        fn delete<'a>(&'a self, _: Scope, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+            Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
+        }
+        fn commit<'a>(
+            &'a self,
+            _: Scope,
+            _: &'a [CommitOp<'a>],
+        ) -> BoxFut<'a, Result<CommitOutcome, RecordsDenied>> {
+            Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
+        }
+        fn push<'a>(&'a self, _: u64, _: &'a [u8]) -> BoxFut<'a, Result<(), RecordsDenied>> {
+            Box::pin(std::future::ready(Err(RecordsDenied::Unavailable)))
+        }
+        fn signal(&self, _: &[u8], _: Option<[u8; 32]>) {}
+    }
+
+    /// One installed plane instance whose admin route is `POST pattern`, and the plane.
+    pub(super) fn seat(pattern: &str) -> (PortSeat, Arc<AdminPlane>) {
+        let plane = Arc::new(AdminPlane {
+            routes: [RouteInfo {
+                route: 7,
+                methods: METHOD_POST,
+                flags: ROUTE_ADMIN,
+                auth: AUTH_OPERATOR,
+                pattern: pattern.into(),
+                cred_header: None,
+                resource_kinds: Default::default(),
+            }],
+            handed: Mutex::new(None),
+        });
+        let driver = PortDriver::new(
+            Arc::clone(&plane) as Arc<dyn PlanePort>,
+            Arc::new(KernelServices::new()),
+            Caller::for_test(Arc::from("admin-plane"), KindCode::Plane),
+            Arc::new(CoreRefusals::new()),
+            &|_| None,
+        )
+        .unwrap();
+        let seat = PortSeat {
+            public_url: None,
+            image: Arc::new(
+                crate::plane_driver::image_identity::PlaneImageIdentity::new(
+                    "admin-plane".into(),
+                    None,
+                )
+                .unwrap(),
+            ),
+            instance: "admin-plane".into(),
+            request_routes: Arc::new(
+                crate::plane_driver::request_admission::RequestRoutes::new(
+                    "admin-plane",
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            ),
+            channel_budget: crate::channels::budget::ChannelBudget::new().instance(),
+            driver: Arc::new(driver),
+            audience: None,
+            intents: Arc::new(NoIntents),
+            who: Namespace {
+                plugin: Arc::from("admin-plane"),
+                name: Arc::from("admin-plane"),
+                instance: 1,
+                slot: 1,
+            },
+            upstream: None,
+            carrier: None,
+        };
+        (seat, plane)
+    }
+}
+
+/// PROOF-053 (LEDGER S-C3; ci/owed/cut/SECURITY-OWED.tsv
+/// `a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_the_actor`): an admin
+/// request the operator chain admitted reaches the native plane's admin route through [`answer`]
+/// (a real `PortDriver::serve`, the plane faked at its port) holding none of the carriers the admin
+/// gate consumed, a gate-declared carrier outside the floor included, and served as the principal
+/// the gate admitted. The identity records the plane is handed are built from the same
+/// `Credentials.principal` that `PortDriver::serve` makes the session's subject, the principal
+/// every AUDIT row the route states is booked under (`port_serve::AuditOnly`; booking under a
+/// principal is pinned in `port_serve_tests`). An anonymous subject here writes the operator's
+/// admin actions to the audit chain as `anonymous`.
+#[tokio::test]
+async fn an_admitted_admin_request_reaches_the_plane_without_the_consumed_credential_as_its_principal(
+) {
+    use crate::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    use axum::http::{HeaderMap, HeaderName, HeaderValue};
+
+    const SECRET: &str = "operator-secret-do-not-forward";
+    // A carrier the configured admin gate reads a credential from that is not on the floor list.
+    let gate_carrier = HeaderName::from_static("x-busbar-operator-key");
+    let mut headers = HeaderMap::new();
+    headers.append("content-type", HeaderValue::from_static("application/json"));
+    headers.append(
+        "authorization",
+        HeaderValue::from_str(&format!("Bearer {SECRET}")).unwrap(),
+    );
+    headers.append(gate_carrier.clone(), HeaderValue::from_static(SECRET));
+    headers.append(gate_carrier.clone(), HeaderValue::from_static(SECRET));
+    headers.append("x-plane-own-field", HeaderValue::from_static("kept"));
+    let consumed = crate::auth::ConsumedCredentials::carrying(&[
+        axum::http::header::AUTHORIZATION,
+        gate_carrier,
+    ]);
+
+    let (seat, plane) = admitted::seat("/admin/plane/things");
+    let request = AdminRequest {
+        request: ProcessAdmission::new(2)
+            .try_enter(AdmissionClass::Operator)
+            .unwrap(),
+        method: "POST".into(),
+        path: "/admin/plane/things".into(),
+        query: String::new(),
+        headers,
+        consumed: Some(consumed),
+        principal: crate::auth::AuthPrincipal(Some(busbar_contract::auth::Principal::from_id(
+            "operator-alice",
+        ))),
+        body: bytes::Bytes::new(),
+        request_id: 9,
+        now_s: 1,
+    };
+    let answered = Box::pin(answer(std::slice::from_ref(&seat), request)).await;
+    assert!(answered.is_some(), "the plane's admin route answered");
+
+    let (mut handed, identity) = plane
+        .handed
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the admitted request reached the plane");
+    for (name, value) in &handed {
+        assert!(
+            !value
+                .windows(SECRET.len())
+                .any(|window| window == SECRET.as_bytes()),
+            "the plane was handed the operator's credential in `{name}`"
+        );
+    }
+    handed.sort();
+    assert_eq!(
+        handed,
+        vec![
+            ("content-type".to_owned(), b"application/json".to_vec()),
+            ("x-plane-own-field".to_owned(), b"kept".to_vec()),
+        ],
+        "only the consumed carriers are withheld; every other field is handed on untouched"
+    );
+    assert_eq!(
+        identity,
+        crate::plane_driver::port_auth::subject_identity("operator-alice"),
+        "the admin route is served as the principal the admin gate admitted, not as anonymous"
+    );
+}

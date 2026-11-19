@@ -727,7 +727,11 @@ async fn retirement_a_cancel_fault_is_not_cancelled_again() {
     drop(walk);
 
     let once = vec![Seen::Finished];
-    assert_eq!(r.seam.seen(), once, "the failed end, once: no cancel, no bill");
+    assert_eq!(
+        r.seam.seen(),
+        once,
+        "the failed end, once: no cancel, no bill"
+    );
     assert_eq!(r.money.open_units(), 1, "the unit waits for its owner");
 
     r.billing.settle(ctx.key, end_of(502, false));
