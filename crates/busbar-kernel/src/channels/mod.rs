@@ -56,7 +56,7 @@ mod tests;
 /// `plane_channel_unattributed_total` when there is none. DX_BROADCAST hands the message to `SessionSignals::signal`
 /// with the instance, the key, the channel's subject (CH_PER_CALLER) and P_SIGNAL | P_TEXT. The reader task never
 /// blocks on a session: every delivery is a `try_send` on the session's bounded channel.
-/// **Respawn and trip (round 6; today's transport-stdio supervisor.rs, moved into core with the carrier):** a
+/// **Respawn and trip (round 6; the retired stdio plugin's supervisor, now core's with the carrier):** a
 /// child that exits or cannot be spawned ends its generation; the next attach respawns it no sooner than
 /// 100 ms × 2^(n−1) after the n-th end counted inside a sliding 60 s window (100, 200, 400, 800 ms; schedule
 /// from `backon::ExponentialBuilder`, no hand-rolled clock math); the 5th end inside 60 s **trips** the channel:
