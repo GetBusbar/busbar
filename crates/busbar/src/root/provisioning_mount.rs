@@ -83,7 +83,12 @@ impl ProvisionMount {
         if req.extensions().get::<RequestContext>().is_none() {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
-        let Some(deadline) = Instant::now().checked_add(self.timeout) else {
+        // The request's one reading of the node's monotonic clock: the deadline is set from it and
+        // the plane is handed it.
+        let mono_ns = busbar_kernel::store::monotonic_ns();
+        let Some(deadline) =
+            busbar_contract::mono_instant::instant_at(mono_ns).checked_add(self.timeout)
+        else {
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         };
         let Ok(id) = self
@@ -98,6 +103,7 @@ impl ProvisionMount {
                 deadline,
                 request_id: id,
                 stack: CallStack::default(),
+                mono_ns,
             },
         };
         match tokio::time::timeout_at(deadline.into(), invocation.run(req)).await {
