@@ -195,7 +195,7 @@ mod tests {
                 pub const A: u32 = 1;
                 pub struct S {
                     /// A field's.
-                    pub a: u32,
+                    pub a: u32
                 }
             )
             .as_bytes()),
