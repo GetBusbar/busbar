@@ -707,7 +707,11 @@ mod tests {
         ledger.part_at(control(1), 5, 115).unwrap();
         ledger.end(end(1, END_FLUSH, 0)).unwrap();
         ledger.accepted(114);
-        assert_eq!(ledger.verdict(1), None, "one byte of the end marker is not out");
+        assert_eq!(
+            ledger.verdict(1),
+            None,
+            "one byte of the end marker is not out"
+        );
         ledger.accepted(115);
         assert_eq!(
             ledger.take(1),

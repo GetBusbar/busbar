@@ -18,6 +18,10 @@ pub struct ProxyHop {
     /// What a CONNECT request carries after its `Host` line: the `Proxy-Authorization` line where
     /// set, then the blank line. Spelled once with the hop.
     connect_tail: String,
+    /// The proxy itself is reached over TLS (its address was written `https://`): the engine runs
+    /// a TLS session to the proxy, verified against the proxy's own name, and the CONNECT and the
+    /// tunnel ride it.
+    secure: bool,
 }
 
 impl std::fmt::Debug for ProxyHop {
@@ -26,6 +30,7 @@ impl std::fmt::Debug for ProxyHop {
             .field("host", &self.host)
             .field("port", &self.port)
             .field("auth", &self.auth.as_ref().map(|_| "<redacted>"))
+            .field("secure", &self.secure)
             .finish()
     }
 }
@@ -44,7 +49,21 @@ impl ProxyHop {
             auth,
             endpoint,
             connect_tail,
+            secure: false,
         }
+    }
+
+    /// The same hop, reached over TLS (a proxy address written `https://`).
+    #[must_use]
+    pub fn over_tls(mut self) -> Self {
+        self.secure = true;
+        self
+    }
+
+    /// The proxy itself is reached over TLS.
+    #[must_use]
+    pub fn secure(&self) -> bool {
+        self.secure
     }
 
     /// The proxy's host.

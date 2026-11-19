@@ -168,10 +168,7 @@ mod tests {
 
     #[test]
     fn the_three_output_records_keep_their_numbers() {
-        assert_eq!(
-            (WIRE_PART, WIRE_END, WIRE_SEALED),
-            (0x0119, 0x011A, 0x011B)
-        );
+        assert_eq!((WIRE_PART, WIRE_END, WIRE_SEALED), (0x0119, 0x011A, 0x011B));
     }
 
     #[test]

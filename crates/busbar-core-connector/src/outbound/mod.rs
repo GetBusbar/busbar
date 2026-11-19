@@ -17,21 +17,32 @@
 //! * [`redial`]: what was sent decides: send again, charge the provider, and what is recorded.
 //! * [`tunnel`]: the operator's proxy on the dial: the CONNECT, its answer, and the proxy reached
 //!   over TLS.
+//! * [`connect`]: several addresses for one name: each its share of the time, the other family
+//!   started after a short delay.
 //! * [`ws`]: a WebSocket upstream on the dial.
+//! * [`wire`]: the driver. One connection's ledger, slots, credit and lending state, applied to
+//!   each answer of the transport in the one order that is right. The dial calls the driver and
+//!   the three planners (`lend::choose`, `tunnel::Dialling`, `connect::Race`), nothing else.
 //!
 //! Order of use on one dialled connection (the dial's wiring follows this, nothing else):
 //!
-//! 1. `lend::choose` picks the connection. A dial plans its route with `tunnel::route`.
-//! 2. `tunnel::Phase` drives connect, the proxy's own TLS, the CONNECT, the target's TLS.
-//! 3. `begin` answers `records::Session`: `credit::Credit::new` and `lend::InUse::state`.
+//! 1. `lend::choose` picks the connection: a stream on one in use, a kept idle one, or a dial.
+//! 2. A dial: `tunnel::hop_for` and `tunnel::Target::of` plan the route, `connect::Race` orders
+//!    the addresses, `tunnel::Dialling` drives the steps below the session (connect, the proxy's
+//!    own TLS, the CONNECT, the target's TLS).
+//! 3. `begin`'s answer goes to `wire::Wire::answer` like every answer: its `SESSION` record makes
+//!    the connection's credit and lending state.
 //! 4. A head: `seal::Slots::take_from` (the opener's head loses its sealed values and its sealing
-//!    metadata), `seal::Slots::admit` (the plaintext rule, before any byte), the head records with
-//!    `seal::Slots::declared`, then `emit(0, HEAD)`.
-//! 5. Every answer, in order, each item one [`records::Out`]: `delivery::Ledger` first (a breach
-//!    ends the session), then `seal::Slots::cover` for a sealed part, `credit` for inbound body.
-//! 6. The socket took bytes: `delivery::Ledger::accepted`.
-//! 7. The attempt ended: `delivery::Ledger::state_of` then `redial::decide`.
+//!    metadata), `seal::Slots::admit` (the plaintext rule, before any byte), the head records
+//!    written from `seal::Slots::declared`, `wire::Wire::offer`, then `emit(0, HEAD)`.
+//! 5. Every answer: `wire::Wire::answer`. Every `emit` of a body, an end, a refusal or a reset:
+//!    the matching `wire::Wire::emitting_*` / `stopping` first.
+//! 6. The socket took bytes: `wire::Wire::accepted`. A reader took body bytes: `wire::Wire::taken`.
+//! 7. The attempt ended: `wire::Wire::state_of` and `wire::Wire::ended_how`, then
+//!    `redial::decide`; `wire::Wire::over` releases the stream (and hands back the sealed values
+//!    when the request is sent again).
 
+pub(crate) mod connect;
 pub(crate) mod credit;
 pub(crate) mod delivery;
 pub(crate) mod lend;
@@ -39,4 +50,5 @@ pub(crate) mod records;
 pub(crate) mod redial;
 pub(crate) mod seal;
 pub(crate) mod tunnel;
+pub(crate) mod wire;
 pub(crate) mod ws;

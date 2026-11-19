@@ -77,6 +77,21 @@ pub(crate) enum SealBreach {
     Uncovered,
 }
 
+/// A run of a sealed value that a `WIRE_SEALED` named and the grammar admitted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Covered {
+    slot: u32,
+    from: u32,
+    to: u32,
+}
+
+impl Covered {
+    /// How many bytes.
+    pub(crate) const fn len(&self) -> u32 {
+        self.to - self.from
+    }
+}
+
 struct Slot {
     place: Place,
     name: String,
@@ -251,13 +266,22 @@ impl Slots {
         self.stream
     }
 
-    /// A `WIRE_SEALED`: the bytes the engine writes in its place. The caller puts the returned
-    /// slice into the run it is building and writes the run in one write; it never copies it
-    /// anywhere else.
+    /// The bytes a covered run stands for. The caller puts the slice into the run it is building
+    /// and writes the run in one write ([`queue_run`]); it never copies it anywhere else. Empty
+    /// for a run that was not made by [`Self::cover`] on these slots.
+    pub(crate) fn bytes(&self, covered: Covered) -> &[u8] {
+        self.slots
+            .get(covered.slot as usize)
+            .and_then(|slot| slot.value.get(covered.from as usize..covered.to as usize))
+            .unwrap_or_default()
+    }
+
+    /// A `WIRE_SEALED`: checked against the grammar, and the slot advanced. The run it names is
+    /// read with [`Self::bytes`] when the answer's run is built.
     ///
     /// # Errors
     /// The rule the part breaks; the slot is not advanced.
-    pub(crate) fn cover(&mut self, sealed: WireSealed) -> Result<&[u8], SealBreach> {
+    pub(crate) fn cover(&mut self, sealed: WireSealed) -> Result<Covered, SealBreach> {
         if self.stream != Some(sealed.stream) || self.slots.is_empty() {
             return Err(SealBreach::WrongStream);
         }
@@ -277,7 +301,11 @@ impl Slots {
             .filter(|end| *end as usize <= slot.value.len())
             .ok_or(SealBreach::PastEnd)?;
         slot.covered = end;
-        Ok(&slot.value[sealed.offset as usize..end as usize])
+        Ok(Covered {
+            slot: sealed.slot,
+            from: sealed.offset,
+            to: end,
+        })
     }
 
     /// Every slot is covered exactly.
@@ -515,9 +543,11 @@ mod tests {
         slots.bind(5);
         assert_eq!(slots.before_payload_or_end(), Err(SealBreach::Uncovered));
         // Split across a frame boundary: two parts.
-        assert_eq!(slots.cover(sealed(5, 0, 0, 10)).unwrap(), &KEY[..10]);
+        let first = slots.cover(sealed(5, 0, 0, 10)).unwrap();
+        assert_eq!(slots.bytes(first), &KEY[..10]);
         assert!(!slots.covered());
-        assert_eq!(slots.cover(sealed(5, 0, 10, 14)).unwrap(), &KEY[10..]);
+        let second = slots.cover(sealed(5, 0, 10, 14)).unwrap();
+        assert_eq!(slots.bytes(second), &KEY[10..]);
         assert!(slots.covered());
         assert!(slots.before_payload_or_end().is_ok());
     }
@@ -574,7 +604,8 @@ mod tests {
         slots.rewind();
         assert_eq!(slots.stream(), None);
         slots.bind(9);
-        assert_eq!(slots.cover(sealed(9, 0, 0, 24)).unwrap(), KEY);
+        let again = slots.cover(sealed(9, 0, 0, 24)).unwrap();
+        assert_eq!(slots.bytes(again), KEY);
     }
 
     #[test]
@@ -596,7 +627,8 @@ mod tests {
         let mut slots = Slots::take_from(&mut fields).unwrap();
         slots.bind(1);
         let mut out = SecureVec::new();
-        let value = slots.cover(sealed(1, 0, 0, 24)).unwrap();
+        let covered = slots.cover(sealed(1, 0, 0, 24)).unwrap();
+        let value = slots.bytes(covered);
         queue_run(None, &mut out, &[b"x-api-key: ", value, b"\r\n\r\n"]).unwrap();
         let mut wire = b"x-api-key: ".to_vec();
         wire.extend_from_slice(KEY);
