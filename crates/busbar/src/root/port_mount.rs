@@ -91,11 +91,20 @@ pub(crate) fn auth_of(effective: u32) -> RouteAuth {
     }
 }
 
+/// The effective chain of each route that declares D_ROUTE_CRED_HEADER (§12.11), by plane instance
+/// and route id: resolved once per candidate, kept by the listener plan's assembly only.
+pub(crate) type RouteChains = std::collections::BTreeMap<
+    String,
+    std::collections::BTreeMap<u32, Vec<super::serve::ChainAuth>>,
+>;
+
 /// The same native route table admitted by the driver seals physical listener claims. The
 /// route id is the renderer's native selector; native render has no legacy dialect number.
+/// A route in `route_chains` runs its own effective chain; every other one runs `chain`.
 pub(crate) fn guest_lines(
     seats: &[PortSeat],
-    chain: &[(String, busbar_contract::route::AuthPoints)],
+    chain: &[super::serve::ChainAuth],
+    route_chains: &RouteChains,
 ) -> Vec<busbar_kernel::guest::Line> {
     use busbar_contract::route::{method_bit, PATH_EXACT, PATH_PATTERN};
     use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
@@ -103,13 +112,14 @@ pub(crate) fn guest_lines(
         .iter()
         .flat_map(|seat| {
             let routes = seat.driver.routes();
+            let own = route_chains.get(&seat.instance);
             // A ROUTE_UPGRADE route (§12.27) is sealed like a data route: its head is matched,
             // authenticated and answered by the native listener (`listener_native_upgrade.rs`).
             routes
                 .data
                 .iter()
                 .chain(&routes.upgrade)
-                .filter_map(|route| {
+                .filter_map(move |route| {
                     let methods = methods_of(route.methods)
                         .into_iter()
                         .fold(0, |mask, method| mask | method_bit(method.as_str()));
@@ -128,7 +138,10 @@ pub(crate) fn guest_lines(
                         claimant: Claimant::Plane(seat.instance.clone()),
                         dialect: 0,
                         auth: if auth_of(route.effective) == RouteAuth::Key {
-                            super::serve::chain_auth(chain)
+                            super::serve::chain_auth(
+                                own.and_then(|own| own.get(&route.route))
+                                    .map_or(chain, Vec::as_slice),
+                            )
                         } else {
                             LineAuth::None
                         },
@@ -817,6 +830,24 @@ pub(crate) enum UpgradeStep<'a> {
     HandOver(&'a super::min3_boot::transports::ServedTransport),
 }
 
+/// The words of the native listener's one unauthenticated refusal (every route, and no route).
+pub(crate) const UNAUTHENTICATED: &str = "authentication required";
+
+/// The native listener's answer to a request that did not authenticate: 401, the same bytes on
+/// every route and on none. `presented`: the request carried one of the route's credential carriers.
+pub(crate) fn unauthenticated(presented: bool) -> busbar_kernel::refusal::ClientRefusal {
+    use busbar_plugin_abi::fail::refused::{R_AUTH_REQUIRED, R_BAD_CREDENTIAL};
+    busbar_kernel::refusal::ClientRefusal {
+        status: 401,
+        code: if presented {
+            R_BAD_CREDENTIAL
+        } else {
+            R_AUTH_REQUIRED
+        },
+        text: UNAUTHENTICATED.into(),
+    }
+}
+
 /// The words of core's two refusals before any 101.
 pub(crate) const NOT_AN_UPGRADE: &str = "this route accepts only a websocket upgrade request";
 pub(crate) const NO_WEBSOCKET: &str = "no transport on this listener can carry a websocket upgrade";
@@ -848,14 +879,17 @@ pub(crate) async fn upgrade_refusal_items(
     seat: &PortSeat,
     route: u32,
     head: &Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
+    withheld: &Arc<[Box<str>]>,
     request_id: u64,
     refusal: busbar_kernel::refusal::ClientRefusal,
 ) -> Vec<ToClient> {
-    let http = HttpIn::new(
+    let mut http = HttpIn::new(
         HttpHead::Snapshot(Arc::clone(head)),
         Bytes::new(),
         request_id,
     );
+    // The plane renders the refusal on the head it is lent: never the route's credential carriers.
+    http.withhold(Arc::clone(withheld));
     // Core's words are lent for the life of the process: keeping them for the fallback copies nothing.
     let fallback = refusal.clone();
     match seat

@@ -231,7 +231,7 @@ fn frozen_selection_shares_native_backing_and_rejects_equal_legacy_or_foreign_sn
     assert_eq!(budget.used(), used);
     assert!(frozen.matches_snapshot(&snapshot));
     frozen
-        .with_selection_input(|view, body| {
+        .with_selection_input(&[], |view, body| {
             assert_eq!(
                 (view.route, view.auth, view.method, view.path, view.query),
                 (3, 0, "POST", "/original", "")
