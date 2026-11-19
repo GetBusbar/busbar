@@ -396,6 +396,7 @@ pub(crate) fn publish_start() -> Result<(), String> {
     let prepared = prepare(&process, &PhaseOneIn::of(&plugins)).map_err(|refusal| refusal.0)?;
     prepared.publish_secrets();
     prepared.publish_hooks();
+    prepared.publish_scope_kinds();
     prepared.publish_operator();
     let _ = START_IMAGES_GRAMMAR.set(prepared.grammar.clone());
     Ok(())

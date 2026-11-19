@@ -766,7 +766,7 @@ dependencies = [
 [[package]]
 name = "busbar-kind-transport-hyper"
 version = "0.1.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=0eeb953bd331fb5c08849dfd547d242a50fca908#0eeb953bd331fb5c08849dfd547d242a50fca908"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=ad0850a7700bbc999395f7f98ed41aa328333acd#ad0850a7700bbc999395f7f98ed41aa328333acd"
 dependencies = [
  "busbar-plugin-abi",
  "hyper",
@@ -786,7 +786,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=cae7de93f08b4c517103efed3cd239cd93dfdc82#cae7de93f08b4c517103efed3cd239cd93dfdc82"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=2e7d01ff245cee5540f93903a482fa159b84f426#2e7d01ff245cee5540f93903a482fa159b84f426"
 dependencies = [
  "busbar-crypto",
  "busbar-plugin-abi",
@@ -814,7 +814,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=a2c7d0b4efd9f2aae8c8c7798d612ff9c22795f3#a2c7d0b4efd9f2aae8c8c7798d612ff9c22795f3"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=1f90d74f5959acd8d565a64cdc9d723dcee17394#1f90d74f5959acd8d565a64cdc9d723dcee17394"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -1008,7 +1008,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=0eeb953bd331fb5c08849dfd547d242a50fca908#0eeb953bd331fb5c08849dfd547d242a50fca908"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=ad0850a7700bbc999395f7f98ed41aa328333acd#ad0850a7700bbc999395f7f98ed41aa328333acd"
 dependencies = [
  "busbar-kind-transport-hyper",
  "busbar-plugin-abi",
@@ -1027,7 +1027,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-webrtc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=64816dfba23d9da9c8ee1997a524f5c5c77e8046#64816dfba23d9da9c8ee1997a524f5c5c77e8046"
+source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=c0fef86c2a95a29a6bc9300decca2a10cd7a98b2#c0fef86c2a95a29a6bc9300decca2a10cd7a98b2"
 dependencies = [
  "busbar-plugin-abi",
  "foldhash 0.2.0",
@@ -1919,7 +1919,7 @@ dependencies = [
 [[package]]
 name = "hyper"
 version = "1.12.0"
-source = "git+https://github.com/MattJackson/hyper?rev=ebd3f6cff06032f9bcf531a5144309d8906e438b#ebd3f6cff06032f9bcf531a5144309d8906e438b"
+source = "git+https://github.com/MattJackson/hyper?rev=ba66651802c4aa70a709cfde732600e4f9bd488e#ba66651802c4aa70a709cfde732600e4f9bd488e"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2625,7 +2625,7 @@ checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 [[package]]
 name = "postgres-protocol"
 version = "0.6.12"
-source = "git+https://github.com/MattJackson/rust-postgres?rev=a0a2f6f8f7f3d23dd5204c06ff56768dc75bb3f2#a0a2f6f8f7f3d23dd5204c06ff56768dc75bb3f2"
+source = "git+https://github.com/MattJackson/rust-postgres?rev=247b38d60748e6b6157cdd3a8d9ee271fed6b16c#247b38d60748e6b6157cdd3a8d9ee271fed6b16c"
 dependencies = [
  "base64 0.22.1",
  "byteorder",
