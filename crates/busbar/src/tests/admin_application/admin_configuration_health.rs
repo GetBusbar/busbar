@@ -214,7 +214,6 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         }
     });
     body["config"]["listen"] = "127.0.0.1:19092".into();
-    body["config"]["advanced"]["worker_threads"] = 3.into();
     let resp = admin(client.post(format!("http://{addr}/api/v1/admin/config/apply")))
         .body(body.to_string())
         .send()
@@ -223,9 +222,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     assert_eq!(resp.status().as_u16(), 200, "{:?}", resp.text().await);
 
     let applied = busbar_contract::json::parse_value(&resp.bytes().await.unwrap()).unwrap();
-    for path in ["/listen", "/advanced/worker_threads"] {
-        assert_pending(&applied, path);
-    }
+    assert_pending(&applied, "/listen");
     let members = pool_members(&client, addr, "apply-pool").await;
     let m0 = members.iter().find(|m| m["model"] == "m0").unwrap();
     let ma = members.iter().find(|m| m["model"] == "m-applied").unwrap();
@@ -339,7 +336,6 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
     let mut disk = document.clone();
     disk["listen"] = "127.0.0.1:19091".into();
     disk["tls"]["cert"]["file"] = certificate_b.to_string_lossy().as_ref().into();
-    disk["advanced"]["worker_threads"] = 3.into();
 
     disk["models"]["m-new"] = json::json!({"provider":"test-provider","max_concurrent":4});
     disk["pools"] = json::json!({"reload-pool":{"members":[{"model":"m0"},{"model":"m-new"}]}});
@@ -426,9 +422,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
             .any(|path| path.as_str() == Some("/listen")),
         "disk listener changes remain unapplied until process restart: {reload}"
     );
-    for path in ["/tls", "/advanced/worker_threads"] {
-        assert_pending(&reload, path);
-    }
+    assert_pending(&reload, "/tls");
     // Reverting a desired setting does not clear conservative pending state until boot.
     disk["listen"] = deploy.listen.as_str().into();
     std::fs::write(&config_path, disk.to_string()).unwrap();
@@ -516,7 +510,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         pending_before_failure["reload_to_apply"], pending_after_failure["reload_to_apply"],
         "failed reload preserves pending requirements of the serving generation"
     );
-    for path in ["/listen", "/tls", "/advanced/worker_threads"] {
+    for path in ["/listen", "/tls"] {
         assert_pending(&pending_after_failure, path);
     }
 

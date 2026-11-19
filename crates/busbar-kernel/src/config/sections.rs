@@ -247,13 +247,10 @@ pub struct AdvancedCfg {
     /// graceful shutdown flushes fully. Default 100.
     #[serde(default = "default_usage_flush_interval_ms")]
     pub usage_flush_interval_ms: u64,
-    /// Tokio worker-thread count (`advanced.worker_threads`, migrated from `BUSBAR_WORKER_THREADS`).
-    /// A BOOT-TIME knob read once before the runtime is built — not runtime-mutable via the overlay.
-    /// Absent (`None`) ⇒ one worker per available core (`available_parallelism`, capped at
-    /// `MAX_WORKER_THREADS`). The `BUSBAR_WORKER_THREADS` env var was deprecated in 1.5.3 and removed
-    /// in 1.6.0.
-    #[serde(default)]
-    pub worker_threads: Option<usize>,
+    /// REMOVED (was the data-plane worker count; the engine runs [`data_workers`]): accepted from
+    /// an old configuration, ignored, never written back; named by [`AdvancedCfg::removed`].
+    #[serde(default, skip_serializing)]
+    pub worker_threads: Option<serde::de::IgnoredAny>,
     /// Pin the shared upstream client to HTTP/1.1 (`advanced.upstream_http1_only`, migrated from
     /// `BUSBAR_UPSTREAM_HTTP1_ONLY`). BOOT-TIME (client-build) knob; default `false` (ALPN default:
     /// h2 where the backend accepts it, h1 otherwise). The `BUSBAR_UPSTREAM_HTTP1_ONLY` env var was
@@ -384,41 +381,23 @@ impl Default for AdvancedCfg {
 /// exists, so nothing the engine owns bounds the count any lower.
 pub const MAX_WORKER_THREADS: usize = u16::MAX as usize;
 
-/// The one rule for `advanced.worker_threads`, used wherever the value is read (boot, the
-/// post-recovery runtime, the admin document edit). The value is converted, never refused:
-///
-/// * absent: the default (one worker per core), no log line;
-/// * `0`: not a worker count, so the default, with the returned line;
-/// * above [`MAX_WORKER_THREADS`]: the ceiling, with the returned line.
-///
-/// Returns the count to use (`None` is the default) and the one log line when a conversion was
-/// made. The caller logs the line; it is the same text everywhere.
+/// THE DATA-PLANE WORKER COUNT, the one place it is decided: one worker per CPU core this process
+/// may use. `std::thread::available_parallelism` reads the process's CPU affinity and, on Linux,
+/// the cgroup v1/v2 CPU quota, so a container gets its CPU limit and a pinned process its cpuset.
+/// Where the operating system cannot say, one worker. Never more than the runtime can run
+/// ([`MAX_WORKER_THREADS`]). No setting chooses it: an operator who wants fewer workers sets the
+/// CPU limit or affinity the platform already provides.
 #[must_use]
-pub fn effective_worker_threads(configured: Option<usize>) -> (Option<usize>, Option<String>) {
-    match configured {
-        Some(0) => (
-            None,
-            Some(
-                "advanced.worker_threads: 0 is not a worker count (it must be >= 1); using the \
-                 default of one per core"
-                    .to_owned(),
-            ),
-        ),
-        Some(n) if n > MAX_WORKER_THREADS => (
-            Some(MAX_WORKER_THREADS),
-            Some(format!(
-                "advanced.worker_threads: {n} is above the most the runtime can run \
-                 ({MAX_WORKER_THREADS}); using {MAX_WORKER_THREADS}"
-            )),
-        ),
-        other => (other, None),
-    }
+pub fn data_workers() -> usize {
+    std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(MAX_WORKER_THREADS)
 }
 
 /// The `advanced` keys that are no longer settings, each with what the engine does instead: the
 /// one place that is worded. An old configuration carrying one still loads (the configuration
 /// file, a settings patch, a document edit), and `config::resolve` says this line once per key.
-pub const REMOVED_ADVANCED: [(&str, &str); 2] = [
+pub const REMOVED_ADVANCED: [(&str, &str); 3] = [
     (
         "allow_destinations",
         "a private address is reached only by a registration that sets its own allow_private, \
@@ -428,6 +407,11 @@ pub const REMOVED_ADVANCED: [(&str, &str); 2] = [
         "rate_sweep_interval",
         "the budget tables are swept on the usage writer's tick (advanced.usage_flush_interval_ms), \
          releasing every entry that holds nothing unwritten and whose window has passed",
+    ),
+    (
+        "worker_threads",
+        "the engine runs one data worker per CPU core it may use (its CPU affinity and container \
+         CPU limit); to run fewer, lower the CPU limit",
     ),
 ];
 
@@ -449,11 +433,13 @@ impl AdvancedCfg {
         let Self {
             allow_destinations,
             rate_sweep_interval,
+            worker_threads,
             ..
         } = self;
         [
             ("allow_destinations", allow_destinations.is_some()),
             ("rate_sweep_interval", rate_sweep_interval.is_some()),
+            ("worker_threads", worker_threads.is_some()),
         ]
         .into_iter()
         .filter_map(|(key, carried)| carried.then_some(key))

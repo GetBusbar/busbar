@@ -125,7 +125,6 @@ impl Root {
 #[derive(Clone)]
 pub(crate) struct Source {
     deregister_delay: std::time::Duration,
-    workers: Option<usize>,
     headers: super::ResponseHeadersCfg,
     admin_mtls: bool,
     /// The boot-bound security settings: the destination guard, the login-limit source reader
@@ -141,7 +140,6 @@ impl Source {
     fn capture(cfg: &DeployCfg) -> Self {
         Self {
             deregister_delay: cfg.advanced.shutdown.deregister_delay,
-            workers: cfg.advanced.worker_threads,
             headers: cfg.advanced.response_headers.clone(),
             admin_mtls: cfg.admin_require_mtls,
             trusted_proxies: cfg.advanced.trusted_proxies.clone(),
@@ -156,9 +154,6 @@ impl Source {
         let mut paths = Vec::new();
         if self.deregister_delay != boot.deregister_delay {
             paths.push("/advanced/shutdown/deregister_delay".to_owned());
-        }
-        if self.workers != boot.workers {
-            paths.push("/advanced/worker_threads".to_owned());
         }
         if self.headers != boot.headers {
             paths.push("/advanced/response_headers".to_owned());
@@ -267,21 +262,16 @@ mod tests {
     }
 
     #[test]
-    fn source_only_workers_headers_and_mtls_changes_are_not_lost_by_resolution() {
+    fn source_only_headers_and_mtls_changes_are_not_lost_by_resolution() {
         let mut deploy: DeployCfg = busbar_contract::yaml::from_str("{}").unwrap();
         let boot = Source::capture(&deploy);
-        deploy.advanced.worker_threads = Some(3);
         deploy.advanced.response_headers.server_timing =
             !deploy.advanced.response_headers.server_timing;
         deploy.admin_require_mtls = !deploy.admin_require_mtls;
         let next = Source::capture(&deploy);
         assert_eq!(
             next.changed(&boot),
-            [
-                "/advanced/worker_threads",
-                "/advanced/response_headers",
-                "/admin_require_mtls"
-            ]
+            ["/advanced/response_headers", "/admin_require_mtls"]
         );
         assert!(next.changed(&next).is_empty());
     }

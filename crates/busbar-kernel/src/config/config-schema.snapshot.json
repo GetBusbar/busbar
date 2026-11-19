@@ -59,7 +59,7 @@
         },
         "worker_threads": {
           "optional": true,
-          "type": "usize"
+          "type": "IgnoredAny"
         }
       },
       "kind": "struct",

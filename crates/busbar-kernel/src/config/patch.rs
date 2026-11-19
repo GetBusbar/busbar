@@ -81,6 +81,7 @@ section_patch!(
         response_headers: crate::config::ResponseHeadersCfg,
     } removed {
         rate_sweep_interval,
+        worker_threads,
     }
 );
 

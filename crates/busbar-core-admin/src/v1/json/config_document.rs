@@ -306,16 +306,6 @@ pub(super) async fn apply(
             if let Some(rejection) = doc.document_patch.as_ref().and_then(|patch| document_patch_rejection(patch, Some(&loaded))) {
                 return Ok(Outcome::Value(Err(rejection)));
             }
-            // One rule for the value everywhere it is read: converted, never refused. The edit is
-            // stored as written; the runtime applies the rule at its next boot.
-            if let (_, Some(note)) = busbar_kernel::config::sections::effective_worker_threads(
-                loaded.deploy.advanced.worker_threads,
-            ) {
-                tracing::warn!(
-                    "{}",
-                    busbar_kernel::diagnostics::WORKER_THREADS_INVALID.coded(note)
-                );
-            }
             loaded.resource_ownership.validate_named_maps(&doc)
                 .map_err(AdminError::Validation)?;
             busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc)
@@ -618,7 +608,6 @@ fn restart_paths(paths: &[String]) -> Vec<String> {
         "/limits/pool_idle_timeout_secs",
         "/limits/max_inbound_concurrent",
         "/advanced/response_headers",
-        "/advanced/worker_threads",
         "/advanced/shutdown/deregister_delay",
         "/advanced/upstream_http1_only",
         "/advanced/upstream_h2_prior_knowledge",
@@ -840,7 +829,7 @@ mod tests {
     #[test]
     fn boot_changes_remain_explicitly_pending_and_live_limits_do_not() {
         let paths = [
-            "/advanced/worker_threads",
+            "/advanced/response_headers",
             "/store/settings",
             "/limits/request_body_max_bytes",
             "/listen",
@@ -848,7 +837,7 @@ mod tests {
         .map(str::to_owned);
         assert_eq!(
             restart_paths(&paths),
-            ["/advanced/worker_threads", "/store/settings", "/listen"]
+            ["/advanced/response_headers", "/store/settings", "/listen"]
         );
     }
 
@@ -894,10 +883,10 @@ mod tests {
         for path in ["/advanced/shutdown/deregister_delay", "/advanced/shutdown"] {
             assert_eq!(restart_paths(&[path.to_owned()]), [path]);
         }
-        assert_eq!(
-            restart_paths(&["/advanced/worker_threads".to_owned()]),
-            ["/advanced/worker_threads"]
-        );
+        // Removed keys change nothing at runtime, so they are never restart state.
+        for path in ["/advanced/worker_threads", "/advanced/rate_sweep_interval"] {
+            assert!(restart_paths(&[path.to_owned()]).is_empty(), "{path}");
+        }
         assert!(restart_paths(&["/providers/example/timeout".to_owned()]).is_empty());
     }
 

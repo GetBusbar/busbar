@@ -2519,7 +2519,10 @@ advanced:
         busbar_contract::yaml::from_str(yaml).expect("current management and transport keys parse");
     assert!(d.config.locked);
     assert_eq!(d.providers_file.as_deref(), Some("catalog.yaml"));
-    assert_eq!(d.advanced.worker_threads, Some(3));
+    assert!(
+        d.advanced.worker_threads.is_some(),
+        "the removed key is accepted"
+    );
     assert!(d.advanced.upstream_http1_only);
     assert!(d.advanced.upstream_h2_prior_knowledge);
     let mut deploy = base_deploy();
@@ -2554,7 +2557,7 @@ advanced:
         busbar_contract::yaml::from_str(yaml3).expect("absent config parses");
     assert!(!d3.config.locked);
     assert!(d3.providers_file.is_none());
-    assert_eq!(d3.advanced.worker_threads, None);
+    assert!(d3.advanced.worker_threads.is_none());
 }
 
 #[test]

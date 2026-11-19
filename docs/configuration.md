@@ -81,19 +81,21 @@ Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <pat
 `--providers=<path>`) points it at the provider catalog, taking precedence over `providers_file:`.
 See [Operations → Process configuration](operations.md#process-configuration).
 
-**Operational environment overrides are retired in 1.6.0.** Serving reads `providers_file:`
-(or `--providers`) and the corresponding `advanced` keys instead of `BUSBAR_PROVIDERS`,
-`BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE`.
-Boot and `--validate` refuse a set retired launch variable with `BUSBAR-3029`, naming its
-replacement without echoing the value. Write the intended values into configuration using
-[the environment-input mappings](migration-1.6.md#environment-inputs), then remove the variables
-from the launcher before validating or starting Busbar. An empty `BUSBAR_PROVIDERS` selects
-nothing and counts as unset; the other retired variables refuse even when empty.
+**Operational environment overrides are retired in 1.6.0, and an old launcher still starts.**
+Boot and `--validate` say one `BUSBAR-3029` line for each retired launch variable that is set,
+never echoing its value, and go on: `BUSBAR_PROVIDERS` is read as the catalog path, as 1.5.5 read
+it, unless `--providers` names one; `BUSBAR_UPSTREAM_HTTP1_ONLY` and
+`BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` are applied over their configuration keys, as 1.5.5 applied
+them (`0` or empty is off, anything else on); `BUSBAR_WORKER_THREADS` and `TOKIO_WORKER_THREADS`
+are ignored, because the worker count is no longer a setting (one data worker per CPU core the
+process may use). Move the values into configuration using
+[the environment-input mappings](migration-1.6.md#environment-inputs) and remove the variables
+from the launcher when convenient. An empty `BUSBAR_PROVIDERS` selects nothing and counts as unset.
 
 `BUSBAR_CONFIG_OVERLAY` is a separate one-time selector for the old overlay, whose contents are
 folded into `config.yaml` on upgrade; runtime configuration is persisted through the Store.
-`BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references, `RUST_LOG`, and the
-`TOKIO_WORKER_THREADS` fallback remain supported.
+`BUSBAR_CONFIG` (bootstrap), explicit secret `{ env: NAME }` references and `RUST_LOG` remain
+supported.
 
 ### `config`
 
@@ -1862,7 +1864,6 @@ Internal tuning knobs, normally omitted; each field defaults to its historical v
 ```yaml
 advanced:
   usage_flush_interval_ms: 100      # write-behind flush cadence for in-memory usage/budget counters
-  worker_threads: 4                 # data-plane worker count — one pinned runtime + listener each; omit ⇒ one per core
   upstream_http1_only: false        # pin the upstream client to HTTP/1.1
   upstream_h2_prior_knowledge: false # force h2c prior-knowledge to cleartext upstreams
   response_headers:                 # every busbar-injected response header, opt-in, default OFF
@@ -1914,14 +1915,13 @@ Repeated operator requests cannot extend either interval. Reserve at least
 `deregister_delay + 20s + 6s + operator margin` in the process supervisor: with the default, at
 least 31 seconds before margin. The six seconds covers the existing bounded exit handover.
 
-`worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
+`upstream_http1_only` and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
 once at process/client construction), so unlike `usage_flush_interval_ms`
 they are not live-mutable via `PUT /config/settings`. A change takes effect on the next restart.
 (The usage writer reads `usage_flush_interval_ms` before each wait, so an applied change is used
-from the next wait on.) The
-`BUSBAR_*` env vars that used to back these knobs are retired in 1.6.0 and never read at serve time;
-see the [development migration limitation](#environment-variables) before upgrading a launcher
-that sets them. `TOKIO_WORKER_THREADS` remains a fallback for `worker_threads`.
+from the next wait on.) The `BUSBAR_*` env vars that used to back these knobs are retired in
+1.6.0; a launcher that still sets them starts, and each is said once (see
+[environment variables](#environment-variables)).
 
 `response_headers` is likewise **restart-to-apply**: `server_timing` is baked into router middleware
 composition at boot, so a live `PUT` stores the new value
@@ -1981,7 +1981,6 @@ act yet).
 |---|---|---|---|---|---|
 | `advanced.wait_for_commit` | boolean | `false` | `true` / `false` | Whether an answer waits until its audit, ledger and usage records are committed. *Arriving with the audit change.* | to be confirmed |
 | `advanced.usage_flush_interval_ms` | integer, milliseconds | `100` | 1 to 946,080,000,000 (30 years); `0` is raised to 1 with one warning | How often in-memory usage and budget counters are written out. | on apply |
-| `advanced.worker_threads` | integer, threads | one per CPU core | 1 to 65,535; `0` means the default, and above 65,535 is lowered to 65,535, each with one warning (`BUSBAR-9008`) | Number of data-plane worker threads. | restart |
 | `advanced.upstream_http1_only` | boolean | `false` | `true` / `false` | Pin the upstream HTTP client to HTTP/1.1. | restart |
 | `advanced.upstream_h2_prior_knowledge` | boolean | `false` | `true` / `false` | Speak HTTP/2 without negotiation to cleartext upstreams. | restart |
 | `advanced.response_headers.server_timing` | boolean | `false` | `true` / `false` | Add `Server-Timing: busbar;dur=<ms>` to responses. | restart |
@@ -1998,7 +1997,7 @@ act yet).
 read before each wait of the background writer, and the configuration apply republishes it; every
 other key is read once at boot. Every
 one of those restart keys is reported by the pending-restart list in the admin API
-(`reload_to_apply`) when an edit changes it: `worker_threads`, `response_headers`,
+(`reload_to_apply`) when an edit changes it: `response_headers`,
 `shutdown.deregister_delay`, `upstream_http1_only`, `upstream_h2_prior_knowledge`,
 `trusted_proxies`, `forwarded_header`, `block_private_addresses`, `proxy_resolution` and `tls`.
 `trusted_proxies` and `block_private_addresses` are security settings: an edit to them is stored
@@ -2069,27 +2068,18 @@ ignored, never written back, and one warning line says so at boot and on every a
 `advanced.rate_sweep_interval is no longer a setting and is ignored: ...`. Delete the line when
 convenient.
 
-#### `advanced.worker_threads`
+#### Removed: `advanced.worker_threads`
 
-The number of data-plane worker threads; each runs its own runtime and listener. Left out, the
-engine uses one per available CPU core. `TOKIO_WORKER_THREADS` is read as a fallback when the key
-is absent. The engine never starts more than 65,535, which is the most the Tokio scheduler can
-run (it keeps its count of searching workers in 16 bits); a larger value is lowered to 65,535.
+No longer a setting. The engine runs one data worker per CPU core the process may use: the
+operating system's answer (`std::thread::available_parallelism`), which counts the process's CPU
+affinity and, on Linux, the container's CPU limit (cgroup v1 or v2 quota). Never more than 65,535,
+the most the Tokio scheduler can run. To run fewer workers, give the container a lower CPU limit
+or the process a narrower CPU affinity; that is also what keeps a small sidecar small.
 
-When to change it: on a container with a CPU limit far below the host's core count, set it to the
-limit; on a shared host, to the cores you want to give the engine. Cost: too few threads cap
-throughput; too many on a limited CPU quota add scheduling overhead.
-
-`0` is not a valid count. One rule applies wherever the value is read (the boot read of
-`config.yaml`, the runtime built after recovery, and the admin document edit): `0` is converted to
-the default, a count above 65,535 to 65,535, and each conversion writes one warning line
-(`BUSBAR-9008`). Nothing is refused: an edit carrying `0` or a larger count is accepted and stored as
-written.
-
-```yaml
-advanced:
-  worker_threads: 4
-```
+A configuration that still carries the key (in `config.yaml`, a `PUT /config/settings` body or an
+admin document edit) loads and applies: the value is ignored, never written back, and one warning
+line says so at boot and on every apply. `BUSBAR_WORKER_THREADS` and `TOKIO_WORKER_THREADS` set in
+a launcher are ignored with one `BUSBAR-3029` line each.
 
 #### `advanced.upstream_http1_only`
 

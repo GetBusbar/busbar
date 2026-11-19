@@ -188,26 +188,24 @@ backup or recovery procedure.
 
 ### Environment inputs
 
-Serving no longer uses these launch overrides. Boot and `--validate` refuse them with
-`BUSBAR-3029` before configuration migration or validation, naming each replacement without
-echoing its value. Write their intended values into configuration, then remove the variables
-from the launcher and validate. No automatic environment capture or separate conversion command
-is provided. An empty `BUSBAR_PROVIDERS` counts as unset; all other retired variables refuse
-even when empty. This refusal prevents an HTTP/1-only or worker setting from silently changing
-on upgrade; exact-artifact upgrade qualification remains required.
+A 1.5.5 launcher still starts. Boot and `--validate` say one `BUSBAR-3029` line for each retired
+variable that is set, before configuration migration or validation, never echoing its value, and
+go on as the table says. Move the values into configuration and remove the variables from the
+launcher when convenient. An empty `BUSBAR_PROVIDERS` counts as unset.
 
-| Retired variable | Current configuration |
-|---|---|
-| `BUSBAR_PROVIDERS` | `providers_file:` |
-| `BUSBAR_WORKER_THREADS` | `advanced.worker_threads` |
-| `BUSBAR_UPSTREAM_HTTP1_ONLY` | `advanced.upstream_http1_only` |
-| `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | `advanced.upstream_h2_prior_knowledge` |
-| `BUSBAR_CONFIG_OVERLAY` | One-time old-overlay selection only; no serving equivalent |
+| Retired variable | What 1.6 does with it | Current configuration |
+|---|---|---|
+| `BUSBAR_PROVIDERS` | read as the catalog path, as 1.5.5 did, unless `--providers` names one | `providers_file:` or `--providers` |
+| `BUSBAR_WORKER_THREADS` | ignored: one data worker per CPU core the process may use | none (set the CPU limit) |
+| `TOKIO_WORKER_THREADS` | ignored, as above | none (set the CPU limit) |
+| `BUSBAR_UPSTREAM_HTTP1_ONLY` | applied over the key, as 1.5.5 did (`0` or empty off) | `advanced.upstream_http1_only` |
+| `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` | applied over the key, as 1.5.5 did (`0` or empty off) | `advanced.upstream_h2_prior_knowledge` |
+| `BUSBAR_CONFIG_OVERLAY` | one-time old-overlay selection only | no serving equivalent |
 
 The 1.6.0 container no longer sets `BUSBAR_PROVIDERS`. Put `providers.yaml` beside the selected
 config or name it with `providers_file:`. `BUSBAR_CONFIG` and `-c`/`--config` still select the
 config; explicit `{ env: NAME }` secret references still resolve environment values.
-`RUST_LOG` and the `TOKIO_WORKER_THREADS` fallback remain available. `BUSBAR_DATA_DIR` is still
+`RUST_LOG` remains available. `BUSBAR_DATA_DIR` is still
 used for registry data; it does not restore the retired journal.
 
 ### A configuration with no `auth:` block

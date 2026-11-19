@@ -1246,11 +1246,11 @@ diagnostics! {
         "The binary hit a fatal startup condition — a misconfiguration or other boot-time failure the process cannot serve past — so it printed a single-line reason to stderr and exited non-zero rather than a Rust panic backtrace. The specific reason is printed alongside this code. This is a deliberate refusal, not a crash.",
         "Read the printed reason, fix the underlying config/environment problem, and restart. `busbar --validate` reproduces most boot refusals without binding a listener.";
 
-    /// An explicitly-set worker-thread count (env or config) is not a positive integer; default used.
-    WORKER_THREADS_INVALID = 9008, Boot, Actionable, "worker-threads-invalid", "1.6.0", false,
-        "Configured worker-thread count is invalid (ignored; default used)",
-        "An explicitly-set data-plane worker count — `TOKIO_WORKER_THREADS`/`advanced.worker_threads` — is out of range or not a positive integer. `0` and non-numeric text are IGNORED and busbar boots on the default worker count (one per core); a count above 65,535, the most the runtime can run, is lowered to 65,535. The operator's intended worker count is NOT in effect. Said once at boot (pre-tracing, to stderr), and in the log when a configuration edit or the recovered document carries such a value; an edit is never refused for it.",
-        "Set the data-plane worker count to an integer from 1 to 65,535 or remove it to accept the default. The gateway runs, but not on the value provided.";
+    /// RETIRED before 1.6.0 shipped: the worker count is no longer a setting, so nothing emits it.
+    WORKER_THREADS_INVALID = 9008, Boot, Actionable, "worker-threads-invalid", "1.6.0", true,
+        "Configured worker-thread count is invalid — RETIRED",
+        "RETIRED. Nothing emits this code. The data-plane worker count is no longer a setting: the engine runs one worker per CPU core the process may use (its CPU affinity and container CPU limit). A configuration carrying `advanced.worker_threads`, or a launcher setting TOKIO_WORKER_THREADS, starts as before and says once that the value is ignored.",
+        "Nothing to do. To run fewer workers, lower the container's CPU limit or the process's CPU affinity.";
 
     /// A shutdown-signal handler could not be installed; that signal will not trigger graceful drain.
     SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED = 9009, Boot, Actionable, "shutdown-signal-handler-install-failed", "1.6.0", false,
@@ -1359,13 +1359,11 @@ diagnostics! {
         example "auth:\n  auth_chain: [oidc]",
         detail "auth.role_bindings.oidc.\"*\" was written by the migration to keep 1.5.5's access: every principal it identifies is admitted on every pool with no budget, as 1.5.5 admitted them. Tighten it (allowed_pools, a group with limits) or remove it to refuse them";
 
-    MIGRATE_WORKER_THREADS_IGNORED = 3409, Config, Actionable, "migrate-worker-threads-ignored", "1.6.0", false,
-        "BUSBAR_WORKER_THREADS was not a positive integer and was not captured",
-        "The migration captures the old launcher's BUSBAR_WORKER_THREADS into `advanced.worker_threads`. Its value was not a positive integer, which the old launcher also ignored, so nothing was captured and the configured worker count (or TOKIO_WORKER_THREADS) still applies.",
-        "Set `advanced.worker_threads` in the migrated config if you meant to pin the worker count, and remove BUSBAR_WORKER_THREADS from the launcher."
-        => migrate_worker_threads_ignored() "BUSBAR_WORKER_THREADS is not a positive integer; ignored as in the old launcher; configured workers and the TOKIO_WORKER_THREADS fallback are preserved",
-        example "BUSBAR_WORKER_THREADS=auto busbar",
-        detail "BUSBAR_WORKER_THREADS is not a positive integer; ignored as in the old launcher; configured workers and the TOKIO_WORKER_THREADS fallback are preserved";
+    /// RETIRED before 1.6.0 shipped: nothing captures a worker count any more, so nothing emits it.
+    MIGRATE_WORKER_THREADS_IGNORED = 3409, Config, Actionable, "migrate-worker-threads-ignored", "1.6.0", true,
+        "BUSBAR_WORKER_THREADS was not a positive integer and was not captured — RETIRED",
+        "RETIRED. Nothing emits this code. The worker count is no longer a setting, so the migration captures nothing from BUSBAR_WORKER_THREADS: the engine runs one worker per CPU core the process may use. A launcher that still sets the variable starts and says once that it is ignored (BUSBAR-3029).",
+        "Remove BUSBAR_WORKER_THREADS from the launcher when convenient.";
 
     CONFIG_MODEL_INVALID = 3102, Config, Fatal, "config-model-invalid", "1.6.0", false,
         "A model definition is invalid",
@@ -2040,9 +2038,9 @@ diagnostics! {
 
     /// A retired 1.5.x launch environment variable is set; 1.6 ignores it.
     RETIRED_ENV_VAR_IGNORED = 3029, Config, Actionable, "retired-env-var-ignored", "1.6.0", false,
-        "A retired launch environment variable is set and IGNORED",
-        "busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY or BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. A set one has NO effect: the config key (or its default) is in force. Emitted pre-tracing, to stderr, at boot and by --validate.",
-        "Write the value into config.yaml, validate, then remove the variable from the launcher.";
+        "A retired launch environment variable is set (converted or ignored)",
+        "busbar 1.6 retired the launch variables BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, TOKIO_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY and BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. None refuses a start: each one set is said once, never echoing its value. BUSBAR_PROVIDERS is read as the providers catalog path, as 1.5.5 read it, unless --providers names one; the two upstream variables are applied over their configuration keys, as 1.5.5 applied them; the two worker variables are ignored, because the worker count is one per CPU core the process may use. Emitted pre-tracing, to stderr, at boot and by --validate.",
+        "Move the value into config.yaml where a key exists (`providers_file:`, the upstream keys), validate, then remove the variable from the launcher.";
 }
 
 /// The page text (template + example) of every templated code the host knows: the catalog's own
