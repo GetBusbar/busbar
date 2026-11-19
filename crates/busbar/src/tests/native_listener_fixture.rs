@@ -109,13 +109,12 @@ where
         ),
     )
     .expect("stage the signed application Store");
-    // The at-rest key the Store's signed keys are minted under, as the keys-arm tests write it.
-    let signing = directory.join("signing-key");
-    std::fs::write(&signing, hex::encode([9u8; 32])).expect("write the fixture's signing key");
+    // The document names no secret reference: a test that needs a pinned signing key states its
+    // secret source as a `secrets:` instance in its own extension of this fixture.
     let document = serde_json::json!({
         "providers": {},
         "models": {},
-        "auth": { "chain": ["keys"], "signing_key": { "file": signing } },
+        "auth": { "chain": ["keys"] },
         "store": {
             "module": module,
             "settings": root::test_plugins::application_store_settings(&directory),
