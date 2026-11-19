@@ -135,7 +135,7 @@ crate::kind! {
             S_STAGE_MODEL: u32 = 0x115;
             STAGE_CANDIDATE: u64 = 1;
             STAGE_ROUTING: u64 = 2;
-        /// Stage 3 (STAGE_RESPONSE) is retired with hook 3.0 (E.9: named by no image).
+            STAGE_RESPONSE: u64 = 3;
         /// CandidateRec.flags presence bits (today's CANDIDATE_HAS_* in busbar-contract abi/hook/mod.rs:446-450,
         /// plus the three optional fields the projection already omits when unknown).
             C_HAS_LATENCY: u32 = 1;

@@ -20,7 +20,7 @@
 use busbar_plugin_abi::hook::{
     self, C_HAS_BUDGET, C_HAS_CONTEXT_MAX, C_HAS_COST, C_HAS_LATENCY, C_HAS_RATE_HEADROOM,
     FB_WANTS_PROMPT, M_ON, M_ON_IO, POINT_NOTIFY, POINT_REWRITE, POINT_ROUTE, STAGE_CANDIDATE,
-    STAGE_ROUTING, S_ATTEMPT, S_INGRESS_PROTOCOL, S_KEY_ID, S_KEY_NAME, S_POOL,
+    STAGE_RESPONSE, STAGE_ROUTING, S_ATTEMPT, S_INGRESS_PROTOCOL, S_KEY_ID, S_KEY_NAME, S_POOL,
     S_REMAINING_CANDIDATES, S_ROUTING_POLICY, S_STAGE, S_STAGE_MODEL, S_USER_SUBJECT, VERB_ABSTAIN,
     VERB_PREFER, VERB_PRIORITIZE, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
 };
@@ -437,7 +437,11 @@ fn views(words: &[String], point: u32, facts: u64) -> Vec<Case> {
 
     // Stage taps (POINT_NOTIFY): S_STAGE present exactly there, S_STAGE_MODEL only when the attempt has a model.
     if point == POINT_NOTIFY {
-        for (stage, model) in [(STAGE_CANDIDATE, None), (STAGE_ROUTING, Some("model-a"))] {
+        for (stage, model) in [
+            (STAGE_CANDIDATE, None),
+            (STAGE_ROUTING, Some("model-a")),
+            (STAGE_RESPONSE, Some("model-b")),
+        ] {
             let mut c = base(point, facts);
             c.candidates = vec![candidate(0, all_flags(), true)];
             c.signals.push((S_STAGE, OwnedFact::U(stage)));
