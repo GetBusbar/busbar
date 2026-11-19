@@ -3029,3 +3029,66 @@ async fn a_dropped_native_stream_is_billed_once_by_its_cancel_bill() {
     assert_eq!(requests(&r).await, 1, "and its request stays counted");
     assert_eq!(r.money.open_units(), 0);
 }
+
+/// `GovState::budget_spent`, the read a native child is judged by (ledger rows M-5, F-10): it
+/// refuses only once the spend has reached the cap, by the rule admission uses with no fee added;
+/// it counts no request and charges nothing; a new window's budget is whole; a key with no group
+/// has no budget to spend.
+#[tokio::test]
+async fn the_child_budget_read_refuses_only_a_spent_budget_and_changes_nothing() {
+    let r = rig(Some(10), 5, ExhaustionMode::FinishUnit).await;
+    let spent = |at: u64| r.gov.budget_spent(&r.cost, &r.key, "", at);
+    assert!(spent(NOW).is_none(), "nothing is spent yet");
+    drop(
+        r.gov
+            .try_admit(&r.cost, &r.key, "", NOW)
+            .expect("the first fee fits the budget"),
+    );
+    assert!(spent(NOW).is_none(), "half the budget is left");
+    drop(
+        r.gov
+            .try_admit(&r.cost, &r.key, "", NOW)
+            .expect("the second fee spends the budget exactly"),
+    );
+
+    let (requests_before, spend_before) = (requests(&r).await, usage(&r).await.1);
+    assert_eq!(spend_before, 10, "two fees of five");
+    let blocked = spent(NOW);
+    assert!(
+        matches!(
+            blocked,
+            Some(crate::governance::LimitBlocked::Limit {
+                metric: "budget",
+                ..
+            })
+        ),
+        "a spent budget is named as the budget limit: {blocked:?}"
+    );
+    assert!(
+        r.gov.try_admit(&r.cost, &r.key, "", NOW).is_err(),
+        "the read agrees with admission"
+    );
+    assert_eq!(
+        (requests(&r).await, usage(&r).await.1),
+        (requests_before, spend_before),
+        "the read counted no request and charged nothing"
+    );
+
+    assert!(
+        spent(a_later_window()).is_none(),
+        "the budget of a new window is whole"
+    );
+    let ungrouped = VirtualKey {
+        id: "ungrouped".into(),
+        generation_hash: "h:ungrouped".into(),
+        name: "ungrouped".into(),
+        enabled: true,
+        group: None,
+        revision: 1,
+        ..Default::default()
+    };
+    assert!(
+        r.gov.budget_spent(&r.cost, &ungrouped, "", NOW).is_none(),
+        "a key with no group has no budget to spend"
+    );
+}
