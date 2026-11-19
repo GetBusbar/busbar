@@ -270,6 +270,9 @@ pub mod watchdog;
 /// The safe test host (SDK-SAFE-TEST-HOST): tests load and drive plugins with no `unsafe`.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_host;
+/// The test signer and dropped-in admission of MIN-3 images (a fixed test key only its trust trusts).
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_native;
 
 // busbar:request-path
 #[cfg_attr(
