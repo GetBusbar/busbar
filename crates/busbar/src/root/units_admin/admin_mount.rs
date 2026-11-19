@@ -35,16 +35,28 @@ impl RetainedAnswer {
                 pending,
                 carrier,
             } => {
-                match record
-                    .and_then(|record| {
-                        pending
-                            .refuse_admin(record.what.unit_key, record.outcome.unit_end)
-                            .ok()
-                    })
-                    .and_then(|physical| carrier.retain_refusal(physical).ok())
+                let unit = pending.binding().invocation().request_id().get();
+                let Some(record) = record else {
+                    no_authority("a refusal with no audit record", unit, answer.status);
+                    return Self::NativeFailed(unavailable_answer());
+                };
+                let physical = match pending
+                    .refuse_admin(record.what.unit_key, record.outcome.unit_end)
                 {
-                    Some(carrier) => Self::Refused { answer, carrier },
-                    None => Self::NativeFailed(unavailable_answer()),
+                    Ok(physical) => physical,
+                    Err(why) => {
+                        tracing::warn!(unit, ?why, "the physical request refused its own refusal");
+                        no_authority("refuse_admin", unit, answer.status);
+                        return Self::NativeFailed(unavailable_answer());
+                    }
+                };
+                match carrier.retain_refusal(physical) {
+                    Ok(carrier) => Self::Refused { answer, carrier },
+                    Err(why) => {
+                        tracing::warn!(unit, ?why, "the admin carrier refused to hold its refusal");
+                        no_authority("retain_refusal", unit, answer.status);
+                        Self::NativeFailed(unavailable_answer())
+                    }
                 }
             }
             other => other,
@@ -123,12 +135,17 @@ impl AdminNode {
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
         physical: Option<busbar_kernel::inbound::native::CompletingPhysicalRequest>,
     ) -> RetainedAnswer {
+        let unit = request.unit;
+        let native = physical.is_some() || request.binding.is_some();
         let ((answer, record, claim_failure), publication) =
             busbar_kernel::audit::auditlog::confirmed_request(Box::pin(
                 self.answer_confirmed(request, admission, physical),
             ))
             .await;
         if publication.is_err() {
+            if native {
+                no_authority("the request's audit publication is unconfirmed", unit, 503);
+            }
             return answer.publication_failed();
         }
         let answer = answer.confirm(record.as_ref());
@@ -287,6 +304,19 @@ impl AdminNode {
                     );
                 }
             }
+            // Neither an execution nor a refusal this unit expected (a verifier that gave no
+            // verdict ends `Refused(Authenticate, Internal)`; a refusal after the claim; a pending
+            // owner or carrier already gone): the answer below has no output authority.
+            tracing::warn!(
+                unit = key.get(),
+                status = answer.status,
+                ended = ?ended,
+                expected_refusal = ?walk.expected_refusal,
+                pending = walk.physical_pending.is_some(),
+                carrier = walk.request.refusal_carrier.is_some(),
+                "a native admin unit ended as neither an execution nor an expected refusal"
+            );
+            no_authority("the admin unit's end", key.get(), answer.status);
             return (
                 RetainedAnswer::NativeFailed(answer),
                 None,
@@ -786,6 +816,36 @@ async fn root_admin_answers_are_never_stored() {
     }
 }
 
+/// A native request's answer that carries no output authority (neither its physical execution nor
+/// a recorded refusal) is never delivered: the native listener closes the request with nothing
+/// written. Every place on the admin path that gives the authority up says so here, by stage, so a
+/// request that gets zero bytes names the layer that left it without one.
+fn no_authority(stage: &'static str, unit: u64, status: u16) {
+    tracing::warn!(
+        stage,
+        unit,
+        status,
+        "a native admin answer has no output authority and will not be delivered"
+    );
+}
+
+/// An exit of [`mount`] that answers before any admin unit exists: said, when the request is a
+/// native one, as [`no_authority`] says it.
+fn before_the_unit(
+    stage: &'static str,
+    physical: Option<&busbar_kernel::inbound::native::CompletingPhysicalRequest>,
+    answer: AdminAnswer,
+) -> axum::response::Response {
+    if let Some(pending) = physical {
+        no_authority(
+            stage,
+            pending.binding().invocation().request_id().get(),
+            answer.status,
+        );
+    }
+    http_response(answer)
+}
+
 /// The refusal a kernel admin answer states, for the admin unit that records it: the middleware's
 /// credential refusal (401), its scope refusal (403) and its refusals of the request itself (400,
 /// 413). `None` for every other status: an answer that is not a refusal of this request.
@@ -802,13 +862,14 @@ fn denial_outcome(status: axum::http::StatusCode) -> Option<Outcome> {
     }
 }
 
-/// A REQUEST THE KERNEL'S ROUTER SERVES: a verb this node does not serve itself, or a path no verb
-/// declares. Its admin middleware judges the credential. A native request it refuses comes back
-/// still holding its pending physical owner ([`AdminDenialReturn`]): this node records the
-/// refusal as that request's own unit and only then makes it the answer's output authority, as
-/// it does for a verb it serves. Before this, such an answer reached the native listener with no
-/// authority, and the listener, rightly, wrote nothing: every refused read on the admin listener
-/// (a wrong token, no operator credential) closed with zero bytes and no fault logged.
+/// A REQUEST THE KERNEL'S ROUTER SERVES: an admin route no row of the closed verb table declares
+/// (a plane's own admin routes are such). Its admin middleware judges the credential. A native
+/// request it refuses comes back still holding its pending physical owner
+/// ([`AdminDenialReturn`]): this node records the refusal as that request's own unit and only then
+/// makes it the answer's output authority, as it does for a verb it serves. Before this, such an
+/// answer reached the native listener with no authority and the listener, rightly, wrote nothing.
+/// Every verb of the table (`info`, `openapi.json`, `kinds`, `usage` among them) is served by this
+/// node itself and never comes through here.
 ///
 /// [`AdminDenialReturn`]: busbar_kernel::inbound::native::AdminDenialReturn
 async fn through_inner(
@@ -909,7 +970,14 @@ pub(crate) fn mount(
                     {
                         Some(carrier) => match carrier.take() {
                             Ok(pending) => (Some(pending), Some(carrier)),
-                            Err(_) => return http_response(door_answer()),
+                            Err(why) => {
+                                tracing::warn!(
+                                    ?why,
+                                    "a native admin request's pending owner was already taken; its \
+                                     answer has no output authority and will not be delivered"
+                                );
+                                return http_response(door_answer());
+                            }
                         },
                         None => (None, None),
                     };
@@ -923,14 +991,22 @@ pub(crate) fn mount(
                 // The transport owns the original admission and complete peer/TLS/head facts.
                 // Neither a new count permit nor a reconstructed empty transport view can replace it.
                 let Some(lease) = parts.extensions.get::<RequestLease>().cloned() else {
-                    return http_response(unavailable_answer());
+                    return before_the_unit(
+                        "no request lease",
+                        physical.as_ref(),
+                        unavailable_answer(),
+                    );
                 };
                 let Some(snapshot) = parts
                     .extensions
                     .get::<Arc<ChargedRequestSnapshot>>()
                     .cloned()
                 else {
-                    return http_response(unavailable_answer());
+                    return before_the_unit(
+                        "no request snapshot",
+                        physical.as_ref(),
+                        unavailable_answer(),
+                    );
                 };
                 if !snapshot.request().same_request(&lease)
                     || physical.as_ref().is_some_and(|pending| {
@@ -942,12 +1018,20 @@ pub(crate) fn mount(
                                 .is_ok_and(|original| Arc::ptr_eq(&original, &snapshot))
                     })
                 {
-                    return http_response(unavailable_answer());
+                    return before_the_unit(
+                        "not the physical request's own lease and snapshot",
+                        physical.as_ref(),
+                        unavailable_answer(),
+                    );
                 }
                 let bytes = match input_body::gather(body, &lease, request_body_max_bytes).await {
                     Ok(bytes) => bytes,
                     Err(input_body::GatherError::Capacity(_)) => {
-                        return http_response(unavailable_answer())
+                        return before_the_unit(
+                            "the body's capacity",
+                            physical.as_ref(),
+                            unavailable_answer(),
+                        )
                     }
                     Err(error) => {
                         if let Some(admission) = &admission {
@@ -958,7 +1042,11 @@ pub(crate) fn mount(
                         }
                         let _ = error;
                         let status = 400;
-                        return http_response(error_answer(status, "invalid_request"));
+                        return before_the_unit(
+                            "the body could not be gathered",
+                            physical.as_ref(),
+                            error_answer(status, "invalid_request"),
+                        );
                     }
                 };
                 let target = parts
@@ -972,7 +1060,11 @@ pub(crate) fn mount(
                     &parts.headers,
                     &bytes,
                 ) {
-                    return http_response(error_answer(400, "invalid_request"));
+                    return before_the_unit(
+                        "the HTTP projection differs from the request's snapshot",
+                        physical.as_ref(),
+                        error_answer(400, "invalid_request"),
+                    );
                 }
                 drop(bytes);
                 let mut request = match physical.as_ref() {
@@ -982,14 +1074,22 @@ pub(crate) fn mount(
                                 parts,
                             ) {
                                 Ok(projection) => projection,
-                                Err(_) => return http_response(unavailable_answer()),
+                                Err(_) => return before_the_unit(
+                                    "the HTTP projection was refused",
+                                    Some(pending),
+                                    unavailable_answer(),
+                                ),
                             };
                         match AdminRequest::from_binding(
                             pending.binding().clone(),
                             Some(projection),
                         ) {
                             Ok(request) => request,
-                            Err(_) => return http_response(unavailable_answer()),
+                            Err(_) => return before_the_unit(
+                                "the request binding gave no snapshot",
+                                Some(pending),
+                                unavailable_answer(),
+                            ),
                         }
                     }
                     None => {
@@ -1010,7 +1110,10 @@ pub(crate) fn mount(
                     Box::pin(node.answer_with_admission(request, admission, physical)).await
                 })
                 .await
-                .unwrap_or_else(|_| RetainedAnswer::NativeFailed(unavailable_answer()));
+                .unwrap_or_else(|_| {
+                    no_authority("the admin unit's task ended abnormally", unit, 503);
+                    RetainedAnswer::NativeFailed(unavailable_answer())
+                });
 
                 let response = answer.into_response();
 

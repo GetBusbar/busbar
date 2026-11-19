@@ -120,9 +120,35 @@ async fn accepted(
 ) -> Result<(), InputError> {
     // The original connector connection permit lives through every terminal join.
     let _hold = admitted.hold;
-    let stream = tokio::net::TcpStream::from_std(admitted.stream).map_err(InputError::Io)?;
-    let opened = native.accepted(stream, security.as_deref()).await?;
-    supervise(opened, native, node, core, stopped).await
+    let listener = Arc::clone(&native);
+    let ended = async {
+        let stream = tokio::net::TcpStream::from_std(admitted.stream).map_err(InputError::Io)?;
+        let opened = native.accepted(stream, security.as_deref()).await?;
+        supervise(opened, native, node, core, stopped).await
+    }
+    .await;
+    if let Err(stop) = &ended {
+        ended_with(&listener, stop);
+    }
+    ended
+}
+
+/// A connection that ends with a failure used to end in silence: the listener loop joins its task
+/// and reads only a panic, so the failure itself was dropped. Say which listener it was on and
+/// what stopped it, so a request closed with nothing written names its layer: an arrival refusal,
+/// the transport's grammar, the response intent, or a delivery stop (`Integrity` is an answer that
+/// carried no output authority). A caller that went away is not a failure of this side.
+fn ended_with(native: &NativeListener, stop: &InputError) {
+    use busbar_contract::response_delivery::ResponseStop;
+    if matches!(stop, InputError::Delivery(ResponseStop::Cancelled)) {
+        return;
+    }
+    tracing::warn!(
+        listener = %native.slot,
+        admin = native.admin.is_some(),
+        stop = %stop,
+        "a native connection ended with a failure"
+    );
 }
 
 struct Waiting {
