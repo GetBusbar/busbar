@@ -211,7 +211,7 @@ pub enum CallerState {
 }
 
 /// A route's challenge names the plane's public URL and the operator configured none (or one
-/// that is not a header value): the route is not mounted.
+/// that is not a header value, or not a URL its quoted value can hold): the route is not mounted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NoPublicUrl;
 
@@ -272,7 +272,8 @@ pub enum RecordRefused {
     InternalAuth,
     /// A credential header on a route with no credential to read from it.
     CredHeader,
-    /// A challenge on a route that can never answer 401, or one that is not a header value.
+    /// A challenge on a route that can never answer 401, one that is not a header value, or one
+    /// that states the outcome of a check (an RFC 6750 `error` parameter).
     Challenge,
     /// Per-caller state on a route that identifies no caller.
     DistinctWithoutCaller,
@@ -313,7 +314,7 @@ impl std::fmt::Display for RecordRefused {
                 f.write_str("credential header: the route reads no credential a header could carry")
             }
             Self::Challenge => f.write_str(
-                "challenge: the route never answers 401, or the text is not a header value",
+                "challenge: the route never answers 401, the text is not a header value, or it states an error",
             ),
             Self::DistinctWithoutCaller => {
                 f.write_str("caller state: distinct needs a route that identifies its caller")
@@ -338,6 +339,69 @@ fn plain_kind(kind: &str) -> bool {
 /// A header value core may send: visible ASCII and spaces, no control byte (so no line break).
 fn header_value(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|byte| (0x20..0x7f).contains(&byte))
+}
+
+/// A `tchar` of RFC 9110 §5.6.2: a byte of an auth-param's name.
+fn tchar(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+}
+
+/// Whether a challenge names, outside any quoted string, one of the auth-params that state the
+/// outcome of a check (RFC 6750 §3: `error`, `error_description`, `error_uri`). A declared
+/// challenge is sent on the one 401, to a caller that presented nothing as to one whose credential
+/// failed, so it may state neither.
+fn states_a_check(challenge: &str) -> bool {
+    const NAMES: [&str; 3] = ["error", "error_description", "error_uri"];
+    let bytes = challenge.as_bytes();
+    let (mut quoted, mut escaped, mut in_token) = (false, false, false);
+    let mut token: Option<(usize, usize)> = None;
+    for (at, &byte) in bytes.iter().enumerate() {
+        if quoted {
+            match (escaped, byte) {
+                (true, _) => escaped = false,
+                (false, b'\\') => escaped = true,
+                (false, b'"') => quoted = false,
+                _ => {}
+            }
+            continue;
+        }
+        match byte {
+            byte if tchar(byte) => {
+                token = match (in_token, token) {
+                    (true, Some((start, _))) => Some((start, at + 1)),
+                    _ => Some((at, at + 1)),
+                };
+                in_token = true;
+            }
+            // Whitespace may stand between a name and its `=` (RFC 9110 §11.2, BWS).
+            b' ' | b'\t' => in_token = false,
+            b'=' => {
+                if let Some((start, end)) = token.take() {
+                    let name = &challenge[start..end];
+                    if NAMES.iter().any(|known| name.eq_ignore_ascii_case(known)) {
+                        return true;
+                    }
+                }
+                in_token = false;
+            }
+            other => {
+                quoted = other == b'"';
+                token = None;
+                in_token = false;
+            }
+        }
+    }
+    false
+}
+
+/// Whether `url` can stand inside the quoted `resource_metadata` value as a URL: not empty, and
+/// none of the bytes RFC 3986 §2 leaves out of a URL that would end or escape a quoted string
+/// (`"`, `\`) or split the value (whitespace).
+fn quotable_url(url: &str) -> bool {
+    !url.is_empty()
+        && !url
+            .bytes()
+            .any(|byte| matches!(byte, b'"' | b'\\') || byte.is_ascii_whitespace())
 }
 
 impl RouteRecord {
@@ -424,6 +488,7 @@ impl RouteRecord {
         if let Some(challenge) = &self.challenge {
             if !who.can_challenge()
                 || !header_value(challenge)
+                || states_a_check(challenge)
                 || challenge.matches(CHALLENGE_PUBLIC_URL).count() > 1
             {
                 return Err(RecordRefused::Challenge);
@@ -451,6 +516,9 @@ impl RouteRecord {
             return Ok(Some(challenge.clone()));
         }
         let url = public_url.ok_or(NoPublicUrl)?.trim_end_matches('/');
+        if !quotable_url(url) {
+            return Err(NoPublicUrl);
+        }
         let text = challenge.replacen(CHALLENGE_PUBLIC_URL, url, 1);
         if header_value(&text) {
             Ok(Some(text.into_boxed_str()))
