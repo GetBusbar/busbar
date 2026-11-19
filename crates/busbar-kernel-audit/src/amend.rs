@@ -538,7 +538,7 @@ pub trait AmendSink: Send + Sync {
 /// One content access to record: `reader` `name` was handed `fields` of a unit's content for
 /// `principal` (`None`: the arrival) under `op_class` at `wall` (unix seconds).
 #[derive(Debug, Clone)]
-pub struct ReadFact<'a> {
+pub struct ReadFact<'a, F> {
     /// What kind of thing reached for the content.
     pub reader: Reader,
     /// The hook or export module's name.
@@ -547,8 +547,9 @@ pub struct ReadFact<'a> {
     pub principal: Option<&'a str>,
     /// The operation class the content was handed over under.
     pub op_class: &'a str,
-    /// The content fields handed over.
-    pub fields: Vec<String>,
+    /// The names of the content fields handed over, in order, lent: the amendment makes its own
+    /// list of them, once.
+    pub fields: F,
     /// When, in unix seconds.
     pub wall: u64,
 }
@@ -650,20 +651,26 @@ impl NodeAmendments {
     /// Record several content accesses at once: each fact is its own amendment (own seq and hash,
     /// chained in order), but all of them are staged as one unit and confirmed by one await, so
     /// the accesses of one request stage cost one durable commit instead of one each. Nothing is
-    /// committed to the chain unless the sink retained every original.
-    pub async fn record_reads(
+    /// committed to the chain unless the sink retained every original. The journal keeps the very
+    /// amendments the sink was handed (moved into its window, not copied); nothing is handed back.
+    pub async fn record_reads<'a, F>(
         &self,
         _token: &Pass<Audit>,
-        facts: &[ReadFact<'_>],
-    ) -> Result<Vec<Amendment>, AmendPersistError> {
-        if facts.is_empty() {
-            return Ok(Vec::new());
+        facts: impl ExactSizeIterator<Item = ReadFact<'a, F>>,
+    ) -> Result<(), AmendPersistError>
+    where
+        F: IntoIterator,
+        F::Item: AsRef<str>,
+    {
+        let count = facts.len();
+        if count == 0 {
+            return Ok(());
         }
-        let (amendments, confirmation) = {
+        let confirmation = {
             let mut held = self.held();
             let mut seq = held.journal.chain.next_seq;
             let mut tail = held.journal.chain.tail_hash.clone();
-            let mut amendments = Vec::with_capacity(facts.len());
+            let mut amendments = Vec::with_capacity(count);
             for fact in facts {
                 let next = seq.checked_add(1).ok_or(AmendPersistError)?;
                 let mut amendment = Amendment {
@@ -673,7 +680,10 @@ impl NodeAmendments {
                         fact.name,
                         subject_of(fact.principal),
                         OpClassId::new(fact.op_class),
-                        fact.fields.clone(),
+                        fact.fields
+                            .into_iter()
+                            .map(|field| field.as_ref().to_owned())
+                            .collect(),
                         fact.wall,
                     ),
                     prev_hash: std::mem::take(&mut tail),
@@ -690,17 +700,16 @@ impl NodeAmendments {
             // memory admission must not create an amendment-chain hole.
             held.journal.chain.tail_hash = tail;
             held.journal.chain.next_seq = seq;
-            for amendment in &amendments {
+            for amendment in amendments {
                 if held.journal.recent.len() == AMENDMENTS_RETAINED {
                     held.journal.recent.pop_front();
                     held.journal.released = held.journal.released.saturating_add(1);
                 }
-                held.journal.recent.push_back(amendment.clone());
+                held.journal.recent.push_back(amendment);
             }
-            (amendments, confirmation)
+            confirmation
         };
-        confirmation.await?;
-        Ok(amendments)
+        confirmation.await
     }
 
     /// The amendments the journal holds, oldest first.
