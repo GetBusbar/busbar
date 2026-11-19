@@ -311,3 +311,81 @@ fn a_view_the_request_cannot_pay_for_is_refused() {
         Some(DataRefused::Capacity)
     );
 }
+
+/// A proven DPoP request's body is charged once (OPEN-3 row 10): the view the chain is handed
+/// pays only for its restated head, never again for the body. A body the request's budget admits
+/// without DPoP is admitted with it.
+#[test]
+fn dpop_body_charged_once() {
+    let body = vec![b'x'; 4096];
+    // Room for the body once with its head and its restated head, never for the body twice.
+    let cap = u32::try_from(body.len() + body.len() / 2).unwrap();
+    let token = bound();
+    let bearer = format!("Bearer {token}");
+    let presented = format!("DPoP {token}");
+    let capture = |request, headers: &[(&'static str, &[u8])]| {
+        ChargedRequestSnapshot::capture(
+            SnapshotInput {
+                method: "POST",
+                path: "/mcp",
+                query: "",
+                query_present: false,
+                authority: "gw.example.com",
+                headers: headers.iter().copied(),
+                peer: "192.0.2.1:123",
+                tls_peer_cert: b"",
+                body: &body,
+                now_s: 10,
+            },
+            request,
+        )
+    };
+
+    // Without DPoP: the body is admitted.
+    let budget = ProcessAdmission::with_limits(2, cap, 0);
+    let request = budget.try_enter(AdmissionClass::Data).unwrap();
+    let plain = capture(
+        &request,
+        &[
+            ("content-type", b"application/json"),
+            ("authorization", bearer.as_bytes()),
+        ],
+    )
+    .expect("the body fits the request's budget");
+    drop(plain);
+    assert_eq!(budget.used(), (0, 0));
+
+    // With DPoP: the same body is admitted, and the view pays for its head alone.
+    let original = capture(
+        &request,
+        &[
+            ("content-type", b"application/json"),
+            ("authorization", presented.as_bytes()),
+            ("dpop", b"a.b.c"),
+        ],
+    )
+    .expect("the body fits the request's budget");
+    let before = budget.used();
+    let view =
+        as_bearer(&original, &token).expect("a proven body is admitted as it is without DPoP");
+    let head = 2 * 16
+        + "content-type".len()
+        + "application/json".len()
+        + "authorization".len()
+        + bearer.len();
+    assert_eq!(
+        budget.used(),
+        (before.0 + head, before.1 + head),
+        "the view is charged exactly its restated head; the body is not charged again"
+    );
+    assert_eq!(view.body(), original.body());
+    assert_eq!(&view.body_bytes()[..], body.as_slice());
+    assert_eq!(view.method(), "POST");
+    assert_eq!(view.target(), "/mcp");
+    assert!(view.request().same_request(original.request()));
+    drop(original);
+    // The view keeps the original's body alive, still charged once.
+    assert_eq!(view.body(), body.as_slice());
+    drop(view);
+    assert_eq!(budget.used(), (0, 0));
+}

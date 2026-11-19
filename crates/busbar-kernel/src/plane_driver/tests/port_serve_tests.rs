@@ -1566,17 +1566,15 @@ fn an_upgrade_whose_money_is_refused_is_answered_before_any_dial_and_any_101() {
     .unwrap();
     let asked = Arc::new(AtomicUsize::new(0));
     let count = asked.clone();
-    let pending = Pending::new(
-        allocation,
-        Arc::new(routes),
-        None,
-        move |receipt| {
-            assert!(receipt.walk_key().is_some(), "the walk resolved before money");
-            count.fetch_add(1, Ordering::SeqCst);
-            // The key's budget is spent.
-            Err(CoreRefusals::new().for_core(0, busbar_plugin_abi::fail::refused::R_RATE_LIMITED))
-        },
-    );
+    let pending = Pending::new(allocation, Arc::new(routes), None, move |receipt| {
+        assert!(
+            receipt.walk_key().is_some(),
+            "the walk resolved before money"
+        );
+        count.fetch_add(1, Ordering::SeqCst);
+        // The key's budget is spent.
+        Err(CoreRefusals::new().for_core(0, busbar_plugin_abi::fail::refused::R_RATE_LIMITED))
+    });
     /// The caller's side of an upgrade: it takes messages, and counts what it was asked and given.
     #[derive(Default)]
     struct Side {
