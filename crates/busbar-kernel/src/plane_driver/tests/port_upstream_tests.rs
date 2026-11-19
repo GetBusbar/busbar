@@ -20,12 +20,41 @@ use busbar_ports::plane::{PlaneIn, PlaneOut, TargetIn};
 use busbar_ports::{FactRef, FactVal, PortError};
 
 use super::{
-    probe_member, probe_wait, run_attempts, Attempted, Candidate, Failure, Members, ProbeOutcome,
-    SendFailed, UpReply, UpSend, Wants,
+    probe_wait, Attempted, Candidate, Failure, Members, ProbeOutcome, SendFailed, UpReply, UpSend,
+    Wants, Whole,
 };
 use crate::plane_driver::port_session::{
-    Calls, Effects, Origin, SessionError, Task, ToClient, UpExchange, Violation,
+    finish, Calls, Effects, Origin, SessionError, Task, ToClient, UpExchange, Violation,
 };
+
+/// The attempt walk, driven to its end on a test runtime.
+fn run_attempts<K: Calls + ?Sized, M: Members, S: UpSend>(
+    task: &mut Task<'_, K>,
+    wants: &Wants,
+    dialect: &str,
+    model: &str,
+    members: &mut M,
+    send: &mut S,
+    effects: &dyn Effects,
+) -> Result<Attempted, SessionError> {
+    finish(super::run_attempts(
+        task, wants, dialect, model, members, send, effects,
+    ))
+}
+
+/// One probe, driven to its end on a test runtime.
+fn probe_member<K: Calls + ?Sized, S: UpSend>(
+    calls: &K,
+    member: &Candidate,
+    dialect: &str,
+    model: &str,
+    send: &mut S,
+    effects: &dyn Effects,
+) -> Result<ProbeOutcome, SessionError> {
+    finish(super::probe_member(
+        calls, member, dialect, model, send, effects,
+    ))
+}
 use crate::retry::{Retry, RetryPolicy, RetrySite};
 
 #[derive(Clone)]
@@ -298,7 +327,7 @@ struct Walk {
 }
 
 impl Members for Walk {
-    fn next(&mut self, _: &Wants) -> Option<Candidate> {
+    async fn next(&mut self, _: &Wants) -> Option<Candidate> {
         self.queue.pop_front()
     }
 
@@ -329,14 +358,23 @@ struct Far {
 }
 
 impl UpSend for Far {
-    fn send(&mut self, c: &Candidate, ex: UpExchange) -> Result<UpReply, SendFailed> {
+    type Rest<'a> = Whole;
+
+    async fn open<'a>(
+        &'a mut self,
+        c: &'a Candidate,
+        ex: UpExchange,
+    ) -> Result<UpOpen<Whole>, SendFailed> {
         self.sent.push((
             c.upstream.to_string(),
             ex.method.as_deref().unwrap_or_default().to_string(),
             ex.path.as_deref().unwrap_or_default().to_string(),
             ex.body.clone(),
         ));
-        self.replies.pop_front().unwrap_or(Err(SendFailed))
+        self.replies
+            .pop_front()
+            .unwrap_or(Err(SendFailed))
+            .map(UpReply::opened)
     }
 }
 
@@ -362,13 +400,19 @@ fn selected_quota_skips_do_not_damage_the_breaker_and_infrastructure_stops() {
     };
     struct Refuse(bool);
     impl UpSend for Refuse {
-        fn send(&mut self, _: &Candidate, _: UpExchange) -> Result<UpReply, SendFailed> {
+        type Rest<'a> = Whole;
+
+        async fn open<'a>(
+            &'a mut self,
+            _: &'a Candidate,
+            _: UpExchange,
+        ) -> Result<UpOpen<Whole>, SendFailed> {
             panic!("no legacy send")
         }
-        fn open_selected<'a>(
+        async fn open_selected<'a>(
             &'a mut self,
             _: OwnedPreparation,
-        ) -> Result<SelectedOpen<'a>, SelectedSendError> {
+        ) -> Result<SelectedOpen<Whole>, SelectedSendError> {
             Err(SelectedSendError(if self.0 {
                 SelectedFailure::Quota
             } else {
@@ -937,9 +981,13 @@ struct Tap {
 }
 
 impl ClientSink for Tap {
-    fn items(&self, items: Vec<ToClient>) -> bool {
-        self.got.lock().unwrap().extend(items);
-        !self.gone.load(Ordering::SeqCst)
+    fn poll_items(
+        &self,
+        _: &mut std::task::Context<'_>,
+        items: &mut Vec<ToClient>,
+    ) -> std::task::Poll<bool> {
+        self.got.lock().unwrap().append(items);
+        std::task::Poll::Ready(!self.gone.load(Ordering::SeqCst))
     }
 }
 
@@ -963,7 +1011,7 @@ struct Reader {
 }
 
 impl UpChunks for Reader {
-    fn next(&mut self) -> Result<Option<Chunk>, SendFailed> {
+    async fn next(&mut self) -> Result<Option<Chunk>, SendFailed> {
         self.seen
             .lock()
             .unwrap()
@@ -984,20 +1032,22 @@ struct Streamer {
 }
 
 impl UpSend for Streamer {
-    fn send(&mut self, _: &Candidate, _: UpExchange) -> Result<UpReply, SendFailed> {
-        Err(SendFailed)
-    }
+    type Rest<'a> = Reader;
 
-    fn open<'a>(&'a mut self, _: &Candidate, _: UpExchange) -> Result<UpOpen<'a>, SendFailed> {
+    async fn open<'a>(
+        &'a mut self,
+        _: &'a Candidate,
+        _: UpExchange,
+    ) -> Result<UpOpen<Reader>, SendFailed> {
         let (status, chunks) = self.replies.pop_front().ok_or(SendFailed)?;
         Ok(UpOpen {
             status,
             headers: vec![(b"content-type".to_vec(), b"text/event-stream".to_vec())],
-            rest: Box::new(Reader {
+            rest: Reader {
                 items: chunks.into(),
                 tap: Arc::clone(&self.tap),
                 seen: Arc::clone(&self.seen),
-            }),
+            },
         })
     }
 }

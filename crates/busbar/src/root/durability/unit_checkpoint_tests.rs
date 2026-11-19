@@ -432,7 +432,10 @@ async fn assert_recovered_audit(book: &TestBook, report: &UnitCheckpoint) {
             .unwrap();
         }
         Some(busbar_kernel_audit::RecordVersion::SignedHead) => {
-            assert_eq!(busbar_kernel_audit::AuditChain::digest_of(audit), audit.hash);
+            assert_eq!(
+                busbar_kernel_audit::AuditChain::digest_of(audit),
+                audit.hash
+            );
         }
         None => panic!("a recovered line carries half a signature"),
     }

@@ -62,6 +62,11 @@ impl RootRules for ConfigRules {
     fn held_document(&self, path: &Path) -> Option<SecureString> {
         crate::root::migrate::held(path)
     }
+    fn fee_debt_owner(
+        &self,
+    ) -> Option<std::sync::Weak<dyn busbar_kernel::governance::fee_debt::FeeDebtAssociate>> {
+        Some(crate::root::plane_node::fee_debt_owner())
+    }
 }
 
 /// Reads after the bootstrap Store opens must preserve the images and inputs that opened it.
@@ -140,6 +145,12 @@ impl RootRules for ProtectedRules {
 
     fn held_document(&self, path: &Path) -> Option<SecureString> {
         self.reader.held_document(path)
+    }
+
+    fn fee_debt_owner(
+        &self,
+    ) -> Option<std::sync::Weak<dyn busbar_kernel::governance::fee_debt::FeeDebtAssociate>> {
+        self.reader.fee_debt_owner()
     }
 }
 

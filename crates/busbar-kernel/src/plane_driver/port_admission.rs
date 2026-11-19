@@ -171,9 +171,9 @@ impl Pending {
         self.routes.clone()
     }
 
-    pub(crate) fn admit(
+    pub(crate) fn admit<M: Members>(
         &self,
-        members: Option<&mut dyn Members>,
+        members: Option<&mut M>,
         wants: Option<&Wants>,
         declaration: RequestDeclaration,
     ) -> Result<(), SessionError> {

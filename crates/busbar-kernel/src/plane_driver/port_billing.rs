@@ -194,15 +194,6 @@ impl PortBilling {
             .admit_existing_ordinary(request, slot, classes, fee, mode)
     }
 
-    /// Bind the native observer owner (the actual Node book) to this GovState's fee producer.
-    /// `Ok(false)` means an owner was already bound; it is never replaced.
-    pub fn bind_fee_debt_owner(
-        &self,
-        owner: std::sync::Weak<dyn crate::governance::fee_debt::FeeDebtAssociate>,
-    ) -> bool {
-        self.gov.bind_fee_debt_owner(owner).is_ok()
-    }
-
     /// FEE-DEBT r1: resolve this slot's transferred fee obligations against their exact pinned
     /// owners. Called by the existing native pulse outside every Node, money and budget lock.
     pub async fn resolve_fee_transfers(&self, slot: &NativeOrdinaryTerminalSlot) {

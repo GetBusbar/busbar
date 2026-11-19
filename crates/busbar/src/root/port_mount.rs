@@ -289,6 +289,17 @@ struct Pipe {
 }
 
 impl ClientSink for Pipe {
+    /// The body channel has no bound here, so items are taken at once and nothing waits.
+    fn poll_items(
+        &self,
+        _cx: &mut std::task::Context<'_>,
+        items: &mut Vec<ToClient>,
+    ) -> std::task::Poll<bool> {
+        std::task::Poll::Ready(self.items(std::mem::take(items)))
+    }
+}
+
+impl Pipe {
     fn items(&self, items: Vec<ToClient>) -> bool {
         for item in items {
             match item {
@@ -569,6 +580,16 @@ struct Counted {
 }
 
 impl ClientSink for Counted {
+    fn poll_items(
+        &self,
+        _cx: &mut std::task::Context<'_>,
+        items: &mut Vec<ToClient>,
+    ) -> std::task::Poll<bool> {
+        std::task::Poll::Ready(self.items(std::mem::take(items)))
+    }
+}
+
+impl Counted {
     fn items(&self, items: Vec<ToClient>) -> bool {
         for item in &items {
             if let ToClient::Head { status, .. } = item {
@@ -886,7 +907,7 @@ pub(crate) fn upgrade_step(
 
 /// The client items of core's refusal on an upgrade route: the plane's rendering of it on that
 /// route (the plane is lent the head, never called with `request`), else core's plain refusal.
-pub(crate) async fn upgrade_refusal_items(
+pub(crate) fn upgrade_refusal_items(
     seat: &PortSeat,
     route: u32,
     head: &Arc<busbar_kernel::inbound::request_snapshot::ChargedRequestSnapshot>,
@@ -901,15 +922,10 @@ pub(crate) async fn upgrade_refusal_items(
     );
     // The plane renders the refusal on the head it is lent: never the route's credential carriers.
     http.withhold(Arc::clone(withheld));
-    // Core's words are lent for the life of the process: keeping them for the fallback copies nothing.
-    let fallback = refusal.clone();
-    match seat
-        .driver
-        .render_refusal(route, head.request().clone(), http, refusal)
-        .await
-    {
+    // A direct call on this thread; the snapshot `head` keeps the request's charged input for it.
+    match seat.driver.render_refusal_now(route, &http, &refusal) {
         Ok(items) => items,
-        Err(_) => port_auth::plain_refusal(&fallback),
+        Err(_) => port_auth::plain_refusal(&refusal),
     }
 }
 

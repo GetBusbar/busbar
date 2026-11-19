@@ -75,7 +75,9 @@ fn line_proves(
             if busbar_kernel_audit::AuditChain::digest_of(audit) == audit.hash {
                 Ok(())
             } else {
-                Err(error(format!("{what} audit differs from its chained digest")))
+                Err(error(format!(
+                    "{what} audit differs from its chained digest"
+                )))
             }
         }
         None => Err(error(format!(

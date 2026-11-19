@@ -305,6 +305,12 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             guard.destinations_applied(destinations);
         }
     }
+
+    fn fee_debt_owner(
+        &self,
+    ) -> Option<std::sync::Weak<dyn busbar_kernel::governance::fee_debt::FeeDebtAssociate>> {
+        Some(crate::root::plane_node::fee_debt_owner())
+    }
 }
 
 /// The composition root's rules that read only the resolved config: no I/O, no loaded plugin
