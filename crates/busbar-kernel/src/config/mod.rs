@@ -2169,6 +2169,10 @@ mod provider_protocol_tests;
 mod advanced_destinations_tests;
 
 #[cfg(test)]
+#[path = "tests/retired_advanced_tests.rs"]
+mod retired_advanced_tests;
+
+#[cfg(test)]
 #[path = "tests/config_backcompat_corpus.rs"]
 mod config_backcompat_corpus;
 

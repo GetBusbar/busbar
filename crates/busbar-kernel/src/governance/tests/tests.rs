@@ -1799,6 +1799,33 @@ async fn test_budget_sweep_staleness_boundary_is_exact() {
     );
 }
 
+/// Admission never sweeps the budget tables: the sweep belongs to the usage writer's tick, not to
+/// a count of admissions. 1,024 admissions is four times the 1.5.5 cadence (every 256th).
+#[tokio::test]
+async fn admission_never_sweeps_the_budget_table() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    let k = sample_key("quiet", "hq");
+    let now = 1_700_000_040u64;
+    let stale = BudgetCell {
+        window_start: now - 40 * SECS_PER_DAY,
+        requests: 1,
+        billable_requests: 1,
+        last_touch: now,
+        ..BudgetCell::default()
+    };
+    gov.budget.write("quiet").insert("stale".into(), stale);
+    for _ in 0..1024 {
+        assert!(gov.try_admit(&flat_cost(0), &k, "", now).is_ok());
+    }
+    assert!(
+        gov.budget.read("quiet").contains_key("stale"),
+        "an admission swept the budget table"
+    );
+}
+
 #[tokio::test]
 async fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
     const N: u32 = crate::config::DEFAULT_RATE_SWEEP_INTERVAL;
