@@ -115,18 +115,4 @@ impl KindCode {
             KindCode::Transport => super::transport::ABI_VERSION,
         }
     }
-
-    /// The ONE layout fingerprint of this kind's ABI the host accepts ([`layout`]): a door stating
-    #[must_use]
-    pub const fn layout_fingerprint(self) -> u64 {
-        match self {
-            KindCode::Store => super::store::v4::LAYOUT_FINGERPRINT,
-            KindCode::Secret => super::secret::LAYOUT_FINGERPRINT,
-            KindCode::Auth => super::auth::LAYOUT_FINGERPRINT,
-            KindCode::Hook => super::hook::LAYOUT_FINGERPRINT,
-            KindCode::Export => super::export::LAYOUT_FINGERPRINT,
-            KindCode::Plane => super::plane::LAYOUT_FINGERPRINT,
-            KindCode::Transport => super::transport::LAYOUT_FINGERPRINT,
-        }
-    }
 }

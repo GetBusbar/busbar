@@ -254,23 +254,6 @@ impl Settings {
         ))
     }
 
-    /// Resolve declared reference slots into sealed credential arguments for a kind boundary.
-    pub fn lend_references(
-        &self,
-        declared: &[String],
-        sources: &crate::secret_ref::Sugars,
-        owner: &str,
-        resolve: &ReferenceResolver<'_>,
-    ) -> Result<LentSettings, String> {
-        self.prepare().lend_references_with(
-            declared,
-            sources,
-            owner,
-            resolve,
-            ReferenceDelivery::Retain,
-        )
-    }
-
     /// Public generation snapshot, additionally excluding credential-like keys and references.
     ///
     /// ```compile_fail

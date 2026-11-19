@@ -366,13 +366,6 @@ impl Blob {
         self
     }
 
-    /// The same bytes, flagged `flags` ([`BLOB_SECRET`]).
-    #[must_use]
-    pub const fn with_flags(mut self, flags: u32) -> Blob {
-        self.flags = flags;
-        self
-    }
-
     /// The payload `len` bytes at `ptr` name (NULL = absent), of `fmt`, flagged `flags`,
     /// unchecked: the host's and the loader's door for the memory they lend one call.
     ///

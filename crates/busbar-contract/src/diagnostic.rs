@@ -226,12 +226,6 @@ impl fmt::Display for DocsUrl {
 }
 
 impl Diagnostic {
-    /// This code's docs page (see [`ERROR_DOCS_BASE`]).
-    #[must_use]
-    pub const fn docs_url(&self) -> DocsUrl {
-        DocsUrl(self.code)
-    }
-
     /// An operator-facing message under this code: `BUSBAR-NNNN: <detail>. See <docs url>`.
     /// Error paths only — this is the one allocation a refusal makes, and no success path builds
     /// one. Prefer the typed constructor the catalog generates for a code that has a `text`

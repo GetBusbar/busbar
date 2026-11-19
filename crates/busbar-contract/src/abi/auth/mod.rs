@@ -23,9 +23,6 @@ pub use serve::{ServeIn, ServeOut};
 /// The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`.
 pub const ABI_VERSION: u32 = super::versions::AUTH.raw();
 
-/// The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0x7f8289d571846432;
-
 /// [`InHead::op`](super::mechanism::call::InHead) of each auth op: kind op `k` is at slot
 /// [`LIFECYCLE_SLOTS`]` + k`, contiguous, in [`Ops`] field order.
 ///

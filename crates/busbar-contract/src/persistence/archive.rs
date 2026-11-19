@@ -630,27 +630,6 @@ impl<R: Read + Seek> VerifiedArchive<R> {
     pub fn summary(&self) -> Summary {
         self.summary
     }
-    /// Table ordinal from the bounded immutable metadata index.
-    pub fn row_table(&self, ordinal: u64) -> Result<u32, Error> {
-        self.index
-            .get(usize::try_from(ordinal).map_err(|_| Error::Budget)?)
-            .map(|i| i.table)
-            .ok_or(Error::Malformed)
-    }
-    /// Encoded native row bytes from the immutable index, before payload allocation.
-    pub fn row_frame_bytes(&self, ordinal: u64) -> Result<usize, Error> {
-        self.index
-            .get(usize::try_from(ordinal).map_err(|_| Error::Budget)?)
-            .map(|entry| entry.length)
-            .ok_or(Error::Malformed)
-    }
-    /// Original frame hash from the validated immutable metadata index; no payload read.
-    pub fn row_frame_digest(&self, ordinal: u64) -> Result<[u8; 32], Error> {
-        self.index
-            .get(usize::try_from(ordinal).map_err(|_| Error::Budget)?)
-            .map(|entry| entry.hash)
-            .ok_or(Error::Malformed)
-    }
     /// Locate one exact native identity through the bounded hash index. Later
     /// read_row still verifies the original frame bytes before exposing a value.
     pub fn find_native(&self, table: u32, native_key: &[u8]) -> Result<Option<u64>, Error> {
@@ -674,19 +653,6 @@ impl<R: Read + Seek> VerifiedArchive<R> {
             table,
             native_key: Secret::new(key.into_vec()),
             value: Secret::new(value.into_vec()),
-        })
-    }
-    /// Revalidate an original frame into the reading owner's wiping custody.
-    /// The archive is already a caller-owned seekable capability; no kernel secret is re-sealed.
-    pub fn read_row_owned<O: crate::redacted::OwnerSeal>(
-        &mut self,
-        ordinal: u64,
-    ) -> Result<ArchiveRow<O>, Error> {
-        let RowBuffers { table, key, value } = self.read_row_buffers(ordinal)?;
-        Ok(ArchiveRow {
-            table,
-            native_key: Secret::held(key.into_vec()),
-            value: Secret::held(value.into_vec()),
         })
     }
     fn read_row_buffers(&mut self, ordinal: u64) -> Result<RowBuffers, Error> {

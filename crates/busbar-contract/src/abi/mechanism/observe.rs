@@ -51,11 +51,6 @@ impl<R> Envelope<R> {
             diagnostics: Vec::new(),
         }
     }
-
-    /// Whether this envelope carries anything on the back-channel at all.
-    pub fn is_bare(&self) -> bool {
-        self.metrics.is_empty() && self.diagnostics.is_empty()
-    }
 }
 
 /// One plugin-reported metric sample — the PUBLISHED SHAPE of an entry in [`Envelope::metrics`].

@@ -237,9 +237,6 @@ use crate::caps::ReasonCode;
 /// Admission also requires the current layout fingerprint.
 pub const ABI_VERSION: u32 = crate::abi::versions::PLANE.raw();
 
-/// The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0x3943afecefc5949d;
-
 /// [`crate::abi::mechanism::call::InHead::op`] of each plane op, in table order: kind op `k` is
 pub mod slot {
     use super::LIFECYCLE_SLOTS;
@@ -791,12 +788,6 @@ impl RefusalClass {
         RefusalClass::PlaneFault,
         RefusalClass::NodeFault,
     ];
-
-    /// Whether the class is a fault of this node, the one family a plane may render as its
-    #[must_use]
-    pub const fn is_node_fault(self) -> bool {
-        matches!(self, RefusalClass::PlaneFault | RefusalClass::NodeFault)
-    }
 }
 
 impl RefusalCode {

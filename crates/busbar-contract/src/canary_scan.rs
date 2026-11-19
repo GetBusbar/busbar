@@ -68,8 +68,6 @@ pub const OFFSET: usize = 32;
 pub const PAYLOAD_LEN: usize = 128;
 /// A short payload's length: at most 30 bytes, so a small-string type stores it inline.
 const SHORT_PAYLOAD_LEN: usize = 24;
-/// Characters in a short text canary (at least [`WINDOW`]).
-const SHORT_CANARY_LEN: usize = 20;
 /// Where a short canary sits in its payload: two filler bytes on each side.
 const SHORT_OFFSET: usize = 2;
 /// The filler around the canary.
@@ -256,16 +254,6 @@ impl WipeProof {
     #[must_use]
     pub fn text() -> Self {
         Self::with_canary(Pattern::random_text(CANARY_LEN), LONG)
-    }
-
-    /// As [`Self::text`], short: a [`SHORT_CANARY_LEN`]-character canary in a
-    /// [`SHORT_PAYLOAD_LEN`]-byte payload (two filler bytes each side), so a small-string type
-    /// would store it inline. Its sentinel and positive control are blocks of the same size, so the
-    /// control shows that a dropped, unwiped [`SHORT_PAYLOAD_LEN`]-byte block is found. Plant it
-    /// with [`Self::text_payload`].
-    #[must_use]
-    pub fn short_text() -> Self {
-        Self::with_canary(Pattern::random_text(SHORT_CANARY_LEN), SHORT)
     }
 
     /// An ASCII alphanumeric canary, unchanged by URL/form encoding, using the same masked scanner and

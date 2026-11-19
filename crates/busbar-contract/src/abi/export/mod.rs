@@ -75,9 +75,6 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 /// The export kind's ABI version: v1.5.5 shipped `2`, so 1.6.0 ships `3`.
 pub const ABI_VERSION: u32 = super::versions::EXPORT.raw();
 
-/// The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0xe1324b294edbab7e;
-
 /// [`InHead::op`] values the export kind adds after the shared lifecycle, in table order.
 ///
 /// # Examples

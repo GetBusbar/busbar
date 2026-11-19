@@ -145,9 +145,6 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 /// The hook kind's ABI version: v1.5.5 shipped `1`, so 1.6.0 ships `2`.
 pub const ABI_VERSION: u32 = super::versions::HOOK.raw();
 
-/// The hook kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0x714c2d6e34092fa0;
-
 /// [`InHead::op`] values the hook kind adds after the shared lifecycle, in table order.
 ///
 /// # Examples
@@ -499,15 +496,6 @@ impl Tail {
         routes: std::ptr::null(),
         routes_len: 0,
     };
-
-    /// This tail with its class and its two grants set: the one constructor a hook plugin's
-    #[must_use]
-    pub const fn with_access(mut self, kind_class: u32, content: u32, user: u32) -> Tail {
-        self.kind_class = kind_class;
-        self.prompt_access = content;
-        self.user_access = user;
-        self
-    }
 
     abi_lists! {
         requested_signals, requested_signals_len: u32

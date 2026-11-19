@@ -4,7 +4,7 @@
 //! Mandatory opaque persistence primitives and their shared output buffer.
 pub mod v4;
 use crate::abi::mechanism::decl::abi_struct;
-pub use v4::{ABI_VERSION, LAYOUT_FINGERPRINT};
+pub use v4::ABI_VERSION;
 abi_struct! {
     /// A caller-owned initialized byte allocation. Native code never retains this pointer.
     #[repr(C)]

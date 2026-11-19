@@ -12,9 +12,6 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 /// The secret kind's ABI version.
 pub const ABI_VERSION: u32 = super::versions::SECRET.raw();
 
-/// The secret kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0x52fda1049968af93;
-
 /// [`InHead::op`] values the secret kind adds after the shared lifecycle, in table order.
 ///
 /// # Examples

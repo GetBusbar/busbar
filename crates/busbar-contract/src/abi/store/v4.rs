@@ -449,9 +449,6 @@ pub const MAX_SLOTS: u32 = 65_536;
 /// Primitive names, in mandatory table order.
 pub const NAMES: [&str; 5] = ["read", "scan", "commit", "clock", "bootstrap"];
 
-/// Fingerprint of the primitive shapes, independent from the legacy business layout.
-pub const LAYOUT_FINGERPRINT: u64 = 0xb74ff4246792db2d;
-
 /// Safe output-envelope checks. The future admitted loader must additionally
 /// validate every returned descriptor/cursor against host-owned written bytes,
 /// inspect Blob format/flags, and validate input spans with checked arithmetic.

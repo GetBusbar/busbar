@@ -962,21 +962,7 @@ pub struct PlaneRecordRef<'a> {
     pub body: &'a [u8],
 }
 
-impl PlaneRecordRef<'_> {
-    /// The owned record, for a store that keeps it.
-    #[must_use]
-    pub fn to_record(&self) -> PlaneRecord {
-        PlaneRecord {
-            kind: self.kind.to_string(),
-            id: self.id.to_string(),
-            parent: self.parent.map(str::to_string),
-            seq: self.seq,
-            ts: self.ts,
-            disposition: self.disposition,
-            body: self.body.to_vec(),
-        }
-    }
-}
+impl PlaneRecordRef<'_> {}
 
 /// How history selection narrows a kind's records — the neutral form of "everything of
 /// this kind" vs "one parent's chain of this kind". The parent is borrowed where the caller holds it

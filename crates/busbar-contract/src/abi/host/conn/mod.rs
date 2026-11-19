@@ -136,22 +136,7 @@ struct Headless {
     timeout_ms: u64,
 }
 
-impl Headless {
-    const fn into_wire(self) -> WireOpenDesc {
-        WireOpenDesc {
-            size: self.size,
-            _reserved: self._reserved,
-            target: self.target,
-            fields: self.fields,
-            fields_len: self.fields_len,
-            body: self.body,
-            body_len: self.body_len,
-            timeout_ms: self.timeout_ms,
-            method: DeclStr::NONE,
-            head_target: DeclStr::NONE,
-        }
-    }
-}
+impl Headless {}
 
 const _: () = assert!(core::mem::size_of::<Headless>() == OPEN_DESC_HEADLESS);
 
@@ -210,11 +195,6 @@ impl Held {
         self.retention
             .get(s)
             .map_or(DeclStr::NONE, |kept| range(kept))
-    }
-
-    /// [`Self::keep`] where the string is stated; an absent one is the NULL range and touches nothing.
-    fn keep_opt(&mut self, s: Option<&str>) -> DeclStr {
-        s.map_or(DeclStr::NONE, |s| self.keep(s))
     }
 }
 
