@@ -42,7 +42,7 @@ impl core::fmt::Display for AbiVersion {
 /// old mechanism plus one, with the one call shape). It is the number a native stamp carries in
 /// `core_abi`, the loader admits against `CORE_CONTRACT`, and `ci/abi.pin`'s `mechanism` line pins, so
 /// a Statement rendering is stamped and read under the same number. No second copy is kept here.
-pub const MECHANISM: AbiVersion = AbiVersion(2);
+pub const MECHANISM: AbiVersion = AbiVersion(busbar_plugin_abi::versions::CORE);
 /// Store: the call-shape number busbar-plugin-abi sets (`versions::abi_of`).
 pub const STORE: AbiVersion = kind(KindCode::Store);
 /// Secret: the call-shape number busbar-plugin-abi sets (`versions::abi_of`).
