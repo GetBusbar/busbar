@@ -173,11 +173,16 @@ fn counted_denial(
     use busbar_contract::caps::{ReasonCode, StepName};
     match decision {
         DataRefused::Credential => (StepName::Authenticate, ReasonCode::Unauthenticated),
-        DataRefused::Policy => (StepName::Approve, ReasonCode::ScopeDenied),
+        DataRefused::Policy | DataRefused::Scope => (StepName::Approve, ReasonCode::ScopeDenied),
+        DataRefused::Disabled => (StepName::Authenticate, ReasonCode::Revoked),
+        DataRefused::TooLarge => (StepName::Decode, ReasonCode::BodyTooLarge),
+        DataRefused::NotAnUpgrade => (StepName::Decode, ReasonCode::MethodNotAllowed),
         DataRefused::Replay => (StepName::Authenticate, ReasonCode::Replayed),
         DataRefused::Capacity => (StepName::Arrival, ReasonCode::InFlightCap),
         DataRefused::Unavailable => (StepName::Arrival, ReasonCode::DurabilityUnavailable),
         DataRefused::Unsupported
+        | DataRefused::Trailers
+        | DataRefused::NoUpgradeTransport
         | DataRefused::Binding
         | DataRefused::Cancelled
         | DataRefused::Unit => (StepName::Decode, ReasonCode::DecodeFailed),

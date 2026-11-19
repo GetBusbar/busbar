@@ -19,7 +19,7 @@
 //! when the mask holds both `AUTH_PRINCIPAL` and `AUTH_TICKET`.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use busbar_plugin_abi::plane::{
     ADMIN_HYDRATE, AUTH_OPERATOR, AUTH_PRINCIPAL, ROUTE_ADMIN, ROUTE_CATALOG, ROUTE_LINE,

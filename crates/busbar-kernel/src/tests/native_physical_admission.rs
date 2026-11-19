@@ -387,13 +387,18 @@ fn native_physical_live_check_answers_the_reading_it_judged_at() {
     let f = fixture();
     let conn = f.listener.connect(accepted());
     let before = Instant::now();
-    let deadline = before + std::time::Duration::from_secs(3600);
+    let arrival = crate::inbound::native::Arrival::at(
+        crate::store::monotonic_ns(),
+        std::time::Duration::from_secs(3600),
+    )
+    .unwrap();
+    let deadline = arrival.deadline();
     let (request, owner) = conn
         .head(
             1,
             head("/one"),
             f.budget.try_enter(f.listener.class).unwrap(),
-            Some(deadline),
+            Some(arrival),
         )
         .unwrap();
     let judged = request
@@ -442,7 +447,10 @@ fn native_physical_wrong_class_and_expired_head_do_not_create_streams() {
             1,
             head("/one"),
             f.budget.try_enter(AdmissionClass::Data).unwrap(),
-            Some(Instant::now())
+            crate::inbound::native::Arrival::at(
+                crate::store::monotonic_ns(),
+                std::time::Duration::ZERO
+            )
         ),
         Err(ArrivalRefusal::Deadline)
     ));
