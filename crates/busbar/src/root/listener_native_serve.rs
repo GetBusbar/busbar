@@ -256,6 +256,10 @@ async fn supervise(
     // websocket transport's session is driven in the HTTP session's place, and what it hands up is
     // the caller's side of the one upgraded session, not a new request.
     let mut adopted: Option<AdoptedSide> = None;
+    // What the connection was asked and what it answered, and how its session ended: a request
+    // head that was read and never answered is said (`unanswered`), whatever ended it.
+    let (mut heads, mut answered) = (0_usize, 0_usize);
+    let mut ended = "the supervisor stopped";
     loop {
         if driver_done {
             for slot in &mut ingress.slots {
@@ -353,6 +357,7 @@ async fn supervise(
                     }
                     outcome => Some(outcome),
                 };
+                ended = outcome.as_ref().map_or("the upgrade was not adopted", session_ended);
                 // The caller's side of an adopted session is over with its connection.
                 adopted = None;
                 driver_done = true;
@@ -414,7 +419,10 @@ async fn supervise(
                             input_open = false;
                             stop_connection(&ingress, &mut waiting, &mut close, reason);
                         }
-                        if let Err(error) = completed.result { failure.get_or_insert(error); }
+                        match completed.result {
+                            Ok(_) => answered += 1,
+                            Err(error) => { failure.get_or_insert(error); },
+                        }
                     },
                     Some(Err(error)) => {
                         failure.get_or_insert(InputError::Io(std::io::Error::other(error)));
@@ -443,6 +451,7 @@ async fn supervise(
                     continue;
                 }
                 if let Inbound::Head { stream, .. } = &input {
+                    heads += 1;
                     waiting.push_back(Waiting { stream: *stream, ready: None });
                 }
                 let reset = match &input {
@@ -495,9 +504,34 @@ async fn supervise(
             },
         }
     }
+    if heads > answered {
+        // A request closed with nothing written used to leave no line: a cancelled preparation
+        // and a session the transport closed are not failures `ended_with` reports.
+        tracing::warn!(
+            listener = %native.slot,
+            admin = native.admin.is_some(),
+            requests = heads,
+            answered,
+            session = ended,
+            failure = %failure.as_ref().map_or_else(|| "none".to_owned(), ToString::to_string),
+            "a native connection closed with a request unanswered"
+        );
+    }
     match failure {
         Some(error) => Err(error),
         None => Ok(()),
+    }
+}
+
+/// How the connection's session ended, in words for the unanswered-request line.
+fn session_ended<S>(outcome: &session::Outcome<S>) -> &'static str {
+    match outcome {
+        session::Outcome::Closed => "the transport closed the session",
+        session::Outcome::PeerClosed => "the peer closed the connection",
+        session::Outcome::CoreClosed(_) => "core closed the session",
+        session::Outcome::Lost(_) => "the socket failed",
+        session::Outcome::Ended(_) => "a transport call failed or broke the answer grammar",
+        session::Outcome::Upgraded(_) => "the connection was upgraded",
     }
 }
 
