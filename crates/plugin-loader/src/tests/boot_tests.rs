@@ -317,14 +317,7 @@ fn a_dropped_plane_is_selected_by_a_section_that_selects_it() {
             _reserved: 0,
         },
     ];
-    let st = busbar_contract::abi::mechanism::door::Statement {
-        kind: KindCode::Plane as u32,
-        sections: SECTIONS.as_ptr(),
-        sections_len: SECTIONS.len(),
-        ..statement("routing-plane", "1.0.0", 1)
-    };
-    // SAFETY: the sections list is a `'static` array of its stated count.
-    let stated = unsafe { render(&st) }.unwrap();
+    let stated = rendered(KindCode::Plane, "routing-plane", SECTIONS, &[], &[]);
     let c = Candidate::from_rendering(
         stated,
         None,

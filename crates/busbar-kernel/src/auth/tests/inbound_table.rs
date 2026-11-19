@@ -1199,8 +1199,9 @@ fn an_empty_chain_is_refused_with_its_remedy() {
     assert!(EMPTY_CHAIN_REFUSED.contains("chain: [anonymous]"));
     assert!(EMPTY_CHAIN_REFUSED.contains("role_bindings.anonymous"));
     assert!(ANONYMOUS_UNLIMITED.contains("role_bindings.anonymous"));
-    // The anonymous principal is a shared subject: the decision serves it on a shared-state
-    // route and never on one that keeps state per caller.
+    // The anonymous principal is a shared subject, and auth is plane-agnostic: the decision serves
+    // it on a shared-state route and on one that keeps state per caller alike (the state is keyed
+    // by the session's handle, `port_intents::handle_scope`).
     let shared = passing(SHARED);
     assert_eq!(
         decide(Target::Route(&reference(Admission::Walk).record), &shared),
@@ -1211,7 +1212,7 @@ fn an_empty_chain_is_refused_with_its_remedy() {
             Target::Route(&reference(Admission::Selected).record),
             &shared
         ),
-        refused(Refusal::NoRoute, true)
+        Decision::Serve(Authority::Billed)
     );
     // With no binding the anonymous principal earns no key: it is not verified.
     let mut unbound = shared;
@@ -1338,7 +1339,9 @@ fn an_audience_bound_plane_takes_only_a_bound_credential() {
         assert_eq!(goes_on, binding == Binding::Bound, "{token}");
     }
     // A route of such a plane keeps a session per caller and says so in its record (callers
-    // distinct), so it is not served to a shared one.
+    // distinct); it is served to a shared subject as to any other (its state is keyed by the
+    // session's handle).
+
     let none: [Box<str>; 0] = [];
     let record = RouteRecord::from_wire(
         0,
@@ -1358,7 +1361,7 @@ fn an_audience_bound_plane_takes_only_a_bound_credential() {
     assert_eq!(record.caller_state, CallerState::Distinct);
     assert_eq!(
         decide(Target::Route(&record), &passing(SHARED)),
-        refused(Refusal::NoRoute, true)
+        Decision::Serve(Authority::Walk)
     );
     assert_eq!(
         decide(Target::Route(&record), &passing(DISTINCT)),
