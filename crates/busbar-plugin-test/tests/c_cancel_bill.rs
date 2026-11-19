@@ -84,11 +84,18 @@ fn cumulative_usage_and_the_cancel_table() {
         "an SRC_ESTIMATED last value on cancel posts nothing"
     );
 
-    // The four rule texts, byte-equal to the 1.5.5 contract module's.
-    let pinned = include_str!("../../busbar-contract/src/abi/plane/mod.rs");
+    // The four rule texts, byte-equal to the 1.5.5 contract module's numbered headings (its plane
+    // module's cancel table, `//! N. RULE:`), pinned here so the check outlives that module.
+    const PINNED_1_5_5: [&str; 4] = [
+        "1. A TRANSLATE-ABORT IS NEVER BILLED:",
+        "2. ONLY FAR-END-REPORTED USAGE IS BILLED:",
+        "3. A NON-STREAMED PARTIAL BILLS ZERO:",
+        "4. THE BUDGET REFUND IS A SEPARATE ACT:",
+    ];
     for (n, rule) in CANCEL_RULES.iter().enumerate() {
-        assert!(
-            pinned.contains(&format!("//! {}. {rule}:", n + 1)),
+        assert_eq!(
+            format!("{}. {rule}:", n + 1),
+            PINNED_1_5_5[n],
             "rule {} differs from the 1.5.5 text",
             n + 1
         );
