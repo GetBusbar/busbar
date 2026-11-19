@@ -5,6 +5,6 @@ mcp:
 a2a:
   a1: { url: "https://a.example/card", pin: { mechanism: unpinned } }
 streaming:
+  session:
+    model: test-model
   context_window_tokens: 16384
-  media:
-    listen: "127.0.0.1:0"
