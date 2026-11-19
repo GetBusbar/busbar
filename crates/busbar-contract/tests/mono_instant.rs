@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The host-clock to `Instant` bridge: one OS read per process, arithmetic after that, and the
-//! host's monotonic distances kept exactly.
+//! The host-clock to `Instant` bridge: the origin plus the reading, and the host's monotonic
+//! distances kept exactly.
 
 use std::time::Duration;
 

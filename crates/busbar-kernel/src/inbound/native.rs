@@ -453,8 +453,7 @@ type Streams = Arc<Mutex<HashMap<u64, Weak<StreamState>>>>;
 pub struct Arrival {
     mono_ns: u64,
     /// The deadline on the arrival's own clock (`store::monotonic_ns`). Admission judges expiry
-    /// here, never through the `Instant` bridge, whose process anchor can sit later than the
-    /// reading it was paired with and would stretch the deadline by that lag.
+    /// here, on the clock that took the reading, with no conversion between the two.
     deadline_ns: u64,
     deadline: Instant,
 }
