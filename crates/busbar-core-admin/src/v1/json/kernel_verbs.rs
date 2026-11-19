@@ -74,11 +74,13 @@ pub(crate) struct LedgerTotalsRow {
     lane: String,
     /// The serving lane's provider (empty where the node keeps no finer width).
     provider: String,
-    /// The summed priced amount of the row's lines in nano-units, each line priced against the
-    /// rate card in force at its own arrival instant.
+    /// The priced amount of the row, in NANO-units of the cost unit (1e-9 of it), as a decimal
+    /// integer string: each line priced against the rate card in force at its own arrival
+    /// instant. This node derives it from the bucket's micro-unit figure times 1000, so it is
+    /// always a multiple of 1000.
     priced_nanos: Amount,
-    /// The same figure in micro-units: ONE truncating divide over the summed nano-units, never a
-    /// sum of per-line divides.
+    /// The same figure in MICRO-units of the cost unit (1e-6 of it), as a decimal integer string:
+    /// the bucket's exact sum truncated once toward zero, never a sum of per-line truncations.
     priced_micros: Amount,
     /// One per billable client request on this row.
     fee_count: u64,
@@ -121,7 +123,10 @@ pub(crate) struct LedgerChainHead {
     hash: Hash,
 }
 
-/// One sealed balance, as the checkpoint holds it. Every money figure is an [`Amount`].
+/// One sealed balance, as the checkpoint holds it. Every money figure is an [`Amount`]: a decimal
+/// integer string, in the unit the cell's `dimension` names (`nano-units`, 1e-9 of the cost unit,
+/// is the only money dimension this node names). This node never serves a checkpoint:
+/// `GET /ledger/checkpoints` always answers an empty list.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct LedgerTotalsCell {
@@ -130,17 +135,29 @@ pub(crate) struct LedgerTotalsCell {
     scope: String,
     /// The window's opening instant, in whole seconds.
     window: u64,
+    /// In the unit of `dimension` (nano-units for money); a decimal integer string.
     budget: Amount,
+    /// In the unit of `dimension` (nano-units for money); a decimal integer string.
     drawn: Amount,
+    /// In the unit of `dimension` (nano-units for money); a decimal integer string.
     released: Amount,
+    /// In the unit of `dimension` (nano-units for money); a decimal integer string.
     settled: Amount,
+    /// In the unit of `dimension` (nano-units for money); a decimal integer string.
     open_holds: Amount,
+    /// In the unit of `dimension` (nano-units for money); a decimal integer string.
     open_slice_remainders: Amount,
+    /// In the unit of `dimension` (nano-units for money); a decimal integer string.
     adjustments: Amount,
+    /// In the unit of `dimension` (nano-units for money); a decimal integer string.
     unreconciled: Amount,
+    /// In the unit of `dimension` (nano-units for money); a decimal integer string.
     overdraft_carried_in: Amount,
+    /// In the unit of `dimension` (nano-units for money); a decimal integer string.
     overdraft_carried_out: Amount,
+    /// In the unit of `dimension` (nano-units for money); a decimal integer string.
     cross_window_transfers: Amount,
+    /// In the unit of `dimension` (nano-units for money); a decimal integer string.
     disputed: Amount,
     oldest_open_hold_age_secs: u64,
     open_dispute_count: u64,
@@ -180,12 +197,14 @@ pub(crate) struct LedgerDiscrepancy {
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct LedgerResidual {
-    /// Where the value the ledger drew is now.
+    /// Where the value the ledger drew is now, in nano-units of the cost unit, as a decimal
+    /// integer string. This node never serves a discrepancy.
     accounted: Amount,
-    /// What the previous release's row records as taken.
+    /// What the previous release's row records as taken, in nano-units of the cost unit, as a
+    /// decimal integer string.
     drawn: Amount,
-    /// `accounted` minus `drawn`. Zero is the good answer; the sign says which side is missing the
-    /// difference.
+    /// `accounted` minus `drawn`, in nano-units of the cost unit, as a decimal integer string.
+    /// Zero is the good answer; the sign says which side is missing the difference.
     amount: Amount,
 }
 
@@ -555,7 +574,8 @@ pub(crate) struct AmendRateHistoryReq {
     /// Why. Required and non-empty; the record keeps its SHA-256, not the text.
     #[serde(rename = "reason")]
     _reason: String,
-    /// The corrected flat per-request fee. Never negative.
+    /// The corrected flat per-request fee, in minor units (hundredths of the cost unit), as a JSON
+    /// integer. Never negative.
     #[serde(default, rename = "per_request_fee")]
     _per_request_fee: Option<u64>,
     /// The corrected rates. A correction must move at least one figure: a rate here or the fee.
