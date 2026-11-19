@@ -19,7 +19,7 @@ use std::ffi::OsStr;
 use object::{Object, ObjectSegment};
 
 use crate::header::{EntryFn, LinkedPlugin, Plugin, STAMP_SIZE, SYMBOL, StampBytes, stamp_kind};
-use crate::raw::{Bytes, KindCode};
+use crate::raw::{Bytes, KindCode, Shared};
 use crate::vt::{Kind, auth, export, hook, kind, plane, secret, store, transport};
 
 /// Why an image was not opened or admitted (the loader maps each to its `Refusal`).
@@ -107,8 +107,8 @@ fn stamp_of(header: &Plugin) -> &StampBytes {
 /// A dlopened image, header checked, not admitted.
 pub struct Opened {
     lib: libloading::Library,
-    /// The header's address (provenance exposed).
-    plugin: usize,
+    /// The header `busbar_plugin` returned, kept as that pointer (its provenance intact) for the views.
+    plugin: Shared<Plugin>,
 }
 
 impl Opened {
@@ -136,7 +136,7 @@ impl Opened {
         )?;
         let opened = Opened {
             lib,
-            plugin: plugin.expose_provenance(),
+            plugin: Shared::new(plugin),
         };
         let header = opened.header();
         segments.check(
@@ -161,9 +161,10 @@ impl Opened {
 
     /// The header (bounds-checked by `open`), borrowed from `self`.
     pub fn header(&self) -> &Plugin {
-        let p = core::ptr::with_exposed_provenance::<Plugin>(self.plugin);
-        // SAFETY: `open` checked that the header lies, aligned, inside the image's mapped segments; the
-        // image stays mapped while `self` holds the library, and the view borrows `self`.
+        let p = self.plugin.get();
+        // SAFETY: `p` is the pointer `busbar_plugin` returned. `open` checked that the header lies, aligned,
+        // inside the image's mapped segments; the image stays mapped while `self` holds the library, and
+        // the view borrows `self`. The header is immutable.
         unsafe { &*p }
     }
 
@@ -207,17 +208,26 @@ impl Opened {
 }
 
 /// An admitted image: a compiled-in `LinkedPlugin`, or a dropped-in image whose library is never
-/// unloaded. `Copy`: it is only an address of an immutable, `'static` header.
-#[derive(Clone, Copy, Debug)]
+/// unloaded. `Copy`: it is only a pointer to an immutable, `'static` header (`Send` and `Sync` through
+/// `Shared`, as `Plugin` is `Sync`).
+#[derive(Clone, Copy)]
 pub struct Admitted {
-    plugin: usize,
+    plugin: Shared<Plugin>,
+}
+
+impl core::fmt::Debug for Admitted {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Admitted")
+            .field("plugin", &self.plugin.get())
+            .finish()
+    }
 }
 
 impl Admitted {
     /// A compiled-in plugin (replaces r34's `admit_linked(&'static Plugin)`).
     pub fn linked(plugin: &'static LinkedPlugin) -> Result<Admitted, ImageError> {
         let admitted = Admitted {
-            plugin: core::ptr::from_ref(plugin.header()).expose_provenance(),
+            plugin: Shared::new(core::ptr::from_ref(plugin.header())),
         };
         match admitted.null_field() {
             Some(field) => Err(ImageError::Null(field)),
@@ -230,7 +240,7 @@ impl Admitted {
     /// null check `linked` runs, and the loader's admission still scans the stamp (A1).
     pub fn from_header(plugin: &'static Plugin) -> Result<Admitted, ImageError> {
         let admitted = Admitted {
-            plugin: core::ptr::from_ref(plugin).expose_provenance(),
+            plugin: Shared::new(core::ptr::from_ref(plugin)),
         };
         match admitted.null_field() {
             Some(field) => Err(ImageError::Null(field)),
@@ -240,9 +250,10 @@ impl Admitted {
 
     /// The header.
     pub fn header(&self) -> &'static Plugin {
-        let p = core::ptr::with_exposed_provenance::<Plugin>(self.plugin);
-        // SAFETY: the address is a `LinkedPlugin` static or the bounds-checked header of an image whose
-        // library `admit` leaked, so it is never unmapped (I13); the header is immutable.
+        let p = self.plugin.get();
+        // SAFETY: `p` is derived from a `&'static LinkedPlugin` / `&'static Plugin`, or is the bounds-checked
+        // header `busbar_plugin` returned for an image whose library `admit` leaked, so it is never unmapped
+        // (I13); the header is immutable.
         unsafe { &*p }
     }
 
