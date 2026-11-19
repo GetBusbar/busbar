@@ -42,6 +42,44 @@ fn picked(sel: &[Selected], cands: &[Candidate]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The Statement rendering of a `kind` plugin `name` 1.0.0 stating `sections`, `secret_refs` and the
+/// `extensions` blob (each list omitted when empty).
+fn rendered(
+    kind: KindCode,
+    name: &'static str,
+    sections: &'static [busbar_contract::abi::mechanism::door::Section],
+    secret_refs: &'static [busbar_contract::abi::mechanism::call::AbiStr],
+    extensions: &[u8],
+) -> Vec<u8> {
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
+    let mut st = busbar_contract::abi::mechanism::door::Statement {
+        kind: kind as u32,
+        ..statement(name, "1.0.0", 1)
+    };
+    if !sections.is_empty() {
+        st.sections = sections.as_ptr();
+        st.sections_len = sections.len();
+    }
+    if !secret_refs.is_empty() {
+        st.secret_refs = secret_refs.as_ptr();
+        st.secret_refs_len = secret_refs.len();
+    }
+    if !extensions.is_empty() {
+        st.extensions = Blob {
+            fmt: BLOB_OCTETS,
+            flags: 0,
+            len: extensions.len(),
+            ptr: extensions.as_ptr(),
+        };
+    }
+    // SAFETY: the lists are `'static` slices of their stated counts and `extensions` outlives the call.
+    unsafe { render(&st) }.unwrap()
+}
+
+/// `PluginRows`' slots over admitted dropped-in archives (their renderings are this file's).
+#[path = "rows_tests.rs"]
+mod rows_tests;
+
 #[test]
 fn uses_reads_each_class_of_root_key() {
     let u = Uses::of(&doc(r#"{
