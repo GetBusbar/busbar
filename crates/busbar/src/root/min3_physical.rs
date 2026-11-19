@@ -385,7 +385,7 @@ pub(crate) fn assemble_slot(
         routes,
         refusals,
         refuse_by_path,
-        unchained,
+        chains,
     } = mounts;
     let plugins = app.plugin_routes.for_listener(&guests);
     let prepared = PreparedListener::new(
@@ -436,14 +436,11 @@ pub(crate) fn assemble_slot(
                     .ok_or_else(|| {
                         format!("{instance}: physical line has no actual native route")
                     })?;
-                // A line with no chain on the guest list (a route the data chain does not gate)
-                // is bound under the chain its data mounts resolved for it.
-                let names = match &line.auth {
-                    LineAuth::Chain(names, _) => names,
-                    LineAuth::None => unchained
-                        .get(&(instance.clone(), line.route.rung))
-                        .ok_or("native plane route has no resolved native auth chain")?,
-                };
+                // Every plane line is bound under the chain its data mounts resolved for it,
+                // built-in members included (a guest line's chain names opened instances only).
+                let names = chains
+                    .get(&(instance.clone(), line.route.rung))
+                    .ok_or("native plane route has no resolved native auth chain")?;
                 RouteBinding::plane(
                     line.clone(),
                     seat.driver.caller().clone(),
@@ -576,7 +573,7 @@ pub(crate) fn assemble_slot(
         .iter()
         .filter_map(|binding| match binding.target() {
             RouteTarget::Plane(target) => {
-                Some((target.mounted().methods,target.mounted().pattern.clone()))
+                Some((target.mounted().methods, target.mounted().pattern.clone()))
             }
             _ => None,
         })

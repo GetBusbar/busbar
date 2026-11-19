@@ -330,10 +330,10 @@ pub(crate) struct DataMounts {
     pub(crate) refusals: Vec<PlaneRefusalSpec>,
 
     pub(crate) refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
-    /// The auth instances of each plane line sealed with no chain (`LineAuth::None`: its route is
-    /// not gated by the data chain), by plane instance and route id: the chain its data route is
-    /// bound under.
-    pub(crate) unchained: std::collections::BTreeMap<(String, u32), Vec<String>>,
+    /// The chain each plane line's data route is bound under, by plane instance and route id: its
+    /// own effective chain, else the configured data chain with its built-in members (`keys`,
+    /// `anonymous`), which name no opened instance and so are never a guest line's chain entry.
+    pub(crate) chains: std::collections::BTreeMap<(String, u32), Vec<String>>,
 }
 
 impl std::fmt::Debug for DataMounts {
@@ -345,10 +345,11 @@ impl std::fmt::Debug for DataMounts {
 }
 
 /// Seal the data listener's guest list (the native port lines and core's own lines) and build the
-/// generation's mounts over it.
+/// generation's mounts over it. `built_in`: the built-in members the configured data chain names.
 pub(crate) fn data_mounts(
     served: Served,
     data_chain: &[ChainAuth],
+    built_in: &[String],
     route_chains: &crate::root::port_mount::RouteChains,
     core: &[(String, RouteMethod, RouteAuth)],
 ) -> Result<DataMounts, String> {
@@ -356,23 +357,28 @@ pub(crate) fn data_mounts(
     use busbar_kernel::guest::{Claimant, GuestList, LineAuth, Matched};
 
     let mut lines = crate::root::port_mount::guest_lines(&served.ports, data_chain, route_chains);
-    // A plane line the guest list gates with no chain is still bound like a data route, under the
-    // chain `guest_lines` resolves for it: its own effective chain, else the data chain.
-    let unchained: std::collections::BTreeMap<(String, u32), Vec<String>> = lines
+    // Every plane line is bound like a data route under the chain `guest_lines` resolves for it
+    // (whether or not the guest list gates it): its own effective chain, else the data chain and
+    // its built-in members.
+    let chains: std::collections::BTreeMap<(String, u32), Vec<String>> = lines
         .iter()
-        .filter_map(|line| match (&line.claimant, &line.auth) {
-            (Claimant::Plane(instance), LineAuth::None) => {
-                let chain = route_chains
-                    .get(instance)
-                    .and_then(|own| own.get(&line.route.rung))
-                    .and_then(Option::as_deref)
-                    .unwrap_or(data_chain);
-                Some((
-                    (instance.clone(), line.route.rung),
-                    chain.iter().map(|(name, _)| name.clone()).collect(),
-                ))
-            }
-            _ => None,
+        .filter_map(|line| {
+            let Claimant::Plane(instance) = &line.claimant else {
+                return None;
+            };
+            let own = route_chains
+                .get(instance)
+                .and_then(|own| own.get(&line.route.rung))
+                .and_then(Option::as_deref);
+            let names = match own {
+                Some(own) => own.iter().map(|(name, _)| name.clone()).collect(),
+                None => data_chain
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .chain(built_in.iter().cloned())
+                    .collect(),
+            };
+            Some(((instance.clone(), line.route.rung), names))
         })
         .collect();
     for (rung, (path, method, auth)) in (0u32..).zip(core) {
@@ -470,6 +476,6 @@ pub(crate) fn data_mounts(
         routes: mounted,
         refusals,
         refuse_by_path: Some(refuse_by_path),
-        unchained,
+        chains,
     })
 }

@@ -130,13 +130,18 @@ impl NativeListenerPlan {
                 } else if !served.ports.is_empty() {
                     return Err("native served ports have no retained boot owners".into());
                 }
-                let chain = configured_chain(app, owners)?;
+                let (chain, built_in) = configured_chain(app, owners)?;
                 let route_chains = route_chains(app, served, owners)?;
                 // A core route that takes a data key is served: the data chain verifies its caller
                 // (`listener_native_corekey.rs`), the handler is given the verified key, no unit.
                 let served_core: Vec<_> = core.to_vec();
-                let mounts =
-                    super::serve::data_mounts(served.clone(), &chain, &route_chains, &served_core)?;
+                let mounts = super::serve::data_mounts(
+                    served.clone(),
+                    &chain,
+                    &built_in,
+                    &route_chains,
+                    &served_core,
+                )?;
                 let guests = mounts.data.guests.clone();
                 // The projection must not omit a declared route merely because its verbs
                 // are unsupported by the actual HTTP mount. Assembly will check full masks.
@@ -208,13 +213,23 @@ pub(crate) fn core_lines(app: &App, served: &Served) -> Vec<(String, RouteMethod
     core
 }
 
-fn configured_chain(app: &App, owners: &SlotOwners) -> Result<Vec<ChainAuth>, String> {
+/// The configured data chain's entries (its opened instances) and the built-in members it names.
+fn configured_chain(
+    app: &App,
+    owners: &SlotOwners,
+) -> Result<(Vec<ChainAuth>, Vec<String>), String> {
     let config = app
         .config_projection
         .as_ref()
         .and_then(|value| value.downcast_ref::<super::door_steps::DoorConfig>())
         .ok_or("native listener has no actual root configuration projection")?;
-    chain_points(owners, &config.data_chain)
+    let built_in = config
+        .data_chain
+        .iter()
+        .filter(|name| busbar_kernel::auth::native_chain::BuiltIn::is(name))
+        .cloned()
+        .collect();
+    Ok((chain_points(owners, &config.data_chain)?, built_in))
 }
 
 /// One opened auth instance as the route rule reads it: its configured name and the D_CRED_HEADER
