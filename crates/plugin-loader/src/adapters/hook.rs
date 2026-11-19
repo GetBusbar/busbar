@@ -184,7 +184,7 @@ fn fault(e: RecErr) -> FaultReason {
 
 /// The VERDICT then the answer's data records (IF §8.4); METRIC records are skipped (core keeps the series from
 /// the answer, §12.17, not from this port). Anything else is `RecErr`.
-fn decode_answer(recs: Records<'_>, scrub: &Scrub) -> Result<HookAnswer, RecErr> {
+pub fn decode_answer(recs: Records<'_>, scrub: &Scrub) -> Result<HookAnswer, RecErr> {
     let mut recs = recs;
     let first = recs.next().ok_or(RecErr::Truncated)??;
     if first.tag != tag::VERDICT {

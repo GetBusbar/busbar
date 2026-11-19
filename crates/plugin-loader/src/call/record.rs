@@ -97,7 +97,13 @@ fn resume_tap(slot: u32, results: &[u8]) {
 }
 
 #[inline(always)]
-pub(crate) fn toward(inst: &Instance, method: u8, session: u64, call: &Call<'_>, list: &[Pair<'_>]) {
+pub(crate) fn toward(
+    inst: &Instance,
+    method: u8,
+    session: u64,
+    call: &Call<'_>,
+    list: &[Pair<'_>],
+) {
     if let Some(hook) = HOOK.get() {
         toward_cold(*hook, inst, method, session, call, list);
     }
@@ -203,6 +209,8 @@ pub struct Crossings {
     /// The instance name of each slot seen, so a resume (which names only the slot) is attributed.
     slots: Mutex<Vec<(u32, KindCode, Box<str>, Box<str>)>>,
     crossings: AtomicU64,
+    /// Calls toward each kind, index `KindCode as usize - 1`.
+    by_kind: [AtomicU64; 7],
     bytes: AtomicU64,
 }
 
@@ -250,6 +258,11 @@ impl Crossings {
     /// Crossings scanned (calls toward a plugin plus resumes).
     pub fn crossings(&self) -> u64 {
         self.crossings.load(Ordering::Relaxed)
+    }
+
+    /// Calls seen toward `kind`.
+    pub fn toward_kind(&self, kind: KindCode) -> u64 {
+        self.by_kind[kind as usize - 1].load(Ordering::Relaxed)
     }
 
     /// Bytes scanned.
@@ -317,6 +330,7 @@ impl Crossings {
 impl Recorder for Crossings {
     fn toward(&self, who: &Who<'_>, method: u8, seen: &Seen<'_>) {
         self.crossings.fetch_add(1, Ordering::Relaxed);
+        self.by_kind[who.kind as usize - 1].fetch_add(1, Ordering::Relaxed);
         self.remember(who);
         self.scan(who, method, Place::Head, seen.head);
         for (at, text) in seen.texts.iter().enumerate() {
@@ -364,7 +378,9 @@ impl Recorder for Crossings {
 }
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty() && hay.len() >= needle.len() && hay.windows(needle.len()).any(|w| w == needle)
+    !needle.is_empty()
+        && hay.len() >= needle.len()
+        && hay.windows(needle.len()).any(|w| w == needle)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -433,7 +449,10 @@ mod tests {
         assert_eq!(leaks.len(), 1);
         assert_eq!(&*leaks[0].label, "provider-key");
         assert_eq!(leaks[0].place, Place::Blob(0));
-        assert_eq!((leaks[0].kind, &*leaks[0].name), (KindCode::Transport, "http"));
+        assert_eq!(
+            (leaks[0].kind, &*leaks[0].name),
+            (KindCode::Transport, "http")
+        );
         assert_eq!(rec.crossings(), 1);
     }
 

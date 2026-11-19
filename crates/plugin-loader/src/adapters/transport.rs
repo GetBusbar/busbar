@@ -42,7 +42,6 @@ use busbar_ports::PortError;
 /// replaces this constant at each call below and nothing else changes.
 const NOW: Mono = Mono::NONE;
 
-
 /// The HTTP status of the one head an UPGRADE may answer (RFC 9110 §15.2.2).
 const SWITCHING_PROTOCOLS: u32 = 101;
 
@@ -412,7 +411,7 @@ pub fn shown(
 
 /// What the adapter called, as far as the answer grammar depends on it.
 #[derive(Clone, Copy)]
-enum Call<'a> {
+pub enum Call<'a> {
     Begin,
     Ingest,
     /// `head` = the piece's bytes (the head records when `piece` is E_HEAD).
@@ -448,7 +447,7 @@ fn head_status(head: &[u8]) -> Option<u32> {
 
 /// Why an answer is not one: FAULT BadRecords, UnknownTag, or MissingToken.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Bad {
+pub enum Bad {
     Rec(RecErr),
     Tag(u16),
     Token,
@@ -461,7 +460,7 @@ impl From<RecErr> for Bad {
 }
 
 impl Bad {
-    fn reason(self) -> FaultReason {
+    pub fn reason(self) -> FaultReason {
         match self {
             Bad::Rec(e) => FaultReason::BadRecords(e),
             Bad::Tag(t) => FaultReason::UnknownTag(t),
@@ -474,7 +473,7 @@ impl Bad {
 const GRAMMAR: Bad = Bad::Rec(RecErr::Size);
 
 /// The whole answer is checked first, then handed to `sink`; a bad answer gives the sink nothing.
-fn decode(
+pub fn decode(
     recs: Records<'_>,
     call: Call<'_>,
     sink: &mut dyn FnMut(TransportOut<'_>),

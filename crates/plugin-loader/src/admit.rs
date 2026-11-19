@@ -208,15 +208,17 @@ pub use busbar_artifact_verifier::kind_word;
 pub fn speaks() -> &'static Speaks {
     static SPEAKS: OnceLock<Speaks> = OnceLock::new();
     SPEAKS.get_or_init(|| {
-        let contract = |name: &'static str, pins: &'static busbar_plugin_abi::pins::Pins| Contract {
-            name,
-            first: pins.first,
-            released: pins.released,
-            dev: pins.dev,
-        };
+        let contract =
+            |name: &'static str, pins: &'static busbar_plugin_abi::pins::Pins| Contract {
+                name,
+                first: pins.first,
+                released: pins.released,
+                dev: pins.dev,
+            };
         let speaks = Speaks {
             core: contract("core", &busbar_plugin_abi::pins::CORE),
-            kinds: KindCode::ALL.map(|kind| contract(kind_word(kind), busbar_plugin_abi::pins::of(kind))),
+            kinds: KindCode::ALL
+                .map(|kind| contract(kind_word(kind), busbar_plugin_abi::pins::of(kind))),
         };
         if let Err(fault) = speaks.well_formed() {
             // A build fault of the engine: no image can be judged against a broken table.

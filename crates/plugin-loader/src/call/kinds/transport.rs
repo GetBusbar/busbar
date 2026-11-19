@@ -195,14 +195,7 @@ impl OnSession for SessionHandle {
         at: Mono,
         bytes: &[u8],
     ) -> Result<Answer<'o>, CallError> {
-        call::on(
-            self,
-            INGEST,
-            at,
-            &Frame::new((), [], [bytes]),
-            &[],
-            buf,
-        )
+        call::on(self, INGEST, at, &Frame::new((), [], [bytes]), &[], buf)
     }
 
     /// One output call. `pieces` is the contract's piece set (its bits name which of `parts` are

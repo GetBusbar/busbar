@@ -248,15 +248,20 @@ pub mod verification;
 // adapters the kernel consumes, admission, the stamp scan, refusals and instances. Wave-0 stubs (W0-ABI);
 // each wave-1 owner replaces the stubs in its own files.
 #[deny(unsafe_code)]
+/// The harness half of the `abi_crossings` security test.
+#[cfg(any(test, feature = "test-support"))]
+#[deny(unsafe_code)]
+pub mod abi_crossings;
+#[deny(unsafe_code)]
 pub mod adapters;
-#[deny(unsafe_code)]
-pub mod agree;
-#[deny(unsafe_code)]
-pub mod call;
 #[deny(unsafe_code)]
 pub mod admit;
 #[deny(unsafe_code)]
+pub mod agree;
+#[deny(unsafe_code)]
 pub mod answer;
+#[deny(unsafe_code)]
+pub mod call;
 mod chains;
 #[cfg(target_os = "linux")]
 #[deny(unsafe_code)]
@@ -268,6 +273,9 @@ pub mod refusal;
 #[deny(unsafe_code)]
 pub mod scan;
 mod upstream_paths;
+/// One validator per answer grammar: what the adapters decode with and the conformance suites judge with.
+#[deny(unsafe_code)]
+pub mod validate;
 #[deny(unsafe_code)]
 pub mod watchdog;
 

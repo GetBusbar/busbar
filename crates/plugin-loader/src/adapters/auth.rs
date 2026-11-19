@@ -467,7 +467,7 @@ fn chain_req(max_out: usize, e: &impl Encode) -> Result<PooledOut, PortError> {
 }
 
 /// D_CRED_HEADER*: lowercase header names (core strips them upstream and keys the verdict cache on them).
-fn decode_cred_headers(describe: Records<'_>) -> Result<Box<[Box<str>]>, RecErr> {
+pub fn decode_cred_headers(describe: Records<'_>) -> Result<Box<[Box<str>]>, RecErr> {
     let mut names: Vec<Box<str>> = Vec::new();
     for rec in describe {
         let rec = rec?;
@@ -489,7 +489,7 @@ fn decode_cred_headers(describe: Records<'_>) -> Result<Box<[Box<str>]>, RecErr>
 
 /// A login OK answer for `step` (§8.3): BEGIN = REDIRECT then STATE; COMPLETE = GRANT for a caller connection
 /// (L_CONNECT), else ID_*; CREDENTIAL = ID_*.
-fn decode_login(step: u32, connect: bool, records: Records<'_>) -> Result<LoginAnswer, RecErr> {
+pub fn decode_login(step: u32, connect: bool, records: Records<'_>) -> Result<LoginAnswer, RecErr> {
     if step == abi::LOGIN_BEGIN {
         let mut url: Option<&str> = None;
         let mut state: Option<&[u8]> = None;
@@ -529,7 +529,7 @@ fn decode_login(step: u32, connect: bool, records: Records<'_>) -> Result<LoginA
 
 /// An outbound OK answer (§8.3): SET_HEADER*, SET_QUERY* (pair shape), GRANT_UPDATE?, FACT(F_CACHE_S)? (absent
 /// = 0, already expired, §12.2 rule 5).
-fn decode_outbound(records: Records<'_>) -> Result<OutboundAnswer, RecErr> {
+pub fn decode_outbound(records: Records<'_>) -> Result<OutboundAnswer, RecErr> {
     let mut out = OutboundAnswer {
         headers: Vec::new(),
         query: Vec::new(),
@@ -567,7 +567,7 @@ fn decode_outbound(records: Records<'_>) -> Result<OutboundAnswer, RecErr> {
 }
 
 /// A refresh OK answer (§8.3): FACT(F_NEXT_REFRESH_S)?.
-fn decode_refresh(records: Records<'_>) -> Result<Option<u32>, RecErr> {
+pub fn decode_refresh(records: Records<'_>) -> Result<Option<u32>, RecErr> {
     let mut next: Option<u32> = None;
     for rec in records {
         let rec = rec?;

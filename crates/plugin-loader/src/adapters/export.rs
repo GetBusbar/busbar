@@ -402,26 +402,30 @@ impl<N: Needs> ExportPort for ExportAdapter<N> {
             if !a.is_ok() {
                 return Err(self.failed(&a, false));
             }
-            let mut content_type = None;
-            let mut body = None;
-            for next in a.records() {
-                let rec = next.map_err(bad_records)?;
-                match rec.tag {
-                    tag::CONTENT_TYPE if content_type.is_none() => {
-                        content_type = Some(rec.text().map_err(bad_records)?);
-                    }
-                    tag::BODY if body.is_none() => body = Some(rec.body),
-                    generic::METRIC => {}
-                    other => return Err(bad_records(RecErr::Unknown(other))),
-                }
-            }
-            match (content_type, body) {
-                (Some(content_type), Some(body)) => {
-                    sink(content_type, body);
-                    Ok(())
-                }
-                _ => Err(bad_records(RecErr::Truncated)),
-            }
+            let (content_type, body) = rendered(a.records()).map_err(bad_records)?;
+            sink(content_type, body);
+            Ok(())
         })
+    }
+}
+
+/// The OK answer of `render`: exactly one CONTENT_TYPE and exactly one BODY, in either order; METRIC
+/// records are passed over; anything else is a contract break. The one grammar of a render answer: the
+/// adapter and the conformance suite both judge with it (`validate::export`).
+pub fn rendered<'o>(recs: Records<'o>) -> Result<(&'o str, &'o [u8]), RecErr> {
+    let mut content_type = None;
+    let mut body = None;
+    for next in recs {
+        let rec = next?;
+        match rec.tag {
+            tag::CONTENT_TYPE if content_type.is_none() => content_type = Some(rec.text()?),
+            tag::BODY if body.is_none() => body = Some(rec.body),
+            generic::METRIC => {}
+            other => return Err(RecErr::Unknown(other)),
+        }
+    }
+    match (content_type, body) {
+        (Some(content_type), Some(body)) => Ok((content_type, body)),
+        _ => Err(RecErr::Truncated),
     }
 }

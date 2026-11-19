@@ -13,8 +13,101 @@ use busbar_plugin_abi::host_side::watch::{
     ENTRY_CANCEL, ENTRY_CLOSE, ENTRY_DESCRIBE, ENTRY_OPEN, ENTRY_RESUME,
 };
 use busbar_plugin_abi::records::CEIL_OPEN;
+use busbar_plugin_abi::types::KindCode;
 
 use crate::instance::SlotTable;
+
+/// The thread that holds a hung entry, as the hang report names it. The watch table records, when a
+/// thread claims its word (once per thread, cold), that thread's name and id; the scan hands the claim of
+/// the word it found stuck. With it an operator (and the core watch) can tell a plugin that never
+/// returns from a worker that is itself parked, which the slot and entry alone cannot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Holder<'a> {
+    /// The thread's name; None for a thread started without one.
+    pub name: Option<&'a str>,
+    /// The thread's id as the standard library numbers it.
+    pub id: u64,
+    /// The index of the thread's watch word.
+    pub word: u32,
+    /// Entries nested on that thread when it was found stuck (1: the hung entry alone).
+    pub depth: u32,
+}
+
+impl Holder<'static> {
+    /// A report with no claim behind it (a test driving `SlotTable::hung` directly).
+    pub const UNKNOWN: Holder<'static> = Holder {
+        name: None,
+        id: 0,
+        word: u32::MAX,
+        depth: 0,
+    };
+}
+
+impl<'a> Holder<'a> {
+    /// From the watch table's record of the claim.
+    pub fn of(held: &'a busbar_plugin_abi::host_side::watch::Held) -> Holder<'a> {
+        Holder {
+            name: held.thread_name.as_deref(),
+            id: held.thread_id,
+            word: held.word,
+            depth: held.depth,
+        }
+    }
+}
+
+/// The name of a watchdog entry index: a kind's method by its table index (the same index the one
+/// crossing place calls), or one of the five header entries.
+pub fn entry_name(kind: KindCode, entry: u8) -> &'static str {
+    const STORE: [&str; 5] = ["read", "scan", "commit", "clock", "info"];
+    const SECRET: [&str; 1] = ["resolve"];
+    const AUTH: [&str; 6] = [
+        "verify",
+        "verify_io",
+        "login",
+        "outbound",
+        "refresh",
+        "serve",
+    ];
+    const HOOK: [&str; 2] = ["on", "on_io"];
+    const EXPORT: [&str; 3] = ["deliver", "render", "confirm"];
+    const PLANE: [&str; 11] = [
+        "request",
+        "upstream",
+        "piece",
+        "end",
+        "rewrite",
+        "render",
+        "admin",
+        "probe",
+        "demux",
+        "select_resources",
+        "channel",
+    ];
+    const TRANSPORT: [&str; 7] = [
+        "begin", "ingest", "emit", "timer", "datagram", "event", "offer",
+    ];
+    match entry {
+        ENTRY_DESCRIBE => return "describe",
+        ENTRY_OPEN => return "open",
+        ENTRY_RESUME => return "resume",
+        ENTRY_CANCEL => return "cancel",
+        ENTRY_CLOSE => return "close",
+        _ => {}
+    }
+    let methods: &[&str] = match kind {
+        KindCode::Store => &STORE,
+        KindCode::Secret => &SECRET,
+        KindCode::Auth => &AUTH,
+        KindCode::Hook => &HOOK,
+        KindCode::Export => &EXPORT,
+        KindCode::Plane => &PLANE,
+        KindCode::Transport => &TRANSPORT,
+    };
+    methods
+        .get(usize::from(entry))
+        .copied()
+        .unwrap_or("an entry this engine has no name for")
+}
 
 const MS: u64 = 1_000;
 const S: u64 = 1_000_000;
@@ -35,7 +128,9 @@ impl Watchdog {
                 while !stopping.load(Ordering::Acquire) {
                     busbar_plugin_abi::host_side::watch::scan(
                         |slot, entry| table.watch_view(slot, entry),
-                        |slot, epoch, entry, busy_ms| table.hung(slot, epoch, entry, busy_ms),
+                        |slot, epoch, entry, busy_ms, held| {
+                            table.hung(slot, epoch, entry, busy_ms, &Holder::of(held))
+                        },
                     );
                     std::thread::park_timeout(Duration::from_millis(100));
                 }
@@ -178,5 +273,61 @@ mod tests {
     fn a_method_naming_no_entry_is_refused() {
         assert!(ceiling_row(&[(0b11, S)], false).is_err());
         assert!(ceiling_row(&[(1 << 56, S)], false).is_err());
+    }
+}
+
+#[cfg(test)]
+mod holder_tests {
+    use super::*;
+    use crate::call::kinds;
+
+    #[test]
+    fn an_entry_is_named_by_the_index_the_crossing_place_calls() {
+        assert_eq!(entry_name(KindCode::Plane, kinds::plane::PIECE), "piece");
+        assert_eq!(
+            entry_name(KindCode::Plane, kinds::plane::CHANNEL),
+            "channel"
+        );
+        assert_eq!(
+            entry_name(KindCode::Transport, kinds::transport::EMIT),
+            "emit"
+        );
+        assert_eq!(entry_name(KindCode::Auth, kinds::auth::SERVE), "serve");
+        assert_eq!(
+            entry_name(KindCode::Export, kinds::export::CONFIRM),
+            "confirm"
+        );
+        assert_eq!(entry_name(KindCode::Store, kinds::store::INFO), "info");
+        assert_eq!(entry_name(KindCode::Hook, kinds::hook::ON_IO), "on_io");
+        assert_eq!(
+            entry_name(KindCode::Secret, kinds::secret::RESOLVE),
+            "resolve"
+        );
+    }
+
+    #[test]
+    fn the_header_entries_have_their_names_for_every_kind() {
+        for kind in KindCode::ALL {
+            assert_eq!(entry_name(kind, ENTRY_OPEN), "open");
+            assert_eq!(entry_name(kind, ENTRY_RESUME), "resume");
+            assert_eq!(entry_name(kind, ENTRY_CLOSE), "close");
+        }
+        assert_eq!(
+            entry_name(KindCode::Secret, 9),
+            "an entry this engine has no name for"
+        );
+    }
+
+    #[test]
+    fn a_report_carries_the_thread_the_watch_table_recorded() {
+        let held = busbar_plugin_abi::host_side::watch::Held {
+            thread_name: Some("busbar-worker-3".into()),
+            thread_id: 41,
+            word: 7,
+            depth: 2,
+        };
+        let holder = Holder::of(&held);
+        assert_eq!(holder.name, Some("busbar-worker-3"));
+        assert_eq!((holder.id, holder.word, holder.depth), (41, 7, 2));
     }
 }

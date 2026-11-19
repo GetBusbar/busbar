@@ -15,6 +15,8 @@ use std::sync::Arc;
 
 pub mod protected_reply;
 
+use crate::call::kinds::plane::{OnSession as _, Proxy};
+use crate::call::Mono;
 use busbar_plugin_abi::fail::fact::{FACT_BACKEND_STATUS, FACT_RETRY_AFTER_S};
 use busbar_plugin_abi::fail::refused::R_INVALID;
 use busbar_plugin_abi::fail::{failed, CallError, FaultReason};
@@ -25,8 +27,6 @@ use busbar_plugin_abi::host_side::driver::Driver;
 use busbar_plugin_abi::host_side::needs::Needs;
 use busbar_plugin_abi::host_side::pool::{sync_out, Pool};
 use busbar_plugin_abi::host_side::scrub::{fail_text, Scrub};
-use crate::call::kinds::plane::{OnSession as _, Proxy};
-use crate::call::Mono;
 use busbar_plugin_abi::plane::{self as p, tag as t, PlaneReq, Target};
 use busbar_plugin_abi::records::{
     commit, tag as g, FactRec, FactTextRec, Rec, RecDelRec, RecErr, RecPredRec, RecPutRec, Records,
@@ -1290,7 +1290,6 @@ pub fn port_error(
 /// operation, made by the kernel), it replaces this constant at each call below and nothing else changes.
 const NOW: Mono = Mono::NONE;
 
-
 /// The plane port over one instance's proxy.
 pub struct PlaneAdapter<N: Needs> {
     proxy: Proxy,
@@ -1762,10 +1761,7 @@ impl<N: Needs> PlanePort for PlaneAdapter<N> {
         let max_out = self.live()?;
         let view = target(tgt);
         sync_out(max_out, |out| {
-            let (session, answer) = self
-                .proxy
-                .probe(out, NOW, &view)
-                .map_err(PortError::Call)?;
+            let (session, answer) = self.proxy.probe(out, NOW, &view).map_err(PortError::Call)?;
             self.finish(Call::Probe, &answer, sink, None, None)?;
             session.ok_or_else(no_token)
         })

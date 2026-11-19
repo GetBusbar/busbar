@@ -136,14 +136,8 @@ mod tests {
         let call = frame.call(Mono(11));
         assert_eq!((call.session(), call.mono_ns()), (0, 11));
         assert_eq!(call.head().len(), 16);
-        assert!(core::ptr::eq(
-            call.texts()[0].get().as_ptr(),
-            path.as_ptr()
-        ));
-        assert!(core::ptr::eq(
-            call.blobs()[0].get().as_ptr(),
-            body.as_ptr()
-        ));
+        assert!(core::ptr::eq(call.texts()[0].get().as_ptr(), path.as_ptr()));
+        assert!(core::ptr::eq(call.blobs()[0].get().as_ptr(), body.as_ptr()));
         assert_eq!(call.blobs()[0].len(), 4096);
     }
 
@@ -176,6 +170,9 @@ mod tests {
     fn known_never_widens_a_frame() {
         let frame = Frame::new((), ["a"], []).known(64, 9, 9);
         let call = frame.call(Mono::NONE);
-        assert_eq!((call.head().len(), call.texts().len(), call.blobs().len()), (0, 1, 0));
+        assert_eq!(
+            (call.head().len(), call.texts().len(), call.blobs().len()),
+            (0, 1, 0)
+        );
     }
 }

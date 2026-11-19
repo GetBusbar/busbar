@@ -363,7 +363,12 @@ mod tests {
 
     #[test]
     fn an_older_second_number_loads_and_is_remembered() {
-        let agreed = agree(&claims((3, 0, 0xC0), (2, 1, 0x71)), &core(), &transport(false)).unwrap();
+        let agreed = agree(
+            &claims((3, 0, 0xC0), (2, 1, 0x71)),
+            &core(),
+            &transport(false),
+        )
+        .unwrap();
         assert_eq!((agreed.core_second, agreed.kind_second), (0, 1));
         assert_eq!(agreed.form, Form::Released);
         assert!(agreed.knows(1) && !agreed.knows(2));
@@ -372,7 +377,12 @@ mod tests {
 
     #[test]
     fn a_newer_kind_is_refused_naming_both_numbers() {
-        let no = agree(&claims((3, 1, 0xC1), (2, 4, 0x74)), &core(), &transport(false)).unwrap_err();
+        let no = agree(
+            &claims((3, 1, 0xC1), (2, 4, 0x74)),
+            &core(),
+            &transport(false),
+        )
+        .unwrap_err();
         assert_eq!(no.why, Why::TooNew);
         assert_eq!(no.have_text(), "built for transport 2.4");
         assert_eq!(
@@ -392,18 +402,35 @@ mod tests {
 
     #[test]
     fn another_first_number_is_refused_naming_both_numbers() {
-        let no = agree(&claims((3, 1, 0xC1), (1, 0, 0x10)), &core(), &transport(false)).unwrap_err();
+        let no = agree(
+            &claims((3, 1, 0xC1), (1, 0, 0x10)),
+            &core(),
+            &transport(false),
+        )
+        .unwrap_err();
         assert_eq!(no.why, Why::FirstNumber);
         assert_eq!(no.have_text(), "built for transport 1.0");
-        assert!(no.want_text().starts_with("this engine speaks transport 2.3"));
-        let no = agree(&claims((2, 0, 0xB0), (2, 3, 0x73)), &core(), &transport(false)).unwrap_err();
+        assert!(no
+            .want_text()
+            .starts_with("this engine speaks transport 2.3"));
+        let no = agree(
+            &claims((2, 0, 0xB0), (2, 3, 0x73)),
+            &core(),
+            &transport(false),
+        )
+        .unwrap_err();
         assert!(no.is_core);
         assert_eq!(no.why, Why::FirstNumber);
     }
 
     #[test]
     fn a_known_line_with_another_fingerprint_is_an_altered_contract() {
-        let no = agree(&claims((3, 1, 0xC1), (2, 2, 0xBAD)), &core(), &transport(false)).unwrap_err();
+        let no = agree(
+            &claims((3, 1, 0xC1), (2, 2, 0xBAD)),
+            &core(),
+            &transport(false),
+        )
+        .unwrap_err();
         assert_eq!(no.why, Why::Altered { want: 0x72 });
         assert!(no.want_text().ends_with("unreleased or altered contract"));
     }
@@ -450,25 +477,13 @@ mod tests {
             kinds: [transport(true); 7],
         };
         assert!(good.well_formed().is_ok());
-        static GAP: [Line; 2] = [
-            Line {
-                second: 0,
-                wire: 1,
-            },
-            Line {
-                second: 2,
-                wire: 2,
-            },
-        ];
+        static GAP: [Line; 2] = [Line { second: 0, wire: 1 }, Line { second: 2, wire: 2 }];
         let mut bad = good;
         bad.kinds[3].released = &GAP;
         bad.kinds[3].dev = None;
         assert!(bad.well_formed().is_err());
         let mut bad = good;
-        bad.kinds[0].dev = Some(Line {
-            second: 9,
-            wire: 0,
-        });
+        bad.kinds[0].dev = Some(Line { second: 9, wire: 0 });
         assert!(bad.well_formed().is_err());
     }
 
@@ -478,7 +493,12 @@ mod tests {
         assert_eq!(no.refusal().code, RefusalCode::KindAbi);
         let no = agree(&claims((4, 0, 0), (2, 0, 0x70)), &core(), &transport(false)).unwrap_err();
         assert_eq!(no.refusal().code, RefusalCode::Mechanism);
-        let no = agree(&claims((3, 1, 0xBAD), (2, 0, 0x70)), &core(), &transport(false)).unwrap_err();
+        let no = agree(
+            &claims((3, 1, 0xBAD), (2, 0, 0x70)),
+            &core(),
+            &transport(false),
+        )
+        .unwrap_err();
         assert_eq!(no.refusal().code, RefusalCode::Layout);
     }
 }
