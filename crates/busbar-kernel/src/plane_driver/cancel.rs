@@ -38,6 +38,26 @@ pub trait MoneySeam: Send + Sync {
         let _ = (ctx, lane);
     }
 
+    /// The unit's far end is being dialled: the unit has run, so its end never releases the
+    /// request count admission took, whatever its owner says it ran.
+    fn dialled(&self, ctx: &UnitCtx) {
+        let _ = ctx;
+    }
+
+    /// The provider's final stated usage for the unit was not accepted (`BUSBAR-5046`): the unit
+    /// keeps `reason` for its terminal record and bills only the usage accepted before it. `true`
+    /// the first time for the unit (its `plane-usage-unread` row is then written), `false` after.
+    fn unread(&self, ctx: &UnitCtx, reason: ReasonCode) -> bool {
+        let _ = (ctx, reason);
+        true
+    }
+
+    /// The lane the unit is served under, when the seam knows it (the unread row names it).
+    fn lane(&self, ctx: &UnitCtx) -> Option<String> {
+        let _ = ctx;
+        None
+    }
+
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended);
 
     fn session_opened(&self, ctx: &UnitCtx) -> Result<(), ReasonCode> {

@@ -66,6 +66,9 @@ pub struct Reported {
 #[derive(Debug, Clone, Default)]
 pub struct SessionUsage {
     last: Vec<Reported>,
+    /// How many times a USAGE changed the kept set (0 = never): two reads of one session's usage
+    /// at the same revision are the same set.
+    revision: u64,
 }
 
 impl SessionUsage {
@@ -96,6 +99,9 @@ impl SessionUsage {
             .iter_mut()
             .find(|r| r.source == rec.source && &*r.class == class)
         {
+            if kept.amount == rec.amount && kept.scale == rec.scale {
+                return Ok(());
+            }
             kept.amount = rec.amount;
             kept.scale = rec.scale;
         } else {
@@ -106,7 +112,14 @@ impl SessionUsage {
                 scale: rec.scale,
             });
         }
+        self.revision = self.revision.wrapping_add(1);
         Ok(())
+    }
+
+    /// The kept set's revision: it moves whenever a USAGE changes the set, never otherwise.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// The kept set, in first-answered order.
@@ -134,7 +147,8 @@ pub enum Ending {
         /// A byte of the reply reached the client.
         streamed: bool,
     },
-    /// A plane FAULT, a quarantine or a failed `end` (today's CANCEL_FAILED).
+    /// A plane FAULT, a quarantine, a failed `end` or a USAGE the session refused: it bills the
+    /// far-end usage the session accepted before it broke (P087B).
     Failed,
 }
 
@@ -207,10 +221,25 @@ pub enum Bill<'a> {
 
 /// The §12.4 cancel table. Rule 4 (the budget hold is released on its own path, whatever the bill) is
 /// the caller's: this never folds in or returns the refund.
+///
+/// A session bills exactly the usage it accepted, once, whatever its ending (owner decision P087B,
+/// which replaced "a failed session bills nothing"): a failed session posts the billing sources it
+/// kept (rule 2: never an estimate), the usage the far end stated before the session broke. A USAGE
+/// the session refused was never kept, so it is never billed.
 #[must_use]
 pub fn bill(ending: Ending, usage: &SessionUsage) -> Bill<'_> {
     match ending {
-        Ending::Failed => Bill::Nothing,
+        Ending::Failed => {
+            let billed = Billed {
+                kept: &usage.last,
+                billing_sources_only: true,
+            };
+            if billed.iter().next().is_none() {
+                Bill::Nothing
+            } else {
+                Bill::Usage(billed)
+            }
+        }
         Ending::End if usage.is_empty() => Bill::Estimate,
         Ending::End => Bill::Usage(Billed {
             kept: &usage.last,
