@@ -565,9 +565,10 @@ pub(crate) fn assemble_slot(
     })?;
     let patterns = plan
         .routes()
+        .iter()
         .filter_map(|binding| match binding.target() {
             RouteTarget::Plane(target) => {
-                Some((target.mounted().methods, target.mounted().pattern.clone()))
+                Some((target.mounted().methods,target.mounted().pattern.clone()))
             }
             _ => None,
         })

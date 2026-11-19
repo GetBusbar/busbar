@@ -5,7 +5,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderName, Request, StatusCode};
