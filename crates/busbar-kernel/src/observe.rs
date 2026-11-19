@@ -197,12 +197,12 @@ impl KernelPluginObserver {
         &self,
         grants: &dyn Grants,
         sink: &dyn ObservationSink,
-        kind: busbar_contract::abi::mechanism::KindCode,
+        kind: busbar_contract::kinds::codes::KindCode,
         metrics: &[serde_json::Value],
         diagnostics: &[serde_json::Value],
     ) {
         fold_diagnostics(grants, sink, self.catalogue, diagnostics);
-        if kind == busbar_contract::abi::mechanism::KindCode::Hook {
+        if kind == busbar_contract::kinds::codes::KindCode::Hook {
             return;
         }
         fold_metrics(grants, sink, metrics);
@@ -216,10 +216,10 @@ impl KernelPluginObserver {
         &self,
         grants: &dyn Grants,
         sink: &dyn ObservationSink,
-        kind: busbar_contract::abi::mechanism::KindCode,
-        metric: busbar_contract::abi::mechanism::observe::PluginMetric,
+        kind: busbar_contract::kinds::codes::KindCode,
+        metric: busbar_contract::observe::PluginMetric,
     ) {
-        if kind == busbar_contract::abi::mechanism::KindCode::Hook {
+        if kind == busbar_contract::kinds::codes::KindCode::Hook {
             return;
         }
         let mut cuts = busbar_contract::hook_wire::reply::TextCuts::default();
@@ -237,7 +237,7 @@ impl KernelPluginObserver {
         &self,
         grants: &dyn Grants,
         sink: &dyn ObservationSink,
-        diagnostic: &busbar_contract::abi::mechanism::observe::PluginDiagnostic,
+        diagnostic: &busbar_contract::observe::PluginDiagnostic,
     ) {
         let mut cuts = busbar_contract::hook_wire::reply::TextCuts::default();
         fold_diagnostic(grants, sink, self.catalogue, diagnostic, &mut cuts);
@@ -318,9 +318,9 @@ fn fold_diagnostics(
     }
     let mut cuts = TextCuts::default();
     for entry in raw.iter().take(MAX_PLUGIN_DIAGNOSTICS) {
-        let Ok(d) = serde_json::from_value::<
-            busbar_contract::abi::mechanism::observe::PluginDiagnostic,
-        >(entry.clone()) else {
+        let Ok(d) =
+            serde_json::from_value::<busbar_contract::observe::PluginDiagnostic>(entry.clone())
+        else {
             continue;
         };
         fold_diagnostic(grants, sink, catalogue, &d, &mut cuts);
@@ -334,7 +334,7 @@ fn fold_diagnostic(
     grants: &dyn Grants,
     sink: &dyn ObservationSink,
     catalogue: crate::diagnostics::Catalogue,
-    d: &busbar_contract::abi::mechanism::observe::PluginDiagnostic,
+    d: &busbar_contract::observe::PluginDiagnostic,
     cuts: &mut busbar_contract::hook_wire::reply::TextCuts,
 ) {
     use busbar_contract::hook_wire::reply::TextField;
@@ -403,8 +403,8 @@ fn resolve_code(
     catalogue.by_code(n)
 }
 
-fn tracing_level(level: busbar_contract::abi::mechanism::observe::DiagLevel) -> tracing::Level {
-    use busbar_contract::abi::mechanism::observe::DiagLevel;
+fn tracing_level(level: busbar_contract::observe::DiagLevel) -> tracing::Level {
+    use busbar_contract::observe::DiagLevel;
     match level {
         DiagLevel::Error => tracing::Level::ERROR,
         DiagLevel::Warn => tracing::Level::WARN,
@@ -414,11 +414,11 @@ fn tracing_level(level: busbar_contract::abi::mechanism::observe::DiagLevel) -> 
 }
 
 fn clamp_level(
-    claimed: busbar_contract::abi::mechanism::observe::DiagLevel,
+    claimed: busbar_contract::observe::DiagLevel,
     severity: crate::diagnostics::Severity,
-) -> busbar_contract::abi::mechanism::observe::DiagLevel {
+) -> busbar_contract::observe::DiagLevel {
     use crate::diagnostics::Severity;
-    use busbar_contract::abi::mechanism::observe::DiagLevel;
+    use busbar_contract::observe::DiagLevel;
     match severity {
         Severity::BenignRecurring => DiagLevel::Debug,
         Severity::Actionable | Severity::Fatal => claimed,

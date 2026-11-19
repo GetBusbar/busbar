@@ -2,11 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use crate::root::test_plugins as plugins;
-use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
-use busbar_contract::abi::host::service::{UnitRef, FLOW_STOP, REFUSE_STOPPED};
-use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
+use busbar_contract::abi::host::service::UnitRef;
 use busbar_contract::json;
 use busbar_contract::json::JsonValueTrait as _;
+use busbar_contract::route::{AuthPoints, POINT_HEAD};
+use busbar_contract::route::{METHOD_POST, PATH_EXACT};
+use busbar_contract::services::codes::{FLOW_STOP, REFUSE_STOPPED};
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 use busbar_kernel::inbound::{Call, Head, Listener, ListenerScope, Refusal, Refuse};
 use std::sync::Arc;
@@ -186,9 +187,8 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
         }
     };
     use axum::http::StatusCode;
-    use busbar_contract::abi::host::service::{
-        LINE_NONE, REFUSE_METHOD_MISS, REFUSE_NO_ROUTE, REFUSE_OVER_GATE,
-    };
+    use busbar_contract::abi::host::service::LINE_NONE;
+    use busbar_contract::services::codes::{REFUSE_METHOD_MISS, REFUSE_NO_ROUTE, REFUSE_OVER_GATE};
     use tracing_subscriber::layer::SubscriberExt as _;
     let captured = RefusalEvents::default();
     let subscriber = tracing_subscriber::registry().with(captured.clone());
@@ -307,7 +307,7 @@ async fn actual_inbound_refusals_preserve_builder_bytes_unit_retirement_and_real
     const METADATA: &str = "https://plane.example/.well-known/oauth-protected-resource/mcp";
     for cause in [
         REFUSE_STOPPED,
-        busbar_contract::abi::host::service::REFUSE_CHECK_FAILED,
+        busbar_contract::services::codes::REFUSE_CHECK_FAILED,
     ] {
         for token in [None, Some("not-a-valid-signed-key")] {
             let mut scoped = listener.clone();

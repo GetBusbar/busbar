@@ -1196,4 +1196,3 @@ fn a_skip_line_names_the_file_and_a_fixed_class() {
         "\"a\\\"b\\n.tar.gz\" (kind auth) was not admitted: revoked"
     );
 }
-

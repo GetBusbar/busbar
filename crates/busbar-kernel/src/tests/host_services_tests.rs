@@ -74,7 +74,7 @@ fn random_fill_draws_fresh_bytes_every_call_and_refuses_outside_its_cap() {
 
 use std::sync::atomic::AtomicU64;
 
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
 use busbar_contract::kinds::RecordBytes;
 
 use crate::host_records::{WRITE_DROPPED, WRITE_FAILED};
@@ -1984,7 +1984,7 @@ fn dest_judge_answers_the_installed_guard_refusal() {
 /// every other class is judged as before.
 #[test]
 fn dest_judge_refuses_the_operator_infrastructure_class() {
-    use busbar_contract::abi::host::conn::connector::{
+    use busbar_contract::conn::codes::{
         EGRESS_DEFAULT, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
     };
     let guard = Arc::new(FakeGuard::default());
@@ -2123,7 +2123,7 @@ fn a_declared_chain_the_host_cannot_keep_refuses_the_admit() {
     let r = rig();
     for (kind, framing) in [
         (0, 99),
-        (7, busbar_contract::abi::plane::CHAIN_LENGTH_PREFIXED),
+        (7, busbar_contract::plane::codes::CHAIN_LENGTH_PREFIXED),
     ] {
         let refused =
             r.s.admit_sync(

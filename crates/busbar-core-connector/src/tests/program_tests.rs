@@ -6,13 +6,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::abi::host::conn::connector::{
+use busbar_contract::conn::codes::{
     DIRECTION_OUTBOUND, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
-use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
 use busbar_contract::conn::{
     ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind, Program,
 };
+use busbar_contract::rendering::{ReadBlob, ReadNeed};
 
 use crate::registry::{Entry, Transports};
 use crate::support::{worker, Knobs, TestDoor};
@@ -146,7 +146,7 @@ fn need(class: u32) -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
     }

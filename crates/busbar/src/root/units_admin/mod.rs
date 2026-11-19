@@ -1160,7 +1160,7 @@ async fn amend_rate_history_effect(
     arrival_secs: u64,
     attribution: &AmendAttribution,
 ) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
-    use busbar_contract::abi::sdk::digest::sha256;
+    use busbar_contract::digest::sha256;
     use busbar_contract::json::{self, JsonContainerTrait, JsonValueTrait};
     use busbar_core_admin::GovernanceError;
 
@@ -1744,9 +1744,8 @@ fn canonical_amend_payload(obj: &busbar_contract::json::Map) -> Vec<u8> {
         .get(&"reason")
         .and_then(json::Value::as_str)
         .unwrap_or_default();
-    let reason_sha256 = json::Value::from(
-        hex::encode(busbar_contract::abi::sdk::digest::sha256(reason.as_bytes())).as_str(),
-    );
+    let reason_sha256 =
+        json::Value::from(hex::encode(busbar_contract::digest::sha256(reason.as_bytes())).as_str());
     push_payload_field(&mut payload, "reason_sha256", Some(&reason_sha256));
     push_payload_field(&mut payload, "rates", obj.get(&"rates"));
     payload.into_bytes()

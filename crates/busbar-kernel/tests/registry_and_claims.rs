@@ -261,7 +261,7 @@ fn door_claim(target: &'static str, flags: u32) -> Claim {
 
 #[test]
 fn a_door_exact_claim_beats_its_pattern_which_beats_its_prefix() {
-    use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_PATTERN};
+    use busbar_contract::plane::codes::{CLAIM_EXACT, CLAIM_PATTERN};
     let claims = vec![
         PlaneClaim {
             plane: "door",
@@ -283,7 +283,7 @@ fn a_door_exact_claim_beats_its_pattern_which_beats_its_prefix() {
 
 #[test]
 fn two_door_pattern_claims_at_equal_precedence_refuse_boot() {
-    use busbar_contract::abi::plane::CLAIM_PATTERN;
+    use busbar_contract::plane::codes::CLAIM_PATTERN;
     let claims = vec![
         PlaneClaim {
             plane: "left",

@@ -1365,7 +1365,7 @@ async fn a_catalog_never_lends_never_kept_fields_and_preserves_permitted_field_b
     let mut g = governed("catalog-head-custody", false).await;
     let routes = session_custody_routes(&mut g, false);
     let mut request = session_custody_request(&g, "/catalog");
-    for field in busbar_contract::abi::host::conn::connector::NEVER_KEPT {
+    for field in busbar_contract::conn::codes::NEVER_KEPT {
         request.headers.insert(
             HeaderName::from_bytes(field.as_bytes()).expect("a forbidden field name"),
             HeaderValue::from_static("credential-fixture"),
@@ -1380,7 +1380,7 @@ async fn a_catalog_never_lends_never_kept_fields_and_preserves_permitted_field_b
         .append(PERMITTED_FIELD, HeaderValue::from_static("second value"));
     let answer = routes.catalog(0, &request);
     assert_eq!(answer.status(), StatusCode::OK);
-    for field in busbar_contract::abi::host::conn::connector::NEVER_KEPT {
+    for field in busbar_contract::conn::codes::NEVER_KEPT {
         assert!(
             !answer.headers().contains_key(*field),
             "catalog received {field}"
@@ -2317,7 +2317,7 @@ mod nested_neutral_tests;
 #[tokio::test]
 async fn only_the_host_line_carrier_adds_a_session_after_external_fields_are_filtered() {
     use axum::http::HeaderValue;
-    use busbar_contract::abi::host::service::CARRIER_SESSION_FIELD;
+    use busbar_contract::services::codes::CARRIER_SESSION_FIELD;
     let _one = PUBLISHING.lock().await;
     let mut g = governed("line-session-custody", false).await;
     let routes = session_custody_routes(&mut g, false);
@@ -2325,7 +2325,7 @@ async fn only_the_host_line_carrier_adds_a_session_after_external_fields_are_fil
     let session = std::num::NonZeroU64::new(kernel.open_carrier_session(
         &busbar_contract::services::Caller::for_test(
             "line-session-custody".into(),
-            busbar_contract::abi::mechanism::KindCode::Plane,
+            busbar_contract::kinds::codes::KindCode::Plane,
         ),
         &"fixture-principal".into(),
         Arc::new(|_: &[u8]| true),

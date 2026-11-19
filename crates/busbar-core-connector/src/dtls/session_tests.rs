@@ -182,7 +182,7 @@ fn permissive() -> Option<(Arc<dyn DialJudge>, u32)> {
         |dest: &str, _class: u32, _done: crate::Judged| -> Option<Result<SocketAddr, u64>> {
             let addr: SocketAddr = dest.parse().ok()?;
             if addr.ip() == IpAddr::from([169, 254, 169, 254]) {
-                return Some(Err(busbar_contract::abi::host::service::DEST_METADATA));
+                return Some(Err(busbar_contract::services::codes::DEST_METADATA));
             }
             Some(Ok(addr))
         };

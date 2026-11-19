@@ -40,7 +40,7 @@ fn each_scheme_is_served_by_one_entry_as_one_claim() {
 
 #[test]
 fn outbound_selection_requires_the_framers_declared_dial_capability() {
-    use busbar_contract::abi::transport::ROLE_FRAMER;
+    use busbar_contract::transport::codes::ROLE_FRAMER;
     let inbound = TestDoor::new("inbound", &["in", "in-alias"], &[], Knobs::default())
         .with_role(ROLE_FRAMER)
         .without_dialing();
@@ -98,7 +98,7 @@ fn door(d: TestDoor) -> Entry {
 /// THE ADDRESS CARRIER IS THE DECLARATION'S: the first CARRIER, in
 #[test]
 fn the_address_carrier_is_the_first_declared_carrier_serving_a_port() {
-    use busbar_contract::abi::transport::ROLE_FRAMER;
+    use busbar_contract::transport::codes::ROLE_FRAMER;
     let framer = || door(TestDoor::identity("framed").with_role(ROLE_FRAMER));
     let pathed = || door(TestDoor::identity("pathed").unported());
     let (a, b) = (

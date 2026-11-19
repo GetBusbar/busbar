@@ -2,9 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::export::{
-    SCRAPE_KIND_COUNTER, SCRAPE_KIND_GAUGE, SCRAPE_KIND_HISTOGRAM, SCRAPE_KIND_UNTYPED,
-};
+use busbar_contract::abi::export::{SCRAPE_KIND_HISTOGRAM, SCRAPE_KIND_UNTYPED};
+use busbar_contract::export_calls::codes::{SCRAPE_KIND_COUNTER, SCRAPE_KIND_GAUGE};
 
 fn sample(name: &str, labels: &[(&str, &str)], value: &str) -> Sample {
     Sample {

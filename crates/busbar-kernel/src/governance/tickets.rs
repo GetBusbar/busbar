@@ -70,7 +70,7 @@ impl TicketRefusal {
     /// The refusal's `ticket.mint` code, as the plane reads it from the answer's value.
     #[must_use]
     pub const fn code(self) -> u32 {
-        use busbar_contract::abi::host::service as svc;
+        use busbar_contract::services::codes::service as svc;
         match self {
             Self::NoSigner
             | Self::NoStanding

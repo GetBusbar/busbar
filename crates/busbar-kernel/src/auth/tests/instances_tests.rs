@@ -624,7 +624,7 @@ mod operator_instance {
     fn head() -> VerifyRequest {
         VerifyRequest {
             lines: Vec::new(),
-            point: busbar_contract::abi::auth::AuthPoint::Head,
+            point: busbar_contract::route::AuthPoint::Head,
             conn: 0,
             unit: 0,
             credential: None,

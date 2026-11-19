@@ -4,9 +4,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use busbar_contract::abi::host::service::{ItemSpan, VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD};
+use busbar_contract::abi::host::service::ItemSpan;
 use busbar_contract::abi::mechanism::call::Span;
-use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
+use busbar_contract::records::size_limits::SPAN_ABSENT;
+use busbar_contract::services::codes::{VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD};
 use busbar_contract::services::{Later, Ran, Stored};
 
 pub const LEAD_MS: u64 = 30_000;

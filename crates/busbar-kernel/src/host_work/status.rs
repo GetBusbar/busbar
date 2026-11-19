@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::host::service::{
+use busbar_contract::services::codes::{
     WORK_STATUS_ABSENT, WORK_STATUS_LIVE, WORK_STATUS_SETTLED, WORK_STATUS_SETTLING,
 };
 

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::transport::route::{METHOD_ANY, METHOD_POST};
+use busbar_contract::route::{METHOD_ANY, METHOD_POST};
 use busbar_kernel::guest::{GuestList, Matched};
 
 fn declared(verb: &str) -> crate::root::loader::dispatch::kinds::plane::OwnedClaim {

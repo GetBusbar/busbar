@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::host::service as svc;
 use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::services::codes::service as svc;
 
 use super::*;
 
@@ -204,7 +204,7 @@ fn every_service(late: &Services) -> Vec<Stored> {
     let s = late.served();
     let caller = Caller::for_test(
         Arc::from("the-instance"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     let now = |ran| match ran {
         Ran::Now(stored) => stored,
@@ -246,6 +246,7 @@ fn kernel(blocked: &[&str]) -> KernelServices {
     let d = busbar_kernel::config::Destinations {
         block_private_addresses: true,
         blocked: blocked.iter().map(|h| (*h).to_string()).collect(),
+        listens: Vec::new(),
     };
     kernel_services(crate::root::connector::guard_for(&d).expect("the guard"))
 }
@@ -279,7 +280,7 @@ fn dest_judge_asks_the_deployments_one_guard() {
         "a class the guard does not know dials nothing"
     );
 
-    let provider = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+    let provider = busbar_contract::conn::codes::EGRESS_PROVIDER;
     let shut = kernel(&["metadata.corp.example"]);
     for class in [DEFAULT_EGRESS_CLASS, provider] {
         for dest in [
@@ -592,7 +593,7 @@ async fn constructed_services_sign_and_write_trust_changes_down() {
         .expect("admitted");
     let caller = Caller::for_test(
         Arc::from("owner"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     let sight = |hash| {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -713,8 +714,7 @@ async fn constructed_services_keep_their_governance_record_store() {
     use busbar_kernel::persistence::scoped::{Outcome, ScopedStore};
     let core = crate::root::real_store::core().await;
     let rows =
-        ScopedStore::host_private(core.clone(), "busbar.attach-probe", ["attach-probe"])
-            .unwrap();
+        ScopedStore::host_private(core.clone(), "busbar.attach-probe", ["attach-probe"]).unwrap();
     assert_eq!(
         rows.put(
             "attach-probe",
@@ -760,7 +760,7 @@ async fn constructed_services_keep_their_governance_record_store() {
     let late = Services::serving(Arc::clone(&k));
     let caller = Caller::for_test(
         Arc::from("record-owner"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     k.admit(
         &"record-owner".into(),
@@ -916,7 +916,7 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
 #[cfg(linked_section_pools)]
 #[test]
 fn an_open_claims_line_takes_no_auth_whatever_the_data_chain() {
-    use busbar_contract::abi::auth::AuthPoints;
+    use busbar_contract::route::AuthPoints;
     use busbar_kernel::guest::LineAuth;
     let chain = vec![("keys".to_string(), AuthPoints(0))];
     assert_eq!(line_auth(CLAIM_OPEN, &chain), LineAuth::None);
@@ -931,7 +931,7 @@ fn an_open_claims_line_takes_no_auth_whatever_the_data_chain() {
 #[cfg(linked_section_pools)]
 #[test]
 fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
-    use busbar_contract::abi::auth::AuthPoints;
+    use busbar_contract::route::AuthPoints;
     use busbar_kernel::guest::LineAuth;
     let chain = vec![("keys".to_string(), AuthPoints(0))];
     let owed = LineAuth::Chain(vec!["keys".to_string()], AuthPoints(0));
@@ -981,8 +981,8 @@ async fn every_declared_stream_type_goes_piece_by_piece() {
 #[test]
 fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
     use crate::root::loader::boot::BindOwner;
-    use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
-    use busbar_contract::abi::mechanism::rendering::ReadNeed;
+    use busbar_contract::conn::codes::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+    use busbar_contract::rendering::ReadNeed;
     fn need(direction: u32, transport: &str, target_from: &str) -> ReadNeed {
         ReadNeed {
             direction,
@@ -991,13 +991,13 @@ fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
             auth: String::new(),
             target_from: target_from.into(),
             trust_from: String::new(),
-            details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+            details: busbar_contract::rendering::ReadBlob {
                 fmt: 0,
                 flags: 0,
                 bytes: Vec::new(),
             },
             timeout_ms: 0,
-            keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+            keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
             keep_response_headers: Vec::new(),
             deny_response_headers: Vec::new(),
         }

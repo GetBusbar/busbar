@@ -874,7 +874,7 @@ fn fresh_line_shared_before_facts(tls: bool) -> (ConnFacts, u8) {
 fn prepared_fresh_line_shared_before_facts_completes() {
     let (facts, scheme) = fresh_line_shared_before_facts(true);
     assert_eq!(facts.alpn.as_deref(), Some("h2"));
-    assert_eq!(scheme, busbar_contract::abi::host::service::SCHEME_SECURE);
+    assert_eq!(scheme, busbar_contract::services::codes::SCHEME_SECURE);
 }
 
 /// The same on a PRIOR-KNOWLEDGE CLEARTEXT h2 line (a single cleartext offer `h2`): readiness is
@@ -885,7 +885,7 @@ fn prepared_fresh_line_shared_before_facts_completes_h2c() {
     assert_eq!(facts.alpn.as_deref(), Some("h2"));
     assert_eq!(
         scheme,
-        busbar_contract::abi::host::service::SCHEME_PLAIN,
+        busbar_contract::services::codes::SCHEME_PLAIN,
         "cleartext"
     );
     assert!(facts.peer_cert.is_none(), "no certificate in the clear");

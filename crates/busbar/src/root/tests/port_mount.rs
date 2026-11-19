@@ -6,8 +6,8 @@
 //! (W2-SW-PLANE e2e); these are the pure seams between axum and `PortDriver::serve`.
 
 use axum::http::{HeaderMap, HeaderValue};
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_contract::abi::transport::route::{
+use busbar_contract::route::{RouteAuth, RouteMethod};
+use busbar_contract::route::{
     METHOD_DELETE, METHOD_GET, METHOD_HEAD, METHOD_PATCH, METHOD_POST, METHOD_PUT,
 };
 use busbar_kernel::plane_driver::port_session::ToClient;
@@ -405,8 +405,8 @@ async fn the_planes_end_closes_the_response_body_while_the_session_goes_on() {
 /// E9a: the route-level rules of a ROUTE_UPGRADE route (§12.27). Its auth step and the custody of
 /// core's answer are proved in the kernel (`auth/tests/native_upgrade_tests.rs`).
 mod upgrade {
-    use busbar_contract::abi::mechanism::KindCode;
-    use busbar_contract::abi::transport::route::{METHOD_GET, METHOD_POST, PATH_EXACT};
+    use busbar_contract::kinds::codes::KindCode;
+    use busbar_contract::route::{METHOD_GET, METHOD_POST, PATH_EXACT};
     use busbar_contract::services::Caller;
     use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
     use busbar_kernel::inbound::native::RouteBinding;
@@ -507,10 +507,10 @@ mod upgrade {
             dialect: 0,
             auth: LineAuth::Chain(
                 vec!["provider".into()],
-                busbar_contract::abi::auth::AuthPoints::EMPTY,
+                busbar_contract::route::AuthPoints::EMPTY,
             ),
             upgrade: None,
-            offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+            offered: busbar_contract::route::AuthPoints::EMPTY,
         };
         let mounted = Mounted {
             route,

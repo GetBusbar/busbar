@@ -72,7 +72,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
             .resolve(&module)
             .expect("the unrelated actual Store row is present")
             .kind,
-        busbar_contract::abi::mechanism::kind::STORE
+        busbar_contract::kinds::codes::STORE
     );
     let mw_err = AuthMiddleware::new(
         &cfg,

@@ -8,7 +8,7 @@
 //! already authenticated this request before it reaches these routes; the generation and its
 //! instances stay owned for the entire asynchronous answer.
 
-use busbar_contract::abi::transport::route::{method_bit, path_matches, PATH_PATTERN};
+use busbar_contract::route::{method_bit, path_matches, PATH_PATTERN};
 
 use super::port::{HttpHead, HttpIn, PortSeat, ServeIn, Served};
 use super::port_auth::{Credentials, Principal};

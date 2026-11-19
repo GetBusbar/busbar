@@ -86,4 +86,3 @@ fn min3_plane_lib() -> Vec<u8> {
     lib.extend_from_slice(b" tail");
     lib
 }
-

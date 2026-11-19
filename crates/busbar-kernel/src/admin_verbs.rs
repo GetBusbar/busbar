@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use busbar_contract::abi::mechanism::route::RouteMethod;
+use busbar_contract::route::RouteMethod;
 
 use crate::plane_driver::EngineHost;
 

@@ -883,7 +883,6 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
  "busbar-plugin-abi",
- "busbar-ports",
  "foldhash 0.2.0",
 ]
 

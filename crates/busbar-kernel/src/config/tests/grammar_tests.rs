@@ -55,7 +55,7 @@ fn declaring(setting: &str) -> Sugars {
         .declare(
             "fixture-secret",
             &[(
-                busbar_contract::abi::mechanism::door::REWRITE_SUGAR,
+                busbar_contract::plugin_settings::sugar_words::REWRITE_SUGAR,
                 WORD.into(),
                 setting.into(),
             )],

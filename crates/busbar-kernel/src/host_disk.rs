@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
-use busbar_contract::abi::host::service::{
+use busbar_contract::services::codes::{
     DISK_APPEND_FAILED, DISK_OPEN_FAILED, DISK_RENAME_FAILED, DISK_RETENTION_FAILED,
     DISK_SHIFT_FAILED,
 };

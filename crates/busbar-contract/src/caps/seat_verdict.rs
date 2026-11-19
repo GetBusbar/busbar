@@ -94,23 +94,23 @@ macro_rules! reasons {
 
             /// THE class of this reason: the table's fourth column, the one reason-to-class
             /// grouping in the tree (`abi::plane::RefusalClass`).
-            pub(crate) const fn class(self) -> crate::abi::plane::RefusalClass {
+            pub(crate) const fn class(self) -> crate::plane::codes::RefusalClass {
                 match self {
-                    $(ReasonCode::$name => crate::abi::plane::RefusalClass::$class,)*
+                    $(ReasonCode::$name => crate::plane::codes::RefusalClass::$class,)*
                 }
             }
 
             /// This reason's wire code: the wire table names each reason by the reason's own name.
-            pub(crate) const fn wire(self) -> crate::abi::plane::RefusalCode {
+            pub(crate) const fn wire(self) -> crate::plane::codes::RefusalCode {
                 match self {
-                    $(ReasonCode::$name => crate::abi::plane::RefusalCode::$name,)*
+                    $(ReasonCode::$name => crate::plane::codes::RefusalCode::$name,)*
                 }
             }
 
             /// The reason a wire code names; `None` for the walk's `Unsent*` codes alone, which
             /// are no reason of this vocabulary.
-            pub(crate) const fn of_wire(code: crate::abi::plane::RefusalCode) -> Option<ReasonCode> {
-                use crate::abi::plane::RefusalCode as W;
+            pub(crate) const fn of_wire(code: crate::plane::codes::RefusalCode) -> Option<ReasonCode> {
+                use crate::plane::codes::RefusalCode as W;
                 match code {
                     $(W::$name => Some(ReasonCode::$name),)*
                     W::UnsentNoAttempt

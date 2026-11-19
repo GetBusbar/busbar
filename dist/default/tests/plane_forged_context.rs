@@ -8,10 +8,9 @@ use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome};
 use busbar_contract::abi::mechanism::lifecycle::OpenIn;
-use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, PlaneOpenIn, PlaneOpenOut, UnitCount,
-};
+use busbar_contract::abi::plane::{ArriveIn, ArriveOut, PlaneOpenIn, PlaneOpenOut, UnitCount};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
+use busbar_contract::plane::codes::slot;
 use busbar_plugin_loader::dispatch::{
     kinds::plane::Plane, load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame,
     LinkedRow, NoSink, NO_BLOB,
@@ -24,7 +23,7 @@ fn a_forged_context_in_a_non_lifecycle_op_answers_fault_and_quarantines() {
         busbar_contract::services::test_caller_binding(),
     );
     let bind = Bind {
- accept: Default::default(),
+        accept: Default::default(),
         instance: Arc::from("the-instance"),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),

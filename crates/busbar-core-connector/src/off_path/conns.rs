@@ -128,8 +128,7 @@ pub(crate) fn operator_anchors(
 /// there is nothing the operator can move it to yet.
 fn log_operator_anchors(owner: InstanceId, need: NeedId, trust_from: &str, roots: &[Vec<u8>]) {
     for der in roots {
-        let sha256 =
-            busbar_contract::abi::sdk::digest::lower_hex(&busbar_contract::crypto::sha256(der));
+        let sha256 = busbar_contract::digest::lower_hex(&busbar_contract::crypto::sha256(der));
         tracing::info!(
             instance = owner.0,
             need = need.0,

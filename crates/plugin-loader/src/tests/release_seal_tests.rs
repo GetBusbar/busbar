@@ -914,7 +914,7 @@ mod standard_crypto {
         let message = b"P-256 signed original message";
         let sig = signer.sign(message);
         assert!(wire::verify(&key, message, &sig).unwrap());
-        let digest = busbar_contract::abi::sdk::digest::sha256(message);
+        let digest = busbar_contract::digest::sha256(message);
         assert!(!wire::verify(&key, &digest, &sig).unwrap());
         for malformed in [
             vec![],

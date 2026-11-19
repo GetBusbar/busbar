@@ -277,8 +277,8 @@ async fn credential_body_binding_survives_process_cache_loss() {
     // this claim so the replay window ends shortly without advancing that clock.
     let now = busbar_kernel::store::now() - IDEMPOTENCY_TTL_SECS + 5;
     let key = key("credential-binding-actor", "create:bound-action");
-    let a = busbar_contract::abi::sdk::digest::sha256(br#"{"name":"a"}"#);
-    let b = busbar_contract::abi::sdk::digest::sha256(br#"{"name":"b"}"#);
+    let a = busbar_contract::digest::sha256(br#"{"name":"a"}"#);
+    let b = busbar_contract::digest::sha256(br#"{"name":"b"}"#);
     let claim = durable::claim_bound(store.as_ref(), &key, a, now)
         .await
         .unwrap()
@@ -294,7 +294,7 @@ async fn credential_body_binding_survives_process_cache_loss() {
     assert!(
         matches!(durable::claim_bound(store.as_ref(), &key, a, now + 1).await, Ok(Err(Refused::Applied(resource))) if resource == "key:public-id")
     );
-    for changed in [b, busbar_contract::abi::sdk::digest::sha256(b"{")] {
+    for changed in [b, busbar_contract::digest::sha256(b"{")] {
         assert!(durable::claim_bound(store.as_ref(), &key, changed, now + 1)
             .await
             .is_err());

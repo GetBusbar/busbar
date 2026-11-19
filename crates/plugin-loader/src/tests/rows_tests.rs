@@ -3,7 +3,6 @@
 
 use busbar_contract::plugin_rows::PluginRows;
 
-
 struct Door;
 
 impl busbar_contract::abi::sdk::auth_door::SyncVerifyPlugin for Door {
@@ -37,10 +36,7 @@ const SECRET_REFS: &[busbar_contract::abi::mechanism::call::AbiStr] =
     &[busbar_contract::abi::sdk::door::abi_str("client_secret")];
 
 const TAIL: &busbar_contract::abi::auth::AuthTail =
-    &busbar_contract::abi::sdk::auth_door::verify_tail(
-        0,
-        busbar_contract::abi::auth::AuthPoints::HEAD,
-    );
+    &busbar_contract::abi::sdk::auth_door::verify_tail(0, busbar_contract::route::AuthPoints::HEAD);
 
 mod slotted {
     busbar_contract::auth_verify_door!(
@@ -91,4 +87,3 @@ mod referencing {
         )
     );
 }
-

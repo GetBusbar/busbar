@@ -1911,7 +1911,7 @@ fn validate_orders_a_webhook_sinks_refusals_among_the_limits_as_before() {
 fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &[u8]) {
     use busbar_contract::abi::mechanism::door::Statement;
     use busbar_contract::abi::mechanism::rendering::render;
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     let st = Statement {
         size: std::mem::size_of::<Statement>() as u32,
         kind: KindCode::Store as u32,
@@ -1933,7 +1933,7 @@ fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &
 #[cfg(linked_section_pools)]
 #[test]
 fn validate_selects_a_dropped_plugin_without_opening_it_and_reports_in_1_5_5s_words() {
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     let dir = fixture_dir("stated");
     let abi = KindCode::Store.abi_version();
     write_stated_store(&dir, "busbar-store-stated", "stated", abi, b"not a library");
@@ -1966,7 +1966,7 @@ fn validate_selects_a_dropped_plugin_without_opening_it_and_reports_in_1_5_5s_wo
 #[cfg(linked_section_pools)]
 #[test]
 fn validate_refuses_a_selected_plugin_built_for_another_host() {
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
     let dir = fixture_dir("stated-abi");
     let abi = KindCode::Store.abi_version() + 1;
     write_stated_store(&dir, "busbar-store-stated", "stated", abi, b"not a library");

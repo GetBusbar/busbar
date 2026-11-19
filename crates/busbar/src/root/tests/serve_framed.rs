@@ -15,7 +15,7 @@ struct Answered {
 }
 
 fn plain() -> busbar_kernel::plane_routes::ListenerScheme {
-    busbar_kernel::plane_routes::ListenerScheme(busbar_contract::abi::host::service::SCHEME_PLAIN)
+    busbar_kernel::plane_routes::ListenerScheme(busbar_contract::services::codes::SCHEME_PLAIN)
 }
 
 async fn framed(g: &Governed, path: &str, body: &'static [u8]) -> Answered {
@@ -230,7 +230,7 @@ fn lp_door(
         dials: true,
         name: "lp".into(),
         claims: vec!["lp"],
-        role: busbar_contract::abi::transport::ROLE_FRAMER,
+        role: busbar_contract::transport::codes::ROLE_FRAMER,
         composes_over: Vec::new(),
         ported: false,
         status_rows: Vec::new(),
@@ -247,7 +247,7 @@ fn a_datagram_framer_is_never_a_streams_framer_though_its_claim_states_a_session
         dials: true,
         name: "dg".into(),
         claims: vec!["dg"],
-        role: busbar_contract::abi::transport::ROLE_FRAMER,
+        role: busbar_contract::transport::codes::ROLE_FRAMER,
         composes_over: Vec::new(),
         ported: false,
         status_rows: Vec::new(),
@@ -311,7 +311,7 @@ fn the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name() {
         name: "claims-the-line".into(),
         claims: vec![line, "framed"],
 
-        role: busbar_contract::abi::transport::ROLE_FRAMER,
+        role: busbar_contract::transport::codes::ROLE_FRAMER,
         composes_over: Vec::new(),
         ported: false,
         status_rows: Vec::new(),

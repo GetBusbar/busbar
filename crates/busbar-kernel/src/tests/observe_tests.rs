@@ -39,7 +39,7 @@ fn a_malformed_code_is_refused() {
 
 #[test]
 fn a_benign_recurring_condition_cannot_be_escalated() {
-    use busbar_contract::abi::mechanism::observe::DiagLevel;
+    use busbar_contract::observe::DiagLevel;
     for claimed in [
         DiagLevel::Error,
         DiagLevel::Warn,
@@ -55,7 +55,7 @@ fn a_benign_recurring_condition_cannot_be_escalated() {
 
 #[test]
 fn an_actionable_condition_keeps_the_reported_level() {
-    use busbar_contract::abi::mechanism::observe::DiagLevel;
+    use busbar_contract::observe::DiagLevel;
     for claimed in [DiagLevel::Error, DiagLevel::Warn, DiagLevel::Debug] {
         assert_eq!(
             clamp_level(claimed, crate::diagnostics::Severity::Actionable),
@@ -133,7 +133,7 @@ fn observer_histograms_reserve_generated_quantiles_before_cardinality_and_snapsh
                 OBSERVER.observe(
                     &TEST_GRANTS,
                     plugin,
-                    busbar_contract::abi::mechanism::kind::EXPORT,
+                    busbar_contract::kinds::codes::EXPORT,
                     &[metric],
                     &[],
                 );
@@ -152,7 +152,7 @@ fn observer_histograms_reserve_generated_quantiles_before_cardinality_and_snapsh
         let family = families.iter().find(|family| family.name == name).unwrap();
         assert_eq!(
             family.kind,
-            busbar_contract::abi::export::SCRAPE_KIND_SUMMARY
+            busbar_contract::export_calls::codes::SCRAPE_KIND_SUMMARY
         );
         assert_eq!(family.samples.len(), MAX_LABEL_SETS_PER_SERIES * 9);
         for sample in &family.samples {
@@ -221,7 +221,7 @@ fn observer_counters_and_gauges_keep_their_quantile_dimension() {
             OBSERVER.observe(
                 &TEST_GRANTS,
                 plugin,
-                busbar_contract::abi::mechanism::kind::EXPORT,
+                busbar_contract::kinds::codes::EXPORT,
                 &[
                     serde_json::json!({"name": format!("quantile_control_{kind}"),
                     "type": kind, "value": 3, "labels": {"quantile": "reported"}}),
@@ -517,7 +517,7 @@ fn hook_envelope_metrics_are_carried_but_not_folded() {
         OBSERVER.observe(
             &TEST_GRANTS,
             "export-freeze-control",
-            busbar_contract::abi::mechanism::kind::EXPORT,
+            busbar_contract::kinds::codes::EXPORT,
             &entries,
             &[],
         );
@@ -592,12 +592,9 @@ fn a_first_party_plugins_diagnostic_is_written_as_the_hosts_own_line() {
         .expect("an actionable code");
     grant("k9c-first-party", &[]);
     let entry = serde_json::to_value(
-        busbar_contract::abi::mechanism::observe::PluginDiagnostic::warn(
-            format!("BUSBAR-{}", d.code),
-            "it broke",
-        )
-        .field("webhook_url", "\"https://a/\"")
-        .field("status", "503"),
+        busbar_contract::observe::PluginDiagnostic::warn(format!("BUSBAR-{}", d.code), "it broke")
+            .field("webhook_url", "\"https://a/\"")
+            .field("status", "503"),
     )
     .unwrap();
     let buf = Buf::default();
@@ -698,7 +695,7 @@ impl TestObserver {
         metrics: &[serde_json::Value],
         diagnostics: &[serde_json::Value],
     ) {
-        let kind = busbar_contract::abi::mechanism::KindCode::ALL
+        let kind = busbar_contract::kinds::codes::KindCode::ALL
             .into_iter()
             .find(|k| k.word() == kind)
             .unwrap();
@@ -755,12 +752,10 @@ fn two_observers_lent_two_catalogues_each_emit_only_their_own_roots_codes() {
     ]))));
     let other = TestObserver::lent(crate::diagnostics::Catalogue::lent(&[]));
     grant("lent-observer-plugin", &[]);
-    let entry = serde_json::to_value(
-        busbar_contract::abi::mechanism::observe::PluginDiagnostic::warn(
-            "BUSBAR-7995".to_string(),
-            "the plane's own condition",
-        ),
-    )
+    let entry = serde_json::to_value(busbar_contract::observe::PluginDiagnostic::warn(
+        "BUSBAR-7995".to_string(),
+        "the plane's own condition",
+    ))
     .unwrap();
     let emitted = |observer: TestObserver| {
         let buf = Buf::default();
@@ -938,7 +933,7 @@ fn a_plugin_replys_cuts_reach_the_sink_once_per_field() {
         .collect();
     let diagnostics: Vec<serde_json::Value> = (0..16)
         .map(|_| {
-            let mut diag = busbar_contract::abi::mechanism::observe::PluginDiagnostic::warn(
+            let mut diag = busbar_contract::observe::PluginDiagnostic::warn(
                 format!("BUSBAR-{}", d.code),
                 "m".repeat(400),
             );
@@ -1068,8 +1063,8 @@ impl Grants for OneOwner {
 /// in a one-entry `observe` does: kept, cut, stripped or refused alike, for every kind.
 #[test]
 fn a_typed_metric_is_folded_exactly_as_its_json_form_is() {
-    use busbar_contract::abi::mechanism::observe::PluginMetric;
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
+    use busbar_contract::observe::PluginMetric;
     let observer = KernelPluginObserver::lent(crate::diagnostics::Catalogue::NEUTRAL);
     let mut rich = PluginMetric::gauge("typed_lane_rich", 3.5).label("sink", "audit");
     rich.help = Some("h".repeat(300));
@@ -1131,8 +1126,8 @@ fn a_typed_metric_is_folded_exactly_as_its_json_form_is() {
 /// form in a one-entry `observe` does.
 #[test]
 fn a_typed_diagnostic_is_folded_exactly_as_its_json_form_is() {
-    use busbar_contract::abi::mechanism::observe::{DiagLevel, PluginDiagnostic};
-    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_contract::kinds::codes::KindCode;
+    use busbar_contract::observe::{DiagLevel, PluginDiagnostic};
     let observer = KernelPluginObserver::lent(crate::diagnostics::Catalogue::NEUTRAL);
     let known = format!(
         "BUSBAR-{}",

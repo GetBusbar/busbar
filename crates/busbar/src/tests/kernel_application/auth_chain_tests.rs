@@ -30,7 +30,7 @@ fn test_chain_identifies_with_module_and_principal() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+    let module = busbar_contract::rendering::read(&statement)
         .expect("the actual OIDC statement is valid")
         .name;
     let directory = common::plugins::scratch(
@@ -86,7 +86,7 @@ fn test_nonempty_chain_fails_closed_on_all_pass() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+    let module = busbar_contract::rendering::read(&statement)
         .expect("the actual OIDC statement is valid")
         .name;
     let directory = common::plugins::scratch(
@@ -155,7 +155,7 @@ fn test_keys_in_chain_sets_flag_not_module() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+    let module = busbar_contract::rendering::read(&statement)
         .expect("the actual OIDC statement is valid")
         .name;
     let directory =
@@ -231,7 +231,7 @@ fn test_auth_middleware_debug_redacts_tokens() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+    let module = busbar_contract::rendering::read(&statement)
         .expect("the actual OIDC statement is valid")
         .name;
     let directory =
@@ -282,7 +282,7 @@ fn a_keys_only_chain_is_not_an_open_front_door() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+    let module = busbar_contract::rendering::read(&statement)
         .expect("the actual OIDC statement is valid")
         .name;
     let directory =
@@ -340,7 +340,7 @@ fn a_verified_oidc_role_is_bound_under_the_provider_name() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+    let module = busbar_contract::rendering::read(&statement)
         .expect("the actual OIDC statement is valid")
         .name;
     let directory = common::plugins::scratch(
@@ -408,7 +408,7 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&artifact)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+    let module = busbar_contract::rendering::read(&statement)
         .expect("the actual OIDC statement is valid")
         .name;
     let directory = common::plugins::scratch("auth-real-pending-jwks");

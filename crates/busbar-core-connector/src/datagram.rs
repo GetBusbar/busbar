@@ -14,9 +14,10 @@ use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::check::check_datagram;
 use busbar_contract::abi::transport::{
     BeginIn, ConnFacts, DatagramLane, DatagramPath, DatagramRoute, EmitIn, FinishIn, FramerOut,
-    FramingIn, IngestIn, KeyingMaterial, CLOSE_NORMAL, EMIT_TEXT, HANDSHAKE_NONE, LANE_CLEAR,
-    LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND, PATH_REQUEST_REBIND, SIDE_ACCEPT, SIDE_DIAL,
+    FramingIn, IngestIn, KeyingMaterial, HANDSHAKE_NONE, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED,
+    PATH_REQUEST_BIND, PATH_REQUEST_REBIND,
 };
+use busbar_contract::transport::codes::{CLOSE_NORMAL, EMIT_TEXT, SIDE_ACCEPT, SIDE_DIAL};
 
 use crate::dtls::{Association, IceCredentials, Role, SessionCert, SrtpKeying, Up, Verdict};
 use crate::framer::{instant_of, ready, At, Buffers, Call, Crossed, FramerDoor, Refused, Yielded};
@@ -1180,7 +1181,7 @@ impl DatagramFraming {
                 let mut i: BeginIn = blank_in();
                 i.side = self.side;
 
-                i.scheme = busbar_contract::abi::host::service::SCHEME_SECURE;
+                i.scheme = busbar_contract::services::codes::SCHEME_SECURE;
                 i.facts = &facts;
                 if !fields.is_empty() {
                     i.fields = fields.as_ptr();
@@ -3199,7 +3200,7 @@ impl DatagramFraming {
                 return Err(fault("datagram FINISH must not pend"));
             }
             ready(crossed)?;
-            let more = o.yielded.flags & busbar_contract::abi::transport::YIELD_MORE != 0;
+            let more = o.yielded.flags & busbar_contract::transport::codes::YIELD_MORE != 0;
             if more {
                 recalls.owed(&o, &self.bufs)?;
             }

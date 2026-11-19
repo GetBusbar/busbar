@@ -408,7 +408,7 @@ pub(crate) fn authentication_unavailable_answer() -> AdminAnswer {
 }
 
 pub(crate) fn answer_for(outcome: Outcome) -> AdminAnswer {
-    use busbar_contract::abi::plane::{class_of, RefusalClass};
+    use busbar_contract::plane::codes::{class_of, RefusalClass};
     let (status, code) = match outcome {
         Outcome::Refused(_, reason) | Outcome::Failed(_, reason) => match class_of(reason) {
             RefusalClass::Unreadable => (400, "invalid_request"),
@@ -454,7 +454,7 @@ pub(crate) const AMEND_RATE_HISTORY_PATH: &str = "/api/v1/admin/ledger/amend-rat
 pub(crate) const AMEND_RATE_HISTORY_SHAPE: &str = "amend-rate-history: body must carry effective_from, reason, and rates and/or per_request_fee; rate_card/window is the pre-1.6.0 shape";
 
 pub(crate) fn explained_answer(request: &AdminRequest, outcome: Outcome) -> Option<AdminAnswer> {
-    use busbar_contract::abi::plane::{class_of, RefusalClass};
+    use busbar_contract::plane::codes::{class_of, RefusalClass};
     let unreadable = matches!(
         outcome,
         Outcome::Refused(_, reason) | Outcome::Failed(_, reason)

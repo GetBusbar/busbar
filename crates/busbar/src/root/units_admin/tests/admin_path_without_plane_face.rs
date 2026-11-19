@@ -1344,7 +1344,7 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     let reads_before = the_operators_rows_for(&node, "/api/v1/admin/trust").await;
     let caller = Caller::for_test(
         Arc::from("inst"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     let served = || {
         kernel.trust_judge(
@@ -1510,7 +1510,7 @@ async fn a_rejected_approval_is_audited() {
     };
     let caller = Caller::for_test(
         Arc::from("inst"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     sight_settled(&kernel, &caller, "unverified").await;
 
@@ -1954,7 +1954,7 @@ async fn a_sighted_trust_kernel() -> Arc<busbar_kernel::host_services::KernelSer
         .expect("admitted");
     let caller = busbar_contract::services::Caller::for_test(
         Arc::from("inst"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     sight_settled(&kernel, &caller, "h1").await;
     kernel

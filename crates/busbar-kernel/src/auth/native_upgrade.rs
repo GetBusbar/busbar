@@ -13,8 +13,8 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
-use busbar_contract::abi::transport::route::METHOD_GET;
 use busbar_contract::records::VirtualKey;
+use busbar_contract::route::METHOD_GET;
 use busbar_contract::services::Caller;
 use busbar_plugin_abi::plane::{AUTH_PRINCIPAL, ROUTE_UPGRADE};
 use busbar_ports::CallCx;
@@ -252,7 +252,8 @@ pub struct UpgradeAuthorization {
 }
 impl std::fmt::Debug for UpgradeAuthorization {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("UpgradeAuthorization").finish_non_exhaustive()
+        f.debug_struct("UpgradeAuthorization")
+            .finish_non_exhaustive()
     }
 }
 impl UpgradeAuthorization {

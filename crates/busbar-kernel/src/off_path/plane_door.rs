@@ -44,7 +44,7 @@ pub fn fold(reg: PlaneRegistration) -> Result<&'static PlaneDecl, String> {
     let hooks = door_hooks(named, !reg.owns.is_empty(), !reg.admin_routes.is_empty());
     let provider_dialects: &'static [&'static str] = (reg.dialects.iter())
         .zip(&reg.dialect_flags)
-        .filter(|(_, f)| *f & busbar_contract::abi::plane::DIALECT_PROVIDER != 0)
+        .filter(|(_, f)| *f & busbar_contract::plane::codes::DIALECT_PROVIDER != 0)
         .map(|(d, _)| *d)
         .collect::<Vec<_>>()
         .leak();
@@ -836,14 +836,14 @@ pub(crate) fn admin_routes(
     _slot: &dyn std::any::Any,
 ) -> Vec<crate::admin_verbs::AdminRouteSpec> {
     use crate::admin_verbs::{AdminRouteSpec, AdminScope, AdminVerbKind};
-    use busbar_contract::abi::mechanism::route::RouteMethod;
+    use busbar_contract::route::RouteMethod;
     let Some(d) = row(decl) else {
         return Vec::new();
     };
     d.reg
         .admin_routes
         .iter()
-        .filter(|r| r.flags & busbar_contract::abi::plane::ROUTE_PUBLIC == 0)
+        .filter(|r| r.flags & busbar_contract::plane::codes::ROUTE_PUBLIC == 0)
         .filter_map(|r| {
             let method = [
                 RouteMethod::Get,
@@ -941,7 +941,7 @@ pub(crate) async fn admin_reply(
     if matches!(&refused, PlaneVerbError::Internal(_)) {
         return AdminReply::Rejected(refused);
     }
-    if served.audit == busbar_contract::abi::plane::AUDIT_NONE {
+    if served.audit == busbar_contract::plane::codes::AUDIT_NONE {
         AdminReply::Refused(refused)
     } else {
         AdminReply::Rejected(refused)

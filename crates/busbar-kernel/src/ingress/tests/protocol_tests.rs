@@ -34,7 +34,7 @@ async fn the_resource_document_renders_its_facts_and_omits_an_empty_member() {
 
 #[test]
 fn a_declared_route_inherits_the_bar_beside_its_mount() {
-    use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
+    use busbar_contract::route::{RouteAuth, RouteMethod};
     let (_router, table) = crate::core_routes::CoreRouter::new()
         .route(
             "/zeta".to_string(),

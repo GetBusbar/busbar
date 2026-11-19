@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::transport::STATUS_CALLER_FAULT;
 use busbar_contract::conn::ConnError;
+use busbar_contract::transport::codes::STATUS_CALLER_FAULT;
 use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::wire::{WireFault, WireStatus};
 
@@ -550,8 +550,8 @@ fn a_dispatch_that_cannot_be_recorded_sends_nothing() {
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use busbar_contract::abi::transport::{FAULT_NONE, STATUS_FAR_END_FAULT, STATUS_SUCCESS};
 use busbar_contract::caps::{Pass, Route};
+use busbar_contract::transport::codes::{FAULT_NONE, STATUS_FAR_END_FAULT, STATUS_SUCCESS};
 use busbar_kernel_breaker::cell::{BreakerCell, BreakerState};
 use busbar_kernel_breaker::cfg::{BreakerCfg, TripConfig, TripMode};
 use busbar_kernel_breaker::{BreakerUnit, LaneState};

@@ -296,7 +296,7 @@ async fn app() -> (
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .unwrap()
         .unwrap();
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .unwrap()
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "custody-auth", false);

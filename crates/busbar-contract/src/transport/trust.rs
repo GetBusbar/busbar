@@ -117,7 +117,7 @@ pub fn canonical_key_pin(written: &str) -> Result<String, BadKeyPin> {
             "it is neither `sha256/` and the standard, padded base64 of 32 bytes, nor that base64 \
              alone",
         ))?;
-    Ok(crate::abi::sdk::digest::tagged(&digest))
+    Ok(crate::digest::tagged(&digest))
 }
 
 /// THE TRUST ANCHORS OF ONE DESTINATION a need reaches: the

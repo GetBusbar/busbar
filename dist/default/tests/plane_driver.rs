@@ -25,10 +25,8 @@ use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::Outcome as AbiOutcome;
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
-use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PlaneOpenIn, PlaneOpenOut, UnitCount,
-    FROM_FAR_END,
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, PlaneOpenIn, PlaneOpenOut, UnitCount,
 };
 use busbar_contract::caps::OpClassId;
 use busbar_contract::conn::{
@@ -36,6 +34,8 @@ use busbar_contract::conn::{
     PieceKind,
 };
 use busbar_contract::ids::StreamId;
+use busbar_contract::plane::codes::{slot, FROM_FAR_END};
+use busbar_contract::rendering::ReadNeed;
 use busbar_contract::transport::ConnFacts;
 use busbar_kernel::host_services::KernelServices;
 use busbar_kernel::plane_driver::{refusal_status, BufferCaps, DriverConfig, PlaneDriver};
@@ -127,7 +127,7 @@ fn load_open_capped(
     cap: u32,
 ) -> (Arc<Plugin<Plane>>, OwnedSnapshot) {
     let bind = Bind {
- accept: Default::default(),
+        accept: Default::default(),
         instance: Arc::from("the-instance"),
         max_inflight_cap: cap,
         sink,
@@ -1184,7 +1184,7 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
         .expect("the actual store statement reads")
         .expect("the actual store exports its statement");
-    let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+    let module = busbar_contract::rendering::read(&statement)
         .expect("the actual store statement is valid")
         .name;
     let mut manifest = fixture_plugins::manifest(
@@ -1425,7 +1425,7 @@ fn a_public_route_is_served_by_the_planes_serve_without_a_credential() {
 
 #[test]
 fn a_public_route_carrying_its_own_token_is_lent_authorization_and_nothing_else() {
-    use busbar_contract::abi::plane::{ROUTE_CARRIES_OWN_TOKEN, ROUTE_PUBLIC};
+    use busbar_contract::plane::codes::{ROUTE_CARRIES_OWN_TOKEN, ROUTE_PUBLIC};
     use busbar_kernel::plane_driver::serve::ServeTables;
     let _one = PUBLISHED
         .lock()

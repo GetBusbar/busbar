@@ -570,7 +570,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Reference<'_, V> {
             .contains_key("template")
         {
             if let Some(used) = self.ctx.used {
-                used.role(crate::abi::mechanism::door::SUGAR_ROLE_FILL);
+                used.role(crate::plugin_settings::sugar_words::SUGAR_ROLE_FILL);
             }
             let reference: super::SecretRef = serde::Deserialize::deserialize(held.clone())
                 .map_err(|_| de::Error::custom("malformed core template (value not echoed)"))?;
@@ -637,7 +637,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Bag<'_, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::abi::mechanism::door::REWRITE_SUGAR;
+    use crate::plugin_settings::sugar_words::REWRITE_SUGAR;
     use crate::secret_ref::SecretRef;
 
     #[derive(Deserialize)]

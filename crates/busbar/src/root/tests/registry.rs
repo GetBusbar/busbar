@@ -654,7 +654,7 @@ fn a_linked_transport_row_logs_to_its_own_plugin_log_file() {
         text: b"the linked transport logged a frame",
     });
     let path = crate::root::boot::plugin_logs()
-        .path_for(&row, busbar_contract::abi::mechanism::KindCode::Transport);
+        .path_for(&row, busbar_contract::kinds::codes::KindCode::Transport);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut text = String::new();
     while std::time::Instant::now() < deadline {

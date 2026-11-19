@@ -14,10 +14,10 @@ use std::sync::{Arc, Mutex};
 
 use indexmap::{Equivalent, IndexMap};
 
-use busbar_contract::abi::host::service::{
+use busbar_contract::auth_calls::AuthField;
+use busbar_contract::services::codes::{
     OUTBOUND_BIND, OUTBOUND_PUBLISH, OUTBOUND_PUBLISH_BODY, OUTBOUND_REVOKE,
 };
-use busbar_contract::auth_calls::AuthField;
 use busbar_contract::services::{Caller, Incarnation, OutboundAuthorization};
 use busbar_contract::Secret;
 

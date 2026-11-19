@@ -17,7 +17,7 @@
 
 use std::time::Duration;
 
-use busbar_contract::abi::transport::fields::lines;
+use busbar_contract::transport::fields::lines;
 use busbar_plugin_abi::fail::refused::R_NO_ROUTE;
 use busbar_plugin_abi::plane::{
     ATT_DECLINE, ATT_HARD, ATT_RETRY, FC_SERVER, FROM_UPSTREAM, F_PROBE_OK, P_BODY, P_END, P_ERROR,

@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use busbar_contract::abi::auth::{FIELD_QUERY, FIELD_SENSITIVE};
+use busbar_contract::auth_calls::codes::{FIELD_QUERY, FIELD_SENSITIVE};
 use busbar_contract::auth_calls::StripPlace;
 use busbar_kernel::inbound::{self as kin, Inbound};
 

@@ -9,8 +9,8 @@
 
 use std::sync::{Arc, PoisonError};
 
-use busbar_contract::abi::auth::{AuthPoint, POINT_HEAD_BODY};
 use busbar_contract::kept::Text;
+use busbar_contract::route::{AuthPoint, POINT_HEAD_BODY};
 use foldhash::HashMap;
 
 use crate::guest::LineAuth;

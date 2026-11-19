@@ -4,7 +4,7 @@
 //! Canonical reference grammar and explicit owner-declared shorthand.
 
 use super::*;
-use crate::abi::mechanism::door::{
+use crate::plugin_settings::sugar_words::{
     REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
 };
 
