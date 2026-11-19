@@ -138,6 +138,7 @@ fn cx(deadline: Instant) -> CallCx {
         deadline,
         request_id: 1,
         stack: CallStack::default(),
+        mono_ns: 0,
     }
 }
 

@@ -325,6 +325,17 @@ impl UnitRecords {
             .flatten()
     }
 
+    /// Whether `unit` is a verified request's registration on a route that opens no unit
+    /// ([`Self::admitted_unbilled`]): it exists for the route's hooks alone and allows no
+    /// effect, so no host service may write under it (a work or record write owned by its
+    /// principal). Before such registrations existed the number named no entry at all.
+    pub(crate) fn opens_no_unit(&self, unit: u64) -> bool {
+        self.lock(unit)
+            .get(&unit)
+            .and_then(|entry| entry.admission_phase.as_ref())
+            .is_some_and(|phase| phase.opens_no_unit())
+    }
+
     pub fn set_child_ancestry(&self, unit: u64, ancestry: Vec<Arc<str>>) {
         self.lock(unit).entry(unit).or_default().child_ancestry = ancestry;
     }

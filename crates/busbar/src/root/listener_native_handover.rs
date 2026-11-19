@@ -3,66 +3,15 @@
 
 //! The hand-over of an admitted upgrade request (§12.27 steps 2 to 5): the one seam between
 //! admission, which is the listener's, and the carrier that takes the stream, which is the
-//! websocket transport's. Admission's part ends here: everything through money happened on the
-//! HTTP head, the request is consumed once into a [`PhysicalUpgrade`], and what the adopter is
-//! handed can produce a 101 and nothing else.
+//! websocket transport's. Admission's part ends before this file: everything through money
+//! happened on the HTTP head, through the data admission.
 
 use std::sync::Arc;
 
-use axum::response::Response;
-use busbar_kernel::inbound::native::{PhysicalUpgrade, StreamOwner};
-use busbar_kernel::plane_driver::port::PortSeat;
+use busbar_kernel::inbound::native::StreamOwner;
 
 use super::InputError;
 use crate::root::min3_boot::transports::ServedTransport;
-use crate::root::plane_node::Node;
-
-/// Everything an adopter needs, and the only things it may use.
-pub(crate) struct HandOver {
-    /// The consumed request: the charged head, the verified identity, the governed key and the
-    /// plane route. Dropping it cancels the request.
-    pub(crate) upgrade: Arc<PhysicalUpgrade>,
-    /// The route's plane seat: the adopter calls its `request` on the head with an empty body.
-    pub(crate) seat: PortSeat,
-    pub(crate) route: u32,
-    /// The carriers the route's chain read: withheld from the plane on the hand-over's `request`.
-    pub(crate) withheld: Arc<[Box<str>]>,
-    /// The stream the upgrade arrived on. The adopter renames it at hand-over, so an upgrade on a
-    /// request that is not its connection's first does not collide with the adopted stream.
-    pub(crate) stream: Arc<StreamOwner>,
-    /// The node that owns the request's unit: money is admitted through it before the plane is
-    /// called, exactly as a data request's is.
-    pub(crate) node: Arc<Node>,
-}
-
-/// What the adopter answered on the HTTP head.
-pub(crate) enum Adopted {
-    /// The plane committed with RESPOND(101): the response carries the 101 head and the plane's
-    /// pairs, and the session continues on the adopted stream, begun with CONN_UPGRADED.
-    Switched(Response),
-    /// The plane answered something else before any 101 (its own client error): written as an
-    /// ordinary response; the stream is not adopted.
-    Answered(Response),
-}
-
-/// The carrier side of the hand-over. One implementation, linked by the websocket transport's
-/// adapter; the listener holds it as `NativeListener::adopter`.
-///
-/// The contract an implementation keeps:
-/// 1. open the request's unit and admit its money through `node` before calling the plane (scope,
-///    limits and the unit are judged on the head: a refusal there is `Adopted::Answered`);
-/// 2. call the plane's `request` once on `upgrade`'s head with an empty body, `withheld` withheld;
-/// 3. on RESPOND(101), `begin` `carrier` with CONN_UPGRADED and the head, H_STATUS(101) and the
-///    plane's PAIR*, on `stream` renamed for the adopted connection;
-/// 4. settle the unit once, when the adopted session ends.
-#[async_trait::async_trait]
-pub(crate) trait UpgradeAdopter: Send + Sync {
-    async fn hand_over(
-        &self,
-        carrier: &ServedTransport,
-        hand_over: HandOver,
-    ) -> Result<Adopted, InputError>;
-}
 
 // ---------------------------------------------------------------------------------------------
 // THE HAND-OVER ITSELF (owner decision 18). What follows is the carrier side of an admitted
@@ -128,13 +77,6 @@ impl MessageKinds {
     }
 }
 
-/// The latest end of an upgrade request's session when nothing stated one for its request: the
-/// deployment's default stream ceiling, from the moment the caller's side is made. An upgraded
-/// session is never left without a limit.
-const UNSTATED_LIMIT: std::time::Duration = std::time::Duration::from_secs(
-    busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
-);
-
 /// The latest end of the sessions of upgrade requests being prepared, by the stream owner of
 /// their request ([`bound`]). An entry lives from the request's preparation to the making of its
 /// caller's side (or to the next statement's sweep after its request ended). It is here for the
@@ -196,7 +138,8 @@ struct PipeState {
 /// What it refuses (the session is then told the caller is gone, and its far end is let go): a
 /// second 101; a message with no 101 before it; a body or trailers after a 101; anything after END.
 ///
-/// THE SESSION'S LIMIT. An upgraded session is bounded ([`bound`]). At its limit the engine cuts
+/// THE SESSION'S LIMIT. An upgraded session whose plane states a ceiling is bounded by it
+/// ([`bound`]); one whose plane states none has no limit here. At its limit the engine cuts
 /// the caller's side, on whichever of its two faces the plane session is at: a session waiting
 /// for the caller is woken and told the caller is gone ([`ClientEvent::Gone`]: "the engine cut
 /// it"); a session writing to the caller has the item refused, which its relay reads the same
@@ -206,7 +149,8 @@ struct PipeState {
 /// failure, never as a normal close). The answer's delivery then ends cut, and the unit settles
 /// by the data path's own settlement on the usage the session last stated.
 pub(crate) struct UpgradePipe {
-    /// The session's latest end. `None` only for a pipe no connection stands behind.
+    /// The session's latest end: its plane's stated ceiling. `None`: the plane states none (or no
+    /// connection stands behind the pipe).
     until: Option<tokio::time::Instant>,
     /// The limit's timer, made the first time the plane session waits for the caller.
     alarm: Mutex<Option<std::pin::Pin<Box<tokio::time::Sleep>>>>,
@@ -248,12 +192,11 @@ pub(crate) fn handed_on<'a>(
 impl UpgradePipe {
     /// The caller's side of an upgrade request's session, over the data path's sink `http`.
     ///
-    /// Its session ends at the limit stated for the request ([`bound`]). A request with a
-    /// connection behind it and no limit stated is still bounded ([`UNSTATED_LIMIT`]).
+    /// Its session ends at the limit stated for the request ([`bound`]): its plane's stated
+    /// ceiling. Where the plane states none, no borrowed number takes its place (owner decision):
+    /// the session is bounded by the caller's budget and the connection's own liveness.
     pub(crate) fn new(http: Arc<dyn ClientSink>, hand: Option<HandTo>) -> Arc<Self> {
-        let until = hand.as_ref().map(|hand| {
-            take_bound(&hand.owner).unwrap_or_else(|| tokio::time::Instant::now() + UNSTATED_LIMIT)
-        });
+        let until = hand.as_ref().and_then(|hand| take_bound(&hand.owner));
         Self::bounded(http, hand, until)
     }
 

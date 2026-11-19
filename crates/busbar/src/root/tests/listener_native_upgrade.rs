@@ -10,9 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_kernel::auth::admission_table::Refusal;
-use busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS;
 
-use super::{judge, session_ends, session_limit};
+use super::{judge, session_ends};
 use crate::root::min3_boot::transports::tests::framer;
 use crate::root::min3_boot::transports::ServedTransport;
 
@@ -60,43 +59,28 @@ fn an_admitted_upgrade_is_handed_to_the_listeners_websocket_transport_not_refuse
     assert_eq!(&*handed.instance, "transport-ws");
 }
 
-/// An upgraded session is bounded by the stricter of the plane's session ceiling and the stream
-/// ceiling; a side that states none (0) does not loosen the other, and with neither stated the
-/// deployment's default stands: there is no unbounded session.
+/// OWNER DECISION: an upgraded session's limit is its plane's stated ceiling, run from the
+/// request, whatever the deployment's stream or request settings say: a plane that states 300 s
+/// is bounded at 300 s and one that states 3600 s at 3600 s.
 #[test]
-fn an_upgraded_sessions_limit_is_the_stricter_of_the_two_ceilings_and_never_none() {
-    for (plane, stream, limit) in [
-        (0, 300, 300),
-        (600, 300, 300),
-        (120, 300, 120),
-        (120, 0, 120),
-        (300, 300, 300),
-        (0, 0, DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS),
-    ] {
+fn an_upgraded_sessions_limit_is_its_planes_stated_ceiling() {
+    let now = tokio::time::Instant::now();
+    for plane in [1, 120, 300, 3600] {
         assert_eq!(
-            session_limit(plane, stream),
-            Duration::from_secs(limit),
-            "plane {plane}, stream {stream}"
+            session_ends(now, plane),
+            Some(now + Duration::from_secs(plane)),
+            "plane {plane}"
         );
     }
 }
 
-/// The limit runs from the request and never reaches past the request's own deadline; a limit
-/// the clock cannot hold does not become no limit.
+/// A plane that states no ceiling is given no borrowed number (not the stream ceiling, not a
+/// default): its session is bounded by the caller's budget and the connection's liveness.
 #[test]
-fn an_upgraded_session_ends_at_its_limit_or_its_requests_deadline_whichever_is_first() {
+fn a_plane_that_states_no_ceiling_is_given_no_borrowed_number() {
     let now = tokio::time::Instant::now();
-    let limit = Duration::from_secs(300);
-    assert_eq!(session_ends(now, None, limit), now + limit);
-    let sooner = now + Duration::from_secs(60);
-    assert_eq!(session_ends(now, Some(sooner), limit), sooner);
-    let later = now + Duration::from_secs(3600);
-    assert_eq!(session_ends(now, Some(later), limit), now + limit);
-    assert_eq!(
-        session_ends(now, None, Duration::MAX),
-        now + Duration::from_secs(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS)
-    );
-    assert_eq!(session_ends(now, Some(sooner), Duration::MAX), sooner);
+    assert_eq!(session_ends(now, 0), None);
+    assert_eq!(session_ends(now, u64::MAX), None);
 }
 
 /// The adopting session serves the upgraded answer as its stream 1, and the delivery entry of an

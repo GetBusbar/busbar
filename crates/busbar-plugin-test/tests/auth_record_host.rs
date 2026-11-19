@@ -121,6 +121,7 @@ fn cx() -> CallCx {
         deadline: Instant::now() + Duration::from_secs(10),
         request_id: 1,
         stack: Default::default(),
+        mono_ns: 0,
     }
 }
 async fn request(port: &dyn AuthPort, command: &str) -> Result<String, PortError> {

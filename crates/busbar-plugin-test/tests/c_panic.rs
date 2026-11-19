@@ -201,6 +201,7 @@ fn cx() -> CallCx {
         deadline: Instant::now() + Duration::from_secs(30),
         request_id: 1,
         stack: CallStack::default(),
+        mono_ns: 0,
     }
 }
 

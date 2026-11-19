@@ -317,6 +317,7 @@ fn safe_parked_fetch_checks_lifecycle_and_rejects_counterfeit_cancellation() {
         request_id: 1,
         deadline: Instant::now() + Duration::from_secs(10),
         stack: Default::default(),
+        mono_ns: 0,
     };
     let host = |url: &str, denied: bool, inspect: fn(FetchNeed<'_>)| {
         let mut needs = FakeNeeds::new();
@@ -466,6 +467,7 @@ fn safe_parked_fetch_wipes_request_and_secret_script_owners() {
                 request_id: 1,
                 deadline: Instant::now() + Duration::from_secs(10),
                 stack: Default::default(),
+                mono_ns: 0,
             },
             &input,
         ),
@@ -509,6 +511,7 @@ fn safe_host_decodes_owned_results_and_preserves_batch_partial_success() {
         request_id: 1,
         deadline: Instant::now() + Duration::from_secs(10),
         stack: Default::default(),
+        mono_ns: 0,
     };
     let answer = h
         .block_on(port.resolve(cx, b"{}"))

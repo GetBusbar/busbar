@@ -55,6 +55,9 @@ pub struct FarPiece {
     /// On the reply's last piece: the answer ended without completing (its connection failed, or
     /// the send's deadline passed, after its head). Pushed with `PIECE_CUT`.
     pub cut: bool,
+    /// On a `cut` piece of a far end whose wire carries messages: the code it closed with, as its
+    /// transport stated it (`PollConns::close_code`); `None` where it stated none.
+    pub close_code: Option<u32>,
     /// On a body piece of a far end that answered a WebSocket handshake with 101: what the piece is of its
     /// message. `None` on every other piece (a byte stream has no messages).
     pub message: Option<FarMessage>,

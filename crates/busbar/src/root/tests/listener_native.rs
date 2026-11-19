@@ -92,6 +92,7 @@ pub(super) async fn ingress_fixture() -> (NativeIngress, busbar_contract::storag
             AdmissionClass::Operator,
             1024 * 1024,
             None,
+            None,
         ),
         source,
     )

@@ -276,6 +276,15 @@ pub trait UpChunks: Send {
         std::future::ready(())
     }
 
+    /// The code the far end closed its side of a message session with, as its transport stated it
+    /// (`PollConns::close_code`), once a read answered `Err`. `None` = it stated none (a dropped
+    /// connection, a deadline, a write that was not taken), or the carrier has no messages (the default).
+    /// The number is the far end's, not judged: the relay writes it to the caller only where
+    /// [`super::port_duplex::caller_close_code`] allows.
+    fn close_code(&self) -> Option<u32> {
+        None
+    }
+
     /// The messages the `upstream` answer wrote for the far end before it answered (UP_MSG beside the
     /// handshake head): the relay writes them first, after the 101.
     fn take_queued(&mut self) -> Vec<(u32, Vec<u8>)> {

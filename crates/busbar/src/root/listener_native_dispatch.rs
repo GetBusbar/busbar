@@ -194,7 +194,6 @@ async fn signed(
         deadline: binding.deadline().ok_or(InputError::Invalid)?,
         request_id: binding.invocation().request_id().get(),
         stack: Default::default(),
-        mono_ns: 0,
     };
     match route.admit(request, cx).await? {
         SignedAnswered::Admitted(owner) => Ok(unbilled(
@@ -415,7 +414,6 @@ pub(super) async fn prepare(
                             let prepared = super::upgrade::prepare(
                                 ready.request,
                                 slot,
-                                native.adopter.clone(),
                                 ready.owner.clone(),
                                 Arc::clone(&node),
                             )

@@ -565,6 +565,7 @@ fn arrival_with(
         deadline,
         request_id: binding.invocation().request_id().get(),
         stack: Default::default(),
+        mono_ns: 0,
     };
     (request, wire.as_bytes().to_vec(), cx, owner)
 }

@@ -359,6 +359,7 @@ fn clocked(clock: &HostClock) -> Clocked {
 struct Dialing {
     secs: u64,
     millis: u128,
+    mono_ns: u64,
     at: std::time::Instant,
 }
 
@@ -367,6 +368,7 @@ fn dialing(clock: &HostClock) -> Dialing {
     Dialing {
         secs: secs_of(at),
         millis: millis_of(at),
+        mono_ns: at.mono_ns,
         at: clock.instant(Deadline::at(at.mono_ns)),
     }
 }
@@ -1669,6 +1671,7 @@ impl EgressFarEnd<'_> {
                     deadline: now.at + Duration::from_millis(self.attempt_cap(now.millis)),
                     request_id: self.route.unit.get(),
                     stack: Default::default(),
+                    mono_ns: now.mono_ns,
                 },
                 &input,
             )
@@ -2386,7 +2389,16 @@ impl EgressFarEnd<'_> {
                 return Some(self.no_answer(token, NoAnswer::of(err), at));
             }
 
-            Err(_) | Ok(Err(_)) => return Some(self.cut(token, at)),
+            Err(_) => return Some(self.cut(token, at)),
+            Ok(Err(_)) => {
+                // A far end whose wire carries messages may have closed with a code of its own: the
+                // connection table states it once the read has failed (`None` on every other wire).
+                let close_code = e.conns.close_code(e.caller, conn);
+                return Some(FarPiece {
+                    close_code,
+                    ..self.cut(token, at)
+                });
+            }
             Ok(Ok(piece)) => piece,
         };
         let buf = &scratch.buf;

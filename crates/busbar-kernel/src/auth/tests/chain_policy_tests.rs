@@ -176,6 +176,7 @@ fn cx() -> CallCx {
         deadline: Instant::now() + Duration::from_secs(10),
         request_id: 1,
         stack: CallStack::default(),
+        mono_ns: 0,
     }
 }
 fn caller() -> Caller<'static> {

@@ -190,6 +190,7 @@ fn a_lent_buffer_holds_no_earlier_answer_and_core_reads_only_what_was_written() 
         deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
         request_id: 1,
         stack: busbar_plugin_abi::host_side::caller::CallStack::default(),
+        mono_ns: 0,
     };
     match verifier.verify(cx, &req, None) {
         Verify::Done(Ok(_)) => {}

@@ -194,6 +194,7 @@ fn cx() -> CallCx {
         deadline: Instant::now() + Duration::from_secs(10),
         request_id: 1,
         stack: Default::default(),
+        mono_ns: 0,
     }
 }
 fn input(scope: Option<&str>) -> UpstreamIn<'_> {

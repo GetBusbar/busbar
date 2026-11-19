@@ -259,7 +259,8 @@ impl NativeDataRoute {
     /// store (`native_keys::as_standing`). A token core itself signed is verified by the chain's
     /// built-in member `keys` (`native_keys::judge`) where the chain names it, and refused by
     /// [`refuse_bound_carriers`] where it does not; it is never accepted unverified. A
-    /// DPoP-bound token is refused: this path verifies no proof. A route with a hook bound is
+    /// DPoP-bound token is admitted only with its proof of possession proven for the request
+    /// (`native_dpop::judge`, in [`Self::prepare`]); unproven it is refused. A route with a hook bound is
     /// admitted exactly where its hooks run ([`Self::hooks_run`]): a route that selects no
     /// resource and verifies every caller by its chain, whether or not it opens a unit, and a
     /// catalog. Any other stays unmounted and says so; serving it unhooked would skip a policy
@@ -946,7 +947,8 @@ pub(crate) fn refuse_bound_carriers(
 
 /// [`refuse_bound_carriers`] without its refusal of a core-signed token: every sender-constrained
 /// presentation (the `DPoP` scheme, a token carrying `cnf.jkt`) is still refused, on every
-/// occurrence of every carrier. The native path verifies no DPoP proof, so none is accepted.
+/// occurrence of every carrier. Only a data route's preparation proves a DPoP proof (`native_dpop`);
+/// a presentation that reaches this check unproven is never accepted.
 pub(crate) fn refuse_sender_bound(
     snapshot: &crate::inbound::request_snapshot::ChargedRequestSnapshot,
     chain: &NativeChain,

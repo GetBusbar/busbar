@@ -381,8 +381,11 @@ impl RegisteredResponse {
             }
         };
         // The request's deadline (`limits.request_timeout`) bounds the WHOLE answer, an upgraded
-        // one included: a WebSocket session is closed (1000) when it passes. Kept strict on
-        // purpose; a session limit of its own is the owner's to add, never an unbounded session.
+        // one included: a WebSocket session is closed (1000) when it passes. The owner decided an
+        // upgraded session is bounded by its plane's ceiling, not by this; it stays until the
+        // request's effect gate (`NativeDataEffectGate`, `Phase::Executing`) follows the same
+        // bound, else a session would be relayed past the time its usage can be stated
+        // (ENGINE-OPEN-3).
         let result = tokio::select! {
             result = run => result,
             _ = binding.cancelled() => Err(InputError::Delivery(ResponseStop::Cancelled)),

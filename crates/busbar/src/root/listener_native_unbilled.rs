@@ -179,6 +179,9 @@ pub(super) async fn serve_signed(
         Arc::clone(route.withheld()),
         Principal::Anonymous,
         Vec::new(),
+        // A signed sender earns no key for a hook to select by: a hook-bound signed route is
+        // never mounted (`NativeSignedRoute::offered`), so no invocation is handed on.
+        None,
     )
     .await
 }

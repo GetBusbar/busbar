@@ -397,7 +397,14 @@ fn route_chains(
             let own = routes.and_then(|routes| routes.get(&route.route));
             // Each route not served is not mounted, with one line saying why; the first reason
             // that applies is the one logged.
-            let unserved = if let Some(None) = own {
+            // A route that admits a ticket alone never runs its chain (core's ticket verifier
+            // judges it), so no instance reading its credential header is not a reason to leave
+            // it unmounted; its admission below still decides.
+            let ticket_alone = {
+                use busbar_kernel::auth::route_record::Who;
+                route.record.who.has(Who::TICKET) && !route.record.who.has(Who::PRINCIPAL)
+            };
+            let unserved = if matches!(own, Some(None)) && !ticket_alone {
                 let header = route.cred_header.as_deref().unwrap_or_default();
                 Some(unserved_line(&seat.instance, route.route, header))
             } else if super::min3_physical::is_signed_route(route) {

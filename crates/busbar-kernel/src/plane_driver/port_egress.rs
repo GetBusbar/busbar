@@ -639,6 +639,8 @@ pub struct Chunks<'a, F: FarEnd> {
     done: bool,
     /// The messages the `upstream` answer wrote beside a WebSocket handshake head: written after the 101.
     queued: Vec<(u32, Vec<u8>)>,
+    /// The code the far end closed with, from the cut piece that ended the read (`FarPiece::close_code`).
+    closed: Option<u32>,
 }
 
 impl<F: FarEnd> UpChunks for Chunks<'_, F> {
@@ -682,6 +684,7 @@ impl<F: FarEnd> UpChunks for Chunks<'_, F> {
             if piece.last {
                 self.done = true;
                 if piece.cut {
+                    self.closed = piece.close_code;
                     return Err(SendFailed);
                 }
             }
@@ -738,6 +741,10 @@ impl<F: FarEnd> UpChunks for Chunks<'_, F> {
 
     fn take_queued(&mut self) -> Vec<(u32, Vec<u8>)> {
         std::mem::take(&mut self.queued)
+    }
+
+    fn close_code(&self) -> Option<u32> {
+        self.closed
     }
 }
 
@@ -799,6 +806,7 @@ async fn read_open<'a, F: FarEnd>(
             pending,
             done: first.last,
             queued: Vec::new(),
+            closed: None,
         },
     })
 }

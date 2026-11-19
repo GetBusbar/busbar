@@ -2427,6 +2427,10 @@ impl KernelServices {
         {
             return Err("record transactions are unsupported");
         }
+        // A request that opens no unit allows no effect: no record transaction runs under it.
+        if unit.is_some_and(|id| self.units.opens_no_unit(id)) {
+            return Err("a request that opens no unit allows no record transaction");
+        }
         let unit = unit
             .map(|id| self.units.get(id).ok_or("record transaction unit ended"))
             .transpose()?;
@@ -2810,7 +2814,12 @@ impl KernelServices {
 
 impl KernelServices {
     fn owner_of_unit(&self, unit: Option<u64>) -> Option<Owner> {
-        let record = self.units.get(unit?)?;
+        let unit = unit?;
+        // A request that opens no unit allows no effect: nothing is written owned by it.
+        if self.units.opens_no_unit(unit) {
+            return None;
+        }
+        let record = self.units.get(unit)?;
         Some(owner_of(record.principal.as_deref().map(|k| k.id.as_str())))
     }
 
@@ -3657,7 +3666,9 @@ impl HostServices for KernelServices {
         record: &[u8],
         later: Later,
     ) -> Ran {
-        let Some(unit) = unit else {
+        // A request that opens no unit allows no effect: no ticket is minted under it here (a
+        // plane's native mint goes through its ticket desk, `auth::native_ticket`).
+        let Some(unit) = unit.filter(|unit| !self.units.opens_no_unit(*unit)) else {
             return Ran::Now(Stored::refused(TICKET_NO_PRINCIPAL));
         };
         let Some(key) = self.units.get(unit).and_then(|r| r.principal.clone()) else {

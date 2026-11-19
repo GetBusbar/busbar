@@ -127,7 +127,9 @@
 //! - Signal ids ([`signal`]) are numbered in the OLD `Signal` enum's declared order
 //!   (`busbar-contract/src/signal.rs`): `RequestedModel, RequestTotalChars, RequestMessageCount,
 //!   RequestToolCount, RequestSystemChars, CandidateBreakerState, CandidateErrorRate,
-//!   CandidateLatencyP95Ms, RoutingPolicy, ResponseTokensOut`.
+//!   CandidateLatencyP95Ms, RoutingPolicy, ResponseTokensOut`. `CandidateErrorRate` and
+//!   `ResponseTokensOut` are RETIRED: their ids stay (the catalog is append-only, an old config
+//!   parses) and the kernel drops them at config load with a warning (`signal::configured`).
 //! - `configure`/`status`/`describe`'s `in` beyond the shared [`InHead`] is only what B.4 states
 //!   (configure: a version + settings; status/describe: nothing extra) — no other 1.5.5 status
 //!   JSON field is renamed or reshaped here; it crosses unchanged as a [`Blob`] payload.

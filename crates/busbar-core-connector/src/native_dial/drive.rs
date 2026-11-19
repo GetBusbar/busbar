@@ -51,10 +51,9 @@ use busbar_plugin_abi::transport as wire;
 use busbar_plugin_abi::vocab::head1::SealedPairRec;
 
 use super::{sleep_for, stage, NativeConnection, NativeFailure, NativeHead, Phase};
-use crate::framed_stream::session::Act;
 use crate::outbound::connect::{Lane, Step as RaceStep};
 use crate::outbound::delivery::Reason;
-use crate::outbound::records::{Out, StreamReset, WireEnd, WirePart};
+use crate::outbound::records::Out;
 use crate::outbound::redial::Ended;
 use crate::outbound::seal::{Place, Slots};
 use crate::outbound::tunnel::{ProxyFailure, Step, CAUSE_PROXY};
@@ -162,64 +161,6 @@ pub(crate) fn ended_of(failure: &NativeFailure, far_end: Option<Ended>, began: b
         stage::CONNECT | stage::SECURITY | stage::DEADLINE if !began => Ended::Dial,
         _ => far_end.unwrap_or(Ended::Connection),
     }
-}
-
-/// One item of the session's answer as the outbound driver reads it, and where its bytes are.
-/// Inbound heads, trailers, timers and flow records are not the driver's: the dial's own arms
-/// keep them.
-fn out_of(act: &Act) -> Option<(Out, Option<crate::framed_stream::session::Span>)> {
-    Some(match act {
-        Act::Session(session) => (Out::Session(*session), None),
-        Act::Opened(stream) => (Out::Opened(*stream), None),
-        Act::Busy => (Out::Busy, None),
-        Act::NoNewStreams => (Out::NoNewStreams, None),
-        Act::WirePart {
-            stream,
-            class,
-            bytes,
-        } => (
-            Out::Part {
-                part: WirePart {
-                    stream: *stream,
-                    class: *class,
-                    _r: 0,
-                },
-                len: bytes.len() as u32,
-            },
-            Some(*bytes),
-        ),
-        Act::WireSealed(sealed) => (Out::Sealed(*sealed), None),
-        Act::WireEnd { stream, how, arg } => (
-            Out::End(WireEnd {
-                stream: *stream,
-                how: *how,
-                arg: *arg,
-            }),
-            None,
-        ),
-        Act::Body { stream, bytes, .. } => (
-            Out::Body {
-                stream: *stream,
-                len: bytes.len() as u32,
-            },
-            None,
-        ),
-        Act::End(stream) => (Out::Ended(*stream), None),
-        Act::Reset {
-            stream,
-            code,
-            flags,
-        } => (
-            Out::Reset(StreamReset {
-                stream: *stream,
-                code: *code,
-                flags: *flags,
-            }),
-            None,
-        ),
-        Act::Close { .. } => (Out::Close, None),
-        _ => return None,
-    })
 }
 
 impl NativeConnection {
@@ -407,7 +348,7 @@ impl NativeConnection {
         let mut spans: smallvec::SmallVec<[Option<crate::framed_stream::session::Span>; 16]> =
             smallvec::SmallVec::new();
         for act in acts.iter() {
-            if let Some((item, span)) = out_of(act) {
+            if let Some((item, span)) = act.driven() {
                 items.push(item);
                 spans.push(span);
             }

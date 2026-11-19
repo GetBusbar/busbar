@@ -358,6 +358,13 @@ impl Wire {
         self.ledger.accepted(flushed);
     }
 
+    /// The connection's carrier last reported `total` bytes taken and no flush succeeded after it
+    /// (the connection is being retired): it tells `part` from `none`, and makes nothing `whole`
+    /// ([`super::delivery::Ledger::reached`]).
+    pub(crate) fn reached(&mut self, total: u64) {
+        self.ledger.reached(total);
+    }
+
     /// The shutdown an `END_SHUTDOWN` asked for succeeded.
     pub(crate) fn shut_down(&mut self) {
         self.ledger.shut_down();

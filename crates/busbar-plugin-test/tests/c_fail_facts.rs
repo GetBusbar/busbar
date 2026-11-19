@@ -394,6 +394,7 @@ fn export_adapter_maps_the_facts() {
             deadline: Instant::now() + Duration::from_secs(30),
             request_id: 1,
             stack: CallStack::default(),
+            mono_ns: 0,
         };
         let got = h
             .block_on(port.deliver(cx, STREAM_LOGS, 1, 1, &lines))

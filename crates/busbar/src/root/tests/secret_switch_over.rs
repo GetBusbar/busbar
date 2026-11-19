@@ -257,6 +257,7 @@ async fn an_immutable_prefix_keeps_cycle_refusal_and_releases_its_ports_on_drop(
         deadline: deadline(),
         request_id: 0,
         stack: CallStack::default().push(31).unwrap(),
+        mono_ns: 0,
     };
     let custody = super::BootCustody(Arc::clone(&after));
     assert!(matches!(

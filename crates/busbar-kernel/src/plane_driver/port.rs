@@ -633,12 +633,14 @@ impl PortDriver {
     /// answers nothing; a plane that fails here has its fault handled by the port, and the carrier is gone anyway.
     pub async fn carrier_ended(&self, carrier: NonZeroU64) {
         let arg = carrier_end_arg(carrier.get());
+        // The node's monotonic clock service, read once for this carrier's end: the deadline is
+        // set from it and the plane is handed it.
+        let mono_ns = crate::store::monotonic_ns();
         let cx = CallCx {
-            // The node's monotonic clock service, read once for this carrier's end.
-            deadline: busbar_contract::mono_instant::instant_at(crate::store::monotonic_ns())
-                + CARRIER_END_GRACE,
+            deadline: busbar_contract::mono_instant::instant_at(mono_ns) + CARRIER_END_GRACE,
             request_id: 0,
             stack: Default::default(),
+            mono_ns,
         };
         if let Err(error) = self.port.admin(cx, ADMIN_CARRIER_END, arg.as_bytes()).await {
             tracing::warn!(?error, carrier = carrier.get(), "plane carrier end failed");

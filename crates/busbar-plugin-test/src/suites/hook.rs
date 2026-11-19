@@ -470,6 +470,7 @@ fn cx() -> CallCx {
         deadline: std::time::Instant::now() + std::time::Duration::from_secs(10),
         request_id: 1,
         stack: CallStack::default(),
+        mono_ns: 0,
     }
 }
 

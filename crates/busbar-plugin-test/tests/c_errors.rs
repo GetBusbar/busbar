@@ -58,6 +58,7 @@ fn the_file_matches_describe_and_every_number_the_suite_saw() {
         deadline: Instant::now() + Duration::from_secs(10),
         request_id: id,
         stack: CallStack::default(),
+        mono_ns: 0,
     };
 
     let admitted = admit_header(fx::probe::PLUGIN.plugin()).unwrap_or_else(|r| panic!("{r:?}"));

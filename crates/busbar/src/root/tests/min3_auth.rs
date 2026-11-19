@@ -200,6 +200,7 @@ async fn retained_native_chain_snapshots_request_and_rejects_before_replay() {
         deadline: std::time::Instant::now() + Duration::from_secs(30),
         request_id: 1,
         stack: Default::default(),
+        mono_ns: 0,
     };
     let future = {
         let body = b"body".to_vec();
@@ -259,6 +260,7 @@ async fn prepared_native_chain_retains_original_request_without_spending_replay(
         deadline: std::time::Instant::now() + Duration::from_secs(30),
         request_id: 9,
         stack: Default::default(),
+        mono_ns: 0,
     };
     let busbar_kernel::auth::native_admin::PreparedAnswer::Identity(prepared) =
         chain.prepare(cx, request).await.unwrap()
@@ -950,6 +952,7 @@ async fn shared_kernel_chain_preserves_admin_preparation_and_single_claim() {
         deadline: std::time::Instant::now() + Duration::from_secs(30),
         request_id: 11,
         stack: Default::default(),
+        mono_ns: 0,
     };
     let PreparedAnswer::Identity(prepared) = chain.prepare(cx, request).await.unwrap() else {
         panic!("prepared identity")

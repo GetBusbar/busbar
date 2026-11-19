@@ -45,7 +45,6 @@ mod unrouted;
 #[path = "listener_native_upgrade.rs"]
 mod upgrade;
 pub(crate) use delivery::RegisteredDelivery;
-pub(crate) use handover::{Adopted, HandOver, UpgradeAdopter};
 pub(crate) use serving::{serve_admitted, NativeCarrierRetired};
 
 pub(crate) type SelectNativeSlot = Arc<
@@ -60,6 +59,11 @@ pub(crate) type SelectNativeSlot = Arc<
 /// as before.
 pub(crate) type HeadScreen =
     Arc<dyn Fn(&busbar_kernel::inbound::native::RequestBinding) -> bool + Send + Sync>;
+
+/// The most body bytes a request on this route may bring, where its route states a bound of its
+/// own (a signed route: `NativeSignedRoute::bound`). `None`: the listener's cap alone.
+pub(crate) type BodyBound =
+    Arc<dyn Fn(&busbar_kernel::inbound::native::RequestBinding) -> Option<usize> + Send + Sync>;
 
 pub(crate) struct NativeLimits {
     pub(crate) max_connections: usize,
@@ -81,9 +85,6 @@ pub(crate) struct NativeListener {
     limits: NativeLimits,
     select: SelectNativeSlot,
     admin: Option<axum::Router>,
-    /// The carrier side of an upgrade's hand-over (`listener_native_handover.rs`). `None`: no
-    /// websocket transport is linked, and an admitted upgrade request is answered 501.
-    adopter: Option<Arc<dyn UpgradeAdopter>>,
 }
 
 pub(crate) struct OpenedConnection {
@@ -142,7 +143,6 @@ impl NativeListener {
             limits,
             select,
             admin,
-            adopter: None,
         })
     }
 
@@ -166,11 +166,16 @@ impl NativeListener {
         })
     }
 
-    /// Link the carrier side of an upgrade's hand-over. Called once, at assembly, by the listener
-    /// plan when the candidate's websocket transport is admitted on this slot.
-    pub(crate) fn with_adopter(mut self, adopter: Arc<dyn UpgradeAdopter>) -> Self {
-        self.adopter = Some(adopter);
-        self
+    /// The body bound every connection of this listener holds a signed route's request to: the
+    /// route's own (its verifier's), so a longer body is refused unread at that bound and never
+    /// buffered up to the listener's cap first.
+    fn body_bound(&self) -> BodyBound {
+        let (select, slot) = (self.select.clone(), self.slot.clone());
+        Arc::new(move |binding| {
+            let slot = select(binding.app(), &slot)?;
+            let route = slot.signed_for(binding).ok()?;
+            Some(usize::try_from(route.bound()).unwrap_or(usize::MAX))
+        })
     }
 
     /// Observe the actual unbuffered socket before security wrapping and preserve its trusted
@@ -242,6 +247,7 @@ impl NativeListener {
             self.class,
             self.limits.body_bytes,
             Some(self.head_screen()),
+            Some(self.body_bound()),
         );
         // Empty: its arrays and its wake cell are made with the first response (allocation ruling).
         let delivery = DeliveryLedger::default();
@@ -433,6 +439,8 @@ pub(crate) struct NativeIngress {
     body_limit: usize,
     /// Whether a head can be verified at all ([`HeadScreen`]). `None`: every head is taken whole.
     screen: Option<HeadScreen>,
+    /// A route's own body bound under the listener's cap ([`BodyBound`]). `None`: the cap alone.
+    bound: Option<BodyBound>,
 }
 
 impl NativeIngress {
@@ -442,6 +450,7 @@ impl NativeIngress {
         class: AdmissionClass,
         body_limit: usize,
         screen: Option<HeadScreen>,
+        bound: Option<BodyBound>,
     ) -> Self {
         Self {
             connection,
@@ -451,7 +460,26 @@ impl NativeIngress {
             last_head: 0,
             body_limit,
             screen,
+            bound,
         }
+    }
+
+    /// The body limit of `binding`'s request: the listener's cap, or its route's own bound where
+    /// that is lower.
+    /// Takes the two fields it reads, not `&self`, so it can be called while a slot is borrowed.
+    fn body_limit_of(
+        body_limit: usize,
+        bound: Option<&BodyBound>,
+        binding: &busbar_kernel::inbound::native::RequestBinding,
+    ) -> usize {
+        let limit = binding
+            .app()
+            .limits
+            .as_ref()
+            .map_or(body_limit, |limits| limits.request_body_max_bytes);
+        bound
+            .and_then(|bound| bound(binding))
+            .map_or(limit, |route| route.min(limit))
     }
 
     pub(crate) fn accept(
@@ -509,11 +537,7 @@ impl NativeIngress {
                 // receives the one 401 and a verified one 413; none of the body is buffered.
                 let declared_over = !shed && !end_stream && {
                     let binding = pending.binding();
-                    let limit = binding
-                        .app()
-                        .limits
-                        .as_ref()
-                        .map_or(self.body_limit, |limits| limits.request_body_max_bytes);
+                    let limit = Self::body_limit_of(self.body_limit, self.bound.as_ref(), binding);
                     binding.head().fields.iter().any(|(name, value)| {
                         name.eq_ignore_ascii_case("content-length")
                             && std::str::from_utf8(value)
@@ -571,12 +595,8 @@ impl NativeIngress {
                 }
                 let pending = slot.pending.as_ref().ok_or(InputError::Invalid)?;
                 pending.binding().check_live()?;
-                let limit = pending
-                    .binding()
-                    .app()
-                    .limits
-                    .as_ref()
-                    .map_or(self.body_limit, |limits| limits.request_body_max_bytes);
+                let limit =
+                    Self::body_limit_of(self.body_limit, self.bound.as_ref(), pending.binding());
                 // A request its own input already refused takes no more of its body into memory.
                 if slot.refused.is_some() {
                     return Ok(None);

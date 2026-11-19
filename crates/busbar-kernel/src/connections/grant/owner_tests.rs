@@ -60,6 +60,7 @@ fn cx() -> CallCx {
         deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
         request_id: 7,
         stack: Default::default(),
+        mono_ns: 0,
     }
 }
 fn request() -> UpstreamIn<'static> {

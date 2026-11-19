@@ -243,6 +243,7 @@ fn a_raw_log_over_9999_renders_no_code_and_warns_once() {
         deadline: Instant::now() + Duration::from_secs(10),
         request_id: 1,
         stack: CallStack::default(),
+        mono_ns: 0,
     };
     assert!(h
         .block_on(port.resolve(cx, br#"{"name":"raw-log"}"#))

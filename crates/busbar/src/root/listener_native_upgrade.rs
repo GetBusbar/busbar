@@ -35,11 +35,10 @@ use std::time::Duration;
 
 use busbar_kernel::auth::admission_table::Refusal;
 use busbar_kernel::auth::native_upgrade::UpgradeRefused;
-use busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS;
 use busbar_kernel::inbound::native::{CompletingPhysicalRequest, RouteTarget, StreamOwner};
 
 use super::data::{DataAuthority, DataPrepareError, DataResponse};
-use super::handover::{UpgradeAdopter, ADOPTED_STREAM};
+use super::handover::ADOPTED_STREAM;
 use super::{answer, InputError};
 use crate::root::min3_boot::transports::ServedTransport;
 use crate::root::min3_physical::NativeSlot;
@@ -89,54 +88,44 @@ pub(super) fn judge(asks: bool, websocket: Option<&ServedTransport>, stream: u64
     }
 }
 
-/// The session ceiling the route's plane states to core, in seconds; `0` = it states none. On this
-/// line no plane states one where the listener can read it (the seat's egress is built with no
-/// stated ceiling, `plane_seats.rs`), so the plane's side of [`session_limit`] is the request's
-/// own deadline alone ([`session_ends`]).
+/// The session ceiling the route's plane states to core, in seconds; `0` = it states none.
+///
+/// OWNER DECISION: an upgraded session's time limit is its PLANE's stated ceiling ("planes
+/// control their timeout as they know the data they deal with"), set in the plane plugin from
+/// its protocol's specification (and optionally overridden by the plane's own setting). The
+/// engine borrows no number for it: not `limits.upstream_request_timeout_secs`, not a default.
+/// The plane ABI does not yet carry a stated ceiling to core (ENGINE-OPEN-3: a describe tag, the
+/// loader's decode, the seat's field), so on this line every plane states none.
 const PLANE_CEILING_SECS: u64 = 0;
 
-/// HOW LONG AN UPGRADED SESSION MAY RUN: the stricter of the plane's session ceiling and the
-/// stream ceiling (the deployment's `limits.upstream_request_timeout_secs`, which bounds every
-/// whole request, streams included), each in seconds with `0` = not stated. With neither stated
-/// the deployment's default stream ceiling stands: an upgraded session is never unbounded.
-pub(super) fn session_limit(plane_secs: u64, stream_secs: u64) -> Duration {
-    let stricter = [plane_secs, stream_secs]
-        .into_iter()
-        .filter(|secs| *secs != 0)
-        .min()
-        .unwrap_or(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS);
-    Duration::from_secs(stricter)
-}
-
-/// WHEN AN UPGRADED SESSION ENDS AT THE LATEST: `limit` after its request was taken up (`now`),
-/// and never after the request's own deadline. The limit runs from the request, not from the
+/// WHEN AN UPGRADED SESSION ENDS AT THE LATEST: the plane's stated ceiling (`plane_secs`, `0` =
+/// none) after its request was taken up (`now`). The limit runs from the request, not from the
 /// 101: the dial and the far end's handshake are part of what it bounds.
+///
+/// `None`: the plane states no ceiling (or one the clock cannot hold). No borrowed number takes
+/// its place: the session is bounded by the caller's budget and the connection's own liveness.
 pub(super) fn session_ends(
     now: tokio::time::Instant,
-    request_deadline: Option<tokio::time::Instant>,
-    limit: Duration,
-) -> tokio::time::Instant {
-    // A limit past the clock's range bounds nothing: the default stands in its place.
-    let by_limit = now
-        .checked_add(limit)
-        .unwrap_or_else(|| now + Duration::from_secs(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS));
-    request_deadline.map_or(by_limit, |deadline| deadline.min(by_limit))
+    plane_secs: u64,
+) -> Option<tokio::time::Instant> {
+    if plane_secs == 0 {
+        return None;
+    }
+    now.checked_add(Duration::from_secs(plane_secs))
 }
 
 /// Serves one upgrade request. The answer and its authority are the data path's own: a refusal
 /// under the refusal's custody, or the executing request with its settlement (the unit's one
 /// terminal, driven when the answer's delivery ends).
 ///
-/// `adopter` is not consulted: the carrier of a hand-over is the listener's own admitted websocket
-/// transport ([`NativeSlot::websocket`]), and the adopt step is the connection supervisor's.
+/// The carrier of a hand-over is the listener's own admitted websocket transport
+/// ([`NativeSlot::websocket`]), and the adopt step is the connection supervisor's.
 pub(super) async fn prepare(
     request: CompletingPhysicalRequest,
     slot: Arc<NativeSlot>,
-    adopter: Option<Arc<dyn UpgradeAdopter>>,
     stream: Arc<StreamOwner>,
     node: Arc<Node>,
 ) -> Result<DataResponse, DataPrepareError> {
-    drop(adopter);
     let binding = request.binding().clone();
     if slot.data_for(&binding).is_err() {
         // No data admission is bound for this route: it cannot be given a unit, so it is not
@@ -145,20 +134,11 @@ pub(super) async fn prepare(
             .await
             .map_err(DataPrepareError::Input);
     }
-    // The session's limit is stated before anything of the request is prepared: the caller's
-    // side is made with it, so no upgraded session exists without one.
-    let stream_secs = busbar_kernel::config::limits::installed()
-        .map_or(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS, |limits| {
-            limits.upstream_request_timeout_secs
-        });
-    super::handover::bound(
-        &stream,
-        session_ends(
-            tokio::time::Instant::now(),
-            binding.deadline().map(tokio::time::Instant::from_std),
-            session_limit(PLANE_CEILING_SECS, stream_secs),
-        ),
-    );
+    // The session's limit, where its plane states one, is stated before anything of the request
+    // is prepared: the caller's side is made with it.
+    if let Some(until) = session_ends(tokio::time::Instant::now(), PLANE_CEILING_SECS) {
+        super::handover::bound(&stream, until);
+    }
     let websocket = slot.websocket().cloned();
     super::data::prepare_for(
         request,
