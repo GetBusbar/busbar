@@ -1362,7 +1362,7 @@ struct PendingJudge {
     pended: std::sync::Mutex<Vec<(String, Judged)>>,
 }
 
-impl Pending {
+impl PendingJudge {
     /// Answer the pended judgement of `dest`.
     fn answer(&self, dest: &str, verdict: Result<SocketAddr, Verdict>) {
         let done = {
@@ -1382,7 +1382,7 @@ impl Pending {
 }
 
 /// A connector judging through `judge`, carrying `http` on a port no session is begun on.
-fn judged_by(judge: &Arc<Pending>) -> Connector {
+fn judged_by(judge: &Arc<PendingJudge>) -> Connector {
     let judge = Arc::clone(judge);
     Connector::serving(
         Arc::new(
@@ -1769,7 +1769,7 @@ async fn pool_key_collision_never_lends() {
 }
 
 /// A pooling connector carrying `http`, with the need declared.
-fn pooling_with(judge: &Arc<Pending>) -> Connector {
+fn pooling_with(judge: &Arc<PendingJudge>) -> Connector {
     let connector = judged_by(judge).pooling(POSTURE);
     connector
         .carry_natively(vec![carrier(CARRIER_HTTP)], storage())
@@ -1782,7 +1782,7 @@ fn pooling_with(judge: &Arc<Pending>) -> Connector {
 async fn a_judged_address_set_pins_the_dial() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    let judge = Arc::new(Pending::default());
+    let judge = Arc::new(PendingJudge::default());
     let connector = pooling_with(&judge);
     let within = [addr.ip()];
     let literal = format!("http://{addr}/v1");
@@ -1842,7 +1842,7 @@ async fn a_judged_address_set_pins_the_dial() {
 async fn a_rebound_name_is_refused_before_its_bytes_leave() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    let judge = Arc::new(Pending::default());
+    let judge = Arc::new(PendingJudge::default());
     let connector = pooling_with(&judge);
     // The set the open was judged against; the name later answers an address outside it.
     let within = [std::net::IpAddr::from([127, 0, 0, 2])];
@@ -1990,7 +1990,7 @@ async fn program_constraint_fields_never_reach_a_network_open() {
 async fn a_target_the_guard_refuses_never_reaches_the_proxy() {
     let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
     let proxy_port = proxy.local_addr().unwrap().port();
-    let judge = Arc::new(Pending::default());
+    let judge = Arc::new(PendingJudge::default());
     let connector = judged_by(&judge).proxying(Some(crate::proxy::test_config(
         "127.0.0.1",
         proxy_port,

@@ -711,14 +711,11 @@ crate::kind! {
             /// ROUTE_ADMIN paths when any route has ROUTE_ADMIN; forbidden otherwise (DescribeInvalid). Today's
             /// ADMIN_OPENAPI text, unchanged.
             D_ADMIN_OPENAPI = 0x0184;
-            /// Round 23, describe: the request header in which a route's sender presents its credential or its
-            /// signature (RouteHeaderRec + TEXT header name, lowercase, ≤ 128 bytes of `[a-z0-9-]`; at most one per
-            /// D_ROUTE id; the id must be a declared D_ROUTE whose auth mask holds AUTH_PRINCIPAL, or is exactly
-            /// AUTH_OPTIONAL, or is exactly AUTH_SIGNED_INGRESS (`cred_header_admitted`); else DescribeInvalid).
-            /// A protocol fact in core vocabulary, like DA_KEY_HEADER (I2): plane-streaming's
-            /// `/twilio/{call_id}` states `x-twilio-signature`, because Twilio Media Streams sign there; a
-            /// signed-ingress-only webhook route states the header its sender signs in (Standard Webhooks:
-            /// `webhook-signature`), and core binds that route's verifier by it. It names no
+            /// Round 23, describe: the request header in which a route's protocol presents its sender's credential
+            /// (RouteHeaderRec + TEXT header name, lowercase, ≤ 128 bytes of `[a-z0-9-]`; at most one per D_ROUTE id;
+            /// the id must be a declared D_ROUTE whose auth mask holds AUTH_PRINCIPAL or AUTH_OPTIONAL; else
+            /// DescribeInvalid). A protocol fact in core vocabulary, like DA_KEY_HEADER (I2): plane-streaming's
+            /// `/twilio/{call_id}` states `x-twilio-signature`, because Twilio Media Streams sign there. It names no
             /// auth plugin, style or instance; core alone picks which configured auth instances run (§12.11
             /// "Route credential header").
             D_ROUTE_CRED_HEADER = 0x018E;
@@ -1179,12 +1176,6 @@ crate::kind! {
                 ROUTE_LINE, ROUTE_RECOVERY, ROUTE_UPGRADE, RouteAdmissionRec, RouteFault, RouteRec,
                 SCOPE_NONE, SCOPE_SELECTED, SCOPE_WALK,
             };
-            /// Whether a route whose auth mask is `auth` may state a D_ROUTE_CRED_HEADER: the mask holds
-            /// AUTH_PRINCIPAL, or is exactly AUTH_OPTIONAL, or exactly AUTH_SIGNED_INGRESS. The one rule the
-            /// loader (describe) and the kernel (route record) both apply.
-            pub const fn cred_header_admitted(auth: u32) -> bool {
-                auth & AUTH_PRINCIPAL != 0 || auth == AUTH_OPTIONAL || auth == AUTH_SIGNED_INGRESS
-            }
             /// The host side of the plane kind: a typed face over busbar-ffi's `Instance` (IF §10.4).
             /// `live` points into the plugin image and is valid because `inst` holds the image (I13).
             #[cfg(feature = "host")]
