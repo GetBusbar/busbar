@@ -18,7 +18,59 @@ use busbar_contract::storage::StorageSource;
 
 use super::{Exchange, State};
 
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+
 use crate::outbound::ws::{Kind, Message, Refusal, Upstream};
+
+/// WHAT THE READS OF A WEBSOCKET ENTRY STATED, for the connection table's reader
+/// (`PollConns::message_text`, `PollConns::close_code`): the kind of the message the body piece last read
+/// belongs to, and the code the far end closed with. Kept in the entry beside its exchange (which is out
+/// of the entry while any call has it, a write included), so the reader's question never waits and never
+/// reads as "not stated" because a write is in flight. One reader writes it (the read of the entry); the
+/// same reader asks.
+#[derive(Default)]
+pub(crate) struct Said {
+    /// 0 = no kind stated; 1 = text; 2 = binary.
+    text: AtomicU8,
+    /// 0 = no code; else the code plus one (every `u32` code is a code, 0 included).
+    code: AtomicU64,
+}
+
+impl Said {
+    /// A body piece was read: `text` is the kind the stream stated for it (`None` = it stated none).
+    pub(crate) fn read_piece(&self, text: Option<bool>) {
+        let kind = match text {
+            None => 0,
+            Some(true) => 1,
+            Some(false) => 2,
+        };
+        self.text.store(kind, Ordering::Release);
+    }
+
+    /// The kind of the message the body piece last read belongs to.
+    pub(crate) fn text(&self) -> Option<bool> {
+        match self.text.load(Ordering::Acquire) {
+            1 => Some(true),
+            2 => Some(false),
+            _ => None,
+        }
+    }
+
+    /// A read failed; `code` is what the far end reset the stream with, where it stated a code. A failure
+    /// that states none leaves an earlier code as it is.
+    pub(crate) fn closed(&self, code: Option<u32>) {
+        if let Some(code) = code {
+            self.code.store(u64::from(code) + 1, Ordering::Release);
+        }
+    }
+
+    /// The code the far end closed with.
+    pub(crate) fn close_code(&self) -> Option<u32> {
+        let kept = self.code.load(Ordering::Acquire);
+        kept.checked_sub(1)
+            .and_then(|code| u32::try_from(code).ok())
+    }
+}
 
 impl Exchange {
     /// CALLED by `Exchange::write` in place of its refusal of a non-empty write, when `self.ws`
@@ -139,9 +191,17 @@ mod tests {
         let said = Said::default();
         assert_eq!(said.close_code(), None, "the far end has not closed");
         said.closed(None);
-        assert_eq!(said.close_code(), None, "a failure with no code states none");
+        assert_eq!(
+            said.close_code(),
+            None,
+            "a failure with no code states none"
+        );
         said.closed(Some(0));
-        assert_eq!(said.close_code(), Some(0), "code 0 is a code, not its absence");
+        assert_eq!(
+            said.close_code(),
+            Some(0),
+            "code 0 is a code, not its absence"
+        );
         let said = Said::default();
         said.closed(Some(1001));
         assert_eq!(said.close_code(), Some(1001));

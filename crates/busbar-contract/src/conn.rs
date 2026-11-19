@@ -1207,12 +1207,32 @@ pub trait PollConns: Conns {
 
     /// On a connection whose wire carries messages (a WebSocket upstream after its 101): the kind of the
     /// message the body piece last read from `conn` belongs to: `Some(true)` text, `Some(false)` binary.
-    /// `None` = the wire has no messages, or this table does not keep the kind: the reader then hands the
-    /// piece on as bytes, never as text it did not see stated.
+    /// It is the transport's own statement (`MSG_TEXT`, `MSG_BINARY` on the piece), kept from the read
+    /// that handed the piece up to the next read of `conn`; every piece of a message in fragments answers
+    /// the message's kind. `None` = the wire has no messages, no body piece was read yet, the transport
+    /// stated no kind, or this table does not keep the kind: the reader then hands the piece on as bytes,
+    /// never as text it did not see stated.
     ///
-    /// A forwarding wrapper (the root's `BoundConns`) must forward it; the `Connector` answers from the
-    /// exchange's own read state. The body is here for the tables that carry no message wire.
+    /// ONE READER: the answer is of the last read, so it is asked by the task that made that read, before
+    /// its next one. It takes no lock a write on `conn` holds.
+    ///
+    /// The `Connector` answers from its entry's own read state; any wrapper that forwards
+    /// [`PollConns::failure_cause`] forwards this the same way. The body is here for the tables that carry
+    /// no message wire (and the fakes built against this trait).
     fn message_text(&self, _caller: InstanceId, _conn: ConnId) -> Option<bool> {
+        None
+    }
+
+    /// On a connection whose wire carries messages: the code the far end's side of `conn` ended with when
+    /// it did not end in order, exactly as the transport stated it (a WebSocket transport's `STREAM_RESET`
+    /// code: a close code, RFC 6455 section 7.4). Asked after a read of `conn` answered an error. `None` =
+    /// the far end ended in order or has not ended, the failure carried no code (the connection dropped,
+    /// a deadline), the wire has no messages, or this table does not keep it.
+    ///
+    /// THE NUMBER IS THE FAR END'S AND IS NOT JUDGED HERE: it may be a code no endpoint is allowed to send
+    /// (1005, 1006, 1015, anything outside 1000..=4999). Whoever writes a close from it decides what may
+    /// be written; the relay's rule is `port_duplex::caller_close_code`.
+    fn close_code(&self, _caller: InstanceId, _conn: ConnId) -> Option<u32> {
         None
     }
 

@@ -308,6 +308,22 @@ impl Riding<'_> {
         }
     }
 
+    /// `NativeConnection::message_text`.
+    pub(super) fn message_text(&self, stream: u64) -> Option<bool> {
+        match self {
+            Self::Alone(conn) => conn.message_text(stream),
+            Self::Shared(shared) => shared.with(|conn| conn.message_text(stream)),
+        }
+    }
+
+    /// `NativeConnection::close_code`.
+    pub(super) fn close_code(&self, stream: u64) -> Option<u32> {
+        match self {
+            Self::Alone(conn) => conn.close_code(stream),
+            Self::Shared(shared) => shared.with(|conn| conn.close_code(stream)),
+        }
+    }
+
     /// The exchange's answer was read to its end: its stream is forgotten. Shared, the connection
     /// stays for the others and one waiting reader takes over the driving.
     pub(super) fn finish(&mut self, stream: u64) {

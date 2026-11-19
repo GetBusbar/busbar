@@ -21,6 +21,13 @@
 //!   `piece(FROM_CORE, 0, P_CLIENT_GONE)`, the far end's close is `piece(FROM_UPSTREAM, 0, P_END)` and a
 //!   far end that failed is `piece(FROM_UPSTREAM, 0, P_ERROR)` with one REFUSAL (502).
 //!
+//! KIND AND CLOSE CODE. A far end's message is handed to the plane as the kind the far end's transport
+//! stated for it, every fragment included (`UpMessage::flags`, from the connection table's
+//! `PollConns::message_text`); only a piece no kind was stated for is handed on as bytes. A far end that
+//! ended with a close code of its own has that code written to the caller where RFC 6455 section 7.4 lets
+//! an endpoint send it ([`caller_close_code`], [`Ending::UpstreamClosed`]); every other code, and a failure
+//! with none, is the failure's close ([`Ending::UpstreamFailed`]).
+//!
 //! MONEY. The unit was opened and its money admitted before the plane's FORWARD was walked (the pending
 //! admission of the request, exactly as for a data request), so nothing here admits anything. Every answer's
 //! USAGE is the session's running total ([`Task::usage`]); it is shown to the effects after every answer
@@ -71,8 +78,36 @@ pub enum ClientEvent {
 /// to the close it writes (a close code on a WebSocket).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ending {
-    /// The far end failed (its connection, its deadline) after the 101.
+    /// The far end failed (its connection, its deadline) after the 101, or closed with a code no endpoint
+    /// may send ([`caller_close_code`]): the caller's close is the failure's (1011 on a WebSocket).
     UpstreamFailed,
+    /// The far end closed with this code, and the protocol lets an endpoint send it
+    /// ([`caller_close_code`] answered it): the caller's close carries the far end's own code.
+    UpstreamClosed(u16),
+}
+
+/// The close code the caller is written when the far end closed with `upstream` (the transport's own
+/// number for the far end's close, [`UpChunks::close_code`]); `None` = that code is not written to anyone,
+/// and the caller's close is the failure's ([`Ending::UpstreamFailed`]).
+///
+/// RFC 6455 section 7.4: a close frame may carry 1000..=1003 and 1007..=1011 (section 7.4.1), the two codes
+/// registered since for an endpoint to send (1012 service restart, 1013 try again later), a registered code
+/// 3000..=3999 or a private one 4000..=4999 (section 7.4.2). Never written: 1005 (no code was present),
+/// 1006 (no close frame came) and 1015 (the TLS handshake failed), which section 7.4.1 says an endpoint
+/// MUST NOT set in a close frame; 1004 (reserved); 1014 and 1016..=2999 (the protocol's own range, with no
+/// meaning an endpoint may state); anything under 1000 or over 4999, which is no close code (the engine's
+/// own stall cut among them).
+#[must_use]
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "the arm's ranges end at 4999"
+)]
+pub const fn caller_close_code(upstream: u32) -> Option<u16> {
+    match upstream {
+        // The range is the proof the number fits.
+        1000..=1003 | 1007..=1013 | 3000..=4999 => Some(upstream as u16),
+        _ => None,
+    }
 }
 
 /// The caller's side of an upgraded session, as the relay reads it. The listener's hand-over implements it
@@ -400,8 +435,15 @@ pub(super) async fn relay<K: Calls + ?Sized, R: UpChunks>(
                         continue;
                     }
                     relay.up_failed = true;
-                    // The caller's close says so: this is not the plane's orderly end.
-                    client.ending(Ending::UpstreamFailed);
+                    // The caller's close says so: this is not the plane's orderly end. Where the far end
+                    // closed with a code an endpoint may send, the caller's close carries that code; any
+                    // other code, and a failure with none, is the failure's close.
+                    let ending = relay
+                        .rest
+                        .close_code()
+                        .and_then(caller_close_code)
+                        .map_or(Ending::UpstreamFailed, Ending::UpstreamClosed);
+                    client.ending(ending);
                     let refusal = upstream_failed()?;
                     task.piece(FROM_UPSTREAM, 0, P_ERROR, refusal.as_bytes(), effects)?
                 }
