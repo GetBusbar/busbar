@@ -715,3 +715,32 @@ mod on_linux_memfd {
         release(loaded);
     }
 }
+
+/// PROOF-093-A:26. `close_on_worker` unloads the image (its `dlclose`, which runs the image's finalizers before
+/// it unmaps it) on a permanent ffi worker, never on the caller's thread: the image is loaded under its staged name
+/// until the call, gone after it, and the thread that closed it is a permanent worker other than the caller.
+#[cfg(target_os = "linux")]
+#[test]
+fn dlclose_on_worker_runs_this_images_finalizer_on_a_permanent_worker() {
+    let bytes = crate::test_host::cdylib_bytes("native_pack_fixture");
+    let (opened, staged) = open_image(&bytes, "finalizer")
+        .unwrap_or_else(|e| panic!("the native fixture opens: {}", said(&Err(e))));
+    let Staged::Memfd { fd: Some(fd) } = &staged else {
+        panic!("Linux stages a verified image into a memfd");
+    };
+    let name = memfd_name(fd);
+    assert!(name_still_loaded(&name), "the opened image is loaded");
+    CLOSED_ON.with(|last| last.set(None));
+    let caller = std::thread::current().id();
+    close_on_worker(opened);
+    let closed_on = CLOSED_ON
+        .with(std::cell::Cell::get)
+        .expect("close_on_worker closed the image")
+        .expect("its dlclose ran on a permanent ffi worker");
+    assert_ne!(closed_on, caller, "never on the caller's thread");
+    assert!(
+        !name_still_loaded(&name),
+        "the dlclose ran to the end: the image's finalizers ran and it is unloaded"
+    );
+    drop(staged);
+}
