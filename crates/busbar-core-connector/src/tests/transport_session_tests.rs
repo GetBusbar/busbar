@@ -2363,3 +2363,366 @@ async fn partial_socket_writes_resume_each_record_where_the_socket_stopped() {
         );
     }
 }
+
+// ---- WHAT AN ACCEPTED CONNECTION MAKES (owner's allocation ruling; v1.5.5 made nothing of its own) ----
+
+/// The delivery ledger root makes for every accepted connection (`root/listener_native.rs`, `open`).
+fn accepted_ledger() -> DeliveryLedger {
+    use busbar_kernel::limits::process_admission::{AdmissionClass, ProcessAdmission};
+    let source = ProcessAdmission::new(1).connection_storage(AdmissionClass::Data);
+    DeliveryLedger::new(&source, 4096.try_into().unwrap(), 200.try_into().unwrap()).unwrap()
+}
+
+/// A plain request and the response a framer writes for it.
+const HEALTHZ_REQUEST: &[u8] = b"GET /healthz HTTP/1.1\r\nhost: 127.0.0.1:18170\r\n\r\n";
+const HEALTHZ_RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok";
+
+/// A framer that answers a request's bytes with the response and CLOSE, from statics.
+fn answer_and_close(call: Call<'_>, sink: &mut dyn FnMut(TransportOut<'_>)) {
+    if matches!(call, Call::Ingest(bytes) if !bytes.is_empty()) {
+        sink(TransportOut::Write(HEALTHZ_RESPONSE));
+        sink(TransportOut::Close { abort: false });
+    }
+}
+
+/// A framer that answers nothing.
+fn answer_nothing(_: Call<'_>, _: &mut dyn FnMut(TransportOut<'_>)) {}
+
+type Carrier = crate::raw_progress::RawCarrier<tokio::io::DuplexStream>;
+type Driven = std::pin::Pin<Box<dyn std::future::Future<Output = Outcome<Carrier>>>>;
+
+/// Everything an accepted connection's session is driven with except core's own state, made before
+/// anything is counted or timed (these are the test's, or root's channels): a lean framer whose
+/// answers allocate nothing, a socket pair, and the channels root keeps open.
+struct AcceptParts {
+    conn: TransportConn,
+    io: Carrier,
+    peer: tokio::io::DuplexStream,
+    counters: Arc<SessionCounters>,
+    registrations: mpsc::Receiver<RegisterResponse>,
+    feeds: mpsc::Receiver<Feed>,
+    inbound: mpsc::Sender<Inbound>,
+    close: oneshot::Receiver<u32>,
+    kept: Kept,
+}
+
+/// Root's ends of the channels, kept open while the session runs.
+struct Kept {
+    _register: mpsc::Sender<RegisterResponse>,
+    _feeds: mpsc::Sender<Feed>,
+    _inputs: mpsc::Receiver<Inbound>,
+    _close: oneshot::Sender<u32>,
+    peer: tokio::io::DuplexStream,
+}
+
+fn accept_parts(lean: fn(Call<'_>, &mut dyn FnMut(TransportOut<'_>))) -> AcceptParts {
+    let mut s = scripted(Box::new(|_| Vec::new()), None, false);
+    if let Some(Backend::Script(script)) = s.conn.backend.as_mut() {
+        script.lean = Some(lean);
+    }
+    let (peer, server) = tokio::io::duplex(4096);
+    let (register, registrations) = mpsc::channel(1);
+    let (feed, feeds) = mpsc::channel(1);
+    let (inbound, inputs) = mpsc::channel(1);
+    let (close_tx, close) = oneshot::channel();
+    let (unused_peer, _) = tokio::io::duplex(1);
+    AcceptParts {
+        conn: s.conn,
+        io: crate::raw_progress::test_carrier(server),
+        peer,
+        counters: Arc::default(),
+        registrations,
+        feeds,
+        inbound,
+        close,
+        kept: Kept {
+            _register: register,
+            _feeds: feed,
+            _inputs: inputs,
+            _close: close_tx,
+            peer: unused_peer,
+        },
+    }
+}
+
+impl AcceptParts {
+    /// The session's task over these parts and `delivery`, boxed as a spawn would (the box is the task's
+    /// own block, not core's state); root's ends and the peer come back to be kept.
+    fn task(self, delivery: DeliveryLedger) -> (Driven, Kept) {
+        let progress = self.io.progress();
+        let wiring = Wiring {
+            delivery,
+            registrations: self.registrations,
+            feeds: self.feeds,
+            inbound: self.inbound,
+            close: self.close,
+            write_timeout: Duration::from_secs(5),
+            drain_grace: Duration::from_secs(5),
+            counters: self.counters,
+        };
+        let driven: Driven = Box::pin(super::drive(self.conn, self.io, progress, wiring));
+        let mut kept = self.kept;
+        kept.peer = self.peer;
+        (driven, kept)
+    }
+}
+
+/// THE RED-BEFORE-GREEN PROOF (owner's allocation ruling): an accepted connection that has sent nothing
+/// has made nothing of core's: the ledger root makes at accept and the session's task, run until it
+/// waits for the first byte, ask the heap for no block and no byte (so none is zero-filled). Then input
+/// that arrives in a burst makes the read block, and the connection that goes idle again holds nothing
+/// more than before.
+#[test]
+fn an_accepted_connection_waiting_for_its_first_byte_has_made_nothing() {
+    use futures::FutureExt;
+    let runtime = custody_runtime();
+    let _entered = runtime.enter();
+    let waker = futures::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+    // The first round warms this thread's own runtime state; the second is counted.
+    for counted in [false, true] {
+        let parts = accept_parts(answer_nothing);
+        let (ledger, ledger_calls, ledger_bytes) = crate::support::heap_during(accepted_ledger);
+        let (mut driven, mut kept) = parts.task(ledger);
+        let (parked, calls, bytes) = crate::support::heap_during(|| driven.as_mut().poll(&mut cx));
+        assert!(parked.is_pending(), "it waits for the first byte");
+        if counted {
+            assert_eq!(
+                (ledger_calls, ledger_bytes, calls, bytes),
+                (0, 0, 0, 0),
+                "heap calls and bytes of the accepted ledger, then of the session until it waits"
+            );
+        }
+        // A burst: more than the task's own room (512 bytes), so the read block is made, used and
+        // released.
+        let burst = [b'x'; 600];
+        kept.peer
+            .write_all(&burst)
+            .now_or_never()
+            .expect("room in the pipe")
+            .expect("written");
+        let held = crate::support::held_bytes();
+        let (idle, calls, bytes) = crate::support::heap_during(|| driven.as_mut().poll(&mut cx));
+        assert!(idle.is_pending(), "idle again after the burst");
+        if counted {
+            assert_eq!(
+                (calls, bytes),
+                (1, READ_CHUNK as u64),
+                "one read block for the burst"
+            );
+            assert_eq!(
+                crate::support::held_bytes(),
+                held,
+                "idle again: the read block is gone"
+            );
+        }
+    }
+}
+
+/// THE MEASUREMENT: per accepted connection, core's share (the ledger root makes and the session's
+/// task; the framer is a lean script, the transport plugin's own work is not in it): heap calls and
+/// bytes, the time to "waiting for the first byte" and its close, the time of open + one request +
+/// close, on one thread and on eight, and what 1,000 idle connections hold. `B_ACCEPT_ROUNDS` sets
+/// the units timed (default 2,000). Run in release with `--nocapture` for the numbers; it asserts
+/// only that every unit did what it says.
+#[test]
+fn the_accept_path_cost() {
+    let rounds: usize = std::env::var("B_ACCEPT_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2_000);
+    let one = accept_units(rounds);
+    println!(
+        "ACCEPT-OPEN 1 thread: median {} ns open, {} ns close; heap per open {} calls, {} bytes; \
+         task state {} bytes",
+        one.open_ns, one.close_ns, one.open_calls, one.open_bytes, one.task_bytes
+    );
+    println!(
+        "ACCEPT-REQUEST 1 thread: median {} ns open + request + close; heap {} calls, {} bytes",
+        one.request_ns, one.request_calls, one.request_bytes
+    );
+    let eight: Vec<AcceptCost> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|_| scope.spawn(|| accept_units(rounds)))
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().expect("worker"))
+            .collect()
+    });
+    let mut opens: Vec<u64> = eight.iter().map(|cost| cost.open_ns).collect();
+    let mut requests: Vec<u64> = eight.iter().map(|cost| cost.request_ns).collect();
+    opens.sort_unstable();
+    requests.sort_unstable();
+    println!(
+        "ACCEPT-OPEN 8 threads: per-thread medians {opens:?} ns; ACCEPT-REQUEST 8 threads: {requests:?} ns"
+    );
+    let held = idle_held(1_000);
+    println!(
+        "ACCEPT-IDLE 1000 held: core's heap {} bytes per connection; process resident {} KiB in all \
+         (the test's sockets and channels included)",
+        held.0, held.1
+    );
+    let (first, rest, per_call, fill) = pool_cost(rounds);
+    println!(
+        "POOL (plugin interface, frozen): a thread's first crossing {} calls, {} bytes (kept by the \
+         thread); each crossing after: {} calls, median {} ns for its two lent buffers; the lease's \
+         4 KiB zero-fill alone median {} ns",
+        first.0, first.1, rest, per_call, fill
+    );
+}
+
+/// The frozen interface's per-crossing buffers (`busbar-plugin-abi` `host_side::pool::sync_bufs`, what
+/// every transport `begin`, `ingest`, `emit` and `close` goes through), on a fresh thread: its first
+/// crossing's heap, then per crossing writing a response-sized answer; and the 4 KiB `fill(0)` the
+/// lease does on every call (`busbar-ffi` `OutLease::new`), timed alone.
+fn pool_cost(rounds: usize) -> ((u64, u64), u64, u64, u64) {
+    use busbar_plugin_abi::host_side::pool::sync_bufs;
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let cross = || {
+                    sync_bufs(1 << 20, |_args, out| {
+                        out.put_bytes(HEALTHZ_RESPONSE).expect("room");
+                    });
+                };
+                let ((), calls, bytes) = crate::support::heap_during(cross);
+                let mut most = 0;
+                let mut times = Vec::with_capacity(rounds);
+                for _ in 0..rounds {
+                    let at = std::time::Instant::now();
+                    let ((), n) = crate::support::allocations_during(cross);
+                    times.push(nanos(at));
+                    most = most.max(n);
+                }
+                let mut block = vec![0u8; 4096];
+                let mut fills = Vec::with_capacity(rounds);
+                for _ in 0..rounds {
+                    let at = std::time::Instant::now();
+                    block.fill(0);
+                    std::hint::black_box(&block);
+                    fills.push(nanos(at));
+                }
+                ((calls, bytes), most, median(times), median(fills))
+            })
+            .join()
+            .expect("pool thread")
+    })
+}
+
+struct AcceptCost {
+    open_ns: u64,
+    close_ns: u64,
+    open_calls: u64,
+    open_bytes: u64,
+    task_bytes: usize,
+    request_ns: u64,
+    request_calls: u64,
+    request_bytes: u64,
+}
+
+fn median(mut times: Vec<u64>) -> u64 {
+    times.sort_unstable();
+    times.get(times.len() / 2).copied().unwrap_or(0)
+}
+
+fn nanos(at: std::time::Instant) -> u64 {
+    u64::try_from(at.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// `rounds` opens (parked at the first byte, then closed by dropping, as a peer that never sends does)
+/// and `rounds` open + request + close, on this thread, after a tenth as warm-up.
+fn accept_units(rounds: usize) -> AcceptCost {
+    use futures::FutureExt;
+    let runtime = custody_runtime();
+    let _entered = runtime.enter();
+    let waker = futures::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+    let warm = (rounds / 10).max(10);
+    let (mut open, mut close, mut request) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut open_heap, mut request_heap) = ((0, 0), (0, 0));
+    for round in 0..warm + rounds {
+        let parts = accept_parts(answer_nothing);
+        let at = std::time::Instant::now();
+        let (ledger, calls, bytes) = crate::support::heap_during(accepted_ledger);
+        let (mut driven, kept) = parts.task(ledger);
+        let (parked, more_calls, more_bytes) =
+            crate::support::heap_during(|| driven.as_mut().poll(&mut cx));
+        let opened = nanos(at);
+        assert!(parked.is_pending());
+        let at = std::time::Instant::now();
+        drop(driven);
+        let closed = nanos(at);
+        drop(kept);
+        let mut parts = accept_parts(answer_and_close);
+        parts
+            .peer
+            .write_all(HEALTHZ_REQUEST)
+            .now_or_never()
+            .expect("room in the pipe")
+            .expect("written");
+        let at = std::time::Instant::now();
+        let (ledger, r_calls, r_bytes) = crate::support::heap_during(accepted_ledger);
+        let (mut served, kept) = parts.task(ledger);
+        let (outcome, r_more_calls, r_more_bytes) =
+            crate::support::heap_during(|| served.as_mut().poll(&mut cx));
+        drop(served);
+        let answered = nanos(at);
+        assert!(
+            matches!(outcome, Poll::Ready(Outcome::Closed)),
+            "{outcome:?}"
+        );
+        drop(kept);
+        if round >= warm {
+            open.push(opened);
+            close.push(closed);
+            request.push(answered);
+            open_heap = (calls + more_calls, bytes + more_bytes);
+            request_heap = (r_calls + r_more_calls, r_bytes + r_more_bytes);
+        }
+    }
+    let (task, kept) = accept_parts(answer_nothing).task(accepted_ledger());
+    let task_bytes = std::mem::size_of_val(&*task);
+    drop((task, kept));
+    AcceptCost {
+        open_ns: median(open),
+        close_ns: median(close),
+        open_calls: open_heap.0,
+        open_bytes: open_heap.1,
+        task_bytes,
+        request_ns: median(request),
+        request_calls: request_heap.0,
+        request_bytes: request_heap.1,
+    }
+}
+
+/// `count` connections opened and left waiting for their first byte: core's heap bytes kept per
+/// connection (asked while opening, nothing freed before it waits), and the process's resident
+/// growth in KiB over all of them, the test's own parts included.
+fn idle_held(count: usize) -> (u64, u64) {
+    let runtime = custody_runtime();
+    let _entered = runtime.enter();
+    let waker = futures::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+    let resident = || {
+        std::fs::read_to_string("/proc/self/statm")
+            .ok()
+            .and_then(|statm| statm.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .map_or(0, |pages| pages * 4)
+    };
+    let before = resident();
+    let mut held = Vec::with_capacity(count);
+    let mut core = 0;
+    for _ in 0..count {
+        let parts = accept_parts(answer_nothing);
+        let (ledger, _, bytes) = crate::support::heap_during(accepted_ledger);
+        let (mut driven, kept) = parts.task(ledger);
+        let (parked, _, more) = crate::support::heap_during(|| driven.as_mut().poll(&mut cx));
+        assert!(parked.is_pending());
+        core += bytes + more;
+        held.push((driven, kept));
+    }
+    let grown = resident().saturating_sub(before);
+    drop(held);
+    (core / count as u64, grown)
+}
