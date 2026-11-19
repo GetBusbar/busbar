@@ -1712,6 +1712,32 @@ pub(crate) fn operations(
             });
         }
         if matches!(verb, KernelVerb::TrustApprove | KernelVerb::TrustRevoke) {
+            // The decision handler reads `Idempotency-Key` (the root's `replayable`, checked by
+            // `valid_idempotency_key`), so a generated client must be able to send it.
+            let idempotency = json!({
+                "name": "Idempotency-Key",
+                "in": "header",
+                "required": false,
+                "schema": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9._:-]+$"
+                },
+                "description": "Optional. 1..128 of `A-Z a-z 0-9 . _ : -`; any other value is \
+                                400 `invalid_request`. Scoped to the authenticated principal and \
+                                kept durably with the decision (echoed as its `operation`): the \
+                                same key and request bytes answer the original outcome with \
+                                `idempotent-replayed: true` and never decide again; other bytes \
+                                are 409 `idempotency_mismatch`, a request still running 409 \
+                                `idempotency_in_flight`. After a 503 whose outcome is unknown, \
+                                replay the same key and bytes to resolve it; never retry under a \
+                                new key."
+            });
+            match op.get_mut("parameters").and_then(Value::as_array_mut) {
+                Some(parameters) => parameters.push(idempotency),
+                None => op["parameters"] = json!([idempotency]),
+            }
             // TRUST-ADMIN-PRODUCER-DESIGN r3 §4.5: every answer carries the host's classification.
             // Refusals before the decision (authentication, scope, budget) do not carry it.
             if let Some(responses) = op[RESPONSES_KEY].as_object_mut() {

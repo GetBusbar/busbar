@@ -271,7 +271,7 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
         req.extensions_mut().insert(original);
     }
     if !is_read {
-        use busbar_kernel::audit::auditlog::{note_generation_source, note_idempotency_key};
+        use busbar_kernel::audit::auditlog::{note_config_generation_of, note_idempotency_key};
         if let Some(key) = req
             .headers()
             .get("idempotency-key")
@@ -280,8 +280,7 @@ pub(crate) async fn preconditions(mut req: Request, next: Next) -> Response {
             note_idempotency_key(key);
         }
         if config {
-            let source = handle.clone();
-            note_generation_source(Arc::new(move || source.load().config_version));
+            note_config_generation_of(handle.clone());
         }
     }
     if !is_read {

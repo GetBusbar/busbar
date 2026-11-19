@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use busbar_contract::json::{self, JsonValueTrait as _};
+use busbar_contract::json::{self, JsonContainerTrait as _, JsonValueTrait as _};
 
 const CHILD: &str = "BUSBAR_ADMIN_GENERATION_CHILD";
 const WITNESS: &str = "actual root generation assertions completed";
@@ -358,6 +358,136 @@ async fn idempotent_replay_every_mutation() {
     assert_eq!(operation["idempotency_key"], "grp-1");
     let missing = s.get("/operations/never-sent").send().await.unwrap();
     assert_eq!(missing.status().as_u16(), 404);
+    s.finish();
+    println!("{WITNESS}");
+}
+
+/// The admin audit row's `config_generation` is the durable configuration generation the change
+/// published (what `/info` and the config ETag report), not the per-process `config_version`.
+#[tokio::test]
+async fn audit_generation_is_the_durable_generation_not_the_process_counter() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    let s = serve("audit-generation", false).await;
+    let body = json::json!({"name": "user:audited", "config": {"parent": "team"}}).to_string();
+    let wrote = s
+        .send(reqwest::Method::POST, "/groups")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert!(wrote.status().is_success(), "{}", wrote.status());
+    let read = |path: &'static str| {
+        let request = s.get(path);
+        async move { json::parse_value(&request.send().await.unwrap().bytes().await.unwrap()).unwrap() }
+    };
+    let info = read("/info").await;
+    let generation = info["config_generation"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("/info reports config_generation: {info:?}"));
+    let config = read("/config").await;
+    let version = config["version"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("/config reports version: {config:?}"));
+    assert_ne!(
+        generation, version,
+        "the durable generation and the process counter differ here, so the row tells them apart"
+    );
+    let audit = read("/audit?action=group.create").await;
+    let row = audit["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("/audit lists items: {audit:?}"))
+        .iter()
+        .rev()
+        .find(|row| row["outcome"] == "applied")
+        .unwrap_or_else(|| panic!("the group create is audited: {audit:?}"))
+        .clone();
+    assert_eq!(
+        row["config_generation"].as_str(),
+        Some(generation.to_string().as_str()),
+        "the audit row carries the durable generation (/info {generation}), not config_version \
+         ({version}): {row:?}"
+    );
+    s.finish();
+    println!("{WITNESS}");
+}
+
+/// `POST /restart` takes the config ETag every config write takes, and still takes the bare
+/// quoted `config_version`. A guard that passes reaches the supervisor check (409 `conflict`,
+/// nothing drains in this fixture); a stale one is 409 `version_conflict`.
+#[tokio::test]
+async fn restart_if_match_takes_the_generation_etag_and_the_version_form() {
+    isolated!(CHILD, WITNESS, witness = "generation");
+    let s = serve("restart-if-match", false).await;
+    let restart = |tag: String| {
+        let request = s
+            .send(reqwest::Method::POST, "/restart")
+            .header("if-match", tag)
+            .body("{}");
+        async move {
+            let response = request.send().await.unwrap();
+            let status = response.status().as_u16();
+            (
+                status,
+                json::parse_value(&response.bytes().await.unwrap()).unwrap(),
+            )
+        }
+    };
+    let etag = s.get("/groups").send().await.unwrap().headers()["etag"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let config = json::parse_value(
+        &s.get("/config")
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let version = config["version"].as_u64().expect("/config reports version");
+
+    let (status, body) = restart(etag.clone()).await;
+    assert_eq!(status, 409, "{body:?}");
+    assert_eq!(
+        body["error"]["code"], "conflict",
+        "the ETag matches: {body:?}"
+    );
+    let (status, body) = restart(format!("\"{version}\"")).await;
+    assert_eq!(status, 409, "{body:?}");
+    assert_eq!(
+        body["error"]["code"], "conflict",
+        "the bare config_version still matches: {body:?}"
+    );
+
+    let wrote = s
+        .send(reqwest::Method::POST, "/groups")
+        .body(json::json!({"name": "user:moved", "config": {"parent": "team"}}).to_string())
+        .send()
+        .await
+        .unwrap();
+    assert!(wrote.status().is_success(), "{}", wrote.status());
+    let (status, body) = restart(etag).await;
+    assert_eq!(status, 409, "{body:?}");
+    assert_eq!(
+        body["error"]["code"], "version_conflict",
+        "stale ETag: {body:?}"
+    );
+    let (status, body) = restart(format!("\"{version}\"")).await;
+    assert_eq!(status, 409, "{body:?}");
+    assert_eq!(
+        body["error"]["code"], "version_conflict",
+        "stale config_version: {body:?}"
+    );
+    let (status, body) = restart("7".to_string()).await;
+    assert_eq!(status, 400, "{body:?}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("<deployment_id>.<config_generation>")),
+        "the refusal names the config ETag: {body:?}"
+    );
     s.finish();
     println!("{WITNESS}");
 }
