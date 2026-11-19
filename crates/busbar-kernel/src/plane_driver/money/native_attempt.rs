@@ -105,7 +105,7 @@ impl NativeRequestMoney {
             self.money
                 .post
                 .checkpoint_facts(self.request.unit())
-                .ok_or_else(|| NativeAttemptError::Custody)?,
+                .ok_or(NativeAttemptError::Custody)?,
         );
         Ok(())
     }

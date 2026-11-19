@@ -346,13 +346,16 @@ impl Looked {
     }
 }
 
+/// One TRUST_STATE item's name length, verdict, approved digest and sighted digest.
+type TrustItemState = (usize, u32, Option<[u8; 32]>, Option<[u8; 32]>);
+
 /// A TRUST_STATE's item states, read into the task's one buffer: the names lie end to end in one run of
 /// text and nothing is allocated per item. Cleared per TRUST_STATE; released with the task.
 #[derive(Debug, Default)]
 pub struct TrustItems {
     names: String,
-    /// Each item's name length, verdict, approved digest and sighted digest, in order.
-    items: Vec<(usize, u32, Option<[u8; 32]>, Option<[u8; 32]>)>,
+    /// Each item's state, in order.
+    items: Vec<TrustItemState>,
 }
 
 impl TrustItems {
@@ -803,7 +806,9 @@ impl<'h> Resolver<'h> {
                 )),
                 Intent::ChReady { exchange, tail } => {
                     if let Some(channel) = held.get_mut(exchange) {
-                        channel.ready(lent.bytes(*tail));
+                        if let Err(denied) = channel.ready(lent.bytes(*tail)) {
+                            tracing::warn!(?denied, "a channel ready tail was not kept");
+                        }
                     }
                 }
                 Intent::Rendezvous {

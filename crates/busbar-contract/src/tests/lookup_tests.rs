@@ -556,10 +556,10 @@ fn bitset_random(width: usize, seed: u64) {
                 let other_width = rng.below(width + 70);
                 other.reset_empty(other_width);
                 let mut other_model = vec![false; other_width];
-                for p in 0..other_width {
+                for (p, held) in other_model.iter_mut().enumerate() {
                     if rng.below(2) == 0 {
                         other.insert(p);
-                        other_model[p] = true;
+                        *held = true;
                     }
                 }
                 set.keep_only(&other);
@@ -570,10 +570,10 @@ fn bitset_random(width: usize, seed: u64) {
             7 => {
                 other.reset_empty(width);
                 let mut other_model = vec![false; width];
-                for p in 0..width {
+                for (p, held) in other_model.iter_mut().enumerate() {
                     if rng.below(3) == 0 {
                         other.insert(p);
-                        other_model[p] = true;
+                        *held = true;
                     }
                 }
                 set.drop_all(&other);

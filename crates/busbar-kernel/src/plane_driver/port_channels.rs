@@ -38,7 +38,7 @@ pub trait Held: Send {
     /// EX_MSG on the channel's exchange; `ask` = the message carried MSG_ASK (it enters the ask line).
     fn send(&mut self, message: &[u8], ask: bool) -> Result<(), RecordsDenied>;
     /// CH_READY: `tail` is handed to later attachers (only the greeting session's takes effect).
-    fn ready(&mut self, tail: &[u8]);
+    fn ready(&mut self, tail: &[u8]) -> Result<(), RecordsDenied>;
     /// RV_REMOTE: the far end's answer for a dialled media session (§12.13). Only a media bridge takes one; the
     /// default refuses.
     fn remote(&mut self, _description: &str) -> Result<(), RecordsDenied> {
@@ -112,8 +112,8 @@ impl Held for Link {
         self.rt.block_on(self.attachment.send(message, ask))
     }
 
-    fn ready(&mut self, tail: &[u8]) {
-        self.attachment.ready(tail);
+    fn ready(&mut self, tail: &[u8]) -> Result<(), RecordsDenied> {
+        self.attachment.ready(tail)
     }
 
     fn recv(&mut self) -> BoxFut<'_, Option<ChannelMsg>> {

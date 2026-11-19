@@ -52,7 +52,7 @@ fn counts_equal_the_walk_for_non_decreasing_seconds() {
     for step in 0..5_000 {
         let roll = next(&mut state);
         // Several outcomes in one second, and now and then a pause.
-        second += (roll >> 8) % 3 / 2 + u64::from(roll % 97 == 0) * 40;
+        second += (roll >> 8) % 3 / 2 + u64::from(roll.is_multiple_of(97)) * 40;
         let is_error = roll % 5 < 2;
         window.push(second, is_error);
         model.push(second, is_error);

@@ -26,7 +26,7 @@ use busbar_plugin_abi::plane::{
     AUTH_OPERATOR, AUTH_OPTIONAL, AUTH_PRINCIPAL, AUTH_PUBLIC, AUTH_SIGNED_INGRESS, AUTH_TICKET,
     RENDER_REFUSAL,
 };
-use busbar_plugin_abi::records::{Reply, Writer};
+use busbar_plugin_abi::records::Reply;
 use busbar_ports::auth::Identity;
 use busbar_ports::codec::plane::encode_refusal;
 use busbar_ports::plane::PlaneIn;
@@ -232,6 +232,7 @@ impl Admitted {
 #[cfg(test)]
 #[must_use]
 pub(crate) fn subject_identity(subject: &str) -> Vec<u8> {
+    use busbar_plugin_abi::records::Writer;
     let mut w = Reply::with_capacity(16 + subject.len());
     // A Reply refuses only past its 16 MiB cap; a subject is bounded far below it.
     let put = w.put_text(busbar_plugin_abi::records::tag::ID_SUBJECT, subject);

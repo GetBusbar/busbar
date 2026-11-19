@@ -100,7 +100,9 @@ impl Held for MediaHeld {
         Err(RecordsDenied::Invalid)
     }
 
-    fn ready(&mut self, _tail: &[u8]) {}
+    fn ready(&mut self, _tail: &[u8]) -> Result<(), RecordsDenied> {
+        Ok(())
+    }
 
     fn remote(&mut self, description: &str) -> Result<(), RecordsDenied> {
         self.rt.block_on(self.bridge.remote(description))
