@@ -22,13 +22,14 @@ use std::time::Instant;
 use busbar_plugin_abi::plane::{AUTH_OPTIONAL, AUTH_PUBLIC, AUTH_SIGNED_INGRESS};
 
 use super::refusal::PreparationState;
-use super::request_snapshot::ChargedRequestSnapshot;
+
 use super::{
     ArrivalRefusal, BindError, CompletingPhysicalRequest, Phase, RequestBinding, RouteTarget,
 };
 use crate::auth::native_data::DataAuthorization;
 use crate::auth::native_signed::SignedIngressVerified;
 use crate::auth::native_signed_route::SignedUnserved;
+use crate::inbound::request_snapshot::ChargedRequestSnapshot;
 use crate::state::AdmissionLease;
 
 /// What admitted the request.
