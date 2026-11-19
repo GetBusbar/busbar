@@ -47,6 +47,17 @@ pub(crate) struct WirePart {
     pub(crate) _r: u32,
 }
 
+impl WirePart {
+    /// From the port's decoded part (`TransportOut::WirePart { stream, payload, .. }`).
+    pub(crate) const fn stated(stream: u64, payload: bool) -> Self {
+        Self {
+            stream,
+            class: if payload { WIRE_PAYLOAD } else { WIRE_CONTROL },
+            _r: 0,
+        }
+    }
+}
+
 /// `WIRE_SEALED`, no tail. Always control.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +72,19 @@ pub(crate) struct WireSealed {
     pub(crate) len: u32,
     /// Reserved, zero.
     pub(crate) _r: u32,
+}
+
+impl WireSealed {
+    /// From the port's decoded mark (`TransportOut::WireSealed { stream, slot, offset, len }`).
+    pub(crate) const fn stated(stream: u64, slot: u32, offset: u32, len: u32) -> Self {
+        Self {
+            stream,
+            slot,
+            offset,
+            len,
+            _r: 0,
+        }
+    }
 }
 
 /// `WIRE_END`, no tail.
@@ -90,6 +114,16 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    /// From the port's decoded statement (`TransportOut::Session { multiplex, stream_window, conn_window }`).
+    pub(crate) const fn stated(multiplex: bool, stream_window: u32, conn_window: u32) -> Self {
+        Self {
+            flags: if multiplex { S_MULTIPLEX } else { 0 },
+            stream_window,
+            conn_window,
+            _r: 0,
+        }
+    }
+
     /// The session carries several streams at once.
     pub(crate) const fn multiplexes(&self) -> bool {
         self.flags & S_MULTIPLEX != 0
@@ -109,6 +143,19 @@ pub(crate) struct StreamReset {
 }
 
 impl StreamReset {
+    /// From the port's decoded reset (`TransportOut::StreamReset { stream, code, not_processed }`).
+    pub(crate) const fn stated(stream: u64, code: u32, not_processed: bool) -> Self {
+        Self {
+            stream,
+            code,
+            flags: if not_processed {
+                RESET_NOT_PROCESSED
+            } else {
+                0
+            },
+        }
+    }
+
     /// The far end states it did not act on the stream.
     pub(crate) const fn not_processed(&self) -> bool {
         self.flags & RESET_NOT_PROCESSED != 0
