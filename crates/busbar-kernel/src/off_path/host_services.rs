@@ -20,12 +20,6 @@ pub(crate) fn boot_instant() -> Instant {
     Instant::now()
 }
 
-/// A label keyed once: an admitted instance's name, the demotion record's default instance, an
-/// instance's work bounds, or a carrier session's principal as its line opens.
-pub(crate) fn intern(label: &str) -> Arc<str> {
-    Arc::from(label)
-}
-
 /// A served plane's ticket prefix, read once as its routes are built.
 pub(crate) fn ticket_prefix(facts: &InstanceFacts) -> Option<String> {
     facts.ticket_prefix.clone()

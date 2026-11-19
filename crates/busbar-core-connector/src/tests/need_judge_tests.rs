@@ -250,3 +250,119 @@ async fn proxy_local_dns_pins_the_target_and_checks_proxy_own_node() {
         Err(NeedErr::Denied)
     ));
 }
+
+/// The deployment the root composes the new interface's guard from: the data door on the wildcard
+/// address (the shipped default's shape, `0.0.0.0:8080`), the admin surface on one configured
+/// address.
+fn own_doors_deployment(block_private: bool) -> busbar_kernel::config::RootCfg {
+    let deploy: busbar_kernel::config::DeployCfg = busbar_contract::yaml::from_str(&format!(
+        "providers: {{}}\nmodels: {{}}\nlisten: \"0.0.0.0:18080\"\n\
+         admin_listen: \"10.20.30.40:18081\"\nadmin_require_mtls: false\n\
+         advanced: {{block_private_addresses: {block_private}}}\n"
+    ))
+    .expect("the deployment parses");
+    busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
+        .unwrap_or_else(|errors| panic!("the deployment resolves: {errors:?}"))
+}
+
+/// A Need judge over the guard exactly as the root builds one for the new interface: the
+/// deployment's `destinations()`, the one destination judge built from them
+/// (`root::connector::dest_judge`), its guard frozen into a stage's network inputs
+/// (`root::min3_boot::network_inputs`), every name answered with `answer`.
+fn composed_judge(
+    cfg: &busbar_kernel::config::RootCfg,
+    answer: &str,
+    seen: &Arc<crate::need::observations::Observations>,
+) -> Judge<Fixed> {
+    let dest = crate::process::dest_judge(&cfg.destinations()).expect("the guard builds");
+    Judge::observed(
+        dest.guard().freeze(),
+        Fixed {
+            answer: Ok(vec![answer.parse().unwrap()]),
+            lookups: Arc::default(),
+        },
+        None,
+        busbar_kernel::config::tls::ProxyResolution::Local,
+        Arc::clone(seen),
+    )
+}
+
+/// IF 12.1, on the new interface as the root composes it: a Need aimed at the engine's own data
+/// port or its own admin port is refused `DEST_INTERNAL`, in every class, whatever else the
+/// deployment lets that class reach: on loopback, on the unspecified address (the data door is
+/// bound to the wildcard), on the address the admin listener is configured on, in an IPv4-mapped
+/// spelling, and by a name that resolves to one of those. The same addresses on a port the engine
+/// does not listen on stay reachable, so the refusal is this rule's and no other's.
+#[tokio::test]
+async fn a_need_never_reaches_the_engines_own_ports_as_the_root_composes_the_guard() {
+    use crate::need::observations::Outcome;
+    use busbar_contract::abi::host::conn::connector::{
+        EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+        EGRESS_PROVIDER,
+    };
+    use busbar_contract::abi::host::service::DEST_INTERNAL;
+    const DATA: u16 = 18080;
+    const ADMIN: u16 = 18081;
+    const ELSEWHERE: u16 = 18082;
+    // (the target as the Need names it, the address its name answers with)
+    let data_door: &[(&str, &str)] = &[
+        ("127.0.0.1", "127.0.0.1"),
+        ("::1", "::1"),
+        ("0.0.0.0", "0.0.0.0"),
+        ("::", "::"),
+        ("::ffff:127.0.0.1", "::ffff:127.0.0.1"),
+        ("front.example", "127.0.0.1"),
+    ];
+    let admin_door: &[(&str, &str)] = &[
+        ("10.20.30.40", "10.20.30.40"),
+        ("::ffff:10.20.30.40", "::ffff:10.20.30.40"),
+        ("127.0.0.1", "127.0.0.1"),
+        ("0.0.0.0", "0.0.0.0"),
+        ("admin.example", "10.20.30.40"),
+    ];
+    let every_class = [
+        EGRESS_DEFAULT,
+        EGRESS_PROVIDER,
+        EGRESS_OPERATOR_INFRASTRUCTURE,
+        EGRESS_OPEN_WEB,
+        EGRESS_LOOPBACK_ALLOWED,
+    ];
+    // A deployment that allows private addresses lets every class reach these addresses; the
+    // shipped default still lets the operator-infrastructure class reach them.
+    let deployments = [
+        (own_doors_deployment(false), &every_class[..]),
+        (
+            own_doors_deployment(true),
+            &[EGRESS_OPERATOR_INFRASTRUCTURE][..],
+        ),
+    ];
+    let mut judged = 0usize;
+    for (cfg, classes) in &deployments {
+        for &class in *classes {
+            for (port, targets) in [(DATA, data_door), (ADMIN, admin_door)] {
+                for &(target, answer) in targets {
+                    let seen = Arc::default();
+                    let judge = composed_judge(cfg, answer, &seen);
+                    assert!(
+                        judge.dial(target, ELSEWHERE, class, OWNER).await.is_ok(),
+                        "class {class}: {target}:{ELSEWHERE} is not one of the engine's ports and \
+                         this deployment lets the class reach it"
+                    );
+                    assert_eq!(
+                        judge.dial(target, port, class, OWNER).await,
+                        Err(NeedErr::Denied),
+                        "class {class}: a Need reached the engine's own port {target}:{port}"
+                    );
+                    let facts = seen.drain().facts;
+                    assert_eq!(
+                        facts.iter().map(|f| f.outcome).collect::<Vec<_>>(),
+                        [Outcome::Denied(DEST_INTERNAL)],
+                        "class {class}: {target}:{port} is refused by the own-port rule"
+                    );
+                    judged += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(judged, (5 + 1) * (6 + 5));
+}

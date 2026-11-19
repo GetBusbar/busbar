@@ -107,3 +107,43 @@ fn custody_json_preserves_full_signed_counts_through_origin_value_rewrite() {
     let decoded: ExactUsageDelta = json::from_value(&value).unwrap();
     assert_eq!(decoded, delta);
 }
+
+#[test]
+fn the_consuming_conversion_equals_the_borrowing_one() {
+    use busbar_contract::records::ModelTokensDelta;
+    let row = |model: &str, scale: u32, units: &[(&str, i128)]| ModelTokensDelta {
+        scale,
+        model: model.to_string(),
+        usage_units: units.iter().map(|(u, n)| (u.to_string(), *n)).collect(),
+    };
+    let dated_name = era_model(RawRateEra::legacy(1), "model-a");
+    let fixtures = [
+        UsageDelta {
+            requests: -3,
+            billable_requests: 2,
+            models: vec![
+                row("model-a", 0, &[("input", -5), ("output", 7), ("image", 1)]),
+                row("model-b", 6, &[("input", 1_500_000), ("seconds", -250_000)]),
+                row("model-c", 0, &[]),
+            ],
+        },
+        UsageDelta::default(),
+        UsageDelta {
+            requests: 0,
+            billable_requests: -1,
+            models: vec![
+                row(&dated_name, 0, &[("input", -2)]),
+                row(
+                    &crate::governance::era_tag(RawRateEra::legacy(1)),
+                    0,
+                    &[("fee", -1)],
+                ),
+            ],
+        },
+    ];
+    for fixture in fixtures {
+        let borrowed = ExactUsageDelta::from_signed(&fixture);
+        let consumed = ExactUsageDelta::from_signed_owned(fixture);
+        assert_eq!(consumed, borrowed);
+    }
+}

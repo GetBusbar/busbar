@@ -272,6 +272,7 @@ impl Guard {
 
     /// Publish the node's own listen ports and the addresses its listeners are bound to (boot
     /// metadata, IF 12.1): what [`Guard::not_the_node`] refuses. Replaces the set whole.
+    /// [`Guard::from_config`] writes it from the deployment's own listen addresses.
     pub fn publish_own(&self, ports: &[u16], bound: &[IpAddr]) {
         self.node
             .store(Arc::new(crate::off_path::egress::guard::own_node(

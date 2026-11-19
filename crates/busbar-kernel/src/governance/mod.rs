@@ -270,25 +270,28 @@ impl BudgetCell {
         });
     }
 
-    fn park(&mut self, window: u64, delta: impl std::borrow::Borrow<UsageDelta>) {
-        let delta = delta.borrow();
+    // `mutate` runs its closure on the cell and, when a correction branch exists, once more on
+    // the branch's copy, so the delta cannot move into the closure. It is converted here, once,
+    // by moving its names; the branch's run gets a copy made only when a branch exists.
+    fn park(&mut self, window: u64, delta: UsageDelta) {
+        let exact = ExactUsageDelta::from_signed_owned(delta);
+        let mut branch_copy = self.correction.is_some().then(|| exact.clone());
+        let mut first = Some(exact);
         self.mutate(|cell| {
-            park_window(
-                &mut cell.rolled,
-                window,
-                ExactUsageDelta::from_signed(delta),
-            );
+            if let Some(exact) = first.take().or_else(|| branch_copy.take()) {
+                park_window(&mut cell.rolled, window, exact);
+            }
         });
     }
 
-    fn park_eras(&mut self, window: u64, delta: impl std::borrow::Borrow<UsageDelta>) {
-        let delta = delta.borrow();
+    fn park_eras(&mut self, window: u64, delta: UsageDelta) {
+        let exact = ExactUsageDelta::from_signed_owned(delta);
+        let mut branch_copy = self.correction.is_some().then(|| exact.clone());
+        let mut first = Some(exact);
         self.mutate(|cell| {
-            park_window(
-                &mut cell.rolled_eras,
-                window,
-                ExactUsageDelta::from_signed(delta),
-            );
+            if let Some(exact) = first.take().or_else(|| branch_copy.take()) {
+                park_window(&mut cell.rolled_eras, window, exact);
+            }
         });
     }
 
@@ -1113,19 +1116,6 @@ pub async fn mint_self_offloaded(
     }
 }
 
-pub fn synthesize_principal_key(
-    principal: &crate::auth::Principal,
-    bindings: Option<&std::collections::BTreeMap<String, crate::config::RoleBindingCfg>>,
-) -> Option<Arc<VirtualKey>> {
-    synthesize_key(principal, bindings).map(|mut key| {
-        key.generation_hash = crate::off_path::governance::state::mod_principal_marker(
-            PRINCIPAL_MARKER_PREFIX,
-            &principal.id,
-        );
-        Arc::new(key)
-    })
-}
-
 pub const PRINCIPAL_MARKER_PREFIX: &str = "principal:";
 
 pub fn synthesize_bound_key(
@@ -1295,7 +1285,7 @@ fn synthesize_key(
     Some(VirtualKey {
         id: principal.id.clone(),
 
-        // Each caller writes its own marker: the principal marker or the bound marker.
+        // The caller writes the bound marker.
         generation_hash: String::new(),
         name: principal
             .name

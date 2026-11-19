@@ -300,12 +300,21 @@ fn role_table(
         .collect()
 }
 
+/// The bound key a principal with `table`'s roles gets from the module `idp`.
+fn synthesize_table_key(
+    p: &crate::auth::Principal,
+    table: &std::collections::BTreeMap<String, crate::config::RoleBindingCfg>,
+) -> Option<std::sync::Arc<crate::governance::VirtualKey>> {
+    let mut bindings = crate::config::RoleBindings::new();
+    bindings.insert("idp".to_string(), table.clone());
+    crate::governance::synthesize_bound_key("idp", p, &bindings)
+}
+
 #[test]
 fn test_synth_key_omitted_pools_grants_all_pools() {
     let table = role_table(&[("dev", binding(None, None, None))]);
     let p = grp_principal("test:dev", &["dev"]);
-    let key = crate::governance::synthesize_principal_key(&p, Some(&table))
-        .expect("a bound role must synthesize a key");
+    let key = synthesize_table_key(&p, &table).expect("a bound role must synthesize a key");
     assert_eq!(
         key.allowed_scopes, None,
         "omitted allowed_pools = ALL pools = None on the key"
@@ -320,7 +329,7 @@ fn test_synth_key_explicit_empty_pools_fails_closed_c6_flip() {
     let table = role_table(&[("dev", binding(Some(&[]), None, None))]);
     let p = grp_principal("test:dev", &["dev"]);
     assert!(
-        crate::governance::synthesize_principal_key(&p, Some(&table)).is_none(),
+        synthesize_table_key(&p, &table).is_none(),
         "allowed_pools: [] must be the empty set (no access), not all pools"
     );
 
@@ -330,7 +339,7 @@ fn test_synth_key_explicit_empty_pools_fails_closed_c6_flip() {
     ]);
     let p = grp_principal("test:dev", &["dev", "ops"]);
     assert!(
-        crate::governance::synthesize_principal_key(&p, Some(&table)).is_none(),
+        synthesize_table_key(&p, &table).is_none(),
         "an all-bindings-[] union must fail closed"
     );
 
@@ -339,8 +348,7 @@ fn test_synth_key_explicit_empty_pools_fails_closed_c6_flip() {
         ("ops", binding(None, None, None)),
     ]);
     let p = grp_principal("test:dev", &["dev", "ops"]);
-    let key = crate::governance::synthesize_principal_key(&p, Some(&table))
-        .expect("an omitted-pools binding grants all pools");
+    let key = synthesize_table_key(&p, &table).expect("an omitted-pools binding grants all pools");
     assert_eq!(key.allowed_scopes, None);
 }
 
@@ -351,8 +359,7 @@ fn test_synth_key_pool_union_and_all_pools_dominates() {
         ("b", binding(Some(&["p2", "p1"]), None, None)),
     ]);
     let p = grp_principal("test:u", &["a", "b"]);
-    let key = crate::governance::synthesize_principal_key(&p, Some(&table))
-        .expect("bound roles must synthesize a key");
+    let key = synthesize_table_key(&p, &table).expect("bound roles must synthesize a key");
     assert_eq!(
         key.allowed_scopes,
         Some(vec![ScopeRef::pool("p1"), ScopeRef::pool("p2")])
@@ -363,8 +370,7 @@ fn test_synth_key_pool_union_and_all_pools_dominates() {
         ("c", binding(None, None, None)),
     ]);
     let p = grp_principal("test:u", &["a", "c"]);
-    let key = crate::governance::synthesize_principal_key(&p, Some(&table))
-        .expect("bound roles must synthesize a key");
+    let key = synthesize_table_key(&p, &table).expect("bound roles must synthesize a key");
     assert_eq!(
         key.allowed_scopes, None,
         "one omitted-pools binding widens the union to ALL pools"
@@ -376,17 +382,21 @@ fn test_synth_key_unbound_roles_grant_nothing() {
     let p = grp_principal("test:u", &["strangers"]);
 
     let table = role_table(&[("dev", binding(None, None, None))]);
-    assert!(crate::governance::synthesize_principal_key(&p, Some(&table)).is_none());
+    assert!(synthesize_table_key(&p, &table).is_none());
 
-    assert!(crate::governance::synthesize_principal_key(&p, None).is_none());
+    assert!(crate::governance::synthesize_bound_key(
+        "idp",
+        &p,
+        &crate::config::RoleBindings::new()
+    )
+    .is_none());
 }
 
 #[test]
 fn test_synth_key_bound_group_lands_in_group_binding() {
     let table = role_table(&[("dev", binding(None, Some("eng"), None))]);
     let p = grp_principal("test:dev", &["dev"]);
-    let key = crate::governance::synthesize_principal_key(&p, Some(&table))
-        .expect("a bound role must synthesize a key");
+    let key = synthesize_table_key(&p, &table).expect("a bound role must synthesize a key");
     assert_eq!(key.group.as_deref(), Some("eng"));
 
     let table = role_table(&[
@@ -394,8 +404,7 @@ fn test_synth_key_bound_group_lands_in_group_binding() {
         ("ops", binding(None, Some("platform"), None)),
     ]);
     let p = grp_principal("test:dev", &["dev", "ops"]);
-    let key = crate::governance::synthesize_principal_key(&p, Some(&table))
-        .expect("bound roles must synthesize a key");
+    let key = synthesize_table_key(&p, &table).expect("bound roles must synthesize a key");
     assert_eq!(key.group.as_deref(), Some("eng"));
 }
 
@@ -405,7 +414,7 @@ fn test_synth_key_reserved_id_prefixes_refused() {
     for id in ["group:evil", "vk_0123456789abcdef"] {
         let p = grp_principal(id, &["dev"]);
         assert!(
-            crate::governance::synthesize_principal_key(&p, Some(&table)).is_none(),
+            synthesize_table_key(&p, &table).is_none(),
             "reserved principal id '{id}' must not synthesize a key"
         );
     }

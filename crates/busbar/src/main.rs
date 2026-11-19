@@ -551,6 +551,7 @@ mod bootstrap_destination_tests {
         let policy = |block_private_addresses| config::Destinations {
             block_private_addresses,
             blocked: Vec::new(),
+            listens: Vec::new(),
         };
         let holder = BootstrapDestJudge::new(root::connector::guard_for(&policy(false)).unwrap());
         let installed: Arc<dyn busbar_kernel::host_services::DestJudge> = holder.clone();
@@ -747,7 +748,7 @@ async fn run(
             LINKED_TRANSPORT_DOORS,
             &root::policy::client_settings(&base_cfg.limits),
             dest.clone(),
-            &[base_cfg.listen.as_str(), base_cfg.admin_listen.as_str()],
+            &base_cfg.own_listens(),
         );
         root::connector::install_trust_store(&base_cfg, false);
         // The MIN-3 registry boots here, before the Store opens and before any listener serves: images, the
@@ -1096,7 +1097,7 @@ async fn run(
     );
     root::connector::finalize_boot(
         &root::policy::client_settings(&cfg.limits),
-        &[cfg.listen.as_str(), cfg.admin_listen.as_str()],
+        &cfg.own_listens(),
     )
     .unwrap_or_else(|error| die(format!("effective connector boot configuration: {error}")));
 

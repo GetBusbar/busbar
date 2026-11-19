@@ -334,12 +334,6 @@ pub trait CallerEnd: Sync {
     fn final_status(&self, status: u32, message: &[u8], details: &[u8]) {
         let _ = (status, message, details);
     }
-
-    /// The client trailer fields a MIN-3 plane wrote after its body (IF §8.6 TRAILERS): one `emit(E_TRAILERS)`,
-    /// trailers-only on HTTP/2 when no body preceded it. A caller that carries no trailers drops them.
-    fn trailers(&self, fields: HeadFields) {
-        let _ = fields;
-    }
 }
 
 pub(crate) struct PieceBufs {

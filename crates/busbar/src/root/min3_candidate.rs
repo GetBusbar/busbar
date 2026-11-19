@@ -308,7 +308,16 @@ impl Factory {
                     "native export reload requires its retained boot-evidence producer".into(),
                 );
             }
-            let dest = super::connector::guard_for(&cfg.destinations())?;
+            // The candidate serves on the listeners the boot bound (a changed `listen` waits for a
+            // restart): those are the own ports its Needs must not reach.
+            let mut destinations = cfg.destinations();
+            destinations.listens = self
+                .listeners
+                .binds()
+                .iter()
+                .map(|bind| bind.listen.to_string())
+                .collect();
+            let dest = super::connector::guard_for(&destinations)?;
             let ready = self
                 .bootstrap
                 .prepare_next(&self.process, cfg, dest.guard().clone(), &self.transports)
