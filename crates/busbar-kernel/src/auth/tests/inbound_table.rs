@@ -1209,3 +1209,61 @@ fn a_seats_walk_kind_is_what_its_routes_state() {
     ))];
     assert_eq!(seat_walk_kind(&mcp), Ok(Some("mcp_server")));
 }
+
+/// An audience-bound plane (MCP's `canonical_uri`) is served, and no less strictly than the
+/// path it replaces: a credential that states no audience is not enough, and one minted for
+/// another resource is refused. The binding is judged before any verifier runs.
+#[test]
+fn an_audience_bound_plane_takes_only_a_bound_credential() {
+    use crate::auth::audience::{inspect_bearer, Binding};
+    use base64::Engine as _;
+    let jwt = |payload: &str| {
+        let part = |text: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text);
+        format!(
+            "{}.{}.{}",
+            part(r#"{"alg":"none"}"#),
+            part(payload),
+            part("sig")
+        )
+    };
+    let mcp = "https://gw.example/mcp";
+    let rows = [
+        (jwt(r#"{"aud":"https://gw.example/mcp"}"#), Binding::Bound),
+        (
+            jwt(r#"{"aud":["x","https://gw.example/mcp"]}"#),
+            Binding::Bound,
+        ),
+        (
+            jwt(r#"{"aud":"https://other.example/mcp"}"#),
+            Binding::Mismatch,
+        ),
+        (jwt(r#"{"sub":"nobody-in-particular"}"#), Binding::Mismatch),
+        ("an-opaque-gateway-key".to_owned(), Binding::Opaque),
+    ];
+    for (token, binding) in rows {
+        assert_eq!(inspect_bearer(&token, mcp), binding, "{token}");
+        // What `refuse_foreign_audience` does with each: only a bound one goes on to the chain.
+        let goes_on = matches!(binding, Binding::Bound | Binding::Deferred);
+        assert_eq!(goes_on, binding == Binding::Bound, "{token}");
+    }
+    // A route of such a plane keeps a session per caller, so it is not served to a shared one.
+    let none: [Box<str>; 0] = [];
+    let record = RouteRecord::from_declared(
+        0,
+        busbar_plugin_abi::plane::AUTH_PRINCIPAL,
+        None,
+        &none,
+        Some("mcp_server"),
+        true,
+    )
+    .expect("a declared route");
+    assert_eq!(record.caller_state, CallerState::Distinct);
+    assert_eq!(
+        decide(Target::Route(&record), &passing(SHARED)),
+        refused(Refusal::NoRoute, true)
+    );
+    assert_eq!(
+        decide(Target::Route(&record), &passing(DISTINCT)),
+        Decision::Serve(Authority::Walk)
+    );
+}

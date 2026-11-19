@@ -48,12 +48,15 @@ impl NativeUpgradeRoute {
     /// Whether this path can admit the upgrade route `mounted` on `seat` at all, before any owner
     /// exists: the route-shape half of [`Self::bind`]. Err names what it lacks. A route this path
     /// cannot admit is never served unadmitted: the listener leaves it unmounted.
-    pub fn admits(_app: &App, _seat: &PortSeat, mounted: &Mounted) -> Result<(), &'static str> {
+    pub fn admits(_app: &App, seat: &PortSeat, mounted: &Mounted) -> Result<(), &'static str> {
         if mounted.flags != ROUTE_UPGRADE || mounted.methods != METHOD_GET || mounted.catalog {
             return Err("the native upgrade path admits a GET upgrade route only");
         }
         if mounted.auth != AUTH_PRINCIPAL || mounted.effective != AUTH_PRINCIPAL {
             return Err("the native upgrade path admits principal routes only");
+        }
+        if seat.driver.has_hooks(mounted.route) {
+            return Err("the native upgrade path does not run route hooks");
         }
         Ok(())
     }

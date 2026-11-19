@@ -242,8 +242,11 @@ impl NativeDataRoute {
     /// judged on the head ([`refuse_foreign_audience`]). A deployment with `oauth_as` is served
     /// for every credential its chain's instances verify; a token core itself minted is still
     /// refused by [`refuse_bound_carriers`] until core's own token verifier is a chain member
-    /// (it must not be accepted unverified). A route with hooks is served: its hooks run inside
-    /// the admitted session (`PortDriver::serve_inner` binds them).
+    /// (it must not be accepted unverified). A route with a hook bound is NOT admitted here yet:
+    /// the session refuses to run a hook without the admitted unit and its invocation
+    /// (`plane_driver::port::serve_session`: "native hooks need the admitted unit and
+    /// generation"), and the native path does not hand it either. Such a route stays unmounted
+    /// and says so; serving it unhooked would skip a policy the operator configured.
     pub fn admits(_app: &App, seat: &PortSeat, mounted: &Mounted) -> Result<(), &'static str> {
         let Some(record) = Self::record_of(seat, mounted) else {
             return Err("the route's declaration names no class or no caller");
@@ -271,6 +274,9 @@ impl NativeDataRoute {
             && seat.driver.port().facts() & busbar_plugin_abi::plane::FB_RESOURCE_ADMISSION == 0
         {
             return Err("the route declares resource kinds its plane does not select");
+        }
+        if seat.driver.has_hooks(mounted.route) {
+            return Err("the native data path does not run route hooks");
         }
         Ok(())
     }
@@ -488,11 +494,13 @@ pub(crate) fn governed_key(
 }
 
 /// The audience check of a plane bound to one (MCP's `canonical_uri`, RFC 8707), on the head and
-/// before any verifier runs: a bearer that states an audience must state this plane's. A JWT
-/// minted for another resource, or for none, is refused as any bad credential is. A token core
-/// minted is judged by its verifier, which has the signature and the claims. A credential that is
-/// not a JWT (a gateway key) states no audience: the chain alone judges it. Every occurrence of
-/// `authorization` is scanned, not a decoy first bearer.
+/// before any verifier runs, exactly as the request path it replaces judged it (`auth/mod.rs`,
+/// the `audience::Binding` match): a bearer must be bound to this plane. A JWT whose `aud` names
+/// the plane goes on to the chain, which still verifies it. A JWT minted for another resource or
+/// for none, and a credential that states no audience at all (an opaque key), are refused as any
+/// bad credential is: on an audience-bound plane an unbound credential is never enough. A token
+/// core minted is judged by its verifier, which has the signature and the claims. Every
+/// occurrence of `authorization` is scanned, not a decoy first bearer.
 pub(crate) fn refuse_foreign_audience(
     snapshot: &crate::inbound::request_snapshot::ChargedRequestSnapshot,
     chain: &NativeChain,
@@ -518,10 +526,10 @@ pub(crate) fn refuse_foreign_audience(
                     continue;
                 }
                 match super::audience::inspect_bearer(token.trim(), audience) {
-                    super::audience::Binding::Mismatch => return Err(DataRefused::Credential),
-                    super::audience::Binding::Bound
-                    | super::audience::Binding::Deferred
-                    | super::audience::Binding::Opaque => {}
+                    super::audience::Binding::Mismatch | super::audience::Binding::Opaque => {
+                        return Err(DataRefused::Credential)
+                    }
+                    super::audience::Binding::Bound | super::audience::Binding::Deferred => {}
                 }
             }
             Ok(())
