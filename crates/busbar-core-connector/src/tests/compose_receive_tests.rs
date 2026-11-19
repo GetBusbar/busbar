@@ -7,7 +7,6 @@ use crate::framer::{Call, Crossed, DoorFacts, FramerDoor, Refused};
 use crate::support::{AuthHost, AuthTicket};
 use busbar_contract::abi::mechanism::{call::Outcome, ticket::Ticket};
 use busbar_contract::framing_scope::FramingScope;
-use busbar_plugin_loader::dispatch::framing_context::FramingContext;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::task::{Context, Poll};

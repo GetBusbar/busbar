@@ -497,8 +497,3 @@ busbar_contract::plugin_door! {
     },
 }
 
-/// The carrier's linked row: its door and the Statement it renders, for `load_linked`.
-pub fn row() -> busbar_plugin_loader::dispatch::LinkedRow {
-    busbar_plugin_loader::dispatch::LinkedRow::of_macro(MACRO_DOOR)
-        .expect("the TCP carrier double states itself")
-}

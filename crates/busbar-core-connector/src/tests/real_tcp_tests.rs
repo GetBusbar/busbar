@@ -21,18 +21,12 @@ use busbar_contract::conn::{
 };
 use busbar_contract::rendering::{ReadBlob, ReadNeed};
 use busbar_contract::transport::{EgressTrust, TransportSettings};
-use busbar_plugin_loader::dispatch::kinds::transport::Transport;
-use busbar_plugin_loader::dispatch::{
-    load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
-};
-
 #[path = "tcp_carrier_double.rs"]
 mod tcp_carrier_double;
 
 #[path = "http_framer_double.rs"]
 mod http_framer_double;
 
-use crate::doors::Dispatched;
 use crate::registry::{Entry, Transports};
 use crate::{Connector, DialJudge, Judged, Verdict};
 
