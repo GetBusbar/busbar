@@ -263,6 +263,8 @@ fn request() -> OutboundRequest {
         ],
         body: b"{\"model\":\"m\"}".to_vec(),
         need: 0,
+        scope: None,
+        no_member_auth: false,
     }
 }
 

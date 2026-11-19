@@ -28,7 +28,6 @@ use std::hash::BuildHasher;
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::abi::auth::NO_MEMBER_AUTH_FIELD;
 use busbar_contract::abi::transport::{FAULT_HARD, FAULT_NONE, FAULT_RATE_LIMIT, FAULT_TRANSIENT};
 use busbar_contract::caps::{Pass, Route};
 use busbar_contract::conn::NeedId;
@@ -526,8 +525,9 @@ impl<F: FarEnd> Members for WalkMembers<'_, '_, F> {
 }
 
 /// The far end's request for `exchange` as `member` in `pool`, attempt `attempt`: the exchange moves
-/// in, its header list, method, path and body become the request's own with no copy. `None` = an
-/// exchange this carrier does not send (another carrier, no method or path).
+/// in, its header list, method, path, scope and body become the request's own with no copy, and its
+/// outbound mode is the request's `no_member_auth`. `None` = an exchange this carrier does not send
+/// (another carrier, no method or path).
 fn request_of(
     member: &Text,
     pool: &Text,
@@ -537,26 +537,15 @@ fn request_of(
     if !matches!(exchange.carrier, CARRIER_DEFAULT | CARRIER_HTTP) {
         return None;
     }
-    let outbound = exchange.outbound;
     let UpExchange {
+        outbound,
         method,
         path,
         scope,
-        headers: mut fields,
+        headers: fields,
         body,
         ..
     } = exchange;
-    if outbound == OUTBOUND_NONE {
-        fields.push((NO_MEMBER_AUTH_FIELD.as_bytes().to_vec(), b"1".to_vec()));
-    }
-    if let Some(scope) = scope {
-        fields.push((
-            busbar_contract::abi::auth::SCOPE_REQUEST_FIELD
-                .as_bytes()
-                .to_vec(),
-            scope.into_boxed_bytes().into_vec(),
-        ));
-    }
     Some(OutboundRequest {
         member: member.clone(),
         pool: pool.clone(),
@@ -567,6 +556,8 @@ fn request_of(
         body,
         need: 0,
         text: false,
+        scope: scope.map(|scope| scope.into_boxed_bytes().into_vec()),
+        no_member_auth: outbound == OUTBOUND_NONE,
     })
 }
 
@@ -584,29 +575,16 @@ pub(super) fn is_request_of(
     let (Some(method), Some(path)) = (exchange.method.as_deref(), exchange.path.as_deref()) else {
         return false;
     };
-    let mut fields = request.fields.iter();
-    let mut same = request.member == member
+    request.member == member
         && request.pool == pool
         && request.verb == method.as_bytes()
         && request.target == path.as_bytes()
+        && request.fields == exchange.headers
         && request.body == exchange.body
         && request.need == 0
-        && !request.text;
-    for expected in &exchange.headers {
-        same &= fields.next() == Some(expected);
-    }
-    if exchange.outbound == OUTBOUND_NONE {
-        same &= fields
-            .next()
-            .is_some_and(|(name, value)| name == NO_MEMBER_AUTH_FIELD.as_bytes() && value == b"1");
-    }
-    if let Some(scope) = &exchange.scope {
-        same &= fields.next().is_some_and(|(name, value)| {
-            name == busbar_contract::abi::auth::SCOPE_REQUEST_FIELD.as_bytes()
-                && value == scope.as_bytes()
-        });
-    }
-    same && fields.next().is_none()
+        && !request.text
+        && request.scope.as_deref() == exchange.scope.as_deref().map(str::as_bytes)
+        && request.no_member_auth == (exchange.outbound == OUTBOUND_NONE)
 }
 
 /// The rest of a reply, read from the far end as the plane takes it.
@@ -690,13 +668,14 @@ fn read_open<'a, F: FarEnd>(
         Ok(0) | Err(_) => 200,
         Ok(status) => status,
     };
-    let pending = (!first.bytes.is_empty()).then(|| {
-        if first.fields {
-            Chunk::Trailers(first.bytes.clone())
-        } else {
-            Chunk::Body(first.bytes.clone())
-        }
-    });
+    // The first piece is taken apart: its bytes move into the pending chunk, its head into the open.
+    let pending = if first.bytes.is_empty() {
+        None
+    } else if first.fields {
+        Some(Chunk::Trailers(first.bytes))
+    } else {
+        Some(Chunk::Body(first.bytes))
+    };
     Ok(UpOpen {
         status,
         headers: first.head,

@@ -394,6 +394,8 @@ fn request(member: &str, pool: &str, attempt_no: u32) -> OutboundRequest {
         target: b"/v1/test".to_vec(),
         fields: Vec::new(),
         body: b"request".to_vec(),
+        scope: None,
+        no_member_auth: false,
     }
 }
 
