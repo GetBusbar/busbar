@@ -6,12 +6,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use indexmap::IndexMap;
 
-use busbar_contract::abi::plane::{
-    RecordChain, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
-};
+use busbar_contract::abi::plane::RecordChain;
 use busbar_contract::host_records::conditional::{Expected, Mutation, Predicate, Request};
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
+use busbar_contract::plane::codes::{
+    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
+};
 use busbar_contract::services::{chain_key, chain_key_parts};
 
 use crate::audit::stream_registry::{StreamInput, StreamRecord};

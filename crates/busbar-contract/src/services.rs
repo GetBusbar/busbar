@@ -3,12 +3,13 @@
 
 //! THE HOST SERVICES, AS THE HOST'S TWO HALVES SHARE THEM (`BUSBAR-1.6.0.md` THE DESIGN, host
 
+pub mod codes;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::abi::host::service::ItemSpan;
 use crate::abi::mechanism::call::Outcome;
-use crate::abi::mechanism::KindCode;
+use crate::kinds::codes::KindCode;
 
 /// Opaque process-local incarnation. Cloning preserves identity; reopening never does.
 /// This value is never serialized as a persistence key.
@@ -47,7 +48,7 @@ impl std::fmt::Debug for Incarnation {
 ///
 /// ```compile_fail,E0451
 /// use busbar_contract::services::Caller;
-/// use busbar_contract::abi::mechanism::KindCode;
+/// use busbar_contract::kinds::codes::KindCode;
 /// fn forge(existing: &Caller) {
 ///     let caller = Caller { namespace: "forged".into(), kind: KindCode::Plane, ..existing.clone() };
 /// }
@@ -196,8 +197,8 @@ pub trait HostServices: Send + Sync {
         &self,
         _caller: &Caller,
         _unit: Option<u64>,
-        _candidate: crate::abi::sdk::plane::conditional::ConditionalCandidate,
-        _acked: Box<dyn FnOnce(crate::abi::sdk::plane::conditional::ConditionalResult) + Send>,
+        _candidate: crate::host_records::shapes::ConditionalCandidate,
+        _acked: Box<dyn FnOnce(crate::host_records::shapes::ConditionalResult) + Send>,
     ) -> Result<(), &'static str> {
         Err("conditional record transactions unsupported")
     }
@@ -207,9 +208,9 @@ pub trait HostServices: Send + Sync {
         &self,
         _caller: &Caller,
         _unit: Option<u64>,
-        _query: &crate::abi::mechanism::inspection::InspectionQuery,
-    ) -> crate::abi::mechanism::inspection::InspectionResult {
-        Err(crate::abi::mechanism::inspection::InspectionError::Unsupported)
+        _query: &crate::services::codes::InspectionQuery,
+    ) -> crate::services::codes::InspectionResult {
+        Err(crate::services::codes::InspectionError::Unsupported)
     }
 
     /// Host-only input for a plane's observation extension. No grant is the default.
@@ -228,7 +229,7 @@ pub trait HostServices: Send + Sync {
         _caller: &Caller,
         _ticket: crate::abi::mechanism::ticket::Ticket,
         _unit: Option<u64>,
-        _observation: crate::abi::sdk::plane::observation::Observation,
+        _observation: crate::observation::Observation,
         _done: ObservationDone,
     ) -> Result<(), &'static str> {
         Err("usage observations unsupported")
@@ -240,7 +241,7 @@ pub trait HostServices: Send + Sync {
         _caller: &Caller,
         _ticket: crate::abi::mechanism::ticket::Ticket,
         _unit: Option<u64>,
-        _request: crate::abi::sdk::plane::observation::ScopeRequest,
+        _request: crate::observation::ScopeRequest,
         _done: ObservationDone,
     ) -> Result<(), &'static str> {
         Err("usage observation scopes unsupported")

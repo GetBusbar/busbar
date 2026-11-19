@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::mechanism::observe::{Envelope, PluginDiagnostic, PluginMetric};
+use busbar_contract::observe::{Envelope, PluginDiagnostic, PluginMetric};
 
 pub trait PluginObserver: Send + Sync {
     /// An envelope's reported entries, verbatim: the JSON the plugin's reply carried.
@@ -320,7 +320,7 @@ pub struct EnvelopeObserver {
     observing: std::sync::Arc<Observing>,
     plugin: std::sync::Arc<str>,
     kind: &'static str,
-    families: Vec<busbar_contract::abi::mechanism::rendering::ReadFamily>,
+    families: Vec<busbar_contract::rendering::ReadFamily>,
 
     then: Option<std::sync::Arc<dyn crate::dispatch::EnvelopeSink>>,
 }
@@ -342,7 +342,7 @@ impl EnvelopeObserver {
         kind: &'static str,
         stated: &[u8],
     ) -> Self {
-        let families = busbar_contract::abi::mechanism::rendering::read(stated)
+        let families = busbar_contract::rendering::read(stated)
             .map(|r| r.families)
             .unwrap_or_default();
         Self::with_families(observing, plugin, kind, families)
@@ -353,7 +353,7 @@ impl EnvelopeObserver {
         observing: std::sync::Arc<Observing>,
         plugin: &str,
         kind: &'static str,
-        families: Vec<busbar_contract::abi::mechanism::rendering::ReadFamily>,
+        families: Vec<busbar_contract::rendering::ReadFamily>,
     ) -> Self {
         Self {
             observing,
@@ -370,7 +370,7 @@ impl EnvelopeObserver {
         then: std::sync::Arc<dyn crate::dispatch::EnvelopeSink>,
         plugin: &str,
         kind: &'static str,
-        families: Vec<busbar_contract::abi::mechanism::rendering::ReadFamily>,
+        families: Vec<busbar_contract::rendering::ReadFamily>,
     ) -> Self {
         Self {
             then: Some(then),
@@ -381,7 +381,7 @@ impl EnvelopeObserver {
 
 impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
     fn metric(&self, m: crate::dispatch::Metric<'_>) {
-        use busbar_contract::abi::mechanism::door::{FAMILY_COUNTER, FAMILY_GAUGE};
+        use busbar_contract::plugin_settings::sugar_words::{FAMILY_COUNTER, FAMILY_GAUGE};
         if let Some(then) = &self.then {
             then.metric(m);
         }
@@ -402,7 +402,7 @@ impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
 
     fn diag(&self, d: crate::dispatch::Diagnostic<'_>) {
         use busbar_contract::abi::mechanism::call::{DIAG_LOG, DIAG_LOG_DROPPED};
-        use busbar_contract::abi::mechanism::observe::DiagLevel;
+        use busbar_contract::observe::DiagLevel;
         if let Some(then) = &self.then {
             then.diag(d);
         }
@@ -637,12 +637,7 @@ pub(crate) mod testing {
         }
 
         /// A back-channel metric, recorded as the one-entry fold its JSON form is.
-        fn metric(
-            &self,
-            plugin: &str,
-            kind: &str,
-            metric: busbar_contract::abi::mechanism::observe::PluginMetric,
-        ) {
+        fn metric(&self, plugin: &str, kind: &str, metric: busbar_contract::observe::PluginMetric) {
             let entry = serde_json::to_value(metric).expect("a metric entry renders as JSON");
             self.observe(plugin, kind, &[entry], &[]);
         }
@@ -652,7 +647,7 @@ pub(crate) mod testing {
             &self,
             plugin: &str,
             kind: &str,
-            diagnostic: busbar_contract::abi::mechanism::observe::PluginDiagnostic,
+            diagnostic: busbar_contract::observe::PluginDiagnostic,
         ) {
             let entry =
                 serde_json::to_value(diagnostic).expect("a diagnostic entry renders as JSON");

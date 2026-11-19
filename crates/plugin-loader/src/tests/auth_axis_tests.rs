@@ -76,15 +76,12 @@ const MARKS: &[busbar_contract::abi::mechanism::door::MarkWord] = &[
 
 const DEFAULT_TAIL: &busbar_contract::abi::auth::AuthTail =
     &busbar_contract::abi::sdk::auth_door::verify_tail(
-        busbar_contract::abi::auth::FACT_DEFAULT_INBOUND_STYLE,
-        busbar_contract::abi::auth::AuthPoints::HEAD,
+        busbar_contract::auth_calls::codes::FACT_DEFAULT_INBOUND_STYLE,
+        busbar_contract::route::AuthPoints::HEAD,
     );
 
 const PLAIN_TAIL: &busbar_contract::abi::auth::AuthTail =
-    &busbar_contract::abi::sdk::auth_door::verify_tail(
-        0,
-        busbar_contract::abi::auth::AuthPoints::HEAD,
-    );
+    &busbar_contract::abi::sdk::auth_door::verify_tail(0, busbar_contract::route::AuthPoints::HEAD);
 
 const fn stating(
     name: &'static str,
@@ -128,7 +125,7 @@ mod aliased_inbound {
     const TAIL: &busbar_contract::abi::auth::AuthTail =
         &busbar_contract::abi::sdk::auth_door::verify_tail(
             0,
-            busbar_contract::abi::auth::AuthPoints::HEAD_BODY,
+            busbar_contract::route::AuthPoints::HEAD_BODY,
         );
     busbar_contract::auth_verify_door!(
         super::Fixture,
@@ -137,7 +134,8 @@ mod aliased_inbound {
 }
 
 mod outbound_only {
-    use busbar_contract::abi::auth::{AuthTail, StyleDecl, CAP_OUTBOUND, POINT_HEAD};
+    use busbar_contract::abi::auth::{AuthTail, StyleDecl, CAP_OUTBOUND};
+    use busbar_contract::route::POINT_HEAD;
     const STYLES: &[StyleDecl] = &[StyleDecl {
         name: busbar_contract::abi::sdk::door::abi_str("request-signature"),
         flags: 0,
@@ -182,10 +180,7 @@ fn inbound_style_uses_declared_aliases_and_points_without_opening() {
     assert_eq!(style.module, "aliased-inbound");
     assert!(style.names.iter().any(|name| name == "aliased-inbound"));
     assert!(style.names.iter().any(|name| name == "request-signature"));
-    assert_eq!(
-        style.points,
-        busbar_contract::abi::auth::AuthPoints::HEAD_BODY
-    );
+    assert_eq!(style.points, busbar_contract::route::AuthPoints::HEAD_BODY);
     assert!(rows.inbound_style("undeclared-style").is_none());
     assert!(rows.bound.lock().unwrap().is_empty());
 }
@@ -213,10 +208,7 @@ fn dropped_inbound_style_is_read_from_signed_manifest_without_loading() {
     assert_eq!(style.module, "busbar-auth-manifest-inbound");
     assert!(style.names.iter().any(|name| name == "manifest-inbound"));
     assert!(style.names.iter().any(|name| name == "request-signature"));
-    assert_eq!(
-        style.points,
-        busbar_contract::abi::auth::AuthPoints::HEAD_BODY
-    );
+    assert_eq!(style.points, busbar_contract::route::AuthPoints::HEAD_BODY);
     assert!(rows.bound.lock().unwrap().is_empty());
 }
 
@@ -332,8 +324,8 @@ const OPERATOR_PRINCIPAL: &str = "manifest-operator";
 const OPERATOR_TAIL: &busbar_contract::abi::auth::AuthTail =
     &busbar_contract::abi::sdk::auth_door::with_operator(
         busbar_contract::abi::sdk::auth_door::verify_tail(
-            busbar_contract::abi::auth::FACT_OPERATOR,
-            busbar_contract::abi::auth::AuthPoints::HEAD,
+            busbar_contract::auth_calls::codes::FACT_OPERATOR,
+            busbar_contract::route::AuthPoints::HEAD,
         ),
         OPERATOR_PRINCIPAL,
     );
@@ -348,7 +340,7 @@ mod operator_row {
 const CACHEABLE_TAIL: &busbar_contract::abi::auth::AuthTail =
     &busbar_contract::abi::sdk::auth_door::verify_tail(
         busbar_contract::abi::auth::FACT_CACHEABLE,
-        busbar_contract::abi::auth::AuthPoints::HEAD,
+        busbar_contract::route::AuthPoints::HEAD,
     );
 
 mod cacheable {
@@ -482,7 +474,7 @@ const READER_TAIL: &busbar_contract::abi::auth::AuthTail =
     &busbar_contract::abi::sdk::auth_door::with_credential_kinds(
         busbar_contract::abi::sdk::auth_door::verify_tail(
             0,
-            busbar_contract::abi::auth::AuthPoints::HEAD,
+            busbar_contract::route::AuthPoints::HEAD,
         ),
         READER_KINDS,
     );
@@ -500,7 +492,7 @@ const fn issued_mark(
 
 const ISSUED_MARKS: &[busbar_contract::abi::mechanism::door::MarkWord] = &[
     issued_mark(
-        busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX,
+        busbar_contract::plugin_settings::sugar_words::MARK_WORD_ISSUED_ID_PREFIX,
         "PFX",
     ),
     issued_mark(
@@ -569,8 +561,8 @@ const SECOND_PRINCIPAL: &str = "second-operator";
 const SECOND_TAIL: &busbar_contract::abi::auth::AuthTail =
     &busbar_contract::abi::sdk::auth_door::with_operator(
         busbar_contract::abi::sdk::auth_door::verify_tail(
-            busbar_contract::abi::auth::FACT_OPERATOR,
-            busbar_contract::abi::auth::AuthPoints::HEAD,
+            busbar_contract::auth_calls::codes::FACT_OPERATOR,
+            busbar_contract::route::AuthPoints::HEAD,
         ),
         SECOND_PRINCIPAL,
     );

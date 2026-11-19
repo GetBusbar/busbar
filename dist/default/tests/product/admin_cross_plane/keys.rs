@@ -1824,7 +1824,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             busbar_plugin_loader::dispatch::rendering_of_library(&ranking_library)
                 .expect("the actual Ranking statement reads")
                 .expect("the actual Ranking product states its door");
-        let ranking_facts = busbar_contract::abi::mechanism::rendering::read(&ranking_statement)
+        let ranking_facts = busbar_contract::rendering::read(&ranking_statement)
             .expect("the actual Ranking statement parses");
         let mut ranking_manifest = super::plugins::manifest(
             "hook",
@@ -1846,7 +1846,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
         let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
             .expect("the actual OIDC statement reads")
             .expect("the actual OIDC product states its door");
-        let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+        let oidc_module = busbar_contract::rendering::read(&oidc_statement)
             .expect("the actual OIDC statement parses")
             .name;
         crate::test_common::credentials::install_auth_plugin(

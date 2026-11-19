@@ -52,7 +52,6 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
-use busbar_contract::abi::mechanism::check::HARD_MAX_BYTES;
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, GenIn, OpenIn, OpenOut, RefreshIn, TickIn, TickOut,
@@ -63,6 +62,7 @@ use busbar_contract::abi::sdk::out::Scalar;
 use busbar_contract::abi::sdk::test_support::loans::{Buf, Loans, Pairs};
 use busbar_contract::abi::sdk::test_support::mutant::Mutant;
 use busbar_contract::conn::InstanceId;
+use busbar_contract::records::size_limits::HARD_MAX_BYTES;
 use busbar_contract::services::{CallerBinding, HostServices};
 
 use crate::dispatch::kinds::{

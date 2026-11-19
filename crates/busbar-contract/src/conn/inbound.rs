@@ -3,8 +3,8 @@
 
 //! The common inbound listener grammar, interpreted only at declared kind boundaries.
 
-use crate::abi::host::conn::connector::DIRECTION_INBOUND;
-use crate::abi::mechanism::rendering::ReadNeed;
+use crate::conn::codes::DIRECTION_INBOUND;
+use crate::rendering::ReadNeed;
 use crate::{caps::KernelSeal, plugin_settings::Settings, secret_ref::SecretRef};
 use serde::{Deserialize, Serialize};
 

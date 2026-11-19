@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::auth::AuthPoints;
+use busbar_contract::route::AuthPoints;
 
 #[test]
 fn mixed_peer_answers_never_replace_their_per_request_verdicts() {
@@ -218,7 +218,8 @@ fn peer_answers_return_flow_alone_and_never_name_a_request_unit_or_strips() {
 
 #[test]
 fn mixed_peer_metadata_requires_each_declared_request_point_and_peer_only_never_repeats() {
-    use busbar_contract::abi::auth::{POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
+    use busbar_contract::abi::auth::POINT_PEER;
+    use busbar_contract::route::{POINT_HEAD, POINT_HEAD_BODY};
     for request_point in [POINT_HEAD, POINT_HEAD_BODY] {
         let points = AuthPoints(POINT_PEER | request_point);
         assert!(points.has(AuthPoint::Peer));

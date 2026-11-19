@@ -3,6 +3,7 @@
 
 //! Shared host-record conditions, decisions and retention vocabulary for every plugin kind.
 
+pub mod shapes;
 use zeroize::Zeroize;
 
 /// The exact state a predicate requires.

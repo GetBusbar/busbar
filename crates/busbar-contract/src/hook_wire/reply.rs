@@ -388,9 +388,9 @@ pub fn bound_metric(mut m: HookMetric, cuts: &mut TextCuts) -> Option<HookMetric
 /// shape of an envelope's `metrics` entries) as the host's own entry: field for field, the entry
 /// its JSON form deserializes into.
 ///
-/// [`PluginMetric`]: crate::abi::mechanism::observe::PluginMetric
-impl From<crate::abi::mechanism::observe::PluginMetric> for HookMetric {
-    fn from(m: crate::abi::mechanism::observe::PluginMetric) -> Self {
+/// [`PluginMetric`]: crate::observe::PluginMetric
+impl From<crate::observe::PluginMetric> for HookMetric {
+    fn from(m: crate::observe::PluginMetric) -> Self {
         HookMetric {
             name: m.name,
             kind: m.kind,

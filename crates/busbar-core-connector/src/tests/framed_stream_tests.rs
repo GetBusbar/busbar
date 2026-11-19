@@ -8,11 +8,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::transport::{
-    FramePiece, FramerOut, FramerSink, PIECE_END_OF_FRAME, SIDE_ACCEPT_STREAM,
-};
+use busbar_contract::abi::transport::{FramePiece, FramerOut, FramerSink};
+use busbar_contract::transport::codes::{PIECE_END_OF_FRAME, SIDE_ACCEPT_STREAM};
 
-use busbar_contract::abi::host::service::{SCHEME_PLAIN, SCHEME_SECURE};
+use busbar_contract::services::codes::{SCHEME_PLAIN, SCHEME_SECURE};
 
 use super::{field_lines, FramedStream};
 use crate::framer::{Call, Crossed, DoorFacts, FramerDoor};
@@ -42,7 +41,7 @@ fn door() -> Arc<LengthDoor> {
             name: "lp".into(),
             claims: vec!["web", "lp"],
 
-            role: busbar_contract::abi::transport::ROLE_FRAMER,
+            role: busbar_contract::transport::codes::ROLE_FRAMER,
             composes_over: Vec::new(),
             ported: false,
             status_rows: vec![(1, 0, 9)],
@@ -362,12 +361,12 @@ fn neutral_closing_uses_producer_metadata_and_preserves_an_unknown_namespace() {
                             offset: 0,
                             len: 0,
                             code: 70_123,
-                            status_class: busbar_contract::abi::transport::STATUS_SUCCESS,
-                            flags: busbar_contract::abi::transport::PIECE_FIELDS
-                                | busbar_contract::abi::transport::PIECE_HAS_CODE
-                                | busbar_contract::abi::transport::PIECE_CODE_HANDOFF
+                            status_class: busbar_contract::transport::codes::STATUS_SUCCESS,
+                            flags: busbar_contract::transport::codes::PIECE_FIELDS
+                                | busbar_contract::transport::codes::PIECE_HAS_CODE
+                                | busbar_contract::transport::codes::PIECE_CODE_HANDOFF
                                 | PIECE_END_OF_FRAME,
-                            fault: busbar_contract::abi::transport::FAULT_NONE,
+                            fault: busbar_contract::transport::codes::FAULT_NONE,
                             retry_after_secs: 0,
                             declared_len: 0,
                         };
@@ -413,7 +412,9 @@ impl FramerDoor for TimedDoor {
     }
 
     fn cross(&self, call: Call<'_>) -> Crossed {
-        use busbar_contract::abi::transport::{PIECE_END, PIECE_STREAM_FAILED, YIELD_HAS_DEADLINE};
+        use busbar_contract::transport::codes::{
+            PIECE_END, PIECE_STREAM_FAILED, YIELD_HAS_DEADLINE,
+        };
         let fail = |sink: &FramerSink, output: &mut FramerOut| {
             // SAFETY: the host lends a writable piece slot for this framing call.
             unsafe {

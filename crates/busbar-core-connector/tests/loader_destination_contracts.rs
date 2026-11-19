@@ -4,15 +4,18 @@
 // Futures over the serving App's credential custody graph prove Send through more than the
 // default 128 auto-trait steps (see busbar-kernel's lib.rs); the graph is acyclic.
 #![recursion_limit = "256"]
-use busbar_contract::abi::host::conn::connector::{
-    EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
-};
 use busbar_contract::abi::host::service::{
-    DEST_ALLOWED, DEST_EXPLAIN, DEST_INTERNAL, DEST_METADATA, DEST_NO_HOST, DEST_OBFUSCATED,
-    DEST_PLAINTEXT, DEST_REFUSE_PRIVATE, DEST_RESOLVE, DEST_SCHEME, DEST_UNRESOLVABLE,
+    DEST_ALLOWED, DEST_EXPLAIN, DEST_REFUSE_PRIVATE, DEST_RESOLVE,
 };
 use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::conn::codes::{
+    EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+};
 use busbar_contract::net::METADATA_HOSTS;
+use busbar_contract::services::codes::{
+    DEST_INTERNAL, DEST_METADATA, DEST_NO_HOST, DEST_OBFUSCATED, DEST_PLAINTEXT, DEST_SCHEME,
+    DEST_UNRESOLVABLE,
+};
 use busbar_contract::services::{HostServices, Later, Ran, Stored};
 use busbar_core_connector::guard::{Guard, Resolve, Resolved};
 use busbar_core_connector::process::GuardJudge;
@@ -210,7 +213,7 @@ fn dest_judge_resolves_through_the_stated_answers_and_writes_what_it_judged() {
         (
             "https://empty.example/",
             DEST_RESOLVE,
-            busbar_contract::abi::host::service::DEST_NO_ADDRESSES,
+            busbar_contract::services::codes::DEST_NO_ADDRESSES,
             vec![],
         ),
         (

@@ -4,7 +4,8 @@
 //! Checked-batch continuation and the finite bidirectional publication boundary.
 
 use super::*;
-use busbar_contract::abi::transport::{FramePiece, PIECE_END_OF_FRAME, ROLE_FRAMER, YIELD_MORE};
+use busbar_contract::abi::transport::FramePiece;
+use busbar_contract::transport::codes::{PIECE_END_OF_FRAME, ROLE_FRAMER, YIELD_MORE};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -184,7 +185,7 @@ impl FramerDoor for Branching {
                     pointer: input.bytes as usize,
                     len: input.len,
                     end: input.end_of_frame != 0,
-                    text: input.flags & busbar_contract::abi::transport::EMIT_TEXT != 0,
+                    text: input.flags & busbar_contract::transport::codes::EMIT_TEXT != 0,
                     more,
                     capacity: input.sink.pieces_cap,
                 });

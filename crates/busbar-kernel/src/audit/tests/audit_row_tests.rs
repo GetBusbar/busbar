@@ -254,6 +254,39 @@ async fn audit_rows_carry_generation_and_request() {
     assert!(outside.request_id.is_none() && outside.idempotency_key.is_none());
 }
 
+/// A config-changing request's applied row carries the durable configuration generation (what
+/// `GET /info` and the config ETag report), read after the publication, never the per-process
+/// `config_version` counter. The two differ here, as they do after any restart on a Store.
+#[tokio::test]
+async fn config_rows_carry_the_durable_generation_not_the_process_counter() {
+    use std::sync::atomic::Ordering;
+    let before = crate::inbound::native::tests::app();
+    before.config_generation.store(41, Ordering::Release);
+    let handle = Arc::new(crate::state::AppHandle::new(before.clone()));
+    let request = Arc::new(AuditRequest::default());
+    let row = scope_request(Some(request), async {
+        note_config_generation_of(handle.clone());
+        // The change publishes: a new App with the process counter and the Store's generation
+        // both advanced, as a publication on a Store leaves them.
+        let mut published = (*before).clone();
+        published.config_version = 3;
+        published.config_generation.store(42, Ordering::Release);
+        handle.swap(Arc::new(published)).await;
+        let mut applied = AuditRowInput {
+            outcome: "applied".into(),
+            ..Default::default()
+        };
+        stamp_request_context(&mut applied);
+        applied
+    })
+    .await;
+    assert_eq!(
+        row.config_generation.as_deref(),
+        Some("42"),
+        "the row names the generation the change published, not config_version 3"
+    );
+}
+
 /// ADMIN-API-1.6-ONE-MODEL section 7.1: scheme 4 seals the request's correlation, and each member
 /// moves the digest.
 #[test]

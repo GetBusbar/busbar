@@ -5,14 +5,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::abi::auth::{
-    slot, BeginLoginIn, BeginLoginOut, CompleteLoginIn, IdentifyOut, LoginField, BEGIN_AUTHORIZE,
-    BEGIN_FORM, FORM_PASSWORD, IDENTITY_BUF_BYTES, IDENTITY_GROUPS, LOGIN_BAD_CREDENTIAL,
-    LOGIN_IDENTITY, LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED,
+    BeginLoginIn, BeginLoginOut, CompleteLoginIn, IdentifyOut, LoginField,
 };
 use busbar_contract::abi::mechanism::call::{
     AbiStr, DeadlineClass, Outcome, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::auth::{BeginLogin, FieldKind, LoginForm, LoginOutcome, Principal};
+use busbar_contract::auth_calls::codes::{
+    slot, BEGIN_AUTHORIZE, BEGIN_FORM, FORM_PASSWORD, IDENTITY_BUF_BYTES, IDENTITY_GROUPS,
+    LOGIN_BAD_CREDENTIAL, LOGIN_IDENTITY, LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED,
+};
 use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled};
 
 use super::{blob, grown, identify_out, lend, lend_opt, Held, Shared, VerifyInput};

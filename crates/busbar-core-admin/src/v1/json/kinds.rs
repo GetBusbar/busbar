@@ -388,6 +388,7 @@ fn pools_descriptor() -> Value {
         "fields": [
             {"name": "pool", "label": "Pool", "type": "string", "unit": null, "format": null, "role": "dimension"},
             {"name": "model", "label": "Model", "type": "string", "unit": null, "format": null, "role": "id"},
+            {"name": "provider", "label": "Provider", "type": "string", "unit": null, "format": null, "role": "dimension"},
             {"name": "weight", "label": "Weight", "type": "int", "unit": "count", "format": null, "role": "measure"},
             {"name": "usable", "label": "Usable", "type": "bool", "unit": null, "format": null, "role": "status"},
             {"name": "cooldown_remaining_seconds", "label": "Cooldown left", "type": "int", "unit": "s", "format": null, "role": "measure"},
@@ -705,7 +706,7 @@ pub(crate) fn plane_runtime(app: &App, decl: &PlaneDecl) -> Value {
             row.insert("target", Value::from(route.target.as_str()));
             row.insert(
                 "public",
-                Value::from(route.flags & busbar_contract::abi::plane::ROUTE_PUBLIC != 0),
+                Value::from(route.flags & busbar_contract::plane::codes::ROUTE_PUBLIC != 0),
             );
             row.insert("audit_verb", Value::from(route.audit_verb.as_str()));
             Value::from(row)

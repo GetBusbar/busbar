@@ -198,10 +198,10 @@ pub(crate) fn route_lines(
     mounts: &[Arc<super::provisioning_mount::ProvisionMount>],
 ) -> Vec<(
     String,
-    busbar_contract::abi::mechanism::route::RouteMethod,
-    busbar_contract::abi::mechanism::route::RouteAuth,
+    busbar_contract::route::RouteMethod,
+    busbar_contract::route::RouteAuth,
 )> {
-    use busbar_contract::abi::mechanism::route::RouteAuth;
+    use busbar_contract::route::RouteAuth;
     mounts
         .iter()
         .flat_map(|mount| {
@@ -222,7 +222,7 @@ pub(crate) fn mount_routes(
     mut router: busbar_kernel::core_routes::CoreRouter,
     mounts: &[Arc<super::provisioning_mount::ProvisionMount>],
 ) -> busbar_kernel::core_routes::CoreRouter {
-    use busbar_contract::abi::mechanism::route::RouteAuth;
+    use busbar_contract::route::RouteAuth;
     for mount in mounts {
         for method in super::off_path::serve::METHODS {
             let mounted = Arc::clone(mount);

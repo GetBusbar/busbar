@@ -3,6 +3,7 @@
 
 //! THE AUTH KIND'S CALLS, AS THE HOST'S TWO HALVES SHARE THEM (`BUSBAR-1.6.0.md` THE DESIGN,
 
+pub mod codes;
 /// Inert provider-owned login presentation carried by the auth lifecycle.
 pub mod presentation;
 pub use presentation::{LoginIcon, LoginIconPath, LoginPresentation};
@@ -13,8 +14,8 @@ use std::future::Future;
 use crate::redacted::Secret;
 use std::sync::Arc;
 
-use crate::abi::auth::AuthPoint;
 use crate::auth::{BeginLogin, CompleteLogin, LoginKind, LoginOutcome};
+use crate::route::AuthPoint;
 
 /// One inbound request at one AUTH POINT, as the host hands it to `verify` (THE DESIGN, "Auth
 pub struct VerifyRequest {
@@ -304,7 +305,7 @@ impl LoginCall for LoginSettled {
 
 /// THE SHAPE OF THE CREDENTIAL THE HOST ISSUES for an auth row that reads host-held credentials,
 /// as the row's Statement states it in its `MARK_WORD_ISSUED_*` word marks
-/// ([`crate::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX`] and its siblings), checked at load.
+/// ([`crate::plugin_settings::sugar_words::MARK_WORD_ISSUED_ID_PREFIX`] and its siblings), checked at load.
 /// Kind-neutral: the host draws every symbol after the prefix from the OS CSPRNG over the stated
 /// alphabets, each symbol with equal weight, and names no format of its own.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -329,19 +330,19 @@ pub trait AuthCalls: Send + Sync {
     /// The tail's facts (`abi::auth::FACT_*`).
     fn facts(&self) -> u32;
 
-    /// With [`crate::abi::auth::FACT_READS_CREDENTIALS`]: the host-held credential kinds `verify`
+    /// With [`crate::auth_calls::codes::FACT_READS_CREDENTIALS`]: the host-held credential kinds `verify`
     fn credential_kinds(&self) -> Vec<String> {
         Vec::new()
     }
 
-    /// With [`crate::abi::auth::FACT_READS_CREDENTIALS`]: the shape of the credential the host issues
+    /// With [`crate::auth_calls::codes::FACT_READS_CREDENTIALS`]: the shape of the credential the host issues
     fn issued_shape(&self) -> Option<IssuedShape> {
         None
     }
 
     /// The auth points `verify` is called at, as the tail states them
-    fn inbound_points(&self) -> crate::abi::auth::AuthPoints {
-        crate::abi::auth::AuthPoints::HEAD
+    fn inbound_points(&self) -> crate::route::AuthPoints {
+        crate::route::AuthPoints::HEAD
     }
 
     /// The inbound carriers `verify` reads (field line names, lower-case), as the Statement's
@@ -535,7 +536,7 @@ pub struct InboundStyle {
     /// The module key and its declared aliases. These never name outbound styles implicitly.
     pub names: Vec<String>,
     /// The points its inbound verifier requires.
-    pub points: crate::abi::auth::AuthPoints,
+    pub points: crate::route::AuthPoints,
 }
 
 /// ONE OUTBOUND STYLE an auth row declares ([`AuthAxis::outbound_styles`]): its name and its

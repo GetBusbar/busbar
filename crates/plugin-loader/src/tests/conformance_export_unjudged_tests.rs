@@ -3,9 +3,10 @@
 
 use std::sync::atomic::{AtomicPtr, Ordering};
 
-use busbar_contract::abi::export::{CheckOut, Ops, ServeOut, StatusOut, CHECK_PHASE_LIMITS};
+use busbar_contract::abi::export::{CheckOut, Ops, ServeOut, StatusOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::door::Door;
+use busbar_contract::export_calls::codes::CHECK_PHASE_LIMITS;
 
 use std::sync::Arc;
 

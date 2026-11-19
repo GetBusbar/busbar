@@ -4,9 +4,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::abi::plane::{CLAIM_PROBE, TAIL_PROBES};
 use busbar_contract::caps::{OriginKind, Pass, Route};
 use busbar_contract::ids::UnitKey;
+use busbar_contract::plane::codes::{CLAIM_PROBE, TAIL_PROBES};
 use busbar_contract::DestinationId;
 
 use super::route::{self, CallerEnd, FarEnd, Pumping};

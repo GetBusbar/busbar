@@ -15,9 +15,9 @@ use oauth_as::scope::ScopeSet;
 use oauth_as::store::{RevocationWindow, Storage, StorageError, WriteOutcome};
 use oauth_as::token::{IssuedToken, RefreshTokenRecord};
 
-use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
-use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+use busbar_contract::conn::codes::{DIRECTION_OUTBOUND, EGRESS_OPEN_WEB};
 use busbar_contract::conn::{ConnError, ConnId, NeedId, OpenDesc, PieceKind};
+use busbar_contract::rendering::{ReadBlob, ReadNeed};
 
 use crate::Table;
 
@@ -212,7 +212,7 @@ pub(crate) fn document_need() -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: u64::try_from(FETCH_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
     }

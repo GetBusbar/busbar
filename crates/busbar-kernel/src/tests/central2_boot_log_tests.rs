@@ -62,7 +62,7 @@ fn the_registry_build_keeps_the_preflights_boot_lines_in_order() {
         &[crate::tests::dropped(
             "acme-lines",
             "lines",
-            busbar_contract::abi::mechanism::kind::STORE,
+            busbar_contract::kinds::codes::STORE,
         )],
         &[],
     );

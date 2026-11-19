@@ -4,16 +4,17 @@
 use crate::auth_axis::AuthRows;
 use crate::dispatch::{DispatchConfig, Dispatcher};
 use crate::{LinkedPlugin, PluginRegistry};
-use busbar_contract::abi::auth::{
-    AuthPoints, AuthTail, BeginLoginOut, Ops, BEGIN_AUTHORIZE, CAP_INBOUND, CAP_LOGIN,
-    LOGIN_KIND_REDIRECT,
-};
+use busbar_contract::abi::auth::{AuthTail, BeginLoginOut, Ops};
 use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::call::{Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::sdk::auth_door::{verify_tail, with_tail, VerifyPlugin};
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::auth::{BeginLogin, LoginOutcome};
+use busbar_contract::auth_calls::codes::{
+    BEGIN_AUTHORIZE, CAP_INBOUND, CAP_LOGIN, LOGIN_KIND_REDIRECT,
+};
+use busbar_contract::route::AuthPoints;
 use std::sync::Arc;
 use std::sync::OnceLock;
 

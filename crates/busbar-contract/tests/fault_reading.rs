@@ -3,9 +3,8 @@
 
 //! A TRANSPORT THAT STATES NO FAULT READING READS AS NONE.
 
-use busbar_contract::abi::transport::{
-    FramePiece, FAULT_CALLER, FAULT_HARD, FAULT_HEALTHY, FAULT_NONE, FAULT_TRANSIENT,
-};
+use busbar_contract::abi::transport::{FramePiece, FAULT_CALLER, FAULT_HEALTHY};
+use busbar_contract::transport::codes::{FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
 use busbar_contract::transport::wire::WireFault;
 
 #[test]
@@ -29,11 +28,11 @@ fn every_stated_reading_round_trips_and_an_unknown_byte_is_none() {
         Some(WireFault::Healthy)
     );
     assert_eq!(
-        WireFault::from_code(busbar_contract::abi::transport::FAULT_RATE_LIMIT + 1),
+        WireFault::from_code(busbar_contract::transport::codes::FAULT_RATE_LIMIT + 1),
         None
     );
     assert_eq!(
-        WireFault::from_code(busbar_contract::abi::transport::FAULT_RATE_LIMIT),
+        WireFault::from_code(busbar_contract::transport::codes::FAULT_RATE_LIMIT),
         Some(WireFault::RateLimit)
     );
     assert_eq!(WireFault::from_code(u8::MAX), None);

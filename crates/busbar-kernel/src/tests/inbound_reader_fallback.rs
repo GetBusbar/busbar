@@ -4,9 +4,9 @@
 //! Exercise the actual inbound host's two-point dispatch, not its decision helpers.
 use super::*;
 use crate::guest::{Claimant, Route};
-use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
-use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_contract::auth_calls::Verifying;
+use busbar_contract::route::{AuthPoints, POINT_HEAD};
+use busbar_contract::route::{METHOD_POST, PATH_EXACT};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "inbound_single_path.rs"]

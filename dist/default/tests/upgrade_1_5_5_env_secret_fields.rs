@@ -137,7 +137,7 @@ fn post(port: u16, path: &str, body: &str) -> Option<u16> {
 }
 
 fn declared(door: busbar_contract::abi::mechanism::door::DoorFn) -> (Vec<String>, Vec<String>) {
-    use busbar_contract::abi::mechanism::rendering;
+    use busbar_contract::kinds::codes::rendering;
     let bytes = busbar_plugin_loader::dispatch::rendering_of(door).expect("the Statement renders");
     let stated = rendering::read(&bytes).expect("the rendering reads back");
     let reference = stated

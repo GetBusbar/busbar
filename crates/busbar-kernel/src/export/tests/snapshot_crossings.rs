@@ -5,8 +5,8 @@
 
 use crate as busbar_kernel;
 use busbar_contract::abi::mechanism::endpoint::EndpointRequest;
-use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use busbar_contract::export_calls::ExportCalls;
+use busbar_contract::route::{Route, RouteAuth, RouteMethod};
 use std::sync::Arc;
 
 #[path = "snapshot_export_fixture.rs"]

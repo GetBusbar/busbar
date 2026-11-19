@@ -216,7 +216,7 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
     let statement = crate::root::loader::dispatch::rendering_of_library(&store_path)
         .expect("the actual Store statement reads")
         .expect("the actual Store states its contract");
-    let store_module = busbar_contract::abi::mechanism::rendering::read(&statement)
+    let store_module = busbar_contract::rendering::read(&statement)
         .expect("the actual Store statement is valid")
         .name;
     let store_settings =

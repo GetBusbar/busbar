@@ -8,13 +8,13 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use arc_swap::ArcSwap;
 
-use busbar_contract::abi::host::conn::connector;
-use busbar_contract::abi::host::service::{
-    DEST_INTERNAL, DEST_METADATA, DEST_NO_ADDRESSES, DEST_NO_HOST, DEST_OBFUSCATED,
-};
+use busbar_contract::conn::codes::connector;
 use busbar_contract::net::{
     embedded_ipv4, host_ip, ip_is_cloud_metadata, ip_is_internal, is_alternate_ipv4_encoding,
     is_link_local_v6, judged_host, IpNet, METADATA_HOSTS,
+};
+use busbar_contract::services::codes::{
+    DEST_INTERNAL, DEST_METADATA, DEST_NO_ADDRESSES, DEST_NO_HOST, DEST_OBFUSCATED,
 };
 
 /// THE DEFAULT POLICY, ONE TABLE: the egress classes whose dials the private address refusal holds
@@ -66,7 +66,7 @@ pub fn judged_class(class: u32, configured: bool) -> u32 {
 /// when an answered (or literal) address decided it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal<'h> {
-    /// The `DEST_*` verdict (`busbar_contract::abi::host::service`).
+    /// The `DEST_*` verdict (`busbar_contract::services::codes::service`).
     pub verdict: u64,
     /// The target as judged: the caller's own name, lent (a refusal copies no name).
     pub host: Refused<'h>,

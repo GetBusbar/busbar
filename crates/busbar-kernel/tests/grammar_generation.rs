@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
+use busbar_contract::plugin_settings::sugar_words::REWRITE_SUGAR;
 use busbar_contract::secret_ref::context::UNDECLARED_MARKER;
 use busbar_contract::secret_ref::Sugars;
 use busbar_kernel::config::grammar::{Grammar, GrammarRefusal, PhaseOneIn};

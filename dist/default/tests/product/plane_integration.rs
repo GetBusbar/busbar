@@ -89,7 +89,7 @@ fn resolved(sections: &str) -> RootCfg {
         .expect("write the actual file-backed operator input");
     auth.signing_key = Some(crate::root::test_plugins::source_reference(
         crate::root::native_secrets::linked_for_tests(),
-        busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
+        busbar_contract::plugin_settings::sugar_words::SUGAR_ROLE_PATH,
         signing_key.to_string_lossy().into_owned(),
     ));
     let operator = auth
@@ -99,7 +99,7 @@ fn resolved(sections: &str) -> RootCfg {
         .expect("the actual operator module");
     operator.token = Some(crate::root::test_plugins::source_reference(
         crate::root::native_secrets::linked_for_tests(),
-        busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
+        busbar_contract::plugin_settings::sugar_words::SUGAR_ROLE_PATH,
         operator_token.to_string_lossy().into_owned(),
     ));
     cfg.auth = Some(auth);
@@ -662,7 +662,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     for public in &declared_public {
         assert!(
             core_routes.iter().any(|(path, _, auth)| path == public
-                && *auth == busbar_contract::abi::mechanism::route::RouteAuth::None),
+                && *auth == busbar_contract::route::RouteAuth::None),
             "{public} is declared unauthenticated-by-design but no core route mounts it with \
              RouteAuth::None — the bypass set this names is not the one the router built"
         );
@@ -722,7 +722,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     let mut door_checked = 0usize;
     for route in &core_routes {
         let path = concrete(&route.0);
-        if route.2 == busbar_contract::abi::mechanism::route::RouteAuth::None {
+        if route.2 == busbar_contract::route::RouteAuth::None {
             assert!(
                 declared_public.contains(&route.0),
                 "{} is mounted RouteAuth::None but is not in declared_public — an unauthenticated \
@@ -862,15 +862,14 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     let guarded_core = core_routes
         .iter()
         .filter(|(path, _, auth)| {
-            *auth != busbar_contract::abi::mechanism::route::RouteAuth::None
-                && !admissible.contains(path)
+            *auth != busbar_contract::route::RouteAuth::None && !admissible.contains(path)
         })
         .count();
     assert!(
         checked == guarded_core
             && checked >= 1
             && core_routes.iter().any(|(path, _, auth)| path == "/stats"
-                && *auth != busbar_contract::abi::mechanism::route::RouteAuth::None),
+                && *auth != busbar_contract::route::RouteAuth::None),
         "the walk covered {checked} of {guarded_core} guarded core routes, and must cover the \
          kernel's guarded `/stats` — the enumeration is not seeing the router: {core_routes:?}"
     );
@@ -1067,7 +1066,7 @@ async fn plane_router(
         .map(|name| {
             (
                 (*name).to_string(),
-                busbar_contract::abi::auth::AuthPoints(busbar_contract::abi::auth::POINT_HEAD),
+                busbar_contract::route::AuthPoints(busbar_contract::route::POINT_HEAD),
             )
         })
         .collect();

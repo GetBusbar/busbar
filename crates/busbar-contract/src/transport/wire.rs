@@ -74,9 +74,9 @@ impl WireFault {
     pub const fn from_code(code: u8) -> Option<Self> {
         match code {
             crate::abi::transport::FAULT_CALLER => Some(Self::Caller),
-            crate::abi::transport::FAULT_TRANSIENT => Some(Self::Transient),
-            crate::abi::transport::FAULT_RATE_LIMIT => Some(Self::RateLimit),
-            crate::abi::transport::FAULT_HARD => Some(Self::Hard),
+            crate::transport::codes::FAULT_TRANSIENT => Some(Self::Transient),
+            crate::transport::codes::FAULT_RATE_LIMIT => Some(Self::RateLimit),
+            crate::transport::codes::FAULT_HARD => Some(Self::Hard),
             crate::abi::transport::FAULT_HEALTHY => Some(Self::Healthy),
             _ => None,
         }
@@ -213,7 +213,7 @@ pub struct FrameMeta {
     pub retry_after_secs: Option<u64>,
     /// The frame's bytes are a TEXT message, not a binary one, on a wire whose messages are one or
     /// the other (ws's TEXT and BINARY opcodes). THE BIT'S ONE HOME: a framer states it as
-    /// [`crate::abi::transport::PIECE_TEXT`], the host reads it here, and a reader of the frame
+    /// [`crate::transport::codes::PIECE_TEXT`], the host reads it here, and a reader of the frame
     /// reads nothing else. `false` (the [`Default`]) is binary, the meaning every transport whose
     /// wire draws no such line keeps; it is not serialized, so a binary frame's record is unchanged.
     #[serde(skip_serializing_if = "core::ops::Not::not")]

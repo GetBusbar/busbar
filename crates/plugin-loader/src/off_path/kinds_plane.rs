@@ -34,19 +34,19 @@
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome};
-use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, RefreshIn};
-use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::plane::check::{
-    check_billable_classes, check_pin_mechanisms, check_record_chains, check_record_retentions,
-    check_refusal_statuses, check_route_cost, check_sections, check_tail, check_trust_keys, Bounds,
-};
 use busbar_contract::abi::plane::{
     self, BillableClass, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneTail,
 };
+use busbar_contract::kinds::codes::KindCode;
+use busbar_contract::plane::codes::{
+    check_billable_classes, check_pin_mechanisms, check_record_chains, check_record_retentions,
+    check_refusal_statuses, check_route_cost, check_sections, check_tail, check_trust_keys, Bounds,
+};
 use busbar_contract::plane::PinMechanismDecl;
 use busbar_contract::plane_calls::InstanceDecl;
+use busbar_contract::records::size_limits::Fault;
 use busbar_contract::secure::SecureVec;
 
 use crate::dispatch::kinds::plane::{
@@ -147,7 +147,7 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     let refusal_statuses = listed(tail.refusal_statuses, tail.refusal_statuses_len);
     check_refusal_statuses(&refusal_statuses, tail.dialects_len as u64).map_err(broke)?;
 
-    busbar_contract::abi::plane::check::check_dialect_auth(
+    busbar_contract::plane::codes::check_dialect_auth(
         &listed(tail.dialect_auth, tail.dialect_auth_len),
         tail.dialects_len as u64,
     )
@@ -156,7 +156,7 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     decl.ticket_prefix = ticket_prefix(st)?;
 
     let extensions = if st.extensions.len
-        > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize
+        > busbar_contract::records::size_limits::HARD_MAX_BYTES as usize
         || (st.extensions.len != 0 && st.extensions.ptr.is_null())
     {
         &[][..]
@@ -205,7 +205,7 @@ pub(crate) fn stated_provider_keys(
     if ext.ptr.is_null() || ext.len == 0 {
         return Ok(None);
     }
-    if ext.len > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize {
+    if ext.len > busbar_contract::records::size_limits::HARD_MAX_BYTES as usize {
         return Err("the Statement's extensions are longer than any blob may be".into());
     }
     // Its length capped first; the descriptor is decoded into owned values before this returns.
@@ -266,7 +266,7 @@ pub(crate) fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
 }
 
 fn ticket_prefix(st: &Statement) -> Result<Option<&'static str>, String> {
-    use busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX;
+    use busbar_contract::plugin_settings::sugar_words::MARK_WORD_ISSUED_ID_PREFIX;
     let mut found = None;
     for w in listed(st.mark_words, st.mark_words_len) {
         if w.class != MARK_WORD_ISSUED_ID_PREFIX {
@@ -335,7 +335,7 @@ pub fn linked_cli_help(
 
 pub fn rendered_cli_help(rendering: &[u8]) -> Result<Option<String>, String> {
     use crate::cold::dispatch::kinds as cold;
-    use busbar_contract::abi::mechanism::rendering::{read, read_plane_cli_help};
+    use busbar_contract::rendering::{read, read_plane_cli_help};
     let r = read(rendering).map_err(|e| cold::unreadable("the plane Statement", &e))?;
     if r.kind != KindCode::Plane as u32 {
         return Err(cold::rendering_kind(r.kind, "plane"));
@@ -624,7 +624,7 @@ pub fn refresh_door_on(
     let extensions = SecureVec::from(if owned.is_empty() {
         Vec::new()
     } else {
-        busbar_contract::abi::mechanism::extensions::encode(&[(plane::EXT_OWNED, owned)])
+        busbar_contract::extensions::encode(&[(plane::EXT_OWNED, owned)])
     });
     let inputs = Arc::new((settings, extensions));
     let mut call = (0..dispatcher.workers().max(1))
@@ -696,10 +696,7 @@ fn refreshed(
     let extensions = if owned.is_empty() {
         Vec::new()
     } else {
-        busbar_contract::abi::mechanism::extensions::encode(&[(
-            busbar_contract::abi::plane::EXT_OWNED,
-            owned,
-        )])
+        busbar_contract::extensions::encode(&[(busbar_contract::plane::codes::EXT_OWNED, owned)])
     };
     let mut head = in_head();
     if !extensions.is_empty() {

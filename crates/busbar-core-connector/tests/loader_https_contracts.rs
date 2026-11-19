@@ -3,9 +3,9 @@
 // Real transport/Connector refusal controls from the former loader HTTPS simulator, over core's
 // in-tree kind-level TCP carrier and HTTP framer doubles (no plugin is built or loaded: owner
 // ruling "core knows nothing about plugins just kinds, plugins test themselves and nothing else").
-use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED};
-use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+use busbar_contract::conn::codes::{DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED};
 use busbar_contract::conn::{ConnError, DeclaredConns, InstanceId, NeedId, OpenDesc};
+use busbar_contract::rendering::{ReadBlob, ReadNeed};
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::doors::Dispatched;
 use busbar_core_connector::registry::{Entry, Transports};
@@ -96,7 +96,7 @@ fn need(transport: &str, class: u32) -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
     }
@@ -116,7 +116,7 @@ fn actual_secure_and_undeclared_refusals_happen_before_any_destination_open() {
         Arc::new(move |_: &str, _: u32, _: Judged| {
             seen.fetch_add(1, Ordering::SeqCst);
             Some(Err::<std::net::SocketAddr, Verdict>(
-                busbar_contract::abi::host::service::DEST_UNRESOLVABLE,
+                busbar_contract::services::codes::DEST_UNRESOLVABLE,
             ))
         }),
         None,
@@ -320,7 +320,7 @@ fn actual_member_targets_declare_without_one_resolved_target() {
         Arc::new(move |_: &str, _: u32, _: Judged| {
             seen.fetch_add(1, Ordering::SeqCst);
             Some(Err::<std::net::SocketAddr, Verdict>(
-                busbar_contract::abi::host::service::DEST_UNRESOLVABLE,
+                busbar_contract::services::codes::DEST_UNRESOLVABLE,
             ))
         }),
         None,

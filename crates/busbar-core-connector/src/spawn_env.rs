@@ -179,7 +179,7 @@ mod source_fixture {
     static SOURCES: Mutex<BTreeMap<String, Entry>> = Mutex::new(BTreeMap::new());
 
     fn sources() -> Sugars {
-        use busbar_contract::abi::mechanism::door::{
+        use busbar_contract::plugin_settings::sugar_words::{
             REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL,
         };
         let mut sources = Sugars::default();

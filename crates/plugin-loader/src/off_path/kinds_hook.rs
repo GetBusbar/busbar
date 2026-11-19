@@ -15,9 +15,10 @@
 //! so the unsafe register (unsafe.yaml) keeps its per-file counts.
 
 use busbar_contract::abi::hook::{self, CLASS_GATE, CLASS_TAP, PROMPT_RW, USER_RO};
-use busbar_contract::abi::mechanism::door::{Statement, MARK_WORD_HOOK};
-use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
+use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::hook_calls::HookFacts;
+use busbar_contract::plugin_settings::sugar_words::MARK_WORD_HOOK;
+use busbar_contract::route::{Route, RouteAuth, RouteMethod};
 
 use crate::dispatch::kinds::hook::{hook_tail, mark_words, tail_routes, NO_TAIL, SIGNALS_REFUSED};
 
@@ -71,7 +72,7 @@ pub(crate) fn read(st: &Statement) -> Result<(HookFacts, Vec<Route>), String> {
         return Err(cold::hook_tail_states("user access", t.user_access));
     }
     if (t.routes_len != 0 && t.routes.is_null())
-        || t.routes_len as u64 > busbar_contract::abi::export::validate::HARD_MAX_ROUTES
+        || t.routes_len as u64 > busbar_contract::export_calls::codes::HARD_MAX_ROUTES
     {
         return Err("the hook tail's route list is null or exceeds the route bound".into());
     }

@@ -196,7 +196,7 @@ impl SecretCalls for Calls {
     fn resolve(&self, settings: &[u8]) -> Result<Secret<Vec<u8>>, SecretRefused> {
         let settings: Settings =
             busbar_contract::json::parse(settings).map_err(|_| SecretRefused {
-                error_kind: busbar_contract::abi::secret::ERROR_KIND_INVALID,
+                error_kind: busbar_contract::secret::codes::ERROR_KIND_INVALID,
                 text: "the reference settings are not a JSON object".to_owned(),
             })?;
         let reference = SecretRef::Source(SourceReference {

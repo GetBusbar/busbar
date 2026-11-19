@@ -18,8 +18,8 @@
 use busbar_contract::abi::export;
 use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::door::Statement;
-use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use busbar_contract::export_stream::ExportStream;
+use busbar_contract::route::{Route, RouteAuth, RouteMethod};
 
 use crate::dispatch::kinds::export::{label_keys, stated_tail, ExportFacts, StatedTail};
 
@@ -71,9 +71,9 @@ pub(crate) fn facts(st: &Statement) -> Result<ExportFacts, String> {
     } = stated_tail(st)?;
     let routes = crate::cold::dispatch::kinds::export_routes(routes)?;
     let families = crate::cold::dispatch::kinds::export_families(declared)?;
-    let span_records = busbar_contract::abi::mechanism::extensions::span_records(ext)?;
-    let whole_batches = busbar_contract::abi::mechanism::extensions::whole_batches(ext)?;
-    use busbar_contract::abi::mechanism::extensions;
+    let span_records = busbar_contract::extensions::span_records(ext)?;
+    let whole_batches = busbar_contract::extensions::whole_batches(ext)?;
+    use busbar_contract::kinds::codes::extensions;
     let public_routes = extensions::route_paths(ext, extensions::EXT_PUBLIC_ROUTES)?;
     let persistent_routes = extensions::route_paths(ext, extensions::EXT_PERSISTENT_ROUTES)?;
     if public_routes
@@ -102,6 +102,7 @@ pub(crate) fn facts(st: &Statement) -> Result<ExportFacts, String> {
         streams,
         routes,
         families,
-        one_instance: st.marks & busbar_contract::abi::mechanism::door::MARK_ONE_INSTANCE != 0,
+        one_instance: st.marks & busbar_contract::plugin_settings::sugar_words::MARK_ONE_INSTANCE
+            != 0,
     })
 }

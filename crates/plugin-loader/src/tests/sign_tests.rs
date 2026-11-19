@@ -1247,10 +1247,11 @@ fn statement_schema_is_authoritative_and_malformed_material_is_rejected() {
 #[test]
 fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
     use crate::dispatch::{load_linked, Adopter, Bind, ConnTable, LinkedRow, LoadError, NoSink};
-    use busbar_contract::abi::host::conn::connector::{Need, KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED};
+    use busbar_contract::abi::host::conn::connector::Need;
     use busbar_contract::abi::mechanism::door::{Door, Statement};
     use busbar_contract::abi::mechanism::rendering::render;
     use busbar_contract::abi::sdk::door::abi_str;
+    use busbar_contract::conn::codes::{KEEP_ALL_EXCEPT_DENIED, KEEP_NAMED};
     use std::sync::atomic::{AtomicPtr, Ordering};
     use std::sync::Arc;
 
@@ -1303,7 +1304,7 @@ fn a_signed_need_retention_policy_must_equal_the_actual_modules_policy() {
         );
         // SAFETY: all Statement backing is static or leaked above.
         let own = unsafe { render(st) }.unwrap();
-        let facts = busbar_artifact_metadata::rendering::read(&own).unwrap();
+        let facts = busbar_contract::rendering::read(&own).unwrap();
         let mut m = manifest(&facts.name, "retention", "busbar");
         m.kind = crate::dispatch_test_plugin::KIND.word().into();
         m.version = facts.version;

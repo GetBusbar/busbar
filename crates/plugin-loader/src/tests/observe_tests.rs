@@ -103,20 +103,8 @@ fn a_second_install_is_refused() {
     impl PluginObserver for Other {
         fn dropped(&self, _: u64) {}
         fn observe(&self, _: &str, _: &str, _: &[serde_json::Value], _: &[serde_json::Value]) {}
-        fn metric(
-            &self,
-            _: &str,
-            _: &str,
-            _: busbar_contract::abi::mechanism::observe::PluginMetric,
-        ) {
-        }
-        fn diagnostic(
-            &self,
-            _: &str,
-            _: &str,
-            _: busbar_contract::abi::mechanism::observe::PluginDiagnostic,
-        ) {
-        }
+        fn metric(&self, _: &str, _: &str, _: busbar_contract::observe::PluginMetric) {}
+        fn diagnostic(&self, _: &str, _: &str, _: busbar_contract::observe::PluginDiagnostic) {}
         fn refused(&self, _: &str, _: &str, _: crate::observe::BindRefusal<'_>) {}
     }
     let _guard = exclusive();
@@ -271,7 +259,7 @@ fn observed_through_its_bind<K: crate::dispatch::Kind>(
     );
     let binder = std::sync::Arc::new(Binder::default());
     let row = crate::dispatch::LinkedRow::of(door).expect("the door states its Statement");
-    let name = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+    let name = busbar_contract::rendering::read(&row.statement)
         .expect("the Statement reads back")
         .name;
     let plugin = crate::dispatch::load_linked::<K>(
@@ -326,7 +314,7 @@ fn observed_through_its_bind<K: crate::dispatch::Kind>(
 fn a_plane_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::plane::Plane>(
         crate::neutral_plane::door,
-        busbar_contract::abi::mechanism::kind::PLANE,
+        busbar_contract::kinds::codes::PLANE,
     );
 }
 
@@ -334,7 +322,7 @@ fn a_plane_envelope_reaches_the_host_observer() {
 fn an_auth_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::auth::Auth>(
         crate::neutral_auth::door,
-        busbar_contract::abi::mechanism::kind::AUTH,
+        busbar_contract::kinds::codes::AUTH,
     );
 }
 
@@ -358,7 +346,7 @@ fn a_transport_envelope_reaches_the_host_observer() {
 fn an_export_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::export::Export>(
         crate::neutral_export::door,
-        busbar_contract::abi::mechanism::kind::EXPORT,
+        busbar_contract::kinds::codes::EXPORT,
     );
 }
 
@@ -367,9 +355,9 @@ fn a_metric_is_named_by_its_family_for_every_kind() {
     use crate::dispatch::EnvelopeSink as _;
     let guard = exclusive();
     let kinds = [
-        busbar_contract::abi::mechanism::kind::PLANE,
-        busbar_contract::abi::mechanism::kind::AUTH,
-        busbar_contract::abi::mechanism::kind::STORE,
+        busbar_contract::kinds::codes::PLANE,
+        busbar_contract::kinds::codes::AUTH,
+        busbar_contract::kinds::codes::STORE,
         busbar_contract::abi::mechanism::kind::HOOK,
         busbar_contract::abi::mechanism::kind::SECRET,
         busbar_contract::abi::mechanism::kind::TRANSPORT,
@@ -381,12 +369,12 @@ fn a_metric_is_named_by_its_family_for_every_kind() {
             std::sync::Arc::new(Binder::default()),
             "envelope-all",
             kind,
-            vec![busbar_contract::abi::mechanism::rendering::ReadFamily {
+            vec![busbar_contract::rendering::ReadFamily {
                 name: "envelope_all_events_total".into(),
                 help: String::new(),
                 unit: String::new(),
                 label_keys: vec!["outcome".into()],
-                kind: busbar_contract::abi::mechanism::door::FAMILY_COUNTER,
+                kind: busbar_contract::plugin_settings::sugar_words::FAMILY_COUNTER,
             }],
         );
         sink.metric(crate::dispatch::Metric {
@@ -422,7 +410,7 @@ fn a_full_intake_drops_and_counts_and_never_stalls_the_caller() {
     for n in 0..sent {
         fold_entries(
             "intake-witness",
-            busbar_contract::abi::mechanism::kind::EXPORT,
+            busbar_contract::kinds::codes::EXPORT,
             &[serde_json::json!({ "name": "intake_witness_total", "type": "counter", "value": n })],
             &[],
         );
@@ -475,7 +463,7 @@ fn a_drop_after_the_last_handled_observation_is_still_reported() {
     let before = testing::DROPPED.load(Ordering::SeqCst);
     fold_entries(
         "late-drop-witness",
-        busbar_contract::abi::mechanism::kind::EXPORT,
+        busbar_contract::kinds::codes::EXPORT,
         &[serde_json::json!({ "name": "late_drop_total", "type": "counter" })],
         &[],
     );
@@ -519,7 +507,7 @@ fn a_back_channel_diagnostic_reaches_the_observer_as_its_entry() {
     let sink = EnvelopeObserver::with_families(
         testing::observing(),
         "typed-diag",
-        busbar_contract::abi::mechanism::kind::EXPORT,
+        busbar_contract::kinds::codes::EXPORT,
         Vec::new(),
     );
     sink.diag(crate::dispatch::Diagnostic {
@@ -531,7 +519,7 @@ fn a_back_channel_diagnostic_reaches_the_observer_as_its_entry() {
     let folds = testing::folds();
     assert_eq!(folds.len(), 1, "{folds:?}");
     assert_eq!(folds[0].0, "typed-diag");
-    assert_eq!(folds[0].1, busbar_contract::abi::mechanism::kind::EXPORT);
+    assert_eq!(folds[0].1, busbar_contract::kinds::codes::EXPORT);
     assert!(folds[0].2.is_empty());
     assert_eq!(
         folds[0].3,

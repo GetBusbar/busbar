@@ -106,7 +106,7 @@ fn a_linked_doors_former_name_resolves_its_module() {
 
 #[test]
 fn a_doors_words_are_its_former_names_then_its_alias_rewrites() {
-    use busbar_contract::abi::mechanism::door::{REWRITE_ALIAS, REWRITE_SUGAR};
+    use busbar_contract::plugin_settings::sugar_words::{REWRITE_ALIAS, REWRITE_SUGAR};
     let rewrites = vec![
         (REWRITE_SUGAR, "tok".to_string(), "token".to_string()),
         (REWRITE_ALIAS, "x-alias".to_string(), String::new()),

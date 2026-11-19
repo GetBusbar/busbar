@@ -44,7 +44,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC states its door");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);

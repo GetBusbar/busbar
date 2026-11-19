@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
 use busbar_kernel::snapshot::observe::{
     Grants, KernelPluginObserver, ObservationOwner, ObservationSink, INSTANCE_LABEL, KIND_LABEL,
 };
@@ -54,12 +54,7 @@ impl PluginObserver for Observer {
         );
     }
 
-    fn metric(
-        &self,
-        plugin: &str,
-        kind: &str,
-        metric: busbar_contract::abi::mechanism::observe::PluginMetric,
-    ) {
+    fn metric(&self, plugin: &str, kind: &str, metric: busbar_contract::observe::PluginMetric) {
         let Some(kind) = KindCode::ALL.into_iter().find(|code| code.word() == kind) else {
             return;
         };
@@ -79,7 +74,7 @@ impl PluginObserver for Observer {
         &self,
         plugin: &str,
         kind: &str,
-        diagnostic: busbar_contract::abi::mechanism::observe::PluginDiagnostic,
+        diagnostic: busbar_contract::observe::PluginDiagnostic,
     ) {
         let Some(kind) = KindCode::ALL.into_iter().find(|code| code.word() == kind) else {
             return;

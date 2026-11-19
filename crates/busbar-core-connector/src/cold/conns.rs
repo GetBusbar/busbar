@@ -57,7 +57,7 @@ pub(crate) fn trust_refused(target: &str, refusal: &impl Display) {
 #[cold]
 pub(crate) fn proxy_unreached(cause: Option<ConnCause>) -> NeedRefusal {
     let text = match cause {
-        Some(c) if c.stage == busbar_contract::abi::host::conn::connector::CAUSE_DEADLINE => {
+        Some(c) if c.stage == busbar_contract::conn::codes::CAUSE_DEADLINE => {
             "the deadline passed before the proxy opened the tunnel".to_owned()
         }
         Some(c) if !c.text.is_empty() => c.text,

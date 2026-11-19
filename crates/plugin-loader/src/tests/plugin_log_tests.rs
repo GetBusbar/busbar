@@ -7,7 +7,7 @@ use std::sync::Arc;
 use super::log_witness_plugin as witness;
 use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, TickIn, TickOut};
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
 
 use crate::dispatch::{
     in_head, load_dropped, load_linked, now_ns, out_head, rendering_of, Adopter, Bind,

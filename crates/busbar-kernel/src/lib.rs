@@ -619,8 +619,8 @@ pub fn base_data_core_lines(
     app: &state::App,
 ) -> Vec<(
     String,
-    busbar_contract::abi::mechanism::route::RouteMethod,
-    busbar_contract::abi::mechanism::route::RouteAuth,
+    busbar_contract::route::RouteMethod,
+    busbar_contract::route::RouteAuth,
 )> {
     router::base_data_router(
         &crate::plugin_routes::PluginRouteTable::default(),
@@ -641,8 +641,8 @@ pub fn base_data_core_lines(
 #[must_use]
 pub fn admin_core_lines() -> Vec<(
     String,
-    busbar_contract::abi::mechanism::route::RouteMethod,
-    busbar_contract::abi::mechanism::route::RouteAuth,
+    busbar_contract::route::RouteMethod,
+    busbar_contract::route::RouteAuth,
 )> {
     off_path::router::admin_routes(&crate::plugin_routes::PluginRouteTable::default())
         .1

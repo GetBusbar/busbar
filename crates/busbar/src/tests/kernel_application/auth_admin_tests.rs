@@ -31,7 +31,7 @@ async fn admin_plugin_full_binding_allows_mutation() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
@@ -152,7 +152,7 @@ async fn admin_max_admin_scope_caps_binding() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
@@ -268,7 +268,7 @@ async fn admin_plugin_readonly_binding_get_ok_post_403() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
@@ -420,7 +420,7 @@ async fn roleless_external_admin_principal_denied() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "ext-admin", true);
@@ -529,7 +529,7 @@ async fn forbidden_admin_requests_audit_once_per_window() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
@@ -661,7 +661,7 @@ async fn the_admin_gate_admits_only_the_listed_verbs() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
@@ -958,7 +958,7 @@ fn a_slow_admin_door_does_not_stall_healthz() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
@@ -1281,7 +1281,7 @@ async fn external_admin_verifier_receives_bearer_and_admin_header_candidates() {
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
@@ -1406,7 +1406,7 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
         fn issued_shape(&self) -> Option<IssuedShape> {
             self.actual.issued_shape()
         }
-        fn inbound_points(&self) -> busbar_contract::abi::auth::AuthPoints {
+        fn inbound_points(&self) -> busbar_contract::route::AuthPoints {
             self.actual.inbound_points()
         }
         fn carriers(&self) -> Arc<[String]> {
@@ -1456,7 +1456,7 @@ async fn every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict(
     let oidc_statement = busbar_plugin_loader::dispatch::rendering_of_library(&oidc_path)
         .expect("the actual OIDC statement reads")
         .expect("the actual OIDC product exports its statement");
-    let oidc_module = busbar_contract::abi::mechanism::rendering::read(&oidc_statement)
+    let oidc_module = busbar_contract::rendering::read(&oidc_statement)
         .expect("the actual OIDC statement is valid")
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);

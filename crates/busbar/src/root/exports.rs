@@ -79,7 +79,7 @@ impl ExportAxis for RootExports {
         crate::root::off_path::exports::linked_modules(rows())
     }
 
-    fn routes(&self, module: &str) -> Vec<busbar_contract::abi::mechanism::route::Route> {
+    fn routes(&self, module: &str) -> Vec<busbar_contract::route::Route> {
         rows().map(|r| r.routes(module)).unwrap_or_default()
     }
 

@@ -59,7 +59,7 @@ fn streaming_media_are_signed_and_old_tail_allocations_render_an_empty_list() {
     assert_eq!(&historical[8..12], &2_u32.to_le_bytes());
     historical[..8].copy_from_slice(rendering::RENDERING_MAGIC);
     historical[8..12]
-        .copy_from_slice(&busbar_contract::abi::mechanism::MECHANISM_VERSION.to_le_bytes());
+        .copy_from_slice(&busbar_contract::kinds::codes::MECHANISM_VERSION.to_le_bytes());
     historical.extend_from_slice(&0_u32.to_le_bytes());
     assert_eq!(legacy_bytes, historical);
     let legacy = rendering::read(&legacy_bytes).unwrap();

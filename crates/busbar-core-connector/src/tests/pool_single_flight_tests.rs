@@ -590,7 +590,7 @@ fn leader_refused_followers_bounded() {
     let opened = Instant::now();
     let followers: Vec<ConnId> = (1..BURST).map(|_| owned(&c, &desc)).collect();
     judge.then(&far.addr);
-    judge.answer(Err(busbar_contract::abi::host::service::DEST_METADATA));
+    judge.answer(Err(busbar_contract::services::codes::DEST_METADATA));
 
     let (_, _, refused) = answer(&c, leader);
     assert!(refused.is_some(), "the refused leader's exchange fails");

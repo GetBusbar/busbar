@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::host::service as svc;
+use busbar_contract::services::codes::service as svc;
 use busbar_contract::services::{HostServices, Later, Ran, Stored};
 use busbar_kernel::config::Destinations;
 use busbar_kernel::host_services::KernelServices;
@@ -16,7 +16,7 @@ use crate::guard::{Guard, Resolve, Resolved};
 use crate::process::GuardJudge;
 
 /// The provider class, the one class the 1.5.5 carve-outs speak for.
-const P: u32 = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+const P: u32 = busbar_contract::conn::codes::EGRESS_PROVIDER;
 
 /// A resolver that holds every resolution for the test to answer.
 #[derive(Default)]
@@ -364,7 +364,7 @@ fn dest_judge_refuses_private_reach_when_asked_and_names_what_decided_it() {
         Arc::clone(&r) as Arc<dyn Resolve>,
     )));
     let strict = svc::DEST_RESOLVE | svc::DEST_REFUSE_PRIVATE | svc::DEST_EXPLAIN;
-    let open_web = busbar_contract::abi::host::conn::connector::EGRESS_OPEN_WEB;
+    let open_web = busbar_contract::conn::codes::EGRESS_OPEN_WEB;
 
     for (flags, want) in [
         (svc::DEST_RESOLVE, svc::DEST_ALLOWED),

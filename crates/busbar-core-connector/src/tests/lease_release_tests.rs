@@ -7,7 +7,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::host::service::SCHEME_PLAIN;
 use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::sdk::door::{abi_str, blank_in, blank_out, statement, AbiIn, AbiOut};
 use busbar_contract::abi::sdk::life::{Held, Leases, Life, Refreshed, Refusal};
@@ -15,6 +14,7 @@ use busbar_contract::abi::sdk::transport::receive;
 use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
 use busbar_contract::abi::transport::*;
 use busbar_contract::plugin::markers::TransportKind;
+use busbar_contract::services::codes::SCHEME_PLAIN;
 use busbar_contract::transport::TransportSettings;
 use busbar_plugin_loader::dispatch::kinds::transport::Transport;
 use busbar_plugin_loader::dispatch::{load_linked, DispatchConfig, Dispatcher, LinkedRow};

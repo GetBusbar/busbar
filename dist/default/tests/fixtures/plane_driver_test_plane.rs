@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use busbar_contract::abi::hook::{MessageView, PromptView};
 use busbar_contract::abi::host::conn::connector::{
-    service, ConnectorSlots, EstablishIn, IoIn, Need, DIRECTION_OUTBOUND,
+    service, ConnectorSlots, EstablishIn, IoIn, Need,
 };
 use busbar_contract::abi::host::service::{
     op as service_op, ClockNowIn, ClockReading, ContentScanIn, HookCallIn, HostSlots, ItemSpan,
@@ -23,26 +23,32 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::call::{MetricEntry, METRIC_SET};
 use busbar_contract::abi::mechanism::door::{
-    Door, DoorParts, KindTailHead, MetricFamily, Section, Statement, FAMILY_GAUGE,
-    SECTION_DECLARING,
+    Door, DoorParts, KindTailHead, MetricFamily, Section, Statement,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpsHead, RefreshIn, TickIn, TickOut, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket, WakeFn};
-use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
+use busbar_contract::abi::mechanism::DOOR_MAGIC;
 use busbar_contract::abi::plane::{
     AdminRoute, ArriveIn, ArriveOut, BillableClass, CatalogIn, CatalogOut, Claim, OnPieceIn,
     OnPieceOut, OpClass, Ops, OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut,
     PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectOut, RefusalIn, RefusalOut, RefusalStatus,
-    ServeIn, ServeOut, UnitCount, ANSWER_LAYOUT, AUDIT_APPLIED, AUDIT_NONE, AUDIT_REJECTED,
-    CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE,
-    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
-    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_FIELDS,
-    PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT,
-    ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL, ROUTE_PUBLIC, SHAPE_WHOLE, SPAN_ABSENT,
-    UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    ServeIn, ServeOut, UnitCount, ANSWER_LAYOUT, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
+    INGRESS_RESPONSE_STREAM, PRINCIPAL_OPTIONAL, SHAPE_WHOLE,
 };
+use busbar_contract::conn::codes::DIRECTION_OUTBOUND;
+use busbar_contract::kinds::codes::{KindCode, MECHANISM_VERSION};
+use busbar_contract::measurement::{UNITS_ESTIMATED, UNITS_REPORTED};
+use busbar_contract::plane::codes::{
+    AUDIT_APPLIED, AUDIT_NONE, AUDIT_REJECTED, CANCEL_ABORTED, CANCEL_FAILED, CANCEL_OK_PARTIAL,
+    CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
+    PIECE_OUT_TEXT, REFUSAL_ANY_DIALECT, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL,
+    ROUTE_PUBLIC, VERDICT_RETRY,
+};
+use busbar_contract::plugin_settings::sugar_words::{FAMILY_GAUGE, SECTION_DECLARING};
+use busbar_contract::records::size_limits::SPAN_ABSENT;
 
 const CLOCK_REFUSED: (u32, u32) = (8, 403);
 
@@ -281,7 +287,7 @@ static NEEDS: Shared<[Need; 1]> = Shared([Need {
     target_from: NO_STR,
     trust_from: NO_STR,
     details: NO_BLOB,
-    keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+    keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
     ..Need::ZERO
 }]);
 

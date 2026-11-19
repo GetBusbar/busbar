@@ -21,8 +21,8 @@ use crate::plane_grants::{KeyRefresh, ReplayGuard};
 use crate::plugin_records::RecordsDenied;
 use crate::router::PreparedListener;
 use crate::state::AppHandle;
-use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::transport::route::PATH_EXACT;
+use busbar_contract::kinds::codes::KindCode;
+use busbar_contract::route::PATH_EXACT;
 use busbar_contract::secure::SecureVec;
 use busbar_plugin_abi::host_side::caller::Caller as AbiCaller;
 use busbar_plugin_abi::host_side::caller::{BoxFut, InstanceLimits};
@@ -198,10 +198,10 @@ fn fixture(bound: bool) -> Fixture {
         dialect: 0,
         auth: LineAuth::Chain(
             vec!["provider-42".into()],
-            busbar_contract::abi::auth::AuthPoints::EMPTY,
+            busbar_contract::route::AuthPoints::EMPTY,
         ),
         upgrade: None,
-        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
+        offered: busbar_contract::route::AuthPoints::EMPTY,
     };
     let transport: Arc<dyn busbar_ports::transport::TransportPort> = Arc::new(Transport);
     let plan = PhysicalPlan::new(

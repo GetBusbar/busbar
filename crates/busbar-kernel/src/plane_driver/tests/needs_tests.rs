@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
-use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+use busbar_contract::conn::codes::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+use busbar_contract::rendering::{ReadBlob, ReadNeed};
 
 fn need(direction: u32, auth: &str) -> ReadNeed {
     need_over(direction, "t", auth)
@@ -23,7 +23,7 @@ fn need_over(direction: u32, transport: &str, auth: &str) -> ReadNeed {
             bytes: Vec::new(),
         },
         timeout_ms: 0,
-        keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+        keep_mode: busbar_contract::conn::codes::KEEP_NAMED,
         keep_response_headers: Vec::new(),
         deny_response_headers: Vec::new(),
     }

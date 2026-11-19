@@ -360,7 +360,7 @@ extern "C" fn cancel(
             .expect("bound neutral SDK plane instance");
         if state.defect == Defect::Session {
             output.cancel.head.outcome = RawOutcome::of(Outcome::Ready);
-            output.cancel.disposition = busbar_contract::abi::plane::CANCEL_ABORTED;
+            output.cancel.disposition = busbar_contract::plane::codes::CANCEL_ABORTED;
             return RawOutcome::of(Outcome::Ready);
         }
         let ack = state
@@ -379,7 +379,7 @@ extern "C" fn cancel(
         };
         output.cancel.head.lease = lease;
         output.cancel.head.outcome = RawOutcome::of(Outcome::Ready);
-        output.cancel.disposition = busbar_contract::abi::plane::CANCEL_ABORTED;
+        output.cancel.disposition = busbar_contract::plane::codes::CANCEL_ABORTED;
         state.leases.insert(lease, bytes);
         RawOutcome::of(Outcome::Ready)
     })
@@ -817,7 +817,7 @@ fn canceling_an_actual_pending_crossing_cannot_ack_its_drivers_result() {
     let _serial = TEST_LOCK.lock().unwrap();
     use crate::dispatch::{in_head, out_head, Frame};
     use busbar_contract::abi::mechanism::call::DeadlineClass;
-    use busbar_contract::abi::plane::{slot, FROM_CALLER};
+    use busbar_contract::plane::codes::{slot, FROM_CALLER};
     NEXT.store(Defect::Cancel as u8, SeqCst);
     let provider = Arc::<Provider>::default();
     let dispatcher = Dispatcher::with_services(
@@ -898,7 +898,7 @@ fn a_pending_driver_delivers_ids_resumes_and_retires_late_service_custody() {
     use crate::dispatch::{in_head, out_head, Frame};
     use busbar_contract::abi::mechanism::call::DeadlineClass;
     use busbar_contract::abi::mechanism::lifecycle::{slot as life, TickIn, TickOut};
-    use busbar_contract::abi::plane::{slot, CANCEL_ABORTED, FROM_CALLER};
+    use busbar_contract::plane::codes::{slot, CANCEL_ABORTED, FROM_CALLER};
     let _serial = TEST_LOCK.lock().unwrap();
     NEXT.store(Defect::Session as u8, SeqCst);
     let provider = Arc::new(Provider {
@@ -1070,7 +1070,7 @@ fn project_attributes_the_actual_host_service_call_to_its_unit() {
     use crate::dispatch::{in_head, out_head, Frame};
     use busbar_contract::abi::hook::SignalEntry;
     use busbar_contract::abi::mechanism::call::AbiStr;
-    use busbar_contract::abi::plane::slot;
+    use busbar_contract::plane::codes::slot;
     let _serial = TEST_LOCK.lock().unwrap();
     NEXT.store(Defect::Pending as u8, SeqCst);
     let provider = Arc::<Provider>::default();

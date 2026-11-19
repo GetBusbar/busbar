@@ -6,7 +6,7 @@ use crate::carrier::{Carry, Side};
 use crate::framer::{Call, Crossed, DoorFacts};
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket as SideTicket;
-use busbar_contract::abi::transport::EMIT_TEXT;
+use busbar_contract::transport::codes::EMIT_TEXT;
 use futures::task::AtomicWaker;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -318,7 +318,7 @@ impl FramerDoor for GatedWrites {
                 self.accepted.lock().unwrap().push((
                     o.len as usize,
                     o.len as usize == i.len
-                        && i.flags & busbar_contract::abi::transport::WRITE_END_OF_FRAME != 0,
+                        && i.flags & busbar_contract::transport::codes::WRITE_END_OF_FRAME != 0,
                 ));
             }
             crossed

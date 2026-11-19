@@ -4,7 +4,7 @@
 use super::*;
 use crate::root::boot::ListenerNeed;
 use crate::root::min3_boot::transports::tests::initial;
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
 
 fn bind(slot: &str, port: u16) -> InboundBind {
     InboundBind {

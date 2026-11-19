@@ -55,17 +55,17 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
-use busbar_contract::abi::host::conn::connector::{
+use busbar_contract::conn::codes::{
     DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
-use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_UNRESOLVABLE};
-use busbar_contract::abi::mechanism::rendering::ReadNeed;
-use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
 use busbar_contract::conn::{
     Bytes, ConnCause, ConnId, ConnSlab, Conns, DeclaredConns, HeadDefaults, InstanceId,
     LocatedTarget, NeedId, NeedRefusal, OpenDesc, OwnedHead, Piece, PieceKind, PollConns, Ticket,
     NO_TICKET,
 };
+use busbar_contract::rendering::ReadNeed;
+use busbar_contract::services::codes::{DEST_NO_ADDRESSES, DEST_UNRESOLVABLE};
+use busbar_contract::transport::codes::{ROLE_CARRIER, ROLE_FRAMER};
 // Named by tests as `crate::ConnError`.
 pub(crate) use busbar_contract::conn::ConnError;
 use busbar_contract::ids::StreamId;
@@ -86,7 +86,7 @@ use crate::registry::Transports;
 /// How the host wakes a caller's ticket, naming the caller that handed it the ticket: the supplier
 pub type WakeTicket = busbar_contract::conn::ConnWake;
 
-/// A `DEST_*` verdict (`busbar_contract::abi::host::service`) refusing a dial.
+/// A `DEST_*` verdict (`busbar_contract::services::codes::service`) refusing a dial.
 pub type Verdict = u64;
 
 /// Where a pended judgement goes: the address to dial, or the verdict refusing it. Called once,
@@ -108,7 +108,7 @@ pub trait DialJudge: Send + Sync {
         done: JudgedAll,
     ) -> Option<Result<SocketAddr, Verdict>> {
         if !scheme_admits(target.egress_class, target.secure) {
-            return Some(Err(busbar_contract::abi::host::service::DEST_PLAINTEXT));
+            return Some(Err(busbar_contract::services::codes::DEST_PLAINTEXT));
         }
         self.judge_dial_all(target.authority, target.egress_class, reach, done)
     }
@@ -119,7 +119,7 @@ pub trait DialJudge: Send + Sync {
         target: busbar_kernel::host_services::Destination<'_>,
     ) -> Option<Verdict> {
         if !scheme_admits(target.egress_class, target.secure) {
-            return Some(busbar_contract::abi::host::service::DEST_PLAINTEXT);
+            return Some(busbar_contract::services::codes::DEST_PLAINTEXT);
         }
         self.judge_static(target.authority, target.egress_class)
     }
@@ -238,7 +238,7 @@ pub(crate) struct LiteralsOnly(pub(crate) guard::Guard);
 impl DialJudge for LiteralsOnly {
     fn judge_dial(&self, dest: &str, class: u32, _: Judged) -> Option<Result<SocketAddr, Verdict>> {
         let Some(at) = socket::address_of(dest) else {
-            return Some(Err(busbar_contract::abi::host::service::DEST_UNRESOLVABLE));
+            return Some(Err(busbar_contract::services::codes::DEST_UNRESOLVABLE));
         };
         let host = StackText::<IP_TEXT>::of(&at.ip());
         Some(
@@ -256,7 +256,7 @@ impl DialJudge for LiteralsOnly {
         _: Judged,
     ) -> Option<Result<SocketAddr, Verdict>> {
         let Some(at) = socket::address_of(dest) else {
-            return Some(Err(busbar_contract::abi::host::service::DEST_UNRESOLVABLE));
+            return Some(Err(busbar_contract::services::codes::DEST_UNRESOLVABLE));
         };
         let host = StackText::<IP_TEXT>::of(&at.ip());
         Some(
@@ -347,7 +347,7 @@ mod refusal_text {
 /// A guard verdict in words (never `guard::Refusal`'s Display: its catch-all and the operator's
 /// blocked list would be misnamed).
 pub(crate) const fn verdict_text(v: Verdict) -> &'static str {
-    use busbar_contract::abi::host::service::{
+    use busbar_contract::services::codes::{
         DEST_INTERNAL, DEST_METADATA, DEST_NO_HOST, DEST_OBFUSCATED, DEST_PLAINTEXT, DEST_SCHEME,
     };
     match v {
@@ -1338,7 +1338,7 @@ pub(crate) fn map(f: &Failure) -> ConnError {
 }
 
 fn class(code: u8) -> Option<WireStatusClass> {
-    use busbar_contract::abi::transport::{
+    use busbar_contract::transport::codes::{
         STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
     };
     match code {

@@ -10,9 +10,9 @@ use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome, RawOutcome, 
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    slot, OnPieceIn, OnPieceOut, Ops, PlaneCancelIn, PlaneCancelOut, PlaneOpenIn, CANCEL_ABORTED,
-    EMIT_DONE, FROM_CALLER,
+    OnPieceIn, OnPieceOut, Ops, PlaneCancelIn, PlaneCancelOut, PlaneOpenIn,
 };
+use busbar_contract::plane::codes::{slot, CANCEL_ABORTED, EMIT_DONE, FROM_CALLER};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, OnceLock};

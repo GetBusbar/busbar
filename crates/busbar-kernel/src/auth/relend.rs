@@ -108,7 +108,7 @@ impl AuthCalls for RelendingAuth {
         self.now().issued_shape()
     }
 
-    fn inbound_points(&self) -> busbar_contract::abi::auth::AuthPoints {
+    fn inbound_points(&self) -> busbar_contract::route::AuthPoints {
         self.now().inbound_points()
     }
 

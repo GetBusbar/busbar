@@ -9,20 +9,24 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use busbar_contract::abi::auth::{
-    slot, AuthPoint, IdentifyOut, IdentityBuf, IdentityOut, NamedValue, RequestFacts, StripName,
-    VerifyIn, DECISION_CONTINUE, FACT_INBOUND_ALL_HEADERS, FIELDS_HARD_MAX, FIELDS_MAX,
-    IDENTITY_BUF_BYTES, IDENTITY_GROUPS, IDENTITY_HAS_TTL, SPAN_ABSENT, STRIP_QUERY,
-    VERDICT_IDENTITY, VERDICT_REJECT,
+    IdentifyOut, IdentityBuf, IdentityOut, NamedValue, RequestFacts, StripName, VerifyIn,
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::call::{
     Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::lifecycle::{slot as lc, RefreshIn};
+use busbar_contract::auth_calls::codes::{
+    slot, DECISION_CONTINUE, FACT_INBOUND_ALL_HEADERS, FIELDS_HARD_MAX, FIELDS_MAX,
+    IDENTITY_BUF_BYTES, IDENTITY_GROUPS, IDENTITY_HAS_TTL, STRIP_QUERY, VERDICT_IDENTITY,
+    VERDICT_REJECT,
+};
 use busbar_contract::auth_calls::{
     AuthCalls, Decision, Strip, StripPlace, Verified, VerifiedIdentity, VerifyAnswer,
     VerifyRequest, Verifying,
 };
+use busbar_contract::records::size_limits::SPAN_ABSENT;
+use busbar_contract::route::AuthPoint;
 use busbar_contract::secure::{SecureString, SecureVec};
 
 use crate::cold::auth_door as cold;
@@ -423,7 +427,7 @@ impl Held {
     }
 
     fn reject_hint(&self, ext: Blob) -> Option<busbar_contract::auth_calls::RejectHint> {
-        busbar_contract::abi::auth::reject_hint_of(self.extensions(ext)?)
+        busbar_contract::auth_calls::codes::reject_hint_of(self.extensions(ext)?)
     }
 
     fn extensions(&self, ext: Blob) -> Option<&[u8]> {
@@ -450,7 +454,7 @@ impl Held {
         // SAFETY: `off + len <= buf_cap` (checked above) inside the `buf_cap` bytes `Held` owns,
         // and the op completed, so the plugin no longer writes the buffer.
         let bytes = unsafe { std::slice::from_raw_parts(self.buf.add(off), ext.len) };
-        busbar_contract::abi::auth::retry_after_of(bytes)
+        busbar_contract::auth_calls::codes::retry_after_of(bytes)
     }
 
     fn text(&self, s: Span) -> Option<String> {
@@ -551,7 +555,7 @@ pub(crate) fn declined(
 
 fn grown(out: &IdentifyOut, held: &Held) -> Option<(usize, u32, u32)> {
     if out.needed_bytes > IDENTITY_BUF_MAX
-        || out.needed_groups > busbar_contract::abi::auth::IDENTITY_GROUPS_HARD_MAX
+        || out.needed_groups > busbar_contract::auth_calls::codes::IDENTITY_GROUPS_HARD_MAX
         || out.needed_strip > FIELDS_HARD_MAX
     {
         return None;
@@ -611,7 +615,7 @@ impl AuthSink {
     ) -> Result<Arc<dyn EnvelopeSink>, String> {
         let file = logs.sink(
             label,
-            busbar_contract::abi::mechanism::KindCode::Auth,
+            busbar_contract::kinds::codes::KindCode::Auth,
             self.bind(),
         )?;
         Ok(Arc::new(InstanceSink {
@@ -1034,7 +1038,7 @@ impl AuthCalls for AuthInstance {
         self.facts.issued.clone()
     }
 
-    fn inbound_points(&self) -> busbar_contract::abi::auth::AuthPoints {
+    fn inbound_points(&self) -> busbar_contract::route::AuthPoints {
         self.facts.inbound_points
     }
 
@@ -1189,8 +1193,10 @@ impl AuthCalls for AuthInstance {
     }
 
     fn login_kind(&self) -> Option<busbar_contract::auth::LoginKind> {
-        use busbar_contract::abi::auth::{CAP_LOGIN, LOGIN_KIND_CREDENTIAL, LOGIN_KIND_REDIRECT};
         use busbar_contract::auth::LoginKind;
+        use busbar_contract::auth_calls::codes::{
+            CAP_LOGIN, LOGIN_KIND_CREDENTIAL, LOGIN_KIND_REDIRECT,
+        };
         if self.facts.caps & CAP_LOGIN == 0 {
             return None;
         }

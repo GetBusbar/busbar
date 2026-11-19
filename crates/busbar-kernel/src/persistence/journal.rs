@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::sdk::digest::Sha256Stream as Sha256;
+use busbar_contract::digest::Sha256Stream as Sha256;
 use busbar_contract::{
     persistence::{
         Address, Candidate, DatasetId, ExpectedValue, Failure, Mutation, NamespaceId, Predicate,

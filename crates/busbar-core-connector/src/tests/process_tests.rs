@@ -7,10 +7,10 @@ use std::time::Duration;
 
 use super::*;
 
-use busbar_contract::abi::host::conn::connector::{
+use busbar_contract::conn::codes::{
     EGRESS_DEFAULT, EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_PROVIDER,
 };
-use busbar_contract::abi::host::service::DEST_METADATA;
+use busbar_contract::services::codes::DEST_METADATA;
 
 use crate::guard::Resolved;
 

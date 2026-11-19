@@ -8,16 +8,20 @@ use std::sync::LazyLock;
 use crate::dispatch::kinds::plane::PlaneFacts;
 use busbar_contract::abi::hook::SignalEntry;
 use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, Span};
-use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
+use busbar_contract::abi::mechanism::check::{fault, Rule};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, GenIn, RefreshIn};
-use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::plane::check::Bounds;
 use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
+    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
     PlaneRefreshOut, PlaneSnapshot, ProjectIn, ProjectOut, RecordWrite, RefusalIn, RefusalOut,
-    ServeIn, ServeOut, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL, EMIT_DONE, PRINCIPAL_REQUIRED,
-    RECORD_PUT, SLOTS, UNITS_REPORTED,
+    ServeIn, ServeOut, UnitCount, SLOTS,
 };
+use busbar_contract::kinds::codes::KindCode;
+use busbar_contract::measurement::UNITS_REPORTED;
+use busbar_contract::plane::codes::Bounds;
+use busbar_contract::plane::codes::{
+    slot, CANCEL_ABORTED, CANCEL_OK_PARTIAL, EMIT_DONE, PRINCIPAL_REQUIRED, RECORD_PUT,
+};
+use busbar_contract::records::size_limits::Fault;
 
 use crate::dispatch::kinds::plane::Plane;
 use crate::dispatch::{Answer, Kind};
@@ -31,10 +35,9 @@ fn z<T>() -> T {
 fn bounded_tail_context(
     change: impl FnOnce(&mut busbar_contract::abi::plane::PlaneTail),
 ) -> Result<Option<Box<crate::dispatch::Context>>, String> {
-    use busbar_contract::abi::mechanism::door::{
-        KindTailHead, Section, Statement, SECTION_DECLARING,
-    };
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement};
     use busbar_contract::abi::plane::{PlaneTail, INGRESS_REQUEST_RESPONSE};
+    use busbar_contract::plugin_settings::sugar_words::SECTION_DECLARING;
     let section = [Section {
         name: AbiStr {
             ptr: b"door".as_ptr(),
@@ -104,7 +107,7 @@ fn plane_context_refuses_an_openapi_blob_before_reading_past_its_storage() {
             assert!(bounded_tail_context(|tail| {
                 tail.admin_openapi.ptr = b"{}".as_ptr();
                 tail.admin_openapi.len =
-                    busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize + 1;
+                    busbar_contract::records::size_limits::HARD_MAX_BYTES as usize + 1;
             })
             .is_err());
         },
@@ -258,7 +261,7 @@ fn plane_context_refuses_oversized_tail_text_before_copying() {
             assert!(bounded_tail_context(|tail| {
                 tail.label = AbiStr {
                     ptr: b"label".as_ptr(),
-                    len: busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize + 1,
+                    len: busbar_contract::records::size_limits::HARD_MAX_BYTES as usize + 1,
                 };
             })
             .is_err());
@@ -274,7 +277,7 @@ fn plane_context_bounds_fee_text_before_the_fee_validator_reads_it() {
         || {
             let fee = AbiStr {
                 ptr: b"fee".as_ptr(),
-                len: busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize + 1,
+                len: busbar_contract::records::size_limits::HARD_MAX_BYTES as usize + 1,
             };
             let class = busbar_contract::abi::plane::BillableClass {
                 class: AbiStr {
@@ -318,7 +321,7 @@ fn plane_context_bounds_metric_text_before_the_metric_validator_reads_it() {
         || {
             let lane = AbiStr {
                 ptr: b"lane".as_ptr(),
-                len: busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize + 1,
+                len: busbar_contract::records::size_limits::HARD_MAX_BYTES as usize + 1,
             };
             let refused = bounded_tail_context(|tail| {
                 tail.metric_lanes = &lane;
@@ -782,8 +785,9 @@ fn snapshot_arrival_spans_require_alignment_before_copying() {
 
 #[test]
 fn red_a_claim_whose_target_breaks_the_grammar_refuses_the_snapshot() {
-    use busbar_contract::abi::plane::{
-        Claim, CLAIM_CATALOG, CLAIM_PATTERN, CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS,
+    use busbar_contract::abi::plane::Claim;
+    use busbar_contract::plane::codes::{
+        CLAIM_CATALOG, CLAIM_PATTERN, CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS,
     };
     let s = |t: &'static str| AbiStr {
         ptr: t.as_ptr(),
@@ -1146,7 +1150,7 @@ fn red_a_tail_trust_key_that_breaks_its_element_rule_does_not_bind() {
         t.trust_keys_len = keys.len();
         let sections = [busbar_contract::abi::mechanism::door::Section {
             name: abi("door"),
-            flags: busbar_contract::abi::mechanism::door::SECTION_DECLARING,
+            flags: busbar_contract::plugin_settings::sugar_words::SECTION_DECLARING,
             _reserved: 0,
         }];
         let mut st: Statement = z();
@@ -1184,10 +1188,9 @@ fn red_a_tail_trust_key_that_breaks_its_element_rule_does_not_bind() {
 #[test]
 fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
-    use busbar_contract::abi::plane::{
-        reason_code, PlaneTail, RefusalStatus, INGRESS_REQUEST_RESPONSE,
-    };
+    use busbar_contract::abi::plane::{PlaneTail, RefusalStatus, INGRESS_REQUEST_RESPONSE};
     use busbar_contract::caps::ReasonCode;
+    use busbar_contract::plane::codes::reason_code;
     let rows = |status: u32| -> &'static [RefusalStatus] {
         Box::leak(Box::new([RefusalStatus {
             dialect: 0,
@@ -1219,7 +1222,7 @@ fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
                     ptr: b"door".as_ptr(),
                     len: 4,
                 },
-                flags: busbar_contract::abi::mechanism::door::SECTION_DECLARING,
+                flags: busbar_contract::plugin_settings::sugar_words::SECTION_DECLARING,
                 _reserved: 0,
             }]));
         let mut st: Statement = z();
@@ -1240,10 +1243,9 @@ fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
 
 #[test]
 fn red_a_tail_whose_fee_unit_is_no_billable_class_does_not_bind() {
-    use busbar_contract::abi::mechanism::door::{
-        KindTailHead, Section, Statement, SECTION_DECLARING,
-    };
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement};
     use busbar_contract::abi::plane::{BillableClass, PlaneTail, INGRESS_DUPLEX_SESSION};
+    use busbar_contract::plugin_settings::sugar_words::SECTION_DECLARING;
     fn s(text: &'static str) -> AbiStr {
         AbiStr {
             ptr: text.as_ptr(),
@@ -1301,12 +1303,11 @@ fn red_a_tail_whose_fee_unit_is_no_billable_class_does_not_bind() {
 
 #[test]
 fn routing_recipe_is_kept_after_plane_tail_validation() {
-    use busbar_contract::abi::mechanism::door::{
-        KindTailHead, Section, Statement, SECTION_DECLARING,
-    };
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement};
     use busbar_contract::abi::plane::{
         BillableClass, PlaneTail, RouteCost, INGRESS_DUPLEX_SESSION,
     };
+    use busbar_contract::plugin_settings::sugar_words::SECTION_DECLARING;
     fn s(text: &'static str) -> AbiStr {
         AbiStr {
             ptr: text.as_ptr(),
@@ -1370,12 +1371,10 @@ fn routing_recipe_is_kept_after_plane_tail_validation() {
 
 #[test]
 fn red_a_tail_whose_record_chains_break_a_rule_does_not_bind() {
-    use busbar_contract::abi::mechanism::door::{
-        KindTailHead, Section, Statement, SECTION_DECLARING,
-    };
-    use busbar_contract::abi::plane::{
-        PlaneTail, RecordChain, CHAIN_DIGESTS_SCOPE, CHAIN_PIPE_SEPARATED, INGRESS_REQUEST_RESPONSE,
-    };
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement};
+    use busbar_contract::abi::plane::{PlaneTail, RecordChain, INGRESS_REQUEST_RESPONSE};
+    use busbar_contract::plane::codes::{CHAIN_DIGESTS_SCOPE, CHAIN_PIPE_SEPARATED};
+    use busbar_contract::plugin_settings::sugar_words::SECTION_DECLARING;
     fn s(text: &'static str) -> AbiStr {
         AbiStr {
             ptr: text.as_ptr(),
@@ -1436,11 +1435,10 @@ fn red_a_tail_whose_record_chains_break_a_rule_does_not_bind() {
 
 #[test]
 fn a_tail_declares_its_record_retentions_and_a_bad_one_does_not_bind() {
-    use busbar_contract::abi::mechanism::door::{
-        KindTailHead, Section, Statement, SECTION_DECLARING,
-    };
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement};
     use busbar_contract::abi::plane::{PlaneTail, RecordRetention, INGRESS_REQUEST_RESPONSE};
     use busbar_contract::host_records::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
+    use busbar_contract::plugin_settings::sugar_words::SECTION_DECLARING;
     fn s(text: &'static str) -> AbiStr {
         AbiStr {
             ptr: text.as_ptr(),
@@ -1508,10 +1506,9 @@ fn a_tail_declares_its_record_retentions_and_a_bad_one_does_not_bind() {
 
 #[test]
 fn a_tail_states_its_stream_ceiling_and_a_tail_ending_before_it_states_none() {
-    use busbar_contract::abi::mechanism::door::{
-        KindTailHead, Section, Statement, SECTION_DECLARING,
-    };
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Section, Statement};
     use busbar_contract::abi::plane::{PlaneTail, INGRESS_REQUEST_RESPONSE};
+    use busbar_contract::plugin_settings::sugar_words::SECTION_DECLARING;
     let bind = |size: usize| {
         let mut tail: PlaneTail = z();
         tail.head = KindTailHead {
@@ -1642,7 +1639,8 @@ fn check_published_registration(
 
 #[test]
 fn snapshot_registration_catalog_claim_requires_the_registered_operation() {
-    use busbar_contract::abi::plane::{Claim, CLAIM_CATALOG, CLAIM_EXACT};
+    use busbar_contract::abi::plane::Claim;
+    use busbar_contract::plane::codes::{CLAIM_CATALOG, CLAIM_EXACT};
     let claim = Claim {
         verb: registration_text("GET"),
         target: registration_text("/catalog"),
@@ -1669,7 +1667,8 @@ fn snapshot_registration_catalog_claim_requires_the_registered_operation() {
 
 #[test]
 fn snapshot_registration_admin_routes_require_serve_and_preserve_declared_security() {
-    use busbar_contract::abi::plane::{AdminRoute, ROUTE_PUBLIC};
+    use busbar_contract::abi::plane::AdminRoute;
+    use busbar_contract::plane::codes::ROUTE_PUBLIC;
     use busbar_contract::plane_calls::StatedAdminRoute;
     let mut facts = FACTS.clone();
     facts.served.admin_routes = vec![
@@ -1752,7 +1751,8 @@ fn snapshot_registration_admin_routes_require_serve_and_preserve_declared_securi
 
 #[test]
 fn snapshot_registration_static_routes_validate_security_metadata() {
-    use busbar_contract::abi::plane::{AdminRoute, ROUTE_CARRIES_OWN_TOKEN, ROUTE_PUBLIC};
+    use busbar_contract::abi::plane::AdminRoute;
+    use busbar_contract::plane::codes::{ROUTE_CARRIES_OWN_TOKEN, ROUTE_PUBLIC};
     let route = AdminRoute {
         verb: registration_text("POST"),
         target: registration_text("/token"),

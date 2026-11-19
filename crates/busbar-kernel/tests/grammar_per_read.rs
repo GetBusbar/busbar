@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::door::REWRITE_SUGAR;
+use busbar_contract::plugin_settings::sugar_words::REWRITE_SUGAR;
 use busbar_contract::plugin_settings::Settings;
 use busbar_contract::secret::{SecretAxis, SecretBytes, SecretCalls};
 use busbar_contract::secret_ref::context::UNDECLARED_MARKER;

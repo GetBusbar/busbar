@@ -49,9 +49,10 @@ impl SafeSlot for Check {
 }
 
 use busbar_contract::abi::export::{Route, ServeIn, ServeOut, ROUTE_AUTH_KEY};
-use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_INBOUND};
+use busbar_contract::abi::host::conn::connector::Need;
 use busbar_contract::abi::mechanism::call::BLOB_OCTETS;
 use busbar_contract::abi::sdk::door::abi_str;
+use busbar_contract::conn::codes::DIRECTION_INBOUND;
 pub const BODY: &[u8] = b"neutral route witness";
 const ROUTES: &[Route] = &[
     Route {

@@ -9,8 +9,8 @@ use busbar_contract::abi::mechanism::lifecycle::{
     slot, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn,
     TickOut, ValidateIn,
 };
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::sdk::door::RawSlot;
+use busbar_contract::kinds::codes::KindCode;
 
 pub const TARGET: &str = "log_witness";
 

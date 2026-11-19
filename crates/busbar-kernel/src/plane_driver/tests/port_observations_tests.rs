@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use busbar_contract::abi::sdk::plane::observation::Receipt;
+use busbar_contract::observation::Receipt;
 use busbar_contract::records::VirtualKey;
 use busbar_contract::UnitKey;
 use busbar_plugin_abi::plane::{

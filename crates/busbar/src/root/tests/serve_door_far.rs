@@ -5,13 +5,13 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 
-use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_ONCE};
 use busbar_contract::abi::transport::FAULT_HEALTHY;
 use busbar_contract::caps::{Dial, PrincipalId, Route};
 use busbar_contract::conn::{
     ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc, Piece, PieceKind, PollConns, Ticket,
 };
 use busbar_contract::ids::{OpClassId, StreamId};
+use busbar_contract::plane::codes::{ROUTE_DIRECT, ROUTE_ONCE};
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
 use busbar_contract::transport::ConnFacts;
 use busbar_kernel::plane_driver::{

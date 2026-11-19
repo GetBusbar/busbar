@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::route::Route;
+use busbar_contract::route::Route;
 use busbar_contract::secure::SecureVec;
 
 use crate::dispatch::kinds::export::ExportFacts;

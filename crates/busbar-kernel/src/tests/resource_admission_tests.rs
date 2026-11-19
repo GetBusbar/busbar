@@ -5,7 +5,7 @@
 
 use std::num::NonZeroU64;
 
-use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::kinds::codes::KindCode;
 
 use super::*;
 

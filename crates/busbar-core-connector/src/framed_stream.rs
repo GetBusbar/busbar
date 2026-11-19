@@ -6,7 +6,8 @@
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::transport::{StatusRow, SIDE_ACCEPT_STREAM};
+use busbar_contract::abi::transport::StatusRow;
+use busbar_contract::transport::codes::SIDE_ACCEPT_STREAM;
 
 use crate::compose::HeadWords;
 use crate::framer::{AuthBinding, Established, FramerDoor, Framing, Refused, Yielded};
@@ -275,7 +276,7 @@ fn closing_response(yielded: &Yielded) -> Result<Closing, Refused> {
 
 /// The compatibility operator adapter validates ordinary HTTP field names and values.
 fn opening_fields(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
-    use busbar_contract::abi::transport::fields;
+    use busbar_contract::transport::codes::fields;
     let mut read = 0;
     let mut out = Vec::new();
     for (name, value) in fields::lines(block) {
@@ -302,7 +303,7 @@ fn opening_fields(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
 
 /// A transport field block must be complete; field names and values belong to its producer.
 fn neutral_opening_fields(block: &[u8]) -> Result<Vec<HeadWords>, Refused> {
-    use busbar_contract::abi::transport::fields;
+    use busbar_contract::transport::codes::fields;
     let mut read = 0;
     let mut out = Vec::new();
     for (name, value) in fields::lines(block) {

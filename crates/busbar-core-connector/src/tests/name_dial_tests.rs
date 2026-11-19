@@ -228,7 +228,7 @@ fn a_refused_endpoint_fails_its_landing_and_the_next_endpoint_lands() {
         );
         assert_eq!(
             DeclaredConns::cause(c.as_ref(), OWNER, id).map(|k| k.stage),
-            Some(busbar_contract::abi::host::conn::connector::CAUSE_CONNECT),
+            Some(busbar_contract::conn::codes::CAUSE_CONNECT),
             "its cause is the connect"
         );
         t.close(id).unwrap();
@@ -364,7 +364,7 @@ fn a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal() {
             OWNER,
             NEED,
             "bytes",
-            busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED,
+            busbar_contract::conn::codes::EGRESS_LOOPBACK_ALLOWED,
         )
         .expect("a served scheme declares");
         let host = host(&c);
@@ -641,7 +641,7 @@ fn a_config_named_target_on_loopback_is_trusted() {
 /// A configured provider target remains refused until its named route is authorized.
 #[test]
 fn a_config_named_provider_target_on_loopback_is_refused_until_its_own_route_is_authorized() {
-    use busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
+    use busbar_contract::conn::codes::EGRESS_PROVIDER;
     worker().block_on(async {
         let (port, accepted) = counting_echo().await;
         let target = format!("model.test:{port}");

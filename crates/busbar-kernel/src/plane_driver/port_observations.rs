@@ -358,8 +358,8 @@ impl UsageObservations for ObsCustody {
 fn observation_of(
     classes: &[String],
     o: &ObservationIn<'_>,
-) -> Option<busbar_contract::abi::sdk::plane::observation::Observation> {
-    use busbar_contract::abi::sdk::plane::observation::Observation;
+) -> Option<busbar_contract::observation::Observation> {
+    use busbar_contract::observation::Observation;
     let mut observation = Observation::new(o.scope, o.event.to_vec(), o.component.to_vec());
     for (name, amount, scale) in o.counts {
         let class = class_of(classes, name)?;

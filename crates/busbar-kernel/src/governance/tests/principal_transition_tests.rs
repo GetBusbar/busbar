@@ -2224,14 +2224,14 @@ async fn fresh_record_bootstrap_consumes_real_baseline_witness_once_and_scopes_c
         .is_err());
     let caller = busbar_contract::services::Caller::for_test(
         Arc::from("a2a"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     assert!(!grant.accepts(&caller));
     grant.bind_caller(&caller).unwrap();
     assert!(grant.accepts(&caller));
     let replacement = busbar_contract::services::Caller::for_test(
         Arc::from("a2a"),
-        busbar_contract::abi::mechanism::KindCode::Plane,
+        busbar_contract::kinds::codes::KindCode::Plane,
     );
     assert!(!grant.accepts(&replacement));
 }
