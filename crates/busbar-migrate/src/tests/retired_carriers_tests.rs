@@ -27,7 +27,7 @@ fn dropped(source: &str) -> (Value, Vec<String>) {
 
 #[test]
 fn every_spelling_of_the_two_modules_is_a_retired_carrier_and_nothing_else_is() {
-    for carrier in ["tcp", "stdio"] {
+    for carrier in "tcp stdio".split(' ') {
         let plugin = format!("busbar-transport-{carrier}");
         for word in [
             carrier.to_string(),
